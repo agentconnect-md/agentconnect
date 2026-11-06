@@ -117,6 +117,8 @@ export interface SkillLedgerLocation {
   workspaceRealpath: string
   workspaceIdentity: PathIdentity
   file: string
+  /** Where the ledger was kept when its key held the device, read until `file` is first written. */
+  deviceFile?: string
 }
 
 export interface ReconcileSkillBundlesOptions {
@@ -221,28 +223,40 @@ export async function skillLedgerLocation(cwd: string, stateDir: string): Promis
   const workspaceRealpath = await fsp.realpath(lexical)
   const workspaceIdentity = identity(stat)
   await assertWorkspaceIdentity(lexical, workspaceRealpath, workspaceIdentity)
-  const key = createHash('sha256')
-    .update(workspaceRealpath)
-    .update('\0')
-    .update(workspaceIdentity.dev)
-    .update('\0')
-    .update(workspaceIdentity.ino)
-    .digest('hex')
+  // No device: a reboot can renumber a Btrfs subvolume's under unchanged files.
+  const key = (parts: string[]) => createHash('sha256').update(parts.join('\0')).digest('hex')
   const dir = join(stateDir, 'workspace-skills')
   await ensureTrustedStateDir(stateDir, dir)
-  return { workspaceRealpath, workspaceIdentity, file: join(dir, `${key}.json`) }
+  return {
+    workspaceRealpath,
+    workspaceIdentity,
+    file: join(dir, `${key([workspaceRealpath, workspaceIdentity.ino])}.json`),
+    deviceFile: join(dir, `${key([workspaceRealpath, workspaceIdentity.dev, workspaceIdentity.ino])}.json`)
+  }
 }
 
 export async function readSkillLedger(location: SkillLedgerLocation): Promise<SkillInstallLedger | null> {
   try {
-    const stat = await fsp.lstat(location.file)
+    return await readSkillLedgerFile(location.file, location)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || !location.deviceFile) throw error
+  }
+  return readSkillLedgerFile(location.deviceFile, location).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  })
+}
+
+async function readSkillLedgerFile(file: string, location: SkillLedgerLocation): Promise<SkillInstallLedger> {
+  try {
+    const stat = await fsp.lstat(file)
     if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > MAX_SKILL_LEDGER_BYTES) {
       throw safety('skill ownership ledger is not a bounded regular file')
     }
-    const value = JSON.parse(await fsp.readFile(location.file, 'utf8')) as unknown
+    const value = JSON.parse(await fsp.readFile(file, 'utf8')) as unknown
     return parseLedger(value, location)
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw error
     if (error instanceof SkillLedgerSafetyError) throw error
     throw safety('skill ownership ledger is unreadable', error)
   }
@@ -1379,10 +1393,11 @@ async function writeSkillLedger(file: string, ledger: SkillInstallLedger, public
 function parseLedger(value: unknown, location: SkillLedgerLocation): SkillInstallLedger {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw safety('skill ownership ledger is invalid')
   const row = value as Record<string, unknown>
+  const recorded = parseRequiredIdentity(row.workspaceIdentity)
   if (
     row.version !== 3 ||
     row.workspaceRealpath !== location.workspaceRealpath ||
-    !sameIdentity(parseRequiredIdentity(row.workspaceIdentity), location.workspaceIdentity) ||
+    recorded.ino !== location.workspaceIdentity.ino ||
     (row.phase !== 'ready' && row.phase !== 'applying') ||
     typeof row.agentId !== 'string' ||
     row.agentId.length === 0 ||
@@ -1391,6 +1406,9 @@ function parseLedger(value: unknown, location: SkillLedgerLocation): SkillInstal
   ) {
     throw safety('skill ownership ledger is invalid')
   }
+  // A reboot can renumber the workspace's device under unchanged files; identities recorded on it move with it.
+  const rebase = (id: PathIdentity): PathIdentity =>
+    id.dev === recorded.dev ? { dev: location.workspaceIdentity.dev, ino: id.ino } : id
   const base: LedgerBase = {
     version: 3,
     workspaceRealpath: location.workspaceRealpath,
@@ -1416,9 +1434,9 @@ function parseLedger(value: unknown, location: SkillLedgerLocation): SkillInstal
       ...base,
       phase: 'ready',
       ...(typeof row.fingerprint === 'string' ? { fingerprint: row.fingerprint } : {}),
-      owned: parseOwnedList(row.owned),
+      owned: parseOwnedList(row.owned, rebase),
       gitResolutions: validateGitResolutions(row.gitResolutions ?? []),
-      ...(row.cleanup === undefined ? {} : { cleanup: parseCleanup(row.cleanup) })
+      ...(row.cleanup === undefined ? {} : { cleanup: parseCleanup(row.cleanup, rebase) })
     }
   }
   return {
@@ -1426,9 +1444,9 @@ function parseLedger(value: unknown, location: SkillLedgerLocation): SkillInstal
     phase: 'applying',
     ...(typeof row.priorFingerprint === 'string' ? { priorFingerprint: row.priorFingerprint } : {}),
     priorGitResolutions: validateGitResolutions(row.priorGitResolutions ?? []),
-    prior: parseOwnedList(row.prior),
+    prior: parseOwnedList(row.prior, rebase),
     pending: parseReceiptList(row.pending),
-    operations: parseOperations(row.operations)
+    operations: parseOperations(row.operations, rebase)
   }
 }
 
@@ -1454,11 +1472,11 @@ function validateGitResolutions(value: unknown): SkillGitResolution[] {
     .sort((a, b) => a.definitionDigest.localeCompare(b.definitionDigest))
 }
 
-function parseOwnedList(value: unknown): OwnedSkillBundle[] {
+function parseOwnedList(value: unknown, rebase: (id: PathIdentity) => PathIdentity): OwnedSkillBundle[] {
   if (!Array.isArray(value) || value.length > MAX_SKILL_BUNDLES) throw safety('skill ownership ledger is invalid')
   return value.map((entry) => {
     validateOwned(entry as OwnedSkillBundle)
-    return entry as OwnedSkillBundle
+    return { ...(entry as OwnedSkillBundle), identity: rebase((entry as OwnedSkillBundle).identity) }
   })
 }
 
@@ -1470,7 +1488,7 @@ function parseReceiptList(value: unknown): SkillBundleReceipt[] {
   })
 }
 
-function parseOperations(value: unknown): JournalOperation[] {
+function parseOperations(value: unknown, rebase: (id: PathIdentity) => PathIdentity): JournalOperation[] {
   if (!Array.isArray(value) || value.length > 128) throw safety('skill ownership ledger is invalid')
   return value.map((entry) => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw safety('skill ownership ledger is invalid')
@@ -1495,18 +1513,18 @@ function parseOperations(value: unknown): JournalOperation[] {
       tombstoneName: operation.tombstoneName,
       ...(operation.reservationIdentity && operation.markerIdentity
         ? {
-            reservationIdentity: { ...operation.reservationIdentity },
-            markerIdentity: { ...operation.markerIdentity }
+            reservationIdentity: rebase(operation.reservationIdentity),
+            markerIdentity: rebase(operation.markerIdentity)
           }
         : {})
     }
   })
 }
 
-function parseCleanup(value: unknown): ReadyCleanup {
+function parseCleanup(value: unknown, rebase: (id: PathIdentity) => PathIdentity): ReadyCleanup {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw safety('skill ownership ledger is invalid')
   const cleanup = value as Record<string, unknown>
-  return { operations: parseOperations(cleanup.operations), prior: parseOwnedList(cleanup.prior) }
+  return { operations: parseOperations(cleanup.operations, rebase), prior: parseOwnedList(cleanup.prior, rebase) }
 }
 
 function identity(stat: BigIntStats): PathIdentity {

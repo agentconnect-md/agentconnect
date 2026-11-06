@@ -390,6 +390,36 @@ describe.skipIf(process.platform === 'win32')('skill install ledger over a re-ch
     expect((await reconcileSkillBundles(options)).skipped).toBe('unchanged')
   })
 
+  it("keeps its bundles when a reboot renumbers the workspace's device under unchanged files", async () => {
+    await reconcile('v1')
+    const location = await skillLedgerLocation(cwd, stateDir)
+    const live = location.workspaceIdentity.dev
+    // What a Btrfs subvolume's anonymous device looks like after the reboot renumbered it.
+    const recorded = (await readFile(location.file, 'utf8')).replaceAll(
+      `"dev":"${live}"`,
+      `"dev":"${BigInt(live) + 7n}"`
+    )
+    expect(recorded).not.toContain(`"dev":"${live}"`)
+    await writeFile(location.file, recorded, { mode: 0o600 })
+
+    expect((await reconcile('v1')).skipped).toBe('unchanged')
+    expect(await reconcile('v2')).toMatchObject({ installed: [], removed: [], conflicts: [] })
+    expect(await readSkillLedger(location)).toMatchObject({
+      phase: 'ready',
+      owned: [{ relativeRoot: BUNDLE, identity: await pathIdentity(join(cwd, BUNDLE)) }]
+    })
+  })
+
+  it('reads a ledger kept under the key that held the device until its own key is written', async () => {
+    await reconcile('v1')
+    const location = await skillLedgerLocation(cwd, stateDir)
+    await rename(location.file, location.deviceFile!)
+
+    expect((await reconcile('v1')).skipped).toBe('unchanged')
+    expect(await reconcile('v2')).toMatchObject({ installed: [], removed: [], conflicts: [] })
+    expect(existsSync(location.file)).toBe(true)
+  })
+
   it('retains an unchanged sibling through interrupted replacement and retry', async () => {
     const changingRoot = '.claude/skills/changing'
     const target = join(cwd, changingRoot, 'SKILL.md')
