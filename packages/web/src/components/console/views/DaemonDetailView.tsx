@@ -237,6 +237,7 @@ export default function DaemonDetailView() {
             <Icon name="tag" size={14} color="var(--text-tertiary)" />
             {daemon.version}
           </span>
+          <DaemonAutoUpgradeSetting daemon={daemon} />
           {group && (
             <button
               onClick={() => router.push(orgPath(`/daemons/groups/${group.setId}`))}
@@ -532,7 +533,6 @@ export default function DaemonDetailView() {
               </span>
             </div>
           ))}
-          <DaemonAutoUpgradeSetting daemon={daemon} mobile />
           <div className="flex items-center justify-between gap-4 border-t border-(--border-subtle) px-4 py-3">
             <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">
               {t('created')}
@@ -642,6 +642,7 @@ export default function DaemonDetailView() {
               <Icon name="tag" size={14} color="var(--text-tertiary)" />
               <span className="mono text-[12px]">{daemon.version}</span>
             </span>
+            <DaemonAutoUpgradeSetting daemon={daemon} />
             <span className="inline-flex items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
               <Icon name="timer" size={14} color="var(--text-tertiary)" />
               {seen}
@@ -816,7 +817,6 @@ export default function DaemonDetailView() {
             {labeled(t('status'), s.label)}
             {labeled(t('version'), daemon.version)}
             {pending && labeled(t('pending'), pendingLabel)}
-            <DaemonAutoUpgradeSetting daemon={daemon} />
             {labeled(t('lastSeen'), daemon.uptime)}
             <div className="row grid-cols-[auto_1fr] gap-3">
               <span className="font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">

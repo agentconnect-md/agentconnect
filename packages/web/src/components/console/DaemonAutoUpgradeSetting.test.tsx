@@ -42,13 +42,19 @@ afterEach(async () => {
 
 const toggle = () => host.querySelector<HTMLButtonElement>('button[role="switch"]')!
 
-describe.each([false, true])('DaemonAutoUpgradeSetting (mobile: %s)', (mobile) => {
-  const render = () => act(async () => root.render(<DaemonAutoUpgradeSetting daemon={daemon} mobile={mobile} />))
+const tooltip = () => host.querySelector<HTMLElement>('[title]')?.title ?? ''
+const details = async () => {
+  await act(async () => host.querySelector<HTMLButtonElement>('button[aria-expanded]')!.click())
+  return host.querySelector('[role="note"]')?.textContent ?? ''
+}
+
+describe('DaemonAutoUpgradeSetting', () => {
+  const render = () => act(async () => root.render(<DaemonAutoUpgradeSetting daemon={daemon} />))
 
   it('lets an owner turn it on for a supported daemon', async () => {
     await render()
     expect(toggle().disabled).toBe(false)
-    expect(host.textContent).toContain('restarts only when the daemon is idle')
+    expect(tooltip()).toContain('restarts only when the daemon is idle')
     await act(async () => toggle().click())
     expect(mocks.setDaemonAutoUpgrade).toHaveBeenCalledWith('d1', true)
   })
@@ -57,7 +63,8 @@ describe.each([false, true])('DaemonAutoUpgradeSetting (mobile: %s)', (mobile) =
     daemon.autoUpgradeSupported = false
     await render()
     expect(toggle().disabled).toBe(true)
-    expect(host.textContent).toContain('not available for pool members')
+    expect(tooltip()).toContain('not available for pool members')
+    expect(await details()).toContain('not available for pool members')
   })
 
   it('is read-only for a caller who cannot manage the daemon lifecycle', async () => {
@@ -70,7 +77,8 @@ describe.each([false, true])('DaemonAutoUpgradeSetting (mobile: %s)', (mobile) =
     daemon.autoUpgrade = true
     await render()
     expect(toggle().getAttribute('aria-checked')).toBe('true')
-    expect(host.textContent).toContain('Waiting for an idle window to upgrade to v1.41.0')
+    expect(tooltip()).toContain('Waiting for an idle window to upgrade to v1.41.0')
+    expect(await details()).toContain('Waiting for an idle window to upgrade to v1.41.0')
   })
 
   it('shows the last automatic failure with its reason', async () => {
@@ -82,7 +90,22 @@ describe.each([false, true])('DaemonAutoUpgradeSetting (mobile: %s)', (mobile) =
       settledAt: '2026-10-28T00:00:00.000Z'
     }
     await render()
-    expect(host.textContent).toContain('Auto-upgrade to v1.41.0 failed: rolled back: crashed on start')
+    expect(await details()).toContain('Auto-upgrade to v1.41.0 failed: rolled back: crashed on start')
+  })
+
+  it('keeps the details inside a narrow viewport when the label sits near its right edge', async () => {
+    const width = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 320 })
+    try {
+      await render()
+      const label = host.querySelector<HTMLButtonElement>('button[aria-expanded]')!
+      label.getBoundingClientRect = () => ({ left: 200, bottom: 100 }) as DOMRect
+      await act(async () => label.click())
+      const panel = host.querySelector<HTMLElement>('[role="note"]')!
+      expect([panel.style.left, panel.style.width, panel.style.top]).toEqual(['24px', '280px', '106px'])
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: width })
+    }
   })
 
   it('surfaces a refused change and returns the switch to the stored value', async () => {
