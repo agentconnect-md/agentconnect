@@ -30,6 +30,22 @@ Dock geometry: width **380–760px, default 480px**, drag handle on the left edg
 (brand-colored while dragging), tab strip with zero gap between tabs. Tab labels
 collapse to icon-only for inactive tabs when the dock is narrow.
 
+Every row is **one line**: the state icon, the name, and the time of its latest
+update (a running runtime row's elapsed time) at the right, which a Stop or End
+replaces on hover. What the session is decides its groups:
+
+- **A coordinator** has Threaded tasks and Follow-ups only. It runs no commands or
+  subagents of its own, so the runtime groups are left out and its dock opens on Tasks,
+  which leads its strip.
+- **A task or an ordinary session** has the runtime's Subagents and Commands, then a
+  Finished group that starts closed, plus any delegated groups it owns.
+
+Each delegated group lists running rows first, then the rest by latest update. It
+shows five rows (every running one, if more run) and folds the rest, finished ones
+always, behind its own "N more". Group headers fold their group and stay in view while
+the list scrolls. Summaries, done-when lines and recent checks stay on the agent's
+Activity page; the dock names each row and links to it.
+
 The Tasks tab is one tab with two groups, not a kind column. It has one verdict,
 settled when both groups' reads are, and shows whenever either group has something
 to show or the runtime group is tracked; the Delegated group shows whenever the

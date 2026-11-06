@@ -11,14 +11,8 @@ import { Icon } from '@/components/ui'
 import { formatFileMtime } from '@/components/console/FileBrowser'
 import { ApiError, fetchAgentTasks, type AgentTaskDto, type AgentTasksDto } from '@/lib/api'
 import { useDockRefresh } from '@/components/console/dock/auto-refresh'
-import {
-  FinishedToggle,
-  MetaLine,
-  TaskGroup,
-  TaskRow,
-  formatTaskElapsed,
-  type MarkTone
-} from '@/components/console/task-list'
+import { formatTaskElapsed, type MarkTone } from '@/components/console/task-list'
+import { LineGroup, LineRow } from '@/components/console/dock/task-lines'
 import type { DockTabStatus } from './SessionDock'
 import type { TaskLink } from '@/components/console/task-link'
 import {
@@ -69,6 +63,8 @@ interface TurnVerdict {
 }
 
 const TURN_UNSETTLED: TurnVerdict = { settled: false, running: null, shown: false, finished: 0, failed: false }
+/** A coordinator's answer for the runtime groups it never has. */
+const TURN_NONE: TurnVerdict = { settled: true, running: null, shown: false, finished: 0, failed: false }
 
 export { formatTaskElapsed }
 
@@ -123,6 +119,7 @@ export function TasksPanel({
   agentId,
   sessionId,
   delegated = false,
+  coordinator = false,
   active = true,
   turnActive = false,
   refreshTick = 0,
@@ -134,6 +131,8 @@ export function TasksPanel({
   sessionId: string
   /** Whether the Tasks and Follow-ups are read: the agent is in assistant mode, or its daemon lists every agent's tasks. */
   delegated?: boolean
+  /** A coordinator runs no commands or subagents of its own, so its tab lists only its tasks and follow-ups. */
+  coordinator?: boolean
   /** Whether this tab is the visible one. */
   active?: boolean
   /** Whether a turn is streaming in this session; its falling edge is where new tasks come from. */
@@ -149,14 +148,12 @@ export function TasksPanel({
   // Held per scope, so a switch never folds the previous session's answer into the new one's verdict.
   const [turnHeard, setTurnHeard] = useState<{ scope: string; verdict: TurnVerdict } | null>(null)
   const [delegatedHeard, setDelegatedHeard] = useState<{ scope: string; verdict: SubsessionsPanelVerdict } | null>(null)
-  const [finishedOpen, setFinishedOpen] = useState<string | null>(null)
-  const showFinished = finishedOpen === scope
   const onTurnVerdict = useCallback((verdict: TurnVerdict) => setTurnHeard({ scope, verdict }), [scope])
   const onDelegatedVerdict = useCallback(
     (verdict: SubsessionsPanelVerdict) => setDelegatedHeard({ scope, verdict }),
     [scope]
   )
-  const turn = turnHeard?.scope === scope ? turnHeard.verdict : TURN_UNSETTLED
+  const turn = coordinator ? TURN_NONE : turnHeard?.scope === scope ? turnHeard.verdict : TURN_UNSETTLED
   const delegatedVerdict = !delegated
     ? null
     : delegatedHeard?.scope === scope
@@ -166,7 +163,6 @@ export function TasksPanel({
   const delegatedRunning = delegatedVerdict?.running ?? 0
   const running = turn.running === null && delegatedVerdict === null ? null : (turn.running ?? 0) + delegatedRunning
   const shown = turn.shown || (delegatedVerdict !== null && subsessionsTabShown(delegatedVerdict))
-  const finished = turn.finished + (delegatedVerdict?.finished ?? 0)
   const delegatedOpen = delegatedVerdict ? delegatedVerdict.count - delegatedVerdict.finished : 0
   // Nothing open in any group and no read to explain: say so once instead of drawing empty groups.
   const idle = (turn.running ?? 0) + delegatedOpen === 0 && !turn.failed && !delegatedVerdict?.failed
@@ -194,28 +190,21 @@ export function TasksPanel({
             active={active}
             turnActive={turnActive}
             refreshTick={refreshTick}
-            showFinished={showFinished}
             onVerdictChange={onDelegatedVerdict}
             {...(onOpenThread ? { onOpenThread } : {})}
           />
         ) : null}
-        <TurnTasksGroups
-          agentId={agentId}
-          sessionId={sessionId}
-          active={active}
-          turnActive={turnActive}
-          refreshTick={refreshTick}
-          showFinished={showFinished}
-          onVerdictChange={onTurnVerdict}
-        />
-        {idle && !showFinished ? <PanelNotice text={t('idle')} /> : null}
-        {finished > 0 ? (
-          <FinishedToggle
-            count={finished}
-            open={showFinished}
-            onToggle={() => setFinishedOpen(showFinished ? null : scope)}
+        {coordinator ? null : (
+          <TurnTasksGroups
+            agentId={agentId}
+            sessionId={sessionId}
+            active={active}
+            turnActive={turnActive}
+            refreshTick={refreshTick}
+            onVerdictChange={onTurnVerdict}
           />
-        ) : null}
+        )}
+        {idle && !(turn.finished > 0) ? <PanelNotice text={t('idle')} /> : null}
       </div>
     </div>
   )
@@ -228,7 +217,6 @@ function TurnTasksGroups({
   active,
   turnActive,
   refreshTick,
-  showFinished,
   onVerdictChange
 }: {
   agentId: string
@@ -236,7 +224,6 @@ function TurnTasksGroups({
   active: boolean
   turnActive: boolean
   refreshTick: number
-  showFinished: boolean
   onVerdictChange: (verdict: TurnVerdict) => void
 }) {
   const t = useTranslations('Sessions.detail.tasksPanel')
@@ -244,6 +231,8 @@ function TurnTasksGroups({
   // Reads the groups ask for ITSELF (polls and the reveal edge), summed with the tab action's counter so every source names one read.
   const [ownTick, setOwnTick] = useState(0)
   const [now, setNow] = useState(() => Date.now())
+  // Groups the reader opened or closed against their default.
+  const [toggledGroups, setToggledGroups] = useState<ReadonlySet<string>>(() => new Set())
   const read = useAgentTasks(agentId, sessionId, refreshTick + ownTick)
   const tasks = read.data?.tasks ?? []
   const running = tasks.filter((task) => task.state === 'running').length
@@ -289,35 +278,42 @@ function TurnTasksGroups({
   if (!settled || !shown) return null
   if (read.err) return <PanelNotice text={t(noticeKey(read.errStatus, read.errCode))} warn={read.errStatus !== 503} />
 
-  const listed = [
-    ...tasks.filter((task) => task.state === 'running'),
-    ...(showFinished ? tasks.filter((task) => task.state !== 'running') : [])
-  ]
-  const subagents = listed.filter((task) => task.subagent)
-  const commands = listed.filter((task) => !task.subagent)
+  // What runs now leads in its own group; everything that ended waits in Finished, closed until the reader opens it.
+  const live = tasks.filter((task) => task.state === 'running')
+  const ended = tasks.filter((task) => task.state !== 'running')
+  const subagents = live.filter((task) => task.subagent)
+  const commands = live.filter((task) => !task.subagent)
+  const group = (id: string, title: string, rows: AgentTaskDto[], openByDefault: boolean) => {
+    if (rows.length === 0) return null
+    const key = `${agentId}\n${sessionId}\n${id}`
+    const open = toggledGroups.has(key) ? !openByDefault : openByDefault
+    return (
+      <LineGroup id={id} title={title} open={open} onToggle={() => setToggledGroups((prev) => toggled(prev, key))}>
+        {rows.map((task) => (
+          <RuntimeTaskRow key={task.id} task={task} now={now} />
+        ))}
+        {id === 'finished' && read.data?.truncated ? (
+          <div className="pl-6 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+            {t('olderTasksHidden')}
+          </div>
+        ) : null}
+      </LineGroup>
+    )
+  }
   return (
     <>
-      {subagents.length > 0 ? (
-        <TaskGroup id="subagents" title={tl('groups.subagents')} count={subagents.length}>
-          {subagents.map((task) => (
-            <RuntimeTaskRow key={task.id} task={task} now={now} />
-          ))}
-        </TaskGroup>
-      ) : null}
-      {commands.length > 0 ? (
-        <TaskGroup id="commands" title={tl('groups.commands')} count={commands.length}>
-          {commands.map((task) => (
-            <RuntimeTaskRow key={task.id} task={task} now={now} />
-          ))}
-        </TaskGroup>
-      ) : null}
-      {showFinished && read.data?.truncated ? (
-        <div className="px-[2px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-          {t('olderTasksHidden')}
-        </div>
-      ) : null}
+      {group('subagents', tl('groups.subagents'), subagents, true)}
+      {group('commands', tl('groups.commands'), commands, true)}
+      {group('finished', tl('groups.finished'), ended, false)}
     </>
   )
+}
+
+function toggled(set: ReadonlySet<string>, key: string): Set<string> {
+  const next = new Set(set)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  return next
 }
 
 const TONE: Record<AgentTaskDto['state'], MarkTone> = { running: 'running', done: 'done', failed: 'failed' }
@@ -326,11 +322,13 @@ function RuntimeTaskRow({ task, now }: { task: AgentTaskDto; now: number }) {
   const t = useTranslations('Sessions.detail.tasksPanel')
   const tl = useTranslations('Common.taskList')
   const running = task.state === 'running'
+  const elapsed = formatTaskElapsed(task.startedAt, now)
+  const ended = formatFileMtime(task.endedAt)
   return (
-    <TaskRow
-      tone={TONE[task.state]}
-      stateLabel={tl(`runtimeState.${task.state}`)}
-      dim={!running}
+    <LineRow
+      state={TONE[task.state]}
+      stateLabel={[tl(`runtimeState.${task.state}`), task.detail].filter(Boolean).join(' · ')}
+      done={!running}
       attrs={{ 'data-task-row': task.state }}
       title={
         // An unnamed task still gets a row: it is what fences host reclaim, so a reader needs to be told about it.
@@ -341,16 +339,9 @@ function RuntimeTaskRow({ task, now }: { task: AgentTaskDto; now: number }) {
           {task.description ?? (task.subagent ? t('unnamedSubagent') : t('unnamedTask'))}
         </span>
       }
-      meta={
-        <MetaLine
-          parts={[
-            tl(`runtimeState.${task.state}`),
-            // The terminal status the runtime reported, when it named one; most settle edges carry none.
-            task.detail,
-            running ? formatTaskElapsed(task.startedAt, now) : formatFileMtime(task.endedAt)
-          ]}
-        />
-      }
+      // One unit is enough for a running row's time; the tip carries it in full.
+      time={running ? elapsed.replace(/^(\d+[hm]) \d+[ms]$/, '$1') : ended}
+      timeTip={running ? tl('runningFor', { time: elapsed }) : tl('finishedAt', { time: ended })}
     />
   )
 }

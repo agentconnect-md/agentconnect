@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-// The dock's Tasks panel: its four groups by kind, the finished toggle, the one verdict it reports to its tab, the untracked session it does not draw, and every degraded answer the task wire can give.
+// The dock's Tasks panel: its groups by kind, the runtime's Finished group, the one verdict it reports to its tab, the untracked session it does not draw, and every degraded answer the task wire can give.
 // It also pins §3.5's two absences: NO stop on a runtime row (no agent-protocol primitive can address one background task) and NO progress bar or step line (the runtime reports neither).
 
 import { act } from 'react'
@@ -112,15 +112,23 @@ const states = () => rows().map((row) => row.dataset.taskRow ?? '')
 const last = () => verdicts.at(-1)
 const groups = () =>
   Array.from(container?.querySelectorAll<HTMLElement>('[data-task-group]') ?? []).map((g) => g.dataset.taskGroup)
-const headings = () => Array.from(container?.querySelectorAll('h3') ?? []).map((h) => h.textContent)
-const finishedToggle = () => container?.querySelector<HTMLButtonElement>('[data-finished-toggle]') ?? null
+const headings = () =>
+  Array.from(container?.querySelectorAll('section[data-task-group] > button:not([data-fold-toggle])') ?? []).map(
+    (h) => h.textContent
+  )
+const finishedHeader = () =>
+  container?.querySelector<HTMLButtonElement>('[data-task-group="finished"] > button') ?? null
+const stateOf = (el: Element | undefined) => el?.querySelector('[data-state-icon]')?.getAttribute('aria-label')
 
-async function showFinished() {
+async function click(el: Element | null | undefined) {
   await act(async () => {
-    finishedToggle()?.click()
+    ;(el as HTMLElement | null)?.click()
     await Promise.resolve()
   })
 }
+
+// The runtime's Finished group starts closed; this opens it.
+const showFinished = () => click(finishedHeader())
 
 function delegatedRow(overrides: Partial<AssistantSubsessionDto> = {}): AssistantSubsessionDto {
   return {
@@ -249,7 +257,7 @@ describe('TasksPanel answers that are not rows', () => {
 })
 
 describe('TasksPanel rows', () => {
-  it('shows running rows by default and puts finished ones back in their group, dimmed, behind one toggle', async () => {
+  it('shows running rows by default and keeps finished ones in a Finished group that starts closed', async () => {
     wire.data = tasks({
       tasks: [
         task({ id: 'b', state: 'done', endedAt: NOW_ISO }),
@@ -259,25 +267,28 @@ describe('TasksPanel rows', () => {
     })
     await render()
     expect(states()).toEqual(['running'])
-    expect(finishedToggle()?.textContent).toBe('2 finished')
-    expect(finishedToggle()?.getAttribute('aria-expanded')).toBe('false')
+    expect(groups()).toEqual(['commands', 'finished'])
+    expect(finishedHeader()?.textContent).toBe('Finished')
+    expect(finishedHeader()?.getAttribute('aria-expanded')).toBe('false')
 
     await showFinished()
     expect(states()).toEqual(['running', 'done', 'failed'])
-    expect(rows().map((row) => row.className.includes('opacity-60'))).toEqual([false, true, true])
-    expect(finishedToggle()?.getAttribute('aria-expanded')).toBe('true')
-    expect(container?.querySelector('[data-task-group="commands"] [data-task-group-count]')?.textContent).toBe('3')
+    expect(container?.querySelectorAll('[data-task-group="finished"] [data-task-row]')).toHaveLength(2)
+    expect(finishedHeader()?.getAttribute('aria-expanded')).toBe('true')
+    await showFinished()
+    expect(states()).toEqual(['running'])
   })
 
-  it('shows the terminal status the runtime reported in the meta line, and nothing when it named none', async () => {
+  it('names the terminal status the runtime reported with the row’s state, and nothing when it named none', async () => {
     // `done` never asserts success on its own: `detail` is the only place a reported outcome may appear.
     wire.data = tasks({
       tasks: [task({ id: 'a', state: 'failed', endedAt: NOW_ISO, detail: 'killed' }), task({ id: 'b' })]
     })
     await render()
     await showFinished()
-    expect(rows()[1]?.textContent).toContain('Failed · killed')
-    expect(rows()[0]?.textContent).toBe('Reindex the workspaceRunning · 2m 00s')
+    expect(stateOf(rows()[1])).toBe('Failed · killed')
+    expect(stateOf(rows()[0])).toBe('Running')
+    expect(rows()[0]?.textContent).toBe('Reindex the workspace2m')
   })
 
   it('keeps a task the runtime did not name, and says so instead of dropping the row', async () => {
@@ -288,7 +299,7 @@ describe('TasksPanel rows', () => {
     expect(text()).toContain('Unnamed background command')
   })
 
-  it('sorts subagents and commands into their own groups, each with a sentence-case label and a count', async () => {
+  it('sorts subagents and commands into their own groups, each with a sentence-case label', async () => {
     // Subagent rows are carried, not filtered: the same records fence reclaim.
     wire.data = tasks({
       tasks: [
@@ -299,7 +310,7 @@ describe('TasksPanel rows', () => {
     })
     await render()
     expect(groups()).toEqual(['subagents', 'commands'])
-    expect(headings()).toEqual(['Subagents2', 'Commands1'])
+    expect(headings()).toEqual(['Subagents', 'Commands'])
     expect(text()).toContain('Unnamed subagent')
     expect(text()).not.toContain('(reported by the runtime)')
   })
@@ -312,9 +323,10 @@ describe('TasksPanel rows', () => {
       ]
     })
     await render()
-    expect(text()).toContain('Running · 2m 14s')
+    // One unit on the row, in full on hover.
+    expect(rows()[0]?.querySelector('span[title="Running for 2m 14s"]')?.textContent).toBe('2m')
     await showFinished()
-    expect(text()).toContain('Done · 12m ago')
+    expect(rows()[1]?.querySelector('span[title^="Finished "]')?.textContent).toBe('12m ago')
   })
 })
 
@@ -325,9 +337,12 @@ describe('TasksPanel withheld controls (§3.5)', () => {
     await render()
     await showFinished()
     expect(rows()).toHaveLength(2)
-    expect(container?.querySelectorAll('[data-task-group] button')).toHaveLength(0)
-    // The finished toggle is the panel's only control.
-    expect(Array.from(container?.querySelectorAll('button') ?? []).map((b) => b.textContent)).toEqual(['1 finished'])
+    expect(container?.querySelectorAll('[data-task-row] button')).toHaveLength(0)
+    // The group headers are the panel's only controls.
+    expect(Array.from(container?.querySelectorAll('button') ?? []).map((b) => b.textContent)).toEqual([
+      'Commands',
+      'Finished'
+    ])
     expect(text().toLowerCase()).not.toContain('cancel')
     expect(text().toLowerCase()).not.toContain('rerun')
   })
@@ -527,7 +542,7 @@ describe('TasksPanel auto refresh', () => {
 })
 
 describe('TasksPanel groups', () => {
-  it('orders Tasks, Follow-ups, Subagents and Commands, and badges what runs in all of them', async () => {
+  it('orders Tasks, Follow-ups, Subagents, Commands and Finished, and badges what runs in all of them', async () => {
     wire.data = tasks({
       tasks: [task(), task({ id: 't2', subagent: true }), task({ id: 't3', state: 'done', endedAt: NOW_ISO })]
     })
@@ -553,29 +568,26 @@ describe('TasksPanel groups', () => {
       nextCursor: null
     }
     await render({ delegated: true })
-    expect(groups()).toEqual(['tasks', 'follow-ups', 'subagents', 'commands'])
-    expect(headings()).toEqual(['Tasks1', 'Follow-ups1', 'Subagents1', 'Commands1'])
+    expect(groups()).toEqual(['tasks', 'follow-ups', 'subagents', 'commands', 'finished'])
+    expect(headings()).toEqual(['Tasks', 'Follow-ups', 'Subagents', 'Commands', 'Finished'])
     expect(text()).not.toContain('(managed by AgentConnect)')
     // Tasks and follow-ups can be stopped or ended; the runtime's rows stay read-only.
-    const buttonsIn = (group: string) =>
-      Array.from(container?.querySelectorAll(`[data-task-group="${group}"] .dsbtn`) ?? []).map((b) => b.textContent)
-    expect(buttonsIn('tasks')).toEqual(['Stop'])
-    expect(buttonsIn('follow-ups')).toEqual(['End'])
-    expect(
-      container?.querySelectorAll('[data-task-group="subagents"] button, [data-task-group="commands"] button')
-    ).toHaveLength(0)
-    // One meta line: a task's state and start, a follow-up's next check.
-    expect(container?.querySelector('[data-task-group="tasks"] [data-meta-line]')?.textContent).toBe(
-      'Running · started 2m ago'
-    )
-    expect(container?.querySelector('[data-task-group="follow-ups"] [data-subsession-state]')?.textContent).toMatch(
-      /^Next check /
-    )
-    expect(finishedToggle()?.textContent).toBe('2 finished')
+    const actionsIn = (group: string) =>
+      Array.from(
+        container?.querySelectorAll(`[data-task-group="${group}"] [data-subsession-row] button[aria-label]`) ?? []
+      ).map((b) => b.getAttribute('aria-label'))
+    expect(actionsIn('tasks')).toEqual(['Stop'])
+    expect(actionsIn('follow-ups')).toEqual(['End'])
+    expect(container?.querySelectorAll('[data-task-row] button')).toHaveLength(0)
+    // One line each: a task's latest word, a follow-up's next check on hover.
+    expect(container?.querySelector('[data-task-group="tasks"] span[title^="Last update"]')?.textContent).toBe('2m ago')
+    expect(container?.querySelector('[data-task-group="follow-ups"] span[title^="Next check "]')).not.toBeNull()
+    // The finished delegated task waits behind its group's fold.
+    expect(container?.querySelector('[data-task-group="tasks"] [data-fold-toggle]')?.textContent).toBe('1 more')
     expect(last()).toEqual({ settled: true, running: 3, shown: true })
 
-    await showFinished()
-    expect(headings()).toEqual(['Tasks2', 'Follow-ups1', 'Subagents1', 'Commands2'])
+    await click(container?.querySelector('[data-task-group="tasks"] [data-fold-toggle]'))
+    expect(container?.querySelectorAll('[data-task-group="tasks"] [data-subsession-row]')).toHaveLength(2)
   })
 
   it('keeps the tab for finished delegated tasks alone, leaving out an untracked runtime', async () => {
@@ -586,12 +598,21 @@ describe('TasksPanel groups', () => {
       nextCursor: null
     }
     await render({ delegated: true })
-    expect(groups()).toEqual([])
-    expect(text()).toBe('Nothing running in the background.1 finished')
-    expect(last()).toEqual({ settled: true, running: 0, shown: true })
-    await showFinished()
     expect(groups()).toEqual(['tasks'])
-    expect(text()).not.toContain('Nothing running')
+    expect(text()).toBe('Tasks1 moreNothing running in the background.')
+    expect(last()).toEqual({ settled: true, running: 0, shown: true })
+    await click(container?.querySelector('[data-fold-toggle]'))
+    expect(container?.querySelectorAll('[data-subsession-row="failed"]')).toHaveLength(1)
+  })
+
+  it('lists only a coordinator’s tasks and follow-ups, reading no runtime lease it never has', async () => {
+    wire.data = tasks({ tasks: [task(), task({ id: 't2', subagent: true })] })
+    wire.delegated = { subsessions: [delegatedRow({ threaded: true })], truncated: false, nextCursor: null }
+    await render({ delegated: true, coordinator: true })
+    expect(wire.calls).toEqual([])
+    expect(groups()).toEqual(['threaded'])
+    expect(rows()).toHaveLength(0)
+    expect(last()).toEqual({ settled: true, running: 1, shown: true })
   })
 
   it('leaves the delegated groups out while the conversation has none, and does not read them when not asked', async () => {

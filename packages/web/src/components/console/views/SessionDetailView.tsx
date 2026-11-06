@@ -2468,7 +2468,8 @@ export default function SessionDetailView() {
     { grouped: !flatView }
   )
   // Which panel is on screen. Sessions is where a session page opens; every other tab is one the reader asked for.
-  const [dockTab, setDockTab] = useState(DOCK_TABS[0]!.key)
+  // Unset until the reader picks one: a coordinator's page opens on Tasks, any other on Sessions.
+  const [dockTab, setDockTab] = useState<string | null>(null)
   // A closed drawer leaves its panels mounted, so the Computer viewer must hear that it is off screen and hand control back.
   const [dockVisible, setDockVisible] = useState(true)
   // The coordinator task open on this page, held for the session it was opened in: expanded over the coordinator, or in the side panel.
@@ -2622,8 +2623,9 @@ export default function SessionDetailView() {
   const dockTabs = useMemo<DockTab[]>(
     () =>
       localizedDockTabs
-        // A coordinator never touches files, git or a computer, so its panel keeps Sessions and Tasks only.
+        // A coordinator never touches files, git or a computer, so its panel keeps Tasks, then Sessions.
         .filter((tab) => !coordinatorPage || tab.key === 'sessions' || tab.key === 'tasks')
+        .sort((a, b) => (coordinatorPage ? Number(b.key === 'tasks') - Number(a.key === 'tasks') : 0))
         .filter((tab) =>
           tab.key === 'files' || tab.key === 'git'
             ? filesAgentId !== null && !MOCK_MODE
@@ -2693,7 +2695,12 @@ export default function SessionDetailView() {
     ]
   )
   // The active tab has to be one that exists: a Files tab dropped under the reader would otherwise leave the dock with no active tab and an unlabelled panel.
-  const dockTabKey = dockTabs.some((tab) => tab.key === dockTab) ? dockTab : DOCK_TABS[0]!.key
+  const dockTabKey =
+    dockTab !== null && dockTabs.some((tab) => tab.key === dockTab)
+      ? dockTab
+      : coordinatorPage && dockTabs.some((tab) => tab.key === 'tasks')
+        ? 'tasks'
+        : DOCK_TABS[0]!.key
   const railSeedWidened = !MOCK_MODE && railSeedKeyNow !== '' && widenedSeed === railSeedKeyNow
   const { sessions: widenedRailRows, total: widenedRailTotal } = useSessionList(
     railSeedWidened ? activeOrg?.id : null,
@@ -5912,6 +5919,7 @@ export default function SessionDetailView() {
                 agentId={filesAgentId}
                 sessionId={tasksSessionId}
                 delegated={subsessionsSessionId !== null}
+                coordinator={coordinatorPage}
                 active={dockTabKey === 'tasks' && !openThread}
                 turnActive={focusBusy}
                 refreshTick={tasksRefreshTick}

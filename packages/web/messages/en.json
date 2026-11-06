@@ -269,7 +269,8 @@
         "background": "Background tasks",
         "followUps": "Follow-ups",
         "subagents": "Subagents",
-        "commands": "Commands"
+        "commands": "Commands",
+        "finished": "Finished"
       },
       "finished": "{count} finished",
       "state": {
@@ -298,7 +299,14 @@
       "notRunning": "Nothing was running.",
       "notRunningBackground": "No turn is running. A background process it started may still be running; it can’t be stopped from here, and it reports back when that process ends.",
       "stopFailed": "Couldn’t stop it. Try again.",
-      "stopUpgrade": "Upgrade this agent’s daemon to stop tasks here."
+      "stopUpgrade": "Upgrade this agent’s daemon to stop tasks here.",
+      "showLess": "Show less",
+      "moreCount": "{count} more",
+      "lastUpdate": "Last update {time}",
+      "updatedNow": "Updated just now",
+      "now": "now",
+      "runningFor": "Running for {time}",
+      "finishedAt": "Finished {time}"
     },
     "taskThread": {
       "replies": "{count, plural, one {# reply} other {# replies}}",

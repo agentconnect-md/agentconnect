@@ -525,20 +525,36 @@ export function BackgroundTaskRow({
               onKeep={() => setConfirming(false)}
             />
           ) : null}
-          {stop && stop !== 'busy' ? (
-            <div
-              role="status"
-              data-subsession-stop={stop}
-              className={`mt-1 font-sans text-[11.5px] font-normal leading-normal ${
-                stop === 'failed' || stop === 'upgrade' ? 'text-(--status-error)' : 'text-(--text-secondary)'
-              }`}
-            >
-              {followUp && stop !== 'upgrade' ? tf(END_RESULT[stop]) : t(stopNotice(stop, row.state))}
-            </div>
-          ) : null}
+          <StopNote row={row} stop={stop} className="mt-1" />
         </>
       }
     />
+  )
+}
+
+/** What stopping a task or ending a follow-up did, under its row; nothing while it is under way. */
+export function StopNote({
+  row,
+  stop,
+  className = ''
+}: {
+  row: AssistantSubsessionDto
+  stop: StopState | undefined
+  className?: string
+}) {
+  const t = useTranslations('Common.taskList')
+  const tf = useTranslations('Common.followUp')
+  if (!stop || stop === 'busy') return null
+  return (
+    <div
+      role="status"
+      data-subsession-stop={stop}
+      className={`font-sans text-[11.5px] font-normal leading-normal ${
+        stop === 'failed' || stop === 'upgrade' ? 'text-(--status-error)' : 'text-(--text-secondary)'
+      } ${className}`}
+    >
+      {followUpOf(row) && stop !== 'upgrade' ? tf(END_RESULT[stop]) : t(stopNotice(stop, row.state))}
+    </div>
   )
 }
 

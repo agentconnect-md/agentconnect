@@ -269,7 +269,8 @@
         "background": "后台任务",
         "followUps": "跟进",
         "subagents": "子 Agent",
-        "commands": "后台命令"
+        "commands": "后台命令",
+        "finished": "已完成"
       },
       "finished": "{count} 个已结束",
       "state": {
@@ -298,7 +299,14 @@
       "notRunning": "没有正在运行的回合。",
       "notRunningBackground": "没有正在运行的回合。它启动的后台进程可能仍在运行，无法在这里停止；该进程结束后，它会回报。",
       "stopFailed": "停止失败，请重试。",
-      "stopUpgrade": "升级此 Agent 的 Daemon 后才能在这里停止任务。"
+      "stopUpgrade": "升级此 Agent 的 Daemon 后才能在这里停止任务。",
+      "showLess": "收起",
+      "moreCount": "还有 {count} 个",
+      "lastUpdate": "最近更新 {time}",
+      "updatedNow": "刚刚更新",
+      "now": "刚刚",
+      "runningFor": "已运行 {time}",
+      "finishedAt": "完成于 {time}"
     },
     "taskThread": {
       "replies": "{count, plural, other {# 条回复}}",
