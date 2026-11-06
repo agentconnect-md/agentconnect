@@ -47,7 +47,8 @@ export function ApprovalRequestsCard({
   permissions = true,
   conversationPermissions = false,
   proposals = false,
-  transcriptTurns
+  transcriptTurns,
+  openTaskSessionId
 }: {
   agentId: string
   sessionId?: string
@@ -64,6 +65,8 @@ export function ApprovalRequestsCard({
   proposals?: boolean
   /** The transcript's agent turns: a tool call's request placed at one of them is answered there instead. */
   transcriptTurns?: readonly ApprovalTurnAnchor[]
+  /** The task whose thread is open: its requests are answered in that thread instead. */
+  openTaskSessionId?: string | null
 }) {
   const t = useTranslations('Agents.detail.integrations')
   const ta = useTranslations('Agents.detail.activity')
@@ -102,7 +105,10 @@ export function ApprovalRequestsCard({
     sessionId && transcriptTurns && allRequests ? placedApprovalIds(transcriptTurns, allRequests, sessionId) : undefined
   const sessionRequests = sessionId
     ? allRequests?.filter(
-        (request) => (request.sessionId === sessionId || fromSubsession(request)) && !placed?.has(request.id)
+        (request) =>
+          (request.sessionId === sessionId || fromSubsession(request)) &&
+          !placed?.has(request.id) &&
+          !(openTaskSessionId && request.sessionId === openTaskSessionId)
       )
     : allRequests
   const pendingRequests = sessionRequests?.filter((request) => request.status === 'pending') ?? []

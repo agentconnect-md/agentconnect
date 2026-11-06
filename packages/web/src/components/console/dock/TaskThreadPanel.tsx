@@ -14,6 +14,8 @@ import { taskStateKey, taskTone, useTaskStops, type MarkTone } from '@/component
 import { taskStopKey } from '@/components/console/follow-up'
 import { exchangePromptMs, turnSpan, typedInvalidReason, withPromptStart } from '@/components/console/session-work'
 import { turnWork, WorkStepList } from '@/components/console/WorkPanel'
+import { TranscriptApprovalsProvider, TurnApprovals, UnplacedApprovals } from '@/components/console/TurnApprovals'
+import { approvalTurnStart, type ApprovalTurnAnchor } from '@/components/console/approval-placement'
 import { AGENT_PROSE, SELF_BUBBLE } from '@/components/console/transcript-bubbles'
 import { AgentTurnHeader } from '@/components/console/AgentTurnHeader'
 import {
@@ -71,7 +73,8 @@ export function TaskThreadPanel({
   variant = 'panel',
   onExpand,
   onShrink,
-  branch
+  branch,
+  taskApprovals
 }: {
   /** The coordinator's agent, which runs the task. */
   agentId: string
@@ -97,6 +100,8 @@ export function TaskThreadPanel({
   onShrink?: () => void
   /** The branch the task's own worktree is on, as its Git panel read it. */
   branch?: string | null
+  /** Who may answer this task's approvals and the conversation they are read through: the coordinator page's own rules. */
+  taskApprovals?: { listSessionId: string; enabled: boolean; conversationPermissions: boolean }
 }) {
   const t = useTranslations('Common.taskThread')
   const tl = useTranslations('Common.taskList')
@@ -317,30 +322,35 @@ export function TaskThreadPanel({
             {t('loadFailed')}
           </span>
         ) : null}
-        {entries.map((entry, i) => (
-          <ThreadMessage
-            key={entry.key}
-            entry={entry}
-            sessionId={id}
-            streaming={busy && i === entries.length - 1}
-            promptMs={exchangePromptMs(promptTurns, i)}
-            speaker={speakerOf(entry)}
-            you={t('you')}
-            person={t('person')}
-            time={entry.at ? format.dateTime(new Date(entry.at), { hour: 'numeric', minute: '2-digit' }) : null}
-          >
-            {entry.question ? (
-              <ThreadQuestion
-                question={entry.question}
-                pageHref={pageHref}
-                onAnswer={(requestId, value) => {
-                  markSessionTarget(id)
-                  pgAnswerElicitation(id, agentId, requestId, value)
-                }}
-              />
-            ) : null}
-          </ThreadMessage>
-        ))}
+        <ApprovalsScope taskSessionId={id} agentId={agentId} scope={taskApprovals} entries={entries}>
+          {entries.map((entry, i) => (
+            <ThreadMessage
+              key={entry.key}
+              entry={entry}
+              sessionId={id}
+              streaming={busy && i === entries.length - 1}
+              promptMs={exchangePromptMs(promptTurns, i)}
+              speaker={speakerOf(entry)}
+              you={t('you')}
+              person={t('person')}
+              time={entry.at ? format.dateTime(new Date(entry.at), { hour: 'numeric', minute: '2-digit' }) : null}
+            >
+              {entry.question ? (
+                <ThreadQuestion
+                  question={entry.question}
+                  pageHref={pageHref}
+                  onAnswer={(requestId, value) => {
+                    markSessionTarget(id)
+                    pgAnswerElicitation(id, agentId, requestId, value)
+                  }}
+                />
+              ) : null}
+              {/* The task's own tool-call approvals, at the turn that asked, as the session page draws a conversation's. */}
+              {entry.who === 'agent' && !entry.question ? <TurnApprovals turnKey={entry.key} /> : null}
+            </ThreadMessage>
+          ))}
+          <UnplacedApprovals />
+        </ApprovalsScope>
         {/* Until the agent's turn shows, which then says it is working in its header, as the session page does. */}
         {busy && !(last?.who === 'agent' && last.live && !last.agentId) ? (
           <div className="flex items-center gap-[9px]" style={own.accent}>
@@ -671,5 +681,47 @@ function ThreadComposer({
         </div>
       </div>
     </div>
+  )
+}
+
+/** Places the task's approvals at the thread's agent turns when the reader may answer them; otherwise draws the thread alone. */
+function ApprovalsScope({
+  taskSessionId,
+  agentId,
+  scope,
+  entries,
+  children
+}: {
+  taskSessionId: string
+  agentId: string
+  scope: { listSessionId: string; enabled: boolean; conversationPermissions: boolean } | undefined
+  entries: readonly ThreadEntry[]
+  children: ReactNode
+}) {
+  if (!scope) return <>{children}</>
+  // A turn followed by a person's message answered an earlier exchange, so a waiting request is the latest one's.
+  const turns: ApprovalTurnAnchor[] = entries.flatMap((entry, i) =>
+    entry.who === 'agent' && !entry.question
+      ? [
+          {
+            key: entry.key,
+            ...(entry.agentId ? { agentId: entry.agentId } : {}),
+            startMs: approvalTurnStart(entry.times ?? []),
+            closed: entries.slice(i + 1).some((later) => later.who === 'person')
+          }
+        ]
+      : []
+  )
+  return (
+    <TranscriptApprovalsProvider
+      agentId={agentId}
+      sessionId={taskSessionId}
+      listSessionId={scope.listSessionId}
+      enabled={scope.enabled}
+      conversationPermissions={scope.conversationPermissions}
+      turns={turns}
+    >
+      {children}
+    </TranscriptApprovalsProvider>
   )
 }

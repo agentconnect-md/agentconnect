@@ -4353,6 +4353,15 @@ export default function SessionDetailView() {
         ]
       : []
   )
+  // A task's approvals are answered in its own thread, read through this conversation under the strip's rules.
+  const taskApprovalScope =
+    (canReviewApprovals || ownerApprovals) && session.agentId
+      ? {
+          listSessionId: session.realSessionId ?? session.id,
+          enabled: true,
+          conversationPermissions: ownerApprovals
+        }
+      : undefined
   const approvalCard = (className: string) =>
     (canReviewApprovals || ownerApprovals || conversationProposals) && session.agentId ? (
       <ApprovalRequestsCard
@@ -4364,6 +4373,7 @@ export default function SessionDetailView() {
         conversationPermissions={ownerApprovals}
         proposals={conversationProposals}
         transcriptTurns={approvalTurns}
+        openTaskSessionId={(openThread ?? expandedTask)?.sessionId ?? null}
         className={className}
       />
     ) : null
@@ -4415,6 +4425,7 @@ export default function SessionDetailView() {
               branch={branch}
               onShrink={() => setTaskMode('panel')}
               onBack={() => setTaskThread(null)}
+              {...(taskApprovalScope ? { taskApprovals: taskApprovalScope } : {})}
             />
           )}
         />
@@ -5937,6 +5948,7 @@ export default function SessionDetailView() {
                 ? { approvals: { orgId: activeOrg.id, conversationId: webchatConversationId } }
                 : {})}
               onBack={() => setTaskThread(null)}
+              {...(taskApprovalScope ? { taskApprovals: taskApprovalScope } : {})}
               {...(isMobile ? {} : { onExpand: () => setTaskMode('expanded') })}
             />
           ) : null}
