@@ -234,5 +234,12 @@ describe('ComputerPanel on a Computer with per-agent desktops (§3.9)', () => {
     })
     expect(fake.stop).toHaveBeenCalled()
     expect(fake.deps!.desktop).toBeUndefined()
+
+    // Focusing the other agent starts again on its own desktop.
+    const other = desktops[0]!.agentId
+    await act(async () =>
+      root!.render(<ComputerPanel computerIds={['c1']} agentId={other} active createSession={create} />)
+    )
+    expect((el.querySelector('[data-desktop-picker]') as HTMLSelectElement).value).toBe('d1')
   })
 })

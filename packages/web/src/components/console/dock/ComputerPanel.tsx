@@ -87,6 +87,9 @@ export function ComputerPanel({ computerIds, managed, agentId, active, createSes
     }
   }, [key, managedAgentId, managedSessionId, active])
 
+  // Focusing another agent starts again on that agent's own desktop.
+  useEffect(() => setChosenDesktop(null), [agentId])
+
   // Leaving the tab stops the stream, so a hidden panel spends no bandwidth.
   useEffect(() => {
     if (!active) setWatching(false)
