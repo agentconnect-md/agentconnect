@@ -5583,6 +5583,7 @@ export class Daemon {
       // which needs the ACP connection that start() establishes.
       hostFor: async (agentId, request, cwd) => {
         const key = this.hostKeyForRequest(agentId, request)
+        await this.evictSessionHostLaunchedElsewhere(key, request.sessionKey, cwd)
         // SessionManager just judged this session cold exactly when the host is not ready here, so it prepares nothing itself.
         const cold = !this.readyHosts.has(key)
         let owned = false
@@ -8250,6 +8251,24 @@ export class Daemon {
       )
       await this.stopHostByKey(key)
     }
+  }
+
+  /** Stop a session-bound host launched in another directory than the one this turn prepared, so it starts again there:
+   *  a PR conversation launches in the session's workspace, and a formal review of the same PR later prepares its exact
+   *  checkout beside it. A host's cwd is fixed at spawn; the runtime session resumes on the new host, else is recreated.
+   *  The turn's delivery route was installed before this call and outlives the stop. */
+  private async evictSessionHostLaunchedElsewhere(
+    key: HostKey,
+    sessionKey: string,
+    cwd: string | undefined
+  ): Promise<void> {
+    if (cwd === undefined || hostKeySessionKey(key) === undefined) return
+    const launched = this.hostLaunch.get(key)?.cwd
+    if (launched === undefined || launched === cwd) return
+    this.log.info(`acp: session host ${hostKeyLabel(key)} launched in ${launched} — relaunching it in ${cwd}`)
+    const binding = this.sessionDeliveryBindings.get(sessionKey)
+    await this.stopHostByKey(key)
+    if (binding && !this.sessionDeliveryBindings.has(sessionKey)) this.sessionDeliveryBindings.set(sessionKey, binding)
   }
 
   /** Destructive authority-release fence. Unlike an ordinary host eviction, a

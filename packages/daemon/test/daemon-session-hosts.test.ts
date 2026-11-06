@@ -775,6 +775,32 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     await daemon.stop()
   })
 
+  it('relaunches a warm session host in the checkout a later review prepared, keeping the turn’s delivery route', async () => {
+    const { daemon, hosts } = await startDaemon(scaffold())
+    await (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
+    const key = sessionHostKey('bot-a', KEY('T1'))
+    const launched = (daemon as any).hostLaunch.get(key).cwd
+    const agent = (daemon as any).agents.get('bot-a')
+    const review = join((daemon as any).workspaces.sessionDir(agent, KEY('T1')), 'repos', 'acme', 'web')
+    mkdirSync(review, { recursive: true })
+    const binding = { route: 'this turn' }
+    ;(daemon as any).sessionDeliveryBindings.set(KEY('T1'), binding)
+    const request = { sessionKey: KEY('T1'), isolation: 'session' }
+    const hostFor = (cwd: string) => (daemon as any).sessions.deps.hostFor('bot-a', request, cwd)
+
+    // The cwd it already runs in keeps the warm host.
+    expect(await hostFor(launched)).toBe(hosts[0])
+    expect(hosts[0]!.stop).not.toHaveBeenCalled()
+
+    const relaunched = await hostFor(review)
+
+    expect(hosts[0]!.stop).toHaveBeenCalledTimes(1)
+    expect(relaunched).toBe(hosts[1])
+    expect((daemon as any).sessions.deps.boundHostCwd('bot-a', request)).toBe(review)
+    expect((daemon as any).sessionDeliveryBindings.get(KEY('T1'))).toBe(binding)
+    await daemon.stop()
+  })
+
   it('keys a session by the isolation ITS row reports, not the agent default it may differ from', async () => {
     // The console's workspace routing, retention and preparation all read that row: a tier chosen from
     // anything else would put the runtime in a directory none of them addresses.
