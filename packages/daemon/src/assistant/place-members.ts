@@ -120,7 +120,7 @@ export class PlaceMembers {
 
 /** One message a turn answers, as far as the read rule needs it. */
 export interface TurnMessage {
-  msg: Pick<NormalizedMessage, 'source' | 'sender' | 'platform' | 'headless' | 'mentionedUsers'>
+  msg: Pick<NormalizedMessage, 'source' | 'sender' | 'platform' | 'mentionedUsers'>
   /** The bot it arrived on. */
   integrationId?: string
   /** It came from the console: webchat, or a console continuation of a chat session. */
@@ -129,11 +129,11 @@ export interface TurnMessage {
   person?: ReadAsker
 }
 
-/** The person behind one message, or null for one no person sent. */
+/** The person behind one message, or null for one no person sent; headless says where a turn posts, never who sent it. */
 export function askerOf(m: TurnMessage, bot: string | undefined): ReadAsker | null {
   const { msg } = m
   if (m.person) return m.person
-  if (msg.headless || msg.source !== 'user' || msg.sender.isBot || !msg.sender.id) return null
+  if (msg.source !== 'user' || msg.sender.isBot || !msg.sender.id) return null
   if (m.console) return { kind: 'console', userId: msg.sender.id }
   const integrationId = m.integrationId ?? bot
   return integrationId ? { kind: 'member', platform: msg.platform, integrationId, userId: msg.sender.id } : null

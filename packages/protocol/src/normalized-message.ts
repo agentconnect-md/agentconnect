@@ -194,6 +194,7 @@ export const NormalizedPlatformMessageSchema = z.object({
    *  The daemon stamps it onto the transcript row's normalized event-time axis
    *  so cross-source merges order correctly (merged-conversation-view.md §6). */
   platformTimeMs: z.number().int().positive().optional(),
+  /** The turn posts nothing to the platform; it says nothing about who sent the message or whether a page shows the turn. */
   headless: z.boolean().optional(),
   /** The platform delivered this message as one from a conversation shared with another organization (assistant-mode.md §5.3). */
   externallyShared: z.literal(true).optional(),

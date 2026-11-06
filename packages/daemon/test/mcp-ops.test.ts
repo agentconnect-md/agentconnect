@@ -577,10 +577,36 @@ describe('executeTool: sendMessage (channel post)', () => {
       expect(res).toMatchObject({ ok: true, notice: expect.stringContaining('transcript') })
     })
 
-    it('refuses a headless turn — its whole point is that nothing is posted', async () => {
+    it('refuses a headless turn — no one reads its conversation', async () => {
       const { d, gw } = shareDeps({ shareTarget: () => ({ ok: false, reason: 'headless' }) })
-      await expect(executeTool(ctx, 'shareFile', { path: 'out/chart.png' }, d)).rejects.toThrow(/headless/)
+      await expect(executeTool(ctx, 'shareFile', { path: 'out/chart.png' }, d)).rejects.toThrow(
+        /no conversation anyone reads/
+      )
       expect(gw.uploadFile).not.toHaveBeenCalled()
+    })
+
+    it("shares a delegated task's file onto its page, never through the platform", async () => {
+      const receipt = { type: 'agentconnect.image', postId: 'p-1', published: true }
+      const publish = vi.fn(async () => receipt)
+      const svg = {
+        ok: true as const,
+        bytes: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'),
+        sha256: 'c'.repeat(64)
+      }
+      const { d, gw } = shareDeps({
+        shareTarget: () => ({ ok: true, surface: 'page' }),
+        webchatImagePublisherFor: () => publish as never,
+        readWorkspaceSharedFile: async () => svg
+      })
+      expect(await executeTool(ctx, 'shareFile', { path: 'out/d.svg' }, d)).toEqual(receipt)
+      expect(publish).toHaveBeenCalledWith({ path: 'out/d.svg', bytes: svg.bytes, sha256: svg.sha256 })
+      expect(gw.uploadFile).not.toHaveBeenCalled()
+
+      const unpublishable = shareDeps({ shareTarget: () => ({ ok: true, surface: 'page' }) })
+      await expect(executeTool(ctx, 'shareFile', { path: 'out/chart.png' }, unpublishable.d)).rejects.toThrow(
+        /not available/
+      )
+      expect(unpublishable.gw.uploadFile).not.toHaveBeenCalled()
     })
 
     it('refuses a postless A2A child, whose live gateway would otherwise pass the port probe', async () => {

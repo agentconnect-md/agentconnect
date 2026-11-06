@@ -47,14 +47,14 @@ function turnOutput(): { wc: WebchatTurnOutput; outputs: WebchatOutput[]; posts:
   return { wc, outputs, posts }
 }
 
-function turnFor(wc: WebchatTurnOutput, over: Partial<WebchatShareTurn> = {}): WebchatShareTurn {
+function turnFor(wc: WebchatTurnOutput | undefined, over: Partial<WebchatShareTurn> = {}): WebchatShareTurn {
   return {
     agentId: AGENT,
     outwardSessionId: 'session-1',
     transcriptChannel: CONVERSATION,
     thread: `webchat:${CONVERSATION}`,
     admission: { agentId: AGENT, sessionKey: 'k1' },
-    wc,
+    ...(wc ? { wc } : {}),
     stillPublishable: () => true,
     ...over
   }
@@ -146,6 +146,44 @@ describe('publishWebchatSharedImage', () => {
     expect(posts).toHaveLength(1)
     expect(posts[0]!.post.author).toEqual({ kind: 'agent', agentId: AGENT })
     expect(posts[0]!.post.image?.attachment.data).toBe(Buffer.from('PNG').toString('base64'))
+    await store.close()
+  })
+
+  it("records a task page's card and its original's state with no browser turn to stream through", async () => {
+    const store = await openStore()
+    const target = await bucket(200)
+    const bytes = Buffer.from('page original bytes')
+    const sha = (await import('node:crypto')).createHash('sha256').update(bytes).digest('hex')
+    const { d, updates } = deps(store, {
+      prepare: vi.fn(async () => reducedPrepared),
+      fileTransfer: () => ({ maxBytes: 1024 * 1024 }),
+      signPut: vi.fn(async () => ({ url: target.url, headers: {} })),
+      signGet: vi.fn(async () => ({ url: 'https://bucket.example.test/get', expiresAt: Date.UTC(2030, 0, 1) }))
+    })
+    const order: string[] = []
+    const page = turnFor(undefined, { commitPrecedingText: async () => void order.push('text') })
+    const receipt = await publishWebchatSharedImage(d, page, { path: 'out/dog.png', bytes, sha256: sha })
+    order.push('card')
+
+    expect(order).toEqual(['text', 'card'])
+    let stored = await store.transcriptSharedImage(CONVERSATION, receipt.postId)
+    for (let i = 0; i < 200 && stored?.revision !== 1; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      stored = await store.transcriptSharedImage(CONVERSATION, receipt.postId)
+    }
+    expect(stored).toMatchObject({
+      original: { kind: 'cache', status: 'ready' }
+    })
+    // No conversation to notify: the page reads the card and its original's state from history.
+    expect(updates).toEqual([])
+    const file = await publishWebchatSharedFile(d, page, {
+      path: 'out/rows.csv',
+      name: 'rows.csv',
+      mimeType: 'text/csv',
+      bytes: 8,
+      sha256: SHA
+    })
+    expect(file).toMatchObject({ type: 'agentconnect.file', published: true })
     await store.close()
   })
 

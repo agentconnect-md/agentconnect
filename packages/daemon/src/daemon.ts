@@ -5395,7 +5395,8 @@ export class Daemon {
           const thread = answerThreadOf(ctx.forMessage)
           return { ok: true, ...place, ...(thread !== undefined ? { thread } : {}) }
         }
-        // §3.2's two coordinate gates, checked before any file I/O: a headless turn posts nothing, a postless A2A child has no conversation.
+        // §3.2's coordinate gates, before any file I/O: a delegated task shows on its page, headless has no reader, a postless A2A child no conversation.
+        if (isDelegatedTaskCoordinate(ctx.thread)) return { ok: true, surface: 'page' }
         if (t.headless) return { ok: false, reason: 'headless' }
         if (t.synthetic) return { ok: false, reason: 'no-conversation' }
         const { headless: _headless, synthetic: _synthetic, ...target } = t
@@ -5450,7 +5451,8 @@ export class Daemon {
       webchatImagePublisherFor: (ctx) => {
         const turn = this.webchatShareTurn(ctx)
         if (!turn) return undefined
-        if (!this.relays?.supportsWebchatImages?.()) return 'unsupported'
+        // Only a live browser turn depends on its relay; a task page reads the card from history.
+        if (turn.wc && !this.relays?.supportsWebchatImages?.()) return 'unsupported'
         return (source) => publishWebchatSharedImage(this.sharedImageDeps(), turn, source)
       },
       // A document needs no card: its row is an ordinary message every console already renders as a chip.
@@ -9279,7 +9281,7 @@ export class Daemon {
     agentId: string,
     place: { platform: string; channel: string; transportScope?: string | null },
     rec?: Pick<SessionRecord, 'conversationKind' | 'triggeredBy'>,
-    msg?: Pick<NormalizedMessage, 'source' | 'sender' | 'isDm' | 'isGroupDm' | 'headless'>
+    msg?: Pick<NormalizedMessage, 'source' | 'sender' | 'isDm' | 'isGroupDm'>
   ): MemoryPlace {
     // Only a message a person typed names a person; a check, a task, another agent or a schedule never does.
     const speaker = msg && typedByPerson(msg) ? msg.sender.id : undefined
@@ -11891,20 +11893,19 @@ export class Daemon {
     return asking.length > 0 ? turnAskers(asking, bot ?? live.integrationId, opener) : NOBODY
   }
 
-  /** The read rule's view of a queued message: its bot, whether the console sent it, and a schedule's or a coordinator message's person. */
+  /** The read rule's view of a queued message: its bot, whether the console sent it, and a schedule's person. */
   private turnMessageOf(entry: QueueEntry): TurnMessage {
     const cronId = entry.msg.source === 'cron' ? entry.msg.cronRun?.cronId : undefined
     const userId = cronId ? this.cpCrons?.askerOf(cronId) : undefined
-    const view: TurnMessage = {
+    return {
       msg: entry.msg,
       ...(entry.integrationId ? { integrationId: entry.integrationId } : {}),
-      ...(entry.webchat && entry.webchat.initiator !== 'agent' ? { console: true } : {}),
+      // A webchat message a coordinator moved onto a task's page keeps its console author, though no browser turn carries it.
+      ...((entry.webchat && entry.webchat.initiator !== 'agent') || entry.msg.platform === 'webchat'
+        ? { console: true }
+        : {}),
       ...(userId ? { person: { kind: 'console' as const, userId } } : {})
     }
-    if (!isCoordinatorCoordinate(sessionThreadOf(entry.msg))) return view
-    // A coordinator's messages are headless only so it speaks through its outcomes (auto-session-mode.md §4.2); each still asks as its sender.
-    const sender = askerOf({ ...view, msg: { ...entry.msg, headless: false } }, undefined)
-    return sender ? { ...view, person: sender } : view
   }
 
   /** A message folded into the live turn joins the people it reads for; recorded before the model can see it. */
@@ -12687,12 +12688,14 @@ export class Daemon {
     }
   }
 
-  /** The trusted coordinates a console-owned turn shares into; undefined for an IM continuation (which keeps its
-   *  origin platform's delivery), a suppressed turn, or no live turn at all. */
+  /** The trusted coordinates a console-owned turn or a delegated task's page shares into; undefined for an IM
+   *  continuation (which keeps its origin platform's delivery), a suppressed turn, or no live turn at all. */
   private webchatShareTurn(ctx: SessionContext): WebchatShareTurn | undefined {
     const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
     const p = [...this.pending.values()].find((turn) => turn.plan.sessionKey === key)
-    if (!p?.webchat || p.webchat.continuation) return undefined
+    if (!p || p.webchat?.continuation) return undefined
+    // A task's round with no browser of its own still shows on the task's page (auto-session-mode.md §10).
+    if (!p.webchat && !isDelegatedTaskCoordinate(p.plan.sessionThread)) return undefined
     if (p.outputSuppressed || !this.toolTurnRunnable(ctx)) return undefined
     const wc = p.webchat
     return {
@@ -12701,10 +12704,11 @@ export class Daemon {
       transcriptChannel: p.plan.transcriptChannel,
       thread: p.plan.statusThread,
       admission: { agentId: ctx.agentId, sessionKey: p.plan.sessionKey },
-      wc,
+      ...(wc ? { wc } : {}),
       ...(p.resolveFileLink ? { resolveFileLink: p.resolveFileLink } : {}),
       // History pages by insertion order, so the text above the card must land before it.
       commitPrecedingText: async () => {
+        if (!wc) return await p.signals.applyChain.catch(() => {})
         if (isNoResponsePrefix(wc.replyText.trim())) return
         for (const segment of wc.replySegments) if (segment.text.trim()) await this.commitWebchatSegmentOnce(p, segment)
       },

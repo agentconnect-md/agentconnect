@@ -169,7 +169,6 @@ describe('turnAskers', () => {
       { source: 'cron' as const },
       { source: 'hook' as const },
       { source: 'agent' as const, sender: { id: 'peer', isBot: true }, parentReport: true },
-      { headless: true },
       { sender: { id: 'B_OTHER', isBot: true } }
     ]) {
       expect(turnAskers([msg(over)], 'int-slack'), JSON.stringify(over)).toEqual(NOBODY)
@@ -230,8 +229,13 @@ describe('askerClass (assistant-mode.md §5.18 ③)', () => {
   })
 
   it('puts a message no person sent in the class no person is behind', async () => {
-    for (const over of [{ source: 'agent' as const }, { sender: { id: 'B_OTHER', isBot: true } }, { headless: true }])
+    for (const over of [{ source: 'agent' as const }, { sender: { id: 'B_OTHER', isBot: true } }])
       expect(await askerClass(msg(over), 'int-slack', CLOSED_LOOKUPS), JSON.stringify(over)).toBe('nobody')
+  })
+
+  it("keeps a person's message theirs on a turn that posts nothing to the platform, as a task's page or a coordinator's", async () => {
+    expect(turnAskers([msg({ headless: true })], 'int-slack')).toEqual(turnAskers([msg({})], 'int-slack'))
+    expect(await askerClass(msg({ headless: true }), 'int-slack', CLOSED_LOOKUPS)).toMatch(/^person/)
   })
 })
 

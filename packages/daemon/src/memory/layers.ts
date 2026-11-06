@@ -96,8 +96,8 @@ const usableId = (id: string | null | undefined): id is string => !!id && !/[\s:
 const AGENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /** Whether a person typed a message: a check's, a task's, a report's, another agent's or a schedule's never counts. */
-export function typedByPerson(msg: Pick<NormalizedMessage, 'source' | 'sender' | 'headless'>): boolean {
-  return msg.source === 'user' && !msg.sender.isBot && !msg.headless && !!msg.sender.id
+export function typedByPerson(msg: Pick<NormalizedMessage, 'source' | 'sender'>): boolean {
+  return msg.source === 'user' && !msg.sender.isBot && !!msg.sender.id
 }
 
 /** Whether an initiator is a person: never an agent (a check's, a task's, another agent's message) or an automation trigger. */

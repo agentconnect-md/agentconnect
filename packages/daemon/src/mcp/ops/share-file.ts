@@ -60,7 +60,11 @@ export interface ShareTurnTarget {
 }
 
 export type ShareTargetRefusal = 'no-turn' | 'no-conversation' | 'headless'
-export type ShareTargetResult = ({ ok: true } & ShareTurnTarget) | { ok: false; reason: ShareTargetRefusal }
+/** A delegated task's turn shows on its own page whatever its platform, so it shares there (docs §3.2). */
+export type ShareTargetResult =
+  | ({ ok: true; surface?: 'platform' } & ShareTurnTarget)
+  | { ok: true; surface: 'page' }
+  | { ok: false; reason: ShareTargetRefusal }
 
 /** The resolved, fenced, typed workspace file — or why it cannot be shared. */
 export type ShareReadResult =
@@ -157,7 +161,7 @@ export async function shareFile(
   if (!target) throw new Error('shareFile is not available in this environment.')
   if (!target.ok) {
     if (target.reason === 'headless') {
-      throw new Error('shareFile: this turn is headless — it must not post anything visible.')
+      throw new Error('shareFile: this turn has no conversation anyone reads, so there is nowhere to share a file.')
     }
     if (target.reason === 'no-conversation') {
       throw new Error(
@@ -228,6 +232,8 @@ export async function shareFile(
       reserved.done(published)
     }
   }
+  // A task's page shows only what its console publisher writes; it has no platform to fall back to.
+  if (target.surface === 'page') throw new Error('shareFile is not available in this environment.')
 
   // Port-probe the platform BEFORE reading the file, so a webchat/fileless session costs no I/O.
   const integrationId = target.integrationId ?? ctx.integrationId

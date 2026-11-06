@@ -142,6 +142,7 @@ function conversationOf(ctx: SessionContext, deps: AssistantReminderDeps) {
         : 'remind: this session has no conversation of its own to post into. Nothing was set.'
     )
   }
+  if (target.surface === 'page') throw new Error(`remind: ${BACKGROUND}. Nothing was set.`)
   const integrationId = target.integrationId ?? ctx.integrationId
   // Only the session's own conversation, reached through its own bot; webchat has no post path without a turn.
   if (target.platform !== ctx.platform || target.channel !== ctx.channel || integrationId === undefined) {

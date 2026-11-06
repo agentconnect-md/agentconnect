@@ -311,6 +311,20 @@ describe('a Slack post an app made with the person’s own token', () => {
   })
 })
 
+describe('a message on a turn that posts nothing to the platform', () => {
+  it("is still the person's, as on a task's page or in a coordinator's conversation", () => {
+    const msg = normalizeSlackMessage({
+      type: 'message',
+      channel: 'D0ALICE',
+      ts: '1760000000.000100',
+      text: 'ok',
+      user: 'U0ALICE'
+    })!
+    const silent: NormalizedMessage = { ...msg, headless: true }
+    expect(typedByPerson(silent)).toBe(true)
+  })
+})
+
 describe('the daemon offers followUp by the agent’s switch', () => {
   const dirs: string[] = []
   afterAll(() => {
