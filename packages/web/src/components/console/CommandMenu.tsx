@@ -35,8 +35,6 @@ export function CommandMenu({
   options,
   activeIndex,
   coords,
-  /** The typed trigger, so a console command reads back the way it was typed. */
-  prefix = '/',
   /** Icons by agentId — a multi-participant conversation marks whose command each row is. */
   iconOf,
   gaps,
@@ -48,7 +46,6 @@ export function CommandMenu({
   options: readonly CommandMenuEntry[]
   activeIndex: number
   coords: MentionCoords | null
-  prefix?: string
   iconOf: (agentId: string) => { icon: AgentIcon | null | undefined; runtime: string } | undefined
   showOwner: boolean
   /** Participants that contributed nothing, and why — a partial roster reads as partial, not empty. */
@@ -98,7 +95,7 @@ export function CommandMenu({
                 onPick(option)
               }}
             >
-              <MenuRow option={option} prefix={prefix} iconOf={iconOf} showOwner={showOwner} />
+              <MenuRow option={option} iconOf={iconOf} showOwner={showOwner} />
             </button>
           )
         })}
@@ -119,7 +116,7 @@ export function CommandMenu({
         >
           {active.kind === 'skill' ? (
             <>
-              <div className="mono text-[12px] break-all text-(--text-primary)">/{active.candidate.name}</div>
+              <div className="mono text-[12px] break-all text-(--text-primary)">{active.candidate.name}</div>
               {active.candidate.hint && (
                 <div className="mono mt-[3px] text-[11px] break-all text-(--text-tertiary)">
                   {active.candidate.hint}
@@ -136,10 +133,7 @@ export function CommandMenu({
             </>
           ) : (
             <>
-              <div className="mono text-[12px] break-all text-(--text-primary)">
-                {prefix}
-                {active.control.name}
-              </div>
+              <div className="mono text-[12px] break-all text-(--text-primary)">{active.control.name}</div>
               {active.control.choices && (
                 <div className="mono mt-[3px] text-[11px] break-all text-(--text-tertiary)">
                   {t(`controls.${active.control.name as Exclude<ControlName, 'stop'>}.hint`)}
@@ -161,12 +155,10 @@ export function CommandMenu({
 
 function MenuRow({
   option,
-  prefix,
   iconOf,
   showOwner
 }: {
   option: CommandMenuEntry
-  prefix: string
   iconOf: (agentId: string) => { icon: AgentIcon | null | undefined; runtime: string } | undefined
   showOwner: boolean
 }) {
@@ -193,10 +185,7 @@ function MenuRow({
           <Icon name={CONTROL_ICON[name]} size={13} />
         </span>
         <span className="min-w-0 flex-1 text-left">
-          <span className="mono block truncate text-[12px]">
-            {prefix}
-            {name}
-          </span>
+          <span className="mono block truncate text-[12px]">{name}</span>
           <span className={`${SUBTEXT} desktop:hidden`}>{t(`controls.${name}.does`)}</span>
         </span>
       </>
@@ -212,7 +201,7 @@ function MenuRow({
         </span>
       )}
       <span className="min-w-0 flex-1 text-left">
-        <span className="mono block truncate text-[12px]">/{candidate.name}</span>
+        <span className="mono block truncate text-[12px]">{candidate.name}</span>
         {(candidate.description || showOwner) && (
           <span className={`${SUBTEXT} desktop:hidden`}>
             {showOwner ? `${candidate.agentName} · ` : ''}

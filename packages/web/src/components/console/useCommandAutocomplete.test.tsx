@@ -136,7 +136,6 @@ describe('useCommandAutocomplete', () => {
   it('lists console commands ahead of the skills on either prefix and filters them as typed', () => {
     const h = mountHarness(ROSTER, undefined, controlsInto([]))
     type(h, '!')
-    expect(h.api().prefix).toBe('!')
     expect(h.api().matches.map(label)).toEqual(['control:stop', 'control:effort', 'code-review', 'code-review', 'tdd'])
     type(h, '/eff')
     expect(h.api().matches.map(label)).toEqual(['control:effort'])
@@ -218,8 +217,9 @@ describe('CommandMenu', () => {
       )
     )
     const text = container.textContent ?? ''
-    expect(text).toContain('/code-review')
-    expect(text).toContain('/tdd')
+    expect(text).toContain('code-review')
+    expect(text).toContain('tdd')
+    expect(text).not.toContain('/code-review')
     // The pane the picker exists for: the ACP-required description, its argument hint, and — in a
     // multi-agent conversation — whose runtime would run it.
     expect(text).toContain('code-review description')
@@ -229,7 +229,7 @@ describe('CommandMenu', () => {
     expect(text).not.toContain('Runs on Bob')
   })
 
-  it('reads a console command back with the typed prefix and says it runs in the console', () => {
+  it('names a console command without a prefix and says it runs in the console', () => {
     container = document.createElement('div')
     document.body.appendChild(container)
     root = createRoot(container)
@@ -243,7 +243,6 @@ describe('CommandMenu', () => {
           ]}
           activeIndex={0}
           coords={coords}
-          prefix="!"
           iconOf={() => undefined}
           showOwner={false}
           onHover={() => {}}
@@ -252,8 +251,8 @@ describe('CommandMenu', () => {
       )
     )
     const text = container.textContent ?? ''
-    expect(text).toContain('!effort')
-    expect(text).toContain('!stop')
+    const names = [...container.querySelectorAll('[role="option"] .mono')].map((el) => el.textContent)
+    expect(names).toEqual(['effort', 'stop'])
     expect(text).toContain('[level]')
     expect(text).toContain('List or switch the reasoning effort')
     expect(text).toContain('not sent to the agent')

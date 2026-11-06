@@ -429,7 +429,6 @@ function ComposerTextarea({
           options={command.matches}
           activeIndex={command.activeIndex}
           coords={command.coords}
-          prefix={command.prefix}
           iconOf={commands?.iconOf ?? noOwnerIcon}
           showOwner={commands?.multi ?? false}
           gaps={runtimeCommands.gaps}

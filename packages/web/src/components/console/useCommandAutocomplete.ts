@@ -169,16 +169,5 @@ export function useCommandAutocomplete(params: {
     return false
   }
 
-  return {
-    open,
-    matches,
-    activeIndex,
-    setActiveIndex,
-    coords,
-    prefix: anchor?.prefix ?? '/',
-    sync,
-    handleKeyDown,
-    pick,
-    close
-  }
+  return { open, matches, activeIndex, setActiveIndex, coords, sync, handleKeyDown, pick, close }
 }
