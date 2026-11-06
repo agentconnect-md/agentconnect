@@ -4,7 +4,7 @@
 // Each row links to its own page where the reader may open it; Stop interrupts its current turn exactly as the composer's stop would, and undoes nothing it already did.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useTranslations } from 'next-intl'
+import { useFormatter, useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
 import { useDockRefresh } from '@/components/console/dock/auto-refresh'
 import {
@@ -13,9 +13,20 @@ import {
   type AssistantSubsessionDto,
   type AssistantSubsessionsPageDto
 } from '@/lib/api'
-import { followUpOf, taskRunning } from '@/components/console/follow-up'
-import { BackgroundTaskRow, TaskGroup, taskFinished, useTaskStops } from '@/components/console/task-list'
-import { ThreadReplyCount } from '@/components/console/TaskThreadCard'
+import { followUpOf, taskRunning, taskStopKey } from '@/components/console/follow-up'
+import {
+  StopNote,
+  taskFinished,
+  taskStateKey,
+  taskTone,
+  useShortTime,
+  useTaskStops,
+  type StopState
+} from '@/components/console/task-list'
+import { ConfirmStrip } from '@/components/console/ConfirmStrip'
+import { FoldToggle, LineGroup, LineRow, foldRows, runningFirst } from '@/components/console/dock/task-lines'
+import { useOrgs } from '@/lib/org-context'
+import Link from 'next/link'
 import type { TaskLink } from '@/components/console/task-link'
 
 /** Rows one read asks for; "Show more" pages on by the cursor the last one returned. */
@@ -105,7 +116,6 @@ export function SubsessionsPanel({
   active = true,
   turnActive = false,
   refreshTick = 0,
-  showFinished = false,
   onVerdictChange,
   onOpenThread
 }: {
@@ -118,8 +128,6 @@ export function SubsessionsPanel({
   turnActive?: boolean
   /** Bumped by the tab's refresh action. */
   refreshTick?: number
-  /** The finished toggle is open, so finished rows are drawn dimmed in their groups. */
-  showFinished?: boolean
   onVerdictChange?: (verdict: SubsessionsPanelVerdict) => void
   /** Opens a threaded task's thread beside the conversation, where its row would follow a link to its page. */
   onOpenThread?: (link: TaskLink) => void
@@ -168,6 +176,9 @@ export function SubsessionsPanel({
   const reread = useCallback(() => setOwnTick((tick) => tick + 1), [])
   const { stopOf, stop } = useTaskStops(agentId, scope, reread)
   const [now, setNow] = useState(() => Date.now())
+  // Groups the reader closed and folds they opened, keyed by conversation and group.
+  const [closed, setClosed] = useState<ReadonlySet<string>>(() => new Set())
+  const [foldOpen, setFoldOpen] = useState<ReadonlySet<string>>(() => new Set())
 
   // The activation edge reads once, so a tab opened after a quiet minute is not stale.
   const wasActive = useRef(active)
@@ -225,57 +236,60 @@ export function SubsessionsPanel({
   // The dock's own placeholder speaks until the first read answers; an empty conversation has no group at all.
   if (!settled || !subsessionsTabShown({ settled, count: rows.length, running, finished, failed })) return null
 
-  // Open rows lead each group; finished ones follow, dimmed, once the toggle is open.
-  const shown = [...rows.filter((row) => !taskFinished(row)), ...(showFinished ? rows.filter(taskFinished) : [])]
-  const followUps = shown.filter((row) => followUpOf(row) !== null)
-  // Threaded and background tasks are grouped apart; with no threaded one the background group keeps the plain name.
-  const threaded = shown.filter((row) => followUpOf(row) === null && row.threaded)
-  const tasks = shown.filter((row) => followUpOf(row) === null && !row.threaded)
-  const drawRow = (row: AssistantSubsessionDto, i: number) => (
-    <BackgroundTaskRow
-      key={`${row.startedAt}:${row.sessionId ?? 'hidden'}:${i}`}
-      row={row}
-      now={now}
-      stop={stopOf(row)}
-      onStop={stop}
-      dim={taskFinished(row)}
-      {...(onOpenThread && row.threaded && row.sessionId
-        ? {
-            onOpen: () => onOpenThread({ title: row.title ?? '', sessionId: row.sessionId!, how: 'opened' }),
-            replies: <ThreadReplyCount replies={row.replies} />
-          }
-        : {})}
-    />
-  )
+  // Running first, then by the latest word from each, so live work never falls past a group's fold.
+  const sorted = runningFirst(rows, taskRunning, latestAt)
+  const followUps = sorted.filter((row) => followUpOf(row) !== null)
+  const threaded = sorted.filter((row) => followUpOf(row) === null && row.threaded)
+  const tasks = sorted.filter((row) => followUpOf(row) === null && !row.threaded)
+  const group = (id: string, title: string, members: AssistantSubsessionDto[]) => {
+    if (members.length === 0) return null
+    // A threaded task never finishes, so only background tasks and follow-ups fold their ended rows away.
+    const live = members.filter((row) => !taskFinished(row))
+    const rest = members.filter(taskFinished)
+    const folded = foldRows(live, rest, members.filter(taskRunning).length, foldOpen.has(`${scope}\n${id}`))
+    const open = !closed.has(`${scope}\n${id}`)
+    return (
+      <LineGroup
+        id={id}
+        title={title}
+        open={open}
+        onToggle={() => setClosed((prev) => toggled(prev, `${scope}\n${id}`))}
+      >
+        {folded.rows.map((row, i) => (
+          <SubsessionLine
+            key={`${row.startedAt}:${row.sessionId ?? 'hidden'}:${i}`}
+            row={row}
+            now={now}
+            stop={stopOf(row)}
+            onStop={stop}
+            {...(onOpenThread && row.threaded && row.sessionId
+              ? { onOpen: () => onOpenThread({ title: row.title ?? '', sessionId: row.sessionId!, how: 'opened' }) }
+              : {})}
+          />
+        ))}
+        {folded.hidden > 0 ? (
+          <FoldToggle
+            hidden={folded.hidden}
+            open={foldOpen.has(`${scope}\n${id}`)}
+            onToggle={() => setFoldOpen((prev) => toggled(prev, `${scope}\n${id}`))}
+          />
+        ) : null}
+      </LineGroup>
+    )
+  }
 
   return (
-    <div data-subsessions-panel="" className="flex flex-none flex-col gap-3">
+    <div data-subsessions-panel="" className="flex flex-none flex-col gap-2">
       {current?.error ? (
         <PanelNotice
           text={t(noticeKey(current.error.status, current.error.code))}
           warn={current.error.status !== 503}
         />
       ) : null}
-      {threaded.length > 0 ? (
-        <TaskGroup id="threaded" title={tl('groups.threaded')} count={threaded.length}>
-          {threaded.map(drawRow)}
-        </TaskGroup>
-      ) : null}
-      {tasks.length > 0 ? (
-        <TaskGroup
-          id="tasks"
-          title={threaded.length > 0 ? tl('groups.background') : tl('groups.tasks')}
-          count={tasks.length}
-        >
-          {tasks.map(drawRow)}
-        </TaskGroup>
-      ) : null}
-      {followUps.length > 0 ? (
-        <TaskGroup id="follow-ups" title={tl('groups.followUps')} count={followUps.length}>
-          {followUps.map(drawRow)}
-        </TaskGroup>
-      ) : null}
-      {/* Pages run by start time, so an older page can hold open work: "Show more" stays whenever a cursor does. */}
+      {group('threaded', tl('groups.threaded'), threaded)}
+      {group('tasks', threaded.length > 0 ? tl('groups.background') : tl('groups.tasks'), tasks)}
+      {group('follow-ups', tl('groups.followUps'), followUps)}
+      {/* Pages run by start time, so an older page can still hold open work. */}
       {current?.cursor ? (
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="ghost" size="xs" disabled={more.loading} onClick={() => void loadMore()}>
@@ -289,6 +303,120 @@ export function SubsessionsPanel({
         </div>
       ) : null}
     </div>
+  )
+}
+
+/** The latest word from a task or follow-up: its newest reply, summary or check, else when it started. */
+function latestAt(row: AssistantSubsessionDto): string {
+  const followUp = followUpOf(row)
+  return row.lastReplyAt ?? row.summaryUpdatedAt ?? followUp?.recentChecks[0]?.at ?? row.startedAt
+}
+
+function toggled(set: ReadonlySet<string>, key: string): Set<string> {
+  const next = new Set(set)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  return next
+}
+
+/** One task or follow-up on one line: a threaded task opens its thread, others their page; Stop (End, confirmed, for a follow-up) shows on hover. */
+function SubsessionLine({
+  row,
+  now,
+  stop,
+  onStop,
+  onOpen
+}: {
+  row: AssistantSubsessionDto
+  now: number
+  stop: StopState | undefined
+  onStop: (row: AssistantSubsessionDto) => Promise<void>
+  onOpen?: () => void
+}) {
+  const t = useTranslations('Common.taskList')
+  const tf = useTranslations('Common.followUp')
+  const format = useFormatter()
+  const shortTime = useShortTime()
+  const { orgPath } = useOrgs()
+  const [confirming, setConfirming] = useState(false)
+  const followUp = followUpOf(row)
+  const finished = taskFinished(row)
+  const stoppable = row.state === 'open' && row.canStop && taskStopKey(row) !== null
+  const name = row.title ?? t('untitled')
+  const title =
+    row.sessionId && onOpen ? (
+      <button
+        type="button"
+        data-task-open-thread=""
+        title={name}
+        className="min-w-0 cursor-pointer truncate border-0 bg-transparent p-0 text-left font-[inherit] text-inherit hover:underline"
+        onClick={onOpen}
+      >
+        {name}
+      </button>
+    ) : row.sessionId ? (
+      <Link
+        title={name}
+        className="min-w-0 truncate text-inherit no-underline hover:underline"
+        href={orgPath(`/sessions/${encodeURIComponent(row.sessionId)}`)}
+      >
+        {name}
+      </Link>
+    ) : row.visible && followUp ? (
+      <span title={name} className="min-w-0 truncate">
+        {name}
+      </span>
+    ) : row.visible ? (
+      <span className="min-w-0 truncate font-normal text-(--text-secondary)">{t('starting')}</span>
+    ) : (
+      <span className="min-w-0 truncate font-normal text-(--text-tertiary)">{t('hidden')}</span>
+    )
+  const at = latestAt(row)
+  const ago =
+    now - new Date(at).getTime() < 60_000 ? t('now') : format.relativeTime(new Date(at), { now, style: 'narrow' })
+  // A finished row says when it ended; a live one how fresh its latest word is, and a waiting follow-up when it checks next.
+  const time = finished ? shortTime(at) : ago
+  const timeTip =
+    followUp?.status === 'waiting' && followUp.nextCheck
+      ? tf('nextCheck', { time: shortTime(followUp.nextCheck) })
+      : finished
+        ? t('finishedAt', { time: shortTime(at) })
+        : ago === t('now')
+          ? t('updatedNow')
+          : t('lastUpdate', { time: ago })
+  return (
+    <LineRow
+      state={taskTone(row, followUp)}
+      stateLabel={followUp ? tf(`status.${followUp.status}`) : t(taskStateKey(row))}
+      title={title}
+      time={time}
+      timeTip={timeTip}
+      done={finished}
+      attrs={{ 'data-subsession-row': row.state, 'data-follow-up': followUp?.status }}
+      {...(stoppable && !confirming
+        ? {
+            stop: {
+              label: followUp ? t('end') : t('stop'),
+              disabled: stop === 'busy',
+              onClick: () => (followUp ? setConfirming(true) : void onStop(row))
+            }
+          }
+        : {})}
+      note={
+        confirming ? (
+          <ConfirmStrip
+            prompt={tf('endConfirm')}
+            confirm={tf('end')}
+            keep={tf('keep')}
+            busy={stop === 'busy'}
+            onConfirm={() => void onStop(row).then(() => setConfirming(false))}
+            onKeep={() => setConfirming(false)}
+          />
+        ) : stop && stop !== 'busy' ? (
+          <StopNote row={row} stop={stop} />
+        ) : null
+      }
+    />
   )
 }
 

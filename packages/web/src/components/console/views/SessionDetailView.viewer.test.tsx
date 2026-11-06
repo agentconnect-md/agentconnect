@@ -1122,7 +1122,10 @@ describe('the Tasks tab', () => {
     })
     await render()
     expect(container?.querySelector('[data-dock-tab="tasks"]')?.textContent).not.toContain('2')
-    expect(container?.querySelector('[data-tasks-panel]')?.textContent).toContain('1 finished')
+    // The finished one waits in the runtime's Finished group.
+    expect(container?.querySelector('[data-tasks-panel] [data-task-group="finished"]')?.textContent).toContain(
+      'Finished'
+    )
   })
 
   it('offers no Tasks tab for a synthetic playground session, whose canonical id does not exist yet', async () => {
@@ -1431,9 +1434,7 @@ describe('the Tasks tab’s Delegated group', () => {
     wire.subsessions = [child]
     await render()
     await openTab('tasks')
-    const stop = Array.from(
-      container?.querySelectorAll<HTMLButtonElement>('[data-subsessions-panel] button') ?? []
-    ).find((button) => button.textContent?.includes('Stop'))
+    const stop = container?.querySelector<HTMLButtonElement>('[data-subsessions-panel] button[aria-label="Stop"]')
     await act(async () => {
       stop?.click()
       await Promise.resolve()
@@ -1484,9 +1485,7 @@ describe('the Tasks tab’s Delegated group', () => {
     await openTab('tasks')
     const panel = container?.querySelector('[data-subsessions-panel]')
     expect(panel?.textContent).toContain('Fix the flaky test')
-    const stop = Array.from(panel?.querySelectorAll<HTMLButtonElement>('button') ?? []).find((button) =>
-      button.textContent?.includes('Stop')
-    )
+    const stop = panel?.querySelector<HTMLButtonElement>('button[aria-label="Stop"]')
     await act(async () => {
       stop?.click()
       await Promise.resolve()
@@ -1518,9 +1517,7 @@ describe('the Tasks tab’s Delegated group', () => {
       expect(container?.querySelector('[data-dock-tab="tasks"]')?.textContent).toContain('Tasks')
       expect(container?.querySelector('[role="dialog"]')?.querySelector('[data-subsessions-panel]')).not.toBeNull()
       const panel = container?.querySelector('[data-subsessions-panel]')
-      expect(Array.from(panel?.querySelectorAll('button') ?? []).some((b) => b.textContent?.includes('Stop'))).toBe(
-        true
-      )
+      expect(panel?.querySelector('button[aria-label="Stop"]')).not.toBeNull()
     } finally {
       window.innerWidth = width
     }
