@@ -74,35 +74,31 @@ function encodedBytes(payload: unknown): number {
   return Buffer.byteLength(JSON.stringify(payload))
 }
 
-function transcriptAttachments(raw: string | null | undefined): NonNullable<SessionMessage['attachments']> {
+// A row's images, cut to what the requesting CP's response schema admits; the rest stay in its marker.
+function transcriptAttachments(
+  raw: string | null | undefined,
+  max: number
+): NonNullable<SessionMessage['attachments']> {
   if (!raw) return []
   try {
-    const parsed = SessionImageAttachmentSchema.array().max(1).safeParse(JSON.parse(raw))
-    return parsed.success ? parsed.data : []
+    const parsed = SessionImageAttachmentSchema.array().safeParse(JSON.parse(raw))
+    return parsed.success ? parsed.data.slice(0, max) : []
   } catch {
     return []
   }
 }
 
-/**
- * The persisted text keeps a synthetic `[attached: name (mimeType), …]` suffix for
- * prompt replay, listing EVERY file on the message; the console instead receives the
- * one image the daemon inlined. Drop only that image's entry and keep the rest as
- * their label, so a second image, an over-cap image, or a plain file stays visible.
- *
- * Entries are matched on the name, not rebuilt from the attachment: the row may have
- * been written by the observer before a download settled the real image type (a
- * Feishu image event declares none). Nothing recognized ⇒ the row is left alone.
- */
+// Drop each inlined image's whole entry from the trailing `[attached: …]` marker, by name; other files keep their label.
 function withoutAttachmentMention(text: string, attachments: NonNullable<SessionMessage['attachments']>): string {
   if (attachments.length === 0) return text
   const label = /(?:^|\n)\[attached: ([^\]\n]*)\]$/.exec(text)
   if (!label) return text
   let list = label[1]!
   for (const { name } of attachments) {
-    const entry = new RegExp(`(, )?${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\([^()]*\\)(, )?`).exec(list)
-    if (entry)
-      list = list.slice(0, entry.index) + (entry[1] && entry[2] ? ', ' : '') + list.slice(entry.index + entry[0].length)
+    const entry = new RegExp(`(^|, )${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\([^()]*\\)(?=, |$)`).exec(list)
+    if (!entry) continue
+    const end = entry.index + entry[0].length
+    list = entry[1] ? list.slice(0, entry.index) + list.slice(end) : list.slice(end).replace(/^, /, '')
   }
   if (list === label[1]) return text
   const head = text.slice(0, label.index).trimEnd()
@@ -369,7 +365,7 @@ export function createSessionReader(
       const built = projected.map<SessionMessage>(({ row: r, sender }) => {
         const senderName = names.get(sender)
         const senderAvatarUrl = avatars.get(sender)
-        const attachments = transcriptAttachments(r.attachmentsJson)
+        const attachments = transcriptAttachments(r.attachmentsJson, req.imagesPerMessage ?? 1)
         const sharedImage = parseSharedImageJson(r.sharedImageJson)
         const base: SessionMessage = {
           seq: r.seq,

@@ -20,7 +20,13 @@ import { ControlSender, NoConnection } from '../../src/orchestrator/outbound.js'
 import { ConnectionClosed } from '../../src/ws/registry.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import type { DaemonLiveness } from '../../src/ports.js'
-import type { SessionListReq, SessionListPage, SessionHistoryReq, SessionHistoryPage } from '@agentconnect.md/protocol'
+import {
+  TRANSCRIPT_IMAGE_MAX_COUNT,
+  type SessionListReq,
+  type SessionListPage,
+  type SessionHistoryReq,
+  type SessionHistoryPage
+} from '@agentconnect.md/protocol'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_EMAIL, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 
 // Console routes are org-scoped: /orgs/:orgId/… (devAuth = seeded owner of the default org).
@@ -719,7 +725,10 @@ describe('GET /sessions/:id/messages (history pull via the session daemon)', () 
             ts: '1718000000.000100',
             kind: 'text',
             text: 'ship it',
-            attachments: [{ name: 'screen.webp', mimeType: 'image/webp', data: 'aW1hZ2U=' }]
+            attachments: [
+              { name: 'screen.webp', mimeType: 'image/webp', data: 'aW1hZ2U=' },
+              { name: 'second.png', mimeType: 'image/png', data: 'aW1hZ2U=' }
+            ]
           }
         ],
         nextCursor: 'c-50',
@@ -745,19 +754,32 @@ describe('GET /sessions/:id/messages (history pull via the session daemon)', () 
     }
     expect(body.messages[0]!.text).toBe('ship it')
     expect(body.messages[0]!.trustedAgentBot).toBe(true)
-    expect(body.messages[0]!.attachments?.[0]?.name).toBe('screen.webp')
+    // Several images on one row survive the response schema, which the request told the daemon it admits.
+    expect(body.messages[0]!.attachments?.map((image) => image.name)).toEqual(['screen.webp', 'second.png'])
     expect(body.nextCursor).toBe('c-50')
     expect(body.liveCursor).toBe('77')
     expect(body.liveMore).toBe(true)
     expect(spy.histCalls[0]!.daemonId).toBe(DAEMON)
-    expect(spy.histCalls[0]!.req).toEqual({ agentId: AGENT, sessionId: SESSION, cursor: 'c-100', limit: 25 })
+    expect(spy.histCalls[0]!.req).toEqual({
+      agentId: AGENT,
+      sessionId: SESSION,
+      cursor: 'c-100',
+      limit: 25,
+      imagesPerMessage: TRANSCRIPT_IMAGE_MAX_COUNT
+    })
 
     const tail = await running.app.inject({
       method: 'GET',
       url: `${ORG}/sessions/${SESSION}/messages?after=77&limit=200`
     })
     expect(tail.statusCode).toBe(200)
-    expect(spy.histCalls[1]!.req).toEqual({ agentId: AGENT, sessionId: SESSION, after: '77', limit: 200 })
+    expect(spy.histCalls[1]!.req).toEqual({
+      agentId: AGENT,
+      sessionId: SESSION,
+      after: '77',
+      limit: 200,
+      imagesPerMessage: TRANSCRIPT_IMAGE_MAX_COUNT
+    })
 
     const conflicting = await running.app.inject({
       method: 'GET',
@@ -787,7 +809,11 @@ describe('GET /sessions/:id/messages (history pull via the session daemon)', () 
 
     expect(res.statusCode).toBe(200)
     expect(spy.histCalls).toEqual([
-      { daemonId: DAEMON, orgId: DEFAULT_ORG_ID, req: { agentId: AGENT, sessionId: SESSION, limit: 50 } }
+      {
+        daemonId: DAEMON,
+        orgId: DEFAULT_ORG_ID,
+        req: { agentId: AGENT, sessionId: SESSION, limit: 50, imagesPerMessage: TRANSCRIPT_IMAGE_MAX_COUNT }
+      }
     ])
   })
 
@@ -832,7 +858,11 @@ describe('GET /sessions/:id/messages (history pull via the session daemon)', () 
     // Explicit org: a peer that never served this agent resolves none from its id, and would
     // answer SCOPE_DENIED before the frame left the CP.
     expect(spy.histCalls).toEqual([
-      { daemonId: POOL_MEMBER, orgId: DEFAULT_ORG_ID, req: { agentId: AGENT, sessionId: SESSION, limit: 50 } }
+      {
+        daemonId: POOL_MEMBER,
+        orgId: DEFAULT_ORG_ID,
+        req: { agentId: AGENT, sessionId: SESSION, limit: 50, imagesPerMessage: TRANSCRIPT_IMAGE_MAX_COUNT }
+      }
     ])
   })
 

@@ -312,3 +312,35 @@ describe('a shared image on the session page', () => {
     expect(wire.resolve).not.toHaveBeenCalled()
   })
 })
+
+describe('a person’s images on the session page', () => {
+  const raccoon = { name: 'image.png', mimeType: 'image/png' as const, data: btoa('raccoon') }
+  const lion = { name: 'image.png', mimeType: 'image/jpeg' as const, data: btoa('lion') }
+
+  it('renders every inline image of one message, and keeps a file card for what was not inlined', async () => {
+    wire.messages = [
+      row({
+        seq: 1,
+        sender: 'sam',
+        kind: 'text',
+        text: 'which animals are these\n[attached: notes.pdf (application/pdf)]',
+        attachments: [raccoon, lion]
+      })
+    ]
+    await render()
+    const images = [...(container?.querySelectorAll('[data-message-images] img') ?? [])] as HTMLImageElement[]
+    expect(images.map((image) => image.src)).toEqual([
+      `data:image/png;base64,${raccoon.data}`,
+      `data:image/jpeg;base64,${lion.data}`
+    ])
+    expect(container?.querySelector('[data-message-files]')?.textContent).toContain('notes.pdf')
+    expect(text()).toContain('which animals are these')
+  })
+
+  it('keeps a lone image at full bubble width', async () => {
+    wire.messages = [row({ seq: 1, sender: 'sam', kind: 'text', text: 'what is this', attachments: [raccoon] })]
+    await render()
+    expect(container?.querySelector('[data-message-images]')).toBeNull()
+    expect(container?.querySelector(`img[src="data:image/png;base64,${raccoon.data}"]`)).not.toBeNull()
+  })
+})

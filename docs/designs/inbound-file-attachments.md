@@ -232,7 +232,13 @@ gate stays: continuable external sessions take no attachments of either kind.
 
 A file attachment's transcript row stores **metadata only** — name, MIME type, size,
 digest, saved path — never bytes. The 160 KB image copy remains the only content the
-transcript retains, so transcript growth and the console history DTO stay bounded. The
+transcript retains, so transcript growth and the console history DTO stay bounded. A
+message with several images (a Slack post of pasted screenshots) keeps up to
+`TRANSCRIPT_IMAGE_MAX_COUNT` (4) of them within that same 160 KB: each image is allowed an
+equal share of what is left, an image over its share falls back to the platform thumbnail,
+and an image that still does not fit keeps its `[attached: …]` label. The CP asks for them
+with `imagesPerMessage` on `session/history`; a daemon answering an older CP, which names
+no bound, returns only the first, because that CP's response schema admits one. The
 console renders a file chip (name, type, size) beside the message; there is nothing to
 preview, and the bytes come back through §5.1. The CP continues to proxy without
 persisting; nothing new touches it beyond the DTO carrying the metadata row.

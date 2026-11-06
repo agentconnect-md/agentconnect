@@ -543,6 +543,35 @@ const PLAN_MARK: Record<string, typeof PLAN_PENDING> = {
   pending: PLAN_PENDING
 }
 
+// A sent message's inline images: one at full bubble width, several as an uncropped two-column grid.
+function MessageImages({ images, spaced }: { images: readonly SessionImage[]; spaced: boolean }) {
+  if (images.length === 1) {
+    const [image] = images
+    return (
+      <img
+        src={`data:${image!.mimeType};base64,${image!.data}`}
+        alt={image!.name}
+        className={`max-h-[360px] max-w-full rounded-md object-contain ${spaced ? 'mb-[10px]' : ''}`}
+      />
+    )
+  }
+  return (
+    <div
+      className={`grid w-[360px] max-w-full grid-cols-2 gap-[6px] ${spaced ? 'mb-[10px]' : ''}`}
+      data-message-images=""
+    >
+      {images.map((image, i) => (
+        <img
+          key={`${i}:${image.name}`}
+          src={`data:${image.mimeType};base64,${image.data}`}
+          alt={image.name}
+          className="aspect-square w-full rounded-md bg-(--surface-sunken) object-contain"
+        />
+      ))}
+    </div>
+  )
+}
+
 /**
  * The turn's task list, rendered as its own block above the answer — deliberately not
  * inside the collapsed work panel: the plan is what the agent set out to do, and burying
@@ -1410,7 +1439,7 @@ type Turn =
       /** When it was sent, where known: a turn answering it with a single timed step measures from here. */
       timeMs?: number
       text: string
-      image?: SessionImage
+      images?: SessionImage[]
       /** The files its `[attached: …]` marker names, lifted out of `text` into cards. */
       files?: MarkedFile[]
       isCron: boolean
@@ -3900,7 +3929,7 @@ export default function SessionDetailView() {
           time: formatTranscriptRowTime(m),
           ...timeMsField(transcriptRowTimeMs(m)),
           text: m.text,
-          image: m.attachments?.[0],
+          ...(m.attachments?.length ? { images: m.attachments } : {}),
           isCron: !!cron,
           cronId: cron?.id ?? null,
           platform: rowPlatform,
@@ -3960,7 +3989,7 @@ export default function SessionDetailView() {
           time: stp.time ?? (firstMsg ? session.time : ''),
           ...(stp.observedAtMs !== undefined ? { timeMs: stp.observedAtMs } : {}),
           text: stp.text,
-          image: stp.image,
+          ...(stp.image ? { images: [stp.image] } : {}),
           isCron: !!cron,
           cronId: cron?.id ?? null,
           ...(stp.steer ? { steer: true, ...(stp.steered ? { steered: true } : {}) } : {}),
@@ -4056,7 +4085,7 @@ export default function SessionDetailView() {
           time: stp.time ?? '',
           ...(stp.observedAtMs !== undefined ? { timeMs: stp.observedAtMs } : {}),
           text: stp.text,
-          image: stp.image,
+          ...(stp.image ? { images: [stp.image] } : {}),
           isCron: !!cron,
           cronId: cron?.id ?? null,
           ...(stp.steer ? { steer: true, ...(stp.steered ? { steered: true } : {}) } : {}),
@@ -5227,18 +5256,12 @@ export default function SessionDetailView() {
                                   </span>
                                 )}
                                 {turn.files && <MessageFileCards files={turn.files} />}
-                                {(turn.text || turn.image || turn.body) && (
+                                {(turn.text || turn.images || turn.body) && (
                                   <div className={SELF_BUBBLE}>
                                     {turn.body?.sessionMessage && (
                                       <SessionMessageCaption facts={turn.body.sessionMessage} />
                                     )}
-                                    {turn.image && (
-                                      <img
-                                        src={`data:${turn.image.mimeType};base64,${turn.image.data}`}
-                                        alt={turn.image.name}
-                                        className={`max-h-[360px] max-w-full rounded-md object-contain ${turn.text ? 'mb-[10px]' : ''}`}
-                                      />
-                                    )}
+                                    {turn.images && <MessageImages images={turn.images} spaced={!!turn.text} />}
                                     {turn.text && <MessageText text={turn.text} platform={turn.platform} />}
                                     {turn.body && <UserTurnDetails body={turn.body} platform={turn.platform} />}
                                   </div>

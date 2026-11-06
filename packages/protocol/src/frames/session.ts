@@ -196,6 +196,9 @@ export {
 export const SessionImageAttachment = WebchatImageAttachment
 export type SessionImageAttachment = z.infer<typeof SessionImageAttachment>
 
+/** Most images one transcript row keeps for console replay; together they share one image's inline budget. */
+export const TRANSCRIPT_IMAGE_MAX_COUNT = 4
+
 /** One message in a session transcript page (a body — returned only for display). */
 export const SessionMessage = z.object({
   seq: z.number().int(), // daemon-local insertion order within the session
@@ -216,7 +219,7 @@ export const SessionMessage = z.object({
   postId: z.string().uuid().optional(),
   kind: z.string(), // "text" / tool / reasoning / plan / elicit / … (daemon transcript kind)
   text: z.string(),
-  attachments: z.array(SessionImageAttachment).max(1).optional(),
+  attachments: z.array(SessionImageAttachment).max(TRANSCRIPT_IMAGE_MAX_COUNT).optional(),
   // A shared image's preview and original descriptor (webchat-generated-images.md §4); never a signed URL.
   sharedImage: SharedImage.optional(),
   // ── body enrichment (optional ⇒ text/reasoning rows and old daemons omit these) ──
@@ -245,7 +248,9 @@ export const SessionHistoryReq = z
       .regex(/^\d+$/)
       .refine((value) => Number.isSafeInteger(Number(value)))
       .optional(),
-    limit: z.number().int().positive().max(200).default(50)
+    limit: z.number().int().positive().max(200).default(50),
+    // Images per message the CP's response schema admits; absent ⇒ 1, an older CP's bound.
+    imagesPerMessage: z.number().int().positive().max(TRANSCRIPT_IMAGE_MAX_COUNT).optional()
   })
   .refine(({ cursor, after }) => cursor === undefined || after === undefined, {
     message: 'cursor and after are mutually exclusive'

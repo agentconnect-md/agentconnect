@@ -61,6 +61,7 @@ import {
   RepoMaterialization,
   RepoSubdirError,
   SessionImageAttachment,
+  TRANSCRIPT_IMAGE_MAX_COUNT,
   SharedImage,
   SharedImageResolveOk,
   SessionStayedHomeReason,
@@ -3720,7 +3721,7 @@ export const SessionMessageDto = z.object({
   postId: z.string().optional(),
   kind: z.string(),
   text: z.string(),
-  attachments: z.array(SessionImageAttachment).max(1).optional(),
+  attachments: z.array(SessionImageAttachment).max(TRANSCRIPT_IMAGE_MAX_COUNT).optional(),
   // A shared image's preview and original descriptor (webchat-generated-images.md §4); never a signed URL.
   sharedImage: SharedImage.optional(),
   // ── tool-body enrichment (mirrors protocol SessionMessage; tool and app rows) ──

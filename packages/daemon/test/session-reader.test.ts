@@ -495,6 +495,42 @@ describe('SessionReader', () => {
     await s.close()
   })
 
+  it('returns every stored image a CP admits and only the first to one that names no bound', async () => {
+    // Pasted Slack images share one name, so each stored image strips one whole marker entry.
+    const s = await store()
+    seedHistorySession(s)
+    const raccoon = { name: 'image.png', mimeType: 'image/png' as const, data: 'aW1hZ2U=' }
+    const lion = { name: 'image.png', mimeType: 'image/jpeg' as const, data: 'bGlvbg==' }
+    await s.appendTranscript({
+      channel: 'C1',
+      thread: 'T1',
+      ts: '1',
+      sender: 'U1',
+      ...(await delivered(s, AGENT, 'C1', 'T1')),
+      kind: 'text',
+      text: 'which animals?\n[attached: image.png (image/png), my-image.png (image/png), image.png (image/png)]',
+      attachments: [raccoon, lion]
+    })
+
+    const reader = createSessionReader(s)
+    expect(
+      (await reader.history({ agentId: AGENT, sessionId: 'acp-1', limit: 50, imagesPerMessage: 4 })).messages
+    ).toEqual([
+      expect.objectContaining({
+        text: 'which animals?\n[attached: my-image.png (image/png)]',
+        attachments: [raccoon, lion]
+      })
+    ])
+    // An older CP's response schema admits one image, so the second stays a label.
+    expect((await reader.history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })).messages).toEqual([
+      expect.objectContaining({
+        text: 'which animals?\n[attached: my-image.png (image/png), image.png (image/png)]',
+        attachments: [raccoon]
+      })
+    ])
+    await s.close()
+  })
+
   it('leaves the row alone when the label names nothing the attachment matches', async () => {
     const s = await store()
     seedHistorySession(s)

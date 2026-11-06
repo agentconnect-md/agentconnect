@@ -2,6 +2,7 @@ import type { ContentBlock } from '@agentclientprotocol/sdk/unstable'
 import {
   SessionImageAttachment as SessionImageAttachmentSchema,
   type SessionImageAttachment,
+  TRANSCRIPT_IMAGE_MAX_COUNT,
   WEBCHAT_IMAGE_MAX_BYTES
 } from '@agentconnect.md/protocol'
 import type { Attachment } from '../messages/normalized.js'
@@ -130,51 +131,73 @@ export function sniffImageMimeType(bytes: Buffer): SessionImageAttachment['mimeT
   return undefined
 }
 
-// Reuse full-resolution prompt bytes and fetch a separate bounded thumbnail for console replay when needed.
-export async function hydrateTranscriptImage(
+/** An inbound attachment that may be an image: a declared `image/*`, or an untyped Feishu image event. */
+function imageCandidate(att: Attachment): boolean {
+  return !att.transfer && (att.mimeType.startsWith('image/') || att.mimeType === 'application/octet-stream')
+}
+
+// Reuse full-resolution prompt bytes, and fetch a bounded thumbnail for console replay where they exceed an equal share of the row budget.
+export async function hydrateTranscriptImages(
   attachments: Attachment[] | undefined,
   deps: Pick<AttachmentDeps, 'download' | 'maxBytes'>
 ): Promise<void> {
-  const image = attachments?.find(
-    (att) => att.mimeType.startsWith('image/') || att.mimeType === 'application/octet-stream'
-  )
-  if (!image) return
+  const images = (attachments ?? []).filter(imageCandidate).slice(0, TRANSCRIPT_IMAGE_MAX_COUNT)
+  if (!images.length) return
   const cap = deps.maxBytes ?? Infinity
-  if (!image.inlineData && !(typeof image.size === 'number' && image.size > cap)) {
-    const bytes = await deps.download(image).catch(() => null)
-    if (bytes && bytes.byteLength <= cap) {
-      image.inlineData = bytes
-      const sniffed = sniffImageMimeType(bytes)
-      if (sniffed) image.mimeType = sniffed
-    }
-  }
-  if (image.thumbnailUrl && (!image.inlineData || image.inlineData.byteLength > WEBCHAT_IMAGE_MAX_BYTES)) {
-    const thumbBytes = await deps.download({ ...image, sourceUrl: image.thumbnailUrl }).catch(() => null)
-    const sniffed = thumbBytes ? sniffImageMimeType(thumbBytes) : undefined
-    if (thumbBytes && sniffed && thumbBytes.byteLength <= WEBCHAT_IMAGE_MAX_BYTES) {
-      image.transcriptThumbnail = { data: thumbBytes, mimeType: sniffed }
-    }
-  }
+  // Each image is guaranteed at least this much when the row's budget is shared (see transcriptImageAttachments).
+  const share = Math.floor(WEBCHAT_IMAGE_MAX_BYTES / images.length)
+  await Promise.all(
+    images.map(async (image) => {
+      if (!image.inlineData && !(typeof image.size === 'number' && image.size > cap)) {
+        const bytes = await deps.download(image).catch(() => null)
+        if (bytes && bytes.byteLength <= cap) {
+          image.inlineData = bytes
+          const sniffed = sniffImageMimeType(bytes)
+          if (sniffed) image.mimeType = sniffed
+        }
+      }
+      if (image.thumbnailUrl && (!image.inlineData || image.inlineData.byteLength > share)) {
+        const thumbBytes = await deps.download({ ...image, sourceUrl: image.thumbnailUrl }).catch(() => null)
+        const sniffed = thumbBytes ? sniffImageMimeType(thumbBytes) : undefined
+        if (thumbBytes && sniffed && thumbBytes.byteLength <= WEBCHAT_IMAGE_MAX_BYTES) {
+          image.transcriptThumbnail = { data: thumbBytes, mimeType: sniffed }
+        }
+      }
+    })
+  )
 }
 
-/** Keep a validated bounded inline image beside its daemon-local transcript row.
- *  Prefers a fetched `transcriptThumbnail` over the full-res `inlineData` — the
- *  former exists only because the latter didn't fit the transcript's budget. */
-export function transcriptImageAttachments(attachments: Attachment[] | undefined): SessionImageAttachment[] {
-  return (attachments ?? [])
-    .flatMap((attachment) => {
-      const image = attachment.transcriptThumbnail
-        ? { mimeType: attachment.transcriptThumbnail.mimeType, data: attachment.transcriptThumbnail.data }
-        : attachment.inlineData
-          ? { mimeType: attachment.mimeType, data: attachment.inlineData }
-          : undefined
-      if (!image) return []
-      const parsed = SessionImageAttachmentSchema.safeParse({
-        name: attachment.name,
-        mimeType: image.mimeType,
-        data: image.data.toString('base64')
-      })
-      return parsed.success ? [parsed.data] : []
+/** The renditions a transcript row may keep of one attachment, a fetched thumbnail first since it exists only because the full bytes did not fit. */
+function transcriptRenditions(attachment: Attachment): { bytes: number; image: SessionImageAttachment }[] {
+  const candidates = [
+    ...(attachment.transcriptThumbnail ? [attachment.transcriptThumbnail] : []),
+    ...(attachment.inlineData ? [{ mimeType: attachment.mimeType, data: attachment.inlineData }] : [])
+  ]
+  return candidates.flatMap(({ mimeType, data }) => {
+    if (data.byteLength > WEBCHAT_IMAGE_MAX_BYTES) return []
+    const parsed = SessionImageAttachmentSchema.safeParse({
+      name: attachment.name,
+      mimeType,
+      data: data.toString('base64')
     })
-    .slice(0, 1)
+    return parsed.success ? [{ bytes: data.byteLength, image: parsed.data }] : []
+  })
+}
+
+/** Keep up to TRANSCRIPT_IMAGE_MAX_COUNT bounded images beside the daemon-local row, sharing one image's byte budget; one that fits nowhere stays a marker label. */
+export function transcriptImageAttachments(attachments: Attachment[] | undefined): SessionImageAttachment[] {
+  const renditions = (attachments ?? []).map(transcriptRenditions).filter((options) => options.length > 0)
+  const kept: SessionImageAttachment[] = []
+  let remaining = WEBCHAT_IMAGE_MAX_BYTES
+  for (const [index, options] of renditions.entries()) {
+    const left = Math.min(TRANSCRIPT_IMAGE_MAX_COUNT - kept.length, renditions.length - index)
+    if (left <= 0) break
+    // An unused share rolls forward, so no image ever gets less than an equal split of the whole budget.
+    const allowance = Math.floor(remaining / left)
+    const pick = options.find((option) => option.bytes <= allowance)
+    if (!pick) continue
+    kept.push(pick.image)
+    remaining -= pick.bytes
+  }
+  return kept
 }

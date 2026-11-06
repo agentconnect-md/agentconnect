@@ -1,10 +1,10 @@
 import { describe, it, expect, vi } from 'vitest'
-import { WEBCHAT_IMAGE_MAX_BYTES } from '@agentconnect.md/protocol'
+import { TRANSCRIPT_IMAGE_MAX_COUNT, WEBCHAT_IMAGE_MAX_BYTES } from '@agentconnect.md/protocol'
 import {
   attachmentToBlock,
   buildAttachmentBlocks,
   attachmentMention,
-  hydrateTranscriptImage,
+  hydrateTranscriptImages,
   transcriptImageAttachments
 } from '../src/session/attachment-block.js'
 import { feishuEventToMessageLike, normalizeFeishuMessage } from '../src/feishu/normalize.js'
@@ -173,12 +173,12 @@ describe('uploaded-file attachments', () => {
   })
 })
 
-describe('hydrateTranscriptImage', () => {
+describe('hydrateTranscriptImages', () => {
   it('fetches a platform image once and memoizes it for the prompt blocks', async () => {
     const bytes = Buffer.from('IMG')
     const download = vi.fn(async () => bytes)
     const attachments = [att({ size: bytes.length })]
-    await hydrateTranscriptImage(attachments, { download })
+    await hydrateTranscriptImages(attachments, { download })
     expect(transcriptImageAttachments(attachments)).toEqual([
       { name: 'a.png', mimeType: 'image/png', data: bytes.toString('base64') }
     ])
@@ -208,7 +208,7 @@ describe('hydrateTranscriptImage', () => {
     expect(attachments[0]).toMatchObject({ mimeType: 'application/octet-stream', sourceUrl: 'om_1:image:img_v3_abc' })
 
     const download = vi.fn(async () => png)
-    await hydrateTranscriptImage(attachments, { download })
+    await hydrateTranscriptImages(attachments, { download })
     expect(transcriptImageAttachments(attachments)).toEqual([
       { name: 'img_v3_abc', mimeType: 'image/png', data: png.toString('base64') }
     ])
@@ -222,10 +222,10 @@ describe('hydrateTranscriptImage', () => {
   it('skips a declared non-image and a file over the caller’s cap', async () => {
     const download = vi.fn(async () => Buffer.from('IMG'))
     const big = [att({ size: 9_000 })]
-    await hydrateTranscriptImage(big, { download, maxBytes: 8_000 })
+    await hydrateTranscriptImages(big, { download, maxBytes: 8_000 })
     expect(download).not.toHaveBeenCalled() // known size over the cap ⇒ never fetched
     const doc = [att({ name: 'd.pdf', mimeType: 'application/pdf' })]
-    await hydrateTranscriptImage(doc, { download })
+    await hydrateTranscriptImages(doc, { download })
     expect(download).not.toHaveBeenCalled()
   })
 
@@ -234,7 +234,7 @@ describe('hydrateTranscriptImage', () => {
     // the schema drops it from the transcript, but the download must not repeat.
     const download = vi.fn(async () => Buffer.alloc(WEBCHAT_IMAGE_MAX_BYTES + 1))
     const attachments = [att()]
-    await hydrateTranscriptImage(attachments, { download })
+    await hydrateTranscriptImages(attachments, { download })
     expect(transcriptImageAttachments(attachments)).toEqual([])
     await buildAttachmentBlocks(attachments, { download, supports: supportsAll })
     expect(download).toHaveBeenCalledOnce()
@@ -245,7 +245,7 @@ describe('hydrateTranscriptImage', () => {
     const jpegThumb = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), Buffer.from('thumb')])
     const download = vi.fn(async (a: Attachment) => (a.sourceUrl === 'https://files/thumb' ? jpegThumb : png))
     const attachments = [att({ thumbnailUrl: 'https://files/thumb' })]
-    await hydrateTranscriptImage(attachments, { download })
+    await hydrateTranscriptImages(attachments, { download })
     expect(download).toHaveBeenCalledTimes(2)
     expect(transcriptImageAttachments(attachments)).toEqual([
       { name: 'a.png', mimeType: 'image/jpeg', data: jpegThumb.toString('base64') }
@@ -260,7 +260,7 @@ describe('hydrateTranscriptImage', () => {
     const jpegThumb = Buffer.from([0xff, 0xd8, 0xff, 0x00])
     const download = vi.fn(async () => jpegThumb)
     const attachments = [att({ inlineData: png, thumbnailUrl: 'https://files/thumb' })]
-    await hydrateTranscriptImage(attachments, { download })
+    await hydrateTranscriptImages(attachments, { download })
     expect(download).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ sourceUrl: 'https://files/thumb' }))
     expect(attachments[0]!.inlineData).toBe(png)
     expect(transcriptImageAttachments(attachments)).toEqual([
@@ -271,13 +271,68 @@ describe('hydrateTranscriptImage', () => {
   it('skips the thumbnail fetch when the full image already fits the transcript budget', async () => {
     const download = vi.fn(async () => Buffer.from('IMG'))
     const attachments = [att({ thumbnailUrl: 'https://files/thumb' })]
-    await hydrateTranscriptImage(attachments, { download })
+    await hydrateTranscriptImages(attachments, { download })
     expect(download).toHaveBeenCalledOnce()
+  })
+
+  it('keeps several images on one row, each fetched once', async () => {
+    const download = vi.fn(async (a: Attachment) => Buffer.from(a.id))
+    const attachments = [att({ id: 'F1' }), att({ id: 'F2', name: 'b.png' })]
+    await hydrateTranscriptImages(attachments, { download })
+    expect(transcriptImageAttachments(attachments)).toEqual([
+      { name: 'a.png', mimeType: 'image/png', data: Buffer.from('F1').toString('base64') },
+      { name: 'b.png', mimeType: 'image/png', data: Buffer.from('F2').toString('base64') }
+    ])
+    await buildAttachmentBlocks(attachments, { download, supports: supportsAll })
+    expect(download).toHaveBeenCalledTimes(2)
+  })
+
+  it('swaps in a thumbnail for an image over its equal share of the row budget', async () => {
+    const share = WEBCHAT_IMAGE_MAX_BYTES / 2
+    const big = Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(share)])
+    const small = Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(share - 64)])
+    const thumb = Buffer.from([0xff, 0xd8, 0xff, 0x00])
+    const download = vi.fn(async (a: Attachment) =>
+      a.sourceUrl === 'https://files/thumb' ? thumb : a.id === 'F1' ? big : small
+    )
+    const attachments = [
+      att({ id: 'F1', thumbnailUrl: 'https://files/thumb' }),
+      att({ id: 'F2', name: 'b.png', thumbnailUrl: 'https://files/thumb-b' })
+    ]
+    await hydrateTranscriptImages(attachments, { download })
+    // Only the image over its share pays for a thumbnail fetch.
+    expect(download).toHaveBeenCalledTimes(3)
+    expect(attachments[0]!.inlineData).toBe(big)
+    expect(transcriptImageAttachments(attachments)).toEqual([
+      { name: 'a.png', mimeType: 'image/jpeg', data: thumb.toString('base64') },
+      { name: 'b.png', mimeType: 'image/png', data: small.toString('base64') }
+    ])
+  })
+
+  it('rolls an unused share forward and never exceeds one image’s budget in total', () => {
+    const png = (bytes: number) => Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(bytes - 8)])
+    const tiny = att({ id: 'F1', inlineData: png(1_024) })
+    const large = att({ id: 'F2', name: 'b.png', inlineData: png(140 * 1024) })
+    const kept = transcriptImageAttachments([tiny, large])
+    // An even split would cap the large image at 80 KiB; the tiny one leaves it the rest.
+    expect(kept.map((image) => image.name)).toEqual(['a.png', 'b.png'])
+    const total = kept.reduce((sum, image) => sum + Buffer.from(image.data, 'base64').byteLength, 0)
+    expect(total).toBeLessThanOrEqual(WEBCHAT_IMAGE_MAX_BYTES)
+  })
+
+  it('keeps at most TRANSCRIPT_IMAGE_MAX_COUNT images', async () => {
+    const download = vi.fn(async (a: Attachment) => Buffer.from(a.id))
+    const attachments = Array.from({ length: TRANSCRIPT_IMAGE_MAX_COUNT + 2 }, (_, i) =>
+      att({ id: `F${i}`, name: `${i}.png` })
+    )
+    await hydrateTranscriptImages(attachments, { download })
+    expect(download).toHaveBeenCalledTimes(TRANSCRIPT_IMAGE_MAX_COUNT)
+    expect(transcriptImageAttachments(attachments)).toHaveLength(TRANSCRIPT_IMAGE_MAX_COUNT)
   })
 
   it('survives a failed download', async () => {
     const attachments = [att()]
-    await hydrateTranscriptImage(attachments, {
+    await hydrateTranscriptImages(attachments, {
       download: async () => {
         throw new Error('network')
       }
