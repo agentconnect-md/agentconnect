@@ -406,9 +406,9 @@ function slackTurn(): Harness {
 /** Raise the form elicitation and wait until its card is posted and its ts recorded. */
 async function raise(h: Harness, req: CreateElicitationRequest): Promise<{ requestId: string; result: Promise<any> }> {
   const result = h.daemon.permissions.onAcpElicit('agent-1', 's1', req)
-  await vi.waitFor(() => expect(h.daemon.permissions.pendingElicits.size).toBe(1))
-  const requestId = [...h.daemon.permissions.pendingElicits.keys()][0] as string
-  await vi.waitFor(() => expect(h.daemon.permissions.pendingElicits.get(requestId).ts).toBe('ts-1'))
+  await vi.waitFor(() => expect(h.daemon.permissions.pendingApprovals.size).toBe(1))
+  const requestId = [...h.daemon.permissions.pendingApprovals.keys()][0] as string
+  await vi.waitFor(() => expect(h.daemon.permissions.pendingApprovals.get(requestId).card.ts).toBe('ts-1'))
   return { requestId, result }
 }
 
@@ -436,7 +436,7 @@ describe('a Slack turn answers a form card from its own Confirm', () => {
     // The card is rewritten to the settled state, naming the fields in the card's own words.
     expect(JSON.stringify(h.updated[0])).toContain('Base branch: develop')
     expect(JSON.stringify(h.updated[0])).toContain('note: ship it')
-    expect(h.daemon.permissions.pendingElicits.size).toBe(0)
+    expect(h.daemon.permissions.pendingApprovals.size).toBe(0)
   })
 
   it("posts the card in the turn's thread, and at the root for a turn that has none", async () => {
@@ -464,7 +464,7 @@ describe('a Slack turn answers a form card from its own Confirm', () => {
     expect(h.notices()).toEqual([
       "That answer wasn't accepted — the question is still open. Base branch: This field is required."
     ])
-    expect(h.daemon.permissions.pendingElicits.size).toBe(1)
+    expect(h.daemon.permissions.pendingApprovals.size).toBe(1)
     expect(h.updated).toEqual([])
 
     await h.daemon.permissions.submitElicitForm({ requestId, fields: submitFields('main') })
@@ -479,8 +479,8 @@ describe('a Slack turn answers a form card from its own Confirm', () => {
     await h.daemon.permissions.submitElicitForm({ requestId, fields: submitFields('main', 'x'.repeat(50)) })
     expect(h.notices()[0]).toContain('note: Enter some text, at most 20 characters long.')
     expect(settled).toBe(false)
-    expect(h.daemon.permissions.pendingElicits.size).toBe(1)
-    await h.daemon.permissions.releaseElicits('agent-1', 's1')
+    expect(h.daemon.permissions.pendingApprovals.size).toBe(1)
+    await h.daemon.permissions.releaseApprovals('agent-1', 's1')
     await expect(result).resolves.toEqual({ action: 'cancel' })
   })
 
@@ -510,7 +510,7 @@ describe('a Slack turn answers a form card from its own Confirm', () => {
     // A minimum length no Slack input holds — a field the card genuinely cannot render.
     const req = form({ a: { type: 'string', minLength: 3500 }, note: { type: 'string' } }, ['a'])
     await expect(h.daemon.permissions.onAcpElicit('agent-1', 's1', req)).resolves.toBeUndefined()
-    expect(h.daemon.permissions.pendingElicits.size).toBe(0)
+    expect(h.daemon.permissions.pendingApprovals.size).toBe(0)
     expect(h.posted).toEqual([])
     expect(h.notices()[0]).toContain("this chat can't collect an answer for")
   })
@@ -541,7 +541,7 @@ describe('both Slack ingress paths settle a form card the same way', () => {
       await relay({ kind: 'elicitation-confirm', requestId, fields: submitFields('main', 'x'.repeat(50)) }, 'a-bad')
     ).toEqual({ msgId: 'a-bad', accepted: true })
     expect(h.notices()[0]).toContain('note: Enter some text, at most 20 characters long.')
-    expect(h.daemon.permissions.pendingElicits.size).toBe(1)
+    expect(h.daemon.permissions.pendingApprovals.size).toBe(1)
 
     expect(await relay({ kind: 'elicitation-confirm', requestId, fields: submitFields('main') }, 'a-ok')).toEqual({
       msgId: 'a-ok',
@@ -600,8 +600,8 @@ describe('an option value past what Slack carries', () => {
     expect(h.notices()).toHaveLength(2)
     expect(h.notices()[0]).toContain('Base branch: Choose one of the options offered.')
     expect(settled).toBe(false)
-    expect(h.daemon.permissions.pendingElicits.size).toBe(1)
-    await h.daemon.permissions.releaseElicits('agent-1', 's1')
+    expect(h.daemon.permissions.pendingApprovals.size).toBe(1)
+    await h.daemon.permissions.releaseApprovals('agent-1', 's1')
     await expect(result).resolves.toEqual({ action: 'cancel' })
   })
 
@@ -672,8 +672,8 @@ describe('a card settled while its own post is still in flight', () => {
       return 'ts-1'
     }
     const result = h.daemon.permissions.onAcpElicit('agent-1', 's1', urlAsk('https://auth.example.com/go'))
-    await vi.waitFor(() => expect(h.daemon.permissions.pendingElicits.size).toBe(1))
-    const requestId = [...h.daemon.permissions.pendingElicits.keys()][0] as string
+    await vi.waitFor(() => expect(h.daemon.permissions.pendingApprovals.size).toBe(1))
+    const requestId = [...h.daemon.permissions.pendingApprovals.keys()][0] as string
     // Slack can deliver the tap before it has answered the post that carried it — the card has
     // no `ts` yet, so nothing can be rewritten at settlement time.
     await h.daemon.permissions.handleElicitChoice({ requestId, value: elicitOptionToken(0) })
@@ -727,7 +727,7 @@ describe('a card recorded in the transcript', () => {
     expect(bodies(h).at(-1)).toMatchObject({ outcome: 'dismissed' })
 
     const abandoned = await raise(h, form(TWO, ['branch']))
-    await h.daemon.permissions.releaseElicits('agent-1', 's1')
+    await h.daemon.permissions.releaseApprovals('agent-1', 's1')
     await expect(abandoned.result).resolves.toEqual({ action: 'cancel' })
     expect(bodies(h).at(-1)).toMatchObject({ outcome: 'cancelled' })
     // Two cards, two rows — the second never rewrote the first.
@@ -773,7 +773,7 @@ describe('a stale card cannot answer the request that reused its id', () => {
     await after.daemon.permissions.handleElicitChoice({ requestId: stale.requestId, value: stale.optionId })
     await new Promise((resolve) => setImmediate(resolve))
     expect(settled).toBe(false)
-    expect(after.daemon.permissions.pendingElicits.size).toBe(1)
+    expect(after.daemon.permissions.pendingApprovals.size).toBe(1)
     // Which is only true because an id is unique across daemon lifetimes.
     expect(production.requestId).not.toBe(staging.requestId)
 

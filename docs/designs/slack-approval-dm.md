@@ -438,8 +438,9 @@ editor. It is routed over the agent's Slack integrations first, then those whose
 through the platform's facet, as on the editor path (teams-integration.md §4.4). On a synced
 Feishu/Lark integration of an agent with neither, nobody is DMed, and the request waits for an
 editor in the conversation or the console; a Feishu/Lark approval DM is not built yet. The first
-answer decides: the DM's addressee is checked as §6.3 says, anyone else as here. An approval elicitation's card gets no DM yet, since it still lives in the elicitation map
-(§11.4); editors answer it there or in the console. A conversation shared with another
+answer decides: the DM's addressee is checked as §6.3 says, anyone else as here. An approval
+elicitation's in-conversation card gets no DM beside it yet, though it shares the one pending
+record and settle path (§11.4); editors answer it there or in the console. A conversation shared with another
 organization takes the editor path instead of the asker's DM. A task's card keeps the
 row's `notify*` handle, so the DM beside it keeps its own (`besideIntegrationId`,
 `besideChannel`, `besideTs`), as an editor's card off Slack always does, and the reconnect sweep

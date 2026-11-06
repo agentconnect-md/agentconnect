@@ -169,7 +169,7 @@ async function world(
   /** What each person was told privately. */
   const toldTo = (user: string): string[] =>
     conn.postEphemeral.mock.calls.filter((call: unknown[]) => call[1] === user).map((call: unknown[]) => call[2])
-  const onlyRequest = (): string => [...permissions.pendingApprovals.keys(), ...permissions.pendingElicits.keys()][0]
+  const onlyRequest = (): string => [...permissions.pendingApprovals.keys(), ...permissions.pendingApprovals.keys()][0]
   const click = (requestId: string, userId: string) =>
     permissions.handlePermissionChoice({ requestId, optionId: 'allow', actor: { userId } })
   return { daemon, clock, store, conn, cp, asked, integration, permissions, postedTo, toldTo, onlyRequest, click }
@@ -280,7 +280,7 @@ describe('where permissions are synced, only an Agent editor answers in chat', (
     expect(w.toldTo(STRANGER)).toEqual([UNLINKED])
     expect(w.toldTo(MEMBER)).toEqual([NOT_EDITOR])
     expect(decided).not.toHaveBeenCalled()
-    expect(w.permissions.pendingElicits.has(id)).toBe(true)
+    expect(w.permissions.pendingApprovals.has(id)).toBe(true)
     await tap('U-EDITOR-2')
     await vi.waitFor(() => expect(decided).toHaveBeenCalledWith(expect.objectContaining({ action: 'accept' })))
     await w.store.close()
