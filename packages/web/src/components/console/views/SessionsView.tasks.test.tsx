@@ -185,3 +185,35 @@ describe('SessionsView, the coordinator', () => {
     expect(tagged('Webhook retries')).toHaveLength(0)
   })
 })
+
+// A row's state as the session page draws it: one icon, gray at rest or closed, green while a turn runs.
+describe('SessionsView, a row’s state', () => {
+  it('draws closed and idle gray and a prompting session running, never a closed one in red', async () => {
+    const row = (id: string, status: string) =>
+      sessionFromDto({
+        sessionId: id,
+        sessionKey: { platform: 'slack', channel: 'C1', thread: `1700000000.00${id.length}` },
+        agentId: 'agent-1',
+        title: `Session ${id}`,
+        status,
+        lastActivityAt: '2026-10-30T09:00:00.000Z',
+        usage: null,
+        triggeredBy: 'U0ALICE',
+        channelName: 'eng',
+        triggeredByName: 'alice',
+        threadUrl: null
+      } as unknown as SessionDto)
+    mocks.sessions = [row('a', 'closed'), row('bb', 'idle'), row('ccc', 'prompting')]
+    mocks.search = 'view=flat'
+    await render()
+    const states = (title: string) =>
+      Array.from(document.querySelectorAll('a.row'))
+        .find((link) => link.textContent?.includes(title))
+        ?.querySelector('.hidden.desktop\\:flex [data-session-status]')
+        ?.getAttribute('data-session-status')
+    expect(states('Session a')).toBe('idle')
+    expect(states('Session bb')).toBe('idle')
+    expect(states('Session ccc')).toBe('running')
+    expect(document.querySelector('[data-session-status] [data-state-icon]')?.getAttribute('aria-label')).toBe('closed')
+  })
+})

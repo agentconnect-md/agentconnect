@@ -329,6 +329,22 @@ describe('the one-line session header', () => {
     expect(quiet.textContent).toBe('')
   })
 
+  it('opens one header popover at a time, without native tips over them', async () => {
+    await render()
+    const requests = header()!.querySelector<HTMLButtonElement>('[data-header-requests]')!
+    const details = header()!.querySelector<HTMLButtonElement>('[data-header-details]')!
+    expect(requests.getAttribute('title')).toBeNull()
+    expect(details.getAttribute('title')).toBeNull()
+    // Opened by focus, as a click leaves it, then the pointer moves on to Details.
+    await act(async () => requests.focus())
+    expect(requests.getAttribute('aria-expanded')).toBe('true')
+    await act(async () => {
+      details.parentElement!.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, relatedTarget: document.body }))
+    })
+    expect(requests.getAttribute('aria-expanded')).toBe('false')
+    expect(document.getElementById(details.getAttribute('aria-describedby')!)?.className).not.toContain('invisible')
+  })
+
   it('opens who is in the session from the faces, with who can see it at the foot', async () => {
     await render()
     await act(async () => header()!.querySelector<HTMLButtonElement>('[data-header-people]')!.click())

@@ -1,5 +1,6 @@
 'use client'
 
+import { StateIcon, sessionState } from '@/components/console/StateIcon'
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
@@ -736,14 +737,7 @@ export default function SessionsView() {
                 <CoordinatorTag show={s.coordinator} />
                 <RestrictedLock show={s.visibility === 'private'} title={t('privateSession')} />
                 <PurgedMark session={s} />
-                {/* Status as a compact pill — the design's badge, driven by the real
-                    status (soft bg + saturated text from STATUS_MAP). */}
-                <span
-                  className="inline-flex flex-none items-center whitespace-nowrap rounded-full px-2 py-[1px] font-sans text-[12px] font-semibold leading-normal"
-                  style={{ background: ss.bg, color: ss.text }}
-                >
-                  {s.statusLabel || ss.label}
-                </span>
+                <SessionStatus label={s.statusLabel || ss.label} />
               </span>
               <span className="justify-self-end whitespace-nowrap font-mono text-[12px] font-medium leading-normal text-(--text-tertiary) desktop:hidden">
                 {s.time}
@@ -792,11 +786,8 @@ export default function SessionsView() {
                 </span>
                 <span className="mono truncate text-[12px] text-(--text-secondary)">{ch.label}</span>
               </div>
-              <div className="hidden items-center gap-[7px] desktop:flex">
-                <span className="dot" style={{ background: ss.dot }} />
-                <span className="font-sans text-[12px] font-medium leading-normal" style={{ color: ss.text }}>
-                  {s.statusLabel || ss.label}
-                </span>
+              <div className="hidden items-center desktop:flex">
+                <SessionStatus label={s.statusLabel || ss.label} />
               </div>
               <span className="mono hidden text-right text-[12.5px] text-(--text-primary) desktop:block">
                 {s.tokens}
@@ -1093,5 +1084,20 @@ function PillSection({
         })}
       </div>
     </>
+  )
+}
+
+/** A session's state as the session page names it: the shared state icon, then its raw word in a quiet tone (red only for a failure). */
+function SessionStatus({ label }: { label: string }) {
+  const state = sessionState(label, false)
+  return (
+    <span data-session-status={state} className="inline-flex flex-none items-center gap-[6px] whitespace-nowrap">
+      <StateIcon state={state} label={label} />
+      <span
+        className={`font-sans text-[12px] font-medium leading-normal ${state === 'failed' ? 'text-(--status-error)' : 'text-(--text-secondary)'}`}
+      >
+        {label}
+      </span>
+    </span>
   )
 }

@@ -4594,7 +4594,8 @@ export default function SessionDetailView() {
         {/* HEADER CHROME — title + action bar (+ any notices). Centred to line up with the 880px
         transcript below. `flex-none`; no `sticky`, no bottom `margin` — the meta row's border-b is
         the flush divider with the transcript, with no blank gap under the line. */}
-        <div className="mx-auto w-full min-w-0 max-w-[880px] flex-none">
+        {/* On desktop the header rises into `.content`'s top padding, so its one line is level with the nav's brand row. */}
+        <div className="mx-auto w-full min-w-0 max-w-[880px] flex-none desktop:-mt-[34px]">
           <div>
             {/* A task's own page names the session it belongs to and leads back there; its tool calls stay in its transcript. */}
             {taskPage && currentSessionDetail ? (
@@ -4630,7 +4631,7 @@ export default function SessionDetailView() {
             {/* Where the dock is a drawer, its fixed Panels toggle sits over the row's right end, so the row leaves it room. */}
             <div
               data-session-header=""
-              className="hidden min-w-0 items-center gap-2 border-b border-(--border-subtle) pb-[10px] desktop:flex desktop:max-wide:pr-11"
+              className="hidden min-w-0 items-center gap-2 border-b border-(--border-subtle) desktop:flex desktop:h-[52px] desktop:max-wide:pr-11"
             >
               {taskOwnerHref ? (
                 <Link
@@ -4745,9 +4746,17 @@ export default function SessionDetailView() {
                 // The pill says how many wait for this reader; the popover keeps the answered history too.
                 <div
                   className="relative flex flex-none items-center"
-                  onMouseEnter={() => requestsPopover.setPresence('hovered', true)}
+                  // One header popover at a time: entering Requests closes Details.
+                  onMouseEnter={() => {
+                    updateDetailPresence('hovered', false)
+                    updateDetailPresence('focused', false)
+                    requestsPopover.setPresence('hovered', true)
+                  }}
                   onMouseLeave={() => requestsPopover.setPresence('hovered', false)}
-                  onFocus={() => requestsPopover.setPresence('focused', true)}
+                  onFocus={() => {
+                    updateDetailPresence('focused', false)
+                    requestsPopover.setPresence('focused', true)
+                  }}
                   // Ignore focus moving inside the wrapper, so tabbing from the trigger into Allow/Deny works.
                   onBlur={(event) => {
                     if (event.currentTarget.contains(event.relatedTarget)) return
@@ -4761,9 +4770,6 @@ export default function SessionDetailView() {
                       pendingRequestCount > 0
                         ? 'inline-flex h-6 flex-none cursor-pointer items-center gap-1 rounded-full border-0 bg-(--status-paused-soft) px-[7px] font-sans text-[12px] font-semibold leading-normal text-[#9a6500] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)'
                         : `${HEADER_ICON_BTN} cursor-pointer border-0 bg-transparent`
-                    }
-                    title={
-                      pendingRequestCount > 0 ? t('requestsWaiting', { count: pendingRequestCount }) : t('requests')
                     }
                     aria-label={
                       pendingRequestCount > 0 ? t('requestsWaiting', { count: pendingRequestCount }) : t('requests')
@@ -4796,9 +4802,17 @@ export default function SessionDetailView() {
               {/* `flex` on the wrapper keeps the button on the row's centre line; the transparent padding bridges trigger and panel for the hover. */}
               <div
                 className="relative flex flex-none items-center"
-                onMouseEnter={() => updateDetailPresence('hovered', true)}
+                // And entering Details closes Requests.
+                onMouseEnter={() => {
+                  requestsPopover.setPresence('hovered', false)
+                  requestsPopover.setPresence('focused', false)
+                  updateDetailPresence('hovered', true)
+                }}
                 onMouseLeave={() => updateDetailPresence('hovered', false)}
-                onFocus={() => updateDetailPresence('focused', true)}
+                onFocus={() => {
+                  requestsPopover.setPresence('focused', false)
+                  updateDetailPresence('focused', true)
+                }}
                 // Focus moving between descendants (trigger to panel) must not drop presence.
                 onBlur={(event) => {
                   if (event.currentTarget.contains(event.relatedTarget)) return
@@ -4810,7 +4824,6 @@ export default function SessionDetailView() {
                   data-header-details=""
                   className={`${HEADER_ICON_BTN} cursor-pointer border-0 bg-transparent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)`}
                   aria-label={t('details')}
-                  title={t('details')}
                   aria-describedby={detailTooltipId}
                 >
                   <Icon name="info" size={15} />
