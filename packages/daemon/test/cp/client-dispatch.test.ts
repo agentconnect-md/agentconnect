@@ -91,6 +91,7 @@ async function readyClient(
   const sessionRead = {
     list: vi.fn(() => ({ sessions: [] })),
     history: vi.fn(() => ({ sessionId: DAEMON_ID, messages: [] })),
+    thread: vi.fn(() => ({ sessionId: DAEMON_ID, rootId: 'root-1', messages: [] })),
     toolBody: vi.fn(() => ({ sessionId: DAEMON_ID, toolCallId: 'tool', data: '', totalBytes: 0 })),
     ...((over.sessionRead as any) ?? {})
   }
@@ -1511,6 +1512,23 @@ describe('CpClient dispatch', () => {
     const rep = JSON.parse(t.sent[0]!)
     expect(rep.type).toBe('session/history/page')
     expect(rep.corr).toBe(f.id)
+  })
+
+  it('answers session/thread with a session/thread/page reply correlated to the req', async () => {
+    const { t } = await readyClient()
+    const f = JSON.parse(
+      frame(
+        'session/thread',
+        { agentId: CRON_AGENT_ID, sessionId: DAEMON_ID, rootId: 'root-1', limit: 50 },
+        { epoch: 5 }
+      )
+    )
+    t.pushInbound(JSON.stringify(f))
+    await tick()
+    const rep = JSON.parse(t.sent[0]!)
+    expect(rep.type).toBe('session/thread/page')
+    expect(rep.corr).toBe(f.id)
+    expect(rep.payload.rootId).toBe('root-1')
   })
 
   it('answers session/child-status/probe from the daemon-owned handler, correlated to the req', async () => {

@@ -177,6 +177,10 @@ describe('runtime matrix coordinator probe', () => {
       `[One new message in this conversation (${CO_IDS.conversation})]`
     )
     expect(coordinatorPrompt(true)).toContain('in a private webchat conversation')
+    // webchat-threads.md §4: a follow-up in an unowned thread names its root.
+    expect(renderBatch(scenario('webchat-thread-follow-up').messages, true)).toContain(
+      'thread="msg-1e6c7b8a-5f4d-4bc2-9a0f-6d7e8f9a0b12"'
+    )
   })
 
   // assistant-mode.md §5.18: the coordinator opens with the work board and reads other places' tasks read only.

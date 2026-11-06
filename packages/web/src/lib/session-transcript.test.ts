@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionMessageDto } from './api'
 import type { SessionStep } from './data'
-import { mergeSessionMessages, reconcilePersistedLiveSteps } from './session-transcript'
+import { liveThreadScope, mergeSessionMessages, reconcilePersistedLiveSteps } from './session-transcript'
 
 function message(seq: number, ts: string, text: string): SessionMessageDto {
   return { seq, ts, text, sender: 'agent', kind: 'reasoning' }
@@ -265,5 +265,61 @@ describe('reconcilePersistedLiveSteps', () => {
       persistedPrompt(2, 'ship it', at + 1_050)
     ]
     expect(reconcilePersistedLiveSteps(live, persisted, agentId)).toEqual([{ ...live[1], hidden: true }, live[2]])
+  })
+})
+
+describe('reconciling a coordinator conversation’s threads (webchat-threads.md §6)', () => {
+  const agentId = 'agent'
+  const at = 1_785_000_000_000
+  const rootPrompt: SessionStep = { kind: 'msg', who: '@you', turnId: 'r', text: 'plan the release', observedAtMs: at }
+  const rootAnswer: SessionStep = { kind: 'done', agentId, turnId: 'r', text: 'Planned.', observedAtMs: at + 10 }
+  // A task answers this thread message in the thread.
+  const heldPrompt: SessionStep = {
+    kind: 'msg',
+    who: '@you',
+    turnId: 'h',
+    text: 'and the notes?',
+    thread: 'root-1',
+    observedAtMs: at + 20
+  }
+  const heldAnswer: SessionStep = {
+    kind: 'done',
+    agentId,
+    turnId: 'h',
+    text: 'Notes drafted.',
+    thread: 'root-1',
+    observedAtMs: at + 30
+  }
+  // The coordinator answers this one, so its turn belongs to the main timeline.
+  const askedPrompt: SessionStep = {
+    kind: 'msg',
+    who: '@you',
+    turnId: 'c',
+    text: 'who owns it?',
+    thread: 'root-2',
+    observedAtMs: at + 40
+  }
+  const askedAnswer: SessionStep = { kind: 'done', agentId, turnId: 'c', text: 'Dana does.', observedAtMs: at + 50 }
+  const live = [rootPrompt, rootAnswer, heldPrompt, heldAnswer, askedPrompt, askedAnswer]
+  const row = (seq: number, sender: string, text: string, ms: number): SessionMessageDto => ({
+    seq,
+    ts: String(ms),
+    text,
+    sender,
+    kind: 'text'
+  })
+
+  it('scopes the root to its turns and a thread message the coordinator answered, and a thread to its own', () => {
+    expect(live.filter(liveThreadScope(live))).toEqual([rootPrompt, rootAnswer, askedPrompt, askedAnswer])
+    expect(live.filter(liveThreadScope(live, 'root-1'))).toEqual([heldPrompt, heldAnswer])
+    expect(live.filter(liveThreadScope(live, 'root-2'))).toEqual([])
+  })
+
+  it('retires a thread’s turn from its record and leaves the root’s alone', () => {
+    const record = [row(7, '@you', 'and the notes?', at + 25), row(8, agentId, 'Notes drafted.', at + 35)]
+    const scoped = reconcilePersistedLiveSteps(live, record, agentId, record, liveThreadScope(live, 'root-1'))
+    expect(scoped).toEqual([rootPrompt, rootAnswer, askedPrompt, askedAnswer])
+    // The same rows read at the root confirm nothing there: the thread's turn is not the root's to retire.
+    expect(reconcilePersistedLiveSteps(live, record, agentId, record, liveThreadScope(live))).toBe(live)
   })
 })

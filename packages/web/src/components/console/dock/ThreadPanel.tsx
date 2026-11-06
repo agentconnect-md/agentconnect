@@ -1,6 +1,6 @@
 'use client'
 
-// One coordinator task's thread in the dock (auto-session-mode.md §10): what it and its people said, and a composer that continues it console-only.
+// One thread in the dock (webchat-threads.md §6.2): its record or its task's session, the holding task's header, and a composer that writes in the thread (§6.3).
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import Link from 'next/link'
@@ -25,10 +25,12 @@ import {
   threadMessages,
   useTaskRow,
   useTaskThread,
-  type ThreadEntry
+  useThreadRecord,
+  type ThreadEntry,
+  type ThreadRecordRef
 } from '@/components/console/task-thread'
 import type { TaskLink } from '@/components/console/task-link'
-import { fetchSessionDetail } from '@/lib/api'
+import { fetchSessionDetail, type SessionThreadSummaryDto } from '@/lib/api'
 import { ComposerFileChips, stageComposerFile } from '@/components/console/ComposerFiles'
 import { prepareWebchatImage } from '@/lib/webchat-image'
 import { RunningCommandsDock } from '@/components/console/RunningCommandsDock'
@@ -45,7 +47,9 @@ import { approvalNotice, raisedIn, WebchatMcpApprovalCard } from '@/components/c
 const HEADER_BTN =
   'flex h-[26px] w-[26px] flex-none cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent text-(--text-secondary) transition-colors hover:bg-(--surface-hover) hover:text-(--text-primary) focus-visible:shadow-(--focus-ring) focus-visible:outline-none'
 
-export function TaskThreadPanel({
+const EMPTY: readonly never[] = []
+
+export function ThreadPanel({
   agentId,
   agentName,
   agentIcon,
@@ -53,13 +57,17 @@ export function TaskThreadPanel({
   agentById,
   platform = '',
   task,
+  record,
   parentSessionId,
   approvals,
   onBack,
   taskApprovals,
   runtimeContext,
   personPicture,
-  fileTransfer = false
+  fileTransfer = false,
+  writer,
+  focusComposer = false,
+  onSummary
 }: {
   /** The coordinator's agent, which runs the task. */
   agentId: string
@@ -71,7 +79,10 @@ export function TaskThreadPanel({
   agentById?: ReadonlyMap<string, Agent>
   /** The conversation's platform, whose bot attribution names a speaking agent. */
   platform?: string
-  task: TaskLink
+  /** The task that holds the thread; without `record`, the panel reads the task's own session. */
+  task?: TaskLink
+  /** The thread's record, read through the conversation's session; its footer names the holding task when `task` does not. */
+  record?: ThreadRecordRef
   /** The conversation whose task list carries this one's state; null reads the task alone. */
   parentSessionId: string | null
   /** The coordinator's webchat conversation, whose grant the task writes under: its writes wait for approval here. */
@@ -91,6 +102,12 @@ export function TaskThreadPanel({
   }
   /** A person's console photo by sender, as the session page draws it; undefined asks for this visit's own sends. */
   personPicture?: (sender: string | undefined) => string | undefined
+  /** The reader's own coordinator conversation, whose socket a message in this record's thread goes out on; absent for another member, who writes through the holding task. */
+  writer?: { sessionId: string; conversationId?: string }
+  /** Focus the composer when it first shows, as Reply in thread asks. */
+  focusComposer?: boolean
+  /** Told each footer the record's reads return, so the timeline's footer keeps up with an open thread. */
+  onSummary?: (summary: SessionThreadSummaryDto) => void
 }) {
   const t = useTranslations('Common.taskThread')
   const tl = useTranslations('Common.taskList')
@@ -98,9 +115,12 @@ export function TaskThreadPanel({
   const { orgPath } = useOrgs()
   const {
     getLiveSteps,
+    getPgInput,
+    getPgTurnThread,
     isPgBusy,
     markSessionTarget,
     pgSend,
+    pgSendThread,
     pgNotice,
     setPgInput,
     reconcileLiveSteps,
@@ -108,17 +128,34 @@ export function TaskThreadPanel({
     pgAttach,
     pgCancel
   } = usePlayground()
-  const id = task.sessionId
-  const row = useTaskRow(agentId, id, parentSessionId)
+  // A turn the reader sent in this thread on their conversation's socket.
+  const writing =
+    !!writer && !!record && isPgBusy(writer.sessionId) && getPgTurnThread(writer.sessionId) === record.rootId
+  // The record is read first; its footer names the holding task when the caller did not.
+  const thread = useThreadRecord(record ?? null, (sid) => writing || isPgBusy(sid))
+  const summary = thread.summary
+  // A daemon without thread reads leaves a task's thread to its session; anything else reads the record.
+  const fromRecord = !!record && !(thread.unsupported && task)
+  const unreadable = fromRecord && summary?.readable === false
+  const holderId = task?.sessionId ?? (unreadable ? null : (summary?.task?.sessionId ?? null))
+  const id = holderId ?? ''
+  // The owner writes in any thread of their conversation, held or not, and routing takes it to the task or the coordinator.
+  const ownThread =
+    writer && record && fromRecord && !unreadable && !thread.missing ? { ...writer, rootId: record.rootId } : null
+  const row = useTaskRow(agentId, holderId, parentSessionId)
   const { stopOf, stop } = useTaskStops(agentId, parentSessionId ?? id, () => {})
   const stopState = row ? stopOf(row) : undefined
   const stoppable = !!row && row.state === 'open' && taskStopKey(row) !== null && stopState !== 'stopped'
   const listRef = useRef<HTMLDivElement | null>(null)
-  const busy = isPgBusy(id)
-  const { page, error, reload } = useTaskThread(id, row, { busy })
+  const busy = ownThread ? writing : holderId !== null && isPgBusy(id)
+  const session = useTaskThread(fromRecord ? null : holderId, row, { busy })
+  const recordPage = useMemo(() => (thread.messages ? { messages: thread.messages } : undefined), [thread.messages])
+  const page = fromRecord ? recordPage : session.page
+  const error = fromRecord ? thread.error : session.error
+  const reload = fromRecord ? thread.reload : session.reload
   // The server decides who may continue a task, by its parent's audience; absent or false keeps it read-only.
   const { data: detail, mutate: reloadDetail } = useSWR(
-    ['session-detail', id],
+    holderId ? ['session-detail', holderId] : null,
     ([, sid]) => readOnceRegistered(() => fetchSessionDetail(sid)),
     CONSOLE_SWR_CONFIG
   )
@@ -131,12 +168,29 @@ export function TaskThreadPanel({
     return (m: (typeof messages)[number]) =>
       agentById.has(m.sender) ? m.sender : (sessionAttributionAgentId(platform, m, agentById) ?? authors.get(m.sender))
   }, [agentById, platform, messages])
-  const entries = threadEntries(messages, getLiveSteps(id), agentId, peerAgent)
+  // The owner's turns in this thread stream on their conversation's socket; another member's on the task's.
+  const live = ownThread
+    ? getLiveSteps(ownThread.sessionId).filter((step) => step.thread === ownThread.rootId)
+    : holderId
+      ? getLiveSteps(id)
+      : EMPTY
+  const entries = threadEntries(messages, live, agentId, peerAgent)
 
   // A read that lands after the turn ends retires the live copy of what it now carries.
+  const ownSessionId = ownThread?.sessionId
+  const ownRootId = ownThread?.rootId
   useEffect(() => {
-    if (page && !busy) reconcileLiveSteps(id, page.messages, agentId)
-  }, [agentId, busy, id, page, reconcileLiveSteps])
+    if (!page || busy) return
+    if (ownSessionId && ownRootId) reconcileLiveSteps(ownSessionId, page.messages, agentId, undefined, ownRootId)
+    else if (holderId) reconcileLiveSteps(holderId, page.messages, agentId)
+  }, [agentId, busy, holderId, ownRootId, ownSessionId, page, reconcileLiveSteps])
+
+  // The timeline's footer follows what this panel reads.
+  const onSummaryRef = useRef(onSummary)
+  onSummaryRef.current = onSummary
+  useEffect(() => {
+    if (summary) onSummaryRef.current?.(summary)
+  }, [summary])
 
   // A turn's end is when its answer lands on the record.
   const wasBusy = useRef(busy)
@@ -162,15 +216,27 @@ export function TaskThreadPanel({
     if (list) list.scrollTop = list.scrollHeight
   }, [tail])
 
+  // The composer's draft: the owner's is this thread's own, another member's the holding task's.
+  const draftId = ownThread ? `${ownThread.sessionId}#${ownThread.rootId}` : id
   const send = (): void => {
-    if (!canReply) return
-    markSessionTarget(id)
-    pgSend(id, agentId)
+    if (ownThread) {
+      if (pgSendThread(ownThread.sessionId, agentId, getPgInput(draftId), ownThread.rootId, ownThread.conversationId))
+        setPgInput(draftId, '')
+      return
+    }
+    if (!canReply || !holderId) return
+    markSessionTarget(holderId)
+    // Read from the record, the message is written in this thread of the task, which may hold several.
+    if (record && fromRecord) {
+      if (pgSendThread(holderId, agentId, getPgInput(holderId), record.rootId)) setPgInput(holderId, '')
+      return
+    }
+    pgSend(holderId, agentId)
   }
 
-  const title = row?.title ?? task.title
+  const title = row?.title ?? task?.title ?? summary?.task?.title ?? t('thread')
   const tone = row ? taskTone(row, null) : null
-  const pageHref = orgPath(`/sessions/${encodeURIComponent(id)}`)
+  const pageHref = holderId ? orgPath(`/sessions/${encodeURIComponent(holderId)}`) : null
   const agentHref = (agent: string): string => orgPath(`/agents/${encodeURIComponent(agent)}`)
   const own: Speaker = {
     name: agentName,
@@ -190,7 +256,11 @@ export function TaskThreadPanel({
     }
   }
   return (
-    <div data-task-thread={id} className="flex min-h-0 flex-1 flex-col">
+    <div
+      {...(holderId ? { 'data-task-thread': holderId } : {})}
+      {...(record ? { 'data-thread-panel': record.rootId } : {})}
+      className="flex min-h-0 flex-1 flex-col"
+    >
       <div className="flex h-[43px] min-w-0 flex-none items-center gap-[6px] border-b border-(--border-subtle) pr-2 pl-[10px]">
         <button
           type="button"
@@ -223,15 +293,17 @@ export function TaskThreadPanel({
           </button>
         ) : null}
         {/* Expanding a task is opening its own page; a real link, so a modified click opens it in a new tab. */}
-        <Link
-          href={pageHref}
-          data-task-thread-expand=""
-          className={HEADER_BTN}
-          title={t('openPage', { title })}
-          aria-label={t('openPage', { title })}
-        >
-          <Icon name="maximize-2" size={14} />
-        </Link>
+        {pageHref ? (
+          <Link
+            href={pageHref}
+            data-task-thread-expand=""
+            className={HEADER_BTN}
+            title={t('openPage', { title })}
+            aria-label={t('openPage', { title })}
+          >
+            <Icon name="maximize-2" size={14} />
+          </Link>
+        ) : null}
         <button
           type="button"
           data-task-thread-close=""
@@ -252,7 +324,17 @@ export function TaskThreadPanel({
             {row.summary}
           </p>
         ) : null}
-        {page?.nextCursor ? (
+        {fromRecord && thread.hasEarlier ? (
+          <button
+            type="button"
+            data-thread-earlier=""
+            disabled={thread.loadingEarlier}
+            onClick={() => void thread.loadEarlier().catch(() => {})}
+            className="w-fit cursor-pointer border-0 bg-transparent p-0 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary) hover:underline"
+          >
+            {t('showEarlier')}
+          </button>
+        ) : !fromRecord && session.page?.nextCursor && pageHref ? (
           <Link
             href={pageHref}
             className="w-fit font-sans text-[12px] font-normal leading-normal text-(--text-tertiary) hover:underline"
@@ -260,17 +342,34 @@ export function TaskThreadPanel({
             {t('earlier')}
           </Link>
         ) : null}
+        {unreadable ? (
+          <span
+            data-thread-unreadable=""
+            className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)"
+          >
+            {t('unreadable')}
+          </span>
+        ) : null}
+        {fromRecord && thread.missing ? (
+          <span role="alert" className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+            {t('missing')}
+          </span>
+        ) : !page && error ? (
+          <span role="alert" className="font-sans text-[12.5px] font-normal leading-normal text-(--status-error)">
+            {t('loadFailed')}
+          </span>
+        ) : null}
         {!page && !error ? (
           <span className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
             {t('loading')}
           </span>
         ) : null}
-        {error && !page ? (
-          <span role="alert" className="font-sans text-[12.5px] font-normal leading-normal text-(--status-error)">
-            {t('loadFailed')}
-          </span>
-        ) : null}
-        <ApprovalsScope taskSessionId={id} agentId={agentId} scope={taskApprovals} entries={entries}>
+        <ApprovalsScope
+          taskSessionId={id}
+          agentId={agentId}
+          scope={holderId ? taskApprovals : undefined}
+          entries={entries}
+        >
           {entries.map((entry, i) => (
             <ThreadMessage
               key={entry.key}
@@ -287,7 +386,7 @@ export function TaskThreadPanel({
               {entry.question ? (
                 <ThreadQuestion
                   question={entry.question}
-                  pageHref={pageHref}
+                  pageHref={pageHref ?? undefined}
                   onAnswer={(requestId, value) => {
                     markSessionTarget(id)
                     pgAnswerElicitation(id, agentId, requestId, value)
@@ -310,7 +409,7 @@ export function TaskThreadPanel({
           </div>
         ) : null}
       </div>
-      {approvals ? (
+      {approvals && holderId ? (
         <WebchatMcpApprovalCard
           orgId={approvals.orgId}
           agentId={agentId}
@@ -324,44 +423,57 @@ export function TaskThreadPanel({
           }}
         />
       ) : null}
-      <ThreadComposer
-        sessionId={id}
-        canReply={canReply}
-        checking={detail === undefined}
-        placeholder={t('replyPlaceholder')}
-        readOnly={t('readOnly')}
-        {...(MOCK_MODE ? {} : { attach: { agentId, transfer: fileTransfer } })}
-        sendLabel={t('send')}
-        onSend={send}
-        // Stop shows as soon as a turn runs here, before the task list catches up; the console's stop route is used once the list says it runs.
-        {...(stoppable && row
-          ? { onStop: () => void stop(row), stopping: stopState === 'busy' }
-          : busy
-            ? { onStop: () => pgCancel(id, agentId) }
-            : {})}
-        stopLabel={tl('stop')}
-        setDraft={(text) => setPgInput(id, text)}
-        // Writing here opens the task's own session, which is what reports the settings its picker offers.
-        onFocus={() => {
-          if (!canReply) return
-          markSessionTarget(id)
-          pgAttach(id, agentId, '')
-        }}
-        runtime={
-          runtimeContext ? (
-            <TaskRuntimePicker
-              sessionId={id}
-              agentId={agentId}
-              owner={runtimeContext.owner}
-              owningDaemon={runtimeContext.owningDaemon}
-              agentRuntime={runtimeContext.agentRuntime}
-              editable={runtimeContext.editable}
-            />
-          ) : null
-        }
-        context={<ContextWindowIndicator used={detail?.usage?.contextUsed} size={detail?.usage?.contextSize} />}
-        dock={MOCK_MODE ? null : <RunningCommandsDock agentId={agentId} sessionId={id} turnActive={busy} />}
-      />
+      {/* The owner writes in any thread; another member only in a held one, which continues its task. */}
+      {ownThread || holderId ? (
+        <ThreadComposer
+          sessionId={draftId}
+          canReply={ownThread ? true : canReply}
+          checking={ownThread ? false : detail === undefined}
+          placeholder={ownThread ? t('threadPlaceholder') : t('replyPlaceholder')}
+          // Who answers a message in the conversation's own thread; a task's reply box has its attach button there instead.
+          {...(ownThread ? { hint: holderId ? t('threadHintTask') : t('threadHintCoordinator') } : {})}
+          readOnly={t('readOnly')}
+          // A thread send carries text alone, so only a reply onto the task's own session offers attachments.
+          {...(MOCK_MODE || ownThread || (record && fromRecord) ? {} : { attach: { agentId, transfer: fileTransfer } })}
+          sendLabel={t('send')}
+          onSend={send}
+          autoFocus={focusComposer}
+          // Stop shows as soon as a turn runs here, before the task list catches up; the console's stop route is used once the list says it runs.
+          {...(stoppable && row
+            ? { onStop: () => void stop(row), stopping: stopState === 'busy' }
+            : busy && !ownThread
+              ? { onStop: () => pgCancel(id, agentId) }
+              : {})}
+          stopLabel={tl('stop')}
+          setDraft={(text) => setPgInput(draftId, text)}
+          // Writing here opens the task's own session, which is what reports the settings its picker offers.
+          onFocus={() => {
+            if (ownThread || !canReply) return
+            markSessionTarget(id)
+            pgAttach(id, agentId, '')
+          }}
+          runtime={
+            runtimeContext && holderId ? (
+              <TaskRuntimePicker
+                sessionId={id}
+                agentId={agentId}
+                owner={runtimeContext.owner}
+                owningDaemon={runtimeContext.owningDaemon}
+                agentRuntime={runtimeContext.agentRuntime}
+                editable={runtimeContext.editable}
+              />
+            ) : null
+          }
+          context={
+            holderId ? (
+              <ContextWindowIndicator used={detail?.usage?.contextUsed} size={detail?.usage?.contextSize} />
+            ) : null
+          }
+          dock={
+            MOCK_MODE || !holderId ? null : <RunningCommandsDock agentId={agentId} sessionId={id} turnActive={busy} />
+          }
+        />
+      ) : null}
     </div>
   )
 }
@@ -524,7 +636,8 @@ function ThreadQuestion({
   onAnswer
 }: {
   question: NonNullable<ThreadEntry['question']>
-  pageHref: string
+  /** The task's own page, where any other form of question is answered. */
+  pageHref: string | undefined
   onAnswer: (requestId: string, value: string) => void
 }) {
   const t = useTranslations('Common.taskThread')
@@ -592,14 +705,14 @@ function ThreadQuestion({
             </Button>
           ))}
         </div>
-      ) : (
+      ) : pageHref ? (
         <Link
           href={pageHref}
           className="w-fit font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary) hover:underline"
         >
           {t('answerOnPage')}
         </Link>
-      )}
+      ) : null}
     </div>
   )
 }
@@ -617,11 +730,14 @@ function ThreadComposer({
   stopLabel,
   setDraft,
   onFocus,
+  autoFocus = false,
+  hint,
   runtime,
   context,
   attach,
   dock
 }: {
+  /** Whose draft the box edits. */
   sessionId: string
   canReply: boolean
   checking: boolean
@@ -635,6 +751,10 @@ function ThreadComposer({
   stopLabel: string
   setDraft: (text: string) => void
   onFocus?: () => void
+  /** Take the caret once the box can be written in. */
+  autoFocus?: boolean
+  /** Who a message reaches, where no attach button takes its place. */
+  hint?: string
   /** The task's runtime picker, beside the attach button. */
   runtime?: ReactNode
   /** The task's context-window ring, beside send as on the conversation's composer. */
@@ -655,6 +775,13 @@ function ThreadComposer({
   const files = getPgFiles(sessionId)
   const hasAttachment = !!image || files.length > 0
   const uploading = files.some((file) => file.status === 'uploading')
+  const boxRef = useRef<HTMLTextAreaElement | null>(null)
+  // After the dock's own reveal, which focuses an overlay panel as it opens.
+  useEffect(() => {
+    if (!autoFocus || !canReply) return
+    const timer = window.setTimeout(() => boxRef.current?.focus(), 0)
+    return () => window.clearTimeout(timer)
+  }, [autoFocus, canReply])
   if (!canReply && !checking)
     return (
       <div className="flex-none border-t border-(--border-subtle) px-4 py-3 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
@@ -722,6 +849,8 @@ function ThreadComposer({
           </div>
         ) : null}
         <textarea
+          ref={boxRef}
+          data-thread-composer=""
           aria-label={placeholder}
           placeholder={placeholder}
           rows={2}
@@ -762,6 +891,13 @@ function ThreadComposer({
                 <Icon name="paperclip" size={16} />
               </button>
             </>
+          ) : hint ? (
+            <span
+              data-task-thread-hint=""
+              className="min-w-0 truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)"
+            >
+              {hint}
+            </span>
           ) : null}
           {runtime}
           <span className="flex-1" />

@@ -125,6 +125,29 @@ export function sessionAfterModelSelection<T extends { availableEfforts?: string
   return { ...session, model, availableEfforts: undefined }
 }
 
+const modelSlug = (text: string) =>
+  text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+
+/** The offered entry a runtime-reported concrete id names (`claude-haiku-5-5` for `haiku`, "Haiku 5.5"); else the id itself. */
+export function catalogModelFor(
+  reported: string,
+  catalog: RuntimeModelCatalog | undefined,
+  offered: readonly string[]
+): string {
+  if (offered.includes(reported)) return reported
+  const id = modelSlug(reported)
+  const entry = catalog?.models.find((model) => {
+    if (!offered.includes(model.id)) return false
+    if (modelSlug(model.id.replace(/\[[^\]]*\]$/, '')) === id) return true
+    const name = model.name === undefined ? '' : modelSlug(model.name)
+    return name !== '' && (id === name || id.endsWith(`-${name}`))
+  })
+  return entry?.id ?? reported
+}
+
 /** Everything a composer's runtime picker shows for a session: the model and its choices, effort, approval mode and fast mode. */
 export function runtimePickerState({
   session,
@@ -164,15 +187,16 @@ export function runtimePickerState({
     strategyModelSource(owningDaemon, owner && !owningDaemon.pool ? agentStrategyValue(owner) : undefined)
   const runtimeProfile = modelSource?.runtimeModels.find((profile) => profile.runtime === agentRuntime)
   const runtimeCatalog = runtimeProfile?.modelCatalog ?? undefined
+  const pgModels = session.availableModels ?? runtimeProfile?.models ?? []
+  const reportedModel = session.model && catalogModelFor(session.model, runtimeCatalog, pgModels)
   const pgModel =
     selection?.model ??
     (beforeFirstTurn
-      ? session.model || owner?.model || preferredModelFor(modelSource, agentRuntime)
-      : (session.model ?? ''))
+      ? reportedModel || owner?.model || preferredModelFor(modelSource, agentRuntime)
+      : (reportedModel ?? ''))
   // A resolved runtime that reported no concrete model ran its own default; the picker names that entry.
   const pgShownModel =
     pgModel || (!runtimeUnresolved && runtimeDefaultModel(owningDaemon, agentRuntime) ? 'default' : '')
-  const pgModels = session.availableModels ?? runtimeProfile?.models ?? []
   const pgModelOptions =
     pgModels.length > 0 && pgModel && !pgModels.includes(pgModel) ? [pgModel, ...pgModels] : pgModels
   const pickerSource = beforeFirstTurn
@@ -187,7 +211,7 @@ export function runtimePickerState({
     agentRuntime,
     owningDaemon,
     pgModel,
-    session.model,
+    reportedModel,
     session.availableEfforts
   )
   const pgEffort = displayedEffort(
@@ -229,7 +253,7 @@ export function runtimePickerState({
   // The local pick first: an idle adopted session reports no status frame, so the switch would read stale.
   const pgFastMode = selection?.fast ?? session.fastMode ?? owner?.fastMode ?? false
   const pgFastModeAvailable =
-    (pgModel === session.model ? session.fastModeAvailable : undefined) ??
+    (pgModel === reportedModel ? session.fastModeAvailable : undefined) ??
     fastModeAvailableFor(agentRuntime, selectedModelCapability)
   return {
     modelSource,

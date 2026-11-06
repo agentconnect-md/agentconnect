@@ -143,6 +143,39 @@ that allows a second participant. Slack's own thread participation rules are unc
   to it in its thread, it answers there, and it reports nothing to the coordinator. The page wording
   (`PAGE_TASK_APPEND`) stays for legacy page tasks.
 
+### 4.3 As implemented (PR 5)
+
+- **Keying.** `prepareTurn` still recognizes a coordinator conversation by `coordinatorCoordinate`, then
+  asks the daemon's `keyWebchatCoordinatorMessage` where the message goes. It shares
+  `threadTaskSession` with `autoCoordinateFor`, so a reply in a thread a task holds keys on the task's
+  session and anything else stays on the coordinator. Webchat has no integration from which `keySession`
+  could read a mode, so the call is made at turn preparation instead.
+- **A held thread's reply** runs as the browser's own turn on the task. `PreparedChatTurn.answersIn`
+  names the thread, and the turn's `output`, `done` and committed posts carry it as `thread`. The
+  coordinator's turns carry no `thread`: they stay in the main timeline (§6.1). No turn in a
+  coordinator conversation takes the browser's per-turn runtime or worktree (`coordinated`).
+- **A task the coordinator opens or hands a message to** has no browser turn. It runs with a post-only
+  context (`WebchatTransport.webchatThreadContext`) and posts each answer with `initiator: 'agent'`
+  and the thread, as an agent wake does. Its inbox row replays with the same context.
+  `postAgentWakeInbound` never re-posts a person's message.
+- **Opened with the thread.** A new task's session reads the rows on its thread as any session does.
+  On a webchat task's first round, the replay also keeps the agent's own rows (`ownRowsAsContext`),
+  so the coordinator's earlier answers are context too, under the agent's name. A Slack task's
+  opening is unchanged.
+- **`replyToMessage`** posts in `answerThreadOf(msg)` and records the row there. A report whose
+  thread is not a root's postId is still answered at the root.
+- **`threadless`** is now `platform === 'webchat'` without a `thread`. Only a message without a
+  post, such as an MCP app's `ui/message`, still opens a page task.
+- **Legacy page tasks** (§10). A message handed to one moves to its page, and the link card is posted
+  in the message's thread. A reply in a thread such a task holds keys on its session, off the
+  conversation's channel (`sessionChannel`).
+- **Prompt.** The webchat form describes a conversation with threads; the threadless form is gone,
+  so PR 14 removes only the page-task branch and link cards. `webchat-thread-follow-up` joins the
+  coordinator probe (auto-session-mode.md §12).
+- **Feature.** The daemon advertises `webchat-threads-v1` with `session-mode-auto-v1`.
+- **Until PR 11**, the console ignored `thread` on posts and drew a task's answers in the main
+  timeline, with the task's card from `openedForMessageId` under the coordinator turn (§6.1).
+
 ## 5. Recording
 
 ### 5.1 Webchat posts join the channel record with a thread
@@ -163,6 +196,26 @@ that allows a second participant. Slack's own thread participation rules are unc
   `inThread`, `replyThreadOf` and `platformMessageIdOf` give webchat the answers they give Slack, and
   `threadless` returns false for a threaded daemon.
 
+As implemented (PR 4):
+
+- Only a coordinator conversation's turns get a `thread` and the per-post `msgId`. An ordinary
+  conversation keeps `msgId: webchat:<conv>`, no `thread`, and its rows on `webchat:<conv>`, so its
+  session key never moves.
+- `threadForPlatformMessage` matches a row by its `ts` or its webchat `postId`. A `thread` is a root
+  when its row's recorded thread is the post itself or the literal `webchat:<conv>`.
+- The rows a turn writes follow the message's thread through the turn plan's `statusThread`, as on
+  Slack. This covers the coordinator's streamed answer, its tool rows and its cards. They stay admitted
+  into the coordinator's session, so `session/history` is unchanged. Readers tell coordinator turns
+  apart by that admission (§6.1, §6.2), except the coordinator's own posts in a thread, which carry the
+  same admission and are marked instead (§5.3, PR 7).
+- Until `threadless` flips (PR 5), `answerThreadOf` still answers a webchat message at the root, and
+  `replyToMessage` reports `at: 'root'`. A reply in a thread already reaches the coordinator with its
+  `thread` named (§4).
+- A session-targeted continuation (`targetSessionId`) that names a `thread` is refused
+  `unknown_thread` unless the targeted task holds that thread (§6.3, PR 9).
+- Peers' `context` copies stay on `webchat:<conv>`, because a coordinator conversation has no other
+  participants (§4.1).
+
 ### 5.2 Task coordinates
 
 A coordinator task opened for a webchat message is keyed like a Slack threaded task: channel
@@ -180,6 +233,25 @@ agents, at most a few), the holding task's session id, title and state, and whet
 running in the thread. `repliesOf` (`packages/daemon/src/cp/assistant-activity.ts`) already counts a
 task's replies; the summary generalizes it from "a task's" to "a thread's", so an unowned thread (a
 coordinator answer and its follow-ups) has a footer too. Nothing new is stored on the Control Plane.
+
+As implemented (PR 7):
+
+- **A thread** is named by a root text row whose `ts` or webchat `postId` it is, the same test the
+  retention rule (§5.5) and `isRoot` use. A row recorded on a thread its root names is a reply in that
+  thread; a row whose thread is its own, absent, or names no recorded root is at the root, which keeps a
+  legacy `webchat:<conv>` row a root.
+- **The thread record a session reads** is the root and the thread's rows, without the reading
+  session's own turns (rows its agent sent that were admitted into it, unless the session's coordinate
+  is the thread, as a task's is) and without other agents' work rows. People's replies, the
+  coordinator's posts in the thread, the holding task's turns and observations are in it.
+- **The coordinator's posts in a thread** (`replyToMessage`, a legacy link card) carry
+  `UserTurnBody.threadPost`, since they share the coordinator's admission with its turns.
+  `postWebchatAgentMessage` sets it whenever it posts in a thread.
+- **The summary** (`SessionThreadSummary`) carries the root's excerpt, the reply count, `lastReplyAt`,
+  the latest reply's author and excerpt, up to five repliers newest first, the holding task's session
+  id, title and state from the task index, and `running` while the task's session is prompting. Its
+  content is filtered by the CP for a task the viewer may not read (§7.1, PR 8). `repliesOf` keeps
+  counting a task's own session for the Activity view.
 
 ### 5.4 A task is recognized by the task index, not its coordinate
 
@@ -202,7 +274,16 @@ sit on `a2a:<agent>`, so they never reach it. Without it, the first task opened 
 coordinator would take the conversation's current-session pointer, which `webchat-token.ts` resumes
 on and checks content reach against, and the owner's resume would bind to a task. The rule is a pure
 function of the reported row's thread, so it does not depend on `taskParentSessionId` arriving
-first.
+first; a row that reported no thread keeps today's behaviour.
+
+On the daemon a webchat coordinator's task is a live work row of the task index holding a webchat
+thread (`webchatCoordinatorTask`, `packages/daemon/src/auto-session/webchat-task.ts`), which only a
+coordinator opens; a follow-up's checks, approved proposals and research never are. Its `page` flag
+tells a legacy page task, which keeps `PAGE_TASK_APPEND`, from a thread-keyed one, which gets the
+threaded wording through `isThreadedTask`. On the Control Plane it is a webchat session with
+`taskParentSessionId` set (`continuation-audience.ts`). A Slack threaded task also holds a thread
+and reports `taskParentSessionId`, but matches neither test, so its parent, audience, grant and
+request listing do not change.
 
 This change has no visible effect by itself and lands before the coordinator moves (§11, PR 3).
 
@@ -210,9 +291,22 @@ This change has no visible effect by itself and lands before the coordinator mov
 
 A thread record includes observations, rows no session admitted, and message-intake.md §8 sweeps
 those once the channel has 100 newer text rows, which would leave gaps in a thread panel. A thread
-in which any row was admitted into a session is exempt: its observations are kept until its newest
-admitted row is itself deleted. Threads no agent took part in are swept as today, so the growth is
-bounded by the threads agents worked in.
+in which any row was admitted into a session is exempt: its observations are kept while any of its
+rows is still admitted, and once the last admission goes with its session (message-intake.md §8
+rule 1) the thread is swept as today. Threads no agent took part in are swept as today, so the
+growth is bounded by the threads agents worked in.
+
+As implemented (PR 6):
+
+- `LocalStore.sweepObservations` skips a row whose thread is one an agent took part in: a thread
+  that a `text` row names as its own (its `ts` or webchat `postId` equals its recorded thread, as a
+  Slack or webchat root does) and that holds at least one admitted row. Both sets are computed once
+  per sweep over the conversation, so the sweep stays one pass per conversation.
+- A thread no recorded root names is swept as today. This covers a whole-room thread (a DM keyed on
+  its channel, or a constant thread such as QQ's), the literal `webchat:<conv>` of an ordinary
+  conversation or of rows written before threads, rows with no thread, and a thread whose root the
+  daemon never recorded. So the exemption never covers a whole conversation.
+- Nothing new is stored: the exemption is computed from the channel record and its admissions.
 
 ## 6. The webchat conversation page
 
@@ -232,6 +326,26 @@ bounded by the threads agents worked in.
 - Hovering a root offers **Reply in thread** beside Copy; on a phone, a tap on the footer or a
   long-press menu does.
 
+As implemented (PR 11):
+
+- **The roots view.** A webchat coordinator's page reads `session/history` with `view: 'roots'`
+  (`useSessionTranscript`'s `rootsView`) and keeps each page's `threads` by root, the newest read
+  winning; an open thread panel's own read updates its footer too. A 409 `DAEMON_FEATURE_MISSING`
+  falls back to the flat view for the rest of the visit.
+- **A person's row with `thread`** is drawn as no bubble: it ends the turn before it, and the
+  coordinator turn after it is labelled "In thread: <first words>" from the footer's `rootExcerpt`,
+  else the root's own text. A root (a person's row whose `postId` is a UUID and that has no
+  `thread`) gets `ThreadFooter` under its bubble once a summary names it. The coordinator's turn rows
+  carry `thread` too, but stay in the main timeline.
+- **`replyToMessage`** is read off the coordinator's tool row (`rawInput.action`), and its line opens
+  the row's `thread`, else the thread of the message id it names.
+- **Live steps** carry `thread` (`SessionStep.thread`): the owner's message sent in a thread, and
+  every frame and post the daemon stamps with one. The main timeline leaves them out; a coordinator
+  turn answering such a message streams there unstamped and takes the label. The typing indicator
+  stays off for a thread turn until an unstamped step shows the coordinator is answering it.
+- **No `openedForMessageId` cards** in the roots view: the root's footer carries the task. A legacy
+  link card is a post in its thread, so it shows there.
+
 ### 6.2 The thread panel
 
 - The thread opens in the side panel, replacing `TaskThreadPanel` with a general `ThreadPanel`: the
@@ -249,6 +363,42 @@ bounded by the threads agents worked in.
 - On a phone the panel is the dock's existing bottom sheet; the timeline and the thread share one
   responsive tree.
 
+As implemented (PR 10):
+
+- **`ThreadPanel`** (`dock/ThreadPanel.tsx`, formerly `TaskThreadPanel`) reads a thread's record
+  through the conversation's session when given `record: {sessionId, rootId}`
+  (`useThreadRecord`, `task-thread.ts`), and a task's own session when given only `task`, as every
+  caller does until PR 11. The holding task comes from `task` or the record's footer; it gives the
+  header, Stop, the page link, approvals and the composer, which still continues the task's session.
+  An unowned thread gets a plain header and no composer until PR 11. A footer that is not
+  `readable` gets a notice and no content, a root the session never received a notice, and a long
+  thread a "Show earlier messages" control that pages back with `cursor`.
+- **409 `DAEMON_FEATURE_MISSING`** from the thread read falls back to the task's session when the
+  panel knows the task; an unowned thread then shows a load failure.
+- **`ThreadFooter`** (`ThreadFooter.tsx`, formerly `TaskThreadCard`) draws a `ThreadFooterView`: the
+  holding task's card (state and title), then the replies line with up to five repliers, the count,
+  the last reply's time, the preview and "working…" while `running`. `footerOfSummary` builds it from
+  a `SessionThreadSummaryDto`. A held thread rests between turns, as a threaded task does. An
+  unreadable footer names "a task you can't open", shows no preview and opens nothing.
+  `TaskThreadFooter` builds the same footer from a task's row, which is how today's link and
+  `openedForMessageId` cards are drawn, so they look as before.
+- **Bindings** (`lib/api.ts`): `fetchSessionMessages(id, {view: 'roots'})` returns `threads`, and
+  `fetchSessionThreadMessages(id, rootId, {cursor | after, limit})` reads one thread.
+
+As implemented (PR 11):
+
+- **Opening.** A footer, an "In thread" label, an "Answered in the thread" line or Reply in thread
+  opens `ThreadPanel` with `record: {sessionId: <coordinator>, rootId}`, and with `task` from a
+  readable footer, so a daemon without thread reads falls back to the task's session. The page's
+  address follows the open thread (`?thread=<rootId>`, written with `router.replace`), and an
+  address it did not write opens the thread it names. `?task=<id>` still opens a legacy page task.
+  A webchat task's page shrinks to `?thread=<its session's thread>`; a page task keeps `?task=`.
+- **Auto-open** (desktop only, `threadToAutoOpen`) opens the latest thread whose first reply arrives
+  while the page is open: a root that had no replies when the page first saw it and now has some, or
+  a thread an agent starts speaking in live. Each opens once.
+- **Phones** reach Reply in thread through a long press on the root, which opens a one-item menu;
+  the footer opens the thread in the dock's bottom sheet, and nothing opens by itself.
+
 ### 6.3 Writing in a thread
 
 - **The owner** writes in any thread from the thread composer, which sends a `turn` with `thread` on
@@ -260,6 +410,46 @@ bounded by the threads agents worked in.
   the owner's alone.
 - The `targetSessionId` path otherwise stays for legacy page tasks (§10) and for continuing sessions
   of other integrations.
+
+As implemented (PR 9):
+
+- **Who.** `continuableSession` (`packages/protocol`) accepts a webchat session with
+  `taskParentSessionId`, the Control Plane's mark of a coordinator's task (§5.4). The composer, the
+  token and every dial judge it by the coordinator's audience (`continuationAudience`, PR 3), so
+  other members write once the owner publishes the coordinator. The coordinator itself, an ordinary
+  conversation and a task its coordinator released stay closed.
+- **Feature.** The Control Plane mints and verifies such a continuation only where the daemon
+  advertises `webchat-threads-v1` (`taskContinuationFeature`, which still asks a page task's daemon for
+  `task-page-messages-v1`). Without it the composer reads `unavailable`.
+- **Where.** `ChatSessionContinuation.prepare` recognizes the target by the task index
+  (`webchatCoordinatorTask`). It takes the turn's `thread`, or without one the task's own thread,
+  only when the task holds it among its webchat threads. Any other thread, an unowned one included,
+  is refused `unknown_thread`, and a closed task's session `not_found`. The message keeps the task's
+  coordinate as `sessionThread`, so it runs on the task's session, and is recorded in the thread under
+  its relay `postId`, a reply there for the thread reads (§5.3) like any other.
+- **Console-only.** As for a page task, nothing is mirrored and the answer streams to the writer's own
+  page. Its frames and posts carry no `thread`, since a task's page has no threads (§10), and nothing is
+  posted into the owner's conversation; the owner reads both in the thread.
+- **AHP** is out of scope (§12): an AHP grant still refuses a thread-keyed task, as a continued webchat
+  session that is not its conversation's current one.
+
+As implemented (PR 11):
+
+- **The owner** writes from `ThreadPanel`'s composer in any readable thread, held or not, through
+  `pgSendThread(conversationSessionId, agentId, text, rootId, conversationId)`: a `turn` with
+  `thread` on the conversation's own socket, with a draft of the thread's own, so the conversation's
+  composer, its image and its files are untouched. The panel draws the live steps stamped with its
+  thread and is busy only for a turn sent in it (`getPgTurnThread`).
+- **A thread message never steers**: one sent while a turn runs, or any message while a thread turn
+  runs, queues and goes out in turn; the conversation's composer does not list a queued thread message.
+- **Reconciling** is scoped (`liveThreadScope`): a thread's record retires its own turns, and the
+  roots view retires the root's turns and a thread message the coordinator answered.
+- **Another member** writes in a held thread through the task's session-targeted continuation, now
+  with `thread` set to the panel's root, so it lands in that thread among the task's; its steps are
+  not stamped, since the frames that answer it carry no thread.
+- **Who sees the composer**: Reply in thread and the owner's composer show only where the page's
+  reader owns the conversation, it can resume, its agent's daemon advertises `webchat-threads-v1`,
+  and the relay's `ready` frame, once read, lists it (`getPgRelayFeatures`).
 
 ## 7. A Slack coordinator's page has Slack's shape
 
@@ -309,18 +499,34 @@ same audience the whole thread, sync on or off. PR 8 adds the console's read of 
 `.oss-scanner/threat_model.md`. This answers message-intake.md §13 question 1 for
 coordinator pages.
 
+As implemented (PR 8):
+
+- **The conversation's audience** is the session read's: both routes first require that the caller
+  may view the session they read through, and re-check it after the daemon answers, as the session
+  history route does.
+- **A held thread** is a summary with `task`. Its content is shown only when the caller may view
+  `task.sessionId`, a session of the same agent (`threadReadable`, `domain/thread-read.ts`). A task
+  whose session does not exist yet, or that the CP has no row for, is read by nobody, so the check
+  fails closed while a task is starting.
+- **Without that view** a footer keeps the reply count, authors, last reply time, the task's state
+  and `running`, and loses `rootExcerpt`, the latest reply's excerpt and the task's title; it says
+  `readable: false`. The thread read answers that footer with no messages and no cursors.
+- **The row marks of the roots view are not filtered.** Every row the view returns was admitted into
+  the session being read, so the caller may already read it in the flat view.
+
 ## 8. Wire and reads
 
 | Surface                                   | Change                                                                                                            |
 | ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | Browser → relay `turn`                    | `thread?: string`                                                                                                 |
 | `RelayWebchatOp.turn`, `WebchatPost`      | `thread?: string`                                                                                                 |
-| Daemon → relay posts and streams          | The thread they answer in                                                                                         |
+| Daemon → relay posts and streams          | `thread?: string` on `WebchatPost`, `WebchatOutput` and `WebchatDone`: the thread they answer in                  |
 | Turn ack reasons                          | `unknown_thread`                                                                                                  |
 | Daemon feature                            | `webchat-threads-v1`, advertised with `session-mode-auto-v1` under `features.autoSessionMode`                     |
-| Relay → browser hello                     | Whether the relay forwards `thread`                                                                               |
+| Relay → browser hello                     | `webchat-threads-v1` in the `ready` frame's `features` once the relay forwards `thread`                           |
 | `session/history` (daemon control RPC)    | A `roots` view: roots and coordinator turns with the §5.3 summaries, paged like today                             |
 | `session/thread` (new daemon control RPC) | One thread record by `(sessionId, rootId)`, paged; authorized by §7.1                                             |
+| Daemon feature for the reads              | `session-thread-reads-v1`, static; the CP sends neither read to a daemon without it                               |
 | BFF                                       | `GET /orgs/:org/sessions/:id/messages?view=roots` and `GET /orgs/:org/sessions/:id/threads/:rootId/messages` (C2) |
 
 A task's own session keeps its four-part key, `webchat:<conv>:<rootPostId>:<agent>`, so the merged
@@ -329,9 +535,43 @@ Session lists leave tasks out by default and list them under "Show tasks" throug
 `taskParentSessionId` (product-conventions.md "Tasks"), so a task thread appears only there, as its
 own entry linked to its coordinator, never folded into the coordinator's entry.
 
+A `thread` is a root's `postId`, so the wire admits only a UUID (`WebchatThreadId`); the relay
+refuses a turn whose `thread` is malformed rather than post it at the root. The protocol names the
+feature `WEBCHAT_THREADS_FEATURE`; the daemon advertises it from PR 5, once its coordinator answers in
+threads, so the console never offers threads to a daemon that only records them.
+
+As implemented (PR 7):
+
+- **`session/history` with `view: 'roots'`** pages the session's own rows as the flat view does,
+  without the coordinator's posts in threads. Each row that is a reply in a thread carries `thread`, the
+  root's id: the coordinator's turn rows there, and the thread message the coordinator received that
+  started such a turn, which the console draws as the turn's "In thread" label rather than as a
+  message. A turn answering a root also sits on the root's thread, and starts at the root itself.
+  `threads` carries the summaries of the roots and threads the kept rows name, each counted once in the
+  frame budget; a forward page (`after`) adds up to 20 threads whose rows changed since the cursor and
+  whose root the session received. When more changed, its cursor stops before the first one left out
+  and `liveMore` is set, so the next poll reports it.
+- **`session/thread`** (`agentId` required) answers only for a root the session received, on its
+  coordinate or admitted into it; a reply's id, an unknown root or another agent's session get an empty
+  page without `summary`. It pages by event time where ids order natively, else by seq, and tails by
+  revision, as `session/history` does.
+
 The BFF routes proxy bounded transcript reads to the owning daemon and persist nothing, as the
 session history route does. Each route gets its OpenAPI `tags`, `summary`, `description` and
 `operationId`.
+
+As implemented (PR 8):
+
+- **`GET /orgs/:org/sessions/:id/messages?view=roots`** (`getSessionMessages`) passes `view: 'roots'`
+  to the daemon and returns each row's `thread` and the page's `threads`, each footer filtered by
+  §7.1 and marked `readable`. Without `view` the route is unchanged and never carries `threads`.
+- **`GET /orgs/:org/sessions/:id/threads/:rootId/messages`** (`getSessionThreadMessages`) takes
+  `cursor` or `after` and `limit` as the history route does, and returns the page with `summary`.
+  A root the session never received, or a reply's id, answers 404; so does a purged session.
+- **Feature gate.** Each read checks that the daemon about to answer advertises
+  `session-thread-reads-v1` before the frame is sent. A daemon without it is skipped for the next
+  holder of the store, and a read no holder can serve answers 409 `DAEMON_FEATURE_MISSING`, the
+  answer the shared-image read already gives.
 
 ## 9. Effect on existing agents
 
@@ -382,7 +622,7 @@ CONTRIBUTING.md. Rows 5, 9, 11, 12 and 13 change what users see and update
 | 11  | `feat`     | Webchat coordinator page: footers under roots, Reply in thread, thread composer, `?thread=`, auto-open, phones, the §6.1 labels                                    | web              | L    | 5, 10 |
 | 12  | `feat`     | Slack coordinator page in Slack's shape; the platform module's thread-shape declaration                                                                            | web              | M    | 10    |
 | 13  | `feat`     | Reply from the console in an unowned Slack thread                                                                                                                  | daemon, web      | M    | 12    |
-| 14  | `chore`    | Remove the page-task branch, link cards and the threadless prompt after the 90-day retention                                                                       | daemon, web      | M    | later |
+| 14  | `chore`    | Remove the page-task branch and link cards after the 90-day retention (PR 5 already replaced the threadless prompt)                                                | daemon, web      | M    | later |
 
 PR 3 and PRs 7, 8 and 10 can run beside PR 5. PR 5 carries the most risk: the coordinator's prompt
 and where it answers change, so it adds the coordinator scenario "a follow-up in an unowned thread"

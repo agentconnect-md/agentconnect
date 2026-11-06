@@ -464,6 +464,28 @@ describe('the one-line session header', () => {
     expect(container?.querySelector('[data-dock-tab="files"]')?.getAttribute('aria-selected')).toBe('true')
   })
 
+  it('shrinks a webchat coordinator’s task into its first thread (webchat-threads.md §6.2)', async () => {
+    const root = '6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b'
+    wire.detail = {
+      ...detail(true),
+      task: true,
+      platform: 'webchat',
+      thread: root,
+      parentSession: {
+        id: 'owner-1',
+        agentId: 'agent-1',
+        agentName: 'Ops bot',
+        platform: 'webchat',
+        title: 'Ship api 1.5',
+        subsession: false
+      }
+    }
+    await render()
+    expect(header()?.querySelector('[data-task-page-shrink]')?.getAttribute('href')).toBe(
+      `/acme/sessions/owner-1?thread=${root}`
+    )
+  })
+
   it('gives an ordinary session no way back to a coordinator, and keeps its Sessions tab', async () => {
     await render()
     const row = header()!

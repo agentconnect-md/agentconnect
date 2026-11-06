@@ -518,3 +518,6 @@ export const SESSION_MODE_AUTO_V1_FEATURE = 'session-mode-auto-v1'
 
 /** Daemon continues a delegated task's session from its console page, console-only (auto-session-mode.md §10); the CP opens a task page's composer only on a daemon with it. */
 export const TASK_PAGE_MESSAGES_FEATURE = 'task-page-messages-v1'
+
+/** Daemon answers `session/history` with `view: 'roots'` and `session/thread` (webchat-threads.md §8); the CP sends neither to a daemon without it. */
+export const SESSION_THREAD_READS_FEATURE = 'session-thread-reads-v1'

@@ -94,6 +94,8 @@ export const UserTurnBody = z.object({
   codehost: CodehostTurnFacts.optional(),
   sessionMessage: SessionMessageTurnFacts.optional(),
   /** On a coordinator's own post: the task it links to. */
-  taskLink: TaskLinkFacts.optional()
+  taskLink: TaskLinkFacts.optional(),
+  /** On a coordinator's own post in a thread: a message of that thread, not output of the turn that posted it (webchat-threads.md §6). */
+  threadPost: z.literal(true).optional()
 })
 export type UserTurnBody = z.infer<typeof UserTurnBody>

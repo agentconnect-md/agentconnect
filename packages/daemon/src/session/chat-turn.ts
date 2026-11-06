@@ -134,6 +134,8 @@ export interface ChatPost {
     attachments?: SessionImageAttachment[]
     image?: SharedImage
     taskLink?: TaskLinkFacts
+    // The root postId of the thread this post replies in; absent ⇒ a root.
+    thread?: string
   }
 }
 
@@ -153,6 +155,8 @@ export interface ChatTurnContext {
   doneSent?: boolean
   apiProtocol?: string
   evaluation?: boolean
+  // The root postId of the webchat thread the turn answers in; absent ⇒ the conversation root (webchat-threads.md §4).
+  thread?: string
 }
 
 // One execution's reply accumulator is independent of how each service transports its updates.

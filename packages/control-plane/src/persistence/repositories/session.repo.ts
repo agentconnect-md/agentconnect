@@ -56,6 +56,7 @@ import type {
 } from '../ports.js'
 import { AgentId, BotId, DaemonId, LaunchId, OrgId, SessionId } from '../../domain/ids.js'
 import { sessionKeyStr, type SessionKey } from '../../domain/sessionKey.js'
+import { takesCurrentSession } from '../../domain/webchat-current-session.js'
 import { sessionViewerSql } from './session-access-sql.js'
 
 /** Webchat conversation ids are CP-minted UUIDs; any other `channel` shape can
@@ -1086,12 +1087,8 @@ export class PgSessionRepo implements SessionRepo {
     `)
     if (rows.length !== 1) return { recorded: false, session: null, settled: [] }
     const session = toRecord(rows[0]!)
-    if (webchatConversationId) {
-      // Advance the conversation's current-session pointer (identity only —
-      // visibility stays live in the authorization predicates). The startedAt
-      // guard keeps a late re-emit from an OLDER session from stealing the
-      // pointer back after a replacement session has been installed; the row
-      // lock above orders genuinely concurrent replacement inserts.
+    if (webchatConversationId && takesCurrentSession(webchatConversationId, session.thread)) {
+      // Advance the pointer by identity alone; the startedAt guard keeps an older session's late re-emit from stealing it back.
       await tx.$executeRaw(Prisma.sql`
         UPDATE "webchat_conversation" AS c
         SET "currentSessionId" = ${session.id},

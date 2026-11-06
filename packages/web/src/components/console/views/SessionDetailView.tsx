@@ -72,6 +72,7 @@ import {
   type SessionProfileProvider,
   type SessionDetailDto,
   type SessionMessageDto,
+  type SessionThreadAuthorDto,
   type SessionRelationDto
 } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
@@ -189,14 +190,25 @@ import {
   tasksTabStatus,
   type TasksPanelVerdict
 } from '@/components/console/dock/TasksPanel'
-import { TaskThreadPanel } from '@/components/console/dock/TaskThreadPanel'
+import { ThreadPanel } from '@/components/console/dock/ThreadPanel'
 import { RunningCommandsDock } from '@/components/console/RunningCommandsDock'
 import { StateIcon, sessionState } from '@/components/console/StateIcon'
 import { TaskBrief } from '@/components/console/TaskBrief'
 import { SendButton } from '@/components/console/SendButton'
 import { SessionShareDialog, type ShareVisibility } from '@/components/console/SessionShareDialog'
 import { useIsMobile } from '@/lib/use-is-mobile'
-import { TaskThreadCard } from '@/components/console/TaskThreadCard'
+import { footerOfSummary, TaskThreadFooter, ThreadFooter } from '@/components/console/ThreadFooter'
+import { ReplyInThreadButton, ThreadRootPress } from '@/components/console/ThreadRootActions'
+import {
+  firstWords,
+  isThreadId,
+  liveReplyThreads,
+  replyToMessageThread,
+  threadAutoOpen,
+  threadToAutoOpen,
+  WEBCHAT_THREADS_FEATURE,
+  type ThreadAutoOpen
+} from '@/components/console/coordinator-threads'
 import { type TaskLink } from '@/components/console/task-link'
 import { useTasksByMessage } from '@/components/console/task-thread'
 import {
@@ -1471,6 +1483,8 @@ type Turn =
       time: string
       steps: FmtStep[]
       wake?: boolean
+      /** A coordinator turn that answered a message in a thread: that thread's root (webchat-threads.md §6.1). */
+      inThread?: string
     }
 
 type SessionParticipant = {
@@ -1975,7 +1989,9 @@ export default function SessionDetailView() {
     pgAnswerElicitation,
     pgAppRpc,
     pgCloseApp,
-    pgCancel
+    pgCancel,
+    getPgRelayFeatures,
+    getPgTurnThread
   } = usePlayground()
   const { user: viewer, me } = useProfile()
   const [copied, setCopied] = useState(false)
@@ -2254,6 +2270,9 @@ export default function SessionDetailView() {
     hasEarlier,
     pagingEarlier,
     conversationLoadedKey,
+    threadsView,
+    threads: threadSummaries,
+    putThread,
     loadEarlier: loadEarlierConversation,
     refreshTail,
     conversationSourcesRef,
@@ -2272,6 +2291,8 @@ export default function SessionDetailView() {
     conversationRosterPlatform: conversationRoster?.platform ?? undefined,
     sessionBusyRef,
     promptSessionIds,
+    // A webchat coordinator's page is roots with their threads' footers (webchat-threads.md §6.1).
+    rootsView: !MOCK_MODE && session?.coordinator === true && session.platform === 'webchat',
     reconcileLiveSteps
   })
 
@@ -2577,10 +2598,18 @@ export default function SessionDetailView() {
   const [dockTab, setDockTab] = useState<string | null>(null)
   // A closed drawer leaves its panels mounted, so the Computer viewer must hear that it is off screen and hand control back.
   const [dockVisible, setDockVisible] = useState(true)
-  // The coordinator task open in the side panel, held for the session it was opened in; expanding one opens its own page.
-  const [taskThread, setTaskThread] = useState<{ scope: string; link: TaskLink } | null>(null)
+  // The thread open in the side panel, a task's or a root's, held for the session it was opened in; expanding one opens its own page.
+  const [taskThread, setTaskThread] = useState<{
+    scope: string
+    link?: TaskLink
+    rootId?: string
+    /** Opened by Reply in thread, so its composer takes the caret. */
+    focus?: boolean
+  } | null>(null)
   const isMobile = useIsMobile()
-  const openThread = taskThread?.scope === id ? taskThread.link : null
+  const openThread = taskThread?.scope === id ? (taskThread.link ?? null) : null
+  const openRoot = taskThread?.scope === id ? (taskThread.rootId ?? null) : null
+  const threadOpen = openThread !== null || openRoot !== null
   const coordinatorPage = session?.coordinator === true
   // A task's own page, also its expanded view: a `subsession:` task, or one the CP says some session owns (a threaded task).
   const taskOwnPage = session?.subsession === true || currentSessionDetail?.task === true
@@ -2593,15 +2622,55 @@ export default function SessionDetailView() {
     filesAgentId ?? '',
     session?.coordinator && filesAgentId === session.agentId ? subsessionsSessionId : null
   )
+  // The open root is the page's `?thread=`; the param last acted on, so an address this page wrote is not read back as a new one.
+  const threadParam = coordinatorPage ? searchParams.get('thread') : null
+  const handledThreadParam = useRef<string | null>(null)
+  const setThreadParam = useCallback(
+    (rootId: string | null) => {
+      const current = new URLSearchParams(searchParams.toString())
+      if ((current.get('thread') ?? null) === rootId) return
+      handledThreadParam.current = rootId
+      if (rootId) current.set('thread', rootId)
+      else current.delete('thread')
+      router.replace(`${pathname}${current.size ? `?${current}` : ''}`, { scroll: false })
+    },
+    [pathname, router, searchParams]
+  )
   // The Tasks list and a task the coordinator opens on its own show the task in the side panel, bringing it on screen.
   const openTaskThread = useCallback(
     (link: TaskLink) => {
       setTaskThread({ scope: id, link })
       setDockTab('tasks')
       setDockReveal((n) => n + 1)
+      setThreadParam(null)
     },
-    [id]
+    [id, setThreadParam]
   )
+  // A root's thread, from its footer, its label, Reply in thread or the address.
+  const openRootThread = useCallback(
+    (rootId: string, options: { focus?: boolean; address?: boolean } = {}) => {
+      setTaskThread({ scope: id, rootId, ...(options.focus ? { focus: true } : {}) })
+      setDockTab('tasks')
+      setDockReveal((n) => n + 1)
+      if (options.address !== false) setThreadParam(rootId)
+    },
+    [id, setThreadParam]
+  )
+  const closeThread = useCallback(() => {
+    setTaskThread(null)
+    setThreadParam(null)
+  }, [setThreadParam])
+  // Acts on a change of the address only, and not on one this page wrote, which lands a render after the panel moved.
+  const seenThreadParam = useRef<string | null | undefined>(undefined)
+  useEffect(() => {
+    if (threadParam === seenThreadParam.current) return
+    seenThreadParam.current = threadParam
+    if (threadParam === handledThreadParam.current) return
+    handledThreadParam.current = threadParam
+    if (isThreadId(threadParam)) openRootThread(threadParam, { address: false })
+    // An address that no longer names a thread closes the one it named.
+    else if (!threadParam) setTaskThread((current) => (current?.rootId ? null : current))
+  }, [openRootThread, threadParam])
   // A task shrunk from its own page comes back as `?task=`: open it in the side panel once, then drop the parameter.
   const shrunkTaskId = coordinatorPage ? searchParams.get('task') : null
   useEffect(() => {
@@ -2628,6 +2697,25 @@ export default function SessionDetailView() {
     const latest = fresh[fresh.length - 1]?.taskLink
     if (latest) openTaskThread(latest)
   }, [coordinatorLive, openTaskThread, session])
+  // On a desktop, a thread whose first reply starts while the reader watches opens beside the chat (webchat-threads.md §6.2).
+  const autoOpen = useRef<{ scope: string; state: ThreadAutoOpen } | null>(null)
+  const threadsLoaded = threadsView && transcriptSessionId === sid && msgs !== null
+  useEffect(() => {
+    if (!threadsLoaded || !session || isMobile) return
+    if (autoOpen.current?.scope !== session.id) autoOpen.current = { scope: session.id, state: threadAutoOpen() }
+    const rows = (msgs ?? []).flatMap((m) =>
+      !m.thread && m.postId && (m.kind || 'text').toLowerCase() === 'text' && m.sender !== session.agentId
+        ? [{ rootId: m.postId, replies: threadSummaries.get(m.postId)?.replies ?? 0 }]
+        : []
+    )
+    const footers = [...threadSummaries.values()].map(({ rootId, replies }) => ({ rootId, replies }))
+    const next = threadToAutoOpen(
+      autoOpen.current.state,
+      [...rows, ...footers],
+      liveReplyThreads(coordinatorLive ?? [])
+    )
+    if (next) openRootThread(next)
+  }, [coordinatorLive, isMobile, msgs, openRootThread, session, threadSummaries, threadsLoaded])
   // The Files tab's `refresh-cw` action: re-reads the tree and the git status without remounting the panel, so the reader's filter and expanded folders survive it.
   const [filesRefreshTick, setFilesRefreshTick] = useState(0)
   // Reported by the panel, like the Sessions verdict: only it knows whether its first root listing has answered.
@@ -2735,7 +2823,7 @@ export default function SessionDetailView() {
               ? (computerIds.length > 0 || computerManaged !== undefined) && !MOCK_MODE
               : tab.key === 'tasks'
                 ? // Against its OWN scope (an agent and a canonical session), and dropped once settled with nothing in either group; an open thread keeps it.
-                  (openThread !== null && !MOCK_MODE) ||
+                  (threadOpen && !MOCK_MODE) ||
                   // A coordinator's header offers Tasks, so its tab stays wherever a list exists, showing the panel's empty state.
                   (taskListAvailable && (coordinatorPage || tasksTabShown(tasksVerdict)))
                 : // PR keeps its tab without one: a 404 only means no pull-request run owns this session, and the panel then draws that branch's state and the action that opens one. That state is drawn only off a git read of THIS session's worktree (`prBranchScoped`) — the focused participant's checkout must not put session A's action on screen — and only when that read found a checkout (`changed !== null` is exactly "the settled read found one"). A linked PR keeps its tab whatever the git scope is: its identity comes from the run, not from a checkout.
@@ -2767,7 +2855,7 @@ export default function SessionDetailView() {
                   : tab.key === 'tasks'
                     ? {
                         ...tab,
-                        status: openThread ? 'ready' : tasksStatus,
+                        status: threadOpen ? 'ready' : tasksStatus,
                         // Running tasks only, and omitted rather than shown as `0`: an idle session wears no pill, and neither does an untracked one, whose count is null rather than zero.
                         ...(tasksVerdict.running ? { badge: tasksVerdict.running } : {})
                       }
@@ -2790,7 +2878,7 @@ export default function SessionDetailView() {
       prVerdict.url,
       sessionsStatus,
       localizedDockTabs,
-      openThread,
+      threadOpen,
       taskListAvailable,
       tasksSessionId,
       tasksStatus,
@@ -3388,6 +3476,26 @@ export default function SessionDetailView() {
     : []
   const resumeState = isPg ? 'available' : sessionResumeState(persistedResumeMembers, placementByAgent)
   const resumeDisabled = (isWebchat && resumeState !== 'available') || continuationBlocked
+  // The owner writes in their coordinator's threads where its daemon answers in them and the relay forwards `thread` (webchat-threads.md §10).
+  const relayFeatures = threadsView ? getPgRelayFeatures(session.id) : undefined
+  const threadsWritable =
+    threadsView &&
+    isWebchat &&
+    isLive &&
+    !resumeDisabled &&
+    ownsThisConversation === true &&
+    !!owner &&
+    agentCapabilitySource(owner, daemons, memberSets)?.caps.features?.includes(WEBCHAT_THREADS_FEATURE) === true &&
+    (relayFeatures === undefined || relayFeatures.includes(WEBCHAT_THREADS_FEATURE))
+  const threadWriter = threadsWritable
+    ? { sessionId: session.id, ...(session.channelId ? { conversationId: session.channelId } : {}) }
+    : undefined
+  // The task holding the open root's thread, so a daemon without thread reads still shows its session.
+  const openRootSummary = openRoot ? threadSummaries.get(openRoot) : undefined
+  const openRootTask: TaskLink | undefined =
+    openRootSummary?.readable && openRootSummary.task?.sessionId
+      ? { sessionId: openRootSummary.task.sessionId, title: openRootSummary.task.title ?? '', how: 'opened' }
+      : undefined
   // Composer state is per-session in the provider — bind it to THIS session's id so a
   // different live conversation streaming in the background can't disable or clear it.
   const pgBusy = sessionBusy
@@ -3398,7 +3506,8 @@ export default function SessionDetailView() {
   const continuationAttachments = composerDetail?.continuationAttachments ?? null
   const attachmentsEnabled = !isContinuable || taskOwnPage || continuationAttachments !== null
   const filesEnabled = !isContinuable || taskOwnPage || continuationAttachments === 'images_and_files'
-  const pgQueue = getPgQueue(session.id)
+  // A message waiting to go out in a thread is that thread's, not the composer's.
+  const pgQueue = getPgQueue(session.id).filter((queued) => !queued.thread)
   const hasSessionWorktree =
     !!focusedAgent &&
     isGitWorkspace(focusedAgent.workspace) &&
@@ -3426,6 +3535,15 @@ export default function SessionDetailView() {
   // A `?file=` on a session with no agent to read it from has nothing to open, so the conversation stays: the viewer never renders without a checkout behind it, nor before that checkout's scope is known, nor when the link named a workspace this conversation does not have.
   const viewerOpen = viewerPath !== null && filesAgentId !== null && filesScopeReady && !linkedFocusStale
   const liveSteps = isWebchat || isContinuable ? getLiveSteps(session.id) : []
+  // A message in a thread that a task answers there keeps this timeline still; one the coordinator answers streams here.
+  const busyThread = pgBusy && threadsView ? getPgTurnThread(session.id) : undefined
+  const busyThreadTurn = busyThread
+    ? [...liveSteps].reverse().find((step) => step.kind === 'msg' && step.thread === busyThread)?.turnId
+    : undefined
+  const mainBusy =
+    pgBusy &&
+    (busyThread === undefined ||
+      liveSteps.some((step) => step.turnId === busyThreadTurn && step.kind !== 'msg' && !step.thread))
 
   // The conversation roster, for EVERY live surface — the synthetic playground and
   // a resumed (or merged) webchat conversation alike. Scoping it to the playground
@@ -3681,11 +3799,16 @@ export default function SessionDetailView() {
   const taskOwnerHref = taskOwner
     ? orgPath(`/sessions/${encodeURIComponent(taskOwner.id)}${flatView ? '?view=flat' : ''}`)
     : null
+  // A webchat coordinator's task shrinks to its first thread, a legacy page task to itself (webchat-threads.md §6.2).
+  const taskFirstThread =
+    currentSessionDetail?.platform === 'webchat' && isThreadId(currentSessionDetail.thread)
+      ? currentSessionDetail.thread
+      : null
   const taskShrinkHref = taskOwner
     ? orgPath(
         `/sessions/${encodeURIComponent(taskOwner.id)}?${new URLSearchParams({
           ...(flatView ? { view: 'flat' } : {}),
-          task: currentSessionDetail?.id ?? session.id
+          ...(taskFirstThread ? { thread: taskFirstThread } : { task: currentSessionDetail?.id ?? session.id })
         })}`
       )
     : null
@@ -3843,6 +3966,8 @@ export default function SessionDetailView() {
   // A capability card has the same two copies on a reload; the live one is what `capability_request_resolved` settles.
   const liveCapabilities = liveCapabilityIds(liveSteps)
   if (wantTranscript) {
+    // The roots view's thread message the coordinator received: no bubble here, a label on the turn that answers it.
+    let answeringThread: string | undefined
     // Real transcript: agent output carries `sender === agentId`; everything else
     // is a human/cron author. Group consecutive agent messages into one turn.
     for (const m of visibleMsgs ?? []) {
@@ -3868,6 +3993,8 @@ export default function SessionDetailView() {
       if (m.sender === session.agentId) {
         const ownerName = session.agentName ?? ''
         let last = sourceTurnKey ? botTurnByKey.get(sourceTurnKey) : turns[turns.length - 1]
+        // A hidden thread message still ends the turn before it, as its bubble would.
+        if (answeringThread !== undefined && !sourceTurnKey) last = undefined
         last = bindWakeBlock(last, { agentId: m.sender, agentName: ownerName }, sourceTurnKey)
         if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: m.sender, agentName: ownerName })) {
           last = {
@@ -3877,16 +4004,23 @@ export default function SessionDetailView() {
             agentId: m.sender,
             model: session.model ?? '',
             time: '',
-            steps: []
+            steps: [],
+            ...(answeringThread !== undefined ? { inThread: answeringThread } : {})
           }
           turns.push(last)
           if (sourceTurnKey) botTurnByKey.set(sourceTurnKey, last)
         }
-        const step = msgStep(m, toolSessionId, rowPlatform)
+        answeringThread = undefined
+        const answeredIn = threadsView ? replyToMessageThread(m) : undefined
+        const step = { ...msgStep(m, toolSessionId, rowPlatform), ...(answeredIn ? { answeredIn } : {}) }
         last.steps.push(step)
         if (last.wake) last.wake = false
         if (!last.time && step.time) last.time = step.time
       } else {
+        if (threadsView && m.thread && (m.kind || 'text').toLowerCase() === 'text' && !isBgTaskWake(m.sender)) {
+          answeringThread = m.thread
+          continue
+        }
         // Daemon background-task wakes belong to the owning agent, not to a person —
         // in a merged conversation that is the SOURCE member's agent.
         if (isBgTaskWake(m.sender)) {
@@ -3936,6 +4070,7 @@ export default function SessionDetailView() {
                       m.senderName ?? hookFallback ?? platformSenderFallback(rowPlatform, m.sender)
                     ))
             )
+        answeringThread = undefined
         pushUserTurn(senderAgent?.id ?? m.sender, {
           kind: 'user',
           key: `u:${rowAnchor(m)}`,
@@ -4062,7 +4197,13 @@ export default function SessionDetailView() {
     let steerSegment = 0
     const segmentedKey = (turnKey: string | undefined): string | undefined =>
       turnKey && steerSegment > 0 ? `${turnKey}:s${steerSegment}` : turnKey
+    // What this visit said in a thread is drawn there; a coordinator turn answering it stays here, labelled.
+    const liveThreadOf = new Map<string, string>()
     for (const stp of liveSteps) {
+      if (stp.thread) {
+        if (stp.kind === 'msg') liveThreadOf.set(stp.turnId, stp.thread)
+        continue
+      }
       if (stp.kind === 'msg') {
         if (stp.steered) steerSegment += 1
         const who = stp.who ?? session.user
@@ -4120,6 +4261,7 @@ export default function SessionDetailView() {
         let last = turnKey ? botTurnByKey.get(turnKey) : turns[turns.length - 1]
         last = bindWakeBlock(last, { agentId: stp.agentId, agentName: stepAgentName }, turnKey)
         if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: stp.agentId, agentName: stepAgentName })) {
+          const inThread = liveThreadOf.get(stp.turnId)
           last = {
             kind: 'bot',
             key: `b:${turnKey ?? liveAnchor(stp)}`,
@@ -4127,7 +4269,8 @@ export default function SessionDetailView() {
             ...(stp.agentId ? { agentId: stp.agentId } : {}),
             model: session.model ?? '',
             time: '',
-            steps: []
+            steps: [],
+            ...(inThread ? { inThread } : {})
           }
           turns.push(last)
           if (turnKey) botTurnByKey.set(turnKey, last)
@@ -4147,7 +4290,8 @@ export default function SessionDetailView() {
 
   // A coordinator's task cards, under the first turn of the coordinator after the message each task was opened for.
   const openedTaskCards = new Map<string, TaskLink[]>()
-  if (tasksByMessage.size > 0) {
+  // With threads, a root's footer carries its task instead (webchat-threads.md §6.1).
+  if (tasksByMessage.size > 0 && !threadsView) {
     // A coordinator answers a batch of messages in one turn, so every message since its last turn adds its tasks.
     let opened: TaskLink[] = []
     for (const t of turns) {
@@ -4158,6 +4302,69 @@ export default function SessionDetailView() {
       }
     }
   }
+
+  // A root's thread in the roots view, named by its postId (webchat-threads.md §6.1).
+  const rootOf = (turn: Turn): string | undefined =>
+    threadsView && turn.kind === 'user' && isThreadId(turn.messageId) ? turn.messageId : undefined
+  // A root the owner may reply under.
+  const replyRootOf = (turn: Turn): string | undefined => (threadsWritable ? rootOf(turn) : undefined)
+  const replyInThread = (rootId: string) => openRootThread(rootId, { focus: true })
+  const rootTextOf = new Map(
+    turns.flatMap((turn) => (turn.kind === 'user' && turn.messageId ? [[turn.messageId, turn.text]] : []))
+  )
+  const threadAuthorName = (author: SessionThreadAuthorDto): string => {
+    const agent = agentById.get(author.sender)
+    if (agent) return agentLabel(agent)
+    return isSelf(author.sender) ? tt('you') : (author.senderName ?? author.sender)
+  }
+  // The conversation with the thread open, which a modified click on its footer opens in a new tab.
+  const threadHref = (rootId: string): string =>
+    `${pathname}?${new URLSearchParams({ ...(flatView ? { view: 'flat' } : {}), thread: rootId })}`
+  const rootFooter = (turn: Turn) => {
+    const rootId = rootOf(turn)
+    const summary = rootId ? threadSummaries.get(rootId) : undefined
+    if (!rootId || !summary) return null
+    return (
+      <div className="mt-[3px] flex w-full justify-end">
+        <ThreadFooter
+          footer={footerOfSummary(summary)}
+          rootId={rootId}
+          href={threadHref(rootId)}
+          selected={openRoot === rootId}
+          onOpen={() => openRootThread(rootId)}
+          nameOf={threadAuthorName}
+        />
+      </div>
+    )
+  }
+  const threadLine =
+    'flex w-fit max-w-full min-w-0 cursor-pointer items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary) hover:text-(--text-secondary) hover:underline'
+  // A coordinator turn answering a thread message names the thread, and opens it.
+  const threadLabel = (rootId: string) => {
+    const root = threadSummaries.get(rootId)?.rootExcerpt ?? rootTextOf.get(rootId)
+    return (
+      <button type="button" data-turn-in-thread={rootId} onClick={() => openRootThread(rootId)} className={threadLine}>
+        <Icon name="corner-down-right" size={12} className="flex-none" />
+        <span className="min-w-0 truncate">
+          {root ? tt('inThread', { root: firstWords(root) }) : tt('inThreadBare')}
+        </span>
+      </button>
+    )
+  }
+  // A `replyToMessage` call is one line here; its answer is in the thread, whose footer previews it.
+  const answeredLines = (steps: readonly FmtStep[]) =>
+    [...new Set(steps.flatMap((step) => (step.answeredIn ? [step.answeredIn] : [])))].map((rootId) => (
+      <button
+        key={`r:${rootId}`}
+        type="button"
+        data-turn-answered-in={rootId}
+        onClick={() => openRootThread(rootId)}
+        className={threadLine}
+      >
+        <Icon name="reply" size={12} className="flex-none" />
+        {tt('answeredInThread')}
+      </button>
+    ))
 
   // The last rendered turn of each tagged agent. A busy reply lane marks ONLY
   // that turn as streaming — every earlier turn from the same agent shares its
@@ -4605,7 +4812,9 @@ export default function SessionDetailView() {
     editable: chatSettingsAllowed(owner ?? undefined) && owner?.canEdit === true
   }
   // The task whose thread is actually on screen: expanded, or in a visible side panel on its Tasks tab.
-  const taskThreadOnScreen = openThread && dockVisible && dockTabKey === 'tasks' ? openThread : null
+  const openThreadTaskId =
+    openThread?.sessionId ?? (openRoot ? threadSummaries.get(openRoot)?.task?.sessionId : undefined)
+  const taskThreadOnScreen = openThreadTaskId && dockVisible && dockTabKey === 'tasks' ? openThreadTaskId : null
   // A task's approvals are answered in its own thread, read through this conversation under the strip's rules.
   const taskApprovalScope =
     (canReviewApprovals || ownerApprovals) && session.agentId
@@ -4626,7 +4835,7 @@ export default function SessionDetailView() {
         conversationPermissions={ownerApprovals}
         proposals={conversationProposals}
         transcriptTurns={approvalTurns}
-        openTaskSessionId={taskThreadOnScreen?.sessionId ?? null}
+        openTaskSessionId={taskThreadOnScreen}
         className={className}
       />
     ) : null
@@ -5249,7 +5458,11 @@ export default function SessionDetailView() {
                           {turn.kind === 'user' ? (
                             // User turns are right-aligned bubbles; a sender label shows only when it isn't you.
                             <div className="group/turn flex items-start justify-end gap-[9px]">
-                              <div className="relative flex min-w-0 max-w-[86%] flex-col items-end gap-[3px]">
+                              <ThreadRootPress
+                                enabled={isMobile && replyRootOf(turn) !== undefined}
+                                onReply={() => replyInThread(replyRootOf(turn)!)}
+                                className="relative flex min-w-0 max-w-[86%] flex-col items-end gap-[3px]"
+                              >
                                 {showsSenderLabel(turn) && (
                                   <span className="flex items-center gap-[6px] pr-1 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)">
                                     {turn.isCron && turn.cronId ? (
@@ -5286,13 +5499,17 @@ export default function SessionDetailView() {
                                     {turn.body && <UserTurnDetails body={turn.body} platform={turn.platform} />}
                                   </div>
                                 )}
-                                {/* A sent bubble's hover copy button sits in the inter-turn gap, so revealing it never shifts the row. */}
-                                {turn.text && (
-                                  <span className="absolute right-0 top-full">
-                                    <CopyTurnButton text={turn.text} />
+                                {rootFooter(turn)}
+                                {/* A sent bubble's hover actions sit in the inter-turn gap, so revealing them never shifts the row. */}
+                                {(turn.text || replyRootOf(turn)) && (
+                                  <span className="absolute right-0 top-full flex items-center gap-1">
+                                    {replyRootOf(turn) ? (
+                                      <ReplyInThreadButton onReply={() => replyInThread(replyRootOf(turn)!)} />
+                                    ) : null}
+                                    {turn.text ? <CopyTurnButton text={turn.text} /> : null}
                                   </span>
                                 )}
-                              </div>
+                              </ThreadRootPress>
                               <ParticipantAvatar
                                 agent={turn.agent}
                                 {...(turn.agent
@@ -5322,7 +5539,7 @@ export default function SessionDetailView() {
                               const textSteps = saidSteps.filter(
                                 (s) => s.lane !== ELICIT_LANE && s.lane !== APP_LANE && s.lane !== CAPABILITY_LANE
                               )
-                              const turnInFlight = sessionTurnInFlight(pgBusy, session.statusLabel)
+                              const turnInFlight = sessionTurnInFlight(mainBusy, session.statusLabel)
                               const busyLanes = turnInFlight ? getBusyLaneAgentIds(session.id) : []
                               // The lane names the busy agent only, so only that agent's last turn streams.
                               const streaming = agentTurnStreaming({
@@ -5397,6 +5614,7 @@ export default function SessionDetailView() {
                                         : {})}
                                     />
                                     <div className="flex min-w-0 flex-col gap-[10px]">
+                                      {turn.inThread ? threadLabel(turn.inThread) : null}
                                       {/* Work happens before the answer, so the open panel sits right under the header. */}
                                       {workSteps.length > 0 && openWork && (
                                         <WorkStepList steps={workSteps} sessionId={toolSid} live={streaming} />
@@ -5452,7 +5670,7 @@ export default function SessionDetailView() {
                                           </div>
                                         ) : taskLinks[si] && turn.agentId ? (
                                           <div key={`t:${si}`}>
-                                            <TaskThreadCard
+                                            <TaskThreadFooter
                                               agentId={turn.agentId}
                                               link={taskLinks[si]}
                                               parentSessionId={
@@ -5508,13 +5726,14 @@ export default function SessionDetailView() {
                                           </div>
                                         )
                                       )}
+                                      {answeredLines(turn.steps)}
                                       {(openedTaskCards.get(turn.key) ?? [])
                                         .filter(
                                           (link) => !taskLinks.some((shown) => shown?.sessionId === link.sessionId)
                                         )
                                         .map((link) => (
                                           <div key={`o:${link.sessionId}`}>
-                                            <TaskThreadCard
+                                            <TaskThreadFooter
                                               agentId={session.agentId!}
                                               link={link}
                                               parentSessionId={subsessionsSessionId}
@@ -5599,7 +5818,7 @@ export default function SessionDetailView() {
                 {/* Playground / resumed webchat: typing indicator, starter prompts, composer. */}
                 {isLive && (
                   <>
-                    {pgBusy &&
+                    {mainBusy &&
                       (() => {
                         // Multi-agent conversations attribute the typing indicator to
                         // the participants whose reply lanes are STILL OPEN — after a
@@ -6083,8 +6302,8 @@ export default function SessionDetailView() {
         revealKey={dockReveal}
         label={t('panels')}
         onVisibleChange={setDockVisible}
-        stripHidden={dockTabKey === 'tasks' && openThread !== null}
-        widthFloor={openThread ? TASK_PANEL_MIN_WIDTH : 0}
+        stripHidden={dockTabKey === 'tasks' && threadOpen}
+        widthFloor={threadOpen ? TASK_PANEL_MIN_WIDTH : 0}
       >
         {/* Both panels stay mounted; only the active one draws. Sessions owns the verdict that sets its own tab status, and Files owns the tree, the filter and the scroll position a tab switch must not spend. */}
         <DockPanel active={dockTabKey === 'sessions'}>
@@ -6190,21 +6409,24 @@ export default function SessionDetailView() {
           ) : null}
         </DockPanel>
         <DockPanel active={dockTabKey === 'tasks'}>
-          {openThread && session.agentId ? (
-            <TaskThreadPanel
-              key={openThread.sessionId}
+          {(openThread || openRoot) && session.agentId ? (
+            <ThreadPanel
+              key={openRoot ?? openThread?.sessionId}
               agentId={session.agentId}
               agentName={session.agentName ?? ''}
               agentIcon={owner?.icon}
               agentRuntime={agentRuntime || undefined}
               agentById={agentById}
               platform={session.platform ?? ''}
-              task={openThread}
+              {...(openThread ? { task: openThread } : openRootTask ? { task: openRootTask } : {})}
+              {...(openRoot ? { record: { sessionId: session.realSessionId ?? session.id, rootId: openRoot } } : {})}
+              {...(openRoot && threadWriter ? { writer: threadWriter } : {})}
+              {...(openRoot ? { onSummary: putThread, focusComposer: taskThread?.focus === true } : {})}
               parentSessionId={session.agentId === filesAgentId ? subsessionsSessionId : null}
               {...(activeOrg && session.coordinator && webchatConversationId
                 ? { approvals: { orgId: activeOrg.id, conversationId: webchatConversationId } }
                 : {})}
-              onBack={() => setTaskThread(null)}
+              onBack={closeThread}
               {...(taskApprovalScope ? { taskApprovals: taskApprovalScope } : {})}
               runtimeContext={taskRuntimeContext}
               personPicture={(sender) =>
@@ -6214,14 +6436,14 @@ export default function SessionDetailView() {
             />
           ) : null}
           {/* Mounted under an open thread too, so its verdict keeps the tab's badge and the reader comes back to the same lists. */}
-          <div className={openThread ? 'hidden' : 'contents'}>
+          <div className={threadOpen ? 'hidden' : 'contents'}>
             {filesAgentId && tasksSessionId ? (
               <TasksPanel
                 agentId={filesAgentId}
                 sessionId={tasksSessionId}
                 delegated={subsessionsSessionId !== null}
                 coordinator={coordinatorPage}
-                active={dockTabKey === 'tasks' && !openThread}
+                active={dockTabKey === 'tasks' && !threadOpen}
                 turnActive={focusBusy}
                 refreshTick={tasksRefreshTick}
                 onVerdictChange={setTasksVerdict}

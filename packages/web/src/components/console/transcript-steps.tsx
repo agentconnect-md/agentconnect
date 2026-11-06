@@ -204,6 +204,8 @@ export interface FmtStep {
   sessionMessage?: SessionMessageTurnFacts
   // A coordinator's post that links to a task, drawn as the task's card.
   taskLink?: TaskLink
+  // A coordinator's replyToMessage call, drawn in the main timeline as one line opening the thread it answered in (webchat-threads.md §6.1).
+  answeredIn?: string
   // Present only on real-transcript tool rows that carry a captured body.
   msg?: SessionMessageDto
   // A conversation row's owning session, so a full-body read never targets the representative member.

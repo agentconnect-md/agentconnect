@@ -1387,6 +1387,34 @@ threads; at the end of each run there the coordinator hears what the task did an
 thread that requested that channel, even when the task originally opened in another thread.
 Archiving the channel closes the task.
 
+A member's console conversation with an agent, the one the home page opens, has the same shape
+where the agent's daemon has Auto on. Each message the person sends at the conversation's root
+goes to the coordinator, and its answer goes in that message's thread: a task the coordinator
+opens works there, and the coordinator's own short reply is posted there. The coordinator's turn
+itself stays in the main conversation. A reply in a thread a task holds goes to that task and is
+answered there, without the coordinator; a reply in any other thread reaches the coordinator,
+which is told which thread it sits in. A task opened on a thread reads everything said there
+before it, the coordinator's answers included. A task the coordinator opened before threads
+existed keeps its own page and its link cards until it closes.
+
+The console draws that conversation as Slack draws a channel. Under each message at the root sits
+its thread's footer: the reply count, who replied and when, a preview of the latest reply, and the
+task holding the thread with its state and title. Replies stay in their thread, out of the main
+conversation. The coordinator's turns stay in the main conversation; one that answered a reply in a
+thread says "In thread:" and the root's first words, and an answer the coordinator posted in a thread
+shows as one line, "Answered in the thread". The footer, that label, that line, or Reply in thread
+on a hovered root opens the thread beside the conversation, and the conversation's address names it
+with `?thread=`. There the owner reads the whole thread and writes in it, whether a task holds it or
+not. On a desktop, a thread whose first reply starts while the owner watches opens by itself; on a
+phone the thread opens in the bottom sheet from its footer or from a long press on the root, and
+nothing opens by itself. A task's own page shrinks back into its first thread.
+
+Once the owner publishes such a conversation, other members may write to its tasks too, from a
+task's own page or the panel of a thread the task holds: their message is a reply in the task's thread, goes to the task, and the task's
+answer streams back to them there. They cannot write at the conversation's root or in a thread no
+task holds, since those reach the coordinator, which only its owner talks to, and a task that has
+closed takes no more messages.
+
 A Code channel's Tasks tab reads the same task and runtime background-work sources as
 the console's Tasks panel. Open work stays visible, finished work is grouped and collapsed,
 and updates continue after the main reply ends while background work remains. Runtime work

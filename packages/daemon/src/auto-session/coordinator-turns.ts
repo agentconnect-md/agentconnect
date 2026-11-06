@@ -46,9 +46,9 @@ export function platformMessageIdOf(msg: MessageIdentity): string {
   return msg.transcriptPostId ?? msg.transcriptTs ?? msg.msgId.split(':').at(-1) ?? msg.msgId
 }
 
-/** Whether a message's conversation has no threads, so a task opened for it continues on its own console page (auto-session-mode.md §10). */
-export function threadless(msg: Pick<NormalizedMessage, 'platform'>): boolean {
-  return msg.platform === 'webchat'
+/** Whether a webchat message has no thread, as only a post-less console message has, so its task continues on its own page (webchat-threads.md §5.1). */
+export function threadless(msg: Pick<NormalizedMessage, 'platform' | 'thread'>): boolean {
+  return msg.platform === 'webchat' && msg.thread === undefined
 }
 
 /** Whether a room is one thread named after it, as a platform keys a room of its own (a task's place, auto-session-mode.md §6.8): it has no root to coordinate. */
@@ -71,11 +71,12 @@ export function replyThreadOf(msg: Pick<NormalizedMessage, 'thread'> & MessageId
   return msg.thread ?? platformMessageIdOf(msg)
 }
 
-/** Where an answer to a delivered entry goes: a channel message's thread, else a report's reply thread or the conversation root. */
+/** Where an answer to a delivered entry goes: a channel message's thread, the root for a threadless one, else a report's reply thread. */
 export function answerThreadOf(
   msg: Pick<NormalizedMessage, 'source' | 'thread' | 'platform'> & MessageIdentity
 ): string | undefined {
-  return msg.source === 'user' && !threadless(msg) ? replyThreadOf(msg) : msg.thread
+  if (msg.source !== 'user') return msg.thread
+  return threadless(msg) ? undefined : replyThreadOf(msg)
 }
 
 /** The message as the coordinator's batch shows it. */

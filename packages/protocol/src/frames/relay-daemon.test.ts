@@ -305,6 +305,50 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
     ).toBe(false)
   })
 
+  it('carries a webchat thread on the turn, the post and both stream frames, and only as a root postId', () => {
+    const thread = '44444444-4444-4444-8444-444444444444'
+    const turn = decodeRelayDaemonFrame(
+      envelope('rd/msg', { ...turnMsg, payload: { op: 'turn', text: 'follow-up', thread } })
+    )
+    if (!turn.ok || turn.frame.type !== 'rd/msg' || turn.frame.payload.source !== 'webchat') throw new Error('narrow')
+    expect(turn.frame.payload.payload).toMatchObject({ op: 'turn', thread })
+    expect(RelayWebchatOp.safeParse({ op: 'turn', text: 'x', thread: 'webchat:conv' }).success).toBe(false)
+    expect(RelayWebchatOp.safeParse({ op: 'turn', text: 'x', thread: '' }).success).toBe(false)
+
+    const post = {
+      postId: TURN_ID,
+      conversationId: CONV_ID,
+      author: { kind: 'agent', agentId: AGENT_ID },
+      text: 'answer',
+      at: 1,
+      thread
+    }
+    const posted = decodeRelayDaemonFrame(
+      envelope('rd/webchat-post', { conversationId: CONV_ID, agentId: AGENT_ID, post })
+    )
+    if (!posted.ok || posted.frame.type !== 'rd/webchat-post') throw new Error('narrow')
+    expect(posted.frame.payload.post.thread).toBe(thread)
+    const context = decodeRelayDaemonFrame(envelope('rd/msg', { ...turnMsg, payload: { op: 'context', post } }))
+    if (!context.ok || context.frame.type !== 'rd/msg' || context.frame.payload.source !== 'webchat') {
+      throw new Error('narrow')
+    }
+    expect(context.frame.payload.payload).toMatchObject({ op: 'context', post: { thread } })
+
+    const output = { conversationId: CONV_ID, turnId: TURN_ID, thread, index: 0, event: { kind: 'message', text: 'a' } }
+    const done = { conversationId: CONV_ID, turnId: TURN_ID, thread }
+    for (const event of [
+      { kind: 'output', output },
+      { kind: 'done', done }
+    ]) {
+      const chat = decodeRelayDaemonFrame(envelope('rd/chat', { chatId: CONV_ID, seq: 0, event }))
+      if (!chat.ok || chat.frame.type !== 'rd/chat') throw new Error('narrow')
+      expect(chat.frame.payload.event).toEqual(event)
+    }
+    expect(
+      RdChat.safeParse({ chatId: CONV_ID, seq: 0, event: { kind: 'done', done: { ...done, thread: 'x' } } }).success
+    ).toBe(false)
+  })
+
   it('decodes an rd/msg im (shared bot) inbound, pre-addressed to an agent', () => {
     const im = {
       source: 'im' as const,

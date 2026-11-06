@@ -5,8 +5,10 @@ import {
   MCP_APP_HTML_MAX_BYTES,
   MCP_APP_TEMPLATE_CHUNK_CHARS,
   McpAppRpc,
+  WebchatAck,
   WebchatOutput,
-  WebchatStatus
+  WebchatStatus,
+  WEBCHAT_THREADS_FEATURE
 } from '../index.js'
 
 const CONV = '11111111-1111-4111-8111-111111111111'
@@ -407,5 +409,12 @@ describe('McpAppRpc — the four host methods a view may reach the daemon with',
       McpAppRpc.safeParse({ method: 'ui/update-model-context', context: 'x'.repeat(MCP_APP_CONTEXT_MAX_CHARS + 1) })
         .success
     ).toBe(false)
+  })
+})
+
+describe('webchat threads (webchat-threads.md §8)', () => {
+  it('names the feature and refuses a turn on a thread the daemon cannot place', () => {
+    expect(WEBCHAT_THREADS_FEATURE).toBe('webchat-threads-v1')
+    expect(WebchatAck.parse({ accepted: false, turnId: TURN, reason: 'unknown_thread' }).reason).toBe('unknown_thread')
   })
 })

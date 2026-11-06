@@ -24,7 +24,7 @@ export interface CoordinatorPromptInput {
   /** How the platform mentions this agent, when known. */
   selfAddress?: string
   peers: readonly CoordinatorPeer[]
-  /** A member's private webchat conversation: no threads, one message a turn, and the text written is shown (§10). */
+  /** A member's private webchat conversation: one person, one message a turn, and the text written is shown (webchat-threads.md §4.2). */
   webchat?: boolean
 }
 
@@ -52,17 +52,18 @@ export interface CoordinatorMessage extends ReportAbout {
 const where = (input: { channelId: string; channelName?: string }): string =>
   input.channelName ? `#${input.channelName} (${input.channelId})` : input.channelId
 
-/** The words the prompt names its place and a task's answer with: a channel's threads, or webchat's pages. */
+/** The words the prompt names its place and a task's answer with: a channel's threads, or a private conversation's. */
 function placeWords(input: CoordinatorPromptInput) {
   return input.webchat
     ? {
         intro:
           `You coordinate the agent "${input.agentName}" in a private webchat conversation (${input.channelId}) ` +
-          'with one person. Their messages are delivered to you, one per turn.',
+          'with one person. Their messages are delivered to you, one per turn, at the conversation root or in a ' +
+          'thread under a root message, which the message names.',
         place: 'conversation',
         taskLink: 'link',
-        taskAnswers: 'on its own page, which the conversation links to',
-        replyPosts: 'in the conversation',
+        taskAnswers: "in the message's thread",
+        replyPosts: "in the message's thread",
         finalText:
           'The person reads your text as you write it, so write nothing but your calls. After them, end the turn with ' +
           `exactly ${NO_RESPONSE_SENTINEL}.`

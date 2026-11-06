@@ -102,6 +102,28 @@ describe('SessionRepo.recordMilestone — milestone-only (real Postgres)', () =>
     expect(after?.currentSessionId).toBe('acp-replacement')
   })
 
+  it('keeps the pointer on the coordinator when a task keyed on a thread lands on the conversation (webchat-threads.md §5.4)', async () => {
+    await webchatFixture()
+    const repo = new PgSessionRepo(prisma)
+    const at = (iso: string) => new Date(`2026-07-05T${iso}:00.000Z`)
+    await repo.recordMilestone({
+      ...webchatEv('acp-coordinator', 'start', at('10:00')),
+      thread: 'append:coordinator-1'
+    })
+    // A newer task row on the conversation's channel, keyed on a root's postId, with its owner already reported.
+    await repo.recordMilestone({
+      ...webchatEv('acp-task', 'start', at('10:05')),
+      thread: '11111111-1111-4111-8111-111111111111',
+      taskParentSessionId: SessionId('acp-coordinator')
+    })
+    const conversation = await prisma.webchatConversation.findUnique({ where: { id: CONVERSATION } })
+    expect(conversation?.currentSessionId).toBe('acp-coordinator')
+    // A later re-emit of the task without its thread keeps the thread recorded before, so it still takes nothing.
+    await repo.recordMilestone({ ...webchatEv('acp-task', 'end', at('10:10')), thread: undefined })
+    const after = await prisma.webchatConversation.findUnique({ where: { id: CONVERSATION } })
+    expect(after?.currentSessionId).toBe('acp-coordinator')
+  })
+
   it('tracks a member’s own pointer until it is removed, then never reinstalls one', async () => {
     await webchatFixture()
     await seedAgent(prisma, OTHER_AGENT)

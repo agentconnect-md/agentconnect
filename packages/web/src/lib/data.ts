@@ -1330,6 +1330,8 @@ export interface SessionStep {
   postId?: string
   /** A coordinator's post that links to a task, which the transcript draws as the task's card. */
   taskLink?: TaskLinkFacts
+  /** The coordinator-conversation thread this live step is in, its root's postId; absent at the root (webchat-threads.md §6). */
+  thread?: string
   /** The agent's in-band question — present only on an `elicit` step. `outcome` is absent
    *  while the card is live and set once the daemon settles it (answered, dismissed, or
    *  cancelled with the turn), which is what collapses the card in place. */

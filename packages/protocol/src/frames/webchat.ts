@@ -117,6 +117,14 @@ export const WebchatImageUpdate = z.object({
 })
 export type WebchatImageUpdate = z.infer<typeof WebchatImageUpdate>
 
+// ── Threads (webchat-threads.md) ────────────────────────────────────────────
+
+/** Daemon records and routes webchat thread replies (rides `session-mode-auto-v1`); the relay announces it in `ready` once it forwards `thread`. */
+export const WEBCHAT_THREADS_FEATURE = 'webchat-threads-v1'
+
+/** A thread is named by its root's `postId`; the relay checks only this shape, the daemon whether the root exists. */
+export const WebchatThreadId = z.string().uuid()
+
 /** Daemon and relay carry `rd/webchat-prompt-suggestion`; the relay hands it to the console as `prompt_suggestion`. */
 export const WEBCHAT_PROMPT_SUGGESTION_FEATURE = 'webchat-prompt-suggestion-v1'
 
@@ -154,7 +162,9 @@ export const WebchatAck = z.object({
       // which says no daemon serves it at all. Only this one carries `detail`.
       'start_failed',
       // The API turn's Decision gate answered no (shared-bot-relay.md §10.4).
-      'declined'
+      'declined',
+      // `thread` names no root of this coordinator conversation (webchat-threads.md §5.1).
+      'unknown_thread'
     ])
     .optional(),
   // One bounded, path-free line naming the fault, so the client can state the cause instead of
@@ -199,7 +209,9 @@ export const WebchatPost = z.object({
   // A shared image the agent published; peers keep it as transcript only, never as model input.
   image: SharedImage.optional(),
   // A coordinator's link to a task, which the console draws as a card opening the task's thread.
-  taskLink: TaskLinkFacts.optional()
+  taskLink: TaskLinkFacts.optional(),
+  // The root `postId` of the thread this post is a reply in; absent ⇒ a root.
+  thread: WebchatThreadId.optional()
 })
 export type WebchatPost = z.infer<typeof WebchatPost>
 
@@ -679,6 +691,8 @@ export const WebchatOutput = z
     // Which participant is streaming — a multi-agent conversation renders one
     // stream lane per (turnId, agentId). Absent ⇒ the conversation's sole agent.
     agentId: z.string().uuid().optional(),
+    // The thread this turn answers in; absent ⇒ the conversation root.
+    thread: WebchatThreadId.optional(),
     index: z.number().int(),
     event: WebchatEvent.optional(),
     status: WebchatStatus.optional()
@@ -699,6 +713,8 @@ export const WebchatDone = z.object({
   turnId: z.string().uuid(),
   // Which participant's turn ended (multi-agent attribution, as on WebchatOutput).
   agentId: z.string().uuid().optional(),
+  // The thread the turn answered in, as on WebchatOutput.
+  thread: WebchatThreadId.optional(),
   // Last output index emitted before this terminal marker. A reconnecting browser
   // holds `done` until it has assembled every output through this index, so an
   // early terminal frame cannot hide a gap. Optional for rolling compatibility.

@@ -46,14 +46,25 @@ function promptKey(text: string, image?: SessionImage): string {
   ])
 }
 
-/** Retire streamed work after its prompt and any reply posts are confirmed. */
+/** Which live steps a read of one place reconciles: the root's (`thread` absent) or one thread's (webchat-threads.md §6). */
+export function liveThreadScope(live: readonly SessionStep[], thread?: string): (step: SessionStep) => boolean {
+  // A thread message the coordinator answered is the root's turn: its reply streams into the main timeline.
+  const answeredAtRoot = new Set(live.flatMap((step) => (step.kind !== 'msg' && !step.thread ? [step.turnId] : [])))
+  const rootTurn = (step: SessionStep) => !step.thread || (step.kind === 'msg' && answeredAtRoot.has(step.turnId))
+  return thread === undefined ? rootTurn : (step) => step.thread === thread && !rootTurn(step)
+}
+
+/** Retire streamed work after its prompt and any reply posts are confirmed; steps outside `inScope` stay as they are. */
 export function reconcilePersistedLiveSteps(
-  live: SessionStep[],
+  all: SessionStep[],
   persisted: SessionMessageDto[],
   agentId: string,
-  promptRows: SessionMessageDto[] = persisted
+  promptRows: SessionMessageDto[] = persisted,
+  inScope: (step: SessionStep) => boolean = () => true
 ): SessionStep[] {
-  if (live.length === 0) return live
+  if (all.length === 0) return all
+  const live = all.filter(inScope)
+  if (live.length === 0) return all
 
   const persistedPostIds = new Set(persisted.flatMap((m) => (m.postId ? [m.postId] : [])))
   const turns: Array<{ start: number; end: number; key: string; observedAtMs: number }> = []
@@ -121,9 +132,12 @@ export function reconcilePersistedLiveSteps(
     }
     for (let step = turn.start; step < turn.end; step++) anchored.add(step)
   }
-  const result = live.flatMap((step, index) => {
+  let index = -1
+  const result = all.flatMap((step) => {
+    if (!inScope(step)) return [step]
+    index += 1
     if (removed.has(index) || (!anchored.has(index) && step.postId && persistedPostIds.has(step.postId))) return []
     return hidden.has(index) && !step.hidden ? [{ ...step, hidden: true }] : [step]
   })
-  return result.every((step, index) => step === live[index]) && result.length === live.length ? live : result
+  return result.every((step, i) => step === all[i]) && result.length === all.length ? all : result
 }

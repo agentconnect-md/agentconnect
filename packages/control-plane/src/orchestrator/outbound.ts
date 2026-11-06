@@ -71,6 +71,8 @@ import {
   SharedImageResolveOk,
   SharedImageResolveReq,
   SessionHistoryPage,
+  SessionThreadReq,
+  SessionThreadPage,
   SessionToolBodyReq,
   SessionToolBodyChunk,
   WorkspaceListReq,
@@ -670,6 +672,12 @@ export class ControlSender {
   async sessionHistory(daemonId: string, orgId: string, req: SessionHistoryReq): Promise<SessionHistoryPage> {
     const c = this.must(daemonId)
     return c.conn.request<SessionHistoryPage>('session/history', req, { epoch: c.sessionEpoch }, undefined, orgId)
+  }
+
+  /** Pull one page of a thread's record through a session that received its root (REQ → `session/thread/page`); org explicit as for history. */
+  async sessionThread(daemonId: string, orgId: string, req: SessionThreadReq): Promise<SessionThreadPage> {
+    const c = this.must(daemonId)
+    return c.conn.request<SessionThreadPage>('session/thread', req, { epoch: c.sessionEpoch }, undefined, orgId)
   }
 
   /** Resolve one shared image's original on a daemon holding the session (REQ → `image/original/resolve/ok`); org explicit as for history. */
