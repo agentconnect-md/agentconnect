@@ -5,7 +5,12 @@ import { useEffect, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { fetchComputer, fetchComputers, type ComputerDto } from '@/lib/api'
 import { agentOwnComputers } from '@/lib/computers'
-import { ComputerViewerScreen, type ComputerViewerProps } from '@/components/console/ComputerViewer'
+import {
+  ComputerViewerScreen,
+  DesktopPicker,
+  shownDesktop,
+  type ComputerViewerProps
+} from '@/components/console/ComputerViewer'
 import { Button, Icon } from '@/components/ui'
 
 export interface ComputerPanelProps {
@@ -13,6 +18,8 @@ export interface ComputerPanelProps {
   computerIds: readonly string[]
   // Set when the agent takes a managed computer from the pool: its own kept one, or this session's fresh one (§15.1).
   managed?: { agentId: string; sessionId: string | null }
+  // The focused agent, whose own desktop the panel shows first on a Computer with per-agent desktops (§3.9).
+  agentId?: string | null
   // The screen streams only while the tab is shown.
   active: boolean
   createSession?: ComputerViewerProps['createSession']
@@ -28,11 +35,13 @@ const managedOf = (all: readonly ComputerDto[], agentId: string, sessionId: stri
     (c) => c.allocation === 'per-agent' || (sessionId !== null && c.poolSessionId === sessionId)
   )
 
-export function ComputerPanel({ computerIds, managed, active, createSession }: ComputerPanelProps) {
+export function ComputerPanel({ computerIds, managed, agentId, active, createSession }: ComputerPanelProps) {
   const t = useTranslations('Sessions.detail')
   const tv = useTranslations('Computers.viewer')
   const [computers, setComputers] = useState<ComputerDto[] | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
+  // null until someone picks: the agent's own desktop, else the main one.
+  const [chosenDesktop, setChosenDesktop] = useState<string | null>(null)
   const [watching, setWatching] = useState(false)
   const key = computerIds.join(',')
   const managedAgentId = managed?.agentId ?? null
@@ -78,6 +87,9 @@ export function ComputerPanel({ computerIds, managed, active, createSession }: C
     }
   }, [key, managedAgentId, managedSessionId, active])
 
+  // Focusing another agent starts again on that agent's own desktop.
+  useEffect(() => setChosenDesktop(null), [agentId])
+
   // Leaving the tab stops the stream, so a hidden panel spends no bandwidth.
   useEffect(() => {
     if (!active) setWatching(false)
@@ -87,6 +99,8 @@ export function ComputerPanel({ computerIds, managed, active, createSession }: C
   if (computers.length === 0) return <div className={NOTE}>{t(managed ? 'computerOnDemand' : 'computerNone')}</div>
   const computer = computers.find((candidate) => candidate.id === selected) ?? computers[0]!
   const watchable = computer.status !== 'revoked' && computer.status !== 'offline'
+  const own = agentId ? computer.desktops?.find((candidate) => candidate.agentId === agentId)?.id : undefined
+  const desktop = shownDesktop(computer, chosenDesktop ?? own ?? 'main')
 
   return (
     <div className="flex min-h-0 flex-col" data-computer-panel>
@@ -99,6 +113,7 @@ export function ComputerPanel({ computerIds, managed, active, createSession }: C
             value={computer.id}
             onChange={(event) => {
               setSelected(event.target.value)
+              setChosenDesktop(null)
               setWatching(false)
             }}
           >
@@ -113,6 +128,7 @@ export function ComputerPanel({ computerIds, managed, active, createSession }: C
             {computer.name}
           </span>
         )}
+        {computer.desktops && <DesktopPicker computer={computer} value={desktop} onChange={setChosenDesktop} />}
         <span className="font-mono text-[11px] font-medium leading-normal text-(--text-tertiary)">
           {computer.status}
         </span>
@@ -130,8 +146,9 @@ export function ComputerPanel({ computerIds, managed, active, createSession }: C
       </div>
       {watching && active ? (
         <ComputerViewerScreen
-          key={computer.id}
+          key={`${computer.id}/${desktop}`}
           computer={computer}
+          desktop={desktop}
           compact
           {...(createSession ? { createSession } : {})}
         />

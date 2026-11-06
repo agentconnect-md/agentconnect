@@ -5981,6 +5981,7 @@ export default function SessionDetailView() {
           {computerIds.length > 0 || computerManaged ? (
             <ComputerPanel
               computerIds={computerIds}
+              agentId={filesAgentId}
               {...(computerManaged ? { managed: computerManaged } : {})}
               active={dockVisible && dockTabKey === 'computer'}
             />

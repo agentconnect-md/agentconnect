@@ -28,7 +28,7 @@ import { useAgentName, useMemberName } from '@/components/console/computer-membe
 import { ComputerActivityCard, ComputerDoctorCard } from '@/components/console/ComputerCards'
 import { ComputerPolicyCard } from '@/components/console/ComputerPolicyCard'
 import { ComputerAgentAccessCard } from '@/components/console/ComputerAgentAccessCard'
-import { ComputerViewerCard } from '@/components/console/ComputerViewer'
+import { ComputerViewerCard, shownDesktop } from '@/components/console/ComputerViewer'
 import { LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 
@@ -105,6 +105,8 @@ function ComputerDetail({
   const [editingVisibility, setEditingVisibility] = useState(false)
   const showActivity = computer.canEditPolicy
   const asked = search?.get('tab')
+  // The desktop the viewer shows (computer-use.md §3.9); its lease and line are the ones beside the screen.
+  const [chosenDesktop, setChosenDesktop] = useState('main')
   const [tab, setTab] = useState<Tab>(asked === 'policy' || (asked === 'activity' && showActivity) ? asked : 'overview')
   const changeTab = (next: Tab) => {
     setTab(next)
@@ -143,8 +145,10 @@ function ComputerDetail({
 
   const seen = computer.lastSeenAt ? ago(computer.lastSeenAt) : t('never')
   const display = computer.capabilities.displays[0]
-  const lease = computer.lease ?? null
-  const waiting = computer.waiting ?? []
+  const desktop = shownDesktop(computer, chosenDesktop)
+  const agentDesktop = computer.desktops?.find((candidate) => candidate.id === desktop)
+  const lease = agentDesktop ? agentDesktop.lease : (computer.lease ?? null)
+  const waiting = agentDesktop ? agentDesktop.waiting : (computer.waiting ?? [])
 
   const stopButton = canStop ? (
     <Button
@@ -378,7 +382,7 @@ function ComputerDetail({
       {tab === 'overview' && (
         <div className="flex flex-wrap items-start gap-4">
           <div className="flex min-w-0 flex-[1.55_1_460px] flex-col gap-4">
-            <ComputerViewerCard computer={computer} control={control} />
+            <ComputerViewerCard computer={computer} control={control} desktop={desktop} onDesktop={setChosenDesktop} />
             <ComputerDoctorCard computer={computer} />
           </div>
           <div className="flex min-w-0 flex-[1_1_300px] flex-col gap-4">

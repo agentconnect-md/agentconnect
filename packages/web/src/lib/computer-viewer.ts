@@ -57,6 +57,8 @@ interface StatsSample {
 export interface ViewerDeps {
   grant: () => Promise<ComputerViewerGrantDto>
   computerId: string
+  // An agent desktop to watch (computer-use.md §3.9); absent or `main`, the main desktop.
+  desktop?: string
   onState: (state: ViewerState) => void
   // Where the WebRTC stream is shown; read when the track arrives.
   video: () => HTMLVideoElement | null
@@ -210,7 +212,9 @@ export class ComputerViewerSession {
   // ---- relay calls ----
 
   private base(index = this.relayIndex): string {
-    return relayComputerViewBase(this.grant!.relays[index]!, this.deps.computerId)
+    const base = relayComputerViewBase(this.grant!.relays[index]!, this.deps.computerId)
+    const desktop = this.deps.desktop
+    return desktop && desktop !== 'main' ? `${base}/d/${encodeURIComponent(desktop)}` : base
   }
 
   /** One viewer API call; tries the next relay only when the desktop is not attached to this one or it is unreachable. */

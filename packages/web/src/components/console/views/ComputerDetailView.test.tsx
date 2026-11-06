@@ -323,6 +323,34 @@ describe('ComputerDetailView', () => {
     })
   })
 
+  it("picks an agent desktop and shows that desktop's holder and line beside the screen (§3.9)", () => {
+    const at = new Date().toISOString()
+    const el = render(
+      computer({
+        lease: null,
+        waiting: [],
+        desktops: [
+          {
+            id: 'd1',
+            agentId: 'a1',
+            status: 'busy',
+            lease: { sessionId: 's1', agentId: 'a1', agentName: 'ops', acquiredAt: at },
+            waiting: [{ sessionId: 's2', agentId: 'a1', since: at }]
+          }
+        ]
+      })
+    )
+    const picker = el.querySelector<HTMLSelectElement>('[data-desktop-picker]')!
+    expect([...picker.options].map((option) => option.textContent)).toEqual(['Main desktop', "ops's desktop"])
+    expect(el.querySelector('[data-computer-viewer]')!.textContent).toContain('No agent has control')
+    act(() => {
+      picker.value = 'd1'
+      picker.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    expect(el.querySelector('[data-lease-holder="a1"]')!.textContent).toContain('ops has control')
+    expect(el.querySelector('[data-lease-waiting]')!.textContent).toBe('1 waiting')
+  })
+
   it('wakes an agent’s sleeping desktop and resets it only after confirmation', async () => {
     const asleep = computer({
       kind: 'managed',

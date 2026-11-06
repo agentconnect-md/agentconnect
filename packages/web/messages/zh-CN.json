@@ -7031,6 +7031,11 @@
       "stats": {
         "roundTrip": "来自电脑的视频的帧率、码率和往返延迟",
         "frameTime": "截图频率、码率和拉取一张截图的耗时"
+      },
+      "desktop": {
+        "pick": "桌面",
+        "main": "主桌面",
+        "agent": "{agent} 的桌面"
       }
     },
     "allAgents": "所有 Agent",

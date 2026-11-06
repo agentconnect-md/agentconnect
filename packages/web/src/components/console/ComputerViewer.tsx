@@ -15,6 +15,7 @@ import { createPortal } from 'react-dom'
 import { useTranslations } from 'next-intl'
 import { openComputerViewer, type ComputerDto } from '@/lib/api'
 import { useAgo } from '@/lib/computers'
+import { useAgentName } from '@/components/console/computer-members'
 import {
   ComputerViewerSession,
   keyToInput,
@@ -36,8 +37,45 @@ export function formatStats({ fps, kbps, latencyMs }: ViewerStats): string {
 }
 const BUTTONS = ['left', 'middle', 'right'] as const
 
+/** Which of a Computer's desktops to watch (computer-use.md §3.9); mount it only for a Computer that reports desktops. */
+export function DesktopPicker({
+  computer,
+  value,
+  onChange
+}: {
+  computer: ComputerDto
+  value: string
+  onChange: (desktop: string) => void
+}) {
+  const t = useTranslations('Computers.viewer')
+  const agentName = useAgentName()
+  if (!computer.desktops) return null
+  return (
+    <select
+      className="inp w-auto min-w-0 max-w-[220px] flex-none"
+      aria-label={t('desktop.pick')}
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      data-desktop-picker
+    >
+      <option value="main">{t('desktop.main')}</option>
+      {computer.desktops.map((desktop) => (
+        <option key={desktop.id} value={desktop.id}>
+          {t('desktop.agent', { agent: agentName(desktop.agentId, desktop.lease?.agentName) })}
+        </option>
+      ))}
+    </select>
+  )
+}
+
+/** The desktop to show: the chosen one while the Computer still runs it, else the main one. */
+export const shownDesktop = (computer: ComputerDto, chosen: string): string =>
+  chosen !== 'main' && computer.desktops?.some((desktop) => desktop.id === chosen) ? chosen : 'main'
+
 export interface ComputerViewerProps {
   computer: ComputerDto
+  // An agent desktop to watch (computer-use.md §3.9); absent or `main`, the main desktop.
+  desktop?: string
   // Injected by tests; the console opens a real session.
   createSession?: (deps: ConstructorParameters<typeof ComputerViewerSession>[0]) => ComputerViewerSession
 }
@@ -45,10 +83,14 @@ export interface ComputerViewerProps {
 export function ComputerViewerCard({
   computer,
   createSession,
-  control
+  control,
+  desktop = 'main',
+  onDesktop
 }: ComputerViewerProps & {
   // Who has control of the desktop, beside the title.
   control?: ReactNode
+  // Choosing another desktop; without it the picker is not shown.
+  onDesktop?: (desktop: string) => void
 }) {
   const t = useTranslations('Computers.viewer')
   const ago = useAgo()
@@ -70,6 +112,7 @@ export function ComputerViewerCard({
     <div className="card overflow-hidden max-desktop:rounded-lg" data-computer-viewer>
       <div className="cardhead gap-2">
         <span className="cardtitle flex-none">{t('title')}</span>
+        {onDesktop && computer.desktops && <DesktopPicker computer={computer} value={desktop} onChange={onDesktop} />}
         <span className="ml-[6px] flex min-w-0 flex-1 items-center gap-[6px] truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
           {control}
         </span>
@@ -91,7 +134,12 @@ export function ComputerViewerCard({
         )}
       </div>
       {open ? (
-        <ComputerViewerScreen computer={computer} {...(createSession ? { createSession } : {})} />
+        <ComputerViewerScreen
+          key={desktop}
+          computer={computer}
+          desktop={desktop}
+          {...(createSession ? { createSession } : {})}
+        />
       ) : (
         <div className="flex aspect-[16/10] flex-col items-center justify-center gap-[10px] bg-[#15111a] px-6">
           <Icon name={idle.icon} size={26} color="#6f6779" />
@@ -113,7 +161,12 @@ export interface ComputerViewerScreenProps extends ComputerViewerProps {
   compact?: boolean
 }
 
-export function ComputerViewerScreen({ computer, createSession, compact = false }: ComputerViewerScreenProps) {
+export function ComputerViewerScreen({
+  computer,
+  createSession,
+  compact = false,
+  desktop = 'main'
+}: ComputerViewerScreenProps) {
   const t = useTranslations('Computers.viewer')
   const [expanded, setExpanded] = useState(false)
   const video = useRef<HTMLVideoElement>(null)
@@ -136,7 +189,8 @@ export function ComputerViewerScreen({ computer, createSession, compact = false 
   useEffect(() => {
     const deps = {
       computerId: computer.id,
-      grant: () => openComputerViewer(computer.id),
+      ...(desktop !== 'main' ? { desktop } : {}),
+      grant: () => openComputerViewer(computer.id, desktop),
       onState: setState,
       video: () => video.current
     }
@@ -147,7 +201,7 @@ export function ComputerViewerScreen({ computer, createSession, compact = false 
       created.stop()
       session.current = null
     }
-  }, [computer.id, createSession])
+  }, [computer.id, desktop, createSession])
 
   const status = state?.status ?? null
   const inControl = status?.inControl ?? false
