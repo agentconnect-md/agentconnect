@@ -171,6 +171,7 @@ import {
   type TasksPanelVerdict
 } from '@/components/console/dock/TasksPanel'
 import { TaskThreadPanel } from '@/components/console/dock/TaskThreadPanel'
+import { RunningCommandsDock } from '@/components/console/RunningCommandsDock'
 import { TaskExpandedView } from '@/components/console/dock/TaskExpandedView'
 import { useIsMobile } from '@/lib/use-is-mobile'
 import { TaskThreadCard } from '@/components/console/TaskThreadCard'
@@ -5390,6 +5391,9 @@ export default function SessionDetailView() {
                           ))}
                         </div>
                       )}
+                      {taskListAvailable && filesAgentId && tasksSessionId ? (
+                        <RunningCommandsDock agentId={filesAgentId} sessionId={tasksSessionId} turnActive={focusBusy} />
+                      ) : null}
                       {/* Composer card (design "achero"): textarea on top, a toolbar row below
                   the divider — attach · model pill (fast toggle in its menu) · effort ·
                   permission · context ring · send. Tokens/cost live in the header's

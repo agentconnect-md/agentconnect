@@ -28,8 +28,9 @@ import {
 import type { TaskLink } from '@/components/console/task-link'
 import { useDockExpand } from '@/components/console/dock/SessionDock'
 import { fetchSessionDetail } from '@/lib/api'
+import { RunningCommandsDock } from '@/components/console/RunningCommandsDock'
 import { agentToneColor } from '@/lib/agent-tone'
-import { agentLabel, type Agent, type DaemonRow } from '@/lib/data'
+import { agentLabel, MOCK_MODE, type Agent, type DaemonRow } from '@/lib/data'
 import { TaskRuntimePicker } from '@/components/console/dock/TaskRuntimePicker'
 import { sessionAttributionAgentAuthors, sessionAttributionAgentId } from '@/lib/session-trigger'
 import { CONSOLE_SWR_CONFIG } from '@/lib/console-swr'
@@ -413,6 +414,7 @@ export function TaskThreadPanel({
             />
           ) : null
         }
+        dock={MOCK_MODE ? null : <RunningCommandsDock agentId={agentId} sessionId={id} turnActive={busy} />}
       />
     </div>
   )
@@ -653,7 +655,8 @@ function ThreadComposer({
   onSend,
   setDraft,
   onFocus,
-  runtime
+  runtime,
+  dock
 }: {
   sessionId: string
   canReply: boolean
@@ -668,17 +671,21 @@ function ThreadComposer({
   onFocus?: () => void
   /** The task's runtime picker, beside the send button. */
   runtime?: ReactNode
+  /** What the task runs in the background, docked over the box. */
+  dock: ReactNode
 }) {
   const draft = usePgDraft(sessionId)
   const hasText = usePgDraftHasText(sessionId)
   if (!canReply && !checking)
     return (
       <div className="flex-none border-t border-(--border-subtle) px-4 py-3 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+        {dock}
         {readOnly}
       </div>
     )
   return (
     <div className="flex-none border-t border-(--border-subtle) px-3 pt-[10px] pb-3">
+      {dock}
       <div className="flex flex-col rounded-[10px] border border-(--border-default) bg-(--surface-card) shadow-(--shadow-xs) transition-[border-color,box-shadow] focus-within:border-(--brand) focus-within:[box-shadow:0_0_0_3px_var(--brand-ring)]">
         <textarea
           aria-label={placeholder}
