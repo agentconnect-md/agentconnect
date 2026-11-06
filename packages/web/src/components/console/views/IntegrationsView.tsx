@@ -169,13 +169,9 @@ function botChannels(bot: BotDto, integrations: IntegrationRow[]): BotChannelVie
       }
     }
   }
-  // Channels first, then the direct conversations (DMs and group DMs) under one
-  // heading — the roster's second half is "places the bot was not invited to".
-  return [...merged.values()].sort((a, b) => {
-    const rank = (k: BotChannelView['kind']) => (isDirectConversation(k) ? 1 : 0)
-    if (rank(a.kind) !== rank(b.kind)) return rank(a.kind) - rank(b.kind)
-    return a.name.localeCompare(b.name)
-  })
+  // Channels, then direct conversations, then the code channels tasks opened — each under its own heading.
+  const rank = (c: BotChannelView) => (c.row.isCodeSession ? 2 : isDirectConversation(c.kind) ? 1 : 0)
+  return [...merged.values()].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name))
 }
 
 /** The page's two section headings. Cards own no top margin here — the section
@@ -322,6 +318,7 @@ function BotsCard({
   // shareable PATCH is in flight, and the last toggle denial to surface (the CP
   // 409s with a reason: no relay connected / still shared by several agents).
   const [openBotId, setOpenBotId] = useState<string | null>(null)
+  const [codeOpenBotId, setCodeOpenBotId] = useState<string | null>(null)
   const [botBusyId, setBotBusyId] = useState<string | null>(null)
   const [botErr, setBotErr] = useState<{ id: string; msg: string } | null>(null)
   // Hides the bots no agent is installed on. Free bots are the reusable pool the
@@ -657,6 +654,26 @@ function BotsCard({
                       )}
                       <div className="overflow-visible rounded-lg border border-(--border-subtle) bg-(--surface-card)">
                         {channels.map((c, index) => {
+                          const code = !!c.row.isCodeSession
+                          const codeOpen = codeOpenBotId === b.id
+                          // Code channels sort last; the first one carries the group's collapsible header.
+                          const codeHeader = code && !channels[index - 1]?.row.isCodeSession && (
+                            <button
+                              type="button"
+                              className="flex w-full items-center gap-2 border-b border-(--border-subtle) bg-(--surface-sunken) px-3 py-[6px] font-sans text-[10.5px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary) last:border-b-0 hover:text-(--text-primary)"
+                              aria-expanded={codeOpen}
+                              onClick={() => setCodeOpenBotId(codeOpen ? null : b.id)}
+                            >
+                              <Icon name={codeOpen ? 'chevron-down' : 'chevron-right'} size={13} />
+                              <span>{t('channelList.codeChannels')}</span>
+                              <span className="ml-auto tabular-nums">
+                                {channels.filter((other) => other.row.isCodeSession).length}
+                              </span>
+                            </button>
+                          )
+                          if (code && !codeOpen) {
+                            return codeHeader ? <Fragment key={c.channelId}>{codeHeader}</Fragment> : null
+                          }
                           const label = rowLabelParts(c, b.platform)
                           // The room marker is the platform's own glyph, not the channel convention:
                           // a Linear team and a Telegram group carry no "#", so they get no icon.
@@ -665,11 +682,14 @@ function BotsCard({
                             glyph === '@@' ? 'users' : glyph === '@' ? 'at-sign' : glyph === '#' ? 'hash' : null
                           return (
                             <Fragment key={c.channelId}>
-                              {isDirectConversation(c.kind) && !isDirectConversation(channels[index - 1]?.kind) && (
-                                <div className="border-b border-(--border-subtle) bg-(--surface-sunken) px-3 py-[6px] font-sans text-[10.5px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)">
-                                  {t('directMessages')}
-                                </div>
-                              )}
+                              {codeHeader}
+                              {!code &&
+                                isDirectConversation(c.kind) &&
+                                !isDirectConversation(channels[index - 1]?.kind) && (
+                                  <div className="border-b border-(--border-subtle) bg-(--surface-sunken) px-3 py-[6px] font-sans text-[10.5px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)">
+                                    {t('directMessages')}
+                                  </div>
+                                )}
                               <div
                                 className={`grid ${chanGrid} items-center gap-[11px] border-b border-(--border-subtle) px-3 py-2 last:border-b-0`}
                               >
