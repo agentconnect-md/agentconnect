@@ -372,6 +372,13 @@ Relay-managed `rd/msg(im)` likewise parses commands before dispatch and uses the
 target resolved by the relay for the final conversation-admission check. A bot
 or unknown sender cannot resume the scope.
 
+A console message that continues a platform session is the same trusted human
+acting on the same conversation, so it parses `!resume`, `!new`, `!stop` and
+`!cancel` before dispatch too, with the session's integration as the target.
+The command is not mirrored into the platform and starts no turn. Its reply goes
+back to the console. The other commands answer with platform cards that the
+console replaces with its own controls, so they stay ordinary messages there.
+
 ---
 
 ## 5. Persistence and Restart/Replay

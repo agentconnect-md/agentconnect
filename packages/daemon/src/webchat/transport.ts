@@ -132,6 +132,13 @@ export interface WebchatHost {
   collabAdmits(fromAgentId: string, toAgentId: string): boolean
   /** A member's private coordinator conversation, which keys its turns on the coordinator (auto-session-mode.md §10). */
   coordinatorCoordinate?(agentId: string, conversationId: string, authorId: string): Promise<string | undefined>
+  /** Run a control command sent from the console into a platform session; true when the message was one. */
+  continuationCommand?(
+    agentId: string,
+    msg: NormalizedMessage,
+    integrationId: string,
+    reply: (text: string) => void
+  ): Promise<boolean>
 }
 
 export class WebchatTransport {
@@ -319,6 +326,23 @@ export class WebchatTransport {
       post
     })
     if (!prepared.accepted) return { ...prepared, turnId }
+    // The console takes the same control commands as the platform conversation it continues.
+    const integration = prepared.turn.integration
+    const replies: string[] = []
+    if (
+      integration &&
+      (await this.host.continuationCommand?.(agentId, prepared.turn.message, integration.integrationId, (text) =>
+        replies.push(text)
+      ))
+    ) {
+      const stream = this.createWebchatTurnStream(agentId, chatId, turnId, sink)
+      replies.forEach((text, index) =>
+        stream.sink.output({ conversationId: chatId, turnId, index, event: { kind: 'notice', text } })
+      )
+      stream.sink.done({ outcome: 'complete', conversationId: chatId, turnId })
+      this.host.info(`chat continuation: ${author.name} → command for session ${prepared.turn.local.key}`)
+      return { accepted: true, turnId }
+    }
     const admission = this.application.checkAdmission(prepared.turn)
     if (!admission.accepted) return { ...admission, turnId }
     this.pruneWebchatStreams()

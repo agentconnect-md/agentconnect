@@ -520,6 +520,7 @@ import {
 import {
   isControlCommandText,
   parseInboundCommand,
+  CONTINUATION_COMMANDS,
   requiresTrustedActor,
   type AgentCommand
 } from './commands/commands.js'
@@ -3524,8 +3525,26 @@ export class Daemon {
       sendWebchatPost: (post) => this.relays?.sendWebchatPost(post),
       collabAdmits: (fromAgentId, toAgentId) => this.cpCollab.admits(fromAgentId, toAgentId),
       coordinatorCoordinate: (agentId, conversationId, authorId) =>
-        this.webchatCoordinator(agentId, conversationId, authorId)
+        this.webchatCoordinator(agentId, conversationId, authorId),
+      continuationCommand: (agentId, msg, integrationId, reply) =>
+        this.continuationCommand(agentId, msg, integrationId, reply)
     }
+  }
+
+  /** A console message into a platform session runs the reply-only commands that conversation's own users can send. */
+  private async continuationCommand(
+    agentId: string,
+    msg: NormalizedMessage,
+    integrationId: string,
+    reply: (text: string) => void
+  ): Promise<boolean> {
+    const command = this.inboundCommand(msg, [integrationId])
+    if (!command || !CONTINUATION_COMMANDS.has(command.kind)) return false
+    if (requiresTrustedActor(command.kind) && !isTrustedHumanTurn(msg)) return false
+    const target = this.commands.resolveExplicitCommandTarget(agentId, integrationId, msg)
+    if (!target) return false
+    await this.commands.handleCommand(command, msg, target, [integrationId], { reply })
+    return true
   }
 
   /** auto-session-mode.md §10: the coordinator a member's private conversation with an agent keys on, minted by its first message; undefined for any other conversation. */

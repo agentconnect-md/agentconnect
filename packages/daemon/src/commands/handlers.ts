@@ -604,7 +604,7 @@ export class CommandHandlers {
     msg: NormalizedMessage,
     explicitTarget?: { agentId: string; integrationId: string; via: RouteVia },
     srcIntegrationIds?: readonly string[],
-    opts: { queueAdmission?: QueueAdmission } = {}
+    opts: { queueAdmission?: QueueAdmission; reply?: (text: string) => void } = {}
   ): Promise<CommandEffect | false> {
     let target: { agentId: string; integrationId: string; via: RouteVia } | null | undefined = explicitTarget
     if (!target) {
@@ -691,10 +691,13 @@ export class CommandHandlers {
     // thread so it never posts as a forum topic.
     const chrome = this.host.commandChrome().for(msg.platform)
     const chromeCtx = { channel: msg.channel, replyThread, sessionKey: key }
-    const reply = (text: string): void => {
-      if (!conn) return
-      chrome.reply(conn, msg, chromeCtx, text)
-    }
+    // A caller that is not the platform conversation (the console) takes the reply itself.
+    const reply =
+      opts.reply ??
+      ((text: string): void => {
+        if (!conn) return
+        chrome.reply(conn, msg, chromeCtx, text)
+      })
     const ctx: CommandContext = {
       msg,
       target,
