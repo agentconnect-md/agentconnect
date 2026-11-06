@@ -13,7 +13,6 @@ import {
 } from 'react'
 import Link from 'next/link'
 import { useTranslations } from 'next-intl'
-import { liveBotTurnKey, sameBotSpeaker } from '@/lib/bot-turn-grouping'
 import { PendingActionsBanner, usePendingAction } from '@/components/console/PendingActions'
 import {
   pickConversationRepresentative,
@@ -94,14 +93,12 @@ import { AgentIconView, LoadingState, PlatformMark, SocialLoginMark, Spinner } f
 import { MessageText } from '@/components/console/MessageText'
 import { SharedFileChip } from '@/components/console/SharedFileChip'
 import { SharedImageCard } from '@/components/console/SharedImageCard'
-import { platformSenderFallback } from '../platforms/registry'
 import { SessionMessageCaption, UserTurnDetails } from '../UserTurnDetails'
-import { parseUserTurnBody } from '@/lib/user-turn-body'
-import type { McpAppRpc, UserTurnBody } from '@agentconnect.md/protocol'
+import type { McpAppRpc } from '@agentconnect.md/protocol'
 import { NotFound } from '@/components/console/NotFound'
 import { Avatar, Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
-import { formatTranscriptRowTime, transcriptRowTimeMs } from '@/lib/transcript-time'
+import { transcriptRowTimeMs } from '@/lib/transcript-time'
 import { liveResumeMembers, sessionResumeMembers, sessionResumeState } from '@/lib/session-resume'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { consoleKeys } from '@/lib/swr-keys'
@@ -118,7 +115,6 @@ import { useSessionTranscript } from '@/lib/use-session-transcript'
 import { socialLoginProviders } from '@/lib/social-login-providers'
 import { isAuthConfigured } from '@/lib/auth'
 import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
-import { splitFilesMarker, type MarkedFile } from '@/lib/webchat-file'
 import { ComposerFileChips, MessageFileCards, stageComposerFile } from '@/components/console/ComposerFiles'
 import { transferCapable, sessionFileDownload } from '@/lib/shared-file'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
@@ -141,18 +137,10 @@ import { useCommandAutocomplete } from '@/components/console/useCommandAutocompl
 import { useRuntimeCommands } from '@/components/console/useRuntimeCommands'
 import type { AgentIcon } from '@/lib/agent-icon'
 import {
-  elicitCard,
-  capabilityCard,
   CAPABILITY_LANE,
-  liveCapabilityIds,
-  appStepKey,
-  liveAppKeys,
-  mcpAppCard,
   APP_LANE,
   ELICIT_LANE,
-  elicitStepKey,
   foldCustomAnswers,
-  liveElicitKeys,
   NOTICE_LANE,
   PLAN_LANE,
   WORK_LANES,
@@ -203,7 +191,6 @@ import {
   firstWords,
   liveReplyThreads,
   namesThread,
-  replyToMessageThread,
   threadAutoOpen,
   threadShapeOf,
   threadToAutoOpen,
@@ -245,16 +232,9 @@ import {
   runtimePickerState,
   chatSettingsAllowed
 } from '@/lib/session-runtime-controls'
-import {
-  msgStep,
-  type FmtStep,
-  plainStep,
-  isBgTaskWake,
-  thinkStep,
-  fmtStep,
-  timeMsField
-} from '@/components/console/transcript-steps'
+import type { FmtStep } from '@/components/console/transcript-steps'
 import { CopyTurnButton, StepExtras, McpAppRow, turnWork, WorkStepList } from '@/components/console/WorkPanel'
+import { buildTurns, type SessionParticipant, type Turn } from '@/components/console/session-turns'
 type ComposerMenuKey = 'permission' | 'model' | 'effort' | 'addAgent'
 
 // Session composer chips (mirrors HomeView); effort and approval live in the model picker.
@@ -1434,67 +1414,6 @@ function minTime(...values: Array<number | null | undefined>): number | null {
 function maxTime(...values: Array<number | null | undefined>): number | null {
   const finite = values.filter((v): v is number => v != null && Number.isFinite(v))
   return finite.length > 0 ? Math.max(...finite) : null
-}
-
-type Turn =
-  | {
-      kind: 'user'
-      /** Durable identity captured at creation from the raw row (`session:seq`), NOT the array
-       *  index or any mutable presentation field — so React reconciles a prepended page in place
-       *  and `workOverride` never mis-keys. */
-      key: string
-      sp: ReturnType<typeof speaker>
-      agent: Agent | null
-      avatarUrl?: string | null
-      avatarInitials?: string
-      sourceLabel: string
-      time: string
-      /** When it was sent, where known: a turn answering it with a single timed step measures from here. */
-      timeMs?: number
-      text: string
-      images?: SessionImage[]
-      /** The files its `[attached: …]` marker names, lifted out of `text` into cards. */
-      files?: MarkedFile[]
-      isCron: boolean
-      cronId: string | null
-      /** Sent into the agent's running turn (#1847) rather than as a turn of its own. */
-      steer?: boolean
-      /** The daemon confirmed the steer landed; until then the reply keeps streaming in the block above. */
-      steered?: boolean
-      /** The platform this message was authored on — see `FmtStep.platform`. */
-      platform?: string
-      /** The facts behind a delivery turn (transcript-full-tool-body.md §9) — the bubble's "more". */
-      body?: UserTurnBody
-      /** The persisted row's transcript seq, which a By decision evaluation of this message is keyed by. */
-      seq?: number
-      /** The platform's id of a recorded message (a webchat post id, a Slack ts), which a coordinator's task names. */
-      messageId?: string
-    }
-  // `wake` marks a block opened by a background-task wake that no reply has
-  // merged into yet — the run that follows binds to it, then clears the flag.
-  | {
-      kind: 'bot'
-      /** Durable identity captured at creation (the turn key, or the first step's row/live
-       *  anchor) and NEVER recomputed — so a wake block keeps its identity when `wake` clears
-       *  and a streaming turn never remounts as steps append. */
-      key: string
-      agentName: string
-      agentId?: string
-      model: string
-      time: string
-      steps: FmtStep[]
-      wake?: boolean
-      /** A coordinator turn that answered a message in a thread: that thread's root (webchat-threads.md §6.1). */
-      inThread?: string
-    }
-
-type SessionParticipant = {
-  id: string
-  sp: ReturnType<typeof speaker>
-  agent: Agent | null
-  avatarUrl?: string | null
-  avatarInitials?: string
-  isCron: boolean
 }
 
 /** Whether a user turn prints a sender line above its bubble — it does only when the
@@ -3849,459 +3768,28 @@ export default function SessionDetailView() {
     return { id, name: crons.find((c) => c.id === id)?.name ?? null }
   }
 
-  const turns: Turn[] = []
-  // Durable per-row anchor: the source session + the row's monotonic `seq`, immutable for the
-  // life of the row. Used as a turn's fallback identity when no turn key groups it, so a turn's
-  // `key` never depends on presentation fields (`time`, `wake`) that change as it grows.
-  const rowAnchor = (m: SessionMessageDto): string =>
-    `${conversationSourceSessionByMessageRef.current.get(m) ?? session.id}#${m.seq}`
-  // Live steps have no persisted `seq`; their turn identity is the step's `turnId`, which
-  // `stampStep` guarantees for every live step (minting one for a standalone line) — so no
-  // presentation-field fallback is needed here.
-  const liveAnchor = (stp: SessionStep): string => `live:${stp.turnId}`
-  const speakers = new Map<string, SessionParticipant>()
-  const rememberParticipant = (id: string, participant: Omit<SessionParticipant, 'id'>): void => {
-    const current = speakers.get(id)
-    speakers.set(id, {
-      id,
-      ...participant,
-      agent: participant.agent ?? current?.agent ?? null,
-      avatarUrl: participant.avatarUrl ?? current?.avatarUrl,
-      avatarInitials: participant.avatarInitials ?? current?.avatarInitials
-    })
-  }
-  const rememberAgentParticipant = (id: string, name: string, agent: Agent | null): void => {
-    rememberParticipant(id, { sp: speaker(id, name), agent, isCron: false })
-  }
-  const pushUserTurn = (id: string, turn: Extract<Turn, { kind: 'user' }>): void => {
-    rememberParticipant(id, {
-      sp: turn.sp,
-      agent: turn.agent,
-      avatarUrl: turn.avatarUrl,
-      avatarInitials: turn.avatarInitials,
-      isCron: turn.isCron
-    })
-    const { text, files } = splitFilesMarker(turn.text)
-    turns.push(files.length ? { ...turn, text, files } : turn)
-  }
-  const botTurnByKey = new Map<string, Extract<Turn, { kind: 'bot' }>>()
-  // Another agent speaking in this session — a webchat peer participant or a
-  // trusted a2a bot — renders as its own left-side agent block: the right side
-  // is reserved for humans. Conversation rows retain their source-local turn;
-  // live rows retain their stream turn; untagged legacy rows group by adjacency.
-  const pushAgentTurn = (agent: Agent, step: FmtStep, anchor: string, turnKey?: string): void => {
-    const name = agentLabel(agent)
-    rememberAgentParticipant(agent.id, name, agent)
-    let last = turnKey ? botTurnByKey.get(turnKey) : turns[turns.length - 1]
-    last = bindWakeBlock(last, { agentId: agent.id, agentName: name }, turnKey)
-    if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: agent.id, agentName: name })) {
-      // `model` is the icon-runtime fallback for turns whose agent is missing from
-      // `agentById`; a peer turn's agent came FROM that map, so it stays empty.
-      last = {
-        kind: 'bot',
-        key: `b:${turnKey ?? anchor}`,
-        agentName: name,
-        agentId: agent.id,
-        model: '',
-        time: '',
-        steps: []
-      }
-      turns.push(last)
-      if (turnKey) botTurnByKey.set(turnKey, last)
-    }
-    last.steps.push(step)
-    if (last.wake) last.wake = false
-    if (!last.time && step.time) last.time = step.time
-  }
-  // A background-task wake lands in its owner agent's lane as a collapsed work
-  // row. The wake is the INPUT that starts a fresh model run, so it opens a new
-  // `wake`-flagged block instead of extending the previous finished reply; only
-  // consecutive still-unanswered wakes for the same owner share one. The run
-  // that follows binds to the block and clears the flag (see bindWakeBlock).
-  // `ownerAgentId` is the merged-conversation source member — a wake from a
-  // peer member is THAT agent's work, not the representative's; plain sessions
-  // fall back to the session owner.
-  const pushOwnerWakeTurn = (step: FmtStep, anchor: string, turnKey?: string, ownerAgentId?: string): void => {
-    const agentId = ownerAgentId ?? session.agentId
-    const agent = agentId ? agentById.get(agentId) : undefined
-    const name = agent ? agentLabel(agent) : agentId === session.agentId ? (session.agentName ?? '') : (agentId ?? '')
-    const prev = turns[turns.length - 1]
-    let last = turnKey ? botTurnByKey.get(turnKey) : undefined
-    if (!last && prev?.kind === 'bot' && prev.wake && sameBotSpeaker(prev, { agentId, agentName: name })) last = prev
-    if (!last || last.kind !== 'bot') {
-      last = {
-        kind: 'bot',
-        // `wake` is deliberately OUT of the key: it flips to false when the reply binds, and
-        // this identity must survive that so the block does not remount and lose its work panel.
-        key: `b:${turnKey ?? anchor}`,
-        wake: true,
-        agentName: name,
-        ...(agentId ? { agentId } : {}),
-        model: agentId === session.agentId ? (session.model ?? '') : '',
-        time: '',
-        steps: []
-      }
-      turns.push(last)
-      if (turnKey) botTurnByKey.set(turnKey, last)
-    }
-    last.steps.push(step)
-    if (!last.time && step.time) last.time = step.time
-  }
-  // The run that follows a wake block answers it. When a keyed lookup found no
-  // block of its own (the wake row itself never carries a source turn key),
-  // bind the run to the trailing unanswered wake block and register the run's
-  // key on it so the rest of the run lands there too.
-  const bindWakeBlock = (
-    found: Turn | undefined,
-    speaker: { agentId?: string; agentName: string },
-    turnKey?: string
-  ): Turn | undefined => {
-    if (found) return found
-    const prev = turns[turns.length - 1]
-    if (prev?.kind === 'bot' && prev.wake && sameBotSpeaker(prev, speaker)) {
-      if (turnKey) botTurnByKey.set(turnKey, prev)
-      return prev
-    }
-    return undefined
-  }
-  // #1794's two halves meet on a reload: a pending webchat card is BOTH a transcript row and the
-  // `elicitation` event the cold attach replays, and the two render independently — one question,
-  // two answerable cards, and a settlement that only reaches the live one. A card carries no
-  // `postId`, so `reconcilePersistedLiveSteps`' exact-post arm cannot retire it; its identity is
-  // its OWNER plus its request. The LIVE copy wins while that replay stands: it is the one that
-  // can be answered, and the one `elicitation_resolved` collapses. Once the turn's live steps are
-  // retired the persisted row takes over, carrying the outcome it was rewritten with. Empty on a
-  // Slack-origin session, which streams no cards and so only ever has the persisted copy.
-  const liveCards = liveElicitKeys(liveSteps, session.agentId)
-  // An app card has the same two-copy problem and the same answer: the live frame is the one the
-  // daemon's registry is serving and the one a settlement reaches, so the persisted row stands
-  // aside while that replay does. Without this a second tab on a running conversation renders the
-  // card twice, both armed.
-  const liveApps = liveAppKeys(liveSteps, session.agentId)
-  // A capability card has the same two copies on a reload; the live one is what `capability_request_resolved` settles.
-  const liveCapabilities = liveCapabilityIds(liveSteps)
-  if (wantTranscript) {
-    // The roots view's thread message the coordinator received: no bubble here, a label on the turn that answers it.
-    let answeringThread: string | undefined
-    // Real transcript: agent output carries `sender === agentId`; everything else
-    // is a human/cron author. Group consecutive agent messages into one turn.
-    for (const m of visibleMsgs ?? []) {
-      if (liveCards.size > 0 && (m.kind || '').toLowerCase() === 'elicit') {
-        const persisted = elicitCard(m.body)
-        const owner = conversationSourceAgentByMessageRef.current.get(m) ?? m.sender
-        if (persisted && liveCards.has(elicitStepKey(owner, persisted.requestId))) continue
-      }
-      if (liveCapabilities.size > 0 && (m.kind || '').toLowerCase() === 'capability') {
-        const persisted = capabilityCard(m.body)
-        if (persisted && liveCapabilities.has(persisted.requestId)) continue
-      }
-      if (liveApps.size > 0 && (m.kind || '').toLowerCase() === 'app') {
-        const persisted = mcpAppCard(m.body)
-        const owner = conversationSourceAgentByMessageRef.current.get(m) ?? m.sender
-        if (persisted && liveApps.has(appStepKey(owner, persisted.appId))) continue
-      }
-      const toolSessionId = conversationSourceSessionByMessageRef.current.get(m)
-      const sourceTurnKey = conversationSourceTurnByMessageRef.current.get(m)
-      // A merged conversation stamps every row with the platform of the source
-      // it came from; a single-session page has one platform for all of them.
-      const rowPlatform = conversationSourcePlatformByMessageRef.current.get(m) ?? session.platform
-      if (m.sender === session.agentId) {
-        const ownerName = session.agentName ?? ''
-        let last = sourceTurnKey ? botTurnByKey.get(sourceTurnKey) : turns[turns.length - 1]
-        // A hidden thread message still ends the turn before it, as its bubble would.
-        if (answeringThread !== undefined && !sourceTurnKey) last = undefined
-        last = bindWakeBlock(last, { agentId: m.sender, agentName: ownerName }, sourceTurnKey)
-        if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: m.sender, agentName: ownerName })) {
-          last = {
-            kind: 'bot',
-            key: `b:${sourceTurnKey ?? rowAnchor(m)}`,
-            agentName: ownerName,
-            agentId: m.sender,
-            model: session.model ?? '',
-            time: '',
-            steps: [],
-            ...(answeringThread !== undefined ? { inThread: answeringThread } : {})
-          }
-          turns.push(last)
-          if (sourceTurnKey) botTurnByKey.set(sourceTurnKey, last)
-        }
-        answeringThread = undefined
-        const answeredIn = threadsView && threadShape ? replyToMessageThread(m, threadShape) : undefined
-        const step = { ...msgStep(m, toolSessionId, rowPlatform), ...(answeredIn ? { answeredIn } : {}) }
-        last.steps.push(step)
-        if (last.wake) last.wake = false
-        if (!last.time && step.time) last.time = step.time
-      } else {
-        if (threadsView && m.thread && (m.kind || 'text').toLowerCase() === 'text' && !isBgTaskWake(m.sender)) {
-          answeringThread = m.thread
-          continue
-        }
-        // Daemon background-task wakes belong to the owning agent, not to a person —
-        // in a merged conversation that is the SOURCE member's agent.
-        if (isBgTaskWake(m.sender)) {
-          const wakeMs = transcriptRowTimeMs(m)
-          pushOwnerWakeTurn(
-            {
-              ...thinkStep(m.text, formatTranscriptRowTime(m), rowPlatform),
-              ...(wakeMs === null ? {} : { timeMs: wakeMs })
-            },
-            rowAnchor(m),
-            sourceTurnKey,
-            conversationSourceAgentByMessageRef.current.get(m)
-          )
-          continue
-        }
-        // Count participants by stable sender id — two people can share a display name.
-        const cron = asCron(m.sender)
-        const senderAgent = participantAgent(m.sender, m.text, m.trustedAgentBot)
-        const senderAgentName = senderAgent ? agentLabel(senderAgent) : undefined
-        const hookFallback = session.platform === 'hook' && m.sender?.startsWith('hook:') ? session.user : undefined
-        const self = isSelf(m.sender)
-        if (senderAgent && !self) {
-          pushAgentTurn(
-            senderAgent,
-            {
-              ...msgStep(m, toolSessionId, rowPlatform),
-              ...(m.attachments?.[0] ? { image: m.attachments[0] } : {}),
-              // Only a copy from another member's session is a peer copy; the author's own row resolves through its session.
-              ...(m.sharedImage && conversationSourceAgentByMessageRef.current.get(m) !== senderAgent.id
-                ? { peerCopy: true }
-                : {})
-            },
-            rowAnchor(m),
-            sourceTurnKey
-          )
-          continue
-        }
-        const participant = self
-          ? speaker('@you')
-          : speaker(
-              senderAgentName ?? m.sender,
-              cron?.name ??
-                (cron
-                  ? 'Schedule'
-                  : senderLabel(
-                      m.sender,
-                      m.senderName ?? hookFallback ?? platformSenderFallback(rowPlatform, m.sender)
-                    ))
-            )
-        answeringThread = undefined
-        pushUserTurn(senderAgent?.id ?? m.sender, {
-          kind: 'user',
-          key: `u:${rowAnchor(m)}`,
-          messageId: m.postId ?? m.ts,
-          sp: participant,
-          agent: senderAgent ?? null,
-          avatarUrl: m.senderAvatarUrl ?? (self ? viewer.picture : memberPictureByIdentity.get(m.sender)),
-          avatarInitials: self ? viewer.initials : undefined,
-          sourceLabel: platName(sessionIntegration),
-          time: formatTranscriptRowTime(m),
-          ...timeMsField(transcriptRowTimeMs(m)),
-          text: m.text,
-          ...(m.attachments?.length ? { images: m.attachments } : {}),
-          isCron: !!cron,
-          cronId: cron?.id ?? null,
-          platform: rowPlatform,
-          body: parseUserTurnBody(m.body),
-          // Seqs are per daemon store, so only the owner's own rows can match its gate's verdicts.
-          ...(ownsDecisionSeq(m) ? { seq: m.seq } : {})
-        })
-      }
-    }
-  } else {
-    let firstMsg = true
-    // A confirmed steer fences the running turn's block: the reply after it starts a fresh block below it; a pending one keeps the block above growing (#1847).
-    let steerSegment = 0
-    const segmentedKey = (turnKey: string | undefined): string | undefined =>
-      turnKey && steerSegment > 0 ? `${turnKey}:s${steerSegment}` : turnKey
-    session.steps.forEach((stp) => {
-      if (stp.kind === 'msg') {
-        if (stp.steered) steerSegment += 1
-        const who = stp.who ?? session.user
-        if (isBgTaskWake(stp.who)) {
-          pushOwnerWakeTurn(
-            thinkStep(stp.text, stp.time, session.platform),
-            liveAnchor(stp),
-            liveBotTurnKey(stp.turnId, session.agentId)
-          )
-          firstMsg = false
-          return
-        }
-        const cron = asCron(who)
-        const senderAgent = participantAgent(who, stp.text)
-        const senderAgentName = senderAgent ? agentLabel(senderAgent) : undefined
-        const self = isSelf(who)
-        if (senderAgent && !self) {
-          pushAgentTurn(
-            senderAgent,
-            plainStep(stp.text, stp.time ?? (firstMsg ? session.time : ''), stp.image, session.platform),
-            liveAnchor(stp),
-            liveBotTurnKey(stp.turnId, senderAgent.id)
-          )
-          firstMsg = false
-          return
-        }
-        const participant = self
-          ? speaker('@you')
-          : speaker(
-              senderAgentName ?? who,
-              cron?.name ?? (cron ? 'Schedule' : (senderAgentName ?? platformSenderFallback(session.platform, who)))
-            )
-        pushUserTurn(senderAgent?.id ?? who, {
-          kind: 'user',
-          key: `u:${liveAnchor(stp)}`,
-          sp: participant,
-          agent: senderAgent ?? null,
-          avatarUrl: self ? viewer.picture : memberPictureByIdentity.get(who),
-          avatarInitials: self ? viewer.initials : undefined,
-          sourceLabel: platName(sessionIntegration),
-          time: stp.time ?? (firstMsg ? session.time : ''),
-          ...(stp.observedAtMs !== undefined ? { timeMs: stp.observedAtMs } : {}),
-          text: stp.text,
-          ...(stp.image ? { images: [stp.image] } : {}),
-          isCron: !!cron,
-          cronId: cron?.id ?? null,
-          ...(stp.steer ? { steer: true, ...(stp.steered ? { steered: true } : {}) } : {}),
-          platform: session.platform
-        })
-        firstMsg = false
-      } else {
-        // Multi-agent conversations attribute live steps per participant. The
-        // lane's `agentId` is authoritative (stamped from the stream cursor);
-        // resolve its display name at RENDER time from the org agent list —
-        // stream-time `who` can be missing (the socket closure predates the
-        // session state) and adopted sessions never had a roster.
-        const stepAgent = stp.agentId ? agentById.get(stp.agentId) : undefined
-        const stepAgentName = (stepAgent ? agentLabel(stepAgent) : stp.who) ?? session.agentName ?? ''
-        if (stp.agentId && stp.agentId !== session.agentId) {
-          rememberAgentParticipant(stp.agentId, stepAgentName, stepAgent ?? null)
-        }
-        const turnKey = segmentedKey(liveBotTurnKey(stp.turnId, stp.agentId))
-        let last = turnKey ? botTurnByKey.get(turnKey) : turns[turns.length - 1]
-        last = bindWakeBlock(last, { agentId: stp.agentId, agentName: stepAgentName }, turnKey)
-        if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: stp.agentId, agentName: stepAgentName })) {
-          last = {
-            kind: 'bot',
-            key: `b:${turnKey ?? liveAnchor(stp)}`,
-            agentName: stepAgentName,
-            ...(stp.agentId ? { agentId: stp.agentId } : {}),
-            model: session.model ?? '',
-            time: '',
-            steps: []
-          }
-          turns.push(last)
-          if (turnKey) botTurnByKey.set(turnKey, last)
-        } else if (stp.agentId && last.agentId === undefined) {
-          // A tagged step continuing an untagged block names its author retroactively.
-          last.agentId = stp.agentId
-        }
-        const step = fmtStep(stp, session.platform)
-        if (step.sharedImage && stp.agentId && stp.agentId !== session.agentId && !stp.toolSessionId)
-          step.peerCopy = true
-        last.steps.push(step)
-        if (last.wake) last.wake = false
-        if (!last.time && step.time) last.time = step.time
-      }
-    })
-  }
-
-  // An adopted webchat session — and a session-targeted continuation — layers the
-  // turns you send THIS visit below its fetched history, like a synthetic
-  // playground session.
-  if (isWebchat || isContinuable) {
-    let steerSegment = 0
-    const segmentedKey = (turnKey: string | undefined): string | undefined =>
-      turnKey && steerSegment > 0 ? `${turnKey}:s${steerSegment}` : turnKey
-    // What this visit said in a thread is drawn there; a coordinator turn answering it stays here, labelled.
-    const liveThreadOf = new Map<string, string>()
-    for (const stp of liveSteps) {
-      if (stp.thread) {
-        if (stp.kind === 'msg') liveThreadOf.set(stp.turnId, stp.thread)
-        continue
-      }
-      if (stp.kind === 'msg') {
-        if (stp.steered) steerSegment += 1
-        const who = stp.who ?? session.user
-        if (isBgTaskWake(stp.who)) {
-          pushOwnerWakeTurn(
-            thinkStep(stp.text, stp.time, session.platform),
-            liveAnchor(stp),
-            liveBotTurnKey(stp.turnId, session.agentId)
-          )
-          continue
-        }
-        const senderAgent = participantAgent(who, stp.text)
-        const senderAgentName = senderAgent ? agentLabel(senderAgent) : undefined
-        const self = isSelf(who)
-        if (senderAgent && !self) {
-          pushAgentTurn(
-            senderAgent,
-            plainStep(stp.text, stp.time ?? '', stp.image, session.platform),
-            liveAnchor(stp),
-            liveBotTurnKey(stp.turnId, senderAgent.id)
-          )
-          continue
-        }
-        const cron = asCron(who)
-        const participant = self
-          ? speaker('@you')
-          : speaker(
-              senderAgentName ?? who,
-              cron?.name ?? (cron ? 'Schedule' : (senderAgentName ?? platformSenderFallback(session.platform, who)))
-            )
-        pushUserTurn(senderAgent?.id ?? who, {
-          kind: 'user',
-          key: `u:${liveAnchor(stp)}`,
-          sp: participant,
-          agent: senderAgent ?? null,
-          avatarUrl: self ? viewer.picture : memberPictureByIdentity.get(who),
-          avatarInitials: self ? viewer.initials : undefined,
-          sourceLabel: platName(sessionIntegration),
-          time: stp.time ?? '',
-          ...(stp.observedAtMs !== undefined ? { timeMs: stp.observedAtMs } : {}),
-          text: stp.text,
-          ...(stp.image ? { images: [stp.image] } : {}),
-          isCron: !!cron,
-          cronId: cron?.id ?? null,
-          ...(stp.steer ? { steer: true, ...(stp.steered ? { steered: true } : {}) } : {}),
-          platform: session.platform
-        })
-      } else {
-        const stepAgent = stp.agentId ? agentById.get(stp.agentId) : undefined
-        const stepAgentName = (stepAgent ? agentLabel(stepAgent) : stp.who) ?? session.agentName ?? ''
-        if (stp.agentId && stp.agentId !== session.agentId) {
-          rememberAgentParticipant(stp.agentId, stepAgentName, stepAgent ?? null)
-        }
-        const turnKey = segmentedKey(liveBotTurnKey(stp.turnId, stp.agentId))
-        let last = turnKey ? botTurnByKey.get(turnKey) : turns[turns.length - 1]
-        last = bindWakeBlock(last, { agentId: stp.agentId, agentName: stepAgentName }, turnKey)
-        if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: stp.agentId, agentName: stepAgentName })) {
-          const inThread = liveThreadOf.get(stp.turnId)
-          last = {
-            kind: 'bot',
-            key: `b:${turnKey ?? liveAnchor(stp)}`,
-            agentName: stepAgentName,
-            ...(stp.agentId ? { agentId: stp.agentId } : {}),
-            model: session.model ?? '',
-            time: '',
-            steps: [],
-            ...(inThread ? { inThread } : {})
-          }
-          turns.push(last)
-          if (turnKey) botTurnByKey.set(turnKey, last)
-        } else if (stp.agentId && last.agentId === undefined) {
-          // A tagged step continuing an untagged block names its author retroactively.
-          last.agentId = stp.agentId
-        }
-        const step = fmtStep(stp, session.platform)
-        if (step.sharedImage && stp.agentId && stp.agentId !== session.agentId && !stp.toolSessionId)
-          step.peerCopy = true
-        last.steps.push(step)
-        if (last.wake) last.wake = false
-        if (!last.time && step.time) last.time = step.time
-      }
-    }
-  }
+  const { turns, speakers } = buildTurns({
+    session,
+    rows: wantTranscript ? (visibleMsgs ?? []) : undefined,
+    liveSteps,
+    source: {
+      session: conversationSourceSessionByMessageRef.current,
+      turn: conversationSourceTurnByMessageRef.current,
+      platform: conversationSourcePlatformByMessageRef.current,
+      agent: conversationSourceAgentByMessageRef.current
+    },
+    threadsView,
+    threadShape,
+    agentById,
+    asCron,
+    participantAgent,
+    isSelf,
+    senderLabel,
+    ownsDecisionSeq,
+    viewer,
+    pictureOf: (identity) => memberPictureByIdentity.get(identity),
+    sourceLabel: platName(sessionIntegration)
+  })
 
   // A coordinator's task cards, under the first turn of the coordinator after the message each task was opened for.
   const openedTaskCards = new Map<string, TaskLink[]>()
