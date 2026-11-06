@@ -767,12 +767,27 @@ describe('ThreadPanel switching or polling a thread’s record', () => {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0))
     })
+    // Another turn ends, and the newest page has moved past row 4 too, which arrived after the earlier page was read.
+    wire.record = recordPage({
+      messages: [reply(5, 'user_lee', 'Thanks!'), reply(6, 'agent_1', 'Anytime.')],
+      summary: held
+    })
+    wire.busy = true
+    await render()
+    wire.busy = false
+    await render()
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
     expect(wire.recordReads).toEqual([
       'ses_coordinator/post-root',
       'ses_coordinator/post-root<c-older',
+      'ses_coordinator/post-root',
       'ses_coordinator/post-root'
     ])
     const said = [...container.querySelectorAll('[data-thread-message]')].map((el) => el.textContent ?? '')
-    expect(said.join('|')).toMatch(/Why is the deploy slow\?.*The cache misses.*Can you fix it\?.*Warmed the cache\./)
+    expect(said.join('|')).toMatch(
+      /Why is the deploy slow\?.*The cache misses.*Can you fix it\?.*Warmed the cache\..*Thanks!.*Anytime\./
+    )
   })
 })

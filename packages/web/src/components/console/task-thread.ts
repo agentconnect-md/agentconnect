@@ -13,6 +13,7 @@ import {
   type AssistantSubsessionDto,
   type SessionHistoryDto,
   type SessionMessageDto,
+  type SessionThreadMessagesDto,
   type SessionThreadSummaryDto
 } from '@/lib/api'
 import { CONSOLE_SWR_CONFIG } from '@/lib/console-swr'
@@ -148,6 +149,13 @@ export interface ThreadRecord {
   reload: () => Promise<unknown>
 }
 
+const NO_ROWS: SessionMessageDto[] = []
+
+/** Rows of overlapping pages, each once; a later list's copy of a row wins. */
+const mergeRows = (...lists: readonly SessionMessageDto[][]): SessionMessageDto[] => [
+  ...new Map(lists.flat().map((m) => [m.seq, m])).values()
+]
+
 /** One thread's record: its newest page, polled faster while a turn runs in it or this visit is answered there. */
 export function useThreadRecord(
   ref: ThreadRecordRef | null,
@@ -179,11 +187,18 @@ export function useThreadRecord(
   const [loadingEarlier, setLoadingEarlier] = useState(false)
   const earlier = older?.key === key ? older : null
   const nextCursor = earlier ? earlier.nextCursor : (data?.nextCursor ?? null)
-  // An earlier page and the newest may overlap once the thread grows between reads; each row is drawn once.
+  // Every row a read returned stays, so a poll whose newest page has moved past a row leaves no gap.
+  const [seen, setSeen] = useState<{
+    key: string
+    page: SessionThreadMessagesDto | undefined
+    rows: SessionMessageDto[]
+  }>({ key: '', page: undefined, rows: [] })
+  if (data && (seen.key !== key || seen.page !== data))
+    setSeen({ key, page: data, rows: mergeRows(seen.key === key ? seen.rows : [], data.messages) })
+  const kept = seen.key === key ? seen.rows : NO_ROWS
   const messages = useMemo(
-    () =>
-      data ? [...new Map([...(earlier?.messages ?? []), ...data.messages].map((m) => [m.seq, m])).values()] : undefined,
-    [data, earlier]
+    () => (data ? mergeRows(earlier?.messages ?? [], kept, data.messages) : undefined),
+    [data, earlier, kept]
   )
   const loadEarlier = async () => {
     if (!ref || !nextCursor || loadingEarlier) return
@@ -193,8 +208,7 @@ export function useThreadRecord(
         cursor: nextCursor,
         limit: THREAD_PAGE
       })
-      // Everything shown so far is kept, so a later poll whose newest page has moved on leaves no gap behind it.
-      setOlder({ key, messages: [...page.messages, ...(messages ?? [])], nextCursor: page.nextCursor })
+      setOlder({ key, messages: [...page.messages, ...(earlier?.messages ?? [])], nextCursor: page.nextCursor })
     } finally {
       setLoadingEarlier(false)
     }
