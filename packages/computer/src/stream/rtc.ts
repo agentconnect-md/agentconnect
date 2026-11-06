@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { isIPv4 } from 'node:net'
 import { MediaStreamTrack, RTCPeerConnection, RTCRtpCodecParameters, RtpPacket, type PeerConfig } from 'werift'
 import {
   ComputerViewerRenewal,
@@ -118,12 +119,15 @@ export class RtcSessions {
       }
     }
     const address = advertiseAddress ?? offer.hostAddress?.replace(/^::ffff:/, '')
+    // A host with several addresses (aliases, more interfaces) otherwise answers DTLS from one the browser never paired.
+    const bound = !advertiseAddress && address && isIPv4(address) ? { iceInterfaceAddresses: { udp4: address } } : {}
     return {
       ...base,
       // ICE-lite host candidates only: no STUN round trip (werift would otherwise default to Google's), one transport.
       iceLite: true,
       iceServers: [],
       ...(address ? { iceAdditionalHostAddresses: [address] } : {}),
+      ...bound,
       ...(portRange ? { icePortRange: portRange } : {})
     }
   }

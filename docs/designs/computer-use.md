@@ -1395,10 +1395,10 @@ Control Plane, which only issues credentials:
 - **Input.** Take control, the keyboard and mouse mapping and the IME text box are the prototype's (§7.3), over the
   DataChannel when one is open and through the relay otherwise. Leaving the page releases a takeover.
 
-**A host with several addresses [found by the prototype; fix in §14.9].** On a host with more than one IPv4 address
-(aliases on one interface, several interfaces), a `direct` session's ICE connects but DTLS never finishes: werift answers the
-browser's ClientHello from a socket the browser has not paired, the browser drops every answer and retransmits, and
-the viewer falls back to screenshots, for every desktop and every Chrome. The fix binds a `direct` session's socket
+**A host with several addresses [fixed].** Before the fix, on a host with more than one IPv4 address (aliases on one
+interface, several interfaces), a `direct` session's ICE connected but DTLS never finished: werift answered the
+browser's ClientHello from a socket the browser had not paired, the browser dropped every answer and retransmitted,
+and the viewer fell back to screenshots, for every desktop and every Chrome. A `direct` session therefore binds its socket
 to the address the browser reached (`iceInterfaceAddresses`), except for an `advertiseAddress`, which names a NAT's
 address rather than a local one. Found on a Parallels VM with two addresses on `eth0`.
 
