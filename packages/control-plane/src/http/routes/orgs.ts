@@ -42,6 +42,7 @@ function toDto(o: OrgRecord, deps: HttpDeps): OrgDtoT {
     slug: o.slug,
     icon: o.icon,
     defaultAgentVisibility: o.defaultAgentVisibility,
+    defaultDaemonAutoUpgrade: o.defaultDaemonAutoUpgrade,
     onboardingCompleted: o.onboardingCompleted,
     gettingStartedStep: o.gettingStartedStep,
     // Only `image` org icons resolve to a URL (object-store public URL); glyph/default

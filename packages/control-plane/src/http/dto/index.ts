@@ -2975,6 +2975,8 @@ export const OrgDto = z.object({
   icon: AgentIconDto.nullable(),
   /** Applied to both directional policies when a new agent does not explicitly choose one. */
   defaultAgentVisibility: AgentCallPolicyEnum,
+  /** Auto-upgrade switch that daemons created in this org from now on start with. */
+  defaultDaemonAutoUpgrade: z.boolean(),
   /** Console onboarding wizard done (finish OR skip) — an owner of a false org lands in the wizard. */
   onboardingCompleted: z.boolean(),
   /** Getting-started tutorial position: checklist steps passed (completed or skipped via Next). */
@@ -3012,6 +3014,8 @@ export const UpdateOrgBody = z
     icon: AgentIconBody.nullable().optional(),
     // Seeds both inbound and outbound policies for future agents only.
     defaultAgentVisibility: AgentCallPolicyEnum.optional(),
+    // Seeds the auto-upgrade switch of future daemons only.
+    defaultDaemonAutoUpgrade: z.boolean().optional(),
     // One-way: the onboarding wizard marks the org onboarded on finish or skip.
     onboardingCompleted: z.literal(true).optional(),
     // Getting-started tutorial position — the console's drawer advances it as steps
@@ -3025,6 +3029,7 @@ export const UpdateOrgBody = z
       b.slug !== undefined ||
       b.icon !== undefined ||
       b.defaultAgentVisibility !== undefined ||
+      b.defaultDaemonAutoUpgrade !== undefined ||
       b.onboardingCompleted !== undefined ||
       b.gettingStartedStep !== undefined,
     {

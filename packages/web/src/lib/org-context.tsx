@@ -147,6 +147,7 @@ interface OrgContextValue {
       name?: string
       slug?: string
       defaultAgentVisibility?: AgentCallPolicy
+      defaultDaemonAutoUpgrade?: boolean
       onboardingCompleted?: true
       gettingStartedStep?: number
     }
@@ -272,6 +273,7 @@ export function OrgProvider({ children }: { children: ReactNode }) {
         name?: string
         slug?: string
         defaultAgentVisibility?: AgentCallPolicy
+        defaultDaemonAutoUpgrade?: boolean
         onboardingCompleted?: true
         gettingStartedStep?: number
       }

@@ -12,13 +12,15 @@
 
 A daemon owner can turn on **auto-upgrade** for one daemon. While it is on, that daemon
 follows the release its Control Plane announces: it downloads the new version while
-serving and restarts onto it only when it is idle. The switch is off by default.
+serving and restarts onto it only when it is idle. A new daemon starts with its
+organization's default, which is off until an owner turns it on.
 
 ## 1. Goals and non-goals
 
 Goals:
 
-- a per-daemon switch, default off, owned by whoever may already upgrade that daemon;
+- a per-daemon switch, owned by whoever may already upgrade that daemon, whose starting
+  value is an organization default;
 - the version a daemon upgrades to is the one the console's "update available" hint
   shows — the same fact, from the same source;
 - no turn is ever cut short by an automatic upgrade;
@@ -72,6 +74,10 @@ The switch is a console daemon setting stored on the CP, delivered exactly like 
 session retention setting:
 
 - `Daemon.autoUpgrade Boolean @default(false)`;
+- `Org.defaultDaemonAutoUpgrade Boolean @default(false)` seeds `Daemon.autoUpgrade` when an
+  org daemon row is created (console provisioning or first authentication). Changing it
+  never touches existing daemons, and an org-less pool row always starts off. An owner sets
+  it with `PATCH /api/v1/orgs/:orgId`, on the organization settings page;
 - `PATCH /api/v1/orgs/:orgId/daemons/:id` accepts `autoUpgrade: boolean` under the same
   `canEdit` check that guards `POST …/upgrade` today, so enabling auto-upgrade grants no
   power a user did not already have;
@@ -89,7 +95,9 @@ is `cli` or `service` (not `k8s`, not unset) and `<root>/cli-entry` names a CLI.
 The console renders the switch only when the feature is present and otherwise explains
 why it is unavailable ("runs without a supervisor", "pool member"). The CP rejects
 `autoUpgrade: true` for a daemon without the feature with 409, so an API caller cannot set
-a switch nothing will honour.
+a switch nothing will honour. The organization default is applied before the CP has seen
+a daemon's features, so it can seed `true` on a daemon without them; that daemon never
+acts on it, and the console shows it as unavailable.
 
 ## 4. Announcing the release
 
@@ -386,7 +394,6 @@ Each step is safe to ship alone, and the feature appears only when steps 2–4 a
   CP setting that announces `null` or a capped version; daemons need no change.
 - **Maintenance window.** A per-daemon `autoUpgradeWindow` (cron-style local hours)
   becomes one more quiescence condition.
-- **Org default.** New daemons inherit an org-level default for the switch.
 
 ## 11. Open questions
 
