@@ -203,6 +203,20 @@ export const CLAUDE_DISALLOWED_BUILTIN_TOOLS = ['SendMessage'] as const
  * aborted, the model retries, and the pass burns its context instead of returning. */
 export const CLAUDE_HEADLESS_DISALLOWED_TOOLS = ['ExitPlanMode', 'AskUserQuestion'] as const
 
+/** A coordinator runs in `default` (auto-session-mode.md §5.4), where sandboxed Bash runs unasked, so it gets no shell, file-writing or sub-agent tool at all. */
+export const CLAUDE_COORDINATOR_DISALLOWED_TOOLS = [
+  ...CLAUDE_HEADLESS_DISALLOWED_TOOLS,
+  'Bash',
+  'BashOutput',
+  'KillShell',
+  'Edit',
+  'MultiEdit',
+  'Write',
+  'NotebookEdit',
+  'Task',
+  'Agent'
+] as const
+
 /** A Claude Code runtime (its command/args reference `claude`) — these embed the
  *  @anthropic-ai/claude-agent-sdk, which needs a Claude Code executable. The ONE
  *  Claude predicate: AcpHost and the model-catalog path both delegate here, matching

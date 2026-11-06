@@ -9,7 +9,10 @@ import {
 } from './subsession-coordinate.js'
 import { isDelegatedTaskCoordinate } from '@agentconnect.md/protocol'
 import { researchRunningLine } from '../assistant/research.js'
-import { CLAUDE_HEADLESS_DISALLOWED_TOOLS } from '../runtime-defs/claude-runtime.js'
+import {
+  CLAUDE_COORDINATOR_DISALLOWED_TOOLS,
+  CLAUDE_HEADLESS_DISALLOWED_TOOLS
+} from '../runtime-defs/claude-runtime.js'
 import { createMemoryEntryService } from '../memory/entries/factory.js'
 import { memoryActivationContext } from '../memory/entries/activation.js'
 import type { ContentBlock, McpServer } from '@agentclientprotocol/sdk/unstable'
@@ -832,10 +835,12 @@ export class SessionManager {
       toolContext,
       sessionQuiescent: (id) => this.deps.sessionSdkQuiescent?.(agentId, key, id) ?? true,
       ...(options.additionalMcpServers !== undefined ? { additionalMcpServers: options.additionalMcpServers } : {}),
-      // A check (assistant-mode.md §5.12) and a coordinator (auto-session-mode.md §5.4) run in plan mode, whose exits need an approver nobody is; research (§5.15) has nobody to ask either.
-      ...(isCheckCoordinate(thread) || isResearchCoordinate(thread) || coordinator
-        ? { extraDisallowedTools: CLAUDE_HEADLESS_DISALLOWED_TOOLS }
-        : {}),
+      // A check (assistant-mode.md §5.12) runs in plan mode, whose exits need an approver nobody is; research (§5.15) has nobody to ask either; a coordinator (auto-session-mode.md §5.4) has no native tool that writes.
+      ...(coordinator
+        ? { extraDisallowedTools: CLAUDE_COORDINATOR_DISALLOWED_TOOLS }
+        : isCheckCoordinate(thread) || isResearchCoordinate(thread)
+          ? { extraDisallowedTools: CLAUDE_HEADLESS_DISALLOWED_TOOLS }
+          : {}),
       // The sticky per-session effort override rides session `_meta` on new/load so the
       // `ultracode` sentinel (rejected by the `thought_level` select) takes effect. Chat
       // authority is resolved immediately before each request, then the await is fenced:
