@@ -125,6 +125,8 @@ import {
   type ComposerHistoryEntry
 } from '@/components/console/useComposerHistory'
 import { CommandMenu } from '@/components/console/CommandMenu'
+import type { ControlCommand } from '@/components/console/composer-control-commands'
+import type { DecisionRuntimeTarget } from '@agentconnect.md/protocol/decision'
 import { useCommandAutocomplete } from '@/components/console/useCommandAutocomplete'
 import { useRuntimeCommands } from '@/components/console/useRuntimeCommands'
 import type { AgentIcon } from '@/lib/agent-icon'
@@ -281,6 +283,7 @@ function useHeaderPopover() {
 
 /** Stable identity for a composer with no participants to ask — keeps useRuntimeCommands' memo still. */
 const EMPTY_ROSTER: ReadonlyArray<{ agentId: string; name: string }> = []
+const noOwnerIcon = () => undefined
 
 // The composer's textarea, isolated so a keystroke re-renders ONLY this node:
 // the draft lives outside the playground context (usePgDraft subscription), and
@@ -296,6 +299,7 @@ function ComposerTextarea({
   onMentionJoiningChange,
   onCommandPick,
   commands,
+  controls,
   history,
   hasEarlier,
   loadEarlier,
@@ -324,6 +328,8 @@ function ComposerTextarea({
     iconOf: (agentId: string) => { icon: AgentIcon | null | undefined; runtime: string } | undefined
     multi: boolean
   }
+  /** Console commands the `/` and `!` picker runs in place, ahead of the skills. */
+  controls?: readonly ControlCommand[]
 }) {
   const draft = usePgDraft(sessionId)
   const { setPgInput } = usePlayground()
@@ -351,14 +357,13 @@ function ComposerTextarea({
   // view returns early above this point. The composer mounts with the conversation, so the read is
   // still a mount-time prefetch rather than a keystroke-time one.
   const runtimeCommands = useRuntimeCommands(commands?.roster ?? EMPTY_ROSTER, !!commands)
-  // `/skill` picker. Offered BEFORE the mention picker on every key, and their triggers cannot
-  // both be live (a command is the draft's leading token; a mention is not). The pick's owner
-  // travels structurally through onCommandPick — never as inline `@Name` text.
+  // `/` and `!` picker, offered before the mention picker; a skill's owner travels via onCommandPick, never as `@Name` text.
   const command = useCommandAutocomplete({
     ref: textareaRef,
     value: draft,
     setValue: (v) => setPgInput(sessionId, v),
     candidates: runtimeCommands.candidates,
+    controls,
     onPicked: onCommandPick
   })
   return (
@@ -419,13 +424,14 @@ function ComposerTextarea({
         onHover={mention.setActiveIndex}
         onPick={mention.pick}
       />
-      {commands && (
+      {(commands || (controls?.length ?? 0) > 0) && (
         <CommandMenu
           options={command.matches}
           activeIndex={command.activeIndex}
           coords={command.coords}
-          iconOf={commands.iconOf}
-          showOwner={commands.multi}
+          prefix={command.prefix}
+          iconOf={commands?.iconOf ?? noOwnerIcon}
+          showOwner={commands?.multi ?? false}
           gaps={runtimeCommands.gaps}
           onHover={command.setActiveIndex}
           onPick={command.pick}
@@ -1660,6 +1666,7 @@ export default function SessionDetailView() {
   const t = useTranslations('Sessions.detail')
   const permissionT = useTranslations('Common.permissionModes')
   const runtimeModelT = useTranslations('Agents.dialog.runtimeModel')
+  const commandMenuT = useTranslations('Common.commandMenu')
   const acpRegistry = useAcpRegistry()
   const { activeOrg, orgPath, myRole } = useOrgs()
   const router = useRouter()
@@ -4180,6 +4187,72 @@ export default function SessionDetailView() {
   const pgFastModeAvailable =
     (pgModel === session.model ? session.fastModeAvailable : undefined) ??
     fastModeAvailableFor(agentRuntime, selectedModelCapability)
+  // The runtime setters, shared by the toolbar's model picker and the composer's console commands.
+  const changeEffort = (effort: string) => {
+    setRuntimeSelection({ effort })
+    pgSetEffort(session.id, session.agentId ?? '', effort, webchatConversationId)
+  }
+  const changePermission = (permissionPreset: string) => {
+    setRuntimeSelection({ permissionPreset })
+    pgSetPermissionPreset(session.id, session.agentId ?? '', permissionPreset, webchatConversationId)
+  }
+  const changeFast = (fast: boolean) => {
+    setRuntimeSelection({ fast })
+    pgSetFast(session.id, session.agentId ?? '', fast, webchatConversationId)
+  }
+  const changeRuntimeModel = (target: DecisionRuntimeTarget) => {
+    const currentEffort = runtimeSelection?.effort ?? session.effort ?? owner?.reasoning ?? ''
+    const effort = sessionEffortAfterModelChange(target.runtime, owningDaemon, target.model, currentEffort)
+    // Another runtime preselects its auto mode, else full access, else its default.
+    const permissionPreset =
+      target.runtime === agentRuntime
+        ? runtimeSelection?.permissionPreset
+        : runtimeSwitchPermissionMode(modelSource || undefined, target.runtime)
+    setRuntimeSelection({ ...target, effort, permissionPreset })
+    if (beforeFirstTurn) {
+      pgStageRuntime(session.id, { ...target, effort, permissionMode: permissionPreset })
+    } else {
+      pgSetModel(session.id, session.agentId ?? '', target.model, webchatConversationId)
+      if (effort !== currentEffort) pgSetEffort(session.id, session.agentId ?? '', effort, webchatConversationId)
+    }
+  }
+  // The composer's console commands: only what the toolbar would let this reader do right now.
+  const runtimeCommandsOpen =
+    !multiLive && runtimeChangesEnabled && !byDecision && !runtimePending && !!(agentRuntime || pgModel)
+  const composerControls: ControlCommand[] = []
+  if (pgBusy || isPgTurnUnstreamed(session.id))
+    composerControls.push({
+      name: 'stop',
+      choices: null,
+      run: () => pgCancel(session.id, composerAgentId, webchatConversationId)
+    })
+  if (runtimeCommandsOpen && pgModelOptions.length > 0)
+    composerControls.push({
+      name: 'model',
+      choices: pgModelOptions.map((model) => ({ value: model, label: model, current: model === pgModel })),
+      run: (model) => model && changeRuntimeModel({ runtime: agentRuntime, model })
+    })
+  if (runtimeCommandsOpen && pgEffort && pgEffortOptions.length > 0)
+    composerControls.push({
+      name: 'effort',
+      choices: pgEffortOptions.map((choice) => ({ ...choice, current: choice.value === pgEffort })),
+      run: (effort) => effort && changeEffort(effort)
+    })
+  if (runtimeCommandsOpen && pgPermissionPreset && pgApprovalOptions.length > 0)
+    composerControls.push({
+      name: 'permission',
+      choices: pgApprovalOptions.map(({ value, label }) => ({ value, label, current: value === pgPermissionPreset })),
+      run: (mode) => mode && changePermission(mode)
+    })
+  if (runtimeCommandsOpen && pgFastModeAvailable)
+    composerControls.push({
+      name: 'fast',
+      choices: [
+        { value: 'on', label: commandMenuT('fastOn'), current: pgFastMode },
+        { value: 'off', label: commandMenuT('fastOff'), current: !pgFastMode }
+      ],
+      run: (value) => value && changeFast(value === 'on')
+    })
   // Run facts for the header's "Details" popover — the stats that used to live in
   // the header cards (duration, usage) plus the run's identity rows. Status is not
   // here: it rides the top-bar crumb as a pill next to the session name. Both form
@@ -5358,6 +5431,7 @@ export default function SessionDetailView() {
                             commandPickRef.current = target
                           }}
                           commands={commandParticipants}
+                          controls={composerControls}
                           history={composerHistory}
                           hasEarlier={visibleHasEarlier}
                           loadEarlier={loadEarlierConversation}
@@ -5547,74 +5621,21 @@ export default function SessionDetailView() {
                                     ? undefined
                                     : {
                                         effort: pgEffort
-                                          ? {
-                                              value: pgEffort,
-                                              options: pgEffortOptions,
-                                              onChange: (effort) => {
-                                                setRuntimeSelection({ effort })
-                                                pgSetEffort(
-                                                  session.id,
-                                                  session.agentId ?? '',
-                                                  effort,
-                                                  webchatConversationId
-                                                )
-                                              }
-                                            }
+                                          ? { value: pgEffort, options: pgEffortOptions, onChange: changeEffort }
                                           : undefined,
                                         approval: pgPermissionPreset
                                           ? {
                                               value: pgPermissionPreset,
                                               options: pgApprovalOptions,
-                                              onChange: (permissionPreset) => {
-                                                setRuntimeSelection({ permissionPreset })
-                                                pgSetPermissionPreset(
-                                                  session.id,
-                                                  session.agentId ?? '',
-                                                  permissionPreset,
-                                                  webchatConversationId
-                                                )
-                                              }
+                                              onChange: changePermission
                                             }
                                           : undefined,
                                         fast: pgFastModeAvailable
-                                          ? {
-                                              value: pgFastMode,
-                                              onChange: (fast) => {
-                                                setRuntimeSelection({ fast })
-                                                pgSetFast(
-                                                  session.id,
-                                                  session.agentId ?? '',
-                                                  fast,
-                                                  webchatConversationId
-                                                )
-                                              }
-                                            }
+                                          ? { value: pgFastMode, onChange: changeFast }
                                           : undefined
                                       }
                                 }
-                                onChange={(target) => {
-                                  const currentEffort =
-                                    runtimeSelection?.effort ?? session.effort ?? owner?.reasoning ?? ''
-                                  const effort = sessionEffortAfterModelChange(
-                                    target.runtime,
-                                    owningDaemon,
-                                    target.model,
-                                    currentEffort
-                                  )
-                                  // Another runtime preselects its auto mode, else full access, else its default.
-                                  const permissionPreset =
-                                    target.runtime === agentRuntime
-                                      ? runtimeSelection?.permissionPreset
-                                      : runtimeSwitchPermissionMode(modelSource || undefined, target.runtime)
-                                  setRuntimeSelection({ ...target, effort, permissionPreset })
-                                  if (beforeFirstTurn) {
-                                    pgStageRuntime(session.id, { ...target, effort, permissionMode: permissionPreset })
-                                  } else {
-                                    pgSetModel(session.id, session.agentId ?? '', target.model, webchatConversationId)
-                                    if (effort !== currentEffort)
-                                      pgSetEffort(session.id, session.agentId ?? '', effort, webchatConversationId)
-                                  }
-                                }}
+                                onChange={changeRuntimeModel}
                               />
                             )}
                             {canChooseWorktree && (

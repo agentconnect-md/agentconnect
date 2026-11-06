@@ -129,22 +129,25 @@ export function tokenSpanEnd(text: string, start: number): number {
   return end
 }
 
-/** The `/command` being typed at `caret`, if any (composer command picker).
- *
- *  Unlike a mention, a command is the prompt's own leading token — ACP invokes one as the prompt
- *  text `/name arg` — so ONLY whitespace may precede it, exactly matching the daemon's
- *  translation gate (`matchSkillInvocation` trims and demands the prefix). A leading @mention
- *  used to be tolerated here, but the daemon never translates that draft, so offering the picker
- *  on it manufactured the very UI-says-yes/wire-says-no split this feature exists to close;
- *  owner addressing is structural now, so the allowance had no remaining purpose. */
-export function commandQueryAt(text: string, caret: number): { start: number; query: string } | null {
-  const upto = text.slice(0, caret)
-  const at = upto.lastIndexOf('/')
-  if (at === -1) return null
-  const query = upto.slice(at + 1)
-  if (/\s/.test(query)) return null
-  if (!/^\s*$/.test(upto.slice(0, at))) return null
-  return { start: at, query }
+/** The prefixes the composer's command picker opens on; `!` is the chat surfaces' alias for `/`. */
+export type CommandPrefix = '/' | '!'
+
+/** The leading `/` or `!` command typed up to `caret`; only whitespace may precede it, matching the daemon's gate. */
+export function commandQueryAt(
+  text: string,
+  caret: number
+): { start: number; prefix: CommandPrefix; query: string } | null {
+  const match = /^(\s*)([/!])([^\s/!]*)$/.exec(text.slice(0, caret))
+  return match ? { start: match[1]!.length, prefix: match[2] as CommandPrefix, query: match[3]! } : null
+}
+
+/** A leading `/word arg` typed up to `caret` on one line — the argument a console command's choices narrow by. */
+export function commandArgAt(
+  text: string,
+  caret: number
+): { start: number; prefix: CommandPrefix; word: string; arg: string } | null {
+  const match = /^(\s*)([/!])([A-Za-z]+) +([^\n]*)$/.exec(text.slice(0, caret))
+  return match ? { start: match[1]!.length, prefix: match[2] as CommandPrefix, word: match[3]!, arg: match[4]! } : null
 }
 
 /** Where a `/sessions/:id` deep link goes when its session turns out to belong

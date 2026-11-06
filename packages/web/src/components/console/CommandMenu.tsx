@@ -1,28 +1,42 @@
 'use client'
 
-// The `/command` picker's floating list. Like MentionMenu it owns no focus — the textarea keeps it
-// and drives `activeIndex` through useCommandAutocomplete.handleKeyDown.
-//
-// The pane beside the list is the point of this menu: ACP makes `description` a REQUIRED field on
-// every advertised command, and a name alone ("/tdd", "/handoff") does not say what running it
-// does. Zed's ACP picker drops the description and its users ask for it back
-// (zed-industries/zed discussion #49085), so the data is there and the affordance is the gap.
+// The `/` and `!` picker's floating list plus a desktop pane describing the highlighted row; the textarea keeps focus.
 
 import { AgentIconView } from '@/components/marks'
+import { Icon } from '@/components/ui'
 import { useTranslations } from 'next-intl'
 import type { AgentIcon } from '@/lib/agent-icon'
-import type { CommandCandidate } from '@/components/console/runtime-command-menu'
+import type { ControlName } from '@/components/console/composer-control-commands'
 import type { RuntimeCommandsGap } from '@/components/console/useRuntimeCommands'
-import { COMMAND_MENU_MAX_HEIGHT } from '@/components/console/useCommandAutocomplete'
+import { COMMAND_MENU_MAX_HEIGHT, type CommandMenuEntry } from '@/components/console/useCommandAutocomplete'
 import type { MentionCoords } from '@/components/console/useMentionAutocomplete'
 
 const LIST_WIDTH = 240
 const DETAIL_WIDTH = 260
 
+const CONTROL_ICON: Readonly<Record<ControlName, string>> = {
+  stop: 'square',
+  model: 'cpu',
+  effort: 'brain',
+  permission: 'shield',
+  fast: 'zap'
+}
+
+const ROW = 'fopt min-h-8 w-full gap-2 rounded-md px-2 py-[5px] text-[12px]'
+const SUBTEXT = 'block truncate font-sans text-[11px] leading-normal font-normal text-(--text-tertiary)'
+
+function entryKey(entry: CommandMenuEntry): string {
+  if (entry.kind === 'skill') return `skill:${entry.candidate.agentId}:${entry.candidate.name}`
+  if (entry.kind === 'control') return `control:${entry.control.name}`
+  return `choice:${entry.control.name}:${entry.choice.value}`
+}
+
 export function CommandMenu({
   options,
   activeIndex,
   coords,
+  /** The typed trigger, so a console command reads back the way it was typed. */
+  prefix = '/',
   /** Icons by agentId — a multi-participant conversation marks whose command each row is. */
   iconOf,
   gaps,
@@ -31,30 +45,31 @@ export function CommandMenu({
   onHover,
   onPick
 }: {
-  options: readonly CommandCandidate[]
+  options: readonly CommandMenuEntry[]
   activeIndex: number
   coords: MentionCoords | null
+  prefix?: string
   iconOf: (agentId: string) => { icon: AgentIcon | null | undefined; runtime: string } | undefined
   showOwner: boolean
   /** Participants that contributed nothing, and why — a partial roster reads as partial, not empty. */
   gaps?: ReadonlyArray<{ agentId: string; agentName: string; reason: RuntimeCommandsGap }>
   onHover: (index: number) => void
-  onPick: (option: CommandCandidate) => void
+  onPick: (option: CommandMenuEntry) => void
 }) {
   const t = useTranslations('Common.commandMenu')
+  // Choices are a second level: the skills' roster gaps say nothing about them.
+  const first = options[0]
+  const choosing = first?.kind === 'choice' ? first.control.name : null
+  const shownGaps = choosing ? [] : (gaps ?? [])
   // Render for gaps alone too: a roster whose every participant is a gap must say so, not vanish.
-  if ((options.length === 0 && (gaps?.length ?? 0) === 0) || !coords) return null
+  if ((options.length === 0 && shownGaps.length === 0) || !coords) return null
   const active = options[activeIndex]
   const position = coords.openUpward
     ? { bottom: coords.elHeight - coords.top + 4 }
     : { top: coords.top + coords.height + 4 }
-  // Clamp like MentionMenu: near a narrow composer's right edge `left` would otherwise push the
-  // whole popover past it. Clamped against the list alone — the pane is desktop-only and fixed.
+  // Clamp like MentionMenu: near a narrow composer's right edge `left` would otherwise push the popover past it.
   const left = Math.min(Math.max(0, coords.left - 4), Math.max(0, coords.elWidth - LIST_WIDTH))
-  // Anchored by whichever edge faces the caret: opening upward, the wrapper's BOTTOM is the fixed
-  // edge, so the cards must bottom-align — top-aligning there leaves the shorter card (usually the
-  // list, the primary surface) floating high above the composer while only the taller pane touches
-  // it. Downward, the top edge faces the caret and top-alignment is correct.
+  // Bottom-align when opening upward so the list, not the taller pane, hugs the composer.
   return (
     <div
       style={{ ...position, left }}
@@ -62,21 +77,20 @@ export function CommandMenu({
     >
       <div
         role="listbox"
-        aria-label={t('runCommand')}
+        aria-label={choosing ? t(`controls.${choosing}.title`) : t('runCommand')}
         style={{ maxHeight: COMMAND_MENU_MAX_HEIGHT }}
         className="w-[240px] flex-none overflow-y-auto rounded-[9px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg)"
       >
         {options.map((option, index) => {
-          const owner = iconOf(option.agentId)
+          const selected = index === activeIndex
+          const divider = index > 0 && option.kind === 'skill' && options[index - 1]!.kind === 'control'
           return (
             <button
-              key={`${option.agentId}:${option.name}`}
+              key={entryKey(option)}
               type="button"
               role="option"
-              aria-selected={index === activeIndex}
-              className={`fopt min-h-8 w-full gap-2 rounded-md px-2 py-[5px] text-[12px] ${
-                index === activeIndex ? 'bg-(--surface-hover)' : ''
-              }`}
+              aria-selected={selected}
+              className={`${ROW} ${selected ? 'bg-(--surface-hover)' : ''} ${divider ? 'mt-1' : ''}`}
               onMouseEnter={() => onHover(index)}
               onMouseDown={(event) => {
                 // preventDefault keeps focus in the textarea so pick() can restore the caret.
@@ -84,24 +98,11 @@ export function CommandMenu({
                 onPick(option)
               }}
             >
-              {showOwner && owner && (
-                <span className="av h-[18px] w-[18px] flex-none rounded-xs">
-                  <AgentIconView icon={owner.icon} runtime={owner.runtime} size={18} />
-                </span>
-              )}
-              <span className="min-w-0 flex-1 text-left">
-                <span className="mono block truncate text-[12px]">/{option.name}</span>
-                {(option.description || showOwner) && (
-                  <span className="block truncate font-sans text-[11px] leading-normal font-normal text-(--text-tertiary) desktop:hidden">
-                    {showOwner ? `${option.agentName} · ` : ''}
-                    {option.description}
-                  </span>
-                )}
-              </span>
+              <MenuRow option={option} prefix={prefix} iconOf={iconOf} showOwner={showOwner} />
             </button>
           )
         })}
-        {(gaps ?? []).map((gap) => (
+        {shownGaps.map((gap) => (
           <div
             key={gap.agentId}
             className="border-t border-(--border-subtle) px-2 py-[5px] font-sans text-[11px] leading-normal font-normal text-(--text-tertiary)"
@@ -111,25 +112,114 @@ export function CommandMenu({
           </div>
         ))}
       </div>
-      {active && (
+      {active && active.kind !== 'choice' && (
         <div
           style={{ maxHeight: COMMAND_MENU_MAX_HEIGHT, width: DETAIL_WIDTH }}
           className="hidden flex-none overflow-y-auto rounded-[9px] border border-(--border-default) bg-(--surface-card) p-3 shadow-(--shadow-lg) desktop:block"
         >
-          <div className="mono text-[12px] break-all text-(--text-primary)">/{active.name}</div>
-          {active.hint && (
-            <div className="mono mt-[3px] text-[11px] break-all text-(--text-tertiary)">{active.hint}</div>
-          )}
-          <p className="mt-2 font-sans text-[12px] leading-[1.5] font-normal text-(--text-secondary)">
-            {active.description || t('noDescription')}
-          </p>
-          {showOwner && (
-            <div className="mt-2 border-t border-(--border-subtle) pt-2 font-sans text-[11px] font-normal text-(--text-tertiary)">
-              {t('runsOn', { agent: active.agentName })}
-            </div>
+          {active.kind === 'skill' ? (
+            <>
+              <div className="mono text-[12px] break-all text-(--text-primary)">/{active.candidate.name}</div>
+              {active.candidate.hint && (
+                <div className="mono mt-[3px] text-[11px] break-all text-(--text-tertiary)">
+                  {active.candidate.hint}
+                </div>
+              )}
+              <p className="mt-2 font-sans text-[12px] leading-[1.5] font-normal text-(--text-secondary)">
+                {active.candidate.description || t('noDescription')}
+              </p>
+              {showOwner && (
+                <div className="mt-2 border-t border-(--border-subtle) pt-2 font-sans text-[11px] font-normal text-(--text-tertiary)">
+                  {t('runsOn', { agent: active.candidate.agentName })}
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <div className="mono text-[12px] break-all text-(--text-primary)">
+                {prefix}
+                {active.control.name}
+              </div>
+              {active.control.choices && (
+                <div className="mono mt-[3px] text-[11px] break-all text-(--text-tertiary)">
+                  {t(`controls.${active.control.name as Exclude<ControlName, 'stop'>}.hint`)}
+                </div>
+              )}
+              <p className="mt-2 font-sans text-[12px] leading-[1.5] font-normal text-(--text-secondary)">
+                {t(`controls.${active.control.name}.does`)}
+              </p>
+              <div className="mt-2 border-t border-(--border-subtle) pt-2 font-sans text-[11px] font-normal text-(--text-tertiary)">
+                {t('consoleAction')}
+              </div>
+            </>
           )}
         </div>
       )}
     </div>
+  )
+}
+
+function MenuRow({
+  option,
+  prefix,
+  iconOf,
+  showOwner
+}: {
+  option: CommandMenuEntry
+  prefix: string
+  iconOf: (agentId: string) => { icon: AgentIcon | null | undefined; runtime: string } | undefined
+  showOwner: boolean
+}) {
+  const t = useTranslations('Common.commandMenu')
+  if (option.kind === 'choice') {
+    const { choice } = option
+    return (
+      <>
+        <span className="flex h-[18px] w-[18px] flex-none items-center justify-center text-(--text-secondary)">
+          {choice.current && <Icon name="check" size={13} />}
+        </span>
+        <span className="min-w-0 flex-1 text-left">
+          <span className="block truncate font-sans text-[12px]">{choice.label}</span>
+          {choice.label !== choice.value && <span className={`mono ${SUBTEXT}`}>{choice.value}</span>}
+        </span>
+      </>
+    )
+  }
+  if (option.kind === 'control') {
+    const { name } = option.control
+    return (
+      <>
+        <span className="flex h-[18px] w-[18px] flex-none items-center justify-center text-(--text-secondary)">
+          <Icon name={CONTROL_ICON[name]} size={13} />
+        </span>
+        <span className="min-w-0 flex-1 text-left">
+          <span className="mono block truncate text-[12px]">
+            {prefix}
+            {name}
+          </span>
+          <span className={`${SUBTEXT} desktop:hidden`}>{t(`controls.${name}.does`)}</span>
+        </span>
+      </>
+    )
+  }
+  const { candidate } = option
+  const owner = iconOf(candidate.agentId)
+  return (
+    <>
+      {showOwner && owner && (
+        <span className="av h-[18px] w-[18px] flex-none rounded-xs">
+          <AgentIconView icon={owner.icon} runtime={owner.runtime} size={18} />
+        </span>
+      )}
+      <span className="min-w-0 flex-1 text-left">
+        <span className="mono block truncate text-[12px]">/{candidate.name}</span>
+        {(candidate.description || showOwner) && (
+          <span className={`${SUBTEXT} desktop:hidden`}>
+            {showOwner ? `${candidate.agentName} · ` : ''}
+            {candidate.description}
+          </span>
+        )}
+      </span>
+    </>
   )
 }

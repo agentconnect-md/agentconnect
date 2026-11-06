@@ -132,7 +132,17 @@
       "unreported": " hasn’t reported its skills yet — they appear after its next session starts",
       "unreachable": " is unreachable",
       "noDescription": "This command has no description.",
-      "runsOn": "Runs on {agent}"
+      "runsOn": "Runs on {agent}",
+      "consoleAction": "Runs in the console; it is not sent to the agent.",
+      "controls": {
+        "stop": { "title": "Stop", "does": "Stop the current answer" },
+        "model": { "title": "Model", "hint": "[model]", "does": "List or switch models" },
+        "effort": { "title": "Reasoning effort", "hint": "[level]", "does": "List or switch the reasoning effort" },
+        "permission": { "title": "Permission mode", "hint": "[mode]", "does": "List or switch the permission mode" },
+        "fast": { "title": "Fast mode", "hint": "on|off", "does": "Turn fast mode on or off" }
+      },
+      "fastOn": "On",
+      "fastOff": "Off"
     },
     "composerMenu": {
       "noMatches": "No matches"
