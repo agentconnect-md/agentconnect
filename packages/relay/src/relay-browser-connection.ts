@@ -100,6 +100,16 @@ function uuidArray(value: unknown, max: number): string[] | undefined {
   return out
 }
 
+/** A refused frame's `type` and top-level field names, never their values, for the relay log. */
+function frameShape(frame: unknown): string {
+  if (typeof frame !== 'object' || frame === null || Array.isArray(frame)) return 'not an object'
+  const m = frame as Record<string, unknown>
+  const name = (s: string): string => (/^[A-Za-z_]{1,32}$/.test(s) ? s : '?')
+  const type = typeof m.type === 'string' ? name(m.type) : 'none'
+  const keys = Object.keys(m).slice(0, 16).map(name)
+  return `type ${type}; fields ${keys.join(',') || 'none'}`
+}
+
 /** Parse a browser envelope into a webchat op (+ targeting), or null if unrecognized. */
 export function parseBrowserFrame(
   msg: unknown,
@@ -341,6 +351,7 @@ export class RelayBrowserConnection implements ChatSink {
     try {
       parsed = JSON.parse(text)
     } catch {
+      this.deps.log.warn(`webchat: non-JSON frame in ${this.deps.chatId}`)
       this.send({ type: 'error', message: 'invalid frame' })
       return
     }
@@ -352,6 +363,7 @@ export class RelayBrowserConnection implements ChatSink {
       this.deps.userIdentities
     )
     if (!op) {
+      this.deps.log.warn(`webchat: unrecognized frame in ${this.deps.chatId} (${frameShape(parsed)})`)
       this.send({ type: 'error', message: 'unrecognized frame' })
       return
     }
@@ -438,14 +450,15 @@ export class RelayBrowserConnection implements ChatSink {
     // A gone recorded member is not a gone agent: a live pool member claims the duty or names the holder.
     const target = resolveWebchatDaemon(this.deps, participant, agentId)
     if (!target) {
-      // The attach probe is background discovery — always a quiet per-agent
-      // refusal, never the legacy error frame.
+      // The attach probe is background discovery: a quiet per-agent refusal, never the error frame.
       if (kind === 'attach') {
         this.send({ type: 'attached', ack: { accepted: false, agentId, reason: 'no_agent' } })
         return
       }
-      // A single-participant conversation keeps the legacy error frame; a
-      // multi-agent one degrades per agent so the other targets still run.
+      this.deps.log.warn(
+        `webchat: ${kind} for ${agentId} in ${this.deps.chatId} has no live daemon to reach (verdict named ${participant?.daemonId ?? 'none'})`
+      )
+      // A single-participant conversation keeps the legacy error frame; a multi-agent one degrades per agent.
       if (this.byAgentId.size === 1) {
         this.send({ type: 'error', message: 'agent daemon offline' })
       } else if (kind === 'turn') {
@@ -459,7 +472,6 @@ export class RelayBrowserConnection implements ChatSink {
           }
         })
       } else if (kind === 'resume') {
-        this.deps.log.warn(`webchat: resume for ${agentId} in ${this.deps.chatId} has no live daemon to reach`)
         this.send({ type: 'resumed', ack: { accepted: false, agentId, reason: 'no_agent' } })
       }
       return
