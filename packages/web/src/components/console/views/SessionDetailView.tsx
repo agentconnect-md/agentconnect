@@ -4578,9 +4578,10 @@ export default function SessionDetailView() {
             ) : null}
             {followUpPageAgentId ? <FollowUpTaskSummary agentId={followUpPageAgentId} sessionId={session.id} /> : null}
             {/* DESKTOP HEADER — one line: the session's state, name and place on the left, who and what as icons on the right. Mobile has its own row below. */}
+            {/* Where the dock is a drawer, its fixed Panels toggle sits over the row's right end, so the row leaves it room. */}
             <div
               data-session-header=""
-              className="hidden min-w-0 items-center gap-2 border-b border-(--border-subtle) pb-[10px] desktop:flex"
+              className="hidden min-w-0 items-center gap-2 border-b border-(--border-subtle) pb-[10px] desktop:flex desktop:max-wide:pr-11"
             >
               {taskOwnerHref ? (
                 <Link
