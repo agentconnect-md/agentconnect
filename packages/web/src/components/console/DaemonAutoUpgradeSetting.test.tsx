@@ -43,6 +43,10 @@ afterEach(async () => {
 const toggle = () => host.querySelector<HTMLButtonElement>('button[role="switch"]')!
 
 const tooltip = () => host.querySelector<HTMLElement>('[title]')?.title ?? ''
+const details = async () => {
+  await act(async () => host.querySelector<HTMLButtonElement>('button[aria-expanded]')!.click())
+  return host.querySelector('[role="note"]')?.textContent ?? ''
+}
 
 describe('DaemonAutoUpgradeSetting', () => {
   const render = () => act(async () => root.render(<DaemonAutoUpgradeSetting daemon={daemon} />))
@@ -60,6 +64,7 @@ describe('DaemonAutoUpgradeSetting', () => {
     await render()
     expect(toggle().disabled).toBe(true)
     expect(tooltip()).toContain('not available for pool members')
+    expect(await details()).toContain('not available for pool members')
   })
 
   it('is read-only for a caller who cannot manage the daemon lifecycle', async () => {
@@ -72,8 +77,8 @@ describe('DaemonAutoUpgradeSetting', () => {
     daemon.autoUpgrade = true
     await render()
     expect(toggle().getAttribute('aria-checked')).toBe('true')
-    expect(host.textContent).toContain('Waiting for an idle window to upgrade to v1.41.0')
     expect(tooltip()).toContain('Waiting for an idle window to upgrade to v1.41.0')
+    expect(await details()).toContain('Waiting for an idle window to upgrade to v1.41.0')
   })
 
   it('shows the last automatic failure with its reason', async () => {
@@ -85,7 +90,7 @@ describe('DaemonAutoUpgradeSetting', () => {
       settledAt: '2026-10-28T00:00:00.000Z'
     }
     await render()
-    expect(host.textContent).toContain('Auto-upgrade to v1.41.0 failed: rolled back: crashed on start')
+    expect(await details()).toContain('Auto-upgrade to v1.41.0 failed: rolled back: crashed on start')
   })
 
   it('surfaces a refused change and returns the switch to the stored value', async () => {

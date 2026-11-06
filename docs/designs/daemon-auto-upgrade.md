@@ -320,7 +320,8 @@ On the daemon detail view's header, right after the version:
 - beside the switch, an icon for the last automatic outcome ("Upgraded to v1.41.0 2 h ago",
   "v1.41.0 rolled back: crashed on start") from the DTO's `lastAutoUpgrade`, and for
   "Waiting for an idle window" while the switch is on, an update is available, and nothing
-  is pending; the full text is the switch's tooltip.
+  is pending; tapping or clicking the label opens the help, the reason a switch is
+  unavailable, and each note's full text, so touch screens reach them too.
 
 The switch sits next to the version so whether a daemon moves on its own is read where its
 version is. The fleet list shows a small auto-upgrade indicator next to the version. The
