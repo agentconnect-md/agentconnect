@@ -215,7 +215,9 @@ offer runtime-setting operations, with one exception. `set_model`, `set_effort`,
 `set_permission_mode`, and `set_fast` are rejected even when
 `chatActions` is `settings`, except on a coordinator's task: its own thread
 changes the task's settings under the rule its conversation's composer follows
-(`chatActions` is `settings` and the caller may change settings there). `cancel` is accepted only for a `turnId`
+(`chatActions` is `settings` and the caller may change settings there). A task is
+a delegated `subsession:` session, or a threaded task in its own platform thread
+while the task index holds it open. `cancel` is accepted only for a `turnId`
 owned by that same targeted conversation's live webchat stream; it is not a
 session-global stop capability.
 
