@@ -315,9 +315,13 @@ export class WebchatTransport {
     author: WebchatAuthor,
     sink: WebchatSink,
     requestedTurnId?: string,
-    post?: { postId: string; at: number }
+    post?: { postId: string; at: number },
+    /** A task's own thread may send images and files; the caller passes them only for one. */
+    inlineImages?: WebchatImageAttachment[],
+    uploadedFiles?: WebchatFileAttachment[]
   ): Promise<WebchatAck> {
     const turnId = requestedTurnId ?? randomUUID()
+    const attachments = decodeChatAttachments(turnId, { images: inlineImages, files: uploadedFiles })
     const prepared = await this.continuation.prepare({
       agentId,
       conversationId: chatId,
@@ -325,7 +329,8 @@ export class WebchatTransport {
       turnId,
       text,
       author,
-      post
+      post,
+      ...(attachments.length ? { attachments } : {})
     })
     if (!prepared.accepted) return { ...prepared, turnId }
     // The console takes the same control commands as the platform conversation it continues.

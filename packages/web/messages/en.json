@@ -1099,7 +1099,8 @@
         "newSince": "New since you last read this",
         "map": "Turns in this conversation"
       },
-      "jumpToLatest": "Jump to latest"
+      "jumpToLatest": "Jump to latest",
+      "attachFailed": "Couldn’t prepare that image."
     },
     "share": {
       "share": "Share",

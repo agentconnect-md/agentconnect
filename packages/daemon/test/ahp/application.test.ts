@@ -123,6 +123,35 @@ it("runs VS Code's turn shape as plain text on a continuation, ignoring its mode
   expect(f.host.setRuntime).not.toHaveBeenCalled()
   expect(f.hooks.admitted).toHaveBeenCalledOnce()
 })
+it("takes an image on a coordinator task's own thread, and refuses one on any other continued session", async () => {
+  const f = fixture()
+  const withImage = {
+    ...start,
+    action: {
+      ...start.action,
+      message: {
+        origin: { kind: MessageKind.User },
+        text: 'here is the screenshot',
+        attachments: [
+          {
+            type: 'embeddedResource',
+            label: 'shot.png',
+            contentType: 'image/png',
+            data: Buffer.from('png').toString('base64')
+          }
+        ]
+      }
+    }
+  } as DispatchActionParams
+  await expect(
+    f.application.dispatch({ ...scope, targetSessionId: 'outward' }, withImage, origin, f.hooks)
+  ).rejects.toThrow('does not support attachment')
+  vi.mocked(f.host.isTaskTarget).mockResolvedValue(true)
+  await f.application.dispatch({ ...scope, targetSessionId: 'outward' }, withImage, origin, f.hooks)
+  const request = vi.mocked(f.host.continuation.prepare).mock.calls[0]?.[0]
+  expect(request?.targetSessionId).toBe('outward')
+  expect(request?.attachments).toHaveLength(1)
+})
 it("changes a coordinator task's runtime from its own thread, and refuses any other continued session", async () => {
   const f = fixture()
   const config = {

@@ -29,6 +29,8 @@ import {
 } from '@/components/console/task-thread'
 import type { TaskLink } from '@/components/console/task-link'
 import { fetchSessionDetail } from '@/lib/api'
+import { ComposerFileChips, stageComposerFile } from '@/components/console/ComposerFiles'
+import { prepareWebchatImage } from '@/lib/webchat-image'
 import { RunningCommandsDock } from '@/components/console/RunningCommandsDock'
 import { agentToneColor } from '@/lib/agent-tone'
 import { agentLabel, MOCK_MODE, type Agent, type DaemonRow } from '@/lib/data'
@@ -55,7 +57,8 @@ export function TaskThreadPanel({
   onBack,
   taskApprovals,
   runtimeContext,
-  personPicture
+  personPicture,
+  fileTransfer = false
 }: {
   /** The coordinator's agent, which runs the task. */
   agentId: string
@@ -76,6 +79,8 @@ export function TaskThreadPanel({
   onBack: () => void
   /** Who may answer this task's approvals and the conversation they are read through: the coordinator page's own rules. */
   taskApprovals?: { listSessionId: string; enabled: boolean; conversationPermissions: boolean }
+  /** The agent's daemon takes uploaded files, so a reply may carry one besides an image. */
+  fileTransfer?: boolean
   /** What the task's runtime picker reads: the agent, its daemon's catalogs, and whether this reader may change settings. */
   runtimeContext?: {
     owner: Agent | undefined
@@ -315,8 +320,8 @@ export function TaskThreadPanel({
         canReply={canReply}
         checking={detail === undefined}
         placeholder={t('replyPlaceholder')}
-        hint={t('replyHint')}
         readOnly={t('readOnly')}
+        {...(MOCK_MODE ? {} : { attach: { agentId, transfer: fileTransfer } })}
         sendLabel={t('send')}
         onSend={send}
         // Stop shows as soon as a turn runs here, before the task list catches up; the console's stop route is used once the list says it runs.
@@ -595,7 +600,6 @@ function ThreadComposer({
   canReply,
   checking,
   placeholder,
-  hint,
   readOnly,
   sendLabel,
   onSend,
@@ -605,14 +609,13 @@ function ThreadComposer({
   setDraft,
   onFocus,
   runtime,
+  attach,
   dock
 }: {
   sessionId: string
   canReply: boolean
   checking: boolean
   placeholder: string
-  /** Who a reply reaches, under the box. */
-  hint: string
   readOnly: string
   sendLabel: string
   onSend: () => void
@@ -622,13 +625,24 @@ function ThreadComposer({
   stopLabel: string
   setDraft: (text: string) => void
   onFocus?: () => void
-  /** The task's runtime picker, beside the send button. */
+  /** The task's runtime picker, beside the attach button. */
   runtime?: ReactNode
+  /** Images and files go with a reply, staged as the conversation's composer stages them. */
+  attach?: { agentId: string; transfer: boolean }
   /** What the task runs in the background, docked over the box. */
   dock: ReactNode
 }) {
+  const t = useTranslations('Sessions.detail')
   const draft = usePgDraft(sessionId)
   const hasText = usePgDraftHasText(sessionId)
+  const { getPgImage, setPgImage, getPgFiles, setPgFiles } = usePlayground()
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [preparing, setPreparing] = useState(false)
+  const [attachError, setAttachError] = useState<string | null>(null)
+  const image = getPgImage(sessionId)
+  const files = getPgFiles(sessionId)
+  const hasAttachment = !!image || files.length > 0
+  const uploading = files.some((file) => file.status === 'uploading')
   if (!canReply && !checking)
     return (
       <div className="flex-none border-t border-(--border-subtle) px-4 py-3 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
@@ -636,10 +650,64 @@ function ThreadComposer({
         {readOnly}
       </div>
     )
+  // An image goes inline, as the conversation's composer sends it; any other file is uploaded and referenced.
+  const pick = async (file: File | undefined) => {
+    if (inputRef.current) inputRef.current.value = ''
+    if (!attach || !file) return
+    setAttachError(null)
+    if (!file.type.startsWith('image/')) {
+      stageComposerFile(
+        {
+          sessionId,
+          agentId: attach.agentId,
+          transfer: attach.transfer,
+          getPgFiles,
+          setPgFiles,
+          onError: setAttachError
+        },
+        file
+      )
+      return
+    }
+    setPreparing(true)
+    try {
+      setPgImage(sessionId, await prepareWebchatImage(file))
+    } catch (error) {
+      setAttachError(error instanceof Error ? error.message : t('attachFailed'))
+    } finally {
+      setPreparing(false)
+    }
+  }
+  const canSend = canReply && (hasText || hasAttachment) && !uploading && !preparing
   return (
     <div className="flex-none border-t border-(--border-subtle) px-3 pt-[10px] pb-3">
       {dock}
-      <div className="flex flex-col rounded-[10px] border border-(--border-default) bg-(--surface-card) shadow-(--shadow-xs) transition-[border-color,box-shadow] focus-within:border-(--brand) focus-within:[box-shadow:0_0_0_3px_var(--brand-ring)]">
+      <div className="flex flex-col rounded-[11px] border border-(--border-default) bg-(--surface-card) shadow-(--shadow-xs) transition-[border-color,box-shadow] focus-within:border-(--brand) focus-within:[box-shadow:0_0_0_3px_var(--brand-ring)]">
+        {attach ? (
+          <ComposerFileChips
+            files={files}
+            onRemove={(key) => setPgFiles(sessionId, (staged) => staged.filter((file) => file.key !== key))}
+          />
+        ) : null}
+        {attach && image ? (
+          <div className="relative mx-[15px] mt-3 w-fit">
+            <img
+              src={`data:${image.mimeType};base64,${image.data}`}
+              alt={image.name}
+              title={image.name}
+              className="h-20 w-20 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) object-cover"
+            />
+            <button
+              type="button"
+              className="iconbtn absolute -top-2 -right-2 h-6 w-6 rounded-full shadow-(--shadow-xs)"
+              title={t('removeImage')}
+              aria-label={t('removeImage')}
+              onClick={() => setPgImage(sessionId)}
+            >
+              <Icon name="x" size={14} />
+            </button>
+          </div>
+        ) : null}
         <textarea
           aria-label={placeholder}
           placeholder={placeholder}
@@ -651,24 +719,44 @@ function ThreadComposer({
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault()
-              onSend()
+              if (canSend) onSend()
             }
           }}
-          className="max-h-[160px] min-h-[44px] min-w-0 resize-none border-0 bg-transparent px-3 pt-[10px] pb-[2px] font-sans text-[13.5px] font-normal leading-[1.55] text-(--text-primary) outline-none placeholder:text-(--text-tertiary)"
+          className="max-h-[160px] min-h-[56px] min-w-0 resize-none border-0 bg-transparent px-[15px] pt-[13px] pb-[2px] font-sans text-[14px] font-normal leading-[1.55] text-(--text-primary) outline-none placeholder:text-(--text-tertiary)"
         />
-        <div className="flex items-center gap-2 pt-[5px] pr-[7px] pb-[6px] pl-[10px]">
-          <span
-            data-task-thread-hint=""
-            className="min-w-0 flex-1 truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)"
+        {attachError ? (
+          <div
+            role="alert"
+            className="px-[15px] pb-1 font-sans text-[12px] font-normal leading-normal text-(--status-error)"
           >
-            {hint}
-          </span>
+            {attachError}
+          </div>
+        ) : null}
+        {/* The conversation composer's toolbar: attach and the runtime on the left, stop or send at the right. */}
+        <div className="flex items-center gap-2 border-t border-(--border-subtle) py-[7px] pr-[9px] pl-[10px]">
+          {attach ? (
+            <>
+              <input ref={inputRef} type="file" hidden onChange={(e) => void pick(e.target.files?.[0])} />
+              <button
+                type="button"
+                data-task-thread-attach=""
+                className="flex h-7 w-7 flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-secondary)"
+                aria-label={t('attachFile')}
+                title={t('attachFile')}
+                disabled={!canReply || preparing}
+                onClick={() => inputRef.current?.click()}
+              >
+                <Icon name="paperclip" size={16} />
+              </button>
+            </>
+          ) : null}
           {runtime}
+          <span className="flex-1" />
           {/* As the conversation's composer: stop while the task runs and nothing is drafted, send otherwise. */}
-          {onStop && !hasText ? (
+          {onStop && !hasText && !hasAttachment ? (
             <SendButton stop label={stopLabel} disabled={stopping} onClick={onStop} />
           ) : (
-            <SendButton label={sendLabel} disabled={!canReply || !hasText} onClick={onSend} />
+            <SendButton label={sendLabel} disabled={!canSend} onClick={onSend} />
           )}
         </div>
       </div>

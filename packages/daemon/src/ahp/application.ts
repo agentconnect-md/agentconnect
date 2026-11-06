@@ -197,7 +197,11 @@ export class AhpApplication {
       throw new AhpProtocolError(JsonRpcErrorCodes.InvalidParams, 'Invalid message attachments')
     }
     if (!action.message.text.trim() && !attachments.length) refuse('Message is empty')
-    if (scope.targetSessionId && (attachments.length || context.worktree || context.runtimeConfig))
+    // A coordinator's task takes images and files from its own thread, as its conversation's composer does.
+    if (
+      scope.targetSessionId &&
+      (context.worktree || context.runtimeConfig || (attachments.length && !(await this.host.isTaskTarget(scope))))
+    )
       refuse('This continuation does not support attachment or workspace changes')
     if (steering && attachments.length) refuse('Steering does not support attachments')
     if (

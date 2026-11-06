@@ -217,7 +217,9 @@ offer runtime-setting operations, with one exception. `set_model`, `set_effort`,
 changes the task's settings under the rule its conversation's composer follows
 (`chatActions` is `settings` and the caller may change settings there). A task is
 a delegated `subsession:` session, or a threaded task in its own platform thread
-while the task index holds it open. `cancel` is accepted only for a `turnId`
+while the task index holds it open. A task's own thread is also the one continuation that
+takes images and files with a turn (relay `attachments`/`files`, AHP message
+attachments); any other continued session stays text, and AHP refuses its attachments. `cancel` is accepted only for a `turnId`
 owned by that same targeted conversation's live webchat stream; it is not a
 session-global stop capability.
 

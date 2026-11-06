@@ -7,7 +7,7 @@ import {
 import { LifecycleCleanupBlockedError } from '../daemon/turn-types.js'
 import { formatErr } from '../daemon/text.js'
 import { isHeadlessCronSession } from '../scheduler/scheduler.js'
-import { sessionThreadOf, wakeThreadFields, type NormalizedMessage } from '../messages/normalized.js'
+import { sessionThreadOf, wakeThreadFields, type Attachment, type NormalizedMessage } from '../messages/normalized.js'
 import type { SlackConnection } from '../slack/connection.js'
 import type { TelegramConnection } from '../telegram/connection.js'
 import type { DiscordConnection } from '../discord/connection.js'
@@ -27,6 +27,8 @@ export interface ChatContinuationRequest {
   text: string
   author: ChatAuthor
   post?: { postId: string; at: number }
+  /** Images and files sent with the message; only a coordinator's task takes them (its own thread is its composer). */
+  attachments?: Attachment[]
 }
 
 type Integration = { integrationId: string; conn: ChatReplyConnection; botUserId?: string }
@@ -111,7 +113,7 @@ export class ChatSessionContinuation {
   }
 
   async prepare(request: ChatContinuationRequest): Promise<ChatContinuationPreparation> {
-    const { agentId, targetSessionId, conversationId, turnId, text, author, post } = request
+    const { agentId, targetSessionId, conversationId, turnId, text, author, post, attachments } = request
     if (!this.host.agents().has(agentId)) {
       const startFailure = this.host.startFailure(agentId)
       return startFailure
@@ -148,6 +150,7 @@ export class ChatSessionContinuation {
       sender: { id: author.id, isBot: false, name: author.name },
       ...(author.timeZone ? { senderTimeZone: author.timeZone } : {}),
       text,
+      ...(attachments?.length ? { attachments } : {}),
       mentionedBots: integration?.botUserId ? [integration.botUserId] : [],
       isDm: local.conversationKind === 'dm',
       trigger: local.conversationKind === 'dm' ? 'dm' : 'mention',
