@@ -4370,7 +4370,8 @@
       "sending": "发送中…",
       "upgrade": "升级",
       "restart": "重启",
-      "downgradeDisablesAutoUpgrade": "升级到较旧的版本会关闭自动升级。"
+      "downgradeDisablesAutoUpgrade": "升级到较旧的版本会关闭自动升级。",
+      "autoUpgradeNotSaved": "升级已开始，但自动升级的设置没能保存：{error}"
     },
     "runtimeLogin": {
       "title": "登录 {label}",

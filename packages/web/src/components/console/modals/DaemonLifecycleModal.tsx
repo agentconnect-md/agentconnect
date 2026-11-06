@@ -8,7 +8,7 @@ import { daemonLifecycleLabel } from '../DaemonLifecycleBadge'
 import type { DaemonRow } from '@/lib/data'
 import { registerCommandedLifecycleOpId } from '@/lib/daemon-notifications'
 import { isUpgradeAvailable } from '@/lib/version'
-import { Button, Icon } from '@/components/ui'
+import { Button, Icon, Toggle } from '@/components/ui'
 import { Spinner } from '@/components/marks'
 
 // Command a live daemon to restart (drain + relaunch, same version) or upgrade (install
@@ -27,14 +27,16 @@ export default function DaemonLifecycleModal({
   mode: 'upgrade' | 'restart'
   onClose: () => void
 }) {
-  const { upgradeDaemon, restartDaemon, daemons, refresh } = useConsoleData()
+  const { upgradeDaemon, restartDaemon, setDaemonAutoUpgrade, daemons, refresh } = useConsoleData()
   const t = useTranslations('Daemons.lifecycleDialog')
+  const tAuto = useTranslations('Daemons.detail.autoUpgrade')
 
   // Upgrade targets: published versions other than the one already running.
   const options = mode === 'upgrade' ? daemon.availableVersions.filter((v) => v !== daemon.version) : []
   const [version, setVersion] = useState(() =>
     daemon.latestVersion && options.includes(daemon.latestVersion) ? daemon.latestVersion : (options[0] ?? '')
   )
+  const [autoChoice, setAutoChoice] = useState(daemon.autoUpgrade)
   const [busy, setBusy] = useState(false)
   // The op WE commanded, tracked by id via a dedicated poll — NOT the fleet read model's
   // single latest-op slot (a newer op from another client would strand our tracking).
@@ -72,6 +74,11 @@ export default function DaemonLifecycleModal({
     }
   }, [opId, terminal, daemon.daemonId, refresh])
 
+  // A target below the announced release turns the switch off on the CP, so it shows off and locked.
+  const downgrade = mode === 'upgrade' && isUpgradeAvailable(version, daemon.latestVersion)
+  const autoLocked = !daemon.autoUpgradeSupported || !daemon.canManageLifecycle || downgrade
+  const autoChecked = !autoLocked && autoChoice
+
   const submit = async () => {
     if (busy || opId) return
     if (mode === 'upgrade' && !version) return
@@ -85,6 +92,15 @@ export default function DaemonLifecycleModal({
       refresh()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
+      setBusy(false)
+      return
+    }
+    // After the op opens, so the daemon's own auto-upgrader stays idle until this upgrade settles.
+    try {
+      if (mode === 'upgrade' && !autoLocked && autoChecked !== daemon.autoUpgrade)
+        await setDaemonAutoUpgrade(daemon.daemonId, autoChecked)
+    } catch (e) {
+      setErr(t('autoUpgradeNotSaved', { error: e instanceof Error ? e.message : String(e) }))
     } finally {
       setBusy(false)
     }
@@ -95,7 +111,7 @@ export default function DaemonLifecycleModal({
   const icon = isUpgrade ? 'circle-arrow-up' : 'refresh-cw'
   const noTargets = isUpgrade && options.length === 0
   // The CP turns auto-upgrade off with a downgrade below the announced release, so say so first.
-  const disablesAutoUpgrade = isUpgrade && daemon.autoUpgrade && isUpgradeAvailable(version, daemon.latestVersion)
+  const disablesAutoUpgrade = downgrade && daemon.autoUpgrade
   const succeeded = !gone && tracked?.status === 'succeeded'
   const failed = gone || tracked?.status === 'failed'
 
@@ -164,6 +180,20 @@ export default function DaemonLifecycleModal({
                       {t('downgradeDisablesAutoUpgrade')}
                     </span>
                   )}
+                  <span
+                    className={`mt-[12px] flex items-center gap-2 font-sans text-[12.5px] font-medium leading-normal ${autoLocked ? 'text-(--text-tertiary)' : 'text-(--text-secondary)'}`}
+                  >
+                    <span className={autoLocked ? 'inline-flex opacity-55' : 'inline-flex'}>
+                      <Toggle
+                        size="sm"
+                        checked={autoChecked}
+                        disabled={autoLocked || busy}
+                        onChange={setAutoChoice}
+                        ariaLabel={tAuto('label')}
+                      />
+                    </span>
+                    {tAuto('label')}
+                  </span>
                 </div>
               ))}
           </>

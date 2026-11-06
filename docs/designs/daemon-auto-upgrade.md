@@ -328,6 +328,13 @@ version is. The fleet list shows no auto-upgrade mark: a switched-on daemon need
 one that fell behind already carries the update badge. The desktop and mobile branches of
 `DaemonDetailView` both get the switch.
 
+The Upgrade dialog repeats the switch below the target version, so an owner upgrading by hand
+can turn auto-upgrade on or off in the same step. It starts at the daemon's current setting,
+is disabled for a daemon without `daemon-auto-upgrade-v1`, and shows off and locked for a
+target below the announced release, which turns it off anyway (§6). A changed setting is saved
+after the upgrade is commanded, so the daemon's auto-upgrader stays idle until that upgrade
+settles (§5.3).
+
 ## 9. Changes by package
 
 **protocol**
