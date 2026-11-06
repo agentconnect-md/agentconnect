@@ -1,6 +1,8 @@
 // The GitHub broker: opening and editing a pull request under the agent's own grant, draft state through GraphQL.
 import { describe, expect, it } from 'vitest'
+import type { GitCredGrant } from '@agentconnect.md/protocol'
 import { GithubBroker } from '../src/github/broker.js'
+import { GitCredentialCache, type GitCredentialCacheDeps } from '../src/cp/git-credential.js'
 import type { BrokerCapability, CodeHostEffectTarget } from '../src/codehost/broker.js'
 
 const BASE = 'https://api.github.example.test'
@@ -47,6 +49,63 @@ function fakeFetch(bodies: unknown[]) {
 function broker(fetchImpl: typeof fetch, access: BrokerCapability = 'write') {
   return new GithubBroker({ lease: async () => ({ token: 'gh-token', access }), baseUrl: BASE, fetchImpl })
 }
+
+describe('the lease the daemon mints for the GitHub broker', () => {
+  // The CP's mint reports a grant's access from its contents level, absent contents reading as `read` (installation-token.service.ts).
+  function cpMint(tier: 'read' | 'write') {
+    const seen: Parameters<GitCredentialCacheDeps['request']>[0][] = []
+    const request: GitCredentialCacheDeps['request'] = async (payload) => {
+      seen.push(payload)
+      const grant: GitCredGrant = {
+        username: 'x-access-token',
+        token: `gh-${tier}`,
+        ttlSec: 3600,
+        expiresAt: '2026-11-06T12:00:00.000Z',
+        repoFullName: payload.repoFullName ?? '',
+        access: payload.capabilities?.includes('contents') ? tier : 'read'
+      }
+      return grant
+    }
+    const cache = new GitCredentialCache({ request, log: { warn: () => {} } })
+    return { cache, seen }
+  }
+
+  function brokerOn(cache: GitCredentialCache, fetchImpl: typeof fetch) {
+    return new GithubBroker({
+      lease: async (target) => {
+        const entry = await cache.getGithubEffectToken(target.agentId, target.repoPath ?? target.repoId)
+        return { token: entry.token, access: entry.access }
+      },
+      baseUrl: BASE,
+      fetchImpl
+    })
+  }
+
+  const create = {
+    kind: 'createMergeRequest' as const,
+    sourceBranch: 'feature',
+    targetBranch: 'main',
+    title: 'Add a thing'
+  }
+
+  it('carries a write repository tier through to the broker, so a pull request opens', async () => {
+    const { cache, seen } = cpMint('write')
+    const { fetchImpl, calls } = fakeFetch([PULL])
+    await brokerOn(cache, fetchImpl).execute(TARGET, create)
+    expect(seen[0]).toMatchObject({
+      repoFullName: 'example-org/example-repo',
+      capabilities: ['contents', 'pull_requests']
+    })
+    expect(calls.map((c) => c.method)).toEqual(['POST'])
+  })
+
+  it('refuses before any write on a read-only repository', async () => {
+    const { cache } = cpMint('read')
+    const { fetchImpl, calls } = fakeFetch([PULL])
+    await expect(brokerOn(cache, fetchImpl).execute(TARGET, create)).rejects.toThrow('needs write authority')
+    expect(calls).toEqual([])
+  })
+})
 
 describe('GithubBroker', () => {
   it('opens a pull request from the trusted repository with only the settable fields', async () => {

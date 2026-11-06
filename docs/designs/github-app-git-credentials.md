@@ -455,8 +455,10 @@ workspace is addressed by its `owner/repo` path. A cross-fork head stays on
 `gh`.
 
 **Lease.** The broker's token is the agent's own grant on the target
-repository, limited to `pull_requests`, at the tier the workspace or an
-explicit grant earns. It needs no new gitcred purpose, because that grant is
+repository, with the `contents` and `pull_requests` capabilities, at the tier
+the workspace or an explicit grant earns. `contents` rides along because a
+grant reports its access from its contents level; without it every lease
+would read as `read`. It needs no new gitcred purpose, because that grant is
 already what the agent's `gh` receives. The token stays in its own cache
 keyspace and never reaches the runtime. Opening or editing requires write.
 
