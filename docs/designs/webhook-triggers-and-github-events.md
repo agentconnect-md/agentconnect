@@ -12,7 +12,7 @@ mapping over it — the session integration facet, the console's trigger taxonom
 the per-kind marks and labels — stops type-checking until it is extended:
 
 - `webhook`: an unguessable capability URL accepts a caller-supplied
-  instruction.
+  instruction, or a payload the hook's own instructions act on.
 - `github`: a GitHub App webhook accepts signed repository events, applies
   subscription and authorization rules, and preserves issue or pull-request
   session continuity.
@@ -155,13 +155,30 @@ bodies are never logged.
 
 ### Message Semantics
 
-The capability URL authenticates the caller, so the payload is an instruction,
-not untrusted quoted context. The daemon extracts a string field named
-`prompt`, `text`, or `message` as the instruction and attaches remaining JSON
-fields as context. If none exists, the complete payload becomes the message.
+A generic hook either lets the sender write the instruction or carries its own.
 
-A generic hook has no separate trigger prompt. The agent description remains
-standing context.
+- **Without instructions** the capability URL authenticates the caller, so the
+  payload is the instruction, not untrusted quoted context. The daemon extracts
+  a string field named `prompt`, `text`, or `message` as the instruction and
+  attaches remaining JSON fields as context. If none exists, the complete
+  payload becomes the message. This suits a sender built to call the hook.
+- **With instructions** (`HookDef.instructions`, at most 8,000 characters) the
+  owner wrote the instruction, and every delivery's turn is those instructions
+  followed by the whole payload inside an untrusted-content fence. No field is
+  extracted. This suits an existing system whose payload format is fixed: it
+  holds the URL, but what it relays — an error message, an alert description —
+  may be authored by anyone, so the payload is data, never instruction.
+
+Instructions ride the compiled rule (`webhook.instructions`) to the relay, which
+puts them on each delivery (`RdMsgHook.instructions`). Both hops fail closed
+during a rollout: the CP sends such a rule only to a relay advertising
+`hook-instructions-v1`, and the relay dispatches such a delivery only to a
+daemon advertising `hook-instructions-v1`; anywhere else it is refused rather
+than run with the payload as the instruction. An edit advances the hook's
+`configRevision` like any other definition change, so a retry captured before
+the edit is cancelled rather than run under the new instructions.
+
+The agent description remains standing context either way.
 
 `sessionMode` controls continuity:
 

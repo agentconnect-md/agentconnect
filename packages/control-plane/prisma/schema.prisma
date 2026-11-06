@@ -2213,11 +2213,10 @@ model HookDef {
   kind                               HookKind
   name                               String
   enabled                            Boolean           @default(true)
-  // No trigger prompt: the agent's description is its standing context and the
-  // delivery payload carries the caller's message (design security boundary 1).
   sessionMode                        HookSessionMode
   // ── kind=webhook ──
   urlToken                           String?           @unique // ≥128-bit random ingress routing key (capability URL; canEdit-visible)
+  instructions                       String?           @db.Text // owner-authored; when set, the delivery payload is fenced data, not the instruction
   // hmacSecret lives in HookSecret — never on this row (accidental-serialization guard)
   // ── kind=github (P2) ──
   repoId                             BigInt? // GitHub numeric repo id — the match key (rename-proof); null on an installation row

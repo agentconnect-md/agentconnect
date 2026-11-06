@@ -37,6 +37,7 @@ import {
   GITEA_V1_FEATURE,
   RD_CODEHOST_RELEASE_V1,
   RD_HOOK_NOTICE_V1,
+  RD_HOOK_INSTRUCTIONS_V1,
   GITLAB_COM_V1_FEATURE,
   GITLAB_INSTANCE_V1_FEATURE,
   DECISION_ROUTING_V1_FEATURE,
@@ -91,6 +92,8 @@ const DAEMON_RD_CAPABILITIES: readonly string[] = [
   GITEA_V1_FEATURE,
   // The relay sends a `notice` delivery only here: a daemon without it would run the fixed-text post as a prompt.
   RD_HOOK_NOTICE_V1,
+  // The relay sends a generic delivery with owner instructions only here: an older daemon would run the payload as the instruction.
+  RD_HOOK_INSTRUCTIONS_V1,
   // The relay sends a GitLab or Gitea `release` target only here: an older daemon cannot decode the member.
   RD_CODEHOST_RELEASE_V1,
   // The relay forwards By decision candidates only to daemons that list this.

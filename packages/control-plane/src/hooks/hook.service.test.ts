@@ -263,6 +263,15 @@ describe('HookService.compile', () => {
     expect(rule?.webhook).toEqual({ urlToken: 'whk_tok1' })
   })
 
+  it('carries the hook instructions on the webhook member only when set', async () => {
+    const { svc } = make({ secret: null })
+    expect((await svc.compile(hook({ instructions: 'Triage this alert.' })))?.webhook).toEqual({
+      urlToken: 'whk_tok1',
+      instructions: 'Triage this alert.'
+    })
+    expect((await svc.compile(hook({ instructions: null })))?.webhook).toEqual({ urlToken: 'whk_tok1' })
+  })
+
   it('carries an anchoring target only when a channel is set', async () => {
     const { svc } = make()
     const withTarget = await svc.compile(

@@ -5049,8 +5049,12 @@ export interface HookDto {
   name: string
   sessionMode: 'perDelivery' | 'perThread' | 'perSubject' | 'shared'
   enabled: boolean
+  instructions?: string | null // webhook kind: put ahead of each delivery's payload
   url: string | null
   hmacConfigured: boolean
+  targetPlatform?: string
+  targetChannel?: string | null
+  targetIntegrationId?: string | null
   // ── code-host kinds ── repo/project + subscription (empty/null on webhook kind)
   repoId?: string | null // GitHub numeric repo id, or the GitLab numeric project id
   repoFullName: string | null // owner/repo as GitHub cases it, or the GitLab project path
@@ -5094,6 +5098,8 @@ export interface CreateHookInput {
   name: string
   /** Session continuity: per delivery (default), caller-keyed via X-AC-Session-Key, or one shared session. */
   sessionMode?: 'perDelivery' | 'perSubject' | 'shared'
+  /** What the agent does with each delivery; the payload then follows as data. */
+  instructions?: string
   /** Add X-AC-Signature verification on top of the capability URL. */
   hmac?: boolean
 }
@@ -5282,6 +5288,21 @@ export async function createHook(input: CreateHookInput): Promise<CreatedHookDto
   const hook = await apiPost<CreatedHookDto>(`${orgBase()}/hooks`, { kind: 'webhook', ...input })
   track('hook_created', { org_id: apiOrgId, agent_id: hook.agentId, hook_kind: hook.kind, hook_id: hook.id })
   return hook
+}
+
+/** Change a generic webhook's instructions; the rest of the whole-definition PUT echoes the stored hook. */
+export async function updateWebhookInstructions(hook: HookDto, instructions: string): Promise<HookDto> {
+  return apiPut<HookDto>(`${orgBase()}/hooks/${encodeURIComponent(hook.id)}`, {
+    kind: 'webhook',
+    agentId: hook.agentId,
+    name: hook.name,
+    enabled: hook.enabled,
+    sessionMode: hook.sessionMode,
+    instructions: instructions.trim() || null,
+    ...(hook.targetPlatform ? { targetPlatform: hook.targetPlatform } : {}),
+    ...(hook.targetChannel ? { targetChannel: hook.targetChannel } : {}),
+    ...(hook.targetIntegrationId ? { targetIntegrationId: hook.targetIntegrationId } : {})
+  })
 }
 
 // GitHub subscription — no URL, no secret (the App webhook signs deliveries

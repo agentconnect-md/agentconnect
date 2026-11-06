@@ -101,6 +101,20 @@ describe('RelayControlSender.hookAssign — Decision routing (code-host-decision
     expect(older).toHaveBeenCalledWith('rc/hook-remove', { hookId: rule.hookId })
   })
 
+  it('sends a rule with instructions only to a relay that forwards them, and removes it elsewhere', () => {
+    const reg = new RelayRegistry()
+    const forwarding = vi.fn()
+    const older = vi.fn()
+    reg.add({ relayId: 'new', features: ['hook-instructions-v1'], send: forwarding, close: vi.fn() })
+    reg.add({ relayId: 'old', features: [], send: older, close: vi.fn() })
+    const instructed = { ...rule, webhook: { urlToken: 'whk_example', instructions: 'Triage this alert.' } }
+
+    new RelayControlSender(reg).hookAssign(instructed as never)
+
+    expect(forwarding).toHaveBeenCalledWith('rc/hook-assign', instructed)
+    expect(older).toHaveBeenCalledWith('rc/hook-remove', { hookId: rule.hookId })
+  })
+
   it('leaves an unrouted rule on every relay', () => {
     const reg = new RelayRegistry()
     const olderRelay = vi.fn()

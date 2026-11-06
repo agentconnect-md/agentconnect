@@ -21,6 +21,7 @@ import {
   GithubHookMetadata,
   GitlabHookMetadata,
   HookBigIntString,
+  HookInstructions,
   OptionalHookConfigSnapshot
 } from './hook.js'
 import { WebchatRemoteMcpEntitlement } from './remote-mcp.js'
@@ -458,6 +459,9 @@ export type RcGithubHookRule = z.infer<typeof RcGithubHookRule>
 /** Relays that fill an installation rule's repository in from each event advertise this (webhook-triggers-and-github-events.md, Installation-Wide Rows). */
 export const HOOK_GITHUB_INSTALLATION_V1_FEATURE = 'hook-github-installation-v1'
 
+/** A relay that forwards a generic rule's `webhook.instructions` on each delivery, so the CP may send it one. */
+export const HOOK_INSTRUCTIONS_V1_FEATURE = 'hook-instructions-v1'
+
 /** An installation-wide github rule: every repository of one App installation, the event naming the repository; its session prefix is `github:<repoId>`. */
 export const RcGithubInstallationHookRule = RcGithubHookRule.omit({
   repoId: true,
@@ -543,8 +547,6 @@ export const RcHookAssign = z
     // R1/R2a rolling fields. Partial/absent remains decodable, but the relay
     // propagates an incomplete tuple with review/reporting forced off.
     ...OptionalHookConfigSnapshot.shape,
-    // No prompt: the agent's description is its standing context; the delivery
-    // payload carries the caller's message (design security boundary 1).
     sessionMode: z.enum(['perDelivery', 'perThread', 'perSubject', 'shared']),
     target: CronTarget.optional(), // output anchoring; absent ⇒ headless
     // The repository scope's Decision routing this rule belongs to; its events go once to the evaluation host (code-host-decisions.md §4).
@@ -553,7 +555,9 @@ export const RcHookAssign = z
     webhook: z
       .object({
         urlToken: z.string().min(1), // ingress routing key (capability URL)
-        hmacSecret: z.string().optional() // optional X-AC-Signature key
+        hmacSecret: z.string().optional(), // optional X-AC-Signature key
+        // Only to relays advertising HOOK_INSTRUCTIONS_V1_FEATURE: an older one would drop it and run the payload as the instruction.
+        instructions: HookInstructions.optional()
       })
       .optional(),
     // kind=github (P2) — required for that kind, unless the rule is installation-wide

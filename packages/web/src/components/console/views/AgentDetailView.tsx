@@ -55,6 +55,7 @@ import {
   fetchSessionDetail,
   sessionFromDetailDto,
   updateGithubHook,
+  updateWebhookInstructions,
   updateGiteaHook,
   updateGitlabHook,
   uploadAgentIcon,
@@ -394,6 +395,7 @@ function AgentDetail() {
       : undefined)
   // Which webhook row has its recent-deliveries panel expanded (one at a time).
   const [hookRunsFor, setHookRunsFor] = useState<string | null>(null)
+  const [hookInstructionsFor, setHookInstructionsFor] = useState<string | null>(null)
   // Hooks are agent-scoped (no org-wide list). Keep a stable resource key so a
   // create/delete revalidation retains the last good rows while it refetches.
   const hooksKey = consoleKeys.agentHooks(activeOrg?.id, id)
@@ -2267,6 +2269,14 @@ function AgentDetail() {
                         </span>
                         <button
                           className="iconbtn"
+                          title={t('integrations.webhookInstructions')}
+                          aria-pressed={hookInstructionsFor === h.id}
+                          onClick={() => setHookInstructionsFor(hookInstructionsFor === h.id ? null : h.id)}
+                        >
+                          <Icon name="pencil" size={15} />
+                        </button>
+                        <button
+                          className="iconbtn"
                           title={t('integrations.recentDeliveries')}
                           onClick={() => setHookRunsFor(hookRunsFor === h.id ? null : h.id)}
                         >
@@ -2280,6 +2290,18 @@ function AgentDetail() {
                           <Icon name="trash" size={15} />
                         </button>
                       </div>
+                      {hookInstructionsFor === h.id && (
+                        <WebhookInstructionsPanel
+                          hook={h}
+                          onDone={(updated) => {
+                            if (updated)
+                              void mutateHooks((rows) => rows?.map((r) => (r.id === h.id ? updated : r)), {
+                                revalidate: false
+                              })
+                            setHookInstructionsFor(null)
+                          }}
+                        />
+                      )}
                       {hookRunsFor === h.id && (
                         <HookRunsPanel hookId={h.id} sessionHref={(sid) => orgPath(`/sessions/${sid}`)} />
                       )}
@@ -3315,6 +3337,49 @@ const HOOK_RUN_DOT: Record<HookRunDto['status'], string> = {
 
 // Recent deliveries for one webhook (GET /hooks/:id/runs), fetched on expand.
 // Link the session a delivery ran in or cleaned up when one is known.
+/** Edit what a generic webhook's agent does with each delivery; empty restores payload-as-instruction. */
+function WebhookInstructionsPanel({ hook, onDone }: { hook: HookDto; onDone: (updated?: HookDto) => void }) {
+  const t = useTranslations('Agents.detail.integrations')
+  const tc = useTranslations('Common.actions')
+  const [draft, setDraft] = useState(hook.instructions ?? '')
+  const [saving, setSaving] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const save = async () => {
+    if (saving) return
+    setSaving(true)
+    setErr(null)
+    try {
+      onDone(await updateWebhookInstructions(hook, draft))
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+      setSaving(false)
+    }
+  }
+  return (
+    <div className="border-t border-(--border-subtle) bg-(--surface-app) px-[14px] py-3">
+      <textarea
+        className="inp min-h-15 w-full resize-y px-3 py-2 leading-[1.5]"
+        rows={4}
+        maxLength={8000}
+        aria-label={t('webhookInstructions')}
+        placeholder={t('webhookInstructionsPlaceholder')}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        autoFocus
+      />
+      {err && <div className="mt-2 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">{err}</div>}
+      <div className="mt-2 flex justify-end gap-2">
+        <Button variant="ghost" onClick={() => onDone()}>
+          {tc('cancel')}
+        </Button>
+        <Button onClick={() => void save()} className={saving ? 'cursor-default opacity-50' : undefined}>
+          {tc('save')}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
 function HookRunsPanel({ hookId, sessionHref }: { hookId: string; sessionHref: (sessionId: string) => string }) {
   const t = useTranslations('Agents.detail')
   const { activeOrg } = useOrgs()

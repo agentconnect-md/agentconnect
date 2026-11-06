@@ -197,7 +197,8 @@ export class HookService {
         kind: 'webhook',
         webhook: {
           urlToken: hook.urlToken,
-          ...(hmacSecret ? { hmacSecret } : {})
+          ...(hmacSecret ? { hmacSecret } : {}),
+          ...(hook.instructions ? { instructions: hook.instructions } : {})
         }
       }
     }

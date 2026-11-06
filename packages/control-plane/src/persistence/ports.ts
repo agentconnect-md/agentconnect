@@ -3214,9 +3214,10 @@ export interface UpsertHookInput {
   agentId: AgentId
   kind: HookKind
   name: string
-  /** Trigger text (control metadata, same as CronDef.trigger). */
   sessionMode: HookSessionMode
   enabled?: boolean
+  /** Webhook kind: owner-authored instructions; null clears, absent preserves the stored value. */
+  instructions?: string | null
   /** REQUIRED for kind=gitlab and kind=gitea: the instance `repoId` names, joining
    *  the host's axis fence inside the insert transaction. Omitting it on such a hook
    *  is refused, because a disabled hook takes no binding lease of any kind. */
@@ -3263,6 +3264,7 @@ export interface HookRecord {
   enabled: boolean
   sessionMode: HookSessionMode
   urlToken: string | null // webhook kind only; capability URL — surfaced to canEdit only
+  instructions?: string | null // webhook kind only; put ahead of each fenced delivery payload
   /** Whether a signing secret exists (the secret itself NEVER rides a record). */
   hmacConfigured: boolean
   // ── kind=github (P2) ──
