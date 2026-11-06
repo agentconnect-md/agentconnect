@@ -5,30 +5,29 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import Link from 'next/link'
 import useSWR from 'swr'
-import { useFormatter, useTranslations } from 'next-intl'
-import { Button, Icon } from '@/components/ui'
+import { useTranslations } from 'next-intl'
+import { Icon } from '@/components/ui'
 import { AgentIconView } from '@/components/marks'
-import { MessageText } from '@/components/console/MessageText'
 import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/console/PlaygroundProvider'
 import { taskStateKey, taskTone, useTaskStops } from '@/components/console/task-list'
 import { StateIcon } from '@/components/console/StateIcon'
 import { SendButton } from '@/components/console/SendButton'
 import { taskStopKey } from '@/components/console/follow-up'
-import { exchangePromptMs, turnSpan, typedInvalidReason, withPromptStart } from '@/components/console/session-work'
-import { turnWork, WorkStepList } from '@/components/console/WorkPanel'
-import { TranscriptApprovalsProvider, TurnApprovals, UnplacedApprovals } from '@/components/console/TurnApprovals'
+import { exchangePromptMs, toggleWorkPanel, workPanelOpen } from '@/components/console/session-work'
+import { TranscriptApprovalsProvider, UnplacedApprovals } from '@/components/console/TurnApprovals'
 import { approvalTurnStart, type ApprovalTurnAnchor } from '@/components/console/approval-placement'
-import { AGENT_PROSE, SELF_BUBBLE } from '@/components/console/transcript-bubbles'
-import { AgentTurnHeader } from '@/components/console/AgentTurnHeader'
 import {
-  threadEntries,
   threadMessages,
+  threadRows,
+  unsavedLive,
   useTaskRow,
   useTaskThread,
   useThreadRecord,
-  type ThreadEntry,
+  withoutAttribution,
   type ThreadRecordRef
 } from '@/components/console/task-thread'
+import { buildTurns, type Turn } from '@/components/console/session-turns'
+import { BotTurnView, UserTurnView } from '@/components/console/TurnViews'
 import type { TaskLink } from '@/components/console/task-link'
 import { fetchSessionDetail, type SessionThreadSummaryDto } from '@/lib/api'
 import { ComposerFileChips, stageComposerFile } from '@/components/console/ComposerFiles'
@@ -36,7 +35,7 @@ import { prepareWebchatImage } from '@/lib/webchat-image'
 import { RunningCommandsDock } from '@/components/console/RunningCommandsDock'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
 import { agentToneColor } from '@/lib/agent-tone'
-import { agentLabel, MOCK_MODE, platName, type Agent, type DaemonRow } from '@/lib/data'
+import { MOCK_MODE, platName, type Agent, type DaemonRow, type ElicitAnswerValue } from '@/lib/data'
 import { threadShapeOf } from '@/components/console/coordinator-threads'
 import { TaskRuntimePicker } from '@/components/console/dock/TaskRuntimePicker'
 import { sessionAttributionAgentAuthors, sessionAttributionAgentId } from '@/lib/session-trigger'
@@ -49,6 +48,9 @@ const HEADER_BTN =
   'flex h-[26px] w-[26px] flex-none cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent text-(--text-secondary) transition-colors hover:bg-(--surface-hover) hover:text-(--text-primary) focus-visible:shadow-(--focus-ring) focus-visible:outline-none'
 
 const EMPTY: readonly never[] = []
+const NO_AGENTS: ReadonlyMap<string, Agent> = new Map()
+// A thread's rows come from one session, so no row names another source.
+const NO_SOURCE = { session: new WeakMap(), turn: new WeakMap(), platform: new WeakMap(), agent: new WeakMap() }
 
 export function ThreadPanel({
   agentId,
@@ -115,7 +117,6 @@ export function ThreadPanel({
 }) {
   const t = useTranslations('Common.taskThread')
   const tl = useTranslations('Common.taskList')
-  const format = useFormatter()
   const { orgPath } = useOrgs()
   const {
     getLiveSteps,
@@ -169,20 +170,59 @@ export function ThreadPanel({
   )
   const canReply = detail?.canContinue === true
   const messages = threadMessages(page)
+  const agents = agentById ?? NO_AGENTS
   // The session page's own reading of a bot post: its sender is an agent, or its trusted attribution names one.
-  const peerAgent = useMemo(() => {
-    if (!agentById) return undefined
-    const authors = sessionAttributionAgentAuthors(platform, messages, agentById)
-    return (m: (typeof messages)[number]) =>
-      agentById.has(m.sender) ? m.sender : (sessionAttributionAgentId(platform, m, agentById) ?? authors.get(m.sender))
-  }, [agentById, platform, messages])
+  const authors = useMemo(
+    () => sessionAttributionAgentAuthors(platform, messages, agents),
+    [agents, platform, messages]
+  )
   // The owner's turns in this thread stream on their conversation's socket; another member's on the task's.
   const live = ownThread
     ? getLiveSteps(ownThread.sessionId).filter((step) => step.thread === ownThread.rootId)
     : holderId
       ? getLiveSteps(id)
       : EMPTY
-  const entries = threadEntries(messages, live, agentId, peerAgent)
+  // Already this thread's own, so no step is left out as another thread's.
+  const liveShown = unsavedLive(live, messages, agentId).map(({ thread: _thread, ...step }) => step)
+  // The session page's turns: this visit's sends are the reader's own, and a person's name falls back as the page's does.
+  const built = buildTurns({
+    session: {
+      id: holderId ?? record?.sessionId ?? '',
+      agentId,
+      agentName,
+      model: '',
+      platform,
+      user: '@you',
+      time: '',
+      steps: []
+    },
+    rows: threadRows(messages, live),
+    liveSteps: liveShown,
+    source: NO_SOURCE,
+    threadsView: false,
+    threadShape: undefined,
+    agentById: agents,
+    asCron: (sender) => (sender.startsWith('cron:') ? { id: sender.slice('cron:'.length), name: null } : null),
+    participantAgent: (sender, text, trustedAgentBot) => {
+      const peer = agents.has(sender)
+        ? sender
+        : (sessionAttributionAgentId(platform, { text, trustedAgentBot }, agents) ?? authors.get(sender))
+      return peer ? agents.get(peer) : undefined
+    },
+    isSelf: (sender) => sender === '@you',
+    senderLabel: (_sender, fallback) => fallback ?? t('person'),
+    ownsDecisionSeq: () => false,
+    viewer: { picture: personPicture?.(undefined) ?? null },
+    pictureOf: (sender) => personPicture?.(sender),
+    sourceLabel: platName(platform)
+  }).turns
+  // Another agent's post reads as that agent, so its "sent by" line goes.
+  const turns: Turn[] = built.map((turn) =>
+    turn.kind === 'bot' && turn.agentId && turn.agentId !== agentId
+      ? { ...turn, steps: turn.steps.map((step) => ({ ...step, text: withoutAttribution(step.text) })) }
+      : turn
+  )
+  const [workOverride, setWorkOverride] = useState<ReadonlyMap<string, boolean>>(() => new Map())
 
   // A read that lands after the turn ends retires the live copy of what it now carries.
   const ownSessionId = ownThread?.sessionId
@@ -211,14 +251,8 @@ export function ThreadPanel({
     wasBusy.current = busy
   }, [busy, reload, reloadDetail])
 
-  // Each entry as the prompt lookup reads it, so a turn its own rows cannot measure dates from the message it answers.
-  const promptTurns = entries.map((entry) => ({
-    kind: entry.who === 'person' ? 'user' : 'bot',
-    ...(entry.at ? { timeMs: Date.parse(entry.at) } : {}),
-    ...(entry.agentId ? { agentId: entry.agentId } : {})
-  }))
-  const last = entries[entries.length - 1]
-  const tail = `${entries.length}:${last?.text.length ?? 0}`
+  const last = turns[turns.length - 1]
+  const tail = `${turns.length}:${last?.kind === 'bot' ? `${last.steps.length}:${last.steps.at(-1)?.text.length ?? 0}` : (last?.text.length ?? 0)}`
   useEffect(() => {
     const list = listRef.current
     if (list) list.scrollTop = list.scrollHeight
@@ -245,24 +279,20 @@ export function ThreadPanel({
   const title = row?.title ?? task?.title ?? summary?.task?.title ?? t('thread')
   const tone = row ? taskTone(row, null) : null
   const pageHref = holderId ? orgPath(`/sessions/${encodeURIComponent(holderId)}`) : null
-  const agentHref = (agent: string): string => orgPath(`/agents/${encodeURIComponent(agent)}`)
-  const own: Speaker = {
-    name: agentName,
-    ...(agentId ? { href: agentHref(agentId) } : {}),
-    avatar: <AgentIconView icon={agentIcon ?? null} runtime={agentRuntime ?? ''} size={24} />,
-    accent: { '--agent-accent': agentToneColor(agentId || agentName) } as CSSProperties
-  }
-  // Another agent speaks as itself: its name, its avatar, its accent.
-  const speakerOf = (entry: ThreadEntry): Speaker => {
-    const peer = entry.agentId ? agentById?.get(entry.agentId) : undefined
-    if (!peer) return own
-    return {
-      name: agentLabel(peer),
-      href: agentHref(peer.id),
-      avatar: <AgentIconView icon={peer.icon ?? null} runtime={peer.runtime ?? ''} size={24} />,
-      accent: { '--agent-accent': agentToneColor(peer.id) } as CSSProperties
-    }
-  }
+  // A question in the thread is the task's, answered on its session.
+  const answerElicitation = holderId
+    ? (turnAgent: string | undefined, requestId: string | undefined, value: ElicitAnswerValue): void => {
+        if (!requestId) return
+        markSessionTarget(holderId)
+        pgAnswerElicitation(holderId, turnAgent ?? agentId, requestId, value)
+      }
+    : undefined
+  // A turn a person's message follows answered an earlier exchange.
+  const lastExchangeAt = turns.reduce((at, turn, i) => (turn.kind === 'user' && !turn.steer ? i : at), -1)
+  // Until the agent's reply streams in, which then says it is working in its header, as the session page does.
+  const lastLive = liveShown[liveShown.length - 1]
+  const replying =
+    last?.kind === 'bot' && !!lastLive && lastLive.kind !== 'msg' && (!last.agentId || last.agentId === agentId)
   return (
     <div
       {...(holderId ? { 'data-task-thread': holderId } : {})}
@@ -389,41 +419,52 @@ export function ThreadPanel({
           taskSessionId={id}
           agentId={agentId}
           scope={holderId ? taskApprovals : undefined}
-          entries={entries}
+          turns={turns}
+          lastExchangeAt={lastExchangeAt}
         >
-          {entries.map((entry, i) => (
-            <ThreadMessage
-              key={entry.key}
-              entry={entry}
-              sessionId={id}
-              streaming={busy && i === entries.length - 1}
-              promptMs={exchangePromptMs(promptTurns, i)}
-              speaker={speakerOf(entry)}
-              picture={entry.who === 'person' ? (entry.avatarUrl ?? personPicture?.(entry.sender)) : undefined}
-              you={t('you')}
-              person={t('person')}
-              time={entry.at ? format.dateTime(new Date(entry.at), { hour: 'numeric', minute: '2-digit' }) : null}
+          {turns.map((turn, i) => (
+            // The session page's turn: its time line, then the person's bubble or the agent's block.
+            <div
+              key={turn.key}
+              data-thread-message={turn.kind === 'user' ? 'person' : 'agent'}
+              {...(turn.kind === 'bot' && turn.agentId && turn.agentId !== agentId
+                ? { 'data-thread-agent': turn.agentId }
+                : {})}
+              className="flex min-w-0 flex-col gap-[5px]"
             >
-              {entry.question ? (
-                <ThreadQuestion
-                  question={entry.question}
-                  pageHref={pageHref ?? undefined}
-                  onAnswer={(requestId, value) => {
-                    markSessionTarget(id)
-                    pgAnswerElicitation(id, agentId, requestId, value)
-                  }}
-                />
+              {turn.time ? (
+                <div className="mono text-center text-[11px] leading-normal text-(--text-tertiary)">{turn.time}</div>
               ) : null}
-              {/* The task's own tool-call approvals, at the turn that asked, as the session page draws a conversation's. */}
-              {entry.who === 'agent' && !entry.question ? <TurnApprovals turnKey={entry.key} /> : null}
-            </ThreadMessage>
+              {turn.kind === 'user' ? (
+                <UserTurnView turn={turn} />
+              ) : (
+                <BotTurnView
+                  turn={turn}
+                  agentById={agents}
+                  owner={agents.get(agentId)}
+                  ownerRuntime={agentRuntime ?? ''}
+                  sessionId={holderId ?? record?.sessionId}
+                  streaming={busy && i === turns.length - 1}
+                  workOpen={workPanelOpen(workOverride.get(turn.key))}
+                  onToggleWork={() =>
+                    setWorkOverride((prev) => toggleWorkPanel(prev, turn.key, workPanelOpen(prev.get(turn.key))))
+                  }
+                  promptMs={exchangePromptMs(turns, i)}
+                  answerElicitation={answerElicitation}
+                />
+              )}
+            </div>
           ))}
           <UnplacedApprovals />
         </ApprovalsScope>
-        {/* Until the agent's turn shows, which then says it is working in its header, as the session page does. */}
-        {busy && !(last?.who === 'agent' && last.live && !last.agentId) ? (
-          <div className="flex items-center gap-[9px]" style={own.accent}>
-            <SpeakerAvatar speaker={own} />
+        {busy && !replying ? (
+          <div
+            className="flex items-center gap-[9px]"
+            style={{ '--agent-accent': agentToneColor(agentId || agentName) } as CSSProperties}
+          >
+            <span className="av h-6 w-6 flex-none rounded-md">
+              <AgentIconView icon={agentIcon ?? null} runtime={agentRuntime ?? ''} size={24} />
+            </span>
             <span role="status" className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
               {t('working', { agent: agentName })}
             </span>
@@ -498,245 +539,6 @@ export function ThreadPanel({
             MOCK_MODE || !holderId ? null : <RunningCommandsDock agentId={agentId} sessionId={id} turnActive={busy} />
           }
         />
-      ) : null}
-    </div>
-  )
-}
-
-/** A person's initials for their avatar: the first letters of the first two words, else the first character. */
-function initials(name: string): string {
-  const words = name.trim().split(/\s+/).filter(Boolean)
-  if (words.length >= 2) return `${[...words[0]!][0]}${[...words[1]!][0]}`.toUpperCase()
-  return ([...(words[0] ?? '?')][0] ?? '?').toUpperCase()
-}
-
-/** Who an agent entry is drawn as. */
-interface Speaker {
-  name: string
-  avatar: ReactNode
-  accent: CSSProperties
-  /** The agent's page, which its mark opens as the session page's does. */
-  href?: string
-}
-
-function SpeakerAvatar({ speaker }: { speaker: Speaker }) {
-  const box = 'av h-6 w-6 flex-none rounded-md'
-  if (!speaker.href) return <span className={box}>{speaker.avatar}</span>
-  return (
-    <Link href={speaker.href} data-thread-agent-link="" className={box} title={speaker.name} aria-label={speaker.name}>
-      {speaker.avatar}
-    </Link>
-  )
-}
-
-function ThreadMessage({
-  entry,
-  sessionId,
-  streaming,
-  promptMs,
-  speaker,
-  picture,
-  you,
-  person,
-  time,
-  children
-}: {
-  entry: ThreadEntry
-  /** The task's session, which a work row's full tool body is read from. */
-  sessionId: string
-  /** The task is still answering and this is its latest entry. */
-  streaming: boolean
-  /** When the message this turn answers was sent, for a turn whose own rows cannot measure it. */
-  promptMs: number | undefined
-  speaker: Speaker
-  /** A person's photo: the platform's, else their console one. */
-  picture: string | undefined
-  you: string
-  person: string
-  time: string | null
-  children?: ReactNode
-}) {
-  const [openWork, setOpenWork] = useState(false)
-  const said = entry.text.trim() ? <MessageText text={entry.text} platform="webchat" /> : null
-  if (entry.who === 'agent') {
-    // The same turn the session page draws: one header folding the work, then one prose block per message posted.
-    const { workSteps, summary, failed } = turnWork(entry.work ?? [])
-    const prose = entry.prose ?? (entry.text.trim() ? [entry.text] : [])
-    return (
-      <div
-        data-thread-message="agent"
-        data-thread-agent={entry.agentId}
-        className="group/turn flex min-w-0 items-start gap-[9px]"
-        style={speaker.accent}
-      >
-        <SpeakerAvatar speaker={speaker} />
-        <div className="min-w-0 flex-1">
-          <AgentTurnHeader
-            name={speaker.name}
-            {...(workSteps.length > 0
-              ? {
-                  work: {
-                    summary,
-                    failed,
-                    open: openWork,
-                    onToggle: () => setOpenWork((open) => !open),
-                    running: streaming,
-                    span: withPromptStart(turnSpan(entry.times ?? []), promptMs)
-                  }
-                }
-              : {})}
-          >
-            {time ? (
-              <span className="flex-none whitespace-nowrap font-mono text-[10.5px] font-normal leading-normal text-(--text-tertiary)">
-                {time}
-              </span>
-            ) : null}
-          </AgentTurnHeader>
-          <div className="flex min-w-0 flex-col gap-[10px]">
-            {workSteps.length > 0 && openWork ? (
-              <WorkStepList steps={workSteps} sessionId={sessionId} live={streaming} />
-            ) : null}
-            {prose.map((text, i) => (
-              <div key={i} className={`${AGENT_PROSE} whitespace-pre-wrap`} data-agent-prose="">
-                <MessageText text={text} platform="webchat" />
-              </div>
-            ))}
-            {children}
-          </div>
-        </div>
-      </div>
-    )
-  }
-  const name = entry.name ?? (entry.live ? you : person)
-  return (
-    <div data-thread-message="person" className="flex min-w-0 items-start justify-end gap-2">
-      <div className="flex min-w-0 max-w-[calc(100%-50px)] flex-col items-end">
-        <span className="mb-1 font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary)">
-          {name}
-          {time ? (
-            <span className="ml-[6px] font-mono text-[10.5px] font-normal text-(--text-tertiary)">{time}</span>
-          ) : null}
-        </span>
-        {said ? <div className={`${SELF_BUBBLE} min-w-0 whitespace-pre-wrap break-words`}>{said}</div> : null}
-        {children}
-      </div>
-      {picture ? (
-        <img
-          src={picture}
-          alt=""
-          aria-hidden
-          data-thread-avatar=""
-          className="mt-[2px] h-[22px] w-[22px] flex-none rounded-full object-cover"
-        />
-      ) : (
-        <span
-          aria-hidden
-          className="mt-[2px] flex h-[22px] w-[22px] flex-none items-center justify-center rounded-full bg-(--brand-soft) font-sans text-[9px] font-semibold leading-none text-(--brand-soft-text)"
-        >
-          {initials(name)}
-        </span>
-      )}
-    </div>
-  )
-}
-
-/** A question's typed answer and what was last sent, kept by request so expanding, shrinking or reading a file keeps them. */
-const questionAnswers = new Map<string, { draft: string; sent: string | null }>()
-
-function useQuestionAnswer(
-  requestId: string
-): [{ draft: string; sent: string | null }, (next: { draft: string; sent: string | null }) => void] {
-  const [answer, setAnswer] = useState(() => questionAnswers.get(requestId) ?? { draft: '', sent: null })
-  const update = (next: { draft: string; sent: string | null }) => {
-    questionAnswers.set(requestId, next)
-    setAnswer(next)
-  }
-  return [answer, update]
-}
-
-/** The agent's open question: a plain choice or a line of text answers here; any other form is shown on the task's page. */
-function ThreadQuestion({
-  question,
-  pageHref,
-  onAnswer
-}: {
-  question: NonNullable<ThreadEntry['question']>
-  /** The task's own page, where any other form of question is answered. */
-  pageHref: string | undefined
-  onAnswer: (requestId: string, value: string) => void
-}) {
-  const t = useTranslations('Common.taskThread')
-  // What was last sent: the control stays live, so an answer the daemon refuses can be corrected, until it settles the question and the thread drops it.
-  const [{ draft, sent }, setAnswer] = useQuestionAnswer(question.requestId)
-  const setDraft = (value: string) => setAnswer({ draft: value, sent })
-  const setSent = (value: string) => setAnswer({ draft, sent: value })
-  const invalid = question.text ? typedInvalidReason({ text: question.text }, draft) : undefined
-  return (
-    <div
-      data-thread-question={question.requestId}
-      className="mt-1 flex flex-col gap-2 rounded-md border border-(--status-paused) bg-(--status-paused-soft) px-3 py-2"
-    >
-      <span className="font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
-        {t('question')}
-      </span>
-      {question.text ? (
-        <form
-          className="flex flex-col gap-1"
-          onSubmit={(event) => {
-            event.preventDefault()
-            if (invalid) return
-            setSent(draft)
-            onAnswer(question.requestId, draft)
-          }}
-        >
-          <div className="flex items-center gap-2">
-            <input
-              aria-label={t('answer')}
-              placeholder={t('answer')}
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              className="min-w-0 flex-1 rounded-sm border border-(--border-default) bg-(--surface-card) px-2 py-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-primary) outline-none focus:border-(--border-strong) focus:shadow-(--focus-shadow)"
-            />
-            <Button variant="primary" size="xs" type="submit" disabled={invalid !== undefined || draft === sent}>
-              {t('send')}
-            </Button>
-          </div>
-          {draft && invalid ? (
-            <span
-              data-thread-question-invalid=""
-              className="font-sans text-[11.5px] font-normal leading-normal text-(--status-error)"
-            >
-              {invalid}
-            </span>
-          ) : sent !== null ? (
-            <span role="status" className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-              {t('answerSent')}
-            </span>
-          ) : null}
-        </form>
-      ) : question.choices ? (
-        <div className="flex flex-wrap gap-2">
-          {question.choices.map((choice) => (
-            <Button
-              key={choice.value}
-              variant={sent === choice.value ? 'primary' : 'secondary'}
-              size="xs"
-              onClick={() => {
-                setSent(choice.value)
-                onAnswer(question.requestId, choice.value)
-              }}
-            >
-              {choice.label}
-            </Button>
-          ))}
-        </div>
-      ) : pageHref ? (
-        <Link
-          href={pageHref}
-          className="w-fit font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary) hover:underline"
-        >
-          {t('answerOnPage')}
-        </Link>
       ) : null}
     </div>
   )
@@ -944,25 +746,27 @@ function ApprovalsScope({
   taskSessionId,
   agentId,
   scope,
-  entries,
+  turns,
+  lastExchangeAt,
   children
 }: {
   taskSessionId: string
   agentId: string
   scope: { listSessionId: string; enabled: boolean; conversationPermissions: boolean } | undefined
-  entries: readonly ThreadEntry[]
+  turns: readonly Turn[]
+  /** The latest person's message: a turn before it answered an earlier exchange. */
+  lastExchangeAt: number
   children: ReactNode
 }) {
   if (!scope) return <>{children}</>
-  // A turn followed by a person's message answered an earlier exchange, so a waiting request is the latest one's.
-  const turns: ApprovalTurnAnchor[] = entries.flatMap((entry, i) =>
-    entry.who === 'agent' && !entry.question
+  const anchors: ApprovalTurnAnchor[] = turns.flatMap((turn, i) =>
+    turn.kind === 'bot'
       ? [
           {
-            key: entry.key,
-            ...(entry.agentId ? { agentId: entry.agentId } : {}),
-            startMs: approvalTurnStart(entry.times ?? []),
-            closed: entries.slice(i + 1).some((later) => later.who === 'person')
+            key: turn.key,
+            ...(turn.agentId ? { agentId: turn.agentId } : {}),
+            startMs: approvalTurnStart(turn.steps.map((step) => step.timeMs)),
+            closed: i < lastExchangeAt
           }
         ]
       : []
@@ -974,7 +778,7 @@ function ApprovalsScope({
       listSessionId={scope.listSessionId}
       enabled={scope.enabled}
       conversationPermissions={scope.conversationPermissions}
-      turns={turns}
+      turns={anchors}
     >
       {children}
     </TranscriptApprovalsProvider>

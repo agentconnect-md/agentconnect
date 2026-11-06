@@ -19,8 +19,6 @@ import {
 import { CONSOLE_SWR_CONFIG, readOnceRegistered } from '@/lib/console-swr'
 import type { SessionStep } from '@/lib/data'
 import type { TaskLink } from '@/components/console/task-link'
-import { elicitCard, WORK_LANES } from '@/components/console/session-work'
-import { fmtStep, msgStep, type FmtStep } from '@/components/console/transcript-steps'
 
 /** Rows the conversation's list reads in one page; a task older than these reads its own row. */
 const ROWS_PAGE = 50
@@ -93,16 +91,9 @@ export function messageTime(m: Pick<SessionMessageDto, 'ts' | 'eventTimeUs'>): s
   return Number.isNaN(parsed) ? null : new Date(parsed).toISOString()
 }
 
-/** The thread's messages, the agent's work and its open questions, oldest first. */
+/** The thread's rows, oldest first. */
 export function threadMessages(page: Pick<SessionHistoryDto, 'messages'> | undefined): SessionMessageDto[] {
-  return [...(page?.messages ?? [])]
-    .filter((m) => {
-      const kind = (m.kind || 'text').toLowerCase()
-      if (kind === 'text') return m.text.trim() !== ''
-      if (kind === 'elicit') return openQuestion(elicitCard(m.body)) !== null
-      return kind === 'tool' || kind === 'reasoning'
-    })
-    .sort((a, b) => a.seq - b.seq)
+  return [...(page?.messages ?? [])].sort((a, b) => a.seq - b.seq)
 }
 
 /** The task's newest page; re-read while the task runs, and whenever its row says something changed. */
@@ -227,87 +218,31 @@ export function useThreadRecord(
   }
 }
 
-/** One message as the thread draws it. */
-export interface ThreadEntry {
-  key: string
-  who: 'agent' | 'person'
-  /** Another agent that spoke here, as its attribution names it; absent for the task's own agent. */
-  agentId?: string
-  name: string | null
-  /** A person's provider-hosted picture. */
-  avatarUrl?: string
-  /** A recorded person's sender, which the panel's console-photo lookup keys on. */
-  sender?: string
-  text: string
-  /** An agent turn's answer, one block per message it posted. */
-  prose?: string[]
-  /** An agent turn's work rows, which its header folds as the session page does. */
-  work?: FmtStep[]
-  /** When each of an agent turn's rows happened, which dates its duration. */
-  times?: number[]
-  at: string | null
-  /** Still streaming, or sent and not yet on the daemon's record. */
-  live: boolean
-  /** The agent's open question: a plain choice or a line of text the panel answers, else one it only points to. */
-  question?: {
-    requestId: string
-    choices: { value: string; label: string }[] | null
-    /** A line of text, with the constraints the daemon checks it against. */
-    text: NonNullable<NonNullable<SessionStep['elicit']>['text']> | null
-  }
-}
-
-/** A question the agent is still waiting on, and how the panel can answer it. */
-function openQuestion(ask: SessionStep['elicit'] | null | undefined): ThreadEntry['question'] | null {
-  if (!ask || ask.outcome) return null
-  const plain = !ask.multi && !ask.number && !ask.fields && !ask.url
-  return {
-    requestId: ask.requestId,
-    choices: plain && !ask.text && ask.options.length > 0 ? ask.options : null,
-    text: plain && ask.text ? ask.text : null
-  }
-}
-
 /** A peer agent's text without its trailing "sent by" line, which the thread draws as the speaker instead. */
 export function withoutAttribution(text: string): string {
   return text.replace(/\n*sent by <https?:\/\/[^\n]*\/agents\/[^\n]*$/, '').trimEnd()
 }
 
-/** Persisted messages, then what this visit sent and is streaming back; one agent's consecutive work and replies make one turn. */
-export function threadEntries(
-  messages: readonly SessionMessageDto[],
-  liveSteps: readonly SessionStep[],
-  agentId: string,
-  /** Which other agent wrote a message, when one did. */
-  peerAgent?: (m: SessionMessageDto) => string | undefined
-): ThreadEntry[] {
-  const entries: ThreadEntry[] = []
-  let turn: ThreadEntry | null = null
-  const ownTurn = (key: string, at: string | null, live: boolean): ThreadEntry => {
-    if (turn) return turn
-    turn = { key, who: 'agent', name: null, text: '', prose: [], work: [], times: [], at, live }
-    entries.push(turn)
-    return turn
-  }
-  const say = (entry: ThreadEntry, text: string) => {
-    entry.prose!.push(text)
-    entry.text = entry.prose!.join('\n\n')
-  }
-  const stamp = (entry: ThreadEntry, at: string | number | null | undefined) => {
-    const ms = typeof at === 'string' ? Date.parse(at) : at
-    if (ms !== null && ms !== undefined && Number.isFinite(ms)) entry.times!.push(ms)
-  }
-  // While a reply streams, its tool and reasoning rows are already saved; the live turn shows them once.
-  const shown = liveSteps.filter((step) => !step.hidden)
-  const liveTools = new Set(shown.flatMap((step) => (step.kind === 'tool' && step.toolCallId ? [step.toolCallId] : [])))
-  const liveStarts = shown.flatMap((step) => (step.observedAtMs !== undefined ? [step.observedAtMs] : []))
+/** The record's rows less the work this visit is streaming: a running reply's tool and reasoning rows are saved while it streams, and the live turn shows them once. */
+export function threadRows(messages: readonly SessionMessageDto[], live: readonly SessionStep[]): SessionMessageDto[] {
+  const liveTools = new Set(live.flatMap((step) => (step.kind === 'tool' && step.toolCallId ? [step.toolCallId] : [])))
+  const liveStarts = live.flatMap((step) => (step.observedAtMs !== undefined ? [step.observedAtMs] : []))
   const liveSince = liveStarts.length ? Math.min(...liveStarts) : undefined
-  const streamedHere = (m: SessionMessageDto, kind: string): boolean => {
-    if (kind === 'tool') return !!m.toolCallId && liveTools.has(m.toolCallId)
+  return messages.filter((m) => {
+    const kind = (m.kind || 'text').toLowerCase()
+    if (kind === 'tool') return !m.toolCallId || !liveTools.has(m.toolCallId)
+    if (kind !== 'reasoning' || liveSince === undefined) return true
     const at = Date.parse(messageTime(m) ?? '')
-    return kind === 'reasoning' && liveSince !== undefined && Number.isFinite(at) && at >= liveSince
-  }
-  // A prompt this visit sent is on the record once a person's row says the same since it was sent; the poll reads it while the reply still runs.
+    return !Number.isFinite(at) || at < liveSince
+  })
+}
+
+/** This visit's live steps less the prompts already on the record: a person's row saying the same since it was sent, which the poll reads while the reply still runs. */
+export function unsavedLive(
+  live: readonly SessionStep[],
+  messages: readonly SessionMessageDto[],
+  agentId: string
+): SessionStep[] {
   const savedPrompt = (step: SessionStep): boolean =>
     messages.some((m) => {
       if ((m.kind || 'text').toLowerCase() !== 'text' || m.sender === agentId || m.text.trim() !== step.text.trim())
@@ -315,79 +250,5 @@ export function threadEntries(
       const at = Date.parse(messageTime(m) ?? '')
       return step.observedAtMs === undefined || !Number.isFinite(at) || at >= step.observedAtMs - PROMPT_CLOCK_SLACK_MS
     })
-  for (const m of messages) {
-    const kind = (m.kind || 'text').toLowerCase()
-    const question = kind === 'elicit' ? openQuestion(elicitCard(m.body)) : null
-    if (question) {
-      turn = null
-      entries.push({
-        key: `m:${m.seq}`,
-        who: 'agent',
-        name: m.senderName ?? null,
-        text: m.text,
-        at: messageTime(m),
-        live: false,
-        question
-      })
-      continue
-    }
-    if (kind === 'tool' || kind === 'reasoning') {
-      if (streamedHere(m, kind)) continue
-      const own = ownTurn(`m:${m.seq}`, messageTime(m), false)
-      own.work!.push(msgStep(m))
-      stamp(own, messageTime(m))
-      continue
-    }
-    if (m.sender === agentId) {
-      const own = ownTurn(`m:${m.seq}`, messageTime(m), false)
-      say(own, m.text)
-      stamp(own, messageTime(m))
-      continue
-    }
-    turn = null
-    const peer = peerAgent?.(m)
-    entries.push({
-      key: `m:${m.seq}`,
-      who: peer ? 'agent' : 'person',
-      ...(peer && peer !== agentId ? { agentId: peer } : {}),
-      name: m.senderName ?? null,
-      ...(!peer && m.senderAvatarUrl ? { avatarUrl: m.senderAvatarUrl } : {}),
-      ...(!peer ? { sender: m.sender } : {}),
-      text: peer ? withoutAttribution(m.text) : m.text,
-      at: messageTime(m),
-      live: false
-    })
-  }
-  const recorded = new Set(entries.flatMap((entry) => (entry.question ? [entry.question.requestId] : [])))
-  turn = null
-  liveSteps.forEach((step, i) => {
-    const question = step.kind === 'elicit' ? openQuestion(step.elicit) : null
-    // A question is never left out: the task waits on it, so the thread shows it even with no text.
-    if (question) {
-      turn = null
-      if (!recorded.has(question.requestId))
-        entries.push({ key: `l:${i}`, who: 'agent', name: null, text: step.text, at: null, live: true, question })
-      return
-    }
-    if (step.hidden) return
-    if (step.kind === 'msg') {
-      turn = null
-      if (step.text.trim() && !savedPrompt(step))
-        entries.push({ key: `l:${i}`, who: 'person', name: null, text: step.text, at: null, live: true })
-      return
-    }
-    if (step.kind === 'done' && !step.demoted) {
-      if (!step.text.trim()) return
-      const own = ownTurn(`l:${i}`, null, true)
-      say(own, step.text)
-      stamp(own, step.observedAtMs)
-      return
-    }
-    const fmt = fmtStep(step)
-    if (!WORK_LANES.has(fmt.lane)) return
-    const own = ownTurn(`l:${i}`, null, true)
-    own.work!.push(fmt)
-    stamp(own, step.observedAtMs)
-  })
-  return entries
+  return live.filter((step) => step.kind !== 'msg' || (step.text.trim() !== '' && !savedPrompt(step)))
 }

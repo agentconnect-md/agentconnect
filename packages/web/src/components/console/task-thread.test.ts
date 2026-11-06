@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionHistoryDto, SessionMessageDto } from '@/lib/api'
 import type { SessionStep } from '@/lib/data'
-import { threadEntries, threadMessages } from './task-thread'
+import { threadMessages, threadRows, unsavedLive, withoutAttribution } from './task-thread'
 
 const row = (seq: number, sender: string, text: string, kind = 'text'): SessionMessageDto => ({
   seq,
@@ -19,138 +19,62 @@ const page = (messages: SessionMessageDto[], nextCursor: string | null = null): 
   liveMore: false
 })
 
-describe('threadEntries', () => {
-  it('draws the spoken record in order, then what this visit sent and is streaming back', () => {
-    const live: SessionStep[] = [
-      { kind: 'msg', turnId: 't1', text: 'what about #1291?' },
-      { kind: 'plan', turnId: 't1', text: 'checking CI' },
-      { kind: 'done', turnId: 't1', text: 'CI is rerunning.' },
-      { kind: 'msg', turnId: 't0', text: 'already on record', hidden: true }
-    ]
-    const entries = threadEntries(
-      threadMessages(
-        page([row(2, 'agent_1', 'On it'), row(3, 'agent_1', 'gh pr list', 'tool'), row(1, 'user_dana', 'go')])
-      ),
-      live,
-      'agent_1'
+describe('threadMessages', () => {
+  it('keeps every row in order, plans, questions and settled ones included, as the session page reads them', () => {
+    const rows = threadMessages(
+      page([
+        row(3, 'agent_1', 'Plan · 1/2', 'plan'),
+        row(1, 'user_dana', 'go'),
+        { ...row(2, 'agent_1', 'Ship it?', 'elicit'), body: JSON.stringify({ requestId: 'q', outcome: 'accepted' }) }
+      ])
     )
-    expect(entries.map((e) => [e.who, e.text, e.live])).toEqual([
-      ['person', 'go', false],
-      ['agent', 'On it', false],
-      ['person', 'what about #1291?', true],
-      ['agent', 'CI is rerunning.', true]
+    expect(rows.map((m) => [m.seq, m.kind])).toEqual([
+      [1, 'text'],
+      [2, 'elicit'],
+      [3, 'plan']
     ])
   })
+})
 
-  it('keeps the agent’s open question, recorded or live, once, and says how the panel can answer it', () => {
-    const ask = (requestId: string, extra: Record<string, unknown> = {}) => ({
-      requestId,
-      options: [
-        { value: 'yes', label: 'Yes' },
-        { value: 'no', label: 'No' }
-      ],
-      ...extra
-    })
-    const recorded = {
-      ...row(3, 'agent_1', 'Ship it?', 'elicit'),
-      body: JSON.stringify(ask('q-recorded'))
-    }
-    const settled = {
-      ...row(4, 'agent_1', 'Old question', 'elicit'),
-      body: JSON.stringify(ask('q-settled', { outcome: 'accepted' }))
-    }
-    const live: SessionStep[] = [
-      { kind: 'elicit', turnId: 't2', text: 'Ship it?', elicit: ask('q-recorded') },
-      { kind: 'elicit', turnId: 't2', text: '', elicit: { requestId: 'q-text', options: [], text: { minLength: 5 } } },
-      { kind: 'elicit', turnId: 't2', text: 'Fill the form', elicit: { requestId: 'q-form', options: [], fields: [] } }
-    ]
-    const entries = threadEntries(threadMessages(page([recorded, settled])), live, 'agent_1')
-    expect(entries.map((e) => [e.text, e.question])).toEqual([
-      ['Ship it?', { requestId: 'q-recorded', choices: ask('q-recorded').options, text: null }],
-      ['', { requestId: 'q-text', choices: null, text: { minLength: 5 } }],
-      ['Fill the form', { requestId: 'q-form', choices: null, text: null }]
-    ])
-  })
-
-  it('makes one agent turn of its consecutive work and replies, each reply its own block', () => {
-    const entries = threadEntries(
-      threadMessages(
-        page([
-          row(1, 'user_dana', 'go'),
-          row(2, 'agent_1', 'Planning', 'reasoning'),
-          row(3, 'agent_1', 'gh pr list', 'tool'),
-          row(4, 'agent_1', 'Three are clear.'),
-          row(5, 'agent_1', 'Two need review.'),
-          row(6, 'bot_peer', 'Noted.'),
-          row(7, 'agent_1', 'Thanks.')
-        ])
-      ),
-      [
-        { kind: 'tool', turnId: 't1', text: 'pnpm test', toolCallId: 'c1', toolStatus: 'in_progress' },
-        { kind: 'done', turnId: 't1', text: 'Tests are running.' }
-      ],
-      'agent_1',
-      (m) => (m.sender === 'bot_peer' ? 'agent_peer' : undefined)
-    )
-    expect(entries.map((e) => [e.who, e.prose ?? e.text, (e.work ?? []).map((w) => w.lane), e.live])).toEqual([
-      ['person', 'go', [], false],
-      ['agent', ['Three are clear.', 'Two need review.'], ['THINK', 'TOOL'], false],
-      ['agent', 'Noted.', [], false],
-      ['agent', ['Thanks.'], [], false],
-      ['agent', ['Tests are running.'], ['TOOL'], true]
-    ])
-  })
-
-  it('shows a streaming reply work once, though its rows are already saved', () => {
+describe('threadRows', () => {
+  it('leaves out the saved work of the reply this visit is streaming, which the live turn shows once', () => {
     const since = Date.UTC(2026, 10, 3, 9, 3)
     const saved = [
       row(1, 'user_dana', 'go'),
-      row(2, 'agent_1', 'Three are clear.'),
+      row(2, 'agent_1', 'Thinking earlier', 'reasoning'),
       { ...row(4, 'agent_1', 'Checking', 'reasoning'), ts: new Date(since + 1000).toISOString() },
-      { ...row(5, 'agent_1', 'pnpm test', 'tool'), toolCallId: 'c1' }
+      { ...row(5, 'agent_1', 'pnpm test', 'tool'), toolCallId: 'c1' },
+      { ...row(6, 'agent_1', 'gh pr list', 'tool'), toolCallId: 'c0' }
     ]
     const live: SessionStep[] = [
       { kind: 'msg', turnId: 't2', text: 'run the tests', observedAtMs: since },
-      { kind: 'plan', turnId: 't2', text: 'Checking', observedAtMs: since + 1000 },
-      {
-        kind: 'tool',
-        turnId: 't2',
-        text: 'pnpm test',
-        toolCallId: 'c1',
-        toolStatus: 'in_progress',
-        observedAtMs: since + 2000
-      }
+      { kind: 'tool', turnId: 't2', text: 'pnpm test', toolCallId: 'c1', observedAtMs: since + 2000 }
     ]
-    const entries = threadEntries(threadMessages(page(saved)), live, 'agent_1')
-    expect(entries.map((e) => [e.who, (e.work ?? []).map((w) => w.lane), e.live])).toEqual([
-      ['person', [], false],
-      ['agent', [], false],
-      ['person', [], true],
-      ['agent', ['PLAN', 'TOOL'], true]
-    ])
+    expect(threadRows(saved, live).map((m) => m.seq)).toEqual([1, 2, 6])
+    expect(threadRows(saved, []).map((m) => m.seq)).toEqual([1, 2, 4, 5, 6])
   })
+})
 
+describe('unsavedLive', () => {
   it('draws a prompt this visit sent once, when the poll already reads it back while the reply runs', () => {
     const sent = Date.UTC(2026, 10, 3, 9, 5)
-    const saved = [
-      row(1, 'user_dana', 'how much memory?'),
-      { ...row(6, 'user_draco', 'which computer?'), ts: new Date(sent + 2000).toISOString() }
-    ]
     const live: SessionStep[] = [
       { kind: 'msg', turnId: 't2', text: 'which computer?', observedAtMs: sent },
-      {
-        kind: 'tool',
-        turnId: 't2',
-        text: 'computer_list',
-        toolCallId: 'c9',
-        toolStatus: 'in_progress',
-        observedAtMs: sent + 3000
-      }
+      { kind: 'tool', turnId: 't2', text: 'computer_list', toolCallId: 'c9', observedAtMs: sent + 3000 },
+      { kind: 'msg', turnId: 't3', text: '  ', observedAtMs: sent + 4000 }
     ]
-    const entries = threadEntries(threadMessages(page(saved)), live, 'agent_1')
-    expect(entries.filter((e) => e.text === 'which computer?')).toHaveLength(1)
+    const saved = [{ ...row(6, 'user_draco', 'which computer?'), ts: new Date(sent + 2000).toISOString() }]
+    expect(unsavedLive(live, saved, 'agent_1').map((step) => step.kind)).toEqual(['tool'])
     // An earlier message with the same words is not this visit's prompt.
-    const older = threadEntries(threadMessages(page([row(1, 'user_dana', 'which computer?')])), live, 'agent_1')
-    expect(older.filter((e) => e.text === 'which computer?')).toHaveLength(2)
+    const older = [row(1, 'user_dana', 'which computer?')]
+    expect(unsavedLive(live, older, 'agent_1').map((step) => step.kind)).toEqual(['msg', 'tool'])
+  })
+})
+
+describe('withoutAttribution', () => {
+  it('drops a peer post’s trailing "sent by" line', () => {
+    expect(
+      withoutAttribution('I only handle support.\n\nsent by <https://console.example.test/acme/agents/a1|support>')
+    ).toBe('I only handle support.')
   })
 })

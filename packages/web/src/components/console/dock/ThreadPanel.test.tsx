@@ -339,7 +339,7 @@ describe('ThreadPanel', () => {
     expect(wire.calls).toEqual(['target:ses_task', 'send:ses_task:agent_1:does 1.5 include the orders migration?'])
   })
 
-  it('shows the agent’s open question and answers a plain choice from the panel', async () => {
+  it('draws the agent’s open question as the session page does, and answers it on the task’s session', async () => {
     wire.live = [
       {
         kind: 'elicit',
@@ -355,35 +355,17 @@ describe('ThreadPanel', () => {
       }
     ]
     await render()
-    const question = container.querySelector('[data-thread-question="q-1"]')!
-    expect(question.textContent).toContain('Waiting for your answer')
-    expect(container.textContent).toContain('Merge #1291 now?')
+    const turn = container.querySelector('[data-thread-message="agent"]:last-of-type')!
+    expect(turn.textContent).toContain('Merge #1291 now?')
     act(() =>
-      Array.from(question.querySelectorAll<HTMLButtonElement>('button'))
+      Array.from(turn.querySelectorAll<HTMLButtonElement>('button'))
         .find((button) => button.textContent === 'Merge')!
         .click()
     )
     expect(wire.calls).toEqual(['target:ses_task', 'answer:ses_task:agent_1:q-1:yes'])
   })
 
-  it('keeps an unfinished answer when the thread remounts, as switching the task view does', async () => {
-    wire.live = [
-      { kind: 'elicit', turnId: 't1', text: 'Which tag?', elicit: { requestId: 'q-keep', options: [], text: {} } }
-    ]
-    await render()
-    const input = container.querySelector<HTMLInputElement>('[data-thread-question="q-keep"] input')!
-    act(() => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'v1.5.')
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-    })
-    act(() => root.unmount())
-    root = createRoot(container)
-    props = {}
-    await render()
-    expect(container.querySelector<HTMLInputElement>('[data-thread-question="q-keep"] input')!.value).toBe('v1.5.')
-  })
-
-  it('checks a typed answer against its constraints, and keeps it editable after sending', async () => {
+  it('checks a typed answer against its constraints before sending it', async () => {
     wire.live = [
       {
         kind: 'elicit',
@@ -393,40 +375,88 @@ describe('ThreadPanel', () => {
       }
     ]
     await render()
-    const question = container.querySelector('[data-thread-question="q-3"]')!
-    const input = question.querySelector('input')!
-    const submit = question.querySelector<HTMLButtonElement>('button[type="submit"]')!
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Your answer"]')!
+    const submit = () =>
+      Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find((b) => b.textContent === 'Submit')!
     const type = (value: string) =>
       act(() => {
         Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value)
         input.dispatchEvent(new Event('input', { bubbles: true }))
       })
     type('v1.5')
-    expect(question.querySelector('[data-thread-question-invalid]')?.textContent).toBe('Enter at least 5 characters')
-    expect(submit.disabled).toBe(true)
+    expect(container.textContent).toContain('Enter at least 5 characters')
+    expect(submit().disabled).toBe(true)
     type('v1.5.0')
-    act(() => submit.click())
+    act(() => submit().click())
     expect(wire.calls).toEqual(['target:ses_task', 'answer:ses_task:agent_1:q-3:v1.5.0'])
-    // The daemon may still refuse it, so the answer stays editable and can be sent again once changed.
-    expect(input.disabled).toBe(false)
-    type('v1.5.1')
-    act(() => submit.click())
-    expect(wire.calls.at(-1)).toBe('answer:ses_task:agent_1:q-3:v1.5.1')
   })
 
-  it('points a question the panel cannot answer to the task’s page', async () => {
-    wire.live = [
+  it('keeps a settled question in the thread with its outcome, and offers nothing to answer', async () => {
+    wire.extra = [
       {
+        seq: 4,
+        sender: 'agent_1',
+        ts: '2026-11-03T09:03:00.000Z',
         kind: 'elicit',
-        turnId: 't1',
-        text: 'Fill in the release form',
-        elicit: { requestId: 'q-2', options: [], fields: [] }
+        text: 'Merge #1291 now?',
+        body: JSON.stringify({ requestId: 'q-old', options: [{ value: 'yes', label: 'Merge' }], outcome: 'cancelled' })
       }
     ]
     await render()
-    const question = container.querySelector('[data-thread-question="q-2"]')!
-    expect(question.querySelector('a')?.getAttribute('href')).toBe('/acme/sessions/ses_task')
-    expect(question.querySelector('button')).toBeNull()
+    expect(container.textContent).toContain('Merge #1291 now?')
+    expect(container.textContent).toContain('Cancelled')
+    expect(Array.from(container.querySelectorAll('button')).some((b) => b.textContent === 'Merge')).toBe(false)
+  })
+
+  it('draws the turn’s plan as its own block, as the session page does', async () => {
+    wire.extra = [
+      {
+        seq: 4,
+        sender: 'agent_1',
+        ts: '2026-11-03T09:03:00.000Z',
+        kind: 'plan',
+        text: 'Plan · 1/2',
+        body: JSON.stringify({
+          entries: [
+            { content: 'Check the release PRs', status: 'completed' },
+            { content: 'Rerun CI on #1291', status: 'in_progress' }
+          ]
+        })
+      }
+    ]
+    await render()
+    const turn = container.querySelector('[data-thread-message="agent"]')!
+    expect(turn.textContent).toContain('Check the release PRs')
+    expect(turn.textContent).toContain('Rerun CI on #1291')
+  })
+
+  it('draws a shared image as its card and a person’s attached images inline, never as raw markers', async () => {
+    const preview = { name: 'chart.png', mimeType: 'image/png' as const, data: btoa('png-bytes') }
+    wire.extra = [
+      {
+        seq: 4,
+        sender: 'user_dana',
+        senderName: 'Dana Reyes',
+        ts: '2026-11-03T09:03:00.000Z',
+        kind: 'text',
+        text: 'like this one',
+        attachments: [preview]
+      },
+      {
+        seq: 5,
+        sender: 'agent_1',
+        ts: '2026-11-03T09:04:00.000Z',
+        kind: 'text',
+        text: 'revenue by week\n[shared: out/chart.png (image/png, 9 bytes, sha256:1a2b3c4d5e6f7a8b)]',
+        postId: '11111111-1111-4111-8111-111111111111',
+        sharedImage: { attachment: preview, original: { kind: 'inline' }, revision: 0 }
+      }
+    ]
+    await render()
+    expect(container.querySelectorAll('[data-testid="shared-image-card"]')).toHaveLength(1)
+    expect(container.querySelector('img[alt="revenue by week"]')).not.toBeNull()
+    expect(container.querySelector('[data-thread-message="person"] img[alt="chart.png"]')).not.toBeNull()
+    expect(container.textContent).not.toContain('[shared:')
   })
 
   it('stays read-only where this reader may not continue the task', async () => {
@@ -510,7 +540,7 @@ describe('ThreadPanel', () => {
       }
     ]
     await render()
-    const avatars = Array.from(container.querySelectorAll<HTMLImageElement>('[data-thread-avatar]'))
+    const avatars = Array.from(container.querySelectorAll<HTMLImageElement>('[data-thread-message="person"] img'))
     expect(avatars.map((img) => img.getAttribute('src'))).toEqual(['https://avatars.example/sam.png'])
   })
 
@@ -524,7 +554,7 @@ describe('ThreadPanel', () => {
     }
     wire.live = [{ kind: 'msg', text: 'and the sixth?' } as SessionStep]
     await render()
-    const avatars = Array.from(container.querySelectorAll<HTMLImageElement>('[data-thread-avatar]'))
+    const avatars = Array.from(container.querySelectorAll<HTMLImageElement>('[data-thread-message="person"] img'))
     expect(avatars.map((img) => img.getAttribute('src'))).toEqual([
       'https://avatars.example/dana.png',
       'https://avatars.example/me.png'
@@ -533,8 +563,10 @@ describe('ThreadPanel', () => {
   })
 
   it('opens the agent’s page from its mark', async () => {
+    const coordinator = { id: 'agent_1', name: 'deploy-bot', runtime: 'claude', icon: null } as unknown as Agent
+    props = { agentById: new Map([['agent_1', coordinator]]) }
     await render()
-    const link = container.querySelector('[data-thread-message="agent"] [data-thread-agent-link]')
+    const link = container.querySelector('[data-thread-message="agent"] a[aria-label="deploy-bot"]')
     expect(link?.getAttribute('href')).toBe('/acme/agents/agent_1')
   })
 
