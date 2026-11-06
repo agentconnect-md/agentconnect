@@ -180,20 +180,6 @@ export default function DaemonLifecycleModal({
                       {t('downgradeDisablesAutoUpgrade')}
                     </span>
                   )}
-                  <span
-                    className={`mt-[12px] flex items-center gap-2 font-sans text-[12.5px] font-medium leading-normal ${autoLocked ? 'text-(--text-tertiary)' : 'text-(--text-secondary)'}`}
-                  >
-                    <span className={autoLocked ? 'inline-flex opacity-55' : 'inline-flex'}>
-                      <Toggle
-                        size="sm"
-                        checked={autoChecked}
-                        disabled={autoLocked || busy}
-                        onChange={setAutoChoice}
-                        ariaLabel={tAuto('label')}
-                      />
-                    </span>
-                    {tAuto('label')}
-                  </span>
                 </div>
               ))}
           </>
@@ -257,7 +243,24 @@ export default function DaemonLifecycleModal({
         )}
       </div>
       <div className="modalfoot">
-        <div className="flex-1" />
+        {isUpgrade && !opId && !noTargets ? (
+          <span
+            className={`flex flex-1 items-center gap-2 font-sans text-[12.5px] font-medium leading-normal ${autoLocked ? 'text-(--text-tertiary)' : 'text-(--text-secondary)'}`}
+          >
+            <span className={autoLocked ? 'inline-flex opacity-55' : 'inline-flex'}>
+              <Toggle
+                size="sm"
+                checked={autoChecked}
+                disabled={autoLocked || busy}
+                onChange={setAutoChoice}
+                ariaLabel={tAuto('label')}
+              />
+            </span>
+            {tAuto('label')}
+          </span>
+        ) : (
+          <div className="flex-1" />
+        )}
         {opId ? (
           <Button variant={terminal ? 'primary' : 'ghost'} onClick={onClose}>
             {terminal ? t('done') : t('close')}
