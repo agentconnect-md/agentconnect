@@ -93,6 +93,21 @@ describe('DaemonAutoUpgradeSetting', () => {
     expect(await details()).toContain('Auto-upgrade to v1.41.0 failed: rolled back: crashed on start')
   })
 
+  it('keeps the details inside a narrow viewport when the label sits near its right edge', async () => {
+    const width = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 320 })
+    try {
+      await render()
+      const label = host.querySelector<HTMLButtonElement>('button[aria-expanded]')!
+      label.getBoundingClientRect = () => ({ left: 200, bottom: 100 }) as DOMRect
+      await act(async () => label.click())
+      const panel = host.querySelector<HTMLElement>('[role="note"]')!
+      expect([panel.style.left, panel.style.width, panel.style.top]).toEqual(['24px', '280px', '106px'])
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: width })
+    }
+  })
+
   it('surfaces a refused change and returns the switch to the stored value', async () => {
     mocks.setDaemonAutoUpgrade.mockRejectedValue(new Error('auto-upgrade is not supported by this daemon'))
     await render()

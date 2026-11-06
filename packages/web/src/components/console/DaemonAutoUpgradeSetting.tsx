@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState, type MouseEvent } from 'react'
 import { useTranslations } from 'next-intl'
 import type { DaemonRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
@@ -35,7 +35,28 @@ export function DaemonAutoUpgradeSetting({ daemon }: { daemon: DaemonRow }) {
   const ago = useAgo()
   const [optimistic, setOptimistic] = useState<boolean | null>(null)
   const [err, setErr] = useState<string | null>(null)
-  const [open, setOpen] = useState(false)
+  // Viewport position of the open details panel; null while closed.
+  const [panel, setPanel] = useState<{ top: number; left: number; width: number } | null>(null)
+
+  useEffect(() => {
+    if (!panel) return
+    const close = () => setPanel(null)
+    window.addEventListener('scroll', close, true)
+    window.addEventListener('resize', close)
+    return () => {
+      window.removeEventListener('scroll', close, true)
+      window.removeEventListener('resize', close)
+    }
+  }, [panel])
+
+  // Clamped to the viewport with a 16px gutter, wherever the wrapping header put the label.
+  const toggleDetails = (e: MouseEvent<HTMLButtonElement>) => {
+    if (panel) return setPanel(null)
+    const r = e.currentTarget.getBoundingClientRect()
+    const width = Math.min(280, window.innerWidth - 32)
+    const left = Math.max(16, Math.min(r.left, window.innerWidth - 16 - width))
+    setPanel({ top: r.bottom + 6, left, width })
+  }
 
   const busy = optimistic !== null
   const checked = optimistic ?? daemon.autoUpgrade
@@ -76,7 +97,7 @@ export function DaemonAutoUpgradeSetting({ daemon }: { daemon: DaemonRow }) {
   const help = supported ? t('help') : t('unsupported')
 
   return (
-    <span className="relative inline-flex items-center gap-[6px] whitespace-nowrap">
+    <span className="inline-flex items-center gap-[6px] whitespace-nowrap">
       <span className={locked ? 'inline-flex opacity-55' : 'inline-flex'}>
         <Toggle
           size="sm"
@@ -89,8 +110,8 @@ export function DaemonAutoUpgradeSetting({ daemon }: { daemon: DaemonRow }) {
       {/* A tap target, not only a hover title: touch screens must reach the reason and the last outcome too. */}
       <button
         type="button"
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
+        aria-expanded={panel !== null}
+        onClick={toggleDetails}
         title={[help, ...notes.map(noteText)].join('\n')}
         className="inline-flex cursor-pointer items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)"
       >
@@ -100,12 +121,13 @@ export function DaemonAutoUpgradeSetting({ daemon }: { daemon: DaemonRow }) {
         ))}
       </button>
       {err && <span className="font-sans text-[12px] font-normal leading-normal text-(--status-error)">{err}</span>}
-      {open && (
+      {panel && (
         <>
-          <div onClick={() => setOpen(false)} className="fixed inset-0 z-45" />
+          <div onClick={() => setPanel(null)} className="fixed inset-0 z-45" />
           <div
             role="note"
-            className="absolute left-0 top-full z-50 mt-[6px] flex w-[280px] flex-col gap-[6px] whitespace-normal rounded-[8px] border border-(--border-default) bg-(--surface-card) p-3 shadow-(--shadow-lg) max-desktop:left-auto max-desktop:right-0"
+            style={panel}
+            className="fixed z-50 flex flex-col gap-[6px] whitespace-normal rounded-[8px] border border-(--border-default) bg-(--surface-card) p-3 shadow-(--shadow-lg)"
           >
             <span className="font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">{help}</span>
             {notes.map((note) => (
