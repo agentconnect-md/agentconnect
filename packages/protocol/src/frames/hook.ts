@@ -11,6 +11,10 @@ import {
 export const HookBigIntString = z.string().regex(/^(?:0|[1-9]\d*)$/)
 export type HookBigIntString = z.infer<typeof HookBigIntString>
 
+/** A generic webhook's owner-authored instructions, put ahead of each fenced delivery payload. */
+export const HOOK_INSTRUCTIONS_MAX = 8000
+export const HookInstructions = z.string().min(1).max(HOOK_INSTRUCTIONS_MAX)
+
 /** The highest formal-review event one hook permits. */
 export const HookReviewPolicy = z.enum(['off', 'comment', 'request_changes', 'full'])
 export type HookReviewPolicy = z.infer<typeof HookReviewPolicy>

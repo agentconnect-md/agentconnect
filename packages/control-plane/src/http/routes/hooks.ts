@@ -90,6 +90,7 @@ function toDto(h: HookRecord, publicRelayUrl?: string): HookDtoT {
     name: h.name,
     sessionMode: h.sessionMode,
     enabled: h.enabled,
+    instructions: h.instructions ?? null,
     url: h.urlToken && publicRelayUrl ? hookIngressUrl(publicRelayUrl, h.urlToken) : null,
     hmacConfigured: h.hmacConfigured,
     repoId: h.repoId?.toString() ?? null,
@@ -758,6 +759,7 @@ export function hookRoutes(deps: HttpDeps) {
           req.body.kind === 'webhook'
             ? {
                 sessionMode: req.body.sessionMode,
+                instructions: req.body.instructions || null,
                 urlToken: `whk_${randomBytes(16).toString('hex')}`,
                 hmacSecret: req.body.hmac ? `whsec_${randomBytes(32).toString('hex')}` : null
               }
@@ -1088,6 +1090,7 @@ export function hookRoutes(deps: HttpDeps) {
         // github kind: re-resolve the repo on every update (re-target allowed —
         // repoId is recomputed; a stale/foreign repo fails the same as on create).
         let kindFields: { sessionMode: HookRecord['sessionMode'] } & Partial<{
+          instructions: string | null
           repoId: bigint
           repoFullName: string
           installationId: bigint
@@ -1414,7 +1417,12 @@ export function hookRoutes(deps: HttpDeps) {
             ...effectConfig
           }
         } else {
-          kindFields = { sessionMode: req.body.sessionMode }
+          // Absent keeps the stored instructions (a client predating them echoes no key); empty or null clears them.
+          const instructions = req.body.instructions
+          kindFields = {
+            sessionMode: req.body.sessionMode,
+            ...(instructions !== undefined ? { instructions: instructions || null } : {})
+          }
         }
         // PgHookRepo owns the hook-level lifecycle transaction: binding/mode/
         // enablement changes tombstone the old projection epoch before this

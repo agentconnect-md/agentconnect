@@ -38,6 +38,7 @@ import {
   HOOK_DECISION_ROUTING_V1_FEATURE,
   HOOK_DECISION_ROUTING_V2_FEATURE,
   HOOK_GITHUB_INSTALLATION_V1_FEATURE,
+  HOOK_INSTRUCTIONS_V1_FEATURE,
   OWNER_DEFAULT_DECISION_V1_FEATURE,
   PULL_REQUEST_FEEDBACK_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
@@ -792,6 +793,8 @@ export class RelayCpClient {
           OWNER_DEFAULT_DECISION_V1_FEATURE,
           // Fills an installation-wide GitHub rule in with each event's repository, so the CP may send it one.
           HOOK_GITHUB_INSTALLATION_V1_FEATURE,
+          // Forwards a generic rule's instructions on each delivery, so the CP may send it a rule that has them.
+          HOOK_INSTRUCTIONS_V1_FEATURE,
           // Prunes its MCP, hook and memory tables at the end of a replay snapshot instead of keeping stale entries.
           RELAY_PROJECTION_SNAPSHOT_V1_FEATURE,
           // Verifies organization GitHub Apps' webhooks with the secrets the CP sends it.

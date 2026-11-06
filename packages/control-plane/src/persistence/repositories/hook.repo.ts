@@ -92,6 +92,7 @@ function toRecord(h: HookWithUsers): HookRecord {
     enabled: h.enabled,
     sessionMode: h.sessionMode,
     urlToken: h.urlToken,
+    instructions: h.instructions,
     hmacConfigured: h.secret !== null,
     repoId: h.repoId,
     repoFullName: h.repoFullName,
@@ -514,6 +515,7 @@ export class PgHookRepo implements HookRepo {
       kind: input.kind,
       name: input.name,
       sessionMode: input.sessionMode,
+      ...(input.instructions !== undefined ? { instructions: input.instructions } : {}),
       // github kind: the route re-sends the full block on every write (repo
       // re-target allowed); webhook kind never sends it, and these stay null/[].
       repoId: input.repoId ?? null,

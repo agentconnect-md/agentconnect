@@ -36,6 +36,7 @@ import {
   RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2,
   RD_CODEHOST_RELEASE_V1,
   RD_HOOK_NOTICE_V1,
+  RD_HOOK_INSTRUCTIONS_V1,
   type CodeHostHookMetadata,
   type CodeHostHookRule,
   type CodeHostProvider,
@@ -308,7 +309,9 @@ export async function dispatchHookFire(
         ...(host ? requiredDaemonFeatures(host, dispatchMsg.event) : []),
         // A daemon without the notice slice would run this as an ordinary prompt — for the
         // very actor it was refused as. Host-neutral, because the post is.
-        ...(dispatchMsg.notice !== undefined ? [RD_HOOK_NOTICE_V1] : [])
+        ...(dispatchMsg.notice !== undefined ? [RD_HOOK_NOTICE_V1] : []),
+        // A daemon without it would ignore the instructions and run the payload as the instruction.
+        ...(dispatchMsg.instructions !== undefined ? [RD_HOOK_INSTRUCTIONS_V1] : [])
       ]
       if (required.some((feature) => !conn.supports(feature))) {
         deps.report({ ...base, status: 'failed', reason: 'rejected:unsupported' })
@@ -404,6 +407,7 @@ export function registerHookIngress(app: FastifyInstance, deps: HookIngressDeps)
             body: truncated ? text.slice(0, HOOK_BODY_EXCERPT_MAX) : text,
             truncated
           },
+          ...(rule.webhook.instructions !== undefined ? { instructions: rule.webhook.instructions } : {}),
           ...(rule.target ? { target: rule.target } : {})
         }
 

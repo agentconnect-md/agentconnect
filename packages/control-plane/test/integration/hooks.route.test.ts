@@ -164,6 +164,42 @@ describe('hooks REST — CRUD, ingress gating, secret echo, runs, audit', () => 
     expect(put.json()).toMatchObject({ kind: 'webhook', name: 'renamed', sessionMode: 'shared', enabled: false, url })
   })
 
+  it('stores instructions on create, keeps them across a PUT that omits them, and clears them on empty', async () => {
+    const agentId = await placedAgent()
+    await seedRelay()
+    const a = app()
+    const created = await a.app.inject({
+      method: 'POST',
+      url: `${ORG}/hooks`,
+      payload: body(agentId, { hmac: false, instructions: '  Triage this alert.  ' })
+    })
+    expect(created.statusCode).toBe(200)
+    const { id, configRevision } = created.json() as { id: string; configRevision: string }
+    expect(created.json()).toMatchObject({ instructions: 'Triage this alert.' })
+
+    const kept = await a.app.inject({
+      method: 'PUT',
+      url: `${ORG}/hooks/${id}`,
+      payload: { kind: 'webhook', agentId, name: 'renamed' }
+    })
+    expect(kept.json()).toMatchObject({ name: 'renamed', instructions: 'Triage this alert.' })
+    expect(BigInt((kept.json() as { configRevision: string }).configRevision)).toBeGreaterThan(BigInt(configRevision))
+
+    const cleared = await a.app.inject({
+      method: 'PUT',
+      url: `${ORG}/hooks/${id}`,
+      payload: { kind: 'webhook', agentId, name: 'renamed', instructions: '' }
+    })
+    expect(cleared.json()).toMatchObject({ instructions: null })
+
+    const tooLong = await a.app.inject({
+      method: 'PUT',
+      url: `${ORG}/hooks/${id}`,
+      payload: { kind: 'webhook', agentId, name: 'renamed', instructions: 'x'.repeat(8001) }
+    })
+    expect(tooLong.statusCode).toBe(400)
+  })
+
   it('DELETE /hooks/:id removes it (cascading secret + runs); unknown id → 404', async () => {
     const agentId = await placedAgent()
     await seedRelay()

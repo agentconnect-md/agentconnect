@@ -56,6 +56,8 @@ interface Harness {
   onlineDaemons: Set<string>
   /** Make sendMsg throw before returning its promise. */
   throwSync: boolean
+  /** Capabilities the fake daemon connection advertises. */
+  daemonFeatures: Set<string>
 }
 
 function makeHarness(): Harness {
@@ -66,6 +68,7 @@ function makeHarness(): Harness {
     lookups: Array<{ daemonId: string; at: number }>
     reports: RcRunReport[]
     onlineDaemons: Set<string>
+    daemonFeatures: Set<string>
   } = {
     sent: [],
     dispatches: [],
@@ -74,7 +77,8 @@ function makeHarness(): Harness {
     ack: { msgId: 'x', accepted: true },
     offline: false,
     onlineDaemons: new Set([DAEMON]),
-    throwSync: false
+    throwSync: false,
+    daemonFeatures: new Set(['hook-instructions-v1'])
   }
   const app = Fastify()
   const table = new HookTable()
@@ -85,6 +89,7 @@ function makeHarness(): Harness {
         h.lookups.push({ daemonId, at: clock.now() })
         if (h.offline || !h.onlineDaemons.has(daemonId)) return undefined
         return {
+          supports: (feature: string) => h.daemonFeatures.has(feature),
           sendMsg: (msg: RdMsg) => {
             h.sent.push(msg)
             h.dispatches.push({ daemonId, msg })
@@ -247,6 +252,35 @@ describe('hook ingress', () => {
     const msg = h.sent[0]!
     if (msg.source !== 'hook') throw new Error('expected hook member')
     expect(msg.target).toEqual({ platform: 'slack', channel: 'C123' })
+  })
+
+  it('carries the hook instructions to a daemon that applies them', async () => {
+    h.table.upsert(rule({ webhook: { urlToken: 'wh_tok1', instructions: 'Triage this alert.' } }))
+    await post('wh_tok1', { body: { message: 'disk full' } })
+    await flush()
+    const msg = h.sent[0]!
+    if (msg.source !== 'hook') throw new Error('expected hook member')
+    expect(msg.instructions).toBe('Triage this alert.')
+    expect(h.reports).toEqual([expect.objectContaining({ status: 'accepted' })])
+  })
+
+  it('refuses an instructed delivery to a daemon that would run its payload as the instruction', async () => {
+    h.daemonFeatures.delete('hook-instructions-v1')
+    h.table.upsert(rule({ webhook: { urlToken: 'wh_tok1', instructions: 'Triage this alert.' } }))
+    expect((await post('wh_tok1')).statusCode).toBe(202)
+    await flush()
+    expect(h.sent).toHaveLength(0)
+    expect(h.reports).toEqual([expect.objectContaining({ status: 'failed', reason: 'rejected:unsupported' })])
+  })
+
+  it('sends no instructions member for a hook without them, whatever the daemon supports', async () => {
+    h.daemonFeatures.clear()
+    h.table.upsert(rule())
+    await post('wh_tok1')
+    await flush()
+    const msg = h.sent[0]!
+    if (msg.source !== 'hook') throw new Error('expected hook member')
+    expect(msg).not.toHaveProperty('instructions')
   })
 
   describe('HMAC second layer', () => {

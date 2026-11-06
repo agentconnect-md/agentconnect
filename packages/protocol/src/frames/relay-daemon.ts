@@ -27,6 +27,7 @@ import {
   GitlabHookMetadata,
   GithubHookMetadata,
   HookContext,
+  HookInstructions,
   OptionalHookConfigSnapshot
 } from './hook.js'
 import { WEBCHAT_FILES_MAX, WebchatFileAttachment } from './file-transfer.js'
@@ -130,6 +131,9 @@ export const RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2 = 'github-thread-worktree-clea
  * exactly the actor the notice exists to say was NOT admitted.
  */
 export const RD_HOOK_NOTICE_V1 = 'hook-notice-v1'
+
+/** `hook-instructions-v1`: this daemon puts `RdMsgHook.instructions` ahead of a fenced payload; an older one would ignore them and run the payload as the instruction. */
+export const RD_HOOK_INSTRUCTIONS_V1 = 'hook-instructions-v1'
 
 /** `codehost-release-v1`: this daemon decodes a GitLab/Gitea `release` target; an older one rejects the member, so a relay never sends it one. */
 export const RD_CODEHOST_RELEASE_V1 = 'codehost-release-v1'
@@ -868,6 +872,8 @@ export const RdMsgHook = z.object({
   // sees it (dispatch is gated on the daemon advertising gitea-v1).
   gitea: GiteaHookMetadata.optional(),
   context: HookContext.optional(), // trimmed envelope; message extraction/fencing happens on the daemon
+  // A generic hook's owner-authored instructions; when present the payload is fenced data. Dispatch is gated on `hook-instructions-v1`.
+  instructions: HookInstructions.optional(),
   target: CronTarget.optional(), // output anchoring; absent ⇒ headless
   // The evaluation host's copy of a routed event (code-host-decisions.md §5): recorded, then judged for `candidates`; never run itself.
   routing: RdHookRouting.optional(),

@@ -82,7 +82,8 @@ import {
   normalizeRepoSubdir,
   TransferFileName,
   TransferMimeType,
-  TransferSha256
+  TransferSha256,
+  HOOK_INSTRUCTIONS_MAX
 } from '@agentconnect.md/protocol'
 import { HEX_COLOR_RE, AGENT_ICON_GLYPHS } from '../../agents/agent-icon.js'
 import { CP_PLATFORM_IDS } from '../../platforms/ids.js'
@@ -3193,6 +3194,15 @@ export const CreateWebhookHookBody = HookBodyBase.extend({
   // perThread is code-host-only (source-thread affinity needs a thread key);
   // perSubject is the generic equivalent — the caller keys it via X-AC-Session-Key.
   sessionMode: z.enum(['perDelivery', 'perSubject', 'shared']).default('perDelivery'),
+  instructions: z
+    .string()
+    .trim()
+    .max(HOOK_INSTRUCTIONS_MAX)
+    .nullable()
+    .optional()
+    .describe(
+      'What the agent should do with each delivery. When set, the request body is passed after it as data rather than read as the instruction; empty or null clears it, and omitting it on update keeps the stored value.'
+    ),
   // Mint a per-hook HMAC signing secret (X-AC-Signature); echoed EXACTLY ONCE in
   // the create response, never retrievable after.
   hmac: z.boolean().default(false)
@@ -3340,6 +3350,7 @@ export const HookDto = z.object({
   name: z.string(),
   sessionMode: HookSessionModeEnum,
   enabled: z.boolean(),
+  instructions: z.string().nullable(), // webhook kind only; null ⇒ the payload is the instruction
   // The full ingress URL (PUBLIC_RELAY_URL-based). A capability URL — surfaced
   // only to callers with edit rights (configuring senders needs it); null otherwise.
   // The full ingress URL (PUBLIC_RELAY_URL-based) — a capability URL, surfaced to

@@ -515,6 +515,7 @@ export default function AddIntegrationModal({
   const [hookName, setHookName] = useState('')
   const [hookSessionMode, setHookSessionMode] = useState<'perDelivery' | 'perSubject' | 'shared'>('perDelivery')
   const [hookHmac, setHookHmac] = useState(false)
+  const [hookInstructions, setHookInstructions] = useState('')
   const [createdHook, setCreatedHook] = useState<CreatedHookDto | null>(null)
   const [copiedHook, setCopiedHook] = useState<'url' | 'secret' | 'curl' | null>(null)
   const [hookTestMessage, setHookTestMessage] = useState(DEFAULT_HOOK_TEST_MESSAGE)
@@ -917,8 +918,7 @@ export default function AddIntegrationModal({
   }
 
   // Webhook path: create the capability URL, optionally minting an HMAC secret,
-  // then flip to the endpoint/reveal step. There is no fixed prompt — the
-  // agent's description is standing context and the delivery payload speaks.
+  // then flip to the endpoint/reveal step. Without instructions the delivery payload speaks.
   const submitHook = async () => {
     if (busyRef.current || createdHook) return
     busyRef.current = true
@@ -929,6 +929,7 @@ export default function AddIntegrationModal({
         agentId: agent.id,
         name: hookName.trim() || `${agent.name}-webhook`,
         sessionMode: hookSessionMode,
+        ...(hookInstructions.trim() ? { instructions: hookInstructions.trim() } : {}),
         hmac: hookHmac
       })
       setCreatedHook(created)
@@ -1640,6 +1641,17 @@ export default function AddIntegrationModal({
                 </div>
               )}
             </div>
+            <div className="fld mt-3">
+              <span className="fldlbl">{t('webhookInstructions')}</span>
+              <textarea
+                className="inp min-h-15 resize-y px-3 py-2 leading-[1.5]"
+                rows={3}
+                maxLength={8000}
+                placeholder={t('webhookInstructionsPlaceholder')}
+                value={hookInstructions}
+                onChange={(e) => setHookInstructions(e.target.value)}
+              />
+            </div>
             <label className="mt-3 flex cursor-pointer items-start gap-2.5 rounded-md border border-(--border-default) bg-(--surface-card) px-3 py-[10px]">
               <input
                 type="checkbox"
@@ -1653,7 +1665,7 @@ export default function AddIntegrationModal({
             </label>
             <div className="mt-3 flex items-start gap-2 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
               <Icon name="info" size={13} className="mt-[1px] flex-none" />
-              <span>{t('postJson', { field: 'message' })}</span>
+              <span>{hookInstructions.trim() ? t('postAnyJson') : t('postJson', { field: 'message' })}</span>
             </div>
           </div>
         )}
