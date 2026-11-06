@@ -23,4 +23,13 @@ describe('a delegated task coordinate (auto-session-mode.md §10)', () => {
     expect(continuableSession({ platform: 'webchat', thread: 'webchat:c1' })).toBe(false)
     expect(continuableSession({ platform: 'dream', thread: null })).toBe(false)
   })
+
+  it("lets the console continue a webchat coordinator's task keyed on its thread, and no other webchat session", () => {
+    const root = '55555555-5555-4555-8555-555555555555'
+    expect(continuableSession({ platform: 'webchat', thread: root, taskParentSessionId: 'coordinator-1' })).toBe(true)
+    expect(continuableSession({ platform: 'webchat', thread: root, taskParentSessionId: null })).toBe(false)
+    expect(continuableSession({ platform: 'webchat', thread: 'subsession:check-1', taskParentSessionId: 'c' })).toBe(
+      false
+    )
+  })
 })

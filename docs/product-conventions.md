@@ -1397,6 +1397,12 @@ which is told which thread it sits in. A task opened on a thread reads everythin
 before it, the coordinator's answers included. A task the coordinator opened before threads
 existed keeps its own page and its link cards until it closes.
 
+Once the owner publishes such a conversation, other members may write to its tasks too, from a
+task's own page: their message is a reply in the task's thread, goes to the task, and the task's
+answer streams back to them there. They cannot write at the conversation's root or in a thread no
+task holds, since those reach the coordinator, which only its owner talks to, and a task that has
+closed takes no more messages.
+
 A Code channel's Tasks tab reads the same task and runtime background-work sources as
 the console's Tasks panel. Open work stays visible, finished work is grouped and collapsed,
 and updates continue after the main reply ends while background work remains. Runtime work

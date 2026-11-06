@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { continuationAudience, continuationParentId } from './continuation-audience.js'
+import { TASK_PAGE_MESSAGES_FEATURE, WEBCHAT_THREADS_FEATURE } from '@agentconnect.md/protocol'
+import { continuationAudience, continuationParentId, taskContinuationFeature } from './continuation-audience.js'
 
 const AGENT = 'agent-1'
 const coordinator = { id: 'sid-coordinator', agentId: AGENT }
@@ -40,5 +41,20 @@ describe('whose audience decides a continuation (webchat-threads.md §5.4)', () 
     const orphan = { agentId: AGENT, platform: 'slack', thread: 'subsession:2', parentSessionId: null }
     expect(continuationParentId(orphan)).toBeNull()
     expect(continuationAudience(orphan, coordinator)).toBeNull()
+  })
+
+  it("asks a task's daemon to serve its console-only continuation: a page by its page feature, a thread by threads", () => {
+    const root = '11111111-1111-4111-8111-111111111111'
+    expect(taskContinuationFeature({ platform: 'webchat', thread: 'subsession:1' })).toBe(TASK_PAGE_MESSAGES_FEATURE)
+    expect(taskContinuationFeature({ platform: 'slack', thread: 'subsession:1' })).toBe(TASK_PAGE_MESSAGES_FEATURE)
+    expect(taskContinuationFeature({ platform: 'webchat', thread: root, taskParentSessionId: 'c' })).toBe(
+      WEBCHAT_THREADS_FEATURE
+    )
+    for (const session of [
+      { platform: 'slack', thread: '100.1', taskParentSessionId: 'c' },
+      { platform: 'webchat', thread: root, taskParentSessionId: null },
+      { platform: 'webchat', thread: 'subsession:check-1', taskParentSessionId: 'c' }
+    ])
+      expect(taskContinuationFeature(session)).toBeNull()
   })
 })

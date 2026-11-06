@@ -28,6 +28,7 @@ import {
   WEBCHAT_HOOK_CONTINUATION_FEATURE,
   WEBCHAT_CONTINUATION_ATTACHMENTS_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
+  WEBCHAT_THREADS_FEATURE,
   isFrame,
   type AnyFrame,
   RELAY_CP_SUBPROTOCOL,
@@ -1734,6 +1735,94 @@ describe('webchat session-continuation mint + verify', () => {
         canContinue: false,
         continuationUnavailableReason: 'unsupported_platform'
       })
+
+      relayWs.close()
+      daemonWs.close()
+    })
+  })
+
+  // webchat-threads.md §6.3: other members write in a thread a task of a published coordinator holds, through the task's session.
+  describe("a webchat coordinator's task in its thread", () => {
+    const CONV = '0c0c0c0c-0c0c-4c0c-8c0c-0c0c0c0c0c0c'
+    const ROOT = '5e5e5e5e-5e5e-4e5e-8e5e-5e5e5e5e5e5e'
+    const COORDINATOR_ID = 'acp-continuation-coordinator-1'
+    const TASK_ID = 'acp-continuation-thread-task-1'
+    const RELEASED_ID = 'acp-continuation-thread-task-2'
+    const detail = async (app: App, id: string) =>
+      (await app.http.inject({ method: 'GET', url: `/api/v1/orgs/${DEFAULT_ORG_ID}/sessions/${id}` })).json()
+
+    async function seedThreadTask(): Promise<void> {
+      await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+      const webchat = { daemonId: DAEMON, platform: 'webchat', channel: CONV }
+      // The coordinator is the owner's private conversation until they publish it.
+      await seedSessionMeta(prisma, COORDINATOR_ID, AGENT, {
+        ...webchat,
+        thread: 'append:coordinator:1',
+        visibility: 'private',
+        ownerIdentity: 'user:someone-else'
+      })
+      await seedSessionMeta(prisma, TASK_ID, AGENT, { ...webchat, thread: ROOT })
+      await prisma.sessionMeta.update({ where: { id: TASK_ID }, data: { taskParentSessionId: COORDINATOR_ID } })
+      // A task its coordinator no longer holds leaves its thread unowned, which reaches the coordinator.
+      await seedSessionMeta(prisma, RELEASED_ID, AGENT, { ...webchat, thread: '6f6f6f6f-6f6f-4f6f-8f6f-6f6f6f6f6f6f' })
+    }
+
+    it('stays read-only until the daemon serves threads', async () => {
+      const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+      const { ws: relayWs } = await openRelay(base, 'pod-thread-1', 'wss://pod-thread-1.example.test', CONTINUATION)
+      const daemonWs = await connectDaemonReady(base, [...CONTINUATION, TASK_PAGE_MESSAGES_FEATURE])
+      await seedThreadTask()
+      await prisma.sessionMeta.update({
+        where: { id: COORDINATOR_ID },
+        data: { visibility: 'org', ownerIdentity: null }
+      })
+
+      expect((await mintSessionToken(app, TASK_ID)).statusCode).toBe(409)
+      expect(await detail(app, TASK_ID)).toMatchObject({
+        canContinue: false,
+        continuationUnavailableReason: 'unavailable'
+      })
+
+      relayWs.close()
+      daemonWs.close()
+    })
+
+    it("mints and verifies a task once its coordinator is published, and keeps an unowned thread's session closed", async () => {
+      const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+      const { ws: relayWs } = await openRelay(base, 'pod-thread-2', 'wss://pod-thread-2.example.test', CONTINUATION)
+      const daemonWs = await connectDaemonReady(base, [...CONTINUATION, WEBCHAT_THREADS_FEATURE])
+      await seedThreadTask()
+
+      // The task's own row reads org-visible, but its coordinator is still someone else's private conversation.
+      expect((await mintSessionToken(app, TASK_ID)).statusCode).toBe(403)
+      expect(await detail(app, TASK_ID)).toMatchObject({
+        canContinue: false,
+        continuationUnavailableReason: 'unauthorized'
+      })
+
+      await prisma.sessionMeta.update({
+        where: { id: COORDINATOR_ID },
+        data: { visibility: 'org', ownerIdentity: null }
+      })
+      expect(await detail(app, TASK_ID)).toMatchObject({ canContinue: true, continuationUnavailableReason: null })
+      const minted = await mintSessionToken(app, TASK_ID)
+      expect(minted.statusCode).toBe(200)
+      sendFrame(relayWs, 'rc/verify', {
+        kind: 'webchat-token',
+        credential: (minted.json() as { token: string }).token,
+        conversationBinding: 'v1'
+      })
+      const verdict = (await nextFrame(relayWs, 'rc/verify/ok')).payload as RcVerifyResult
+      expect(verdict).toMatchObject({ ok: true, targetSessionId: TASK_ID })
+
+      // Neither the coordinator itself nor a released task's session takes another member's messages.
+      for (const id of [COORDINATOR_ID, RELEASED_ID]) {
+        expect((await mintSessionToken(app, id)).statusCode).toBe(409)
+        expect(await detail(app, id)).toMatchObject({
+          canContinue: false,
+          continuationUnavailableReason: 'unsupported_platform'
+        })
+      }
 
       relayWs.close()
       daemonWs.close()

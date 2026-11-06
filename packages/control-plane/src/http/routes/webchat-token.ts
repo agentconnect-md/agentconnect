@@ -326,7 +326,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           tags: [Tag.Sessions],
           summary: 'Mint a session-continuation webchat token',
           description:
-            'Mints a short-lived token the browser presents to the relay pool to continue an existing session from the console composer — a chat thread (the human turn is mirrored back to it), a hook-origin session such as a GitHub or GitLab event, whose only surface is the console, or a delegated task, which whoever may continue its owning session continues console-only. Requires continuation authorization, un-purged content, a daemon that can still serve the session content (its recorder, or a live member of the shared store it was written to), and continuation-capable daemon and relay pool.',
+            'Mints a short-lived token the browser presents to the relay pool to continue an existing session from the console composer — a chat thread (the human turn is mirrored back to it), a hook-origin session such as a GitHub or GitLab event, whose only surface is the console, or a task (a delegated task’s page, or a webchat coordinator’s task, whose message is a reply in the thread it holds), which whoever may continue its owning session continues console-only. Requires continuation authorization, un-purged content, a daemon that can still serve the session content (its recorder, or a live member of the shared store it was written to), and continuation-capable daemon and relay pool.',
           operationId: 'mintWebchatSessionToken',
           params: z.object({ orgId: z.string(), sessionId: z.string() }),
           body: z.object({ protocol: WebchatProtocol.optional() }).nullish(),
