@@ -442,6 +442,8 @@ describe('Kilo, Qwen Code, Copilot and goose', () => {
       runtime: 'goose'
     })
     expect(modelProviderTarget(agent('gemini'), runtime('gemini', ['--acp']))).toBeUndefined()
+    // Kilo's built-in deepseek provider speaks chat completions, which the Messages-only deepseek pair refuses.
+    expect(modelProviderTarget(agent('kilo', 'deepseek/deepseek-chat'), runtime('./kilo', ['acp']))).toBeUndefined()
   })
 
   it('reads explicit, Qwen-advertised and bare model ids', () => {
@@ -455,14 +457,11 @@ describe('Kilo, Qwen Code, Copilot and goose', () => {
   it('reuses the Claude and Codex pairs for the dialect each launch speaks', () => {
     expect(modelCredentialRuntime({ provider: 'anthropic', runtime: 'goose', model: 'claude-x' })).toBe('claude')
     expect(modelCredentialRuntime({ provider: 'openai', runtime: 'copilot', model: 'gpt-5.5' })).toBe('codex')
-    expect(modelCredentialRuntime({ provider: 'deepseek', runtime: 'kilo', opencodeProvider: 'deepseek' })).toBe(
-      'deepseek'
-    )
   })
 
   it('writes Kilo through KILO_CONFIG_CONTENT and limits it to the configured providers', () => {
     const env: Record<string, string> = { KILO_CONFIG_CONTENT: JSON.stringify({ share: 'disabled' }) }
-    const pairs = { anthropic: anthropicPair, openai: openaiPair }
+    const pairs = { anthropic: anthropicPair, openai: openaiPair, deepseek: openaiPair }
     applyConfiguredModelProviders(
       { provider: 'anthropic', runtime: 'kilo', opencodeProvider: 'anthropic' },
       env,

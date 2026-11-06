@@ -202,8 +202,9 @@ normal choice for a loopback or in-pod gateway.
 The cloud daemon's static pair is `MODEL_TOKEN` plus optional `MODEL_BASE_URL`, with a
 per-runtime pair that replaces it whole: `ANTHROPIC_MODEL_TOKEN`/`ANTHROPIC_MODEL_BASE_URL`
 for Claude, `OPENAI_MODEL_*` for Codex, `DEEPSEEK_MODEL_*` for the DeepSeek Harness.
-OpenCode and Kilo reuse these provider pairs: `anthropic` uses `ANTHROPIC_MODEL_*`, `openai`
+OpenCode reuses these provider pairs: `anthropic` uses `ANTHROPIC_MODEL_*`, `openai`
 uses `OPENAI_MODEL_*`, and `deepseek` uses `DEEPSEEK_MODEL_*`, with the same shared fallback.
+Kilo reuses the `anthropic` and `openai` pairs the same way.
 Qwen Code, GitHub Copilot CLI and goose reuse the `anthropic` or `openai` pair of the dialect
 their launch speaks (below).
 `*_MODEL_TOKEN` names an opaque deployment credential, not a header choice: despite the
@@ -244,8 +245,9 @@ server, and a static-credential host refuses it. Qwen Code takes whichever varia
 first, so an Anthropic launch empties `OPENAI_MODEL` and `QWEN_MODEL`; its Anthropic route sends
 the key as `Authorization: Bearer`, not `x-api-key`. The launch also sets
 `QWEN_USAGE_STATISTICS_ENABLED=false` unless the deployment set it. None of the three takes a
-`deepseek` pair, whose dialect differs between deployments; Kilo's `deepseek/` models use it as
-OpenCode's do. Organization provider keys that carry request headers are refused for Qwen Code,
+`deepseek` pair, which speaks Messages. Neither does Kilo: its built-in `deepseek` provider sends
+OpenAI chat completions even when its `npm` names the Anthropic SDK, so a Kilo `deepseek/` model
+gets no managed credential. Organization provider keys that carry request headers are refused for Qwen Code,
 Copilot and goose, which have no way to send them.
 
 Dynamic grants use the same translation for their key, and take their base URL from

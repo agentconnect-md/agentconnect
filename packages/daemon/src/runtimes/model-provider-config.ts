@@ -59,6 +59,12 @@ const OPENCODE_PROVIDERS: Record<string, { runtime: ModelRuntimeKind; keyEnv: st
   deepseek: { runtime: 'deepseek', keyEnv: 'DEEPSEEK_API_KEY' }
 }
 
+// The deepseek pair speaks Messages, and Kilo's built-in deepseek provider sends chat completions whatever its `npm`.
+function openCodeShapedProviders(target: ModelProviderTarget): string[] {
+  const providers = Object.keys(OPENCODE_PROVIDERS)
+  return target.runtime === 'kilo' ? providers.filter((provider) => provider !== 'deepseek') : providers
+}
+
 export function modelCredentialRuntime(target: ModelProviderTarget): ModelRuntimeKind {
   if (isOpenCodeShaped(target)) return OPENCODE_PROVIDERS[target.opencodeProvider ?? 'openai']?.runtime ?? 'opencode'
   // A launch-model runtime reuses the pair of the dialect it speaks.
@@ -141,6 +147,7 @@ export function modelProviderTarget(
 
   const configuredProvider = effectiveModel?.includes('/') ? effectiveModel.split('/', 1)[0]?.trim() : undefined
   const opencodeProvider = configuredProvider || 'openai'
+  if (launchKind === 'kilo' && opencodeProvider === 'deepseek') return undefined
   return {
     provider: opencodeProvider === 'anthropic' || opencodeProvider === 'deepseek' ? opencodeProvider : 'openai',
     runtime: launchKind,
@@ -405,7 +412,7 @@ export function applyConfiguredModelProviders(
     isLaunchModelRuntime(target.runtime) && !target.model ? environmentLaunchModel(target, env) : undefined
   const resolved = launchModel ? launchModelTarget(target.runtime as LaunchModelRuntimeKind, launchModel) : target
   const targets: ModelProviderTarget[] = isOpenCodeShaped(target)
-    ? [...new Set([...Object.keys(OPENCODE_PROVIDERS), target.opencodeProvider ?? 'openai'])].map((provider) => ({
+    ? [...new Set([...openCodeShapedProviders(target), target.opencodeProvider ?? 'openai'])].map((provider) => ({
         runtime: target.runtime,
         opencodeProvider: provider,
         provider: provider === 'anthropic' || provider === 'deepseek' ? provider : 'openai'
