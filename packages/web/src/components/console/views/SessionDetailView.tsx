@@ -117,7 +117,7 @@ import {
   type ComposerHistoryEntry
 } from '@/components/console/useComposerHistory'
 import { CommandMenu } from '@/components/console/CommandMenu'
-import type { ControlCommand } from '@/components/console/composer-control-commands'
+import { commandHighlight, type ControlCommand } from '@/components/console/composer-control-commands'
 import type { DecisionRuntimeTarget } from '@agentconnect.md/protocol/decision'
 import { useCommandAutocomplete } from '@/components/console/useCommandAutocomplete'
 import { useRuntimeCommands } from '@/components/console/useRuntimeCommands'
@@ -277,6 +277,9 @@ function useHeaderPopover() {
 /** Stable identity for a composer with no participants to ask — keeps useRuntimeCommands' memo still. */
 const EMPTY_ROSTER: ReadonlyArray<{ agentId: string; name: string }> = []
 const noOwnerIcon = () => undefined
+const EMPTY_CONTROLS: readonly ControlCommand[] = []
+// The textarea's text box, shared with the overlay that marks a leading command so both lay text out identically.
+const COMPOSER_TEXT = 'px-[15px] pt-[13px] pb-[2px] font-sans text-[14px] leading-[1.55]'
 
 // The composer's textarea, isolated so a keystroke re-renders ONLY this node:
 // the draft lives outside the playground context (usePgDraft subscription), and
@@ -361,6 +364,9 @@ function ComposerTextarea({
     controls,
     onPicked: onCommandPick
   })
+  // A recognized leading command reads as a command: the overlay behind the (then transparent) text colors it and hints its argument.
+  const highlight = commandHighlight(draft, controls ?? EMPTY_CONTROLS, runtimeCommands.candidates)
+  const overlayRef = useRef<HTMLDivElement | null>(null)
   return (
     <div className="relative">
       {recall.label && (
@@ -372,51 +378,74 @@ function ComposerTextarea({
           {recall.label}
         </div>
       )}
-      <textarea
-        ref={textareaRef}
-        className="block max-h-[160px] min-h-[56px] w-full resize-none border-0 bg-transparent px-[15px] pt-[13px] pb-[2px] font-sans text-[14px] leading-[1.55] text-(--text-primary) outline-none placeholder:text-(--text-tertiary)"
-        placeholder={suggestion ?? placeholder}
-        value={draft}
-        onChange={(e) => {
-          setPgInput(sessionId, e.target.value)
-          const caret = e.target.selectionStart ?? e.target.value.length
-          mention.sync(e.target.value, caret)
-          command.sync(e.target.value, caret)
-        }}
-        onSelect={(e) => {
-          // Re-derives the anchor on every caret move, not just typing — see
-          // the Home composer's identical handler for why.
-          const el = e.currentTarget
-          const caret = el.selectionStart ?? el.value.length
-          mention.sync(el.value, caret)
-          command.sync(el.value, caret)
-        }}
-        onPaste={(event) => {
-          if (!onImageFile) return
-          const image = clipboardImageFile(event.clipboardData)
-          if (!image) return
-          event.preventDefault()
-          onImageFile(image)
-        }}
-        onKeyDown={(e) => {
-          // History first: a recalled `/cmd` or `@name` must not hand Up/Down to a picker mid-walk.
-          if (recall.handleKeyDown(e)) return
-          if (e.key === 'Tab' && !e.shiftKey && !draft && suggestion) {
-            e.preventDefault()
-            setPgInput(sessionId, suggestion)
-            return
-          }
-          if (command.handleKeyDown(e)) return
-          if (mention.handleKeyDown(e)) return
-          // Enter sends — but NOT while an IME is composing (that Enter
-          // just confirms the candidate), while a mention join is still in
-          // flight (see onMentionJoiningChange), and Shift+Enter is a newline.
-          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !mention.joining) {
-            e.preventDefault()
-            onSend()
-          }
-        }}
-      />
+      <div className="relative">
+        {highlight && (
+          <div
+            ref={(el) => {
+              overlayRef.current = el
+              if (el && textareaRef.current) el.scrollTop = textareaRef.current.scrollTop
+            }}
+            aria-hidden
+            data-testid="composer-command-highlight"
+            className={`${COMPOSER_TEXT} pointer-events-none absolute inset-0 overflow-hidden break-words whitespace-pre-wrap text-(--text-primary)`}
+          >
+            {draft.slice(0, highlight.start)}
+            <span className="text-(--text-link)">{draft.slice(highlight.start, highlight.end)}</span>
+            {draft.slice(highlight.end)}
+            {highlight.hint && (
+              <span className="text-(--text-tertiary)">
+                {draft.length === highlight.end ? ' ' : ''}
+                {highlight.hint}
+              </span>
+            )}
+          </div>
+        )}
+        <textarea
+          ref={textareaRef}
+          onScroll={(e) => {
+            if (overlayRef.current) overlayRef.current.scrollTop = e.currentTarget.scrollTop
+          }}
+          className={`${COMPOSER_TEXT} relative block max-h-[160px] min-h-[56px] w-full resize-none border-0 bg-transparent outline-none placeholder:text-(--text-tertiary) ${highlight ? 'text-transparent caret-(--text-primary)' : 'text-(--text-primary)'}`}
+          placeholder={suggestion ?? placeholder}
+          value={draft}
+          onChange={(e) => {
+            setPgInput(sessionId, e.target.value)
+            const caret = e.target.selectionStart ?? e.target.value.length
+            mention.sync(e.target.value, caret)
+            command.sync(e.target.value, caret)
+          }}
+          onSelect={(e) => {
+            // Re-derive the anchor on every caret move, as the Home composer does.
+            const el = e.currentTarget
+            const caret = el.selectionStart ?? el.value.length
+            mention.sync(el.value, caret)
+            command.sync(el.value, caret)
+          }}
+          onPaste={(event) => {
+            if (!onImageFile) return
+            const image = clipboardImageFile(event.clipboardData)
+            if (!image) return
+            event.preventDefault()
+            onImageFile(image)
+          }}
+          onKeyDown={(e) => {
+            // History first: a recalled `/cmd` or `@name` must not hand Up/Down to a picker mid-walk.
+            if (recall.handleKeyDown(e)) return
+            if (e.key === 'Tab' && !e.shiftKey && !draft && suggestion) {
+              e.preventDefault()
+              setPgInput(sessionId, suggestion)
+              return
+            }
+            if (command.handleKeyDown(e)) return
+            if (mention.handleKeyDown(e)) return
+            // Enter sends, except mid-IME composition, during a mention join, or with Shift (a newline).
+            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !mention.joining) {
+              e.preventDefault()
+              onSend()
+            }
+          }}
+        />
+      </div>
       <MentionMenu
         options={mention.matches}
         activeIndex={mention.activeIndex}

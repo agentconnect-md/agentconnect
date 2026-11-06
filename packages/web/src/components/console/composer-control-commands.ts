@@ -64,6 +64,35 @@ export function matchChoices(choices: readonly ControlChoice[], arg: string): Co
     .map((entry) => entry.choice)
 }
 
+/** A recognized leading command in the draft: its `[start, end)` span, plus an argument hint while no argument is typed. */
+export interface CommandHighlight {
+  start: number
+  end: number
+  hint: string | null
+}
+
+/** The draft's leading command when it names a console command, or with `/` a skill, so the composer can mark it. */
+export function commandHighlight(
+  text: string,
+  controls: readonly ControlCommand[],
+  skills: ReadonlyArray<{ name: string; hint: string | null }>
+): CommandHighlight | null {
+  const match = /^(\s*)([/!])([^\s/!]+)(?=\s|$)/.exec(text)
+  if (!match) return null
+  const start = match[1]!.length
+  const end = start + 1 + match[3]!.length
+  const control = resolveControl(controls, match[3]!)
+  const skill = control || match[2] !== '/' ? undefined : skills.find((candidate) => candidate.name === match[3])
+  if (!control && !skill) return null
+  if (!/^ ?$/.test(text.slice(end))) return { start, end, hint: null }
+  const hint = control
+    ? control.choices?.length
+      ? `[${control.choices.map((choice) => choice.value).join('|')}]`
+      : null
+    : skill!.hint
+  return { start, end, hint: hint || null }
+}
+
 /** The draft once a run command's leading line is consumed: the command never reaches the agent. */
 export function draftWithoutCommandLine(text: string, start: number): string {
   const lineEnd = text.indexOf('\n', start)

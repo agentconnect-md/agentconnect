@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  commandHighlight,
   draftWithoutCommandLine,
   matchChoices,
   matchControls,
@@ -44,6 +45,41 @@ describe('matchChoices', () => {
     expect(matchChoices(choices, 'hi').map((c) => c.value)).toEqual(['high', 'xhigh'])
     expect(matchChoices(choices, 'extra').map((c) => c.value)).toEqual(['xhigh'])
     expect(matchChoices(choices, 'none')).toEqual([])
+  })
+})
+
+describe('commandHighlight', () => {
+  const fast: ControlCommand = {
+    name: 'fast',
+    choices: [
+      { value: 'on', label: 'On', current: false },
+      { value: 'off', label: 'Off', current: true }
+    ],
+    run: () => {}
+  }
+  const controls = [...ALL.filter((c) => c.name !== 'fast'), fast]
+  const skills = [
+    { name: 'plugin', hint: '[install]' },
+    { name: 'tdd', hint: null }
+  ]
+
+  it('marks a whole command word and hints its argument until one is typed', () => {
+    expect(commandHighlight('/fast', controls, skills)).toEqual({ start: 0, end: 5, hint: '[on|off]' })
+    expect(commandHighlight('  !fast ', controls, skills)).toEqual({ start: 2, end: 7, hint: '[on|off]' })
+    expect(commandHighlight('/fast on', controls, skills)).toEqual({ start: 0, end: 5, hint: null })
+    expect(commandHighlight('!cancel', controls, skills)).toEqual({ start: 0, end: 7, hint: null })
+  })
+
+  it('marks a skill only behind `/`, with its own argument hint', () => {
+    expect(commandHighlight('/plugin', controls, skills)).toEqual({ start: 0, end: 7, hint: '[install]' })
+    expect(commandHighlight('/tdd now', controls, skills)).toEqual({ start: 0, end: 4, hint: null })
+    expect(commandHighlight('!plugin', controls, skills)).toBeNull()
+  })
+
+  it('leaves a partial or unknown word, or a command not at the start, unmarked', () => {
+    expect(commandHighlight('/fas', controls, skills)).toBeNull()
+    expect(commandHighlight('/unknown', controls, skills)).toBeNull()
+    expect(commandHighlight('hi /fast', controls, skills)).toBeNull()
   })
 })
 
