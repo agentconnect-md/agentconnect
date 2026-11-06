@@ -646,11 +646,19 @@ not addressed to this agent. Cost grows with the number of agents.
   keyed `webchat:<conv>:<rootPostId>:<agent>` (webchat-threads.md §5.2): it opens with the thread so
   far, the coordinator's answers included, answers in the thread with posts of its own, and a reply
   in the thread reaches it directly. The coordinator posts no link card for it; the console draws
-  its card from `openedForMessageId` as below.
-  - Whoever may continue the coordinator writes to it from its page, where the daemon advertises
-    `webchat-threads-v1`: the message is a reply in the thread it names, or the task's own, among the
-    threads the task holds, and runs on the task's session console-only, as a background task's page
-    does (webchat-threads.md §6.3). The root and threads no task holds stay the owner's.
+  the task in its thread's footer under the root (webchat-threads.md §6.1).
+  - Whoever may continue the coordinator writes to it from its page or its thread's panel, where the
+    daemon advertises `webchat-threads-v1`: the message is a reply in the thread it names, or the
+    task's own, among the threads the task holds, and runs on the task's session console-only, as a
+    background task's page does (webchat-threads.md §6.3). The root and threads no task holds stay
+    the owner's.
+  - The console draws the conversation in Slack's shape: roots with their threads' footers, thread
+    replies only in the thread, the coordinator's turns in the main timeline with "In thread: …" on
+    one that answered a reply, and `replyToMessage` as one line "Answered in the thread". A footer,
+    a label, that line or Reply in thread opens the thread in the side panel at `?thread=<rootId>`,
+    where the owner writes in it on the conversation's own socket. A task's page shrinks into its
+    first thread, and on a desktop a thread whose first reply starts while the owner watches opens
+    by itself (webchat-threads.md §6).
 - Before webchat had threads, a task the coordinator opened for a webchat message continued on its own
   page, which is its conversation. Such a page task keeps running as described here until it closes,
   and a message without a post (such as an MCP app's) still opens one; webchat-threads.md §10

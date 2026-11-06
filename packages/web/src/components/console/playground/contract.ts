@@ -82,6 +82,12 @@ export interface PlaygroundData {
     conversationId?: string,
     participants?: Array<{ agentId: string; name: string; primary?: boolean }>
   ) => boolean
+  /** Send `text` in a thread of a coordinator conversation (webchat-threads.md §6.3), leaving its composer alone; a session-targeted continuation writes it in that thread of its task. */
+  pgSendThread: (id: string, agentId: string, text: string, thread: string, conversationId?: string) => boolean
+  /** The thread the turn in flight was sent in, undefined at the root or when idle. */
+  getPgTurnThread: (id: string) => string | undefined
+  /** What the relay's `ready` frame said it supports; undefined until a socket of this session is verified. */
+  getPgRelayFeatures: (id: string) => readonly string[] | undefined
   /** Probe the conversation's daemons for a turn this view is not streaming (after a reload, or one started elsewhere) and reattach on a hit; no-op while busy. */
   pgAttach: (id: string, agentId: string, conversationId: string) => void
   /** Mark `id` (a CP session id) as a session-targeted continuation: the socket
@@ -142,12 +148,13 @@ export interface PlaygroundData {
    *  superseded regeneration keeps its author's lane open, so the indicator
    *  names the agent actually working, not the primary). */
   getBusyLaneAgentIds: (id: string) => string[]
-  /** Retire only live steps confirmed by authoritative transcript rows. */
+  /** Retire only live steps confirmed by authoritative transcript rows: the root's, or with `thread` that thread's. */
   reconcileLiveSteps: (
     id: string,
     persisted: SessionMessageDto[],
     agentId: string,
-    promptRows?: SessionMessageDto[]
+    promptRows?: SessionMessageDto[],
+    thread?: string
   ) => void
 }
 
@@ -166,6 +173,8 @@ export interface QueuedTurn {
   commandPick?: { agentId: string; name: string }
   /** Composer send order (per provider), so a steer put back in the queue keeps its place. */
   seq?: number
+  /** The thread it is sent in, a root's postId. */
+  thread?: string
 }
 
 export type WebchatRuntimeConfig = {

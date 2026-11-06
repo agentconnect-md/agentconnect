@@ -365,7 +365,15 @@
       "footerWorking": "处理中…",
       "showEarlier": "显示更早的消息",
       "unreadable": "只有能打开持有这个会话串的任务的人才能查看它。",
-      "missing": "这个会话串不在这个会话里。"
+      "missing": "这个会话串不在这个会话里。",
+      "threadPlaceholder": "在会话串里回复",
+      "threadHintTask": "持有这个会话串的任务会在这里回答",
+      "threadHintCoordinator": "协调会话会在这个会话串里回答",
+      "replyInThread": "在会话串中回复",
+      "inThread": "在会话串中：{root}",
+      "inThreadBare": "在会话串中",
+      "answeredInThread": "已在会话串中回答",
+      "messageActions": "消息操作"
     },
     "githubApp": {
       "title": "GitHub App",

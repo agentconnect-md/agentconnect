@@ -54,7 +54,7 @@ import { randomUuid } from '@/lib/random-uuid'
 import { resolveRoster, typedMentionIds, wireMentions } from '@/lib/conversation-addressing'
 import { leadingCommandToken } from '@/components/console/runtime-command-menu'
 import { sessionAfterModelSelection } from '@/lib/session-runtime-controls'
-import { reconcilePersistedLiveSteps } from '@/lib/session-transcript'
+import { liveThreadScope, reconcilePersistedLiveSteps } from '@/lib/session-transcript'
 import { publishImageState, type SharedImageState, type WebchatImageUpdate } from '@/lib/shared-image'
 import { applyImageUpdateToSteps, upsertImageStep } from '@/lib/shared-image-steps'
 import {
@@ -239,6 +239,8 @@ type WebchatOutput = {
   index: number
   event?: WebchatEvent
   status?: WebchatStatus
+  /** The thread this answer streams in (webchat-threads.md §8). */
+  thread?: string
 }
 
 type WebchatDone = {
@@ -247,6 +249,7 @@ type WebchatDone = {
   lastIndex?: number
   stopReason?: string
   error?: string
+  thread?: string
 }
 
 /** One completed conversation post (mirrors protocol WebchatPost). Only rendered here
@@ -260,6 +263,8 @@ type WebchatPost = {
   image?: Omit<SharedImageState, 'download'>
   /** A coordinator's link to a task, drawn as the task's card. */
   taskLink?: TaskLinkFacts
+  /** The thread it is posted in. */
+  thread?: string
 }
 
 /** One roster entry from the relay `ready` frame. */
@@ -368,6 +373,11 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   // targeted participant (webchat-multi-agents.md §5.3); keys from lib/webchat-lanes.ts.
   const streamCursors = useRef<Map<string, OrderedWebchatCursor<WebchatOutput, WebchatDone>>>(new Map())
   const reconnectAttempts = useRef<Map<string, number>>(new Map())
+  // The thread each turn was sent in, and each stream turn whose frames answer in one, keyed by `id\nturnId`.
+  const turnThreads = useRef<Map<string, string>>(new Map())
+  const streamThreads = useRef<Map<string, string>>(new Map())
+  // What each session's relay announced in its `ready` frame.
+  const [relayFeaturesBy, setRelayFeaturesBy] = useState<Record<string, readonly string[]>>({})
   // An open socket can still lose frames (a relay↔daemon gap), so a busy stream that stalls or holds a hole resumes itself.
   const stallResumeRef = useRef<(id: string) => void>(() => undefined)
   const stallWatchRef = useRef<WebchatStallWatch | null>(null)
@@ -564,8 +574,12 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     (id: string, ev: WebchatEvent, agentId: string | undefined, turnId: string): void => {
       const observedAtMs = Date.now()
       const who = participantName(id, agentId)
+      const thread = streamThreads.current.get(`${id}\n${turnId}`)
       const lane = (extra: Omit<SessionStep, 'text' | 'turnId'> & { text: string }): SessionStep =>
-        stampStep({ ...extra, turnId, ...(agentId ? { agentId } : {}), ...(who ? { who } : {}) }, observedAtMs)
+        stampStep(
+          { ...extra, turnId, ...(agentId ? { agentId } : {}), ...(who ? { who } : {}), ...(thread ? { thread } : {}) },
+          observedAtMs
+        )
       mutateSteps(id, (arrived) => {
         // Any streamed event ends the wait a `notice` announced, so it retires before this event lands.
         const steps = ev.kind === 'notice' ? arrived : dropWaitNotices(arrived, agentId, turnId)
@@ -1224,11 +1238,13 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       if (result.done.error) {
         // The notice STAYS on a failure: a turn that died waiting for its pod is explained by it.
         const name = participantName(id, agentId)
+        const thread = streamThreads.current.get(`${id}\n${result.done.turnId}`)
         pushStep(id, {
           kind: 'done',
           turnId: result.done.turnId,
           ...(agentId ? { agentId } : {}),
           ...(name ? { who: name } : {}),
+          ...(thread ? { thread } : {}),
           text: `⚠️ ${result.done.error}`
         })
       } else {
@@ -1259,6 +1275,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
 
   const receiveOutput = useCallback(
     (id: string, output: WebchatOutput): void => {
+      if (output.thread) streamThreads.current.set(`${id}\n${output.turnId}`, output.thread)
       let key = cursorKeyFor(id, output.agentId)
       // A warm session's first stream frame can beat the participant's ack to
       // the browser (the daemon emits it synchronously inside turn admission).
@@ -1316,6 +1333,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         return
       }
       if (steered) steerTurns.current.get(id)?.delete(done.turnId)
+      if (done.thread) streamThreads.current.set(`${id}\n${done.turnId}`, done.thread)
       let key = cursorKeyFor(id, done.agentId)
       // Same early-frame admission as receiveOutput: a participant's terminal
       // frame (e.g. a coalesced turn's immediate done) may also beat its ack.
@@ -1591,6 +1609,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 update?: WebchatImageUpdate
                 suggestion?: WebchatPromptSuggestion
                 refused?: { op?: string; agentId?: string; reason?: string }
+                features?: string[]
               }
               try {
                 m = JSON.parse(String(e.data))
@@ -1598,6 +1617,10 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 return
               }
               if (m.type === 'ready') {
+                const features = Array.isArray(m.features) ? m.features : []
+                setRelayFeaturesBy((cur) =>
+                  cur[id]?.join('\n') === features.join('\n') ? cur : { ...cur, [id]: features }
+                )
                 if (m.participants?.length) {
                   rosterAgentIds.current.set(
                     id,
@@ -1686,6 +1709,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                         postId: post.postId,
                         agentId,
                         ...(who ? { who } : {}),
+                        ...(post.thread ? { thread: post.thread } : {}),
                         text: post.text,
                         sharedImage: image,
                         ...(toolSessionId ? { toolSessionId } : {})
@@ -1721,7 +1745,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                             agentId,
                             ...(participantName(id, agentId) ? { who: participantName(id, agentId) } : {}),
                             text: post.text,
-                            ...(post.taskLink ? { taskLink: post.taskLink } : {})
+                            ...(post.taskLink ? { taskLink: post.taskLink } : {}),
+                            ...(post.thread ? { thread: post.thread } : {})
                           })
                         ]
                   )
@@ -2066,13 +2091,24 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       conversationId?: string,
       knownParticipants?: Array<{ agentId: string; name: string; primary?: boolean }>,
       commandPick?: { agentId: string; name: string },
-      files?: WebchatFileAttachment[]
+      files?: WebchatFileAttachment[],
+      thread?: string
     ): void => {
       const requestedTurnId = randomUuid()
       // The files' marker is what the reloaded transcript row shows, so the optimistic step reads the same.
       const marker = filesMarker(files ?? [])
       const shown = marker ? (text ? `${text}\n${marker}` : marker) : text
-      pushStep(id, { kind: 'msg', who: '@you', turnId: requestedTurnId, text: shown, ...(image ? { image } : {}) })
+      // A task's page has no threads: a continuation's message and answer stay on its own timeline.
+      const shownIn = thread && !sessionTargets.current.has(id) ? thread : undefined
+      if (thread) turnThreads.current.set(`${id}\n${requestedTurnId}`, thread)
+      pushStep(id, {
+        kind: 'msg',
+        who: '@you',
+        turnId: requestedTurnId,
+        text: shown,
+        ...(image ? { image } : {}),
+        ...(shownIn ? { thread: shownIn } : {})
+      })
       setBusy(id, true)
       // Targeting (webchat-multi-agents.md §4.2): conversation membership is a
       // STANDING mention — an unmentioned message goes to the WHOLE roster
@@ -2144,6 +2180,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           // Runtime staging is a single-agent affordance — multi-agent conversations expose no runtime controls (§9.1/§9.3).
           ...(roster.length <= 1 && stagedRuntime.current.get(id) ? { runtime: stagedRuntime.current.get(id) } : {}),
           ...(roster.length <= 1 && stagedWorktree.current.has(id) ? { worktree: stagedWorktree.current.get(id) } : {}),
+          ...(thread ? { thread } : {}),
           ...browserTimeZone()
         })
         // Re-send only one-target turns; retrying several targets could duplicate the relay's canonical post.
@@ -2303,7 +2340,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       conversationId?: string,
       knownParticipants?: Array<{ agentId: string; name: string; primary?: boolean }>,
       commandPick?: { agentId: string; name: string },
-      files?: WebchatFileAttachment[]
+      files?: WebchatFileAttachment[],
+      thread?: string
     ) => {
       // Queue while a turn streams (Claude Code-style) — and also while older
       // queued messages are still waiting for the dispatcher, so a send landing
@@ -2320,7 +2358,10 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           // A steer carries no file links either: the daemon's steer path names attachments without them.
           !files?.length &&
           roster <= 1 &&
-          !commandPick
+          !commandPick &&
+          // A message never steers across threads: one in a thread, or into a turn running in one, waits its turn.
+          !thread &&
+          !turnThreads.current.has(`${id}\n${pendingTurnIds.current.get(id) ?? ''}`)
         ) {
           sendSteer(id, agentForId, text, ++sendSeq.current, conversationId)
           return true
@@ -2334,13 +2375,14 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           agentId: agentForId,
           ...(commandPick ? { commandPick } : {}),
           ...(conversationId ? { conversationId } : {}),
-          ...(knownParticipants ? { participants: knownParticipants } : {})
+          ...(knownParticipants ? { participants: knownParticipants } : {}),
+          ...(thread ? { thread } : {})
         }
         pgQueueRef.current[id] = [...(pgQueueRef.current[id] ?? NO_QUEUE), queued]
         setPgQueueBy((cur) => ({ ...cur, [id]: [...(cur[id] ?? NO_QUEUE), queued] }))
         return true
       }
-      sendTurn(id, agentForId, text, image, conversationId, knownParticipants, commandPick, files)
+      sendTurn(id, agentForId, text, image, conversationId, knownParticipants, commandPick, files, thread)
       return true
     },
     [sendSteer, sendTurn]
@@ -2391,6 +2433,22 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     [submitTurn]
   )
 
+  /** A message in one thread; the thread panel owns its own draft, so the conversation's composer is untouched. */
+  const pgSendThread = useCallback(
+    (id: string, agentForId: string, text: string, thread: string, conversationId?: string) => {
+      const trimmed = text.trim()
+      if (!trimmed || !thread) return false
+      return submitTurn(id, agentForId, trimmed, undefined, conversationId, undefined, undefined, undefined, thread)
+    },
+    [submitTurn]
+  )
+  const getPgTurnThread = useCallback(
+    (id: string): string | undefined =>
+      pgBusyBy[id] ? turnThreads.current.get(`${id}\n${pendingTurnIds.current.get(id) ?? ''}`) : undefined,
+    [pgBusyBy]
+  )
+  const getPgRelayFeatures = useCallback((id: string) => relayFeaturesBy[id], [relayFeaturesBy])
+
   // Dispatch the oldest queued message the moment its session's turn ends. The
   // dispatched-set makes the effect idempotent (StrictMode runs effects twice).
   const dispatchedQueueIds = useRef<Set<string>>(new Set())
@@ -2413,7 +2471,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         next.conversationId,
         next.participants,
         next.commandPick,
-        next.files
+        next.files,
+        next.thread
       )
     }
   }, [pgQueueBy, pgBusyBy, sendTurn])
@@ -2574,11 +2633,23 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const getPgSuggestion = useCallback((id: string) => suggestionBy[id], [suggestionBy])
   const getLiveSteps = useCallback((id: string) => (wcSteps[id] ?? NO_STEPS).filter((step) => !step.hidden), [wcSteps])
   const reconcileLiveSteps = useCallback(
-    (id: string, persisted: SessionMessageDto[], agentId: string, promptRows?: SessionMessageDto[]): void => {
+    (
+      id: string,
+      persisted: SessionMessageDto[],
+      agentId: string,
+      promptRows?: SessionMessageDto[],
+      thread?: string
+    ): void => {
       setWcSteps((cur) => {
         const live = cur[id]
         if (!live) return cur
-        const reconciled = reconcilePersistedLiveSteps(live, persisted, agentId, promptRows)
+        const reconciled = reconcilePersistedLiveSteps(
+          live,
+          persisted,
+          agentId,
+          promptRows,
+          liveThreadScope(live, thread)
+        )
         if (reconciled === live) return cur
         const next = { ...cur }
         if (reconciled.length === 0) delete next[id]
@@ -2657,6 +2728,9 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       pgDiscard,
       pgSend,
       pgNotice,
+      pgSendThread,
+      getPgTurnThread,
+      getPgRelayFeatures,
       pgAttach,
       markSessionTarget,
       getPgQueue,
@@ -2695,6 +2769,9 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       pgDiscard,
       pgSend,
       pgNotice,
+      pgSendThread,
+      getPgTurnThread,
+      getPgRelayFeatures,
       pgAttach,
       markSessionTarget,
       getPgQueue,

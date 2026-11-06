@@ -82,6 +82,9 @@ let markSessionTarget: ReturnType<typeof usePlayground>['markSessionTarget']
 let getBusyLaneAgentIds: ReturnType<typeof usePlayground>['getBusyLaneAgentIds']
 let isPgBusy: ReturnType<typeof usePlayground>['isPgBusy']
 let isPgTurnUnstreamed: ReturnType<typeof usePlayground>['isPgTurnUnstreamed']
+let pgSendThread: ReturnType<typeof usePlayground>['pgSendThread']
+let getPgTurnThread: ReturnType<typeof usePlayground>['getPgTurnThread']
+let getPgRelayFeatures: ReturnType<typeof usePlayground>['getPgRelayFeatures']
 
 function Probe() {
   const pg = usePlayground()
@@ -110,6 +113,9 @@ function Probe() {
   getBusyLaneAgentIds = pg.getBusyLaneAgentIds
   isPgBusy = pg.isPgBusy
   isPgTurnUnstreamed = pg.isPgTurnUnstreamed
+  pgSendThread = pg.pgSendThread
+  getPgTurnThread = pg.getPgTurnThread
+  getPgRelayFeatures = pg.getPgRelayFeatures
   return null
 }
 
@@ -2714,5 +2720,139 @@ describe('A live session on an existing conversation', () => {
     expect(vi.mocked(api.webchatWsUrl)).toHaveBeenCalledTimes(1)
     expect(vi.mocked(api.webchatWsUrl)).toHaveBeenCalledWith('org1', 'agent-1', 'conv-co', undefined)
     expect(getPgSession(id)).toMatchObject({ agentId: 'agent-1' })
+  })
+})
+
+describe('messages in a coordinator conversation’s threads (webchat-threads.md §6.3)', () => {
+  const ROOT = '6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b'
+  class ThreadSocket extends StubSocket {
+    static instances: ThreadSocket[] = []
+    onopen?: () => void
+    onmessage?: (e: { data: string }) => void
+    onerror?: (e: unknown) => void
+    onclose?: () => void
+    constructor() {
+      super()
+      ThreadSocket.instances.push(this)
+    }
+  }
+  const frames = (socket: ThreadSocket) =>
+    socket.send.mock.calls.map((call) => JSON.parse(String(call[0])) as Record<string, unknown>)
+  const feed = (socket: ThreadSocket, message: unknown) => socket.onmessage?.({ data: JSON.stringify(message) })
+  async function open(send: () => void) {
+    ThreadSocket.instances = []
+    Reflect.set(globalThis, 'WebSocket', ThreadSocket)
+    const api = await import('@/lib/api')
+    vi.mocked(api.webchatWsUrl).mockResolvedValue('wss://relay.test/ws')
+    await act(async () => send())
+    const socket = ThreadSocket.instances[0]!
+    await act(async () => {
+      socket.readyState = 1
+      socket.onopen?.()
+    })
+    return socket
+  }
+  afterEach(async () => {
+    const api = await import('@/lib/api')
+    vi.mocked(api.webchatWsUrl).mockRejectedValue(new Error('no relay in this test'))
+  })
+
+  it('sends a message in a thread without touching the composer, and keeps what answers there in it', async () => {
+    act(() => setPgInput('s1', 'half a thought'))
+    const socket = await open(() => {
+      expect(pgSendThread('s1', 'agent-1', ' and the notes? ', ROOT, 'c1')).toBe(true)
+    })
+    act(() =>
+      feed(socket, { type: 'ready', conversationId: 'c1', features: ['webchat-images-v1', 'webchat-threads-v1'] })
+    )
+    expect(getPgRelayFeatures('s1')).toEqual(['webchat-images-v1', 'webchat-threads-v1'])
+    const turn = frames(socket).at(-1)!
+    expect(turn).toMatchObject({ text: 'and the notes?', thread: ROOT })
+    expect(getPgInput('s1')).toBe('half a thought')
+    expect(getPgTurnThread('s1')).toBe(ROOT)
+    expect(getLiveSteps('s1')).toMatchObject([{ kind: 'msg', text: 'and the notes?', thread: ROOT }])
+
+    const turnId = turn.turnId as string
+    act(() => {
+      feed(socket, { type: 'ack', ack: { accepted: true, turnId, agentId: 'agent-1' } })
+      feed(socket, {
+        type: 'output',
+        output: {
+          turnId,
+          agentId: 'agent-1',
+          index: 0,
+          thread: ROOT,
+          event: { kind: 'tool_call', toolCallId: 'tc-1', title: 'Read notes', status: 'completed' }
+        }
+      })
+      feed(socket, { type: 'done', done: { turnId, agentId: 'agent-1', lastIndex: 0, thread: ROOT } })
+      // A task's answer posted in the thread, and one the coordinator posts at the root.
+      feed(socket, {
+        type: 'post',
+        initiator: 'agent',
+        post: { postId: 'post-1', author: { kind: 'agent', agentId: 'agent-1' }, text: 'Notes drafted.', thread: ROOT }
+      })
+      feed(socket, {
+        type: 'post',
+        initiator: 'agent',
+        post: { postId: 'post-2', author: { kind: 'agent', agentId: 'agent-1' }, text: 'At the root.' }
+      })
+    })
+    expect(getLiveSteps('s1').map((step) => [step.kind, step.thread])).toEqual([
+      ['msg', ROOT],
+      ['tool', ROOT],
+      ['done', ROOT],
+      ['done', undefined]
+    ])
+    expect(isPgBusy('s1')).toBe(false)
+    expect(getPgTurnThread('s1')).toBeUndefined()
+
+    // The thread's record retires its turn; the root's post waits for the root's own rows.
+    act(() =>
+      reconcileLiveSteps(
+        's1',
+        [
+          { seq: 4, ts: String(Date.now()), sender: 'user', kind: 'text', text: 'and the notes?' },
+          { seq: 5, ts: String(Date.now()), sender: 'agent-1', kind: 'text', text: 'Notes drafted.', postId: 'post-1' }
+        ],
+        'agent-1',
+        undefined,
+        ROOT
+      )
+    )
+    expect(getLiveSteps('s1').map((step) => step.postId)).toEqual(['post-2'])
+  })
+
+  it('never steers a message in a thread into the running turn: it waits its turn', async () => {
+    const socket = await open(() => pgSend('s1', 'agent-1', 'plan the release', 'c1'))
+    const { turnId } = frames(socket).at(-1) as { turnId: string }
+    act(() => {
+      feed(socket, { type: 'ack', ack: { accepted: true, turnId, agentId: 'agent-1' } })
+      feed(socket, {
+        type: 'output',
+        output: { turnId, agentId: 'agent-1', index: 0, status: { steerable: true } }
+      })
+    })
+    act(() => {
+      pgSendThread('s1', 'agent-1', 'and the notes?', ROOT, 'c1')
+    })
+    expect(frames(socket).filter((frame) => frame.steer)).toEqual([])
+    expect(getPgQueue('s1')).toMatchObject([{ text: 'and the notes?', thread: ROOT }])
+  })
+
+  it('writes a continuation’s message in its task’s thread, on the task’s own timeline', async () => {
+    ThreadSocket.instances = []
+    Reflect.set(globalThis, 'WebSocket', ThreadSocket)
+    await act(async () => {
+      markSessionTarget('ses_task')
+      pgSendThread('ses_task', 'agent-1', 'try a warm cache', ROOT)
+    })
+    const socket = ThreadSocket.instances[0]!
+    await act(async () => {
+      socket.readyState = 1
+      socket.onopen?.()
+    })
+    expect(frames(socket).at(-1)).toMatchObject({ text: 'try a warm cache', thread: ROOT })
+    expect(getLiveSteps('ses_task')[0]).not.toHaveProperty('thread')
   })
 })

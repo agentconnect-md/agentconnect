@@ -8,9 +8,33 @@
 
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import { platformTranscriptOrdering } from '@/components/console/platforms/registry'
-import { ApiError, fetchSessionMessages, type SessionMessageDto } from '@/lib/api'
+import {
+  ApiError,
+  fetchSessionMessages,
+  type SessionHistoryDto,
+  type SessionMessageDto,
+  type SessionThreadSummaryDto
+} from '@/lib/api'
 import { mergeConversation, type MergeSource } from '@/lib/conversation-merge'
 import { mergeSessionMessages } from '@/lib/session-transcript'
+
+/** A daemon without thread reads answers the roots view 409 `DAEMON_FEATURE_MISSING`; the flat view still reads. */
+function rootsViewMissing(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 409 && error.code === 'DAEMON_FEATURE_MISSING'
+}
+
+const NO_THREADS: ReadonlyMap<string, SessionThreadSummaryDto> = new Map()
+
+/** The footers a page carried, over those read before (webchat-threads.md §6.1). */
+function withThreads(
+  current: ReadonlyMap<string, SessionThreadSummaryDto>,
+  page: Pick<SessionHistoryDto, 'threads'>
+): ReadonlyMap<string, SessionThreadSummaryDto> {
+  if (!page.threads?.length) return current
+  const next = new Map(current)
+  for (const summary of page.threads) next.set(summary.rootId, summary)
+  return next
+}
 
 /** A 502/503/504 from one member's daemon is an offline source (partial-merge notice), not a
  *  page-level failure. */
@@ -66,6 +90,8 @@ export interface UseSessionTranscriptInput {
   sessionBusyRef: RefObject<boolean>
   /** Member sessions this page's live turns went to (conversation mode); their human rows confirm the live prompts too. */
   promptSessionIds?: readonly string[]
+  /** Read a coordinator's roots view, with its threads' footers, where its daemon serves it (single session only). */
+  rootsView?: boolean
   reconcileLiveSteps: (
     id: string,
     persisted: SessionMessageDto[],
@@ -85,6 +111,12 @@ export interface UseSessionTranscriptResult {
   hasEarlier: boolean
   pagingEarlier: boolean
   conversationLoadedKey: string | null
+  /** The transcript is the roots view: replies in threads are marked, and `threads` holds their footers. */
+  threadsView: boolean
+  /** Each thread's footer by its root's id, newest read wins. */
+  threads: ReadonlyMap<string, SessionThreadSummaryDto>
+  /** Put a fresher footer, such as an open thread's own read, over the one the transcript carried. */
+  putThread: (summary: SessionThreadSummaryDto) => void
   loadEarlier: () => Promise<void>
   refreshTail: () => Promise<void>
   /** Conversation-mode per-member state, read during render (merge + per-row source resolution). */
@@ -122,6 +154,7 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
     conversationRosterPlatform,
     sessionBusyRef,
     promptSessionIds,
+    rootsView = false,
     reconcileLiveSteps
   } = input
   // Read at reconcile time: a new send target must not refetch the conversation.
@@ -179,6 +212,34 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
   const tailReadyRef = useRef(false)
   const tailInFlightRef = useRef<Promise<void> | null>(null)
   const tailDirtyRef = useRef(false)
+  // Whether this session's reads ask for the roots view: on until its daemon says it has none.
+  const rootsRef = useRef(false)
+  const [threadsView, setThreadsView] = useState(false)
+  const [threads, setThreads] = useState<ReadonlyMap<string, SessionThreadSummaryDto>>(NO_THREADS)
+  const putThread = useCallback((summary: SessionThreadSummaryDto) => {
+    setThreads((current) =>
+      current.get(summary.rootId) === summary ? current : withThreads(current, { threads: [summary] })
+    )
+  }, [])
+  /** One page of the single session's history, through the roots view while it is served. */
+  const readPage = useCallback(
+    async (sessionId: string, options: Parameters<typeof fetchSessionMessages>[1] = {}): Promise<SessionHistoryDto> => {
+      if (rootsRef.current) {
+        try {
+          const page = await fetchSessionMessages(sessionId, { ...options, view: 'roots' })
+          if (tailSessionRef.current === sessionId && rootsRef.current)
+            setThreads((current) => withThreads(current, page))
+          return page
+        } catch (error) {
+          if (!rootsViewMissing(error)) throw error
+          rootsRef.current = false
+          if (tailSessionRef.current === sessionId) setThreadsView(false)
+        }
+      }
+      return fetchSessionMessages(sessionId, options)
+    },
+    []
+  )
   // Rows a busy-skipped reconcile never saw: the tail passes only its increment and the cursor is already past them, so they ride along next time or a prompt row never retires its live echo.
   const pendingReconcileRef = useRef<SessionMessageDto[]>([])
 
@@ -202,6 +263,9 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
     setMsgPaging(false)
     setHasEarlier(false)
     olderCursorRef.current = null
+    rootsRef.current = rootsView && !conversationKey
+    setThreadsView(false)
+    setThreads(NO_THREADS)
     // Load only the NEWEST page; older history comes in on demand via loadEarlier (a "Load earlier
     // activity" button), so a long session no longer walks its whole backlog at open.
     if (conversationKey) {
@@ -270,8 +334,9 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
       }
     }
     ;(async () => {
-      const page = await fetchSessionMessages(sid, { signal: ac.signal })
+      const page = await readPage(sid, { signal: ac.signal })
       if (!active) return
+      setThreadsView(rootsRef.current)
       olderCursorRef.current = page.nextCursor ?? null
       setHasEarlier(page.nextCursor != null)
       liveCursorRef.current = page.liveCursor ?? null
@@ -298,7 +363,7 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
     }
     // conversationSourceKey keys the fan-out on the member SET — a roster refresh with identical
     // members must not refetch every transcript.
-  }, [wantTranscript, sid, aid, reconcileLiveSteps, conversationKey, conversationSourceKey])
+  }, [wantTranscript, sid, aid, reconcileLiveSteps, conversationKey, conversationSourceKey, rootsView, readPage])
 
   const refreshTail = useCallback((): Promise<void> => {
     if (!wantTranscript || !sid || !tailReadyRef.current || sessionBusyRef.current) return Promise.resolve()
@@ -371,7 +436,7 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
       let cursor = liveCursorRef.current
       const persisted: SessionMessageDto[] = []
       for (let pageNo = 0; pageNo < 20; pageNo++) {
-        const page = await fetchSessionMessages(sid, {
+        const page = await readPage(sid, {
           ...(cursor !== null ? { after: cursor } : {}),
           limit: 200
         })
@@ -407,7 +472,7 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
       })
     tailInFlightRef.current = run
     return run
-  }, [wantTranscript, sid, aid, sessionPlatform, reconcileLiveSteps, conversationKey])
+  }, [wantTranscript, sid, aid, sessionPlatform, reconcileLiveSteps, conversationKey, readPage])
 
   // "Load earlier": one strictly-older page, prepended. Single-session pages `sid` off its own
   // cursor; conversation mode (C3 §5.2) pages one older page per member and re-merges the union.
@@ -418,7 +483,7 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
       if (!sid || !cursor) return
       setPagingEarlier(true)
       try {
-        const page = await fetchSessionMessages(sid, { cursor })
+        const page = await readPage(sid, { cursor })
         // Fence on the session: a navigation before this resolves would otherwise splice these rows
         // into the NEW session and re-point its cursor at the old one (tailSessionRef tracks the open
         // session, like refreshTail's guard).
@@ -468,7 +533,7 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
     } finally {
       setPagingEarlier(false)
     }
-  }, [conversationKey, pagingEarlier, sid, sessionPlatform])
+  }, [conversationKey, pagingEarlier, sid, sessionPlatform, readPage])
 
   return {
     msgs,
@@ -481,6 +546,9 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
     hasEarlier,
     pagingEarlier,
     conversationLoadedKey,
+    threadsView,
+    threads,
+    putThread,
     loadEarlier,
     refreshTail,
     conversationSourcesRef,

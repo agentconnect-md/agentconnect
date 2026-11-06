@@ -286,6 +286,10 @@ export class AhpPlaygroundStore {
       },
       pgNotice: (id, agentId, text, conversationId, participants) =>
         this.enqueue(id, agentId, text, conversationId, participants),
+      // A coordinator conversation runs on the legacy protocol, so an AHP conversation has no threads.
+      pgSendThread: () => false,
+      getPgTurnThread: () => undefined,
+      getPgRelayFeatures: () => undefined,
       pgAttach: (id, agentId, conversationId) => {
         const connection = this.entry(id, agentId, conversationId).connection
         void connection.connect().catch((error) => connection.warn(error))

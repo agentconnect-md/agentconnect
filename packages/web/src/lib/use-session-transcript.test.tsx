@@ -205,3 +205,66 @@ describe('useSessionTranscript prompt confirmation across members', () => {
     expect(reconcile.mock.calls[0]?.[3]).toEqual([])
   })
 })
+
+describe('useSessionTranscript roots view (webchat-threads.md §6.1)', () => {
+  type Seen = {
+    threadsView: boolean
+    threads: ReadonlyMap<string, { replies: number }>
+    refreshTail: () => Promise<void>
+  }
+  const busyRef = { current: false }
+  const reconcile = () => {}
+  function RootsHarness({ expose }: { expose: (seen: Seen) => void }) {
+    const { threadsView, threads, refreshTail } = useSessionTranscript({
+      sid: 's1',
+      aid: 'agent',
+      wantTranscript: true,
+      sessionPlatform: 'webchat',
+      conversationKey: null,
+      conversationSourceKey: '',
+      conversationMembers: null,
+      conversationRosterPlatform: undefined,
+      sessionBusyRef: busyRef,
+      rootsView: true,
+      reconcileLiveSteps: reconcile
+    })
+    useEffect(() => {
+      expose({ threadsView, threads, refreshTail })
+    })
+    return null
+  }
+  const footer = (rootId: string, replies: number) => ({ rootId, replies, participants: [], readable: true })
+
+  it('reads roots with their threads’ footers, the newest footer of each thread winning', async () => {
+    fetchMock
+      .mockResolvedValueOnce({ ...page([row(1, 'user', 'plan the release')], 'c1'), threads: [footer('a', 1)] })
+      .mockResolvedValueOnce({ ...page([], 'c2'), threads: [footer('a', 2), footer('b', 1)] })
+    let seen!: Seen
+    await act(async () => root.render(<RootsHarness expose={(next) => (seen = next)} />))
+    await flush()
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ view: 'roots' })
+    expect(seen.threadsView).toBe(true)
+    expect(seen.threads.get('a')?.replies).toBe(1)
+    await act(async () => seen.refreshTail())
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({ view: 'roots', after: 'c1' })
+    expect(seen.threads.get('a')?.replies).toBe(2)
+    expect(seen.threads.get('b')?.replies).toBe(1)
+  })
+
+  it('reads the flat view from a daemon without thread reads, and keeps reading it', async () => {
+    const { ApiError } = await import('@/lib/api')
+    const missing = Object.assign(new ApiError('feature missing', 409), { code: 'DAEMON_FEATURE_MISSING' })
+    fetchMock
+      .mockRejectedValueOnce(missing)
+      .mockResolvedValueOnce(page([row(1, 'user', 'plan the release')], 'c1'))
+      .mockResolvedValueOnce(page([], 'c2'))
+    let seen!: Seen
+    await act(async () => root.render(<RootsHarness expose={(next) => (seen = next)} />))
+    await flush()
+    expect(seen.threadsView).toBe(false)
+    expect(fetchMock.mock.calls[1]?.[1]).not.toHaveProperty('view')
+    await act(async () => seen.refreshTail())
+    expect(fetchMock.mock.calls[2]?.[1]).not.toHaveProperty('view')
+    expect(seen.threads.size).toBe(0)
+  })
+})

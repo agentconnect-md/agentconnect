@@ -30,6 +30,8 @@ const wire = vi.hoisted(() => ({
   operations: [] as unknown[],
   permissionRequests: [] as unknown[],
   busy: false,
+  /** The thread the conversation's turn in flight was sent in. */
+  turnThread: undefined as string | undefined,
   /** What the thread record route answers: a page, or an error status with its code. */
   record: null as null | { status: number; code?: string } | Record<string, unknown>,
   recordReads: [] as string[]
@@ -109,6 +111,8 @@ vi.mock('@/components/console/PlaygroundProvider', () => {
   const listeners = new Set<() => void>()
   const playground = {
     getLiveSteps: () => wire.live,
+    getPgInput: (id: string) => wire.drafts[id] ?? '',
+    getPgTurnThread: () => wire.turnThread,
     isPgBusy: () => wire.busy,
     pgCancel: (id: string, agentId: string) => wire.calls.push(`cancel:${id}:${agentId}`),
     reconcileLiveSteps: () => {},
@@ -121,6 +125,10 @@ vi.mock('@/components/console/PlaygroundProvider', () => {
     },
     pgSend: (id: string, agentId: string) => {
       wire.calls.push(`send:${id}:${agentId}:${wire.drafts[id] ?? ''}`)
+      return true
+    },
+    pgSendThread: (id: string, agentId: string, text: string, thread: string, conversationId?: string) => {
+      wire.calls.push(`thread:${id}:${agentId}:${text}:${thread}${conversationId ? `:${conversationId}` : ''}`)
       return true
     },
     setPgInput: (id: string, text: string) => {
@@ -176,6 +184,7 @@ beforeEach(() => {
   wire.permissionRequests = []
   wire.operations = []
   wire.busy = false
+  wire.turnThread = undefined
   wire.record = null
   wire.recordReads = []
   taskRow.state = 'open'
@@ -602,7 +611,7 @@ function recordPage(over: Record<string, unknown> = {}) {
 describe('ThreadPanel on a thread’s record (webchat-threads.md §6.2)', () => {
   const ref = { sessionId: 'ses_coordinator', rootId: 'post-root' }
 
-  it('reads an unowned thread through the conversation: the root first, a plain header, and no composer yet', async () => {
+  it('reads an unowned thread through the conversation: the root first, a plain header, and no composer for another member', async () => {
     wire.record = recordPage()
     withTask = false
     props = { record: ref }
@@ -622,7 +631,7 @@ describe('ThreadPanel on a thread’s record (webchat-threads.md §6.2)', () => 
     expect(panel.textContent).not.toContain('You can read this task')
   })
 
-  it('names the holding task from the footer, heads with it and continues it from the composer', async () => {
+  it('names the holding task from the footer, heads with it and continues it in this thread from the composer', async () => {
     wire.record = recordPage({
       summary: {
         rootId: 'post-root',
@@ -648,7 +657,9 @@ describe('ThreadPanel on a thread’s record (webchat-threads.md §6.2)', () => 
         .querySelector<HTMLTextAreaElement>('textarea')!
         .dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     })
-    expect(wire.calls).toContain('send:ses_task:agent_1:try a warm cache')
+    // Another member writes through the task, in this thread of the several it may hold.
+    expect(wire.calls).toContain('thread:ses_task:agent_1:try a warm cache:post-root')
+    expect(wire.drafts.ses_task).toBe('')
   })
 
   it('shows a thread whose task the reader may not view as unreadable, with no content and no composer', async () => {
@@ -789,5 +800,99 @@ describe('ThreadPanel switching or polling a thread’s record', () => {
     expect(said.join('|')).toMatch(
       /Why is the deploy slow\?.*The cache misses.*Can you fix it\?.*Warmed the cache\..*Thanks!.*Anytime\./
     )
+  })
+})
+
+describe('ThreadPanel for the conversation’s owner (webchat-threads.md §6.3)', () => {
+  const ref = { sessionId: 'ses_coordinator', rootId: 'post-root' }
+  const writer = { sessionId: 'ses_coordinator', conversationId: 'conv-1' }
+  const step = (over: Partial<SessionStep> & Pick<SessionStep, 'kind' | 'text'>): SessionStep => ({
+    turnId: 't1',
+    ...over
+  })
+
+  it('writes in an unowned thread on the conversation’s socket and shows only that thread’s live steps', async () => {
+    wire.record = recordPage()
+    withTask = false
+    props = { record: ref, writer, focusComposer: true }
+    wire.live = [
+      step({ kind: 'msg', who: '@you', text: 'is it the lockfile?', thread: 'post-root' }),
+      step({ kind: 'done', text: 'Checking the lockfile.', thread: 'post-root' }),
+      step({ kind: 'msg', who: '@you', text: 'something else entirely', turnId: 't2', thread: 'post-other' }),
+      step({ kind: 'done', text: 'An answer at the root', turnId: 't3' })
+    ]
+    await render()
+    const panel = container.querySelector('[data-thread-panel="post-root"]')!
+    const box = panel.querySelector<HTMLTextAreaElement>('[data-thread-composer]')!
+    expect(box.getAttribute('placeholder')).toBe('Reply in the thread')
+    expect(panel.querySelector('[data-task-thread-hint]')?.textContent).toBe('The coordinator answers in this thread')
+    // Reply in thread hands the caret to the box.
+    expect(document.activeElement).toBe(box)
+    expect(panel.textContent).toContain('is it the lockfile?')
+    expect(panel.textContent).toContain('Checking the lockfile.')
+    expect(panel.textContent).not.toContain('something else entirely')
+    expect(panel.textContent).not.toContain('An answer at the root')
+
+    wire.drafts['ses_coordinator#post-root'] = 'and the cache key?'
+    act(() => {
+      box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    expect(wire.calls).toEqual(['thread:ses_coordinator:agent_1:and the cache key?:post-root:conv-1'])
+    expect(wire.drafts['ses_coordinator#post-root']).toBe('')
+  })
+
+  it('writes in a held thread on the conversation’s socket too, which routing takes to the task', async () => {
+    const summary = {
+      rootId: 'post-root',
+      replies: 2,
+      participants: [],
+      task: { sessionId: 'ses_task', title: 'Find what blocks api 1.5', state: 'open' },
+      readable: true
+    }
+    wire.record = recordPage({ summary })
+    withTask = false
+    const seen: unknown[] = []
+    props = { record: ref, writer, onSummary: (read) => seen.push(read) }
+    wire.busy = true
+    wire.turnThread = 'post-root'
+    await render()
+    const panel = container.querySelector('[data-thread-panel="post-root"]')!
+    expect(panel.getAttribute('data-task-thread')).toBe('ses_task')
+    expect(panel.querySelector('[data-task-thread-hint]')?.textContent).toBe(
+      'The task holding this thread answers here'
+    )
+    // The turn the owner sent in this thread is running.
+    expect(panel.textContent).toContain('deploy-bot is working…')
+    expect(seen).toEqual([summary])
+
+    wire.drafts['ses_coordinator#post-root'] = 'ship it'
+    act(() => {
+      panel
+        .querySelector<HTMLTextAreaElement>('textarea')!
+        .dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    expect(wire.calls).toEqual(['thread:ses_coordinator:agent_1:ship it:post-root:conv-1'])
+  })
+
+  it('is not busy for a turn the owner sent in another thread', async () => {
+    wire.record = recordPage()
+    withTask = false
+    props = { record: ref, writer }
+    wire.busy = true
+    wire.turnThread = 'post-other'
+    await render()
+    expect(container.textContent).not.toContain('is working')
+  })
+
+  it('takes no message in a thread the owner cannot read', async () => {
+    wire.record = recordPage({
+      messages: [],
+      summary: { rootId: 'post-root', replies: 1, participants: [], task: { state: 'open' }, readable: false }
+    })
+    withTask = false
+    props = { record: ref, writer }
+    await render()
+    expect(container.querySelector('[data-thread-unreadable]')).not.toBeNull()
+    expect(container.querySelector('textarea')).toBeNull()
   })
 })
