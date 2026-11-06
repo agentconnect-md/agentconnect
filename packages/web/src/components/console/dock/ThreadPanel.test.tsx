@@ -42,7 +42,7 @@ vi.mock(import('@/lib/api'), async (importOriginal) => {
     fetchSessionThreadMessages: vi.fn((sessionId: string, rootId: string, opts: { cursor?: string } = {}) => {
       wire.recordReads.push(`${sessionId}/${rootId}${opts.cursor ? `<${opts.cursor}` : ''}`)
       // A root other than the first never answers, as a read still on its way.
-      if (rootId !== 'post-root') return new Promise(() => {})
+      if (rootId !== 'post-root') return new Promise<never>(() => {})
       const answer = wire.record
       if (answer && 'status' in answer && typeof answer.status === 'number')
         return Promise.reject(new actual.ApiError('refused', answer.status, answer.code as string | undefined))
