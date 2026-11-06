@@ -829,14 +829,17 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     scale: sized(screenSize.scale_factor) || 1
   })
   log(`Cua Driver ${driver.version ?? '?'} started (${resolveDriverPath(dir, config.driverPath)})`)
-  const desktopSupport: DesktopSupport | undefined =
-    process.platform === 'linux' ? await probeDesktopSupport() : undefined
-  if (desktopSupport) log(`per-agent desktops: ${describeDesktops(config.perAgentDesktops, desktopSupport)}`)
+  // Re-probed when switched on, so packages `desktops on` just installed count without a restart.
+  const desktopSupport: { current: DesktopSupport } | undefined =
+    process.platform === 'linux' ? { current: await probeDesktopSupport() } : undefined
+  if (desktopSupport) {
+    log(`per-agent desktops: ${describeDesktops(config.perAgentDesktops, desktopSupport.current)}`)
+  }
   if (desktopSupport) {
     live.desktops = new DesktopManager({
       dataDir: dir,
       config,
-      support: () => desktopSupport,
+      support: () => desktopSupport.current,
       self: [process.execPath, resolve(process.argv[1]!)],
       build: ({ id, label, env, launchBrowser }) => {
         const prefixed = (line: string): void => log(`desktop ${id}: ${line}`)
@@ -876,6 +879,7 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     } catch (error) {
       log(`per-agent desktops: could not save the setting: ${(error as Error).message}`)
     }
+    if (on && desktopSupport && !desktopSupport.current.supported) desktopSupport.current = await probeDesktopSupport()
     log(`per-agent desktops switched ${on ? 'on' : 'off'}`)
     live.local?.update()
     if (!on) await live.desktops?.stopAll('per-agent desktops switched off')
@@ -963,8 +967,8 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
           desktops: {
             state: () => ({
               on: config.perAgentDesktops,
-              available: desktopSupport.supported,
-              ...(desktopSupport.reason ? { note: desktopSupport.reason } : {})
+              available: desktopSupport.current.supported,
+              ...(desktopSupport.current.reason ? { note: desktopSupport.current.reason } : {})
             }),
             toggle: () => void setDesktops(!config.perAgentDesktops)
           }

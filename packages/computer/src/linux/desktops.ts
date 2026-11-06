@@ -164,6 +164,7 @@ export class DesktopManager {
   private readonly now: () => number
   private readonly baseEnv: NodeJS.ProcessEnv
   private sweeper: NodeJS.Timeout | undefined
+  private closed = false
   // The owner's pause, applied to every desktop, including ones started while it stands.
   private paused: string | undefined
 
@@ -200,7 +201,7 @@ export class DesktopManager {
 
   /** The caller's own desktop, started if it is not running. */
   async forKey(key: string, label: string): Promise<RunningDesktop> {
-    if (!this.enabled()) throw new ComputerError('unavailable', 'per-agent desktops are off')
+    if (this.closed || !this.enabled()) throw new ComputerError('unavailable', 'per-agent desktops are off')
     const record = this.recordFor(key, label)
     const running = this.running.get(record.id)
     if (running && !running.stopping) {
@@ -215,6 +216,10 @@ export class DesktopManager {
       this.starting.set(record.id, pending)
     }
     const started = await pending
+    // Switched off (or closing) while it started: stopAll stops it, and the caller must not act on it.
+    if (started.stopping || !this.running.has(started.record.id)) {
+      throw new ComputerError('unavailable', 'per-agent desktops are off')
+    }
     started.lastActivity = this.now()
     return started
   }
@@ -250,11 +255,14 @@ export class DesktopManager {
     for (const desktop of this.running.values()) desktop.computer.suspend(reason)
   }
 
+  // Starts already queued or under way finish first (queued ones refuse once switched off), then everything stops.
   async stopAll(reason: string): Promise<void> {
+    await Promise.allSettled([...this.starting.values()])
     await Promise.allSettled([...this.running.keys()].map((id) => this.stop(id, reason)))
   }
 
   close(): Promise<void> {
+    this.closed = true
     if (this.sweeper) clearInterval(this.sweeper)
     this.sweeper = undefined
     return this.stopAll('the daemon is stopping')
@@ -275,6 +283,7 @@ export class DesktopManager {
   }
 
   private async start(record: DesktopRecord): Promise<Started> {
+    if (this.closed || !this.enabled()) throw new ComputerError('unavailable', 'per-agent desktops are off')
     await this.makeRoom()
     const { dataDir, config, log } = this.deps
     const prefix = `desktop ${record.id} (${record.label})`

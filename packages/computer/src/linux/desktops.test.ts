@@ -101,27 +101,58 @@ function fakeXvfb(): string {
   return bin
 }
 
+// A manager whose desktops run the stand-in Xvfb and a fake driver; PATH is restored by the returned cleanup.
+function fakeManager(maxDesktops: number) {
+  const bin = fakeXvfb()
+  const dataDir = mkdtempSync(join(tmpdir(), 'ac-desktops-'))
+  dirs.push(dataDir)
+  const path = `${bin}:/usr/bin:/bin`
+  const original = process.env.PATH
+  process.env.PATH = path
+  const config = testConfig({ perAgentDesktops: true, maxDesktops, actionScreenshot: false })
+  const manager = new DesktopManager({
+    dataDir,
+    config,
+    support: () => ({ supported: true, session: 'xfce', browser: '/usr/bin/chromium' }),
+    self: ['node', 'daemon.mjs'],
+    build: () => {
+      const driver = new FakeDriver()
+      return { driver: driver as unknown as CuaDriver, computer: new Computer({ driver, config }) }
+    },
+    log: () => undefined,
+    env: { PATH: path }
+  })
+  const restore = async (): Promise<void> => {
+    process.env.PATH = original
+    await manager.stopAll('test over')
+  }
+  return { manager, config, restore }
+}
+
+describe('switching desktops off', () => {
+  it.skipIf(process.platform === 'win32')(
+    'stops desktops still starting and refuses the callers waiting on them',
+    async () => {
+      const { manager, config, restore } = fakeManager(4)
+      try {
+        const starting = manager.forKey('agent-a', 'Agent A').catch((error: unknown) => error)
+        const queued = manager.forKey('agent-b', 'Agent B').catch((error: unknown) => error)
+        config.perAgentDesktops = false
+        await manager.stopAll('per-agent desktops switched off')
+
+        expect(await starting).toMatchObject({ code: 'unavailable' })
+        expect(await queued).toMatchObject({ code: 'unavailable' })
+        expect(manager.runningDesktops()).toEqual([])
+      } finally {
+        await restore()
+      }
+    }
+  )
+})
+
 describe('a full machine', () => {
   it.skipIf(process.platform === 'win32')('refuses another agent as unavailable/desktops_full, not busy', async () => {
-    const bin = fakeXvfb()
-    const dataDir = mkdtempSync(join(tmpdir(), 'ac-desktops-'))
-    dirs.push(dataDir)
-    const path = `${bin}:/usr/bin:/bin`
-    const original = process.env.PATH
-    process.env.PATH = path
-    const config = testConfig({ perAgentDesktops: true, maxDesktops: 1, actionScreenshot: false })
-    const manager = new DesktopManager({
-      dataDir,
-      config,
-      support: () => ({ supported: true, session: 'xfce', browser: '/usr/bin/chromium' }),
-      self: ['node', 'daemon.mjs'],
-      build: () => {
-        const driver = new FakeDriver()
-        return { driver: driver as unknown as CuaDriver, computer: new Computer({ driver, config }) }
-      },
-      log: () => undefined,
-      env: { PATH: path }
-    })
+    const { manager, restore } = fakeManager(1)
     try {
       const first = await manager.forKey('agent-a', 'Agent A')
       first.computer.acquire('agent-a')
@@ -134,8 +165,7 @@ describe('a full machine', () => {
       expect(second.record.id).not.toBe(first.record.id)
       expect(manager.runningDesktops()).toHaveLength(1)
     } finally {
-      process.env.PATH = original
-      await manager.stopAll('test over')
+      await restore()
     }
   })
 })
