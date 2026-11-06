@@ -1,9 +1,7 @@
 import {
   continuableOrigin,
   continuableSession,
-  isDelegatedTaskCoordinate,
   originKindOf,
-  TASK_PAGE_MESSAGES_FEATURE,
   WEBCHAT_HOOK_CONTINUATION_FEATURE,
   WEBCHAT_REMOTE_MCP_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
@@ -15,7 +13,7 @@ import { canEdit, canView } from '../authorization/policy.js'
 import { chatCallerRole } from '../domain/chat-actions.js'
 import { AgentId, OrgId, SessionId } from '../domain/ids.js'
 import { servesSessionContent } from '../domain/session-content.js'
-import { continuationAudience, continuationParentId } from '../domain/continuation-audience.js'
+import { continuationAudience, continuationParentId, taskContinuationFeature } from '../domain/continuation-audience.js'
 import type { MemberSetRepo, OrgMemberRole, SessionContentStore, Shareable, ViewCtx } from '../persistence/ports.js'
 import type { PlacementResolver, ResolvableAgent } from '../orchestrator/placementResolver.js'
 import type { WebchatRemoteMcpService } from './webchatRemoteMcpService.js'
@@ -48,6 +46,7 @@ export interface WebchatVerificationDeps {
       orgId: string
       agentId: string
       parentSessionId?: string | null
+      taskParentSessionId?: string | null
       platform: string | null
       tenantScope?: string | null
       channel?: string | null
@@ -163,10 +162,9 @@ export function webchatBinding(
       ) {
         return { ok: false, reason: 'continuation unavailable' }
       }
-      if (
-        isDelegatedTaskCoordinate(session.thread) &&
-        !daemon.capabilities.features.includes(TASK_PAGE_MESSAGES_FEATURE)
-      ) {
+      // A task's console-only continuation is a daemon feature: its page's, or for a coordinator's task in its thread, threads (webchat-threads.md §6.3).
+      const taskFeature = taskContinuationFeature(session)
+      if (taskFeature !== null && !daemon.capabilities.features.includes(taskFeature)) {
         return { ok: false, reason: 'continuation unavailable' }
       }
       // No roster growth and no remote MCP entitlement; a hook target also brings its conversation's other members (#2500).

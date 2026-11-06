@@ -16923,9 +16923,7 @@ export class Daemon {
     if (msg.targetSessionId !== undefined) {
       switch (op.op) {
         case 'turn':
-          // A continued session writes in no thread of its conversation yet (webchat-threads.md §6.3).
-          if (op.thread !== undefined)
-            return { msgId: msg.msgId, accepted: false, turnId: op.turnId, reason: 'unknown_thread' }
+          // A thread names one a coordinator's task holds, written in through the task (webchat-threads.md §6.3).
           return this.webchatTransport
             .dispatchWebchatContinuationTurn(
               msg.agentId,
@@ -16935,7 +16933,8 @@ export class Daemon {
               webchatAuthorOf(op),
               sink,
               op.turnId,
-              op.post
+              op.post,
+              op.thread
             )
             .then((ack) => ({
               msgId: msg.msgId,

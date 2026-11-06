@@ -1,10 +1,9 @@
 import {
-  isDelegatedTaskCoordinate,
   originKindOf,
-  TASK_PAGE_MESSAGES_FEATURE,
   WEBCHAT_HOOK_CONTINUATION_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE
 } from '@agentconnect.md/protocol'
+import { taskContinuationFeature } from '../domain/continuation-audience.js'
 import { servesSessionContent } from '../domain/session-content.js'
 import type { ResolvableAgent } from '../orchestrator/placementResolver.js'
 import type { HttpDeps } from './deps.js'
@@ -18,7 +17,12 @@ export type ContinuationHost = { ok: true; daemonId: string } | { ok: false; rea
 /** The ONE answer to "which daemon continues this session" — the detail projection (`canContinue`) and the session-target mint both read it, so they cannot disagree. The daemon a turn reaches (`dispatchDaemon`) must be the recorder or a holder of the shared store the rows went to (`domain/session-content.ts`); keying on `session.daemonId` alone read as "agent moved" for every pooled agent once its recorder pod rolled. */
 export async function resolveContinuationHost(
   deps: Pick<HttpDeps, 'placementResolver' | 'daemonConns' | 'repos' | 'config'>,
-  session: { platform: string | null; thread?: string | null; daemonId: string | null } & SessionContentStore,
+  session: {
+    platform: string | null
+    thread?: string | null
+    taskParentSessionId?: string | null
+    daemonId: string | null
+  } & SessionContentStore,
   agent: ResolvableAgent
 ): Promise<ContinuationHost> {
   const daemonId = await deps.placementResolver.dispatchDaemon(agent)
@@ -40,8 +44,9 @@ export async function resolveContinuationHost(
   ) {
     return { ok: false, reason: 'unavailable' }
   }
-  // A task's page runs console-only, which only a daemon advertising it serves (auto-session-mode.md §10).
-  if (isDelegatedTaskCoordinate(session.thread) && !daemon.capabilities.features.includes(TASK_PAGE_MESSAGES_FEATURE)) {
+  // A task runs console-only, which only a daemon advertising it serves (auto-session-mode.md §10, webchat-threads.md §6.3).
+  const taskFeature = taskContinuationFeature(session)
+  if (taskFeature !== null && !daemon.capabilities.features.includes(taskFeature)) {
     return { ok: false, reason: 'unavailable' }
   }
   if (!deps.config.PUBLIC_RELAY_URL) return { ok: false, reason: 'unavailable' }

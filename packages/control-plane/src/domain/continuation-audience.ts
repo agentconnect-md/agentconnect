@@ -1,4 +1,9 @@
-import { isSubsessionCoordinate } from '@agentconnect.md/protocol'
+import {
+  isDelegatedTaskCoordinate,
+  isSubsessionCoordinate,
+  TASK_PAGE_MESSAGES_FEATURE,
+  WEBCHAT_THREADS_FEATURE
+} from '@agentconnect.md/protocol'
 
 /** What tells a task from any other session: its coordinate and lineage, or the task index its daemon reports. */
 export interface ContinuationSubject {
@@ -10,7 +15,7 @@ export interface ContinuationSubject {
 }
 
 /** Whether a session is a task continued by its owning session's audience: a background one, or a webchat coordinator's by the task index (webchat-threads.md §5.4). */
-function continuedAsTask(session: ContinuationSubject): boolean {
+function continuedAsTask(session: Omit<ContinuationSubject, 'agentId'>): boolean {
   return isSubsessionCoordinate(session.thread) || (session.platform === 'webchat' && !!session.taskParentSessionId)
 }
 
@@ -30,4 +35,11 @@ export function continuationAudience<S extends ContinuationSubject, P extends { 
   return parent !== null && parentId !== null && parent.id === parentId && parent.agentId === session.agentId
     ? parent
     : null
+}
+
+/** The daemon feature a console-only task continuation needs: a delegated task's page, or a webchat coordinator's task in its thread (webchat-threads.md §6.3); none for any other session. */
+export function taskContinuationFeature(session: Omit<ContinuationSubject, 'agentId'>): string | null {
+  if (isSubsessionCoordinate(session.thread))
+    return isDelegatedTaskCoordinate(session.thread) ? TASK_PAGE_MESSAGES_FEATURE : null
+  return continuedAsTask(session) ? WEBCHAT_THREADS_FEATURE : null
 }

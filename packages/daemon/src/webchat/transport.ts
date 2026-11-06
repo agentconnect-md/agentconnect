@@ -316,7 +316,8 @@ export class WebchatTransport {
     author: WebchatAuthor,
     sink: WebchatSink,
     requestedTurnId?: string,
-    post?: { postId: string; at: number }
+    post?: { postId: string; at: number },
+    thread?: string
   ): Promise<WebchatAck> {
     const turnId = requestedTurnId ?? randomUUID()
     const prepared = await this.continuation.prepare({
@@ -326,7 +327,8 @@ export class WebchatTransport {
       turnId,
       text,
       author,
-      post
+      post,
+      ...(thread !== undefined ? { thread } : {})
     })
     if (!prepared.accepted) return { ...prepared, turnId }
     // The console takes the same control commands as the platform conversation it continues.

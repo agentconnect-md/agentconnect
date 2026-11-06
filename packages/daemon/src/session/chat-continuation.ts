@@ -4,6 +4,7 @@ import {
   isSubsessionCoordinate,
   originKindOf
 } from '@agentconnect.md/protocol'
+import { webchatCoordinatorTask } from '../auto-session/webchat-task.js'
 import { LifecycleCleanupBlockedError } from '../daemon/turn-types.js'
 import { formatErr } from '../daemon/text.js'
 import { isHeadlessCronSession } from '../scheduler/scheduler.js'
@@ -27,6 +28,8 @@ export interface ChatContinuationRequest {
   text: string
   author: ChatAuthor
   post?: { postId: string; at: number }
+  /** The root postId of the webchat thread written in, one a coordinator's task holds (webchat-threads.md §6.3). */
+  thread?: string
 }
 
 type Integration = { integrationId: string; conn: ChatReplyConnection; botUserId?: string }
@@ -47,6 +50,7 @@ type Refusal = {
     | 'draining'
     | 'integration_offline'
     | 'integration_delivery_failed'
+    | 'unknown_thread'
   detail?: string
 }
 export type ChatContinuationPreparation = { accepted: true; turn: PreparedChatContinuation } | Refusal
@@ -111,7 +115,7 @@ export class ChatSessionContinuation {
   }
 
   async prepare(request: ChatContinuationRequest): Promise<ChatContinuationPreparation> {
-    const { agentId, targetSessionId, conversationId, turnId, text, author, post } = request
+    const { agentId, targetSessionId, conversationId, turnId, text, author, post, thread } = request
     if (!this.host.agents().has(agentId)) {
       const startFailure = this.host.startFailure(agentId)
       return startFailure
@@ -120,16 +124,25 @@ export class ChatSessionContinuation {
     }
     // The verified outward id must resolve on this agent; never rebuild coordinates from caller input.
     const local = await this.host.store().getSessionByOutwardId(targetSessionId, agentId)
-    if (!local || !continuableSession(local)) return { accepted: false, reason: 'not_found' }
+    if (!local) return { accepted: false, reason: 'not_found' }
+    // A webchat coordinator's task keyed on its thread takes messages in the threads it holds, as their replies.
+    const threadTask = await this.webchatThreadTask(agentId, local)
+    const writesIn = thread ?? (threadTask ? local.thread : undefined)
+    if (writesIn !== undefined && !threadTask?.held.includes(writesIn))
+      return { accepted: false, reason: 'unknown_thread' }
+    if (!continuableSession({ ...local, taskParentSessionId: threadTask?.parentSessionId }))
+      return { accepted: false, reason: 'not_found' }
     if (this.host.paused(agentId)) return { accepted: false, reason: 'paused' }
     if (this.host.safetyDraining(agentId)) return { accepted: false, reason: 'busy' }
     if (this.host.draining() || this.host.agentDraining(agentId)) return { accepted: false, reason: 'draining' }
     // Hook and headless cron sessions have no mirror; a missing chat integration must refuse the turn.
     const synthetic = isHeadlessCronSession(local)
-    // A delegated task's coordinate is no platform thread, so its page runs console-only (auto-session-mode.md §10).
-    const task = isDelegatedTaskCoordinate(local.thread)
+    // A delegated task's coordinate is no platform thread, and a webchat thread has no mirror, so both run console-only (auto-session-mode.md §10).
+    const page = isDelegatedTaskCoordinate(local.thread)
     const integration =
-      originKindOf(local.platform) === 'hook' || synthetic || task ? null : this.integration(agentId, local)
+      originKindOf(local.platform) === 'hook' || synthetic || page || threadTask
+        ? null
+        : this.integration(agentId, local)
     if (integration === undefined) return { accepted: false, reason: 'integration_offline' }
     await this.application.rememberAuthorName(author)
     const shared = integration === null ? post : undefined
@@ -141,7 +154,7 @@ export class ChatSessionContinuation {
       platform: local.platform,
       channel: local.channel,
       // An append or coordinator coordinate is no platform thread: the turn posts at the conversation's top level.
-      ...wakeThreadFields(local.thread),
+      ...wakeThreadFields(local.thread, writesIn),
       ...(local.transportScope ? { transportScope: local.transportScope } : {}),
       transcriptTs: shared ? String(shared.at) : monotonicTs(),
       ...(shared ? { transcriptPostId: shared.postId } : {}),
@@ -153,7 +166,7 @@ export class ChatSessionContinuation {
       trigger: local.conversationKind === 'dm' ? 'dm' : 'mention',
       adoptedSession: true,
       ...(senderMemberId ? { senderMemberId } : {}),
-      ...(synthetic ? { headless: true, syntheticChannel: true } : task ? { headless: true } : {})
+      ...(synthetic ? { headless: true, syntheticChannel: true } : page ? { headless: true } : {})
     }
     const key = sessionKey(message.platform, message.channel, sessionThreadOf(message), agentId, message.transportScope)
     if (key !== local.key) {
@@ -161,6 +174,20 @@ export class ChatSessionContinuation {
       return { accepted: false, reason: 'not_found' }
     }
     return { accepted: true, turn: { agentId, sessionKey: key, message, local, integration, request } }
+  }
+
+  /** The live coordinator task `local` is keyed on its webchat thread for, with the webchat threads it holds; undefined for any other session. */
+  private async webchatThreadTask(
+    agentId: string,
+    local: SessionRecord
+  ): Promise<{ parentSessionId: string; held: string[] } | undefined> {
+    if (local.platform !== 'webchat' || !local.thread || isSubsessionCoordinate(local.thread)) return undefined
+    const store = this.host.store()
+    const task = await webchatCoordinatorTask(store, agentId, local.key, local.thread)
+    if (!task) return undefined
+    const threads = await store.assistantSubsessions.threadsOf(agentId, local.key)
+    const held = threads.filter((one) => one.platform === 'webchat' && one.channel === local.channel)
+    return { parentSessionId: task.parentSessionId, held: held.map((one) => one.thread) }
   }
 
   async dispatch(

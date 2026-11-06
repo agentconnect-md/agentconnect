@@ -86,9 +86,14 @@ export function continuableOrigin(platform: string): boolean {
   return kind === 'hook' || (kind === 'chat' && manifestFor(platform).consoleContinuation)
 }
 
-/** Whether the console composer may continue this session: a delegated task's page on any surface, which runs console-only (auto-session-mode.md §10), or a continuable origin's session outside background work. */
-export function continuableSession(session: { platform: string | null; thread?: string | null }): boolean {
+/** Whether the console composer may continue this session: a delegated task's page on any surface, or a webchat coordinator's task in its thread, which run console-only (auto-session-mode.md §10, webchat-threads.md §6.3), or a continuable origin's session outside background work. */
+export function continuableSession(session: {
+  platform: string | null
+  thread?: string | null
+  taskParentSessionId?: string | null
+}): boolean {
   if (isSubsessionCoordinate(session.thread)) return isDelegatedTaskCoordinate(session.thread)
+  if (session.platform === 'webchat' && session.taskParentSessionId) return true
   return continuableOrigin(session.platform ?? '')
 }
 export const Platform = z.string().min(1)

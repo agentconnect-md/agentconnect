@@ -647,6 +647,10 @@ not addressed to this agent. Cost grows with the number of agents.
   far, the coordinator's answers included, answers in the thread with posts of its own, and a reply
   in the thread reaches it directly. The coordinator posts no link card for it; the console draws
   its card from `openedForMessageId` as below.
+  - Whoever may continue the coordinator writes to it from its page, where the daemon advertises
+    `webchat-threads-v1`: the message is a reply in the thread it names, or the task's own, among the
+    threads the task holds, and runs on the task's session console-only, as a background task's page
+    does (webchat-threads.md §6.3). The root and threads no task holds stay the owner's.
 - Before webchat had threads, a task the coordinator opened for a webchat message continued on its own
   page, which is its conversation. Such a page task keeps running as described here until it closes,
   and a message without a post (such as an MCP app's) still opens one; webchat-threads.md §10
