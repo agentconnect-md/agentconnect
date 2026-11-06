@@ -127,6 +127,15 @@ describe('parseBrowserFrame', () => {
       expect(parseBrowserFrame({ text: 'hi', timeZone }, USER)).toEqual({ op: { op: 'turn', text: 'hi', user: USER } })
   })
 
+  it('carries a thread root postId, lowercased, and refuses a turn whose thread is malformed', () => {
+    const root = '44444444-4444-4444-8444-44444444444A'
+    expect(parseBrowserFrame({ text: 'hi', thread: root }, USER)).toEqual({
+      op: { op: 'turn', text: 'hi', user: USER, thread: root.toLowerCase() }
+    })
+    for (const thread of [`webchat:${CHAT}`, '', 42, null])
+      expect(parseBrowserFrame({ text: 'hi', thread }, USER)).toBeNull()
+  })
+
   it('forwards the browser time zone on the turn it bridges to the daemon', async () => {
     const { transport, sent } = build()
     transport.feed({ text: 'hi', turnId: AGENT, timeZone: 'Asia/Shanghai' })
@@ -342,7 +351,7 @@ describe('RelayBrowserConnection', () => {
       type: 'ready',
       conversationId: CHAT,
       agentId: AGENT,
-      features: ['webchat-images-v1'],
+      features: ['webchat-images-v1', 'webchat-threads-v1'],
       participants: [{ agentId: AGENT, primary: true }]
     })
   })
@@ -489,6 +498,38 @@ describe('RelayBrowserConnection', () => {
     await tick()
     const fileOnly = sent.filter((frame) => frame.agentId === PEER).at(-1)?.payload as { post: { text: string } }
     expect(fileOnly.post.text).toBe('[attached: spec.pdf (application/pdf)]')
+  })
+
+  it("forwards a thread reply's thread on the targeted turn and on peers' context copies", async () => {
+    const PEER = '22222222-2222-4222-8222-222222222222'
+    const thread = '44444444-4444-4444-8444-444444444444'
+    const { transport, sent } = build({
+      participants: [
+        { agentId: AGENT, daemonId: DAEMON, primary: true },
+        { agentId: PEER, daemonId: DAEMON }
+      ]
+    })
+    transport.feed({ text: 'in thread', thread, targets: [AGENT] })
+    await tick()
+    expect(sent.find((frame) => frame.agentId === AGENT)?.payload).toMatchObject({ op: 'turn', thread })
+    expect(sent.find((frame) => frame.agentId === PEER)?.payload).toMatchObject({ op: 'context', post: { thread } })
+
+    transport.feed({ text: 'at the root', targets: [AGENT] })
+    await tick()
+    expect(sent.filter((frame) => frame.agentId === AGENT).at(-1)?.payload).not.toHaveProperty('thread')
+    expect(
+      (sent.filter((frame) => frame.agentId === PEER).at(-1)?.payload as { post: object }).post
+    ).not.toHaveProperty('thread')
+  })
+
+  it('surfaces an unknown_thread refusal to the browser', async () => {
+    const { transport } = build({ ack: { msgId: 'x', accepted: false, reason: 'unknown_thread' } })
+    transport.feed({ text: 'hi', thread: '44444444-4444-4444-8444-444444444444' })
+    await tick()
+    expect(transport.last('ack')).toEqual({
+      type: 'ack',
+      ack: { accepted: false, agentId: AGENT, reason: 'unknown_thread' }
+    })
   })
 
   it('forwards structured mentions inside every per-target rd/msg(turn) payload', async () => {
@@ -701,6 +742,36 @@ describe('RelayBrowserConnection', () => {
     )
     conn['onClose'](1006, '')
     expect(lines.at(-1)).toBe(`webchat: browser left conversation ${CHAT} (close 1006)`)
+  })
+
+  it('forwards the thread an agent post and its stream answer in', () => {
+    const { conn, transport } = build()
+    const thread = '44444444-4444-4444-8444-444444444444'
+    const post = {
+      postId: '55555555-5555-4555-8555-555555555555',
+      conversationId: CHAT,
+      author: { kind: 'agent' as const, agentId: AGENT },
+      text: 'answer',
+      at: 1,
+      thread
+    }
+    conn.onPost({ conversationId: CHAT, agentId: AGENT, post })
+    expect(transport.last('post')).toEqual({ type: 'post', post })
+    const output = {
+      conversationId: CHAT,
+      turnId: AGENT,
+      thread,
+      index: 0,
+      event: { kind: 'message' as const, text: 'a' }
+    }
+    conn.onChat({ chatId: CHAT, seq: 0, event: { kind: 'output', output } })
+    conn.onChat({
+      chatId: CHAT,
+      seq: 1,
+      event: { kind: 'done', done: { conversationId: CHAT, turnId: AGENT, thread } }
+    })
+    expect(transport.last('output')).toEqual({ type: 'output', output })
+    expect(transport.last('done')).toEqual({ type: 'done', done: { conversationId: CHAT, turnId: AGENT, thread } })
   })
 
   it('translates an rd/chat output/done back to {type:output}/{type:done}', () => {
