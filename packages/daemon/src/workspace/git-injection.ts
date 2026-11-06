@@ -638,6 +638,14 @@ export function liveSecretsChannelEnv(
   }
 }
 
+/** The variable a proxied environment's placeholder rides in, which the helper below hands git. */
+export const CODE_HOST_CREDENTIAL_ENV = 'AC_CODEHOST_CREDENTIAL'
+
+const GITHUB_BASE_URL = 'https://github.com'
+
+// Quoted whole, since `;` would start a gitconfig comment; it answers only `get`, with the placeholder the proxy exchanges.
+const PLACEHOLDER_HELPER = `"!f() { test $1 = get || return 0; echo username=x-access-token; echo password=$${CODE_HOST_CREDENTIAL_ENV}; }; f"`
+
 function quotedHelper(agentId: string, target: GitCredentialTarget = targetOf(agentId)): string {
   const { helper } = target
   const quoted = `'${helper.replaceAll("'", "'\\''")}'`
@@ -725,14 +733,16 @@ export function sessionGitConfig(
   target: GitCredentialTarget = targetOf(agentId),
   // `null` is an agent the daemon issues NO managed credential to: it still gets the file for the
   // ambient policy, and nothing that would hand it a credential pointer or a socket capability.
-  scope: ManagedCredentialScope | null = GITHUB_CREDENTIAL_SCOPE
+  scope: ManagedCredentialScope | null = GITHUB_CREDENTIAL_SCOPE,
+  // The credential proxy carries GitHub's token: git presents the environment's placeholder instead of asking the helper.
+  proxied = false
 ): { path: string; content: string; env: Record<string, string> } {
   // Keyed by what the file CONTAINS, not by the host that asked for it. A dream host is stripped of
   // tool credentials and coexists with the warm host (sharing its pod on the pool), so writing the
   // credentialed name with policy-only content would cut the live host's helper until it rebuilds.
   // Content is a pure function of (agent, class) — scope and identity are agent- and daemon-global —
   // so every writer of a path writes identical bytes, and an agent can never own more than these two.
-  const file = join(target.configDir, `${agentId}${scope ? '' : '.policy'}.gitconfig`)
+  const file = join(target.configDir, `${agentId}${scope ? (proxied ? '.proxied' : '') : '.policy'}.gitconfig`)
   const bases = scope ? sessionCredentialBases(scope) : []
   const lines = [
     '# agentconnect session git config — regenerated on agent start; NO secrets.',
@@ -745,7 +755,7 @@ export function sessionGitConfig(
     ...bases.flatMap((base) => [
       `[credential "${base}"]`,
       '\thelper = ', // reset the accumulated helper list for this host
-      `\thelper = ${quotedHelper(agentId, target)}`,
+      `\thelper = ${proxied && base === GITHUB_BASE_URL ? PLACEHOLDER_HELPER : quotedHelper(agentId, target)}`,
       '\tuseHttpPath = true'
     ]),
     ''
@@ -772,12 +782,13 @@ export function sessionGitConfig(
 export function sessionGitEnv(
   agentId: string,
   commitIdentity?: GitCommitIdentity,
-  scope: ManagedCredentialScope | null = GITHUB_CREDENTIAL_SCOPE
+  scope: ManagedCredentialScope | null = GITHUB_CREDENTIAL_SCOPE,
+  proxied = false
 ): Record<string, string> {
   if (targetOf(agentId).kind !== 'daemon') {
     throw new Error(`agent ${agentId} runs its git in a sandbox — materialize its gitconfig instead of writing it`)
   }
-  const { path: file, content, env } = sessionGitConfig(agentId, commitIdentity, targetOf(agentId), scope)
+  const { path: file, content, env } = sessionGitConfig(agentId, commitIdentity, targetOf(agentId), scope, proxied)
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
   writeFileSync(file, content, { mode: 0o644 })
   return env

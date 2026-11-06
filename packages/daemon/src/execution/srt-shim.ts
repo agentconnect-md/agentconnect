@@ -95,6 +95,8 @@ export function srtShimBoundary(input: {
   readRoots: string[]
   hostEnv?: NodeJS.ProcessEnv
   log?: Pick<Logger, 'warn'>
+  /** The code-host domains SRT routes to the daemon's credential proxy, when it runs. */
+  mitmProxy?: { socketPath: string; domains: string[] }
 }): HostShimBoundary {
   return {
     wrap: (shim, layout) => {
@@ -106,7 +108,11 @@ export function srtShimBoundary(input: {
           `daemon root is too long for an srt shim: its SRT socket would exceed ${AF_UNIX_PATH_MAX} bytes`
         )
       mkdirSync(tempDir, { mode: 0o700 })
-      const { policy, cwd, skipped } = srtShimPolicy({
+      const {
+        policy: confined,
+        cwd,
+        skipped
+      } = srtShimPolicy({
         daemonRoot: input.daemonRoot,
         ...(input.agentsRoot ? { agentsRoot: input.agentsRoot } : {}),
         layout,
@@ -118,6 +124,7 @@ export function srtShimBoundary(input: {
       })
       for (const path of skipped)
         input.log?.warn(`srt: not reopening ${path} for a shim — it would expose a protected path`)
+      const policy = input.mitmProxy ? { ...confined, mitmProxy: input.mitmProxy } : confined
       // Outside every path the sandbox can write, so nothing inside rewrites the policy it runs under.
       const settingsPath = writeSandboxSettingsUnder(
         input.daemonRoot,

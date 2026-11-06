@@ -29,4 +29,12 @@ describe('SRT settings', () => {
     expect(settings.filesystem).toMatchObject({ allowGitConfig: false })
     expect(settings.network).toMatchObject({ allowAllUnixSockets: false })
   })
+
+  it('routes the code-host domains to the credential proxy, never for the offline helper', () => {
+    const mitmProxy = { socketPath: '/run/example/codehost-proxy.sock', domains: ['github.com', 'api.github.com'] }
+    expect(settingsFor({ writable: [], denyRead: [], allowRead: [], mitmProxy }).network).toMatchObject({ mitmProxy })
+    expect(
+      settingsFor({ writable: [], denyRead: [], allowRead: [], mitmProxy, offline: true }).network
+    ).not.toHaveProperty('mitmProxy')
+  })
 })

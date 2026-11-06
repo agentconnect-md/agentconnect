@@ -21,7 +21,8 @@ import {
   workspaceGitEnvBase,
   workspaceGitLocalEnv,
   workspaceGitRemoteTarget,
-  writeRepoHelperConfig
+  writeRepoHelperConfig,
+  CODE_HOST_CREDENTIAL_ENV
 } from '../src/workspace/git-injection.js'
 import { INSTALLATION_GIT_CREDENTIAL_WRAPPER } from '../src/shim/git-credential-wrapper.js'
 import { SANDBOX_GIT_CONFIG_DIR, SANDBOX_GIT_CREDENTIAL_HELPER } from '../src/shim/sandbox-paths.js'
@@ -1002,5 +1003,32 @@ describe('parseGitVersion', () => {
   it('returns null on unrecognizable output', () => {
     expect(parseGitVersion('zsh: command not found: git')).toBeNull()
     expect(parseGitVersion('')).toBeNull()
+  })
+})
+
+describe('git in a proxied session', () => {
+  it('hands git the placeholder from the environment, in a file of its own', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'acp-proxied-git-'))
+    const target = sandboxGitCredentialTarget(dir, dir)
+    const direct = sessionGitConfig('agent-proxied', undefined, target)
+    const proxied = sessionGitConfig('agent-proxied', undefined, target, undefined, true)
+    expect(proxied.path).not.toBe(direct.path)
+    expect(proxied.content).not.toContain(target.helper)
+    const config = join(dir, 'session.gitconfig')
+    writeFileSync(config, proxied.content)
+    const answer = execFileSync('git', ['credential', 'fill'], {
+      input: 'protocol=https\nhost=github.com\npath=o/r.git\n\n',
+      env: {
+        PATH: process.env.PATH ?? '',
+        HOME: dir,
+        GIT_CONFIG_GLOBAL: config,
+        GIT_CONFIG_NOSYSTEM: '1',
+        GIT_TERMINAL_PROMPT: '0',
+        [CODE_HOST_CREDENTIAL_ENV]: 'acph1_example.tag'
+      }
+    }).toString()
+    expect(answer).toContain('username=x-access-token')
+    expect(answer).toContain('password=acph1_example.tag')
+    rmSync(dir, { recursive: true, force: true })
   })
 })
