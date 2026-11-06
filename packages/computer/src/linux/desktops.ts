@@ -217,7 +217,7 @@ export class DesktopManager {
     }
     const started = await pending
     // Switched off (or closing) while it started: stopAll stops it, and the caller must not act on it.
-    if (started.stopping || !this.running.has(started.record.id)) {
+    if (this.closed || !this.enabled() || started.stopping || !this.running.has(started.record.id)) {
       throw new ComputerError('unavailable', 'per-agent desktops are off')
     }
     started.lastActivity = this.now()

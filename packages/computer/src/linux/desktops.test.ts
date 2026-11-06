@@ -93,17 +93,17 @@ describe('desktops', () => {
   })
 })
 
-// A stand-in Xvfb that reports display 99 and stays up, so a desktop starts without an X server or Xfce.
-function fakeXvfb(): string {
+// A stand-in Xvfb that reports display 99 after a delay and stays up, so a desktop starts without X or Xfce.
+function fakeXvfb(delaySeconds = 0): string {
   const bin = mkdtempSync(join(tmpdir(), 'ac-xvfb-'))
   dirs.push(bin)
-  writeFileSync(join(bin, 'Xvfb'), '#!/bin/sh\necho 99 >&3\nexec sleep 60\n', { mode: 0o755 })
+  writeFileSync(join(bin, 'Xvfb'), `#!/bin/sh\nsleep ${delaySeconds}\necho 99 >&3\nexec sleep 60\n`, { mode: 0o755 })
   return bin
 }
 
 // A manager whose desktops run the stand-in Xvfb and a fake driver; PATH is restored by the returned cleanup.
-function fakeManager(maxDesktops: number) {
-  const bin = fakeXvfb()
+function fakeManager(maxDesktops: number, xvfbDelaySeconds = 0) {
+  const bin = fakeXvfb(xvfbDelaySeconds)
   const dataDir = mkdtempSync(join(tmpdir(), 'ac-desktops-'))
   dirs.push(dataDir)
   const path = `${bin}:/usr/bin:/bin`
@@ -148,6 +148,24 @@ describe('switching desktops off', () => {
       }
     }
   )
+})
+
+describe('switching desktops off mid-start', () => {
+  it.skipIf(process.platform === 'win32')('refuses the caller whose desktop was already starting', async () => {
+    const { manager, config, restore } = fakeManager(4, 0.3)
+    try {
+      const starting = manager.forKey('agent-a', 'Agent A').catch((error: unknown) => error)
+      // The start is now waiting on Xvfb, past the checks at its beginning.
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      config.perAgentDesktops = false
+      await manager.stopAll('per-agent desktops switched off')
+
+      expect(await starting).toMatchObject({ code: 'unavailable' })
+      expect(manager.runningDesktops()).toEqual([])
+    } finally {
+      await restore()
+    }
+  })
 })
 
 describe('a full machine', () => {
