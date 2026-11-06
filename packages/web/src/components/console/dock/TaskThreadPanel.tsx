@@ -109,7 +109,8 @@ export function TaskThreadPanel({
     setPgInput,
     reconcileLiveSteps,
     pgAnswerElicitation,
-    pgAttach
+    pgAttach,
+    pgCancel
   } = usePlayground()
   const dock = useDockExpand()
   const id = task.sessionId
@@ -369,7 +370,12 @@ export function TaskThreadPanel({
         readOnly={t('readOnly')}
         sendLabel={t('send')}
         onSend={send}
-        {...(stoppable && row ? { onStop: () => void stop(row), stopping: stopState === 'busy' } : {})}
+        // Stop shows as soon as a turn runs here, before the task list catches up; the console's stop route is used once the list says it runs.
+        {...(stoppable && row
+          ? { onStop: () => void stop(row), stopping: stopState === 'busy' }
+          : busy
+            ? { onStop: () => pgCancel(id, agentId) }
+            : {})}
         stopLabel={tl('stop')}
         setDraft={(text) => setPgInput(id, text)}
         // Writing here opens the task's own session, which is what reports the settings its picker offers.

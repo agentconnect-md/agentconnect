@@ -12,7 +12,7 @@ import type { Agent, SessionStep } from '@/lib/data'
 const taskRow = vi.hoisted(() => ({
   sessionId: 'ses_task',
   title: 'Find what blocks api 1.5',
-  state: 'open' as const,
+  state: 'open' as 'open' | 'done',
   startedAt: '2026-11-03T09:00:00.000Z',
   visible: true,
   canStop: true,
@@ -28,7 +28,8 @@ const wire = vi.hoisted(() => ({
   calls: [] as string[],
   extra: [] as SessionMessageDto[],
   operations: [] as unknown[],
-  permissionRequests: [] as unknown[]
+  permissionRequests: [] as unknown[],
+  busy: false
 }))
 
 vi.mock(import('@/lib/api'), async (importOriginal) => ({
@@ -77,7 +78,8 @@ vi.mock('@/components/console/PlaygroundProvider', () => {
   const listeners = new Set<() => void>()
   const playground = {
     getLiveSteps: () => wire.live,
-    isPgBusy: () => false,
+    isPgBusy: () => wire.busy,
+    pgCancel: (id: string, agentId: string) => wire.calls.push(`cancel:${id}:${agentId}`),
     reconcileLiveSteps: () => {},
     markSessionTarget: (id: string) => wire.calls.push(`target:${id}`),
     pgAnswerElicitation: (id: string, agentId: string, requestId: string, value: unknown) =>
@@ -137,6 +139,8 @@ beforeEach(() => {
   wire.extra = []
   wire.permissionRequests = []
   wire.operations = []
+  wire.busy = false
+  taskRow.state = 'open'
   props = {}
   back = vi.fn()
   container = document.createElement('div')
@@ -272,6 +276,16 @@ describe('TaskThreadPanel', () => {
     const turn = container.querySelector('[data-thread-message="agent"]')!
     expect(turn.querySelector('[data-turn-approval="perm-1"]')?.textContent).toContain('kubectl rollout restart')
     expect(container.querySelector('[data-turn-approval="perm-2"]')).toBeNull()
+  })
+
+  it('stops a turn running here before the task list says it runs, by cancelling it as the conversation would', async () => {
+    taskRow.state = 'done'
+    wire.busy = true
+    await render()
+    const stop = container.querySelector<HTMLButtonElement>('[data-send-button="stop"]')!
+    expect(stop).not.toBeNull()
+    await act(async () => stop.click())
+    expect(wire.calls).toContain('cancel:ses_task:agent_1')
   })
 
   it('sends a reply onto the task’s own session', async () => {
