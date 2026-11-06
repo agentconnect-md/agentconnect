@@ -1,8 +1,6 @@
-// No 'use client' here: imported only by client components (the daemon modals
-// under ModalProvider), so it's already in the client bundle — and keeping the
-// directive off avoids Next's "props must be serializable" check on onChange.
+// No 'use client': only client modals import it, and the directive would trip Next's serializable-props check on onChange.
 
-// The daemon's retention pickers (Add/Edit daemon modals): how long a finished session's row and transcript, or its workspace, stay.
+// The daemon's cleanup row (Add/Edit daemon modals): workspace window first, then the session window, with one shared hint.
 import { useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
@@ -33,13 +31,7 @@ const CUSTOM = '__custom'
 // Full-string day count, same 1–9999 bound as the protocol's SESSION_RETENTION_RE.
 const DAY_COUNT_RE = /^[1-9]\d{0,3}$/
 
-/**
- * Parse the custom day input. The COMPLETE text must be an integer day count
- * (1–9999): a prefix parse would silently save a window the operator didn't
- * type ('1.5' → 1, '1e2' → 1), and anything past the protocol cap would only
- * fail server-side with a generic 400 — this setting deletes sessions and
- * workspaces, so an invalid entry must never coerce into a different value.
- */
+// Whole-string parse only: this setting deletes data, so '1.5' or '1e2' must never coerce into another window.
 export function parseCustomDays(text: string): number | null {
   const trimmed = text.trim()
   return DAY_COUNT_RE.test(trimmed) ? Number.parseInt(trimmed, 10) : null
@@ -51,13 +43,13 @@ function retentionDays(value: DaemonSessionRetention): number | null {
   return Number.isFinite(days) && days > 0 ? days : null
 }
 
-export function SessionRetentionField({
-  kind = 'session',
+function RetentionPicker({
+  kind,
   value,
   onChange,
   disabled
 }: {
-  kind?: keyof typeof KINDS
+  kind: keyof typeof KINDS
   value: DaemonSessionRetention
   onChange: (value: DaemonSessionRetention) => void
   disabled?: boolean
@@ -71,16 +63,13 @@ export function SessionRetentionField({
       preset === 'never' ? t(`${scope}.never`) : t('sessionRetention.afterDays', { count: Number.parseInt(preset, 10) })
   }))
   const isPreset = presetValues.includes(value)
-  // Sticky custom mode: once the operator picks "Custom…" the day input stays
-  // visible even while the typed count momentarily equals a preset (7 → 70).
+  // Sticky custom mode: the day input stays while the typed count passes through a preset (7 → 70).
   const [custom, setCustom] = useState(() => !isPreset)
   const [customText, setCustomText] = useState(() => (isPreset ? '' : String(retentionDays(value) ?? '')))
   const showCustom = custom || !isPreset
   const customInvalid = showCustom && parseCustomDays(customText) === null
 
-  // While the typed text is invalid the parent still holds the last valid
-  // value — show '…' rather than that stale window so the row never claims a
-  // setting the operator didn't enter.
+  // Invalid text shows '…', not the parent's last valid window, so the row never claims a value nobody entered.
   const label = showCustom
     ? customInvalid
       ? t('sessionRetention.afterDays', { count: '…' })
@@ -100,15 +89,16 @@ export function SessionRetentionField({
 
   const typeDays = (text: string) => {
     setCustomText(text)
-    // Only propagate a complete valid count; invalid text surfaces inline below
-    // and the parent keeps the last valid value.
+    // Only a complete valid count propagates; the parent keeps the last valid value meanwhile.
     const days = parseCustomDays(text)
     if (days !== null) onChange(`${days}d`)
   }
 
   return (
-    <div className="fld mt-[14px]">
-      <span className="fldlbl">{t(`${scope}.label`)}</span>
+    <div className="flex min-w-0 flex-col gap-[6px]">
+      <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+        {t(`${scope}.label`)}
+      </span>
       <div className={`inp relative ${disabled ? 'opacity-60' : ''}`}>
         <span className="truncate font-sans text-[13px] text-(--text-primary)">
           {label}
@@ -116,13 +106,13 @@ export function SessionRetentionField({
             <span className="text-(--text-tertiary)"> · {t('sessionRetention.default')}</span>
           )}
         </span>
-        <Icon name="chevron-down" size={15} color="var(--text-tertiary)" className="ml-auto" />
+        <Icon name="chevron-down" size={15} color="var(--text-tertiary)" className="ml-auto shrink-0" />
         <select
           value={showCustom ? CUSTOM : value}
           disabled={disabled}
           onChange={(e) => selectPreset(e.target.value)}
           className="absolute inset-0 cursor-pointer opacity-0 disabled:cursor-default"
-          aria-label={t(`${scope}.label`)}
+          aria-label={t(`${scope}.ariaLabel`)}
         >
           {presets.map((o) => (
             <option key={o.value} value={o.value}>
@@ -135,9 +125,7 @@ export function SessionRetentionField({
       </div>
       {showCustom && (
         <>
-          <div
-            className={`inp mt-[6px] ${disabled ? 'opacity-60' : ''} ${customInvalid ? 'border-(--status-error)' : ''}`}
-          >
+          <div className={`inp ${disabled ? 'opacity-60' : ''} ${customInvalid ? 'border-(--status-error)' : ''}`}>
             <input
               type="number"
               min={1}
@@ -162,8 +150,33 @@ export function SessionRetentionField({
           )}
         </>
       )}
+    </div>
+  )
+}
+
+export function SessionRetentionFields({
+  session,
+  workspace,
+  onSessionChange,
+  onWorkspaceChange,
+  disabled
+}: {
+  session: DaemonSessionRetention
+  workspace: DaemonSessionRetention
+  onSessionChange: (value: DaemonSessionRetention) => void
+  onWorkspaceChange: (value: DaemonSessionRetention) => void
+  disabled?: boolean
+}) {
+  const t = useTranslations('Daemons.dialog')
+  return (
+    <div role="group" aria-label={t('retention.label')} className="fld mt-[14px]">
+      <span className="fldlbl">{t('retention.label')}</span>
+      <div className="grid grid-cols-1 items-start gap-[10px] desktop:grid-cols-2">
+        <RetentionPicker kind="workspace" value={workspace} onChange={onWorkspaceChange} disabled={disabled} />
+        <RetentionPicker kind="session" value={session} onChange={onSessionChange} disabled={disabled} />
+      </div>
       <span className="font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-        {t(`${scope}.hint`)}
+        {t('retention.hint')}
       </span>
     </div>
   )

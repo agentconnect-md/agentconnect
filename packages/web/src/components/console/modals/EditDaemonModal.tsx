@@ -6,7 +6,7 @@ import type { DaemonRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { Button, Icon } from '@/components/ui'
 import { VisibilityField, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
-import { SessionRetentionField } from '@/components/console/SessionRetentionField'
+import { SessionRetentionFields } from '@/components/console/SessionRetentionField'
 
 // The daemon's rename + retention + sharing editor: name and both retention windows PATCH (canEdit), visibility rides /sharing (canManageSharing); unchanged fields skip their write.
 export default function EditDaemonModal({ daemon, onClose }: { daemon: DaemonRow; onClose: () => void }) {
@@ -68,11 +68,11 @@ export default function EditDaemonModal({ daemon, onClose }: { daemon: DaemonRow
             }}
           />
         </div>
-        <SessionRetentionField value={retention} onChange={setRetention} disabled={!daemon.canEdit} />
-        <SessionRetentionField
-          kind="workspace"
-          value={workspaceRetention}
-          onChange={setWorkspaceRetention}
+        <SessionRetentionFields
+          session={retention}
+          workspace={workspaceRetention}
+          onSessionChange={setRetention}
+          onWorkspaceChange={setWorkspaceRetention}
           disabled={!daemon.canEdit}
         />
         <VisibilityField value={sharing} onChange={setSharing} disabled={!daemon.canManageSharing} />

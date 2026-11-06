@@ -4238,23 +4238,27 @@
       "daemonPlaceholder": "edge-1",
       "saveChanges": "Save changes",
       "groupPlaceholder": "edge-pool",
+      "retention": {
+        "label": "Clean up finished sessions",
+        "hint": "The workspace and sandbox go first; the conversation and unpushed work stay. Later the session is deleted with its transcript."
+      },
       "sessionRetention": {
-        "label": "Expire sessions",
+        "label": "Session",
         "afterDays": "After {count, plural, one {# day} other {# days}}",
         "never": "Never",
         "default": "default",
         "custom": "Custom…",
         "days": "Days",
         "daysSuffix": "days",
-        "daysAriaLabel": "Expire sessions after (days)",
+        "daysAriaLabel": "Delete finished sessions after (days)",
         "invalidDays": "Enter a whole number of days (1–9999).",
-        "hint": "Finished sessions older than this are deleted from the daemon, with their transcripts."
+        "ariaLabel": "Delete finished sessions after"
       },
       "workspaceRetention": {
-        "label": "Clean up workspaces",
+        "label": "Workspace",
         "never": "With the session",
         "daysAriaLabel": "Clean up workspaces after (days)",
-        "hint": "Finished sessions idle this long lose their workspace and sandbox but keep the conversation. Work not yet pushed is kept."
+        "ariaLabel": "Clean up workspaces after"
       }
     },
     "lifecycleDialog": {

@@ -1299,9 +1299,9 @@ export interface DaemonViewDto {
   createdBy: string | null // creator's userId (resolved to a name / "You" in the UI); null for CLI/self-registered
   lastModifiedAt: string // ISO-8601
   lastModifiedBy: string | null // editor's userId (resolved to a name / "You" in the UI); null for CLI/self-registered
-  /** How long a finished session's row and transcript stay on the daemon ("Expire sessions"). */
+  /** How long a finished session's row and transcript stay on the daemon (the cleanup row's "Session" picker). */
   sessionRetention: DaemonSessionRetention
-  /** How long a finished session's workspace and sandbox stay, never past its row ("Clean up workspaces"). */
+  /** How long a finished session's workspace and sandbox stay, never past its row (the cleanup row's "Workspace" picker). */
   workspaceRetention: DaemonSessionRetention
   visibility: ResourceVisibility
   sharedWith: string[]
@@ -1326,8 +1326,7 @@ export interface DaemonAutoUpgradeResultDto {
   settledAt: string | null
 }
 
-/** The console-settable "Expire sessions" window (PATCH /daemons/:id):
- *  'never' disables the sweep, otherwise an integer day count as '<n>d'. */
+/** The console-settable cleanup window (PATCH /daemons/:id): 'never' disables the sweep, else '<n>d'. */
 export type DaemonSessionRetention = 'never' | `${number}d`
 
 /** A CP-commanded daemon restart/upgrade (cli-daemon-split.md §7). Returned by the
@@ -4748,7 +4747,7 @@ export async function updateDaemonSessionRetention(
   )
 }
 
-// Set how long a finished session's workspace and sandbox stay ("Clean up workspaces"); the CP hot-pushes it.
+// Set how long a finished session's workspace and sandbox stay (the cleanup row's "Workspace" picker); the CP hot-pushes it.
 export async function updateDaemonWorkspaceRetention(
   daemonId: string,
   workspaceRetention: DaemonSessionRetention

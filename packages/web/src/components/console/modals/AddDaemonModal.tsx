@@ -9,7 +9,7 @@ import { Button, Icon } from '@/components/ui'
 import { Spinner } from '@/components/marks'
 import { VisibilityField, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
 import {
-  SessionRetentionField,
+  SessionRetentionFields,
   SESSION_RETENTION_DEFAULT,
   WORKSPACE_RETENTION_DEFAULT
 } from '@/components/console/SessionRetentionField'
@@ -283,8 +283,12 @@ export default function AddDaemonModal({
             }}
           />
         </div>
-        <SessionRetentionField value={retention} onChange={setRetention} />
-        <SessionRetentionField kind="workspace" value={workspaceRetention} onChange={setWorkspaceRetention} />
+        <SessionRetentionFields
+          session={retention}
+          workspace={workspaceRetention}
+          onSessionChange={setRetention}
+          onWorkspaceChange={setWorkspaceRetention}
+        />
         <VisibilityField value={sharing} onChange={setSharing} label={t('visibility')} />
         {saveErr && (
           <div className="mt-[14px] flex items-start gap-2 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[11px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--status-error)">
