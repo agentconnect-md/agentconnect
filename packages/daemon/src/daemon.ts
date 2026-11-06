@@ -3294,7 +3294,7 @@ export class Daemon {
       isTaskTarget: async (scope) => {
         if (!scope.targetSessionId) return false
         const target = await this.store.getSessionByOutwardId(scope.targetSessionId, scope.agentId)
-        return !!target && isDelegatedTaskCoordinate(target.thread)
+        return !!target && (await this.isOwnedTask(scope.agentId, target))
       },
       onExecutionError: (error) => this.log.warn(`AHP execution failed: ${formatErr(error)}`)
     })
@@ -16717,6 +16717,13 @@ export class Daemon {
   }
 
   /** Applies one webchat runtime-setting op to the session under `sessionKey`. */
+  /** A task some session owns now: a delegated `subsession:` one, or a threaded task in its own platform thread that its index still holds open. */
+  private async isOwnedTask(agentId: string, target: { key: string; thread?: string | null }): Promise<boolean> {
+    if (isDelegatedTaskCoordinate(target.thread)) return true
+    const task = await this.store.assistantSubsessions.get(agentId, target.key)
+    return !!task && task.mode !== 'watch' && task.closedAt === undefined
+  }
+
   private async applyWebchatRuntimeOp(
     msgId: string,
     op: Extract<RdMsgWebchat['payload'], { op: 'set_model' | 'set_effort' | 'set_permission_mode' | 'set_fast' }>,
@@ -16806,7 +16813,7 @@ export class Daemon {
         case 'set_fast': {
           // A coordinator's task is set from its own thread as its conversation is; any other continued session takes human input only.
           const target = await this.store.getSessionByOutwardId(msg.targetSessionId, msg.agentId)
-          if (!target || !isDelegatedTaskCoordinate(target.thread))
+          if (!target || !(await this.isOwnedTask(msg.agentId, target)))
             return { msgId: msg.msgId, accepted: false, reason: 'runtime changes are disabled for a continued session' }
           if (!webchatRoleChangesSettings(op.callerRole) && chatSettingsAllowed(this.agents.get(msg.agentId)))
             return { msgId: msg.msgId, accepted: false, reason: WEBCHAT_SETTINGS_REFUSAL }

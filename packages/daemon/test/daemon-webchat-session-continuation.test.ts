@@ -715,6 +715,40 @@ describe('webchat session-targeted continuation — a delegated task', () => {
     await daemon.stop()
   })
 
+  it('lets a threaded task in its own platform thread change its runtime settings while some session owns it', async () => {
+    const { daemon, d } = await boot()
+    const key = await seedTask(d, '1700000000.000300')
+    const index = (d as never as { store: { assistantSubsessions: AssistantSubsessionIndexLike } }).store
+      .assistantSubsessions
+    const applied: Array<[string, string]> = []
+    ;(
+      d as never as { commands: { setModelByKey: (k: string, m: string) => Promise<boolean> } }
+    ).commands.setModelByKey = async (k, m) => {
+      applied.push([k, m])
+      return true
+    }
+    const setModel = () =>
+      d.handleRelayMsg(
+        turn('', { targetSessionId: TASK_ACP, payload: { op: 'set_model', model: 'opus', callerRole: 'editor' } }),
+        () => {}
+      ) as Promise<RdAck>
+    // Before any session owns it, a thread session is an ordinary continued one.
+    expect(await setModel()).toMatchObject({
+      accepted: false,
+      reason: 'runtime changes are disabled for a continued session'
+    })
+    await index.open({
+      agentId: AGENT,
+      childSessionKey: key,
+      parentSessionId: TARGET_ACP,
+      parentSessionKey: PARENT_KEY,
+      title: 'Notes'
+    })
+    expect(await setModel()).toMatchObject({ accepted: true })
+    expect(applied).toEqual([[key, 'opus']])
+    await daemon.stop()
+  })
+
   it("refuses a follow-up's check, which stays read-only", async () => {
     const { daemon, d, prompts, postMessage } = await boot()
     await seedTask(d, 'subsession:check-7')
