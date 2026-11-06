@@ -178,12 +178,6 @@ describe('private runtime HOME', () => {
       provider: 'anthropic'
     },
     {
-      runtime: 'opencode',
-      path: join('.local', 'share', 'opencode', 'auth.json'),
-      credential: { openai: { type: 'oauth', access: 'synthetic-access', refresh: 'synthetic-refresh', expires: 1 } },
-      provider: 'openai'
-    },
-    {
       runtime: 'qwen-code',
       path: join('.qwen', 'settings.json'),
       credential: {

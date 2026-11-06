@@ -686,6 +686,14 @@ describe('AcpHost — account-bound app isolation', () => {
     expect(warns.join('\n')).toContain('ignoring unsafe inherited CODEX_CONFIG')
   })
 
+  it('gives OpenCode CLAUDE.md as an instruction file beside the launch config', async () => {
+    const raw = JSON.stringify({ model: 'deepseek/deepseek-chat' })
+    const out = await runIsolatedFixture('opencode', 'OPENCODE_CONFIG_CONTENT', raw)
+
+    const echoed = out.find((line) => line.startsWith('env:'))?.slice('env:'.length)
+    expect(JSON.parse(echoed ?? '')).toMatchObject({ model: 'deepseek/deepseek-chat', instructions: ['CLAUDE.md'] })
+  })
+
   it("enables Codex's request_user_input tool when the host services elicitations", async () => {
     const raw = JSON.stringify({ model: 'gpt-test', features: { apps: true } })
     const out = await runIsolatedFixture('codex-acp', 'CODEX_CONFIG', raw, undefined, undefined, true)

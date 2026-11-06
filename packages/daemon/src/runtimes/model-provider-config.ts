@@ -8,6 +8,7 @@ import {
 import type { RuntimeDef } from '../config/config-schema.js'
 import type { Agent } from '../agents/agent-schema.js'
 import { isClaudeRuntimeDef } from '../runtime-defs/claude-runtime.js'
+import { isOpenCodeRuntime } from '../runtime-defs/opencode-runtime.js'
 import { sharedCredentialProfile } from './runtime-credentials.js'
 import {
   codexConfigWithBaseUrl,
@@ -41,11 +42,6 @@ export function modelCredentialRuntime(target: ModelProviderTarget): ModelRuntim
   return target.runtime === 'opencode'
     ? (OPENCODE_PROVIDERS[target.opencodeProvider ?? 'openai']?.runtime ?? 'opencode')
     : target.runtime
-}
-
-function isOpenCodeRuntime(runtimeId: string, runtime: RuntimeDef): boolean {
-  if (runtimeId === 'opencode') return true
-  return [runtime.command, ...runtime.args].some((part) => /(?:^|[\/@])opencode(?:@[^\/]*)?$/.test(part.toLowerCase()))
 }
 
 // The bin, not the package: `dsh-acp` is the single bin of @openma/deepseek-harness-acp.

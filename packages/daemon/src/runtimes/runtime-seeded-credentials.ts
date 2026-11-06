@@ -17,7 +17,6 @@ export interface SeededCredentialFile {
     | 'kimi-config'
     | 'pi'
     | 'pi-models'
-    | 'opencode'
     | 'oauth'
     | 'claude-oauth'
     | 'hermes'

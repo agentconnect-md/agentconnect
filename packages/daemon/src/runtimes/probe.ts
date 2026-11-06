@@ -281,18 +281,9 @@ export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
     ...state(join(home(env), '.cursor', 'cli-config.json'), join('.cursor', 'cli-config.json'))
   ],
 
-  // sst OpenCode — XDG config dir + auth file under XDG data. `~/.opencode` is the
-  // project-level config dir, not the documented global one, but it lands in $HOME
-  // when opencode is run from home, so accept it as a fallback signal.
+  // OpenCode 2 config; its sign-ins live in its database and reach a private HOME through `auth export` (opencode-host-keys.ts).
   opencode: (env) => [
     ...state(join(xdgConfigHome(env), 'opencode'), join('.config', 'opencode')),
-    ...state(
-      join(xdgDataHome(env), 'opencode', 'auth.json'),
-      join('.local', 'share', 'opencode', 'auth.json'),
-      undefined,
-      undefined,
-      [{ path: '', format: 'opencode' }]
-    ),
     ...state(join(home(env), '.opencode'), '.opencode')
   ],
 

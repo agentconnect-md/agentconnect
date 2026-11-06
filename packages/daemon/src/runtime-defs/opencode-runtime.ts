@@ -1,6 +1,23 @@
 import { RESERVED_MCP_SERVER_NAME } from '../mcp/resolve-servers.js'
 import { objectFromJson, record } from '../runtimes/codex-config.js'
+import type { RuntimeDef } from '../config/config-schema.js'
 import type { ModelProviderTarget } from '../runtimes/model-provider-config.js'
+
+/** Whether a runtime is OpenCode: the registry id, or a launch that names its binary or package. */
+export function isOpenCodeRuntime(runtimeId: string | undefined, runtime?: RuntimeDef): boolean {
+  if (runtimeId === 'opencode') return true
+  return [runtime?.command ?? '', ...(runtime?.args ?? [])].some((part) =>
+    /(?:^|[\/@])opencode(?:\/cli)?(?:@[^\/]*)?$/.test(part.toLowerCase())
+  )
+}
+
+/** Adds CLAUDE.md to OpenCode's instruction files, which are otherwise AGENTS.md alone, unless the launch already lists its own. */
+export function openCodeConfigWithClaudeInstructions(raw: string | undefined): string {
+  const config = objectFromJson(raw, 'OPENCODE_CONFIG_CONTENT')
+  if (config.instructions !== undefined) return JSON.stringify(config)
+  // Files load by resolved path, so an AGENTS.md linked to CLAUDE.md is read once.
+  return JSON.stringify({ ...config, instructions: ['CLAUDE.md'] })
+}
 
 /** The OpenCode agent the daemon authors for its own extraction passes, advertised as the ACP `read-only` mode. */
 export const OPENCODE_READ_ONLY_MODE = 'read-only'
@@ -12,7 +29,6 @@ export const OPENCODE_READ_ONLY_PERMISSION = {
   read: 'allow',
   glob: 'allow',
   grep: 'allow',
-  list: 'allow',
   [`${RESERVED_MCP_SERVER_NAME}_*`]: 'allow'
 } as const
 

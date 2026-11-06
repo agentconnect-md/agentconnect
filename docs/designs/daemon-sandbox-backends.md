@@ -549,37 +549,35 @@ in request headers for `https://api.deepseek.com`. A non-default base URL in the
 launch environment, host environment or DSH `.env` refuses the launch with a
 diagnostic. Custom credential-reference names are outside this first implementation.
 
-OpenCode uses the same proxy and lifecycle for `type: api` records in its native
-`auth.json` (including XDG data-directory overrides). Each provider receives its
-own placeholder and allowed HTTPS hosts; providers sharing a key share one
-placeholder with their combined authorized hosts. Routing comes from standard host OpenCode
-config and `OPENCODE_CONFIG_CONTENT`, then provider defaults or OpenCode's cached model
-catalog. Unknown or unsupported destinations keep placeholders but receive no
-proxy key injection; other providers can still start and authenticate. Configure
-a supported HTTPS host `provider.options.baseURL` to enable that provider. There
-is no fallback to mounting its real API key. An absent or unusable catalog only
-affects providers that need that catalog, not providers with known defaults;
-guest workspace configuration cannot authorize a new destination. Standard
-providers do not require a warm model cache. Copies of the protected keys in
-seeded OpenCode credential values, Bearer headers, and JSON environment config are
-replaced too, without replacing matching substrings in paths or unrelated text.
-The host files are unchanged.
-This path protects keys discovered in native `auth.json`; it does not discover
-additional keys stored only in other configuration sources.
-`OPENCODE_CONFIG` and `OPENCODE_CONFIG_DIR` paths are not imported or used for proxy
-routing; use the standard host config locations or `OPENCODE_CONFIG_CONTENT`.
-Symlinked host files are skipped, matching native HOME seeding. Credential import
-uses the registered `opencode` state profile, not command-name matching for custom
-runtime IDs.
+OpenCode 2 keeps its sign-ins in its own database, which no private HOME copies. The
+daemon reads the host's sign-ins through OpenCode's own `opencode auth export
+--standalone` (a private server that exits with the command) and takes the active
+API-key records only. Each provider's key travels in its own `OPENCODE_API_<hash>`
+variable, and `OPENCODE_CONFIG_CONTENT` points that provider's `options.apiKey` at it
+with `{env:…}`, unless the launch's config already sets that provider's key. Under SRT
+the variable holds the key; in microsandbox it holds a placeholder that the same proxy
+swaps on the provider's allowed HTTPS hosts. Providers sharing a key share one
+placeholder with their combined authorized hosts. Routing comes from the provider's
+base URL in standard host OpenCode config or `OPENCODE_CONFIG_CONTENT`, in either the
+`provider.<id>.options` or `providers.<id>.settings` shape, else its models' own APIs
+and the provider's default origin. Unknown or unsupported destinations get no proxy
+key injection and no config pointer; other providers can still start and
+authenticate. Configure a supported HTTPS `baseURL` to enable that provider. There is
+no fallback to mounting its real API key, and guest workspace configuration cannot
+authorize a new destination. Copies of the protected keys in projected OpenCode
+config files, Bearer headers, and JSON environment config are replaced too, without
+replacing matching substrings in paths or unrelated text. The host files are
+unchanged. `OPENCODE_CONFIG` and `OPENCODE_CONFIG_DIR` paths are not imported or used
+for proxy routing; use the standard host config locations or
+`OPENCODE_CONFIG_CONTENT`. Symlinked host files are skipped, matching native HOME
+seeding. Host keys go only to the registered `opencode` runtime ID, not to custom
+runtime IDs that run the same binary.
 
-OpenCode OAuth and `wellknown` records remain unchanged in the mounted private credential file
-and are readable by the guest. Guest-refreshed OAuth records survive subsequent
-preparation. OAuth-only launches retain the existing seeding path, without proxy
-secrets or additional credential shielding. This change does not add an OAuth
-proxy or refresh coordinator.
-API records for providers configured only inside the guest retain their native local login
-behavior on resume; they are not host-managed proxy credentials. Blank or malformed
-API keys are not selected for protection and do not prevent preparing other records.
+OpenCode OAuth and external sign-ins stay on the host: no private HOME receives
+them, so where the host has only those, the guest signs in itself or uses keys the
+agent configures. There is no OAuth proxy or refresh coordinator. Inactive, blank,
+or malformed key records are not selected and do not prevent preparing other
+records; a host without OpenCode, or whose export fails, contributes no keys.
 
 pi uses the same proxy for file-based `type: api_key` records in `auth.json` and
 provider `apiKey` fields in `models.json`, honoring `PI_CODING_AGENT_DIR`. Its
