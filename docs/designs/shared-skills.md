@@ -732,6 +732,12 @@ node <bundled skills@1.5.21 bin> add <absoluteSnapshot> \
   recorded one and only the receipt walk separates it from the tree the daemon
   installed. A quarantine is therefore refused as unowned when either half
   disagrees.
+- The device half of a recorded identity is not stable across a reboot: a Btrfs
+  subvolume's anonymous device can be renumbered while its paths, inodes and files
+  stay the same. The ledger is therefore keyed by the workspace's path and inode,
+  not its device, and identities recorded on the workspace's previous device are
+  read as the same inodes on its current one. An identity on any other device keeps
+  its recorded value, so a mount seated inside the workspace still fails the check.
 - Recovery with persisted inode authority may touch only the exact reservation
   or receipt-bound tree. Before that authority exists it may remove only
   content-free crash shapes: an empty target directory, or an empty target that
