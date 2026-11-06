@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { Daemon } from '../src/daemon.js'
+import { memberIdOn } from '../src/session/chat-continuation.js'
+import { webchatAuthorOf } from '../src/webchat/transport.js'
 import type { RdAck, RdChatEvent, RdMsgWebchat } from '@agentconnect.md/protocol'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
@@ -422,6 +424,21 @@ describe('webchat session-targeted continuation — mirror identity', () => {
     expect(text).toBe('[Ada via console] looks off?')
     expect(blocks).toEqual([{ type: 'markdown', text: '[Ada via console] looks off?' }])
     await daemon.stop()
+  })
+})
+
+describe('webchat session-targeted continuation — author member id', () => {
+  const local = { platform: 'slack', transportScope: 'T1' }
+
+  it("picks the author's linked member in the session's own workspace", () => {
+    const author = webchatAuthorOf({ user: 'Ada', userId: 'user-1', userIdentities: ['slack:T9:U9', 'slack:T1:U7'] })
+    expect(memberIdOn(author, local)).toBe('U7')
+  })
+
+  it('names nobody without a linked member in that workspace or a recorded workspace', () => {
+    expect(memberIdOn({ identities: ['slack:T9:U9', 'feishu:lark:on_1'] }, local)).toBeUndefined()
+    expect(memberIdOn({}, local)).toBeUndefined()
+    expect(memberIdOn({ identities: ['slack:T1:U7'] }, { platform: 'slack' })).toBeUndefined()
   })
 })
 

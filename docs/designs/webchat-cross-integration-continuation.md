@@ -245,6 +245,15 @@ the existing output rules.**
   lands, its provider message id becomes the message's own, as channel ingress
   names a message: the transcript row carries it, and a coordinator that opens a
   task for the message opens it in that post's thread.
+- The **reply's working chrome** addresses the author on the platform when they
+  linked an account there. The session-targeted mint stamps the author's identity
+  keys on the session's platform (`<platform>:<tenant>:<memberId>`, from the same
+  viewer identities the continuation check resolved) into the verified token; the
+  relay copies them from the verdict onto each turn, never from browser input; and
+  the daemon keeps the one whose tenant is the session's own. On Slack that member
+  is the streamed plan card's recipient, so the author watches it live in the
+  thread; without one the bot names itself, as for any turn without a human Slack
+  initiator ([slack-streaming-turn-output.md](slack-streaming-turn-output.md)).
 - The mirror is an ordinary authenticated platform message, and delivery must
   be PROVEN: only a returned provider message id counts — an undefined result
   (a provider that swallows send failures) takes the same refusal path as an

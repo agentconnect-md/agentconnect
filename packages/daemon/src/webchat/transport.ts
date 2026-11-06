@@ -65,6 +65,7 @@ export function webchatAuthorOf(op: {
   user?: string
   userId?: string
   userPicture?: string
+  userIdentities?: string[]
   timeZone?: string
 }): WebchatAuthor {
   const name = op.user ?? 'webchat'
@@ -73,6 +74,7 @@ export function webchatAuthorOf(op: {
     id: op.userId ?? name,
     name,
     ...(op.userPicture ? { pictureUrl: op.userPicture } : {}),
+    ...(op.userIdentities?.length ? { identities: op.userIdentities } : {}),
     ...(timeZone ? { timeZone } : {})
   }
 }

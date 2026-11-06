@@ -118,6 +118,7 @@ export function webchatBinding(
       userId: claims.userId,
       user: claims.user,
       ...(claims.userPicture ? { userPicture: claims.userPicture } : {}),
+      ...(claims.userIdentities?.length ? { userIdentities: claims.userIdentities } : {}),
       agentId: claims.agentId,
       daemonId: agentDaemonId,
       orgId: claims.orgId,

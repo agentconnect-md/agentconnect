@@ -25,6 +25,8 @@ export interface WebchatTokenClaims {
   user: string
   /** Public avatar URL, when the profile has one — the identity a platform mirror posts under. */
   userPicture?: string
+  /** A session continuation's author on the target session's platform, as `<platform>:<tenant>:<memberId>` keys. */
+  userIdentities?: string[]
   agentId: string
   orgId: string
   conversationId: string
@@ -58,6 +60,23 @@ function conversationPeersOf(raw: unknown): ConversationPeerClaim[] | undefined 
   return peers
 }
 
+/** At most this many identity keys ride a token — the verdict's own cap. */
+export const MAX_USER_IDENTITIES = 8
+
+/** A viewer's identity keys on one platform (`<platform>:<tenant>:<memberId>`), capped for the token. */
+export function platformIdentities(platform: string | null, identitySet: Iterable<string>): string[] {
+  if (!platform) return []
+  return [...identitySet].filter((key) => key.startsWith(`${platform}:`)).slice(0, MAX_USER_IDENTITIES)
+}
+
+/** Parses the identity claim, dropping the whole list when any entry is malformed. */
+function userIdentitiesOf(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_USER_IDENTITIES) return undefined
+  return raw.every((key) => typeof key === 'string' && key.length > 0 && key.length <= 512)
+    ? (raw as string[])
+    : undefined
+}
+
 /** A minted token and the instant its `exp` claim names. */
 export interface MintedWebchatToken {
   token: string
@@ -88,6 +107,7 @@ export class WebchatTokenService {
     const token = await new SignJWT({
       user: claims.user,
       ...(claims.userPicture ? { userPicture: claims.userPicture } : {}),
+      ...(claims.userIdentities?.length ? { userIdentities: claims.userIdentities } : {}),
       agentId: claims.agentId,
       orgId: claims.orgId,
       conversationId: claims.conversationId,
@@ -113,6 +133,7 @@ export class WebchatTokenService {
         sub,
         user,
         userPicture,
+        userIdentities,
         agentId,
         orgId,
         conversationId,
@@ -121,6 +142,7 @@ export class WebchatTokenService {
         conversationPeers
       } = payload as Record<string, unknown>
       const peers = conversationPeersOf(conversationPeers)
+      const identities = userIdentitiesOf(userIdentities)
       if (
         typeof sub !== 'string' ||
         typeof agentId !== 'string' ||
@@ -135,6 +157,7 @@ export class WebchatTokenService {
         userId: sub,
         user: typeof user === 'string' ? user : sub,
         ...(typeof userPicture === 'string' ? { userPicture } : {}),
+        ...(identities ? { userIdentities: identities } : {}),
         agentId,
         orgId,
         conversationId: conversationId.toLowerCase(),

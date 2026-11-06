@@ -183,6 +183,10 @@ describe('parseBrowserFrame', () => {
     expect(
       parseBrowserFrame({ text: 'hi', userPicture: 'https://evil.example.test/x.png' }, USER, 'user-1', PICTURE)
     ).toEqual({ op: { op: 'turn', text: 'hi', user: USER, userId: 'user-1', userPicture: PICTURE } })
+    // Linked chat identities come from the verdict too, never from the browser envelope.
+    expect(
+      parseBrowserFrame({ text: 'hi', userIdentities: ['slack:T9:U9'] }, USER, 'user-1', undefined, ['slack:T1:U1'])
+    ).toEqual({ op: { op: 'turn', text: 'hi', user: USER, userId: 'user-1', userIdentities: ['slack:T1:U1'] } })
     // A CP that returns no principal leaves the claim off entirely, rather than
     // inventing one from the handle — the daemon owns that fallback.
     expect(parseBrowserFrame({ text: 'hi' }, USER)).toEqual({ op: { op: 'turn', text: 'hi', user: USER } })

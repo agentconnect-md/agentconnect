@@ -14,6 +14,8 @@ export interface ChatAuthor {
   name: string
   pictureUrl?: string
   timeZone?: string
+  /** The author's linked chat identities as `<platform>:<tenant>:<memberId>`, verified by the CP. */
+  identities?: string[]
 }
 
 // Protocol adapters decode attachments before entering the shared application boundary.

@@ -264,19 +264,16 @@ export function slackAgentPostOptions(
   }
 }
 
-/**
- * The human this turn's chrome cards are addressed to (`recipient_user_id`, which Slack
- * requires outside a DM). A cron fire, a webhook, a dream, or an agent→agent delivery has no
- * human initiator, so the connection names the bot itself instead — no structural carve-out.
- *
- * Structural in its parameter so this module stays free of core message types.
- */
+/** The Slack user the chrome stream is addressed to; undefined (the bot names itself) when no Slack user started the turn. A console continuation's sender is a console principal, so it names the author's linked Slack member or nobody. */
 export function slackStreamRecipient(msg: {
   source: string
   headless?: boolean
+  adoptedSession?: boolean
+  senderMemberId?: string
   sender: { id: string; isBot?: boolean }
 }): string | undefined {
-  return msg.source === 'user' && !msg.headless && !msg.sender.isBot ? msg.sender.id : undefined
+  if (msg.source !== 'user' || msg.headless || msg.sender.isBot) return undefined
+  return msg.adoptedSession ? msg.senderMemberId : msg.sender.id
 }
 
 /** Keep the working indicator visually owned by the same agent as its reply. */

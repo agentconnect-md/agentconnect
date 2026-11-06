@@ -223,6 +223,8 @@ export const RelayWebchatOp = z.discriminatedUnion('op', [
     userId: z.string().optional(),
     // The author's public avatar URL from the verified CP verdict; a Slack mirror posts under it.
     userPicture: z.string().url().max(2_048).optional(),
+    // The author's linked chat identities (`<platform>:<tenant>:<memberId>`) from the verified CP verdict, so a continuation can address the author on its own platform.
+    userIdentities: z.array(z.string().min(1).max(512)).max(8).optional(),
     // New browsers allocate this before sending so a pre-ack reconnect can name
     // the exact turn. Optional for older clients; the daemon allocates a fallback.
     turnId: z.string().uuid().optional(),
