@@ -24,7 +24,9 @@ import {
   RD_CODEHOST_REPLY_TARGET_V1,
   RD_DECISION_ROUTE_V1,
   RD_WEBCHAT_IMAGES_V1,
+  RD_WEBCHAT_PROMPT_SUGGESTION_V1,
   type RdWebchatImageUpdate,
+  type RdWebchatPromptSuggestion,
   type RelayDaemonFrame,
   type RdRoute,
   type RdRouteAck,
@@ -75,6 +77,8 @@ export interface RelayDaemonConnDeps {
   onWebchatPost: (fromDaemonId: string, post: RdWebchatPost) => void
   /** Route an `rd/webchat-image-update` to the conversation's browsers only, bound to the AUTHENTICATED daemon. */
   onWebchatImageUpdate?: (fromDaemonId: string, update: RdWebchatImageUpdate) => void
+  /** Route an `rd/webchat-prompt-suggestion` to the conversation's browsers only, bound to the AUTHENTICATED daemon. */
+  onWebchatPromptSuggestion?: (fromDaemonId: string, suggestion: RdWebchatPromptSuggestion) => void
   /** Route an inbound cross-daemon `rd/agentmsg` (agent-collaboration §2.3/§6.2). The
    *  socket's AUTHENTICATED `daemonId` is passed in (NOT the frame's untrusted
    *  `claimedFromAgentId`) — the router binds the request to it, validates/authorizes
@@ -244,6 +248,9 @@ export class RelayDaemonConnection {
         case 'rd/webchat-image-update':
           this.deps.onWebchatImageUpdate?.(this.daemonId, frame.payload)
           return
+        case 'rd/webchat-prompt-suggestion':
+          this.deps.onWebchatPromptSuggestion?.(this.daemonId, frame.payload)
+          return
         case 'rd/agentmsg': {
           // Cross-daemon agent-call REQ (§2.3/§6.2). Bind to the AUTHENTICATED daemonId —
           // NEVER the frame's untrusted claimedFromAgentId. The router validates +
@@ -305,6 +312,7 @@ export class RelayDaemonConnection {
           type === 'rd/chat' ||
           type === 'rd/webchat-post' ||
           type === 'rd/webchat-image-update' ||
+          type === 'rd/webchat-prompt-suggestion' ||
           type === 'rd/agentmsg' ||
           type === 'rd/route' ||
           type === 'rd/route/report'
@@ -381,7 +389,12 @@ export class RelayDaemonConnection {
     this.state = 'READY'
     this.reply(frame, 'rd/hello/ok', {
       relayId,
-      capabilities: [RD_CODEHOST_REPLY_TARGET_V1, RD_DECISION_ROUTE_V1, RD_WEBCHAT_IMAGES_V1]
+      capabilities: [
+        RD_CODEHOST_REPLY_TARGET_V1,
+        RD_DECISION_ROUTE_V1,
+        RD_WEBCHAT_IMAGES_V1,
+        RD_WEBCHAT_PROMPT_SUGGESTION_V1
+      ]
     })
     this.deps.onReady(this.daemonId, this)
   }

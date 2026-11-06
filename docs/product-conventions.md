@@ -444,6 +444,25 @@ or folded into the running turn: it waits and runs as its own turn, so the agent
 receives the files and not just their names. `!cancel` remains the way to abandon the work in
 progress rather than redirect it.
 
+## A predicted next prompt is offered, never sent
+
+When the runtime predicts what the person will most likely ask next (Claude does
+after most turns), the prediction is offered where the person writes, and nothing
+is sent until they choose to send it:
+
+- In the console, it is the placeholder of the conversation's empty composer on
+  desktop; Tab puts it into the composer as an editable draft. Phones keep the
+  ordinary placeholder, because they have no key to take it.
+- In a Slack direct message, it is the one suggested prompt at the top of the
+  Messages tab, replacing whatever was there; clicking it sends it as the person.
+  Channels and group DMs never show one: a prediction is for the one person the
+  agent is talking to.
+
+A prediction belongs to the turn that just ended. Sending anything retires it, and
+a turn that predicts nothing clears the previous one rather than leaving it in
+place. Like the reply it follows, it stays on the data plane: the Control Plane
+neither receives nor stores it.
+
 ## Slack message attribution footer
 
 The attribution footer for an agent response must be attached to the final Slack

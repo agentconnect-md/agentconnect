@@ -430,6 +430,9 @@ export class VirtualSlackConnection implements PlatformConnection {
 
   async setTitle(): Promise<void> {}
 
+  /** A predicted next prompt is composer chrome, never a message: nothing to record or score. */
+  async setDmSuggestedPrompt(): Promise<void> {}
+
   /**
    * Native tool-call chrome is UNSUPPORTED here, deliberately and deterministically. The arena
    * has no Slack API to stream into, and a half-modelled stream would change what the arena

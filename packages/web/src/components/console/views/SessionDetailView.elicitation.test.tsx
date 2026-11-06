@@ -124,6 +124,7 @@ vi.mock('@/components/console/Shell', () => ({
 // turns the real transcript off.)
 vi.mock('@/components/console/PlaygroundProvider', () => {
   const playground = {
+    getPgSuggestion: () => undefined,
     getPgSession: () => undefined,
     getLiveSteps: () => live.steps,
     getBusyLaneAgentIds: () => [],

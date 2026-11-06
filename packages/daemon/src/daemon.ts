@@ -174,6 +174,7 @@ import {
   COMPUTER_LEASE_FEATURE,
   MAX_WORKSPACE_DOWNLOAD_BYTES,
   isDelegatedTaskCoordinate,
+  WebchatPromptSuggestion,
   type TaskLinkFacts,
   type UserTurnBody
 } from '@agentconnect.md/protocol'
@@ -907,6 +908,7 @@ import { CpCollabRoutes, isSyntheticA2aChannel } from './cp/cp-collab-routes.js'
 import { ClientTransport, systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
 import { z } from 'zod'
 import { OUTSIDE_HUMAN_SCOPE_REMINDER, isNoResponseBody, isNoResponsePrefix } from './session/no-response.js'
+import { promptSuggestionOf } from './session/prompt-suggestion.js'
 import { codeHostReplySnapshot, sessionReplyRoute, sessionWakeFields } from './session/reply-route.js'
 import { WorkspaceConflictError } from './cp/workspace-reader.js'
 import { createWorkspaceScope } from './cp/workspace-scope.js'
@@ -24696,6 +24698,42 @@ export class Daemon {
     }
   }
 
+  /** Deliver a predicted next prompt (`null` clears) to the surfaces that show one; never persisted or sent to the CP. */
+  private async publishPromptSuggestion(
+    owner: HostKey,
+    sessionId: string,
+    p: Pending | undefined,
+    text: string | null
+  ): Promise<void> {
+    const agentId = hostKeyAgentId(owner)
+    const rec = p ? await this.store.getSession(p.plan.sessionKey) : await this.sessionForAcp(owner, sessionId)
+    if (!rec || rec.agentId !== agentId || rec.acpSessionId !== sessionId) return
+    if (rec.platform === 'webchat') {
+      const suggestion = WebchatPromptSuggestion.safeParse({ conversationId: rec.channel, agentId, text })
+      if (suggestion.success) this.relays?.sendWebchatPromptSuggestion(suggestion.data)
+      return
+    }
+    const binding = this.sessionDeliveryBindings.get(rec.key)
+    if (
+      rec.platform !== 'slack' ||
+      !binding?.isDm ||
+      binding.platform !== 'slack' ||
+      binding.agentId !== rec.agentId ||
+      !binding.integrationId
+    )
+      return
+    const conn = this.connByIntegration.get(binding.integrationId)
+    if (typeof conn?.setDmSuggestedPrompt !== 'function') return
+    const release = this.holdReplyConnection(conn)
+    try {
+      await conn.setDmSuggestedPrompt(rec.channel, text)
+    } catch (err) {
+      this.log.debug(`prompt suggestion: Slack update failed (${formatErr(err)})`)
+    } finally {
+      release()
+    }
+  }
+
   /** One ACP session's updates stay in arrival order: the async store would otherwise let
    *  a later update whose handler does less I/O emit ahead of an earlier one. */
   private enqueueAcpUpdate(owner: HostKey, sessionId: string, update: unknown): Promise<void> {
@@ -24815,6 +24853,13 @@ export class Daemon {
       data: { update }
     })
     if (p?.outputSuppressed) return
+    // The runtime's predicted next prompt lands after the turn's result, usually once `pending` is gone.
+    const suggestion = promptSuggestionOf(update)
+    if (suggestion !== undefined) {
+      if (!this.internalPassSessions.has(extractionKey))
+        await this.publishPromptSuggestion(owner, sessionId, p, suggestion)
+      if (update.title === undefined) return
+    }
     // codex-acp >= 1.1.3 auto-titles an untitled session from its raw prompt text
     // (all first-prompt text blocks joined, unbounded). Whatever that prompt led with, the
     // "title" is an echo of what we just sent — internal agent/memory context on a session

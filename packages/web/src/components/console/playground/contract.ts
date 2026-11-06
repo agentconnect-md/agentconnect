@@ -129,6 +129,8 @@ export interface PlaygroundData {
   /** Tell the daemon the reader closed an MCP App frame. */
   pgCloseApp: (id: string, agentId: string, appId: string, conversationId?: string) => void
   getPgSession: (id: string) => Session | undefined
+  /** The runtime's predicted next prompt for this session's empty composer, if it sent one. */
+  getPgSuggestion: (id: string) => string | undefined
   pgSessionList: Session[]
   /** Live tail (this-visit) steps for an ADOPTED webchat session, keyed by its CP session
    *  id — the turns you send after opening a persisted session from the list, appended

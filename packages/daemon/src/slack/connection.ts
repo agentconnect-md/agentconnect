@@ -314,6 +314,9 @@ export interface SlackStatusOptions {
 /** The Agent Sessions states `agents.sessions.setStatus` accepts. */
 export type SlackSessionLifecycle = 'processing' | 'active' | 'suspended' | 'closed'
 
+/** A suggested prompt's button label is one short line; its full text is still what gets sent. */
+const SLACK_PROMPT_TITLE_CHARS = 60
+
 /** The `view_key` of a code channel's Plan tab. */
 export const SLACK_PLAN_VIEW_KEY = 'plan'
 
@@ -1304,6 +1307,8 @@ export class SlackConnection implements PlatformConnection {
   private assistantDmThreads = new Map<string, string>()
   private appHomeOpens = new Map<string, Promise<void>>()
   private welcomedAppHomes = new Set<string>()
+  /** Last predicted prompt published per DM channel (`''` = cleared), so an unchanged one refires nothing. */
+  private dmSuggestedPrompts = new Map<string, string>()
   /** Last agent-session lifecycle state per `channel:thread`, so an unchanged one refires nothing. */
   private sessionLifecycle = new Map<string, string>()
   /** The slot's displayed owner per `channel:thread`: the sessionKey of the last `processing`
@@ -1878,6 +1883,27 @@ export class SlackConnection implements PlatformConnection {
       })
     this.appHomeOpens.set(channel, work)
     return work
+  }
+
+  /** Show the runtime's predicted next prompt at the top of a DM's Messages tab; `null` clears it. Best-effort. */
+  async setDmSuggestedPrompt(channel: string, text: string | null): Promise<void> {
+    if (!channel.startsWith('D')) return
+    // Unknown state (e.g. after a restart) is not "cleared": the first clear still reaches Slack.
+    if (this.dmSuggestedPrompts.has(channel) && this.dmSuggestedPrompts.get(channel) === (text ?? '')) return
+    const title =
+      text && text.length > SLACK_PROMPT_TITLE_CHARS ? `${text.slice(0, SLACK_PROMPT_TITLE_CHARS - 1)}…` : text
+    try {
+      // Agent messaging keeps prompts per channel; thread_ts silently fails on this surface.
+      await this.queue.enqueue(() =>
+        this.app.client.apiCall('assistant.threads.setSuggestedPrompts', {
+          channel_id: channel,
+          prompts: text && title ? [{ title, message: text }] : []
+        })
+      )
+      this.dmSuggestedPrompts.set(channel, text ?? '')
+    } catch (err) {
+      this.deps.log?.debug(`slack: suggested prompt failed (ch=${channel}): ${(err as Error).message}`)
+    }
   }
 
   async postMessage(

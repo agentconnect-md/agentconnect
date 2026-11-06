@@ -29,6 +29,7 @@ export interface RelayDaemonServerDeps {
   /** Route an inbound `rd/webchat-post` to the conversation's browser connection. */
   onWebchatPost: RelayDaemonConnDeps['onWebchatPost']
   onWebchatImageUpdate?: RelayDaemonConnDeps['onWebchatImageUpdate']
+  onWebchatPromptSuggestion?: RelayDaemonConnDeps['onWebchatPromptSuggestion']
   /** Route an inbound cross-daemon `rd/agentmsg` (agent-collaboration P2). */
   onAgentMsg: RelayDaemonConnDeps['onAgentMsg']
   /** Route an evaluation host's `rd/route` and `rd/route/report` (message-intake.md §6). */
@@ -77,6 +78,7 @@ export function createRelayDaemonServer(app: FastifyInstance, deps: RelayDaemonS
     onChat: deps.onChat,
     onWebchatPost: deps.onWebchatPost,
     ...(deps.onWebchatImageUpdate ? { onWebchatImageUpdate: deps.onWebchatImageUpdate } : {}),
+    ...(deps.onWebchatPromptSuggestion ? { onWebchatPromptSuggestion: deps.onWebchatPromptSuggestion } : {}),
     onAgentMsg: deps.onAgentMsg,
     onRoute: deps.onRoute,
     onRouteReport: deps.onRouteReport,
