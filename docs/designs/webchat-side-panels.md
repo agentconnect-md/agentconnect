@@ -63,8 +63,9 @@ Beside the dock, the left pane is now **two mutually exclusive modes**:
 The session header above them is **one line** on desktop and stays put in both
 modes. On the left are the state icon, the name, a coordinator mark, the link to
 a task's owning session, and the place chip. On the right are the people stack,
-whose popover holds the agent focus, the people and the visibility control, then
-a Requests pill counting what waits, the Details icon, and copy-link. It has no
+whose popover holds the agent focus and the people, then a Requests pill counting
+what waits, the Details icon, and Share. Share opens a dialog that says who can
+see the session (the owner changes it there) and copies its link. It has no
 Workspace or Tasks entry, because Files and Tasks live in the dock. The phone keeps
 its own header row.
 

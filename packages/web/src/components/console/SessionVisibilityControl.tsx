@@ -58,15 +58,14 @@ export function SessionVisibilityControl({
   onChanged: (next: { visibility: SessionVisibility; state: 'pending' | 'applied' }) => void
 }) {
   const t = useTranslations('Sessions.visibility')
-  const [confirming, setConfirming] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const effective: SessionVisibility = visibility ?? 'org'
+  const change = useSessionVisibilityChange({ sessionId, effective, onChanged })
+  const { busy, error, confirming } = change
   const [open, setOpen] = useState(false)
   const wrapRef = useRef<HTMLSpanElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const menuId = useId()
   const headingId = useId()
-  const effective: SessionVisibility = visibility ?? 'org'
 
   useEffect(() => {
     if (!open) return
@@ -77,29 +76,9 @@ export function SessionVisibilityControl({
     return () => document.removeEventListener('mousedown', close)
   }, [open])
 
-  const apply = async (next: MutableSessionVisibility) => {
-    setBusy(true)
-    setError(null)
-    try {
-      const result = await putSessionVisibility(sessionId, next)
-      setConfirming(false)
-      onChanged({ visibility: result.visibility, state: result.state })
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-
   const pick = (next: MutableSessionVisibility) => {
-    if (busy) return
     setOpen(false)
-    if (next === effective) return
-    setError(null)
-    // Tightening surfaces the memory caveat first; widening never cascades and
-    // applies immediately.
-    if (next === 'private') setConfirming(true)
-    else void apply('org')
+    change.pick(next)
   }
 
   if (loading) {
@@ -276,21 +255,64 @@ export function SessionVisibilityControl({
           {error}
         </span>
       )}
-      {confirming && (
-        <ConfirmationDialog
-          title={t('makePrivateTitle')}
-          confirmLabel={t('makePrivate')}
-          busy={busy}
-          error={error}
-          onConfirm={() => void apply('private')}
-          onClose={() => {
-            setConfirming(false)
-            setError(null)
-          }}
-        >
-          {nativeMemory ? <>{t('nativeMemoryWarning')}</> : <>{t('managedMemoryWarning')}</>}
-        </ConfirmationDialog>
-      )}
+      {change.confirmDialog(nativeMemory)}
     </span>
   )
+}
+
+/** Changing a session's visibility: widening applies at once, tightening asks first with the memory caveat. */
+export function useSessionVisibilityChange({
+  sessionId,
+  effective,
+  onChanged
+}: {
+  sessionId: string
+  effective: SessionVisibility
+  onChanged: (next: { visibility: SessionVisibility; state: 'pending' | 'applied' }) => void
+}) {
+  const t = useTranslations('Sessions.visibility')
+  const [confirming, setConfirming] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const apply = async (next: MutableSessionVisibility) => {
+    setBusy(true)
+    setError(null)
+    try {
+      const result = await putSessionVisibility(sessionId, next)
+      setConfirming(false)
+      onChanged({ visibility: result.visibility, state: result.state })
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const pick = (next: MutableSessionVisibility) => {
+    if (busy || next === effective) return
+    setError(null)
+    // Tightening surfaces the memory caveat first; widening never cascades and applies immediately.
+    if (next === 'private') setConfirming(true)
+    else void apply('org')
+  }
+
+  const confirmDialog = (nativeMemory: boolean) =>
+    confirming ? (
+      <ConfirmationDialog
+        title={t('makePrivateTitle')}
+        confirmLabel={t('makePrivate')}
+        busy={busy}
+        error={error}
+        onConfirm={() => void apply('private')}
+        onClose={() => {
+          setConfirming(false)
+          setError(null)
+        }}
+      >
+        {nativeMemory ? <>{t('nativeMemoryWarning')}</> : <>{t('managedMemoryWarning')}</>}
+      </ConfirmationDialog>
+    ) : null
+
+  return { busy, error, confirming, pick, confirmDialog }
 }

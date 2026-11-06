@@ -304,7 +304,7 @@ describe('the one-line session header', () => {
     expect(row.querySelector('h1')?.textContent).toBe('Usage report')
     expect(row.querySelector('[data-header-people]')).not.toBeNull()
     expect(row.querySelector('[data-header-details]')?.getAttribute('aria-label')).toBe('Details')
-    expect(row.querySelector('button[aria-label="Copy a link to this session"]')).not.toBeNull()
+    expect(row.querySelector('[data-header-share]')?.getAttribute('aria-label')).toBe('Share')
     expect(row.textContent).not.toContain('Workspace')
     expect(row.querySelector('[data-header-coordinator]')).toBeNull()
   })
@@ -327,6 +327,22 @@ describe('the one-line session header', () => {
     const quiet = header()!.querySelector('[data-header-requests]')!
     expect(quiet.getAttribute('data-header-requests')).toBe('history')
     expect(quiet.textContent).toBe('')
+  })
+
+  it('shares from the header: who can see the session, its link, and Done', async () => {
+    wire.detail = { ...detail(true), visibility: 'org', canChangeVisibility: true }
+    await render()
+    await act(async () => header()!.querySelector<HTMLButtonElement>('[data-header-share]')!.click())
+    const dialog = container!.ownerDocument.querySelector('[data-share-dialog]')!
+    expect(dialog.textContent).toContain('Share “Usage report”')
+    expect(dialog.textContent).toContain('Who can see it')
+    // The owner chooses between everyone and private; the current one is picked.
+    const choices = [...dialog.querySelectorAll('[role="radio"]')]
+    expect(choices.map((c) => c.textContent?.slice(0, 7))).toEqual(['Everyon', 'Private'])
+    expect(choices[0]!.getAttribute('aria-checked')).toBe('true')
+    expect(dialog.textContent).toContain('Copy link')
+    await act(async () => [...dialog.querySelectorAll('button')].find((b) => b.textContent === 'Done')!.click())
+    expect(container!.ownerDocument.querySelector('[data-share-dialog]')).toBeNull()
   })
 
   it('opens one header popover at a time, without native tips over them', async () => {
