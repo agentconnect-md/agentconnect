@@ -649,7 +649,7 @@ describe('ThreadPanel on a thread’s record (webchat-threads.md §6.2)', () => 
       }
     })
     withTask = false
-    props = { record: ref }
+    props = { record: ref, platform: 'webchat' }
     // A reply sends only what is drafted when the composer draws.
     wire.drafts.ses_task = 'try a warm cache'
     await render()
@@ -731,6 +731,53 @@ describe('ThreadPanel on a thread’s record (webchat-threads.md §6.2)', () => 
     expect(said).toHaveLength(3)
     expect(said[0]).toContain('Why is the deploy slow?')
     expect(container.querySelector('[data-thread-earlier]')).toBeNull()
+  })
+})
+
+describe('ThreadPanel on a Slack thread’s record (webchat-threads.md §7)', () => {
+  const ref = { sessionId: 'ses_coordinator', rootId: 'post-root' }
+  const held = {
+    rootId: 'post-root',
+    replies: 2,
+    participants: [],
+    task: { sessionId: 'ses_task', title: 'Find what blocks api 1.5', state: 'open' as const },
+    readable: true
+  }
+
+  it('continues the holding task as its page does, mirrored into the Slack thread, and links the thread', async () => {
+    wire.record = recordPage({ summary: held })
+    withTask = false
+    props = {
+      record: ref,
+      platform: 'slack',
+      threadUrl: 'https://app.slack.com/client/T0EXAMPLE/C0EXAMPLE/thread/C0EXAMPLE-1754123456.000200'
+    }
+    wire.drafts.ses_task = 'try a warm cache'
+    await render()
+    const panel = container.querySelector('[data-thread-panel="post-root"]')!
+    const link = panel.querySelector<HTMLAnchorElement>('[data-thread-platform-link]')
+    expect(link?.getAttribute('href')).toBe(props.threadUrl)
+    expect(link?.getAttribute('aria-label')).toBe('Open in Slack')
+    expect(panel.textContent).toContain('Posted in the Slack thread under your name')
+    act(() => {
+      panel
+        .querySelector<HTMLTextAreaElement>('textarea')!
+        .dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    // A Slack task's continuation names no thread: the daemon writes it in the task's own.
+    expect(wire.calls).toContain('send:ses_task:agent_1:try a warm cache')
+    expect(wire.calls.some((call) => call.startsWith('thread:'))).toBe(false)
+  })
+
+  it('offers no composer in an unowned Slack thread, and no link without one', async () => {
+    wire.record = recordPage()
+    withTask = false
+    props = { record: ref, platform: 'slack' }
+    await render()
+    const panel = container.querySelector('[data-thread-panel="post-root"]')!
+    expect(panel.querySelectorAll('[data-thread-message]')).toHaveLength(3)
+    expect(panel.querySelector('textarea')).toBeNull()
+    expect(panel.querySelector('[data-thread-platform-link]')).toBeNull()
   })
 })
 

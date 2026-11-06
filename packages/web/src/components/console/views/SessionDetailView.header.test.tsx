@@ -486,6 +486,30 @@ describe('the one-line session header', () => {
     )
   })
 
+  it('shrinks a Slack coordinator’s task into its first thread (webchat-threads.md §7)', async () => {
+    const root = '1754123456.000200'
+    const owner = {
+      id: 'owner-1',
+      agentId: 'agent-1',
+      agentName: 'Ops bot',
+      platform: 'slack',
+      title: 'Ship api 1.5',
+      subsession: false
+    }
+    wire.detail = {
+      ...detail(true),
+      task: true,
+      platform: 'slack',
+      channel: 'C0EXAMPLE',
+      thread: root,
+      parentSession: owner
+    }
+    await render()
+    expect(header()?.querySelector('[data-task-page-shrink]')?.getAttribute('href')).toBe(
+      `/acme/sessions/owner-1?thread=${root}`
+    )
+  })
+
   it('gives an ordinary session no way back to a coordinator, and keeps its Sessions tab', async () => {
     await render()
     const row = header()!

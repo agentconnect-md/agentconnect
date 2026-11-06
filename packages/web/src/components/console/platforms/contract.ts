@@ -625,6 +625,23 @@ export interface ConversationLinkInput {
   feishuRegion?: 'feishu' | 'lark' | null
 }
 
+/** How a platform's conversations thread: replies under a root named by its id, as Slack's do (webchat-threads.md §7). */
+export interface WebThreadShape {
+  /** Whether an id names a root's thread here (a Slack ts); the console opens and labels no other id as a thread. */
+  isThreadId(id: string): boolean
+  /** The thread's page on the platform, from the conversation's ids and the root's. Absent ⇒ no link. */
+  threadUrl?(input: ThreadLinkInput): string | undefined
+  /** A message continuing a task names the thread it is written in; absent ⇒ it goes to the task's own thread, as its page writes. */
+  continuesInThread?: true
+}
+
+/** What a thread link is built from: the conversation's channel, its workspace (Slack's "T…" team id) and the root's id. */
+export interface ThreadLinkInput {
+  channelId: string
+  workspaceId?: string | null
+  rootId: string
+}
+
 /** Message keys platform modules may hand back to the channel-list host. The
  * module describes semantics; the host owns locale resolution. */
 export type WebChannelListMessageKey =
@@ -750,6 +767,8 @@ export interface WebPlatformModule<TApi = unknown> {
   channelList?: WebChannelListSemantics
   /** A module's additions to its integration cards on the agent page. Absent ⇒ the host's card alone. */
   agentCard?: WebAgentIntegrationCardFacet
+  /** Its thread shape, which draws a coordinator's page as roots with their threads; absent ⇒ the flat transcript. */
+  threadShape?: WebThreadShape
   /** This platform's transcript renderer, resolved per row by `MessageText`; absent ⇒ the core default. A component so the host's memo holds; load a parser lazily (Google Chat). */
   textRenderer?: ComponentType<{ text: string }>
   /**

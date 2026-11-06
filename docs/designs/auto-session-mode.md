@@ -695,7 +695,8 @@ not addressed to this agent. Cost grows with the number of agents.
     the task posted after the one that opened it, which the daemon counts. A coordinator on a
     platform with threads posts no link card, so its task row carries `openedForMessageId`, the
     platform id of the message it was opened for. The console draws the card under the
-    coordinator's turn that answered that message, on any platform, once per task.
+    coordinator's turn that answered that message, once per task, on a platform whose module declares
+    no thread shape; where it does, the root's thread footer carries the task instead (§11).
   - `messageTask` with a `messageId` moves the message into the task's conversation, which answers on
     its page, and attaches its thread as one more; the coordinator posts a link card in the message's
     thread.
@@ -717,6 +718,13 @@ not addressed to this agent. Cost grows with the number of agents.
   threaded task's page names its coordinator once, among its related sessions, from the Control
   Plane's record of the owner (§6.2).
 - A parent's Tasks tab lists all its tasks, threaded and background grouped apart.
+- A coordinator's page takes its platform's thread shape where the web platform module declares one
+  (`WebPlatformModule.threadShape`; webchat's is core's own). On Slack it reads the coordinator's
+  roots with their threads' footers, keeps thread replies in their threads, labels the turns that
+  answer them, and opens a thread's whole record beside the page at `?thread=<ts>`, linked to the
+  thread in Slack. In a held thread the composer continues the task as its page does, mirrored into
+  the Slack thread; a Slack task's page shrinks into its first thread (webchat-threads.md §7). Other
+  platforms keep the flat transcript.
 
 ## 12. Validation
 

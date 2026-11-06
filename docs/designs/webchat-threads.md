@@ -476,11 +476,33 @@ A coordinator on Slack is drawn with the same components and rules as §6:
 - **The root composer** keeps today's behavior for the coordinator page.
 
 Other platforms differ in their thread shape (Discord thread channels, Telegram topics or reply
-chains, DingTalk reply chains). The web platform module declares it in its channel semantics
-(`WebPlatformModule`), and the page reads that declaration, never a platform name. Webchat is
+chains, DingTalk reply chains). The web platform module declares it (`WebPlatformModule.threadShape`),
+and the page reads that declaration, never a platform name. Webchat is
 core-owned, not a platform module (integration-plugin-architecture.md §2), so its declaration is
 core's own and PR 12 does not make webchat a module. This proposal implements Slack and webchat; a
 platform without a declaration keeps the flat transcript.
+
+As implemented (PR 12):
+
+- **The declaration.** `WebThreadShape` (`platforms/contract.ts`) says how a thread is named
+  (`isThreadId`: a Slack ts), how it is linked on the platform (`threadUrl`, from the conversation's
+  channel, its workspace and the root's id), and whether a continued task takes the thread a message
+  is written in (`continuesInThread`, webchat only). Slack's module declares one. Webchat's,
+  `WEBCHAT_THREAD_SHAPE`, lives in `coordinator-threads.ts`, and `threadShapeOf(platform)` resolves
+  either; a coordinator's page reads the roots view only where it returns one.
+- **Roots** are a person's rows without `thread` whose id (`postId`, else the Slack `ts`) the shape
+  names; everything else of §6.1 (footers, hidden thread replies, labels, the answered line, `?thread=`,
+  auto-open) is shared with webchat. Reply in thread and the owner's composer stay webchat's
+  (`threadsWritable`); a Slack root offers neither until PR 13.
+- **The panel** links the thread with "Open in Slack" (`ThreadPanel`'s `threadUrl`): the web client's
+  `app.slack.com/client/<team>/<channel>/thread/<channel>-<ts>`, the team being the coordinator
+  session's `tenantScope`. In a held thread the composer continues the task with `pgSend`, naming no
+  thread, so the daemon writes it in the task's own Slack thread as the task's page does, and the hint
+  says so; webchat's `pgSendThread` is kept for a shape with `continuesInThread`. A thread no task
+  holds has no composer.
+- **A Slack task's page** shrinks to `?thread=<its session's thread>`, the ts of the thread it opened on.
+- **Not drawn yet:** a task's Code channel in its footer. The summary (§5.3) names only the holding
+  task, not the other threads it holds, so the footer cannot show the channel until it does.
 
 ### 7.1 Who may read a thread
 

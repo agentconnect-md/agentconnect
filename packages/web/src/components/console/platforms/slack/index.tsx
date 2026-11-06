@@ -66,6 +66,14 @@ export const slackModule: WebPlatformModule<SlackApi> = {
     HeaderActions: SlackAgentCardHeaderActions,
     Notice: SlackAgentCardNotice
   },
+  // Replies hang under a root named by its ts, and the web client opens a thread beside its channel.
+  threadShape: {
+    isThreadId: (id) => SLACK_NATIVE_TS.test(id),
+    threadUrl: ({ channelId, workspaceId, rootId }) =>
+      workspaceId
+        ? `https://app.slack.com/client/${encodeURIComponent(workspaceId)}/${encodeURIComponent(channelId)}/thread/${encodeURIComponent(`${channelId}-${rootId}`)}`
+        : undefined
+  },
   messageIdentity: (row) => (SLACK_NATIVE_TS.test(row.ts) ? `ts:${row.ts}` : null),
   // Slack rows carry the workspace's own send-time, and a page must present
   // them in it: the daemon `seq` is ingest order, which reorders a burst that

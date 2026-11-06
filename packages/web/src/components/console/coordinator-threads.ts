@@ -1,7 +1,9 @@
-// A webchat coordinator page's threads (webchat-threads.md §6): what its rows and live steps say about them, and which one opens on its own.
+// A coordinator page's threads (webchat-threads.md §6, §7): its platform's thread shape, what its rows and live steps say about them, and which one opens on its own.
 
 import type { SessionMessageDto } from '@/lib/api'
 import type { SessionStep } from '@/lib/data'
+import type { WebThreadShape } from '@/components/console/platforms/contract'
+import { platformThreadShape } from '@/components/console/platforms/registry'
 
 /** A daemon or relay that serves a coordinator's threads (protocol `WEBCHAT_THREADS_FEATURE`). */
 export const WEBCHAT_THREADS_FEATURE = 'webchat-threads-v1'
@@ -16,9 +18,23 @@ export function isThreadId(id: string | null | undefined): id is string {
   return !!id && THREAD_ID.test(id)
 }
 
+/** Webchat's thread shape, core's own since webchat is no platform module; a continued task takes the thread it is written in (§6.3). */
+export const WEBCHAT_THREAD_SHAPE: WebThreadShape = { isThreadId, continuesInThread: true }
+
+/** A platform's thread shape: webchat's, else what its module declares; undefined keeps the flat transcript. */
+export function threadShapeOf(platform: string | null | undefined): WebThreadShape | undefined {
+  return platform === 'webchat' ? WEBCHAT_THREAD_SHAPE : platformThreadShape(platform ?? undefined)
+}
+
+/** Whether an id names a thread in this shape. */
+export function namesThread(shape: WebThreadShape | undefined, id: string | null | undefined): id is string {
+  return !!shape && !!id && shape.isThreadId(id)
+}
+
 /** The thread a coordinator's `replyToMessage` call answered in, read off its tool row; undefined for any other row. */
 export function replyToMessageThread(
-  m: Pick<SessionMessageDto, 'kind' | 'body' | 'thread' | 'toolStatus'>
+  m: Pick<SessionMessageDto, 'kind' | 'body' | 'thread' | 'toolStatus'>,
+  shape: WebThreadShape = WEBCHAT_THREAD_SHAPE
 ): string | undefined {
   if ((m.kind || '').toLowerCase() !== 'tool' || !m.body || m.toolStatus === 'failed') return undefined
   let input: unknown
@@ -34,7 +50,7 @@ export function replyToMessageThread(
   if (m.thread) return m.thread
   if (typeof messageId !== 'string' || !messageId.startsWith(COORDINATOR_MESSAGE_ID_PREFIX)) return undefined
   const id = messageId.slice(COORDINATOR_MESSAGE_ID_PREFIX.length)
-  return isThreadId(id) ? id : undefined
+  return namesThread(shape, id) ? id : undefined
 }
 
 /** The threads agents spoke in this visit, oldest first by their latest step. */

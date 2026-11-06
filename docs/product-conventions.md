@@ -1415,6 +1415,16 @@ answer streams back to them there. They cannot write at the conversation's root 
 task holds, since those reach the coordinator, which only its owner talks to, and a task that has
 closed takes no more messages.
 
+A Slack coordinator's page in the console has the same shape. Its roots are the channel messages
+the coordinator received, each with its thread's footer, and replies the coordinator received in a
+thread stay in that thread. Its turns are labelled as on a console conversation. A thread opens
+beside the page at `?thread=` with the whole Slack thread, including what people said there without
+addressing the agent, and the header's "Open in Slack" links the thread. In a thread a task holds,
+the composer continues that task as its own page does, posting in the task's Slack thread under the
+writer's name. The console offers no Reply in thread on a Slack root and no composer in a thread no
+task holds. A Slack task's own page shrinks back into its first thread. Platforms whose module
+declares no thread shape keep a coordinator's flat transcript.
+
 A Code channel's Tasks tab reads the same task and runtime background-work sources as
 the console's Tasks panel. Open work stays visible, finished work is grouped and collapsed,
 and updates continue after the main reply ends while background work remains. Runtime work
