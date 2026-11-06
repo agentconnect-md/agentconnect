@@ -16533,11 +16533,13 @@ export class Daemon {
     return result
   }
 
-  /** The attribution footer a change request's description carries when the agent's footer is on; empty otherwise. */
+  /** The attribution footer a change request's or an issue's description carries when the agent's footer is on; empty otherwise. */
   private async descriptionFooter(req: CodeHostEffectReq, key: string, provider: CodeHostProvider): Promise<string> {
     const { kind } = req.operation
     const writesDescription =
-      kind === 'createMergeRequest' || (kind === 'updateMergeRequest' && req.operation.description !== undefined)
+      kind === 'createMergeRequest' ||
+      kind === 'createIssue' ||
+      ((kind === 'updateMergeRequest' || kind === 'updateIssue') && req.operation.description !== undefined)
     if (!writesDescription || !this.agents.get(req.agentId)?.output.showFooter) return ''
     const sessionId = (await this.store?.getSession(key))?.sessionId
     if (!sessionId) return ''

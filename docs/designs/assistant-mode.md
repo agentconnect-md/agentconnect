@@ -3777,7 +3777,7 @@ Choices the text above leaves open:
   thread; the agent's own words name no task. `listTasks` entries, `here` and `elsewhere`, carry
   `openedFor` (place and message id) and `opened`.
 - **What a task opened** is recorded where the daemon already sees it: a merge request or pull request
-  a task creates with `createGitlabMergeRequest`, `createGiteaPullRequest` or `createGithubPullRequest`, and the pull request the
+  a task creates with `gitlabMergeRequest`, `giteaPullRequest` or `githubPullRequest`, and the pull request the
   Control Plane names as a session's own when it delivers feedback for it
   ([codehost-pr-feedback.md](codehost-pr-feedback.md)), at most 20 per task. The Control Plane
   associates a GitHub pull request with its session from the worktree's branch and tells the daemon

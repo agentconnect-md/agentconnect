@@ -6,6 +6,7 @@ import type { BrokerCapability, CodeHostBrokerOperation, CodeHostEffectTarget } 
 
 const BASE = 'https://gitea.example.test:8443/gitea/api/v1'
 const REPO = `${BASE}/repos/example-org/example-repo`
+const ORG = `${BASE}/orgs/example-org`
 const TARGET: CodeHostEffectTarget = {
   agentId: 'agent-1',
   provider: 'gitea',
@@ -77,8 +78,9 @@ async function run(
 describe('the allowlist is the whole surface', () => {
   it('declares only bounded methods and repository-scoped templated paths', () => {
     for (const [id, endpoint] of Object.entries(GITEA_BROKER_ENDPOINTS)) {
-      expect(['GET', 'POST', 'PATCH'], id).toContain(endpoint.method)
-      expect(endpoint.path.startsWith('/repos/:owner/:repo'), id).toBe(true)
+      expect(['GET', 'POST', 'PATCH', 'DELETE'], id).toContain(endpoint.method)
+      // Only the organization label list sits outside the repository, under the same owner.
+      expect(endpoint.path.startsWith('/repos/:owner/:repo') || endpoint.path === '/orgs/:owner/labels', id).toBe(true)
       expect(endpoint.path, id).not.toContain('?')
     }
   })
@@ -93,12 +95,23 @@ describe('the allowlist is the whole surface', () => {
       'comment.get',
       'comment.list',
       'issue.get',
+      'label.list',
+      'org.label.list',
       'pull.get',
       'review.list',
       'status.list'
     ])
     expect(byCapability('comment')).toEqual(['comment.create', 'comment.update'])
-    expect(byCapability('write')).toEqual(['pull.create', 'pull.update'])
+    expect(byCapability('write')).toEqual([
+      'issue.create',
+      'issue.label.remove',
+      'issue.labels.add',
+      'issue.update',
+      'pull.create',
+      'pull.merge',
+      'pull.reviewers.request',
+      'pull.update'
+    ])
   })
 })
 
@@ -223,6 +236,279 @@ describe('each operation calls exactly its allowlisted endpoints', () => {
     })
     const sha = await run({ kind: 'inspectPipelines', scope: 'pipelines', ref: 'a'.repeat(40) }, {}, { body: '[]' })
     expect(sha.calls[0]?.url).toBe(`${REPO}/commits/${'a'.repeat(40)}/statuses?limit=20`)
+  })
+})
+
+/** A page of repository labels: `filler` unnamed-for-the-test labels first, then the named ones with their ids. */
+function labelPage(named: Record<string, number>, filler = 0, fillerFrom = 1000): string {
+  const fill = Array.from({ length: filler }, (_unused, index) => ({
+    id: fillerFrom + index,
+    name: `other-${fillerFrom + index}`
+  }))
+  return JSON.stringify([...fill, ...Object.entries(named).map(([name, id]) => ({ id, name }))])
+}
+
+const PULL =
+  '{"id":2,"number":31,"title":"Add x","state":"open","merged":false,"head":{"ref":"feature/x","sha":"abc"},"base":{"ref":"main"}}'
+const ISSUE = '{"id":1,"number":12,"title":"db down","state":"open","labels":[{"name":"bug"}]}'
+const SHA = 'c'.repeat(40)
+
+describe('labels, people, merge, state, and issues', () => {
+  it('creates a pull request with labels by id, assignees, and a review request once it exists', async () => {
+    const { calls, result } = await run(
+      {
+        kind: 'createMergeRequest',
+        sourceBranch: 'feature/x',
+        targetBranch: 'main',
+        title: 'Add x',
+        labels: ['bug', 'needs-triage'],
+        assignees: ['alice'],
+        reviewers: ['carol', 'dave']
+      },
+      {},
+      { bodies: [labelPage({ bug: 7 }, 49), labelPage({ 'needs-triage': 77 }), PULL, '[]'] }
+    )
+    expect(calls.map((c) => [c.method, c.url])).toEqual([
+      ['GET', `${REPO}/labels?limit=50&page=1`],
+      ['GET', `${REPO}/labels?limit=50&page=2`],
+      ['POST', `${REPO}/pulls`],
+      ['POST', `${REPO}/pulls/31/requested_reviewers`]
+    ])
+    expect(calls[2]?.body).toEqual({
+      head: 'feature/x',
+      base: 'main',
+      title: 'Add x',
+      assignees: ['alice'],
+      labels: [7, 77]
+    })
+    expect(calls[3]?.body).toEqual({ reviewers: ['carol', 'dave'] })
+    expect(result).toMatchObject({ pullRequest: { number: 31, head: 'feature/x' } })
+  })
+
+  it('stops paging labels once every name is found, and after five full pages', async () => {
+    const found = await run(
+      { kind: 'createIssue', title: 'db down', labels: ['bug'] },
+      {},
+      { bodies: [labelPage({ bug: 7 }, 49), ISSUE] }
+    )
+    expect(found.calls.map((c) => c.url)).toEqual([`${REPO}/labels?limit=50&page=1`, `${REPO}/issues`])
+    const pages = Array.from({ length: 5 }, (_unused, page) => labelPage({}, 50, 1000 + page * 50))
+    const { fetchImpl, calls } = fakeFetch({ bodies: pages })
+    await expect(
+      broker(fetchImpl).instance.execute(TARGET, { kind: 'createIssue', title: 't', labels: ['bug'] })
+    ).rejects.toThrow(/no label named "bug" among its first 250 labels/)
+    expect(calls.map((c) => c.url)).toEqual([
+      ...[1, 2, 3, 4, 5].map((page) => `${REPO}/labels?limit=50&page=${page}`),
+      `${ORG}/labels?limit=50&page=1`
+    ])
+  })
+
+  it('refuses an unknown label name before any write', async () => {
+    const { fetchImpl, calls } = fakeFetch({ bodies: [labelPage({ bug: 7 })] })
+    await expect(
+      broker(fetchImpl).instance.execute(TARGET, { kind: 'updateMergeRequest', iid: 77, addLabels: ['bug', 'nope'] })
+    ).rejects.toThrow(/the Gitea repository and its organization have no label named "nope"$/)
+    expect(calls.map((c) => [c.method, c.url])).toEqual([
+      ['GET', `${REPO}/labels?limit=50&page=1`],
+      ['GET', `${ORG}/labels?limit=50&page=1`]
+    ])
+    await expect(
+      broker(fetchImpl).instance.execute(TARGET, { kind: 'createIssue', title: 't', labels: ['a,b'] })
+    ).rejects.toThrow(/without commas/)
+    await expect(
+      broker(fetchImpl).instance.execute(TARGET, { kind: 'createIssue', title: 't', assignees: ['../x'] })
+    ).rejects.toThrow(/assignees must hold usernames/)
+    expect(calls).toHaveLength(2)
+  })
+
+  it('finds a label the organization defines, and reads a user owner’s 404 as no organization labels', async () => {
+    const { calls } = await run(
+      { kind: 'createIssue', title: 't', labels: ['bug', 'team'] },
+      {},
+      { bodies: [labelPage({ bug: 7 }), labelPage({ team: 12 }), ISSUE] }
+    )
+    expect(calls.map((c) => c.url)).toEqual([
+      `${REPO}/labels?limit=50&page=1`,
+      `${ORG}/labels?limit=50&page=1`,
+      `${REPO}/issues`
+    ])
+    expect(calls[2]?.body).toMatchObject({ labels: [7, 12] })
+    const { fetchImpl, calls: userCalls } = fakeFetch({ statuses: [200, 404], bodies: [labelPage({ bug: 7 })] })
+    await expect(
+      broker(fetchImpl).instance.execute(TARGET, { kind: 'createIssue', title: 't', labels: ['team'] })
+    ).rejects.toThrow(/have no label named "team"$/)
+    expect(userCalls).toHaveLength(2)
+  })
+
+  it('updates a pull request by adding and removing labels and assignees, then requests reviewers', async () => {
+    const assigned = PULL.replace('"state":"open"', '"state":"open","assignees":[{"login":"alice"},{"login":"dave"}]')
+    const { calls, result } = await run(
+      {
+        kind: 'updateMergeRequest',
+        iid: 77,
+        addLabels: ['bug'],
+        removeLabels: ['stale', 'gone'],
+        addAssignees: ['bob'],
+        removeAssignees: ['alice'],
+        reviewers: ['carol']
+      },
+      {},
+      { bodies: [labelPage({ bug: 7, stale: 8 }), '[]', assigned, '[]', '', PULL, '[]'] }
+    )
+    // "gone" is in neither list, so it is already absent and skipped.
+    expect(calls.map((c) => [c.method, c.url, c.body])).toEqual([
+      ['GET', `${REPO}/labels?limit=50&page=1`, undefined],
+      ['GET', `${ORG}/labels?limit=50&page=1`, undefined],
+      ['GET', `${REPO}/pulls/77`, undefined],
+      ['POST', `${REPO}/issues/77/labels`, { labels: [7] }],
+      ['DELETE', `${REPO}/issues/77/labels/8`, undefined],
+      ['PATCH', `${REPO}/pulls/77`, { assignees: ['dave', 'bob'] }],
+      ['POST', `${REPO}/pulls/77/requested_reviewers`, { reviewers: ['carol'] }]
+    ])
+    expect(result).toMatchObject({ pullRequest: { number: 31 } })
+  })
+
+  it('refuses a removal the page cap may have hidden, before any write', async () => {
+    const pages = Array.from({ length: 10 }, (_unused, page) => labelPage({}, 50, 1000 + page * 50))
+    const { fetchImpl, calls } = fakeFetch({ bodies: pages })
+    await expect(
+      broker(fetchImpl).instance.execute(TARGET, { kind: 'updateIssue', iid: 12, removeLabels: ['bug'] })
+    ).rejects.toThrow(/no label named "bug" among its first 250 labels/)
+    expect(calls.every((c) => c.method === 'GET')).toBe(true)
+    expect(calls).toHaveLength(10)
+  })
+
+  it('requests reviewers alone without an empty edit, and reads the pull request back', async () => {
+    const { calls, result } = await run(
+      { kind: 'updateMergeRequest', iid: 31, reviewers: ['carol'] },
+      {},
+      { bodies: ['[]', PULL] }
+    )
+    expect(calls.map((c) => [c.method, c.url])).toEqual([
+      ['POST', `${REPO}/pulls/31/requested_reviewers`],
+      ['GET', `${REPO}/pulls/31`]
+    ])
+    expect(result).toMatchObject({ pullRequest: { number: 31 } })
+  })
+
+  it('merges with the chosen method and head fence, then reads the empty-answered merge back', async () => {
+    const merged = PULL.replace('"merged":false', '"merged":true').replace('"open"', '"closed"')
+    const { calls, result } = await run(
+      { kind: 'mergeMergeRequest', iid: 31, method: 'squash', sha: SHA },
+      {},
+      { bodies: ['', merged] }
+    )
+    expect(calls.map((c) => [c.method, c.url, c.body])).toEqual([
+      ['POST', `${REPO}/pulls/31/merge`, { Do: 'squash', head_commit_id: SHA }],
+      ['GET', `${REPO}/pulls/31`, undefined]
+    ])
+    expect(result).toMatchObject({ pullRequest: { number: 31, state: 'closed', merged: true } })
+    const plain = await run({ kind: 'mergeMergeRequest', iid: 31 }, {}, { bodies: ['', merged] })
+    expect(plain.calls[0]?.body).toEqual({ Do: 'merge' })
+    const { fetchImpl, calls: none } = fakeFetch()
+    await expect(
+      broker(fetchImpl).instance.execute(TARGET, { kind: 'mergeMergeRequest', iid: 31, sha: 'abc1234' })
+    ).rejects.toThrow(/full commit sha/)
+    expect(none).toEqual([])
+  })
+
+  it('opens or closes an issue and a pull request through their own edit paths', async () => {
+    const issue = await run({ kind: 'setState', subject: 'issue', iid: 12, state: 'closed' }, {}, { body: ISSUE })
+    expect(issue.calls).toEqual([
+      expect.objectContaining({ method: 'PATCH', url: `${REPO}/issues/12`, body: { state: 'closed' } })
+    ])
+    expect(issue.result).toMatchObject({ issue: { number: 12 } })
+    const pull = await run({ kind: 'setState', subject: 'merge_request', iid: 31, state: 'open' }, {}, { body: PULL })
+    expect(pull.calls).toEqual([
+      expect.objectContaining({ method: 'PATCH', url: `${REPO}/pulls/31`, body: { state: 'open' } })
+    ])
+    expect(pull.result).toMatchObject({ pullRequest: { number: 31 } })
+  })
+
+  it('creates an issue with labels by id and assignees', async () => {
+    const { calls, result } = await run(
+      { kind: 'createIssue', title: 'db down', description: 'since 09:00', labels: ['bug'], assignees: ['alice'] },
+      {},
+      { bodies: [labelPage({ bug: 7 }), ISSUE] }
+    )
+    expect(calls.map((c) => [c.method, c.url])).toEqual([
+      ['GET', `${REPO}/labels?limit=50&page=1`],
+      ['POST', `${REPO}/issues`]
+    ])
+    expect(calls[1]?.body).toEqual({ title: 'db down', body: 'since 09:00', assignees: ['alice'], labels: [7] })
+    expect(result).toEqual({
+      issue: { id: '1', number: 12, title: 'db down', state: 'open', labels: ['bug'] }
+    })
+  })
+
+  it('updates an issue, adding labels on their own path before the edit', async () => {
+    const both = await run(
+      { kind: 'updateIssue', iid: 12, title: 'db down again', addLabels: ['bug'] },
+      {},
+      { bodies: [labelPage({ bug: 7 }), '[{"id":7,"name":"bug"}]', ISSUE] }
+    )
+    expect(both.calls.map((c) => [c.method, c.url, c.body])).toEqual([
+      ['GET', `${REPO}/labels?limit=50&page=1`, undefined],
+      ['POST', `${REPO}/issues/12/labels`, { labels: [7] }],
+      ['PATCH', `${REPO}/issues/12`, { title: 'db down again' }]
+    ])
+    expect(both.result).toMatchObject({ issue: { number: 12, labels: ['bug'] } })
+  })
+
+  it('removes a label already gone as a no-op, and reads the issue back without an edit', async () => {
+    const { calls, result } = await run(
+      { kind: 'updateIssue', iid: 12, removeLabels: ['bug'] },
+      {},
+      { statuses: [200, 404], bodies: [labelPage({ bug: 7 }), '', ISSUE] }
+    )
+    expect(calls.map((c) => [c.method, c.url])).toEqual([
+      ['GET', `${REPO}/labels?limit=50&page=1`],
+      ['DELETE', `${REPO}/issues/12/labels/7`],
+      ['GET', `${REPO}/issues/12`]
+    ])
+    expect(result).toMatchObject({ issue: { number: 12 } })
+  })
+
+  it('merges assignee changes into the current set, since Gitea edits replace it', async () => {
+    const assigned = ISSUE.replace('"state":"open"', '"state":"open","assignees":[{"login":"alice"}]')
+    const { calls } = await run(
+      { kind: 'updateIssue', iid: 12, addAssignees: ['bob', 'alice'] },
+      {},
+      { bodies: [assigned, ISSUE] }
+    )
+    expect(calls.map((c) => [c.method, c.url, c.body])).toEqual([
+      ['GET', `${REPO}/issues/12`, undefined],
+      ['PATCH', `${REPO}/issues/12`, { assignees: ['alice', 'bob'] }]
+    ])
+    const { fetchImpl, calls: none } = fakeFetch()
+    await expect(broker(fetchImpl).instance.execute(TARGET, { kind: 'updateIssue', iid: 12 })).rejects.toThrow(
+      /nothing to update/
+    )
+    await expect(
+      broker(fetchImpl).instance.execute(TARGET, {
+        kind: 'updateIssue',
+        iid: 12,
+        addAssignees: ['bob'],
+        removeAssignees: ['bob']
+      })
+    ).rejects.toThrow(/cannot both add and remove "bob"/)
+    expect(none).toEqual([])
+  })
+
+  it('refuses above the clamp before any request, lookups included', async () => {
+    const cases: [BrokerCapability, CodeHostBrokerOperation, RegExp][] = [
+      ['comment', { kind: 'createIssue', title: 't', labels: ['bug'] }, /needs write authority/],
+      ['comment', { kind: 'mergeMergeRequest', iid: 31 }, /needs write authority/],
+      ['comment', { kind: 'updateMergeRequest', iid: 31, reviewers: ['carol'] }, /needs write authority/],
+      ['read', { kind: 'setState', subject: 'issue', iid: 12, state: 'closed' }, /needs write authority/],
+      ['read', { kind: 'updateIssue', iid: 12, addLabels: ['bug'] }, /needs write authority/],
+      ['comment', { kind: 'updateMergeRequest', iid: 31, removeAssignees: ['alice'] }, /needs write authority/]
+    ]
+    for (const [access, op, message] of cases) {
+      const { fetchImpl, calls } = fakeFetch()
+      await expect(broker(fetchImpl, { access }).instance.execute(TARGET, op)).rejects.toThrow(message)
+      expect(calls).toEqual([])
+    }
   })
 })
 
