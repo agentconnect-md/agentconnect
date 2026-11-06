@@ -584,7 +584,9 @@ it is then a **self-hosted computer with isolation**.
 
 On Linux a Computer hosts several **desktops**: the **main desktop**, the display the daemon started in (a person's
 session, or the container's Xvfb), and one **agent desktop** for each agent that has used the Computer. Agents on
-different desktops work in parallel; the sessions of one agent take turns on that agent's desktop (§4.4).
+different desktops work in parallel; the sessions of one agent take turns on that agent's desktop (§4.4). Here a
+desktop is a display inside a Computer and the inner unit is called an **agent desktop** in the API and the console;
+quotas and metering (§15.5) stay per Computer, so a managed pod running several agent desktops is one metered unit.
 
 - **The switch.** A feature switch of the Linux desktop daemon, `perAgentDesktops` in its config, on by
   default; it takes effect only where the machine supports it. Support is probed, not assumed: Xvfb, `dbus-launch`
@@ -602,6 +604,20 @@ different desktops work in parallel; the sessions of one agent take turns on tha
   screen stayed empty. Xfce's window manager starts before its panel, and desktops start one at a time. The owner turns it off or on again with the tray's checkmark "Separate desktop for each agent"
   (greyed out with the reason where unsupported) or `agentconnect-computer desktops off | on | status`; both save the
   config. Off, or unsupported, the Computer is the single shared desktop of §4.4. The daemon logs the verdict at start.
+- **On a person's desktop (`isolation: none`).** Decided: on by default there too, wherever supported. The cost is that
+  agents no longer work on the screen the person sits at (§6, §8.2): they see an agent's work only through the viewer
+  and the audit, and the agent works with a fork of their browser logins. So the registration and agent-access notices
+  say it, and §6 applies as follows: the person's input on the main desktop does not pause agent desktops (their input
+  cannot reach them), the owner's pause, stop hotkey, tray Stop and console Stop pause every desktop, and the tray
+  summarizes all of them (busy when any agent desktop is held). Turning the switch off brings back the shared, visible
+  desktop.
+- **Login sharing (`shareBrowserLogins`).** A registrant-only policy field like `agentMode`, on by default. On, agent
+  desktops fork from the master profile and merge each other (§3.10), so with agent access "All agents" every granted
+  agent works with a copy of the registrant's logins. Off, each agent desktop keeps a profile of its own, never copied
+  from or merged with another, and agents still work in parallel. On a managed computer the master is the main
+  desktop's profile, which the organization prepares (§17-14).
+- **Managed computers.** An `ephemeral` or `per-agent` computer serves one agent, so the switch is off there; a
+  `manual` one, which agents share, has it on. Its pod is sized for `maxDesktops` × about 0.9 GB (§15.1).
 
 - **Why separate displays.** Measured on Debian 13 with Chromium 156 (2026-11-05): one display has one pointer and one
   keyboard focus, so two agents' XTest input interleaves into one window. MPX (`xinput create-master`) gives each agent
@@ -621,13 +637,18 @@ different desktops work in parallel; the sessions of one agent take turns on tha
 - **Lifecycle.** A desktop starts on demand. An agent desktop with no lease and no viewer for `desktopIdleMinutes` (30)
   stops, closing its browser first (§3.10) and keeping everything on disk; its next use starts it again. At most
   `maxDesktops` run at once (by default the available memory divided by 1 GiB, at least one); starting one more stops
-  the least recently used idle desktop, and when none is idle the call fails with `computer_busy`.
+  the least recently used idle desktop, and when none is idle the call fails with `unavailable` and the reason
+  `desktops_full`: a capacity refusal has no holder and no queue, so it must not read as `computer_busy` (§4.4).
 - **Leases.** One control lease per desktop: each desktop's `Computer` holds its own local lease. The Control Plane
   keys the lease and its queue by Computer and desktop: an
   agent desktop's key is its agent id, the main desktop's is empty. The desktop daemon reports `desktops: 'per-agent'`
   and each desktop's status and local lease in its heartbeat, behind `computer-desktops-v1`; a Control Plane without
   the feature keeps one lease per Computer, and the daemon then serves every agent on the main desktop. Owner pause and
-  the console Stop act on every desktop; a viewer takeover pauses only the desktop it took.
+  the console Stop act on every desktop; a viewer takeover pauses only the desktop it took. The Computer's own `status`
+  (§2.2) is the main desktop's, and each agent desktop's status travels in the heartbeat's list, so §4.4 pre-emption
+  ("a heartbeat reporting `paused` or `human_in_control` ends the lease") ends only that desktop's lease, except an
+  owner pause, which every desktop reports. Each `computer_audit` entry carries the desktop id, which the agent alone
+  does not determine once the main-desktop fallback or a takeover is involved.
 - **Viewer.** `GET /view/api/desktops` lists the main desktop and each agent
   desktop (label, status, lease holder); `/view/api/d/<id>/…` serves that desktop's viewer API (status, frame, WebRTC,
   control, input) from a viewer of its own, with its own capture of the desktop's display (`x11grab`, even under a
@@ -682,7 +703,13 @@ then starts the browser. No extension and no DevTools protocol are involved.
   launcher: it fork-merged from the master and the other desktops first. Closing sends
   `WM_DELETE_WINDOW` to each of its windows and waits for the exit; SIGTERM is only the fallback after a timeout, since
   it loses cookies Chromium has not flushed yet (measured twice). A browser is never closed in the middle of a turn.
-- **Limits.** localStorage left after a logout is kept (servers trust the cookies); storage buckets (`WebStorage/`) and
+- **Invariants.** A running profile is never written to; a fork reads only profiles of the daemon's own user; an
+  agent desktop never inherits the main session's identity environment. The threat model lists them once it has a
+  computer-use section.
+- **Limits.** A deletion reaches only a target that saw the cookie at an earlier fork: a new desktop copies the master
+  as it is, so a cookie another agent desktop deleted (a logout there) survives in the new one while the master still
+  holds it, until the server rejects it. Shared tombstones would close this; the logout check in validation covers it.
+  localStorage left after a logout is kept (servers trust the cookies); storage buckets (`WebStorage/`) and
   partitioned storage are not merged yet; whether two desktops refreshing the same rotating app token kept in
   localStorage log each other out is not yet measured.
 
@@ -1845,9 +1872,9 @@ desktop, and the last step turns it on.
 | 3    | Browser fork-merge: LevelDB reader and writer, the three-way cookie, localStorage and IndexedDB merge, the launcher, the X11 graceful close, and the `browser` / `browser-close` commands; nothing calls them yet                                              | Unit tests with a Chromium fixture; real GitHub and console logins in a VM      |
 | 4    | The desktop manager behind the switch (off): support probe, `setup`'s install offer, `doctor`, Xvfb plus Xfce per agent with the scrubbed environment and start order, routing by agent, the browser launchers, the idle sweep, the tray and `desktops` switch | Unit tests; two agents in parallel in a VM under Xorg and Wayland main sessions |
 | 5    | The per-desktop viewer in the daemon (`/view/api/desktops`, `/view/api/d/<id>/…`, per-desktop capture and takeover, the `/view` picker)                                                                                                                        | Unit tests; WebRTC video and DataChannel input per desktop from another machine |
-| 6    | Protocol and Control Plane: leases and the queue per desktop behind `computer-desktops-v1`, the heartbeat's desktops, the viewer token's `dsk`                                                                                                                 | Integration tests (Postgres); an agent pair in parallel through the CP          |
+| 6    | Protocol and Control Plane: leases and the queue per desktop behind `computer-desktops-v1`, per-desktop status and the desktop id in the audit, the viewer token's `dsk`, the `shareBrowserLogins` policy                                                      | Integration tests (Postgres); an agent pair in parallel through the CP          |
 | 7    | Console: the desktop picker in the viewer and each desktop's lease holder                                                                                                                                                                                      | Web tests; the console against the VM                                           |
-| 8    | On by default where supported, the container image's settings, and the end-to-end checks on X11, Wayland and the container                                                                                                                                     | The VM and the container, both main session types                               |
+| 8    | On by default where supported (off on `ephemeral` and `per-agent` managed computers), the registration and access notices, the container image's settings, the end-to-end checks on X11, Wayland and the container                                             | The VM and the container, both main session types                               |
 
 Open after the prototype: whether two desktops refreshing one rotating app token kept in localStorage log each other
 out; storage buckets and partitioned storage in the merge; tab restore after an idle close worked once and failed
