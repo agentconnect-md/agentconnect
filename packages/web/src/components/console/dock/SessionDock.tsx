@@ -515,14 +515,15 @@ export function SessionDock({
         >
           {vacant ? null : resizeHandle}
           {vacant || stripHidden ? null : (
-            <div className="flex flex-none items-center border-b border-(--border-subtle) pl-[5px]">
+            // On desktop the strip is the session header's 52px, so its divider continues that header's line.
+            <div className="flex flex-none items-center border-b border-(--border-subtle) pl-[5px] desktop:h-[52px]">
               {/* Zero gap between tabs by design; the strip scrolls rather than wraps. */}
               <div
                 role="tablist"
                 aria-label={label}
                 ref={stripRef}
                 onKeyDown={onStripKey}
-                className="flex min-w-0 flex-1 gap-0 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                className="flex min-w-0 flex-1 gap-0 self-stretch overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
               >
                 {tabs.map((tab) => {
                   const on = tab.key === activeKey
