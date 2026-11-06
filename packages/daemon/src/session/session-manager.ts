@@ -7,7 +7,7 @@ import {
   keepsTaskSummaryAt,
   mayOpenTasksAt
 } from './subsession-coordinate.js'
-import { isDelegatedTaskCoordinate } from '@agentconnect.md/protocol'
+import { webchatCoordinatorTask, type WebchatCoordinatorTask } from '../auto-session/webchat-task.js'
 import { researchRunningLine } from '../assistant/research.js'
 import { CLAUDE_HEADLESS_DISALLOWED_TOOLS } from '../runtime-defs/claude-runtime.js'
 import { createMemoryEntryService } from '../memory/entries/factory.js'
@@ -436,17 +436,9 @@ export class SessionManager {
     return row !== undefined && row.mode !== 'watch'
   }
 
-  /** The coordinator session a task on its own console page belongs to, by outward id: a delegated task holding a thread; undefined for any other session (auto-session-mode.md §10). */
-  private async pageTaskParent(agentId: string, key: string, thread: string): Promise<string | undefined> {
-    if (!isDelegatedTaskCoordinate(thread)) return undefined
-    const index = this.deps.store.assistantSubsessions
-    try {
-      const row = await index.get(agentId, key)
-      if (row === undefined || (await index.threadsOf(agentId, key)).length === 0) return undefined
-      return row.parentSessionId
-    } catch {
-      return undefined
-    }
+  /** The webchat coordinator a task belongs to, by the task index (webchat-threads.md §5.4); a failed read counts as none. */
+  private async webchatTask(agentId: string, key: string, thread: string): Promise<WebchatCoordinatorTask | undefined> {
+    return await webchatCoordinatorTask(this.deps.store, agentId, key, thread).catch(() => undefined)
   }
 
   async handle(
@@ -548,7 +540,7 @@ export class SessionManager {
     let rec = await this.deps.store.getSession(key)
     // A task the coordinator opened on a platform thread keeps a summary as a delegated one does (auto-session-mode.md §6.7).
     const threadedTask = await this.isThreadedTask(agentId, key, thread)
-    const pageTaskParent = await this.pageTaskParent(agentId, key, thread)
+    const webchatTask = await this.webchatTask(agentId, key, thread)
     const transcriptChannel = transcriptChannelKey(msg.channel, transportScope)
     // Affinity is the PHYSICAL thread's (channel-session-mode.md §6.4), which is what the
     // routing ladder looks this agent up by — `upsertSession` can only derive the session's
@@ -633,8 +625,10 @@ export class SessionManager {
       await this.deps.store.upsertSession(rec)
     }
     // send-message-guide.md §9.6: the origin records who created the session, written once with the row and never read for replies.
-    // A page task carries no caller, so its coordinator is recorded as its creator, the parent its page is judged by (auto-session-mode.md §10).
-    const creatorSessionId = rec ? (rec.originSessionId ?? undefined) : (originSessionId ?? pageTaskParent)
+    // A webchat coordinator's task carries no caller, so its coordinator is recorded as its creator, the parent it is judged by (§10).
+    const creatorSessionId = rec
+      ? (rec.originSessionId ?? undefined)
+      : (originSessionId ?? webchatTask?.parentSessionId)
     // Names a session's branch by whoever opened it, so a shared thread keeps its owner when someone else replies.
     const initiatedBy = await sessionInitiatedBy((ids) => this.deps.store.getDisplayNames(ids), rec?.triggeredBy, msg)
     const workspaceRequest = { sessionKey: key, isolation: workspaceIsolation, initiatedBy }
@@ -761,7 +755,7 @@ export class SessionManager {
             msg.platform === 'slack' && integrationId ? this.deps.slackBotUserIdFor?.(integrationId) : undefined,
           thread,
           ...(threadedTask ? { threadedTask } : {}),
-          ...(pageTaskParent !== undefined ? { pageTask: true } : {}),
+          ...(webchatTask?.page ? { pageTask: true } : {}),
           ...(this.deps.taskPagesTakeMessages?.() ? { taskPageMessages: true } : {}),
           ...(this.deps.tasksCoordinatorOnly?.() ? { tasksCoordinatorOnly: true } : {}),
           sessionId: rec?.sessionId,

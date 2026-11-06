@@ -251,13 +251,17 @@ describe('which turn installs admin MCP in a webchat coordinator conversation', 
   const coordinatorKey = `webchat:${CONV}:append:coordinator-1:${AGENT_ID}`
   const taskThread = 'subsession:2'
   const taskKey = `webchat:a2a:${taskThread}:${AGENT_ID}`
+  const ROOT = '11111111-1111-4111-8111-111111111111'
 
   function routing(parent: { platform: string; channel: string; thread: string } | undefined) {
     const daemon = Object.create(Daemon.prototype) as any
     daemon.remoteWebchatGrants = new RemoteWebchatGrantManager(fakeGrantClient() as never)
     daemon.clock = { now: () => Date.parse('2029-01-01T00:00:00.000Z') }
     daemon.store = {
-      assistantSubsessions: { get: vi.fn(async () => ({ parentSessionKey: coordinatorKey })) },
+      assistantSubsessions: {
+        get: vi.fn(async () => ({ parentSessionKey: coordinatorKey })),
+        threadsOf: vi.fn(async () => [{ platform: 'webchat', channel: CONV, thread: ROOT }])
+      },
       getSession: vi.fn(async () => parent)
     }
     return daemon
@@ -279,6 +283,17 @@ describe('which turn installs admin MCP in a webchat coordinator conversation', 
       conversationId: CONV,
       entitlement,
       sessionKey: taskKey
+    })
+  })
+
+  it('a task keyed on its webchat thread inherits its own grant as a page task does (webchat-threads.md §5.4)', async () => {
+    const daemon = routing(coordinatorParent)
+    daemon.remoteWebchatGrants.noteEntitlement(CONV, AGENT_ID, entitlement)
+    const threadKey = `webchat:${CONV}:${ROOT}:${AGENT_ID}`
+    expect(await daemon.adminMcpEntitlement(AGENT_ID, threadKey, { channel: CONV, thread: ROOT }, undefined)).toEqual({
+      conversationId: CONV,
+      entitlement,
+      sessionKey: threadKey
     })
   })
 
