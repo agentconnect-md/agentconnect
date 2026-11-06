@@ -7031,6 +7031,11 @@
       "stats": {
         "roundTrip": "Frame rate, bitrate and round trip of the video from the computer",
         "frameTime": "Screenshot rate, bitrate and time to fetch one screenshot"
+      },
+      "desktop": {
+        "pick": "Desktop",
+        "main": "Main desktop",
+        "agent": "{agent}'s desktop"
       }
     },
     "allAgents": "All agents",

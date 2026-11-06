@@ -14,6 +14,12 @@ vi.mock('@/lib/api', async (actual) => ({
   fetchComputers
 }))
 
+// The desktop picker names agents from the console's data, which this test does not mount.
+vi.mock('@/components/console/computer-members', async (actual) => ({
+  ...(await actual<typeof import('@/components/console/computer-members')>()),
+  useAgentName: () => (agentId: string | null | undefined, fallback?: string | null) => fallback ?? agentId ?? ''
+}))
+
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
 const live: ViewerState = {
@@ -202,5 +208,31 @@ describe('ComputerPanel', () => {
       root!.render(<ComputerPanel computerIds={[]} managed={{ agentId: 'a1', sessionId: 's2' }} active />)
     )
     expect(el.textContent).not.toContain('mine')
+  })
+})
+
+describe('ComputerPanel on a Computer with per-agent desktops (§3.9)', () => {
+  const AGENT = 'a0a0a0a0-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+  const desktops = [
+    { id: 'd1', agentId: 'b0b0b0b0-bbbb-4bbb-8bbb-bbbbbbbbbbbb', status: 'online' as const, lease: null, waiting: [] },
+    { id: 'd2', agentId: AGENT, status: 'busy' as const, lease: null, waiting: [] }
+  ]
+
+  it("shows the focused agent's own desktop first, and opens another one picked", async () => {
+    fetchComputer.mockImplementation(async (id: string) => computer({ id, desktops }))
+    const { fake, create } = fakeSession()
+    const el = await render(<ComputerPanel computerIds={['c1']} agentId={AGENT} active createSession={create} />)
+    const picker = el.querySelector('[data-desktop-picker]') as HTMLSelectElement
+    expect([...picker.options].map((option) => option.value)).toEqual(['main', 'd1', 'd2'])
+    expect(picker.value).toBe('d2')
+    await act(async () => button(el, 'Watch')!.click())
+    expect(fake.deps!.desktop).toBe('d2')
+
+    await act(async () => {
+      picker.value = 'main'
+      picker.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    expect(fake.stop).toHaveBeenCalled()
+    expect(fake.deps!.desktop).toBeUndefined()
   })
 })

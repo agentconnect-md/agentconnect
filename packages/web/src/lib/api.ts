@@ -2904,6 +2904,18 @@ export interface ComputerDto {
   lease?: { sessionId: string; agentId: string; agentName: string | null; acquiredAt: string } | null
   /** The sessions waiting in line for the lease, first in line first. */
   waiting?: Array<{ sessionId: string; agentId: string; since: string }>
+  /** Its running agent desktops, each with its own lease and line (computer-use.md §3.9); null while agents share one desktop. */
+  desktops?: ComputerDesktopDto[] | null
+}
+
+/** One agent desktop of a Computer with per-agent desktops (computer-use.md §3.9). */
+export interface ComputerDesktopDto {
+  /** The desktop daemon's id for it, which the viewer opens. */
+  id: string
+  agentId: string
+  status: ComputerStatus
+  lease: { sessionId: string; agentId: string; agentName: string | null; acquiredAt: string } | null
+  waiting: Array<{ sessionId: string; agentId: string; since: string }>
 }
 
 export type ComputerAllocation = 'ephemeral' | 'per-agent' | 'manual'
@@ -3119,8 +3131,10 @@ export interface ComputerViewerGrantDto {
   directMedia?: boolean
 }
 
-export async function openComputerViewer(id: string): Promise<ComputerViewerGrantDto> {
-  return apiPost<ComputerViewerGrantDto>(`${computerPath(id)}/viewer`, {})
+// `desktop` names an agent desktop (§3.9); omitted or `main`, the main desktop.
+export async function openComputerViewer(id: string, desktop?: string): Promise<ComputerViewerGrantDto> {
+  const query = desktop && desktop !== 'main' ? `?desktop=${encodeURIComponent(desktop)}` : ''
+  return apiPost<ComputerViewerGrantDto>(`${computerPath(id)}/viewer${query}`, {})
 }
 
 // Fetch one agent's raw spec (GET /agents/:id). Returns the wire DTO (not the

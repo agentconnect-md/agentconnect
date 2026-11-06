@@ -131,7 +131,8 @@ function relayFetch(opts: { attachedOn?: string; offerFails?: boolean; stun?: bo
     if (opts.attachedOn && !url.startsWith(opts.attachedOn)) {
       return new Response(JSON.stringify({ error: 'computer_not_attached' }), { status: 503 })
     }
-    const endpoint = url.split('/view/api/')[1]
+    // An agent desktop's API sits under its own prefix (§3.9); the desktop answers it the same way.
+    const endpoint = url.split('/view/api/')[1]?.replace(/^d\/[^/]+\//, '')
     if (endpoint === 'status')
       return Response.json({ ...status, webrtc: { ...status.webrtc, stun: opts.stun ?? false } })
     if (endpoint === 'rtc/offer') return Response.json({ id: 'rtc-1', sdp: 'v=0 offer', candidates: 1 })
@@ -159,11 +160,13 @@ function open(opts: {
   grant?: ComputerViewerGrantDto
   fetch: typeof fetch
   createPeer: (c: RTCConfiguration) => RTCPeerConnection
+  desktop?: string
 }) {
   const states: ViewerState[] = []
   const grants = vi.fn(async () => opts.grant ?? grant())
   const session = new ComputerViewerSession({
     computerId: ID,
+    ...(opts.desktop ? { desktop: opts.desktop } : {}),
     grant: grants,
     onState: (s) => states.push(s),
     video: () => null,
@@ -189,6 +192,16 @@ describe('ComputerViewerSession', () => {
     expect(calls.every((c) => c.auth === 'Bearer actk1.view.1')).toBe(true)
     expect(created).toHaveLength(1)
     expect(created[0]!.config.iceServers).toEqual([])
+  })
+
+  it("talks to an agent desktop's own viewer API under its prefix (§3.9)", async () => {
+    const { calls, fetchImpl } = relayFetch()
+    const { createPeer } = peers(() => 'connected')
+    const { session } = open({ fetch: fetchImpl, createPeer, desktop: 'd1' })
+    await session.start()
+    expect(session.snapshot()).toMatchObject({ phase: 'live', path: 'direct' })
+    expect(calls[0]!.url).toBe(`https://relay-a.example.com/cr/computers/${ID}/view/api/d/d1/status`)
+    expect(calls.every((c) => c.url.includes('/view/api/d/d1/'))).toBe(true)
   })
 
   it('falls back to TURN with relay-only candidates when the direct path fails', async () => {
