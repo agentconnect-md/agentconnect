@@ -232,7 +232,7 @@ describe("a member's coordinator conversation in webchat (auto-session-mode.md ย
     await daemon.stop()
   })
 
-  it('refuses a thread in an ordinary conversation and on a continued session', async () => {
+  it('refuses a thread in an ordinary conversation and on a continued session that holds none', async () => {
     const { daemon, d, turn, send } = await boot(async (_id, _text, say) => say('ok'))
     const root = await send('hello', 'user-2')
     expect(await d.store.threadForPlatformMessage(transcriptChannelKey(CONV), root.postId)).toBe(`webchat:${CONV}`)
@@ -377,6 +377,85 @@ describe("a member's coordinator conversation in webchat (auto-session-mode.md ย
       WAIT
     )
     expect(coordinatorPrompts).toHaveLength(4)
+    await booted.daemon.stop()
+  })
+
+  // webchat-threads.md ยง6.3: another member of a published coordinator writes in a thread a task holds, through the task's session.
+  it("lets another member write in a task's threads through its session, and in no other thread", async () => {
+    const live: { d?: any } = {}
+    const coordinatorPrompts: string[] = []
+    const taskPrompts: string[] = []
+    let taskId = ''
+    const script: Record<string, (messageId: string) => Record<string, unknown>> = {
+      'fix the retry': (messageId) => ({ action: 'delegateTask', messageId, title: 'Fix the retry' }),
+      'also handle 429': (messageId) => ({ action: 'messageTask', messageId, taskId }),
+      'how is it going?': (messageId) => ({ action: 'replyToMessage', messageId, message: 'Still on it.' })
+    }
+    const booted = await boot(async (_id, text, say) => {
+      const id = /<message id="(msg-[^"]+)"/.exec(text)?.[1]
+      if (id === undefined) {
+        taskPrompts.push(text)
+        say(`task answer ${taskPrompts.length}`)
+        return
+      }
+      coordinatorPrompts.push(text)
+      const body = /mentions-you="yes"(?: thread="[^"]+")?>\n([^\n]*)\n/.exec(text)?.[1] ?? ''
+      const call = script[body]?.(id)
+      if (call) {
+        const { ctx } = await booted.coordinator()
+        const receipt = (await live.d.coordinators.decide(ctx, call)) as { taskId?: string }
+        if (receipt.taskId) taskId = receipt.taskId
+      }
+      say('AC_NO_RESPONSE')
+    })
+    const { d, posts, turn, send } = booted
+    live.d = d
+    const channel = transcriptChannelKey(CONV)
+    const settle = () => vi.waitFor(() => expect(d.pending.size + d.inflight.size).toBe(0), WAIT)
+    const first = await send('fix the retry')
+    await vi.waitFor(() => expect(taskPrompts).toHaveLength(1), WAIT)
+    await settle()
+    const second = await send('also handle 429')
+    await vi.waitFor(() => expect(taskPrompts).toHaveLength(2), WAIT)
+    await settle()
+    const unowned = await send('how is it going?')
+    await settle()
+    const asked = coordinatorPrompts.length
+    const task = (await d.store.getSession(taskId)).sessionId
+    // The member writes from the task's page on a conversation of their own, which the Control Plane verified.
+    const MEMBER = 'user-2'
+    const PAGE = '99999999-9999-4999-8999-999999999999'
+    const postCount = posts.length
+
+    // Without a thread the message is a reply in the thread the task was opened on, and the task answers it.
+    const onTask = await send('add a test', MEMBER, PAGE, task)
+    expect(onTask.streamed).toBe('task answer 3')
+    expect(taskPrompts[2]).toContain('add a test')
+    expect(await d.store.threadForPlatformMessage(channel, onTask.postId)).toBe(first.postId)
+    const inFirst = await d.store.transcriptPage(channel, first.postId, null, 50, AGENT)
+    expect(inFirst.rows.map((row: { text: string }) => row.text)).toEqual(
+      expect.arrayContaining(['add a test', 'task answer 3'])
+    )
+    // Its stream is the member's own page, which has no threads; nothing is posted to the owner's conversation.
+    expect(
+      onTask.events.every((event) => (event.kind === 'output' ? event.output.thread : event.done.thread) === undefined)
+    ).toBe(true)
+    expect(posts.slice(postCount).every((post) => post.thread === undefined && post.initiator === undefined)).toBe(true)
+
+    // Another thread the task holds takes the reply there, on the same session.
+    const inSecond = await send('and 503', MEMBER, PAGE, task, second.postId)
+    expect(inSecond.streamed).toBe('task answer 4')
+    expect(await d.store.threadForPlatformMessage(channel, inSecond.postId)).toBe(second.postId)
+    expect((await d.store.getSession(taskId)).sessionId).toBe(task)
+
+    // A thread no task holds reaches the coordinator, which is the owner's alone; a closed task holds none.
+    const refused = await turn('me too', MEMBER, PAGE, task, unowned.postId)
+    expect(refused.ack).toMatchObject({ accepted: false, reason: 'unknown_thread' })
+    expect(await d.store.threadForPlatformMessage(channel, refused.postId)).toBeUndefined()
+    expect(await d.store.assistantSubsessions.closeTask(AGENT, taskId)).toBe(true)
+    expect((await turn('still there?', MEMBER, PAGE, task)).ack).toMatchObject({ accepted: false, reason: 'not_found' })
+    expect(taskPrompts).toHaveLength(4)
+    expect(coordinatorPrompts).toHaveLength(asked)
     await booted.daemon.stop()
   })
 

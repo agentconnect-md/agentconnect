@@ -212,7 +212,7 @@ As implemented (PR 4):
   `replyToMessage` reports `at: 'root'`. A reply in a thread already reaches the coordinator with its
   `thread` named (§4).
 - A session-targeted continuation (`targetSessionId`) that names a `thread` is refused
-  `unknown_thread` until other members can write in a task's thread (§6.3, PR 9).
+  `unknown_thread` unless the targeted task holds that thread (§6.3, PR 9).
 - Peers' `context` copies stay on `webchat:<conv>`, because a coordinator conversation has no other
   participants (§4.1).
 
@@ -354,6 +354,28 @@ As implemented (PR 6):
   the owner's alone.
 - The `targetSessionId` path otherwise stays for legacy page tasks (§10) and for continuing sessions
   of other integrations.
+
+As implemented (PR 9):
+
+- **Who.** `continuableSession` (`packages/protocol`) accepts a webchat session with
+  `taskParentSessionId`, the Control Plane's mark of a coordinator's task (§5.4). The composer, the
+  token and every dial judge it by the coordinator's audience (`continuationAudience`, PR 3), so
+  other members write once the owner publishes the coordinator. The coordinator itself, an ordinary
+  conversation and a task its coordinator released stay closed.
+- **Feature.** The Control Plane mints and verifies such a continuation only where the daemon
+  advertises `webchat-threads-v1` (`taskContinuationFeature`, which still asks a page task's daemon for
+  `task-page-messages-v1`). Without it the composer reads `unavailable`.
+- **Where.** `ChatSessionContinuation.prepare` recognizes the target by the task index
+  (`webchatCoordinatorTask`). It takes the turn's `thread`, or without one the task's own thread,
+  only when the task holds it among its webchat threads. Any other thread, an unowned one included,
+  is refused `unknown_thread`, and a closed task's session `not_found`. The message keeps the task's
+  coordinate as `sessionThread`, so it runs on the task's session, and is recorded in the thread under
+  its relay `postId`, a reply there for the thread reads (§5.3) like any other.
+- **Console-only.** As for a page task, nothing is mirrored and the answer streams to the writer's own
+  page. Its frames and posts carry no `thread`, since a task's page has no threads (§10), and nothing is
+  posted into the owner's conversation; the owner reads both in the thread.
+- **AHP** is out of scope (§12): an AHP grant still refuses a thread-keyed task, as a continued webchat
+  session that is not its conversation's current one.
 
 ## 7. A Slack coordinator's page has Slack's shape
 
