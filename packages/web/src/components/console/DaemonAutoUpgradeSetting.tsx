@@ -9,8 +9,21 @@ import { autoUpgradeNotes, type AutoUpgradeNote } from '@/lib/daemon-auto-upgrad
 import { vTag } from '@/components/console/DaemonLifecycleBadge'
 import { Icon, Toggle } from '@/components/ui'
 
-// The daemon detail's Auto-upgrade switch, applied on change; `mobile` swaps the row chrome for the System card's.
-export function DaemonAutoUpgradeSetting({ daemon, mobile = false }: { daemon: DaemonRow; mobile?: boolean }) {
+const NOTE_ICON: Record<AutoUpgradeNote['kind'], string> = {
+  upgrading: 'circle-fading-arrow-up',
+  upgraded: 'circle-check',
+  failed: 'triangle-alert',
+  waiting: 'clock'
+}
+const NOTE_COLOR: Record<AutoUpgradeNote['kind'], string> = {
+  upgrading: 'var(--brand)',
+  upgraded: 'var(--text-tertiary)',
+  failed: 'var(--status-error)',
+  waiting: 'var(--text-tertiary)'
+}
+
+// The header's Auto-upgrade switch beside the version, applied on change; help and status notes ride its tooltip.
+export function DaemonAutoUpgradeSetting({ daemon }: { daemon: DaemonRow }) {
   const t = useTranslations('Daemons.detail.autoUpgrade')
   const { setDaemonAutoUpgrade } = useConsoleData()
   const ago = useAgo()
@@ -52,59 +65,28 @@ export function DaemonAutoUpgradeSetting({ daemon, mobile = false }: { daemon: D
         return t('waiting', { version: vTag(note.version) })
     }
   }
-  const noteIcon: Record<AutoUpgradeNote['kind'], string> = {
-    upgrading: 'circle-fading-arrow-up',
-    upgraded: 'circle-check',
-    failed: 'triangle-alert',
-    waiting: 'clock'
-  }
-  const noteColor: Record<AutoUpgradeNote['kind'], string> = {
-    upgrading: 'text-(--brand)',
-    upgraded: 'text-(--text-secondary)',
-    failed: 'text-(--status-error)',
-    waiting: 'text-(--text-tertiary)'
-  }
+  const notes = autoUpgradeNotes(daemon)
+  const tooltip = [supported ? t('help') : t('unsupported'), ...notes.map(noteText)].join('\n')
 
   return (
-    <div
-      className={
-        mobile
-          ? 'grid grid-cols-[1fr_auto] items-start gap-4 border-t border-(--border-subtle) px-4 py-3'
-          : 'row grid-cols-[1fr_auto] items-start gap-3'
-      }
-    >
-      <div className="flex min-w-0 flex-col gap-1">
-        <span
-          className={
-            mobile
-              ? 'font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)'
-              : 'font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)'
-          }
-        >
-          {t('label')}
-        </span>
-        <span className="font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-          {supported ? t('help') : t('unsupported')}
-        </span>
-        {autoUpgradeNotes(daemon).map((note) => (
-          <span
-            key={note.kind}
-            className={`flex items-start gap-[6px] font-sans text-[12px] font-medium leading-[1.5] ${noteColor[note.kind]}`}
-          >
-            <Icon name={noteIcon[note.kind]} size={13} className="mt-[2px] flex-none" />
-            <span className="min-w-0 break-words">{noteText(note)}</span>
-          </span>
-        ))}
-        {err && <span className="font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">{err}</span>}
-      </div>
-      <span className={locked ? 'opacity-55' : undefined}>
+    <span className="inline-flex items-center gap-[6px] whitespace-nowrap" title={tooltip}>
+      <span className={locked ? 'inline-flex opacity-55' : 'inline-flex'}>
         <Toggle
+          size="sm"
           checked={checked}
           disabled={locked || busy}
           onChange={(next) => void change(next)}
           ariaLabel={t('label')}
         />
       </span>
-    </div>
+      <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">{t('label')}</span>
+      {notes.map((note) => (
+        <span key={note.kind} className="inline-flex">
+          <Icon name={NOTE_ICON[note.kind]} size={13} color={NOTE_COLOR[note.kind]} />
+          <span className="sr-only">{noteText(note)}</span>
+        </span>
+      ))}
+      {err && <span className="font-sans text-[12px] font-normal leading-normal text-(--status-error)">{err}</span>}
+    </span>
   )
 }

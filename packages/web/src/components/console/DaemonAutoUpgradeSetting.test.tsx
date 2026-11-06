@@ -42,13 +42,15 @@ afterEach(async () => {
 
 const toggle = () => host.querySelector<HTMLButtonElement>('button[role="switch"]')!
 
-describe.each([false, true])('DaemonAutoUpgradeSetting (mobile: %s)', (mobile) => {
-  const render = () => act(async () => root.render(<DaemonAutoUpgradeSetting daemon={daemon} mobile={mobile} />))
+const tooltip = () => host.querySelector<HTMLElement>('[title]')?.title ?? ''
+
+describe('DaemonAutoUpgradeSetting', () => {
+  const render = () => act(async () => root.render(<DaemonAutoUpgradeSetting daemon={daemon} />))
 
   it('lets an owner turn it on for a supported daemon', async () => {
     await render()
     expect(toggle().disabled).toBe(false)
-    expect(host.textContent).toContain('restarts only when the daemon is idle')
+    expect(tooltip()).toContain('restarts only when the daemon is idle')
     await act(async () => toggle().click())
     expect(mocks.setDaemonAutoUpgrade).toHaveBeenCalledWith('d1', true)
   })
@@ -57,7 +59,7 @@ describe.each([false, true])('DaemonAutoUpgradeSetting (mobile: %s)', (mobile) =
     daemon.autoUpgradeSupported = false
     await render()
     expect(toggle().disabled).toBe(true)
-    expect(host.textContent).toContain('not available for pool members')
+    expect(tooltip()).toContain('not available for pool members')
   })
 
   it('is read-only for a caller who cannot manage the daemon lifecycle', async () => {
@@ -71,6 +73,7 @@ describe.each([false, true])('DaemonAutoUpgradeSetting (mobile: %s)', (mobile) =
     await render()
     expect(toggle().getAttribute('aria-checked')).toBe('true')
     expect(host.textContent).toContain('Waiting for an idle window to upgrade to v1.41.0')
+    expect(tooltip()).toContain('Waiting for an idle window to upgrade to v1.41.0')
   })
 
   it('shows the last automatic failure with its reason', async () => {

@@ -311,18 +311,20 @@ console shows the failure.
 
 ## 8. Console
 
-On the daemon detail view, settings section:
+On the daemon detail view's header, right after the version:
 
 - an **Auto-upgrade** switch for owners when `daemon-auto-upgrade-v1` is present, and a
   disabled switch with the reason otherwise;
 - the existing lifecycle badge reads "Auto-upgrading to v1.41.0" for a pending `auto`
   operation;
-- below the switch, the last automatic outcome ("Upgraded to v1.41.0 2 h ago", "v1.41.0
-  rolled back: crashed on start") from the DTO's `lastAutoUpgrade`, and "Waiting for an
-  idle window" while the switch is on, an update is available, and nothing is pending.
+- beside the switch, an icon for the last automatic outcome ("Upgraded to v1.41.0 2 h ago",
+  "v1.41.0 rolled back: crashed on start") from the DTO's `lastAutoUpgrade`, and for
+  "Waiting for an idle window" while the switch is on, an update is available, and nothing
+  is pending; the full text is the switch's tooltip.
 
-The fleet list shows a small auto-upgrade indicator next to the version. The desktop and
-mobile branches of `DaemonDetailView` both get the switch.
+The switch sits next to the version so whether a daemon moves on its own is read where its
+version is. The fleet list shows a small auto-upgrade indicator next to the version. The
+desktop and mobile branches of `DaemonDetailView` both get the switch.
 
 ## 9. Changes by package
 
