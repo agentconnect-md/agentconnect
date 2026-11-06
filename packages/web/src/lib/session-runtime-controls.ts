@@ -235,6 +235,7 @@ export function runtimePickerState({
     modelSource,
     pgModel,
     pgShownModel,
+    pgModelOptions,
     pickerSource,
     pgEffort,
     pgEffortOptions,

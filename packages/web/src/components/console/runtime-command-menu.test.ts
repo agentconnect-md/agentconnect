@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { commandQueryAt } from '@/lib/conversation-addressing'
+import { commandArgAt, commandQueryAt } from '@/lib/conversation-addressing'
 import {
   commandInsertion,
   leadingCommandToken,
@@ -19,9 +19,16 @@ const candidate = (agent: typeof AGENT_A, name: string): CommandCandidate => ({
 
 describe('commandQueryAt', () => {
   it('opens on a leading slash and narrows on what follows', () => {
-    expect(commandQueryAt('/', 1)).toEqual({ start: 0, query: '' })
-    expect(commandQueryAt('/rev', 4)).toEqual({ start: 0, query: 'rev' })
-    expect(commandQueryAt('  /rev', 6)).toEqual({ start: 2, query: 'rev' })
+    expect(commandQueryAt('/', 1)).toEqual({ start: 0, prefix: '/', query: '' })
+    expect(commandQueryAt('/rev', 4)).toEqual({ start: 0, prefix: '/', query: 'rev' })
+    expect(commandQueryAt('  /rev', 6)).toEqual({ start: 2, prefix: '/', query: 'rev' })
+  })
+
+  it('opens on the chat surfaces’ `!` alias too, but not on a bang inside a sentence', () => {
+    expect(commandQueryAt('!', 1)).toEqual({ start: 0, prefix: '!', query: '' })
+    expect(commandQueryAt(' !mo', 4)).toEqual({ start: 1, prefix: '!', query: 'mo' })
+    expect(commandQueryAt('wow!', 4)).toBeNull()
+    expect(commandQueryAt('!!', 2)).toBeNull()
   })
 
   it('does NOT open after a mention — the daemon never translates that draft', () => {
@@ -37,6 +44,16 @@ describe('commandQueryAt', () => {
     expect(commandQueryAt('do this /then', 13)).toBeNull()
     // A space ends the query: the picker narrows on the command word only.
     expect(commandQueryAt('/review this pr', 15)).toBeNull()
+  })
+})
+
+describe('commandArgAt', () => {
+  it('reads the word and the argument typed after it on one line', () => {
+    expect(commandArgAt('/effort hi', 10)).toEqual({ start: 0, prefix: '/', word: 'effort', arg: 'hi' })
+    expect(commandArgAt(' !model ', 8)).toEqual({ start: 1, prefix: '!', word: 'model', arg: '' })
+    expect(commandArgAt('/effort', 7)).toBeNull()
+    expect(commandArgAt('/effort high\nmore', 17)).toBeNull()
+    expect(commandArgAt('say /effort hi', 14)).toBeNull()
   })
 })
 

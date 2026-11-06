@@ -133,7 +133,16 @@
       "unreported": " 尚未报告其技能，会在下一次会话开始后显示",
       "unreachable": " 无法访问",
       "noDescription": "此命令没有描述。",
-      "runsOn": "运行于 {agent}"
+      "runsOn": "运行于 {agent}",
+      "controls": {
+        "stop": { "title": "停止", "does": "停止当前回答" },
+        "model": { "title": "模型", "does": "列出或切换模型" },
+        "effort": { "title": "推理强度", "does": "列出或切换推理强度" },
+        "permission": { "title": "权限模式", "does": "列出或切换权限模式" },
+        "fast": { "title": "快速模式", "does": "开启或关闭快速模式" }
+      },
+      "fastOn": "开启",
+      "fastOff": "关闭"
     },
     "composerMenu": {
       "noMatches": "没有匹配项"
