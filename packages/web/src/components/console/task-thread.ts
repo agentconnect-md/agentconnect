@@ -154,12 +154,16 @@ export function useThreadRecord(
   /** Whether this visit is waiting on a turn of the holding task's session. */
   busy: (sessionId: string) => boolean = () => false
 ): ThreadRecord {
-  const { data, error, mutate } = useSWR(
+  // No previous data across keys: another thread's footer would name its task as this panel's reply target.
+  const {
+    data: read,
+    error,
+    mutate
+  } = useSWR(
     ref ? ['thread-record', ref.sessionId, ref.rootId] : null,
     ([, sessionId, rootId]) => fetchSessionThreadMessages(sessionId, rootId, { limit: THREAD_PAGE }),
     {
       ...CONSOLE_SWR_CONFIG,
-      keepPreviousData: true,
       // People and the coordinator write in a thread whether or not a task runs in it, so an idle thread is still polled.
       refreshInterval: (page) => {
         const holder = page?.summary.task?.sessionId
@@ -167,6 +171,7 @@ export function useThreadRecord(
       }
     }
   )
+  const data = read && ref && read.sessionId === ref.sessionId && read.rootId === ref.rootId ? read : undefined
   const key = ref ? `${ref.sessionId}\n${ref.rootId}` : ''
   const [older, setOlder] = useState<{ key: string; messages: SessionMessageDto[]; nextCursor: string | null } | null>(
     null
@@ -174,6 +179,12 @@ export function useThreadRecord(
   const [loadingEarlier, setLoadingEarlier] = useState(false)
   const earlier = older?.key === key ? older : null
   const nextCursor = earlier ? earlier.nextCursor : (data?.nextCursor ?? null)
+  // An earlier page and the newest may overlap once the thread grows between reads; each row is drawn once.
+  const messages = useMemo(
+    () =>
+      data ? [...new Map([...(earlier?.messages ?? []), ...data.messages].map((m) => [m.seq, m])).values()] : undefined,
+    [data, earlier]
+  )
   const loadEarlier = async () => {
     if (!ref || !nextCursor || loadingEarlier) return
     setLoadingEarlier(true)
@@ -182,18 +193,13 @@ export function useThreadRecord(
         cursor: nextCursor,
         limit: THREAD_PAGE
       })
-      setOlder({ key, messages: [...page.messages, ...(earlier?.messages ?? [])], nextCursor: page.nextCursor })
+      // Everything shown so far is kept, so a later poll whose newest page has moved on leaves no gap behind it.
+      setOlder({ key, messages: [...page.messages, ...(messages ?? [])], nextCursor: page.nextCursor })
     } finally {
       setLoadingEarlier(false)
     }
   }
   const featureMissing = error instanceof ApiError && error.status === 409 && error.code === 'DAEMON_FEATURE_MISSING'
-  // An earlier page and the newest may overlap once the thread grows between reads; each row is drawn once.
-  const messages = useMemo(
-    () =>
-      data ? [...new Map([...(earlier?.messages ?? []), ...data.messages].map((m) => [m.seq, m])).values()] : undefined,
-    [data, earlier]
-  )
   return {
     messages,
     summary: data?.summary,

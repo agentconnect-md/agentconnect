@@ -41,6 +41,8 @@ vi.mock(import('@/lib/api'), async (importOriginal) => {
     ...actual,
     fetchSessionThreadMessages: vi.fn((sessionId: string, rootId: string, opts: { cursor?: string } = {}) => {
       wire.recordReads.push(`${sessionId}/${rootId}${opts.cursor ? `<${opts.cursor}` : ''}`)
+      // A root other than the first never answers, as a read still on its way.
+      if (rootId !== 'post-root') return new Promise(() => {})
       const answer = wire.record
       if (answer && 'status' in answer && typeof answer.status === 'number')
         return Promise.reject(new actual.ApiError('refused', answer.status, answer.code as string | undefined))
@@ -710,5 +712,67 @@ describe('ThreadPanel on a thread’s record (webchat-threads.md §6.2)', () => 
     expect(said).toHaveLength(3)
     expect(said[0]).toContain('Why is the deploy slow?')
     expect(container.querySelector('[data-thread-earlier]')).toBeNull()
+  })
+})
+
+describe('ThreadPanel switching or polling a thread’s record', () => {
+  const held = {
+    rootId: 'post-root',
+    replies: 2,
+    participants: [],
+    task: { sessionId: 'ses_task', title: 'Find what blocks api 1.5', state: 'open' },
+    readable: true
+  }
+
+  it('never shows another thread’s record or replies to its task while the new one loads', async () => {
+    wire.record = recordPage({ summary: held })
+    withTask = false
+    props = { record: { sessionId: 'ses_coordinator', rootId: 'post-root' } }
+    await render()
+    expect(container.querySelector('[data-thread-panel="post-root"]')?.getAttribute('data-task-thread')).toBe(
+      'ses_task'
+    )
+    expect(container.querySelector('textarea')).not.toBeNull()
+
+    props = { record: { sessionId: 'ses_coordinator', rootId: 'post-other' } }
+    await render()
+    const panel = container.querySelector('[data-thread-panel="post-other"]')!
+    expect(panel.hasAttribute('data-task-thread')).toBe(false)
+    expect(panel.querySelectorAll('[data-thread-message]')).toHaveLength(0)
+    expect(panel.querySelector('textarea')).toBeNull()
+    expect(panel.textContent).toContain('Loading the thread…')
+  })
+
+  it('keeps every row it showed when a later read’s newest page has moved past them', async () => {
+    wire.record = recordPage({
+      messages: [reply(2, 'agent_1', 'The cache misses on every build.'), reply(3, 'user_lee', 'Can you fix it?')],
+      nextCursor: 'c-older',
+      summary: held
+    })
+    withTask = false
+    wire.busy = true
+    props = { record: { sessionId: 'ses_coordinator', rootId: 'post-root' } }
+    await render()
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-thread-earlier]')!.click())
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    // A turn ends here, so the record is read again; its newest page no longer carries row 2.
+    wire.record = recordPage({
+      messages: [reply(3, 'user_lee', 'Can you fix it?'), reply(4, 'agent_1', 'Warmed the cache.')],
+      summary: held
+    })
+    wire.busy = false
+    await render()
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(wire.recordReads).toEqual([
+      'ses_coordinator/post-root',
+      'ses_coordinator/post-root<c-older',
+      'ses_coordinator/post-root'
+    ])
+    const said = [...container.querySelectorAll('[data-thread-message]')].map((el) => el.textContent ?? '')
+    expect(said.join('|')).toMatch(/Why is the deploy slow\?.*The cache misses.*Can you fix it\?.*Warmed the cache\./)
   })
 })
