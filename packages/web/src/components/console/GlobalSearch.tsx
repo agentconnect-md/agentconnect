@@ -489,7 +489,7 @@ export function GlobalSearch({
     return (
       <div className="fixed inset-0 z-80 flex flex-col bg-(--surface-card)">
         <div className="flex h-16 flex-none items-center gap-1 border-b border-(--border-subtle) pr-2 pl-3">
-          <div className="box-border flex h-11 min-w-0 flex-1 items-center gap-2 rounded-md border border-(--brand) px-3 shadow-[0_0_0_3px_var(--magenta-100)]">
+          <div className="box-border flex h-11 min-w-0 flex-1 items-center gap-2 rounded-md border border-(--border-strong) px-3 shadow-(--focus-shadow)">
             <Icon name="search" size={18} color="var(--text-tertiary)" />
             <input
               ref={inputRef}

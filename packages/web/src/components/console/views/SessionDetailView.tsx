@@ -808,9 +808,9 @@ const ELICIT_CHIP_SOFT_ON =
 const ELICIT_ROW_BASE =
   'flex w-full min-w-0 cursor-pointer items-start gap-[9px] rounded-sm border px-[11px] py-[8px] text-left font-sans text-[13px] font-medium leading-[1.45] disabled:cursor-default disabled:opacity-55'
 const ELICIT_ROW = `${ELICIT_ROW_BASE} border-(--border-default) bg-(--surface-card) text-(--text-secondary) hover:border-(--border-strong) hover:bg-(--surface-hover)`
-const ELICIT_ROW_ON = `${ELICIT_ROW_BASE} border-(--brand) bg-(--brand-soft) text-(--text-primary)`
+const ELICIT_ROW_ON = `${ELICIT_ROW_BASE} border-(--border-strong) bg-(--surface-hover) text-(--text-primary)`
 const ELICIT_ROW_SOFT = `${ELICIT_ROW_BASE} border-(--border-default) bg-(--surface-card) text-(--text-tertiary) hover:border-(--border-strong) hover:bg-(--surface-hover)`
-const ELICIT_ROW_SOFT_ON = `${ELICIT_ROW_BASE} border-(--brand-soft-border) bg-(--brand-soft) text-(--brand-soft-text)`
+const ELICIT_ROW_SOFT_ON = `${ELICIT_ROW_BASE} border-(--border-strong) bg-(--surface-hover) text-(--text-primary)`
 const ELICIT_INPUT = 'inp w-full min-w-0 bg-(--surface-app) disabled:cursor-default disabled:opacity-55'
 // An option long enough to be a sentence cannot be a chip: a row of them would either
 // truncate the answer away or wrap into a ragged block. One such option turns the whole
@@ -4814,7 +4814,7 @@ export default function SessionDetailView() {
                     data-header-requests={pendingRequestCount > 0 ? 'pending' : 'history'}
                     className={
                       pendingRequestCount > 0
-                        ? 'inline-flex h-6 flex-none cursor-pointer items-center gap-1 rounded-full border-0 bg-(--status-paused-soft) px-[7px] font-sans text-[12px] font-semibold leading-normal text-[#9a6500] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)'
+                        ? 'inline-flex h-6 flex-none cursor-pointer items-center gap-1 rounded-full border-0 bg-(--status-paused-soft) px-[7px] font-sans text-[12px] font-semibold leading-normal text-[#9a6500] transition-colors focus-visible:outline-none focus-visible:shadow-(--focus-ring)'
                         : `${HEADER_ICON_BTN} cursor-pointer border-0 bg-transparent`
                     }
                     aria-label={
@@ -4868,7 +4868,7 @@ export default function SessionDetailView() {
                 <button
                   type="button"
                   data-header-details=""
-                  className={`${HEADER_ICON_BTN} cursor-pointer border-0 bg-transparent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)`}
+                  className={`${HEADER_ICON_BTN} cursor-pointer border-0 bg-transparent focus-visible:outline-none focus-visible:shadow-(--focus-ring)`}
                   aria-label={t('details')}
                   aria-describedby={detailTooltipId}
                 >
@@ -5730,7 +5730,7 @@ export default function SessionDetailView() {
                   permission · context ring · send. Tokens/cost live in the header's
                   Details popover, not here. */}
               <div
-                className="relative min-w-0 rounded-[11px] border border-(--border-default) bg-(--surface-card) shadow-(--shadow-xs) transition-[border-color,box-shadow] focus-within:border-(--brand) focus-within:[box-shadow:0_0_0_3px_var(--brand-ring)]"
+                className="relative min-w-0 rounded-[11px] border border-(--border-default) bg-(--surface-card) shadow-(--shadow-xs) transition-[border-color,box-shadow] focus-within:border-(--border-strong) focus-within:shadow-(--focus-shadow)"
                 inert={resumeDisabled}
                 aria-disabled={resumeDisabled}
                 onKeyDown={(event) => {

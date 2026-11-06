@@ -131,7 +131,7 @@ export function HeaderPeople({
                     aria-pressed={on}
                     data-header-people-agent={agent.agentId}
                     onClick={() => onFocusChange(agent.agentId)}
-                    className={`${ROW} cursor-pointer border-0 hover:bg-(--surface-hover) ${on ? 'bg-(--brand-soft)' : 'bg-transparent'}`}
+                    className={`${ROW} cursor-pointer border-0 hover:bg-(--surface-hover) ${on ? 'bg-(--surface-hover)' : 'bg-transparent'}`}
                   >
                     {body}
                   </button>

@@ -133,10 +133,10 @@ export function DaemonSelect({
         type="button"
         className={`inp relative w-full text-left outline-none transition-[background-color,border-color,box-shadow] ${
           open
-            ? 'cursor-pointer border-(--border-focus) ring-[3px] ring-(--brand-ring)'
+            ? 'cursor-pointer border-(--border-strong) shadow-(--focus-shadow)'
             : disabled
               ? 'cursor-default opacity-60'
-              : 'cursor-pointer hover:border-(--border-strong) hover:bg-(--surface-hover) focus-visible:border-(--border-focus) focus-visible:ring-[3px] focus-visible:ring-(--brand-ring)'
+              : 'cursor-pointer hover:border-(--border-strong) hover:bg-(--surface-hover)'
         }`}
         aria-label={effectiveAriaLabel}
         aria-haspopup="listbox"

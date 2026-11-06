@@ -49,7 +49,7 @@ export function DingTalkEditionSwitcher({
           type="button"
           disabled={disabled}
           aria-label={t('switchEdition', { edition: t(`editions.${other}`) })}
-          className="cursor-pointer rounded-[2px] border-0 bg-transparent p-0 font-sans text-[10px] font-medium leading-normal text-(--text-tertiary) hover:text-(--brand) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand) disabled:cursor-not-allowed disabled:opacity-50"
+          className="cursor-pointer rounded-[2px] border-0 bg-transparent p-0 font-sans text-[10px] font-medium leading-normal text-(--text-tertiary) hover:text-(--brand) focus-visible:outline-none focus-visible:shadow-(--focus-ring) disabled:cursor-not-allowed disabled:opacity-50"
           onClick={(event) => {
             event.stopPropagation()
             onSwitch(other)

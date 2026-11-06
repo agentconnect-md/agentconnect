@@ -139,8 +139,8 @@ export function WorkspaceScopePicker({
             !canChooseCheckout
               ? 'border-(--border-subtle)'
               : open
-                ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)'
-                : 'border-(--border-subtle) hover:border-(--border-strong) hover:bg-(--surface-hover) focus-within:border-(--border-focus) focus-within:ring-[3px] focus-within:ring-(--brand-ring)'
+                ? 'border-(--border-strong) shadow-(--focus-shadow)'
+                : 'border-(--border-subtle) hover:border-(--border-strong) hover:bg-(--surface-hover) focus-within:border-(--border-strong) focus-within:shadow-(--focus-shadow)'
           }`}
         >
           {canChooseCheckout ? (
@@ -236,8 +236,8 @@ export function WorkspaceScopePicker({
                 role="menuitemradio"
                 aria-checked={selectedSessionId === null}
                 data-workspace-choice
-                className={`fopt h-7 min-h-7 rounded-none px-4 text-[12px] outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-(--brand) ${
-                  selectedSessionId === null ? 'bg-(--brand-soft) text-(--brand-soft-text) hover:bg-(--brand-soft)' : ''
+                className={`fopt h-7 min-h-7 rounded-none px-4 text-[12px] outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-(--border-focus) ${
+                  selectedSessionId === null ? 'bg-(--surface-hover) text-(--text-primary)' : ''
                 }`}
                 onClick={() => pick(null)}
               >
@@ -261,9 +261,7 @@ export function WorkspaceScopePicker({
                       <div
                         key={session.id}
                         className={`flex h-7 items-center ${
-                          selected
-                            ? 'bg-(--brand-soft) text-(--brand-soft-text) hover:bg-(--brand-soft)'
-                            : 'hover:bg-(--surface-hover)'
+                          selected ? 'bg-(--surface-hover) text-(--text-primary)' : 'hover:bg-(--surface-hover)'
                         }`}
                       >
                         <button
@@ -271,7 +269,7 @@ export function WorkspaceScopePicker({
                           role="menuitemradio"
                           aria-checked={selected}
                           data-workspace-choice
-                          className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 self-stretch border-0 bg-transparent px-4 text-left text-inherit outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-(--brand)"
+                          className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 self-stretch border-0 bg-transparent px-4 text-left text-inherit outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-(--border-focus)"
                           title={worktreeTooltip(identity, session.time)}
                           onClick={() => pick(session.id)}
                         >

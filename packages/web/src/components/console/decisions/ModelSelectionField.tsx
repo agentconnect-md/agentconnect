@@ -781,7 +781,7 @@ function AnswerSelect({
       trigger={({ open, menuId, toggle }) => (
         <button
           type="button"
-          className={`inp mn h-[30px] min-h-0 w-full cursor-pointer gap-2 px-[9px] py-0 text-left text-[12px] font-medium hover:border-(--border-strong) ${open ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)' : ''}`}
+          className={`inp mn h-[30px] min-h-0 w-full cursor-pointer gap-2 px-[9px] py-0 text-left text-[12px] font-medium hover:border-(--border-strong) ${open ? 'border-(--border-strong) shadow-(--focus-shadow)' : ''}`}
           aria-label={ariaLabel}
           aria-haspopup="menu"
           aria-expanded={open}

@@ -69,7 +69,7 @@ export default function EditDescriptionModal({ agent, onClose }: { agent: Agent;
           <div className="fld">
             <span className="fldlbl">{t('description')}</span>
             <textarea
-              className="inp resize-y px-3 py-[10px] leading-[1.6] focus:border-(--brand) focus:outline-none"
+              className="inp resize-y px-3 py-[10px] leading-[1.6]"
               rows={6}
               placeholder={t('placeholder')}
               value={description}

@@ -24,7 +24,7 @@ export function Chip({
   const base =
     'inline-flex items-center gap-[5px] rounded-full border px-[9px] py-1 font-mono text-[11.5px] leading-normal'
   const tone = on
-    ? 'border-(--brand) bg-(--brand-soft) font-semibold text-(--brand-soft-text)'
+    ? 'border-(--border-strong) bg-(--surface-hover) font-semibold text-(--text-primary)'
     : 'border-(--border-default) bg-transparent font-medium text-(--text-secondary)'
   if (!onClick) return <span className={`${base} ${tone}`}>{children}</span>
   return (

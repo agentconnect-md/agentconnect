@@ -156,6 +156,19 @@ desktop:grid-cols-4`. The hack rules stay in globals.css (harmless — they
     (`</span> to confirm`) and expression neighbours (`</span> {expr}`) are
     unaffected.
 
+16. **Focus and selection are quiet; magenta is not a focus colour.**
+
+    | Kind                                                     | Treatment                                                                                                                                                                             |
+    | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+    | Field (input, select, textarea, composer `focus-within`) | border one step darker than at rest (`--border-default` → `--border-strong`, `--border-strong` → `--border-focus`) + `shadow-(--focus-shadow)`; an invalid field keeps its red border |
+    | Button, icon button, toggle, link                        | `focus-visible:shadow-(--focus-ring) focus-visible:outline-none`; mouse focus shows nothing                                                                                           |
+    | Selected card / row / option / picker item               | `--border-strong` + `--surface-hover`, no shadow                                                                                                                                      |
+
+    Magenta stays for the primary button, checked/on states and the active tab or
+    nav indicator. `--brand-ring` is legacy — never use it for focus. A control with
+    no focus style of its own falls back to a base `:focus-visible` outline in the
+    same gray, so don't leave the browser's blue ring showing.
+
 ## Worked example
 
 ```tsx

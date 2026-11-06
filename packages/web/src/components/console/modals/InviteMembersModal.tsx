@@ -101,7 +101,7 @@ export default function InviteMembersModal({ onClose, onAdded }: { onClose: () =
               >
                 <span
                   className={`flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] border bg-(--surface-card) ${
-                    on ? 'border-(--brand)' : 'border-(--border-default)'
+                    on ? 'border-(--border-strong) bg-(--surface-hover)' : 'border-(--border-default)'
                   }`}
                 >
                   <Icon name={tile.icon} size={16} color={on ? 'var(--brand)' : 'var(--text-tertiary)'} />

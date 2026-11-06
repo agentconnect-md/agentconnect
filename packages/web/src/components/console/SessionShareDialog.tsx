@@ -85,7 +85,7 @@ export function SessionShareDialog({
       </>
     )
     const cls = `flex w-full items-center gap-3 rounded-[10px] border px-4 py-3 text-left ${
-      opts.selected ? 'border-(--brand) bg-(--brand-soft)' : 'border-(--border-default) bg-(--surface-card)'
+      opts.selected ? 'border-(--border-strong) bg-(--surface-hover)' : 'border-(--border-default) bg-(--surface-card)'
     }`
     return opts.onPick ? (
       <button

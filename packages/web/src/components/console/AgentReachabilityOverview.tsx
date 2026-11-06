@@ -266,7 +266,7 @@ export function AgentReachabilityOverview({
                 setFocusAgentId(event.target.value)
                 setFocusCycleComponentId(null)
               }}
-              className="h-8 min-w-[180px] rounded-md border border-(--border-subtle) bg-(--surface-card) px-2 font-sans text-[12.5px] font-medium leading-normal text-(--text-primary) outline-none focus:border-(--brand)"
+              className="h-8 min-w-[180px] rounded-md border border-(--border-subtle) bg-(--surface-card) px-2 font-sans text-[12.5px] font-medium leading-normal text-(--text-primary) outline-none focus:border-(--border-default) focus:shadow-(--focus-shadow)"
             >
               <option value="">{t('allAgents')}</option>
               {orderedAgents.map((agent) => (
@@ -355,7 +355,7 @@ export function AgentReachabilityOverview({
                   title={t('openAgentDetails')}
                   className={`${
                     isFocus || isFocusedCycleMember
-                      ? 'absolute flex items-center gap-[10px] rounded-md border-2 border-(--brand) bg-(--brand-soft) px-[11px] py-2 no-underline shadow-(--shadow-md)'
+                      ? 'absolute flex items-center gap-[10px] rounded-md border border-(--border-strong) bg-(--surface-hover) px-3 py-[9px] no-underline shadow-(--shadow-xs)'
                       : 'absolute flex items-center gap-[10px] rounded-md border border-(--border-subtle) bg-(--surface-card) px-3 py-[9px] no-underline shadow-(--shadow-xs)'
                   } ${dimmed ? 'opacity-30' : 'opacity-100'}`}
                   style={{
@@ -413,7 +413,7 @@ export function AgentReachabilityOverview({
                       }}
                       className={
                         selected
-                          ? 'flex max-w-[280px] items-center gap-[6px] rounded-full border border-(--brand) bg-(--brand-soft) px-[10px] py-[6px] text-left text-(--brand-soft-text)'
+                          ? 'flex max-w-[280px] items-center gap-[6px] rounded-full border border-(--border-strong) bg-(--surface-hover) px-[10px] py-[6px] text-left text-(--text-primary)'
                           : 'flex max-w-[280px] items-center gap-[6px] rounded-full border border-(--border-subtle) bg-(--surface-card) px-[10px] py-[6px] text-left text-(--text-secondary) hover:border-(--border-strong) hover:bg-(--surface-hover)'
                       }
                     >

@@ -589,7 +589,7 @@ export default function HomeView() {
           the design: agent + model as pills (leading mark), effort + permission as
           chips. Each picks the run's runtime; the choice is applied on send. */}
       <div
-        className="card mb-3 overflow-visible"
+        className="card mb-3 overflow-visible transition-[border-color,box-shadow] focus-within:border-(--border-default) focus-within:shadow-(--focus-shadow)"
         onKeyDown={(event) => {
           if (event.key === 'Escape') setMenu(null)
         }}

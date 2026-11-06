@@ -218,7 +218,7 @@ export function ComposerMenu({
                     autoFocus={selectedChoice && !searchable}
                     title={tooltipFor(choice)}
                     className={`fopt min-h-8 gap-2 rounded-md px-2 py-[5px] text-[12px] ${
-                      selectedChoice ? 'bg-(--brand-soft) text-(--brand-soft-text) hover:bg-(--brand-soft)' : ''
+                      selectedChoice ? 'bg-(--surface-hover) text-(--text-primary)' : ''
                     } ${choice.dimmed ? 'opacity-55' : ''}`}
                     onClick={() => pick(choice.value)}
                   >

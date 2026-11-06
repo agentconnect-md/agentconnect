@@ -12,7 +12,7 @@ export function OutputModeHelp({ activeMode }: { activeMode?: string | null }) {
     <span className="group relative inline-flex align-middle">
       <button
         type="button"
-        className="inline-flex h-4 w-4 items-center justify-center rounded-full text-(--text-tertiary) transition-colors hover:text-(--text-primary) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
+        className="inline-flex h-4 w-4 items-center justify-center rounded-full text-(--text-tertiary) transition-colors hover:text-(--text-primary) focus-visible:outline-none focus-visible:shadow-(--focus-ring)"
         aria-label={t('compare')}
         aria-describedby={tooltipId}
         onKeyDown={(event) => {

@@ -47,7 +47,7 @@ export function TaskThreadCard({
   const state = row ? tl(taskStateKey(row)) : null
   const href = orgPath(`/sessions/${encodeURIComponent(link.sessionId)}`)
   const cardClass = `card click flex w-full max-w-[520px] min-w-0 items-center gap-[10px] px-[14px] py-[11px] text-left no-underline ${
-    selected ? 'border-(--brand) [box-shadow:0_0_0_3px_var(--brand-ring)]' : ''
+    selected ? 'border-(--border-strong) bg-(--surface-hover) shadow-none' : ''
   }`
   const face = (
     <>

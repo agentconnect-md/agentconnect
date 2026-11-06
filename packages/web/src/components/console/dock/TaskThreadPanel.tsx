@@ -43,7 +43,7 @@ import { useOrgs } from '@/lib/org-context'
 import { approvalNotice, raisedIn, WebchatMcpApprovalCard } from '@/components/console/WebchatMcpApprovalCard'
 
 const HEADER_BTN =
-  'flex h-[26px] w-[26px] flex-none cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent text-(--text-secondary) transition-colors hover:bg-(--surface-hover) hover:text-(--text-primary) focus-visible:shadow-[0_0_0_3px_var(--brand-ring)] focus-visible:outline-none'
+  'flex h-[26px] w-[26px] flex-none cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent text-(--text-secondary) transition-colors hover:bg-(--surface-hover) hover:text-(--text-primary) focus-visible:shadow-(--focus-ring) focus-visible:outline-none'
 
 export function TaskThreadPanel({
   agentId,
@@ -558,7 +558,7 @@ function ThreadQuestion({
               placeholder={t('answer')}
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
-              className="min-w-0 flex-1 rounded-sm border border-(--border-default) bg-(--surface-card) px-2 py-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-primary) outline-none focus:border-(--brand)"
+              className="min-w-0 flex-1 rounded-sm border border-(--border-default) bg-(--surface-card) px-2 py-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-primary) outline-none focus:border-(--border-strong) focus:shadow-(--focus-shadow)"
             />
             <Button variant="primary" size="xs" type="submit" disabled={invalid !== undefined || draft === sent}>
               {t('send')}
@@ -696,7 +696,7 @@ function ThreadComposer({
     // On desktop the bottom inset is the conversation composer's (`.content`'s 26px + its footer's 4px), so the two boxes line up.
     <div className="flex-none px-3 pt-[10px] pb-3 desktop:pb-[30px]">
       {dock}
-      <div className="flex flex-col rounded-[11px] border border-(--border-default) bg-(--surface-card) shadow-(--shadow-xs) transition-[border-color,box-shadow] focus-within:border-(--brand) focus-within:[box-shadow:0_0_0_3px_var(--brand-ring)]">
+      <div className="flex flex-col rounded-[11px] border border-(--border-default) bg-(--surface-card) shadow-(--shadow-xs) transition-[border-color,box-shadow] focus-within:border-(--border-strong) focus-within:shadow-(--focus-shadow)">
         {attach ? (
           <ComposerFileChips
             files={files}

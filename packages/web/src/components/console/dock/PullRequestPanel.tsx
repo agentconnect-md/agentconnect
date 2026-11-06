@@ -720,7 +720,7 @@ export function PullRequestPanel({
               <button
                 type="button"
                 data-pr-body-toggle=""
-                className="self-start px-3 pb-2 font-sans text-[11px] font-medium leading-normal text-(--text-link) hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
+                className="self-start px-3 pb-2 font-sans text-[11px] font-medium leading-normal text-(--text-link) hover:underline focus-visible:outline-none focus-visible:shadow-(--focus-ring)"
                 onClick={() => setBodyExpanded((v) => !v)}
               >
                 {bodyExpanded ? t('showLess') : t('showMore')}

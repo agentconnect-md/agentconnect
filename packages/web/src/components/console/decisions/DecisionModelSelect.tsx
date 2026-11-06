@@ -63,7 +63,7 @@ export function DecisionModelSelect({
           <button
             type="button"
             disabled={disabled}
-            className={`inp min-h-9 w-full cursor-pointer gap-2 text-left hover:border-(--border-strong) ${open ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)' : ''}`}
+            className={`inp min-h-9 w-full cursor-pointer gap-2 text-left hover:border-(--border-strong) ${open ? 'border-(--border-strong) shadow-(--focus-shadow)' : ''}`}
             aria-label={ariaLabel ?? t('providerModel')}
             aria-haspopup="dialog"
             aria-expanded={open}

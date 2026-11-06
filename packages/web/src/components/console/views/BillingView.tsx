@@ -748,7 +748,7 @@ function AddCreditsCard({ orgId, returnPath }: { orgId: string; returnPath: stri
             className={`flex h-[38px] items-center gap-1.5 rounded-[6px] border px-2.5 ${
               invalidCustom
                 ? 'border-(--status-error)'
-                : 'border-(--border-default) focus-within:border-(--border-focus) focus-within:shadow-[0_0_0_3px_var(--brand-ring)]'
+                : 'border-(--border-default) focus-within:border-(--border-strong) focus-within:shadow-(--focus-shadow)'
             }`}
           >
             <span className="mono text-[12.5px] text-(--text-tertiary)">$</span>

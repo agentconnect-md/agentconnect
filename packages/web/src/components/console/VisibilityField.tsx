@@ -361,7 +361,7 @@ export function ChoicePills<T extends string>({
             onClick={() => onPick(option.value)}
             className={
               on
-                ? 'h-9 cursor-pointer rounded-full border border-(--brand) bg-(--brand-soft) px-[14px] font-sans text-[13px] font-semibold leading-normal text-(--brand) disabled:cursor-default'
+                ? 'h-9 cursor-pointer rounded-full border border-(--border-strong) bg-(--surface-hover) px-[14px] font-sans text-[13px] font-semibold leading-normal text-(--text-primary) disabled:cursor-default'
                 : 'h-9 cursor-pointer rounded-full border border-(--border-default) bg-(--surface-card) px-[14px] font-sans text-[13px] font-medium leading-normal text-(--text-secondary) transition-[background-color,border-color,color] hover:border-(--border-strong) hover:bg-(--surface-hover) hover:text-(--text-primary) disabled:cursor-default disabled:opacity-60'
             }
           >
@@ -392,7 +392,7 @@ function ShareWithPills({ selected, onToggle }: { selected: string[]; onToggle: 
               title={lastSelected ? t('removeLastMember') : undefined}
               className={
                 on
-                  ? 'inline-flex h-9 cursor-pointer items-center gap-[7px] rounded-full border border-(--brand) bg-(--brand-soft) pr-[14px] pl-[6px] font-sans text-[13px] font-semibold leading-normal text-(--brand)'
+                  ? 'inline-flex h-9 cursor-pointer items-center gap-[7px] rounded-full border border-(--border-strong) bg-(--surface-hover) pr-[14px] pl-[6px] font-sans text-[13px] font-semibold leading-normal text-(--text-primary)'
                   : 'inline-flex h-9 cursor-pointer items-center gap-[7px] rounded-full border border-(--border-default) bg-(--surface-card) pr-[14px] pl-[6px] font-sans text-[13px] font-medium leading-normal text-(--text-secondary) transition-[background-color,border-color,color] hover:border-(--border-strong) hover:bg-(--surface-hover) hover:text-(--text-primary)'
               }
             >

@@ -109,8 +109,8 @@ export function RuntimeSelect({
         disabled={rows.length === 0}
         className={`inp relative w-full cursor-pointer text-left outline-none transition-[background-color,border-color,box-shadow] ${
           open
-            ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)'
-            : 'hover:border-(--border-strong) hover:bg-(--surface-hover) focus-visible:border-(--border-focus) focus-visible:ring-[3px] focus-visible:ring-(--brand-ring)'
+            ? 'border-(--border-strong) shadow-(--focus-shadow)'
+            : 'hover:border-(--border-strong) hover:bg-(--surface-hover)'
         }`}
         aria-label={effectiveAriaLabel}
         aria-haspopup="listbox"
@@ -185,11 +185,7 @@ export function RuntimeSelect({
                           : undefined
                     }
                     className={`fopt min-h-10 gap-3 rounded-md px-2 py-[6px] text-[13px] ${
-                      isSelected
-                        ? 'bg-(--brand-soft) text-(--brand-soft-text) hover:bg-(--brand-soft)'
-                        : isActive
-                          ? 'bg-(--surface-hover)'
-                          : ''
+                      isSelected ? 'bg-(--surface-hover) text-(--text-primary)' : isActive ? 'bg-(--surface-hover)' : ''
                     }`}
                     onMouseEnter={() => setActiveIndex(index)}
                     onClick={() => pick(row.id)}
