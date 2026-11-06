@@ -1888,7 +1888,8 @@ export class SlackConnection implements PlatformConnection {
   /** Show the runtime's predicted next prompt at the top of a DM's Messages tab; `null` clears it. Best-effort. */
   async setDmSuggestedPrompt(channel: string, text: string | null): Promise<void> {
     if (!channel.startsWith('D')) return
-    if ((this.dmSuggestedPrompts.get(channel) ?? '') === (text ?? '')) return
+    // Unknown state (e.g. after a restart) is not "cleared": the first clear still reaches Slack.
+    if (this.dmSuggestedPrompts.has(channel) && this.dmSuggestedPrompts.get(channel) === (text ?? '')) return
     const title =
       text && text.length > SLACK_PROMPT_TITLE_CHARS ? `${text.slice(0, SLACK_PROMPT_TITLE_CHARS - 1)}…` : text
     try {

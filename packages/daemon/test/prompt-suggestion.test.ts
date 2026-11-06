@@ -68,6 +68,13 @@ describe('SlackConnection.setDmSuggestedPrompt', () => {
     ])
   })
 
+  it('sends the first clear for a DM it has no record of, since Slack may still show an old prompt', async () => {
+    const h = fixture()
+    await h.conn.setDmSuggestedPrompt('D1', null)
+    await h.conn.setDmSuggestedPrompt('D1', null)
+    expect(h.apiCall.mock.calls).toEqual([['assistant.threads.setSuggestedPrompts', { channel_id: 'D1', prompts: [] }]])
+  })
+
   it('never touches a channel or a group conversation', async () => {
     const h = fixture()
     await h.conn.setDmSuggestedPrompt('C1', 'next')
