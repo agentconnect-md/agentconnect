@@ -1617,6 +1617,8 @@ function MobileSessionFamilyLinks({
 
 /** How an open coordinator task is drawn: over the coordinator with its own tools, or as the side panel's quick look. */
 type TaskViewMode = 'panel' | 'expanded'
+/** The side panel is at least this wide while it shows a task's thread. */
+const TASK_PANEL_MIN_WIDTH = 420
 
 /** The dock's tabs. PR / Tasks are each one more entry (§9), not a stub; Sessions' §1 `plus` action awaits a new-session flow. */
 const DOCK_TABS: DockTab[] = [
@@ -2482,6 +2484,15 @@ export default function SessionDetailView() {
   // The side panel's thread; an expanded task draws over the page instead, leaving the panel on its lists.
   const openThread = taskThread?.scope === id && taskMode === 'panel' ? taskThread.link : null
   const expandedTask = taskThread?.scope === id && taskMode === 'expanded' ? taskThread.link : null
+  const coordinatorPage = session?.coordinator === true
+  // Whether this page has a task list to show: its agent and a real (not yet-to-be-created playground) session.
+  const taskListAvailable = !MOCK_MODE && filesAgentId !== null && tasksSessionId !== null
+  // The header's Tasks entry on a coordinator's page: the side panel's task list, any open task closed.
+  const showTaskList = () => {
+    setTaskThread(null)
+    setDockTab('tasks')
+    setDockReveal((n) => n + 1)
+  }
   // Bumped when a task opens in the side panel, so a collapsed dock comes on screen to show it.
   const [dockReveal, setDockReveal] = useState(0)
   const setTaskMode = useCallback((mode: TaskViewMode) => {
@@ -2617,6 +2628,8 @@ export default function SessionDetailView() {
   const dockTabs = useMemo<DockTab[]>(
     () =>
       localizedDockTabs
+        // A coordinator never touches files, git or a computer, so its panel keeps Sessions and Tasks only.
+        .filter((tab) => !coordinatorPage || tab.key === 'sessions' || tab.key === 'tasks')
         .filter((tab) =>
           tab.key === 'files' || tab.key === 'git'
             ? filesAgentId !== null && !MOCK_MODE
@@ -2625,7 +2638,8 @@ export default function SessionDetailView() {
               : tab.key === 'tasks'
                 ? // Against its OWN scope (an agent and a canonical session), and dropped once settled with nothing in either group; an open thread keeps it.
                   (openThread !== null && !MOCK_MODE) ||
-                  (filesAgentId !== null && tasksSessionId !== null && !MOCK_MODE && tasksTabShown(tasksVerdict))
+                  // A coordinator's header offers Tasks, so its tab stays wherever a list exists, showing the panel's empty state.
+                  (taskListAvailable && (coordinatorPage || tasksTabShown(tasksVerdict)))
                 : // PR keeps its tab without one: a 404 only means no pull-request run owns this session, and the panel then draws that branch's state and the action that opens one. That state is drawn only off a git read of THIS session's worktree (`prBranchScoped`) — the focused participant's checkout must not put session A's action on screen — and only when that read found a checkout (`changed !== null` is exactly "the settled read found one"). A linked PR keeps its tab whatever the git scope is: its identity comes from the run, not from a checkout.
                   tab.key !== 'pr' ||
                   (prSessionId !== null &&
@@ -2664,6 +2678,7 @@ export default function SessionDetailView() {
     [
       computerIds.length,
       computerManaged,
+      coordinatorPage,
       filesAgentId,
       filesStatus,
       gitStatus,
@@ -2677,6 +2692,7 @@ export default function SessionDetailView() {
       sessionsStatus,
       localizedDockTabs,
       openThread,
+      taskListAvailable,
       tasksSessionId,
       tasksStatus,
       tasksVerdict
@@ -4512,7 +4528,24 @@ export default function SessionDetailView() {
               ) : humanParticipants.length > 0 ? (
                 <SessionHumanFaces participants={humanParticipants} />
               ) : null}
-              {workspaceHref ? (
+              {coordinatorPage ? (
+                taskListAvailable ? (
+                  <button
+                    type="button"
+                    data-header-tasks=""
+                    className="lnk flex-none border-0 bg-transparent p-0 text-[12.5px] text-(--text-secondary)"
+                    onClick={showTaskList}
+                  >
+                    <Icon name="list-checks" size={13} />
+                    {t('tasks')}
+                    {tasksVerdict.running ? (
+                      <span className="rounded-full bg-(--brand-soft) px-[6px] font-sans text-[11px] font-semibold leading-normal text-(--brand-soft-text)">
+                        {tasksVerdict.running}
+                      </span>
+                    ) : null}
+                  </button>
+                ) : null
+              ) : workspaceHref ? (
                 <Link
                   className="lnk flex-none text-[12.5px] text-(--text-secondary)"
                   href={orgPath(workspaceHref)}
@@ -4644,9 +4677,21 @@ export default function SessionDetailView() {
               />
             </span>
             <CoordinatorTag show={session.coordinator} />
-            {workspaceHref ? (
-              // Borderless on purpose (no `iconbtn`): a boxed button in this strip of
-              // plain text triggers reads as the odd one out and eats width.
+            {coordinatorPage ? (
+              taskListAvailable ? (
+                <button
+                  type="button"
+                  data-header-tasks=""
+                  onClick={showTaskList}
+                  className="flex h-[26px] w-[22px] flex-none items-center justify-center rounded-md border-0 bg-transparent p-0 text-(--text-secondary) active:bg-(--surface-active)"
+                  title={t('tasks')}
+                  aria-label={t('tasks')}
+                >
+                  <Icon name="list-checks" size={14} />
+                </button>
+              ) : null
+            ) : workspaceHref ? (
+              // Borderless on purpose (no `iconbtn`): a boxed button in this strip of plain text reads as the odd one out.
               <Link
                 href={orgPath(workspaceHref)}
                 className="flex h-[26px] w-[22px] flex-none items-center justify-center rounded-md text-(--text-secondary) no-underline active:bg-(--surface-active)"
@@ -5772,6 +5817,7 @@ export default function SessionDetailView() {
         onVisibleChange={setDockVisible}
         stripHidden={dockTabKey === 'tasks' && openThread !== null}
         suppressed={expandedTask !== null}
+        widthFloor={openThread ? TASK_PANEL_MIN_WIDTH : 0}
       >
         {/* Both panels stay mounted; only the active one draws. Sessions owns the verdict that sets its own tab status, and Files owns the tree, the filter and the scroll position a tab switch must not spend. */}
         <DockPanel active={dockTabKey === 'sessions'}>
