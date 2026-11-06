@@ -11,7 +11,8 @@ import {
   desktopEnv,
   desktopProfile,
   isBrowserName,
-  loadDesktopState
+  loadDesktopState,
+  memoryGiB
 } from './desktops.js'
 
 const dirs: string[] = []
@@ -200,5 +201,26 @@ describe('a full machine', () => {
     } finally {
       await restore()
     }
+  })
+})
+
+describe('memory for one more desktop', () => {
+  const GiB = 1024 * 1024 * 1024
+  const files = (entries: Record<string, string>) => (path: string) => {
+    if (!(path in entries)) throw new Error(`ENOENT ${path}`)
+    return entries[path]!
+  }
+  const meminfo = (gib: number) => `MemTotal: 99 kB\nMemAvailable: ${gib * 1024 * 1024} kB\n`
+
+  it("counts the machine's free memory, or a container limit's headroom when that is less", () => {
+    expect(memoryGiB(files({ '/proc/meminfo': meminfo(6.5) }))).toBe(6)
+    expect(memoryGiB(files({ '/proc/meminfo': meminfo(6), '/sys/fs/cgroup/memory.max': 'max\n' }))).toBe(6)
+    const pod = {
+      '/proc/meminfo': meminfo(60),
+      '/sys/fs/cgroup/memory.max': `${3 * GiB}\n`,
+      '/sys/fs/cgroup/memory.current': `${1.2 * GiB}\n`
+    }
+    expect(memoryGiB(files(pod))).toBe(1)
+    expect(memoryGiB(files({}))).toBe(1)
   })
 })

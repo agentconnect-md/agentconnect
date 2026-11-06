@@ -44,13 +44,20 @@ export DBUS_SESSION_BUS_ADDRESS
 xfce4-session > /tmp/xfce4-session.log 2>&1 &
 session=$!
 
+# Whether the main desktop's browser runs: the one holding the default profile, not an agent desktop's own (computer-use.md §3.9).
+main_browser_running() {
+  local lock
+  lock=$(readlink "$HOME/.config/chromium/SingletonLock" 2> /dev/null) || return 1
+  kill -0 "${lock##*-}" 2> /dev/null
+}
+
 # Keeps one maximized browser window open: it is restarted when it exits or crashes, with a growing pause.
 supervise_browser() {
   trap 'exit 0' TERM INT
   local pause=1 started pid window steady status
   while true; do
     # A second launch would only open another window in the instance holding the profile, so wait for that one to exit.
-    if pgrep -u "$(id -u)" -x "$(basename "$BROWSER")" > /dev/null; then
+    if main_browser_running; then
       sleep 2 &
       wait $!
       continue

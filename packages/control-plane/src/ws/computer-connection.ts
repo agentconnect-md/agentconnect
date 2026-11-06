@@ -216,7 +216,11 @@ export class ComputerConnection implements ComputerChannel {
       ...(this.deps.screenshots
         ? { screenshotRetentionDays: this.deps.screenshots.retentionDays(computer.policy) }
         : {}),
-      ...(egress ? { egress } : {})
+      ...(egress ? { egress } : {}),
+      // Only a `manual` managed computer is shared by agents, so only it gives each agent a desktop (§3.9).
+      ...(this.managed && this.deps.leases
+        ? { desktops: computer.allocation === 'manual' ? 'per-agent' : 'shared' }
+        : {})
     })
     // Grants still sign with the previous window's key just after a boundary, so a desktop that joins then needs it too.
     const signing = this.deps.keys.signing(this.computerId, principal.apiKeyId, now.getTime())

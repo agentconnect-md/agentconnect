@@ -59,8 +59,8 @@ export const DaemonConfig = z.object({
   webrtc: z.boolean().default(true),
   // Hold the display awake while running: a sleeping display cannot be captured or controlled.
   keepAwake: z.boolean().default(true),
-  // Linux: each agent gets its own desktop where the machine supports it (computer-use.md §3.9); off until it ships whole.
-  perAgentDesktops: z.boolean().default(false),
+  // Linux: each agent gets its own desktop where the machine supports it (computer-use.md §3.9); false shares this one.
+  perAgentDesktops: z.boolean().default(true),
   // An agent desktop's screen, and how long one with no lease or viewer keeps its browser, then itself, running.
   desktopSize: z
     .string()

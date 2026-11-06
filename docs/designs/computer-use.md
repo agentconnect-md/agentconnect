@@ -9,7 +9,7 @@ with a development plan: the Linux desktop daemon and Docker first, then macOS a
 adds a command-line and file tier beside the GUI tools, granted separately and off on a person's desktop (§5.7).
 v8 (2026-11-06) designs one desktop per agent on a Linux Computer, so agents work in parallel, with browser logins
 shared between those desktops by forking and merging Chromium profiles when a browser starts (§3.9, §3.10); a
-prototype validated it in a Debian VM, and §14.9 plans its delivery (M6).
+prototype validated it in a Debian VM, and it shipped as M6 (§14.9), on by default where supported.
 The Chinese version lives in the extensions repository (`docs/designs/computer-use.md`, PR #147).
 
 The first source of Computers is the user's own machine (a **self-hosted computer**). A **managed computer** that
@@ -30,7 +30,7 @@ inferred or untested; **[legal]** needs counsel. Nothing here on licenses is leg
 | 5   | macOS grant owner                  | macOS grants must belong to AgentConnect's own app (`md.agentconnect.computer`), not the terminal (§3.2.1)                                                                                                                                        | Validated                                         |
 | 6   | Connection                         | Outbound WebSocket to the CP with a Computer key; tool calls ride the desktop's outbound relay link with per-session CP tokens; no screen bytes reach the CP (§3.6, §3.7)                                                                         | Implemented (the agent's direct path is design)   |
 | 7   | Permissions                        | Per-Computer visibility; agent access as one relation (No agents / Selected / All agents) set from either side; `view` / `control` modes; approvals; hard refusals (§4)                                                                           | Refusals validated; approvals, access implemented |
-| 8   | Concurrency                        | **At most one control lease per desktop**; on Linux each agent gets its own desktop by default, elsewhere a Computer is one desktop that agents take in turn; screenshots run concurrently (§3.9, §4.4)                                           | Validated (per-agent desktops: design)            |
+| 8   | Concurrency                        | **At most one control lease per desktop**; on Linux each agent gets its own desktop by default, elsewhere a Computer is one desktop that agents take in turn; screenshots run concurrently (§3.9, §4.4)                                           | Validated                                         |
 | 9   | Tools                              | `computer_*` MCP tools; coordinates are screenshot pixels with a fixed 1280 long edge (§5)                                                                                                                                                        | Validated                                         |
 | 10  | Sharing with a human               | Human-first arbitration, owner pause, emergency stop, takeover pauses agents (§6)                                                                                                                                                                 | Validated (keyboard detection and tray: X11 only) |
 | 11  | Remote desktop                     | A **built-in WebRTC viewer** on the same port as MCP, instead of relying on the OS's remote desktop; embedded in the console, direct first then TURN (§7)                                                                                         | Implemented                                       |
@@ -580,7 +580,7 @@ and UDP ports, and no access to the user's own apps and sessions (exactly what a
 VM when a GPU, real Xorg, or a long-lived personal desktop is needed. A user can also run the image on their own server;
 it is then a **self-hosted computer with isolation**.
 
-### 3.9 Per-agent desktops (Linux) [design; validated by a prototype]
+### 3.9 Per-agent desktops (Linux) [implemented]
 
 On Linux a Computer hosts several **desktops**: the **main desktop**, the display the daemon started in (a person's
 session, or the container's Xvfb), and one **agent desktop** for each agent that has used the Computer. Agents on
@@ -617,7 +617,9 @@ quotas and metering (§15.5) stay per Computer, so a managed pod running several
   from or merged with another, and agents still work in parallel. On a managed computer the master is the main
   desktop's profile, which the organization prepares (§17-14).
 - **Managed computers.** An `ephemeral` or `per-agent` computer serves one agent, so the switch is off there; a
-  `manual` one, which agents share, has it on. Its pod is sized for `maxDesktops` × about 0.9 GB (§15.1).
+  `manual` one, which agents share, has it on. A pod does not know its allocation, so the Control Plane says it on every
+  connect (`desktops` in `computer/auth/ok`), which overrides the switch without saving it. Warm pods share one memory
+  limit (`computerPool.resources`), and a `manual` one starts an agent desktop while a GiB of it is free (§15.1).
 
 - **Why separate displays.** Measured on Debian 13 with Chromium 156 (2026-11-05): one display has one pointer and one
   keyboard focus, so two agents' XTest input interleaves into one window. MPX (`xinput create-master`) gives each agent
@@ -636,7 +638,8 @@ quotas and metering (§15.5) stay per Computer, so a managed pod running several
   command runs with its caller's desktop environment, so a GUI app it starts opens there.
 - **Lifecycle.** A desktop starts on demand. An agent desktop with no lease and no viewer for `desktopIdleMinutes` (30)
   stops, closing its browser first (§3.10) and keeping everything on disk; its next use starts it again. At most
-  `maxDesktops` run at once (by default the available memory divided by 1 GiB, at least one); starting one more stops
+  `maxDesktops` run at once (by default one more while a GiB is free, the lesser of the machine's available memory and a
+  container's cgroup headroom, and at least one); starting one more stops
   the least recently used idle desktop, and when none is idle the call fails with `unavailable` and the reason
   `desktops_full`: a capacity refusal has no holder and no queue, so it must not read as `computer_busy` (§4.4).
 - **Leases.** One control lease per desktop: each desktop's `Computer` holds its own local lease. The Control Plane
@@ -673,7 +676,7 @@ quotas and metering (§15.5) stay per Computer, so a managed pod running several
   `desktops off` closed both browsers gracefully and stopped the desktops, `on` and the next call restarted one whose
   browser merged the other desktop's newer cookies and localStorage; SIGTERM to the daemon left no Xvfb or browser.
 
-### 3.10 Browser profiles: fork-merge on launch [design; validated by a prototype]
+### 3.10 Browser profiles: fork-merge on launch [implemented]
 
 Each desktop runs its own Chromium with its own profile, since a profile serves one process: a second Chromium on the
 same `--user-data-dir` hands its window to the running one, on that one's display. Logins are shared by
@@ -1866,9 +1869,10 @@ works; lock screen and UAC prompts return definite errors; no rules or autostart
 ### 14.9 M6: per-agent desktops on Linux
 
 A prototype (2026-11-05/06, a Debian 13 VM under both GNOME on Xorg and GNOME on Wayland, plus a Mac's Chrome 156
-for the viewer) validated §3.9 and §3.10 end to end. It lands in this order, one pull request each; the daemon parts
-stay behind `perAgentDesktops`, off by default, until the Control Plane and the console can show and lease each
-desktop, and the last step turns it on.
+for the viewer) validated §3.9 and §3.10 end to end. It landed in this order, one pull request each (#3657, #3659,
+#3661, #3662, #3664, #3670, #3672, then the default; tracked in #3658); the daemon parts stayed behind
+`perAgentDesktops`, off by default, until the Control Plane and the console could show and lease each desktop, and
+the last step turned it on.
 
 | Step | Pull request                                                                                                                                                                                                                                                   | Verified by                                                                     |
 | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |

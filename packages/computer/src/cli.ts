@@ -17,7 +17,7 @@ import { auditSinks, fileAuditSink, type AuditSink } from './audit.js'
 import { browserCloseCommand, browserCommand } from './browser/command.js'
 import { CommandLine, commandLineSupported, narrowedCommandLine } from './command-line.js'
 import { installable, offerDesktopInstall } from './linux/desktops-install.js'
-import { describeDesktops, probeDesktopSupport, type DesktopSupport } from './linux/desktops-support.js'
+import { describeDesktops, desktopsNotice, probeDesktopSupport, type DesktopSupport } from './linux/desktops-support.js'
 import { DesktopManager } from './linux/desktops.js'
 import { AuditReporter } from './cp/audit-report.js'
 import { ScreenshotStore } from './cp/screenshot-store.js'
@@ -156,8 +156,8 @@ Commands:
                                                start a desktop's Chromium on its own profile, first merging the
                                                logins of the other profiles into it (or hand ARGS to the running one)
   browser-close --profile DIR [--display :N]   close that browser the way a person would, so it saves its cookies
-  desktops [on | off | status]                 Linux: give each agent its own desktop (where the machine can:
-                                               Xvfb, D-Bus and Xfce), or let agents share this one (the default)
+  desktops [on | off | status]                 Linux: give each agent its own desktop (the default where the
+                                               machine can: Xvfb, D-Bus and Xfce), or let agents share this one
   service install | uninstall [--purge] | start | stop | restart | status
                                                background service: macOS .app LaunchAgent (the app holds
                                                the permissions), Linux systemd user unit (graphical session),
@@ -516,6 +516,8 @@ function startCpChannel(options: {
   // Linux: the per-agent desktops, whose status the heartbeat reports and whose leases the CP pushes (§3.9).
   desktops?: () => DesktopManager | undefined
   onDesktopLeases?: (leases: ComputerControlLease[]) => void
+  // A managed computer's arrangement, which the Control Plane decides from its allocation (§3.9).
+  onArrangement?: (perAgent: boolean) => void
 }): { client: ComputerCpClient; relays: RelayLinks; refreshDoctor(): void; stop(): void } | undefined {
   const { dir, config, registration, authority, computer, driver, screenSize } = options
   const num = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0)
@@ -588,7 +590,10 @@ function startCpChannel(options: {
       computer.applyControlLease(lease)
       options.onDesktopLeases?.(desktops ?? [])
     },
-    onReady: (ok) => computer.rename(ok.name),
+    onReady: (ok) => {
+      computer.rename(ok.name)
+      if (ok.desktops) options.onArrangement?.(ok.desktops === 'per-agent')
+    },
     onRelays: (relays) => relayLinks.converge(relays),
     onStop: (stop) => applyConsoleStop(stop),
     onEgress: (egress) => options.egress?.apply(egress),
@@ -1206,6 +1211,16 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
       live.desktops?.setShareBrowserLogins(policy.shareBrowserLogins !== false)
     },
     desktops: () => live.desktops,
+    // Not saved: the Control Plane says it again on every connect, and the allocation never changes.
+    onArrangement: (on) => {
+      if (config.perAgentDesktops === on) return
+      config.perAgentDesktops = on
+      log(
+        `per-agent desktops ${on ? 'on' : 'off'}: this managed computer ${on ? 'is shared by agents' : 'serves one agent'}`
+      )
+      live.local?.update()
+      if (!on) void live.desktops?.stopAll('this managed computer serves one agent')
+    },
     onDesktopLeases: (leases) => {
       live.desktopLeases = new Map(leases.flatMap((lease) => (lease.desktop ? [[lease.desktop, lease]] : [])))
       for (const desktop of live.desktops?.runningDesktops() ?? [])
@@ -1535,6 +1550,8 @@ async function setup(
   // With per-agent desktops on and only packages missing, setup offers to install them (§3.9).
   if (process.platform === 'linux' && config.perAgentDesktops) {
     await offerDesktopInstall(await probeDesktopSupport(), { log: (line) => console.log(line) })
+    // On by default even on a person's own desktop, so setup says what that changes and how to undo it (§3.9).
+    if ((await probeDesktopSupport()).supported) console.log(desktopsNotice(selfCommand()))
   }
   console.log('')
   let checks: Check[]

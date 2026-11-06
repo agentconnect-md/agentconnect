@@ -29,6 +29,17 @@ describe('the policy form', () => {
     expect(DEFAULT_ADMIN_PROMPTS).toBe(DEFAULT_COMPUTER_ADMIN_PROMPT_MODE)
   })
 
+  it('shares browser logins between agent desktops by default and stores only turning it off (§3.9)', () => {
+    const draft = draftOf(policy)
+    expect(draft.shareBrowserLogins).toBe(true)
+    const off = policyFromDraft(policy, { ...draft, shareBrowserLogins: false })
+    expect('policy' in off && off.policy.shareBrowserLogins).toBe(false)
+    const stored = { ...policy, shareBrowserLogins: false }
+    expect(draftOf(stored).shareBrowserLogins).toBe(false)
+    const back = policyFromDraft(stored, { ...draftOf(stored), shareBrowserLogins: true })
+    expect('policy' in back && 'shareBrowserLogins' in back.policy).toBe(false)
+  })
+
   it('drops the retention when blanked, so the deployment default applies', () => {
     const result = policyFromDraft(policy, { ...draftOf(policy), screenshotRetentionDays: ' ' })
     expect('policy' in result && result.policy.screenshotRetentionDays).toBeUndefined()

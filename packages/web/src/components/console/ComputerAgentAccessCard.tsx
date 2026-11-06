@@ -47,6 +47,16 @@ export function ComputerAgentAccessCard({ computer }: { computer: ComputerDto })
           access.agents.map((id) => <GrantedAgent key={id} agent={byId.get(id)} id={id} computer={computer} />)
         )}
       </div>
+      {/* Per-agent desktops (computer-use.md §3.9): granted agents leave the main screen and work with a fork of its logins. */}
+      {computer.desktops && (access.mode === 'all' || access.agents.length > 0) && (
+        <p
+          className="m-0 flex items-start gap-[7px] border-t border-(--border-subtle) px-4 py-[10px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)"
+          data-desktops-notice
+        >
+          <Icon name="app-window" size={13} className="mt-[2px] flex-none" />
+          <span>{t(computer.policy.shareBrowserLogins === false ? 'ownDesktopsSeparate' : 'ownDesktopsShared')}</span>
+        </p>
+      )}
       <p className="m-0 border-t border-(--border-subtle) bg-(--surface-sunken) px-4 py-[10px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
         {fixed
           ? t('ownAgentOnly')

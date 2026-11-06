@@ -104,6 +104,16 @@ export function describeDesktops(switchedOn: boolean, support: DesktopSupport): 
   return `on: each agent gets its own desktop (Xvfb + ${support.session === 'xfce' ? 'Xfce' : 'xfwm4'})`
 }
 
+/** What setup tells the owner while per-agent desktops are on: agents leave this screen and work with a copy of its logins. */
+export function desktopsNotice(command: string): string {
+  return [
+    'Per-agent desktops are on: each agent works on a desktop of its own, not on this screen; watch it in the console',
+    "or the viewer. Agents' browsers start with a copy of this desktop's Chromium logins (the console policy",
+    `"Share browser logins" turns that off). Turn per-agent desktops off with the tray's "Separate desktop for each`,
+    `agent" or: ${command} desktops off`
+  ].join('\n')
+}
+
 /** The doctor's line for the switch and what this machine supports; `install` is this distribution's install line. */
 export function desktopsCheck(switchedOn: boolean, support: DesktopSupport, command: string, install?: string): Check {
   const detail = describeDesktops(switchedOn, support)

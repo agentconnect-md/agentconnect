@@ -25,6 +25,8 @@ export interface PolicyDraft {
   exposeDriverTools: boolean
   /** The effective setting; it is stored only while it differs from the default. */
   viewerPeerToPeer: boolean
+  /** Per-agent desktops fork the registrant's browser logins (computer-use.md §3.9); stored only while off. */
+  shareBrowserLogins: boolean
   leaseIdleSeconds: string
   leaseMaxSeconds: string
   leaseWaitSeconds: string
@@ -49,6 +51,7 @@ export function draftOf(policy: ComputerPolicy, owner: PolicyOwner = NO_OWNER): 
     ...(policy.approvals.adminPrompts ? { adminPrompts: policy.approvals.adminPrompts } : {}),
     exposeDriverTools: policy.exposeDriverTools,
     viewerPeerToPeer: viewerPeerToPeerAllowed(policy, owner),
+    shareBrowserLogins: policy.shareBrowserLogins !== false,
     leaseIdleSeconds: String(policy.leaseIdleSeconds),
     leaseMaxSeconds: String(policy.leaseMaxSeconds),
     leaseWaitSeconds: String(policy.leaseWaitSeconds),
@@ -91,6 +94,7 @@ export function policyFromDraft(
   const {
     screenshotRetentionDays: _drop,
     viewerPeerToPeer: _p2p,
+    shareBrowserLogins: _share,
     shell: _sh,
     files: _fs,
     fileRoots: _roots,
@@ -98,6 +102,7 @@ export function policyFromDraft(
   } = base
   void _drop
   void _p2p
+  void _share
   void _sh
   void _fs
   void _roots
@@ -116,6 +121,7 @@ export function policyFromDraft(
       },
       exposeDriverTools: draft.exposeDriverTools,
       ...(p2pDefault ? {} : { viewerPeerToPeer: draft.viewerPeerToPeer }),
+      ...(draft.shareBrowserLogins ? {} : { shareBrowserLogins: false }),
       leaseIdleSeconds: idle,
       leaseMaxSeconds: max,
       leaseWaitSeconds: wait,
@@ -318,6 +324,16 @@ export function ComputerPolicyCard({
             ariaLabel={t('peerToPeer')}
           />
         </Row>
+        {computer.os === 'linux' && (
+          <Row label={t('shareLogins')} detail={t('shareLoginsHint')}>
+            <Toggle
+              checked={draft.shareBrowserLogins}
+              disabled={!editable}
+              onChange={(v) => set('shareBrowserLogins', v)}
+              ariaLabel={t('shareLogins')}
+            />
+          </Row>
+        )}
       </Group>
 
       {editable && (
