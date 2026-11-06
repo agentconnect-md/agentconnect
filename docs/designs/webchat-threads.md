@@ -163,6 +163,25 @@ that allows a second participant. Slack's own thread participation rules are unc
   `inThread`, `replyThreadOf` and `platformMessageIdOf` give webchat the answers they give Slack, and
   `threadless` returns false for a threaded daemon.
 
+As implemented (PR 4):
+
+- Only a coordinator conversation's turns get a `thread` and the per-post `msgId`. An ordinary
+  conversation keeps `msgId: webchat:<conv>`, no `thread`, and its rows on `webchat:<conv>`, so its
+  session key never moves.
+- `threadForPlatformMessage` matches a row by its `ts` or its webchat `postId`. A `thread` is a root
+  when its row's recorded thread is the post itself or the literal `webchat:<conv>`.
+- The rows a turn writes follow the message's thread through the turn plan's `statusThread`, as on
+  Slack. This covers the coordinator's streamed answer, its tool rows and its cards. They stay admitted
+  into the coordinator's session, so `session/history` is unchanged. Readers tell coordinator turns
+  apart by that admission (§6.1, §6.2).
+- Until `threadless` flips (PR 5), `answerThreadOf` still answers a webchat message at the root, and
+  `replyToMessage` reports `at: 'root'`. A reply in a thread already reaches the coordinator with its
+  `thread` named (§4).
+- A session-targeted continuation (`targetSessionId`) that names a `thread` is refused
+  `unknown_thread` until other members can write in a task's thread (§6.3, PR 9).
+- Peers' `context` copies stay on `webchat:<conv>`, because a coordinator conversation has no other
+  participants (§4.1).
+
 ### 5.2 Task coordinates
 
 A coordinator task opened for a webchat message is keyed like a Slack threaded task: channel
