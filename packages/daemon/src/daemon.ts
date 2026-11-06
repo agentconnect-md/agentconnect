@@ -6601,6 +6601,9 @@ export class Daemon {
       // Crossing into or out of 'settings' clears session overrides; dropping below 'approve' retires in-chat approval cards.
       const settingsLeft = chatSettingsAllowed(previous) && !chatSettingsAllowed(a)
       if (chatSettingsAllowed(previous) !== chatSettingsAllowed(a)) await this.store.clearRuntimeConfigOverrides(a.id)
+      // A new coordinator setting wins over what a coordinator chat set for itself (auto-session-mode.md §5.4).
+      else if (JSON.stringify(previous?.coordinatorModel ?? null) !== JSON.stringify(a.coordinatorModel ?? null))
+        await this.store.clearCoordinatorRuntimeOverrides(a.id)
       if (chatApprovalsAllowed(previous) && !chatApprovalsAllowed(a))
         this.permissions.disableChatPermissionSurfaces(a.id)
       await this.applyMemoryHomeBinding(previous, a as LoadedAgent)

@@ -5194,6 +5194,19 @@ export class LocalStore {
       .run(agentId)
   }
 
+  /** Drop what each coordinator chat set for its own coordinator, so a new agent setting reaches them all (auto-session-mode.md §5.4). */
+  async clearCoordinatorRuntimeOverrides(agentId: string): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE sessions
+         SET modelOverride = NULL,
+             effortOverride = NULL,
+             fastModeOverride = NULL
+         WHERE agentId = ? AND thread LIKE ?`
+      )
+      .run(agentId, `${COORDINATOR_COORDINATE_PREFIX}%`)
+  }
+
   /** The session-scoped fast-mode override (set via the status-bar fast toggle), or
    *  undefined if the session runs on the agent's default. Stored as 0/1; sticky across
    *  turns and restarts, re-applied to the ACP session on each dispatch. */
