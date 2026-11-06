@@ -93,6 +93,14 @@ export function commandHighlight(
   return { start, end, hint: hint || null }
 }
 
+/** Fit the command overlay to the textarea's text viewport, scrollbar gutter excluded, so both wrap and scroll alike. */
+export function syncCommandMirror(mirror: HTMLElement | null, textarea: HTMLTextAreaElement | null): void {
+  if (!mirror || !textarea) return
+  mirror.style.width = `${textarea.clientWidth}px`
+  mirror.style.height = `${textarea.clientHeight}px`
+  mirror.scrollTop = textarea.scrollTop
+}
+
 /** The draft once a run command's leading line is consumed: the command never reaches the agent. */
 export function draftWithoutCommandLine(text: string, start: number): string {
   const lineEnd = text.indexOf('\n', start)

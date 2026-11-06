@@ -1,6 +1,16 @@
 'use client'
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode
+} from 'react'
 import Link from 'next/link'
 import { useTranslations } from 'next-intl'
 import { liveBotTurnKey, sameBotSpeaker } from '@/lib/bot-turn-grouping'
@@ -117,7 +127,11 @@ import {
   type ComposerHistoryEntry
 } from '@/components/console/useComposerHistory'
 import { CommandMenu } from '@/components/console/CommandMenu'
-import { commandHighlight, type ControlCommand } from '@/components/console/composer-control-commands'
+import {
+  commandHighlight,
+  syncCommandMirror,
+  type ControlCommand
+} from '@/components/console/composer-control-commands'
 import type { DecisionRuntimeTarget } from '@agentconnect.md/protocol/decision'
 import { useCommandAutocomplete } from '@/components/console/useCommandAutocomplete'
 import { useRuntimeCommands } from '@/components/console/useRuntimeCommands'
@@ -367,6 +381,15 @@ function ComposerTextarea({
   // A recognized leading command reads as a command: the overlay behind the (then transparent) text colors it and hints its argument.
   const highlight = commandHighlight(draft, controls ?? EMPTY_CONTROLS, runtimeCommands.candidates)
   const overlayRef = useRef<HTMLDivElement | null>(null)
+  // Re-fit after every render (the scrollbar comes and goes with the draft) and whenever the composer resizes.
+  useLayoutEffect(() => syncCommandMirror(overlayRef.current, textareaRef.current))
+  useEffect(() => {
+    const textarea = textareaRef.current
+    if (!textarea || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => syncCommandMirror(overlayRef.current, textareaRef.current))
+    observer.observe(textarea)
+    return () => observer.disconnect()
+  }, [])
   return (
     <div className="relative">
       {recall.label && (
@@ -381,17 +404,16 @@ function ComposerTextarea({
       <div className="relative">
         {highlight && (
           <div
-            ref={(el) => {
-              overlayRef.current = el
-              if (el && textareaRef.current) el.scrollTop = textareaRef.current.scrollTop
-            }}
+            ref={overlayRef}
             aria-hidden
             data-testid="composer-command-highlight"
-            className={`${COMPOSER_TEXT} pointer-events-none absolute inset-0 overflow-hidden break-words whitespace-pre-wrap text-(--text-primary)`}
+            className={`${COMPOSER_TEXT} pointer-events-none absolute top-0 left-0 overflow-hidden break-words whitespace-pre-wrap text-(--text-primary)`}
           >
             {draft.slice(0, highlight.start)}
             <span className="text-(--text-link)">{draft.slice(highlight.start, highlight.end)}</span>
             {draft.slice(highlight.end)}
+            {/* A textarea gives a trailing newline its own line; a div needs content there to match. */}
+            {draft.endsWith('\n') && '\u200b'}
             {highlight.hint && (
               <span className="text-(--text-tertiary)">
                 {draft.length === highlight.end ? ' ' : ''}
@@ -402,9 +424,7 @@ function ComposerTextarea({
         )}
         <textarea
           ref={textareaRef}
-          onScroll={(e) => {
-            if (overlayRef.current) overlayRef.current.scrollTop = e.currentTarget.scrollTop
-          }}
+          onScroll={(e) => syncCommandMirror(overlayRef.current, e.currentTarget)}
           className={`${COMPOSER_TEXT} relative block max-h-[160px] min-h-[56px] w-full resize-none border-0 bg-transparent outline-none placeholder:text-(--text-tertiary) ${highlight ? 'text-transparent caret-(--text-primary)' : 'text-(--text-primary)'}`}
           placeholder={suggestion ?? placeholder}
           value={draft}

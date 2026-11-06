@@ -5,6 +5,7 @@ import {
   matchChoices,
   matchControls,
   resolveControl,
+  syncCommandMirror,
   type ControlCommand,
   type ControlName
 } from './composer-control-commands'
@@ -80,6 +81,19 @@ describe('commandHighlight', () => {
     expect(commandHighlight('/fas', controls, skills)).toBeNull()
     expect(commandHighlight('/unknown', controls, skills)).toBeNull()
     expect(commandHighlight('hi /fast', controls, skills)).toBeNull()
+  })
+})
+
+describe('syncCommandMirror', () => {
+  it('fits the overlay to the text viewport, not the outer box with its scrollbar', () => {
+    // A 320px composer whose 10px scrollbar leaves a 310px text viewport.
+    const textarea = { clientWidth: 310, clientHeight: 160, scrollTop: 48 } as HTMLTextAreaElement
+    const mirror = { style: {}, scrollTop: 0 } as HTMLElement
+    syncCommandMirror(mirror, textarea)
+    expect(mirror.style.width).toBe('310px')
+    expect(mirror.style.height).toBe('160px')
+    expect(mirror.scrollTop).toBe(48)
+    expect(() => syncCommandMirror(null, textarea)).not.toThrow()
   })
 })
 
