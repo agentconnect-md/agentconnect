@@ -680,6 +680,8 @@ export interface Pending {
   /** Each tool call's title and input summary from its updates, for an approval card whose
    *  request names only the call's id (`rememberToolCall`). Created on the first tool call. */
   knownToolCalls?: Map<string, KnownToolCall>
+  /** This turn's execute calls not yet settled, by start time; the ones still open at a clean end are background terminals. */
+  openExecs?: Map<string, number>
   /** Bounded fingerprint of the prompt text this turn sent, for recognizing a runtime
    *  fallback title that is only that prompt read back (session/derive-title.ts). */
   promptEchoPrefix?: string

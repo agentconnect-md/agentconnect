@@ -1,7 +1,8 @@
 # Background-Task-Aware ACP Host Reclamation
 
 **Status:** Implemented for Claude runtimes that emit the required SDK lifecycle
-events. Other runtimes use the ordinary idle-timeout behavior.
+events, and for any runtime's background terminals (§2.1). Other work uses the
+ordinary idle-timeout behavior.
 
 ## 1. Contract
 
@@ -40,6 +41,25 @@ These notifications are trusted lifecycle signals because they come from the
 daemon-owned ACP connection, not from a chat message or a control-plane
 instruction. They remain daemon-local and never traverse the daemon-control
 plane WebSocket.
+
+### 2.1 Background terminals
+
+A runtime can end a turn while a command it started keeps running. Codex's
+unified exec leaves such a command as a background terminal, and its `execute`
+tool call is still `in_progress` when `session/prompt` returns. The daemon
+tracks each turn's open `execute` calls from `tool_call` and terminal
+`tool_call_update` notifications. When the turn ends cleanly, the calls still
+open are held for the session in `BackgroundExecs`
+([`background-execs.ts`](../../packages/daemon/src/daemon/background-execs.ts)),
+beside the lease and under the same key. The call's terminal update, sent when
+the process exits during a later turn or outside any turn, releases it. A
+stopped or failed turn holds nothing, because its open calls may never settle.
+
+A held call counts as live work for every guard in §4, for at most
+`agentMaxLifetimeMs` from its start. Closing the session matters as much as
+stopping the host here: the runtime answers `session/close` by unsubscribing
+from the thread, and Codex then unloads it and terminates its background
+terminals.
 
 ## 3. Lease State
 
@@ -348,9 +368,11 @@ The current lease depends on the filtered Claude SDK lifecycle stream:
 
 - A non-Claude runtime, an adapter without the extension, or a session that
   emits no accepted lifecycle messages has no lease and uses ordinary
-  idle-timeout reclamation.
-- Arbitrary child processes that the runtime does not represent as lifecycle
-  tasks are not protected by the lease.
+  idle-timeout reclamation, apart from its background terminals (§2.1).
+- Arbitrary child processes that the runtime represents neither as lifecycle
+  tasks nor as open `execute` calls are not protected.
+- A background terminal whose end never reaches the daemon holds its session
+  until `agentMaxLifetimeMs` from its start.
 - A missed `task_started` event is not recovered from
   `background_tasks_changed`; the snapshot only settles already tracked tasks.
 - A lease that never receives a terminal edge remains protected only until the
@@ -363,9 +385,9 @@ of this contract.
 
 ## 7. Locality and Cleanup
 
-Lease records live only in daemon memory. Stopping a host removes all leases for
-that agent so stale task state cannot defer a future child. TTL-closing an idle
-session removes its lease, and unknown lifecycle events do not create durable
+Lease records and held background terminals live only in daemon memory. Stopping
+a host removes all of them for that agent so stale task state cannot defer a
+future child. TTL-closing an idle session removes its lease and terminals, and unknown lifecycle events do not create durable
 state.
 
 The control plane receives neither the lifecycle stream nor task descriptions.

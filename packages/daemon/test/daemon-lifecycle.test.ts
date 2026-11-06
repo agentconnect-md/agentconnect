@@ -2451,6 +2451,84 @@ describe('Daemon idle sweep (#111/#118)', () => {
   })
 })
 
+describe('Daemon idle sweep — background terminals', () => {
+  // A turn that ends while a command it started keeps running, as a Codex unified exec terminal does.
+  async function bootWithBackgroundExec(clock: FakeClock, limits: Record<string, number>) {
+    let onUpdate!: (sessionId: string, update: unknown) => unknown
+    const host = {
+      ...quietHost(),
+      prompt: vi.fn(async () => {
+        await onUpdate('acp-1', {
+          sessionUpdate: 'tool_call',
+          toolCallId: 'exec-1',
+          kind: 'execute',
+          status: 'in_progress',
+          title: 'python3 observer.py'
+        })
+        return 'end_turn'
+      })
+    }
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(limits),
+      hostFactory: (_agent, update) => {
+        onUpdate = update
+        return host as any
+      },
+      clock
+    })
+    await daemon.start()
+    makeRoutable(daemon)
+    await (daemon as any).dispatch('bot-a', dm('100', 'watch the rebuild'), 'int-a')
+    return { daemon, host, update: async (u: unknown) => await onUpdate('acp-1', u) }
+  }
+
+  it('keeps the session and its host while the command runs, then reclaims once it exits', async () => {
+    const clock = new FakeClock()
+    const { daemon, host, update } = await bootWithBackgroundExec(clock, {
+      agentIdleTimeoutMs: 1000,
+      agentMaxLifetimeMs: 10_000_000,
+      idleSweepMs: 10_000_000
+    })
+
+    clock.advance(1001)
+    await (daemon as any).sweepIdle()
+    expect((daemon as any).hosts.has('bot-a')).toBe(true)
+    expect((await (daemon as any).store.getSession(KEY))?.state).toBe('idle')
+    expect((daemon as any).agentHasLiveSdkWork('bot-a')).toBe(true) // the gate on idle secret-file removal
+
+    // The command exits between turns; its end arrives outside any turn.
+    await update({ sessionUpdate: 'tool_call_update', toolCallId: 'exec-1', status: 'completed' })
+    clock.advance(1001)
+    await (daemon as any).sweepIdle()
+    await vi.waitFor(() => expect((daemon as any).hosts.has('bot-a')).toBe(false), WAIT)
+    expect(host.stop).toHaveBeenCalled()
+    expect((await (daemon as any).store.getSession(KEY))?.state).toBe('closed')
+
+    await daemon.stop()
+  })
+
+  it('stops holding once the command has run past agentMaxLifetimeMs', async () => {
+    const clock = new FakeClock()
+    const { daemon } = await bootWithBackgroundExec(clock, {
+      agentIdleTimeoutMs: 1000,
+      agentMaxLifetimeMs: 5000,
+      idleSweepMs: 10_000_000
+    })
+
+    clock.advance(1001)
+    await (daemon as any).sweepIdle()
+    expect((await (daemon as any).store.getSession(KEY))?.state).toBe('idle')
+
+    clock.advance(4500)
+    await (daemon as any).sweepIdle()
+    await vi.waitFor(() => expect((daemon as any).hosts.has('bot-a')).toBe(false), WAIT)
+    expect((await (daemon as any).store.getSession(KEY))?.state).toBe('closed')
+
+    await daemon.stop()
+  })
+})
+
 describe('Daemon idle sweep — background-task lease', () => {
   const evt = (subtype: string, extra: Record<string, unknown> = {}) => ({ type: 'system', subtype, ...extra })
 

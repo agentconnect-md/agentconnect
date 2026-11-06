@@ -1246,6 +1246,7 @@ import type {
   WebchatRemoteMcpEntitlement
 } from '@agentconnect.md/protocol'
 import { boundedDiagnostic, formatErr, startFailureDetail } from './daemon/text.js'
+import { BackgroundExecs, noteOpenExec } from './daemon/background-execs.js'
 import { HostPasses } from './daemon/host-passes.js'
 import { isBuiltinSystemToolCall, rememberToolCall, type ApprovalRequestParts } from './daemon/tool-classification.js'
 import { activityThreadOf, buildTurnPlan, type TurnPlan } from './daemon/turn-plan.js'
@@ -1771,6 +1772,11 @@ export class Daemon {
       drainDeliveries: number
     }
   >()
+  // Background terminals a cleanly ended turn left running (any runtime), keyed like `sdkLease`; they hold the same idle gates.
+  private backgroundExecs = new BackgroundExecs(
+    () => this.clock.now(),
+    () => this.cfg.limits.agentMaxLifetimeMs
+  )
   /** Armed background-task wake checks (one per settled non-subagent task), tracked so
    *  daemon drain cannot leave a timer behind. The callback re-validates everything it
    *  needs, so a lease dropped by stopHost simply makes the wake a no-op. */
@@ -9053,7 +9059,10 @@ export class Daemon {
       outwardSessionId: async (sessionKey, agentId) =>
         await this.store.ensureOutwardSessionId(sessionKey, agentId, this.clock.now()),
       sessionSdkQuiescent: (owner, acpSessionId) => this.sessionSdkQuiescent(owner, acpSessionId),
-      releaseSdkLease: (owner, acpSessionId) => void this.sdkLease.delete(sdkLeaseKey(owner, acpSessionId)),
+      releaseSdkLease: (owner, acpSessionId) => {
+        this.sdkLease.delete(sdkLeaseKey(owner, acpSessionId))
+        this.backgroundExecs.drop(sdkLeaseKey(owner, acpSessionId))
+      },
       startRuntime: async (agent, entry) => await this.startModelSessionRuntime(agent, entry),
       hasDaemonHost: (agentId) => this.hasHostForAgent(agentId),
       cleanupAgentConfigFiles: (agentId) => this.cleanupModelSessionConfigFiles(agentId),
@@ -22678,6 +22687,9 @@ export class Daemon {
     if (!cleanupOutcome.blocked) {
       this.recordFooterHolder(p)
       this.pending.delete(pendingTurnKey(p.hostKey, sessionId))
+      // A clean end leaves its still-open execute calls running in the background; a stopped or failed turn's are not trusted.
+      if (!p.outputSuppressed && !settlement.propagatingTurnError)
+        this.backgroundExecs.adopt(sdkLeaseKey(p.hostKey, sessionId), agentId, p.openExecs)
       this.quiescence.notify()
       // §7.3 prompting/cancelling → idle: the turn is over (cleanly, on error, or
       // cancelled), so the session is idle again. Without this the row stayed
@@ -25136,6 +25148,8 @@ export class Daemon {
       }
     }
     if (!p) {
+      // A background terminal that exits between turns reports its end here.
+      this.backgroundExecs.settle(sdkLeaseKey(owner, sessionId), update)
       // A runtime-initiated cycle (Claude's bg-task self-drain) narrates into a turn nobody
       // owns. Capture the text instead of dropping it — the idle edge delivers it (§5.2 of
       // background-task-aware-reclaim.md). Gated on a lease saying `running`: a straggler
@@ -25169,7 +25183,11 @@ export class Daemon {
     update = p.termOut.fold(update)
     const toolCallId = typeof update?.toolCallId === 'string' ? update.toolCallId : ''
     if (toolCallId && isBuiltinSystemToolCall(update)) p.builtinSystemToolCallIds.add(toolCallId)
-    if (toolCallId) rememberToolCall((p.knownToolCalls ??= new Map()), update)
+    if (toolCallId) {
+      rememberToolCall((p.knownToolCalls ??= new Map()), update)
+      noteOpenExec((p.openExecs ??= new Map()), update, this.clock.now())
+      this.backgroundExecs.settle(sdkLeaseKey(owner, sessionId), update) // a later turn may see an earlier one end
+    }
     // Select the complete GitHub final in memory. Do not write any GitHub comment here:
     // the prompt (and every agent-side tool call) must finish before publish() performs
     // the first and only public POST.
@@ -26831,6 +26849,7 @@ export class Daemon {
     )
     // With every host of the agent gone, nothing of its session state can be live: sweep it agent-wide.
     for (const [sid, lease] of this.sdkLease) if (lease.agentId === agentId) this.sdkLease.delete(sid)
+    this.backgroundExecs.dropAgent(agentId)
     for (const [bindingKey, binding] of this.sessionDeliveryBindings) {
       if (binding.agentId === agentId) this.sessionDeliveryBindings.delete(bindingKey)
     }
@@ -26874,6 +26893,7 @@ export class Daemon {
     // Session state is filed under its owning host, so this host drops exactly its own — a sibling
     // session host of the same agent keeps its leases and bindings (the agent-wide sweep is stopHost's).
     for (const sid of this.sdkLease.keys()) if (pendingTurnOwner(sid) === key) this.sdkLease.delete(sid)
+    this.backgroundExecs.dropOwner(key)
     const clearDeliveryBindings = () => {
       for (const [bindingKey, binding] of this.sessionDeliveryBindings) {
         if (binding.agentId === agentId && this.sessionOwnerKey(agentId, bindingKey) === key) {
@@ -27575,7 +27595,9 @@ export class Daemon {
    *  window and the completion lost — the very thing §5.1 exists to prevent. */
   private sessionSdkQuiescent(owner: HostKey, acpSessionId: string | null | undefined): boolean {
     if (!acpSessionId) return true
-    const l = this.sdkLease.get(sdkLeaseKey(owner, acpSessionId))
+    const leaseKey = sdkLeaseKey(owner, acpSessionId)
+    if (this.backgroundExecs.live(leaseKey)) return false
+    const l = this.sdkLease.get(leaseKey)
     return !l || (l.tasks.size === 0 && l.armedWakes === 0 && l.deliveringWakes === 0 && l.sdkState === 'idle')
   }
 
@@ -27585,13 +27607,13 @@ export class Daemon {
    *  reclaim. */
   private agentHasLiveSdkWork(agentId: string): boolean {
     for (const l of this.sdkLease.values()) if (l.agentId === agentId && liveSdkLease(l)) return true
-    return false
+    return this.backgroundExecs.agentLive(agentId)
   }
 
   /** Live background work on the sessions one host owns — its leases are filed under its key. */
   private hostHasLiveSdkWork(owner: HostKey): boolean {
     for (const [leaseKey, l] of this.sdkLease) if (pendingTurnOwner(leaseKey) === owner && liveSdkLease(l)) return true
-    return false
+    return this.backgroundExecs.ownerLive(owner)
   }
 
   /** Re-write the agent's materialized config-file secrets (idle-swept below)
@@ -27904,8 +27926,10 @@ export class Daemon {
           removed += 1
           this.sessionStrategies.delete(rec.key)
           this.expireAppCards({ sessionKey: rec.key })
-          if (rec.acpSessionId)
+          if (rec.acpSessionId) {
             this.sdkLease.delete(sdkLeaseKey(this.sessionOwnerKey(rec.agentId, rec.key), rec.acpSessionId))
+            this.backgroundExecs.drop(sdkLeaseKey(this.sessionOwnerKey(rec.agentId, rec.key), rec.acpSessionId))
+          }
           this.legacyMicrosandboxSessions.delete(sessionHostKey(rec.agentId, rec.key))
           await this.modelSessions.release(rec.key)
           await this.closeSharedHostSession(rec)
@@ -28508,6 +28532,7 @@ export class Daemon {
       void this.closeSharedHostSession(row, hostsAtDecision.get(agentHostKey(row.agentId)))
       if (!row.acpSessionId) continue
       this.sdkLease.delete(sdkLeaseKey(this.sessionOwnerKey(row.agentId, row.key), row.acpSessionId)) // the session is gone
+      this.backgroundExecs.drop(sdkLeaseKey(this.sessionOwnerKey(row.agentId, row.key), row.acpSessionId))
       await this.sessionMetadataOutbox.emitSessionMetadataSnapshot({
         sessionId: row.acpSessionId,
         sessionKey: row.key,
