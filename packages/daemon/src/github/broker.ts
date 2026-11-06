@@ -1,6 +1,7 @@
 // GitHub's structured broker (github-app-git-credentials.md, Daemon-Mediated Agent Access): pull requests, issues, and the comments on them.
 import {
   AuthoredCommentLedger,
+  BrokerHttpError,
   bool,
   branch,
   BROKER_MERGE_METHODS,
@@ -60,6 +61,26 @@ const TO_READY =
 
 /** A commit sha the merge must match: hex only, never free text in the body. */
 const COMMIT_SHA = /^[0-9a-f]{7,64}$/i
+
+/** GitHub echoes a grant's contents level, so a comment-tier grant reads `read`; for a comment, the token's own issue and pull-request scopes decide. */
+function enforceGithub(lease: BrokerLease, endpoint: BrokerEndpoint): void {
+  const clamp =
+    endpoint.capability === 'comment' && lease.access === 'read' ? { ...lease, access: 'comment' as const } : lease
+  enforceCapability(clamp, endpoint, 'GitHub repository')
+}
+
+/** A read-tier token GitHub refuses a comment with gets the same answer the clamp gives elsewhere. */
+async function commentScoped(request: Promise<unknown>): Promise<unknown> {
+  try {
+    return await request
+  } catch (error) {
+    if (error instanceof BrokerHttpError && error.status === 403)
+      throw new Error(
+        'this operation needs comment authority on the GitHub repository, but the current authorization grants read'
+      )
+    throw error
+  }
+}
 
 export interface GithubBrokerDeps {
   /** The pull-request token for this target's repository, at the tier the agent's authorization earns. */
@@ -175,7 +196,7 @@ export class GithubBroker implements CodeHostEffectBroker {
       case 'createComment': {
         const params = { ...at, number: numberOf(op.iid) }
         const lease = await this.lease(target, 'comment.create')
-        const created = await this.call(target, lease, 'comment.create', params, { body: op.body })
+        const created = await commentScoped(this.call(target, lease, 'comment.create', params, { body: op.body }))
         this.authored.remember(ledger, idOf(record(created).id))
         return { comment: commentResult(created) }
       }
@@ -185,7 +206,9 @@ export class GithubBroker implements CodeHostEffectBroker {
           throw new Error('only a comment this session created through the broker can be updated')
         }
         const lease = await this.lease(target, 'comment.update')
-        const updated = await this.call(target, lease, 'comment.update', { ...at, commentId }, { body: op.body })
+        const updated = await commentScoped(
+          this.call(target, lease, 'comment.update', { ...at, commentId }, { body: op.body })
+        )
         return { comment: commentResult(updated) }
       }
       case 'createMergeRequest': {
@@ -368,7 +391,7 @@ export class GithubBroker implements CodeHostEffectBroker {
   /** Mint the lease and check every endpoint the operation will use before its first request, so a refusal never half-applies. */
   private async lease(target: CodeHostEffectTarget, ...endpoints: EndpointId[]): Promise<BrokerLease> {
     const lease = await this.deps.lease(target)
-    for (const endpoint of endpoints) enforceCapability(lease, GITHUB_BROKER_ENDPOINTS[endpoint], 'GitHub repository')
+    for (const endpoint of endpoints) enforceGithub(lease, GITHUB_BROKER_ENDPOINTS[endpoint])
     return lease
   }
 
@@ -389,7 +412,7 @@ export class GithubBroker implements CodeHostEffectBroker {
         ...(this.deps.invalidateLease
           ? { invalidateLease: (token: string) => this.deps.invalidateLease!(target, token) }
           : {}),
-        enforce: (fresh) => enforceCapability(fresh, endpoint, 'GitHub repository'),
+        enforce: (fresh) => enforceGithub(fresh, endpoint),
         host: 'GitHub',
         ...(this.deps.fetchImpl ? { fetchImpl: this.deps.fetchImpl } : {})
       },

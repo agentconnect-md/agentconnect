@@ -494,6 +494,27 @@ describe('GithubBroker', () => {
     expect(calls.map((c) => c.method)).toEqual(['POST'])
   })
 
+  it('lets a comment-tier grant comment although GitHub echoes its contents level as read', async () => {
+    const { fetchImpl, calls } = fakeFetch([COMMENT])
+    const gh = broker(fetchImpl, 'read')
+    await gh.execute(TARGET, { kind: 'createComment', subject: 'issue', iid: 7, body: 'Looks good' })
+    expect(calls.map((c) => c.method)).toEqual(['POST'])
+    await expect(gh.execute(TARGET, { kind: 'createIssue', title: 'Bug' })).rejects.toThrow('needs write authority')
+    expect(calls).toHaveLength(1)
+  })
+
+  it('answers a read-tier token GitHub refuses a comment with as a missing comment authority', async () => {
+    const calls: string[] = []
+    const fetchImpl = (async (url: string) => {
+      calls.push(String(url))
+      return new Response(JSON.stringify({ message: 'Resource not accessible by integration' }), { status: 403 })
+    }) as typeof fetch
+    await expect(
+      broker(fetchImpl, 'read').execute(TARGET, { kind: 'createComment', subject: 'issue', iid: 7, body: 'hi' })
+    ).rejects.toThrow('needs comment authority on the GitHub repository, but the current authorization grants read')
+    expect(calls).toHaveLength(1)
+  })
+
   it('refuses a pull request edit naming reviewers on a comment lease before any request', async () => {
     const { fetchImpl, calls } = fakeFetch([PULL])
     await expect(

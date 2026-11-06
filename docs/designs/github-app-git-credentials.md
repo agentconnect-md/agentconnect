@@ -487,7 +487,10 @@ grant reports its access from its contents level; without it every lease
 would read as `read`. It needs no new gitcred purpose, because that grant is
 already what the agent's `gh` receives. The token stays in its own cache
 keyspace and never reaches the runtime. A comment needs the comment tier;
-every other action needs write.
+every other action needs write. A GitHub grant cannot echo `comment`, so a
+comment-tier grant reads `read`; the broker therefore lets a comment through
+on a `read` echo and leaves the decision to the token's own issue and
+pull-request scopes, which the Control Plane minted from the tier.
 
 **Footer at creation.** When the agent's footer is on, the daemon appends the
 attribution footer (agent, runtime, model, session link) to the description
