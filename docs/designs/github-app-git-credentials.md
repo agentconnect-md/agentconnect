@@ -554,7 +554,31 @@ Only the proxy address differs:
 - `gh`, which cannot be pointed at another API origin for `github.com`, gets
   `HTTPS_PROXY`, the daemon CA in the usual trust variables, and the
   placeholder as `GH_TOKEN`; and
-- every other client sees the same variables.
+- every other client sees the same variables, with `NODE_USE_ENV_PROXY=1`,
+  since Node's `fetch` and `https` ignore `HTTPS_PROXY` without it.
+
+**Capture.** The proxy needs no transparent capture, because a client that
+bypasses it holds only the placeholder and fails closed. Whether a client
+reaches the proxy is therefore a matter of usability, never of exposure:
+
+- Under `srt` the network namespace has no route but `srt`'s own proxy, so a
+  client that ignores the proxy variables has no network at all. `srt`'s
+  `mitmProxy` option routes the code-host domains to the daemon's proxy over
+  a Unix socket, so `srt` keeps setting the proxy variables and the daemon
+  only adds the trust variables.
+- Elsewhere (the host, the VM, a pool pod) the proxy variables point at the
+  daemon's proxy, and a client that ignores them reaches the code host with
+  the placeholder and is refused.
+- `gh`, `git`, `curl`, Go's `net/http` (and so `glab`), Python's `urllib` and
+  `requests` honor `HTTPS_PROXY`; Node's `fetch` and `https` honor it only
+  with `NODE_USE_ENV_PROXY=1`, which the daemon already sets for `srt` and the
+  pod shim and would set everywhere.
+
+**Trust.** The proxy terminates TLS only for the code-host domains, with a
+daemon CA. `SSL_CERT_FILE` replaces the system roots, so it names a bundle of
+the system roots plus that CA. Python's `requests` reads its own bundle and
+needs `REQUESTS_CA_BUNDLE` as well. git needs no trust, since `insteadOf`
+reaches the proxy without TLS.
 
 **Token selection.** The proxy would take the repository from the request
 path: a smart-HTTP path for git, and `/repos/{owner}/{repo}/…` for REST, and
@@ -616,12 +640,6 @@ take the real key out of the `srt` and host environments, where a command the
 agent runs can read it today, and would replace the VM's hostname-scoped
 placeholders. Subscription sign-ins (OAuth) stay out: the daemon does not hold
 or refresh a person's subscription login on others' behalf.
-
-### Open Questions
-
-1. **Transparent capture.** The proxy would rely on clients honoring
-   `HTTPS_PROXY`. Does `srt`'s network namespace allow transparent capture
-   instead, and which runtimes and common CLIs ignore the variable?
 
 ## Protocol Contract (`packages/protocol`)
 
