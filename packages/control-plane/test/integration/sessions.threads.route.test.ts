@@ -225,7 +225,14 @@ describe('GET /sessions/:id/threads/:rootId/messages', () => {
       {
         daemonId: DAEMON,
         orgId: DEFAULT_ORG_ID,
-        req: { agentId: AGENT, sessionId: COORDINATOR, rootId: ROOT_UNOWNED, cursor: 'tc-9', limit: 10 }
+        req: {
+          agentId: AGENT,
+          sessionId: COORDINATOR,
+          rootId: ROOT_UNOWNED,
+          cursor: 'tc-9',
+          limit: 10,
+          imagesPerMessage: TRANSCRIPT_IMAGE_MAX_COUNT
+        }
       }
     ])
     const shared = await running.app.inject({

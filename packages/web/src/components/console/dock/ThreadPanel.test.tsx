@@ -829,6 +829,8 @@ describe('ThreadPanel for the conversation’s owner (webchat-threads.md §6.3)'
       step({ kind: 'msg', who: '@you', text: 'something else entirely', turnId: 't2', thread: 'post-other' }),
       step({ kind: 'done', text: 'An answer at the root', turnId: 't3' })
     ]
+    // A message sends only what is drafted when the composer draws.
+    wire.drafts['ses_coordinator#post-root'] = 'and the cache key?'
     await render()
     const panel = container.querySelector('[data-thread-panel="post-root"]')!
     const box = panel.querySelector<HTMLTextAreaElement>('[data-thread-composer]')!
@@ -841,7 +843,6 @@ describe('ThreadPanel for the conversation’s owner (webchat-threads.md §6.3)'
     expect(panel.textContent).not.toContain('something else entirely')
     expect(panel.textContent).not.toContain('An answer at the root')
 
-    wire.drafts['ses_coordinator#post-root'] = 'and the cache key?'
     act(() => {
       box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     })
@@ -861,6 +862,8 @@ describe('ThreadPanel for the conversation’s owner (webchat-threads.md §6.3)'
     withTask = false
     const seen: unknown[] = []
     props = { record: ref, writer, onSummary: (read) => seen.push(read) }
+    // A message sends only what is drafted when the composer draws.
+    wire.drafts['ses_coordinator#post-root'] = 'ship it'
     wire.busy = true
     wire.turnThread = 'post-root'
     await render()
@@ -873,7 +876,6 @@ describe('ThreadPanel for the conversation’s owner (webchat-threads.md §6.3)'
     expect(panel.textContent).toContain('deploy-bot is working…')
     expect(seen).toEqual([summary])
 
-    wire.drafts['ses_coordinator#post-root'] = 'ship it'
     act(() => {
       panel
         .querySelector<HTMLTextAreaElement>('textarea')!
