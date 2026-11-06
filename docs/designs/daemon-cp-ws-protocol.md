@@ -668,6 +668,13 @@ usage, display and deep-link metadata, sender names, and tool-body references.
 `session/tool-body` / `session/tool-body/chunk` stream large tool payloads
 separately.
 
+A daemon advertising `session-thread-reads-v1` also answers a coordinator page's
+reads ([webchat-threads.md](webchat-threads.md) §8): `session/history` with
+`view: 'roots'` returns the main timeline with each thread reply marked by its
+`thread` and the page's `threads` summaries, and `session/thread` /
+`session/thread/page` page one thread's record by `(sessionId, rootId)` with its
+summary. The CP sends neither to a daemon without the feature.
+
 **List** (`GET /sessions`): a **CP database read** of the
 `event/session`-synced metadata — cursor-paginated, ordered by last activity,
 scoped by each Session's audience; `agentId`/`platform`/`channel` filters narrow

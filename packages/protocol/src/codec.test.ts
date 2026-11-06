@@ -1095,6 +1095,68 @@ describe('session read-back frames (console history pull)', () => {
     expect(JSON.parse(m.body!).rawInput).toEqual({ path: 'README.md' })
   })
 
+  it('session/history takes the roots view; session/thread pages one thread with its summary (webchat-threads.md §8)', () => {
+    const roots = decodeEnvelope(
+      envelope('session/history', { agentId: AGENT_ID, sessionId: SESSION_ID, view: 'roots', after: '7' })
+    )
+    if (!roots.ok || !isFrame('session/history')(roots.frame)) throw new Error('expected session/history')
+    expect(roots.frame.payload.view).toBe('roots')
+    expect(decodeEnvelope(envelope('session/history', { sessionId: SESSION_ID, view: 'threads' })).ok).toBe(false)
+    const summary = {
+      rootId: 'root-1',
+      rootExcerpt: 'can you look at the login bug?',
+      replies: 3,
+      lastReplyAt: '2026-11-06T10:00:00.000Z',
+      lastReply: { sender: '@dana', senderName: 'Dana Reyes', excerpt: 'thanks, that worked' },
+      participants: [{ sender: '@dana', senderName: 'Dana Reyes' }, { sender: AGENT_ID }],
+      task: { sessionId: 'sid-task', title: 'Fix the login bug', state: 'open' },
+      running: true
+    }
+    const page = decodeEnvelope(
+      envelope('session/history/page', {
+        sessionId: SESSION_ID,
+        messages: [{ seq: 2, sender: AGENT_ID, ts: '2', kind: 'text', text: 'on it', thread: 'root-1' }],
+        threads: [summary]
+      })
+    )
+    if (!page.ok || !isFrame('session/history/page')(page.frame)) throw new Error('expected page')
+    expect(page.frame.payload.messages[0]!.thread).toBe('root-1')
+    expect(page.frame.payload.threads).toEqual([summary])
+    const tooMany = { ...summary, participants: Array.from({ length: 6 }, (_, i) => ({ sender: `u${i}` })) }
+    expect(
+      decodeEnvelope(envelope('session/history/page', { sessionId: SESSION_ID, messages: [], threads: [tooMany] })).ok
+    ).toBe(false)
+
+    const req = decodeEnvelope(
+      envelope('session/thread', { agentId: AGENT_ID, sessionId: SESSION_ID, rootId: 'root-1' })
+    )
+    if (!req.ok || !isFrame('session/thread')(req.frame)) throw new Error('expected session/thread')
+    expect(req.frame.payload.limit).toBe(50)
+    expect(decodeEnvelope(envelope('session/thread', { sessionId: SESSION_ID, rootId: 'root-1' })).ok).toBe(false)
+    expect(
+      decodeEnvelope(
+        envelope('session/thread', {
+          agentId: AGENT_ID,
+          sessionId: SESSION_ID,
+          rootId: 'root-1',
+          cursor: 'c',
+          after: '1'
+        })
+      ).ok
+    ).toBe(false)
+    const thread = decodeEnvelope(
+      envelope('session/thread/page', {
+        sessionId: SESSION_ID,
+        rootId: 'root-1',
+        messages: [{ seq: 1, sender: '@dana', ts: '1', kind: 'text', text: 'can you look at the login bug?' }],
+        liveCursor: '9',
+        summary
+      })
+    )
+    if (!thread.ok || !isFrame('session/thread/page')(thread.frame)) throw new Error('expected session/thread/page')
+    expect(thread.frame.payload.summary?.task?.sessionId).toBe('sid-task')
+  })
+
   it('session/tool-body REQ defaults offset to 0; session/tool-body/chunk round-trips with nextOffset', () => {
     const req = decodeEnvelope(
       envelope('session/tool-body', { agentId: AGENT_ID, sessionId: SESSION_ID, toolCallId: 'tc-1' })

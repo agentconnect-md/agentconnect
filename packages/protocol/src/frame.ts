@@ -162,6 +162,8 @@ import { SecretsRequest, SecretsGrant, SecretsRenew, SecretsRevoke, ScopeAttesta
 import {
   SessionHistoryReq,
   SessionHistoryPage,
+  SessionThreadReq,
+  SessionThreadPage,
   SessionListReq,
   SessionListPage,
   SessionToolBodyReq,
@@ -550,6 +552,9 @@ export const FRAME_SCHEMAS = {
   'session/list/page': SessionListPage,
   'session/history': SessionHistoryReq,
   'session/history/page': SessionHistoryPage,
+  // One thread's record (webchat-threads.md §8), only to a daemon advertising SESSION_THREAD_READS_FEATURE.
+  'session/thread': SessionThreadReq,
+  'session/thread/page': SessionThreadPage,
   'session/tool-body': SessionToolBodyReq,
   'session/tool-body/chunk': SessionToolBodyChunk,
   // ── child-session status (session-concept §5.4). Two legs: D→C asks the CP (the placement
@@ -952,6 +957,8 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('session/list/page', FRAME_SCHEMAS['session/list/page']),
   frame('session/history', FRAME_SCHEMAS['session/history']),
   frame('session/history/page', FRAME_SCHEMAS['session/history/page']),
+  frame('session/thread', FRAME_SCHEMAS['session/thread']),
+  frame('session/thread/page', FRAME_SCHEMAS['session/thread/page']),
   frame('session/tool-body', FRAME_SCHEMAS['session/tool-body']),
   frame('session/tool-body/chunk', FRAME_SCHEMAS['session/tool-body/chunk']),
   frame('session/child-status', FRAME_SCHEMAS['session/child-status']),

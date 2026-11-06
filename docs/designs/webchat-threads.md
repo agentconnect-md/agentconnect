@@ -206,7 +206,8 @@ As implemented (PR 4):
 - The rows a turn writes follow the message's thread through the turn plan's `statusThread`, as on
   Slack. This covers the coordinator's streamed answer, its tool rows and its cards. They stay admitted
   into the coordinator's session, so `session/history` is unchanged. Readers tell coordinator turns
-  apart by that admission (§6.1, §6.2).
+  apart by that admission (§6.1, §6.2), except the coordinator's own posts in a thread, which carry the
+  same admission and are marked instead (§5.3, PR 7).
 - Until `threadless` flips (PR 5), `answerThreadOf` still answers a webchat message at the root, and
   `replyToMessage` reports `at: 'root'`. A reply in a thread already reaches the coordinator with its
   `thread` named (§4).
@@ -232,6 +233,25 @@ agents, at most a few), the holding task's session id, title and state, and whet
 running in the thread. `repliesOf` (`packages/daemon/src/cp/assistant-activity.ts`) already counts a
 task's replies; the summary generalizes it from "a task's" to "a thread's", so an unowned thread (a
 coordinator answer and its follow-ups) has a footer too. Nothing new is stored on the Control Plane.
+
+As implemented (PR 7):
+
+- **A thread** is named by a root text row whose `ts` or webchat `postId` it is, the same test the
+  retention rule (§5.5) and `isRoot` use. A row recorded on a thread its root names is a reply in that
+  thread; a row whose thread is its own, absent, or names no recorded root is at the root, which keeps a
+  legacy `webchat:<conv>` row a root.
+- **The thread record a session reads** is the root and the thread's rows, without the reading
+  session's own turns (rows its agent sent that were admitted into it, unless the session's coordinate
+  is the thread, as a task's is) and without other agents' work rows. People's replies, the
+  coordinator's posts in the thread, the holding task's turns and observations are in it.
+- **The coordinator's posts in a thread** (`replyToMessage`, a legacy link card) carry
+  `UserTurnBody.threadPost`, since they share the coordinator's admission with its turns.
+  `postWebchatAgentMessage` sets it whenever it posts in a thread.
+- **The summary** (`SessionThreadSummary`) carries the root's excerpt, the reply count, `lastReplyAt`,
+  the latest reply's author and excerpt, up to five repliers newest first, the holding task's session
+  id, title and state from the task index, and `running` while the task's session is prompting. Its
+  content is filtered by the CP for a task the viewer may not read (§7.1, PR 8). `repliesOf` keeps
+  counting a task's own session for the Activity view.
 
 ### 5.4 A task is recognized by the task index, not its coordinate
 
@@ -395,6 +415,7 @@ coordinator pages.
 | Relay → browser hello                     | `webchat-threads-v1` in the `ready` frame's `features` once the relay forwards `thread`                           |
 | `session/history` (daemon control RPC)    | A `roots` view: roots and coordinator turns with the §5.3 summaries, paged like today                             |
 | `session/thread` (new daemon control RPC) | One thread record by `(sessionId, rootId)`, paged; authorized by §7.1                                             |
+| Daemon feature for the reads              | `session-thread-reads-v1`, static; the CP sends neither read to a daemon without it                               |
 | BFF                                       | `GET /orgs/:org/sessions/:id/messages?view=roots` and `GET /orgs/:org/sessions/:id/threads/:rootId/messages` (C2) |
 
 A task's own session keeps its four-part key, `webchat:<conv>:<rootPostId>:<agent>`, so the merged
@@ -407,6 +428,22 @@ A `thread` is a root's `postId`, so the wire admits only a UUID (`WebchatThreadI
 refuses a turn whose `thread` is malformed rather than post it at the root. The protocol names the
 feature `WEBCHAT_THREADS_FEATURE`; the daemon advertises it from PR 5, once its coordinator answers in
 threads, so the console never offers threads to a daemon that only records them.
+
+As implemented (PR 7):
+
+- **`session/history` with `view: 'roots'`** pages the session's own rows as the flat view does,
+  without the coordinator's posts in threads. Each row that is a reply in a thread carries `thread`, the
+  root's id: the coordinator's turn rows there, and the thread message the coordinator received that
+  started such a turn, which the console draws as the turn's "In thread" label rather than as a
+  message. A turn answering a root also sits on the root's thread, and starts at the root itself.
+  `threads` carries the summaries of the roots and threads the kept rows name, each counted once in the
+  frame budget; a forward page (`after`) adds up to 20 threads whose rows changed since the cursor and
+  whose root the session received. When more changed, its cursor stops before the first one left out
+  and `liveMore` is set, so the next poll reports it.
+- **`session/thread`** (`agentId` required) answers only for a root the session received, on its
+  coordinate or admitted into it; a reply's id, an unknown root or another agent's session get an empty
+  page without `summary`. It pages by event time where ids order natively, else by seq, and tails by
+  revision, as `session/history` does.
 
 The BFF routes proxy bounded transcript reads to the owning daemon and persist nothing, as the
 session history route does. Each route gets its OpenAPI `tags`, `summary`, `description` and
