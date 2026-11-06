@@ -328,8 +328,8 @@ importers:
   packages/daemon:
     dependencies:
       '@agentclientprotocol/sdk':
-        specifier: ^2.0.0
-        version: 2.0.2(zod@4.6.7)
+        specifier: ^2.4.0
+        version: 2.4.0(@modelcontextprotocol/server@2.4.0)(zod@4.6.7)
       '@agentconnect.md/activation-policy':
         specifier: workspace:*
         version: link:../activation-policy
@@ -912,10 +912,14 @@ packages:
   '@ag-ui/proto@1.0.3':
     resolution: {integrity: sha512-L3YVEJN1hCYx3P7Zfrf4e1obA1pwzykkkPZkNHAdcXyUZ05/ezvWCkErnfNoUlER8QCasBwRjKiDjicu3Tt7+g==}
 
-  '@agentclientprotocol/sdk@2.0.2':
-    resolution: {integrity: sha512-jLywRB42hZMRMc4aUgt0uRjkY9FQnMdybv4XgLl+ddi75QuJn8Vbl0+CHcVHJDC0+WDfi1KQXRWtHaR5vp6gHw==}
+  '@agentclientprotocol/sdk@2.4.0':
+    resolution: {integrity: sha512-7qJ8nnyj7WesC5ve185ioTpB2/svQoeGV4HA4nLEhgDUrcmBe54/08VcXc/oL4p14tDbxxECZzdYmUYQ+4l+Wg==}
     peerDependencies:
+      '@modelcontextprotocol/server': ^2.4.0
       zod: ^3.25.76 || ^4.0.0
+    peerDependenciesMeta:
+      '@modelcontextprotocol/server':
+        optional: true
 
   '@ai-sdk/gateway@3.0.222':
     resolution: {integrity: sha512-ln8Fbcvq20V15HBMoBvvNAX8a3i4dQmuxAQ9qG8XHoeCcj5x8BQD8pLFO66DXDaIlvfdIczSNuLCog2yN3kaiA==}
@@ -9652,9 +9656,11 @@ snapshots:
       '@protobuf-ts/protoc': 2.11.1
       zod: 3.25.76
 
-  '@agentclientprotocol/sdk@2.0.2(zod@4.6.7)':
+  '@agentclientprotocol/sdk@2.4.0(@modelcontextprotocol/server@2.4.0)(zod@4.6.7)':
     dependencies:
       zod: 4.6.7
+    optionalDependencies:
+      '@modelcontextprotocol/server': 2.4.0
 
   '@ai-sdk/gateway@3.0.222(zod@4.6.7)':
     dependencies:
