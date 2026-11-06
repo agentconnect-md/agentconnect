@@ -65,6 +65,7 @@ const BOT: BotRecord = {
   feishuAppId: null,
   feishuRegion: null,
   shareable: false,
+  newConversationMode: null,
   transport: 'socket',
   createdBy: null,
   lastUsedAt: null,

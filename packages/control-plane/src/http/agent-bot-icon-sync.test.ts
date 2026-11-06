@@ -100,6 +100,7 @@ function bot(
     feishuAppId: options.feishuAppId ?? null,
     feishuRegion: options.feishuRegion ?? null,
     shareable: options.shareable ?? false,
+    newConversationMode: null,
     transport: 'socket',
     createdBy: null,
     lastUsedAt: null,

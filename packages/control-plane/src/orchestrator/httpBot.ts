@@ -46,6 +46,7 @@ import type {
   IntegrationChannelRecord,
   ChannelTrigger,
   SeedTrigger,
+  NewConversationMode,
   ChannelActivation,
   ConversationKind,
   ReportedChannel,
@@ -834,22 +835,43 @@ export class HttpBotOrchestrator {
       // editor must enable them in the console before the compiler emits a route.
       const owner = await this.agents.getUnscoped(integration.agentId)
       const defaultTrigger = owner && isGatedAgent(owner) ? ('off' as const) : undefined
-      const autoKinds = owner ? await this.autoConversationKinds(owner, bot.platform) : []
-      await this.channels.replaceSnapshot(
-        integration.id,
-        channels,
-        defaultTrigger || autoKinds.length
-          ? { ...(defaultTrigger ? { defaultTrigger } : {}), ...(autoKinds.length ? { autoKinds } : {}) }
-          : undefined
-      )
+      const autoKinds = owner ? await this.autoConversationKinds(owner, bot) : []
+      await this.channels.replaceSnapshot(integration.id, channels, this.seedOptions(defaultTrigger, autoKinds, bot))
     }
     await this.syncRoutes(botId)
   }
 
   /** The kinds an install's new conversation starts on Auto in: the daemon the relay addresses its agent on must read it (auto-session-mode.md §3.2). */
-  private async autoConversationKinds(agent: AgentRecord, platform: string): Promise<readonly ConversationKind[]> {
+  private async autoConversationKinds(
+    agent: AgentRecord,
+    bot: Pick<BotRecord, 'platform' | 'newConversationMode'>
+  ): Promise<readonly ConversationKind[]> {
     const daemonId = await this.placement.dispatchDaemon(agent)
-    return autoConversationKinds(platform, daemonId ? this.control.daemonFeatures?.(daemonId) : undefined)
+    return autoConversationKinds(
+      bot.platform,
+      daemonId ? this.control.daemonFeatures?.(daemonId) : undefined,
+      bot.newConversationMode
+    )
+  }
+
+  /** The seed a new conversation row of this install takes: a gated install's Off, the Auto kinds, and the bot's default for new rooms. */
+  private seedOptions(
+    defaultTrigger: SeedTrigger | undefined,
+    autoKinds: readonly ConversationKind[],
+    bot: Pick<BotRecord, 'newConversationMode'>
+  ):
+    | {
+        defaultTrigger?: SeedTrigger
+        autoKinds?: readonly ConversationKind[]
+        newConversationMode?: NewConversationMode
+      }
+    | undefined {
+    if (!defaultTrigger && !autoKinds.length && !bot.newConversationMode) return undefined
+    return {
+      ...(defaultTrigger ? { defaultTrigger } : {}),
+      ...(autoKinds.length ? { autoKinds } : {}),
+      ...(bot.newConversationMode ? { newConversationMode: bot.newConversationMode } : {})
+    }
   }
 
   /** §14.3: the relay that posts a bot's channel gating notices, chosen deterministically from the connected roster at (re)assign time; undefined ⇒ no relay. */
@@ -910,14 +932,8 @@ export class HttpBotOrchestrator {
       const reported = { ...conversation, kind }
       // Per install, since installs have different audiences; an ungated one takes the repository's open default (§14.9).
       const defaultTrigger = isGatedAgent(agent) ? await this.gatedConversationTrigger(agent, bot, reported) : undefined
-      const autoKinds = await this.autoConversationKinds(agent, bot.platform)
-      await this.channels.upsertConversation(
-        install.id,
-        reported,
-        defaultTrigger || autoKinds.length
-          ? { ...(defaultTrigger ? { defaultTrigger } : {}), ...(autoKinds.length ? { autoKinds } : {}) }
-          : undefined
-      )
+      const autoKinds = await this.autoConversationKinds(agent, bot)
+      await this.channels.upsertConversation(install.id, reported, this.seedOptions(defaultTrigger, autoKinds, bot))
     }
     await this.syncRoutes(botId)
   }

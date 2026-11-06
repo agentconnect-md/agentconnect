@@ -57,6 +57,7 @@ import type {
   ReportedChannel,
   ChannelTrigger,
   SeedTrigger,
+  NewConversationMode,
   ChannelActivation,
   DecisionChannelUsage,
   ConversationKind,
@@ -127,6 +128,7 @@ function toBotRecord(b: BotJoined): BotRecord {
     feishuRegion: (asText(cfg.feishuRegion) as FeishuRegion | null) ?? null,
     shareable: b.shareable,
     transport: b.transport as BotRecord['transport'],
+    newConversationMode: b.newConversationMode ?? null,
     createdBy: b.createdBy
       ? { userId: b.createdBy.id, displayName: b.createdBy.displayName, email: b.createdBy.email }
       : null,
@@ -346,7 +348,10 @@ export class PgBotRepo implements BotRepo {
       }
       await tx.bot.update({
         where: { id, orgId },
-        data: patch.shareable !== undefined ? { shareable: patch.shareable } : {}
+        data: {
+          ...(patch.shareable !== undefined ? { shareable: patch.shareable } : {}),
+          ...(patch.newConversationMode !== undefined ? { newConversationMode: patch.newConversationMode } : {})
+        }
       })
     })
   }
@@ -996,6 +1001,7 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
       removed?: string[]
       migrated?: readonly { from: string; to: string }[]
       autoKinds?: readonly ConversationKind[]
+      newConversationMode?: NewConversationMode | null
     }
   ): Promise<{ externalChanged: boolean; migrated?: boolean; sessionModeChanged?: boolean }> {
     // Read first only to decide whether the spec needs a push; the register snapshot backs up a missed one.
@@ -1043,7 +1049,9 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
       const direct = c.kind === 'im' || c.kind === 'mpim'
       // A per-conversation seed (§14.8) outranks the install-wide default (restricted 'off'), which outranks the open one (§14.9); all seed a NEW row only.
       const createTrigger: SeedTrigger =
-        opts?.defaultTriggerByChannel?.get(c.id) ?? opts?.defaultTrigger ?? openConversationTrigger(c)
+        opts?.defaultTriggerByChannel?.get(c.id) ??
+        opts?.defaultTrigger ??
+        openConversationTrigger(c, opts?.newConversationMode)
       const createMode = openConversationSessionMode(c, opts?.autoKinds)
       await this.db.$executeRaw`
         INSERT INTO "integration_channel"
@@ -1196,7 +1204,11 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
   async upsertConversation(
     integrationId: IntegrationId,
     conversation: ReportedChannel,
-    opts?: { defaultTrigger?: SeedTrigger; autoKinds?: readonly ConversationKind[] }
+    opts?: {
+      defaultTrigger?: SeedTrigger
+      autoKinds?: readonly ConversationKind[]
+      newConversationMode?: NewConversationMode | null
+    }
   ): Promise<IntegrationChannelRecord> {
     const row = await this.db.integrationChannel.upsert({
       include: CHANNEL_INCLUDE,
@@ -1217,7 +1229,7 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         dmUserId: conversation.dmUserId ?? null,
         externalReason: conversation.externalReason ?? null,
         // Restricted installs supply Off; otherwise the same open default replaceSnapshot seeds (§14.9).
-        trigger: opts?.defaultTrigger ?? openConversationTrigger(conversation),
+        trigger: opts?.defaultTrigger ?? openConversationTrigger(conversation, opts?.newConversationMode),
         sessionMode: openConversationSessionMode(conversation, opts?.autoKinds)
       },
       // Refresh only known metadata; trigger/agentId stay operator-owned.

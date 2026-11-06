@@ -2762,6 +2762,8 @@ model Bot {
   // it would kill (the case where the relay already holds the newer assignment).
   credentialRevision    Int            @default(1)
   credentialInstalledAt DateTime?      @db.Timestamptz(6)
+  // What a new room or group DM starts at; null ⇒ the platform default (Auto where the daemon reads it, else Mention).
+  newConversationMode   NewConversationMode?
   // Bot scopes Slack REPORTED as granted for the current credential — the
   // `x-oauth-scopes` header observed when an install/refresh verified the token.
   // Empty means "never observed" (Slack omits the header at times), NEVER
@@ -2950,6 +2952,13 @@ enum ChannelSessionMode {
   createNew
   append
   auto
+}
+
+// A bot's default for its new rooms and group DMs: Auto, Mention on Per thread, or Off. DMs keep their own default.
+enum NewConversationMode {
+  auto
+  mention
+  off
 }
 
 // Conversation kind (resource-visibility.md §14.3): a member channel vs a direct

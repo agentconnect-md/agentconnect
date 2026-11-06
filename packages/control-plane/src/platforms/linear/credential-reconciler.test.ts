@@ -45,6 +45,7 @@ function bot(id: BotId = BOT, overrides: Partial<BotRecord> = {}): BotRecord {
     feishuAppId: null,
     feishuRegion: null,
     shareable: true,
+    newConversationMode: null,
     transport: 'http',
     createdBy: null,
     lastUsedAt: null,

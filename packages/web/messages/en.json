@@ -2435,6 +2435,16 @@
       "ahpPilot": "AHP access is limited to approved pilot keys on this deployment.",
       "ahpAccess": "Use an existing approved full-access API key on a trusted server. Chat-only keys and OAuth tokens are not accepted. Keep credentials out of browser code.",
       "ahpEndpoint": "WebSocket endpoint"
+    },
+    "newConversations": {
+      "label": "New channels start on",
+      "hint": "Applies to channels and group DMs the bot joins from now on; existing ones keep their settings.",
+      "auto": "Auto",
+      "autoHint": "A coordinator reads every message and decides what to answer (where the daemon supports it; otherwise @-mentions).",
+      "mention": "@-mentions, per thread",
+      "mentionHint": "Replies only when @-mentioned; each thread is its own session.",
+      "off": "Off",
+      "offHint": "Stays in the channel but never replies until it is turned on."
     }
   },
   "Agents": {

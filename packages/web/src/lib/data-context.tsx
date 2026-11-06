@@ -130,6 +130,7 @@ import {
   type CreateGiteaHookInput,
   type CreateGitlabHookInput,
   type BotDto,
+  type NewConversationMode,
   type UpsertCronInput,
   type CronDto,
   type DaemonConnectDto,
@@ -280,6 +281,8 @@ interface ConsoleData {
   ) => Promise<void>
   /** Flip a bot's shared-bot opt-in (PATCH /bots/:id), then re-pull. */
   setBotShareable: (botId: string, shareable: boolean) => Promise<void>
+  /** Set what a bot's new rooms and group DMs start at (PATCH /bots/:id), then re-pull. */
+  setBotNewConversationMode: (botId: string, mode: NewConversationMode | null) => Promise<void>
   /** Create-or-update a cron (PUT upsert; null id ⇒ mint a fresh UUID), then re-pull. */
   saveCron: (id: string | null, body: UpsertCronInput) => Promise<void>
   /** Delete a cron, then re-pull. */
@@ -1648,6 +1651,15 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     [mutateBots, mutateIntegrations]
   )
 
+  // Only conversations created afterwards read it, so the bot list is all that changes.
+  const setBotNewConversationMode = useCallback(
+    async (botId: string, mode: NewConversationMode | null) => {
+      await apiUpdateBot(botId, { newConversationMode: mode })
+      settleInBackground(mutateBots())
+    },
+    [mutateBots]
+  )
+
   // Create-or-update a cron. PUT /crons/:id is an idempotent upsert, so a create
   // just mints a fresh client-side UUID (the CP keys the row on it).
   const saveCron = useCallback(
@@ -1847,6 +1859,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       leaveConversation,
       setChannelAgent,
       setBotShareable,
+      setBotNewConversationMode,
       saveCron,
       deleteCron,
       provisionDaemon,
@@ -1936,6 +1949,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       setChannelDecision,
       setChannelAgent,
       setBotShareable,
+      setBotNewConversationMode,
       saveCron,
       deleteCron,
       provisionDaemon,

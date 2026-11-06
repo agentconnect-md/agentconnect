@@ -115,6 +115,7 @@ function bot(over: Partial<BotRecord> = {}): BotRecord {
     feishuAppId: 'cli_testapp',
     feishuRegion: 'lark',
     shareable: false,
+    newConversationMode: null,
     transport: 'socket',
     createdBy: null,
     lastUsedAt: null,

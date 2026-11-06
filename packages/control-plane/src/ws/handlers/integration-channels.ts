@@ -79,24 +79,33 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
     // §14.8: a gated DM whose counterpart is already in the agent's audience seeds to
     // the ordinary DM default instead. Only the gated arm asks — a public install has
     // no Off to override — and a resolver that answers nothing leaves §14.2 intact.
-    const bot = defaultTrigger && deps.bot ? await deps.bot.get(OrgId(integration.orgId), integration.botId) : null
-    seeded = owner && bot && deps.gatedDmSeeds ? await deps.gatedDmSeeds(p.channels, owner, bot) : undefined
-    // A new room or group DM starts on Auto where the reporting daemon reads it (auto-session-mode.md §3.2).
+    const bot = deps.bot ? await deps.bot.get(OrgId(integration.orgId), integration.botId) : null
+    seeded =
+      defaultTrigger && owner && bot && deps.gatedDmSeeds ? await deps.gatedDmSeeds(p.channels, owner, bot) : undefined
+    // A new room or group DM starts on Auto where the reporting daemon reads it (auto-session-mode.md §3.2), unless its bot starts new rooms on Mention or Off.
+    const newConversationMode = bot?.newConversationMode ?? null
     const autoKinds = autoConversationKinds(
       integration.platform,
-      deps.connReg.get(conn.daemonId)?.capabilities?.features
+      deps.connReg.get(conn.daemonId)?.capabilities?.features,
+      newConversationMode
     )
     const written = await deps.integrationChannel.replaceSnapshot(
       integration.id,
       p.channels,
-      defaultTrigger || p.authoritative === false || p.removed?.length || p.migrated?.length || autoKinds.length
+      defaultTrigger ||
+        p.authoritative === false ||
+        p.removed?.length ||
+        p.migrated?.length ||
+        autoKinds.length ||
+        newConversationMode
         ? {
             ...(defaultTrigger ? { defaultTrigger } : {}),
             ...(seeded?.size ? { defaultTriggerByChannel: seeded } : {}),
             ...(p.authoritative === false ? { authoritative: false } : {}),
             ...(p.removed?.length ? { removed: p.removed } : {}),
             ...(p.migrated?.length ? { migrated: p.migrated } : {}),
-            ...(autoKinds.length ? { autoKinds } : {})
+            ...(autoKinds.length ? { autoKinds } : {}),
+            ...(newConversationMode ? { newConversationMode } : {})
           }
         : undefined
     )

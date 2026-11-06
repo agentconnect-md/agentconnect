@@ -4197,6 +4197,8 @@ export interface BotRecord {
   shareable: boolean
   /** Inbound transport: 'http' ⇒ relay callbacks; 'socket' ⇒ daemon long connection. */
   transport: SlackTransport
+  /** What a new room or group DM of this bot starts at; null ⇒ the platform default (Auto where the daemon reads it, else Mention). */
+  newConversationMode: NewConversationMode | null
   /** Creator (WebUI user), joined for the console picker; null for prebuilt/CLI. */
   createdBy: { userId: string; displayName: string | null; email: string } | null
   /** Stamped when the bot's integration is removed ("last used 12d ago"). */
@@ -4229,6 +4231,8 @@ export interface BotIdentityChange {
 export interface BotUpdate {
   /** Shared-bot (multi-agent) opt-in; `false` is recounted under the row lock. */
   shareable?: boolean
+  /** What new rooms and group DMs start at; null restores the platform default. */
+  newConversationMode?: NewConversationMode | null
 }
 
 export interface BotRepo {
@@ -6283,6 +6287,9 @@ export type ChannelTrigger = 'off' | 'mention' | 'any' | 'decision'
 /** A trigger a row can be seeded or defaulted to; By decision is only ever chosen, with its binding. */
 export type SeedTrigger = Exclude<ChannelTrigger, 'decision'>
 
+/** What a bot's new rooms and group DMs start at: Auto (where the daemon reads it), Mention on Per thread, or Off. DMs are not affected. */
+export type NewConversationMode = 'auto' | 'mention' | 'off'
+
 /** A trigger write: By decision carries its binding, so a decision trigger without one is unrepresentable. */
 export type ChannelActivation =
   | { trigger: SeedTrigger }
@@ -6405,6 +6412,8 @@ export interface IntegrationChannelRepo {
       migrated?: readonly { from: string; to: string }[]
       /** The kinds a NEW row starts on Auto in (auto-session-mode.md §3.2); absent ⇒ every new row is Per thread. `sessionModeChanged` says a mode the daemon's spec lacks was written. */
       autoKinds?: readonly ConversationKind[]
+      /** The bot's default for a NEW room or group DM; `off` seeds Off where no other seed applies. */
+      newConversationMode?: NewConversationMode | null
     }
   ): Promise<{ externalChanged: boolean; migrated?: boolean; sessionModeChanged?: boolean }>
   /** Forget one conversation row. Console-driven cleanup for a conversation the bot
@@ -6416,7 +6425,11 @@ export interface IntegrationChannelRepo {
   upsertConversation(
     integrationId: IntegrationId,
     conversation: ReportedChannel,
-    opts?: { defaultTrigger?: SeedTrigger; autoKinds?: readonly ConversationKind[] }
+    opts?: {
+      defaultTrigger?: SeedTrigger
+      autoKinds?: readonly ConversationKind[]
+      newConversationMode?: NewConversationMode | null
+    }
   ): Promise<IntegrationChannelRecord>
   /** Conversations across EVERY integration of a shared bot — the route compiler's
    *  ownership source. */

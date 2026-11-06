@@ -1075,6 +1075,8 @@ export interface BotDto {
   // callbacks. Only a Slack http bot may be shared. Missing (older CP) ⇒ socket.
   transport: 'socket' | 'http'
   shareable: boolean // shared-bot opt-in — when true it may serve many agents at once
+  // What a new room or group DM starts at; null ⇒ the platform default (Auto where the daemon reads it, else @-mentions).
+  newConversationMode?: NewConversationMode | null
   inUseByAgentId: string | null // classic-bot occupancy; ALWAYS null for a shareable bot
   agentIds: string[] // every agent currently installed on the bot (a shared bot may have many)
   lastUsedAt: string | null // ISO-8601; stamped when last freed; null ⇒ never used
@@ -5495,7 +5497,13 @@ export async function leaveIntegrationConversation(
 }
 
 /** Flip a bot's shared-bot opt-in (PATCH /bots/:id). */
-export async function updateBot(id: string, patch: { shareable: boolean }): Promise<BotDto> {
+/** What a bot's new rooms and group DMs start at: Auto, @-mentions on Per thread, or Off. */
+export type NewConversationMode = 'auto' | 'mention' | 'off'
+
+export async function updateBot(
+  id: string,
+  patch: { shareable?: boolean; newConversationMode?: NewConversationMode | null }
+): Promise<BotDto> {
   return apiPatch<BotDto>(`${orgBase()}/bots/${encodeURIComponent(id)}`, patch)
 }
 

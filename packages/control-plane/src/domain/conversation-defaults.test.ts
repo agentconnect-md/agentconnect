@@ -33,3 +33,31 @@ describe('autoConversationKinds and openConversationSessionMode', () => {
     expect(openConversationSessionMode({ kind: 'channel' }, undefined)).toBe('createNew')
   })
 })
+
+// A bot's default for its new rooms (bot new-conversation mode): Mention and Off keep them off Auto, Off seeds the trigger Off; DMs keep theirs.
+describe("a bot's new-conversation mode", () => {
+  const reads = [SESSION_MODE_AUTO_V1_FEATURE]
+
+  it('Auto and an unset mode keep the platform default', () => {
+    for (const mode of ['auto', null, undefined] as const) {
+      expect(autoConversationKinds('slack', reads, mode)).toEqual(['channel', 'mpim'])
+      expect(openConversationTrigger({ kind: 'channel' }, mode)).toBe('mention')
+    }
+  })
+
+  it('Mention starts a room on Mention, Per thread, even where the daemon reads Auto', () => {
+    expect(autoConversationKinds('slack', reads, 'mention')).toEqual([])
+    expect(openConversationTrigger({ kind: 'channel' }, 'mention')).toBe('mention')
+  })
+
+  it('Off starts a room and a group DM Off, Per thread, and leaves a 1:1 DM On', () => {
+    expect(autoConversationKinds('slack', reads, 'off')).toEqual([])
+    expect(openConversationTrigger({ kind: 'channel' }, 'off')).toBe('off')
+    expect(openConversationTrigger({ kind: 'mpim' }, 'off')).toBe('off')
+    expect(openConversationTrigger({ kind: 'im' }, 'off')).toBe('any')
+  })
+
+  it('never opens an external place', () => {
+    expect(openConversationTrigger({ kind: 'channel', externalReason: 'externallyShared' }, 'mention')).toBe('off')
+  })
+})

@@ -38,6 +38,7 @@ export function toBotDto(b: BotRecord, platforms: Pick<CpPlatformRegistry, 'get'
     createdBy: b.createdBy && !isSyntheticEmail(b.createdBy.email) ? b.createdBy.userId : null,
     shareable: b.shareable,
     transport: b.transport,
+    newConversationMode: b.newConversationMode,
     inUseByAgentId: b.inUseByAgentId,
     agentIds: b.agentIds,
     releasedWhenFreed: platforms.get(b.platform)?.releasesFreedBot?.(b) === true,
@@ -156,7 +157,7 @@ export function botRoutes(deps: HttpDeps) {
           tags: [Tag.Bots],
           summary: 'Update a bot',
           description:
-            'Allow or disallow this HTTP bot from serving multiple agents (allowing requires a platform that supports multi-agent bots; relay ingress is unchanged either way).',
+            'Allow or disallow this HTTP bot from serving multiple agents (allowing requires a platform that supports multi-agent bots; relay ingress is unchanged either way), and/or set what its new rooms and group DMs start at: `auto` (Auto where the serving daemon reads it, else Mention), `mention` (Mention, Per thread) or `off`; null restores the platform default. Existing conversations and DMs keep their settings.',
           operationId: 'updateBot',
           params: IdParam,
           body: UpdateBotBody,
@@ -169,7 +170,13 @@ export function botRoutes(deps: HttpDeps) {
         if (!bot) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'bot not found' })
         }
-        if (req.body.shareable === bot.shareable) return toBotDto(bot, deps.platforms) // no-op
+        // Only rows created after it read the default, so it needs no routing push and no agent lease.
+        if (req.body.newConversationMode !== undefined && req.body.newConversationMode !== bot.newConversationMode) {
+          await deps.repos.bot.update(bot.orgId, bot.id, { newConversationMode: req.body.newConversationMode })
+          bot = (await deps.repos.bot.get(bot.orgId, bot.id)) ?? bot
+        }
+        if (req.body.shareable === undefined || req.body.shareable === bot.shareable)
+          return toBotDto(bot, deps.platforms) // no-op
         // Only enabling is refused on a platform without multi-agent bots, so a row flipped before this guard stays repairable.
         if (req.body.shareable && !manifestFor(bot.platform).multiAgentShareable) {
           return reply

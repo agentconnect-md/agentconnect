@@ -2092,8 +2092,15 @@ export const LeaveIntegrationConversationBody = z.object({
   ])
 })
 
-/** `PATCH /bots/:id` — flip the shared-bot opt-in (shared-bot-relay.md §4.1); an unknown field is dropped. */
-export const UpdateBotBody = z.object({ shareable: z.boolean() })
+/** What a bot's new rooms and group DMs start at: Auto, Mention on Per thread, or Off. */
+export const NewConversationMode = z.enum(['auto', 'mention', 'off'])
+
+/** `PATCH /bots/:id` — flip the shared-bot opt-in (shared-bot-relay.md §4.1) and/or set what new rooms start at (null ⇒ the platform default); an unknown field is dropped. */
+export const UpdateBotBody = z
+  .object({ shareable: z.boolean().optional(), newConversationMode: NewConversationMode.nullable().optional() })
+  .refine((body) => body.shareable !== undefined || body.newConversationMode !== undefined, {
+    message: 'nothing to update'
+  })
 
 /** Console view of a bot identity — metadata only, NEVER the tokens. */
 export const BotDto = z.object({
@@ -2116,6 +2123,8 @@ export const BotDto = z.object({
   /** Slack inbound transport (slack-http-mode): 'http' ⇒ relay-pool Events API
    *  ingress; 'socket' ⇒ classic daemon Socket Mode. Immutable post-create. */
   transport: z.enum(['socket', 'http']),
+  /** What a new room or group DM starts at; null ⇒ the platform default (Auto where the daemon reads it, else Mention). Existing conversations and DMs keep theirs. */
+  newConversationMode: NewConversationMode.nullable(),
   /** Classic-bot occupancy: the single agent holding it, or null (free). ALWAYS
    *  null for a shareable bot — sharing lifts the 1-install cap. */
   inUseByAgentId: z.string().nullable(),
