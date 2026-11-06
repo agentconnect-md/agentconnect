@@ -1668,8 +1668,11 @@ function MobileSessionFamilyLinks({
 /** The one-line header's quiet icon buttons and its place chip. */
 const HEADER_ICON_BTN =
   'flex h-[26px] w-[26px] flex-none items-center justify-center rounded-[6px] text-(--text-tertiary) transition-colors hover:bg-(--surface-hover) hover:text-(--text-primary)'
-const HEADER_CHIP =
-  'inline-flex h-6 min-w-0 flex-[0_1_auto] items-center gap-1 rounded-[6px] px-[7px] font-sans text-[12px] font-medium leading-normal text-(--text-secondary) no-underline transition-colors hover:bg-(--surface-hover) hover:text-(--text-primary)'
+const HEADER_CHIP_BASE =
+  'inline-flex h-6 min-w-0 flex-[0_1_auto] items-center gap-1 rounded-[6px] px-[7px] font-sans text-[12px] font-medium leading-normal'
+// A chip that opens its thread reads as a link; one without a thread stays plain text.
+const HEADER_CHIP_LINK = `${HEADER_CHIP_BASE} text-(--text-link) no-underline transition-colors hover:bg-(--surface-hover)`
+const HEADER_CHIP = `${HEADER_CHIP_BASE} text-(--text-secondary)`
 
 /** The side panel is at least this wide while it shows a task's thread. */
 const TASK_PANEL_MIN_WIDTH = 420
@@ -4696,7 +4699,7 @@ export default function SessionDetailView() {
               {session.threadUrl ? (
                 <a
                   data-header-place=""
-                  className={HEADER_CHIP}
+                  className={HEADER_CHIP_LINK}
                   href={session.threadUrl}
                   target="_blank"
                   rel="noopener noreferrer"

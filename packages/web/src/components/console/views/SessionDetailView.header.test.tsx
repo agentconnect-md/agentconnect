@@ -262,6 +262,7 @@ const button = (label: string) =>
 const picker = () => container?.querySelector<HTMLButtonElement>('button[aria-label="Model"]')
 
 beforeEach(() => {
+  delete listRow.threadUrl
   wire.detail = detail(true)
   wire.ownerDetail = null
   wire.chatActions = 'approve'
@@ -307,6 +308,23 @@ describe('the one-line session header', () => {
     expect(row.querySelector('button[aria-label="Copy a link to this session"]')).not.toBeNull()
     expect(row.textContent).not.toContain('Workspace')
     expect(row.querySelector('[data-header-coordinator]')).toBeNull()
+  })
+
+  it('shows a place chip that opens its thread as a link, and one without a thread as plain text', async () => {
+    listRow.threadUrl = 'https://example.test/thread/1'
+    await render()
+    const link = header()!.querySelector<HTMLElement>('[data-header-place]')!
+    expect(link.tagName).toBe('A')
+    expect(link.getAttribute('href')).toBe('https://example.test/thread/1')
+    expect(link.className).toContain('text-(--text-link)')
+    delete listRow.threadUrl
+    root?.unmount()
+    root = createRoot(container!)
+    await render()
+    const plain = header()!.querySelector<HTMLElement>('[data-header-place]')!
+    expect(plain.tagName).toBe('SPAN')
+    expect(plain.className).not.toContain('text-(--text-link)')
+    expect(plain.className).not.toContain('hover:')
   })
 
   it('counts what waits for an editor on an amber Requests pill, and shows a quiet icon once nothing does', async () => {
