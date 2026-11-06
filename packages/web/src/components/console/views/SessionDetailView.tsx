@@ -4496,11 +4496,11 @@ export default function SessionDetailView() {
     return at !== undefined && (max === null || at > max) ? at : max
   }, null)
   const newDividerAt = newDividerIndex(turnStartsMs, seen.marker)
-  // The turn map's ticks: a person's message short, an agent's turn long, each named in its tip.
+  // The turn map's ticks, each named in its tip by who spoke.
   const mapTurns: MapTurn[] = turns.map((turn) =>
     turn.kind === 'user'
-      ? { key: turn.key, human: true, tip: `${turn.sp.name}: ${turn.text.replace(/\s+/g, ' ').slice(0, 60)}` }
-      : { key: turn.key, human: false, tip: [turn.agentName, turn.time].filter(Boolean).join(' · ') }
+      ? { key: turn.key, tip: `${turn.sp.name}: ${turn.text.replace(/\s+/g, ' ').slice(0, 60)}` }
+      : { key: turn.key, tip: [turn.agentName, turn.time].filter(Boolean).join(' · ') }
   )
   const approvalTurns: ApprovalTurnAnchor[] = turns.flatMap((turn, i) =>
     turn.kind === 'bot'

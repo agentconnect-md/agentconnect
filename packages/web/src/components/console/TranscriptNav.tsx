@@ -33,8 +33,6 @@ export function SeenRecorder({ newestMs, markSeen }: { newestMs: number | null; 
 
 export interface MapTurn {
   key: string
-  /** A person's message reads as a short tick, an agent's turn as a long one. */
-  human: boolean
   tip: string
 }
 
@@ -45,7 +43,7 @@ export function mapTicks<T>(turns: readonly T[], max = MAP_TICKS_MAX): T[] {
   return Array.from({ length: max }, (_, i) => turns[Math.round(i * step)]!)
 }
 
-/** One tick per turn at the transcript's right edge: the one in view is marked, and a tick scrolls to its turn. */
+/** One tick per turn at the transcript's right edge: the one in view is the long one, and a tick jumps to its turn. */
 export function TranscriptMap({ turns }: { turns: readonly MapTurn[] }) {
   const t = useTranslations('Sessions.detail.transcriptNav')
   const ref = useRef<HTMLDivElement>(null)
@@ -79,12 +77,13 @@ export function TranscriptMap({ turns }: { turns: readonly MapTurn[] }) {
     }
   }, [turns.length])
 
+  // An instant jump, so the bottom-follow lets go on its first scroll event rather than pulling a smooth one back down.
   const go = (key: string) => {
+    setActive(key)
     const scroller = ref.current?.parentElement?.querySelector<HTMLElement>('[data-transcript-scroll]')
     const el = scroller?.querySelector<HTMLElement>(`[data-turn-anchor="${CSS.escape(key)}"]`)
     if (!scroller || !el) return
-    const offset = el.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop - 16
-    scroller.scrollTo({ top: offset, behavior: 'smooth' })
+    scroller.scrollTop = el.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop - 16
   }
 
   if (ticks.length < 3) return null
@@ -101,7 +100,7 @@ export function TranscriptMap({ turns }: { turns: readonly MapTurn[] }) {
       ref={ref}
       data-transcript-map=""
       aria-label={t('map')}
-      className="absolute top-1/2 right-[10px] z-[4] hidden -translate-y-1/2 flex-col gap-[7px] px-1 py-2 desktop:flex"
+      className="absolute top-1/2 right-[10px] z-[4] hidden -translate-y-1/2 flex-col items-end gap-[7px] px-1 py-2 desktop:flex"
     >
       {ticks.map((tick) => {
         const on = tick.key === markedKey
@@ -113,12 +112,9 @@ export function TranscriptMap({ turns }: { turns: readonly MapTurn[] }) {
             aria-label={tick.tip}
             aria-current={on ? 'true' : undefined}
             onClick={() => go(tick.key)}
+            // Every tick the same short mark; only the turn in view is long.
             className={`h-[3px] cursor-pointer rounded-[2px] border-0 p-0 transition-colors ${
-              on
-                ? 'w-[22px] bg-(--text-primary)'
-                : tick.human
-                  ? 'ml-[6px] w-3 bg-(--border-default) hover:bg-(--border-strong)'
-                  : 'w-[18px] bg-(--border-strong) hover:bg-(--text-tertiary)'
+              on ? 'w-[22px] bg-(--text-primary)' : 'w-3 bg-(--border-strong) hover:bg-(--text-tertiary)'
             }`}
           />
         )
