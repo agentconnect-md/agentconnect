@@ -1,17 +1,8 @@
-/**
- * `SessionReader` — the read-only seam answering the CP's `session/list`,
- * `session/history` and `session/tool-body` REQs from the daemon's local store.
- * Bodies live only on the daemon (§1/§12); this projects store rows onto the
- * protocol shapes. The protocol `sessionId` IS the store's `acpSessionId`
- * (SessionManager returns it).
- *
- * Frame-size safety: every REP must serialise under the 256 KiB wire cap. A single
- * tool body can be large, so `history` caps each inline `body` at a 32 KiB VALID-JSON
- * preview and assembles a page under the per-frame budget (newest rows that fit);
- * the FULL body is pulled on demand via `toolBody`, chunked by offset.
- */
+// Answers the CP's session/list, session/history, session/thread and session/tool-body REQs from the local store, each REP under the 256 KiB frame cap.
 import {
   MAX_FRAME_BYTES,
+  SESSION_THREAD_EXCERPT_MAX,
+  SESSION_THREAD_PARTICIPANTS_MAX,
   SessionImageAttachment as SessionImageAttachmentSchema,
   computerScreenshotHashesIn
 } from '@agentconnect.md/protocol'
@@ -20,6 +11,9 @@ import type {
   SessionListPage,
   SessionHistoryReq,
   SessionHistoryPage,
+  SessionThreadReq,
+  SessionThreadPage,
+  SessionThreadSummary,
   SessionToolBodyReq,
   SessionToolBodyChunk,
   SessionMessage,
@@ -32,7 +26,10 @@ import {
   transcriptChannelKey,
   type LocalStore,
   type SessionRecord,
-  type TranscriptEventCursor
+  type ThreadRootRow,
+  type TranscriptEventCursor,
+  type TranscriptRow,
+  type TranscriptSessionScope
 } from '../store/local-store.js'
 import { mentionedUserIds, substituteUserMentions } from '../slack/mentions.js'
 import { hasNativeMessageOrder } from '../platforms/message-ordering.js'
@@ -188,6 +185,7 @@ export interface SessionReadScope {
 export interface SessionReader {
   list(req: SessionListReq, scope?: SessionReadScope): Promise<SessionListPage>
   history(req: SessionHistoryReq, scope?: SessionReadScope): Promise<SessionHistoryPage>
+  thread(req: SessionThreadReq, scope?: SessionReadScope): Promise<SessionThreadPage>
   toolBody(req: SessionToolBodyReq, scope?: SessionReadScope): Promise<SessionToolBodyChunk>
 }
 
@@ -198,7 +196,435 @@ type TranscriptReadStore = Pick<
   | 'transcriptPageForAgent'
   | 'getToolBodyForAgent'
   | 'currentTranscriptRevision'
+  | 'threadRootInSession'
+  | 'threadPageForAgent'
+  | 'threadPageForAgentByEventTime'
+  | 'threadTailForAgent'
 >
+
+/** One transcript page as the store returns it, newest first (revision order on a forward page). */
+interface PageRows {
+  rows: TranscriptRow[]
+  hasMore: boolean
+}
+
+/** The three page walks a read pages by, and the watermark an exhausted one ends at. */
+interface PageReads {
+  tail(after: number, limit: number): Promise<PageRows>
+  byEventTime(before: TranscriptEventCursor | null, limit: number): Promise<PageRows>
+  bySeq(before: number | null, limit: number): Promise<PageRows>
+  currentRevision(): Promise<number>
+}
+
+/** A page's thread summaries: the ids each message names, by index, and those every page of it carries. */
+interface PageThreads {
+  refs: (readonly string[])[]
+  always: readonly string[]
+  summaries: Map<string, SessionThreadSummary>
+  // A forward page's cursor may not pass this revision: changed threads past it were left for the next poll.
+  liveCap?: number
+}
+
+type PageThreadsOf = (
+  rows: TranscriptRow[],
+  built: SessionMessage[],
+  after: number | null,
+  upto: number | undefined
+) => Promise<PageThreads>
+
+/** Each summary rides a page once, paid for by the first kept message naming it, so a page stays under the frame cap. */
+function threadBudget(threads: PageThreads | undefined) {
+  const carried = new Map<string, SessionThreadSummary>()
+  const cost = (ids: readonly string[]): number => {
+    let bytes = 0
+    for (const id of new Set(ids)) {
+      const summary = threads?.summaries.get(id)
+      if (summary && !carried.has(id)) bytes += encodedBytes(summary) + 1
+    }
+    return bytes
+  }
+  const carry = (ids: readonly string[]): void => {
+    for (const id of ids) {
+      const summary = threads?.summaries.get(id)
+      if (summary) carried.set(id, summary)
+    }
+  }
+  return {
+    liveCap: threads?.liveCap,
+    carryAlways(): number {
+      const bytes = cost(threads?.always ?? [])
+      carry(threads?.always ?? [])
+      return bytes
+    },
+    cost: (i: number) => cost(threads?.refs[i] ?? []),
+    carry: (i: number) => carry(threads?.refs[i] ?? []),
+    // In page order, oldest first, then the changed threads no row names.
+    carried: () => {
+      if (!threads) return {}
+      const order = [...new Set([...threads.refs.flat(), ...threads.always])]
+      return { threads: order.flatMap((id) => carried.get(id) ?? []) }
+    }
+  }
+}
+
+/** What one session's reads are scoped to: what THIS agent's session received and produced, never a peer's cross-talk in a shared thread. */
+function sessionReadScope(rec: SessionRecord, scope: SessionReadScope | undefined): TranscriptSessionScope {
+  return {
+    transcriptChannel: transcriptChannelKey(rec.channel, rec.transportScope),
+    coordinate: rec.thread,
+    sessionKey: rec.key,
+    agentId: rec.agentId,
+    ...(scope?.orgId !== undefined ? { orgId: scope.orgId } : {})
+  }
+}
+
+/** The id a root text row names its thread by: a webchat postId, else its platform ts. */
+function rootIdOf(row: { ts?: string | null; postId?: string | null }): string | undefined {
+  return row.postId ?? row.ts ?? undefined
+}
+
+/** A row whose recorded thread is its own, none, or names no other root (a legacy `webchat:<conv>` root) is a root (webchat-threads.md §5.1). */
+async function isRootRow(store: LocalStore, scope: TranscriptSessionScope, row: ThreadRootRow): Promise<boolean> {
+  if (row.thread === null || row.thread === row.ts || row.thread === row.postId) return true
+  return !(await store.threadRootRows(scope, [row.thread])).some((r) => r.seq !== row.seq)
+}
+
+/** The start of a message on one line, cut to the summary's excerpt length without splitting a surrogate pair. */
+function excerptOf(text: string, names: Map<string, string>): string {
+  const line = substituteUserMentions(text, names).replace(/\s+/g, ' ').trim()
+  if (line.length <= SESSION_THREAD_EXCERPT_MAX) return line
+  let end = SESSION_THREAD_EXCERPT_MAX - 1
+  const last = line.charCodeAt(end - 1)
+  if (last >= 0xd800 && last <= 0xdbff) end--
+  return `${line.slice(0, end)}…`
+}
+
+/** The session states in which a turn is running. */
+const RUNNING_STATES: ReadonlySet<SessionRecord['state']> = new Set(['prompting', 'cancelling'])
+
+/** At most this many threads changed since `after` ride a forward `roots` page beyond those its rows name. */
+const CHANGED_THREADS_MAX = 20
+
+/** The summaries of `rootIds` (webchat-threads.md §5.3); a thread with no reply and no task has none unless `always`. */
+async function threadSummaries(
+  store: LocalStore,
+  rec: SessionRecord,
+  scope: TranscriptSessionScope,
+  rootIds: readonly string[],
+  roots: Map<string, Pick<ThreadRootRow, 'sender' | 'text'>>,
+  always = false
+): Promise<Map<string, SessionThreadSummary>> {
+  const ids = [...new Set(rootIds)]
+  const summaries = new Map<string, SessionThreadSummary>()
+  if (ids.length === 0) return summaries
+  const stats = await store.threadReplyStats(scope, ids, SESSION_THREAD_PARTICIPANTS_MAX)
+  const tasks = new Map<string, string>()
+  for (const id of ids) {
+    const task = await store.assistantSubsessions.taskOfThread(rec.agentId, {
+      platform: rec.platform,
+      channel: rec.channel,
+      transportScope: rec.transportScope ?? null,
+      thread: id
+    })
+    if (task !== undefined) tasks.set(id, task)
+  }
+  const shown = ids.filter((id) => always || (stats.get(id)?.replies ?? 0) > 0 || tasks.has(id))
+  const missing = shown.filter((id) => !roots.has(id))
+  for (const row of await store.threadRootRows(scope, missing)) {
+    const id = missing.find((m) => m === row.postId || m === row.ts)
+    if (id !== undefined && !roots.has(id)) roots.set(id, row)
+  }
+  const names = await store.getDisplayNames(
+    shown.flatMap((id) => {
+      const stat = stats.get(id)
+      return [
+        ...(stat?.participants ?? []),
+        ...mentionedUserIds(stat?.latest?.text),
+        ...mentionedUserIds(roots.get(id)?.text)
+      ]
+    })
+  )
+  const author = (sender: string) => {
+    const senderName = names.get(sender)
+    return { sender, ...(senderName ? { senderName } : {}) }
+  }
+  for (const id of shown) {
+    const stat = stats.get(id)
+    const root = roots.get(id)
+    const taskKey = tasks.get(id)
+    const row = taskKey !== undefined ? await store.assistantSubsessions.get(rec.agentId, taskKey) : undefined
+    const child = taskKey !== undefined ? await store.getSession(taskKey) : undefined
+    const owned = row && child?.agentId === rec.agentId ? child : undefined
+    summaries.set(id, {
+      rootId: id,
+      ...(root ? { rootExcerpt: excerptOf(root.text, names) } : {}),
+      replies: stat?.replies ?? 0,
+      ...(stat?.lastEventTimeUs != null ? { lastReplyAt: new Date(stat.lastEventTimeUs / 1000).toISOString() } : {}),
+      ...(stat?.latest
+        ? { lastReply: { ...author(stat.latest.sender), excerpt: excerptOf(stat.latest.text, names) } }
+        : {}),
+      participants: (stat?.participants ?? []).map(author),
+      ...(row
+        ? {
+            task: {
+              ...(owned?.sessionId ? { sessionId: owned.sessionId } : {}),
+              ...(row.title ? { title: row.title } : {}),
+              // A task whose failure report is still on its way has ended, as the Activity view shows it.
+              state: row.state === 'reporting' ? ('failed' as const) : row.state
+            }
+          }
+        : {}),
+      ...(owned && RUNNING_STATES.has(owned.state) ? { running: true } : {})
+    })
+  }
+  return summaries
+}
+
+/** The `roots` view's threads (webchat-threads.md §6.1): marks each reply in a thread with it, and summarizes the roots, the marked threads and, forward, those changed. */
+async function rootsViewThreads(
+  store: LocalStore,
+  rec: SessionRecord,
+  scope: TranscriptSessionScope,
+  rows: TranscriptRow[],
+  built: SessionMessage[],
+  after: number | null,
+  upto: number | undefined
+): Promise<PageThreads> {
+  const named = [
+    ...new Set(rows.flatMap((r) => (r.thread && r.thread !== r.ts && r.thread !== r.postId ? [r.thread] : [])))
+  ]
+  const roots = new Map<string, Pick<ThreadRootRow, 'sender' | 'text'>>()
+  for (const row of await store.threadRootRows(scope, named)) {
+    for (const id of [row.postId, row.ts]) if (id && named.includes(id) && !roots.has(id)) roots.set(id, row)
+  }
+  const refs = rows.map((r, i): string[] => {
+    if (r.thread && roots.has(r.thread) && r.thread !== r.ts && r.thread !== r.postId) {
+      built[i]!.thread = r.thread
+      return [r.thread]
+    }
+    const id = r.kind === 'text' ? rootIdOf(r) : undefined
+    if (id !== undefined && !roots.has(id)) roots.set(id, r)
+    return id !== undefined ? [id] : []
+  })
+  const always: string[] = []
+  let liveCap: number | undefined
+  if (after !== null && upto !== undefined) {
+    const changed = await store.threadsChangedBetween(scope, after, upto, CHANGED_THREADS_MAX + 1)
+    // More changed than a page carries: the cursor stops before the first left out, which the next poll reports.
+    if (changed.length > CHANGED_THREADS_MAX) liveCap = Math.max(after + 1, changed.pop()!.revision - 1)
+    for (const { thread } of changed) {
+      if (refs.some((ids) => ids.includes(thread))) continue
+      const root = await store.threadRootInSession(scope, thread)
+      if (!root || !(await isRootRow(store, scope, root))) continue
+      roots.set(thread, root)
+      always.push(thread)
+    }
+  }
+  const summaries = await threadSummaries(store, rec, scope, [...refs.flat(), ...always], roots)
+  return {
+    refs,
+    always: always.filter((id) => summaries.has(id)),
+    summaries,
+    ...(liveCap !== undefined ? { liveCap } : {})
+  }
+}
+
+/** One page of rows through `reads`, projected for display and cut to the frame budget with the thread summaries they name. */
+async function readTranscriptPage(
+  store: LocalStore,
+  rec: SessionRecord,
+  req: { cursor?: string | undefined; after?: string | undefined; limit: number },
+  reads: PageReads,
+  threads?: PageThreadsOf
+): Promise<Omit<SessionHistoryPage, 'sessionId'>> {
+  const tailing = req.after !== undefined
+  const afterRevision = tailing ? Number(req.after) : null
+  if (afterRevision !== null && (!Number.isSafeInteger(afterRevision) || afterRevision < 0))
+    throw new Error('invalid transcript revision')
+  // Native-order ids (Slack's) page by event time + seq; opaque ids and a legacy numeric cursor page by seq.
+  const nativeOrder = hasNativeMessageOrder(rec.platform)
+  const eventCursor = decodeEventCursor(req.cursor)
+  const numericCursor = req.cursor !== undefined ? Number(req.cursor) : Number.NaN
+  const legacyBefore = Number.isSafeInteger(numericCursor) ? numericCursor : null
+  const chronological = nativeOrder && (req.cursor === undefined || eventCursor !== null || legacyBefore === null)
+  const page =
+    afterRevision !== null
+      ? await reads.tail(afterRevision, req.limit)
+      : chronological
+        ? await reads.byEventTime(eventCursor, req.limit)
+        : await reads.bySeq(legacyBefore, req.limit)
+  const { rows, hasMore } = page
+  // rows are newest-first; the page itself is oldest→newest.
+  const ordered = tailing ? rows : rows.slice().reverse()
+  const projected = ordered.map((row) => ({ row, sender: row.sender }))
+  // Cached names for senders and `<@U…>` mentions; an unresolved id stays raw and omits `senderName`.
+  const names = await store.getDisplayNames(
+    projected.flatMap(({ row, sender }) => [sender, ...mentionedUserIds(row.text)])
+  )
+  const avatars = rec.transportScope
+    ? await store.getProfileAvatars(
+        rec.transportScope,
+        projected.map(({ sender }) => sender)
+      )
+    : new Map<string, string>()
+  const built = projected.map<SessionMessage>(({ row: r, sender }) => {
+    const senderName = names.get(sender)
+    const senderAvatarUrl = avatars.get(sender)
+    const attachments = transcriptAttachments(r.attachmentsJson)
+    const sharedImage = parseSharedImageJson(r.sharedImageJson)
+    const base: SessionMessage = {
+      seq: r.seq,
+      sender,
+      ...(senderName ? { senderName } : {}),
+      ...(senderAvatarUrl ? { senderAvatarUrl } : {}),
+      ...(r.trustedAgentBot ? { trustedAgentBot: true } : {}),
+      ts: r.ts,
+      ...(r.eventTimeUs ? { eventTimeUs: r.eventTimeUs } : {}),
+      ...(r.postId ? { postId: canonicalPostId(r.postId) } : {}),
+      kind: r.kind,
+      text: substituteUserMentions(withoutAttachmentMention(r.text, attachments), names),
+      ...(attachments.length ? { attachments } : {}),
+      ...(sharedImage ? { sharedImage: displayedSharedImage(sharedImage) } : {})
+    }
+    if (!r.body) return base
+    // A user turn's `UserTurnBody` rides inline when it fits; an oversized one drops only the prompt.
+    if (r.kind === 'text') {
+      const bytes = Buffer.byteLength(r.body)
+      if (bytes <= PREVIEW_CAP) {
+        base.body = r.body
+        return base
+      }
+      try {
+        const { prompt: _prompt, ...facts } = JSON.parse(r.body) as { prompt?: unknown }
+        const shrunk = JSON.stringify(facts)
+        if (Buffer.byteLength(shrunk) <= PREVIEW_CAP) {
+          base.body = shrunk
+          base.bodyTruncated = true
+          base.bodyBytes = bytes
+        }
+      } catch {
+        // unparseable body → the row's text stands alone
+      }
+      return base
+    }
+    // A plan body has no full-body fetch, so an oversized one is dropped and its `Plan · n/m` row stands alone.
+    if (r.kind === 'plan') {
+      if (Buffer.byteLength(r.body) <= PREVIEW_CAP) base.body = r.body
+      return base
+    }
+    // An elicitation or capability card's body is the card and has no full-body fetch: inline or not at all.
+    if (r.kind === 'elicit' || r.kind === 'capability') {
+      if (Buffer.byteLength(r.body) <= PREVIEW_CAP) base.body = r.body
+      return base
+    }
+    // An app card's template makes it too large for a page (webchat-mcp-apps.md §8): a shed preview rides, fetched whole by `toolCallId`.
+    if (r.kind === 'app') {
+      base.toolCallId = r.tool_call_id ?? undefined
+      const bytes = Buffer.byteLength(r.body)
+      if (bytes <= PREVIEW_CAP) {
+        base.body = r.body
+        return base
+      }
+      const preview = previewAppBody(r.body)
+      if (preview) {
+        base.body = preview
+        base.bodyTruncated = true
+        base.bodyBytes = bytes
+      }
+      return base
+    }
+    if (r.kind !== 'tool') return base
+    // A tool row surfaces its id, status and kind, with its body verbatim up to 32 KiB, else a valid-JSON preview.
+    let full: ToolBody
+    try {
+      full = JSON.parse(r.body) as ToolBody
+    } catch {
+      return base // unparseable body → fall back to the title-only row
+    }
+    const bytes = Buffer.byteLength(r.body)
+    base.toolCallId = full.toolCallId ?? r.tool_call_id ?? undefined
+    if (full.status !== undefined) base.toolStatus = full.status
+    if (full.kind !== undefined) base.toolKind = full.kind
+    if (bytes <= PREVIEW_CAP) {
+      base.body = r.body
+    } else {
+      base.body = JSON.stringify(previewBody(full, r.body))
+      base.bodyTruncated = true
+      base.bodyBytes = bytes
+    }
+    return base
+  })
+  const budget = threadBudget(await threads?.(ordered, built, afterRevision, transcriptPageCursor(page)))
+  if (tailing) {
+    // A forward page keeps the EARLIEST unseen mutations, so its cursor progresses without skipping one.
+    const kept: SessionMessage[] = []
+    let acc = budget.carryAlways()
+    for (const [i, message] of built.entries()) {
+      const enc = encodedBytes(message) + 1 + budget.cost(i)
+      if (kept.length > 0 && acc + enc > REPLY_BUDGET) break
+      kept.push(message)
+      budget.carry(i)
+      acc += enc
+    }
+    const droppedToBudget = kept.length < built.length
+    const lastMutationRow = kept.length > 0 ? rows[kept.length - 1] : undefined
+    const reached =
+      (hasMore || droppedToBudget) && lastMutationRow
+        ? lastMutationRow.revision
+        : (transcriptPageCursor(page) ?? afterRevision!)
+    // Rows past a capped cursor come again on the next poll, as a same-seq update does.
+    const capped = budget.liveCap !== undefined && reached > budget.liveCap
+    const liveCursor = capped ? budget.liveCap! : reached
+    const liveMore = hasMore || droppedToBudget || capped
+    // A backfill can insert an older native-order row, so the page is chronological while its cursor stays in mutation order.
+    const rowBySeq = new Map(rows.map((row) => [row.seq, row]))
+    kept.sort((a, b) => {
+      if (!nativeOrder) return a.seq - b.seq
+      const ar = rowBySeq.get(a.seq)
+      const br = rowBySeq.get(b.seq)
+      return (ar?.eventTimeUs ?? 0) - (br?.eventTimeUs ?? 0) || a.seq - b.seq
+    })
+    return {
+      messages: kept,
+      liveCursor: String(liveCursor),
+      ...(liveMore ? { liveMore: true } : {}),
+      ...budget.carried()
+    }
+  }
+  // Keep the NEWEST rows that fit, newest first; a single ≤ 32 KiB preview always fits, so the walk progresses.
+  const kept: SessionMessage[] = []
+  let acc = budget.carryAlways()
+  let droppedToBudget = false
+  for (let i = built.length - 1; i >= 0; i--) {
+    const m = built[i]!
+    const enc = encodedBytes(m) + 1 + budget.cost(i) // + array separator
+    if (kept.length > 0 && acc + enc > REPLY_BUDGET) {
+      droppedToBudget = true // this row + everything older overflows the frame
+      break
+    }
+    kept.push(m)
+    budget.carry(i)
+    acc += enc
+  }
+  kept.reverse() // back to oldest→newest
+  // Older rows exist past the store page or the budget; the cursor anchors to the oldest KEPT row in the active order.
+  const hasOlder = hasMore || droppedToBudget
+  const oldestKept = kept[0]
+  const oldestRow = oldestKept ? rows.find((r) => r.seq === oldestKept.seq) : undefined
+  return {
+    messages: kept,
+    liveCursor: String(transcriptPageCursor(page) ?? (await reads.currentRevision())),
+    ...(hasOlder && oldestKept
+      ? {
+          nextCursor:
+            chronological && oldestRow
+              ? encodeEventCursor({ eventTimeUs: oldestRow.eventTimeUs, seq: oldestRow.seq })
+              : String(oldestKept.seq)
+        }
+      : {}),
+    ...budget.carried()
+  }
+}
 
 function transcriptPageCursor(page: unknown): number | undefined {
   if (!page || typeof page !== 'object' || !('cursor' in page)) return undefined
@@ -318,225 +744,42 @@ export function createSessionReader(
     async history(req, scope) {
       const rec = await sessionForRead(store, req.agentId, req.sessionId)
       if (!rec) return { sessionId: req.sessionId, messages: [] }
-      const tailing = req.after !== undefined
-      const afterRevision = tailing ? Number(req.after) : null
-      if (afterRevision !== null && (!Number.isSafeInteger(afterRevision) || afterRevision < 0))
-        throw new Error('invalid transcript revision')
-      // A platform whose ids order natively can append an OLDER row during warm-thread
-      // backfill (Slack's, today — see platforms/message-ordering.ts), so its
-      // authoritative history pages by normalized event time + seq tie-breaker. Where
-      // ids are opaque, insertion seq IS the only order there is and stays the page
-      // walk. A plain numeric cursor came from a pre-upgrade daemon: finish that page
-      // walk in legacy seq order to avoid mixing cursor domains mid-request.
-      const nativeOrder = hasNativeMessageOrder(rec.platform)
-      const eventCursor = decodeEventCursor(req.cursor)
-      const numericCursor = req.cursor !== undefined ? Number(req.cursor) : Number.NaN
-      const legacyBefore = Number.isSafeInteger(numericCursor) ? numericCursor : null
-      const chronological = nativeOrder && (req.cursor === undefined || eventCursor !== null || legacyBefore === null)
-      const transcriptChannel = transcriptChannelKey(rec.channel, rec.transportScope)
-      // Scope to what THIS agent's session received + produced, not the whole shared
-      // (channel, thread) thread — an agent-called session only ever saw the message handed
-      // to it (context isolation), so the view must not leak other participants' cross-talk.
-      const readScope = {
-        transcriptChannel,
-        coordinate: rec.thread,
-        sessionKey: rec.key,
-        agentId: rec.agentId,
-        ...(scope?.orgId !== undefined ? { orgId: scope.orgId } : {})
-      }
-      const page =
-        afterRevision !== null
-          ? await transcriptRead.transcriptTailForAgent(readScope, afterRevision, req.limit)
-          : chronological
-            ? await transcriptRead.transcriptPageForAgentByEventTime(readScope, eventCursor, req.limit)
-            : await transcriptRead.transcriptPageForAgent(readScope, legacyBefore, req.limit)
-      const { rows, hasMore } = page
-      // rows are newest-first; the page itself is oldest→newest.
-      const ordered = tailing ? rows : rows.slice().reverse()
-      const projected = ordered.map((row) => ({ row, sender: row.sender }))
-      // Display names (cached in the store) for both senders AND `<@U…>` mentions in
-      // message bodies; agent-id senders and unresolved ids have no entry, so
-      // `senderName` is omitted (UI falls back) and mentions stay as the raw token.
-      const names = await store.getDisplayNames(
-        projected.flatMap(({ row, sender }) => [sender, ...mentionedUserIds(row.text)])
+      const readScope = sessionReadScope(rec, scope)
+      const roots = req.view === 'roots' ? 'roots' : undefined
+      const page = await readTranscriptPage(
+        store,
+        rec,
+        req,
+        {
+          tail: (after, limit) => transcriptRead.transcriptTailForAgent(readScope, after, limit, roots),
+          byEventTime: (before, limit) =>
+            transcriptRead.transcriptPageForAgentByEventTime(readScope, before, limit, roots),
+          bySeq: (before, limit) => transcriptRead.transcriptPageForAgent(readScope, before, limit, roots),
+          currentRevision: () => transcriptRead.currentTranscriptRevision(rec.agentId, scope?.orgId)
+        },
+        roots
+          ? (rows, built, after, upto) => rootsViewThreads(store, rec, readScope, rows, built, after, upto)
+          : undefined
       )
-      const avatars = rec.transportScope
-        ? await store.getProfileAvatars(
-            rec.transportScope,
-            projected.map(({ sender }) => sender)
-          )
-        : new Map<string, string>()
-      const built = projected.map<SessionMessage>(({ row: r, sender }) => {
-        const senderName = names.get(sender)
-        const senderAvatarUrl = avatars.get(sender)
-        const attachments = transcriptAttachments(r.attachmentsJson)
-        const sharedImage = parseSharedImageJson(r.sharedImageJson)
-        const base: SessionMessage = {
-          seq: r.seq,
-          sender,
-          ...(senderName ? { senderName } : {}),
-          ...(senderAvatarUrl ? { senderAvatarUrl } : {}),
-          ...(r.trustedAgentBot ? { trustedAgentBot: true } : {}),
-          ts: r.ts,
-          ...(r.eventTimeUs ? { eventTimeUs: r.eventTimeUs } : {}),
-          ...(r.postId ? { postId: canonicalPostId(r.postId) } : {}),
-          kind: r.kind,
-          text: substituteUserMentions(withoutAttachmentMention(r.text, attachments), names),
-          ...(attachments.length ? { attachments } : {}),
-          ...(sharedImage ? { sharedImage: displayedSharedImage(sharedImage) } : {})
-        }
-        if (!r.body) return base
-        // A text row's body is the `UserTurnBody` behind a user turn. It rides inline when it fits;
-        // an oversized one keeps its facts and drops the prompt, which the console never renders.
-        if (r.kind === 'text') {
-          const bytes = Buffer.byteLength(r.body)
-          if (bytes <= PREVIEW_CAP) {
-            base.body = r.body
-            return base
-          }
-          try {
-            const { prompt: _prompt, ...facts } = JSON.parse(r.body) as { prompt?: unknown }
-            const shrunk = JSON.stringify(facts)
-            if (Buffer.byteLength(shrunk) <= PREVIEW_CAP) {
-              base.body = shrunk
-              base.bodyTruncated = true
-              base.bodyBytes = bytes
-            }
-          } catch {
-            // unparseable body → the row's text stands alone
-          }
-          return base
-        }
-        // A plan body is the turn's whole task list and has no full-body fetch behind it, so
-        // it rides inline or not at all — an implausibly large one is dropped rather than
-        // previewed, leaving the row's `Plan · n/m` summary to stand alone.
-        if (r.kind === 'plan') {
-          if (Buffer.byteLength(r.body) <= PREVIEW_CAP) base.body = r.body
-          return base
-        }
-        // An elicitation card's body IS the card and has no full-body fetch behind it: it rides
-        // inline or not at all, leaving the row's question to stand alone.
-        // A capability card's body is small and the card itself (capability-requests.md §4.4.2): it rides inline, like an elicitation card's.
-        if (r.kind === 'elicit' || r.kind === 'capability') {
-          if (Buffer.byteLength(r.body) <= PREVIEW_CAP) base.body = r.body
-          return base
-        }
-        // An app card's body is the card WITH its template, which is the whole reason a reloaded
-        // page can be shown again (webchat-mcp-apps.md §8) and also why it must not ride a page:
-        // one card is hundreds of KiB. What rides is a preview SHED down to fit, marked truncated,
-        // and the console pulls the whole card back through the same on-demand daemon read an
-        // oversized tool body uses — keyed by the `toolCallId` below.
-        if (r.kind === 'app') {
-          base.toolCallId = r.tool_call_id ?? undefined
-          const bytes = Buffer.byteLength(r.body)
-          if (bytes <= PREVIEW_CAP) {
-            base.body = r.body
-            return base
-          }
-          const preview = previewAppBody(r.body)
-          if (preview) {
-            base.body = preview
-            base.bodyTruncated = true
-            base.bodyBytes = bytes
-          }
-          return base
-        }
-        if (r.kind !== 'tool') return base
-        // Enrich a tool row: surface toolCallId/status/kind + an inline body (verbatim
-        // when ≤ 32 KiB, else a valid-JSON preview with bodyTruncated + full byte length).
-        let full: ToolBody
-        try {
-          full = JSON.parse(r.body) as ToolBody
-        } catch {
-          return base // unparseable body → fall back to the title-only row
-        }
-        const bytes = Buffer.byteLength(r.body)
-        base.toolCallId = full.toolCallId ?? r.tool_call_id ?? undefined
-        if (full.status !== undefined) base.toolStatus = full.status
-        if (full.kind !== undefined) base.toolKind = full.kind
-        if (bytes <= PREVIEW_CAP) {
-          base.body = r.body
-        } else {
-          base.body = JSON.stringify(previewBody(full, r.body))
-          base.bodyTruncated = true
-          base.bodyBytes = bytes
-        }
-        return base
+      return { sessionId: req.sessionId, ...page }
+    },
+    async thread(req, scope) {
+      const empty: SessionThreadPage = { sessionId: req.sessionId, rootId: req.rootId, messages: [] }
+      const rec = await sessionForRead(store, req.agentId, req.sessionId)
+      if (!rec) return empty
+      const readScope = sessionReadScope(rec, scope)
+      const root = await transcriptRead.threadRootInSession(readScope, req.rootId)
+      if (!root || !(await isRootRow(store, readScope, root))) return empty
+      const summaries = await threadSummaries(store, rec, readScope, [req.rootId], new Map([[req.rootId, root]]), true)
+      const page = await readTranscriptPage(store, rec, req, {
+        tail: (after, limit) => transcriptRead.threadTailForAgent(readScope, req.rootId, after, limit),
+        byEventTime: (before, limit) =>
+          transcriptRead.threadPageForAgentByEventTime(readScope, req.rootId, before, limit),
+        bySeq: (before, limit) => transcriptRead.threadPageForAgent(readScope, req.rootId, before, limit),
+        currentRevision: () => transcriptRead.currentTranscriptRevision(rec.agentId, scope?.orgId)
       })
-      if (tailing) {
-        // A forward page must retain the EARLIEST unseen mutations so its cursor
-        // always makes progress without skipping an insert or same-seq update.
-        const kept: SessionMessage[] = []
-        let acc = 0
-        for (const message of built) {
-          const enc = encodedBytes(message) + 1
-          if (kept.length > 0 && acc + enc > REPLY_BUDGET) break
-          kept.push(message)
-          acc += enc
-        }
-        const droppedToBudget = kept.length < built.length
-        const liveMore = hasMore || droppedToBudget
-        const lastMutationRow = kept.length > 0 ? rows[kept.length - 1] : undefined
-        const liveCursor =
-          liveMore && lastMutationRow ? lastMutationRow.revision : (transcriptPageCursor(page) ?? afterRevision)
-        // Mutation order and display order differ when a warm-thread backfill inserts
-        // an older platform message — possible only where message ids order natively.
-        // Return a chronological page while the revision cursor above remains anchored
-        // to mutation order.
-        const rowBySeq = new Map(rows.map((row) => [row.seq, row]))
-        kept.sort((a, b) => {
-          if (!nativeOrder) return a.seq - b.seq
-          const ar = rowBySeq.get(a.seq)
-          const br = rowBySeq.get(b.seq)
-          return (ar?.eventTimeUs ?? 0) - (br?.eventTimeUs ?? 0) || a.seq - b.seq
-        })
-        return {
-          sessionId: req.sessionId,
-          messages: kept,
-          liveCursor: String(liveCursor),
-          ...(liveMore ? { liveMore: true } : {})
-        }
-      }
-      // Per-page frame budget: keep the NEWEST rows that fit, drop older overflow, and
-      // page older via nextCursor = oldest KEPT seq. `built` is oldest→newest, so we
-      // accumulate from the newest end. A single ≤ 32 KiB preview always fits ⇒ progress.
-      const kept: SessionMessage[] = []
-      let acc = 0
-      let droppedToBudget = false
-      for (let i = built.length - 1; i >= 0; i--) {
-        const m = built[i]!
-        const enc = encodedBytes(m) + 1 // + array separator
-        if (kept.length > 0 && acc + enc > REPLY_BUDGET) {
-          droppedToBudget = true // this row + everything older overflows the frame
-          break
-        }
-        kept.push(m)
-        acc += enc
-      }
-      kept.reverse() // back to oldest→newest
-      // Older rows exist if the store had more beyond this page (hasMore) OR the frame
-      // budget forced us to drop some of this page. Anchor the next cursor to the oldest
-      // KEPT row in the active ordering (event-time+seq for Slack; seq otherwise), so the
-      // console pages strictly older. A ≤ 32 KiB preview always fits ⇒ kept is non-empty
-      // when the page is ⇒ progress is guaranteed.
-      const hasOlder = hasMore || droppedToBudget
-      const oldestKept = kept[0]
-      const oldestRow = oldestKept ? rows.find((r) => r.seq === oldestKept.seq) : undefined
-      return {
-        sessionId: req.sessionId,
-        messages: kept,
-        liveCursor: String(
-          transcriptPageCursor(page) ?? (await transcriptRead.currentTranscriptRevision(rec.agentId, scope?.orgId))
-        ),
-        ...(hasOlder && oldestKept
-          ? {
-              nextCursor:
-                chronological && oldestRow
-                  ? encodeEventCursor({ eventTimeUs: oldestRow.eventTimeUs, seq: oldestRow.seq })
-                  : String(oldestKept.seq)
-            }
-          : {})
-      }
+      const summary = summaries.get(req.rootId)
+      return { ...empty, ...page, ...(summary ? { summary } : {}) }
     },
     async toolBody(req, scope) {
       const rec = await sessionForRead(store, req.agentId, req.sessionId)

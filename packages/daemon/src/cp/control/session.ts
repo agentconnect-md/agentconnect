@@ -4,6 +4,7 @@ import type {
   ChildSessionStatusProbe,
   SessionHistoryReq,
   SessionListReq,
+  SessionThreadReq,
   SessionPullRequestFeedback,
   SessionPullRequestFeedbackResult,
   SharedImageResolveOk,
@@ -82,6 +83,13 @@ export const sessionHistory: ControlHandler<SessionControlDeps> = (frame: AnyFra
     .then(() => deps.sessionRead.history(req, { orgId: frame.orgId }))
     .then((page) => wire.reply(frame, 'session/history/page', page))
     .catch((err) => wire.sendError(frame.id, 'INTERNAL', `session/history failed: ${(err as Error).message}`, false))
+}
+
+export const sessionThread: ControlHandler<SessionControlDeps> = (frame: AnyFrame, deps, wire) => {
+  Promise.resolve()
+    .then(() => deps.sessionRead.thread(frame.payload as SessionThreadReq, { orgId: frame.orgId }))
+    .then((page) => wire.reply(frame, 'session/thread/page', page))
+    .catch((err) => wire.sendError(frame.id, 'INTERNAL', `session/thread failed: ${(err as Error).message}`, false))
 }
 
 export const sessionToolBody: ControlHandler<SessionControlDeps> = (frame: AnyFrame, deps, wire) => {

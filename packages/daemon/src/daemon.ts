@@ -118,6 +118,7 @@ import {
   ACTIVITY_EVERY_AGENT_V1_FEATURE,
   SESSION_MODE_AUTO_V1_FEATURE,
   WEBCHAT_THREADS_FEATURE,
+  SESSION_THREAD_READS_FEATURE,
   coordinatorConversationId,
   TASK_PAGE_MESSAGES_FEATURE,
   AUTO_MERGE_FEATURE,
@@ -8952,6 +8953,8 @@ export class Daemon {
       ...(this.cfg.features.autoSessionMode ? [TASK_PAGE_MESSAGES_FEATURE] : []),
       // Answers a webchat coordinator's messages in their threads (webchat-threads.md §8); it rides the same switch.
       ...(this.cfg.features.autoSessionMode ? [WEBCHAT_THREADS_FEATURE] : []),
+      // Answers the `roots` view and `session/thread` from the channel record (webchat-threads.md §8); static.
+      SESSION_THREAD_READS_FEATURE,
       // Keeps follow-ups in place of items: Activity carries them as tasks and answers no items; static.
       FOLLOW_UP_TASKS_V1_FEATURE,
       // Ends a follow-up by its id before its first check, and reads one task by its session; static.
@@ -14495,7 +14498,14 @@ export class Daemon {
           sessionKey: sessionKey(msg.platform, conversationId, sessionThreadOf(msg), agentId, msg.transportScope)
         },
         text,
-        ...(taskLink ? { body: JSON.stringify({ taskLink } satisfies UserTurnBody) } : {})
+        ...(taskLink || thread
+          ? {
+              body: JSON.stringify({
+                ...(taskLink ? { taskLink } : {}),
+                ...(thread ? { threadPost: true } : {})
+              } satisfies UserTurnBody)
+            }
+          : {})
       }
     )
     this.relays?.sendWebchatPost({

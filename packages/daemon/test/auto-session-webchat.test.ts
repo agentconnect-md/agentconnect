@@ -12,6 +12,7 @@ import { subsessionCoordinate } from '../src/session/subsession-coordinate.js'
 import { sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import type { SessionContext } from '../src/mcp/ops/context.js'
 import { WAIT } from './wait-support.js'
+import { createSessionReader } from '../src/cp/session-reader.js'
 
 const AGENT = 'bot-a'
 const ORG = 'org-1'
@@ -349,6 +350,21 @@ describe("a member's coordinator conversation in webchat (auto-session-mode.md �
     expect(replies.at(-1)).toEqual({ channel: CONV, thread: asked.messageId })
     const answered = await d.store.transcriptPage(channel, asked.postId, null, 50, AGENT)
     expect(answered.rows.map((row: { text: string }) => row.text)).toContain('Still on it.')
+    // It is a message of that thread, so the coordinator page shows it there and not in its timeline (§6.1, §8).
+    expect(answered.rows.find((row: { text: string }) => row.text === 'Still on it.')?.body).toBe(
+      JSON.stringify({ threadPost: true })
+    )
+    const coordinatorId = await d.store.ensureOutwardSessionId(coordinatorKey, AGENT)
+    const reader = createSessionReader(d.store)
+    const timeline = await reader.history({ agentId: AGENT, sessionId: coordinatorId, limit: 50, view: 'roots' })
+    expect(timeline.messages.map((m) => m.text)).toContain('how is it going?')
+    expect(timeline.messages.map((m) => m.text)).not.toContain('Still on it.')
+    const inThread = await reader.thread({ agentId: AGENT, sessionId: coordinatorId, rootId: asked.postId, limit: 50 })
+    expect(inThread.messages.map((m) => m.text)).toEqual(['how is it going?', 'Still on it.'])
+    expect(timeline.threads?.find((t) => t.rootId === first.postId)).toMatchObject({
+      task: { title: 'Fix the retry' },
+      lastReply: { excerpt: 'task answer 2' }
+    })
 
     // Every message is addressed to the agent, so one left undecided opens a task on its own thread.
     await vi.waitFor(() => expect(d.pending.size + d.inflight.size).toBe(0), WAIT)

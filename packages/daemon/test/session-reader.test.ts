@@ -1231,6 +1231,205 @@ const screenshotContent = (imageChars: number) => [
   { type: 'content', content: { type: 'text', text: JSON.stringify({ width: 1280, stored: `sha256:${SHOT_HASH}` }) } }
 ]
 
+describe('the roots view and session/thread (webchat-threads.md §8)', () => {
+  const CONV = '5a0e8c4d-2b7f-4e19-9c3a-6d8b1f2e4a70'
+  const R1 = '0f9c2b1e-5d4a-4c3b-9a8f-7e6d5c4b3a21'
+  const R2 = '6b1d7e2f-3a4c-4d5e-8f90-a1b2c3d4e5f6'
+  const LEGACY = '9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b'
+  const REPLY = 'c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e5f'
+  const coordinatorKey = sessionKey('webchat', CONV, 'append:c', AGENT)
+  const taskKey = sessionKey('webchat', CONV, R1, AGENT)
+  const coordinator = { agentId: AGENT, sessionKey: coordinatorKey }
+  const task = { agentId: AGENT, sessionKey: taskKey }
+  const session = (key: string, thread: string, sessionId: string, state: 'idle' | 'prompting') => ({
+    key,
+    agentId: AGENT,
+    platform: 'webchat',
+    channel: CONV,
+    thread,
+    acpSessionId: `acp-${sessionId}`,
+    sessionId,
+    state,
+    lastDeliveredTs: null,
+    updatedAt: 1
+  })
+  const post = (ts: string, thread: string, extra: Record<string, unknown> = {}) => ({
+    channel: CONV,
+    thread,
+    ts,
+    sender: 'U1',
+    kind: 'text' as const,
+    text: `m${ts}`,
+    postId: crypto.randomUUID(),
+    ...extra
+  })
+
+  // A member's coordinator conversation: a root a task holds, the coordinator's turns on it and on a reply, its post in the thread, an empty root and a legacy root.
+  async function conversation() {
+    const s = await store()
+    await s.upsertSession(session(coordinatorKey, 'append:c', 'sid-coord', 'idle'))
+    await s.upsertSession(session(taskKey, R1, 'sid-task', 'prompting'))
+    await s.appendTranscript(post('1', R1, { postId: R1, admission: coordinator }))
+    await s.appendTranscript(post('2', R1, { sender: AGENT, admission: coordinator }))
+    await s.appendTranscript(post('3', R1, { sender: 'U2', postId: REPLY, admission: coordinator }))
+    await s.appendTranscript(post('4', R1, { sender: AGENT, admission: coordinator }))
+    await s.appendTranscript(post('5', R1, { sender: AGENT, admission: coordinator, body: '{"threadPost":true}' }))
+    await s.appendTranscript(post('6', R1, { sender: AGENT, admission: task }))
+    await s.appendTranscript(post('7', R1, { sender: 'U3', text: `<@U2>   thanks,\n  that worked ${'x'.repeat(300)}` }))
+    await s.appendTranscript(post('8', R2, { postId: R2, admission: coordinator }))
+    await s.appendTranscript(post('9', `webchat:${CONV}`, { postId: LEGACY, admission: coordinator }))
+    await s.appendTranscript(post('10', LEGACY, { admission: coordinator }))
+    await s.assistantSubsessions.open({
+      agentId: AGENT,
+      childSessionKey: taskKey,
+      parentSessionId: 'sid-coord',
+      parentSessionKey: coordinatorKey,
+      title: 'Fix the login bug',
+      now: 1
+    })
+    await s.assistantSubsessions.attachThread({
+      agentId: AGENT,
+      childSessionKey: taskKey,
+      platform: 'webchat',
+      channel: CONV,
+      thread: R1,
+      sinceRound: 1,
+      now: 1
+    })
+    await s.setDisplayName('U2', 'Dana Reyes', 1)
+    return s
+  }
+
+  const heldThread = {
+    rootId: R1,
+    rootExcerpt: 'm1',
+    replies: 4,
+    lastReplyAt: '1970-01-01T00:00:07.000Z',
+    lastReply: { sender: 'U3', excerpt: `@Dana Reyes thanks, that worked ${'x'.repeat(167)}…` },
+    participants: [{ sender: 'U3' }, { sender: AGENT }, { sender: 'U2', senderName: 'Dana Reyes' }],
+    task: { sessionId: 'sid-task', title: 'Fix the login bug', state: 'open' },
+    running: true
+  }
+
+  it('shows roots and coordinator turns, marks a turn’s rows with their thread, and summarizes each thread', async () => {
+    const s = await conversation()
+    const page = await createSessionReader(s).history({
+      agentId: AGENT,
+      sessionId: 'sid-coord',
+      limit: 50,
+      view: 'roots'
+    })
+    expect(page.messages.map((m) => [m.ts, m.thread])).toEqual([
+      ['1', undefined],
+      ['2', R1],
+      ['3', R1],
+      ['4', R1],
+      ['8', undefined],
+      ['9', undefined],
+      ['10', LEGACY]
+    ])
+    expect(SessionMessage.array().parse(page.messages)).toHaveLength(7)
+    expect(page.threads).toEqual([
+      heldThread,
+      {
+        rootId: LEGACY,
+        rootExcerpt: 'm9',
+        replies: 1,
+        lastReplyAt: '1970-01-01T00:00:10.000Z',
+        lastReply: { sender: 'U1', excerpt: 'm10' },
+        participants: [{ sender: 'U1' }]
+      }
+    ])
+    // The session's own transcript is unchanged: the post in the thread, and no marks or summaries.
+    const flat = await createSessionReader(s).history({ agentId: AGENT, sessionId: 'sid-coord', limit: 50 })
+    expect(flat.messages.map((m) => [m.ts, m.thread])).toEqual(
+      ['1', '2', '3', '4', '5', '8', '9', '10'].map((ts) => [ts, undefined])
+    )
+    expect(flat.threads).toBeUndefined()
+    await s.close()
+  })
+
+  it('carries, on a forward roots page, the threads that changed since its cursor', async () => {
+    const s = await conversation()
+    const reader = createSessionReader(s)
+    const first = await reader.history({ agentId: AGENT, sessionId: 'sid-coord', limit: 50, view: 'roots' })
+    await s.appendTranscript(post('11', R2, { sender: 'U2' }))
+    const tail = await reader.history({
+      agentId: AGENT,
+      sessionId: 'sid-coord',
+      limit: 50,
+      view: 'roots',
+      after: first.liveCursor!
+    })
+    expect(tail.messages).toEqual([])
+    expect(tail.threads).toEqual([
+      {
+        rootId: R2,
+        rootExcerpt: 'm8',
+        replies: 1,
+        lastReplyAt: '1970-01-01T00:00:11.000Z',
+        lastReply: { sender: 'U2', senderName: 'Dana Reyes', excerpt: 'm11' },
+        participants: [{ sender: 'U2', senderName: 'Dana Reyes' }]
+      }
+    ])
+    await s.close()
+  })
+
+  it('holds a forward page’s cursor back when more threads changed than it carries, so none is skipped', async () => {
+    const s = await conversation()
+    const reader = createSessionReader(s)
+    const roots = Array.from({ length: 21 }, () => crypto.randomUUID())
+    for (const [i, root] of roots.entries())
+      await s.appendTranscript(post(String(100 + i), root, { postId: root, admission: coordinator }))
+    const first = await reader.history({ agentId: AGENT, sessionId: 'sid-coord', limit: 50, view: 'roots' })
+    for (const [i, root] of roots.entries()) await s.appendTranscript(post(String(200 + i), root, { sender: 'U3' }))
+    const tail = { agentId: AGENT, sessionId: 'sid-coord', limit: 50, view: 'roots' as const }
+    const one = await reader.history({ ...tail, after: first.liveCursor! })
+    expect(one.threads?.map((t) => t.rootId)).toEqual(roots.slice(0, 20))
+    expect(one.liveMore).toBe(true)
+    const two = await reader.history({ ...tail, after: one.liveCursor! })
+    expect(two.threads?.map((t) => t.rootId)).toEqual(roots.slice(20))
+    expect(two.liveMore).toBeUndefined()
+    await s.close()
+  })
+
+  it('reads one thread’s record with its summary, and nothing for a reply, an unknown root or another agent', async () => {
+    const s = await conversation()
+    const reader = createSessionReader(s)
+    const held = await reader.thread({ agentId: AGENT, sessionId: 'sid-coord', rootId: R1, limit: 50 })
+    expect(held.messages.map((m) => m.ts)).toEqual(['1', '3', '5', '6', '7'])
+    expect(held.summary).toEqual(heldThread)
+    expect(held.nextCursor).toBeUndefined()
+    const paged = await reader.thread({ agentId: AGENT, sessionId: 'sid-coord', rootId: R1, limit: 2 })
+    expect(paged.messages.map((m) => m.ts)).toEqual(['6', '7'])
+    const older = await reader.thread({
+      agentId: AGENT,
+      sessionId: 'sid-coord',
+      rootId: R1,
+      limit: 50,
+      cursor: paged.nextCursor!
+    })
+    expect(older.messages.map((m) => m.ts)).toEqual(['1', '3', '5'])
+    const empty = await reader.thread({ agentId: AGENT, sessionId: 'sid-coord', rootId: R2, limit: 50 })
+    expect(empty.messages.map((m) => m.ts)).toEqual(['8'])
+    expect(empty.summary).toEqual({ rootId: R2, rootExcerpt: 'm8', replies: 0, participants: [] })
+    const legacy = await reader.thread({ agentId: AGENT, sessionId: 'sid-coord', rootId: LEGACY, limit: 50 })
+    expect(legacy.messages.map((m) => m.ts)).toEqual(['9', '10'])
+    for (const [agentId, rootId] of [
+      [AGENT, REPLY],
+      [AGENT, crypto.randomUUID()],
+      [OTHER_AGENT, R1]
+    ] as const) {
+      expect(await reader.thread({ agentId, sessionId: 'sid-coord', rootId, limit: 50 })).toEqual({
+        sessionId: 'sid-coord',
+        rootId,
+        messages: []
+      })
+    }
+    await s.close()
+  })
+})
+
 describe('stored screenshot references survive a capped tool body', () => {
   it('rides beside the preview of a screenshot-sized body', async () => {
     const s = await store()

@@ -12,18 +12,7 @@ import {
   WebchatImageAttachment
 } from './webchat.js'
 
-/**
- * Session read-back (C→D REQ → REP) — the console's on-demand pulls.
- *
- * Session bodies are daemon-local (body-locality, §1/§12). The CP may persist a
- * metadata-only session-list snapshot from daemon `event/session` events, while
- * transcript/tool bodies are pulled live from the owning daemon and proxied to
- * the console only for display.
- *
- * - `session/list`: the daemon's local metadata projection, used for snapshots
- *   and direct read-back/debugging.
- * - `session/history`: one cursor-paginated page of a session's transcript.
- */
+// Session read-back (C→D REQ → REP): bodies stay daemon-local and are proxied for display only (§1/§12); session/history and session/thread page transcripts.
 
 /**
  * Per-session token accounting, metered by the daemon from the agent's ACP usage
@@ -225,9 +214,55 @@ export const SessionMessage = z.object({
   toolKind: z.string().optional(), // ACP ToolKind, surfaced for the console icon
   body: z.string().optional(), // JSON.stringify(ToolBody) on a tool row, PlanBody on a plan row, ElicitBody on an elicit row; a tool body may be a truncated-but-VALID-JSON preview
   bodyTruncated: z.boolean().optional(), // preview was shrunk for the frame; full body via session/tool-body
-  bodyBytes: z.number().int().optional() // full (untruncated) body byte length
+  bodyBytes: z.number().int().optional(), // full (untruncated) body byte length
+  // The `roots` view alone (webchat-threads.md §8): the root id of the thread this row is a reply in.
+  thread: z.string().min(1).max(200).optional()
 })
 export type SessionMessage = z.infer<typeof SessionMessage>
+
+/** At most this many repliers ride a thread summary, newest first. */
+export const SESSION_THREAD_PARTICIPANTS_MAX = 5
+/** A thread summary's excerpts (the root's start, the latest reply's) are cut to this many characters. */
+export const SESSION_THREAD_EXCERPT_MAX = 200
+
+/** Who wrote in a thread: a platform handle or an agent id, and the daemon-resolved name when one is known. */
+export const SessionThreadAuthor = z.object({
+  sender: z.string(),
+  senderName: z.string().optional()
+})
+export type SessionThreadAuthor = z.infer<typeof SessionThreadAuthor>
+
+/** One thread's footer (webchat-threads.md §5.3); its excerpts and task title are content the CP shows only to who may read the thread (§7.1). */
+export const SessionThreadSummary = z.object({
+  rootId: z.string().min(1).max(200),
+  rootExcerpt: z.string().max(SESSION_THREAD_EXCERPT_MAX).optional(),
+  // Every chat message in the thread record but the root, people's and agents', observations included (§3).
+  replies: z.number().int().nonnegative(),
+  lastReplyAt: z.string().optional(),
+  lastReply: SessionThreadAuthor.extend({ excerpt: z.string().max(SESSION_THREAD_EXCERPT_MAX) }).optional(),
+  participants: z.array(SessionThreadAuthor).max(SESSION_THREAD_PARTICIPANTS_MAX),
+  // The task holding the thread; `sessionId` is absent until its session exists.
+  task: z
+    .object({
+      sessionId: z.string().optional(),
+      title: z.string().optional(),
+      state: z.enum(['open', 'done', 'failed'])
+    })
+    .optional(),
+  // A turn of the holding task is running.
+  running: z.boolean().optional()
+})
+export type SessionThreadSummary = z.infer<typeof SessionThreadSummary>
+
+/** What `session/history` reads: absent ⇒ the session's transcript; `roots` ⇒ a coordinator page's main timeline (webchat-threads.md §6.1, §8). */
+export const SessionHistoryView = z.enum(['roots'])
+export type SessionHistoryView = z.infer<typeof SessionHistoryView>
+
+/** The revision watermark a forward page starts after; shared by `session/history` and `session/thread`. */
+const TranscriptRevision = z
+  .string()
+  .regex(/^\d+$/)
+  .refine((value) => Number.isSafeInteger(Number(value)))
 
 /** C→D REQ: fetch one page of a session's history from the owning daemon. */
 export const SessionHistoryReq = z
@@ -240,12 +275,10 @@ export const SessionHistoryReq = z
     // Monotonic daemon-local transcript revision. Mutually exclusive with the
     // backward-pagination cursor; used by an open console view to pull inserts
     // and same-seq tool updates without replaying the whole transcript.
-    after: z
-      .string()
-      .regex(/^\d+$/)
-      .refine((value) => Number.isSafeInteger(Number(value)))
-      .optional(),
-    limit: z.number().int().positive().max(200).default(50)
+    after: TranscriptRevision.optional(),
+    limit: z.number().int().positive().max(200).default(50),
+    // Sent only to a daemon advertising SESSION_THREAD_READS_FEATURE; an older one ignores it.
+    view: SessionHistoryView.optional()
   })
   .refine(({ cursor, after }) => cursor === undefined || after === undefined, {
     message: 'cursor and after are mutually exclusive'
@@ -260,9 +293,39 @@ export const SessionHistoryPage = z.object({
   // Optional for rolling compatibility. `liveCursor` is the next `after`
   // watermark; `liveMore` means another forward page is immediately available.
   liveCursor: z.string().optional(),
-  liveMore: z.boolean().optional()
+  liveMore: z.boolean().optional(),
+  // The `roots` view alone: the summaries of the threads its rows start or reply in, and on a forward page those changed since `after`.
+  threads: z.array(SessionThreadSummary).optional()
 })
 export type SessionHistoryPage = z.infer<typeof SessionHistoryPage>
+
+/** C→D REQ: one page of a thread's record, read through a session that received its root (webchat-threads.md §8); paged like `session/history`. */
+export const SessionThreadReq = z
+  .object({
+    agentId: z.string().uuid(),
+    sessionId: z.string(),
+    rootId: z.string().min(1).max(200),
+    cursor: z.string().optional(),
+    after: TranscriptRevision.optional(),
+    limit: z.number().int().positive().max(200).default(50)
+  })
+  .refine(({ cursor, after }) => cursor === undefined || after === undefined, {
+    message: 'cursor and after are mutually exclusive'
+  })
+export type SessionThreadReq = z.infer<typeof SessionThreadReq>
+
+/** D→C REP: the thread's messages oldest→newest, and its summary; no summary ⇒ the session received no such root, and the page is empty. */
+export const SessionThreadPage = z.object({
+  sessionId: z.string(),
+  rootId: z.string(),
+  messages: z.array(SessionMessage),
+  nextCursor: z.string().optional(),
+  liveCursor: z.string().optional(),
+  liveMore: z.boolean().optional(),
+  // The CP authorizes the content by it (§7.1): a thread a task holds is read only by who may view `summary.task.sessionId`.
+  summary: SessionThreadSummary.optional()
+})
+export type SessionThreadPage = z.infer<typeof SessionThreadPage>
 
 /**
  * C→D REQ: fetch the FULL (untruncated) ToolBody JSON for one tool call, chunked.
