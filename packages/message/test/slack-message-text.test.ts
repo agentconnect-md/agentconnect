@@ -69,4 +69,14 @@ describe('extractSlackMessageText', () => {
     })
     expect(text).toBe('Deploy finished\n*api* is live on staging')
   })
+
+  it('keeps two attachments that differ only in characters mrkdwn also uses, inside code or words', () => {
+    const text = extractSlackMessageText({
+      attachments: [{ text: 'Check `src/foo_bar.ts`' }, { text: 'Check `src/foobar.ts`' }]
+    })
+    expect(text).toBe('Check `src/foo_bar.ts`\nCheck `src/foobar.ts`')
+    expect(
+      extractSlackMessageText({ attachments: [{ text: 'see snake_case_name' }, { text: 'see snakecasename' }] })
+    ).toBe('see snake_case_name\nsee snakecasename')
+  })
 })

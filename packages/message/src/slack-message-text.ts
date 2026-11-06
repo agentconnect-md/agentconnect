@@ -231,18 +231,32 @@ function attachmentText(value: unknown): string {
 
 // A rendered surface reference collapses to its bare id, which is how Slack's fallback `text`
 // spells the same mention — so the two views of one message dedupe instead of both surviving.
-// The `text` view is mrkdwn (escaped `&<>`, `` ` `` `*` `_` `~` markers, labelled mentions) while
-// rich_text spells the same words plainly, so the key drops what is only markup.
+// The `text` view is mrkdwn (escaped `&<>`, code spans, emphasis, labelled mentions) while rich_text
+// spells the same words plainly, so the key drops the delimiters and keeps every character they wrap.
 function canonical(value: string): string {
-  return value
-    .replace(REFERENCE_RE, '$1')
-    .replace(/<([@#!][^|>]+)\|[^>]*>/g, '<$1>')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&amp;/g, '&')
-    .replace(/[`*_~]/g, '')
+  return plainMrkdwn(
+    value
+      .replace(REFERENCE_RE, '$1')
+      .replace(/<([@#!][^|>]+)\|[^>]*>/g, '<$1>')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&amp;/g, '&')
+  )
     .replace(/\s+/g, ' ')
     .trim()
+}
+
+// A code span keeps its content and loses its backticks; outside one, `*` `_` `~` drop only where they
+// wrap words (`_Sent using_`), never inside one (`foo_bar`) or a link.
+function plainMrkdwn(value: string): string {
+  return value
+    .split(/(`{1,3}[^`]+`{1,3})/)
+    .map((part, i) =>
+      i % 2 === 1
+        ? part.replace(/^`+|`+$/g, '')
+        : part.replace(/(^|[^\w<|/])([*_~])(?=\S)([^\n]*?\S)\2(?=[^\w]|$)/g, '$1$3')
+    )
+    .join('')
 }
 
 /** Join top-level text with visible blocks/attachments while removing the common
