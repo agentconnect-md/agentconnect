@@ -1,6 +1,7 @@
 # Webchat Threads, and One Thread Shape for Every Coordinator
 
-> **Status:** Proposal, decisions recorded 2026-11-06 (§12); implementation tracked as the PRs of §11.
+> **Status:** Proposal, decisions recorded 2026-11-06 (§12), one question left for PR 8 (§13);
+> implementation tracked as the PRs of §11.
 > **Builds on:** [auto-session-mode.md](auto-session-mode.md) (§6–§8, §10 webchat),
 > [channel-session-mode.md](channel-session-mode.md) (§3.1 session vs delivery coordinate),
 > [message-intake.md](message-intake.md) (the channel record),
@@ -130,7 +131,8 @@ Every agent of a webchat conversation participates in every one of its threads: 
 standing mention reaches into threads, so a message in a thread is delivered to each agent, and each
 routes it by its own coordinator and tasks (auto-session-mode.md §9), rather than only to the agents
 mentioned or already replying there. A webchat coordinator conversation takes no other participants
-today, so this applies once one may; Slack's own thread participation rules are unchanged.
+today, so this applies once one may, and the rule moves into webchat-multi-agents.md in the change
+that allows a second participant. Slack's own thread participation rules are unchanged.
 
 ### 4.2 Prompts
 
@@ -156,7 +158,8 @@ today, so this applies once one may; Slack's own thread participation rules are 
   `webchat:<conv>` row as a root.
 - A `thread` that names no root the daemon recorded in this conversation, names a reply rather than
   a root, or arrives on a conversation that is not a coordinator conversation is refused with the
-  turn ack reason `unknown_thread`.
+  turn ack reason `unknown_thread`. The root lookup is the reply-chain seam the DingTalk, Teams and
+  Telegram threading already use (`LocalStore.threadForPlatformMessage`), not a second root index.
 - `prepareTurn` sets `msg.thread` to the physical thread and `msgId` to `webchat:<conv>:<postId>`, so
   `inThread`, `replyThreadOf` and `platformMessageIdOf` give webchat the answers they give Slack, and
   `threadless` returns false for a threaded daemon.
@@ -186,13 +189,21 @@ recognizes a page task by `subsession:` switches to the task index (`assistant_s
 to the Control Plane as `taskParentSessionId`). The behaviour each gate gives stays what a page task
 has today:
 
-| Gate                  | Today's test                                                      | Must stay                                                                                  |
-| --------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| Parent and audience   | `pageTaskParent` (`session-manager.ts`) reports `parentSessionId` | The task inherits the coordinator's audience, and publishing the coordinator widens it     |
-| Admin MCP grant       | `adminMcpEntitlement` (`daemon.ts`) on a delegated-task thread    | Each task gets its own grant inherited from the conversation, not the conversation's own   |
-| Standing context      | `pageTask` from `pageTaskParent`                                  | The threaded wording of §4.2                                                               |
-| Permission requests   | `request-conversation.ts` sets `parentSessionId` on `subsession:` | A task's requests list on the coordinator, marked as from a task, and in the task's thread |
-| Continuation audience | `continuation-audience.ts` swaps in the parent on `subsession:`   | A task is continued by whoever may continue its coordinator (§6.3)                         |
+| Gate                    | Today's test                                                                                                              | Must stay                                                                                                                                                                          |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Parent and audience     | `pageTaskParent` (`session-manager.ts`) reports `parentSessionId`                                                         | The task inherits the coordinator's audience, and publishing the coordinator widens it                                                                                             |
+| Admin MCP grant         | `adminMcpEntitlement` (`daemon.ts`) on a delegated-task thread                                                            | Each task gets its own grant inherited from the conversation, not the conversation's own                                                                                           |
+| Standing context        | `pageTask` from `pageTaskParent`                                                                                          | The threaded wording of §4.2                                                                                                                                                       |
+| Permission requests     | `request-conversation.ts` sets `parentSessionId` on `subsession:`                                                         | A task's requests list on the coordinator, marked as from a task, and in the task's thread                                                                                         |
+| Continuation audience   | `continuation-audience.ts` swaps in the parent on `subsession:`                                                           | A task is continued by whoever may continue its coordinator (§6.3)                                                                                                                 |
+| Current-session pointer | `session.repo.ts` advances `webchat_conversation.currentSessionId` for any webchat row on the conversation's UUID channel | The pointer stays on the coordinator: it advances only for a row on the conversation's own thread (`webchat:<conv>` or an `append:` coordinate), never for a thread-keyed task row |
+
+The last gate exists only because tasks move onto the conversation's channel: today's page tasks
+sit on `a2a:<agent>`, so they never reach it. Without it, the first task opened after the
+coordinator would take the conversation's current-session pointer, which `webchat-token.ts` resumes
+on and checks content reach against, and the owner's resume would bind to a task. The rule is a pure
+function of the reported row's thread, so it does not depend on `taskParentSessionId` arriving
+first.
 
 This change has no visible effect by itself and lands before the coordinator moves (§11, PR 3).
 
@@ -277,8 +288,10 @@ A coordinator on Slack is drawn with the same components and rules as §6:
 
 Other platforms differ in their thread shape (Discord thread channels, Telegram topics or reply
 chains, DingTalk reply chains). The web platform module declares it in its channel semantics
-(`WebPlatformModule`), and the page reads that declaration, never a platform name. This proposal
-implements Slack and webchat; a platform without a declaration keeps the flat transcript.
+(`WebPlatformModule`), and the page reads that declaration, never a platform name. Webchat is
+core-owned, not a platform module (integration-plugin-architecture.md §2), so its declaration is
+core's own and PR 12 does not make webchat a module. This proposal implements Slack and webchat; a
+platform without a declaration keeps the flat transcript.
 
 ### 7.1 Who may read a thread
 
@@ -288,6 +301,14 @@ Slack conversation, from the rows admitted into sessions to the threads' full re
 audience that may already view the coordinator. A thread a task holds is read only by someone who
 may view that task's session; a task its sender made private before it became a task
 (auto-session-mode.md §6.2) shows its footer with the count and no content to anyone else.
+
+The audience is unchanged, but one case widens what it reads: while a platform's session access
+sync is off, every member sees a Slack conversation's sessions (product-conventions.md "Session
+visibility"), so the observations of a private channel, said by people who never addressed the
+agent, would be shown to every member. Whether to accept that or to show a private channel's
+observations only while sync is on is decided with PR 8 (§13), which also adds the console's read
+of observations to `.oss-scanner/threat_model.md`. This answers message-intake.md §13 question 1 for
+coordinator pages.
 
 ## 8. Wire and reads
 
@@ -302,6 +323,12 @@ may view that task's session; a task its sender made private before it became a 
 | `session/history` (daemon control RPC)    | A `roots` view: roots and coordinator turns with the §5.3 summaries, paged like today                             |
 | `session/thread` (new daemon control RPC) | One thread record by `(sessionId, rootId)`, paged; authorized by §7.1                                             |
 | BFF                                       | `GET /orgs/:org/sessions/:id/messages?view=roots` and `GET /orgs/:org/sessions/:id/threads/:rootId/messages` (C2) |
+
+A task's own session keeps its four-part key, `webchat:<conv>:<rootPostId>:<agent>`, so the merged
+conversation codec (merged-conversation-view.md §5.1) would group it as a conversation of its own.
+Session lists leave tasks out by default and list them under "Show tasks" through
+`taskParentSessionId` (product-conventions.md "Tasks"), so a task thread appears only there, as its
+own entry linked to its coordinator, never folded into the coordinator's entry.
 
 The BFF routes proxy bounded transcript reads to the owning daemon and persist nothing, as the
 session history route does. Each route gets its OpenAPI `tags`, `summary`, `description` and
@@ -345,12 +372,12 @@ CONTRIBUTING.md. Rows 5, 9, 11, 12 and 13 change what users see and update
 | --- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------- | ---- | ----- |
 | 1   | `docs`     | This proposal                                                                                                                                                      | docs             | S    | —     |
 | 2   | `chore`    | `thread` on the webchat wire, `unknown_thread`, `webchat-threads-v1`; relay forwards and announces it                                                              | protocol, relay  | S    | —     |
-| 3   | `refactor` | Recognize a task by the task index instead of `subsession:` at the five gates of §5.4; no visible change                                                           | daemon, CP       | M    | —     |
+| 3   | `refactor` | Recognize a task by the task index at the gates of §5.4, and keep the current-session pointer on the coordinator                                                   | daemon, CP       | M    | —     |
 | 4   | `chore`    | Record webchat rows with their physical thread; `prepareTurn` thread and `msgId`; refuse `unknown_thread`                                                          | daemon           | M    | 2     |
 | 5   | `feat`     | Webchat coordinator through `keySession` / `autoCoordinateFor`; tasks on thread coordinates opened with the thread; `replyToMessage` in the thread; prompts (§4.2) | daemon           | L    | 3, 4  |
 | 6   | `chore`    | Keep the observations of threads agents took part in (§5.5)                                                                                                        | daemon           | S    | 4     |
 | 7   | `chore`    | Thread summaries, the `roots` view and `session/thread`                                                                                                            | protocol, daemon | M    | 4     |
-| 8   | `chore`    | The two BFF read routes and their OpenAPI; thread read authorization (§7.1)                                                                                        | CP               | S    | 7     |
+| 8   | `chore`    | BFF read routes, OpenAPI, thread read authorization and threat model (§7.1, §13)                                                                                   | CP               | S    | 7     |
 | 9   | `feat`     | Other members of a published coordinator write in a task's thread (§6.3)                                                                                           | CP, daemon       | M    | 3, 5  |
 | 10  | `refactor` | `ThreadPanel` and the thread footer, generalized from `TaskThreadPanel` and `TaskThreadCard`, reading the thread record                                            | web              | M    | 8     |
 | 11  | `feat`     | Webchat coordinator page: footers under roots, Reply in thread, thread composer, `?thread=`, auto-open, phones, the §6.1 labels                                    | web              | L    | 5, 10 |
@@ -386,3 +413,8 @@ to the webchat scenarios of auto-session-mode.md §12 and is watched on the test
     only (§6.3).
 13. **A task's permission requests list on the coordinator and in the task's thread** (§5.4).
 14. **A thread opens in the panel when its first reply starts**, on a desktop only (§6.2).
+
+## 13. Open questions
+
+1. **Observations of a private channel while session access sync is off** (§7.1): show them to every
+   member who sees the conversation, or only while sync is on. Decided with PR 8.

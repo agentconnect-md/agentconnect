@@ -533,7 +533,8 @@ record, the Decision resource, conditions, the Jev adapter, the console — stan
 
 1. **Console view of observations.** The channel record now holds messages no session owns. Whether
    the console should show them (a conversation view rather than a session view) is a product
-   question this document does not answer; nothing here prevents it.
+   question this document does not answer; nothing here prevents it. For coordinator pages,
+   [webchat-threads.md](webchat-threads.md) §7.1 answers it: a thread panel shows its observations.
 2. **The read-window constant.** 100 matches the retention floor so the window is always resident.
    If Jev's budget routinely trims well below it, a smaller window saves nothing; if conversations
    are bursty, a time bound (decisions.md's 24 hours) may matter more than a count. Measure before
