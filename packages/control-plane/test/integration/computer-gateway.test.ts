@@ -174,7 +174,11 @@ describe('Computer channel', () => {
     const { app, base } = await start()
     const { computerId, apiKey } = await register(app)
     const client = await Client.dial(`${base}/v1/computers/ws`)
-    expect((await client.auth(apiKey)).features).toEqual(['computer-audit-v1', 'computer-admin-prompts-v1'])
+    expect((await client.auth(apiKey)).features).toEqual([
+      'computer-audit-v1',
+      'computer-admin-prompts-v1',
+      'computer-desktops-v1'
+    ])
     const report = buildComputerCpFrame('computer/audit', {
       entries: [
         {

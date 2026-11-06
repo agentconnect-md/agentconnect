@@ -13,7 +13,7 @@ async function desktopBrowser(id: string, args: string[], log: (line: string) =>
   if (plan.mainBus) env.DBUS_SESSION_BUS_ADDRESS = plan.mainBus
   const result = await launchBrowser({
     profile: plan.profile,
-    master: plan.master,
+    ...(plan.master ? { master: plan.master } : {}),
     sources: plan.sources,
     browser,
     // The desktop's tabs come back after its browser was closed for idleness (computer-use.md §3.10).

@@ -4695,6 +4695,8 @@ model Computer {
   poolError            String?
   // Desktop time is metered up to here (computer-use.md §15.5); each sweep moves it forward with a compare-and-set.
   poolMeteredAt        DateTime?          @db.Timestamptz(6)
+  // The agent desktops its last heartbeat reported (computer-use.md §3.9); null while agents share one desktop.
+  desktops             Json?              @db.JsonB
   createdAt            DateTime           @default(now()) @db.Timestamptz(6)
   updatedAt            DateTime           @updatedAt @db.Timestamptz(6)
 
@@ -4702,7 +4704,7 @@ model Computer {
   owner         User                   @relation("ComputerOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
   apiKeys       ApiKey[]
   registrations ComputerRegistration[]
-  lease         ComputerLease?
+  leases        ComputerLease[]
   leaseWaiters  ComputerLeaseWaiter[]
   audits        ComputerAudit[]
 
@@ -4717,7 +4719,9 @@ model Computer {
 
 // The one control lease a Computer may have (computer-use.md §4.4); the row exists only while a session holds it or is barred.
 model ComputerLease {
-  computerId String   @id @db.Uuid
+  computerId String   @db.Uuid
+  // The agent desktop it covers, keyed by that agent's id (computer-use.md §3.9); empty for the main desktop.
+  desktop    String   @default("")
   orgId      String
   // A fresh id per acquisition, so a late release or report of an earlier lease cannot end a later one.
   leaseId    String   @db.Uuid
@@ -4737,6 +4741,7 @@ model ComputerLease {
 
   computer Computer @relation(fields: [computerId], references: [id], onDelete: Cascade)
 
+  @@id([computerId, desktop])
   @@index([sessionId])
   @@index([daemonId])
   @@map("computer_lease")
@@ -4745,6 +4750,8 @@ model ComputerLease {
 /// A session waiting in a Computer's FIFO lease queue (computer-use.md §4.4), changed only under the Computer row's lock.
 model ComputerLeaseWaiter {
   computerId String    @db.Uuid
+  // The desktop's line it waits in, as on ComputerLease.
+  desktop    String    @default("")
   orgId      String
   sessionId  String
   agentId    String    @db.Uuid
@@ -4761,7 +4768,7 @@ model ComputerLeaseWaiter {
 
   computer Computer @relation(fields: [computerId], references: [id], onDelete: Cascade)
 
-  @@id([computerId, agentId, sessionId])
+  @@id([computerId, desktop, agentId, sessionId])
   @@index([sessionId])
   @@map("computer_lease_waiter")
 }
@@ -4785,6 +4792,8 @@ model ComputerAudit {
   textLength    Int?
   ms            Int
   screenshotRef String?
+  // The desktop daemon's id for the agent desktop that served it (§3.9); null for the main desktop.
+  desktop       String?
   receivedAt    DateTime @default(now()) @db.Timestamptz(3)
 
   computer Computer @relation(fields: [computerId], references: [id], onDelete: Cascade)

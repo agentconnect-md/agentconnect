@@ -4743,7 +4743,27 @@ export const ComputerDto = z.object({
     .object({ sessionId: z.string(), agentId: z.string(), agentName: z.string().nullable(), acquiredAt: z.string() })
     .nullable(),
   /** The sessions waiting in line for the lease, first in line first. */
-  waiting: z.array(z.object({ sessionId: z.string(), agentId: z.string(), since: z.string() }))
+  waiting: z.array(z.object({ sessionId: z.string(), agentId: z.string(), since: z.string() })),
+  /** Its running agent desktops (computer-use.md §3.9), each with its own lease and line; null while agents share one desktop. */
+  desktops: z
+    .array(
+      z.object({
+        /** The desktop daemon's id for it, which a viewer token's `desktop` names. */
+        id: z.string(),
+        agentId: z.string(),
+        status: z.enum(COMPUTER_STATUSES),
+        lease: z
+          .object({
+            sessionId: z.string(),
+            agentId: z.string(),
+            agentName: z.string().nullable(),
+            acquiredAt: z.string()
+          })
+          .nullable(),
+        waiting: z.array(z.object({ sessionId: z.string(), agentId: z.string(), since: z.string() }))
+      })
+    )
+    .nullable()
 })
 export type ComputerDtoT = z.infer<typeof ComputerDto>
 
@@ -4864,13 +4884,23 @@ export const ComputerAuditEntryDto = z.object({
   args: z.record(z.string(), z.unknown()),
   textLength: z.number().int().nullable(),
   ms: z.number().int(),
-  screenshotRef: z.string().nullable()
+  screenshotRef: z.string().nullable(),
+  /** The desktop daemon's id for the agent desktop that served it (§3.9); null for the main desktop. */
+  desktop: z.string().nullable()
 })
 export const ComputerAuditPageDto = z.object({
   entries: z.array(ComputerAuditEntryDto),
   /** Pass back as `cursor` for older entries; null on the last page. */
   nextCursor: z.string().nullable()
 })
+/** `POST /computers/:id/viewer` query: the agent desktop to watch (computer-use.md §3.9); absent or `main`, the main desktop. */
+export const ComputerViewerQuery = z.object({
+  desktop: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{1,32}$/)
+    .optional()
+})
+
 export const ComputerAuditQuery = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
   cursor: z.string().min(1).max(200).optional(),

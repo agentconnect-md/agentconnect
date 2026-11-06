@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { REPLY_BUDGET } from '../wire.js'
+import { ComputerDesktopId } from './computer-lease.js'
 
 // Computer use audit (computer-use.md §4.2, §8.2): what a desktop daemon reports per call; never typed text or screen bytes.
 
@@ -91,7 +92,9 @@ export const ComputerAuditEntry = z
     textLength: z.number().int().min(0).max(1_000_000).optional(),
     ms: z.number().int().min(0),
     // The stored screenshot this call returned (§9), as `sha256:<hex>`.
-    screenshotRef: z.string().min(1).max(1024).optional()
+    screenshotRef: z.string().min(1).max(1024).optional(),
+    // Behind `computer-desktops-v1`: the agent desktop that served it (§3.9); absent, the main desktop.
+    desktop: ComputerDesktopId.optional()
   })
   .strict()
 export type ComputerAuditEntry = z.infer<typeof ComputerAuditEntry>

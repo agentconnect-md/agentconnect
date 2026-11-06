@@ -105,6 +105,17 @@ describe('computer audit', () => {
     expect(bySession.entries).toEqual([])
   })
 
+  it('keeps the agent desktop that served an entry (§3.9), and null for the main desktop', async () => {
+    const dana = await makeUser('audit-desk', 'collaborator')
+    const computerId = await register(appAs(dana))
+    const log = new ComputerAuditLog(new PgComputerAuditRepo(prisma), new FakeClock(T0))
+    expect(await log.record(DEFAULT_ORG_ID, computerId, [entry(1, { desktop: 'd2' }), entry(2)])).toBe(2)
+    const page = (
+      await appAs(dana).app.inject({ method: 'GET', url: `${ORG}/computers/${computerId}/audit` })
+    ).json() as Page
+    expect(page.entries.map((e) => e.desktop)).toEqual([null, 'd2'])
+  })
+
   it('is the owner’s to read: an organization owner who sees the desktop gets 403', async () => {
     const dana = await makeUser('audit-owner-dana', 'collaborator')
     const computerId = await register(appAs(dana))

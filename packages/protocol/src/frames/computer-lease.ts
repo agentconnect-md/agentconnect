@@ -2,6 +2,9 @@ import { z } from 'zod'
 
 // Computer control leases (computer-use.md §4.4): one agent session's exclusive, time-limited right to send input.
 
+/** A desktop daemon's id for one of its agent desktops (computer-use.md §3.9), e.g. `d1`; `main` is the person's own. */
+export const ComputerDesktopId = z.string().regex(/^[A-Za-z0-9_-]{1,32}$/)
+
 /** The longest agent name a holder carries; the CP clamps longer display names. */
 export const COMPUTER_LEASE_AGENT_NAME_MAX = 200
 
@@ -23,7 +26,9 @@ export const ComputerControlLease = z.object({
   computerId: z.string().uuid(),
   holder: ComputerLeaseHolder,
   acquiredAt: z.string().datetime(),
-  expiresAt: z.string().datetime()
+  expiresAt: z.string().datetime(),
+  // Behind `computer-desktops-v1`: the agent desktop it covers, keyed by that agent's id; absent, the main desktop.
+  desktop: z.string().uuid().optional()
 })
 export type ComputerControlLease = z.infer<typeof ComputerControlLease>
 

@@ -33,7 +33,8 @@ export class ComputerAuditLog {
         args: summary.args,
         textLength: entry.textLength !== undefined || summary.textLength !== undefined ? textLength : null,
         ms: entry.ms,
-        screenshotRef: entry.screenshotRef !== undefined ? computerAuditText(entry.screenshotRef) : null
+        screenshotRef: entry.screenshotRef !== undefined ? computerAuditText(entry.screenshotRef) : null,
+        desktop: entry.desktop ?? null
       }
     })
     const keepAfter = new Date(this.clock.now() - this.retentionMs)

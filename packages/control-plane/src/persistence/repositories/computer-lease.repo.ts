@@ -1,9 +1,15 @@
-// PgComputerLeaseRepo — the `computer_lease` row, changed only under the Computer row's lock (computer-use.md §4.4).
+// PgComputerLeaseRepo — the `computer_lease` rows, one per desktop, changed only under the Computer row's lock (§4.4, §3.9).
 import type { ComputerLease, ComputerLeaseWaiter } from '../../generated/prisma/client.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
-import type { ComputerLeaseRepo } from '../ports.js'
+import type { ComputerLeaseRepo, LeaseTarget } from '../ports.js'
 import type { ComputerId, OrgId } from '../../domain/ids.js'
-import { readAgentAccess, readComputerPolicy } from '../../domain/computer.js'
+import {
+  desktopStatus,
+  leaseDesktopFor,
+  readAgentAccess,
+  readComputerDesktops,
+  readComputerPolicy
+} from '../../domain/computer.js'
 import type { ControlLease, LeaseComputer, LeaseStep } from '../../domain/computerLease.js'
 import type { LeaseWaiter } from '../../domain/computerLeaseQueue.js'
 
@@ -20,7 +26,8 @@ function toLease(row: ComputerLease): ControlLease {
     lastUsedAt: row.lastUsedAt.getTime(),
     renewedAt: row.renewedAt.getTime(),
     turnAt: row.turnAt.getTime(),
-    spentAt: row.spentAt?.getTime() ?? null
+    spentAt: row.spentAt?.getTime() ?? null,
+    desktop: row.desktop
   }
 }
 
@@ -50,7 +57,8 @@ function toWaiter(row: ComputerLeaseWaiter): LeaseWaiter {
     enqueuedAt: row.enqueuedAt.getTime(),
     polledAt: row.polledAt.getTime(),
     turnAt: row.turnAt.getTime(),
-    droppedAt: row.droppedAt?.getTime() ?? null
+    droppedAt: row.droppedAt?.getTime() ?? null,
+    desktop: row.desktop
   }
 }
 
@@ -70,15 +78,21 @@ const waiterKey = (w: { agentId: string; sessionId: string }) => `${w.agentId}/$
 export class PgComputerLeaseRepo implements ComputerLeaseRepo {
   constructor(private readonly db: PrismaLike) {}
 
-  async get(computerId: ComputerId): Promise<ControlLease | null> {
-    const row = await this.db.computerLease.findUnique({ where: { computerId } })
-    return row ? toLease(row) : null
+  async desktops(computerId: ComputerId): Promise<string[]> {
+    const rows = await this.db.computerLease.findMany({ where: { computerId }, select: { desktop: true } })
+    return rows.map((row) => row.desktop)
   }
 
   async step<R>(
     orgId: OrgId,
     computerId: ComputerId,
-    decide: (computer: LeaseComputer | null, lease: ControlLease | null, queue: LeaseWaiter[]) => LeaseStep<R>
+    target: LeaseTarget,
+    decide: (
+      computer: LeaseComputer | null,
+      lease: ControlLease | null,
+      queue: LeaseWaiter[],
+      desktop: string
+    ) => LeaseStep<R>
   ): Promise<R> {
     return withAmbientTx(this.db, async (tx) => {
       // The Computer row lock serializes every lease change across replicas; a foreign or missing id locks nothing.
@@ -96,15 +110,22 @@ export class PgComputerLeaseRepo implements ComputerLeaseRepo {
                 accessAgentIds: true,
                 ownerUserId: true,
                 stoppedAt: true,
-                poolSessionId: true
+                poolSessionId: true,
+                desktops: true
               }
             })
           : null
-      const row = computer ? await tx.computerLease.findUnique({ where: { computerId } }) : null
-      const waiting = computer ? (await tx.computerLeaseWaiter.findMany({ where: { computerId } })).map(toWaiter) : []
+      // Per-agent desktops (§3.9): each desktop has its own lease and line, and its own status under the main one's.
+      const desktops = computer ? readComputerDesktops(computer.desktops) : null
+      const desktop = 'desktop' in target ? target.desktop : leaseDesktopFor(desktops, target.agentId)
+      const key = { computerId, desktop }
+      const row = computer ? await tx.computerLease.findUnique({ where: { computerId_desktop: key } }) : null
+      const waiting = computer
+        ? (await tx.computerLeaseWaiter.findMany({ where: { computerId, desktop } })).map(toWaiter)
+        : []
       const view: LeaseComputer | null = computer
         ? {
-            status: computer.status,
+            status: desktopStatus(computer.status, desktops, desktop),
             lastSeenAt: computer.lastSeenAt,
             stoppedAt: computer.stoppedAt,
             poolSessionId: computer.poolSessionId,
@@ -112,13 +133,13 @@ export class PgComputerLeaseRepo implements ComputerLeaseRepo {
             agentAccess: readAgentAccess(computer.agentAccess, computer.accessAgentIds)
           }
         : null
-      const { next, queue, result } = decide(view, row ? toLease(row) : null, waiting)
-      if (next === null && row) await tx.computerLease.delete({ where: { computerId } })
+      const { next, queue, result } = decide(view, row ? toLease(row) : null, waiting, desktop)
+      if (next === null && row) await tx.computerLease.delete({ where: { computerId_desktop: key } })
       if (next) {
         const data = toRow(next)
-        await tx.computerLease.upsert({ where: { computerId }, create: { computerId, ...data }, update: data })
+        await tx.computerLease.upsert({ where: { computerId_desktop: key }, create: { ...key, ...data }, update: data })
       }
-      if (queue) await this.storeQueue(tx, computerId, waiting, queue)
+      if (queue) await this.storeQueue(tx, computerId, desktop, waiting, queue)
       return result
     })
   }
@@ -144,19 +165,33 @@ export class PgComputerLeaseRepo implements ComputerLeaseRepo {
   }
 
   // Write only the waiters that changed: a queue is a handful of rows.
-  private async storeQueue(tx: PrismaLike, computerId: ComputerId, before: LeaseWaiter[], after: LeaseWaiter[]) {
+  private async storeQueue(
+    tx: PrismaLike,
+    computerId: ComputerId,
+    desktop: string,
+    before: LeaseWaiter[],
+    after: LeaseWaiter[]
+  ) {
     const kept = new Set(after.map(waiterKey))
     for (const gone of before.filter((w) => !kept.has(waiterKey(w)))) {
       await tx.computerLeaseWaiter.delete({
-        where: { computerId_agentId_sessionId: { computerId, agentId: gone.agentId, sessionId: gone.sessionId } }
+        where: {
+          computerId_desktop_agentId_sessionId: {
+            computerId,
+            desktop,
+            agentId: gone.agentId,
+            sessionId: gone.sessionId
+          }
+        }
       })
     }
     const was = new Map(before.map((w) => [waiterKey(w), JSON.stringify(w)]))
     for (const w of after.filter((x) => was.get(waiterKey(x)) !== JSON.stringify(x))) {
       const data = waiterRow(w)
+      const id = { computerId, desktop, agentId: w.agentId, sessionId: w.sessionId }
       await tx.computerLeaseWaiter.upsert({
-        where: { computerId_agentId_sessionId: { computerId, agentId: w.agentId, sessionId: w.sessionId } },
-        create: { computerId, agentId: w.agentId, sessionId: w.sessionId, ...data },
+        where: { computerId_desktop_agentId_sessionId: id },
+        create: { ...id, ...data },
         update: data
       })
     }

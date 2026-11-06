@@ -23,7 +23,7 @@ import {
   type LeaseStep
 } from '../domain/computerLease.js'
 import { dropWaiter, withoutWaiter, type LeaseWaiter } from '../domain/computerLeaseQueue.js'
-import type { AuditRepo, ComputerLeaseRepo } from '../persistence/ports.js'
+import type { AuditRepo, ComputerLeaseRepo, LeaseTarget } from '../persistence/ports.js'
 
 /** Where a lease change goes: the connected desktop daemon re-reads the lease, so pushes follow the commits they reflect. */
 export interface ComputerLeaseSink {
@@ -71,9 +71,13 @@ export function wireLease(lease: ControlLease, policy: ComputerPolicy): Computer
     computerId: lease.computerId,
     holder: leaseHolder(lease),
     acquiredAt: new Date(lease.acquiredAt).toISOString(),
-    expiresAt: new Date(leaseCap(lease, policy)).toISOString()
+    expiresAt: new Date(leaseCap(lease, policy)).toISOString(),
+    ...(lease.desktop ? { desktop: lease.desktop } : {})
   }
 }
+
+/** Who holds each desktop of a Computer and who waits; `desktops` lists the agent desktops with either (§3.9). */
+export type DesktopsOccupancy = LeaseOccupancy & { desktops: Array<LeaseOccupancy & { desktop: string }> }
 
 export class ComputerLeaseService {
   // Held acquires on this replica, woken when a lease here ends so the next in line does not wait out its poll.
@@ -102,8 +106,26 @@ export class ComputerLeaseService {
   }
 
   private async acquireOnce(orgId: string, computerId: string, who: LeaseRequester, queue: boolean) {
-    const { result, policy } = await this.step(orgId, computerId, (computer, lease, clock, waiting) =>
-      decideAcquire(computerId, orgId, computer, lease, { ...who, leaseId: randomUUID(), wait: queue }, clock, waiting)
+    const target = { agentId: who.agentId }
+    const { result, policy } = await this.step(
+      orgId,
+      computerId,
+      target,
+      (computer, lease, clock, waiting, desktop) => {
+        const step = decideAcquire(
+          computerId,
+          orgId,
+          computer,
+          lease,
+          { ...who, leaseId: randomUUID(), wait: queue },
+          clock,
+          waiting
+        )
+        // The repo stores the desktop with the row; the grant names it too.
+        return step.result.granted
+          ? { ...step, result: { ...step.result, lease: { ...step.result.lease, desktop } } }
+          : step
+      }
     )
     if (!result.granted) {
       if (result.ended) this.ended(result.ended.lease, result.ended.reason)
@@ -121,7 +143,7 @@ export class ComputerLeaseService {
 
   /** The session gives the lease up, and its place in line; false when it held no lease. */
   async release(orgId: string, computerId: string, holder: { sessionId: string; agentId: string }): Promise<boolean> {
-    const { result } = await this.step(orgId, computerId, (_computer, lease, _clock, queue) => ({
+    const { result } = await this.step(orgId, computerId, { agentId: holder.agentId }, (_c, lease, _clock, queue) => ({
       ...decideRelease(lease, holder, 'released'),
       queue: withoutWaiter(queue, holder)
     }))
@@ -132,14 +154,16 @@ export class ComputerLeaseService {
   /** The session's turn ended (`end` or `problem`): every lease it took and wait it began at or before `endedAt` (daemon clock) ends. */
   async sessionEnded(sessionId: string, agentId: string, endedAt: number): Promise<number> {
     let released = 0
-    const touched = new Map<string, string>()
+    const touched = new Map<string, { computerId: string; orgId: string; desktop: string }>()
     for (const row of [
       ...(await this.repo.listBySession(sessionId)),
       ...(await this.repo.listWaitingBySession(sessionId))
-    ])
-      if (row.agentId === agentId) touched.set(row.computerId, row.orgId)
-    for (const [computerId, orgId] of touched) {
-      const { result } = await this.step(orgId, computerId, (_computer, lease, clock, queue) => ({
+    ]) {
+      const desktop = row.desktop ?? ''
+      if (row.agentId === agentId) touched.set(`${row.computerId}/${desktop}`, { ...row, desktop })
+    }
+    for (const { computerId, orgId, desktop } of touched.values()) {
+      const { result } = await this.step(orgId, computerId, { desktop }, (_computer, lease, clock, queue) => ({
         ...decideRelease(lease, { sessionId, agentId, before: endedAt }, 'session_ended'),
         queue: dropWaiter(queue, { sessionId, agentId }, endedAt, clock.now)
       }))
@@ -157,29 +181,65 @@ export class ComputerLeaseService {
     return this.repo.renewByDaemon(daemonId, new Date(now), new Date(now - this.opts.holderTtlMs))
   }
 
-  /** A Computer heartbeat: a pause or takeover pre-empts, real use refreshes the idle clock; returns the lease to enforce. */
-  async observe(orgId: string, computerId: string, report: DesktopReport): Promise<ComputerControlLease | null> {
+  /** A Computer heartbeat for one desktop ('' the main one): a pause or takeover pre-empts, real use refreshes the idle clock; returns the lease to enforce. */
+  async observe(
+    orgId: string,
+    computerId: string,
+    report: DesktopReport,
+    desktop = ''
+  ): Promise<ComputerControlLease | null> {
     // Most heartbeats find no lease: skip the lock for them.
-    if (!(await this.repo.get(ComputerId(computerId)))) return null
-    const { result, policy } = await this.step(orgId, computerId, (computer, lease, clock) =>
+    if (!(await this.repo.desktops(ComputerId(computerId))).includes(desktop)) return null
+    const { result, policy } = await this.step(orgId, computerId, { desktop }, (computer, lease, clock) =>
       decideObserve(computer, lease, report, clock)
     )
     if (result.ended) this.ended(result.ended.lease, result.ended.reason, false)
     return result.lease && policy ? wireLease(result.lease, policy) : null
   }
 
-  /** The lease that stands now, clearing a lapsed one. */
+  /** The main desktop's lease that stands now, clearing a lapsed one. */
   async current(orgId: string, computerId: string): Promise<ComputerControlLease | null> {
-    if (!(await this.repo.get(ComputerId(computerId)))) return null
-    const { result, policy } = await this.step(orgId, computerId, (computer, lease, clock) =>
+    if (!(await this.repo.desktops(ComputerId(computerId))).includes('')) return null
+    return this.read(orgId, computerId, '')
+  }
+
+  /** Every agent desktop's lease that stands now (§3.9), clearing lapsed ones. */
+  async currentDesktops(orgId: string, computerId: string): Promise<ComputerControlLease[]> {
+    const out: ComputerControlLease[] = []
+    for (const desktop of await this.repo.desktops(ComputerId(computerId))) {
+      if (desktop === '') continue
+      const lease = await this.read(orgId, computerId, desktop)
+      if (lease) out.push(lease)
+    }
+    return out
+  }
+
+  /** The Computer switched between one shared desktop and per-agent desktops: leases of the other arrangement end. */
+  async arrangementChanged(orgId: string, computerId: string, perAgent: boolean): Promise<number> {
+    let ended = 0
+    for (const desktop of await this.repo.desktops(ComputerId(computerId))) {
+      if ((desktop === '') !== perAgent) continue
+      const { result } = await this.step(orgId, computerId, { desktop }, (_computer, lease) =>
+        decidePreempt(lease, 'reset')
+      )
+      if (result) {
+        ended++
+        this.ended(result.ended, result.reason)
+      }
+    }
+    return ended
+  }
+
+  private async read(orgId: string, computerId: string, desktop: string): Promise<ComputerControlLease | null> {
+    const { result, policy } = await this.step(orgId, computerId, { desktop }, (computer, lease, clock) =>
       decideRead(computer, lease, clock)
     )
     if (result.ended) this.ended(result.ended.lease, result.ended.reason)
     return result.lease && policy ? wireLease(result.lease, policy) : null
   }
 
-  /** Who holds each Computer's lease and who waits, read without a lock for the console; lapsed ones are left out. */
-  async occupancy(computers: ReadonlyArray<LeaseComputer & { id: string }>): Promise<Map<string, LeaseOccupancy>> {
+  /** Who holds each Computer's desktops and who waits, read without a lock for the console; lapsed ones are left out. */
+  async occupancy(computers: ReadonlyArray<LeaseComputer & { id: string }>): Promise<Map<string, DesktopsOccupancy>> {
     const { leases, waiters } = await this.repo.listOccupancy(computers.map((c) => ComputerId(c.id)))
     const clock = {
       now: this.clock.now(),
@@ -187,43 +247,74 @@ export class ComputerLeaseService {
       staleAfterMs: this.opts.staleAfterMs,
       ...(this.opts.waiterTtlMs !== undefined ? { waiterTtlMs: this.opts.waiterTtlMs } : {})
     }
-    const out = new Map<string, LeaseOccupancy>()
+    const out = new Map<string, DesktopsOccupancy>()
     for (const c of computers) {
-      const lease = leases.find((l) => l.computerId === c.id) ?? null
-      const queue = waiters.filter((w) => w.computerId === c.id)
-      out.set(c.id, leaseOccupancy(c, lease, queue, clock))
+      const on = (desktop: string) => (row: { computerId: string; desktop?: string }) =>
+        row.computerId === c.id && (row.desktop ?? '') === desktop
+      const desk = (desktop: string) =>
+        leaseOccupancy(
+          // An agent desktop's own pause or takeover is in its own status, which the lease read does not need.
+          c,
+          leases.find(on(desktop)) ?? null,
+          waiters.filter(on(desktop)),
+          clock
+        )
+      const keys = new Set(
+        [...leases, ...waiters].filter((row) => row.computerId === c.id).map((row) => row.desktop ?? '')
+      )
+      keys.delete('')
+      const desktops = [...keys]
+        .sort()
+        .map((desktop) => ({ desktop, ...desk(desktop) }))
+        .filter((d) => d.holder || d.waiting.length > 0)
+      out.set(c.id, { ...desk(''), desktops })
     }
     return out
   }
 
-  /** A person or a revoke ends the lease whoever holds it. */
+  /** A person or a revoke ends every desktop's lease whoever holds it. */
   async preempt(orgId: string, computerId: string, reason: LeaseEndReason): Promise<boolean> {
-    const { result } = await this.step(orgId, computerId, (_computer, lease) => decidePreempt(lease, reason))
-    if (result) this.ended(result.ended, result.reason)
-    return result !== null
+    let any = false
+    for (const desktop of new Set(['', ...(await this.repo.desktops(ComputerId(computerId)))])) {
+      const { result } = await this.step(orgId, computerId, { desktop }, (_computer, lease) =>
+        decidePreempt(lease, reason)
+      )
+      if (result) {
+        any = true
+        this.ended(result.ended, result.reason)
+      }
+    }
+    return any
   }
 
   private async step<R>(
     orgId: string,
     computerId: string,
+    target: LeaseTarget,
     decide: (
       computer: LeaseComputer | null,
       lease: ControlLease | null,
       clock: LeaseClock,
-      queue: LeaseWaiter[]
+      queue: LeaseWaiter[],
+      desktop: string
     ) => LeaseStep<R>
   ): Promise<{ result: R; policy: ComputerPolicy | undefined }> {
     let policy: ComputerPolicy | undefined
-    const result = await this.repo.step(OrgId(orgId), ComputerId(computerId), (computer, lease, queue) => {
-      policy = computer?.policy
-      const clock = {
-        now: this.clock.now(),
-        holderTtlMs: this.opts.holderTtlMs,
-        staleAfterMs: this.opts.staleAfterMs,
-        ...(this.opts.waiterTtlMs !== undefined ? { waiterTtlMs: this.opts.waiterTtlMs } : {})
+    const result = await this.repo.step(
+      OrgId(orgId),
+      ComputerId(computerId),
+      target,
+      (computer, lease, queue, desktop) => {
+        policy = computer?.policy
+        const clock = {
+          now: this.clock.now(),
+          holderTtlMs: this.opts.holderTtlMs,
+          staleAfterMs: this.opts.staleAfterMs,
+          ...(this.opts.waiterTtlMs !== undefined ? { waiterTtlMs: this.opts.waiterTtlMs } : {})
+        }
+        return decide(computer, lease, clock, queue, desktop)
       }
-      return decide(computer, lease, clock, queue)
-    })
+    )
     return { result, policy }
   }
 
@@ -268,6 +359,7 @@ export class ComputerLeaseService {
           leaseId: lease.leaseId,
           sessionId: lease.sessionId,
           agentId: lease.agentId,
+          ...(lease.desktop ? { desktop: lease.desktop } : {}),
           ...extra
         }
       })

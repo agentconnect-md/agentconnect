@@ -32,7 +32,8 @@ export function auditEntry(record: AuditRecord, at: Date, id: string = randomUUI
     args: summary.args,
     ...(summary.textLength !== undefined ? { textLength: summary.textLength } : {}),
     ms: Math.max(0, Math.round(record.ms)),
-    ...(record.screenshotRef ? { screenshotRef: record.screenshotRef } : {})
+    ...(record.screenshotRef ? { screenshotRef: record.screenshotRef } : {}),
+    ...(record.desktop ? { desktop: record.desktop } : {})
   }
 }
 

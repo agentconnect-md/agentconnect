@@ -24,7 +24,8 @@ function toRecord(row: ComputerAudit): ComputerAuditRecord {
     args: args && typeof args === 'object' && !Array.isArray(args) ? (args as Record<string, unknown>) : {},
     textLength: row.textLength,
     ms: row.ms,
-    screenshotRef: row.screenshotRef
+    screenshotRef: row.screenshotRef,
+    desktop: row.desktop
   }
 }
 
@@ -53,7 +54,8 @@ export class PgComputerAuditRepo implements ComputerAuditRepo {
         args: entry.args as object,
         textLength: entry.textLength,
         ms: entry.ms,
-        screenshotRef: entry.screenshotRef
+        screenshotRef: entry.screenshotRef,
+        desktop: entry.desktop ?? null
       })),
       skipDuplicates: true
     })

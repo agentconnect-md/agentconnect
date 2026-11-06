@@ -3,6 +3,7 @@ import {
   CloseCode,
   COMPUTER_ADMIN_PROMPTS_FEATURE,
   COMPUTER_AUDIT_FEATURE,
+  COMPUTER_DESKTOPS_FEATURE,
   COMPUTER_EGRESS_FEATURE,
   COMPUTER_RELAYS_MAX,
   COMPUTER_SCREENSHOT_FEATURE,
@@ -57,7 +58,7 @@ export interface ComputerConnDeps {
   /** The relays the desktop dials out to for the data plane (§3.7); absent in tests that do not exercise it. */
   relays?: () => Promise<ComputerRelayEntry[]>
   /** The control lease the desktop enforces; absent in tests that do not exercise it. */
-  leases?: Pick<ComputerLeaseService, 'observe' | 'current'>
+  leases?: Pick<ComputerLeaseService, 'observe' | 'current' | 'currentDesktops' | 'arrangementChanged'>
   /** Where the desktop's audit entries are stored (§8.2); without it the CP does not offer `computer-audit-v1`. */
   audit?: Pick<ComputerAuditLog, 'record'>
   /** Where screenshots are stored (§9); without it the CP does not offer `computer-screenshot-v1`. */
@@ -91,8 +92,10 @@ export class ComputerConnection implements ComputerChannel {
   private egressCapable = false
   private principal: ComputerPrincipal | undefined
   private lastKeyId = ''
-  // The lease id last told to the desktop ('' for none); undefined until the first push.
+  // The lease ids last told to the desktop, main first ('' for none); undefined until the first push.
   private toldLease: string | undefined
+  // Whether the desktop runs per-agent desktops (§3.9), as the stored row or its last heartbeat says.
+  private perAgent = false
   // The console Stop last told to the desktop (its time, '' for none); undefined until the first push.
   private toldStop: string | undefined
   // Counts Stop pushes, so a heartbeat's read that a console push overtook does not undo it.
@@ -188,6 +191,7 @@ export class ComputerConnection implements ComputerChannel {
     this.ownerUserId = computer.ownerUserId
     this.managed = computer.kind === 'managed'
     this.egressCapable = computer.capabilities?.egress === true
+    this.perAgent = Boolean(computer.desktops)
     const egress = this.managed && this.deps.egress ? await this.readEgress() : undefined
     if ((this.state as State) === 'CLOSED') return
     // A managed desktop never learns "direct" by omission: an unreadable egress fails the auth and it redials.
@@ -242,6 +246,8 @@ export class ComputerConnection implements ComputerChannel {
     const now = this.deps.clock.now()
     const { status, osVersion, session, desktopDaemonVersion, driverVersion, capabilities, doctor } = beat
     if (capabilities) this.egressCapable = capabilities.egress === true
+    // Only a CP that offered `computer-desktops-v1` keys leases per desktop; without it every agent shares the main one.
+    const desktops = this.deps.leases ? (beat.desktops ?? null) : undefined
     const live = await this.deps.repo.recordLive(
       OrgId(principal.orgId),
       ComputerId(principal.computerId),
@@ -253,16 +259,31 @@ export class ComputerConnection implements ComputerChannel {
         ...(desktopDaemonVersion ? { desktopDaemonVersion } : {}),
         ...(driverVersion ? { driverVersion } : {}),
         ...(capabilities ? { capabilities } : {}),
-        ...(doctor ? { doctor } : {})
+        ...(doctor ? { doctor } : {}),
+        ...(desktops !== undefined
+          ? { desktops: desktops && desktops.map(({ id, agentId, status: own }) => ({ id, agentId, status: own })) }
+          : {})
       },
       new Date(now)
     )
     if (this.state !== 'READY') return
     // The conditional write is the backstop: a revoke this replica never heard of still ends the channel here.
     if (!live) return this.revoke('revoked')
-    await this.syncLease(() =>
-      this.deps.leases?.observe(this.orgId, this.computerId, { status, ...(beat.lease ? { lease: beat.lease } : {}) })
-    )
+    const leases = this.deps.leases
+    await this.syncLease(async () => {
+      if (!leases) return null
+      const perAgent = Boolean(desktops)
+      if (perAgent !== this.perAgent) {
+        this.perAgent = perAgent
+        await leases.arrangementChanged(this.orgId, this.computerId, perAgent)
+      }
+      // Each agent desktop's own pause, takeover or use reaches its own lease.
+      for (const desktop of desktops ?? []) {
+        const report = { status: desktop.status, ...(desktop.lease ? { lease: desktop.lease } : {}) }
+        await leases.observe(this.orgId, this.computerId, report, desktop.agentId)
+      }
+      return leases.observe(this.orgId, this.computerId, { status, ...(beat.lease ? { lease: beat.lease } : {}) })
+    })
     if (this.state !== 'READY') return
     await this.readStop(status)
     if (this.state !== 'READY') return
@@ -349,6 +370,7 @@ export class ComputerConnection implements ComputerChannel {
       ...(this.deps.audit ? [COMPUTER_AUDIT_FEATURE] : []),
       ...(this.deps.policies ? [COMPUTER_ADMIN_PROMPTS_FEATURE] : []),
       ...(this.deps.screenshots ? [COMPUTER_SCREENSHOT_FEATURE] : []),
+      ...(this.deps.leases ? [COMPUTER_DESKTOPS_FEATURE] : []),
       ...(this.managed && this.deps.egress ? [COMPUTER_EGRESS_FEATURE] : [])
     ]
   }
@@ -413,19 +435,26 @@ export class ComputerConnection implements ComputerChannel {
     this.queue = this.queue.then(() => this.syncLease(() => this.deps.leases?.current(this.orgId, this.computerId)))
   }
 
-  private pushLease(lease: ComputerControlLease | null): void {
+  private pushLease(lease: ComputerControlLease | null, desktops?: ComputerControlLease[]): void {
     if (this.state !== 'READY') return
-    const id = lease?.leaseId ?? ''
+    const id = [lease?.leaseId ?? '', ...(desktops ?? []).map((d) => d.leaseId).sort()].join(',')
     if (id === this.toldLease) return
     this.toldLease = id
-    this.send('computer/lease', { lease })
+    this.send('computer/lease', { lease, ...(desktops ? { desktops } : {}) })
   }
 
   // A lease read that fails leaves the desktop on what it was last told; the next heartbeat retries.
   private async syncLease(read: () => Promise<ComputerControlLease | null> | undefined): Promise<void> {
     try {
       const pending = read()
-      if (pending) this.pushLease(await pending)
+      if (!pending) return
+      const lease = await pending
+      // Per-agent desktops get every agent desktop's lease beside the main one's.
+      const desktops =
+        this.perAgent && this.deps.leases
+          ? await this.deps.leases.currentDesktops(this.orgId, this.computerId)
+          : undefined
+      this.pushLease(lease, desktops)
     } catch (err) {
       this.deps.log?.warn({ err: (err as Error).message }, 'computer: lease sync failed')
     }

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -53,6 +53,16 @@ describe('desktops', () => {
       mainBus: 'unix:path=/run/user/1000/bus'
     })
     expect(() => desktopBrowserPlan(dataDir, 'd9')).toThrow('no desktop d9')
+
+    // With login sharing off (§3.9) the profile is its own: never seeded from the master or merged with another.
+    const state = JSON.parse(readFileSync(join(dataDir, 'desktops', 'state.json'), 'utf8')) as Record<string, unknown>
+    writeFileSync(join(dataDir, 'desktops', 'state.json'), JSON.stringify({ ...state, shareBrowserLogins: false }))
+    expect(desktopBrowserPlan(dataDir, 'd2')).toEqual({
+      profile: desktopProfile(dataDir, 'd2'),
+      sources: [],
+      skip: [join(dataDir, 'desktops', 'd1', 'bin'), join(dataDir, 'desktops', 'd2', 'bin')],
+      mainBus: 'unix:path=/run/user/1000/bus'
+    })
   })
 
   it("starts an agent desktop as an Xfce X11 session, without the main GNOME or Wayland session's identity", () => {

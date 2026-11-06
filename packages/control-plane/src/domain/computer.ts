@@ -1,6 +1,7 @@
 // The Computer resource's closed vocabularies, policy and capabilities (docs/designs/computer-use.md §2.2, §4.1).
 import {
   COMPUTER_ACCESS_AGENTS_MAX,
+  COMPUTER_STATUSES,
   ComputerCapabilitiesSchema,
   ComputerDoctorReport,
   agentAccessGrants,
@@ -11,6 +12,7 @@ import {
   type ComputerPolicy,
   type ComputerStatus
 } from '@agentconnect.md/protocol'
+import { z } from 'zod'
 
 // The vocabularies, policy and capabilities are wire contracts, so the protocol package owns them.
 export {
@@ -104,6 +106,36 @@ export function presentComputerStatus(
   if (!c.lastSeenAt || nowMs - c.lastSeenAt.getTime() > staleAfterMs) return 'offline'
   if (c.stoppedAt && c.status !== 'human_in_control') return 'paused'
   return c.status
+}
+
+/** One agent desktop as the Computer row keeps it from the last heartbeat (computer-use.md §3.9). */
+export interface StoredDesktop {
+  id: string
+  agentId: string
+  status: ComputerStatus
+}
+
+const StoredDesktops = z.array(z.object({ id: z.string(), agentId: z.string(), status: z.enum(COMPUTER_STATUSES) }))
+
+/** The stored agent desktops, or null while agents share one desktop (or the blob is unreadable). */
+export function readComputerDesktops(raw: unknown): StoredDesktop[] | null {
+  const parsed = StoredDesktops.safeParse(raw)
+  return parsed.success ? parsed.data : null
+}
+
+/** The desktop a lease or wait of this agent is for: its own while the Computer runs per-agent desktops, else the main one (''). */
+export const leaseDesktopFor = (desktops: readonly StoredDesktop[] | null, agentId: string): string =>
+  desktops ? agentId : ''
+
+/** A desktop's own status: the main one's for '' and for a Computer-wide verdict or pause; a not yet started desktop is online. */
+export function desktopStatus(
+  main: ComputerStatus,
+  desktops: readonly StoredDesktop[] | null,
+  desktop: string
+): ComputerStatus {
+  if (desktop === '' || main === 'offline' || main === 'sleeping' || main === 'revoked' || main === 'paused')
+    return main
+  return desktops?.find((d) => d.agentId === desktop)?.status ?? 'online'
 }
 
 /** Whether a Computer admits this agent (§4.1): its agent access lists the agent or grants every agent. */

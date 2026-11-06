@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { ComputerControlLease } from '@agentconnect.md/protocol'
 import { FakeClock } from '../../test/fakes/fake-clock.js'
-import { ComputerPolicySchema } from '../domain/computer.js'
+import { ComputerPolicySchema, desktopStatus, leaseDesktopFor, type StoredDesktop } from '../domain/computer.js'
 import type { ControlLease, LeaseComputer, LeaseStep } from '../domain/computerLease.js'
 import type { LeaseWaiter } from '../domain/computerLeaseQueue.js'
 import type { ComputerId, OrgId } from '../domain/ids.js'
-import type { ComputerLeaseRepo } from '../persistence/ports.js'
+import type { ComputerLeaseRepo, LeaseTarget } from '../persistence/ports.js'
 import { ComputerLeaseService, wireLease } from './computerLeaseService.js'
 
 const T0 = 1_760_000_000_000
@@ -16,29 +16,40 @@ const AGENT_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 // The holder name a desktop reports for session s1 of agent A.
 const S1_HOLDER = `${AGENT_A}/s1`
 
+// Keyed by Computer and desktop like the Postgres repo; a Computer with `desktops` runs per-agent desktops (§3.9).
 class MemoryLeaseRepo implements ComputerLeaseRepo {
   leases = new Map<string, ControlLease>()
-  computers = new Map<string, LeaseComputer & { orgId: string }>()
+  computers = new Map<string, LeaseComputer & { orgId: string; desktops?: StoredDesktop[] | null }>()
   queues = new Map<string, LeaseWaiter[]>()
 
-  async get(computerId: ComputerId) {
-    return this.leases.get(computerId) ?? null
+  async desktops(computerId: ComputerId) {
+    return [...this.leases.values()].filter((l) => l.computerId === computerId).map((l) => l.desktop ?? '')
   }
   async step<R>(
     orgId: OrgId,
     computerId: ComputerId,
-    decide: (c: LeaseComputer | null, l: ControlLease | null, q: LeaseWaiter[]) => LeaseStep<R>
+    target: LeaseTarget,
+    decide: (c: LeaseComputer | null, l: ControlLease | null, q: LeaseWaiter[], desktop: string) => LeaseStep<R>
   ) {
     const computer = this.computers.get(computerId)
     const visible = computer && computer.orgId === orgId ? computer : null
+    const desktops = visible?.desktops ?? null
+    const desktop = 'desktop' in target ? target.desktop : leaseDesktopFor(desktops, target.agentId)
+    const key = `${computerId}/${desktop}`
+    const view = visible ? { ...visible, status: desktopStatus(visible.status, desktops, desktop) } : null
     const { next, queue, result } = decide(
-      visible,
-      visible ? (this.leases.get(computerId) ?? null) : null,
-      visible ? [...(this.queues.get(computerId) ?? [])] : []
+      view,
+      visible ? (this.leases.get(key) ?? null) : null,
+      visible ? [...(this.queues.get(key) ?? [])] : [],
+      desktop
     )
-    if (next === null) this.leases.delete(computerId)
-    if (next) this.leases.set(computerId, next)
-    if (queue) this.queues.set(computerId, queue)
+    if (next === null) this.leases.delete(key)
+    if (next) this.leases.set(key, { ...next, desktop })
+    if (queue)
+      this.queues.set(
+        key,
+        queue.map((w) => ({ ...w, desktop }))
+      )
     return result
   }
   async listBySession(sessionId: string) {
@@ -50,7 +61,9 @@ class MemoryLeaseRepo implements ComputerLeaseRepo {
   async listOccupancy(ids: readonly ComputerId[]) {
     return {
       leases: [...this.leases.values()].filter((l) => ids.includes(l.computerId as ComputerId)),
-      waiters: ids.flatMap((id) => this.queues.get(id) ?? []).filter((w) => w.droppedAt === null)
+      waiters: [...this.queues.values()]
+        .flat()
+        .filter((w) => ids.includes(w.computerId as ComputerId) && w.droppedAt === null)
     }
   }
   async renewByDaemon(daemonId: string, at: Date, aliveSince: Date) {
@@ -81,7 +94,7 @@ function setup() {
     staleAfterMs: 45_000,
     channels: {
       leaseChanged: () => {
-        const lease = repo.leases.get(CID)
+        const lease = repo.leases.get(`${CID}/`)
         pushed.push(lease && lease.spentAt === null ? wireLease(lease, repo.computers.get(CID)!.policy) : null)
       }
     }
@@ -266,7 +279,7 @@ describe('ComputerLeaseService wait queue', () => {
     // The holder's turn ends, so the next in line takes the Computer.
     expect(await service.sessionEnded('s2', AGENT_B, T0)).toBe(1)
     expect(await service.acquire(ORG, CID, who('s3'), waits)).toMatchObject({ granted: true })
-    expect(env.repo.queues.get(CID)).toEqual([])
+    expect(env.repo.queues.get(`${CID}/`)).toEqual([])
   })
 
   it('gives up with computer_busy naming the holder once leaseWaitSeconds has passed', async () => {
@@ -284,7 +297,7 @@ describe('ComputerLeaseService wait queue', () => {
     const late = await service.acquire(ORG, CID, who('s2', AGENT_B), waits)
     expect(late).toMatchObject({ granted: false, code: 'computer_busy', holder: { sessionId: 's1', agentName: 'Ops' } })
     expect(late.granted === false && late.queued).toBeUndefined()
-    expect(env.repo.queues.get(CID)).toEqual([])
+    expect(env.repo.queues.get(`${CID}/`)).toEqual([])
   })
 
   it('never queues when the policy sets no wait', async () => {
@@ -371,7 +384,7 @@ describe('ComputerLeaseService wait queue', () => {
     const env = setup()
     const { service, repo } = env
     const view = () => [{ id: CID, ...repo.computers.get(CID)! }]
-    expect((await service.occupancy(view())).get(CID)).toEqual({ holder: null, waiting: [] })
+    expect((await service.occupancy(view())).get(CID)).toEqual({ holder: null, waiting: [], desktops: [] })
     await service.acquire(ORG, CID, who('s1'))
     await service.acquire(ORG, CID, who('s2', AGENT_B), waits)
     await pass(env, 1_000)
@@ -381,11 +394,83 @@ describe('ComputerLeaseService wait queue', () => {
       waiting: [
         { sessionId: 's2', agentId: AGENT_B, enqueuedAt: T0 },
         { sessionId: 's3', agentId: AGENT_A, enqueuedAt: T0 + 1_000 }
-      ]
+      ],
+      desktops: []
     })
     // Nobody asks again and the holder's daemon goes quiet: the view shows neither, without writing anything.
     env.tick(60_000)
-    expect((await service.occupancy(view())).get(CID)).toEqual({ holder: null, waiting: [] })
+    expect((await service.occupancy(view())).get(CID)).toEqual({ holder: null, waiting: [], desktops: [] })
     expect(repo.leases.size).toBe(1)
+  })
+})
+
+describe('ComputerLeaseService with per-agent desktops', () => {
+  // The Computer reports per-agent desktops: agent A's runs as d1, agent B has none running yet.
+  function perAgent() {
+    const env = setup()
+    env.repo.computers.get(CID)!.desktops = [{ id: 'd1', agentId: AGENT_A, status: 'online' }]
+    return env
+  }
+
+  it('grants two agents their own desktops at once, while one session of the same agent still waits its turn', async () => {
+    const { service } = perAgent()
+    const a = await service.acquire(ORG, CID, who('s1'))
+    const b = await service.acquire(ORG, CID, who('s2', AGENT_B))
+    expect(a).toMatchObject({ granted: true, view: { desktop: AGENT_A } })
+    expect(b).toMatchObject({ granted: true, view: { desktop: AGENT_B } })
+    const sameAgent = await service.acquire(ORG, CID, who('s3'))
+    expect(sameAgent).toMatchObject({ granted: false, code: 'computer_busy', holder: { sessionId: 's1' } })
+    expect(await service.currentDesktops(ORG, CID)).toHaveLength(2)
+    expect(await service.current(ORG, CID)).toBeNull()
+  })
+
+  it('refuses only the agent whose desktop a person took over, but every agent when the owner paused', async () => {
+    const { service, repo } = perAgent()
+    repo.computers.get(CID)!.desktops = [{ id: 'd1', agentId: AGENT_A, status: 'human_in_control' }]
+    expect(await service.acquire(ORG, CID, who('s1'))).toMatchObject({ granted: false, code: 'human_in_control' })
+    expect(await service.acquire(ORG, CID, who('s2', AGENT_B))).toMatchObject({ granted: true })
+    repo.computers.get(CID)!.status = 'paused'
+    expect(await service.acquire(ORG, CID, who('s3', AGENT_B))).toMatchObject({
+      granted: false,
+      code: 'human_in_control'
+    })
+  })
+
+  it("ends one desktop's lease on its own takeover report and every lease on a console Stop", async () => {
+    const { service } = perAgent()
+    await service.acquire(ORG, CID, who('s1'))
+    await service.acquire(ORG, CID, who('s2', AGENT_B))
+    expect(await service.observe(ORG, CID, { status: 'human_in_control' }, AGENT_A)).toBeNull()
+    expect((await service.currentDesktops(ORG, CID)).map((l) => l.desktop)).toEqual([AGENT_B])
+    expect(await service.preempt(ORG, CID, 'paused')).toBe(true)
+    expect(await service.currentDesktops(ORG, CID)).toEqual([])
+  })
+
+  it('ends the other arrangement’s leases when the Computer switches between one desktop and per-agent desktops', async () => {
+    const { service, repo } = setup()
+    await service.acquire(ORG, CID, who('s1'))
+    repo.computers.get(CID)!.desktops = []
+    expect(await service.arrangementChanged(ORG, CID, true)).toBe(1)
+    await service.acquire(ORG, CID, who('s2', AGENT_B))
+    repo.computers.get(CID)!.desktops = null
+    expect(await service.arrangementChanged(ORG, CID, false)).toBe(1)
+    expect(repo.leases.size).toBe(0)
+  })
+
+  it('shows each agent desktop’s holder beside the main desktop’s', async () => {
+    const { service, repo } = perAgent()
+    await service.acquire(ORG, CID, who('s1'))
+    const view = [{ id: CID, ...repo.computers.get(CID)! }]
+    expect((await service.occupancy(view)).get(CID)).toEqual({
+      holder: null,
+      waiting: [],
+      desktops: [
+        {
+          desktop: AGENT_A,
+          holder: { sessionId: 's1', agentId: AGENT_A, agentName: 'Ops', acquiredAt: T0 },
+          waiting: []
+        }
+      ]
+    })
   })
 })
