@@ -415,8 +415,10 @@ installation id, so two Apps never share an entry.
 
 ## Daemon-Mediated Agent Access
 
-> **Status:** Phase 1 is implemented. Phase 2 is proposed (#3382) and would
-> replace Trust Model item 3.
+> **Status:** Phase 1 is implemented. Phase 2 is being built (#3382): the
+> proxy and its host and `srt` transports run behind the daemon's
+> `features.credentialProxy`; the rest is proposed. Phase 2 would replace Trust
+> Model item 3.
 
 Agents write to GitHub with whatever their `gh` wrapper mints: a
 capability-clamped installation token at the repository's tier. The daemon
@@ -548,9 +550,9 @@ proxy differs:
 **Client configuration.** Every strategy would get the same configuration.
 Only the proxy address differs:
 
-- git rewrites `https://github.com/` to the proxy with `url.<proxy>.insteadOf`,
-  so no TLS interception is needed and `useHttpPath` keeps selecting the
-  repository;
+- git presents the placeholder through its session credential helper and
+  reaches the proxy over HTTPS, as every other client does. `srt`'s route to
+  the proxy carries HTTPS, so one path serves every strategy;
 - `gh`, which cannot be pointed at another API origin for `github.com`, gets
   `HTTPS_PROXY`, the daemon CA in the usual trust variables, and the
   placeholder as `GH_TOKEN`; and
@@ -577,23 +579,41 @@ reaches the proxy is therefore a matter of usability, never of exposure:
 **Trust.** The proxy terminates TLS only for the code-host domains, with a
 daemon CA. `SSL_CERT_FILE` replaces the system roots, so it names a bundle of
 the system roots plus that CA. Python's `requests` reads its own bundle and
-needs `REQUESTS_CA_BUNDLE` as well. git needs no trust, since `insteadOf`
-reaches the proxy without TLS.
+needs `REQUESTS_CA_BUNDLE` as well, and git reads `GIT_SSL_CAINFO`. Node adds
+the bundle through `NODE_EXTRA_CA_CERTS`. A sandbox may read only the
+directory holding the certificate and the bundle; the CA key and the
+placeholder key stay outside it. `srt` intercepts only the environments of an
+agent whose workspace credentials are GitHub's, and every session there gets
+the trust variables, a placeholder or not.
 
-**Token selection.** The proxy would take the repository from the request
-path: a smart-HTTP path for git, and `/repos/{owner}/{repo}/…` for REST, and
-mint that repository's token at its tier.
+**Token selection.** The proxy takes the repository from the request path: a
+smart-HTTP path for git, and `/repos/{owner}/{repo}/…` for REST, and mints
+that repository's token at its tier. A read that names no repository, such as
+`/user`, uses the workspace's read-tier token; a write outside a repository is
+refused.
+
+**The placeholder.** The environment's credential is sealed by the daemon: it
+names the agent and the hosts it may be presented to, under an HMAC with a
+daemon key kept across restarts, so the proxy verifies it without a lookup. A
+placeholder that is forged, presented to another host or over plain HTTP, or
+issued to an agent this daemon no longer runs is refused with 403. A
+credential that is not a placeholder, such as a token the agent was given
+itself, passes untouched.
+
+**Listeners.** `srt` reaches the proxy over a Unix socket in the daemon's run
+directory. On the host, the proxy listens on loopback and requires the proxy
+credential carried in the `HTTPS_PROXY` URL, so it is no open proxy to other
+local processes. A code-host name never resolves to loopback, private,
+link-local or unspecified space upstream.
 
 **GraphQL is read-only.** A GraphQL request names no repository in its URL,
 and GitHub applies a token's permissions to every repository the token lists,
 so no single token could carry each repository's own tier. The proxy would
-therefore parse the document's operation type and forward only queries, with
-a read-tier token covering the repositories the agent is authorized for in
-one installation. It would refuse every mutation, and a document it cannot
-parse, with an error naming the tool for that write; `gh` prints the error,
-so the agent sees it. The installation is the agent's only one, or the one
-owning the `owner` in the query's variables; a query that names neither is
-refused.
+therefore reads the document's operation types and forwards only queries,
+with a read-tier token for the repository the query's variables name (`owner`
+with `name` or `repo`), else the workspace's. It refuses every mutation, and a
+document it cannot read, with an error naming the tool for that write; `gh`
+prints the error, so the agent sees it.
 
 This keeps one rule on every host: GitLab's CLI is already read-only and its
 writes already go through the daemon. Features that exist only in GraphQL,

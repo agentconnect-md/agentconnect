@@ -51,6 +51,8 @@ export interface SrtSandboxPolicy {
    *  write root the cwd does not contain (a session worktree's owner `.git`) needs its own. */
   denyWrite?: string[]
   gitSafeDirectories?: string[]
+  /** Code-host domains SRT's proxy hands to the daemon's credential proxy over its Unix socket (github-app-git-credentials.md, Phase 2). */
+  mitmProxy?: { socketPath: string; domains: string[] }
   /** No network or Unix-domain socket access and no dynamic approval callback.
    * Used for audited daemon helpers such as local skills installation. */
   offline?: boolean
@@ -331,7 +333,8 @@ export function writeSandboxSettingsUnder(trustedRoot: string, relDir: string, p
       // helper; filesystem and network namespace visibility limit which host
       // sockets are reachable. The offline skills sandbox is stricter — it blocks
       // ALL Unix sockets through the apply-seccomp helper — so deny them there.
-      allowAllUnixSockets: policy.offline !== true
+      allowAllUnixSockets: policy.offline !== true,
+      ...(policy.mitmProxy && policy.offline !== true ? { mitmProxy: policy.mitmProxy } : {})
     },
     filesystem: {
       // SRT's shared default temp path is not per-agent storage: TMPDIR points at this host's own directory, so hide the shared fallback and let no agent exchange data through it.

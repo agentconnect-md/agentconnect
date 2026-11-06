@@ -381,8 +381,13 @@ import {
   sandboxGitCredentialTarget,
   sessionGitConfig,
   liveSecretsChannelEnv,
-  sessionGitEnv
+  sessionGitEnv,
+  CODE_HOST_CREDENTIAL_ENV
 } from './workspace/git-injection.js'
+import { CredentialProxy } from './credential-proxy/proxy.js'
+import { loadProxyCa, proxyTrustEnv, type ProxyCa } from './credential-proxy/ca.js'
+import { loadPlaceholderKey } from './credential-proxy/placeholder.js'
+import { GITHUB_PROXY_HOSTS } from './credential-proxy/github-route.js'
 import { configureWorkspaceGitOrigins, permitsNoHttpsOrigin } from './workspace/git-origin-policy.js'
 import { buildMcpServers, buildSandboxMcpServers, type McpStdioServer } from './mcp/inject.js'
 import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-servers.js'
@@ -1677,6 +1682,8 @@ export class Daemon {
   /** The CP's transfer cache from the last register; where a shared image's large original goes. */
   private fileTransfer?: { maxBytes: number }
   private gitCredServer?: GitCredServer
+  /** The code-host credential proxy, when `features.credentialProxy` is on and it started (github-app-git-credentials.md, Phase 2). */
+  private credentialProxy?: { proxy: CredentialProxy; ca: ProxyCa; socketPath: string }
   /** Leases over cluster pods, in memory: an open page's keep-alive, and this daemon's own on a pod it saw a watcher armed in. */
   private readonly sandboxHolds = new SandboxHolds({ now: () => Date.now() })
   /** Merge-when-ready's in-memory armed set (github/auto-merge). Built with the credential server,
@@ -3863,6 +3870,17 @@ export class Daemon {
     this.localSrt = srtLauncher(root, {
       ...(cfg.agentsDir ? { agentsRoot: cfg.agentsDir } : {}),
       readRoots: () => this.srtShimReadRoots(),
+      // Only an environment whose sessions receive the proxy's trust: its agent's own, never one hosted for another member.
+      mitmProxy: (environment) =>
+        this.credentialProxy &&
+        !environment.hosted &&
+        this.credentialProxyIntercepts(environment.id.split('/')[0] ?? '')
+          ? {
+              socketPath: this.credentialProxy.socketPath,
+              domains: [...GITHUB_PROXY_HOSTS],
+              trustEnv: proxyTrustEnv(this.credentialProxy.ca)
+            }
+          : undefined,
       now: () => this.clock.now()
     })
     this.localSrtExecutor = new LocalExecutor({
@@ -4283,6 +4301,7 @@ export class Daemon {
       this.log.warn(`gitcred: glab wrapper shim write failed — spawning agents without it (${formatErr(err)})`)
     }
     await this.gitCredServer.start()
+    if (this.cfg.features.credentialProxy) await this.startCredentialProxy(root)
     // A cluster agent's watcher runs in a pod's `automerge` channel, a local agent's loop in this process; both read a token through the clamped credential path the agent's own gh does.
     this.autoMergeWatcher = new AutoMergeWatcher({
       knownAgent: (agentId) => this.agents.has(agentId),
@@ -6843,6 +6862,73 @@ export class Daemon {
   }
 
   /** What an srt shim reads of this machine's code (§5): node, the runtime store whole — an adapter it installs after the start must be visible — and each admitted runtime's install. */
+  /** Start the code-host credential proxy; a failure leaves every session on its direct credentials. */
+  private async startCredentialProxy(root: string): Promise<void> {
+    const dir = join(root, 'credential-proxy')
+    try {
+      const ca = loadProxyCa(dir)
+      const proxy = new CredentialProxy({
+        key: loadPlaceholderKey(join(dir, 'placeholder.key')),
+        ca,
+        mint: async (agentId, repo, plane, readOnly) =>
+          (
+            await this.gitCreds.get(agentId, 'helper', {
+              plane,
+              repo,
+              ...(readOnly ? { requestedAccess: 'read' as const } : {})
+            })
+          ).token,
+        workspaceRepo: (agentId) => {
+          const workspace = this.agents.get(agentId)?.workspace
+          if (!workspace || credentialProviderOf(workspace.gitCredential) !== 'github') return undefined
+          return workspace.gitRepo ? (gitRepoLabel(workspace.gitRepo) ?? undefined) : undefined
+        },
+        knownAgent: (agentId) => this.agents.has(agentId),
+        log: this.log
+      })
+      const socketPath = join(root, 'run', 'codehost-proxy.sock')
+      await proxy.start(socketPath)
+      this.credentialProxy = { proxy, ca, socketPath }
+      this.log.info('credential proxy: host and srt sessions on GitHub hold a placeholder')
+    } catch (err) {
+      this.log.warn(`credential proxy: not started, sessions keep their direct credentials (${formatErr(err)})`)
+    }
+  }
+
+  /** Whether the proxy intercepts this agent's srt environments: an agent whose workspace credentials are GitHub's. */
+  private credentialProxyIntercepts(agentId: string): boolean {
+    const workspace = this.agents.get(agentId)?.workspace
+    return workspace !== undefined && credentialProviderOf(workspace.gitCredential) === 'github'
+  }
+
+  /** What a proxied session's environment carries: the placeholder for gh and git, the trust bundle, and on the host the proxy itself. */
+  private credentialProxyEnv(
+    proxy: { proxy: CredentialProxy; ca: ProxyCa },
+    agentId: string,
+    onHost: boolean,
+    env: Record<string, string>,
+    runtimeEnv: Record<string, string>
+  ): Record<string, string> {
+    const placeholder = proxy.proxy.placeholderFor(agentId)
+    const out: Record<string, string> = { ...proxyTrustEnv(proxy.ca), [CODE_HOST_CREDENTIAL_ENV]: placeholder }
+    // A GH_TOKEN the agent was configured with is its own, and wins as it always has.
+    if (env.GH_TOKEN === undefined && runtimeEnv.GH_TOKEN === undefined) out.GH_TOKEN = placeholder
+    const url = onHost ? proxy.proxy.loopbackUrl() : undefined
+    if (url) {
+      const noProxy = ['localhost', '127.0.0.1', '::1', env.NO_PROXY ?? process.env.NO_PROXY]
+        .filter((entry) => entry)
+        .join(',')
+      Object.assign(out, {
+        HTTPS_PROXY: url,
+        https_proxy: url,
+        NO_PROXY: noProxy,
+        no_proxy: noProxy,
+        NODE_USE_ENV_PROXY: '1'
+      })
+    }
+    return out
+  }
+
   private srtShimReadRoots(): string[] {
     this.refreshAdmittedRuntimes()
     const store = runtimeStoreDir(this.root)
@@ -6862,6 +6948,8 @@ export class Daemon {
         this.log.debug(`srt: no install of runtime ${runtimeId} to open for a shim (${formatErr(error)})`)
       }
     }
+    // The credential proxy's trust bundle, which a proxied session's clients verify the code host with.
+    if (this.credentialProxy) roots.add(this.credentialProxy.ca.trustDir)
     // This daemon's own helpers, which Git run through the shim needs before any runtime is launched: code, never state.
     try {
       const executables = ['gh', 'glab'].flatMap((name) => resolveCommandPath(name, process.env) ?? [])
@@ -7131,6 +7219,9 @@ export class Daemon {
     // This host's HOME, temp root and credential socket are hidden inside; the session's HOME and the shim's own stand in.
     const owned: Record<string, string> = { HOME: sessionHomeIn(session.environment.workspaceRoot) }
     shimEnvironment(owned, session.runtimeRoot)
+    // The daemon's own clone and fetch cross the credential proxy where SRT intercepts, so they trust its CA too, over any env they send.
+    if (this.credentialProxy && !session.environment.hosted && this.credentialProxyIntercepts(agentId))
+      Object.assign(owned, proxyTrustEnv(this.credentialProxy.ca))
     return localShimGitRunner({
       run: (work) => this.localSrtExecutor!.withEnvironment(session.environment, work),
       cwd: cwd!,
@@ -8554,8 +8645,16 @@ export class Daemon {
         : undefined
     // Held as its own value: the sandbox read grant must come from the path the DAEMON authored,
     // never read back out of the merged child env, where runtimeOverrides.env could name any file.
+    // A host or srt session on GitHub holds a placeholder the credential proxy exchanges; a host behind its own outbound proxy keeps direct credentials.
+    const proxied =
+      this.credentialProxy !== undefined &&
+      githubAppCredentials &&
+      !this.k8sPlane &&
+      !micro &&
+      !remoteSession &&
+      (srtShim !== undefined || (!runInSandbox && !process.env.HTTPS_PROXY && !process.env.https_proxy))
     const sessionGitInjection = needsSessionGit
-      ? (sandboxSessionGit?.env ?? sessionGitEnv(agent.id, sessionGitIdentity, sessionGitScope))
+      ? (sandboxSessionGit?.env ?? sessionGitEnv(agent.id, sessionGitIdentity, sessionGitScope, proxied))
       : undefined
     // Every runtime but a dream's gets the credential channel for its live secrets; the session channel above re-states it where it applies.
     const liveSecretsChannel =
@@ -8626,6 +8725,14 @@ export class Daemon {
     if (shimDirs.size > 0) {
       env.PATH = `${[...shimDirs].join(':')}:${env.PATH ?? runtimeEnv.PATH ?? process.env.PATH ?? ''}`
     }
+    if (proxied && this.credentialProxy)
+      Object.assign(
+        env,
+        this.credentialProxyEnv(this.credentialProxy, agent.id, srtShim === undefined, env, runtimeEnv)
+      )
+    // Every session in an srt environment the proxy intercepts trusts its CA, a placeholder or not, or its GitHub requests would fail verification.
+    else if (srtShim && this.credentialProxy && this.credentialProxyIntercepts(agent.id))
+      Object.assign(env, proxyTrustEnv(this.credentialProxy.ca))
     const target = opts.modelCredential?.target ?? modelProviderTarget(agent, runtime)
     // A runtime on another filesystem reads its config files there, so they travel with its launch as the gitconfig does (§8): the pod's image root, or the one an executor reported.
     const launchFilesRoot = remoteRoots
@@ -31377,6 +31484,7 @@ export class Daemon {
     await Promise.resolve(this.mcp?.stop()).catch((e) => errors.push(e))
     await this.computerTools.close().catch((e: unknown) => errors.push(e))
     this.gitCredServer?.stop()
+    void this.credentialProxy?.proxy.stop()
     // Local loops end with the process; dropping them here just makes the timers stop promptly.
     this.autoMergeWatcher?.stop()
     // The projection resweep runs on its own clock, so it must be disarmed before the store closes.

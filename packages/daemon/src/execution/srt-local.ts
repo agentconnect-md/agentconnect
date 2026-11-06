@@ -77,6 +77,10 @@ export function srtLauncher(
     agentsRoot?: string
     /** The code the shim and its runtimes read beyond what each environment mounts: node, the runtime installs and this daemon's helpers. */
     readRoots: () => string[]
+    /** Where SRT sends the code-host domains: the daemon's credential proxy, when it runs. */
+    mitmProxy?: (
+      environment: EnvironmentDescriptor
+    ) => { socketPath: string; domains: string[]; trustEnv: Record<string, string> } | undefined
     now?: () => number
     hostEnv?: NodeJS.ProcessEnv
   },
@@ -86,9 +90,13 @@ export function srtLauncher(
   const running = new Map<string, Running>()
   const usage = new Map<string, Usage>()
 
-  const boundary = (environment: EnvironmentDescriptor, log: Logger) =>
-    srtShimBoundary({
+  const boundary = (environment: EnvironmentDescriptor, log: Logger) => {
+    const proxy = deps.mitmProxy?.(environment)
+    return srtShimBoundary({
       daemonRoot,
+      ...(proxy
+        ? { mitmProxy: { socketPath: proxy.socketPath, domains: proxy.domains }, trustEnv: proxy.trustEnv }
+        : {}),
       ...(deps.agentsRoot ? { agentsRoot: deps.agentsRoot } : {}),
       mounts: environment.mounts,
       ...(environment.cwd ? { cwd: environment.cwd } : {}),
@@ -96,6 +104,7 @@ export function srtLauncher(
       ...(deps.hostEnv ? { hostEnv: deps.hostEnv } : {}),
       log
     })
+  }
   const stopMatching = async (matches: (id: string) => boolean): Promise<void> => {
     const stopping = [...running.entries()].filter(([id]) => matches(id)).map(([, state]) => state.shim.stop())
     await Promise.allSettled(stopping)
