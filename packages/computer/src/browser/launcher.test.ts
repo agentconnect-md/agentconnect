@@ -160,4 +160,34 @@ describe('launchBrowser', () => {
     await until(() => browser.calls().length > 0)
     expect(browser.calls()[0]?.[0]).toBe(`--user-data-dir=${profile}`)
   })
+
+  it.skipIf(!posix)(
+    'keeps a second launch waiting until the first browser owns the profile, then hands off',
+    async () => {
+      const dir = temp()
+      const master = masterProfile(dir)
+      const profile = join(dir, 'desktop')
+      const calls = join(dir, 'calls.log')
+      // Like Chromium: takes the profile only after a moment, and a request for an owned profile is handed over.
+      const path = join(dir, 'slow-chromium')
+      writeFileSync(
+        path,
+        `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\nprofile="\${1#--user-data-dir=}"\n` +
+          `[ -L "$profile/SingletonLock" ] && exit 0\nsleep 0.4\nln -s "${hostname()}-$$" "$profile/SingletonLock"\nexec sleep 5\n`
+      )
+      chmodSync(path, 0o755)
+
+      const [first, second] = await Promise.all([
+        launchBrowser({ profile, master, sources: [master], browser: path }),
+        launchBrowser({ profile, master, sources: [master], browser: path })
+      ])
+
+      expect([first.handedOff, second.handedOff].sort()).toEqual([false, true])
+      const pid = (first.handedOff ? second : first).pid!
+      expect(profileOwner(profile)).toBe(pid)
+      process.kill(pid)
+      await until(() => readFileSync(calls, 'utf8').trim().split('\n').length === 2)
+      expect(readFileSync(calls, 'utf8').trim().split('\n')).toHaveLength(2)
+    }
+  )
 })

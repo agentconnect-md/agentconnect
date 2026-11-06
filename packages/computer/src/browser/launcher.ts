@@ -1,5 +1,5 @@
 // Starts a desktop's Chromium on its own profile, fork-merging the other profiles in first (computer-use.md §3.10).
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import {
   accessSync,
   closeSync,
@@ -23,6 +23,8 @@ export const BROWSER_NAMES = ['chromium', 'chromium-browser', 'google-chrome-sta
 const BASE_FLAGS = ['--no-first-run', '--no-default-browser-check', '--hide-crash-restore-bubble']
 const LOCK_STALE_MS = 60_000
 const LOCK_WAIT_MS = 30_000
+// How long a started browser may take to take its profile before the launch lock goes anyway.
+const OWN_WAIT_MS = 20_000
 
 /** The process holding a profile, from its SingletonLock link (`<host>-<pid>`), if that process is alive here. */
 export function profileOwner(profile: string, host = hostname()): number | undefined {
@@ -105,7 +107,7 @@ export async function launchBrowser(options: LaunchOptions): Promise<LaunchResul
   const release = await lockProfile(options.profile)
   try {
     if (profileOwner(options.profile) !== undefined) {
-      start(options)
+      start(options).unref()
       return { handedOff: true, reports: [] }
     }
     if (!existsSync(options.profile)) {
@@ -123,20 +125,41 @@ export async function launchBrowser(options: LaunchOptions): Promise<LaunchResul
     )
     const reports = await forkMerge(options.profile, sources)
     for (const report of reports) log(`browser fork-merge from ${report.source}: ${summarize(report)}`)
-    return { handedOff: false, reports, pid: start(options) }
+    const child = start(options)
+    // The lock holds until the browser owns the profile, so a second launch hands off instead of merging under it.
+    if (!(await owned(options.profile, child))) log(`browser for ${options.profile} did not take its profile`)
+    return { handedOff: false, reports, ...(child.pid !== undefined ? { pid: child.pid } : {}) }
   } finally {
     release()
   }
 }
 
-function start(options: LaunchOptions): number | undefined {
+function start(options: LaunchOptions): ChildProcess {
   const child = spawn(options.browser, [`--user-data-dir=${options.profile}`, ...BASE_FLAGS, ...(options.args ?? [])], {
     detached: true,
     stdio: 'ignore',
     env: options.env ?? process.env
   })
-  child.unref()
-  return child.pid
+  child.on('error', () => undefined)
+  return child
+}
+
+// True once some live process holds the profile; false when the browser failed to start, exited, or ran out of time.
+async function owned(profile: string, child: ChildProcess): Promise<boolean> {
+  let ended = false
+  const end = (): void => void (ended = true)
+  child.once('error', end).once('exit', end)
+  try {
+    const deadline = Date.now() + OWN_WAIT_MS
+    for (;;) {
+      if (profileOwner(profile) !== undefined) return true
+      if (ended || Date.now() > deadline) return false
+      await new Promise((resolveWait) => setTimeout(resolveWait, 100))
+    }
+  } finally {
+    child.off('error', end).off('exit', end)
+    child.unref()
+  }
 }
 
 export function summarize(report: SourceReport): string {
