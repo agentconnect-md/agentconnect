@@ -245,6 +245,16 @@ describe('ThreadPanel', () => {
     expect(container.textContent).not.toContain('gh pr list')
   })
 
+  it('leaves out a live step reconciliation hid, which the record already carries', async () => {
+    wire.live = [
+      { kind: 'done', turnId: 't1', text: 'Three of five are clear.', hidden: true },
+      { kind: 'done', turnId: 't1', text: 'Rerunning CI on #1291.' }
+    ]
+    await render()
+    expect(container.textContent?.split('Three of five are clear.')).toHaveLength(2)
+    expect(container.textContent).toContain('Rerunning CI on #1291.')
+  })
+
   it('draws an agent turn as the session page does: its work folded under one header, then its answer', async () => {
     await render()
     const turn = container.querySelector('[data-thread-message="agent"]')!
