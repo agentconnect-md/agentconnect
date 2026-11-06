@@ -4220,7 +4220,12 @@ describe('thread reads (webchat-threads.md §8)', () => {
     expect((await s.threadRootRows(scope, [R3, '4'])).map((r) => r.ts)).toEqual(['4', '11'])
     const before = await s.currentTranscriptRevision()
     await s.appendTranscript(row('12', R2, { sender: 'U2', postId: randomUUID() }))
-    expect(await s.threadsChangedBetween(scope, before, await s.currentTranscriptRevision(), 20)).toEqual([R2])
+    const now = await s.currentTranscriptRevision()
+    // Only threads whose root the session received: R3's root was never admitted.
+    await s.appendTranscript(row('13', R3, { sender: 'U2', postId: randomUUID() }))
+    expect(await s.threadsChangedBetween(scope, before, await s.currentTranscriptRevision(), 20)).toEqual([
+      { thread: R2, revision: now }
+    ])
     await s.close()
   })
 

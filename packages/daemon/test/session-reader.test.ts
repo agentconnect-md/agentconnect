@@ -1375,6 +1375,24 @@ describe('the roots view and session/thread (webchat-threads.md §8)', () => {
     await s.close()
   })
 
+  it('holds a forward page’s cursor back when more threads changed than it carries, so none is skipped', async () => {
+    const s = await conversation()
+    const reader = createSessionReader(s)
+    const roots = Array.from({ length: 21 }, () => crypto.randomUUID())
+    for (const [i, root] of roots.entries())
+      await s.appendTranscript(post(String(100 + i), root, { postId: root, admission: coordinator }))
+    const first = await reader.history({ agentId: AGENT, sessionId: 'sid-coord', limit: 50, view: 'roots' })
+    for (const [i, root] of roots.entries()) await s.appendTranscript(post(String(200 + i), root, { sender: 'U3' }))
+    const tail = { agentId: AGENT, sessionId: 'sid-coord', limit: 50, view: 'roots' as const }
+    const one = await reader.history({ ...tail, after: first.liveCursor! })
+    expect(one.threads?.map((t) => t.rootId)).toEqual(roots.slice(0, 20))
+    expect(one.liveMore).toBe(true)
+    const two = await reader.history({ ...tail, after: one.liveCursor! })
+    expect(two.threads?.map((t) => t.rootId)).toEqual(roots.slice(20))
+    expect(two.liveMore).toBeUndefined()
+    await s.close()
+  })
+
   it('reads one thread’s record with its summary, and nothing for a reply, an unknown root or another agent', async () => {
     const s = await conversation()
     const reader = createSessionReader(s)

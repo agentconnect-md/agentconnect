@@ -221,6 +221,8 @@ interface PageThreads {
   refs: (readonly string[])[]
   always: readonly string[]
   summaries: Map<string, SessionThreadSummary>
+  // A forward page's cursor may not pass this revision: changed threads past it were left for the next poll.
+  liveCap?: number
 }
 
 type PageThreadsOf = (
@@ -248,6 +250,7 @@ function threadBudget(threads: PageThreads | undefined) {
     }
   }
   return {
+    liveCap: threads?.liveCap,
     carryAlways(): number {
       const bytes = cost(threads?.always ?? [])
       carry(threads?.always ?? [])
@@ -404,8 +407,12 @@ async function rootsViewThreads(
     return id !== undefined ? [id] : []
   })
   const always: string[] = []
+  let liveCap: number | undefined
   if (after !== null && upto !== undefined) {
-    for (const thread of await store.threadsChangedBetween(scope, after, upto, CHANGED_THREADS_MAX)) {
+    const changed = await store.threadsChangedBetween(scope, after, upto, CHANGED_THREADS_MAX + 1)
+    // More changed than a page carries: the cursor stops before the first left out, which the next poll reports.
+    if (changed.length > CHANGED_THREADS_MAX) liveCap = Math.max(after + 1, changed.pop()!.revision - 1)
+    for (const { thread } of changed) {
       if (refs.some((ids) => ids.includes(thread))) continue
       const root = await store.threadRootInSession(scope, thread)
       if (!root || !(await isRootRow(store, scope, root))) continue
@@ -414,7 +421,12 @@ async function rootsViewThreads(
     }
   }
   const summaries = await threadSummaries(store, rec, scope, [...refs.flat(), ...always], roots)
-  return { refs, always: always.filter((id) => summaries.has(id)), summaries }
+  return {
+    refs,
+    always: always.filter((id) => summaries.has(id)),
+    summaries,
+    ...(liveCap !== undefined ? { liveCap } : {})
+  }
 }
 
 /** One page of rows through `reads`, projected for display and cut to the frame budget with the thread summaries they name. */
@@ -555,10 +567,15 @@ async function readTranscriptPage(
       acc += enc
     }
     const droppedToBudget = kept.length < built.length
-    const liveMore = hasMore || droppedToBudget
     const lastMutationRow = kept.length > 0 ? rows[kept.length - 1] : undefined
-    const liveCursor =
-      liveMore && lastMutationRow ? lastMutationRow.revision : (transcriptPageCursor(page) ?? afterRevision)
+    const reached =
+      (hasMore || droppedToBudget) && lastMutationRow
+        ? lastMutationRow.revision
+        : (transcriptPageCursor(page) ?? afterRevision!)
+    // Rows past a capped cursor come again on the next poll, as a same-seq update does.
+    const capped = budget.liveCap !== undefined && reached > budget.liveCap
+    const liveCursor = capped ? budget.liveCap! : reached
+    const liveMore = hasMore || droppedToBudget || capped
     // A backfill can insert an older native-order row, so the page is chronological while its cursor stays in mutation order.
     const rowBySeq = new Map(rows.map((row) => [row.seq, row]))
     kept.sort((a, b) => {

@@ -438,7 +438,8 @@ As implemented (PR 7):
   message. A turn answering a root also sits on the root's thread, and starts at the root itself.
   `threads` carries the summaries of the roots and threads the kept rows name, each counted once in the
   frame budget; a forward page (`after`) adds up to 20 threads whose rows changed since the cursor and
-  whose root the session received.
+  whose root the session received. When more changed, its cursor stops before the first one left out
+  and `liveMore` is set, so the next poll reports it.
 - **`session/thread`** (`agentId` required) answers only for a root the session received, on its
   coordinate or admitted into it; a reply's id, an unknown root or another agent's session get an empty
   page without `summary`. It pages by event time where ids order natively, else by seq, and tails by

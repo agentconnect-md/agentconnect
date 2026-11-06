@@ -4561,27 +4561,39 @@ export class LocalStore {
     return stats
   }
 
-  /** The threads of one conversation whose rows changed in `(afterRevision, uptoRevision]`, for a forward `roots` page (webchat-threads.md §8). */
+  /** The threads whose root the session received and whose rows changed in `(afterRevision, uptoRevision]`, by their newest change, oldest first (webchat-threads.md §8). */
   async threadsChangedBetween(
-    scope: Pick<TranscriptSessionScope, 'transcriptChannel' | 'agentId' | 'orgId'>,
+    scope: TranscriptSessionScope,
     afterRevision: number,
     uptoRevision: number,
     limit: number
-  ): Promise<string[]> {
+  ): Promise<{ thread: string; revision: number }[]> {
     const rows = (await this.db
       .prepare(
-        `SELECT DISTINCT thread FROM transcript
+        `SELECT transcript.thread AS thread, MAX(transcript.revision) AS n FROM transcript
           WHERE orgId = ? AND channel = ? AND revision > ? AND revision <= ? AND thread IS NOT NULL
-          ORDER BY thread LIMIT ?`
+            AND EXISTS (SELECT 1 FROM transcript r
+                         WHERE r.orgId = transcript.orgId AND r.channel = transcript.channel AND r.kind = 'text'
+                           AND (r.ts = transcript.thread OR r.postId = transcript.thread)
+                           AND (r.thread = ? OR EXISTS (
+                             SELECT 1 FROM transcript_recipient tr_r WHERE tr_r.seq = r.seq AND tr_r.sessionKey = ?))
+                           AND (r.sender = ? OR EXISTS (
+                             SELECT 1 FROM transcript_recipient tr_g WHERE tr_g.seq = r.seq AND tr_g.agentId = ?)))
+          GROUP BY transcript.thread
+          ORDER BY MAX(transcript.revision), transcript.thread LIMIT ?`
       )
       .all(
         this.orgForRead(scope.agentId, scope.orgId),
         scope.transcriptChannel,
         afterRevision,
         uptoRevision,
+        scope.coordinate,
+        scope.sessionKey,
+        scope.agentId,
+        scope.agentId,
         limit
-      )) as { thread: string }[]
-    return rows.map((r) => r.thread)
+      )) as { thread: string; n: number | string }[]
+    return rows.map((r) => ({ thread: r.thread, revision: Number(r.n) }))
   }
 
   /** One newest-first page of a thread's record as a session reads it (webchat-threads.md §8), in insertion order. */
