@@ -4353,6 +4353,8 @@ export default function SessionDetailView() {
         ]
       : []
   )
+  // The task whose thread is actually on screen: expanded, or in a visible side panel on its Tasks tab.
+  const taskThreadOnScreen = expandedTask ?? (openThread && dockVisible && dockTabKey === 'tasks' ? openThread : null)
   // A task's approvals are answered in its own thread, read through this conversation under the strip's rules.
   const taskApprovalScope =
     (canReviewApprovals || ownerApprovals) && session.agentId
@@ -4373,7 +4375,7 @@ export default function SessionDetailView() {
         conversationPermissions={ownerApprovals}
         proposals={conversationProposals}
         transcriptTurns={approvalTurns}
-        openTaskSessionId={(openThread ?? expandedTask)?.sessionId ?? null}
+        openTaskSessionId={taskThreadOnScreen?.sessionId ?? null}
         className={className}
       />
     ) : null
