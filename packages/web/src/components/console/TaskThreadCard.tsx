@@ -1,6 +1,6 @@
 'use client'
 
-// A coordinator's task in its conversation (auto-session-mode.md §10): a card that opens the task's thread beside the chat, and its replies line.
+// A coordinator's task in its conversation (auto-session-mode.md §10): a card that opens the task's thread beside the chat, its reply count on its right.
 
 import { useEffect, useState, type MouseEvent } from 'react'
 import Link from 'next/link'
@@ -11,9 +11,11 @@ import { StateIcon } from '@/components/console/StateIcon'
 import { useTaskRow } from '@/components/console/task-thread'
 import type { TaskLink } from '@/components/console/task-link'
 import { useOrgs } from '@/lib/org-context'
+import { shortAgo } from '@/components/console/session-work'
 
-/** How often "last reply 1m ago" redraws; arithmetic, no request. */
-const TICK_MS = 30_000
+/** How often "· 39s" redraws: every second while it counts seconds, else every 30s; arithmetic, no request. */
+const tickMs = (lastReplyAt: string | undefined, now: number) =>
+  lastReplyAt && now - Date.parse(lastReplyAt) < 60_000 ? 1_000 : 30_000
 
 export function TaskThreadCard({
   agentId,
@@ -38,10 +40,11 @@ export function TaskThreadCard({
   const { orgPath } = useOrgs()
   const row = useTaskRow(agentId, link.sessionId, parentSessionId)
   const [now, setNow] = useState(() => Date.now())
+  const tick = tickMs(row?.lastReplyAt, now)
   useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), TICK_MS)
+    const timer = setInterval(() => setNow(Date.now()), tick)
     return () => clearInterval(timer)
-  }, [])
+  }, [tick])
 
   const title = row?.title ?? link.title
   const state = row ? tl(taskStateKey(row)) : null
@@ -49,29 +52,34 @@ export function TaskThreadCard({
   const cardClass = `card click flex w-full max-w-[520px] min-w-0 items-center gap-[10px] px-[14px] py-[11px] text-left no-underline ${
     selected ? 'border-(--border-strong) bg-(--surface-hover) shadow-none' : ''
   }`
+  const replies = row?.replies ?? 0
+  const lastReplyAt = row?.lastReplyAt ? new Date(row.lastReplyAt) : null
+  const repliesLabel = replies > 0 ? t('replies', { count: replies }) : t('reply')
   const face = (
     <>
       <StateIcon state={row ? taskTone(row, null) : 'idle'} label={state ?? tl('state.idle')} />
       <span className="min-w-0 flex-1 truncate font-sans text-[13.5px] font-medium leading-normal text-(--text-primary)">
         {title}
       </span>
-      <Icon name="panel-right-open" size={15} color="var(--text-tertiary)" className="flex-none" />
+      <span
+        data-task-card-replies=""
+        className="flex-none whitespace-nowrap font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)"
+        {...(replies > 0 && lastReplyAt
+          ? {
+              title: t('repliesTitle', {
+                replies: repliesLabel,
+                time: format.relativeTime(lastReplyAt, { now, style: 'narrow' })
+              })
+            }
+          : {})}
+      >
+        <span className="font-semibold text-(--brand)">{repliesLabel}</span>
+        {replies > 0 && lastReplyAt ? (
+          <time dateTime={row!.lastReplyAt!}> · {shortAgo(lastReplyAt.getTime(), now)}</time>
+        ) : null}
+      </span>
     </>
   )
-  const replies = row?.replies ?? 0
-  const repliesLine =
-    replies > 0 ? (
-      <>
-        <span className="font-semibold text-(--brand)">{t('replies', { count: replies })}</span>
-        {row?.lastReplyAt ? (
-          <time dateTime={row.lastReplyAt} className="text-(--text-tertiary)">
-            {t('lastReply', { time: format.relativeTime(new Date(row.lastReplyAt), { now, style: 'narrow' }) })}
-          </time>
-        ) : null}
-      </>
-    ) : (
-      <span className="font-semibold text-(--brand)">{t('reply')}</span>
-    )
 
   // A plain click opens the thread beside the chat; a modified or middle click keeps the link's own new-tab behaviour.
   const openBeside = (event: MouseEvent<HTMLAnchorElement>) => {
@@ -81,7 +89,7 @@ export function TaskThreadCard({
   }
 
   return (
-    <div data-task-card={link.sessionId} className="flex min-w-0 flex-col gap-[6px]">
+    <div data-task-card={link.sessionId} className="flex min-w-0 flex-col">
       <Link
         className={cardClass}
         href={href}
@@ -91,15 +99,6 @@ export function TaskThreadCard({
         title={onOpen ? t('open', { title }) : undefined}
       >
         {face}
-      </Link>
-      <Link
-        data-task-card-replies=""
-        href={href}
-        onClick={openBeside}
-        className="flex w-fit items-center gap-[6px] px-[2px] font-sans text-[12.5px] font-normal leading-normal no-underline hover:underline"
-      >
-        <Icon name="reply" size={13} color="var(--brand)" className="flex-none" />
-        {repliesLine}
       </Link>
     </div>
   )

@@ -2,7 +2,7 @@
 
 // The turn's PLAN on the real session page. The point of the block is where it is, not that
 // it exists: the plan is what the agent set out to do, so it must be readable without opening
-// the "Thought through…" panel — and it must not be counted as one of those steps either.
+// the folded work panel — and it must not be counted as one of those steps either.
 
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -222,7 +222,7 @@ describe('the turn plan on the session page', () => {
     // are rendered by different paths rather than the panel happening to be open.
     expect(text()).not.toContain('weighing the rollout order')
     // One reasoning step, not two: the plan is not folded into the count.
-    expect(text()).toContain('Thought through 1 step')
+    expect(container?.querySelector<HTMLButtonElement>('[data-turn-fold]')?.title).toMatch(/thought through 1 step$/)
   })
 
   it('falls back to the summary when the row arrives without a body', async () => {

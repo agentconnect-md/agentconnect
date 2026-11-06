@@ -17,6 +17,8 @@ import {
   planLabel,
   sessionTurnInFlight,
   formatTurnDuration,
+  formatWorkStatus,
+  shortAgo,
   stepStatusMark,
   stripBoldMarks,
   toggleWorkPanel,
@@ -464,5 +466,57 @@ describe('exchangePromptMs', () => {
     expect(exchangePromptMs([user(100), bot('A'), bot('B'), bot('A')], 3)).toBeUndefined()
     expect(exchangePromptMs([user(100), bot(), bot()], 2)).toBeUndefined()
     expect(exchangePromptMs([bot('A')], 0)).toBeUndefined()
+  })
+})
+
+describe('formatWorkStatus', () => {
+  const t = (key: string, values?: Record<string, string | number>) =>
+    ({
+      turnWorking: `Working for ${values?.duration}`,
+      turnWorked: `Worked for ${values?.duration}`,
+      turnStopped: 'Stopped',
+      turnFailed: `${values?.count} failed`
+    })[key]!
+  const base = { ms: 1_000, running: false, failed: 0, summary: 'Ran 1 command' }
+
+  it('shows the duration alone and keeps the long form for the tooltip', () => {
+    expect(formatWorkStatus(base, t)).toEqual({
+      running: false,
+      lead: null,
+      duration: '1s',
+      failed: null,
+      title: 'Worked for 1s · ran 1 command'
+    })
+  })
+
+  it('a coordinator turn that only dispatched a task still reads as its duration', () => {
+    const status = formatWorkStatus({ ...base, summary: 'Thought through 1 step' }, t)
+    expect([status.lead, status.duration, status.failed]).toEqual([null, '1s', null])
+    expect(status.title).toBe('Worked for 1s · thought through 1 step')
+  })
+
+  it('says a running turn is working, a failed one how many failed, and a stopped one Stopped', () => {
+    expect(formatWorkStatus({ ...base, ms: 12_000, running: true }, t).title).toBe('Working for 12s · ran 1 command')
+    const failed = formatWorkStatus({ ...base, ms: 18_000, failed: 1 }, t)
+    expect([failed.duration, failed.failed]).toEqual(['18s', '1 failed'])
+    expect(failed.title).toBe('Worked for 18s · ran 1 command · 1 failed')
+    const stopped = formatWorkStatus({ ...base, ms: 3_000, stopped: true }, t)
+    expect([stopped.lead, stopped.duration]).toEqual(['Stopped', '3s'])
+    expect(stopped.title).toBe('Stopped · 3s · ran 1 command')
+  })
+
+  it('omits a duration it cannot measure', () => {
+    expect(formatWorkStatus({ ...base, ms: null }, t)).toMatchObject({ duration: null, title: 'ran 1 command' })
+  })
+})
+
+describe('shortAgo', () => {
+  it('reads seconds, minutes, hours, then days', () => {
+    const now = Date.parse('2026-11-06T12:00:00Z')
+    expect(shortAgo(now - 39_000, now)).toBe('39s')
+    expect(shortAgo(now - 52 * 60_000, now)).toBe('52m')
+    expect(shortAgo(now - 3 * 3_600_000 - 59 * 60_000, now)).toBe('3h')
+    expect(shortAgo(now - 2 * 86_400_000, now)).toBe('2d')
+    expect(shortAgo(now + 5_000, now)).toBe('0s')
   })
 })

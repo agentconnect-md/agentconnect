@@ -496,27 +496,12 @@ export function ToolBodyDetail({
   )
 }
 
-/** What an agent turn's header reports about its work: the work rows, their summary, and the step still running. */
-export function turnWork(
-  steps: readonly FmtStep[],
-  streaming: boolean
-): { workSteps: FmtStep[]; summary: string; liveLine?: string; liveKey?: string } {
+/** What an agent turn's header reports about its work: the work rows, their summary, and how many tool calls failed. */
+export function turnWork(steps: readonly FmtStep[]): { workSteps: FmtStep[]; summary: string; failed: number } {
   const workSteps = steps.filter((s) => WORK_LANES.has(s.lane))
   const { thinkCount, toolCount, editCount } = workCounts(workSteps)
-  const summary = workSummary(thinkCount, toolCount, editCount)
-  // Work runs while any tool row is unsettled (parallel calls update in place) or a trailing work step is unfinished.
-  const stepDone = (st?: FmtStep) => ['completed', 'failed'].includes((st?.msg?.toolStatus ?? '').toLowerCase())
-  const activeTool = [...workSteps].reverse().find((st) => st.msg?.toolCallId && !stepDone(st))
-  const lastStep = steps[steps.length - 1]
-  const tailRunning = !!lastStep && WORK_LANES.has(lastStep.lane) && !stepDone(lastStep)
-  const liveStep = activeTool ?? (tailRunning ? lastStep : undefined)
-  if (!streaming || !liveStep) return { workSteps, summary }
-  // The live line: the running step's first line (tool rows keep the command in `code`), markdown stripped.
-  const liveRaw = (liveStep.text || liveStep.code)?.trimStart().split('\n', 1)[0]?.trim()
-  const liveLine = liveRaw && liveStep.text ? stripMdMarkers(liveRaw) : liveRaw
-  if (!liveLine) return { workSteps, summary }
-  // Step identity keys the fade-in, since two consecutive steps can share a first line.
-  return { workSteps, summary, liveLine, liveKey: `${liveStep.msg?.toolCallId ?? steps.indexOf(liveStep)}:${liveLine}` }
+  const failed = workSteps.filter((st) => st.lane === 'TOOL' && stepStatusMark(st.msg?.toolStatus) === 'failed').length
+  return { workSteps, summary: workSummary(thinkCount, toolCount, editCount), failed }
 }
 
 /** A turn's open work panel: one row per step, under the header and before the answer. */

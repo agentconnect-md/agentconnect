@@ -205,8 +205,8 @@ describe('TaskThreadPanel', () => {
     await render()
     const turn = container.querySelector('[data-thread-message="agent"]')!
     const fold = turn.querySelector<HTMLButtonElement>('[data-turn-fold]')!
-    expect(fold.textContent).toContain('Worked for 1m 0s')
-    expect(fold.textContent).toContain('Ran 1 command')
+    expect(fold.textContent).toBe('1m 0s')
+    expect(fold.title).toBe('Worked for 1m 0s · ran 1 command')
     expect(turn.querySelectorAll('[data-agent-prose]')).toHaveLength(1)
     expect(turn.textContent).not.toContain('gh pr list')
     await act(async () => fold.click())
@@ -219,9 +219,9 @@ describe('TaskThreadPanel', () => {
       { seq: 5, sender: 'agent_1', ts: '2026-11-03T09:04:00.000Z', kind: 'reasoning', text: 'Nothing to add' }
     ]
     await render()
-    const folds = [...container.querySelectorAll('[data-turn-fold]')].map((el) => el.textContent)
-    expect(folds.at(-1)).toContain('Worked for 1m 0s')
-    expect(folds.at(-1)).toContain('Thought through 1 step')
+    const folds = [...container.querySelectorAll<HTMLButtonElement>('[data-turn-fold]')]
+    expect(folds.at(-1)?.textContent).toBe('1m 0s')
+    expect(folds.at(-1)?.title).toBe('Worked for 1m 0s · thought through 1 step')
   })
 
   it('heads the quick look with back, the task’s state, a link to its own page and close, and no crumb or branch', async () => {

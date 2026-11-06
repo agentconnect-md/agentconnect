@@ -213,14 +213,13 @@ describe('a finished agent turn', () => {
     ]
   })
 
-  it('folds its work into one header line with its duration and summary', async () => {
+  it('folds its work into one header line: its duration and failures, the counts in its tooltip', async () => {
     await render()
     const line = fold()!
     // First step to last step: rows two and five are 90s apart.
-    expect(line.textContent).toContain('Worked for 1m 30s ·')
-    expect(line.textContent).toContain('Ran 2 commands')
+    expect(line.textContent).toBe('1m 30s· 1 failed')
+    expect(line.title).toBe('Worked for 1m 30s · ran 2 commands · 1 failed')
     expect(line.getAttribute('aria-expanded')).toBe('false')
-    expect(line.querySelector('.work-live')).toBeNull()
     expect(container?.textContent).not.toContain('kubectl apply')
   })
 
@@ -255,8 +254,8 @@ describe('a finished agent turn', () => {
   it('omits the duration when no step carries a timestamp', async () => {
     wire.messages = (wire.messages as SessionMessageDto[]).map((m) => ({ ...m, ts: '' }))
     await render()
-    expect(fold()!.textContent).not.toContain('Worked for')
-    expect(fold()!.textContent).toContain('Ran 2 commands')
+    expect(fold()!.textContent).toBe('1 failed')
+    expect(fold()!.title).toBe('ran 2 commands · 1 failed')
   })
 
   it('shows no fold control on a turn that did no work', async () => {
@@ -271,7 +270,7 @@ describe('a finished agent turn', () => {
 })
 
 describe('a running agent turn', () => {
-  it('keeps the live line naming the step that runs right now', async () => {
+  it('shows a running dot and its duration, and no step text', async () => {
     wire.statusLabel = 'prompting'
     wire.messages = [
       row({ seq: 1, sender: 'sam', kind: 'text', text: 'ship it to staging' }),
@@ -280,8 +279,9 @@ describe('a running agent turn', () => {
     ]
     await render()
     const line = fold()!
-    expect(line.textContent).toContain('Working for')
-    expect(line.querySelector('.work-live')?.textContent).toBe('· kubectl rollout status deploy/api --watch')
+    expect(line.querySelector('[data-turn-running]')).not.toBeNull()
+    expect(line.textContent).toMatch(/^\d+(h \d+m|m \d+s|s)$/)
+    expect(line.title).toMatch(/^Working for .* · ran 2 commands$/)
     await act(async () => line.click())
     const marks = Array.from(container?.querySelectorAll('[data-step-status]') ?? []).map((step) =>
       step.getAttribute('data-step-status')

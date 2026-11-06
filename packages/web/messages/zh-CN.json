@@ -335,7 +335,7 @@
     "taskThread": {
       "replies": "{count, plural, other {# 条回复}}",
       "reply": "回复",
-      "lastReply": "最后回复于 {time}",
+      "repliesTitle": "{replies}，最后回复于 {time}",
       "open": "打开 {title} 的会话串",
       "openPage": "在单独页面打开 {title}",
       "earlier": "更早的消息在任务页面上",
@@ -786,6 +786,8 @@
       "copyMessage": "复制消息",
       "turnWorking": "已工作 {duration}",
       "turnWorked": "用时 {duration}",
+      "turnStopped": "已停止",
+      "turnFailed": "{count} 个失败",
       "showWork": "展开智能体的工作过程",
       "hideWork": "收起智能体的工作过程",
       "stepRunning": "运行中",

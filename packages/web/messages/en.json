@@ -335,7 +335,7 @@
     "taskThread": {
       "replies": "{count, plural, one {# reply} other {# replies}}",
       "reply": "Reply",
-      "lastReply": "last reply {time}",
+      "repliesTitle": "{replies}, last reply {time}",
       "open": "Open the thread of {title}",
       "openPage": "Open {title} on its own page",
       "earlier": "Earlier messages are on the task’s page",
@@ -786,6 +786,8 @@
       "copyMessage": "Copy message",
       "turnWorking": "Working for {duration}",
       "turnWorked": "Worked for {duration}",
+      "turnStopped": "Stopped",
+      "turnFailed": "{count} failed",
       "showWork": "Show the agent’s work",
       "hideWork": "Hide the agent’s work",
       "stepRunning": "Running",

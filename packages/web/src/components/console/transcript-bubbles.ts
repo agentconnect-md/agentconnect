@@ -8,7 +8,7 @@ export const AGENT_PROSE =
 export const AGENT_NAME =
   'font-sans text-[13px] font-semibold leading-normal text-[color:color-mix(in_oklab,var(--agent-accent,var(--indigo-500))_62%,var(--text-primary))]'
 
-/** The agent turn's fold line beside its name: duration, work summary and the live step, one click to open the work. */
+/** The agent turn's fold line beside its name: its duration and any failures, one click to open the work. */
 export const TURN_FOLD =
   'inline-flex min-w-0 cursor-pointer items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) hover:text-(--text-secondary)'
 

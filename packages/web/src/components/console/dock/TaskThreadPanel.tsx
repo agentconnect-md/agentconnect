@@ -423,7 +423,7 @@ function ThreadMessage({
   const said = entry.text.trim() ? <MessageText text={entry.text} platform="webchat" /> : null
   if (entry.who === 'agent') {
     // The same turn the session page draws: one header folding the work, then one prose block per message posted.
-    const { workSteps, summary, liveLine, liveKey } = turnWork(entry.work ?? [], streaming)
+    const { workSteps, summary, failed } = turnWork(entry.work ?? [])
     const prose = entry.prose ?? (entry.text.trim() ? [entry.text] : [])
     return (
       <div
@@ -440,12 +440,11 @@ function ThreadMessage({
               ? {
                   work: {
                     summary,
+                    failed,
                     open: openWork,
                     onToggle: () => setOpenWork((open) => !open),
                     running: streaming,
-                    span: withPromptStart(turnSpan(entry.times ?? []), promptMs),
-                    liveLine,
-                    liveKey
+                    span: withPromptStart(turnSpan(entry.times ?? []), promptMs)
                   }
                 }
               : {})}

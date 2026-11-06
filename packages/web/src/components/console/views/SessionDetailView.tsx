@@ -5335,7 +5335,7 @@ export default function SessionDetailView() {
                                 agentLastIndex: turn.agentId ? lastBotTurnIndexByAgent.get(turn.agentId) : undefined
                               })
                               const openWork = workPanelOpen(workOverride.get(turn.key ?? ''))
-                              const { workSteps, summary, liveLine, liveKey } = turnWork(turn.steps, streaming)
+                              const { workSteps, summary, failed } = turnWork(turn.steps)
                               // Keyed by agent id so the colour survives a rename; an id-less row falls back to its name.
                               const turnTone = agentToneColor(turn.agentId || turn.agentName)
                               // What the turn's copy button copies: the spoken answer.
@@ -5375,7 +5375,7 @@ export default function SessionDetailView() {
                                     )
                                   })()}
                                   <div
-                                    className="min-w-0 flex-1"
+                                    className="relative min-w-0 flex-1"
                                     style={{ '--agent-accent': turnTone } as CSSProperties}
                                   >
                                     <AgentTurnHeader
@@ -5384,15 +5384,14 @@ export default function SessionDetailView() {
                                         ? {
                                             work: {
                                               summary,
+                                              failed,
                                               open: openWork,
                                               onToggle: () => toggleWork(turn.key ?? '', openWork),
                                               running: streaming,
                                               span: withPromptStart(
                                                 turnSpan(turn.steps.map((st) => st.timeMs)),
                                                 exchangePromptMs(turns, ti)
-                                              ),
-                                              liveLine,
-                                              liveKey
+                                              )
                                             }
                                           }
                                         : {})}
@@ -5526,11 +5525,11 @@ export default function SessionDetailView() {
                                         ))}
                                       {/* A tool call's approval closes the turn that asked it, after what the agent said before asking. */}
                                       <TurnApprovals turnKey={turn.key} asked={askedApprovalIds(turn.steps)} />
-                                      {/* A finished turn's answer gets its copy button on its own line. */}
+                                      {/* A finished turn's hover copy button sits in the inter-turn gap, so it takes no line of its own. */}
                                       {!streaming && answerText && (
-                                        <div className="flex">
+                                        <span className="absolute left-0 top-full">
                                           <CopyTurnButton text={answerText} />
-                                        </div>
+                                        </span>
                                       )}
                                     </div>
                                   </div>
