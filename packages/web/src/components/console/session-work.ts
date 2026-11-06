@@ -420,6 +420,49 @@ export function formatTurnDuration(ms: number): string {
   return `${seconds}s`
 }
 
+/** A translator for the turn-status strings, as `useTranslations('Sessions.detail')` returns one. */
+type StatusText = (
+  key: 'turnWorking' | 'turnWorked' | 'turnStopped' | 'turnFailed',
+  values?: Record<string, string | number>
+) => string
+
+/** What a turn's header line says about its work: the short parts it shows and the long form its tooltip carries. */
+export interface WorkStatus {
+  running: boolean
+  /** "Stopped" ahead of the duration, for a turn someone interrupted. */
+  lead: string | null
+  duration: string | null
+  /** "1 failed", drawn in the error colour. */
+  failed: string | null
+  title: string
+}
+
+/** One turn's work status: "● 12s" running, "1s" done, "18s · 1 failed", "Stopped · 3s"; the counts go to the tooltip only. */
+export function formatWorkStatus(
+  p: { ms: number | null; running: boolean; stopped?: boolean; failed: number; summary: string },
+  t: StatusText
+): WorkStatus {
+  const duration = p.ms === null ? null : formatTurnDuration(p.ms)
+  const stopped = !p.running && p.stopped === true
+  const failed = p.failed > 0 ? t('turnFailed', { count: p.failed }) : null
+  const detail = p.summary ? p.summary.charAt(0).toLowerCase() + p.summary.slice(1) : ''
+  const lead = stopped ? t('turnStopped') : null
+  const head = stopped ? duration : duration && t(p.running ? 'turnWorking' : 'turnWorked', { duration })
+  const title = [lead, head, detail, failed].filter(Boolean).join(' · ')
+  return { running: p.running, lead, duration, failed, title }
+}
+
+/** A reply's age in its shortest form: "39s", "52m", "3h", "2d". */
+export function shortAgo(atMs: number, nowMs: number): string {
+  const seconds = Math.max(0, Math.floor((nowMs - atMs) / 1000))
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h`
+  return `${Math.floor(hours / 24)}d`
+}
+
 /** A tool step's status mark: running for pending/in_progress, done, failed, or none when it reports no status. */
 export function stepStatusMark(toolStatus: string | undefined): 'running' | 'done' | 'failed' | null {
   const status = (toolStatus ?? '').toLowerCase()

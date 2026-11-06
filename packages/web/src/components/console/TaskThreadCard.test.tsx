@@ -90,15 +90,18 @@ describe('TaskThreadCard', () => {
     const card = container.querySelector('[data-task-card="ses_task"]')!
     expect(card.textContent).toContain('Find what blocks api 1.5')
     expect(card.querySelector('[data-state-icon]')?.getAttribute('aria-label')).toBe('Running')
-    expect(card.querySelector('[data-task-card-replies]')?.textContent).toMatch(/3 replies\s*last reply 1m ago/)
+    const replies = card.querySelector<HTMLElement>('[data-task-card-replies]')!
+    expect(replies.textContent).toBe('3 replies · 1m')
+    expect(replies.title).toBe('3 replies, last reply 1m ago')
+    expect(card.querySelectorAll('a')).toHaveLength(1)
     expect(wire.listReads).toEqual(['agent_1/ses_coordinator'])
     expect(wire.rowReads).toEqual([])
 
-    // A plain click opens the thread beside the chat, from the card or its replies line alike.
-    const face = card.querySelector<HTMLAnchorElement>('a:not([data-task-card-replies])')!
+    // A plain click anywhere on the card, its reply count included, opens the thread beside the chat.
+    const face = card.querySelector<HTMLAnchorElement>('a')!
     expect(face.getAttribute('href')).toBe('/acme/sessions/ses_task')
     act(() => face.click())
-    act(() => card.querySelector<HTMLAnchorElement>('[data-task-card-replies]')!.click())
+    act(() => replies.click())
     expect(onOpen).toHaveBeenCalledTimes(2)
     // A modified click keeps the link's own behaviour: the task's page, in a new tab.
     const modified = new MouseEvent('click', { bubbles: true, cancelable: true, metaKey: true })

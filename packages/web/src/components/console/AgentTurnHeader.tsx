@@ -3,22 +3,23 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
-import { formatTurnDuration, turnDurationMs } from '@/components/console/session-work'
+import { formatWorkStatus, turnDurationMs } from '@/components/console/session-work'
 import { AGENT_NAME, TURN_FOLD } from '@/components/console/transcript-bubbles'
 
 /** What an agent turn's fold line reports about the work it folds. */
 export interface TurnWork {
-  /** The work summary ("Ran 2 commands"); empty falls back to a generic label. */
+  /** The work summary ("Ran 2 commands"), shown only in the tooltip. */
   summary: string
+  /** Tool calls that failed, said after the duration in the error colour. */
+  failed: number
+  /** Someone interrupted the turn. */
+  stopped?: boolean
   open: boolean
   onToggle: () => void
-  /** The turn is still streaming: "Working for", ticking, with no completion check yet. */
+  /** The turn is still streaming: a running dot and a ticking duration. */
   running: boolean
   /** The first and last of the turn's own step timestamps; null omits the duration. */
   span: { startMs: number; endMs: number } | null
-  /** The running step's first line, and the identity that replays its fade-in when the step changes. */
-  liveLine?: string | undefined
-  liveKey?: string | undefined
 }
 
 /** The current time, re-read every second while `ticking`. */
@@ -61,29 +62,34 @@ export function useTurnDuration(work: TurnWork | undefined): number | null {
 
 function TurnFold({ work, ms }: { work: TurnWork; ms: number | null }) {
   const t = useTranslations('Sessions.detail')
-  const duration = ms === null ? null : formatTurnDuration(ms)
+  const status = formatWorkStatus(
+    { ms, running: work.running, stopped: work.stopped, failed: work.failed, summary: work.summary },
+    t
+  )
+  const said = [status.lead, status.duration].filter(Boolean).join(' · ')
+  const title = status.title || t('details')
   return (
     <button
       type="button"
       onClick={work.onToggle}
       aria-expanded={work.open}
+      aria-label={`${title}. ${work.open ? t('hideWork') : t('showWork')}`}
       data-turn-fold=""
       className={TURN_FOLD}
-      title={work.open ? t('hideWork') : t('showWork')}
+      title={title}
     >
-      {work.running && <Icon name="loader" size={12} color="var(--text-tertiary)" className="flex-none animate-spin" />}
-      {duration && (
-        <span className="flex-none">
-          {work.running ? t('turnWorking', { duration }) : t('turnWorked', { duration })}
-          {' ·'}
-        </span>
+      {status.running && (
+        <span
+          data-turn-running=""
+          aria-hidden
+          className="h-[6px] w-[6px] flex-none animate-pulse rounded-full bg-(--brand)"
+        />
       )}
-      <span className="min-w-0 flex-[0_1_auto] truncate">{work.summary || t('details')}</span>
-      {!work.running && <Icon name="check" size={13} color="var(--text-tertiary)" className="flex-none" />}
-      {work.liveLine && (
-        // Keyed by step identity + content so a new step remounts the span and replays its fade-in.
-        <span key={work.liveKey} className="work-live min-w-0 flex-[0_1000_auto] truncate">
-          · {work.liveLine}
+      {said && <span className="flex-none">{said}</span>}
+      {status.failed && (
+        <span className="flex-none">
+          {said ? '· ' : ''}
+          <span className="text-(--status-error)">{status.failed}</span>
         </span>
       )}
       <Icon name={work.open ? 'chevron-down' : 'chevron-right'} size={13} className="flex-none" />
