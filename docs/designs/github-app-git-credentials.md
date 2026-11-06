@@ -159,6 +159,8 @@ stale until a network fetch succeeds.
    single-repository scope, the `access:read` switch, and the GitHub-side App
    audit log (which attributes pushes to the App). Shorter TTLs or human
    approval before push can be added later as gates.
+   Phase 2 of "Daemon-Mediated Agent Access" proposes keeping the token out
+   of the execution environment, which would retire this residual risk.
 4. **Residual blast radius of the write tier, even for a single repository:**
    the token includes `contents:write + workflows:write`. It can push to any
    unprotected branch, rewrite history with force-push, delete branches/tags,
@@ -410,6 +412,167 @@ installation id, so two Apps never share an entry.
 - A relay keeps an App's secret after the organization is deleted until its
   next registration replay; a delivery it still verifies finds no App on the
   CP and does nothing.
+
+## Daemon-Mediated Agent Access
+
+> **Status:** Phase 1 is implemented. Phase 2 is proposed (#3382) and would
+> replace Trust Model item 3.
+
+Agents write to GitHub with whatever their `gh` wrapper mints: a
+capability-clamped installation token at the repository's tier. The daemon
+never sees what `gh pr create` sends. A pull request an agent opened that way
+carried no attribution footer (#3261), and routing and Decisions that read the
+body on `pull_request.opened` saw only what the model chose to write.
+
+Formal reviews and review-thread replies already go through structured tools
+(`submitCodeReview`, `replyGithubReviewThreads`). The standing `# GitHub`
+context steers the agent to them, but nothing enforces it: the agent's `gh`
+token can still write a review or a comment. This design closes both gaps in
+two steps:
+
+1. Phase 1 adds the missing tool: opening a pull request through the daemon,
+   which adds the footer at creation time.
+2. Phase 2 would enforce all three tools and remove the token from the
+   execution environment.
+
+### Phase 1: Opening Pull Requests Through the Daemon
+
+**Tools.** GitHub joins the code-host effect surface
+(gitlab-com-integration.md §14.2) with two tools in its own words:
+
+- `createGithubPullRequest` opens a pull request through
+  `POST /repos/{owner}/{repo}/pulls`, draft included.
+- `updateGithubPullRequest` edits the title, body or base through
+  `PATCH /repos/{owner}/{repo}/pulls/{number}`. The REST update cannot change
+  draft state, so a draft change runs `convertPullRequestToDraft` or
+  `markPullRequestReadyForReview` on the pull request's node id. It does
+  nothing when the state already matches.
+
+The broker implements no other operation; `gh` remains the path for those.
+The target is the turn's trusted repository: the hook's, else the workspace's.
+The spec carries no numeric identity for a GitHub workspace, so the
+workspace is addressed by its `owner/repo` path. A cross-fork head stays on
+`gh`.
+
+**Lease.** The broker's token is the agent's own grant on the target
+repository, with the `contents` and `pull_requests` capabilities, at the tier
+the workspace or an explicit grant earns. `contents` rides along because a
+grant reports its access from its contents level; without it every lease
+would read as `read`. It needs no new gitcred purpose, because that grant is
+already what the agent's `gh` receives. The token stays in its own cache
+keyspace and never reaches the runtime. Opening or editing requires write.
+
+**Footer at creation.** When the agent's footer is on, the daemon appends the
+attribution footer (agent, runtime, model, session link) to the description,
+below a hidden marker. It does this before any host's broker runs, so GitLab
+merge requests and Gitea pull requests get the same footer.
+
+- A rewrite replaces only the text above the marker and re-appends the footer,
+  so an agent that edits its description keeps it.
+- A marker block in the agent's own input is dropped first, so a footer is
+  never duplicated.
+- An edit that does not touch the description leaves it alone.
+
+A pull request opened this way is also recorded on its task
+(assistant-mode.md §5.18), as merge requests already are.
+
+**Guidance.** A session offered a host's change-request tools also gets one
+line of guidance naming them: "On GitHub, open and edit pull requests with
+`createGithubPullRequest` and `updateGithubPullRequest`", and likewise for
+GitLab and Gitea. The line rides the tool context, so a session that is not
+offered the tools, such as a follow-up check, does not get it.
+
+**What stays the same.** `gh pr create` keeps working, but a pull request
+opened that way has no footer. Adoption of the tool is measured before
+Phase 2 enforces it.
+
+### Phase 2: The Daemon Credential Proxy
+
+**Model.** The daemon would run one egress proxy for agent credentials. The
+agent's environment would hold only a session-bound placeholder, so a runtime
+that bypasses the proxy holds nothing usable and fails closed.
+
+For each request the proxy would:
+
+1. resolve the session from the placeholder;
+2. select the installation and repository;
+3. apply the agent's existing tier and the routed-write list below;
+4. mint or refresh the real token; and
+5. forward the request.
+
+What an agent may do within its authorization would not change. Only where
+the token lives would change.
+
+**One proxy, one transport per strategy.** Credential logic would exist once,
+in the daemon, for every execution strategy. Only how a request reaches the
+proxy differs:
+
+| Strategy       | Transport                                                    |
+| -------------- | ------------------------------------------------------------ |
+| `microsandbox` | a third tunnel beside `gitcred` and `mcp` over the VM bridge |
+| pool pod       | the same tunnel through the shim's tunnel host               |
+| `srt` and host | a loopback or Unix-socket listener under the daemon root     |
+
+**Client configuration.** Every strategy would get the same configuration.
+Only the proxy address differs:
+
+- git rewrites `https://github.com/` to the proxy with `url.<proxy>.insteadOf`,
+  so no TLS interception is needed and `useHttpPath` keeps selecting the
+  repository;
+- `gh`, which cannot be pointed at another API origin for `github.com`, gets
+  `HTTPS_PROXY`, the daemon CA in the usual trust variables, and the
+  placeholder as `GH_TOKEN`; and
+- every other client sees the same variables.
+
+**Token selection.** The proxy would take the repository from the request
+path: a smart-HTTP path for git, and `/repos/{owner}/{repo}/…` for REST. A
+GraphQL request names no repository in its URL, so it would get one token for
+the installation, covering the repositories the agent is authorized for
+there. That token would carry the lowest tier among them, because GitHub
+applies a token's permissions to every repository the token lists. An agent
+with a single repository, or only write grants, would see no change.
+
+**Routed writes.** The proxy would refuse a short list of writes and name the
+tool that owns each one:
+
+| Write                              | Owner                                                |
+| ---------------------------------- | ---------------------------------------------------- |
+| formal reviews                     | `submitCodeReview`                                   |
+| opening a pull request             | `createGithubPullRequest`                            |
+| comments and review-thread replies | the daemon's final reply, `replyGithubReviewThreads` |
+
+The third row would apply only while a delivery turn is active. Each row
+covers both the REST endpoint and the GraphQL mutation. For GraphQL, the proxy
+would parse the document's operation type and top-level fields, and refuse a
+mutation it cannot parse.
+
+The list is not a security control: authority comes from the tier. A write the
+list misses produces the wrong product behavior, never excess access.
+
+**What it would retire.** The `gh` wrapper and its argv target resolution
+(`gh-target.ts`), and the agent-facing helper channel with its per-agent
+capability. The daemon's own Git operations keep using gitcred unchanged.
+`glab` would follow on the same proxy.
+
+**What it would not cover.** Runtime sign-ins and provider credentials keep
+their own handling (session-executors.md §8), including the VM's
+hostname-scoped placeholders. Cluster access is expected through an MCP
+server running outside the execution environment, not through this proxy.
+
+### Open Questions
+
+1. **Multiple repositories.** The broker acts on one trusted repository per
+   turn, so an agent opening a pull request elsewhere falls back to `gh`,
+   without a footer. Should the broker accept a repository argument
+   restricted to workspace ∪ `AgentRepoAuthorization`? The CP already
+   enforces that set at minting time (agent-multi-repo-authorization.md
+   decision 2).
+2. **The GraphQL tier rule.** Under Phase 2's lowest-tier rule, an agent with
+   mixed tiers would lose GraphQL writes. Is that acceptable, or should the
+   proxy resolve the repository from mutation inputs?
+3. **Transparent capture.** The proxy would rely on clients honoring
+   `HTTPS_PROXY`. Does `srt`'s network namespace allow transparent capture
+   instead, and which runtimes and common CLIs ignore the variable?
 
 ## Protocol Contract (`packages/protocol`)
 
@@ -1273,6 +1436,8 @@ the cache and stops requesting.
 5. When is it worthwhile to add approval-before-push or a shorter TTL, with
    more frequent minting, as tighter gates against the risk that an agent
    exfiltrates its own token?
+   "Daemon-Mediated Agent Access" proposes removing the token from the agent
+   instead.
 6. **Private submodules / multi-repository workspaces:** explicit
    `AgentRepoAuthorization` rows provide three per-repository access levels and
    independent per-repository minting. Each repository may resolve through a

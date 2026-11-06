@@ -1914,7 +1914,7 @@ pull-request feedback lane as its second consumer, beside the session that opene
 - **What a check can read.** A check is offered its host's read tools (`readGitlabDiscussions`
   and `inspectGitlabPipelines`, or `readGiteaComments` and `inspectGiteaStatuses`), whose target
   is never an argument: outside a hook turn it is the
-  agent's workspace repository, and only GitLab and Gitea register a broker for them. A GitHub object
+  agent's workspace repository, and only GitLab and Gitea offer such read tools. A GitHub object
   is read through the runtime's native shell and the `gh` wrapper, which mints a token for any
   repository the agent is authorized for, where the runtime's read-only mode runs the command without
   asking.
@@ -3776,8 +3776,8 @@ Choices the text above leaves open:
   when the turn may read that task, the `taskId` of the task opened for the message or holding its
   thread; the agent's own words name no task. `listTasks` entries, `here` and `elsewhere`, carry
   `openedFor` (place and message id) and `opened`.
-- **What a task opened** is recorded where the daemon already sees it: a merge request (GitLab) or
-  pull request (Gitea) a task creates with `createGitlabMergeRequest` or `createGiteaPullRequest`, and the pull request the
+- **What a task opened** is recorded where the daemon already sees it: a merge request or pull request
+  a task creates with `createGitlabMergeRequest`, `createGiteaPullRequest` or `createGithubPullRequest`, and the pull request the
   Control Plane names as a session's own when it delivers feedback for it
   ([codehost-pr-feedback.md](codehost-pr-feedback.md)), at most 20 per task. The Control Plane
   associates a GitHub pull request with its session from the worktree's branch and tells the daemon

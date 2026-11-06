@@ -84,6 +84,10 @@ const GITLAB_EFFECT_KEY = (agentId: string, projectId: string): string => `fxgla
 const GITEA_POST_KEY = (agentId: string, repoId: string): string => `postgitea\u0000${agentId}\u0000${repoId}`
 const GITEA_EFFECT_KEY = (agentId: string, repoId: string): string => `fxgitea\u0000${agentId}\u0000${repoId}`
 
+/** The GitHub broker's token: the agent's own grant on the repository, in a keyspace of its own per (agent, repo). */
+const GITHUB_EFFECT_KEY = (agentId: string, repo: string): string =>
+  `fxgithub\u0000${agentId}\u0000${repo.toLowerCase()}`
+
 export class GitCredUnavailableError extends Error {
   constructor(
     message: string,
@@ -378,6 +382,28 @@ export class GitCredentialCache {
     if (presentedToken !== undefined && entry.token !== presentedToken) return
     this.entries.delete(key)
     this.refreshPosts.add(key)
+  }
+
+  /** The GitHub broker's lease at the tier the agent's own authorization on `repo` earns; the runtime never sees it. */
+  async getGithubEffectToken(agentId: string, repo: string): Promise<Entry> {
+    const key = GITHUB_EFFECT_KEY(agentId, repo)
+    const forceRefresh = this.refreshPosts.has(key)
+    const entry = await this.getKeyed(key, agentId, {
+      agentId,
+      reason: 'helper',
+      // The CP reports a grant's access from its contents level, so contents rides along to carry the repository's tier.
+      capabilities: ['contents', 'pull_requests'],
+      repoFullName: repo,
+      ...this.githubProvider(),
+      ...(forceRefresh ? { forceRefresh: true } : {})
+    })
+    if (forceRefresh) this.refreshPosts.delete(key)
+    return entry
+  }
+
+  /** Drop the GitHub broker's cached token after GitHub rejects it, so the single retry re-mints. */
+  invalidateGithubEffect(agentId: string, repo: string, presentedToken?: string): void {
+    this.dropCached(GITHUB_EFFECT_KEY(agentId, repo), presentedToken)
   }
 
   /** Drop the cached GithubPoster token after GitHub rejects it. Matching the

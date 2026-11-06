@@ -338,6 +338,9 @@ import { GitCredentialCache } from './cp/git-credential.js'
 import { GitlabBroker } from './gitlab/broker.js'
 import { gitlabApiBaseUrl } from './gitlab/api-base.js'
 import { GiteaBroker } from './gitea/broker.js'
+import { GithubBroker } from './github/broker.js'
+import { withOperationFooter } from './codehost/description-footer.js'
+import { githubAttributionFooter } from './github/poster.js'
 import { giteaApiBaseUrl } from './gitea/api-base.js'
 import type { CodeHostEffectBroker, CodeHostEffectTarget } from './codehost/broker.js'
 import { CodeHostNoteProjector } from './gitlab/note-projection.js'
@@ -392,7 +395,7 @@ import {
   type LiveApp
 } from './mcp/apps/cards.js'
 import { toolsForIntegrations, GITHUB_REVIEW_TOOLS, KNOWLEDGE_TOOLS } from './mcp/tools.js'
-import { codeHostEffectToolsFor } from './codehost/effect-tools.js'
+import { codeHostEffectGuidance, codeHostEffectToolsFor } from './codehost/effect-tools.js'
 import {
   askerIdentity,
   assistantModeOn,
@@ -4093,6 +4096,18 @@ export class Daemon {
         invalidateLease: (target, token) => this.gitCreds.invalidateGiteaEffect(target.agentId, target.repoId, token)
       })
     )
+    // GitHub addresses a repository by its path; the lease is the agent's own grant on it, never handed to the runtime.
+    this.codeHostBrokers.set(
+      'github',
+      new GithubBroker({
+        lease: async (target) => {
+          const entry = await this.gitCreds.getGithubEffectToken(target.agentId, target.repoPath ?? target.repoId)
+          return { token: entry.token, access: entry.access }
+        },
+        invalidateLease: (target, token) =>
+          this.gitCreds.invalidateGithubEffect(target.agentId, target.repoPath ?? target.repoId, token)
+      })
+    )
     // §16: the same hook-authorized effect lease, on a writer the model never sees or influences.
     this.noteProjector = new CodeHostNoteProjector({
       daemonId: () => this.cfg.daemonId,
@@ -5703,6 +5718,7 @@ export class Daemon {
           [
             research ? this.organizationResearchPrompt(agent, tools) : undefined,
             coordinator ? this.coordinatorInstructions(agent, { platform, channel, integrationId }) : undefined,
+            codeHostEffectGuidance(tools),
             computers && tools.length > 0
               ? [COMPUTER_USE_GUIDANCE, ...(commandLine ? [COMPUTER_COMMAND_LINE_GUIDANCE] : [])].join('\n')
               : undefined
@@ -10596,9 +10612,9 @@ export class Daemon {
       })
     ]
     // §14.2 brokers: only a session on a repository whose host registered one carries the tools, and the clamped lease still authorizes.
-    const managedRepo = this.managedWorkspaceRepo(agent.id)
-    if (managedRepo && this.codeHostBrokers.has(managedRepo.provider))
-      tools = [...tools, ...codeHostEffectToolsFor(managedRepo.provider)]
+    const workspaceRepo = this.workspaceEffectTarget(agent.id)
+    if (workspaceRepo && this.codeHostBrokers.has(workspaceRepo.provider))
+      tools = [...tools, ...codeHostEffectToolsFor(workspaceRepo.provider)]
     // The provider's stable core tools replace the legacy managed descriptors; an external plugin's raw tools never enter.
     tools = tools.filter((t) => !MEMORY_TOOL_NAMES.has(t.name))
     if (this.evaluationProfile.memory === 'configured') {
@@ -16438,10 +16454,22 @@ export class Daemon {
     if (!target) throw new Error(`this session has no ${req.provider} repository to act on`)
     const broker = this.codeHostBrokers.get(target.provider)
     if (!broker) throw new Error(`code-host effects are unavailable for ${target.provider} on this daemon`)
-    const result = await broker.execute({ ...target, agentId: req.agentId, sessionKey: key }, req.operation)
+    const operation = withOperationFooter(req.operation, await this.descriptionFooter(req, key, target.provider))
+    const result = await broker.execute({ ...target, agentId: req.agentId, sessionKey: key }, operation)
     if (req.operation.kind === 'createMergeRequest')
       await this.noteTaskOpened(req.agentId, key, createdObjectOf(result))
     return result
+  }
+
+  /** The attribution footer a change request's description carries when the agent's footer is on; empty otherwise. */
+  private async descriptionFooter(req: CodeHostEffectReq, key: string, provider: CodeHostProvider): Promise<string> {
+    const { kind } = req.operation
+    const writesDescription =
+      kind === 'createMergeRequest' || (kind === 'updateMergeRequest' && req.operation.description !== undefined)
+    if (!writesDescription || !this.agents.get(req.agentId)?.output.showFooter) return ''
+    const sessionId = (await this.store?.getSession(key))?.sessionId
+    if (!sessionId) return ''
+    return githubAttributionFooter(await this.githubReviews.githubCommentAttribution(req.agentId, sessionId, provider))
   }
 
   /** A task that opened a pull request or merge request keeps it beside its record (assistant-mode.md §5.18 ④); any other session keeps nothing. */
@@ -16488,8 +16516,21 @@ export class Daemon {
       const { agentId: _owner, ...target } = hook
       return target
     }
-    const workspace = this.managedWorkspaceRepo(agentId)
+    const workspace = this.workspaceEffectTarget(agentId)
     return workspace?.provider === provider ? workspace : undefined
+  }
+
+  /** The managed workspace repository as a broker target; a host that resolves by name is addressed by its path. */
+  private workspaceEffectTarget(agentId: string): Omit<CodeHostEffectTarget, 'agentId' | 'sessionKey'> | undefined {
+    const managed = this.managedWorkspaceRepo(agentId)
+    if (managed) return managed
+    const agent = this.agents.get(agentId)
+    const provider = agent ? this.workspaces.managedCredentialProvider(agent) : undefined
+    const host = codeHostCredentials(provider)
+    const gitRepo = agent?.workspace.mode === 'git-repo' ? agent.workspace.gitRepo : undefined
+    if (!agent || provider === undefined || !host?.resolvesByName || !gitRepo) return undefined
+    const repoPath = workspaceRepositoryPath(host, this.workspaces.specHostsOf(agent), gitRepo)
+    return repoPath ? { provider, repoId: repoPath, repoPath } : undefined
   }
 
   /** The instance every GitLab client on this turn addresses (§24.4). Resolved per turn off the

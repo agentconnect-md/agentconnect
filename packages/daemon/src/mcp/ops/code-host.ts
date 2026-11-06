@@ -123,6 +123,8 @@ export interface CodeHostEffectTool {
   descriptor: ToolDescriptor
   args: ZodType
   operation: (args: Record<string, unknown>) => CodeHostBrokerOperation
+  /** One line of session guidance, given whenever this tool is offered. */
+  guidance?: string
 }
 
 /** Declare a host's tool with its argument schema and the operation its parsed arguments make. */
@@ -132,6 +134,7 @@ export function codeHostEffectTool<S extends ZodType>(spec: {
   descriptor: ToolDescriptor
   args: S
   operation: (args: z.infer<S>) => CodeHostBrokerOperation
+  guidance?: string
 }): CodeHostEffectTool {
   return spec as unknown as CodeHostEffectTool
 }

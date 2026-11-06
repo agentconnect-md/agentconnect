@@ -7,9 +7,10 @@ type Opened = Omit<OpenedObject, 'openedAt'>
 const record = (value: unknown): Record<string, unknown> =>
   value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
 
-const GITEA_PULL = /^\/(.+)\/pulls\/([1-9]\d{0,9})\/?$/
+// Gitea's pull path is `/pulls/<n>`, GitHub's `/pull/<n>`; both label the object `owner/repo#<n>`.
+const PULL_PATH = /^\/(.+)\/pulls?\/([1-9]\d{0,9})\/?$/
 
-/** The object `createGitlabMergeRequest` or `createGiteaPullRequest` made, from its broker's result. */
+/** The object `createGitlabMergeRequest`, `createGiteaPullRequest` or `createGithubPullRequest` made, from its broker's result. */
 export function createdObjectOf(result: unknown): Opened | undefined {
   const mergeRequest = record(record(result).mergeRequest)
   if (typeof mergeRequest.webUrl === 'string') {
@@ -20,7 +21,7 @@ export function createdObjectOf(result: unknown): Opened | undefined {
   const pull = record(record(result).pullRequest)
   if (typeof pull.htmlUrl === 'string') {
     const path = URL.canParse(pull.htmlUrl) ? new URL(pull.htmlUrl).pathname : ''
-    const match = GITEA_PULL.exec(path)
+    const match = PULL_PATH.exec(path)
     if (match) return { kind: 'pull request', label: `${match[1]}#${match[2]}`, url: pull.htmlUrl }
   }
   return undefined

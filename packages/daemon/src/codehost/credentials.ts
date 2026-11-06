@@ -88,6 +88,8 @@ export interface CodeHostCredentialModule {
   readonly liveCredentialPurposes: readonly string[]
   /** The workspace repository's rename-stable id on the spec — the §17.1 identity a grant echo is verified against; undefined for a host that resolves by name. */
   workspaceRepoId(workspace: CodeHostWorkspaceIds): string | undefined
+  /** True when the host addresses a repository by its path, so the spec carries no numeric identity for it. */
+  readonly resolvesByName: boolean
   /** Where one additional repository lands, or undefined when the row is not a placeable name. */
   placeSecondaryRoot(row: { repoFullName: string; repoId: string }): SecondaryRootPlacement | undefined
   /** The authorized clone URL of one additional repository on this host. */
