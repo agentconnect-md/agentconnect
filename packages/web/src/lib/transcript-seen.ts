@@ -2,7 +2,7 @@
 
 // How far this browser has read each session's transcript, kept in web storage so a NEW line can mark what arrived since.
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 const STORAGE_KEY = 'agentconnect.transcript-seen'
 /** Sessions remembered at most; the least recently read fall out first. */
@@ -56,8 +56,6 @@ export function useSeenMarker(
 ): { marker: number | null; markSeen: (at: number) => void } {
   const [taken, setTaken] = useState<{ id: string | null; at: number | null }>({ id: null, at: null })
   const [active, setActive] = useState(false)
-  const followingRef = useRef(following)
-  followingRef.current = following
 
   useEffect(() => {
     if (!sessionId) return
@@ -83,11 +81,12 @@ export function useSeenMarker(
     }
   }, [sessionId])
 
+  // A new identity whenever looking or following starts, so the recorder re-records what is on screen then.
   const markSeen = useCallback(
     (at: number) => {
-      if (sessionId && active && followingRef.current) writeSeen(sessionId, at)
+      if (sessionId && active && following) writeSeen(sessionId, at)
     },
-    [active, sessionId]
+    [active, following, sessionId]
   )
   return { marker: taken.id === sessionId ? taken.at : null, markSeen }
 }

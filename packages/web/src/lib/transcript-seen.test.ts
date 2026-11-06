@@ -4,6 +4,7 @@ import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { newDividerIndex, readSeen, SEEN_SESSIONS_MAX, useSeenMarker, writeSeen } from './transcript-seen'
+import { SeenRecorder } from '@/components/console/TranscriptNav'
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 let container: HTMLDivElement
@@ -67,4 +68,19 @@ it('takes the mark on load and again when the page regains focus, and records re
   act(() => root.render(createElement(Probe, { following: false })))
   act(() => latest!.markSeen(700))
   expect(readSeen('s1')).toBe(300)
+})
+
+it('records what is on screen when the reader returns to the end, and nothing while the transcript is hidden', () => {
+  function Page({ following, shown }: { following: boolean; shown: boolean }) {
+    const { markSeen } = useSeenMarker('s2', following)
+    return shown ? createElement(SeenRecorder, { newestMs: 900, markSeen }) : null
+  }
+  act(() => root.render(createElement(Page, { following: false, shown: true })))
+  expect(readSeen('s2')).toBeNull()
+  // Back at the end with no new turn: what it now shows is read.
+  act(() => root.render(createElement(Page, { following: true, shown: true })))
+  expect(readSeen('s2')).toBe(900)
+  // A file open over the transcript reads nothing, however new.
+  act(() => root.render(createElement(Page, { following: true, shown: false })))
+  expect(readSeen('s2')).toBe(900)
 })

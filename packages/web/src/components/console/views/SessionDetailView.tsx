@@ -4588,7 +4588,8 @@ export default function SessionDetailView() {
       {/* Column: fixed header chrome ABOVE the scrolling transcript pane. The header lives OUTSIDE
       the scroller (no `sticky`), so it never scrolls away and the pane below can be virtualized. */}
       <div className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col">
-        <SeenRecorder newestMs={newestTurnMs} markSeen={seen.markSeen} />
+        {/* Only a transcript on screen is read: the file viewer hides it, so nothing is recorded meanwhile. */}
+        {!viewerOpen ? <SeenRecorder newestMs={newestTurnMs} markSeen={seen.markSeen} /> : null}
         {!viewerOpen ? <TranscriptMap turns={mapTurns} /> : null}
         {/* HEADER CHROME — title + action bar (+ any notices). Centred to line up with the 880px
         transcript below. `flex-none`; no `sticky`, no bottom `margin` — the meta row's border-b is
