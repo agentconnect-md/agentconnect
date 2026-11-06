@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-// A coordinator task's thread in the dock: it draws the task's messages and what this visit streams, sends a reply onto the task's own session, and stays read-only where the server says this reader may not continue it.
+// A thread in the dock: a task's messages or a thread's record and what this visit streams, a reply onto the holding task's session, and read-only where the server says this reader may not continue it.
 
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -29,50 +29,81 @@ const wire = vi.hoisted(() => ({
   extra: [] as SessionMessageDto[],
   operations: [] as unknown[],
   permissionRequests: [] as unknown[],
-  busy: false
+  busy: false,
+  /** What the thread record route answers: a page, or an error status with its code. */
+  record: null as null | { status: number; code?: string } | Record<string, unknown>,
+  recordReads: [] as string[]
 }))
 
-vi.mock(import('@/lib/api'), async (importOriginal) => ({
-  ...(await importOriginal()),
-  fetchAssistantSubsessions: vi.fn(() =>
-    Promise.resolve({ subsessions: [taskRow], truncated: false, nextCursor: null })
-  ),
-  fetchAssistantSubsession: vi.fn(),
-  fetchAgentPermissionRequests: vi.fn(() => Promise.resolve(wire.permissionRequests as never)),
-  stopAssistantSubsession: vi.fn((_agent: string, id: string) => {
-    wire.calls.push(`stop:${id}`)
-    return Promise.resolve({ result: 'stopped' as const })
-  }),
-  listWebchatMcpOperations: vi.fn(() => Promise.resolve(wire.operations as never)),
-  decideWebchatMcpOperation: vi.fn((_org: string, _agent: string, _conv: string, operationId: string) =>
-    Promise.resolve({
-      ...(wire.operations as { operationId: string }[]).find((op) => op.operationId === operationId),
-      status: 'completed'
-    } as never)
-  ),
-  fetchSessionDetail: vi.fn(() => Promise.resolve({ id: 'ses_task', canContinue: wire.canContinue } as never)),
-  fetchSessionMessages: vi.fn(() =>
-    Promise.resolve({
-      sessionId: 'ses_task',
-      messages: [
-        {
-          seq: 1,
-          sender: 'user_dana',
-          senderName: 'Dana Reyes',
-          ts: '2026-11-03T09:00:00.000Z',
-          kind: 'text',
-          text: 'find what blocks api 1.5'
-        },
-        { seq: 2, sender: 'agent_1', ts: '2026-11-03T09:01:00.000Z', kind: 'tool', text: 'gh pr list' },
-        { seq: 3, sender: 'agent_1', ts: '2026-11-03T09:02:00.000Z', kind: 'text', text: 'Three of five are clear.' },
-        ...wire.extra
-      ],
-      nextCursor: null,
-      liveCursor: null,
-      liveMore: false
-    })
-  )
-}))
+vi.mock(import('@/lib/api'), async (importOriginal) => {
+  const actual = await importOriginal()
+  return {
+    ...actual,
+    fetchSessionThreadMessages: vi.fn((sessionId: string, rootId: string, opts: { cursor?: string } = {}) => {
+      wire.recordReads.push(`${sessionId}/${rootId}${opts.cursor ? `<${opts.cursor}` : ''}`)
+      // A root other than the first never answers, as a read still on its way.
+      if (rootId !== 'post-root') return new Promise<never>(() => {})
+      const answer = wire.record
+      if (answer && 'status' in answer && typeof answer.status === 'number')
+        return Promise.reject(new actual.ApiError('refused', answer.status, answer.code as string | undefined))
+      if (opts.cursor)
+        return Promise.resolve({
+          ...(answer as object),
+          messages: [
+            {
+              seq: 1,
+              sender: 'user_dana',
+              senderName: 'Dana Reyes',
+              ts: '2026-11-03T09:00:00.000Z',
+              kind: 'text',
+              text: 'Why is the deploy slow?',
+              postId: 'post-root'
+            }
+          ],
+          nextCursor: null
+        } as never)
+      return Promise.resolve(answer as never)
+    }),
+    fetchAssistantSubsessions: vi.fn(() =>
+      Promise.resolve({ subsessions: [taskRow], truncated: false, nextCursor: null })
+    ),
+    fetchAssistantSubsession: vi.fn(),
+    fetchAgentPermissionRequests: vi.fn(() => Promise.resolve(wire.permissionRequests as never)),
+    stopAssistantSubsession: vi.fn((_agent: string, id: string) => {
+      wire.calls.push(`stop:${id}`)
+      return Promise.resolve({ result: 'stopped' as const })
+    }),
+    listWebchatMcpOperations: vi.fn(() => Promise.resolve(wire.operations as never)),
+    decideWebchatMcpOperation: vi.fn((_org: string, _agent: string, _conv: string, operationId: string) =>
+      Promise.resolve({
+        ...(wire.operations as { operationId: string }[]).find((op) => op.operationId === operationId),
+        status: 'completed'
+      } as never)
+    ),
+    fetchSessionDetail: vi.fn(() => Promise.resolve({ id: 'ses_task', canContinue: wire.canContinue } as never)),
+    fetchSessionMessages: vi.fn(() =>
+      Promise.resolve({
+        sessionId: 'ses_task',
+        messages: [
+          {
+            seq: 1,
+            sender: 'user_dana',
+            senderName: 'Dana Reyes',
+            ts: '2026-11-03T09:00:00.000Z',
+            kind: 'text',
+            text: 'find what blocks api 1.5'
+          },
+          { seq: 2, sender: 'agent_1', ts: '2026-11-03T09:01:00.000Z', kind: 'tool', text: 'gh pr list' },
+          { seq: 3, sender: 'agent_1', ts: '2026-11-03T09:02:00.000Z', kind: 'text', text: 'Three of five are clear.' },
+          ...wire.extra
+        ],
+        nextCursor: null,
+        liveCursor: null,
+        liveMore: false
+      })
+    )
+  }
+})
 
 vi.mock('@/components/console/PlaygroundProvider', () => {
   const listeners = new Set<() => void>()
@@ -122,7 +153,7 @@ vi.mock('@/lib/org-context', () => ({
   useOrgs: () => ({ activeOrg: { id: 'org_acme' }, orgPath: (path: string) => `/acme${path}` })
 }))
 
-import { TaskThreadPanel } from './TaskThreadPanel'
+import { ThreadPanel } from './ThreadPanel'
 import { DockExpandContext, type DockExpand } from './SessionDock'
 import { renderWithIntl } from '@/i18n/test-utils'
 
@@ -133,7 +164,8 @@ const task = { title: 'Find what blocks api 1.5', sessionId: 'ses_task', how: 'o
 let container: HTMLDivElement
 let root: ReturnType<typeof createRoot>
 let back: ReturnType<typeof vi.fn<() => void>>
-let props: Partial<Parameters<typeof TaskThreadPanel>[0]> = {}
+let props: Partial<Parameters<typeof ThreadPanel>[0]> = {}
+let withTask = true
 
 beforeEach(() => {
   wire.canContinue = true
@@ -144,8 +176,11 @@ beforeEach(() => {
   wire.permissionRequests = []
   wire.operations = []
   wire.busy = false
+  wire.record = null
+  wire.recordReads = []
   taskRow.state = 'open'
   props = {}
+  withTask = true
   back = vi.fn()
   container = document.createElement('div')
   document.body.appendChild(container)
@@ -165,10 +200,10 @@ async function render(dock: DockExpand = NO_DOCK) {
       renderWithIntl(
         <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
           <DockExpandContext.Provider value={dock}>
-            <TaskThreadPanel
+            <ThreadPanel
               agentId="agent_1"
               agentName="deploy-bot"
-              task={task}
+              {...(withTask ? { task } : {})}
               parentSessionId="ses_coordinator"
               onBack={back}
               {...props}
@@ -183,7 +218,7 @@ async function render(dock: DockExpand = NO_DOCK) {
   })
 }
 
-describe('TaskThreadPanel', () => {
+describe('ThreadPanel', () => {
   it('draws the task’s spoken messages and what this visit is streaming', async () => {
     wire.live = [{ kind: 'done', turnId: 't1', text: 'Rerunning CI on #1291.' }]
     await render()
@@ -530,5 +565,229 @@ describe('TaskThreadPanel', () => {
     await render()
     act(() => container.querySelector<HTMLButtonElement>('button')!.click())
     expect(back).toHaveBeenCalledTimes(1)
+  })
+})
+
+const reply = (
+  seq: number,
+  sender: string,
+  text: string,
+  over: Partial<SessionMessageDto> = {}
+): SessionMessageDto => ({
+  seq,
+  sender,
+  ts: `2026-11-03T09:0${seq}:00.000Z`,
+  kind: 'text',
+  text,
+  ...over
+})
+
+function recordPage(over: Record<string, unknown> = {}) {
+  return {
+    sessionId: 'ses_coordinator',
+    rootId: 'post-root',
+    messages: [
+      reply(1, 'user_dana', 'Why is the deploy slow?', { senderName: 'Dana Reyes', postId: 'post-root' }),
+      reply(2, 'agent_1', 'The cache misses on every build.'),
+      reply(3, 'user_lee', 'Can you fix it?', { senderName: 'Lee Park' })
+    ],
+    nextCursor: null,
+    liveCursor: null,
+    liveMore: false,
+    summary: { rootId: 'post-root', replies: 2, participants: [], readable: true },
+    ...over
+  }
+}
+
+describe('ThreadPanel on a thread’s record (webchat-threads.md §6.2)', () => {
+  const ref = { sessionId: 'ses_coordinator', rootId: 'post-root' }
+
+  it('reads an unowned thread through the conversation: the root first, a plain header, and no composer yet', async () => {
+    wire.record = recordPage()
+    withTask = false
+    props = { record: ref }
+    await render()
+    expect(wire.recordReads).toEqual(['ses_coordinator/post-root'])
+    const panel = container.querySelector('[data-thread-panel="post-root"]')!
+    expect(panel.hasAttribute('data-task-thread')).toBe(false)
+    const said = [...panel.querySelectorAll('[data-thread-message]')].map((el) => el.textContent)
+    expect(said).toHaveLength(3)
+    expect(said[0]).toContain('Why is the deploy slow?')
+    expect(said[1]).toContain('The cache misses on every build.')
+    expect(said[2]).toContain('Lee Park')
+    expect(panel.querySelector('h3')?.textContent).toBe('Thread')
+    expect(panel.querySelector('[data-state-icon]')).toBeNull()
+    expect(panel.querySelector('[data-task-thread-expand]')).toBeNull()
+    expect(panel.querySelector('textarea')).toBeNull()
+    expect(panel.textContent).not.toContain('You can read this task')
+  })
+
+  it('names the holding task from the footer, heads with it and continues it from the composer', async () => {
+    wire.record = recordPage({
+      summary: {
+        rootId: 'post-root',
+        replies: 2,
+        participants: [],
+        task: { sessionId: 'ses_task', title: 'Find what blocks api 1.5', state: 'open' },
+        readable: true
+      }
+    })
+    withTask = false
+    props = { record: ref }
+    await render()
+    const panel = container.querySelector('[data-thread-panel="post-root"]')!
+    expect(panel.getAttribute('data-task-thread')).toBe('ses_task')
+    expect(panel.querySelector('h3')?.textContent).toBe('Find what blocks api 1.5')
+    expect(panel.querySelector('[data-task-thread-expand]')?.getAttribute('href')).toBe('/acme/sessions/ses_task')
+    // The record is the thread; the task's own session history is not read.
+    expect(panel.textContent).not.toContain('find what blocks api 1.5')
+    expect(panel.textContent).toContain('Can you fix it?')
+    wire.drafts.ses_task = 'try a warm cache'
+    act(() => {
+      panel
+        .querySelector<HTMLTextAreaElement>('textarea')!
+        .dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    expect(wire.calls).toContain('send:ses_task:agent_1:try a warm cache')
+  })
+
+  it('shows a thread whose task the reader may not view as unreadable, with no content and no composer', async () => {
+    wire.record = recordPage({
+      messages: [],
+      summary: {
+        rootId: 'post-root',
+        replies: 4,
+        participants: [],
+        task: { sessionId: 'ses_task', state: 'open' },
+        readable: false
+      }
+    })
+    withTask = false
+    props = { record: ref }
+    await render()
+    const panel = container.querySelector('[data-thread-panel="post-root"]')!
+    expect(panel.querySelector('[data-thread-unreadable]')).not.toBeNull()
+    expect(panel.hasAttribute('data-task-thread')).toBe(false)
+    expect(panel.querySelectorAll('[data-thread-message]')).toHaveLength(0)
+    expect(panel.querySelector('textarea')).toBeNull()
+    expect(panel.querySelector('[data-task-thread-expand]')).toBeNull()
+  })
+
+  it('reads a task’s session where its daemon cannot serve thread reads', async () => {
+    wire.record = { status: 409, code: 'DAEMON_FEATURE_MISSING' }
+    props = { record: ref }
+    await render()
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(wire.recordReads).toEqual(['ses_coordinator/post-root'])
+    const said = [...container.querySelectorAll('[data-thread-message]')].map((el) => el.textContent)
+    expect(said[0]).toContain('find what blocks api 1.5')
+    expect(container.querySelector('[role="alert"]')).toBeNull()
+  })
+
+  it('says a root the conversation never received is not here', async () => {
+    wire.record = { status: 404 }
+    withTask = false
+    props = { record: ref }
+    await render()
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe('This thread isn’t in this conversation.')
+  })
+
+  it('pages in earlier messages of a long thread, drawing each row once', async () => {
+    wire.record = recordPage({
+      messages: [reply(2, 'agent_1', 'The cache misses on every build.'), reply(3, 'user_lee', 'Can you fix it?')],
+      nextCursor: 'c-older'
+    })
+    withTask = false
+    props = { record: ref }
+    await render()
+    expect(container.querySelectorAll('[data-thread-message]')).toHaveLength(2)
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-thread-earlier]')!.click())
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(wire.recordReads).toEqual(['ses_coordinator/post-root', 'ses_coordinator/post-root<c-older'])
+    const said = [...container.querySelectorAll('[data-thread-message]')].map((el) => el.textContent)
+    expect(said).toHaveLength(3)
+    expect(said[0]).toContain('Why is the deploy slow?')
+    expect(container.querySelector('[data-thread-earlier]')).toBeNull()
+  })
+})
+
+describe('ThreadPanel switching or polling a thread’s record', () => {
+  const held = {
+    rootId: 'post-root',
+    replies: 2,
+    participants: [],
+    task: { sessionId: 'ses_task', title: 'Find what blocks api 1.5', state: 'open' },
+    readable: true
+  }
+
+  it('never shows another thread’s record or replies to its task while the new one loads', async () => {
+    wire.record = recordPage({ summary: held })
+    withTask = false
+    props = { record: { sessionId: 'ses_coordinator', rootId: 'post-root' } }
+    await render()
+    expect(container.querySelector('[data-thread-panel="post-root"]')?.getAttribute('data-task-thread')).toBe(
+      'ses_task'
+    )
+    expect(container.querySelector('textarea')).not.toBeNull()
+
+    props = { record: { sessionId: 'ses_coordinator', rootId: 'post-other' } }
+    await render()
+    const panel = container.querySelector('[data-thread-panel="post-other"]')!
+    expect(panel.hasAttribute('data-task-thread')).toBe(false)
+    expect(panel.querySelectorAll('[data-thread-message]')).toHaveLength(0)
+    expect(panel.querySelector('textarea')).toBeNull()
+    expect(panel.textContent).toContain('Loading the thread…')
+  })
+
+  it('keeps every row it showed when a later read’s newest page has moved past them', async () => {
+    wire.record = recordPage({
+      messages: [reply(2, 'agent_1', 'The cache misses on every build.'), reply(3, 'user_lee', 'Can you fix it?')],
+      nextCursor: 'c-older',
+      summary: held
+    })
+    withTask = false
+    wire.busy = true
+    props = { record: { sessionId: 'ses_coordinator', rootId: 'post-root' } }
+    await render()
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-thread-earlier]')!.click())
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    // A turn ends here, so the record is read again; its newest page no longer carries row 2.
+    wire.record = recordPage({
+      messages: [reply(3, 'user_lee', 'Can you fix it?'), reply(4, 'agent_1', 'Warmed the cache.')],
+      summary: held
+    })
+    wire.busy = false
+    await render()
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    // Another turn ends, and the newest page has moved past row 4 too, which arrived after the earlier page was read.
+    wire.record = recordPage({
+      messages: [reply(5, 'user_lee', 'Thanks!'), reply(6, 'agent_1', 'Anytime.')],
+      summary: held
+    })
+    wire.busy = true
+    await render()
+    wire.busy = false
+    await render()
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(wire.recordReads).toEqual([
+      'ses_coordinator/post-root',
+      'ses_coordinator/post-root<c-older',
+      'ses_coordinator/post-root',
+      'ses_coordinator/post-root'
+    ])
+    const said = [...container.querySelectorAll('[data-thread-message]')].map((el) => el.textContent ?? '')
+    expect(said.join('|')).toMatch(
+      /Why is the deploy slow\?.*The cache misses.*Can you fix it\?.*Warmed the cache\..*Thanks!.*Anytime\./
+    )
   })
 })

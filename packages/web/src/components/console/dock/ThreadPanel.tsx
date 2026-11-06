@@ -1,6 +1,6 @@
 'use client'
 
-// One coordinator task's thread in the dock (auto-session-mode.md §10): what it and its people said, and a composer that continues it console-only.
+// One thread in the dock (webchat-threads.md §6.2): its record or its task's session, the holding task's header, and a composer that continues the task console-only.
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import Link from 'next/link'
@@ -25,7 +25,9 @@ import {
   threadMessages,
   useTaskRow,
   useTaskThread,
-  type ThreadEntry
+  useThreadRecord,
+  type ThreadEntry,
+  type ThreadRecordRef
 } from '@/components/console/task-thread'
 import type { TaskLink } from '@/components/console/task-link'
 import { fetchSessionDetail } from '@/lib/api'
@@ -42,7 +44,9 @@ import { approvalNotice, raisedIn, WebchatMcpApprovalCard } from '@/components/c
 const HEADER_BTN =
   'flex h-[26px] w-[26px] flex-none cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent text-(--text-secondary) transition-colors hover:bg-(--surface-hover) hover:text-(--text-primary) focus-visible:shadow-[0_0_0_3px_var(--brand-ring)] focus-visible:outline-none'
 
-export function TaskThreadPanel({
+const EMPTY: readonly never[] = []
+
+export function ThreadPanel({
   agentId,
   agentName,
   agentIcon,
@@ -50,6 +54,7 @@ export function TaskThreadPanel({
   agentById,
   platform = '',
   task,
+  record,
   parentSessionId,
   approvals,
   onBack,
@@ -67,7 +72,10 @@ export function TaskThreadPanel({
   agentById?: ReadonlyMap<string, Agent>
   /** The conversation's platform, whose bot attribution names a speaking agent. */
   platform?: string
-  task: TaskLink
+  /** The task that holds the thread; without `record`, the panel reads the task's own session. */
+  task?: TaskLink
+  /** The thread's record, read through the conversation's session; its footer names the holding task when `task` does not. */
+  record?: ThreadRecordRef
   /** The conversation whose task list carries this one's state; null reads the task alone. */
   parentSessionId: string | null
   /** The coordinator's webchat conversation, whose grant the task writes under: its writes wait for approval here. */
@@ -102,16 +110,31 @@ export function TaskThreadPanel({
     pgAttach,
     pgCancel
   } = usePlayground()
-  const id = task.sessionId
-  const row = useTaskRow(agentId, id, parentSessionId)
+  // The record is read first; its footer names the holding task when the caller did not.
+  const thread = useThreadRecord(record ?? null, isPgBusy)
+  const summary = thread.summary
+  // A daemon without thread reads leaves a task's thread to its session; anything else reads the record.
+  const fromRecord = !!record && !(thread.unsupported && task)
+  const unreadable = fromRecord && summary?.readable === false
+  const holderId = task?.sessionId ?? (unreadable ? null : (summary?.task?.sessionId ?? null))
+  const id = holderId ?? ''
+  const row = useTaskRow(agentId, holderId, parentSessionId)
   const { stopOf, stop } = useTaskStops(agentId, parentSessionId ?? id, () => {})
   const stopState = row ? stopOf(row) : undefined
   const stoppable = !!row && row.state === 'open' && taskStopKey(row) !== null && stopState !== 'stopped'
   const listRef = useRef<HTMLDivElement | null>(null)
-  const busy = isPgBusy(id)
-  const { page, error, reload } = useTaskThread(id, row, { busy })
+  const busy = holderId !== null && isPgBusy(id)
+  const session = useTaskThread(fromRecord ? null : holderId, row, { busy })
+  const recordPage = useMemo(() => (thread.messages ? { messages: thread.messages } : undefined), [thread.messages])
+  const page = fromRecord ? recordPage : session.page
+  const error = fromRecord ? thread.error : session.error
+  const reload = fromRecord ? thread.reload : session.reload
   // The server decides who may continue a task, by its parent's audience; absent or false keeps it read-only.
-  const { data: detail } = useSWR(['session-detail', id], ([, sid]) => fetchSessionDetail(sid), CONSOLE_SWR_CONFIG)
+  const { data: detail } = useSWR(
+    holderId ? ['session-detail', holderId] : null,
+    ([, sid]) => fetchSessionDetail(sid),
+    CONSOLE_SWR_CONFIG
+  )
   const canReply = detail?.canContinue === true
   const messages = threadMessages(page)
   // The session page's own reading of a bot post: its sender is an agent, or its trusted attribution names one.
@@ -121,12 +144,12 @@ export function TaskThreadPanel({
     return (m: (typeof messages)[number]) =>
       agentById.has(m.sender) ? m.sender : (sessionAttributionAgentId(platform, m, agentById) ?? authors.get(m.sender))
   }, [agentById, platform, messages])
-  const entries = threadEntries(messages, getLiveSteps(id), agentId, peerAgent)
+  const entries = threadEntries(messages, holderId ? getLiveSteps(id) : EMPTY, agentId, peerAgent)
 
   // A read that lands after the turn ends retires the live copy of what it now carries.
   useEffect(() => {
-    if (page && !busy) reconcileLiveSteps(id, page.messages, agentId)
-  }, [agentId, busy, id, page, reconcileLiveSteps])
+    if (holderId && page && !busy) reconcileLiveSteps(holderId, page.messages, agentId)
+  }, [agentId, busy, holderId, page, reconcileLiveSteps])
 
   // A turn's end is when its answer lands on the record.
   const wasBusy = useRef(busy)
@@ -149,14 +172,14 @@ export function TaskThreadPanel({
   }, [tail])
 
   const send = (): void => {
-    if (!canReply) return
-    markSessionTarget(id)
-    pgSend(id, agentId)
+    if (!canReply || !holderId) return
+    markSessionTarget(holderId)
+    pgSend(holderId, agentId)
   }
 
-  const title = row?.title ?? task.title
+  const title = row?.title ?? task?.title ?? summary?.task?.title ?? t('thread')
   const tone = row ? taskTone(row, null) : null
-  const pageHref = orgPath(`/sessions/${encodeURIComponent(id)}`)
+  const pageHref = holderId ? orgPath(`/sessions/${encodeURIComponent(holderId)}`) : null
   const agentHref = (agent: string): string => orgPath(`/agents/${encodeURIComponent(agent)}`)
   const own: Speaker = {
     name: agentName,
@@ -176,7 +199,11 @@ export function TaskThreadPanel({
     }
   }
   return (
-    <div data-task-thread={id} className="flex min-h-0 flex-1 flex-col">
+    <div
+      {...(holderId ? { 'data-task-thread': holderId } : {})}
+      {...(record ? { 'data-thread-panel': record.rootId } : {})}
+      className="flex min-h-0 flex-1 flex-col"
+    >
       <div className="flex h-[43px] min-w-0 flex-none items-center gap-[6px] border-b border-(--border-subtle) pr-2 pl-[10px]">
         <button
           type="button"
@@ -209,15 +236,17 @@ export function TaskThreadPanel({
           </button>
         ) : null}
         {/* Expanding a task is opening its own page; a real link, so a modified click opens it in a new tab. */}
-        <Link
-          href={pageHref}
-          data-task-thread-expand=""
-          className={HEADER_BTN}
-          title={t('openPage', { title })}
-          aria-label={t('openPage', { title })}
-        >
-          <Icon name="maximize-2" size={14} />
-        </Link>
+        {pageHref ? (
+          <Link
+            href={pageHref}
+            data-task-thread-expand=""
+            className={HEADER_BTN}
+            title={t('openPage', { title })}
+            aria-label={t('openPage', { title })}
+          >
+            <Icon name="maximize-2" size={14} />
+          </Link>
+        ) : null}
         <button
           type="button"
           data-task-thread-close=""
@@ -238,7 +267,17 @@ export function TaskThreadPanel({
             {row.summary}
           </p>
         ) : null}
-        {page?.nextCursor ? (
+        {fromRecord && thread.hasEarlier ? (
+          <button
+            type="button"
+            data-thread-earlier=""
+            disabled={thread.loadingEarlier}
+            onClick={() => void thread.loadEarlier().catch(() => {})}
+            className="w-fit cursor-pointer border-0 bg-transparent p-0 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary) hover:underline"
+          >
+            {t('showEarlier')}
+          </button>
+        ) : !fromRecord && session.page?.nextCursor && pageHref ? (
           <Link
             href={pageHref}
             className="w-fit font-sans text-[12px] font-normal leading-normal text-(--text-tertiary) hover:underline"
@@ -246,17 +285,34 @@ export function TaskThreadPanel({
             {t('earlier')}
           </Link>
         ) : null}
+        {unreadable ? (
+          <span
+            data-thread-unreadable=""
+            className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)"
+          >
+            {t('unreadable')}
+          </span>
+        ) : null}
+        {fromRecord && thread.missing ? (
+          <span role="alert" className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+            {t('missing')}
+          </span>
+        ) : !page && error ? (
+          <span role="alert" className="font-sans text-[12.5px] font-normal leading-normal text-(--status-error)">
+            {t('loadFailed')}
+          </span>
+        ) : null}
         {!page && !error ? (
           <span className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
             {t('loading')}
           </span>
         ) : null}
-        {error && !page ? (
-          <span role="alert" className="font-sans text-[12.5px] font-normal leading-normal text-(--status-error)">
-            {t('loadFailed')}
-          </span>
-        ) : null}
-        <ApprovalsScope taskSessionId={id} agentId={agentId} scope={taskApprovals} entries={entries}>
+        <ApprovalsScope
+          taskSessionId={id}
+          agentId={agentId}
+          scope={holderId ? taskApprovals : undefined}
+          entries={entries}
+        >
           {entries.map((entry, i) => (
             <ThreadMessage
               key={entry.key}
@@ -273,7 +329,7 @@ export function TaskThreadPanel({
               {entry.question ? (
                 <ThreadQuestion
                   question={entry.question}
-                  pageHref={pageHref}
+                  pageHref={pageHref ?? undefined}
                   onAnswer={(requestId, value) => {
                     markSessionTarget(id)
                     pgAnswerElicitation(id, agentId, requestId, value)
@@ -296,7 +352,7 @@ export function TaskThreadPanel({
           </div>
         ) : null}
       </div>
-      {approvals ? (
+      {approvals && holderId ? (
         <WebchatMcpApprovalCard
           orgId={approvals.orgId}
           agentId={agentId}
@@ -310,43 +366,46 @@ export function TaskThreadPanel({
           }}
         />
       ) : null}
-      <ThreadComposer
-        sessionId={id}
-        canReply={canReply}
-        checking={detail === undefined}
-        placeholder={t('replyPlaceholder')}
-        hint={t('replyHint')}
-        readOnly={t('readOnly')}
-        sendLabel={t('send')}
-        onSend={send}
-        // Stop shows as soon as a turn runs here, before the task list catches up; the console's stop route is used once the list says it runs.
-        {...(stoppable && row
-          ? { onStop: () => void stop(row), stopping: stopState === 'busy' }
-          : busy
-            ? { onStop: () => pgCancel(id, agentId) }
-            : {})}
-        stopLabel={tl('stop')}
-        setDraft={(text) => setPgInput(id, text)}
-        // Writing here opens the task's own session, which is what reports the settings its picker offers.
-        onFocus={() => {
-          if (!canReply) return
-          markSessionTarget(id)
-          pgAttach(id, agentId, '')
-        }}
-        runtime={
-          runtimeContext ? (
-            <TaskRuntimePicker
-              sessionId={id}
-              agentId={agentId}
-              owner={runtimeContext.owner}
-              owningDaemon={runtimeContext.owningDaemon}
-              agentRuntime={runtimeContext.agentRuntime}
-              editable={runtimeContext.editable}
-            />
-          ) : null
-        }
-        dock={MOCK_MODE ? null : <RunningCommandsDock agentId={agentId} sessionId={id} turnActive={busy} />}
-      />
+      {/* Only a held thread takes a reply here, which continues its task; an unowned one has none yet. */}
+      {holderId ? (
+        <ThreadComposer
+          sessionId={id}
+          canReply={canReply}
+          checking={detail === undefined}
+          placeholder={t('replyPlaceholder')}
+          hint={t('replyHint')}
+          readOnly={t('readOnly')}
+          sendLabel={t('send')}
+          onSend={send}
+          // Stop shows as soon as a turn runs here, before the task list catches up; the console's stop route is used once the list says it runs.
+          {...(stoppable && row
+            ? { onStop: () => void stop(row), stopping: stopState === 'busy' }
+            : busy
+              ? { onStop: () => pgCancel(id, agentId) }
+              : {})}
+          stopLabel={tl('stop')}
+          setDraft={(text) => setPgInput(id, text)}
+          // Writing here opens the task's own session, which is what reports the settings its picker offers.
+          onFocus={() => {
+            if (!canReply) return
+            markSessionTarget(id)
+            pgAttach(id, agentId, '')
+          }}
+          runtime={
+            runtimeContext ? (
+              <TaskRuntimePicker
+                sessionId={id}
+                agentId={agentId}
+                owner={runtimeContext.owner}
+                owningDaemon={runtimeContext.owningDaemon}
+                agentRuntime={runtimeContext.agentRuntime}
+                editable={runtimeContext.editable}
+              />
+            ) : null
+          }
+          dock={MOCK_MODE ? null : <RunningCommandsDock agentId={agentId} sessionId={id} turnActive={busy} />}
+        />
+      ) : null}
     </div>
   )
 }
@@ -510,7 +569,8 @@ function ThreadQuestion({
   onAnswer
 }: {
   question: NonNullable<ThreadEntry['question']>
-  pageHref: string
+  /** The task's own page, where any other form of question is answered. */
+  pageHref: string | undefined
   onAnswer: (requestId: string, value: string) => void
 }) {
   const t = useTranslations('Common.taskThread')
@@ -578,14 +638,14 @@ function ThreadQuestion({
             </Button>
           ))}
         </div>
-      ) : (
+      ) : pageHref ? (
         <Link
           href={pageHref}
           className="w-fit font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary) hover:underline"
         >
           {t('answerOnPage')}
         </Link>
-      )}
+      ) : null}
     </div>
   )
 }

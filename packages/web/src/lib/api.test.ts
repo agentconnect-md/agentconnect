@@ -12,6 +12,8 @@ import {
   fetchConversations,
   fetchConversationByKey,
   fetchSessionFacets,
+  fetchSessionMessages,
+  fetchSessionThreadMessages,
   fetchGithubRepoRoster,
   deleteCodeHostRouting,
   fetchCodeHostRouting,
@@ -1112,5 +1114,46 @@ describe('a schema rejection', () => {
     await expect(createSkillSource({ name: 'kit', source: 'o/r', skills: [] })).rejects.toThrow(
       'request does not match schema'
     )
+  })
+})
+
+describe('thread reads (webchat-threads.md §8)', () => {
+  afterEach(() => {
+    setApiOrgId(null)
+    vi.unstubAllGlobals()
+  })
+
+  it('asks for the roots view and reads one thread’s record by its root, keeping the 409 code', async () => {
+    setApiOrgId('org-1')
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(JSON.stringify({ sessionId: 'ses-1', messages: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    await fetchSessionMessages('ses-1', { view: 'roots', after: 'c1' })
+    await fetchSessionThreadMessages('ses-1', 'post/root', { cursor: 'c2', limit: 100 })
+    const urls = fetchMock.mock.calls.map(([url]) => new URL(String(url)))
+    expect(urls[0]!.pathname).toMatch(/\/orgs\/org-1\/sessions\/ses-1\/messages$/)
+    expect(Object.fromEntries(urls[0]!.searchParams)).toEqual({ limit: '50', after: 'c1', view: 'roots' })
+    expect(urls[1]!.pathname).toMatch(/\/orgs\/org-1\/sessions\/ses-1\/threads\/post%2Froot\/messages$/)
+    expect(Object.fromEntries(urls[1]!.searchParams)).toEqual({ limit: '100', cursor: 'c2' })
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ statusCode: 409, message: 'upgrade', code: 'DAEMON_FEATURE_MISSING' }), {
+            status: 409,
+            headers: { 'content-type': 'application/json' }
+          })
+      )
+    )
+    await expect(fetchSessionThreadMessages('ses-1', 'post-root')).rejects.toMatchObject({
+      status: 409,
+      code: 'DAEMON_FEATURE_MISSING'
+    })
   })
 })
