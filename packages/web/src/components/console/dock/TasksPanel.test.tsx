@@ -291,6 +291,49 @@ describe('TasksPanel rows', () => {
     expect(rows()[0]?.textContent).toBe('Reindex the workspace2m')
   })
 
+  it('opens a row to its whole command as code, its state, its reported status and its times', async () => {
+    const command = 'cd /home/agent/workspace && gh api "repos/example-org/example-repo/compare/v1...v2" --jq .commits'
+    wire.data = tasks({
+      tasks: [
+        task({ id: 'a', description: command, startedAt: '2026-08-11T11:57:46.000Z' }),
+        task({ id: 'b', state: 'failed', endedAt: '2026-08-11T11:48:00.000Z', detail: 'exit 2' })
+      ]
+    })
+    await render()
+    const toggle = rows()[0]?.querySelector('button[aria-expanded]')
+    expect(toggle?.getAttribute('aria-expanded')).toBe('false')
+    expect(container?.querySelector('[data-task-command]')).toBeNull()
+
+    await click(toggle)
+    expect(toggle?.getAttribute('aria-expanded')).toBe('true')
+    expect(rows()[0]?.querySelector('[data-task-command]')?.textContent).toBe(`$ ${command}`)
+    expect(rows()[0]?.textContent).toContain('Running · started 2m ago · Running for 2m 14s')
+
+    await showFinished()
+    await click(rows()[1]?.querySelector('button[aria-expanded]'))
+    expect(rows()[1]?.textContent).toContain('Failed · exit 2 · started 2m ago · Finished 12m ago')
+
+    await click(toggle)
+    expect(rows()[0]?.querySelector('[data-task-command]')).toBeNull()
+  })
+
+  it('opens a subagent row to its whole description as prose, and an unnamed row to its times alone', async () => {
+    wire.data = tasks({
+      tasks: [
+        task({ id: 'a', subagent: true, description: 'Find every webhook handler that writes a review' }),
+        task({ id: 'b', description: null })
+      ]
+    })
+    await render()
+    for (const row of rows()) await click(row.querySelector('button[aria-expanded]'))
+    expect(rows()[0]?.querySelector('[data-task-description]')?.textContent).toBe(
+      'Find every webhook handler that writes a review'
+    )
+    expect(rows()[0]?.querySelector('[data-task-command]')).toBeNull()
+    expect(rows()[1]?.querySelector('[data-task-command], [data-task-description]')).toBeNull()
+    expect(rows()[1]?.textContent).toContain('Running · started 2m ago')
+  })
+
   it('keeps a task the runtime did not name, and says so instead of dropping the row', async () => {
     // An unnamed task is still the thing fencing host reclaim, so a panel that hid it would show "no tasks" beside a host refusing to be reclaimed.
     wire.data = tasks({ tasks: [task({ description: null })] })
@@ -337,9 +380,10 @@ describe('TasksPanel withheld controls (§3.5)', () => {
     await render()
     await showFinished()
     expect(rows()).toHaveLength(2)
-    expect(container?.querySelectorAll('[data-task-row] button')).toHaveLength(0)
-    // The group headers are the panel's only controls.
-    expect(Array.from(container?.querySelectorAll('button') ?? []).map((b) => b.textContent)).toEqual([
+    // A row's only control opens its details; the group headers are the panel's other controls.
+    expect(container?.querySelectorAll('[data-task-row] button:not([aria-expanded])')).toHaveLength(0)
+    expect(container?.querySelectorAll('[data-task-row] button[aria-expanded]')).toHaveLength(2)
+    expect(Array.from(container?.querySelectorAll('section > button') ?? []).map((b) => b.textContent)).toEqual([
       'Commands',
       'Finished'
     ])
@@ -578,7 +622,7 @@ describe('TasksPanel groups', () => {
       ).map((b) => b.getAttribute('aria-label'))
     expect(actionsIn('tasks')).toEqual(['Stop'])
     expect(actionsIn('follow-ups')).toEqual(['End'])
-    expect(container?.querySelectorAll('[data-task-row] button')).toHaveLength(0)
+    expect(container?.querySelectorAll('[data-task-row] button:not([aria-expanded])')).toHaveLength(0)
     // One line each: a task's latest word, a follow-up's next check on hover.
     expect(container?.querySelector('[data-task-group="tasks"] span[title^="Last update"]')?.textContent).toBe('2m ago')
     expect(container?.querySelector('[data-task-group="follow-ups"] span[title^="Next check "]')).not.toBeNull()

@@ -46,6 +46,14 @@ always, behind its own "N more". Group headers fold their group and stay in view
 the list scrolls. Summaries, done-when lines and recent checks stay on the agent's
 Activity page; the dock names each row and links to it.
 
+A runtime row (Subagents, Commands, Finished) carries a caret after its name and
+opens in place on click: a command's whole line in a code block led by `$`, a
+subagent's whole description as wrapped text, then one line with its state, the
+status the runtime reported, when it started, and how long it has run or when it
+finished. A one-line name truncates, and a command is what a reader needs to read in
+full to know what is running. The daemon keeps no output for a background task, so
+the opened row shows none.
+
 The Tasks tab is one tab with two groups, not a kind column. It has one verdict,
 settled when both groups' reads are, and shows whenever either group has something
 to show or the runtime group is tracked; the Delegated group shows whenever the

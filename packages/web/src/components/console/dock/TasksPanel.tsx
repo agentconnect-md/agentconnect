@@ -3,7 +3,7 @@
 // The dock's Tasks tab (§3.5): one session's background work in four groups — Tasks and Follow-ups that AgentConnect manages and can stop, then the Subagents and Commands the runtime reports, read-only.
 // Runtime rows are READ-ONLY by measurement: no agent-protocol primitive can address ONE background command, so the composer's turn-scoped stop is the escape hatch.
 // Both reads are proxied from the owning daemon and stored nowhere (body-locality, §2), so an offline daemon, an old daemon and an untracked session are expected answers drawn as data.
-// What the runtime cannot supply is absent rather than faked: no progress bar, no step line, no command line and no "Logs" link (§3.5).
+// What the runtime cannot supply is absent rather than faked: no progress bar, no step line, no output and no "Logs" link (§3.5); a row opens to its full name and times.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
@@ -334,7 +334,6 @@ function RuntimeTaskRow({ task, now }: { task: AgentTaskDto; now: number }) {
         // An unnamed task still gets a row: it is what fences host reclaim, so a reader needs to be told about it.
         <span
           className={`min-w-0 truncate ${task.description ? (task.subagent ? '' : 'font-mono text-[12.5px]') : 'font-normal italic text-(--text-tertiary)'}`}
-          title={task.description ?? undefined}
         >
           {task.description ?? (task.subagent ? t('unnamedSubagent') : t('unnamedTask'))}
         </span>
@@ -342,6 +341,32 @@ function RuntimeTaskRow({ task, now }: { task: AgentTaskDto; now: number }) {
       // One unit is enough for a running row's time; the tip carries it in full.
       time={running ? elapsed.replace(/^(\d+[hm]) \d+[ms]$/, '$1') : ended}
       timeTip={running ? tl('runningFor', { time: elapsed }) : tl('finishedAt', { time: ended })}
+      details={
+        <>
+          {task.description === null ? null : task.subagent ? (
+            <p
+              data-task-description=""
+              className="m-0 font-sans text-[12.5px] font-normal leading-[1.55] whitespace-pre-wrap break-words text-(--text-secondary)"
+            >
+              {task.description}
+            </p>
+          ) : (
+            <div data-task-command="" className="codeblk max-h-60 overflow-auto">
+              $ {task.description}
+            </div>
+          )}
+          <div className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+            {[
+              tl(`runtimeState.${task.state}`),
+              task.detail,
+              tl('started', { time: formatFileMtime(task.startedAt) }),
+              running ? tl('runningFor', { time: elapsed }) : tl('finishedAt', { time: ended })
+            ]
+              .filter(Boolean)
+              .join(' · ')}
+          </div>
+        </>
+      }
     />
   )
 }

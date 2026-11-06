@@ -1,8 +1,8 @@
 'use client'
 
-// The dock Tasks tab's parts: a collapsible group with a sticky header, one-line rows led by the state icon, and the "N more" fold.
+// The dock Tasks tab's parts: a collapsible group with a sticky header, one-line rows led by the state icon that may open their details, and the "N more" fold.
 
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 import { StateIcon, type StateKind } from '@/components/console/StateIcon'
@@ -60,6 +60,7 @@ export function LineRow({
   timeTip,
   stop,
   note,
+  details,
   done = false,
   attrs
 }: {
@@ -71,10 +72,16 @@ export function LineRow({
   stop?: { label: string; disabled?: boolean; onClick: () => void }
   /** A line under the row, such as what a stop did. */
   note?: ReactNode
+  /** What clicking the row opens under it; a row with details carries no Stop. */
+  details?: ReactNode
   /** A finished row reads quieter. */
   done?: boolean
   attrs?: Record<`data-${string}`, string | undefined>
 }) {
+  const [open, setOpen] = useState(false)
+  const titleClass = `flex min-w-0 flex-1 items-center font-sans text-[13.5px] leading-[1.5] ${
+    done ? 'font-normal text-(--text-secondary)' : 'font-medium text-(--text-primary)'
+  }`
   return (
     <div
       {...attrs}
@@ -82,13 +89,24 @@ export function LineRow({
     >
       <div className="flex min-h-6 min-w-0 items-center gap-[10px]">
         <StateIcon state={state} label={stateLabel} />
-        <div
-          className={`flex min-w-0 flex-1 items-center font-sans text-[13.5px] leading-[1.5] ${
-            done ? 'font-normal text-(--text-secondary)' : 'font-medium text-(--text-primary)'
-          }`}
-        >
-          {title}
-        </div>
+        {details ? (
+          <button
+            type="button"
+            aria-expanded={open}
+            onClick={() => setOpen((v) => !v)}
+            className={`${titleClass} cursor-pointer gap-[5px] border-0 bg-transparent p-0 text-left`}
+          >
+            {title}
+            <Icon
+              name={open ? 'chevron-down' : 'chevron-right'}
+              size={13}
+              color="var(--text-tertiary)"
+              className="flex-none"
+            />
+          </button>
+        ) : (
+          <div className={titleClass}>{title}</div>
+        )}
         <span className="relative flex flex-none items-center gap-[10px]">
           <span
             title={timeTip}
@@ -116,6 +134,7 @@ export function LineRow({
         </span>
       </div>
       {note ? <div className="mt-[3px] ml-6">{note}</div> : null}
+      {details && open ? <div className="mt-[6px] mb-[2px] ml-6 flex min-w-0 flex-col gap-[6px]">{details}</div> : null}
     </div>
   )
 }
