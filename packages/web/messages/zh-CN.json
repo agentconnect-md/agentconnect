@@ -1010,6 +1010,11 @@
         "notReadable": "无法读取此会话的子 Agent 和后台命令。",
         "unavailable": "暂时无法读取子 Agent 和后台命令，Agent 的 Daemon 可能已离线。"
       },
+      "runningCommands": {
+        "count": "{count, plural, other {# 个 shell 命令}}",
+        "outlivesTurn": "本轮结束后仍会继续运行",
+        "unnamed": "未命名的后台命令"
+      },
       "subsessionsPanel": {
         "upgradeDaemon": "升级此 Agent 的 Daemon 后，才能在这里查看任务和跟进。",
         "notReadable": "无法读取此对话的任务和跟进。",

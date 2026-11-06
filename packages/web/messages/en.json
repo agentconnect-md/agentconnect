@@ -1010,6 +1010,11 @@
         "notReadable": "This session’s subagents and commands can’t be read.",
         "unavailable": "Subagents and commands are unavailable. The agent’s daemon may be offline."
       },
+      "runningCommands": {
+        "count": "{count, plural, one {# shell command} other {# shell commands}}",
+        "outlivesTurn": "keeps running after this turn",
+        "unnamed": "Unnamed background command"
+      },
       "subsessionsPanel": {
         "upgradeDaemon": "Upgrade this agent’s daemon to see its tasks and follow-ups here.",
         "notReadable": "This conversation’s tasks and follow-ups can’t be read.",

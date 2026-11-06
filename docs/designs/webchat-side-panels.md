@@ -278,6 +278,12 @@ the shipped daemon and `@agentclientprotocol/sdk@1.3.0` while building M4:
   `tracked:false` so the panel can say "not reported for this session" instead of
   "no tasks this turn".
 
+The same read docks the session's running background **commands** (not subagents)
+above its composer — the conversation's and a coordinator task's thread alike — so
+they stay in view while a person types. It is read-only for the same reason as the
+panel, never polls an idle session, and draws nothing for an untracked or unreadable
+one: the Tasks tab is where that is explained.
+
 ## 4. Gap analysis — the inline viewer
 
 The viewer is the largest single addition in revision 2 and the reason the dock
@@ -483,6 +489,7 @@ FilesPanel.tsx         narrow single-column tree over WorkspaceFiles' read model
 GitPanel.tsx           status + numstat + staging + commit box + log
 PullRequestPanel.tsx   the /sessions/:id/pull-request projection + Auto-fix / auto-merge actions
 TasksPanel.tsx         the Tasks tab's This turn group (read-only — §3.5); polls while visible, backed off when idle
+../RunningCommandsDock.tsx  the running background commands docked above a composer (§3.5)
 auto-refresh.ts        the dock's shared cadence: turn edge / poll / reveal edge (§3.3)
 ```
 
