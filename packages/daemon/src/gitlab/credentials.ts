@@ -25,6 +25,7 @@ export const gitlabCredentials: CodeHostCredentialModule = {
   managedRemoteUrl: (repository) => repository,
   liveCredentialPurposes: ['gitlab_hook_reply', 'gitlab_effect'],
   workspaceRepoId: (workspace) => workspace.gitlabProjectId,
+  resolvesByName: false,
   placeSecondaryRoot: (row): SecondaryRootPlacement | undefined => {
     // `repos/_gitlab/<project id>` — the id, because a project path is namespaced to any depth and a rename moves it.
     const segments = row.repoFullName.split('/')

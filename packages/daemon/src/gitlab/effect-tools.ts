@@ -118,6 +118,7 @@ export const GITLAB_EFFECT_TOOLS: readonly CodeHostEffectTool[] = [
     readOnly: false,
     args: CREATE_CHANGE_REQUEST_ARGS,
     operation: (args) => ({ kind: 'createMergeRequest', ...args }),
+    guidance: 'On GitLab, open and edit merge requests with `createGitlabMergeRequest` and `updateGitlabMergeRequest`.',
     descriptor: {
       name: 'createGitlabMergeRequest',
       description:

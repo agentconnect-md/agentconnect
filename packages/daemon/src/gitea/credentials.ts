@@ -24,6 +24,7 @@ export const giteaCredentials: CodeHostCredentialModule = {
   managedRemoteUrl: (repository) => repository,
   liveCredentialPurposes: ['gitea_hook_reply', 'gitea_effect'],
   workspaceRepoId: (workspace) => workspace.giteaRepoId,
+  resolvesByName: false,
   placeSecondaryRoot: (row): SecondaryRootPlacement | undefined => {
     // `repos/_gitea/<repository id>` — the id, because a rename or a transfer moves the path.
     const [owner, repo, ...rest] = row.repoFullName.split('/')

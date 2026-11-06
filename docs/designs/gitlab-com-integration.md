@@ -1265,7 +1265,8 @@ Anything else is refused.
 This broker surface is new machinery, not an existing seam: today's GitHub
 equivalents are the capability-clamped CLI token plus exactly two structured
 tools (`submitGithubReview` and `replyGithubReviewThreads`). GitLab builds the
-provider-neutral surface first; migrating GitHub onto it is separate work.
+provider-neutral surface first. GitHub joins it with its pull-request
+operations ([github-app-git-credentials.md](github-app-git-credentials.md#daemon-mediated-agent-access)).
 
 ## 15. Formal Merge-Request Reviews
 

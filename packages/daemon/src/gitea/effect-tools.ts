@@ -112,6 +112,7 @@ export const GITEA_EFFECT_TOOLS: readonly CodeHostEffectTool[] = [
     readOnly: false,
     args: CREATE_CHANGE_REQUEST_ARGS,
     operation: (args) => ({ kind: 'createMergeRequest', ...args }),
+    guidance: 'On Gitea, open and edit pull requests with `createGiteaPullRequest` and `updateGiteaPullRequest`.',
     descriptor: {
       name: 'createGiteaPullRequest',
       description:
