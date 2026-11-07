@@ -73,5 +73,12 @@ export function instanceRoute(
   const descriptor = routeDescriptor(instance.provider)
   if (!descriptor)
     return { kind: 'deny', status: 403, reason: `the credential proxy has no routes for ${instance.provider}` }
+  const refused = descriptor.refusedHeaders?.find((name) => context.headers?.has(name))
+  if (refused)
+    return {
+      kind: 'deny',
+      status: 400,
+      reason: `a request carrying ${refused} is not accepted with this agent's credential; send its method itself`
+    }
   return descriptor.route(instance, method, target, context)
 }

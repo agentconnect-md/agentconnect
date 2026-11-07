@@ -1,5 +1,14 @@
 import { execFile, execFileSync } from 'node:child_process'
-import { chmodSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs'
 import { createServer as createHttpServer } from 'node:http'
 import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https'
 import { connect as netConnect, type AddressInfo, type LookupFunction } from 'node:net'
@@ -19,7 +28,7 @@ import {
   type GitCredRequest
 } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
-import { agentHostKey } from '../src/acp/host-key.js'
+import { agentHostKey, sessionKeyDirName } from '../src/acp/host-key.js'
 import { secretsShimDir } from '../src/cp/secrets-shim.js'
 import {
   AGENT_CHANNEL_AGENT_ENV,
@@ -690,6 +699,43 @@ describe('an Azure DevOps agent behind the credential proxy', () => {
     await expect(d.ensureHostAsync(agentHostKey(AZURE_AGENT))).rejects.toThrow(refusal)
     expect(prepared).not.toHaveBeenCalled()
   })
+
+  // POSIX only: srt confines nothing on Windows.
+  it.skipIf(process.platform === 'win32')(
+    "hands the daemon's own Git in a confined srt session the placeholder, and neither the real helper nor its capability",
+    async () => {
+      const { d } = await startDaemon()
+      // After the startup sweep, which retires a session directory the store has no row for.
+      await vi.waitFor(() => expect(d.sessionRetentionSweepInFlight).toBe(false))
+      const agent = await admit(d, AZURE_AGENT, azureSpec())
+      agent.execution = 'srt'
+      const clone = join(agent.dir, 'sessions', sessionKeyDirName('example-session'), 'workspace')
+      mkdirSync(clone, { recursive: true })
+      const seen: { env?: Record<string, string> }[] = []
+      d.localSrtExecutor = {
+        withEnvironment: (_environment: unknown, work: (session: unknown) => Promise<unknown>) =>
+          work({
+            request: async (_capability: string, payload: { env?: Record<string, string> }) => {
+              seen.push(payload)
+              return { code: 0, stdout: '', stderr: '' }
+            }
+          })
+      }
+      const scope = d.workspaces.managedScopeOf(agent)
+      const env = cloneGitEnv(AZURE_AGENT, undefined, scope, clone)
+      expect(env[GITCRED_CAPABILITY_ENV]).toBeDefined()
+      await d.workspaces.runnerFor(AZURE_AGENT, clone).withEnv(env).raw(['ls-remote', AZURE_REPO])
+      const sent = seen.at(-1)!.env!
+      expect(sent.AC_CODEHOST_CREDENTIAL).toBe(d.credentialProxy.proxy.placeholderFor(AZURE_AGENT))
+      expect(sent).not.toHaveProperty(GITCRED_CAPABILITY_ENV)
+      const helpers = Object.entries(sent)
+        .filter(([name, value]) => name.startsWith('GIT_CONFIG_KEY_') && value.endsWith('dev.azure.com.helper'))
+        .map(([name]) => sent[name.replace('KEY', 'VALUE')])
+      expect(helpers).toEqual(['', checkoutHelper()])
+      // It crosses the proxy, so it trusts the proxy's authority.
+      expect(sent.GIT_SSL_CAINFO).toBe(d.credentialProxy.ca.bundlePath)
+    }
+  )
 
   // POSIX only: the proxy's upstream leg and the placeholder helper are exercised as a POSIX session runs them.
   it.skipIf(process.platform === 'win32')(

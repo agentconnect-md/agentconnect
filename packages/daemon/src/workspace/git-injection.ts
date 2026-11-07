@@ -701,7 +701,7 @@ export function checkoutHelper(): string {
   return PLACEHOLDER_HELPER_COMMAND
 }
 
-/** Daemon Git inside an agent's boundary, behind the credential proxy: each of `bases`' helpers answers `placeholder`, never a real token (azure-devops-integration.md §6.1). */
+/** Daemon Git inside an agent's boundary, behind the credential proxy: each of `bases`' helpers answers `placeholder`, never a real token, and the daemon's capability goes where no real helper is left (azure-devops-integration.md §6.1). */
 export function proxiedDaemonGitEnv(
   env: Record<string, string>,
   bases: readonly string[],
@@ -711,7 +711,17 @@ export function proxiedDaemonGitEnv(
   const pairs = gitConfigPairsOf(env).map(([key, value]): [string, string] =>
     helpers.has(key) && value !== '' ? [key, PLACEHOLDER_HELPER_COMMAND] : [key, value]
   )
-  return { ...env, ...(pairs.length > 0 ? gitConfigEnv(pairs) : {}), [CODE_HOST_CREDENTIAL_ENV]: placeholder }
+  const proxied: Record<string, string> = {
+    ...env,
+    ...(pairs.length > 0 ? gitConfigEnv(pairs) : {}),
+    [CODE_HOST_CREDENTIAL_ENV]: placeholder
+  }
+  // The daemon's capability serves only a real helper, so with none left it stays outside the boundary.
+  const realHelper = pairs.some(
+    ([key, value]) => /^credential\.(?:.*\.)?helper$/i.test(key) && value !== '' && value !== PLACEHOLDER_HELPER_COMMAND
+  )
+  if (!realHelper) delete proxied[GITCRED_CAPABILITY_ENV]
+  return proxied
 }
 
 /** The three host-scoped config pairs both channels share. The host defaults to

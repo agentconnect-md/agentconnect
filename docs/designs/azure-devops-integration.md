@@ -507,27 +507,54 @@ organization is the first path segment on `dev.azure.com`, or the host's own
 name; it must be the organization of one of the agent's repositories, compared
 case-insensitively, and any other is refused.
 
-Requests are routed by method and path. Names are compared after
-percent-decoding and case-insensitively, and a project segment may be a name or
-the project's GUID. A path with a segment that does not decode to one plain
-name, such as an encoded separator, a dot segment, or an empty segment, is
-refused.
+Requests are routed by method and path. The lease the proxy obtains must be for
+the repository Azure DevOps then acts on, so it resolves names by Azure DevOps's
+own rules (§12, probe 3) and never more loosely:
 
-- **git**: `[{project}/]_git/{repository}[.git]/` followed by `info/refs`,
+- every segment, `DefaultCollection`, `_git` and `_apis` included, is read
+  after percent-decoding;
+- names match case-insensitively only where both lower-casing and
+  upper-casing agree, so an all-uppercase spelling matches while a character
+  such as the Kelvin sign never matches the ASCII letter it lower-cases to;
+- a `.git` suffix is part of the name, since Azure DevOps answers
+  `_git/{repository}.git` with `TF401019` rather than stripping it; and
+- a GUID-shaped project or repository segment is an id and never a name.
+
+A path with a segment that does not decode to one plain name, such as an
+encoded separator, a dot segment, or an empty segment, is refused. A request
+carrying `X-HTTP-Method-Override`, `X-HTTP-Method` or `X-Method-Override`, with
+any value, is refused with 400, because Azure DevOps would run that method
+rather than the one the request was routed by.
+
+- **git**: `[{project}/]_git/{repository}/` followed by `info/refs`,
   `git-upload-pack`, or `git-receive-pack`, spelled as git sends them, so no
-  other spelling of a push reads as a fetch. The repository is resolved by name
-  among the agent's authorized Azure DevOps repositories; without a project it
-  is the repository in the project of the same name.
+  other spelling of a push reads as a fetch. The repository is resolved among
+  the agent's authorized Azure DevOps repositories by name, or by GUID below a
+  project; without a project it is the repository in the project of the same
+  name, and a GUID without a project is refused, as Azure DevOps refuses it
+  (`TF200016`).
 - **REST naming a repository**: `[{project}/]_apis/git/repositories/{id-or-name}/…`.
   The repository is resolved by GUID, with or without a project, or by project
   and name; Azure DevOps itself refuses a name without a project. The project
   segment may be a name or a GUID, since the links Azure DevOps returns name
-  the project by GUID.
+  the project by GUID. Below the repository, a read is forwarded as it is, a
+  write only as §6.3 allows, and a query whose repository criterion
+  (`searchCriteria.repositoryId`, `searchCriteria.sourceRepositoryId`, or any
+  other parameter ending in `repositoryId`, however cased or bracketed) names
+  another repository is refused.
+- **One pull request below a held repository**:
+  `[{project}/]_apis/git/repositories/{repository}/pullrequests/{id}[/…]`, any
+  method. Before forwarding, the proxy looks the pull request up by id as below
+  and forwards only when its `repository.id` is the repository the path names,
+  so a held repository's path never reaches another repository's pull request.
+  Any other pull request, including one of another held repository, gets the
+  `TF401180` answer for a missing id.
 - **REST naming no repository**: only `_apis/connectionData` and
-  `_apis/ResourceAreas[/…]` at the organization's root, which the Azure CLI
-  reads before any command. Each is forwarded as a read under a read lease of
-  one of the agent's repositories in that organization: the token is the same
-  for all of them, and neither answer is about a repository.
+  `_apis/ResourceAreas[/{area}]`, one level deep, at the organization's root,
+  which the Azure CLI reads before any command. Each is forwarded as a read
+  under a read lease of one of the agent's repositories in that organization:
+  the token is the same for all of them, and neither answer is about a
+  repository.
 - **One pull request by id**: `GET [{project}/]_apis/git/pullrequests/{id}`
   names no repository, but the Azure CLI resolves `--id` through it before
   every repository-scoped call, including `az repos pr update` and
@@ -541,9 +568,14 @@ refused.
     `TF401180` 404 below itself, so the two answers are the same.
 
   Walking ids therefore finds only the agent's own pull requests. Only `GET`
-  is answered this way; a write by id with no repository is refused. A `401`
-  to the lookup drops its lease and retries once, a `429` is refused naming
-  Azure DevOps's `Retry-After`, and any other answer is refused with 502.
+  is answered this way; a write by id with no repository is refused. The
+  lookup sends its own path with `api-version=7.1` alone and
+  `accept: application/json`, never the client's query or `Accept`, so nothing
+  the client sends shapes its answer. A `401` to it drops its lease and retries
+  once, and a `429` is refused naming Azure DevOps's `Retry-After`. Every other
+  4xx, an answer that does not parse, and one over the proxy's 1 MiB limit are
+  answered like a missing id; any other answer is refused with 502. A lease the
+  lookup cannot obtain is refused with a reason that names no repository.
 
 - **Everything else is refused.** That includes:
   - the project and repository lists, at organization and at project scope;
@@ -580,27 +612,30 @@ ordinary 403 with a short reason.
 
 Each of GitLab, Gitea and Azure DevOps registers a route descriptor with the
 proxy: the hosts it serves a managed host on, whether its credential always
-goes as Basic, and the route of one request. The router dispatches by provider
-and has no provider branch; GitHub keeps its own route, which reads GraphQL
-bodies. The Azure DevOps descriptor differs from the others in two places. It
-reads the agent's authorized repositories from its spec, the workspace's and
-the additional ones with their GUIDs, and resolves every request among them.
+goes as Basic, the headers whose presence refuses a request (Azure DevOps's
+method overrides), and the route of one request. The router dispatches by
+provider and has no provider branch; GitHub keeps its own route, which reads
+GraphQL bodies. The Azure DevOps descriptor differs from the others in two
+places. It reads the agent's authorized repositories from its spec, the
+workspace's and the additional ones with their GUIDs, and resolves every request
+among them.
 And where the other providers map a read that names no repository to the
 workspace's credential, because their tokens are scoped by the provider, the
 Azure DevOps descriptor maps such a read to `deny` unless it is on the
 allowlist above, rather than borrowing the workspace's authority. Beside it
 the proxy gained three provider-neutral members that Azure DevOps is the first
 to use: a write gate beside the push gate (§6.3), a lookup route the proxy
-answers by asking the upstream itself, and a lease of its own for a proxy-only
-provider.
+answers by asking the upstream itself, on the target the descriptor names and
+with the access the forwarded request needs, and a lease of its own for a
+proxy-only provider.
 
 ### 6.3 The Tier
 
-| Access    | git            | API                                 |
-| --------- | -------------- | ----------------------------------- |
-| `read`    | fetch          | reads of that repository            |
-| `comment` | fetch          | reads of that repository            |
-| `write`   | fetch and push | reads and writes of that repository |
+| Access    | git            | API                                                                                      |
+| --------- | -------------- | ---------------------------------------------------------------------------------------- |
+| `read`    | fetch          | reads of that repository                                                                 |
+| `comment` | fetch          | reads of that repository                                                                 |
+| `write`   | fetch and push | reads, and writes to its pull requests, pushes, refs, commit statuses and annotated tags |
 
 A push is `git-receive-pack`, or `info/refs?service=git-receive-pack`. The proxy
 refuses either unless the grant it obtained for that repository has access
@@ -613,6 +648,15 @@ A write that names an authorized repository is forwarded under a `write`
 grant and refused below it, naming the agent's access as the push gate does
 (`this agent has read access to {repository}; writing needs write access`). A
 write that names no repository is refused.
+
+`write` changes what a repository holds, never the repository itself. A write
+to `_apis/git/repositories/{repository}` with nothing below it, which would
+rename it, delete it or change its default branch, is refused. Below it a write
+reaches only `pullrequests` and everything under it (threads, reviewers,
+labels, statuses, iterations), `pushes`, `refs`, `commits/{commit}/statuses`
+and `annotatedtags`; any other write, such as a fork or an import, is refused
+with a short reason. A pull request is written only after the lookup of §6.2
+shows it is that repository's.
 
 The proxy asks the Control Plane for a `read` lease for a fetch or a read, and
 for the agent's tier for a push or a write. It keeps each lease per repository
@@ -780,9 +824,20 @@ connection-write, and secret routes manage a credential and are
   deployment's access on its own side by removing the service principal from
   its organization.
 - The proxy is the boundary for both the repository set and the tier: routing
-  is deny-by-default, and a push or an API write needs `write` on the
-  repository it names. A client that bypasses the proxy holds only a
+  is deny-by-default, a push or an API write needs `write` on the repository
+  it names, and `write` reaches only the parts of a repository §6.3 lists,
+  never the repository itself. A client that bypasses the proxy holds only a
   placeholder.
+- The proxy resolves a repository's name by Azure DevOps's own rules and never
+  more loosely (§6.2): after percent-decoding, a `.git` suffix literally, a GUID
+  as an id alone, and case folded only where lower- and upper-casing agree, so
+  its lease is for the repository Azure DevOps then acts on. A method override
+  header is refused, so a request cannot run another method than the one it was
+  routed by.
+- The proxy's own lookups send a fixed target and `Accept` and answer every
+  refusal but `401` and `429`, an unreadable answer and an oversized one like
+  a missing id, so neither the client's request nor Azure DevOps's answer
+  about another repository's pull request shows through them.
 - A compromised daemon host yields the current token: the identity's full
   rights in the organization for up to an hour. That is wider than a GitHub
   installation token. The Console states this on the connect card, and §3.6's
@@ -891,7 +946,15 @@ known only through consent.
    pushes. Through the proxy with a placeholder, on both `dev.azure.com` and
    `{organization}.visualstudio.com`, a held repository fetches and clones, a
    push under a `read` grant is refused by the proxy naming that access, and
-   the same push under `write` lands.
+   the same push under `write` lands. Azure DevOps names a git repository as
+   follows (§6.2):
+   - `{project}/_git/{repository GUID}` works, the project named or given by
+     GUID, while `_git/{repository GUID}` without a project fails with
+     `TF200016`;
+   - a `.git` suffix is read literally: `_git/{repository}.git` answers 404
+     `TF401019`; and
+   - project and repository names match regardless of ASCII case, an
+     all-uppercase spelling included.
 4. **Verified without the proxy:** Azure CLI 2.92 with `azure-devops` 1.0.10
    took an Entra token in `AZURE_DEVOPS_EXT_PAT` under an empty
    `AZURE_CONFIG_DIR`. The repository list, pull-request list, and project

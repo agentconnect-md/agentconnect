@@ -29,8 +29,8 @@ import {
   type ProxyInstance,
   type ProxyRepository
 } from './instance-route.js'
-import type { InstanceRoute } from './route-descriptor.js'
-import { upstreamGet, type UpstreamAnswer, type UpstreamRoute } from './upstream.js'
+import { requestPath, type InstanceRoute } from './route-descriptor.js'
+import { upstreamGet, UpstreamAnswerTooLarge, type UpstreamAnswer, type UpstreamRoute } from './upstream.js'
 import { looksLikePlaceholder, openPlaceholder, sealPlaceholder, type OpenedClaims } from './placeholder.js'
 import {
   providerKeyPlaceholders,
@@ -631,7 +631,7 @@ export class CredentialProxy {
     at: { hostname: string; port: number; target: string; scheme: Presented['scheme'] | undefined }
   ): Promise<MintAsk | RequestDecision | 'anonymous'> {
     const repositories = this.deps.repositoriesOf?.(agentId, instance.provider) ?? []
-    const route = instanceRoute(instance, request.method, at.target, { repositories })
+    const route = instanceRoute(instance, request.method, at.target, { repositories, headers: request.headers })
     switch (route.kind) {
       case 'deny':
         return deny(route.status, route.reason)
@@ -650,19 +650,19 @@ export class CredentialProxy {
           ...(route.write ? { write: true as const } : {})
         }
       case 'lookup':
-        return await this.lookupOwner(agentId, instance.provider, route, request, at)
+        return await this.lookupOwner(agentId, instance.provider, route, at)
     }
   }
 
-  /** Ask the upstream itself, with a read lease, whose answer a request would get; one not of the agent's repositories is answered `hidden`. */
+  /** Ask the upstream itself, with a read lease, which repository a request's target is in; a refusal other than a rejected credential or a rate limit, and an answer it cannot read, is answered `hidden`, so the lookup is no oracle. */
   private async lookupOwner(
     agentId: string,
     provider: string,
     route: Extract<InstanceRoute, { kind: 'lookup' }>,
-    request: Request,
-    at: { hostname: string; port: number; target: string; scheme: Presented['scheme'] | undefined }
+    at: { hostname: string; port: number; scheme: Presented['scheme'] | undefined }
   ): Promise<MintAsk | RequestDecision> {
     const lease: MintAsk = { provider, ...route.via, plane: 'api', readOnly: true }
+    const hidden = deny(route.hidden.status, route.hidden.reason)
     // One retry after a 401, with the rejected token dropped, as a forwarded request's next one would be.
     for (let attempt = 0; ; attempt += 1) {
       let minted: MintedCredential
@@ -671,45 +671,51 @@ export class CredentialProxy {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         this.deps.log.warn(`credential proxy: no token for ${agentId} on ${route.via.repo}: ${message}`)
-        return deny(403, `this agent is not authorized for ${route.via.repo}`)
+        // The lease's repository is not what the request asked about, so the answer does not name it.
+        return deny(403, 'no credential of this agent could be obtained to check this request')
       }
       let answer: UpstreamAnswer
       try {
+        // Its own target and a fixed `accept`, so nothing the client sends shapes the answer.
         answer = await upstreamGet(
           at.hostname,
           at.port,
-          at.target,
-          {
-            authorization: authorization(at.scheme ?? 'basic', minted),
-            accept: request.headers.get('accept') ?? 'application/json',
-            ...route.headers
-          },
+          route.target,
+          { authorization: authorization(at.scheme ?? 'basic', minted), ...route.headers, accept: 'application/json' },
           this.upstreamRoute(at.port)
         )
       } catch (err) {
-        this.deps.log.warn(`credential proxy: lookup of ${at.target.split('?')[0]} failed: ${(err as Error).message}`)
+        if (err instanceof UpstreamAnswerTooLarge) return hidden
+        this.deps.log.warn(`credential proxy: lookup of ${requestPath(route.target)} failed: ${(err as Error).message}`)
         return deny(502, 'the code host could not be reached to check this request')
       }
       if (answer.status === 401 && attempt === 0) {
         minted.invalidate?.()
         continue
       }
-      if (answer.status === 404) return deny(route.hidden.status, route.hidden.reason)
       if (answer.status === 429) {
         const after = answer.headers['retry-after']
         return deny(429, `the code host is rate limiting this identity${after ? ` (Retry-After: ${after})` : ''}`)
       }
+      // Any other refusal reads as a missing target, whatever it says about one the agent does not hold.
+      if (answer.status >= 400 && answer.status < 500 && answer.status !== 401) return hidden
       if (answer.status !== 200)
         return deny(502, `the code host answered ${answer.status} when this request was checked`)
       let parsed: unknown
       try {
         parsed = JSON.parse(answer.body.toString('utf8'))
       } catch {
-        return deny(502, 'the code host’s answer could not be read')
+        return hidden
       }
       const owner = route.owner(parsed)
-      if (!owner) return deny(route.hidden.status, route.hidden.reason)
-      return { provider, ...owner, plane: 'api', readOnly: true }
+      if (!owner) return hidden
+      return {
+        provider,
+        ...owner,
+        plane: 'api',
+        readOnly: !route.write,
+        ...(route.write ? { write: true as const } : {})
+      }
     }
   }
 

@@ -52,26 +52,29 @@ const dirs: string[] = []
 const servers: (HttpServer | HttpsServer)[] = []
 const tunnels = new Set<Duplex>()
 const saved: Partial<Record<(typeof PROXY_ENV)[number], string>> = {}
-const upstreamSeen: { host: string; method: string; url: string; authorization?: string }[] = []
+const upstreamSeen: { host: string; method: string; url: string; authorization?: string; accept?: string }[] = []
 const parentSeen: string[] = []
 const minted: MintAsk[] = []
 let upstreamCa = ''
 let hiddenExists = true
 let refsRejections = 0
+let pullRequestRejections = 0
+let mintFails = false
 let generation = 1
 let proxy: CredentialProxy
 let proxyCaPem = ''
 let placeholder = ''
 let placeholderKey: Buffer
 
-/** The fake Azure DevOps: a repository named Hidden Repo exists or not as the test says, and pull requests 7 and 8 belong to a held and an unheld repository. */
+/** The fake Azure DevOps: a repository named Hidden Repo exists or not as the test says; pull requests 6, 7 and 8 belong to the workspace, the second and an unheld repository, and 10 to 16 answer as their lookups' cases need. */
 function azureDevOps(req: IncomingMessage, res: import('node:http').ServerResponse): void {
   const url = req.url ?? ''
   upstreamSeen.push({
     host: req.headers.host ?? '',
     method: req.method ?? '',
     url,
-    ...(req.headers.authorization ? { authorization: req.headers.authorization } : {})
+    ...(req.headers.authorization ? { authorization: req.headers.authorization } : {}),
+    ...(req.headers.accept ? { accept: req.headers.accept } : {})
   })
   const json = (status: number, value: unknown, headers: Record<string, string> = {}) => {
     res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...headers })
@@ -89,8 +92,25 @@ function azureDevOps(req: IncomingMessage, res: import('node:http').ServerRespon
   }
   const pullRequest = /\/_apis\/git\/pullrequests\/(\d+)/i.exec(url)
   if (pullRequest) {
-    if (pullRequest[1] === '7') return json(200, { pullRequestId: 7, repository: { id: SECOND, name: 'Second Repo' } })
-    if (pullRequest[1] === '8') return json(200, { pullRequestId: 8, repository: { id: UNHELD, name: 'Hidden Repo' } })
+    const id = Number(pullRequest[1])
+    if (id === 6) return json(200, { pullRequestId: 6, repository: { id: REPO, name: 'Example Repo' } })
+    if (id === 7) return json(200, { pullRequestId: 7, repository: { id: SECOND, name: 'Second Repo' } })
+    if (id === 8) return json(200, { pullRequestId: 8, repository: { id: UNHELD, name: 'Hidden Repo' } })
+    // Refusals other than a missing id, which must not tell a pull request of another repository apart.
+    if (id === 10) return json(400, { message: 'TF400898: An Internal Error Occurred.' })
+    if (id === 11) return json(403, { message: 'TF401027: You need the Git GenericRead permission.' })
+    if (id === 12) {
+      res.writeHead(200, { 'content-type': 'text/html' })
+      return void res.end('<html>sign in</html>')
+    }
+    if (id === 13) return json(200, { pullRequestId: 13, repository: { id: SECOND }, padding: 'x'.repeat(1 << 20) })
+    if (id === 14 && pullRequestRejections > 0) {
+      pullRequestRejections -= 1
+      return json(401, { message: 'TF400813' })
+    }
+    if (id === 14) return json(200, { pullRequestId: 14, repository: { id: SECOND, name: 'Second Repo' } })
+    if (id === 15) return json(429, { message: 'slow down' }, { 'retry-after': '30' })
+    if (id === 16) return json(500, { message: 'TF400898' })
     return json(404, JSON.parse(PULL_REQUEST_NOT_FOUND.reason))
   }
   if (url.includes(`/repositories/${REPO}/commits`)) return json(429, { message: 'slow down' }, { 'retry-after': '30' })
@@ -153,6 +173,7 @@ beforeAll(async () => {
   const ca2 = loadProxyCa(join(dir, 'ca'))
   proxyCaPem = ca2.certPem
   const mint = async (_agentId: string, ask: MintAsk): Promise<MintedCredential> => {
+    if (mintFails) throw new Error('the control plane is not connected')
     minted.push(ask)
     const token = `azure-token-${generation}`
     return {
@@ -188,6 +209,8 @@ afterEach(() => {
   minted.splice(0)
   hiddenExists = true
   refsRejections = 0
+  pullRequestRejections = 0
+  mintFails = false
   generation = 1
 })
 
@@ -214,8 +237,15 @@ interface Answer {
   body: string
 }
 
-/** One request through the proxy's loopback listener to `host`, as an Azure DevOps client sends it. */
-function send(host: string, method: string, path: string, authorization: string, body?: string): Promise<Answer> {
+/** One request through the proxy's loopback listener to `host`, as an Azure DevOps client sends it, with `extra` headers. */
+function send(
+  host: string,
+  method: string,
+  path: string,
+  authorization: string,
+  body?: string,
+  extra: Record<string, string> = {}
+): Promise<Answer> {
   const url = new URL(proxy.loopbackUrl()!)
   const proxyAuth = `Basic ${Buffer.from(`${url.username}:${url.password}`).toString('base64')}`
   return new Promise((resolve, reject) => {
@@ -238,6 +268,7 @@ function send(host: string, method: string, path: string, authorization: string,
             host,
             authorization,
             connection: 'close',
+            ...extra,
             ...(body !== undefined
               ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) }
               : {})
@@ -421,9 +452,116 @@ describe('API writes', () => {
     )
     const unnamed = await send(DEV, 'POST', `${PROJECT_PATH}/_apis/git/repositories`, CLI(), '{"name":"New Repo"}')
     expect(unnamed.status).toBe(403)
+    // `write` never administers the repository itself.
+    const deleted = await send(DEV, 'DELETE', `${PROJECT_PATH}/_apis/git/repositories/${REPO}?api-version=7.1`, CLI())
+    expect(deleted.status).toBe(403)
     expect(upstreamSeen.map((entry) => [entry.method, entry.url])).toEqual([
-      ['POST', `${PROJECT_PATH}/_apis/git/repositories/${REPO}/pullrequests?api-version=7.1`]
+      ['POST', `${PROJECT_PATH}/_apis/git/repositories/${REPO}/pullrequests?api-version=7.1`],
+      // The pull request was looked up first; the write itself never left.
+      ['GET', `${PROJECT_PATH}/_apis/git/pullrequests/7?api-version=7.1`]
     ])
+  })
+
+  it('refuses a method override before anything is forwarded', async () => {
+    for (const header of ['X-HTTP-Method-Override', 'X-HTTP-Method', 'X-Method-Override']) {
+      const answer = await send(
+        DEV,
+        'GET',
+        `${PROJECT_PATH}/_apis/git/repositories/${REPO}?api-version=7.1`,
+        CLI(),
+        undefined,
+        { [header]: 'DELETE' }
+      )
+      expect(answer.status).toBe(400)
+    }
+    expect(upstreamSeen).toEqual([])
+    expect(minted).toEqual([])
+  })
+})
+
+describe('one pull request below a held repository', () => {
+  const lookup = (id: number) => `${PROJECT_PATH}/_apis/git/pullrequests/${id}?api-version=7.1`
+  const threads = (repository: string, id: number) =>
+    `${PROJECT_PATH}/_apis/git/repositories/${repository}/pullrequests/${id}/threads?api-version=7.1`
+
+  it('is forwarded only once the lookup shows it is that repository’s, and otherwise answered as a missing id', async () => {
+    expect((await send(DEV, 'GET', threads(SECOND, 7), CLI())).status).toBe(200)
+    expect(upstreamSeen.map((entry) => [entry.method, entry.url])).toEqual([
+      ['GET', lookup(7)],
+      ['GET', threads(SECOND, 7)]
+    ])
+    upstreamSeen.splice(0)
+    // An unheld repository's pull request, and a held one's under another held repository, read like a missing id.
+    const unheld = await send(DEV, 'GET', threads(SECOND, 8), CLI())
+    const elsewhere = await send(DEV, 'GET', threads(REPO, 7), CLI())
+    const missing = await send(DEV, 'GET', threads(SECOND, 9), CLI())
+    expect(unheld).toEqual(missing)
+    expect(elsewhere).toEqual(missing)
+    expect(missing.status).toBe(404)
+    expect(missing.body).toBe(`${PULL_REQUEST_NOT_FOUND.reason}\n`)
+    expect(upstreamSeen.map((entry) => entry.url)).toEqual([lookup(8), lookup(7), lookup(9)])
+  })
+
+  it('looks a write up the same way, and then needs `write` on that repository', async () => {
+    const pull = `${PROJECT_PATH}/_apis/git/repositories/${REPO}/pullrequests/6?api-version=7.1`
+    expect((await send(DEV, 'PATCH', pull, CLI(), '{"status":"completed"}')).status).toBe(200)
+    expect(upstreamSeen.map((entry) => [entry.method, entry.url])).toEqual([
+      ['GET', lookup(6)],
+      ['PATCH', pull]
+    ])
+    expect(minted.at(-1)).toMatchObject({ repoId: '42', readOnly: false, write: true })
+    upstreamSeen.splice(0)
+    // Another held repository's pull request is not written under this one.
+    const other = await send(DEV, 'PATCH', threads(REPO, 7), CLI(), '{}')
+    expect(other.status).toBe(404)
+    expect(upstreamSeen.map((entry) => entry.url)).toEqual([lookup(7)])
+  })
+})
+
+describe('the ownership lookup', () => {
+  const pull = (id: number) => `${PROJECT_PATH}/_apis/git/pullrequests/${id}?api-version=7.1`
+
+  it('asks its own target with a JSON accept, whatever the request carried', async () => {
+    const asked = `${PROJECT_PATH}/_apis/git/pullrequests/7?api-version=5.0&$expand=all`
+    const answer = await send(DEV, 'GET', asked, CLI(), undefined, { accept: 'text/html' })
+    expect(answer.status).toBe(200)
+    expect(upstreamSeen).toEqual([
+      expect.objectContaining({ url: pull(7), accept: 'application/json' }),
+      // The request itself then goes as the client sent it.
+      expect.objectContaining({ url: asked, accept: 'text/html' })
+    ])
+  })
+
+  it('answers every refusal but 401 and 429, an unreadable answer and an oversized one as a missing id', async () => {
+    const missing = await send(DEV, 'GET', pull(9), CLI())
+    for (const id of [10, 11, 12, 13]) expect(await send(DEV, 'GET', pull(id), CLI())).toEqual(missing)
+    // Only the lookups reached Azure DevOps.
+    expect(upstreamSeen.map((entry) => entry.url)).toEqual([9, 10, 11, 12, 13].map(pull))
+  })
+
+  it('retries a 401 once with a fresh token, refuses a 429 naming Retry-After, and a 5xx as unreachable', async () => {
+    pullRequestRejections = 1
+    const before = generation
+    expect((await send(DEV, 'GET', pull(14), CLI())).status).toBe(200)
+    expect(upstreamSeen.map((entry) => entry.authorization)).toEqual([
+      UPSTREAM_AUTH(before),
+      UPSTREAM_AUTH(before + 1),
+      UPSTREAM_AUTH(before + 1)
+    ])
+    const limited = await send(DEV, 'GET', pull(15), CLI())
+    expect(limited.status).toBe(429)
+    expect(limited.body).toContain('Retry-After: 30')
+    expect((await send(DEV, 'GET', pull(16), CLI())).status).toBe(502)
+  })
+
+  it('names no repository when its own credential cannot be had', async () => {
+    mintFails = true
+    for (const target of [pull(7), `${PROJECT_PATH}/_apis/git/repositories/${SECOND}/pullrequests/8`]) {
+      const answer = await send(DEV, 'GET', target, CLI())
+      expect(answer.status).toBe(403)
+      expect(answer.body).not.toMatch(/Example Repo|Second Repo|example-org\//)
+    }
+    expect(upstreamSeen).toEqual([])
   })
 })
 

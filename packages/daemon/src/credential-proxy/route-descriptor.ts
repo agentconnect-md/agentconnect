@@ -28,9 +28,10 @@ export interface ProxyRepository {
   azureDevOps?: AzureDevOpsRepoRouting
 }
 
-/** What a descriptor reads of the agent a request is for. */
+/** What a descriptor reads of the agent a request is for, and the request's headers where the router has them. */
 export interface ProxyRouteContext {
   repositories: readonly ProxyRepository[]
+  headers?: { has(name: string): boolean }
 }
 
 /** A repository a lease names: its path and, where the provider numbers it, its numeric id. */
@@ -53,14 +54,18 @@ export type InstanceRoute =
     }
   /** An API read that names no repository, answered with the workspace's read token. */
   | { kind: 'workspace' }
-  /** A request whose repository only the upstream's answer names: the proxy GETs it with `via`'s read lease and forwards it under the repository `owner` finds there, else answers `hidden`. */
+  /** A request whose repository only the upstream's answer names: the proxy GETs `target` with `via`'s read lease and forwards the request under the repository `owner` finds there, else answers `hidden`. */
   | {
       kind: 'lookup'
       via: RepositoryRef
+      /** What the lookup GETs, its own query alone: nothing of the client's query or `accept` reaches it. */
+      target: string
       owner: (answer: unknown) => RepositoryRef | undefined
       hidden: { status: number; reason: string }
-      /** Headers the lookup itself sends beside the credential and the client's `accept`. */
+      /** Headers the lookup sends beside the credential and a JSON `accept`. */
       headers?: Record<string, string>
+      /** The forwarded request writes, so it needs a `write` grant on the owner; absent ⇒ it reads under a read lease. */
+      write?: true
     }
   /** A request that needs no credential: forwarded with none. */
   | { kind: 'anonymous' }
@@ -73,6 +78,8 @@ export interface ProxyRouteDescriptor {
   readonly saas?: true
   /** The minted credential goes as Basic with the grant's user, whatever scheme the client presented the placeholder in. */
   readonly basicAuthorization?: true
+  /** Request headers whose presence alone refuses a request, such as a method override the upstream would run instead of the method routed. */
+  readonly refusedHeaders?: readonly string[]
   /** The hosts the proxy serves an agent's managed host on, from its repositories there; absent ⇒ the managed host itself. */
   proxyHosts?(host: ManagedCredentialHost, repositories: readonly ProxyRepository[]): ManagedCredentialHost[]
   /** The credential one request on one of this provider's instances needs, by method and target (query included or not). */

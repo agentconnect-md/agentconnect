@@ -28,6 +28,13 @@ export interface UpstreamAnswer {
 const MAX_ANSWER_BYTES = 1 << 20
 const TIMEOUT_MS = 30_000
 
+/** The upstream answered with more than the proxy buffers, which a caller may treat apart from an unreachable upstream. */
+export class UpstreamAnswerTooLarge extends Error {
+  constructor() {
+    super('the upstream answer is too large')
+  }
+}
+
 /** GET `path` on `hostname:port` over HTTPS: through the outbound proxy unless NO_PROXY names the host, else a guarded direct dial. */
 export async function upstreamGet(
   hostname: string,
@@ -60,8 +67,11 @@ export async function upstreamGet(
         let size = 0
         res.on('data', (chunk: Buffer) => {
           size += chunk.length
-          if (size > MAX_ANSWER_BYTES) req.destroy(new Error('the upstream answer is too large'))
-          else chunks.push(chunk)
+          if (size > MAX_ANSWER_BYTES) {
+            // Settled before the destroy, whose own errors then change nothing.
+            reject(new UpstreamAnswerTooLarge())
+            req.destroy()
+          } else chunks.push(chunk)
         })
         res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks) }))
         res.on('error', reject)

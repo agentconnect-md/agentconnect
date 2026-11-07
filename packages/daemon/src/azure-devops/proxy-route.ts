@@ -17,6 +17,8 @@ const VISUALSTUDIO_SUFFIX = '.visualstudio.com'
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const PULL_REQUEST_ID = /^[1-9]\d{0,9}$/
 const GIT_SERVICES = new Set(['info/refs', 'git-upload-pack', 'git-receive-pack'])
+/** The version the proxy's own lookups ask for, whatever the request named. */
+const LOOKUP_API_VERSION = '7.1'
 
 /** A JSON error body in Azure DevOps's own shape. */
 function vssError(message: string, typeKey: string): string {
@@ -63,9 +65,15 @@ const PULL_REQUEST_WRITE =
   'a pull request is changed under its repository (_apis/git/repositories/{repository}/pullrequests/{id})'
 const NOT_AVAILABLE =
   "only Git and the REST API of the agent's own Azure DevOps repositories are available with this agent's credential"
+const WRITE_NOT_AVAILABLE =
+  "only pull requests, pushes, refs, commit statuses and annotated tags are written with this agent's credential"
+const OTHER_REPOSITORY_QUERY =
+  "a query naming another repository is not available with this agent's credential; name the repository in the path"
+const NOT_A_PULL_REQUEST = 'the pull request id is not a number'
 
+/** Names Azure DevOps treats as one: equal lower-cased and upper-cased alike, so a sign such as Kelvin's never folds onto an ASCII letter. */
 function same(a: string, b: string): boolean {
-  return a.toLowerCase() === b.toLowerCase()
+  return a.toLowerCase() === b.toLowerCase() && a.toUpperCase() === b.toUpperCase()
 }
 
 /** One path segment percent-decoded as a name; undefined when it does not decode to one. */
@@ -78,32 +86,46 @@ function decodedName(segment: string | undefined): string | undefined {
   }
 }
 
+/** Whether a segment, read as Azure DevOps reads it after percent-decoding, is the keyword. */
+function is(segment: string | undefined, keyword: string): boolean {
+  const name = decodedName(segment)
+  return name !== undefined && same(name, keyword)
+}
+
 /** A segment that decodes to one plain name, an empty one only last (a trailing slash): an encoded separator or dot segment names no single resource. */
 function plainSegment(segment: string, last: boolean): boolean {
   return segment === '' ? last : decodedName(segment) !== undefined
 }
 
-/** The organization a request addresses and the path below it: the first segment on dev.azure.com, the host's own name on `{organization}.visualstudio.com` (optionally under `DefaultCollection`). */
-function organizationOf(instance: ProxyInstance, target: string): { organization: string; rest: string[] } | undefined {
+/** The organization a request addresses, the segments that name it, and the path below: the first segment on dev.azure.com, the host's own name on `{organization}.visualstudio.com` (optionally under `DefaultCollection`). */
+function organizationOf(
+  instance: ProxyInstance,
+  target: string
+): { organization: string; prefix: string[]; rest: string[] } | undefined {
   const segments = requestPath(target).split('/').slice(1)
   const host = instance.hosts[0] ?? ''
   if (host === AZURE_DEVOPS_HOST) {
     const [first, ...rest] = segments
     const organization = decodedName(first)
-    return organization !== undefined ? { organization, rest } : undefined
+    return organization !== undefined ? { organization, prefix: [first!], rest } : undefined
   }
   if (!host.endsWith(VISUALSTUDIO_SUFFIX)) return undefined
-  const rest = segments[0]?.toLowerCase() === 'defaultcollection' ? segments.slice(1) : segments
-  return { organization: host.slice(0, -VISUALSTUDIO_SUFFIX.length), rest }
+  const collection = is(segments[0], 'DefaultCollection') ? 1 : 0
+  return {
+    organization: host.slice(0, -VISUALSTUDIO_SUFFIX.length),
+    prefix: segments.slice(0, collection),
+    rest: segments.slice(collection)
+  }
 }
 
-/** The held repository's project matches a project segment by name or GUID. */
+/** The held repository's project matches a project segment: a GUID-shaped one by the project's id alone, any other by name. */
 function inProject(repository: ProxyRepository, project: string): boolean {
+  if (GUID.test(project)) return same(repository.azureDevOps!.projectId, project)
   const name = azureDevOpsRepoName(repository.repoFullName)
-  return (name !== undefined && same(name.project, project)) || same(repository.azureDevOps!.projectId, project)
+  return name !== undefined && same(name.project, project)
 }
 
-/** A held repository by name: in the named project, or, with no project, in the project named like it. */
+/** A held repository by name, taken literally (a `.git` suffix is part of it): in the named project, or, with no project, in the project named like it. */
 function heldByName(held: readonly ProxyRepository[], project: string | undefined, repository: string) {
   return held.find((candidate) => {
     const name = azureDevOpsRepoName(candidate.repoFullName)
@@ -120,23 +142,94 @@ function heldById(held: readonly ProxyRepository[], project: string | undefined,
   )
 }
 
+/** A held repository as a path segment names it: a GUID-shaped segment by id alone, never by name, as Azure DevOps reads it. */
+function heldBySegment(held: readonly ProxyRepository[], project: string | undefined, identifier: string) {
+  if (GUID.test(identifier)) return heldById(held, project, identifier)
+  // Azure DevOps finds a repository by name only within a project, or in the project named like it on git's own path.
+  return heldByName(held, project, identifier)
+}
+
 function ref(repository: ProxyRepository): RepositoryRef {
   return { repo: repository.repoFullName, repoId: repository.repoId }
 }
 
-/** `{repository}[.git]/(info/refs | git-upload-pack | git-receive-pack)`, the service spelled exactly as git sends it. */
+/** `{repository}/(info/refs | git-upload-pack | git-receive-pack)`, the service spelled exactly as git sends it; a GUID names the repository only below its project. */
 function gitRoute(
   held: readonly ProxyRepository[],
   project: string | undefined,
   after: string[],
   target: string
 ): InstanceRoute {
-  const repository = decodedName(after[0])?.replace(/\.git$/i, '')
+  const repository = decodedName(after[0])
   if (!repository || !GIT_SERVICES.has(after.slice(1).join('/'))) return deny(403, NOT_AVAILABLE)
-  const found = heldByName(held, project, repository)
+  const found = GUID.test(repository) && project === undefined ? undefined : heldBySegment(held, project, repository)
   if (!found) return repositoryNotFound(repository, 'git')
   const push = isGitPush(after.at(-1)!, target)
   return { kind: 'repository', plane: 'git', ...ref(found), push, readOnly: !push }
+}
+
+/** One pull request by id, any method: forwarded under `owner`'s repository only once the proxy's own GET shows the pull request is there, else answered as a missing id. */
+function pullRequestLookup(
+  via: ProxyRepository,
+  apis: string,
+  id: string,
+  owner: (repositoryId: string) => ProxyRepository | undefined,
+  write: boolean
+): InstanceRoute {
+  return {
+    kind: 'lookup',
+    via: ref(via),
+    target: `${apis}/git/pullrequests/${id}?api-version=${LOOKUP_API_VERSION}`,
+    owner: (answer) => {
+      const repositoryId = (answer as { repository?: { id?: unknown } } | null)?.repository?.id
+      const found = typeof repositoryId === 'string' ? owner(repositoryId) : undefined
+      return found && ref(found)
+    },
+    hidden: PULL_REQUEST_NOT_FOUND,
+    // A rejected credential answers 401 rather than a sign-in page.
+    headers: { 'x-tfs-fedauthredirect': 'Suppress' },
+    ...(write ? { write: true as const } : {})
+  }
+}
+
+/** Whether a query names, in a repository criterion, a repository other than `found`, which Azure DevOps would answer about under its lease; read as loosely as its binder may. */
+function namesOtherRepository(target: string, found: ProxyRepository): boolean {
+  const at = target.indexOf('?')
+  if (at < 0) return false
+  for (const [key, value] of new URLSearchParams(target.slice(at + 1))) {
+    const name = key.toUpperCase().replace(/\[([^\]]*)\]/g, '.$1')
+    if (name.endsWith('REPOSITORYID') && !same(value, found.azureDevOps!.repositoryId)) return true
+  }
+  return false
+}
+
+/** The parts of a repository a `write` grant changes: its pull requests and everything under them, pushes, refs, commit statuses and annotated tags; never the repository itself. */
+function writable(below: readonly string[]): boolean {
+  if (is(below[0], 'pullrequests')) return true
+  if (below.length === 1) return is(below[0], 'pushes') || is(below[0], 'refs') || is(below[0], 'annotatedtags')
+  return below.length === 3 && is(below[0], 'commits') && is(below[2], 'statuses')
+}
+
+/** A request below one held repository: a read as it is, a pull request's only once it is shown to be that repository's, and a write only to the parts a `write` grant changes. */
+function repositoryResource(
+  found: ProxyRepository,
+  below: string[],
+  method: string,
+  target: string,
+  apis: string
+): InstanceRoute {
+  const read = READS.has(method.toUpperCase())
+  if (namesOtherRepository(target, found)) return deny(403, OTHER_REPOSITORY_QUERY)
+  // A trailing slash names the same resource.
+  const parts = below.at(-1) === '' ? below.slice(0, -1) : below
+  if (is(parts[0], 'pullrequests') && parts[1] !== undefined) {
+    if (!PULL_REQUEST_ID.test(parts[1])) return deny(400, NOT_A_PULL_REQUEST)
+    const repositoryId = found.azureDevOps!.repositoryId
+    return pullRequestLookup(found, apis, parts[1], (id) => (same(id, repositoryId) ? found : undefined), !read)
+  }
+  if (read) return { kind: 'repository', plane: 'api', ...ref(found), readOnly: true }
+  if (!writable(parts)) return deny(403, WRITE_NOT_AVAILABLE)
+  return { kind: 'repository', plane: 'api', ...ref(found), readOnly: false, write: true }
 }
 
 /** The REST API below `_apis`: a held repository, the pull-request lookup, or the allowlist; nothing else. */
@@ -144,50 +237,32 @@ function apiRoute(
   held: readonly ProxyRepository[],
   project: string | undefined,
   after: string[],
-  method: string
+  method: string,
+  target: string,
+  apis: string
 ): InstanceRoute {
-  const lower = after.map((segment) => segment.toLowerCase())
   const read = READS.has(method.toUpperCase())
-  if (lower[0] === 'git' && lower[1] === 'repositories') {
+  if (is(after[0], 'git') && is(after[1], 'repositories')) {
     if (after[2] === undefined || after[2] === '') return deny(403, read ? REPOSITORY_LIST : WRITE_NAMING_NO_REPOSITORY)
     const identifier = decodedName(after[2])
     if (!identifier) return deny(400, NOT_A_REPOSITORY)
-    // Azure DevOps itself finds a repository by name only within a project.
-    const found = GUID.test(identifier)
-      ? heldById(held, project, identifier)
-      : project !== undefined
-        ? heldByName(held, project, identifier)
-        : undefined
+    // A name without a project is no repository Azure DevOps finds here.
+    const found = GUID.test(identifier) || project !== undefined ? heldBySegment(held, project, identifier) : undefined
     if (!found) return repositoryNotFound(identifier, 'api')
-    return {
-      kind: 'repository',
-      plane: 'api',
-      ...ref(found),
-      readOnly: read,
-      ...(read ? {} : { write: true as const })
-    }
+    return repositoryResource(found, after.slice(3), method, target, apis)
   }
-  if (lower[0] === 'git' && lower[1] === 'pullrequests') {
+  if (is(after[0], 'git') && is(after[1], 'pullrequests')) {
     if (after[2] === undefined || after[2] === '')
       return deny(403, read ? PULL_REQUEST_LIST : WRITE_NAMING_NO_REPOSITORY)
     if (after.length > 3) return deny(403, NOT_AVAILABLE)
     if (method.toUpperCase() !== 'GET') return deny(403, PULL_REQUEST_WRITE)
-    if (!PULL_REQUEST_ID.test(after[2])) return deny(400, 'the pull request id is not a number')
-    return {
-      kind: 'lookup',
-      via: ref(held[0]!),
-      owner: (answer) => {
-        const id = (answer as { repository?: { id?: unknown } } | null)?.repository?.id
-        const found = typeof id === 'string' ? heldById(held, undefined, id) : undefined
-        return found && ref(found)
-      },
-      hidden: PULL_REQUEST_NOT_FOUND,
-      // A rejected credential answers 401 rather than a sign-in page.
-      headers: { 'x-tfs-fedauthredirect': 'Suppress' }
-    }
+    if (!PULL_REQUEST_ID.test(after[2])) return deny(400, NOT_A_PULL_REQUEST)
+    return pullRequestLookup(held[0]!, apis, after[2], (id) => heldById(held, undefined, id), false)
   }
-  // The lookups the Azure CLI makes before any command; they show nothing repository-specific.
-  const allowlisted = (lower[0] === 'connectiondata' && after.length === 1) || lower[0] === 'resourceareas'
+  // The lookups the Azure CLI makes before any command, one level deep; they show nothing repository-specific.
+  const allowlisted =
+    (is(after[0], 'connectionData') && after.length === 1) ||
+    (is(after[0], 'ResourceAreas') && (after.length === 1 || (after.length === 2 && after[1] !== '')))
   if (project === undefined && allowlisted) {
     if (!read) return deny(403, WRITE_NAMING_NO_REPOSITORY)
     return { kind: 'repository', plane: 'api', ...ref(held[0]!), readOnly: true }
@@ -200,6 +275,8 @@ export const azureDevOpsProxyRoute: ProxyRouteDescriptor = {
   saas: true,
   // The Azure CLI sends its placeholder as a Basic password and git through its helper; the token is the identity's either way.
   basicAuthorization: true,
+  // Azure DevOps would run the method these name instead of the one the request was routed by.
+  refusedHeaders: ['x-http-method-override', 'x-http-method', 'x-method-override'],
   // One connection's organization on two names: a path prefix on dev.azure.com and a host of its own.
   proxyHosts: (_host, repositories) => {
     const organizations = new Set(
@@ -215,18 +292,20 @@ export const azureDevOpsProxyRoute: ProxyRouteDescriptor = {
     if (!addressed?.rest.every((segment, i, all) => plainSegment(segment, i === all.length - 1))) {
       return deny(400, NOT_A_REPOSITORY)
     }
-    const { organization, rest } = addressed
+    const { organization, prefix, rest } = addressed
     const held = context.repositories.filter(
       (repository) => repository.azureDevOps !== undefined && same(repository.azureDevOps.organization, organization)
     )
     if (!AZURE_DEVOPS_ORGANIZATION.test(organization) || held.length === 0) return deny(403, OTHER_ORGANIZATION)
-    const lower = rest.map((segment) => segment.toLowerCase())
     // `[{project}/]_git/…` or `[{project}/]_apis/…`; the project is a name or its GUID.
-    const at = lower[0] === '_git' || lower[0] === '_apis' ? 0 : lower[1] === '_git' || lower[1] === '_apis' ? 1 : -1
+    const at = is(rest[0], '_git') || is(rest[0], '_apis') ? 0 : is(rest[1], '_git') || is(rest[1], '_apis') ? 1 : -1
     if (at < 0) return deny(403, NOT_AVAILABLE)
     const project = at === 1 ? decodedName(rest[0]) : undefined
     if (at === 1 && project === undefined) return deny(400, NOT_A_REPOSITORY)
     const after = rest.slice(at + 1)
-    return lower[at] === '_git' ? gitRoute(held, project, after, target) : apiRoute(held, project, after, method)
+    if (is(rest[at], '_git')) return gitRoute(held, project, after, target)
+    // The proxy's own lookups address the organization and project the request does.
+    const apis = `/${[...prefix, ...rest.slice(0, at), '_apis'].join('/')}`
+    return apiRoute(held, project, after, method, target, apis)
   }
 }
