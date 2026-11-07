@@ -146,22 +146,22 @@ describe('IntegrationChannelList for an assistant-mode agent', () => {
     await render([room({ trigger: 'mention' }), room({ channelId: 'D1', name: '@alice', kind: 'im', trigger: 'any' })])
     expect(document.body.querySelector('[role="note"]')).toBeNull()
     expect(document.body.textContent).not.toContain('answers only where enabled')
-    expect(document.body.querySelector('[aria-label="Settings for general: @-mentions, Single session"]')).toBeTruthy()
-    expect(document.body.querySelector('[aria-label="Settings for alice: On, Single session"]')).toBeTruthy()
+    expect(document.body.querySelector('[aria-label="Settings for general: Single session, @-mentions"]')).toBeTruthy()
+    expect(document.body.querySelector('[aria-label="Settings for alice: Single session"]')).toBeTruthy()
   })
 
   it('enables an Off room at once, with no warning', async () => {
     await render([room()])
-    await pick('general', '@-mentions')
+    await pick('general', 'Single session')
     expect(dialog()).toBeNull()
     expect(data.setChannelTrigger).toHaveBeenCalledWith('int-1', 'C1', 'mention')
   })
 
   it('enables an Off group DM at once, with no warning', async () => {
     await render([room({ channelId: 'G1', name: '@alice, bob', kind: 'mpim' })])
-    await pick('alice, bob', 'All messages')
+    await pick('alice, bob', 'Single session')
     expect(dialog()).toBeNull()
-    expect(data.setChannelTrigger).toHaveBeenCalledWith('int-1', 'G1', 'any')
+    expect(data.setChannelTrigger).toHaveBeenCalledWith('int-1', 'G1', 'mention')
   })
 
   it('opens + Decision rules on an Off room at once', async () => {
