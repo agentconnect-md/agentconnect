@@ -468,7 +468,7 @@ told `missing_scope` rather than handed a silent success.
 The optional facets an AGENT can reach are declared per platform in
 `platforms/read-ports.ts`, the same pre-connection registry that decides which attachment tool
 to inject: `channelHistory`, `threadHistory`, `reactions`, `messageDelete`, `conversationCreate`,
-`publicMessageSearch`, `scheduledMessages`, `canvas`, `bookmarks`, `lists`, one that gates where the agent-to-agent
+`publicMessageSearch`, `scheduledMessages`, `canvas`, `bookmarks`, `lists`, `choiceCards`, one that gates where the agent-to-agent
 channel form of `sendMessage` REACHES rather than a tool: `publicChannelReach` (daemon-detailed-design.md §9.4 "Channel
 reach"), and three
 the read rule asks of a source's own platform: `channelPrivacy` (its `isPrivate` confirms a public channel),
@@ -561,6 +561,11 @@ looked up exactly, so webchat, hook and dream turns inherit neither:
   elicitation cards' included, name them as its reply cards do, so the relay routes a
   click on an app shared by several agents to that integration rather than to a sole one.
   A Google Chat app serves one agent, so its relay needs no such target.
+
+A third optional member, `choiceCards` (`platforms/choice-card.ts`), draws a card whose
+first permitted press starts a turn as the presser ([choice-cards.md](choice-cards.md)).
+Slack implements it and declines a send-only app, whose presses the relay does not forward;
+its `choiceCards` port declaration (§7.1) gates the agent's card tools.
 
 Core judges every click the same way (the level, then the conversation's
 `chatSurface`, then `chatActor`) and records the clicker as an `InteractionActor`. A

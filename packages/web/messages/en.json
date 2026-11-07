@@ -722,6 +722,7 @@
       "people": "People",
       "mine": "{name} (me)",
       "schedules": "Schedules",
+      "doorbells": "Doorbells",
       "count": "{count, plural, one {# session} other {# sessions}}",
       "schedule": "Schedule",
       "openSchedule": "Open schedule",

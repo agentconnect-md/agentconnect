@@ -92,6 +92,16 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
    agent's GET is a short-lived bearer URL that may leave the cluster through the model provider.
 10. **Operator-supplied uploads and config**: agent/org icon uploads (`sharp`, `@resvg/resvg-js`),
     Slack manifests, integration credentials entered in the console or Setup Server.
+11. **The daemon's local API socket** (`daemon/src/local-api/`, `local-doorbell.md`): opt-in
+    (`localApi.enabled`) HTTP on `<root>/run/local.sock`, mode `0600` in a `0700` directory, no token;
+    the file mode is the authority, so any process of the daemon's OS user may call it. Windows refuses
+    to start it. It is never in a sandbox's allow-list or tunnels. `POST /v1/doorbell` takes an agent id
+    and a doorbell id that agent's `agent.json` declares; the caller cannot name a channel, only a thread
+    inside the declared target's channel. `POST /v1/cards` (`choice-cards.md`) places a choice card at
+    such a declared target the same way; `GET`/`PATCH /v1/cards/:id` read any card and set only a
+    settled state or a label, never `open`, never a card mid-handoff, never the press record. A card's
+    press is judged as a message from that person (conversation surface, synced chat actor, no bots)
+    before it starts a turn. Bodies are capped at 64 KiB.
 
 ## Invariants worth attacking
 

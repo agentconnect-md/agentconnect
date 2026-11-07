@@ -66,6 +66,13 @@ describe('sessionTriggerKind', () => {
     expect(sessionTriggerKind({ triggeredBy: 'agent-id' }, agents)).toBe('agent')
   })
 
+  it('classifies a local doorbell as its own automation kind, never a person', () => {
+    expect(sessionTriggerKind({ triggeredBy: 'doorbell:deploys' }, agents)).toBe('doorbell')
+    expect(sessionTriggerKind({ triggeredBy: 'doorbell:agent-id' }, agents)).toBe('doorbell')
+    expect(sessionSenderLabel('doorbell:deploys', 'Deploy bell', new Map(), new Map(), null)).toBe('Deploy bell')
+    expect(sessionSenderLabel('doorbell:deploys', undefined, new Map(), new Map(), null)).toBe('Doorbell')
+  })
+
   it('uses stable hook kind after session hydration, independent of delivery platform or display name', () => {
     const anchoredGithub = sessionFromDto(
       sessionDto({

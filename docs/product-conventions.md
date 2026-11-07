@@ -124,10 +124,17 @@ Every level keeps these rules:
 - The setting does not change the agent's permission policy. Which tool calls need approval is
   set in the console, and an agent that allows every tool call never asks.
 
-Three things are outside this setting:
+Four things are outside this setting:
 
 - A proposal from an assistant-mode follow-up's check. Approving it is the same as asking the agent
   there, so whoever could ask there may approve it ("Assistant-mode proposals").
+- A press on a choice card. Pressing it starts a turn as that person, the same as writing in the
+  conversation, and grants nothing, so the level does not apply. The conversation must take chat
+  actions (not switched off, admitted per message by a Decision, routed, or shared with another
+  organization), a bot never presses, and where permissions are synced only an Agent editor may.
+  A refused press is told only to the person who made it, and the card stays as everyone else
+  sees it. The first permitted press decides the card; one whose turn cannot start reopens it,
+  and that person is told to press again.
 - Stopping a turn, which follows the `!stop` sender rule. Stopping a delegated task is the
   decision of the conversation that delegated it ("Tasks").
 - Letting the bot join a public channel, which only a person behind the turn answers ("Joining a

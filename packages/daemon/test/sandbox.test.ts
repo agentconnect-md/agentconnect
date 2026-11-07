@@ -36,6 +36,7 @@ import {
 } from '../src/acp/sandbox-temp.js'
 import { agentHostKey, hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
 import { claudeInnerSandboxSettings } from '../src/runtime-defs/claude-runtime.js'
+import { localIpcPath, mcpSocketPath } from '../src/paths.js'
 import { clearConfigFiles, configFilesDir, materializeConfigFiles } from '../src/shim/config-file-env.js'
 
 // Ordinary ACP hosts launch through one SRT provider process with an immutable,
@@ -196,6 +197,22 @@ describe('sandboxBoundary', () => {
     // The agent-dir root itself is never writable ⇒ agent.json and local state stay read-only.
     expect(writable).not.toContain(canonicalAgentDir)
   })
+
+  it.skipIf(process.platform === 'win32')(
+    're-opens the MCP socket but never the local API socket beside it (local-doorbell.md)',
+    () => {
+      const root = realpathSync(tmpdir())
+      const { writable, allowRead } = sandboxBoundary({
+        agentDir,
+        cwd: join(agentDir, 'workspace'),
+        runtimeHome: join(agentDir, 'home'),
+        mcpSocketPath: mcpSocketPath(root)
+      })
+      expect(allowRead).toContain(join(root, 'run', 'mcp.sock'))
+      const local = localIpcPath(root, 'local')
+      for (const path of [...writable, ...allowRead]) expect(local === path || local.startsWith(path + sep)).toBe(false)
+    }
+  )
 
   it('rejects a cwd that escapes the trusted agent dir (the workspace.path=/ attack)', () => {
     const runtimeHome = join(agentDir, 'home')

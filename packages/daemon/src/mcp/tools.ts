@@ -16,6 +16,7 @@ import { FOLLOW_UP_TOOL, PROPOSE_TOOL, RECORD_CHECK_TOOL } from './ops/assistant
 import { ASSISTANT_REMINDER_TOOLS } from './ops/assistant-reminders.js'
 import { LIST_TASKS_TOOL, READ_TASK_TOOL, STOP_TASK_TOOL, UPDATE_TASK_TOOL } from './ops/assistant-subsessions.js'
 import { CAPABILITY_REQUEST_TOOLS } from './ops/capability-requests.js'
+import { CHOICE_CARD_SETTABLE_STATES } from '../cards/choice-cards.js'
 import { CODE_HOST_RESEARCH_TOOLS } from './ops/code-host-research.js'
 import { GETTING_TO_KNOW_TOOL } from './ops/getting-to-know.js'
 import { SEND_MESSAGE_ACTIONS } from './ops/send-message-actions.js'
@@ -186,6 +187,57 @@ function buildShareFileTool(): ToolDescriptor {
     )
   }
 }
+
+/** Sticky choice cards in THIS conversation: buttons that outlive the turn; a press starts a new turn here. */
+export const CHOICE_CARD_TOOLS: ToolDescriptor[] = [
+  {
+    name: 'postChoiceCard',
+    description:
+      'Post a card with 1–5 buttons into THIS conversation. Unlike a question in your reply, the card stays ' +
+      'clickable after your turn ends and after restarts; the first press by someone who may talk to you here settles it and starts a new turn here ' +
+      'with the presser as sender and a line like `[card <id>] <name> chose "<label>"`. Set `editText` to add an ' +
+      'editable text field and a "Send edited" button. Returns the card id.',
+    inputSchema: obj(
+      {
+        title: { type: 'string', minLength: 1, maxLength: 150 },
+        body: { type: 'string', maxLength: 2900 },
+        options: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 5,
+          items: obj(
+            {
+              id: { type: 'string', minLength: 1, maxLength: 60 },
+              label: { type: 'string', minLength: 1, maxLength: 75 }
+            },
+            ['id', 'label']
+          )
+        },
+        editText: { type: 'string', minLength: 1, maxLength: 2900 }
+      },
+      ['title', 'options']
+    )
+  },
+  {
+    name: 'readChoiceCard',
+    description: 'Read one of your cards: its state, the chosen option, who pressed it, and any edited text.',
+    inputSchema: obj({ cardId: { type: 'string', minLength: 1 } }, ['cardId'])
+  },
+  {
+    name: 'updateChoiceCard',
+    description:
+      'Change one of your cards: a settled `state` (removes its buttons; to ask again, post a new card) and/or a ' +
+      'status `label` shown under it (null clears it). A card being handed to you after a press cannot be changed.',
+    inputSchema: obj(
+      {
+        cardId: { type: 'string', minLength: 1 },
+        state: { type: 'string', enum: [...CHOICE_CARD_SETTABLE_STATES] },
+        label: { type: ['string', 'null'], maxLength: 300 }
+      },
+      ['cardId']
+    )
+  }
+]
 
 function buildReadTools(platforms: string[], currentPlatform?: string): ToolDescriptor[] {
   const platform = {
@@ -983,6 +1035,7 @@ export const ALL_TOOL_NAMES = [
       buildSendMessageTool([]),
       GET_TOOL_GUIDE_TOOL,
       buildShareFileTool(),
+      ...CHOICE_CARD_TOOLS,
       // Built once per registered platform AS the session platform so every port gate opens:
       // the auto-allow set is about names, and a name some platform can inject must be listed
       // even for an agent that will never see it.
@@ -1078,5 +1131,7 @@ export function toolsForIntegrations(
   // only where the session is, so a Linear-connected agent's Slack sessions carry none of them.
   const sessionPlatform = options.currentPlatform ?? (platforms.length === 1 ? platforms[0] : undefined)
   add([...(sessionToolsFor(sessionPlatform)?.descriptors ?? [])])
+  // Choice cards only where the session's platform declares a card surface (§7.1), before any connection exists.
+  if (sessionPlatform !== undefined && declaresPort(sessionPlatform, 'choiceCards')) add(CHOICE_CARD_TOOLS)
   return tools
 }

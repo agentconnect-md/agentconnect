@@ -334,6 +334,7 @@ export default function SessionsView() {
   // sessions used to disappear from this menu instead of getting their own group.
   const hookSets = new Map<HookKind, Map<string, string>>(HOOK_TRIGGER_KINDS.map((kind) => [kind, new Map()]))
   const cronSet = new Map<string, string>()
+  const doorbellSet = new Map<string, string>()
   for (const [triggeredBy, source] of triggerSources) {
     const label = sessionSenderLabel(triggeredBy, source.name, agentNameById, memberNameByIdentity, me)
     const kind = sessionTriggerKind({ triggeredBy, hookKind: source.hookKind }, agentById)
@@ -345,6 +346,9 @@ export default function SessionsView() {
         cronSet.set(triggeredBy, cronById.get(id)?.name?.trim() || `Schedule ${id.slice(0, 8)}`)
         break
       }
+      case 'doorbell':
+        doorbellSet.set(triggeredBy, label)
+        break
       case 'agent': {
         const agent = agentById.get(triggeredBy)
         if (agent) triggerAgentSet.set(triggeredBy, agent)
@@ -503,18 +507,23 @@ export default function SessionsView() {
   const triggerScheds: FilterOption[] = [...cronSet]
     .map(([v, label]) => ({ v, label, kind: 'schedule' as const, face: catFace('timer') }))
     .sort(byLabel)
+  const triggerDoorbells: FilterOption[] = [...doorbellSet]
+    .map(([v, label]) => ({ v, label, kind: 'doorbell' as const, face: catFace('bell-ring') }))
+    .sort(byLabel)
   const triggerGroups: FilterGroup[] = [
     { label: t('people'), options: triggerPeople },
     { label: t('agents'), options: triggerAgents },
     ...hookTriggerGroups,
-    { label: t('schedules'), options: triggerScheds }
+    { label: t('schedules'), options: triggerScheds },
+    { label: t('doorbells'), options: triggerDoorbells }
   ]
   const triggerFlat: FilterOption[] = [
     triggerAll,
     ...triggerPeople,
     ...triggerAgents,
     ...hookTriggerGroups.flatMap((group) => group.options),
-    ...triggerScheds
+    ...triggerScheds,
+    ...triggerDoorbells
   ]
 
   const filtered = sessions
