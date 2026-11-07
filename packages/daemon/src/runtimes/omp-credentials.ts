@@ -256,11 +256,12 @@ export function copyOmpDatabase(parent: string, into: string): boolean {
   return true
 }
 
-/** Set the key of each listed API key row in a database copy this daemon made, folding its WAL in. */
+/** Set the key of each listed API key row in a database copy this daemon made, folding its WAL in and leaving no old key bytes in the file. */
 export function rewriteOmpApiKeys(copy: string, keys: ReadonlyArray<readonly [OmpApiCredential, string]>): void {
   const database = new DatabaseSync(copy)
   try {
     database.exec('PRAGMA trusted_schema=OFF')
+    database.exec('PRAGMA secure_delete=ON')
     database.exec('BEGIN IMMEDIATE')
     const update = database.prepare(
       "UPDATE auth_credentials SET data = json_set(data, '$.key', ?) WHERE id = ? AND provider = ? AND credential_type = 'api_key'"
@@ -268,6 +269,8 @@ export function rewriteOmpApiKeys(copy: string, keys: ReadonlyArray<readonly [Om
     for (const [row, key] of keys) update.run(key, row.id, row.provider)
     database.exec('COMMIT')
     database.exec('PRAGMA journal_mode=DELETE')
+    // Rebuild the file so a replaced key leaves neither free pages nor cell slack behind.
+    database.exec('VACUUM')
   } finally {
     database.close()
   }

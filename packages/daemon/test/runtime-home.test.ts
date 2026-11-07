@@ -21,7 +21,12 @@ import {
   projectRuntimeHomeSeedFile,
   runtimeHomeEnvironment
 } from '../src/runtimes/runtime-home.js'
-import { extractOmpCredentials, readOmpApiCredentials } from '../src/runtimes/omp-credentials.js'
+import {
+  extractOmpCredentials,
+  installOmpDatabase,
+  readOmpApiCredentials,
+  rewriteOmpApiKeys
+} from '../src/runtimes/omp-credentials.js'
 import { discoverSeededRuntimeCredentials } from '../src/runtimes/runtime-seeded-credentials.js'
 import { fifoWriter, killFifoWriters, mkfifo } from './fifo-support.js'
 import { ompOAuth, writeOmpDatabase } from './runtime-key-files-support.js'
@@ -255,6 +260,29 @@ describe('private runtime HOME', () => {
       restored.close()
     }
     expect(existsSync(`${path}-wal`)).toBe(false)
+  })
+
+  it('leaves no byte of a replaced OMP key in the installed database file', () => {
+    const { scopeDir } = fixture()
+    const parent = join(scopeDir, 'omp-private')
+    mkdirSync(parent, { recursive: true })
+    const copy = join(scopeDir, 'copy', 'agent.db')
+    writeOmpDatabase(copy, 'synthetic-omp-retained-key')
+    const db = new DatabaseSync(copy)
+    try {
+      db.exec('PRAGMA journal_mode=WAL')
+      db.exec("CREATE TABLE usage_history (value TEXT); INSERT INTO usage_history VALUES ('private-usage')")
+    } finally {
+      db.close()
+    }
+    // A sealed placeholder outgrows the key, so SQLite moves the row and leaves the old cell in free space.
+    const placeholder = `acph1_${'f'.repeat(400)}`
+    rewriteOmpApiKeys(copy, [[readOmpApiCredentials(copy)[0]!, placeholder]])
+    installOmpDatabase(copy, parent)
+    const installed = join(parent, 'agent.db')
+    expect(readOmpApiCredentials(installed)[0]?.key).toBe(placeholder)
+    expect(readFileSync(installed).includes(Buffer.from('synthetic-omp-retained-key'))).toBe(false)
+    expect(existsSync(`${installed}-wal`)).toBe(false)
   })
 
   it("gives a credential-proxy placeholder in retained private config way to the host's saved key", () => {
