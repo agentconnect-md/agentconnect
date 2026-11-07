@@ -9,7 +9,12 @@ import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
 import type { CodeHostProvider } from '@agentconnect.md/protocol/code-host'
 
-const HOST_NAME: Record<CodeHostProvider, string> = { github: 'GitHub', gitlab: 'GitLab', gitea: 'Gitea' }
+const HOST_NAME: Record<CodeHostProvider, string> = {
+  github: 'GitHub',
+  gitlab: 'GitLab',
+  gitea: 'Gitea',
+  'azure-devops': 'Azure DevOps'
+}
 
 /** Commits the login the field still holds; false only when the host refused it, with the error already on screen. */
 export type TrustedUsersFlush = () => Promise<boolean>

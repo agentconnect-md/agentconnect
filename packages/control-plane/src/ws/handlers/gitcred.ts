@@ -79,6 +79,11 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
   // §17.3: an explicit 'github' takes exactly the arms the absent form takes and adds the echo the
   // daemon verifies. The absent form stays unqualified — old daemons upgrade slowly and still send it.
   const githubQualified = provider === 'github'
+  // A known host with no credential arm here (Azure DevOps until A2) is refused, never served by the GitHub arm below.
+  if (provider !== undefined && !gitlabRequest && !giteaRequest && !githubQualified) {
+    conn.sendError(frame.id, 'SCOPE_DENIED', `${provider} workspaces are not enabled on this control plane`, false)
+    return
+  }
   if (!gitlabRequest && !giteaRequest && !deps.github) {
     conn.sendError(frame.id, 'SCOPE_DENIED', 'github-app workspaces are not enabled on this control plane', false)
     return

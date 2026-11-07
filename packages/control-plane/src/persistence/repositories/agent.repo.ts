@@ -288,9 +288,7 @@ async function settlePresetPlacement(tx: Prisma.TransactionClient, agentId: stri
   })
 }
 
-// Each host also needs the column holding the identity that makes its credential
-// mintable — the github provenance-hint installation, the gitlab rename-stable
-// project id. A row missing it reads as anonymous rather than minting against nothing.
+// Each host's persisted credential needs the column holding the identity that makes it mintable; without it the row reads as anonymous.
 const CREDENTIAL_OF: Record<CodeHostProvider, (a: Agent) => AgentWorkspaceCredential | undefined> = {
   github: (a) =>
     a.installationId !== null
@@ -298,7 +296,9 @@ const CREDENTIAL_OF: Record<CodeHostProvider, (a: Agent) => AgentWorkspaceCreden
       : undefined,
   gitlab: (a) => (a.workspaceRepoId !== null ? { provider: 'gitlab', access: a.gitAccess } : undefined),
   // The same shape as GitLab's: the numeric repository id is what the bot token is served for (gitea-integration.md §5).
-  gitea: (a) => (a.workspaceRepoId !== null ? { provider: 'gitea', access: a.gitAccess } : undefined)
+  gitea: (a) => (a.workspaceRepoId !== null ? { provider: 'gitea', access: a.gitAccess } : undefined),
+  // A2 adds the connection this credential names; until then a row naming the host reads as anonymous.
+  'azure-devops': () => undefined
 }
 
 function credentialOf(a: Agent): AgentWorkspaceCredential | undefined {

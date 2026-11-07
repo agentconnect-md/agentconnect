@@ -116,7 +116,9 @@ const POLICY_RANK = { off: 0, comment: 1, request_changes: 2, full: 3 } as const
 const REQUEST_CHANGES_NEEDS_REVIEWER: Readonly<Record<CodeHostProvider, boolean>> = {
   github: false,
   gitlab: true,
-  gitea: false
+  gitea: false,
+  // Unreachable: no hooks in v1, so no review turn names Azure DevOps.
+  'azure-devops': false
 }
 
 const EVENT_RANK: Record<HookReviewEvent, number> = {

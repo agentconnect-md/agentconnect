@@ -1,6 +1,7 @@
 # Azure DevOps Integration
 
-> Status: **Proposed**. Scope: **Azure DevOps Services** (`dev.azure.com`),
+> Status: **In progress** — A1 (protocol) has landed; A2 to A4 follow (§13).
+> Scope: **Azure DevOps Services** (`dev.azure.com`),
 > Git repositories in Azure Repos. The first version covers workspaces and
 > additional repositories only; pull-request hooks, reviews, pull-request
 > tools, and code-channel pull-request views are the second step (§11).
@@ -270,8 +271,9 @@ deployment-global, the deployment-global claim keeps its meaning: one
 AgentConnect organization per repository.
 
 The GUID still travels where routing needs it. The agent spec carries, for each
-Azure DevOps root, the repository GUID beside the numeric id, because the Azure
-CLI and REST paths address a repository by GUID as often as by name (§6.2).
+Azure DevOps root, the organization name and the project and repository GUIDs
+beside the numeric id, because the Azure CLI and REST paths address a
+repository by GUID as often as by name (§6.2).
 
 `repoFullName` is `{organization}/{project}/{repository}`. It is display and
 matching text, refreshed when the binding converges; nothing is keyed on it.
@@ -312,7 +314,14 @@ The normalizer accepts:
   DevOps documents for a repository that has its project's name. The probe
   (§12) saw the four-segment form even then, so this form is accepted, never
   produced; and
-- `https://{organization}.visualstudio.com/[DefaultCollection/]{project}/_git/{repository}`.
+- `https://{organization}.visualstudio.com/[DefaultCollection/]{project}/_git/{repository}`,
+  and its three-segment form likewise.
+
+An optional `.git` suffix or trailing slash is dropped. Segments are compared
+after percent-decoding and re-encoded one way, so a space is always `%20`. The
+label of every accepted form is `{organization}/{project}/{repository}`,
+decoded, which is the binding's `repoFullName`. An address that matches none
+of these forms is handled as on any other host.
 
 SSH addresses are not managed: a service principal cannot register SSH keys.
 
@@ -468,14 +477,17 @@ Plane's picker and refresh honor `Retry-After` and `X-RateLimit-Remaining`.
 
 - `CODE_HOST_PROVIDERS` gains `azure-devops`. Every provider-keyed hook table
   gets an entry that refuses, as Gitea's G1 did before its hooks existed; the
-  second step replaces them.
+  second step replaces them. The database's hook-kind enum gains no value: no
+  hook body admits the kind, and a query for it matches nothing.
 - Feature string `azure-devops-v1` on the daemon gates placement and spec
   projection, with fail-closed-by-omission semantics (§6.1).
 - `AgentWorkspaceCredential` gains
   `{ provider: 'azure-devops', repoId, connectionId }`: the numeric identity of
-  §4, and the connection whose identity serves it (§3.2). The spec carries the
-  organization name and each Azure DevOps root's repository GUID. There is no
-  host field, since the host is fixed.
+  §4, and the connection whose identity serves it (§3.2). The routing of §4
+  rides beside them as `azureDevOps: { organization, projectId, repositoryId }`,
+  required on the credential and optional on an additional-repository entry, so
+  an older peer still decodes the list. There is no host field, since the host
+  is fixed.
 - gitcred grants echo the provider, numeric id, path, access, and credential
   epoch, which the daemon verifies as it does for the other providers.
 - The protocol's clone-URL normalizer and label learn the forms of §5.
@@ -678,7 +690,7 @@ live organization before A2.
 
 - **A0 — Push gate.** The proxy refuses `git-receive-pack` under a grant below
   `write` (§6.3). This is #3767; it is not scheduled again here.
-- **A1 — Protocol.** The provider value with refusing hook entries,
+- **A1 — Protocol.** _Landed._ The provider value with refusing hook entries,
   `azure-devops-v1`, the credential arm, the clone-URL forms, and the reserved
   secondary-root directory.
 - **A2 — Control Plane.** The connect flow on the deployment application and

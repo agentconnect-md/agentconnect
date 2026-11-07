@@ -2342,7 +2342,8 @@
         "removalNote": {
           "github": "从现在起会忽略这些 GitHub 事件。历史运行及其会话会保留。",
           "gitlab": "从现在起会忽略这些 GitLab 事件。该项目本身、它的 bot 和 webhook 不受影响。历史运行及其会话会保留。",
-          "gitea": "从现在起会忽略这些 Gitea 事件。该仓库本身、它的 bot 和 webhook 不受影响。历史运行及其会话会保留。"
+          "gitea": "从现在起会忽略这些 Gitea 事件。该仓库本身、它的 bot 和 webhook 不受影响。历史运行及其会话会保留。",
+          "azure-devops": "从现在起会忽略这些 Azure DevOps 事件。历史运行及其会话会保留。"
         },
         "cancel": "取消",
         "disconnecting": "断开中…",

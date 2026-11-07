@@ -14,11 +14,13 @@ import type { CodeHostProviderRegistry } from './provider.js'
 import { githubCodeHostProvider } from '../github/provider.js'
 import { gitlabCodeHostProvider } from '../gitlab/provider.js'
 import { giteaCodeHostProvider } from '../gitea/provider.js'
+import { azureDevOpsCodeHostProvider } from '../azure-devops/provider.js'
 
 export const codeHostProviders: CodeHostProviderRegistry = Object.freeze({
   github: githubCodeHostProvider,
   gitlab: gitlabCodeHostProvider,
-  gitea: giteaCodeHostProvider
+  gitea: giteaCodeHostProvider,
+  'azure-devops': azureDevOpsCodeHostProvider
 })
 
 /** The registry a consumer should read: the one the composition root published, else this record. */

@@ -211,6 +211,8 @@ interface CodeHostHookMetadataByProvider {
   github: GithubHookMetadata
   gitlab: GitlabHookMetadata
   gitea: GiteaHookMetadata
+  // No hooks in v1 (azure-devops-integration.md §11), so no frame carries an Azure DevOps member.
+  'azure-devops': never
 }
 
 /** The trusted member typed for one provider. */

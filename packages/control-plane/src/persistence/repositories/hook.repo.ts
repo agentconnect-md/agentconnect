@@ -16,6 +16,7 @@ import {
   isGithubPullRequestRevisionEvent,
   isRetryableHookDeliveryReason,
   normalizeGitUrl,
+  type HookKind as WireHookKind,
   type Platform
 } from '@agentconnect.md/protocol'
 import { randomUUID } from 'node:crypto'
@@ -28,6 +29,7 @@ import type {
   User
 } from '../../generated/prisma/client.js'
 import { Prisma } from '../../generated/prisma/client.js'
+import { isStoredHookKind } from '../hook-kind.js'
 import type { PrismaLike } from '../prisma.js'
 import { tombstoneCodeHostRunProjections } from './code-host-projection.repo.js'
 import type {
@@ -818,7 +820,8 @@ export class PgHookRepo implements HookRepo {
     return rows.map(toRecord)
   }
 
-  async listIdsForOrgKind(orgId: OrgId, kind: HookRecord['kind']): Promise<HookId[]> {
+  async listIdsForOrgKind(orgId: OrgId, kind: WireHookKind): Promise<HookId[]> {
+    if (!isStoredHookKind(kind)) return []
     const rows = await this.db.hookDef.findMany({ where: { orgId, kind }, select: { id: true } })
     return rows.map((row) => HookId(row.id))
   }

@@ -91,7 +91,9 @@ export function platformOffered(key: string): boolean {
 const CODE_HOST_BLURB: Record<CodeHostProvider, string> = {
   github: 'React to issues & PRs',
   gitlab: 'React to issues & MRs',
-  gitea: 'React to issues & PRs'
+  gitea: 'React to issues & PRs',
+  // Not offered until Azure DevOps has hooks (azure-devops-integration.md §11).
+  'azure-devops': 'React to issues & PRs'
 }
 
 /**

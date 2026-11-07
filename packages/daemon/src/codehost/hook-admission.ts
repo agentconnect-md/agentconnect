@@ -16,6 +16,7 @@ import type { QueueEntry } from '../daemon/turn-types.js'
 import { githubHookAdmission } from '../github/hook-admission.js'
 import { gitlabHookAdmission } from '../gitlab/hook-admission.js'
 import { giteaHookAdmission } from '../gitea/hook-admission.js'
+import { azureDevOpsHookAdmission } from '../azure-devops/hook-admission.js'
 
 /** The three timing gates one open comment batch is sealed by; both providers share them. */
 export const REVIEW_BATCH_QUIET_MS = 5_000
@@ -89,7 +90,8 @@ export interface CodeHostHookAdmission {
 const ADMISSIONS: { readonly [P in CodeHostProvider]: CodeHostHookAdmission } = {
   github: githubHookAdmission,
   gitlab: gitlabHookAdmission,
-  gitea: giteaHookAdmission
+  gitea: giteaHookAdmission,
+  'azure-devops': azureDevOpsHookAdmission
 }
 
 /** The module owning one delivery, resolved off the frame's trusted provider member. */

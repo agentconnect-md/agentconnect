@@ -911,7 +911,7 @@ export const GitResolveDto = z.object({
   access: z.enum(['read', 'write']),
   defaultBranch: z.string().optional(),
   /** For an anonymous outcome: which managed host the target sits on ('other' ⇒ none of them). */
-  host: z.enum(['github', 'gitlab', 'gitea', 'other']).optional()
+  host: z.enum(['github', 'gitlab', 'gitea', 'azure-devops', 'other']).optional()
 })
 export type GitResolveDtoT = z.infer<typeof GitResolveDto>
 

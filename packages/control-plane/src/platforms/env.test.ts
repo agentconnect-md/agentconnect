@@ -166,6 +166,7 @@ describe('composed AppConfigSchema', () => {
         'github',
         'gitlab',
         'gitea',
+        'azure-devops',
         'linear',
         'slack',
         'slackbot',

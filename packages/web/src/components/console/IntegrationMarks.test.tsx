@@ -20,6 +20,7 @@ vi.mock('@/components/marks', () => ({
   GithubMark: () => <span data-mark="github" />,
   GitlabMark: () => <span data-mark="gitlab" />,
   GiteaMark: () => <span data-mark="gitea" />,
+  AzureDevOpsMark: () => <span data-mark="azure-devops" />,
   PlatformMark: ({ platform }: { platform: string }) => <span data-mark={platform} />
 }))
 

@@ -16,6 +16,7 @@ import webhooksLogoFillIcon from '@iconify-icons/ph/webhooks-logo-fill'
 import { Icon as IconifyIcon } from '@iconify/react'
 import { FcGoogle } from 'react-icons/fc'
 import { SiDiscord, SiForgejo, SiGitea, SiGithub, SiTelegram, SiVercel } from 'react-icons/si'
+import { VscAzureDevops } from 'react-icons/vsc'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { useGiteaProduct } from '@/lib/gitea-product'
 import { LARK_MARK_SRC } from './console/platforms/feishu/mark'
@@ -247,6 +248,24 @@ export function GiteaMark({ color, fillPct = 60 }: { color?: string; fillPct?: n
   return <GiteaProductGlyph style={{ width: `${fillPct}%`, height: `${fillPct}%`, display: 'block' }} color={color} />
 }
 
+// Azure DevOps mark — the codicon glyph of its logo in the brand blue; `color` overrides it for a monochrome surface.
+export const AZURE_DEVOPS_BRAND_COLOR = '#0078D4'
+export function AzureDevOpsMark({
+  color = AZURE_DEVOPS_BRAND_COLOR,
+  fillPct = 60
+}: {
+  color?: string
+  fillPct?: number
+}) {
+  return (
+    <VscAzureDevops
+      style={{ width: `${fillPct}%`, height: `${fillPct}%`, display: 'block' }}
+      color={color}
+      aria-hidden
+    />
+  )
+}
+
 function GiteaProductGlyph({ style, color }: { style: CSSProperties; color?: string }) {
   if (useGiteaProduct() === 'forgejo')
     return <SiForgejo style={style} color={color ?? FORGEJO_BRAND_COLOR} aria-hidden />
@@ -321,6 +340,9 @@ export function PlatformMark({ platform, fillPct = 60 }: { platform: string; fil
   }
   if (x.includes('gitea')) {
     return <GiteaProductGlyph style={sq} />
+  }
+  if (x.includes('azure-devops')) {
+    return <VscAzureDevops style={sq} color={AZURE_DEVOPS_BRAND_COLOR} aria-hidden />
   }
   if (x.includes('hook')) {
     return <IconifyIcon icon={webhooksLogoFillIcon} style={sq} color="var(--brand)" aria-hidden />

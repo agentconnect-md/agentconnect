@@ -1037,6 +1037,19 @@ const HOOK_NORMALIZERS: { readonly [P in CodeHostProvider]: HookNormalizer<P> } 
         ? anchorEventLine(c.action ? `${c.event}:${c.action}` : (c.event ?? 'event'), giteaSubjectRef(gitea), c)
         : undefined,
     threadUrl: (c, gitea) => (gitea ? giteaThreadUrl(gitea) : undefined) ?? c?.htmlUrl
+  },
+  // No hooks in v1 (azure-devops-integration.md §11): no standing context means this build will not answer one.
+  'azure-devops': {
+    decisionSubject: (c) => targetDecisionSubject(c, undefined, undefined, undefined, undefined),
+    sessionThread: () => undefined,
+    sessionTitle: () => undefined,
+    standingContext: () => undefined,
+    turnFacts: () => undefined,
+    subjectLabel: () => 'Azure DevOps',
+    eventLine: () => undefined,
+    text: () => undefined,
+    anchorLine: () => undefined,
+    threadUrl: (c) => c?.htmlUrl
   }
 }
 

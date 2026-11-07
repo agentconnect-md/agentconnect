@@ -22,7 +22,15 @@ import { amountToNumber } from '@/lib/amount'
 import { useConsoleData } from '@/lib/data-context'
 import { IntegrationMarks, RevokedMarkDot } from '@/components/console/IntegrationMarks'
 import { useModal } from '@/components/console/ModalProvider'
-import { AgentIconView, GiteaMark, GithubMark, GitlabMark, LoadingState, PlatformMark } from '@/components/marks'
+import {
+  AgentIconView,
+  AzureDevOpsMark,
+  GiteaMark,
+  GithubMark,
+  GitlabMark,
+  LoadingState,
+  PlatformMark
+} from '@/components/marks'
 import { BuiltinBadge } from '@/components/console/BuiltinBadge'
 import { RestrictedLock } from '@/components/console/VisibilityField'
 import { Avatar, Button, Icon } from '@/components/ui'
@@ -33,13 +41,12 @@ import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { AgentReachabilityOverview } from '@/components/console/AgentReachabilityOverview'
 import { useOnboardingRedirect } from '@/lib/use-onboarding-redirect'
 
-// The single mark a compact agent row shows for its inbound triggers. Total over the
-// hook-kind vocabulary, so a new code host is given a mark instead of falling through
-// to the generic webhook glyph the way an unmapped kind used to.
+// A compact agent row's one trigger mark; total over the hook kinds, so no code host falls through to the webhook glyph.
 const AGENT_HOOK_MARK: Record<HookKind, ReactNode> = {
   github: <GithubMark />,
   gitlab: <GitlabMark />,
   gitea: <GiteaMark />,
+  'azure-devops': <AzureDevOpsMark />,
   webhook: <Icon name="webhook" size={14} color="var(--text-secondary)" />
 }
 

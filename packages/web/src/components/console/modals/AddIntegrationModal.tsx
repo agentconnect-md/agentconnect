@@ -179,7 +179,9 @@ export type FeishuRegion = LarkFeishuTarget
 const CODE_HOST_SUBSCRIPTION_HINT: Record<CodeHostProvider, string> = {
   github: 'Matching events run the agent in a session and reply on the same PR, issue or commit thread.',
   gitlab: 'Matching events run the agent in a session and reply on the same issue, merge request or push thread.',
-  gitea: 'Matching events run the agent in a session and reply on the same issue, pull request or push thread.'
+  gitea: 'Matching events run the agent in a session and reply on the same issue, pull request or push thread.',
+  // Not offered: Azure DevOps has no hooks in v1 (azure-devops-integration.md §11).
+  'azure-devops': ''
 }
 
 const WEBHOOK_DOCS_PATH = 'connect-automate/triggers-automation/webhooks'
@@ -1476,8 +1478,7 @@ export default function AddIntegrationModal({
   // whatever the active fragment published (`WizardHost.setFooter`), and the
   // fragment bakes its own busy label / disabled state into that publication.
   const identityHidden = identityView?.hidden === true
-  // Each code host subscribes through its own pane, so its footer is its own. Total over the
-  // providers, so a new host cannot inherit GitHub's submit.
+  // Each code host's pane has its own footer; total, so a new host cannot inherit GitHub's submit.
   const codeHostFooter: Record<
     CodeHostProvider,
     { label: string; act: () => void; enabled: boolean; hidden: boolean }
@@ -1499,7 +1500,9 @@ export default function AddIntegrationModal({
       act: () => void submitGitea(),
       enabled: !!gtRepo && !gtAlreadyWatched && gtRepoAuthorized && gtSelectedFams.length > 0,
       hidden: false
-    }
+    },
+    // No hooks in v1, so this pane is never offered and its footer submits nothing.
+    'azure-devops': { label: 'Connect', act: () => {}, enabled: false, hidden: true }
   }
   const footer =
     platform === 'webhook'

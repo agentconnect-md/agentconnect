@@ -25,6 +25,7 @@ import {
 import { githubTurnFinal, type GithubTurnFinalHost } from '../github/turn-final.js'
 import { gitlabTurnFinal, type GitlabTurnFinalHost } from '../gitlab/turn-final.js'
 import { giteaTurnFinal, type GiteaTurnFinalHost } from '../gitea/turn-final.js'
+import { azureDevOpsTurnFinal, type AzureDevOpsTurnFinalHost } from '../azure-devops/turn-final.js'
 import type { GithubCommentAttributionSource } from '../github/poster.js'
 import type { GitlabPublishFailure } from '../gitlab/poster.js'
 import type { HookPromptSupplement } from '../messages/hook-message.js'
@@ -69,7 +70,10 @@ export type CodeHostReplySource = CodeHostHookMembers & Pick<RdMsgHook, 'hookId'
 export type CodeHostThreadWorktreeCleanup = 'pull_request_merged' | 'issue_closed' | 'issue_deleted'
 
 /** What the daemon lends these members; each provider declares only the part it reads. */
-export type CodeHostTurnFinalHost = GithubTurnFinalHost & GitlabTurnFinalHost & GiteaTurnFinalHost
+export type CodeHostTurnFinalHost = GithubTurnFinalHost &
+  GitlabTurnFinalHost &
+  GiteaTurnFinalHost &
+  AzureDevOpsTurnFinalHost
 
 /** One code host's turn-final members. */
 export interface CodeHostTurnFinal<P extends CodeHostProvider = CodeHostProvider> {
@@ -100,7 +104,8 @@ export interface CodeHostTurnFinal<P extends CodeHostProvider = CodeHostProvider
 const TURN_FINALS: { readonly [P in CodeHostProvider]: CodeHostTurnFinal<P> } = {
   github: githubTurnFinal,
   gitlab: gitlabTurnFinal,
-  gitea: giteaTurnFinal
+  gitea: giteaTurnFinal,
+  'azure-devops': azureDevOpsTurnFinal
 }
 
 /** Every registered member, in provider order — the order a member that claims its own delivery resolves in. */

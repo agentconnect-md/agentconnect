@@ -83,10 +83,7 @@ export const GitCredRequest = z.object({
   // verify grant.repoFullName against what they asked for before trusting it.
   repoFullName: z.string().optional(),
   // ── gitcred v2 (gitlab-com-integration.md §17.1) — negotiated fields ──
-  // Absent ⇒ GitHub, the pre-v2 wire user-installed daemons keep sending for a long time yet.
-  // 'gitlab' may be named only after GITCRED_PROVIDER_V2_FEATURE and an explicit 'github' only
-  // after GITCRED_GITHUB_V2_FEATURE; an older CP strips the field and answers a GitHub workspace
-  // grant, so a consumer that named one MUST verify the echo before trusting it (see GitCredGrant).
+  // Absent ⇒ GitHub; a named provider needs its feature (GITCRED_PROVIDER_V2, GITCRED_GITHUB_V2, AZURE_DEVOPS_V1), and its echo MUST be verified.
   provider: CodeHostProviderString.optional(),
   // Rename-stable numeric repository/project identity for the named provider; display paths are
   // never a v2 match key. The GitHub arm still RESOLVES by name, so there it is verify-if-present.

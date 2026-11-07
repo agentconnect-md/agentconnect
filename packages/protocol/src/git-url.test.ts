@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  azureDevOpsRepoAddress,
   DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS,
   MAX_GIT_REPO_LENGTH,
   GitCloneUrlError,
@@ -293,6 +294,109 @@ describe('gitRepoLabel', () => {
 
   it('round-trips normalize → label back to the short form', () => {
     expect(gitRepoLabel(normalizeGitUrl('acme/infra'))).toBe('acme/infra')
+  })
+})
+
+describe('Azure DevOps clone addresses (azure-devops-integration.md §5)', () => {
+  const CANONICAL = 'https://dev.azure.com/example-org/Example%20Project/_git/Example%20Repo'
+
+  it.each([
+    ['the canonical form', CANONICAL],
+    [
+      'the organization as user-info',
+      'https://example-org@dev.azure.com/example-org/Example%20Project/_git/Example%20Repo'
+    ],
+    [
+      'user-info in another case',
+      'https://Example-Org@dev.azure.com/example-org/Example%20Project/_git/Example%20Repo'
+    ],
+    ['a .git suffix', `${CANONICAL}.git`],
+    ['a trailing slash', `${CANONICAL}/`],
+    ['a .git suffix and a trailing slash', `${CANONICAL}.git/`],
+    ['visualstudio.com', 'https://example-org.visualstudio.com/Example%20Project/_git/Example%20Repo'],
+    [
+      'visualstudio.com with DefaultCollection',
+      'https://example-org.visualstudio.com/DefaultCollection/Example%20Project/_git/Example%20Repo'
+    ],
+    [
+      'visualstudio.com with user-info',
+      'https://example-org@example-org.visualstudio.com/Example%20Project/_git/Example%20Repo'
+    ],
+    ['host-prefixed shorthand', 'dev.azure.com/example-org/Example%20Project/_git/Example%20Repo'],
+    ['an encoded letter', 'https://dev.azure.com/example-org/Example%20Pr%6Fject/_git/Example%20Repo']
+  ])('normalizes %s to the canonical address', (_name, input) => {
+    expect(normalizeGitCloneUrl(input)).toBe(CANONICAL)
+    expect(normalizeGitCloneUrl(normalizeGitCloneUrl(input))).toBe(CANONICAL)
+  })
+
+  it('reads the three-segment form as a repository named like its project, and never produces it', () => {
+    const expected = 'https://dev.azure.com/example-org/Example%20Repo/_git/Example%20Repo'
+    expect(normalizeGitCloneUrl('https://dev.azure.com/example-org/_git/Example%20Repo')).toBe(expected)
+    expect(normalizeGitCloneUrl('https://example-org@dev.azure.com/example-org/_git/Example%20Repo.git')).toBe(expected)
+    expect(normalizeGitCloneUrl('https://example-org.visualstudio.com/DefaultCollection/_git/Example%20Repo')).toBe(
+      expected
+    )
+  })
+
+  it('re-encodes every reserved character the same way', () => {
+    expect(normalizeGitCloneUrl('https://dev.azure.com/example-org/R%26D/_git/a%2Bb')).toBe(
+      'https://dev.azure.com/example-org/R%26D/_git/a%2Bb'
+    )
+    expect(normalizeGitCloneUrl('https://dev.azure.com/example-org/R&D/_git/a+b')).toBe(
+      'https://dev.azure.com/example-org/R%26D/_git/a%2Bb'
+    )
+  })
+
+  it.each([
+    ['a password', 'https://example-org:secret@dev.azure.com/example-org/Example%20Project/_git/Example%20Repo'],
+    [
+      'a user-info that is not the organization',
+      'https://someone@dev.azure.com/example-org/Example%20Project/_git/Example%20Repo'
+    ],
+    [
+      'another organization as user-info',
+      'https://other-org@example-org.visualstudio.com/Example%20Project/_git/Example%20Repo'
+    ],
+    ['user-info on a path that is not a repository', 'https://example-org@dev.azure.com/example-org/Example%20Project']
+  ])('still refuses %s as a credential', (_name, input) => {
+    expect(() => normalizeGitCloneUrl(input)).toThrow(/credentials/)
+  })
+
+  it('leaves non-repository paths, encoded slashes, and SSH addresses as they are today', () => {
+    for (const input of [
+      'https://dev.azure.com/example-org/Example%20Project',
+      'https://dev.azure.com/example-org/Example%20Project/_git/a%2Fb',
+      'https://dev.azure.com/example-org/Example%20Project/_git/Example%20Repo/extra',
+      'git@ssh.dev.azure.com:v3/example-org/Example%20Project/Example%20Repo',
+      'ssh://git@ssh.dev.azure.com/v3/example-org/Example%20Project/Example%20Repo'
+    ]) {
+      expect(normalizeGitCloneUrl(input)).toBe(input)
+    }
+    expect(azureDevOpsRepoAddress('https://dev.azure.com:8443/example-org/p/_git/r')).toBeUndefined()
+    expect(azureDevOpsRepoAddress('https://dev.azure.example.test/example-org/p/_git/r')).toBeUndefined()
+  })
+
+  it('refuses a query or fragment exactly as for any other host', () => {
+    expect(() => normalizeGitCloneUrl(`${CANONICAL}?path=/`)).toThrow(/query or fragment/)
+    expect(() => normalizeGitCloneUrl(`${CANONICAL}#readme`)).toThrow(/query or fragment/)
+  })
+
+  it('labels every accepted form as organization/project/repository, decoded', () => {
+    for (const input of [
+      CANONICAL,
+      'https://example-org@dev.azure.com/example-org/Example%20Project/_git/Example%20Repo.git',
+      'https://example-org.visualstudio.com/DefaultCollection/Example%20Project/_git/Example%20Repo'
+    ]) {
+      expect(gitRepoLabel(input)).toBe('example-org/Example Project/Example Repo')
+    }
+    expect(gitRepoLabel('https://dev.azure.com/example-org/_git/Example%20Repo')).toBe(
+      'example-org/Example Repo/Example Repo'
+    )
+    expect(azureDevOpsRepoAddress(CANONICAL)).toEqual({
+      organization: 'example-org',
+      project: 'Example Project',
+      repository: 'Example Repo'
+    })
   })
 })
 

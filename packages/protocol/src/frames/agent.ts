@@ -28,17 +28,23 @@ import { isGitHubSkillSource, normalizeSkillSource } from '../git-url.js'
 export const RepoMaterialization = z.enum(['always', 'decision', 'on-demand'])
 export type RepoMaterialization = z.infer<typeof RepoMaterialization>
 
-// One repository of the agent's additional-repository allowlist (multi-repository-workspaces.md decision 2).
-// `repoId` is the host's numeric repository/project id as a decimal string — rename-immune, the identity
-// minting matches on. `provider` qualifies it (gitlab-com-integration.md §8.1): the hosts number their
-// repositories independently, so the pair is the identity. Absent ⇒ `github`, which is what every row a
-// pre-GitLab control plane projects means, so an older peer's list still decodes. `materialize` absent ⇒
-// `always`, what every entry an older control plane projects means.
+// Where an Azure DevOps repository lives (azure-devops-integration.md §4): the surrogate numeric id is the identity, these are routing.
+export const AzureDevOpsRepoRouting = z.object({
+  // An Azure DevOps organization name: letters, digits and inner hyphens.
+  organization: z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,48}[A-Za-z0-9])?$/),
+  projectId: z.guid().toLowerCase(),
+  repositoryId: z.guid().toLowerCase()
+})
+export type AzureDevOpsRepoRouting = z.infer<typeof AzureDevOpsRepoRouting>
+
+// One allowlisted repository (multi-repository-workspaces.md decision 2): `(provider, repoId)` is the identity; absent defaults are what an older control plane meant.
 export const AgentAdditionalRepo = z.object({
   repoFullName: z.string(),
   repoId: z.string(),
   provider: CodeHostProviderString.default('github'),
-  materialize: RepoMaterialization.default('always')
+  materialize: RepoMaterialization.default('always'),
+  // Present on an `azure-devops` entry only; an older peer strips the unknown key.
+  azureDevOps: AzureDevOpsRepoRouting.optional()
 })
 export type AgentAdditionalRepo = z.infer<typeof AgentAdditionalRepo>
 
@@ -71,17 +77,21 @@ export type AgentAdditionalInstallation = z.infer<typeof AgentAdditionalInstalla
  * Every mode carries `additionalRepos`, the CP-projected allowlist: the daemon checks out each `always` entry and scopes credentials to the whole list.
  * Every mode also carries `additionalInstallations`, the installation grants beside it; one is never expanded into `additionalRepos`.
  */
-// Who vouches for a `git` workspace's repository (git-workspace-model.md §3).
-// Absent ⇒ anonymous clone; the daemon's operator-owned `workspaceGitAllowedOrigins`
-// still gates the origin. `access` stays off the wire — the CP clamps minted tokens
-// server-side. A new code host is a new variant here, never a new workspace mode.
+// Who vouches for a `git` workspace's repository (git-workspace-model.md §3); absent ⇒ anonymous, and a new code host is a new variant here.
 export const AgentWorkspaceCredential = z.discriminatedUnion('provider', [
   // Minting re-resolves the live installation by owner, so no installationId travels.
   z.object({ provider: z.literal('github') }),
   // The rename-stable numeric project id — the gitcred v2 request identity.
   z.object({ provider: z.literal('gitlab'), projectId: z.string().regex(/^[1-9]\d*$/) }),
   // The rename-stable numeric repository id (gitea-integration.md §12); same v2 request identity.
-  z.object({ provider: z.literal('gitea'), repoId: z.string().regex(/^[1-9]\d*$/) })
+  z.object({ provider: z.literal('gitea'), repoId: z.string().regex(/^[1-9]\d*$/) }),
+  // The surrogate numeric id, the connection whose identity serves it, and the routing the proxy needs (azure-devops-integration.md §7).
+  z.object({
+    provider: z.literal('azure-devops'),
+    repoId: z.string().regex(/^[1-9]\d*$/),
+    connectionId: z.string().min(1),
+    azureDevOps: AzureDevOpsRepoRouting
+  })
 ])
 export type AgentWorkspaceCredential = z.infer<typeof AgentWorkspaceCredential>
 
