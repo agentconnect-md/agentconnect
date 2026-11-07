@@ -17,10 +17,19 @@ import {
 } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import { agentHostKey } from '../src/acp/host-key.js'
-import { gitcredShimPath } from '../src/cp/gitcred-server.js'
+import { ghShimDir, secretsShimDir } from '../src/cp/gh-shim.js'
+import { glabShimDir } from '../src/cp/glab-shim.js'
+import {
+  GITCRED_AGENT_ENV,
+  GITCRED_CAPABILITY_ENV,
+  gitcredShimPath,
+  gitcredSocketPath,
+  RUNTIME_NO_MINT_ERROR
+} from '../src/cp/gitcred-server.js'
+import { gitcredIpc } from '../src/gitcred/gh-token-ipc.js'
 import { CredentialProxy } from '../src/credential-proxy/proxy.js'
 import { PROXY_TRUST_VARS } from '../src/credential-proxy/trust-bundle.js'
-import { workspaceGitLocalEnv, writeRepoHelperConfig } from '../src/workspace/git-injection.js'
+import { cloneGitEnv, workspaceGitLocalEnv, writeRepoHelperConfig } from '../src/workspace/git-injection.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 // A host-strategy session of a real daemon with `features.credentialProxy`, as the daemon itself assembles and serves it.
@@ -267,6 +276,52 @@ describe('a host session with the credential proxy on', () => {
       expect(d.credentialProxy.proxy.domainsFor(GITLAB_AGENT)).toEqual(['gitlab.example.test'])
       expect(fill(cwd, child, 'gitlab.example.test:8443', 'gitlab/group/project.git')).toBe(placeholder)
       expect(JSON.stringify(own)).not.toMatch(/ghs_|glpat/)
+      // No glab wrapper to fetch a token: glab presents the placeholder itself, at the spec's instance.
+      expect(own.GITLAB_HOST).toBe(instance)
+      expect(own.PATH!.split(':')).not.toContain(glabShimDir(root))
+      expect(own.PATH!.split(':')).toContain(secretsShimDir(root))
+    }
+  )
+
+  // POSIX only: the stand-in helper is a shell script.
+  it.skipIf(process.platform === 'win32')(
+    'keeps every way to a real token out of the session, and leaves the daemon its own',
+    async () => {
+      const { d, root } = await startDaemon(true)
+      stubRealHelper(root)
+      const agent = await admit(d, GITHUB_AGENT, githubSpec())
+      const cwd = await checkout(d, agent)
+      const asked = fakeControlPlane(d, 'write')
+      const { own, child } = sessionEnv(d, GITHUB_AGENT)
+      // The checkout's own pin answers, so a child that drops every command-scope pair still presents the placeholder.
+      const reset = { ...child, GIT_CONFIG_COUNT: '0' }
+      expect(fill(cwd, reset, 'github.com', 'example-org/example-repo.git')).toBe(own.AC_CODEHOST_CREDENTIAL)
+      // No gh wrapper, whose token fetch the runtime's capability would be refused; the secrets helper stays.
+      const path = own.PATH!.split(':')
+      expect(path).not.toContain(ghShimDir(root))
+      expect(path).toContain(secretsShimDir(root))
+      expect(readFileSync(join(secretsShimDir(root), 'agentconnect-secrets'), 'utf8')).toContain(' secrets')
+      // The runtime's capability, as the session holds it, mints nothing on any plane and still reads secrets.
+      const socket = gitcredSocketPath(root)
+      const presented = { agentId: own[GITCRED_AGENT_ENV], capability: own[GITCRED_CAPABILITY_ENV] }
+      for (const plane of ['git', 'gh']) {
+        expect(await gitcredIpc(socket, { op: 'get', ...presented, plane })).toEqual({
+          ok: false,
+          error: RUNTIME_NO_MINT_ERROR,
+          denied: 'agent'
+        })
+      }
+      expect(await gitcredIpc(socket, { op: 'secret', ...presented })).toEqual({ ok: true, secrets: [] })
+      expect(asked).toEqual([])
+      // The daemon's own git keeps minting with its own capability.
+      const daemon = d.gitCredServer.capabilityFor(GITHUB_AGENT, 'daemon')
+      expect(daemon).not.toBe(presented.capability)
+      expect(cloneGitEnv(GITHUB_AGENT)[GITCRED_CAPABILITY_ENV]).toBe(daemon)
+      expect(await gitcredIpc(socket, { op: 'get', agentId: GITHUB_AGENT, capability: daemon })).toMatchObject({
+        ok: true,
+        password: MINTED_GITHUB
+      })
+      expect(asked).toHaveLength(1)
     }
   )
 })
@@ -317,8 +372,17 @@ describe('a host session with the credential proxy off', () => {
     stubRealHelper(root)
     const agent = await admit(d, GITHUB_AGENT, githubSpec())
     const cwd = await checkout(d, agent)
-    const { child } = sessionEnv(d, GITHUB_AGENT)
+    const { own, child } = sessionEnv(d, GITHUB_AGENT)
     expect(fill(cwd, child, 'github.com', 'example-org/example-repo.git')).toBe(HELPER_TOKEN)
+    // Its gh fetches a token through the wrapper, which sits beside the secrets helper.
+    expect(own.PATH!.split(':')).toEqual(expect.arrayContaining([ghShimDir(root), secretsShimDir(root)]))
+    // And its runtime capability still mints.
+    fakeControlPlane(d, 'write')
+    const presented = { agentId: own[GITCRED_AGENT_ENV], capability: own[GITCRED_CAPABILITY_ENV] }
+    expect(await gitcredIpc(gitcredSocketPath(root), { op: 'get', ...presented })).toMatchObject({
+      ok: true,
+      password: MINTED_GITHUB
+    })
   })
 })
 

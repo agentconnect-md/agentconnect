@@ -15,6 +15,7 @@ import {
   GITCRED_AGENT_ENV,
   GitCredServer,
   gitcredSocketPath,
+  RUNTIME_NO_MINT_ERROR,
   type GitCredServerDeps
 } from '../../src/cp/gitcred-server.js'
 import { GitCredUnavailableError, type GitCredentialCache } from '../../src/cp/git-credential.js'
@@ -490,6 +491,57 @@ describe('GitCredServer routing (gitcred.sock)', () => {
     }
     expect(gets).toHaveLength(2)
     expect(erases).toHaveLength(2)
+  })
+
+  it("refuses a proxied agent's runtime capability get and erase, and still serves it secrets", async () => {
+    let proxied = true
+    const { sockPath, gets, erases, warnings, capability, runtimeCapability } = await boot(undefined, {
+      runtimeMayMint: (agentId) => !(proxied && agentId === 'a1'),
+      liveSecretsOf: () => [{ name: 'EXAMPLE_TOKEN', value: 'example-value' }]
+    })
+    const refused = { ok: false, error: RUNTIME_NO_MINT_ERROR, denied: 'agent' }
+    for (const plane of ['git', 'gh', 'glab']) {
+      await expect(
+        roundtrip(sockPath, { op: 'get', agentId: 'a1', capability: runtimeCapability, plane })
+      ).resolves.toEqual(refused)
+    }
+    await expect(
+      roundtrip(sockPath, { op: 'erase', agentId: 'a1', capability: runtimeCapability, password: 'ghs_dead' })
+    ).resolves.toEqual(refused)
+    expect(gets).toHaveLength(0)
+    expect(erases).toHaveLength(0)
+    expect(warnings.join('\n')).toContain('outcome=denied')
+    await expect(roundtrip(sockPath, { op: 'secret', agentId: 'a1', capability: runtimeCapability })).resolves.toEqual({
+      ok: true,
+      secrets: [{ name: 'EXAMPLE_TOKEN', value: 'example-value' }]
+    })
+
+    // The daemon's own capability still mints for the same agent.
+    await expect(roundtrip(sockPath, { op: 'get', agentId: 'a1', capability })).resolves.toMatchObject({
+      ok: true,
+      password: 'ghs_test'
+    })
+    await expect(
+      roundtrip(sockPath, { op: 'erase', agentId: 'a1', capability, password: 'ghs_dead' })
+    ).resolves.toEqual({ ok: true })
+
+    // Decided on each request: once the proxy no longer carries the agent, the same capability mints again.
+    proxied = false
+    await expect(
+      roundtrip(sockPath, { op: 'get', agentId: 'a1', capability: runtimeCapability })
+    ).resolves.toMatchObject({ ok: true, password: 'ghs_test' })
+    expect(gets).toHaveLength(2)
+  })
+
+  it("leaves an unproxied agent's runtime capability minting beside a proxied one's", async () => {
+    const { sockPath, gets } = await boot(undefined, { runtimeMayMint: (agentId) => agentId !== 'a2' })
+    await expect(
+      roundtrip(sockPath, { op: 'get', agentId: 'a1', capability: server!.capabilityFor('a1', 'runtime') })
+    ).resolves.toMatchObject({ ok: true, password: 'ghs_test' })
+    await expect(
+      roundtrip(sockPath, { op: 'get', agentId: 'a2', capability: server!.capabilityFor('a2', 'runtime') })
+    ).resolves.toMatchObject({ ok: false, error: RUNTIME_NO_MINT_ERROR })
+    expect(gets.map((call) => call.agentId)).toEqual(['a1'])
   })
 
   it('rejects missing, cross-agent, and revoked capabilities of either holder before cache access', async () => {
