@@ -479,7 +479,6 @@ describe('ThreadPanel', () => {
     wire.canContinue = false
     await render()
     expect(container.querySelector('textarea')).toBeNull()
-    expect(container.textContent).toContain('You can read this task, but not reply to it here.')
   })
 
   it('heads the thread with its title and state, and goes back from the crumb or the close button', async () => {

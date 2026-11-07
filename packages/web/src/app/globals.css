@@ -2444,9 +2444,22 @@
   .mdtxt ol {
     margin: 0;
     padding-left: 20px;
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
+  }
+  /* The global reset strips list-style; without a marker a list item reads as a stray indent. */
+  .mdtxt ul {
+    list-style: disc;
+  }
+  .mdtxt ol {
+    list-style: decimal;
+  }
+  .mdtxt li + li {
+    margin-top: 3px;
+  }
+  .mdtxt li::marker {
+    color: var(--text-tertiary);
+  }
+  .mdtxt li.task-list-item {
+    list-style: none;
   }
   .mdtxt blockquote {
     margin: 0;
