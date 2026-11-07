@@ -945,8 +945,9 @@ connection-write, and secret routes manage a credential and are
 - Several connections per AgentConnect organization, each agent choosing one.
   This is how an agent gets an identity of its own: the customer registers an
   application whose service principal reaches only that agent's repositories,
-  so Azure DevOps itself bounds it. The model already keys everything by
-  connection (§3.2). Only the Console's choice is missing.
+  so Azure DevOps itself bounds it, and it is also how an agent gets a review
+  vote of its own (§11.6). The model already keys everything by connection
+  (§3.2). Only the Console's choice is missing.
 - Finer control in the proxy than §6.2 describes, such as filtering a list down
   to the agent's repositories instead of refusing it.
 - A second, read-only identity per organization beneath the proxy.
@@ -1030,9 +1031,13 @@ say (§11.4).
 The binding records each subscription id with its kind. The Control Plane's
 `convergeManagedRepository` makes the set match the union of the enabled
 hooks' families: it creates what is missing, deletes what no hook needs, and
-reads each recorded subscription back, so a subscription removed in Azure
-DevOps is recreated. A repository whose last hook goes away loses all of its
-subscriptions; the binding stays for its workspaces and grants.
+reads each recorded subscription back. A subscription removed in Azure DevOps
+is recreated. One whose `eventType`, publisher inputs, or consumer inputs
+other than the masked password no longer match its recorded kind, which the
+grant of §11.1 lets anyone with it edit, is rewritten whole with `PUT`, the
+current secret included, before its status is touched. A repository whose
+last hook goes away loses all of its subscriptions; the binding stays for its
+workspaces and grants.
 
 **Secrets.** The signing secret is 32 random bytes per binding, hex, sealed
 like the other code hosts' webhook secrets. A subscription read answers it as
@@ -1042,9 +1047,27 @@ like the other code hosts' webhook secrets. A subscription read answers it as
 custom header. A rotation replaces each subscription's consumer inputs with
 `PUT _apis/hooks/subscriptions/{id}` carrying the new secret in full; the
 masked value a read returns is never sent back, since what Azure DevOps does
-with it is not established. The rule carries the successor as
-`nextSigningKey` until the relay reports a delivery verified under it, as in
-Gitea §7, and a rotation cut short resumes from the recorded state.
+with it is not established.
+
+One key serves several subscriptions, so a rotation is a fan-out with a
+barrier, unlike Gitea §7's single successor webhook:
+
+1. seal the next key and compile it into the rule as `nextSigningKey`, so the
+   relay accepts both;
+2. `PUT` each recorded subscription with the next key, recording per
+   subscription, durably, that its update was acknowledged; a rotation cut
+   short resumes from those records and never re-keys a subscription twice
+   under different secrets;
+3. once every recorded subscription is recorded as switched — the barrier —
+   the next delivery verified under the next key promotes it. A delivery
+   verified under the next key before the barrier promotes nothing; and
+4. the old key stays accepted as `previousSigningKey` for 36 hours after
+   promotion, the length of Azure DevOps's retry schedule, so a notification
+   queued before its subscription switched is not refused and does not put
+   that subscription on probation.
+
+A subscription created during a rotation gets the next key and counts as
+switched.
 
 **Subscription state.** Azure DevOps puts a subscription on probation after a
 failure that is not transient, drops new events while it lasts, and disables
@@ -1072,8 +1095,9 @@ timestamp. The relay:
    id, its organization `instanceId`, project and repository GUIDs, the
    delivery kind, the connection's identity id as the veto set, and the
    signing keys;
-3. compares the `Authorization: Basic` credentials, timing-safe, against the
-   current and next key, user name included; and only then
+3. compares the `Authorization: Basic` credentials, timing-safe, against every
+   key the rule carries (current, next, and previous during its 36 hours),
+   user name included; and only then
 4. decodes the body, and refuses one whose `eventType`, collection id or
    project id disagrees with the rule, or whose resource names another
    repository or pull request than the rule's repository.
@@ -1090,7 +1114,9 @@ deliveryKey)` uniqueness and the session inbox absorb repeats, and an Azure
 DevOps retry is the same notification of the same event.
 
 The relay reports a verified delivery to the Control Plane as
-`rc/codehost-delivery`, with the subscription id and which key verified it.
+`rc/codehost-delivery` with the frame's existing fields: the surrogate id the
+rule holds as `repoExternalId`, and which key verified it. Keys and promotion
+belong to the binding, so the frame needs no subscription id.
 
 ### 11.4 Event Mapping and Routing
 
@@ -1134,7 +1160,7 @@ broadcast, which Azure DevOps stores in a comment's content as
 **Loop prevention.** A delivery whose actor is the connection's identity id is
 rejected: `createdBy.id` for opened, `author.id` for a comment, `pushedBy.id`
 for a push. The bot's own same-repository pull-request revisions still enter
-review, as in Gitea §12.1.
+review, as in GitLab §12.1, which Gitea inherits.
 
 **Collaborator gate.** Opened, comment, review-requested and reopened
 deliveries are authorized live through `rc/codehost-membership-authz`. Azure
@@ -1146,9 +1172,14 @@ groups grant (**verified**). The Azure DevOps arm therefore evaluates it:
 1. read the actor's identity with `queryMembership=ExpandedUp`, which lists
    every group it belongs to, directly or not (**verified**);
 2. read the Git repositories namespace's access-control lists on
-   `repoV2`, `repoV2/{project GUID}` and `repoV2/{project GUID}/{repository GUID}`;
+   `repoV2/{project GUID}/{repository GUID}`, `repoV2/{project GUID}` and
+   `repoV2`, in that order, stopping after the first list whose
+   `inheritPermissions` is false: a repository or project that does not
+   inherit takes nothing from above it, so an ancestor's allow beyond that
+   boundary counts for nothing. A list whose `inheritPermissions` the answer
+   leaves out is taken as a boundary too;
 3. admit the actor when an entry for the actor or one of its groups allows
-   GenericContribute (bit 4) on that chain, and no entry for any of them
+   GenericContribute (bit 4) on the lists read, and no entry for any of them
    denies it.
 
 The rule is stricter than Azure DevOps's own, which lets a more specific
@@ -1161,7 +1192,7 @@ on the pull request's author: anyone holding the pull-request contribute
 permission, which Readers have, can add a reviewer, and the review then reads
 code the author wrote. A revision and a push need no gate, since pushing to
 the repository already takes Contribute. An external pull request from a fork
-starts only through the explicit paths of Gitea §12.2.
+starts only through the explicit paths of GitLab §12.2.
 
 **Session keys.**
 
@@ -1220,8 +1251,16 @@ the vote, which is idempotent. Nothing an attempt writes is ever deleted. The
 identity may vote on a pull request it opened (**verified**); whether that
 vote counts is the branch policy's "allow requestors to approve their own
 changes", which the adapter does not read or work around. A policy that resets
-votes on a new push is the customer's, and a re-review follows Gitea §10.4's
-re-request paths.
+votes on a new push is the customer's, and a re-review follows the re-request
+paths of GitLab §16.1, which Gitea §10.4 inherits.
+
+A vote is one state per reviewer identity, and the identity is the
+connection's, shared by every agent. Two agents reviewing one pull request
+therefore overwrite each other's vote, last writer wins, and a `COMMENT`
+review leaves another agent's verdict standing. Each agent's verdict stays
+durable in its own summary thread and its own status context (§11.7), unlike
+Gitea, where two agents leave two reviews. An agent that needs a vote of its
+own needs an identity of its own: the several-connections path of §10.
 
 ### 11.7 Run Projection
 
@@ -1260,8 +1299,9 @@ as the tools' opened-object record already does (§6.6).
   `gitlab` and `gitea`, with its arm in the decode-time view of Gitea §13.
 - The gitcred purpose enum gains `azure_devops_hook_reply`; the
   membership-authorization request carries the actor's identity id.
-- The binding gains its signing key, next key, and recorded subscriptions with
-  their kinds and last observed status.
+- The binding gains its signing key, next key, and previous key with its
+  expiry, and recorded subscriptions with their kinds, last observed status,
+  and the key each was last switched to.
 
 ## 12. Open Questions and Probes
 
@@ -1445,13 +1485,17 @@ The second step (§11):
 - **B2 — Control Plane.** §11.1's access-control entry in the connect flow and
   Manage project access, with **Allow triggers**; the hook write and its
   refusal without the grant; the binding's secrets and subscriptions;
-  `convergeManagedRepository` with create, delete, read-back, re-enable, and
-  rotation; the membership-authorization arm; and the
-  `azure_devops_hook_reply` purpose.
+  `convergeManagedRepository` with create, delete, read-back with drift
+  rewrite, re-enable, and the rotation barrier; the membership-authorization
+  arm with its inheritance boundaries; and the `azure_devops_hook_reply`
+  purpose. Tests pin that no delivery promotes a key before every
+  subscription switched, and that a project without inheritance takes no
+  ancestor allow.
 - **B3 — Daemon hook turns.** Normalization and the hook-admission members, the
   turn-start read of the pull request, its iterations and threads, the final
   poster and the like, the standing context, and the tool guidance.
 - **B4 — Reviews and run projection.** The review adapter of §11.6 and the
-  status writer of §11.7.
+  status writer of §11.7. Tests pin the shared vote: a second agent's verdict
+  replaces the first, and a `COMMENT` review leaves the vote alone.
 - **B5 — Console.** The hook kind's families, Allow triggers, the binding's
   subscription state, and code-channel views (§11.8).
