@@ -25,8 +25,12 @@ import {
   isValidBranchRef,
   isValidFullRef
 } from '../workspace/git-command-policy.js'
-import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV, GITCRED_SOCKET_ENV } from '../gitcred/env.js'
-import { GITCRED_HOSTS_ENV } from '../gitcred/managed-hosts.js'
+import {
+  AGENT_CHANNEL_AGENT_ENV,
+  AGENT_CHANNEL_CAPABILITY_ENV,
+  AGENT_CHANNEL_SOCKET_ENV
+} from '../agent-channel/env.js'
+import { AGENT_CHANNEL_HOSTS_ENV } from '../gitcred/managed-hosts.js'
 import { assertStagingPrivate } from './bundle-staging.js'
 import { GitSkillPlanSchema, type GitSkillPlan, type SkillSkipCode } from './skill-protocol.js'
 
@@ -53,8 +57,13 @@ const PASSTHROUGH_ENV = [
   'GIT_SSL_CAINFO',
   'GIT_SSL_CAPATH'
 ]
-// The only credential-window variables the gitcred helper reads; anything else the caller passes is dropped.
-const CREDENTIAL_ENV = [GITCRED_CAPABILITY_ENV, GITCRED_AGENT_ENV, GITCRED_SOCKET_ENV, GITCRED_HOSTS_ENV]
+// The only credential-window variables the git credential helper reads; anything else the caller passes is dropped.
+const CREDENTIAL_ENV = [
+  AGENT_CHANNEL_CAPABILITY_ENV,
+  AGENT_CHANNEL_AGENT_ENV,
+  AGENT_CHANNEL_SOCKET_ENV,
+  AGENT_CHANNEL_HOSTS_ENV
+]
 // Only a transport spawn can be refused by a remote; a local `permission denied` (EACCES) is not access_denied.
 const TRANSPORT_SUBCOMMANDS = new Set(['clone', 'fetch', 'ls-remote'])
 const ACCESS_DENIED_RE =
@@ -164,13 +173,13 @@ export const runLocalSkillGit: SkillGitRunner = (invocation) =>
     )
   })
 
-/** The gitcred helper for the Source's host, with the env carrying the caller's credential-window capability. */
+/** The git credential helper for the Source's host, with the env carrying the caller's credential-window capability. */
 export interface SkillGitCredential {
   /** The https host base the helper answers for, e.g. `https://github.com`. */
   host: string
   /** The `credential.<host>.helper` value. */
   helper: string
-  /** The helper's own `AC_GITCRED_*` variables; any other name is dropped, never forwarded. */
+  /** The helper's own `AC_AGENT_CHANNEL_*` variables; any other name is dropped, never forwarded. */
   env: Record<string, string>
 }
 

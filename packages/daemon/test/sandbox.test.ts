@@ -368,7 +368,7 @@ describe('Claude credential environment isolation', () => {
     const privateTmp = join(privateHome, '.tmp')
     const privateClaudeConfig = join(privateHome, '.claude')
     const privateClaudeSettings = join(privateClaudeConfig, 'settings.json')
-    const credentialSocket = join(root, 'run', 'gitcred.sock')
+    const credentialSocket = join(root, 'run', 'agent.sock')
     let credentialRequest: Record<string, unknown> | undefined
     const credentialServer = createServer((socket) => {
       let input = ''
@@ -510,8 +510,8 @@ describe('Claude credential environment isolation', () => {
             env: {
               ...socketAttempt.env,
               AGENTCONNECT_ROOT: root,
-              AC_GITCRED_AGENT: 'agent-1',
-              AC_GITCRED_CAPABILITY: 'test-capability'
+              AC_AGENT_CHANNEL_AGENT: 'agent-1',
+              AC_AGENT_CHANNEL_CAPABILITY: 'test-capability'
             },
             stdio: ['pipe', 'pipe', 'pipe']
           })

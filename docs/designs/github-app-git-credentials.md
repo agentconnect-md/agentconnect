@@ -121,10 +121,10 @@ stale until a network fetch succeeds.
    the self-hosted shape, where the daemon, the helper it writes and the git that
    runs it share a filesystem and an OS user. Under `--k8s` they do not: the agent's
    git runs in a sandbox pod, and the helper socket exists only on the daemon's
-   filesystem. The socket is reached through the shim's `gitcred` tunnel, the helper
+   filesystem. The socket is reached through the shim's `agent` tunnel, the helper
    is the runtime image's own root-owned executable, and every pointer the daemon
    writes — the `credential.helper` line, `GIT_CONFIG_GLOBAL`, the socket path in
-   `AC_GITCRED_SOCKET` — is in the POD's coordinates, resolved from the same
+   `AC_AGENT_CHANNEL_SOCKET` — is in the POD's coordinates, resolved from the same
    predicate that decides where git executes. What does NOT change is this
    section's substance: the capability is still per-agent and runtime-only, still
    never written to disk, and the pod holds nothing longer-lived than one launch's
@@ -578,7 +578,7 @@ Only the proxy address differs:
   since Node's `fetch` and `https` ignore `HTTPS_PROXY` without it.
 
 **The runtime holds no minting credential.** The daemon and the agent runtime
-hold separate gitcred capabilities. The runtime's serves only live secrets: a
+hold separate agent channel capabilities. The runtime's serves only live secrets: a
 `get` or `erase` presented with it is always refused with an error saying git
 and `gh` go through the proxy, so nothing in a session can obtain a real
 token. The daemon's own Git keeps minting with the daemon's capability, and so
@@ -739,7 +739,7 @@ the proxy's CA certificate:
   honors only that agent's placeholder and refuses a CONNECT to anything but
   its routes, whatever the executor's shim forwards.
 - `codehost` streams have their own cap (16 per session) beside the helper
-  tunnels' 32, so a burst of clones cannot take `mcp` or `gitcred` slots, and
+  tunnels' 32, so a burst of clones cannot take `mcp` or `agent` slots, and
   end after five idle minutes. A renewal of the shim channel ends a stream
   with a frame in flight, as for the helpers: a lost or repeated fragment
   corrupts a TLS record, so the client's retry is the only recovery.
@@ -777,7 +777,7 @@ the proxy's CA certificate:
 
 A session in a local `microsandbox` VM or a pool pod reaches its own daemon's
 proxy the same way, through the shim inside the VM or pod. The daemon asks
-for `codehost` beside `gitcred` and `mcp` for an agent the proxy intercepts,
+for `codehost` beside `agent` and `mcp` for an agent the proxy intercepts,
 and the switch happens at spawn, after the bind:
 
 - The launch carries the placeholder variables beside its env. The driver
@@ -851,7 +851,7 @@ wrappers that called them (the daemon's `run/bin` and the image's
 `glab-target.ts`); and the runtime's ability to mint credentials over the
 helper channel. The channel and its per-agent capabilities stay: the daemon
 and the agent runtime each hold their own, the runtime's keeps serving live
-secrets, and the daemon's own Git operations keep using gitcred unchanged.
+secrets, and the daemon's own Git operations keep using the agent channel unchanged.
 
 **What it does not cover.** Runtime sign-ins and provider credentials keep
 their own handling (session-executors.md §8), including the VM's
@@ -1271,7 +1271,7 @@ and length** (never the token itself), the `reason` enum, and
   the `ghs_` prefix, two dots, and approximately 520
   characters. Every buffer, regex, and length assumption must be
   length-independent. `token: z.string()` in the WS frame and line buffering
-  in `gitcred.sock` are both acceptable; do not introduce fixed-length limits.
+  in `agent.sock` are both acceptable; do not introduce fixed-length limits.
   Redactors must not use a fixed short-token prefix rule.
 
 ## Daemon Side
@@ -1337,7 +1337,7 @@ through `conn.replyTo` (`connection.ts:157-160`).
 
 ### Local Helper Channel: Credential-Free Agent-Initiated Git
 
-1. **Unix socket:** `~/.agentconnect/run/gitcred.sock`, mode 0600, in a 0700
+1. **Unix socket:** `~/.agentconnect/run/agent.sock`, mode 0600, in a 0700
    directory. Use line-delimited JSON:
    `{ op:'get'|'erase', agentId, capability, password? } ->
 { username, password } | { ok } | { error }`. The daemon generates a capability
@@ -1350,14 +1350,14 @@ through `conn.replyTo` (`connection.ts:157-160`).
    through the tsx CLI, and tsx consumes flags it does not recognize.
    Positional arguments are reliable in both development and production. The
    command does not appear in normal
-   `--help`. It reads the local capability from `AC_GITCRED_CAPABILITY` and
+   `--help`. It reads the local capability from `AC_AGENT_CHANNEL_CAPABILITY` and
    implements the git credential-helper protocol: `get` reads
    `protocol/host/path` from stdin and verifies `host==github.com`.
    **Agent identity resolution:** the agentId positional argument is a value
    baked into the config file. It can become a dead ID when an agent is deleted
    and recreated under the same name while the checkout survives; the daemon
    then rejects it because its capability does not match. Prefer the
-   `AC_GITCRED_AGENT` environment variable from `gitCredentialEnv`, injected as
+   `AC_AGENT_CHANNEL_AGENT` environment variable from `gitCredentialEnv`, injected as
    a **co-minted pair** with the capability, and use argv only as a fallback
    when no environment value exists. The presented identity therefore always
    matches the accompanying capability. When multiple agents share a checkout,
@@ -1463,7 +1463,7 @@ through `conn.replyTo` (`connection.ts:157-160`).
   the helper.** This is the mechanism that lets an agent push while the machine
   has no credentials. When multiple agents share one checkout, the agentId in
   this file is the last writer. Identity follows the helper's environment
-  resolution rule: `AC_GITCRED_AGENT` takes precedence over this baked-in ID;
+  resolution rule: `AC_AGENT_CHANNEL_AGENT` takes precedence over this baked-in ID;
   see "Local Helper Channel." **prepareWorkspace idempotently rewrites this
   config for an existing checkout**, best-effort. If an agent is deleted and
   recreated under the same name, it takes over the surviving checkout by agent
@@ -1729,7 +1729,7 @@ repository-local helper config -> start the session normally.
 
 The agent runs `git push` in the workspace -> git reads repository config and
 invokes the shim -> the CLI takes the agent's temporary capability from the
-managed runtime environment and connects to `gitcred.sock` -> after daemon
+managed runtime environment and connects to `agent.sock` -> after daemon
 validation, the cache hits if more than 10 minutes remain, otherwise it pulls
 through WS on demand -> stdout hands the token to git -> push completes.
 Neither the token nor capability ever enters disk or argv.

@@ -1,9 +1,9 @@
-// The gitcred socket call itself, for the in-sandbox entries that reach it (the auto-merge watcher, `agentconnect-secrets`).
+// The agent channel socket call itself, for the in-sandbox entries that reach it (the auto-merge watcher, `agentconnect-secrets`).
 // Node builtins only: every consumer of this file is bundled into the runtime image.
 import { createConnection } from 'node:net'
-import { GITCRED_CAPABILITY_ENV } from './env.js'
+import { AGENT_CHANNEL_CAPABILITY_ENV } from './env.js'
 
-export interface GitCredIpcReply {
+export interface AgentChannelReply {
   ok: boolean
   password?: string
   error?: string
@@ -11,9 +11,8 @@ export interface GitCredIpcReply {
   denied?: 'repository' | 'agent'
 }
 
-/** One newline-delimited-JSON round trip on the gitcred socket. Never rejects: an unreachable
- *  daemon is an answer (`ok:false`), and callers report it as data. */
-export function gitcredIpc(path: string, msg: unknown): Promise<GitCredIpcReply> {
+/** One newline-delimited-JSON round trip on the agent channel socket; never rejects, since an unreachable daemon is an `ok:false` answer. */
+export function agentChannelIpc(path: string, msg: unknown): Promise<AgentChannelReply> {
   return new Promise((resolve) => {
     const sock = createConnection(path)
     let buf = ''
@@ -29,7 +28,7 @@ export function gitcredIpc(path: string, msg: unknown): Promise<GitCredIpcReply>
       if (nl === -1) return
       sock.destroy()
       try {
-        resolve(JSON.parse(buf.slice(0, nl)) as GitCredIpcReply)
+        resolve(JSON.parse(buf.slice(0, nl)) as AgentChannelReply)
       } catch {
         fail('malformed daemon reply')
       }
@@ -44,10 +43,10 @@ export async function fetchGhToken(
   args: { agentId: string; repoFullName: string; socketPath: string; capability?: string },
   env: NodeJS.ProcessEnv = process.env
 ): Promise<string> {
-  const res = await gitcredIpc(args.socketPath, {
+  const res = await agentChannelIpc(args.socketPath, {
     op: 'get',
     agentId: args.agentId,
-    capability: args.capability ?? env[GITCRED_CAPABILITY_ENV],
+    capability: args.capability ?? env[AGENT_CHANNEL_CAPABILITY_ENV],
     plane: 'gh',
     repoFullName: args.repoFullName
   })

@@ -876,7 +876,7 @@ describe.skipIf(process.platform === 'win32')('cluster skill shim Git plan sourc
   const HOST = 'https://github.com/acme/'
   const GIT_URL = `${HOST}skills.git`
   const HELPER = '/opt/agentconnect/bin/git-credential'
-  const SOCKET = '/run/agentconnect/gitcred.sock'
+  const SOCKET = '/run/agentconnect/agent.sock'
   const authority = {
     groupId: 'g',
     term: '1',
@@ -1063,7 +1063,7 @@ describe.skipIf(process.platform === 'win32')('cluster skill shim Git plan sourc
       expect(reply.skipped).toBeUndefined()
       expect(await readFile(join(w.workspace, '.agents/skills/alpha/notes.md'), 'utf8')).toBe('alpha notes\n')
       expect(existsSync(join(w.workspace, '.agents/skills/beta'))).toBe(false)
-      expect(r.calls.every((call) => call.env.AC_GITCRED_CAPABILITY === undefined)).toBe(true)
+      expect(r.calls.every((call) => call.env.AC_AGENT_CHANNEL_CAPABILITY === undefined)).toBe(true)
       expect(await readdir(w.staging)).toEqual([])
     } finally {
       await removeTree(w.root)
@@ -1230,9 +1230,9 @@ describe.skipIf(process.platform === 'win32')('cluster skill shim Git plan sourc
       expect(leaves(reply.roots)).toEqual(['alpha'])
       expect(r.calls.length).toBeGreaterThan(0)
       for (const call of r.calls) {
-        expect(call.env.AC_GITCRED_CAPABILITY).toBe(capability)
-        expect(call.env.AC_GITCRED_AGENT).toBe('a')
-        expect(call.env.AC_GITCRED_SOCKET).toBe(SOCKET)
+        expect(call.env.AC_AGENT_CHANNEL_CAPABILITY).toBe(capability)
+        expect(call.env.AC_AGENT_CHANNEL_AGENT).toBe('a')
+        expect(call.env.AC_AGENT_CHANNEL_SOCKET).toBe(SOCKET)
         const config = Object.entries(call.env).filter(([key]) => key.startsWith('GIT_CONFIG_VALUE_'))
         expect(config.map(([, value]) => value)).toContain(`!sh '${HELPER}' 'a'`)
         expect(call.args.join(' ')).not.toContain(capability)
@@ -1240,12 +1240,12 @@ describe.skipIf(process.platform === 'win32')('cluster skill shim Git plan sourc
       expect(logs.length).toBeGreaterThan(0)
       expect(logs.join('\n')).not.toContain(capability)
       expect(onDisk).toEqual([])
-      expect(process.env.AC_GITCRED_CAPABILITY).not.toBe(capability)
+      expect(process.env.AC_AGENT_CHANNEL_CAPABILITY).not.toBe(capability)
 
       const after = runner(w)
       await reconcile(handlerFor(w, after.git), { sources: [plan(w)], priorRoots: reply.roots })
       expect(after.calls.length).toBeGreaterThan(0)
-      expect(after.calls.every((call) => call.env.AC_GITCRED_CAPABILITY === undefined)).toBe(true)
+      expect(after.calls.every((call) => call.env.AC_AGENT_CHANNEL_CAPABILITY === undefined)).toBe(true)
     } finally {
       await removeTree(w.root)
     }
@@ -1365,7 +1365,7 @@ describe.skipIf(process.platform === 'win32')('cluster skill shim Git plan sourc
     const gitlab = { ...plan({ tip: 'a'.repeat(40) } as World), url: 'https://gitlab.com/o/r.git' }
     expect(skillGitCredentialFor(gitlab, window, 'a', deps)).toBeUndefined()
     const github = { ...gitlab, url: 'https://github.com/o/r.git' }
-    expect(skillGitCredentialFor(github, window, 'a', deps)?.env.AC_GITCRED_CAPABILITY).toBe('cap')
+    expect(skillGitCredentialFor(github, window, 'a', deps)?.env.AC_AGENT_CHANNEL_CAPABILITY).toBe('cap')
     expect(skillGitCredentialFor(github, undefined, 'a', deps)).toBeUndefined()
   })
 
@@ -1379,8 +1379,8 @@ describe.skipIf(process.platform === 'win32')('cluster skill shim Git plan sourc
     }
     const credential = skillGitCredentialFor(gitlab, window, 'a', deps)
     expect(credential?.host).toBe('https://gitlab.example.test/prefix')
-    expect(credential?.env.AC_GITCRED_HOSTS).toBe('gitlab=https://gitlab.example.test/prefix')
-    expect(credential?.env.AC_GITCRED_CAPABILITY).toBe('cap')
+    expect(credential?.env.AC_AGENT_CHANNEL_HOSTS).toBe('gitlab=https://gitlab.example.test/prefix')
+    expect(credential?.env.AC_AGENT_CHANNEL_CAPABILITY).toBe('cap')
     // A named instance that does not prefix the URL, or no window, carries nothing.
     expect(
       skillGitCredentialFor({ ...gitlab, credentialHost: 'https://code.example.test' }, window, 'a', deps)

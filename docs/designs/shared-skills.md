@@ -244,7 +244,7 @@ admission; the daemon checks the same rules again at acquisition:
   repository, next to the workspace repository and explicit additional-repo
   rows, and mints a `contents:read` installation token scoped to that one
   repository. No grant row is stored, so unselecting or deleting the source
-  revokes it. The daemon's `gitcred` issues that token only inside a **skill
+  revokes it. The daemon's agent channel issues that token only inside a **skill
   credential window** it opens itself ([source-cache.md](source-cache.md) §8):
   the per-agent helper capability, which the agent's runtime also holds, is
   refused for a private skill repository and the refusal is audited, so the
@@ -898,7 +898,7 @@ The implemented surface follows `McpServersCard`:
   credentialed source is the agent's read grant, and the Control Plane serves
   only a read token scoped to that one repository or project: `contents:read`
   for GitHub, and for GitLab a read token under a `read` clamp, its agent
-  account a Reporter member of the project. `gitcred` issues it only inside a
+  account a Reporter member of the project. The agent channel issues it only inside a
   skill credential window the daemon opens for the pod or for its own fill
   ([source-cache.md](source-cache.md) §8); the per-agent helper capability the
   runtime holds is refused for a private skill repository, and the refusal is

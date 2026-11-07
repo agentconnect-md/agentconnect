@@ -564,8 +564,8 @@ process.stdout.write(JSON.stringify({ seen: fs.readFileSync(p, 'utf8') }) + '\\n
     { timeout: 180_000 },
     async () => {
       root = await mkdtemp(join(tmpdir(), 'ac-srt-'))
-      const sockets = { mcp: join(root, 'daemon-mcp.sock'), gitcred: join(root, 'daemon-gitcred.sock') }
-      const servers = [await daemonSocket(sockets.mcp, 'mcp'), await daemonSocket(sockets.gitcred, 'gitcred')]
+      const sockets = { mcp: join(root, 'daemon-mcp.sock'), agent: join(root, 'daemon-agent.sock') }
+      const servers = [await daemonSocket(sockets.mcp, 'mcp'), await daemonSocket(sockets.agent, 'agent')]
       closers.push(...servers.map((server) => () => server.close()))
       const sessionDir = join(root, 'agents', 'a', 'sessions', LEAF)
       await mkdir(join(sessionDir, 'workspace'), { recursive: true })
@@ -574,7 +574,7 @@ process.stdout.write(JSON.stringify({ seen: fs.readFileSync(p, 'utf8') }) + '\\n
       const local = new LocalExecutor({
         launcher,
         generations: { nextSandboxGeneration: async () => ++generation },
-        tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' || tunnel === 'mcp' ? sockets[tunnel] : undefined),
+        tunnelSocketPath: (tunnel) => (tunnel === 'agent' || tunnel === 'mcp' ? sockets[tunnel] : undefined),
         log: quiet
       })
       closers.push(
@@ -592,7 +592,7 @@ process.stdout.write(JSON.stringify({ seen: fs.readFileSync(p, 'utf8') }) + '\\n
 const net = require('net')
 const report = (tunnel) => process.stdout.write(JSON.stringify({ tunnel, home: process.env.HOME, proxy: process.env.HTTPS_PROXY }) + '\\n')
 const attempt = (left) => {
-  const socket = net.connect(process.env.AC_GITCRED_SOCKET)
+  const socket = net.connect(process.env.AC_AGENT_CHANNEL_SOCKET)
   socket.once('data', (data) => report(data.toString()))
   socket.once('connect', () => socket.write('hello'))
   socket.once('error', () => (left > 0 ? setTimeout(() => attempt(left - 1), 100) : report('unreachable')))
@@ -606,7 +606,7 @@ process.stdin.resume()`
           AC_AGENT_ID: 'agent-1',
           PATH: process.env.PATH ?? '',
           HOME: join(sessionDir, 'home'),
-          AC_GITCRED_SOCKET: join(runtimeRoot, 'gitcred.sock')
+          AC_AGENT_CHANNEL_SOCKET: join(runtimeRoot, 'agent.sock')
         }
       })
       closers.unshift(() => runtime.stop(5_000, 1_000))
@@ -616,7 +616,7 @@ process.stdin.resume()`
       reader.releaseLock()
       const seen = JSON.parse(text.slice(0, text.indexOf('\n'))) as { tunnel: string; home: string; proxy?: string }
       // The shim's tunnel under its fixed root reached this daemon's socket, the launch env arrived whole, and SRT's route rode over it.
-      expect(seen.tunnel).toBe('gitcred:hello')
+      expect(seen.tunnel).toBe('agent:hello')
       expect(seen.home).toBe(join(sessionDir, 'home'))
       expect(seen.proxy).toMatch(/^http:\/\/.*localhost:\d+$/)
       expect(generation).toBe(1)

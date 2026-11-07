@@ -206,7 +206,7 @@ function toCheck(node: Record<string, unknown>): PrCheck {
  * next tick judges the new head on its own merits, which is the whole point of "when ready".
  *
  * The token is fetched BEFORE the last abort check, not inside the request: fetching it is itself an
- * await (a pod reads it over the gitcred tunnel), and a disarm landing in that window would otherwise
+ * await (a pod reads it over the agent tunnel), and a disarm landing in that window would otherwise
  * be invisible — the check would have passed already and the POST would go out regardless. Answers
  * `false` when the fence closed instead, so nothing was sent.
  */

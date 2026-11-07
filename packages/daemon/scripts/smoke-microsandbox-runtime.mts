@@ -140,8 +140,8 @@ async function firstJsonLine(runtime: SpawnedRuntime): Promise<Record<string, un
   }
 }
 
-const sockets = { mcp: join(root, 'mcp.sock'), gitcred: join(root, 'gitcred.sock') }
-const servers = [await daemonSocket(sockets.mcp, 'mcp'), await daemonSocket(sockets.gitcred, 'gitcred')]
+const sockets = { mcp: join(root, 'mcp.sock'), agent: join(root, 'agent.sock') }
+const servers = [await daemonSocket(sockets.mcp, 'mcp'), await daemonSocket(sockets.agent, 'agent')]
 let generation = 0
 const manager = await installMicrosandbox({
   root,
@@ -156,7 +156,7 @@ const sdk = (await import(
 const local = new LocalExecutor({
   launcher: microsandboxLauncher({ manager: () => manager }),
   generations: { nextSandboxGeneration: async () => ++generation },
-  tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' || tunnel === 'mcp' ? sockets[tunnel] : undefined),
+  tunnelSocketPath: (tunnel) => (tunnel === 'agent' || tunnel === 'mcp' ? sockets[tunnel] : undefined),
   log: makeLogger('info')
 })
 let passed = false
@@ -271,7 +271,7 @@ try {
     trustedMounts: microsandboxSupportMounts(root)
   })
   const environment = { id: environmentId, ...launch.microsandbox }
-  const guestSockets = dirname(launch.env.AC_GITCRED_SOCKET!)
+  const guestSockets = dirname(launch.env.AC_AGENT_CHANNEL_SOCKET!)
   const driver = local.driverFor(environment)
   // Every shim driver routes a launch by its agent, which the environment id names.
   const launchEnv = { ...launch.env, AC_AGENT_ID: 'smoke' }
@@ -334,7 +334,7 @@ try {
     assert.equal(result.exitCode, 0, `${tunnel} ${command}: ${result.stderr}`)
     return JSON.parse(result.stdout) as { reply: string; received: number; ms: number }
   }
-  for (const tunnel of ['mcp', 'gitcred'] as const) {
+  for (const tunnel of ['mcp', 'agent'] as const) {
     assert.equal((await guest(tunnel, 'echo hello')).reply, `${tunnel}:hello`)
   }
   step('both-helper-endpoints-reach-their-own-daemon-socket', { guestSockets })
@@ -378,7 +378,7 @@ try {
   // The stopped VM's shim exited, so its launch went with it: the next one binds the resumed VM at a new generation.
   summary.resumedLaunchToInitializeMs = await acpRoundTrip()
   step('acp-initialize-answered-after-resuming-the-stopped-vm', { ms: summary.resumedLaunchToInitializeMs })
-  for (const tunnel of ['mcp', 'gitcred'] as const) {
+  for (const tunnel of ['mcp', 'agent'] as const) {
     assert.equal((await guest(tunnel, 'echo resumed')).reply, `${tunnel}:resumed`)
   }
   step('both-helper-endpoints-served-again-on-the-resumed-vm')

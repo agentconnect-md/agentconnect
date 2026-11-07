@@ -276,7 +276,7 @@ describe('createWorkspaceGit.pull', () => {
       ['checkout', '--no-recurse-submodules', '--no-track', '-B', 'main', 'refs/remotes/origin/main']
     ])
     expect(envImpl).toHaveBeenCalledWith(
-      expect.objectContaining({ AC_GITCRED_CAPABILITY: 'cap-a', GIT_ALLOW_PROTOCOL: 'https:ssh' })
+      expect.objectContaining({ AC_AGENT_CHANNEL_CAPABILITY: 'cap-a', GIT_ALLOW_PROTOCOL: 'https:ssh' })
     )
     expect(r).toMatchObject({ isRepo: true, ok: true, changed: 2, insertions: 10, deletions: 3 })
     expect(r.detail).toBe('Synced main — updated 2 files.')

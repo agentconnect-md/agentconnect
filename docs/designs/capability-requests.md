@@ -545,11 +545,11 @@ Runtime shells do not keep environment between tool calls (each call is a fresh 
 runtimes), so the agent loads per command — `exec` is one line and keeps the values out of anything
 the shell echoes.
 
-**Transport: the credential channel the runtime already has.** The helper speaks to the daemon's
-existing git-credential server with a new op, `{ op: 'secret', agentId, capability, names? }`
-(`cp/gitcred-server.ts`). It authenticates with the per-agent capability the runtime already holds in
-`AC_GITCRED_CAPABILITY` since spawn, over the transport every execution backend already provides: the
-unix socket self-hosted, the host-shim socket, and in a pod the shim's `gitcred` tunnel
+**Transport: the agent channel the runtime already has.** The helper speaks to the daemon's
+existing agent channel server with a new op, `{ op: 'secret', agentId, capability, names? }`
+(`cp/agent-channel-server.ts`). It authenticates with the per-agent capability the runtime already holds in
+`AC_AGENT_CHANNEL_CAPABILITY` since spawn, over the transport every execution backend already provides: the
+unix socket self-hosted, the host-shim socket, and in a pod the shim's `agent` tunnel
 (`shim/tunnel.ts`) — no new tunnel. The daemon answers from the **current** in-memory spec, so a value
 saved a second ago is returned on the next call. A dream host gets no capability, as it gets no
 secrets today.
@@ -594,7 +594,7 @@ says so.
 sees a spawn-time secret today. A secret limited to the session that asked is a follow-up.
 
 **Upgrade.** A runtime process spawned before the daemon has the helper has no `PATH` entry for it.
-`AC_GITCRED_CAPABILITY` is only minted for agents whose workspace uses daemon-provided git
+`AC_AGENT_CHANNEL_CAPABILITY` is only minted for agents whose workspace uses daemon-provided git
 credentials today; with this feature every agent's runtime gets one at spawn. Both arrive with the
 next spawn, which a daemon upgrade already causes.
 

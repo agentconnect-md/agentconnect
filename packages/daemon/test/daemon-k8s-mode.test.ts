@@ -1715,16 +1715,16 @@ describe('daemon --k8s mode', () => {
       // Every pod agent: any session may carry tools, and `agentconnect-secrets` rides the credential socket for
       // every agent (capability-requests.md §4.9.2); the server answers `get` only for a managed credential.
       ;(k8sDaemon as any).agents.set('plain', { id: 'plain', workspace: {} })
-      expect(planeOptions.tunnelsFor('plain')).toEqual(['mcp', 'gitcred'])
+      expect(planeOptions.tunnelsFor('plain')).toEqual(['mcp', 'agent'])
       expect(planeOptions.tunnelSocketPath('mcp')).toBe(mcpSocketPath(rootDir))
       ;(k8sDaemon as any).agents.set('gh', { id: 'gh', workspace: { mode: 'git-repo', gitCredential: 'github-app' } })
       // A managed code-host credential also asks for `codehost`: the credential proxy is the only path to it.
-      expect(planeOptions.tunnelsFor('gh')).toEqual(['mcp', 'gitcred', 'codehost'])
+      expect(planeOptions.tunnelsFor('gh')).toEqual(['mcp', 'agent', 'codehost'])
       ;(k8sDaemon as any).agents.set('anon', {
         id: 'anon',
         workspace: { mode: 'git-repo', additionalRepos: [{ repoFullName: 'acme/own', repoId: '2' }] }
       })
-      expect(planeOptions.tunnelsFor('anon')).toEqual(['mcp', 'gitcred'])
+      expect(planeOptions.tunnelsFor('anon')).toEqual(['mcp', 'agent'])
       // And nothing for the member's own runtime probe, whose channel is granted `probe` alone —
       // asking it to serve a socket would be refused, and the refusal logged, on every boot.
       expect(planeOptions.tunnelsFor('ac-runtime-probe-0f0f0f0f')).toEqual([])

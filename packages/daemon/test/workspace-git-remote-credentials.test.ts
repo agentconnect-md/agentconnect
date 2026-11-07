@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WorkspaceManager, type WorkspaceRoot } from '../src/workspace/workspace-manager.js'
 import { daemonGitCredentialTarget, initGitInjection } from '../src/workspace/git-injection.js'
-import { GITCRED_CAPABILITY_ENV } from '../src/gitcred/env.js'
+import { AGENT_CHANNEL_CAPABILITY_ENV } from '../src/agent-channel/env.js'
 import type { GitRunner } from '../src/workspace/git-runner.js'
 import { wireTestPlane } from './workspace-plane-support.js'
 
@@ -97,7 +97,7 @@ describe('daemon git that reaches a remote', () => {
       workspaces.setPlaneResolver(undefined)
     }
     expectHelperAfterReset(envsOf(recorded))
-    expect(envsOf(recorded)[GITCRED_CAPABILITY_ENV]).toBe('cap-bot-1')
+    expect(envsOf(recorded)[AGENT_CHANNEL_CAPABILITY_ENV]).toBe('cap-bot-1')
   })
 
   it('carries the credential helper on a root pull', async () => {
@@ -122,6 +122,6 @@ describe('daemon git that reaches a remote', () => {
     }
     const env = envsOf(recorded)
     expect(configPairs(env).some(([key]) => key === HELPER)).toBe(false)
-    expect(env[GITCRED_CAPABILITY_ENV]).toBeUndefined()
+    expect(env[AGENT_CHANNEL_CAPABILITY_ENV]).toBeUndefined()
   })
 })

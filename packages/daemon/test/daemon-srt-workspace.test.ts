@@ -79,7 +79,7 @@ describe.skipIf(process.platform === 'win32')("a confined srt session's workspac
       expect(env).toMatchObject({
         HOME: join(sessionDir, 'home'),
         TMPDIR: join(runtimeRoot, 't'),
-        AC_GITCRED_SOCKET: join(runtimeRoot, 'gitcred.sock')
+        AC_AGENT_CHANNEL_SOCKET: join(runtimeRoot, 'agent.sock')
       })
     } finally {
       await daemon.stop()

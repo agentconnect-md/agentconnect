@@ -315,12 +315,12 @@ describe("a placed session's Git", () => {
     const { executor, request } = await placed()
     await executor
       .gitRunnerFor(AGENT, CWD, undefined, KEY)!
-      .withEnv({ HOME: '/home/holder', AC_GITCRED_SOCKET: '/home/holder/.agentconnect/run/gitcred.sock' })
+      .withEnv({ HOME: '/home/holder', AC_AGENT_CHANNEL_SOCKET: '/home/holder/.agentconnect/run/agent.sock' })
       .raw(['rev-parse', 'HEAD'])
     expect(request).toHaveBeenCalledWith(
       'exec',
       expect.objectContaining({
-        env: { HOME: '/home/holder', AC_GITCRED_SOCKET: '/var/lib/agentconnect/hs/ab12cd/gitcred.sock' }
+        env: { HOME: '/home/holder', AC_AGENT_CHANNEL_SOCKET: '/var/lib/agentconnect/hs/ab12cd/agent.sock' }
       }),
       expect.anything()
     )

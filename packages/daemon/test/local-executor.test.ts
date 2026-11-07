@@ -23,16 +23,16 @@ afterEach(async () => {
 
 async function fixture(runtimeEnv?: Record<string, string>) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'local-executor-')))
-  const sockets = { mcp: join(root, 'mcp.sock'), gitcred: join(root, 'gitcred.sock') }
-  const servers: Server[] = [await daemonSocket(sockets.mcp, 'mcp'), await daemonSocket(sockets.gitcred, 'gitcred')]
-  const vm = fakeVm({ mcp: join(root, 'guest', 'mcp.sock'), gitcred: join(root, 'guest', 'gitcred.sock') })
+  const sockets = { mcp: join(root, 'mcp.sock'), agent: join(root, 'agent.sock') }
+  const servers: Server[] = [await daemonSocket(sockets.mcp, 'mcp'), await daemonSocket(sockets.agent, 'agent')]
+  const vm = fakeVm({ mcp: join(root, 'guest', 'mcp.sock'), agent: join(root, 'guest', 'agent.sock') })
   const fake = fakeVmManager({ vm, ...(runtimeEnv ? { runtimeEnv } : {}) })
   let generation = 0
   const allocated = vi.fn(async (_subject: string) => ++generation)
   const local = new LocalExecutor({
     launcher: microsandboxLauncher({ manager: () => fake.manager }),
     generations: { nextSandboxGeneration: allocated },
-    tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' || tunnel === 'mcp' ? sockets[tunnel] : undefined),
+    tunnelSocketPath: (tunnel) => (tunnel === 'agent' || tunnel === 'mcp' ? sockets[tunnel] : undefined),
     log: quiet
   })
   const environment: EnvironmentDescriptor = { id: 'agent/session-example', mounts: [], workspaceRoot: root }

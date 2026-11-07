@@ -4,7 +4,7 @@ import type { Socket } from 'node:net'
 import { ClientTransport, systemClock, type Clock } from '@agentconnect.md/connection'
 import type { ExecutorPrepareResult, ExecutorReleaseResult } from '@agentconnect.md/protocol'
 import { proxyTrustEnv } from '../credential-proxy/ca.js'
-import { GITCRED_SOCKET_ENV } from '../gitcred/env.js'
+import { AGENT_CHANNEL_SOCKET_ENV } from '../agent-channel/env.js'
 import type { PrivateRuntimeState } from '../runtimes/private-runtime-state.js'
 import { sessionKeyDirName } from '../acp/host-key.js'
 import type { RuntimeDef } from '../config/config-schema.js'
@@ -73,7 +73,7 @@ export interface ExecutorPlaneDeps {
   /** Which of this daemon's own sockets a session needs a tunnel to, and where each one is — the same policy the pool's plane is given. */
   tunnelsFor?: (agentId: string, placed: PlacedSession | undefined) => TunnelName[]
   tunnelSocketPath?: (tunnel: TunnelName, agentId: string) => string | undefined
-  /** Tags a subject's daemon-socket connection with that subject (gitcred binds a pod window to its pod). */
+  /** Tags a subject's daemon-socket connection with that subject (the agent channel binds a pod window to its pod). */
   tunnelGreeting?: (subject: string, tunnel: TunnelName) => Buffer | undefined
   /** What a `listen` carries beside the name: `codehost`'s or `provider`'s routes and the CA its sessions trust. */
   tunnelListenOptions?: (agentId: string, tunnel: TunnelName) => TunnelListenOptions | undefined
@@ -446,7 +446,7 @@ export class ExecutorPlane implements ExecutionPlane {
     // otherwise; inside the environment that path does not exist, so it is pointed at the session's own tunnel (§5).
     const roots = this.rootsFor(placed.sessionKey)
     if (!roots) return new ShimGitRunner(session, cwd, undefined, abort)
-    const socket = shimPaths(roots.runtimeRoot).tunnels.gitcred
+    const socket = shimPaths(roots.runtimeRoot).tunnels.agent
     // Where srt routes the code hosts to this holder's proxy, its Git verifies them with the bundle the shim wrote, over any it sent.
     const srt = this.srtCodehostFor(placed.sessionKey)
     const trust = srt ? proxyTrustEnv({ bundlePath: srt.trustBundle }) : {}
@@ -456,7 +456,7 @@ export class ExecutorPlane implements ExecutionPlane {
         const mapped =
           env === undefined
             ? payload
-            : { ...(payload as GitExecPayload), env: { ...env, [GITCRED_SOCKET_ENV]: socket, ...trust } }
+            : { ...(payload as GitExecPayload), env: { ...env, [AGENT_CHANNEL_SOCKET_ENV]: socket, ...trust } }
         return session.request(capability, mapped, options)
       }
     }

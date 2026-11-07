@@ -364,7 +364,12 @@ import {
 import { DEFAULT_SHIM_RUNTIME_ROOT, shimPaths } from './shim/sandbox-paths.js'
 import type { CodehostSpawn, ProviderSpawn, SpawnFile } from './acp/spawn-driver.js'
 import { writeSecretsShim } from './cp/secrets-shim.js'
-import { GitCredServer, gitcredShimPath, gitcredSocketPath, writeGitcredShim } from './cp/gitcred-server.js'
+import {
+  AgentChannelServer,
+  gitcredShimPath,
+  agentChannelSocketPath,
+  writeGitcredShim
+} from './cp/agent-channel-server.js'
 import { AutoMergeViolationError, AutoMergeWatcher } from './github/auto-merge/watcher.js'
 import { AUTO_MERGE_HOLDER, SandboxHolds } from './k8s/sandbox-hold.js'
 import {
@@ -1714,7 +1719,7 @@ export class Daemon {
   }
   /** The CP's transfer cache from the last register; where a shared image's large original goes. */
   private fileTransfer?: { maxBytes: number }
-  private gitCredServer?: GitCredServer
+  private agentChannelServer?: AgentChannelServer
   /** The credential proxy, once it started (github-app-git-credentials.md, Phase 2); without it no session holds a code-host credential. */
   private credentialProxy?: { proxy: CredentialProxy; ca: ProxyCa }
   /** Each agent's provider key slots the credential proxy serves, by slot id; registered as a host, srt, VM or pool pod session launches. */
@@ -1731,7 +1736,7 @@ export class Daemon {
    *  because a watcher that cannot mint a gh token has nothing to poll with. Never persisted: this
    *  process going away is what unchecks the box. */
   private autoMergeWatcher?: AutoMergeWatcher
-  /** The `agentconnect-secrets` wrapper's own dir, on every local runtime's PATH that holds the credential channel. */
+  /** The `agentconnect-secrets` wrapper's own dir, on every local runtime's PATH that holds the agent channel. */
   private secretsBinDir?: string
   /** Spawn-time config warnings per agent (config-file secrets: pointer-var
    *  conflicts, write failures) — flushed into the next dispatched session. */
@@ -3901,7 +3906,7 @@ export class Daemon {
       launcher: this.vmLauncher,
       generations: { nextSandboxGeneration: (subject) => this.store.nextSandboxGeneration(subject) },
       tunnelSocketPath: (tunnel, agentId) => this.tunnelSocketPath(root, tunnel, agentId),
-      tunnelGreeting: (subject, tunnel) => this.gitcredTunnelGreeting(subject, tunnel),
+      tunnelGreeting: (subject, tunnel) => this.agentTunnelGreeting(subject, tunnel),
       // A VM's sessions reach the credential proxy through its shim, which keeps microsandbox's own authority in their bundle at spawn.
       extraTunnelsFor: (agentId) => [...this.codehostTunnelFor(agentId), ...this.providerTunnelFor(agentId)],
       tunnelListenOptions: (agentId, tunnel) => this.tunnelListenOptions(agentId, tunnel),
@@ -3919,7 +3924,7 @@ export class Daemon {
       launcher: this.localSrt,
       generations: { nextSandboxGeneration: (subject) => this.store.nextSandboxGeneration(subject) },
       tunnelSocketPath: (tunnel, agentId) => this.tunnelSocketPath(root, tunnel, agentId),
-      tunnelGreeting: (subject, tunnel) => this.gitcredTunnelGreeting(subject, tunnel),
+      tunnelGreeting: (subject, tunnel) => this.agentTunnelGreeting(subject, tunnel),
       log: this.log,
       clock: this.clock
     })
@@ -3971,7 +3976,7 @@ export class Daemon {
     return {
       root,
       config: cfg.sandbox.microsandbox === false ? undefined : cfg.sandbox.microsandbox,
-      sockets: { mcp: mcpSocketPath(root), gitcred: gitcredSocketPath(root) },
+      sockets: { mcp: mcpSocketPath(root), agent: agentChannelSocketPath(root) },
       log: this.log
     }
   }
@@ -4081,7 +4086,7 @@ export class Daemon {
             ...this.providerTunnelFor(agentId)
           ],
           tunnelSocketPath: (tunnel, agentId) => this.tunnelSocketPath(root, tunnel, agentId),
-          tunnelGreeting: (subject, tunnel) => this.gitcredTunnelGreeting(subject, tunnel),
+          tunnelGreeting: (subject, tunnel) => this.agentTunnelGreeting(subject, tunnel),
           tunnelListenOptions: (agentId, tunnel) => this.tunnelListenOptions(agentId, tunnel),
           // A bound sandbox is a reachable memory tree: drain any managed capture that waited for it.
           onSandboxBound: () => this.memoryOutbox?.wake(),
@@ -4217,7 +4222,7 @@ export class Daemon {
       log: { warn: (m: string) => this.log.warn(m) },
       now: () => this.clock.now()
     })
-    this.gitCredServer = new GitCredServer(this.gitCreds, gitcredSocketPath(root), {
+    this.agentChannelServer = new AgentChannelServer(this.gitCreds, agentChannelSocketPath(root), {
       log: {
         info: (m: string) => this.log.info(m),
         warn: (m: string) => this.log.warn(m)
@@ -4297,9 +4302,9 @@ export class Daemon {
       // Git the daemon runs itself (skill acquisition) reads these on THIS filesystem, whatever
       // `targetFor` says about the agent's workspace git.
       daemonTarget: daemonCredentialTarget,
-      capabilityFor: (agentId, holder) => this.gitCredServer!.capabilityFor(agentId, holder),
+      capabilityFor: (agentId, holder) => this.agentChannelServer!.capabilityFor(agentId, holder),
       // Daemon-run skill acquisition opens its own window per credential fill, except on the workspace repo (source-cache.md §8).
-      openSkillCredentialWindow: (agentId, repo) => this.gitCredServer!.openDaemonSkillWindow(agentId, repo),
+      openSkillCredentialWindow: (agentId, repo) => this.agentChannelServer!.openDaemonSkillWindow(agentId, repo),
       preWarm: async (agentId, reason, repository) => {
         // An additional repository warms the key its own helper ask lands on, never the workspace's — a scratch agent has none.
         if (repository !== undefined) {
@@ -4326,9 +4331,9 @@ export class Daemon {
     try {
       this.secretsBinDir = writeSecretsShim(root, daemonEntryForShims(root))
     } catch (err) {
-      this.log.warn(`gitcred: live secrets wrapper write failed — spawning agents without it (${formatErr(err)})`)
+      this.log.warn(`agent-channel: live secrets wrapper write failed — spawning agents without it (${formatErr(err)})`)
     }
-    await this.gitCredServer.start()
+    await this.agentChannelServer.start()
     await this.startCredentialProxy(root)
     // A cluster agent's watcher runs in a pod's `automerge` channel, a local agent's loop in this process; both read a token through the clamped credential path the agent's own gh does.
     this.autoMergeWatcher = new AutoMergeWatcher({
@@ -4340,7 +4345,7 @@ export class Daemon {
       placementOf: (agentId, sessionId) => this.autoMergePlacement(agentId, sessionId),
       holdSandbox: (subject) => this.k8sPlane?.holdIfBound(subject),
       onArmed: (subject) => this.sandboxHolds.renew(subject, AUTO_MERGE_HOLDER, ['auto-merge-armed']),
-      daemonCapabilityFor: (agentId) => this.gitCredServer!.capabilityFor(agentId, 'daemon'),
+      daemonCapabilityFor: (agentId) => this.agentChannelServer!.capabilityFor(agentId, 'daemon'),
       tokenFor: async (agentId, repoFullName) =>
         (await this.gitCreds.get(agentId, 'helper', { plane: 'gh', repo: repoFullName })).token,
       log: { info: (m) => this.log.info(m), warn: (m) => this.log.warn(m) }
@@ -5996,7 +6001,7 @@ export class Daemon {
       // The pool's policy, plus the code-host route a host-strategy session reaches the credential proxy by.
       tunnelsFor: (agentId, placed) => this.tunnelsForPlaced(agentId, placed),
       tunnelSocketPath: (tunnel, agentId) => this.tunnelSocketPath(root, tunnel, agentId),
-      tunnelGreeting: (subject, tunnel) => this.gitcredTunnelGreeting(subject, tunnel),
+      tunnelGreeting: (subject, tunnel) => this.agentTunnelGreeting(subject, tunnel),
       tunnelListenOptions: (agentId, tunnel) => this.tunnelListenOptions(agentId, tunnel),
       log: {
         info: (m) => this.log.info(m),
@@ -6637,7 +6642,7 @@ export class Daemon {
       this.dreamScheduler.unregister(id)
       this.gitCreds.remove(id)
       this.codeHostRefs.forgetAgent(id)
-      this.gitCredServer?.revoke(id)
+      this.agentChannelServer?.revoke(id)
       this.runtimeCommands.forget(id)
       void this.store.deleteRuntimeCommands(id).catch(() => undefined)
       // Use the one generation-safe teardown path: it evicts the host synchronously,
@@ -6726,7 +6731,7 @@ export class Daemon {
         if (workspaceNeedsColdRecovery) {
           this.gitCreds.remove(a.id)
           this.codeHostRefs.forgetAgent(a.id)
-          this.gitCredServer?.revoke(a.id)
+          this.agentChannelServer?.revoke(a.id)
         }
         try {
           // Ordinary teardown keeps its established degrading behavior: eviction
@@ -6938,8 +6943,8 @@ export class Daemon {
         invalidate: () => this.gitCreds.invalidate(agentId, cred.token, { plane, ...repo })
       }
     }
-    const server = this.gitCredServer
-    if (!server) throw new Error('the git credential channel is not running')
+    const server = this.agentChannelServer
+    if (!server) throw new Error('the agent channel is not running')
     let repo = ask.repo
     // GitLab's API may name a project by its numeric id: the workspace's, or an authorized one's path.
     if (ask.repoId !== undefined) {
@@ -8212,14 +8217,14 @@ export class Daemon {
       : this.workspaces.prepareWorkspace(agent, opts)
   }
 
-  /** The gitcred greeting that binds a pod-subject skill window to this subject's tunnel (source-cache.md §8). */
-  private gitcredTunnelGreeting(subject: string, tunnel: TunnelName): Buffer | undefined {
-    return tunnel === 'gitcred' ? this.gitCredServer?.tunnelGreeting(subject) : undefined
+  /** The agent channel greeting that binds a pod-subject skill window to this subject's tunnel (source-cache.md §8). */
+  private agentTunnelGreeting(subject: string, tunnel: TunnelName): Buffer | undefined {
+    return tunnel === 'agent' ? this.agentChannelServer?.tunnelGreeting(subject) : undefined
   }
 
-  /** `mcp` and `gitcred` for every pod agent: its live secrets ride the credential channel, whose `get` serves only a managed credential (capability-requests.md §4.9.2). */
+  /** `mcp` and `agent` for every pod agent: its live secrets ride the agent channel, whose `get` serves only a managed credential (capability-requests.md §4.9.2). */
   private tunnelsForAgent(agentId: string): TunnelName[] {
-    return this.agents.has(agentId) ? ['mcp', 'gitcred'] : []
+    return this.agents.has(agentId) ? ['mcp', 'agent'] : []
   }
 
   /** `codehost` for a known agent the credential proxy intercepts, which its VM's or pod's sessions reach the proxy by. */
@@ -8258,7 +8263,7 @@ export class Daemon {
   /** Every tunnel's daemon-side socket; `codehost` and `provider` reach the agent's own credential-proxy sockets, and only while the proxy serves it them. */
   private tunnelSocketPath(root: string, tunnel: TunnelName, agentId: string): string | undefined {
     return daemonTunnelSocketPath(tunnel, agentId, {
-      gitcred: gitcredSocketPath(root),
+      agent: agentChannelSocketPath(root),
       mcp: mcpSocketPath(root),
       codehost: (id) =>
         this.credentialProxy && this.credentialProxyCodeHosts(id)
@@ -8330,7 +8335,7 @@ export class Daemon {
       shimGeneration,
       isLaunchCurrent,
       // Only the pool's plane serves tunnels per pod; an executor's client is never granted `skills-git`.
-      ...(plane?.servesTunnel ? { pod: { subject: pod, servesGitcred: plane.servesTunnel(pod, 'gitcred') } } : {})
+      ...(plane?.servesTunnel ? { pod: { subject: pod, servesAgentTunnel: plane.servesTunnel(pod, 'agent') } } : {})
     })
     if (cwd !== undefined && reported && shimGeneration !== undefined) {
       await this.retireShimRootSkills(agent, plane?.skillClientFor?.(pod), reported, shimGeneration, isLaunchCurrent)
@@ -8430,7 +8435,7 @@ export class Daemon {
       localAuthority?: { groupId: string; term: string; daemonId: string }
       initialLedger?: ClusterSkillLedger
       /** A Kubernetes runtime pod: a client granted `skills-git` there installs Git skills in the pod. */
-      pod?: { subject: string; servesGitcred: boolean }
+      pod?: { subject: string; servesAgentTunnel: boolean }
     }
   ): Promise<ClusterSkillLedger | undefined> {
     const { client, workspaceIncarnation, shimGeneration } = peer
@@ -8567,7 +8572,7 @@ export class Daemon {
   }
 
   /** The in-pod Git skill path's daemon half (source-cache.md §8): trusted resolution, the pod's window, its GET URLs. */
-  private inPodSkillDeps(agent: Agent, pod: { subject: string; servesGitcred: boolean }): InPodSkillDeps {
+  private inPodSkillDeps(agent: Agent, pod: { subject: string; servesAgentTunnel: boolean }): InPodSkillDeps {
     const workspaceRepo =
       agent.workspace.mode === 'git-repo' &&
       agent.workspace.gitRepo &&
@@ -8581,9 +8586,9 @@ export class Daemon {
     )
     return {
       resolve: (entry) => this.gitSkillRefPlans?.(entry, agent.id) ?? Promise.resolve({ ok: false }),
-      servesGitcred: pod.servesGitcred,
-      openWindow: (repos) => this.gitCredServer?.openPodSkillWindow(agent.id, pod.subject, repos),
-      windowAdmits: (repo) => this.gitCredServer?.admitsPodSkillRepo(agent.id, repo) ?? false,
+      servesAgentTunnel: pod.servesAgentTunnel,
+      openWindow: (repos) => this.agentChannelServer?.openPodSkillWindow(agent.id, pod.subject, repos),
+      windowAdmits: (repo) => this.agentChannelServer?.admitsPodSkillRepo(agent.id, repo) ?? false,
       ...(this.skillCachePlan
         ? {
             cachePlan: (entry, resolution, options) =>
@@ -9122,9 +9127,9 @@ export class Daemon {
     const sessionGitInjection = needsSessionGit
       ? (sandboxSessionGit?.env ?? sessionGitEnv(agent.id, sessionGitIdentity, sessionGitScope))
       : undefined
-    // Every runtime but a dream's gets the credential channel for its live secrets; the session channel above re-states it where it applies.
+    // Every runtime but a dream's gets the agent channel for its live secrets; the session channel above re-states it where it applies.
     const liveSecretsChannel =
-      !excludeAgentToolCredentials && this.gitCredServer
+      !excludeAgentToolCredentials && this.agentChannelServer
         ? liveSecretsChannelEnv(agent.id, this.k8sPlane || remoteRoots ? sandboxGitTarget : undefined)
         : undefined
     const env: Record<string, string> = {
@@ -29891,7 +29896,7 @@ export class Daemon {
     this.drainingAgents.add(agentId)
     this.cpDroppedAgents.add(agentId)
     this.gitCreds?.remove(agentId)
-    this.gitCredServer?.revoke(agentId)
+    this.agentChannelServer?.revoke(agentId)
     // Reserve ordering before I/O. Even if marker publication fails, every
     // already-queued re-add observes this newer removal and the queued cleanup
     // below installs a typed failure latch after stopping live authority.
@@ -30622,7 +30627,7 @@ export class Daemon {
       keyServer: () => this.modelSessions.keyServer,
       usesMicrosandbox: (agent) => this.usesMicrosandbox(agent),
       gitCreds: () => this.gitCreds,
-      gitCredServer: () => this.gitCredServer,
+      agentChannelServer: () => this.agentChannelServer,
       quiesceAgentWorkspaceAuthority: (agentId) => this.quiesceAgentWorkspaceAuthority(agentId),
       // Best effort: a store error leaves the old coordinator behind, which must not keep the agent from moving.
       retireCoordinatorsForMove: (agentId) =>
@@ -32016,7 +32021,7 @@ export class Daemon {
     // so server.close() isn't left waiting on a live bridge connection.
     await Promise.resolve(this.mcp?.stop()).catch((e) => errors.push(e))
     await this.computerTools.close().catch((e: unknown) => errors.push(e))
-    this.gitCredServer?.stop()
+    this.agentChannelServer?.stop()
     void this.credentialProxy?.proxy.stop()
     // Local loops end with the process; dropping them here just makes the timers stop promptly.
     this.autoMergeWatcher?.stop()

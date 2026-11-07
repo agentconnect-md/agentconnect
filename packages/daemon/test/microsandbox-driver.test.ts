@@ -476,7 +476,7 @@ async function fixture() {
     sdk: fake.sdk,
     msbCommand: { command: process.execPath, args: ['-e', ''] },
     kvmPreflight: () => {},
-    sockets: { mcp: '/host/mcp.sock', gitcred: '/host/gitcred.sock' },
+    sockets: { mcp: '/host/mcp.sock', agent: '/host/agent.sock' },
     startShim: async (input) => {
       const shim = new FakeShim(input)
       shims.push(shim)
@@ -1488,8 +1488,8 @@ describe('microsandbox process and VM ownership', () => {
   it('refuses the VM when its shim cannot start, and starts it again on the next launch', async () => {
     const { manager, options, environment, created, shims } = await fixture()
     const start = options.startShim!
-    options.startShim = vi.fn(start).mockRejectedValueOnce(new Error('tunnel gitcred could not listen'))
-    await expect(occupy(manager, environment)).rejects.toThrow('tunnel gitcred could not listen')
+    options.startShim = vi.fn(start).mockRejectedValueOnce(new Error('tunnel agent could not listen'))
+    await expect(occupy(manager, environment)).rejects.toThrow('tunnel agent could not listen')
     expect(shims).toHaveLength(0)
     expect(created[0]!.destroy).toHaveBeenCalledOnce()
     await (await occupy(manager, environment)).stop(0)

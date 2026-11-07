@@ -495,7 +495,7 @@ describe('workspace git push (real repo; local bare remote through the runner se
     expect(push.env.GIT_TERMINAL_PROMPT).toBe('0')
     // The credential channel reached the invocation: the socket pair plus a helper pointer listed
     // AFTER the command-scope reset that would otherwise have wiped it.
-    expect(push.env.AC_GITCRED_CAPABILITY).toBe('cap-a')
+    expect(push.env.AC_AGENT_CHANNEL_CAPABILITY).toBe('cap-a')
     const pairs = Array.from({ length: Number(push.env.GIT_CONFIG_COUNT ?? 0) }, (_, index) => [
       push.env[`GIT_CONFIG_KEY_${index}`],
       push.env[`GIT_CONFIG_VALUE_${index}`]

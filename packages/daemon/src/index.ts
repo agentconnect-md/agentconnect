@@ -180,7 +180,7 @@ program
 // Git credential helper (github-app workspaces): invoked BY GIT via the shim in
 // repo config / session env, once or more per remote operation — lazy import
 // keeps its cost to bundle init only. Speaks the git credential protocol on
-// stdin/stdout and proxies the daemon's gitcred.sock; tokens never touch disk.
+// stdin/stdout and proxies the daemon's agent.sock; tokens never touch disk.
 program
   .command('git-credential', { hidden: true })
   .description('Git credential helper backed by the local daemon (github-app workspaces)')

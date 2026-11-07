@@ -43,7 +43,7 @@ describe.skipIf(process.platform === 'win32')("Git over a local environment's sh
       HOME: join(root, '.home'),
       PATH: process.env.PATH!,
       XDG_CONFIG_HOME: join(root, '.config'),
-      AC_GITCRED_SOCKET: '/run/agentconnect/gitcred.sock',
+      AC_AGENT_CHANNEL_SOCKET: '/run/agentconnect/agent.sock',
       LAUNCH_ONLY: '1'
     }
     const runner = localShimGitRunner({
@@ -73,7 +73,7 @@ describe.skipIf(process.platform === 'win32')("Git over a local environment's sh
       HOME: launchEnv.HOME,
       PATH: launchEnv.PATH,
       XDG_CONFIG_HOME: launchEnv.XDG_CONFIG_HOME,
-      AC_GITCRED_SOCKET: launchEnv.AC_GITCRED_SOCKET
+      AC_AGENT_CHANNEL_SOCKET: launchEnv.AC_AGENT_CHANNEL_SOCKET
     })
   })
 
@@ -81,7 +81,11 @@ describe.skipIf(process.platform === 'win32')("Git over a local environment's sh
   it('sends a bare request with no env, and puts what the environment names over a caller replacement env', async () => {
     const root = repository()
     const seen: Parameters<typeof vm>[1] = []
-    const owned = { HOME: join(root, 'home'), TMPDIR: join(root, 't'), AC_GITCRED_SOCKET: join(root, 'gitcred.sock') }
+    const owned = {
+      HOME: join(root, 'home'),
+      TMPDIR: join(root, 't'),
+      AC_AGENT_CHANNEL_SOCKET: join(root, 'agent.sock')
+    }
     const runner = localShimGitRunner({ run: vm(root, seen), cwd: root, owned })
     expect((await runner.status()).current).toBe('main')
     expect(seen.at(-1)!.payload.env).toBeUndefined()

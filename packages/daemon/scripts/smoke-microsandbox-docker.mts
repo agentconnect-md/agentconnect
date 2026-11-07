@@ -30,7 +30,7 @@ Object.assign(process.env, sandboxEnv)
 const sdk: typeof import('microsandbox') = await import(
   sdkModule ? pathToFileURL(resolve(sdkModule)).href : 'microsandbox'
 )
-const sockets = { mcp: join(root, 'mcp.sock'), gitcred: join(root, 'git.sock') }
+const sockets = { mcp: join(root, 'mcp.sock'), agent: join(root, 'git.sock') }
 const servers: Server[] = []
 for (const path of Object.values(sockets)) {
   const server = createServer((socket) => socket.end())

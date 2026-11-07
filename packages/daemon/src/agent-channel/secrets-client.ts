@@ -1,4 +1,4 @@
-// `agentconnect-secrets` (capability-requests.md §4.9.2): the agent's live secrets, fetched over the credential channel at use time.
+// `agentconnect-secrets` (capability-requests.md §4.9.2): the agent's live secrets, fetched over the agent channel at use time.
 // One implementation for every place it runs: the daemon CLI dials its own socket, the in-pod entry dials the shim's tunnel.
 // Node builtins and the channel's leaves only: the in-sandbox bundle is asserted to import nothing else.
 import { spawn } from 'node:child_process'
@@ -6,8 +6,8 @@ import { randomBytes } from 'node:crypto'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { constants, tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV } from './env.js'
-import { gitcredIpc } from './gh-token-ipc.js'
+import { AGENT_CHANNEL_AGENT_ENV, AGENT_CHANNEL_CAPABILITY_ENV } from './env.js'
+import { agentChannelIpc } from './ipc.js'
 
 /** A live secret's name, as the agent writes it on the command line. */
 const SECRET_NAME = /^[A-Z][A-Z0-9_]{1,63}$/
@@ -89,10 +89,10 @@ export async function runSecretsHelper(argv: readonly string[], io: SecretsHelpe
   if (invalid !== undefined)
     return fail(`"${invalid}" is not a secret name (A-Z, 0-9 and _, starting with a letter)`, 2)
 
-  const agentId = io.env[GITCRED_AGENT_ENV]
-  const capability = io.env[GITCRED_CAPABILITY_ENV]
-  if (!agentId || !capability) return fail('this runtime has no AgentConnect credential channel')
-  const res = (await gitcredIpc(io.socketPath, {
+  const agentId = io.env[AGENT_CHANNEL_AGENT_ENV]
+  const capability = io.env[AGENT_CHANNEL_CAPABILITY_ENV]
+  if (!agentId || !capability) return fail('this runtime has no AgentConnect agent channel')
+  const res = (await agentChannelIpc(io.socketPath, {
     op: 'secret',
     agentId,
     capability,

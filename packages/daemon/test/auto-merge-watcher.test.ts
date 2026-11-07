@@ -4,7 +4,7 @@
 import { MAX_AUTO_MERGE_DETAIL } from '@agentconnect.md/protocol'
 import { describe, expect, it, vi } from 'vitest'
 import type { GitCredentialCache } from '../src/cp/git-credential.js'
-import { GitCredServer } from '../src/cp/gitcred-server.js'
+import { AgentChannelServer } from '../src/cp/agent-channel-server.js'
 import { AutoMergeLoop } from '../src/github/auto-merge/loop.js'
 import { AutoMergeViolationError, AutoMergeWatcher, type AutoMergeSandbox } from '../src/github/auto-merge/watcher.js'
 import { ShimAutoMergeClient, askArmed } from '../src/shim/auto-merge-client.js'
@@ -169,7 +169,7 @@ describe('AutoMergeLoop', () => {
     const { timers } = fakeTimers()
     const loop = new AutoMergeLoop({
       access: {
-        // The pod fetches this over the gitcred tunnel, so it really is an await of its own.
+        // The pod fetches this over the agent tunnel, so it really is an await of its own.
         token: () => new Promise<string>((resolve) => tokenAsks.push(resolve)),
         fetchImpl
       },
@@ -294,10 +294,10 @@ describe('AutoMergeWatcher', () => {
     expect(await watcher.state(TARGET)).toEqual({ ...TARGET, armed: false })
   })
 
-  it('hands the pod the daemon’s gitcred capability, never the runtime’s', async () => {
+  it('hands the pod the daemon’s agent channel capability, never the runtime’s', async () => {
     const sandbox = fakeSandbox()
     // Never started: issuing capabilities needs no socket.
-    const server = new GitCredServer({} as GitCredentialCache, '/tmp/ac-amw-unused.sock', {
+    const server = new AgentChannelServer({} as GitCredentialCache, '/tmp/ac-amw-unused.sock', {
       log: { info: () => undefined, warn: () => undefined }
     })
     const watcher = new AutoMergeWatcher({

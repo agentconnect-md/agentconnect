@@ -61,8 +61,8 @@ export interface SandboxSkillTarget {
 export interface InPodSkillDeps {
   /** The daemon's own resolution: a planned commit is never a pod's answer. */
   resolve(entry: AgentSkillEntry): Promise<SkillRefPlan>
-  /** The pod serves the gitcred tunnel; without it, private Sources take the daemon path this reconcile. */
-  servesGitcred: boolean
+  /** The pod serves the agent tunnel; without it, private Sources take the daemon path this reconcile. */
+  servesAgentTunnel: boolean
   /** A pod-subject credential window over exactly these private repositories, or undefined. */
   openWindow(repos: string[]): { capability: string; close(): void } | undefined
   /** Whether `openWindow` would admit this private repository; one it would not takes the daemon path. */
@@ -406,9 +406,9 @@ async function planInPod(
     if (!isCredentialedSkillSource(entry)) return isGitHubSkillSource(entry.source) || inPod.resolveInPod !== undefined
     // A GitLab Source needs an image that credentials its instance.
     if (!isGitHubSkillSource(entry.source) && !input.target.client.gitlabPlans) return false
-    // A pod without the gitcred tunnel, or a repo no window would admit, cannot fill a private Source; the daemon path still can.
+    // A pod without the agent tunnel, or a repo no window would admit, cannot fill a private Source; the daemon path still can.
     const key = skillWindowKey(entry, inPod.gitlabHost)
-    return inPod.servesGitcred && key !== undefined && inPod.windowAdmits(key)
+    return inPod.servesAgentTunnel && key !== undefined && inPod.windowAdmits(key)
   })
   // The pod's own answer for an anonymous Source off GitHub is used by this preparation alone (source-cache.md §5).
   const resolutions = await Promise.all(

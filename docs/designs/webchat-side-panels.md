@@ -1093,7 +1093,7 @@ Decisions recorded while building it:
   ([k8s-daemon-pool.md](k8s-daemon-pool.md) §4), else the agent's: a new
   `automerge` shim capability (`src/shim/auto-merge-handler.ts`) spawns one
   `/opt/agentconnect/shim/auto-merge.js` per armed pull request, which fetches its
-  own clamped `gh` token per tick over the existing gitcred tunnel, opened on a
+  own clamped `gh` token per tick over the existing agent tunnel, opened on a
   session pod under its agent's policy. A locally-placed agent has no pod, so the loop
   runs in its daemon (`github/auto-merge/watcher.ts` dispatches on `clusterPlaced`,
   for the reason the next bullet records). Its own capability rather than
@@ -1151,7 +1151,7 @@ Decisions recorded while building it:
   once `stop()` has returned, no merge can still BEGIN — and `disarm` awaits
   `settle()` before answering, so `armed: false` is never reported while one could
   still be in the air. That last check has to sit past the MERGE TOKEN's own
-  await: fetching the token is a round trip of its own (over the gitcred tunnel,
+  await: fetching the token is a round trip of its own (over the agent tunnel,
   in a pod), so `squashMerge` resolves it FIRST and gates immediately before the
   POST — a fence placed before that await has already passed by the time the
   request goes out. The in-pod child runs the same fence off `SIGTERM`, and the

@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { prepareMicrosandboxLaunch, type PrepareMicrosandboxLaunchOptions } from '../src/microsandbox/launch.js'
 import { microsandboxSupportMounts } from '../src/microsandbox/support.js'
-import { gitcredShimPath } from '../src/cp/gitcred-server.js'
+import { gitcredShimPath } from '../src/cp/agent-channel-server.js'
 import { hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
 import { prepareRuntimeLaunch } from '../src/launch/prepare.js'
 import { composeRuntimeLaunch } from '../src/launch/compose.js'
@@ -514,7 +514,7 @@ describe('prepareMicrosandboxLaunch', () => {
       expect(launch.env[name]).toBeUndefined()
     }
     expect(launch.env.TMPDIR).toBe('/tmp')
-    expect(launch.env.AC_GITCRED_SOCKET).toBe('/run/agentconnect/gitcred.sock')
+    expect(launch.env.AC_AGENT_CHANNEL_SOCKET).toBe('/run/agentconnect/agent.sock')
     const dockerConfig = join(opts.scopeDir, 'run', 'config-files', 'docker')
     const explicit = prepareMicrosandboxLaunch({
       ...opts,

@@ -128,7 +128,7 @@ describe('nameGitSkillRef (anonymous ls-remote)', () => {
     expect(env.GIT_TERMINAL_PROMPT).toBe('0')
     expect(env.GIT_CONFIG_NOSYSTEM).toBe('1')
     expect(env.HOME).toBe(home)
-    expect(Object.keys(env).filter((key) => key.startsWith('AC_GITCRED_'))).toEqual([])
+    expect(Object.keys(env).filter((key) => key.startsWith('AC_AGENT_CHANNEL_'))).toEqual([])
     const pairs = Object.entries(env).filter(([key]) => key.startsWith('GIT_CONFIG_KEY_'))
     const helper = pairs.find(([, value]) => value === 'credential.helper')
     expect(helper && env[helper[0].replace('KEY', 'VALUE')]).toBe('')

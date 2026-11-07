@@ -2398,7 +2398,7 @@ before, and the host is per-agent data.
 On the daemon the two-literal `'github.com' | 'gitlab.com'` classifier is
 retired. The managed host resolves from the spec's provider and host, and
 the clone URL is checked against it, never sniffed from it. The credential
-helper's gate becomes an injected table via the existing `AC_GITCRED_*`
+helper's gate becomes an injected table via the existing `AC_AGENT_CHANNEL_*`
 convention, and each entry carries the **full normalized base including any
 path prefix**: with `useHttpPath`, Git hands the helper
 `gitlab/group/project.git` on a prefixed install, and `glab` remotes carry
@@ -2552,7 +2552,7 @@ Merge order, GitLab.com green at every step:
   the trusted-origin check, the `.git`-suffix canonicalization (now keyed on
   provider) and the materialization key all take the spec's answer instead of
   re-deriving one from the clone URL. The helper table travels on
-  `AC_GITCRED_HOSTS` beside the capability it is minted with, carries GitHub
+  `AC_AGENT_CHANNEL_HOSTS` beside the capability it is minted with, carries GitHub
   plus the one GitLab instance the spec names — a GitLab consumer is not always
   the workspace — and is stripped from the daemon's own inherited environment so
   an ambient value can never be read as a hint. The table only classifies, so the

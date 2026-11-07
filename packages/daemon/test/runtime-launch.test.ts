@@ -621,7 +621,7 @@ describe('prepareRuntimeLaunch', () => {
     expect(launch.env.TMPDIR).toBe(join(runtimeRoot, 't'))
     expect(launch.env.CLAUDE_CODE_TMPDIR).toBe(join(runtimeRoot, 't'))
     expect(launch.env[SANDBOX_TEMP_DIR_ENV]).toBeUndefined()
-    expect(launch.env.AC_GITCRED_SOCKET).toBe(join(runtimeRoot, 'gitcred.sock'))
+    expect(launch.env.AC_AGENT_CHANNEL_SOCKET).toBe(join(runtimeRoot, 'agent.sock'))
     expect(existsSync(sandboxTempDirFor(scopeDir, key))).toBe(false)
     expect(existsSync(join(scopeDir, '.agentconnect', 'sandbox', hostKeyDirName(key)))).toBe(false)
     // The runtime's inner profile is composed exactly as it is for a runtime wrapped alone.
@@ -661,7 +661,7 @@ describe('prepareRuntimeLaunch', () => {
     ).toBe(false)
     // The shim's temp root and tunnel; no per-host policy or temp directory is written.
     expect(launch.env.TMPDIR).toBe(join(runtimeRoot, 't'))
-    expect(launch.env.AC_GITCRED_SOCKET).toBe(join(runtimeRoot, 'gitcred.sock'))
+    expect(launch.env.AC_AGENT_CHANNEL_SOCKET).toBe(join(runtimeRoot, 'agent.sock'))
     expect(existsSync(sandboxTempDirFor(scopeDir, key))).toBe(false)
     expect(existsSync(join(scopeDir, '.agentconnect', 'sandbox', hostKeyDirName(key)))).toBe(false)
   })

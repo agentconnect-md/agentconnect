@@ -11,7 +11,7 @@ export interface TunnelBinderDeps {
   tunnelsFor?: (agentId: string, subject: string) => TunnelName[]
   /** Where this daemon serves a tunnel for an agent: one socket per daemon for the helpers, the agent's own for `codehost`. */
   tunnelSocketPath?: (tunnel: TunnelName, agentId: string) => string | undefined
-  /** The line that tags a subject's connection to a daemon socket with that subject (gitcred's pod window binding). */
+  /** The line that tags a subject's connection to a daemon socket with that subject (the agent channel's pod window binding). */
   tunnelGreeting?: (subject: string, tunnel: TunnelName) => Buffer | undefined
   /** What a subject's `listen` carries beside the name (`codehost`'s routes and CA). */
   tunnelListenOptions?: (agentId: string, tunnel: TunnelName) => TunnelListenOptions | undefined
@@ -63,7 +63,7 @@ export class TunnelBinder {
     }
   }
 
-  /** Whether the subject's bound pod serves `tunnel`: a pod bound by an older daemon may lack `gitcred` (source-cache.md §8). */
+  /** Whether the subject's bound pod serves `tunnel`: a pod bound by an older daemon may lack `agent` (source-cache.md §8). */
   serves(subject: string, tunnel: TunnelName): boolean {
     return this.proxies.get(subject)?.proxy.serves(tunnel) === true
   }

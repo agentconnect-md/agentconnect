@@ -14,16 +14,16 @@ import {
   type TunnelName
 } from './tunnel.js'
 
-/** Silence after which a stream ends, per tunnel (`null` for none): gitcred and codehost carry finite exchanges, while mcp's bridge idles between tool calls for a whole session and is bounded by its channel. */
+/** Silence after which a stream ends, per tunnel (`null` for none): agent and codehost carry finite exchanges, while mcp's bridge idles between tool calls for a whole session and is bounded by its channel. */
 const STREAM_IDLE_MS: Readonly<Record<TunnelName, number | null>> = {
-  gitcred: 5 * 60_000,
+  agent: 5 * 60_000,
   mcp: null,
   codehost: 5 * 60_000,
   // A model stream can sit silent for minutes while the model thinks, and a client keeps its connection for the next turn.
   provider: 30 * 60_000
 }
 
-/** This side's own cap on concurrent helper (`gitcred`, `mcp`) streams per agent, protecting the daemon from a shim that does not enforce its own. */
+/** This side's own cap on concurrent helper (`agent`, `mcp`) streams per agent, protecting the daemon from a shim that does not enforce its own. */
 const MAX_TUNNEL_STREAMS = 32
 
 /** Each stream budget's cap: the helpers share one, and each proxy tunnel has its own. */
@@ -53,7 +53,7 @@ export interface TunnelProxyDeps {
   /** This daemon's own socket for a tunnel, or undefined when it serves none — an unserved
    *  tunnel must be refused rather than dialled somewhere plausible. */
   socketPathFor: (tunnel: TunnelName) => string | undefined
-  /** Bytes written to the daemon socket before any pod byte, naming this pod to the server (gitcred's window binding). */
+  /** Bytes written to the daemon socket before any pod byte, naming this pod to the server (the agent channel's window binding). */
   greeting?: (tunnel: TunnelName) => Buffer | undefined
   /** What a `listen` carries beside the name: `codehost`'s or `provider`'s routes and the CA its sessions trust. */
   listenOptions?: (tunnel: TunnelName) => TunnelListenOptions | undefined
@@ -78,7 +78,7 @@ interface ProxyStream {
  * daemon-side server, and shim requests only ever flow daemon → shim — so the pod announces the
  * connection as an event and the daemon answers by dialling its own end. Nothing here inspects
  * what it forwards: authorization for these servers is per-agent and lives in the servers
- * themselves (gitcred's capability), exactly as it does for a runtime that shares the daemon's
+ * themselves (the agent channel's capability), exactly as it does for a runtime that shares the daemon's
  * filesystem.
  */
 export class TunnelProxy {
@@ -102,7 +102,7 @@ export class TunnelProxy {
     deps.session.onLost((reason) => this.stop(reason))
   }
 
-  /** On a renewal, end each stream with a frame in flight, whose bytes may be lost or would duplicate on a resend (a corrupt request for gitcred, a corrupt TLS record for codehost); an idle stream is untouched. */
+  /** On a renewal, end each stream with a frame in flight, whose bytes may be lost or would duplicate on a resend (a corrupt request for the agent channel, a corrupt TLS record for codehost); an idle stream is untouched. */
   private dropUnaccountedStreams(): void {
     for (const [streamId, entry] of [...this.streams]) {
       if (entry.inFlight === 0) continue

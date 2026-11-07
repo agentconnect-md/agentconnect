@@ -120,7 +120,7 @@ export function createExecHandler(
   context?: ClusterSkillRequestContext
 ) => Promise<unknown> {
   const paths = deps.paths ?? DEFAULT_SHIM_PATHS
-  // The handler defaults the gitcred helper and socket; only the log is this caller's.
+  // The handler defaults the git credential helper and the agent channel socket; only the log is this caller's.
   const git = deps.log ? { log: deps.log } : {}
   const skillHandler = new ClusterSkillHandler({
     stagingRoot: paths.skillStagingDir,

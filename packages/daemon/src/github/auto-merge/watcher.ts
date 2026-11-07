@@ -56,9 +56,9 @@ export interface AutoMergeWatcherDeps {
   holdSandbox?: (subject: string) => (() => void) | undefined
   /** A pod answered with a watcher armed in it: renew the idle sweep's own hold on that pod. */
   onArmed?: (subject: string) => void
-  /** The agent's daemon gitcred capability (never the runtime's), so the POD's watcher can fetch its own token. */
+  /** The agent's daemon-holder agent channel capability (never the runtime's), so the POD's watcher can fetch its own token. */
   daemonCapabilityFor: (agentId: string) => string
-  /** A GH_TOKEN-plane token for the LOCAL loop; the pod fetches its own over the gitcred tunnel. */
+  /** A GH_TOKEN-plane token for the LOCAL loop; the pod fetches its own over the agent tunnel. */
   tokenFor: (agentId: string, repoFullName: string) => Promise<string>
   log?: { info: (message: string) => void; warn: (message: string) => void }
   /** GitHub seam for the LOCAL loop; the pod's watcher owns its own. Tests substitute it. */

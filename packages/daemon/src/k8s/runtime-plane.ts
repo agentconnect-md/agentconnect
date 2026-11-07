@@ -93,7 +93,7 @@ export interface K8sRuntimePlaneOptions {
    */
   tunnelsFor?: (agentId: string) => TunnelName[]
   tunnelSocketPath?: (tunnel: TunnelName, agentId: string) => string | undefined
-  /** Tags a subject's daemon-socket connection with that subject (gitcred binds a pod window to its pod). */
+  /** Tags a subject's daemon-socket connection with that subject (the agent channel binds a pod window to its pod). */
   tunnelGreeting?: (subject: string, tunnel: TunnelName) => Buffer | undefined
   /** What a `listen` carries beside the name: `codehost`'s routes and the proxy CA, its certificate alone. */
   tunnelListenOptions?: (agentId: string, tunnel: TunnelName) => TunnelListenOptions | undefined
@@ -216,7 +216,7 @@ export interface K8sRuntimePlane extends ExecutionPlane {
   /** A key the subject's ledger was kept under before `workspaceIncarnationFor`'s, adopted when that one has none. */
   deviceWorkspaceIncarnationFor?: (subject: string) => string | undefined
   shimGenerationFor?: (subject: string) => number | undefined
-  /** Whether the subject's bound pod serves `tunnel` (S5b routes private skill Sources of a pod without `gitcred` through the daemon). */
+  /** Whether the subject's bound pod serves `tunnel` (S5b routes private skill Sources of a pod without `agent` through the daemon). */
   servesTunnel?: (subject: string, tunnel: TunnelName) => boolean
   /** Subjects this daemon holds a Sandbox for, and since when — the idle sweep's candidates. Read from
    *  the driver, not inferred from live hosts: a launch outlives the host it was made for. */

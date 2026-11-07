@@ -19,13 +19,13 @@ import { Daemon } from '../src/daemon.js'
 import { agentHostKey } from '../src/acp/host-key.js'
 import { secretsShimDir } from '../src/cp/secrets-shim.js'
 import {
-  GITCRED_AGENT_ENV,
-  GITCRED_CAPABILITY_ENV,
+  AGENT_CHANNEL_AGENT_ENV,
+  AGENT_CHANNEL_CAPABILITY_ENV,
   gitcredShimPath,
-  gitcredSocketPath,
+  agentChannelSocketPath,
   RUNTIME_NO_MINT_ERROR
-} from '../src/cp/gitcred-server.js'
-import { gitcredIpc } from '../src/gitcred/gh-token-ipc.js'
+} from '../src/cp/agent-channel-server.js'
+import { agentChannelIpc } from '../src/agent-channel/ipc.js'
 import { CredentialProxy } from '../src/credential-proxy/proxy.js'
 import { PROXY_TRUST_VARS } from '../src/credential-proxy/trust-bundle.js'
 import {
@@ -310,22 +310,22 @@ describe('a host session with the credential proxy on', () => {
       expect(path).toContain(secretsShimDir(root))
       expect(readFileSync(join(secretsShimDir(root), 'agentconnect-secrets'), 'utf8')).toContain(' secrets')
       // The runtime's capability, as the session holds it, mints nothing on any plane and still reads secrets.
-      const socket = gitcredSocketPath(root)
-      const presented = { agentId: own[GITCRED_AGENT_ENV], capability: own[GITCRED_CAPABILITY_ENV] }
+      const socket = agentChannelSocketPath(root)
+      const presented = { agentId: own[AGENT_CHANNEL_AGENT_ENV], capability: own[AGENT_CHANNEL_CAPABILITY_ENV] }
       for (const plane of ['git', 'gh']) {
-        expect(await gitcredIpc(socket, { op: 'get', ...presented, plane })).toEqual({
+        expect(await agentChannelIpc(socket, { op: 'get', ...presented, plane })).toEqual({
           ok: false,
           error: RUNTIME_NO_MINT_ERROR,
           denied: 'agent'
         })
       }
-      expect(await gitcredIpc(socket, { op: 'secret', ...presented })).toEqual({ ok: true, secrets: [] })
+      expect(await agentChannelIpc(socket, { op: 'secret', ...presented })).toEqual({ ok: true, secrets: [] })
       expect(asked).toEqual([])
       // The daemon's own git keeps minting with its own capability.
-      const daemon = d.gitCredServer.capabilityFor(GITHUB_AGENT, 'daemon')
+      const daemon = d.agentChannelServer.capabilityFor(GITHUB_AGENT, 'daemon')
       expect(daemon).not.toBe(presented.capability)
-      expect(cloneGitEnv(GITHUB_AGENT)[GITCRED_CAPABILITY_ENV]).toBe(daemon)
-      expect(await gitcredIpc(socket, { op: 'get', agentId: GITHUB_AGENT, capability: daemon })).toMatchObject({
+      expect(cloneGitEnv(GITHUB_AGENT)[AGENT_CHANNEL_CAPABILITY_ENV]).toBe(daemon)
+      expect(await agentChannelIpc(socket, { op: 'get', agentId: GITHUB_AGENT, capability: daemon })).toMatchObject({
         ok: true,
         password: MINTED_GITHUB
       })
@@ -385,8 +385,8 @@ describe('a daemon whose credential proxy did not start', () => {
         fill(cwd, { ...child, GIT_TERMINAL_PROMPT: '0' }, 'github.com', 'example-org/example-repo.git')
       ).toThrow()
       fakeControlPlane(d, 'write')
-      const presented = { agentId: own[GITCRED_AGENT_ENV], capability: own[GITCRED_CAPABILITY_ENV] }
-      expect(await gitcredIpc(gitcredSocketPath(root), { op: 'get', ...presented })).toEqual({
+      const presented = { agentId: own[AGENT_CHANNEL_AGENT_ENV], capability: own[AGENT_CHANNEL_CAPABILITY_ENV] }
+      expect(await agentChannelIpc(agentChannelSocketPath(root), { op: 'get', ...presented })).toEqual({
         ok: false,
         error: RUNTIME_NO_MINT_ERROR,
         denied: 'agent'

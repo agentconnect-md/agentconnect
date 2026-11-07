@@ -185,7 +185,7 @@ async function sandbox(
       allowFileProtocol: true,
       shimEnv: { PATH: process.env.PATH },
       credentialHelper: '/nonexistent/gitcred-helper',
-      credentialSocket: '/nonexistent/gitcred.sock'
+      credentialSocket: '/nonexistent/agent.sock'
     },
     manifestLimits: limits,
     ...(bundles ? { writeBack: { stage: bundles.stage, discard: (handle: string) => bundles.discard(handle) } } : {})
@@ -308,7 +308,7 @@ async function run(w: World, box: Sandbox, mode: 'daemon' | 'pod', options: Run 
       ? {
           inPod: {
             resolve: async (entry) => resolve(entry),
-            servesGitcred: true,
+            servesAgentTunnel: true,
             windowAdmits: () => true,
             openWindow: (repos) => ({
               capability: `window-${repos.join('-')}`.replace(/[^A-Za-z0-9_-]/g, '_'),
@@ -579,7 +579,7 @@ describe('sandbox skill reconcile: routing', () => {
     })
   }, 240_000)
 
-  it('routes private Sources through the daemon for a pod bound without the gitcred tunnel', async () => {
+  it('routes private Sources through the daemon for a pod bound without the agent tunnel', async () => {
     await withWorld(async (w) => {
       const pod = await sandbox(w, 'pod')
       const acquired: string[] = []
@@ -587,7 +587,7 @@ describe('sandbox skill reconcile: routing', () => {
       await run(w, pod, 'pod', {
         acquired,
         inPod: {
-          servesGitcred: false,
+          servesAgentTunnel: false,
           openWindow: () => {
             opened += 1
             return undefined
@@ -646,7 +646,7 @@ describe('sandbox skill reconcile: routing', () => {
             resolve: async () => {
               throw new Error('never asked')
             },
-            servesGitcred: true,
+            servesAgentTunnel: true,
             windowAdmits: () => true,
             openWindow: () => {
               throw new Error('never opened')
@@ -804,7 +804,7 @@ describe('sandbox skill reconcile: plan frame bound', () => {
         },
         inPod: {
           resolve: async () => ({ ok: true, commit, ref: 'refs/heads/main', pinned: false, credentialed: false }),
-          servesGitcred: true,
+          servesAgentTunnel: true,
           windowAdmits: () => true,
           openWindow: () => undefined,
           cachePlan: async () => ({ getUrl: `https://cache.example/${'q'.repeat(2000)}` })
@@ -932,7 +932,7 @@ describe('sandbox skill reconcile: cross-agent isolation', () => {
               resolvedB.push(entry)
               return { ok: false }
             },
-            servesGitcred: true,
+            servesAgentTunnel: true,
             windowAdmits: () => true,
             openWindow: () => undefined,
             cachePlan: async (entry, resolution) => reader.plan({ agentId: 'b', entry, resolution })

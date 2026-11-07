@@ -143,14 +143,14 @@ describe("a hosted VM launch's switch to its shim's codehost listener", () => {
 describe('a hosted VM session through its guest shim', () => {
   async function fixture(extraTunnels: Array<'codehost'>) {
     const root = shortDir()
-    const sockets = { mcp: join(root, 'mcp.sock'), gitcred: join(root, 'gc.sock'), codehost: join(root, 'ch.sock') }
+    const sockets = { mcp: join(root, 'mcp.sock'), agent: join(root, 'gc.sock'), codehost: join(root, 'ch.sock') }
     const servers: Server[] = [
       await daemonSocket(sockets.mcp, 'mcp'),
-      await daemonSocket(sockets.gitcred, 'gitcred'),
+      await daemonSocket(sockets.agent, 'agent'),
       await daemonSocket(sockets.codehost, 'codehost')
     ]
     const seed = msbSeed(root)
-    const vm = fakeVm({ mcp: join(root, 'g', 'mcp.sock'), gitcred: join(root, 'g', 'gc.sock') }, { seedEnv: seed })
+    const vm = fakeVm({ mcp: join(root, 'g', 'mcp.sock'), agent: join(root, 'g', 'gc.sock') }, { seedEnv: seed })
     const fake = fakeVmManager({ vm })
     const local = new LocalExecutor({
       launcher: microsandboxLauncher({ manager: () => fake.manager }),
@@ -301,7 +301,7 @@ describe.skipIf(process.platform === 'win32')('the holder of an executor-placed 
     const { d, agent, stop } = await holder()
     try {
       const placed = { agentId: agent.id, sessionKey: SESSION_KEY, strategy: 'microsandbox' }
-      expect(d.tunnelsForPlaced(agent.id, placed)).toEqual(['mcp', 'gitcred', 'codehost'])
+      expect(d.tunnelsForPlaced(agent.id, placed)).toEqual(['mcp', 'agent', 'codehost'])
     } finally {
       await stop()
     }

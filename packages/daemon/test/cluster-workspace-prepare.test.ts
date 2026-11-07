@@ -449,7 +449,7 @@ describe('preparing a cluster git-repo workspace', () => {
     const fetch = calls.find((call) => call.args[0] === 'fetch')
     expect(fetch).toMatchObject({ cwd: CHECKOUT })
     // The fetch carries the credential pair, or a private repo has nothing to authenticate with.
-    expect(fetch!.env).toMatchObject({ AC_GITCRED_AGENT: 'agent-cluster' })
+    expect(fetch!.env).toMatchObject({ AC_AGENT_CHANNEL_AGENT: 'agent-cluster' })
     // The sync pins the configured branch to the fetched tip and checks it out — never a merge.
     expect(calls.find((call) => call.args[0] === 'checkout')).toMatchObject({
       cwd: CHECKOUT,

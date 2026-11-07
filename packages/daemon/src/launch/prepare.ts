@@ -4,7 +4,7 @@ import { sandboxBoundary, writeSandboxSettings, type SandboxMechanism } from '..
 import { prepareSandboxTempDir, SANDBOX_TEMP_DIR_ENV } from '../acp/sandbox-temp.js'
 import { hostKeyDirName, hostKeySessionKey, type HostKey } from '../acp/host-key.js'
 import type { RuntimeDef, SandboxMount } from '../config/config-schema.js'
-import { GITCRED_SOCKET_ENV } from '../gitcred/env.js'
+import { AGENT_CHANNEL_SOCKET_ENV } from '../agent-channel/env.js'
 import { shimPaths } from '../shim/sandbox-paths.js'
 import { prepareMicrosandboxLaunch } from '../microsandbox/launch.js'
 import {
@@ -168,7 +168,7 @@ export function shimEnvironment(env: Record<string, string>, runtimeRoot: string
   env.TMPDIR = tempDir
   env.CLAUDE_CODE_TMPDIR = tempDir
   env.CLAUDE_TMPDIR = tempDir
-  env[GITCRED_SOCKET_ENV] = shimPaths(runtimeRoot).tunnels.gitcred
+  env[AGENT_CHANNEL_SOCKET_ENV] = shimPaths(runtimeRoot).tunnels.agent
 }
 
 export interface PreparedRuntimeLaunch {

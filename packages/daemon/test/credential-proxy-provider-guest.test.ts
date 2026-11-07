@@ -116,15 +116,15 @@ describe('applying a launch provider env at spawn', () => {
 describe('a local VM session through its shim provider listener', () => {
   async function fixture(options: { refuse?: string[] } = {}) {
     const root = shortDir()
-    const sockets = { mcp: join(root, 'mcp.sock'), gitcred: join(root, 'gc.sock'), provider: join(root, 'pv.sock') }
+    const sockets = { mcp: join(root, 'mcp.sock'), agent: join(root, 'gc.sock'), provider: join(root, 'pv.sock') }
     const servers: Server[] = [
       await daemonSocket(sockets.mcp, 'mcp'),
-      await daemonSocket(sockets.gitcred, 'gitcred'),
+      await daemonSocket(sockets.agent, 'agent'),
       await daemonSocket(sockets.provider, 'provider')
     ]
     writeFileSync(join(root, 'proxy-ca.pem'), proxyCa)
     const vm = fakeVm(
-      { mcp: join(root, 'g', 'mcp.sock'), gitcred: join(root, 'g', 'gc.sock') },
+      { mcp: join(root, 'g', 'mcp.sock'), agent: join(root, 'g', 'gc.sock') },
       options.refuse ? { refuseTunnels: options.refuse } : {}
     )
     const fake = fakeVmManager({ vm })

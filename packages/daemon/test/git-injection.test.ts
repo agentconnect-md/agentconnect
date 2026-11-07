@@ -4,7 +4,11 @@ import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { simpleGit } from 'simple-git'
-import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV, GITCRED_SOCKET_ENV } from '../src/cp/gitcred-server.js'
+import {
+  AGENT_CHANNEL_AGENT_ENV,
+  AGENT_CHANNEL_CAPABILITY_ENV,
+  AGENT_CHANNEL_SOCKET_ENV
+} from '../src/cp/agent-channel-server.js'
 import { LocalGitRunner, type GitRunner } from '../src/workspace/git-runner.js'
 import {
   canonicalWorkspaceGitUrl,
@@ -40,8 +44,8 @@ import { SANDBOX_TUNNEL_PATHS } from '../src/shim/tunnel.js'
 // "the deployed daemon would not have thrown before git even started".
 
 const POLLUTED = {
-  [GITCRED_CAPABILITY_ENV]: 'host-capability',
-  [GITCRED_AGENT_ENV]: 'host-agent-id', // a stale host value must never outrank the minted pair
+  [AGENT_CHANNEL_CAPABILITY_ENV]: 'host-capability',
+  [AGENT_CHANNEL_AGENT_ENV]: 'host-agent-id', // a stale host value must never outrank the minted pair
   EDITOR: 'vim', // the observed production failure — login-shell default
   Visual: 'code', // checker matches case-insensitively; so must the strip
   PAGER: 'less',
@@ -545,27 +549,27 @@ describe('cloneGitEnv', () => {
   })
 
   it('injects the runtime capability without writing it to the session gitconfig', () => {
-    expect(cloneGitEnv('agent-1')[GITCRED_CAPABILITY_ENV]).toBe('daemon-cap-agent-1')
+    expect(cloneGitEnv('agent-1')[AGENT_CHANNEL_CAPABILITY_ENV]).toBe('daemon-cap-agent-1')
     const session = sessionGitEnv('agent-1')
-    expect(session[GITCRED_CAPABILITY_ENV]).toBe('runtime-cap-agent-1')
+    expect(session[AGENT_CHANNEL_CAPABILITY_ENV]).toBe('runtime-cap-agent-1')
     expect(readFileSync(session.GIT_CONFIG_GLOBAL!, 'utf8')).not.toContain('cap-agent-1')
   })
 
   it('gives git the daemon runs the daemon capability and the agent runtime its own, in every filesystem', () => {
     for (const agentId of ['agent-1', 'pod-1', 'installed-1']) {
-      expect(cloneGitEnv(agentId)[GITCRED_CAPABILITY_ENV]).toBe(`daemon-cap-${agentId}`)
-      expect(daemonLocalGitEnv(agentId)[GITCRED_CAPABILITY_ENV]).toBe(`daemon-cap-${agentId}`)
-      expect(workspaceGitRemoteTarget('https://github.com/acme/repo.git', agentId).env[GITCRED_CAPABILITY_ENV]).toBe(
-        `daemon-cap-${agentId}`
-      )
-      expect(sessionGitConfig(agentId).env[GITCRED_CAPABILITY_ENV]).toBe(`runtime-cap-${agentId}`)
-      expect(liveSecretsChannelEnv(agentId)[GITCRED_CAPABILITY_ENV]).toBe(`runtime-cap-${agentId}`)
+      expect(cloneGitEnv(agentId)[AGENT_CHANNEL_CAPABILITY_ENV]).toBe(`daemon-cap-${agentId}`)
+      expect(daemonLocalGitEnv(agentId)[AGENT_CHANNEL_CAPABILITY_ENV]).toBe(`daemon-cap-${agentId}`)
+      expect(
+        workspaceGitRemoteTarget('https://github.com/acme/repo.git', agentId).env[AGENT_CHANNEL_CAPABILITY_ENV]
+      ).toBe(`daemon-cap-${agentId}`)
+      expect(sessionGitConfig(agentId).env[AGENT_CHANNEL_CAPABILITY_ENV]).toBe(`runtime-cap-${agentId}`)
+      expect(liveSecretsChannelEnv(agentId)[AGENT_CHANNEL_CAPABILITY_ENV]).toBe(`runtime-cap-${agentId}`)
     }
   })
 
   it('mints the env identity as a pair with the capability (helper outranks config-embedded ids)', () => {
-    expect(cloneGitEnv('agent-1')[GITCRED_AGENT_ENV]).toBe('agent-1')
-    expect(sessionGitEnv('agent-1')[GITCRED_AGENT_ENV]).toBe('agent-1')
+    expect(cloneGitEnv('agent-1')[AGENT_CHANNEL_AGENT_ENV]).toBe('agent-1')
+    expect(sessionGitEnv('agent-1')[AGENT_CHANNEL_AGENT_ENV]).toBe('agent-1')
   })
 
   it('keeps the redirect guard alongside GitHub App credential config', () => {
@@ -673,8 +677,8 @@ describe('workspaceGitRemoteTarget', () => {
     expect(reset).toBeGreaterThanOrEqual(0)
     expect(helper).toBeGreaterThan(reset)
     expect(pairs).toContainEqual(['credential.https://github.com.useHttpPath', 'true'])
-    expect(target.env[GITCRED_CAPABILITY_ENV]).toBe('daemon-cap-agent-1')
-    expect(target.env[GITCRED_AGENT_ENV]).toBe('agent-1')
+    expect(target.env[AGENT_CHANNEL_CAPABILITY_ENV]).toBe('daemon-cap-agent-1')
+    expect(target.env[AGENT_CHANNEL_AGENT_ENV]).toBe('agent-1')
   })
 
   it('declares the remote a promisor with the session clone filter only when asked to', () => {
@@ -695,7 +699,7 @@ describe('workspaceGitRemoteTarget', () => {
     const target = workspaceGitRemoteTarget('ssh://git@github.com/acme/repo.git')
     const pairs = configPairs(target.env)
     expect(pairs.some(([key]) => key === 'credential.https://github.com.helper')).toBe(false)
-    expect(target.env[GITCRED_CAPABILITY_ENV]).toBeUndefined()
+    expect(target.env[AGENT_CHANNEL_CAPABILITY_ENV]).toBeUndefined()
     // Still the full hardening set — an ssh target keeps its pinned command and no user routing.
     expect(pairs).toContainEqual(['core.hooksPath', process.platform === 'win32' ? 'NUL' : '/dev/null'])
     expect(pairs).toContainEqual(['ssh.variant', 'ssh'])
@@ -744,8 +748,8 @@ describe('sessionGitEnv', () => {
     const content = readFileSync(env.GIT_CONFIG_GLOBAL!, 'utf8')
     expect(content).toContain(`hooksPath = ${HOOKS_PATH}`)
     expect(content).not.toContain('[credential')
-    expect(env[GITCRED_CAPABILITY_ENV]).toBeUndefined()
-    expect(env[GITCRED_AGENT_ENV]).toBeUndefined()
+    expect(env[AGENT_CHANNEL_CAPABILITY_ENV]).toBeUndefined()
+    expect(env[AGENT_CHANNEL_AGENT_ENV]).toBeUndefined()
   })
 
   // A credential-stripped host (a dream) coexists with the warm credentialed one and shares its pod
@@ -855,7 +859,7 @@ describe.skipIf(process.platform === 'win32')('pointers for an agent whose git r
       `!sh '${SANDBOX_GIT_CREDENTIAL_HELPER}' pod-agent`
     ])
     // The helper has no daemon root to derive a socket from, so the tunnel's path travels with it.
-    expect(cloneGitEnv('pod-agent')[GITCRED_SOCKET_ENV]).toBe(SANDBOX_TUNNEL_PATHS.gitcred)
+    expect(cloneGitEnv('pod-agent')[AGENT_CHANNEL_SOCKET_ENV]).toBe(SANDBOX_TUNNEL_PATHS.agent)
     expect(JSON.stringify(pairs)).not.toContain(tmpRun)
   })
 
@@ -863,7 +867,7 @@ describe.skipIf(process.platform === 'win32')('pointers for an agent whose git r
     // The regression guard for every self-hosted daemon: this path is the one in production today.
     const pairs = configPairs(cloneGitEnv('agent-1', 'https://github.com/acme/repo.git'))
     expect(pairs).toContainEqual(['credential.https://github.com.helper', `!'${join(tmpRun, 'helper.sh')}' agent-1`])
-    expect(cloneGitEnv('agent-1')).not.toHaveProperty(GITCRED_SOCKET_ENV)
+    expect(cloneGitEnv('agent-1')).not.toHaveProperty(AGENT_CHANNEL_SOCKET_ENV)
   })
 
   it('puts the session gitconfig in the pod and drops the daemon operator home include', () => {
@@ -888,7 +892,7 @@ describe.skipIf(process.platform === 'win32')('pointers for an agent whose git r
     const pod = sessionGitConfig('agent-1', undefined, sandboxGitCredentialTarget())
     expect(pod.path).toBe(`${SANDBOX_GIT_CONFIG_DIR}/agent-1.gitconfig`)
     expect(pod.env.GIT_CONFIG_GLOBAL).toBe(pod.path)
-    expect(pod.env[GITCRED_SOCKET_ENV]).toBe(SANDBOX_TUNNEL_PATHS.gitcred)
+    expect(pod.env[AGENT_CHANNEL_SOCKET_ENV]).toBe(SANDBOX_TUNNEL_PATHS.agent)
     // The runtime's git presents the placeholder, never the helper.
     expect(pod.content).toContain(CODE_HOST_CREDENTIAL_ENV)
     expect(pod.content).not.toContain(SANDBOX_GIT_CREDENTIAL_HELPER)

@@ -115,7 +115,7 @@ export interface TunnelHostDeps {
   emit: (streamId: string, event: ShimEvent['event']) => void
   /** Where each tunnel is served. The image's fixed map unless the entrypoint or a test names another root. */
   socketPathFor?: (tunnel: TunnelName) => string
-  /** The helper tunnels' (`gitcred`, `mcp`) shared cap. */
+  /** The helper tunnels' (`agent`, `mcp`) shared cap. */
   maxStreams?: number
   maxCodehostStreams?: number
   maxProviderStreams?: number

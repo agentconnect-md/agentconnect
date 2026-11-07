@@ -19,7 +19,7 @@ describe('daemon-authored sandbox paths follow the runtime root', () => {
       kind: 'sandbox',
       helper: SANDBOX_GIT_CREDENTIAL_HELPER,
       configDir: SANDBOX_GIT_CONFIG_DIR,
-      socketPath: SANDBOX_TUNNEL_PATHS.gitcred
+      socketPath: SANDBOX_TUNNEL_PATHS.agent
     })
     expect(mcpEndpoint()).toBe('/run/agentconnect/mcp.sock')
   })
@@ -27,7 +27,7 @@ describe('daemon-authored sandbox paths follow the runtime root', () => {
   it('moves the git-credential socket, the Git config location and the MCP endpoint together', () => {
     const root = '/home/agent/.agentconnect/hs/0a1b2c3d4e5f'
     const target = sandboxGitCredentialTarget(root)
-    expect(target.socketPath).toBe(`${root}/gitcred.sock`)
+    expect(target.socketPath).toBe(`${root}/agent.sock`)
     expect(target.configDir).toBe(`${root}/git`)
     expect(mcpEndpoint(root)).toBe(`${root}/mcp.sock`)
     // The helper is the image's, not the runtime root's.
@@ -59,7 +59,7 @@ describe('shim entry options', () => {
     expect(host.completeEnv).toBe(false)
     expect(host.listen).toEqual({ socketPath: '/d/hs/x/shim.sock' })
     expect(host.paths.tunnels).toEqual({
-      gitcred: '/d/hs/x/gitcred.sock',
+      agent: '/d/hs/x/agent.sock',
       mcp: '/d/hs/x/mcp.sock',
       codehost: '/d/hs/x/codehost.sock',
       provider: '/d/hs/x/provider.sock'

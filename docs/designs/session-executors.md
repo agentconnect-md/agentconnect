@@ -160,7 +160,7 @@ mode rather than a local one and a remote one
 - **Git and workspace files.** Daemon-run Git crosses the shim's `exec` channel
   with the pool's `ShimGitRunner`, and workspace mutations cross its file channel,
   so a rename is the guest's own.
-- **The tunnels.** The VM's `gitcred` and `mcp` endpoints are served by the shim's
+- **The tunnels.** The VM's `agent` and `mcp` endpoints are served by the shim's
   `TunnelHost` under the `tunnel` grant and proxied to the driving daemon's own
   sockets, and the guest helper endpoints — the git-credential socket variable and
   the bridge's `mcpServers` spec — name the shim's paths, exactly as the pool image
@@ -261,7 +261,7 @@ non-Linux `host` needs a read fallback and that second look; both are deferred.
 
 The shim also assumes one thing about its surroundings that `host` must supply
 explicitly: that it owns its filesystem namespace. Its tunnel endpoints default to
-the fixed in-sandbox paths `/run/agentconnect/{gitcred,mcp}.sock`, and `TunnelHost`
+the fixed in-sandbox paths `/run/agentconnect/{agent,mcp}.sock`, and `TunnelHost`
 removes a stale socket before binding, because inside a pod or a VM the only
 previous owner of that path is an earlier incarnation of the same shim. Two `host`
 sessions on one machine would replace each other's endpoints — a request could
@@ -902,7 +902,7 @@ spreads (§6's controls), pulls candidates, picks one and sends `prepare`.
   through the execution plane's Git runner. That is exactly the pool's path —
   `WorkspaceManager` (`packages/daemon/src/workspace/workspace-manager.ts`) clones
   through a swappable `GitRunner`, and on the pool that runner is the shim's exec
-  channel plus the gitcred tunnel.
+  channel plus the agent tunnel.
 
 The split follows what each side knows. The executor knows neither the remote nor
 the credentials — the retention rule below already depended on that — so an earlier
@@ -1404,7 +1404,7 @@ locally went, in four steps that each landed alone:
    launches through the in-process entry: `LocalExecutor` over the local srt launcher
    (`execution/srt-local.ts`), one shim per session directory, bound by its token with
    this daemon's complete launch env. The environment's runtime root is fixed by its
-   id, so the launch names the shim's temp root and its `gitcred` and `mcp` tunnels
+   id, so the launch names the shim's temp root and its `agent` and `mcp` tunnels
    before the shim starts, and this daemon's own sockets are not opened in the
    boundary. The descriptor is the launch composition's write and read roots at their
    host paths, which the shim's policy is composed from; nothing per host is written.

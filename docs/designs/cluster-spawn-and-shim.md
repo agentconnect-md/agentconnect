@@ -99,8 +99,8 @@ config files, proxying the git-credential socket, the MCP bridge, and the whole 
 git orchestration. The **shim** is the thin arm inside the sandbox that performs those, and
 it holds no policy — every decision stays in the daemon.
 
-The tunnel names a **closed set** of daemon-side servers (`gitcred`, `mcp`) at paths the
-runtime image fixes. `gh`'s token helper is not among them because it shares `gitcred.sock`
+The tunnel names a **closed set** of daemon-side servers (`agent`, `mcp`) at paths the
+runtime image fixes. `gh`'s token helper is not among them because it shares `agent.sock`
 with the credential helper: a second name would be a second in-pod path onto one server.
 `mcp` is served for every pod agent, because any session may carry tools and the listener belongs
 to the pod's lifetime; the `mcpServers` spec that dials it is decided per session instead.

@@ -5,16 +5,16 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
-  GITCRED_AGENT_ENV,
-  GITCRED_CAPABILITY_ENV,
-  GitCredServer,
-  gitcredSocketPath,
+  AGENT_CHANNEL_AGENT_ENV,
+  AGENT_CHANNEL_CAPABILITY_ENV,
+  AgentChannelServer,
+  agentChannelSocketPath,
   RUNTIME_NO_MINT_ERROR,
   type LiveSecretEntry
-} from '../../src/cp/gitcred-server.js'
+} from '../../src/cp/agent-channel-server.js'
 import type { GitCredentialCache } from '../../src/cp/git-credential.js'
-import { gitcredIpc } from '../../src/gitcred/gh-token-ipc.js'
-import { runSecretsHelper } from '../../src/gitcred/secrets-client.js'
+import { agentChannelIpc } from '../../src/agent-channel/ipc.js'
+import { runSecretsHelper } from '../../src/agent-channel/secrets-client.js'
 
 const SECRETS: LiveSecretEntry[] = [
   { name: 'GRAFANA_TOKEN', value: "s3cr3t-'quoted'", description: 'Grafana API token' },
@@ -22,7 +22,7 @@ const SECRETS: LiveSecretEntry[] = [
 ]
 
 let dir: string | undefined
-let server: GitCredServer | undefined
+let server: AgentChannelServer | undefined
 afterEach(() => {
   server?.stop()
   if (dir) rmSync(dir, { recursive: true, force: true })
@@ -30,8 +30,8 @@ afterEach(() => {
 })
 
 async function boot(opts: { credentialed?: boolean; secrets?: LiveSecretEntry[] } = {}) {
-  dir = mkdtempSync(join(tmpdir(), 'gitcred-live-'))
-  const socketPath = gitcredSocketPath(dir)
+  dir = mkdtempSync(join(tmpdir(), 'agent-channel-live-'))
+  const socketPath = agentChannelSocketPath(dir)
   const logs: string[] = []
   const gets: string[] = []
   const cache = {
@@ -41,7 +41,7 @@ async function boot(opts: { credentialed?: boolean; secrets?: LiveSecretEntry[] 
     },
     invalidate: () => undefined
   }
-  server = new GitCredServer(cache as unknown as GitCredentialCache, socketPath, {
+  server = new AgentChannelServer(cache as unknown as GitCredentialCache, socketPath, {
     log: { info: (m) => logs.push(m), warn: (m) => logs.push(m) },
     credentialedOf: () => opts.credentialed === true,
     liveSecretsOf: () => opts.secrets ?? SECRETS
@@ -56,13 +56,13 @@ async function boot(opts: { credentialed?: boolean; secrets?: LiveSecretEntry[] 
 describe('the credential channel’s live secrets', () => {
   it('serves the current live secrets by name to the agent capability, never logging a value', async () => {
     const { socketPath, capability, logs } = await boot()
-    const all = (await gitcredIpc(socketPath, { op: 'secret', agentId: 'a1', capability })) as unknown as {
+    const all = (await agentChannelIpc(socketPath, { op: 'secret', agentId: 'a1', capability })) as unknown as {
       ok: boolean
       secrets: LiveSecretEntry[]
     }
     expect(all.ok).toBe(true)
     expect(all.secrets.map((s) => s.name)).toEqual(['GRAFANA_TOKEN', 'KUBE_CONFIG'])
-    const one = (await gitcredIpc(socketPath, {
+    const one = (await agentChannelIpc(socketPath, {
       op: 'secret',
       agentId: 'a1',
       capability,
@@ -76,14 +76,14 @@ describe('the credential channel’s live secrets', () => {
 
   it('refuses a request without the agent’s capability', async () => {
     const { socketPath } = await boot()
-    const res = await gitcredIpc(socketPath, { op: 'secret', agentId: 'a1', capability: 'forged' })
+    const res = await agentChannelIpc(socketPath, { op: 'secret', agentId: 'a1', capability: 'forged' })
     expect(res.ok).toBe(false)
   })
 
   it('serves the daemon capability too, and refuses either holder’s capability of another agent', async () => {
     const { socketPath, capability, daemonCapability } = await boot()
     expect(daemonCapability).not.toBe(capability)
-    const own = (await gitcredIpc(socketPath, {
+    const own = (await agentChannelIpc(socketPath, {
       op: 'secret',
       agentId: 'a1',
       capability: daemonCapability
@@ -95,7 +95,7 @@ describe('the credential channel’s live secrets', () => {
     expect(own.secrets.map((s) => s.name)).toEqual(['GRAFANA_TOKEN', 'KUBE_CONFIG'])
     for (const holder of ['daemon', 'runtime'] as const) {
       const other = server!.capabilityFor('a2', holder)
-      expect(await gitcredIpc(socketPath, { op: 'secret', agentId: 'a1', capability: other })).toMatchObject({
+      expect(await agentChannelIpc(socketPath, { op: 'secret', agentId: 'a1', capability: other })).toMatchObject({
         ok: false
       })
     }
@@ -104,7 +104,7 @@ describe('the credential channel’s live secrets', () => {
   it('refuses the runtime capability `get` whether or not the spec carries a managed credential', async () => {
     for (const credentialed of [false, true]) {
       const { socketPath, capability, gets } = await boot({ credentialed })
-      expect(await gitcredIpc(socketPath, { op: 'get', agentId: 'a1', capability })).toEqual({
+      expect(await agentChannelIpc(socketPath, { op: 'get', agentId: 'a1', capability })).toEqual({
         ok: false,
         error: RUNTIME_NO_MINT_ERROR,
         denied: 'agent'
@@ -118,7 +118,7 @@ describe('the credential channel’s live secrets', () => {
   it("serves the daemon capability's `get` only to an agent whose spec carries a managed credential", async () => {
     const uncredentialed = await boot({ credentialed: false })
     expect(
-      await gitcredIpc(uncredentialed.socketPath, {
+      await agentChannelIpc(uncredentialed.socketPath, {
         op: 'get',
         agentId: 'a1',
         capability: uncredentialed.daemonCapability
@@ -128,7 +128,7 @@ describe('the credential channel’s live secrets', () => {
     server?.stop()
     rmSync(dir!, { recursive: true, force: true })
     const credentialed = await boot({ credentialed: true })
-    const res = await gitcredIpc(credentialed.socketPath, {
+    const res = await agentChannelIpc(credentialed.socketPath, {
       op: 'get',
       agentId: 'a1',
       capability: credentialed.daemonCapability
@@ -146,7 +146,11 @@ describe('agentconnect-secrets', () => {
     const runs: { command: string; args: readonly string[]; env: NodeJS.ProcessEnv }[] = []
     const code = await runSecretsHelper(argv, {
       socketPath,
-      env: opts.env ?? { [GITCRED_AGENT_ENV]: 'a1', [GITCRED_CAPABILITY_ENV]: capability, PATH: '/usr/bin' },
+      env: opts.env ?? {
+        [AGENT_CHANNEL_AGENT_ENV]: 'a1',
+        [AGENT_CHANNEL_CAPABILITY_ENV]: capability,
+        PATH: '/usr/bin'
+      },
       stdout: (t) => out.push(t),
       stderr: (t) => err.push(t),
       run: async (command, args, env) => {
@@ -220,6 +224,6 @@ describe('agentconnect-secrets', () => {
   it('says so when the runtime has no credential channel', async () => {
     const { code, err } = await helper(['list'], { env: { PATH: '/usr/bin' } })
     expect(code).toBe(1)
-    expect(err).toContain('no AgentConnect credential channel')
+    expect(err).toContain('no AgentConnect agent channel')
   })
 })

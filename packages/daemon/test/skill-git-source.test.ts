@@ -16,7 +16,7 @@ import {
   loadScopedGitSkillCredential,
   type GitSkillCredentialRequest
 } from '../src/skills/skill-git-source.js'
-import { GitCredServer, gitcredSocketPath } from '../src/cp/gitcred-server.js'
+import { AgentChannelServer, agentChannelSocketPath } from '../src/cp/agent-channel-server.js'
 import type { GitCredentialCache } from '../src/cp/git-credential.js'
 import { DAEMON_SKILL_WINDOW_SUBJECT } from '../src/cp/skill-credential-window.js'
 import {
@@ -882,8 +882,8 @@ describe('Git skill source policy boundary', () => {
       privateHome: '/private/home',
       useGitCredential: true
     })
-    expect(env.AC_GITCRED_AGENT).toBeUndefined()
-    expect(env.AC_GITCRED_CAPABILITY).toBeUndefined()
+    expect(env.AC_AGENT_CHANNEL_AGENT).toBeUndefined()
+    expect(env.AC_AGENT_CHANNEL_CAPABILITY).toBeUndefined()
   })
 
   it('never forwards the GitHub credential capability to an allowed non-GitHub SSH origin', () => {
@@ -897,8 +897,8 @@ describe('Git skill source policy boundary', () => {
     })
 
     expect(cloneUrl).toBe('ssh://git@git.example.test:2222/acme/skills.git')
-    expect(env.AC_GITCRED_AGENT).toBeUndefined()
-    expect(env.AC_GITCRED_CAPABILITY).toBeUndefined()
+    expect(env.AC_AGENT_CHANNEL_AGENT).toBeUndefined()
+    expect(env.AC_AGENT_CHANNEL_CAPABILITY).toBeUndefined()
   })
 
   it('points a cluster agent’s acquisition at the DAEMON helper, not the sandbox pod’s', () => {
@@ -920,9 +920,9 @@ describe('Git skill source policy boundary', () => {
     })
     const config = gitConfig(env)
 
-    expect(env.AC_GITCRED_AGENT).toBe('agent-1')
-    expect(env.AC_GITCRED_CAPABILITY).toBe('cap-agent-1')
-    expect(env.AC_GITCRED_SOCKET).toBeUndefined() // the daemon shim derives its own socket
+    expect(env.AC_AGENT_CHANNEL_AGENT).toBe('agent-1')
+    expect(env.AC_AGENT_CHANNEL_CAPABILITY).toBe('cap-agent-1')
+    expect(env.AC_AGENT_CHANNEL_SOCKET).toBeUndefined() // the daemon shim derives its own socket
     expect(config.get('credential.https://github.com.helper')).toBe("!'/daemon/git-credential-helper' agent-1")
     expect(config.get('credential.https://github.com.helper')).not.toContain('/opt/agentconnect/bin')
   })
@@ -943,8 +943,8 @@ describe('Git skill source policy boundary', () => {
     const config = gitConfig(env)
 
     expect(cloneUrl).toBe('https://github.com/acme/skills.git')
-    expect(env.AC_GITCRED_AGENT).toBe('agent-1')
-    expect(env.AC_GITCRED_CAPABILITY).toBe('cap-agent-1')
+    expect(env.AC_AGENT_CHANNEL_AGENT).toBe('agent-1')
+    expect(env.AC_AGENT_CHANNEL_CAPABILITY).toBe('cap-agent-1')
     expect(config.get('credential.https://github.com.helper')).toBe("!'/daemon/git-credential-helper' agent-1")
     expect(config.get('credential.https://github.com.useHttpPath')).toBe('true')
   })
@@ -962,8 +962,8 @@ describe('Git skill source policy boundary', () => {
       useGitCredential: true,
       windowCapability: 'window-cap'
     })
-    expect(https.AC_GITCRED_CAPABILITY).toBe('window-cap')
-    expect(https.AC_GITCRED_AGENT).toBe('agent-1')
+    expect(https.AC_AGENT_CHANNEL_CAPABILITY).toBe('window-cap')
+    expect(https.AC_AGENT_CHANNEL_AGENT).toBe('agent-1')
 
     configureWorkspaceGitOrigins(['ssh://github.com'])
     const ssh = buildSkillGitAcquisitionEnv({
@@ -973,14 +973,14 @@ describe('Git skill source policy boundary', () => {
       useGitCredential: true,
       windowCapability: 'window-cap'
     })
-    expect(ssh.AC_GITCRED_CAPABILITY).toBeUndefined()
+    expect(ssh.AC_AGENT_CHANNEL_CAPABILITY).toBeUndefined()
   })
 
   it.skipIf(process.platform === 'win32')(
     'acquires a private skill credential through a window the daemon opens around the fill',
     async () => {
       const root = await mkdtemp(join(tmpdir(), 'skill-window-'))
-      const socket = gitcredSocketPath(root)
+      const socket = agentChannelSocketPath(root)
       const helperScript = join(root, 'helper.mjs')
       const helper = join(root, 'helper.sh')
       // A stand-in for the daemon helper: forwards the env bearer and the parsed path to the socket.
@@ -994,7 +994,7 @@ describe('Git skill source policy boundary', () => {
           "  const path = (input.match(/^path=(.*)$/m)?.[1] ?? '').replace(/\\.git$/, '')",
           `  const sock = createConnection(${JSON.stringify(socket)})`,
           "  let buf = ''",
-          "  sock.on('connect', () => sock.write(JSON.stringify({ op: 'get', agentId: process.env.AC_GITCRED_AGENT, capability: process.env.AC_GITCRED_CAPABILITY, repoFullName: path }) + '\\n'))",
+          "  sock.on('connect', () => sock.write(JSON.stringify({ op: 'get', agentId: process.env.AC_AGENT_CHANNEL_AGENT, capability: process.env.AC_AGENT_CHANNEL_CAPABILITY, repoFullName: path }) + '\\n'))",
           "  sock.on('data', (c) => {",
           '    buf += c',
           "    if (!buf.includes('\\n')) return",
@@ -1016,7 +1016,7 @@ describe('Git skill source policy boundary', () => {
         },
         invalidate: () => {}
       }
-      const server = new GitCredServer(cache as unknown as GitCredentialCache, socket, {
+      const server = new AgentChannelServer(cache as unknown as GitCredentialCache, socket, {
         log: { info: () => {}, warn: () => {} },
         privateGithubSkillRepoOf: (_agentId, repo) => repo.toLowerCase() === 'acme/skills',
         workspaceRepoOf: () => 'acme/infra'
@@ -1032,7 +1032,7 @@ describe('Git skill source policy boundary', () => {
       }
       try {
         await mkdir(join(root, 'home', 'tmp'), { recursive: true })
-        // An older wiring without windows presents the agent capability, which gitcred refuses.
+        // An older wiring without windows presents the agent capability, which the agent channel refuses.
         initGitInjection({
           targetFor: () => target,
           daemonTarget: target,

@@ -161,9 +161,9 @@ check('the agentconnect-secrets helper is present, root-owned, on PATH, and fail
   const owner = assertImmutable('agentconnect-secrets wrapper', SECRETS_WRAPPER_PATH)
   const resolved = execFileSync('bash', ['-lc', 'command -v agentconnect-secrets'], { encoding: 'utf8' }).trim()
   if (resolved !== SECRETS_WRAPPER_PATH) throw new Error(`login shell resolves agentconnect-secrets to ${resolved}`)
-  const out = sh(`env -u AC_GITCRED_CAPABILITY ${SECRETS_WRAPPER_PATH} list 2>&1; echo "exit=$?"`)
-  if (!out.includes('exit=1') || !/no AgentConnect credential channel/.test(out)) {
-    throw new Error(`the helper did not refuse without a credential channel: ${out}`)
+  const out = sh(`env -u AC_AGENT_CHANNEL_CAPABILITY ${SECRETS_WRAPPER_PATH} list 2>&1; echo "exit=$?"`)
+  if (!out.includes('exit=1') || !/no AgentConnect agent channel/.test(out)) {
+    throw new Error(`the helper did not refuse without an agent channel: ${out}`)
   }
   return owner
 })
@@ -171,7 +171,7 @@ check('the agentconnect-secrets helper is present, root-owned, on PATH, and fail
 // A helper that cannot reach a socket must SAY so and fail, or git reads an empty answer as "no credentials configured".
 check('the credential helper runs and fails loudly with no daemon socket', () => {
   const out = sh(
-    `AC_GITCRED_SOCKET=/nonexistent/gitcred.sock ` +
+    `AC_AGENT_CHANNEL_SOCKET=/nonexistent/agent.sock ` +
       `sh -c 'echo "protocol=https\nhost=github.com" | ${CREDENTIAL_HELPER_PATH} agent-x get; echo "exit=$?"' 2>&1`
   )
   if (!out.includes('exit=1')) throw new Error(`helper did not exit 1 without a socket: ${out}`)

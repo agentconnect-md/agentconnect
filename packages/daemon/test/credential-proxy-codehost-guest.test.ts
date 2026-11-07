@@ -166,15 +166,15 @@ describe('the shim trust bundle beside microsandbox and a session own authoritie
 describe('a local VM session through its shim codehost listener', () => {
   async function fixture(extraTunnels: Array<'codehost'>) {
     const root = shortDir()
-    const sockets = { mcp: join(root, 'mcp.sock'), gitcred: join(root, 'gc.sock'), codehost: join(root, 'ch.sock') }
+    const sockets = { mcp: join(root, 'mcp.sock'), agent: join(root, 'gc.sock'), codehost: join(root, 'ch.sock') }
     const servers: Server[] = [
       await daemonSocket(sockets.mcp, 'mcp'),
-      await daemonSocket(sockets.gitcred, 'gitcred'),
+      await daemonSocket(sockets.agent, 'agent'),
       await daemonSocket(sockets.codehost, 'codehost')
     ]
     const msbFile = join(root, 'msb-ca.pem')
     writeFileSync(msbFile, msbCa)
-    const vm = fakeVm({ mcp: join(root, 'g', 'mcp.sock'), gitcred: join(root, 'g', 'gc.sock') })
+    const vm = fakeVm({ mcp: join(root, 'g', 'mcp.sock'), agent: join(root, 'g', 'gc.sock') })
     const fake = fakeVmManager({ vm })
     const listens = vi.fn()
     const local = new LocalExecutor({

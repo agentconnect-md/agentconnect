@@ -24,7 +24,7 @@ const CREDENTIAL_TTL_MS = 24 * 60 * 60_000
 // The launcher answers once the shim listens, so the dial has only a stream to open.
 const CHANNEL_TIMEOUT_MS = 15_000
 // The helper tunnels, which every local environment gets; a VM adds `codehost` through its own policy.
-const LOCAL_TUNNELS: readonly TunnelName[] = ['gitcred', 'mcp']
+const LOCAL_TUNNELS: readonly TunnelName[] = ['agent', 'mcp']
 
 /** One environment life on this machine: the descriptor it started from, what its launcher started, and the holds on it. */
 interface LocalLaunch extends Launch {
@@ -44,7 +44,7 @@ export interface LocalExecutorDeps {
   generations: LaunchGenerations
   /** Where this daemon's own sockets are; a local VM reaches every one of them through its shim. */
   tunnelSocketPath: (tunnel: TunnelName, agentId: string) => string | undefined
-  /** Tags a subject's daemon-socket connection with that subject (gitcred binds a pod window to its pod). */
+  /** Tags a subject's daemon-socket connection with that subject (the agent channel binds a pod window to its pod). */
   tunnelGreeting?: (subject: string, tunnel: TunnelName) => Buffer | undefined
   /** Tunnels beyond the helpers an environment's agent gets (a VM's `codehost` and `provider`); omitted means none. */
   extraTunnelsFor?: (agentId: string) => TunnelName[]

@@ -24,14 +24,14 @@ import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import {
   decodeManagedHostTable,
   encodeManagedHostTable,
-  GITCRED_HOSTS_ENV,
+  AGENT_CHANNEL_HOSTS_ENV,
   gitlabManagedHost,
   managedHostTableFor,
   matchManagedHost,
   stripHostPathPrefix
 } from '../src/gitcred/managed-hosts.js'
 import { runGitCredential } from '../src/gitcred/helper.js'
-import { GITCRED_CAPABILITY_ENV } from '../src/gitcred/env.js'
+import { AGENT_CHANNEL_CAPABILITY_ENV } from '../src/agent-channel/env.js'
 import { GitCredentialCache, GitCredUnavailableError } from '../src/cp/git-credential.js'
 import {
   gitCredentialEnv,
@@ -148,13 +148,13 @@ describe('the credential helper on a prefixed instance (§24.4)', () => {
     capabilityFor: () => 'cap-test'
   })
 
-  /** A one-shot gitcred socket that records the request and answers a fixed grant. */
+  /** A one-shot agent channel socket that records the request and answers a fixed grant. */
   async function socket(reply: Record<string, unknown>): Promise<{
     path: string
     requests: Record<string, unknown>[]
     close: () => void
   }> {
-    const path = join(mkdtempSync(join(tmpdir(), 'ac-gitcred-sock-')), 's')
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-agent-channel-sock-')), 's')
     const requests: Record<string, unknown>[] = []
     const server = createServer((conn) => {
       let buf = ''
@@ -190,11 +190,11 @@ describe('the credential helper on a prefixed instance (§24.4)', () => {
       err.push(String(chunk))
       return true
     })
-    const previous = process.env[GITCRED_HOSTS_ENV]
-    const previousCapability = process.env[GITCRED_CAPABILITY_ENV]
-    if (table === undefined) delete process.env[GITCRED_HOSTS_ENV]
-    else process.env[GITCRED_HOSTS_ENV] = table
-    process.env[GITCRED_CAPABILITY_ENV] = 'cap-test'
+    const previous = process.env[AGENT_CHANNEL_HOSTS_ENV]
+    const previousCapability = process.env[AGENT_CHANNEL_CAPABILITY_ENV]
+    if (table === undefined) delete process.env[AGENT_CHANNEL_HOSTS_ENV]
+    else process.env[AGENT_CHANNEL_HOSTS_ENV] = table
+    process.env[AGENT_CHANNEL_CAPABILITY_ENV] = 'cap-test'
     let exitCode = 0
     try {
       await runGitCredential('get', AGENT, socketPath)
@@ -204,10 +204,10 @@ describe('the credential helper on a prefixed instance (§24.4)', () => {
       Object.defineProperty(process, 'stdin', stdinDescriptor)
       stdout.mockRestore()
       stderr.mockRestore()
-      if (previous === undefined) delete process.env[GITCRED_HOSTS_ENV]
-      else process.env[GITCRED_HOSTS_ENV] = previous
-      if (previousCapability === undefined) delete process.env[GITCRED_CAPABILITY_ENV]
-      else process.env[GITCRED_CAPABILITY_ENV] = previousCapability
+      if (previous === undefined) delete process.env[AGENT_CHANNEL_HOSTS_ENV]
+      else process.env[AGENT_CHANNEL_HOSTS_ENV] = previous
+      if (previousCapability === undefined) delete process.env[AGENT_CHANNEL_CAPABILITY_ENV]
+      else process.env[AGENT_CHANNEL_CAPABILITY_ENV] = previousCapability
       process.exitCode = 0
     }
     return { stdout: out.join(''), stderr: err.join(''), exitCode }
@@ -283,11 +283,11 @@ describe('the credential helper on a prefixed instance (§24.4)', () => {
     const config = sessionGitConfig(AGENT, undefined, target, scope)
     expect(config.content).toContain(`[credential "${INSTANCE}"]`)
     expect(config.content).toContain('useHttpPath = true')
-    expect(config.env[GITCRED_HOSTS_ENV]).toBe(table)
+    expect(config.env[AGENT_CHANNEL_HOSTS_ENV]).toBe(table)
     // A github workspace on the same deployment still carries the instance in its table: an
     // additional-repository authorization is a GitLab consumer that is not the workspace.
     expect(
-      gitCredentialEnv(AGENT, target, managedCredentialScope('github', INSTANCE), 'daemon')[GITCRED_HOSTS_ENV]
+      gitCredentialEnv(AGENT, target, managedCredentialScope('github', INSTANCE), 'daemon')[AGENT_CHANNEL_HOSTS_ENV]
     ).toBe(table)
   })
 
