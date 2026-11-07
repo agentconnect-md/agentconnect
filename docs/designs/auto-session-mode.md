@@ -402,7 +402,9 @@ exception (§10).
   their threaded tasks, so a later move back revives neither. Once the placement commits, the
   Control Plane releases the lock of every task whose store the new placement does not share,
   since no daemon left serving the agent can report it. A shared store keeps both for the next
-  member.
+  member. The source's tasks stay readable: the Control Plane sends a conversation's task reads to
+  a daemon holding its store, which answers them for an agent it no longer serves, and offers no
+  Stop on them.
 
 ### 6.3 Nesting
 

@@ -35,6 +35,8 @@ import type { OrgMemberRole } from '../../src/persistence/ports.js'
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const DAEMON = 'd5d5d5d5-dddd-4ddd-8ddd-ddddddddd0a1'
 const AGENT = 'a5a5a5a5-aaaa-4aaa-8aaa-aaaaaaaaa0a1'
+/** A daemon whose store kept a conversation after its agent moved to `DAEMON`. */
+const HOLDER = 'd5d5d5d5-dddd-4ddd-8ddd-ddddddddd0a2'
 const CAPABILITIES = {
   platforms: ['slack'],
   runtimes: ['claude'],
@@ -47,7 +49,7 @@ const CAPABILITIES = {
   ]
 }
 const LIVE: DaemonLiveness = {
-  get: (id) => (id === DAEMON ? { state: 'READY', reachable: true, sessionEpoch: 1 } : undefined)
+  get: (id) => (id === DAEMON || id === HOLDER ? { state: 'READY', reachable: true, sessionEpoch: 1 } : undefined)
 }
 const ITEM = {
   id: 'item-1',
@@ -86,9 +88,11 @@ class ActivitySpy {
     failure: null
   }
   failure: Error | null = null
+  /** The daemon every read must reach. */
+  reader = DAEMON
 
   async assistantActivityRead(daemonId: string, req: AssistantActivityReadReq): Promise<AssistantActivityReadResult> {
-    expect(daemonId).toBe(DAEMON)
+    expect(daemonId).toBe(this.reader)
     this.reads.push(req)
     if (this.failure) throw this.failure
     switch (req.operation) {
@@ -1556,5 +1560,64 @@ describe('a getting-to-know task of a channel the bot just joined', () => {
       parent: { sessionId: place, platform: 'slack', channelName: 'release' }
     })
     expect(settled).not.toHaveProperty('place')
+  })
+})
+
+describe('a conversation whose agent moved to another daemon', () => {
+  const HANDLE = [...CAPABILITIES.features, FOLLOW_UP_TASKS_V1_FEATURE, ASSISTANT_TASK_HANDLE_FEATURE]
+
+  /** The agent now serves from `DAEMON`; its conversation and task were recorded by `holder`. */
+  async function seedMoved(holder: string, features = HANDLE) {
+    await seedAssistant({ features: HANDLE })
+    await seedDaemon(prisma, holder, { capabilities: { ...CAPABILITIES, features } })
+    const [team, teamChild] = [randomUUID(), randomUUID()]
+    await seedSessionMeta(prisma, team, AGENT, { daemonId: holder, channel: 'C0SUPPORT', thread: 'append:1' })
+    await seedSessionMeta(prisma, teamChild, AGENT, {
+      daemonId: holder,
+      channel: 'C0SUPPORT',
+      thread: subsessionThread('1'),
+      parentSessionId: team
+    })
+    return { team, teamChild }
+  }
+
+  it('reads its tasks and one task from the daemon holding it, with the mode the agent has, and offers no Stop', async () => {
+    const { team, teamChild } = await seedMoved(HOLDER)
+    const control = new ActivitySpy()
+    control.reader = HOLDER
+    control.subsessions = [
+      { sessionId: teamChild, parentSessionId: team, state: 'open', createdAt: '2026-10-09T09:00:00.000Z' }
+    ]
+    control.task = control.subsessions[0]!
+
+    const listed = await get(app(control), `/subsessions?parentSessionId=${team}`)
+    expect(listed.statusCode, listed.body).toBe(200)
+    expect(listed.json().subsessions).toEqual([expect.objectContaining({ sessionId: teamChild, canStop: false })])
+    const one = await get(app(control), `/subsessions/${teamChild}`)
+    expect(one.statusCode, one.body).toBe(200)
+    expect(one.json()).toMatchObject({ sessionId: teamChild, canStop: false })
+    const away = { heldElsewhere: { assistantMode: true } }
+    expect(control.reads).toEqual([
+      { agentId: AGENT, operation: 'subsessions', limit: 50, parent: { sessionId: team }, ...away },
+      { agentId: AGENT, operation: 'task', sessionId: teamChild, ...away }
+    ])
+
+    // The agent-wide list stays with the daemon serving the agent.
+    control.reader = DAEMON
+    expect((await get(app(control), '/subsessions')).statusCode).toBe(200)
+  })
+
+  it('answers offline or too old for a holder that cannot be read, never a serving daemon’s empty list', async () => {
+    const gone = randomUUID()
+    const { team } = await seedMoved(gone)
+    const control = new ActivitySpy()
+    const offline = await get(app(control), `/subsessions?parentSessionId=${team}`)
+    expect(offline.json()).toMatchObject({ statusCode: 503, code: 'DAEMON_OFFLINE' })
+
+    await seedDaemon(prisma, HOLDER, { capabilities: { ...CAPABILITIES, features: [ASSISTANT_ACTIVITY_FEATURE] } })
+    await prisma.sessionMeta.update({ where: { id: team }, data: { daemonId: HOLDER } })
+    const refused = await get(app(control), `/subsessions?parentSessionId=${team}`)
+    expect(refused.json()).toMatchObject({ statusCode: 409, code: 'DAEMON_FEATURE_MISSING' })
+    expect(control.reads).toEqual([])
   })
 })

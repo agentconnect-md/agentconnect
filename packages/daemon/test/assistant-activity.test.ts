@@ -71,7 +71,7 @@ async function setup() {
     stopSession,
     pendingPermissions
   })
-  return { s, a, b, off, activity, decideDraft, stopSession, pendingPermissions }
+  return { s, a, b, off, agents, activity, decideDraft, stopSession, pendingPermissions }
 }
 
 async function read<O extends AssistantActivityReadReq['operation']>(
@@ -1150,6 +1150,48 @@ describe('the Activity view: who it answers', () => {
     })
     expect(await refusal(() => stopUnknown)).toBe('unknown-agent')
     expect(await s.assistantWatchTasks.get(a, item.taskKey)).toBeDefined()
+  })
+
+  it('reads a conversation’s tasks for an agent that moved away only when asked to, and re-homes nothing', async () => {
+    const { s, a, agents, activity } = await setup()
+    const item = await createFollowUp(s, a)
+    const coordinate = await s.resolveAppendCoordinate(a, 'C0SUPPORT', 'T0EXAMPLE', 1)
+    const session = (key: string, sessionId: string, thread: string) =>
+      s.upsertSession({
+        key,
+        agentId: a,
+        platform: 'slack',
+        channel: 'C0SUPPORT',
+        thread,
+        transportScope: 'T0EXAMPLE',
+        acpSessionId: `acp-${sessionId}`,
+        sessionId,
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt: 2_000
+      })
+    await session(sessionKey('slack', 'C0SUPPORT', coordinate, a, 'T0EXAMPLE'), 'sid-current', coordinate)
+    await session(item.taskKey, 'sid-follow-up', item.taskKey.split(':')[2]!)
+    agents.delete(a)
+
+    const listing = { agentId: a, operation: 'subsessions', limit: 10, parent: { sessionId: 'sid-parent' } } as const
+    await expect(activity.read(listing)).rejects.toMatchObject({ reason: 'unknown-agent' })
+    const away = { heldElsewhere: { assistantMode: true } }
+    expect((await read(activity, { ...listing, ...away })).subsessions).toEqual([
+      expect.objectContaining({ kind: 'follow-up', parentSessionId: 'sid-parent', sessionId: 'sid-follow-up' })
+    ])
+    expect((await s.assistantSubsessions.get(a, item.taskKey))?.parentSessionId).toBe('sid-parent')
+    expect(
+      (await read(activity, { agentId: a, operation: 'task', sessionId: 'sid-follow-up', ...away })).task
+    ).toMatchObject({
+      sessionId: 'sid-follow-up'
+    })
+    // The mode the Control Plane holds decides what shows, and an agent-wide list is never answered.
+    const off = { heldElsewhere: { assistantMode: false } }
+    expect((await read(activity, { ...listing, ...off })).subsessions).toEqual([])
+    await expect(activity.read({ agentId: a, operation: 'subsessions', limit: 10, ...away })).rejects.toMatchObject({
+      reason: 'unknown-agent'
+    })
   })
 
   it('answers an agent outside assistant mode with its permission requests, sub-sessions and drafts, and no items, checks or proposals', async () => {
