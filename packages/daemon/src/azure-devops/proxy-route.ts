@@ -51,18 +51,18 @@ function deny(status: number, reason: string): InstanceRoute {
   return { kind: 'deny', status, reason }
 }
 
-const OTHER_ORGANIZATION = 'this agent’s Azure DevOps credential does not reach that organization'
+const OTHER_ORGANIZATION = "this agent's Azure DevOps credential does not reach that organization"
 const NOT_A_REPOSITORY = 'the path does not name one Azure DevOps repository'
 const WRITE_NAMING_NO_REPOSITORY =
-  'an Azure DevOps write that names no repository is not available with this agent’s credential'
+  "an Azure DevOps write that names no repository is not available with this agent's credential"
 const REPOSITORY_LIST =
-  'Azure DevOps repository lists are not available with this agent’s credential; its repositories are named in its context'
+  "Azure DevOps repository lists are not available with this agent's credential; its repositories are named in its context"
 const PULL_REQUEST_LIST =
-  'pull-request lists that name no repository are not available with this agent’s credential; list them under the repository (_apis/git/repositories/{repository}/pullrequests)'
+  "pull-request lists that name no repository are not available with this agent's credential; list them under the repository (_apis/git/repositories/{repository}/pullrequests)"
 const PULL_REQUEST_WRITE =
   'a pull request is changed under its repository (_apis/git/repositories/{repository}/pullrequests/{id})'
 const NOT_AVAILABLE =
-  'only Git and the REST API of the agent’s own Azure DevOps repositories are available with this agent’s credential'
+  "only Git and the REST API of the agent's own Azure DevOps repositories are available with this agent's credential"
 
 function same(a: string, b: string): boolean {
   return a.toLowerCase() === b.toLowerCase()

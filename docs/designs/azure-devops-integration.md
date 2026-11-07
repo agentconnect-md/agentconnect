@@ -888,7 +888,10 @@ known only through consent.
 3. **Verified:** git over HTTPS takes the Entra token as the Basic password. A
    Reader identity clones; its push is refused at the `git-receive-pack`
    advertisement with 403 `TF401027` (GenericContribute). A Contributor
-   pushes. Still to run through the proxy in A3.
+   pushes. Through the proxy with a placeholder, on both `dev.azure.com` and
+   `{organization}.visualstudio.com`, a held repository fetches and clones, a
+   push under a `read` grant is refused by the proxy naming that access, and
+   the same push under `write` lands.
 4. **Verified without the proxy:** Azure CLI 2.92 with `azure-devops` 1.0.10
    took an Entra token in `AZURE_DEVOPS_EXT_PAT` under an empty
    `AZURE_CONFIG_DIR`. The repository list, pull-request list, and project
@@ -896,8 +899,19 @@ known only through consent.
    four-segment remote, all succeeded. These reached only `dev.azure.com`,
    and no session file held the token. An empty configuration directory
    without `AZURE_EXTENSION_DIR` reinstalled the extension from `aka.ms`, Azure
-   blob storage, and `github.com` (§6.4). Still to run with the placeholder
-   through the proxy in A3.
+   blob storage, and `github.com` (§6.4). Through the proxy with the
+   placeholder in `AZURE_DEVOPS_EXT_PAT`:
+   - `az repos show` and a pull-request list naming the repository answer;
+   - `az repos list` and a pull-request list naming no repository are refused;
+   - under `write`, `az repos pr create`, `az repos pr show --id` and
+     `az repos pr update --id … --status abandoned` work, the last two through
+     the lookup by id.
+
+   With the repository not held, a pull request of it and a missing id, a
+   repository GUID that exists and one that does not, and a Git
+   `info/refs` for an existing and a missing name each answered
+   byte-identically (Date aside).
+
 5. **Decided:** project and repository lists, at either scope, and
    pull-request lists that name no repository are refused. A single pull
    request by id is answered only when it belongs to one of the agent's
