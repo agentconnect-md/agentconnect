@@ -251,8 +251,10 @@ there is no webhook to clean up.
 Workspace derivation (git-workspace-model.md §6) gains two rows: an address in
 the connected organization that the identity can see yields
 `{ provider: 'azure-devops', repoId }`; one it cannot see is refused with "grant
-the application access to this repository". Every other Azure DevOps address
-stays anonymous, as any unmanaged host does.
+the application access to this repository". A `write` request on a repository
+where the identity lacks Contribute is refused the same way, read through one
+permission evaluation (§12, item 7). Every other Azure DevOps address stays
+anonymous, as any unmanaged host does.
 
 Clone addresses are normalized to `https://dev.azure.com/{organization}/{project}/_git/{repository}`.
 The normalizer accepts:
@@ -260,7 +262,9 @@ The normalizer accepts:
 - a user-info part equal to the organization name, which Azure DevOps puts in
   its clone URLs and which is not a credential;
 - `https://dev.azure.com/{organization}/_git/{repository}`, the form Azure
-  DevOps emits when a repository has its project's name; and
+  DevOps documents for a repository that has its project's name. The probe
+  (§12) saw the four-segment form even then, so this form is accepted, never
+  produced; and
 - `https://{organization}.visualstudio.com/[DefaultCollection/]{project}/_git/{repository}`.
 
 SSH addresses are not managed: a service principal cannot register SSH keys.
@@ -303,7 +307,10 @@ path:
   `git-upload-pack`, or `git-receive-pack`. The repository is resolved by name
   among the agent's authorized Azure DevOps repositories.
 - **REST naming a repository**: `[{project}/]_apis/git/repositories/{id-or-name}/…`.
-  The repository is resolved by GUID or by project and name.
+  The repository is resolved by GUID, with or without a project, or by project
+  and name; Azure DevOps itself refuses a name without a project. The project
+  segment may be a name or a GUID, since the links Azure DevOps returns name
+  the project by GUID.
 - **REST naming no repository**: only `_apis/connectionData`, `_apis/projects`,
   `_apis/git/repositories` (the list), and the resource-area lookups the Azure
   CLI makes. Each is forwarded as a read.
@@ -471,28 +478,43 @@ version does not preclude them:
 
 ## 12. Open Questions and Probes
 
-1. **Probe:** a multi-tenant application's service principal, created in a
-   customer tenant by consent, can be added to that tenant's Azure DevOps
-   organization, and its client credentials token at the customer tenant's
-   authority is accepted there.
+Results of 2026-11-07 are against a test organization in the application's
+home tenant.
+
+1. **Probe, half verified:** an application's service principal added to an
+   Azure DevOps organization is accepted with a client credentials token.
+   Verified in the application's home tenant: before the entitlement,
+   `connectionData` answers 401 `TF401444`; after it, 200, and the repository
+   list returns only projects the identity was granted. Open: the same in a
+   customer tenant, for a service principal created there by consent.
 2. **Probe:** with the administrator's delegated token, the Service Principal
    Entitlements API adds that service principal with Basic, the group
    membership calls add it to project groups, and the organizations the
-   administrator belongs to can be listed. Which role each call needs.
-3. **Probe:** git clone and push with the Entra token as the Basic password,
-   through the proxy.
-4. **Probe:** `az repos` and `az repos pr` reads with the placeholder in
-   `AZURE_DEVOPS_EXT_PAT` and an empty `AZURE_CONFIG_DIR`. Also: which hosts
-   the CLI contacts besides `dev.azure.com`.
+   administrator belongs to can be listed. Which role each call needs. Open:
+   it needs the authorization-code sign-in of §3.2, since the tenant's
+   security defaults refuse a device-code sign-in.
+3. **Verified:** git over HTTPS takes the Entra token as the Basic password. A
+   Reader identity clones; its push is refused at the `git-receive-pack`
+   advertisement with 403 `TF401027` (GenericContribute). A Contributor
+   pushes. Still to run through the proxy in A3.
+4. **Probe, half verified:** the REST API accepts the token as a Basic password
+   with an empty user, which is how the Azure CLI presents
+   `AZURE_DEVOPS_EXT_PAT`. Open: the CLI itself with the placeholder and an
+   empty `AZURE_CONFIG_DIR`, and which hosts it contacts besides
+   `dev.azure.com`.
 5. Whether the repository list (names only) belongs in §6.2's allowlist, or
    only repositories the agent holds.
 6. Whether the first version needs a pull-request tool. Without one, an agent
    pushes a branch and a person opens the pull request.
-7. **Probe:** whether the identity's Contribute permission on a repository can
-   be read cheaply at derivation, so that a `write` workspace on a repository
-   the identity cannot push to is refused at save time instead of at the first
-   push.
-8. **Probe:** how `remoteUrl` encodes a space in a project or repository name.
+7. **Verified:** derivation can read the identity's own rights in one call.
+   `POST _apis/security/permissionevaluationbatch` as the identity, Git
+   Repositories namespace, token `repoV2/{project GUID}/{repository GUID}`,
+   answers GenericRead (bit 2) and GenericContribute (bit 4) and follows a
+   group change at once. So a `write` workspace on a repository the identity
+   cannot push to can be refused at save time.
+8. **Verified:** `remoteUrl` percent-encodes a space (`%20`) in both the project
+   and the repository segment, carries the organization as user-info, and
+   keeps the four-segment form when the repository has its project's name.
 9. Whether to offer a second, read-only identity per organization as defense
    in depth beneath the proxy, at the cost of a second licence.
 
