@@ -39,7 +39,12 @@ import {
   verifyMsTeamsConnectState,
   type MsTeamsConnectKeys
 } from './connect.js'
-import { msTeamsDeploymentSecrets, type MsTeamsPlatformApp } from './deployment-app.js'
+import {
+  MSTEAMS_DEPLOYMENT_OWNER,
+  MSTEAMS_ROW_OWNER_KEY,
+  msTeamsDeploymentSecrets,
+  type MsTeamsPlatformApp
+} from './deployment-app.js'
 
 export interface MsTeamsConnectSeams {
   /** The deployment-owned app; absent ⇒ every route answers that there is none. */
@@ -292,7 +297,13 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
               const installed = await installNewBot(deps, req.log, {
                 bot: {
                   externalAppId: live.app.appId,
-                  platformConfig: { tenantId, tokenTenantId: live.app.tenantId, ...(store ? { source: 'store' } : {}) }
+                  platformConfig: {
+                    tenantId,
+                    tokenTenantId: live.app.tenantId,
+                    // Marks the row as the deployment app's for good, whatever its settings say later (§8.5).
+                    [MSTEAMS_ROW_OWNER_KEY]: MSTEAMS_DEPLOYMENT_OWNER,
+                    ...(store ? { source: 'store' } : {})
+                  }
                 },
                 // The row stores no secret; its daemon sends through the relay (§8.5).
                 secrets: msTeamsDeploymentSecrets(),
@@ -331,6 +342,10 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
               return refuse(reply, 409, 'MSTEAMS_TENANT_IN_USE', IN_USE_MESSAGE)
             }
             if (admission.outcome === 'added') {
+              if (held.platformConfig?.[MSTEAMS_ROW_OWNER_KEY] !== MSTEAMS_DEPLOYMENT_OWNER)
+                await deps.repos.bot.mergeBotIdentity(orgId, held.id, () => ({
+                  platformConfig: { [MSTEAMS_ROW_OWNER_KEY]: MSTEAMS_DEPLOYMENT_OWNER }
+                }))
               await deps.repos.botCredential.install(
                 orgId,
                 held.id,

@@ -167,7 +167,6 @@ import {
   type TransferNetwork,
   WORKSPACE_REPO_SCOPE_FEATURE,
   WORKSPACE_SESSION_READ_FEATURE,
-  MSTEAMS_RELAY_EGRESS_V1_FEATURE,
   RdSlackAction,
   WireFeishuCardActionEvent,
   WireGoogleChatCardAction,
@@ -9714,8 +9713,6 @@ export class Daemon {
       'workspace-file-delete-v1',
       'workspace-dir-create-v1',
       WORKSPACE_SESSION_READ_FEATURE,
-      // Sends a deployment Teams app's calls through the relay; the CP connects a tenant to it only on a daemon listing this.
-      MSTEAMS_RELAY_EGRESS_V1_FEATURE,
       WORKSPACE_REPO_SCOPE_FEATURE,
       WORKSPACE_FILE_DOWNLOAD_FEATURE,
       // Snapshots workspace files onto, and fetches console uploads from, URLs the control plane signs; static.
@@ -9835,7 +9832,9 @@ export class Daemon {
       // multi-repository-workspaces.md decisions 15–19: this daemon selects a session's `decision` repositories before it starts; the CP refuses `decision` for a daemon without it. Static.
       REPO_SELECTOR_V1_FEATURE,
       // computer-use.md §15.5: this daemon reads the `quota_exceeded` refusal of computer-pool/acquire. Static.
-      COMPUTER_POOL_QUOTA_FEATURE
+      COMPUTER_POOL_QUOTA_FEATURE,
+      // What each platform module declares for itself (§7.4).
+      ...this.platformModules.registrationFeatures()
     ]
   }
 

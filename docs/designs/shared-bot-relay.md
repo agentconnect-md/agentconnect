@@ -881,11 +881,15 @@ Later, separately: the
   the normal daemon path.
 - Direct Slack integrations retain their daemon-owned socket transport.
 - A platform whose credential must not reach daemons sends through the relay:
-  `rd/platform/request { platformId, botId, payload }` → `rd/platform/reply
-{ outcome, reason?, payload? }`, sent to a relay that advertised
-  `platform-request-v1`. The relay answers only for a bot whose assignment
-  names the requesting daemon as a member, and the bot's relay platform module
-  checks the payload. The deployment-owned Teams app is the one user
+  `rd/platform/request { platformId, botId, payload }` →
+  `rd/platform/reply { outcome, reason?, retryable?, payload? }`, sent to a
+  relay that advertised `platform-request-v1`. The relay answers only for a bot
+  whose assignment names the requesting daemon as a member, and the bot's relay
+  platform module checks the payload. It answers within
+  `RD_PLATFORM_REQUEST_BUDGET_MS`, which the daemon's wait exceeds. `refused`
+  and `unavailable` mean the provider was never called, so the daemon asks the
+  next ready relay; `retryable` marks a refusal that assignment lag may explain.
+  The deployment-owned Teams app is the one user
   ([teams-integration.md §8.5](teams-integration.md#85-egress-for-the-deployment-apps-rows)).
 - Webchat output is returned through `rd/chat` to the relay holding the browser
   session. That relay delivers output, completion, and canonical posts to every

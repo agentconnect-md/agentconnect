@@ -1,6 +1,6 @@
 // The deployment Teams app's relay egress (teams-integration.md §8.5): tickets, the host fence, the fixed operations, and Graph tokens for one tenant.
 import { describe, expect, it, vi } from 'vitest'
-import type { RcMsTeamsDeploymentApp, WireMsTeamsCall, WireMsTeamsCallResult } from '@agentconnect.md/protocol'
+import { WireMsTeamsCall, type RcMsTeamsDeploymentApp, type WireMsTeamsCallResult } from '@agentconnect.md/protocol'
 import { MSTEAMS_BOT_SCOPE, MSTEAMS_GRAPH_SCOPE, MsTeamsRelayEgress } from './egress.js'
 import { allowedMsTeamsServiceUrl, mintMsTeamsTicket, openMsTeamsTicket } from './ticket.js'
 import { createMsTeamsIngressPlugin } from './ingress-plugin.js'
@@ -216,6 +216,51 @@ describe('MsTeamsRelayEgress', () => {
     expect(resultOf(await denied.call(BINDING, { op: 'get-team', ticket: teamTicket, teamId: TEAM })).status).toBe(401)
     expect(refused.sent).toEqual([])
   })
+
+  it('refuses a dot segment that would leave the operation’s path, sending nothing', async () => {
+    const ms = microsoft()
+    const egress = new MsTeamsRelayEgress(APP, ms.fetchImpl, () => NOW)
+    for (const id of ['..', '.'])
+      for (const call of [
+        { op: 'delete-activity', ticket, conversationId: CHANNEL, activityId: id },
+        { op: 'get-member', ticket, conversationId: CHANNEL, memberId: id },
+        { op: 'update-activity', ticket, conversationId: CHANNEL, activityId: id, activity: {} }
+      ] as WireMsTeamsCall[])
+        expect(await egress.call(BINDING, call)).toEqual({ outcome: 'refused', reason: 'invalid' })
+    expect(ms.sent).toEqual([])
+    expect(ms.tokens).toEqual([])
+    expect(
+      WireMsTeamsCall.safeParse({ op: 'delete-activity', ticket, conversationId: CHANNEL, activityId: '..' }).success
+    ).toBe(false)
+    expect(WireMsTeamsCall.safeParse({ op: 'get-team', ticket, teamId: '.' }).success).toBe(false)
+  })
+
+  it('answers within its budget: a slow token sends nothing, and a slow send reads as one that may have landed', async () => {
+    const BUDGET = 150
+    const hang = new Promise<Response>(() => {})
+    // Entra never answers: nothing reached Microsoft, and the relay says so before the daemon stops waiting.
+    const silentEntra = (async (url: unknown, init?: RequestInit) => {
+      if (String(url).includes('login.microsoftonline.com')) return hang
+      return Response.json({}, { status: init?.method === 'POST' ? 201 : 200 })
+    }) as typeof fetch
+    const slowToken = new MsTeamsRelayEgress(APP, silentEntra, () => NOW, BUDGET)
+    const started = Date.now()
+    const call: WireMsTeamsCall = { op: 'post-activity', ticket, conversationId: CHANNEL, activity: {} }
+    expect(await slowToken.call(BINDING, call)).toEqual({ outcome: 'unavailable', reason: 'deadline' })
+    expect(await slowToken.call(BINDING, { op: 'graph-token' })).toEqual({ outcome: 'unavailable', reason: 'deadline' })
+
+    // The Bot Connector never answers: the send is cut off inside the budget and answered as a gateway timeout.
+    const silentConnector = (async (url: unknown, init?: RequestInit) => {
+      if (String(url).includes('login.microsoftonline.com'))
+        return Response.json({ access_token: 'tok', expires_in: 3600 })
+      return await new Promise<Response>((_resolve, reject) =>
+        init?.signal?.addEventListener('abort', () => reject(new Error('aborted')))
+      )
+    }) as typeof fetch
+    const slowSend = new MsTeamsRelayEgress(APP, silentConnector, () => NOW, 1_200)
+    expect(resultOf(await slowSend.call(BINDING, call)).status).toBe(504)
+    expect(Date.now() - started).toBeLessThan(3_000)
+  })
 })
 
 describe('the Teams plugin for a deployment app’s rows', () => {
@@ -297,7 +342,8 @@ describe('the Teams plugin for a deployment app’s rows', () => {
     const post = { op: 'post-activity', ticket, conversationId: CHANNEL, activity: {} }
     expect(await plugin.daemonRequest!(assignment({ apiAppId: OTHER_APP_ID }), post)).toEqual({
       outcome: 'refused',
-      reason: 'not_deployment_app'
+      reason: 'not_deployment_app',
+      retryable: false
     })
     expect(await plugin.daemonRequest!(assignment(), { op: 'get-anything', path: '/v3/x' })).toEqual({
       outcome: 'refused',
@@ -308,7 +354,8 @@ describe('the Teams plugin for a deployment app’s rows', () => {
     plugin.deploymentAssignments!({ revision: 0 })
     expect(await plugin.daemonRequest!(assignment(), post)).toEqual({
       outcome: 'refused',
-      reason: 'not_deployment_app'
+      reason: 'not_deployment_app',
+      retryable: true
     })
   })
 })

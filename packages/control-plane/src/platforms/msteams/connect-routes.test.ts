@@ -85,7 +85,14 @@ async function harness(
     throw new Error(`unexpected request to ${url}`)
   }) as typeof fetch
   const held = opts.held
-    ? ({ id: BOT, orgId: ORG, name: 'Microsoft Teams', agentIds: [], ...opts.held } as BotRecord)
+    ? ({
+        id: BOT,
+        orgId: ORG,
+        name: 'Microsoft Teams',
+        agentIds: [],
+        platformConfig: { appOwner: 'deployment' },
+        ...opts.held
+      } as BotRecord)
     : null
   const create = vi.fn(async (input: Record<string, unknown>) => {
     order.push('create')
@@ -225,7 +232,7 @@ describe('the deployment Teams app routes', () => {
         prebuilt: true,
         name: 'Microsoft Teams · Example Org',
         externalAppId: APP.appId,
-        platformConfig: { tenantId: CUSTOMER, tokenTenantId: APP.tenantId }
+        platformConfig: { tenantId: CUSTOMER, tokenTenantId: APP.tenantId, appOwner: 'deployment' }
       })
     )
     // The row stores a marker, never the deployment app's secret (§8.5).
@@ -275,7 +282,7 @@ describe('the deployment Teams app routes', () => {
     expect(h.create).toHaveBeenCalledWith(
       expect.objectContaining({
         prebuilt: true,
-        platformConfig: { tenantId: CUSTOMER, tokenTenantId: APP.tenantId, source: 'store' }
+        platformConfig: { tenantId: CUSTOMER, tokenTenantId: APP.tenantId, appOwner: 'deployment', source: 'store' }
       })
     )
     expect(h.graph.map((call) => call.url.split('?')[0])).toEqual(['https://graph.microsoft.com/v1.0/organization'])
@@ -327,7 +334,8 @@ describe('the deployment Teams app routes', () => {
   })
 
   it('puts a freed row of this organization back on the agent, with the marker rather than a secret', async () => {
-    const h = await harness({ held: {} })
+    // A row an older build wrote carries no owner entry until this connect records it.
+    const h = await harness({ held: { platformConfig: { tokenTenantId: APP.tenantId } } })
     expect((await h.callback()).statusCode).toBe(200)
     expect(h.create).not.toHaveBeenCalled()
     expect(h.addBotMembership).toHaveBeenCalledWith(expect.objectContaining({ agentId: AGENT, botId: BOT }))
@@ -337,6 +345,7 @@ describe('the deployment Teams app routes', () => {
       { botToken: MSTEAMS_DEPLOYMENT_SECRET_MARKER, appToken: null, signingSecret: null },
       expect.any(Date)
     )
+    expect(h.recorded[0]).toEqual({ appOwner: 'deployment' })
     expect(h.syncBot).toHaveBeenCalledWith(BOT)
   })
 

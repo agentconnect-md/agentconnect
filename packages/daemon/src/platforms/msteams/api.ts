@@ -332,8 +332,16 @@ function relayAnswer(reply: RdPlatformReply): WireMsTeamsCallResult {
       undefined,
       true
     )
+  // A refusal the relays' assignments may still lift is retried as unsent, a bounded number of times; nothing reached Microsoft.
   if (reply.outcome === 'refused')
-    throw new MsTeamsApiError(`msteams: the relay refused the call (${reply.reason ?? 'refused'})`, 'forbidden')
+    throw new MsTeamsApiError(
+      `msteams: the relay refused the call (${reply.reason ?? 'refused'})`,
+      reply.retryable ? 'unavailable' : 'forbidden',
+      undefined,
+      undefined,
+      undefined,
+      reply.retryable === true
+    )
   const parsed = WireMsTeamsCallResult.safeParse(reply.payload)
   if (!parsed.success) throw new MsTeamsApiError('msteams: the relay answered an unreadable result', 'ambiguous')
   return parsed.data

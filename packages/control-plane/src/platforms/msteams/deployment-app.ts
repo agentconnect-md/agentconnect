@@ -33,12 +33,30 @@ export function resolveMsTeamsPlatformApp(env: Env): MsTeamsPlatformApp | undefi
   return { appId: appId.toLowerCase(), tenantId: tenantId.toLowerCase(), clientSecret }
 }
 
-/** A row of the deployment app, decided by its app ID: its egress goes through the relay and its row holds no secret (§8.5). */
+/** A row named as the configured deployment app's by its app ID. */
 export function usesMsTeamsDeploymentApp(
   bot: { externalAppId: string | null },
   app: Pick<MsTeamsPlatformApp, 'appId'> | undefined
 ): boolean {
   return !!app && bot.externalAppId === app.appId
+}
+
+/** The `platformConfig` entry every deployment app's row carries, so it is one whatever the deployment's settings say later (§8.5). */
+export const MSTEAMS_ROW_OWNER_KEY = 'appOwner'
+export const MSTEAMS_DEPLOYMENT_OWNER = 'deployment'
+
+/** A deployment app's row by facts stored on it: the owner entry, or the token tenant and prebuilt flag every connect has written; or by the configured app's ID. */
+export function isMsTeamsDeploymentRow(
+  bot: { externalAppId: string | null; prebuilt?: boolean; platformConfig: Record<string, unknown> | null },
+  app?: Pick<MsTeamsPlatformApp, 'appId'>
+): boolean {
+  const stored = bot.platformConfig ?? {}
+  return (
+    stored[MSTEAMS_ROW_OWNER_KEY] === MSTEAMS_DEPLOYMENT_OWNER ||
+    (typeof stored.tokenTenantId === 'string' && stored.tokenTenantId !== '') ||
+    bot.prebuilt === true ||
+    usesMsTeamsDeploymentApp(bot, app)
+  )
 }
 
 /** What a deployment app's row stores in its secret slot: a marker, not a secret, since the app's secret never leaves the deployment (§8.5). */

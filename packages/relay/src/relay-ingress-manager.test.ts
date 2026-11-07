@@ -3917,7 +3917,8 @@ describe('RelayIngressManager platform requests', () => {
     const req = { platformId: 'msteams', botId: BOT_ID, payload: { op: 'graph-token' } }
     expect(await manager.handlePlatformRequest(OTHER_DAEMON_ID, req)).toEqual({
       outcome: 'refused',
-      reason: 'not_member'
+      reason: 'not_member',
+      retryable: true
     })
     expect(answer).not.toHaveBeenCalled()
     expect(await manager.handlePlatformRequest(DAEMON_ID, req)).toEqual({ outcome: 'ok' })
@@ -3929,8 +3930,8 @@ describe('RelayIngressManager platform requests', () => {
     routerOf(manager).upsert(assignment())
     const ask = (platformId: string, botId: string) =>
       manager.handlePlatformRequest(DAEMON_ID, { platformId, botId, payload: {} })
-    expect(await ask('msteams', OTHER_AGENT_ID)).toEqual({ outcome: 'refused', reason: 'unknown_bot' })
-    expect(await ask('msteams', BOT_ID)).toEqual({ outcome: 'refused', reason: 'unknown_bot' })
+    expect(await ask('msteams', OTHER_AGENT_ID)).toEqual({ outcome: 'refused', reason: 'unknown_bot', retryable: true })
+    expect(await ask('msteams', BOT_ID)).toEqual({ outcome: 'refused', reason: 'unknown_bot', retryable: true })
     expect(await ask('slack', BOT_ID)).toEqual({ outcome: 'refused', reason: 'unsupported' })
   })
 })

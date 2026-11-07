@@ -1,13 +1,21 @@
 // The Microsoft Teams provider (teams-integration.md §2, §5, §6): an organization's own bot registration, checked by a client-credentials token request; the relay owns ingress.
 import type { FastifyPluginAsync } from 'fastify'
 import { z } from 'zod'
-import { MSTEAMS_PLATFORM, msTeamsMessagesUrl, type IntegrationMsTeamsConfig } from '@agentconnect.md/protocol'
+import {
+  IntegrationMsTeamsConfig,
+  MSTEAMS_PLATFORM,
+  MSTEAMS_RELAY_EGRESS_V1_FEATURE,
+  msTeamsMessagesUrl
+} from '@agentconnect.md/protocol'
 import type { BotRecord, BotSecretMaterial } from '../../persistence/ports.js'
 import { isMsTeamsConversationId, msTeamsSessionRealm } from './session-access.js'
 import {
+  MSTEAMS_DEPLOYMENT_OWNER,
   MSTEAMS_DEPLOYMENT_SECRET_MARKER,
+  MSTEAMS_ROW_OWNER_KEY,
   MsTeamsCpEnvSchema,
   isMsTeamsCustomerRow,
+  isMsTeamsDeploymentRow,
   usesMsTeamsDeploymentApp,
   type MsTeamsPlatformApp
 } from './deployment-app.js'
@@ -143,7 +151,7 @@ export function msTeamsSecrets(clientSecret: string): BotSecretMaterial {
 
 /** The daemon spec payload; undefined when the row lacks its identity or secret. A deployment app's row gets no secret, only the relay as its egress (§8.5). */
 export function msTeamsIntegrationConfig(
-  bot: Pick<BotRecord, 'id' | 'externalAppId' | 'externalTenantId'>,
+  bot: Pick<BotRecord, 'id' | 'externalAppId' | 'externalTenantId' | 'prebuilt' | 'platformConfig'>,
   secrets: Pick<BotSecretMaterial, 'botToken'>,
   publicRelayUrl?: string,
   app?: Pick<MsTeamsPlatformApp, 'appId'>
@@ -154,11 +162,17 @@ export function msTeamsIntegrationConfig(
     tenantId: bot.externalTenantId,
     ...(publicRelayUrl ? { messagesUrl: msTeamsMessagesUrl(publicRelayUrl) } : {})
   }
-  // The marker is checked too, so a row is never handed it as a secret after the deployment app's settings change.
-  if (usesMsTeamsDeploymentApp(bot, app) || secrets.botToken === MSTEAMS_DEPLOYMENT_SECRET_MARKER)
-    return { ...identity, egress: 'relay', botId: bot.id }
+  // Decided by what the row stores, never by its secret slot; with no matching app configured it delivers nothing.
+  if (isMsTeamsDeploymentRow(bot, app) || secrets.botToken === MSTEAMS_DEPLOYMENT_SECRET_MARKER)
+    return usesMsTeamsDeploymentApp(bot, app) ? { ...identity, egress: 'relay', botId: bot.id } : undefined
   if (!secrets.botToken) return undefined
   return { ...identity, clientSecret: secrets.botToken }
+}
+
+/** What a daemon must advertise to hold a projected config: the relay egress for a deployment app's row (§8.5). */
+export function msTeamsRequiredDaemonFeatures(config: unknown): readonly string[] {
+  const parsed = IntegrationMsTeamsConfig.safeParse(config)
+  return parsed.success && 'egress' in parsed.data ? [MSTEAMS_RELAY_EGRESS_V1_FEATURE] : []
 }
 
 /** The relay assignment: no secret, the app ID the inbound token's audience must equal, the bot's own tenant, and its `28:` mention identity. */
@@ -225,11 +239,16 @@ export function createMsTeamsCpProvider(
     projectBotIdentity: (input) => {
       const tenantId = input.platformConfig?.tenantId
       const tokenTenantId = input.platformConfig?.tokenTenantId
+      const owner = input.platformConfig?.[MSTEAMS_ROW_OWNER_KEY]
       if (!input.externalAppId || !tenantId) return {}
+      const kept = {
+        ...(tokenTenantId ? { tokenTenantId } : {}),
+        ...(owner === MSTEAMS_DEPLOYMENT_OWNER ? { [MSTEAMS_ROW_OWNER_KEY]: owner } : {})
+      }
       return {
         externalAppId: input.externalAppId,
         externalTenantId: tenantId,
-        ...(tokenTenantId ? { platformConfig: { tokenTenantId } } : {})
+        ...(Object.keys(kept).length ? { platformConfig: kept } : {})
       }
     },
 
@@ -261,6 +280,8 @@ export function createMsTeamsCpProvider(
     async projectIntegrationConfig(_integration, bot, _core, secrets) {
       return msTeamsIntegrationConfig(bot, secrets, deps.publicRelayUrl, deps.app)
     },
+
+    requiredDaemonFeatures: msTeamsRequiredDaemonFeatures,
 
     async projectBotAssign(bot) {
       return msTeamsBotAssignBags(bot)

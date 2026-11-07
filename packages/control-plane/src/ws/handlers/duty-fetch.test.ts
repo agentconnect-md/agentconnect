@@ -201,4 +201,19 @@ describe('handleDutyFetch', () => {
 
     expect(conn.replyTo).toHaveBeenCalledWith(frame, 'duty/fetch/ok', {})
   })
+
+  it('removes, and leaves out, an integration that needs a feature the member does not advertise', async () => {
+    const send = vi.fn()
+    const conn = Object.assign(fakeConn(), { send })
+    const needy = { ...BUNDLE.integrations[0]!, integrationId: CRON, requires: ['example-feature-v1'] }
+    const agentBundle = vi.fn(async () => ({ ...BUNDLE, integrations: [...BUNDLE.integrations, needy] }))
+    const frame = fetchFrame()
+    await handleDutyFetch(frame, conn, fakeDeps({ agent: AGENT_RECORD, holdsAgent: true, agentBundle }))
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(send.mock.calls[0]![0]).toBe('integration/remove')
+    expect(send.mock.calls[0]![1]).toEqual({ integrationId: CRON })
+    expect(send.mock.calls[0]![3]).toBe(ORG)
+    const reply = conn.replyTo.mock.calls[0]![2] as { bundle: typeof BUNDLE }
+    expect(reply.bundle.integrations.map((i) => i.integrationId)).toEqual([INTEGRATION])
+  })
 })

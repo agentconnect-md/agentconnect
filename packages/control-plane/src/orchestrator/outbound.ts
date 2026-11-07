@@ -197,7 +197,7 @@ const WORKSPACE_TRANSFER_BUDGET_MS = 16 * 60_000
  */
 import { createHash } from 'node:crypto'
 import { daemonSupportsAgent, encodeAgentSpecForPeer } from '../domain/daemon-features.js'
-import { encodeIntegrationSpecForPeer } from '../domain/decision-trigger-features.js'
+import { encodeIntegrationSpecForPeer, integrationDeliverableToPeer } from '../domain/decision-trigger-features.js'
 import {
   MAX_ORGANIZATION_SUGGESTION_BODY_BYTES,
   ORGANIZATION_SUGGESTION_CHUNK_BYTES,
@@ -453,6 +453,11 @@ export class ControlSender {
       if (!daemonSupportsAgent(a.spec, c.capabilities?.features)) {
         throw new Error(`daemon ${daemonId} lacks a feature required by agent ${a.agentId}'s spec`)
       }
+      // An integration the target cannot take is removed rather than sent, so no earlier copy of it survives there.
+      const features = c.capabilities?.features
+      for (const i of a.integrations)
+        if (!integrationDeliverableToPeer(i, features))
+          c.conn.send('integration/remove', { integrationId: i.integrationId }, { epoch: c.sessionEpoch }, orgId)
       try {
         return await c.conn.request<Ack>(
           'agent/activate',
@@ -461,7 +466,9 @@ export class ControlSender {
           {
             ...a,
             spec: encodeAgentSpecForPeer(a.spec, c.capabilities?.features),
-            integrations: a.integrations.map((i) => encodeIntegrationSpecForPeer(i, c.capabilities?.features))
+            integrations: a.integrations
+              .filter((i) => integrationDeliverableToPeer(i, features))
+              .map((i) => encodeIntegrationSpecForPeer(i, features))
           },
           { epoch: c.sessionEpoch, agentId: a.agentId },
           { ackTimeoutMs: COLD_ACTIVATE_ACK_TIMEOUT_MS, maxTries: COLD_ACTIVATE_MAX_TRIES },
@@ -521,6 +528,11 @@ export class ControlSender {
    */
   async integrationUpsert(daemonId: string, u: IntegrationUpsert): Promise<void> {
     const c = this.must(daemonId)
+    // A daemon lacking a required feature would ignore the spec and keep its last one, so it is told to remove it.
+    if (!integrationDeliverableToPeer(u, c.capabilities?.features)) {
+      c.conn.send('integration/remove', { integrationId: u.integrationId }, { epoch: c.sessionEpoch }, u.orgId)
+      return
+    }
     const spec = encodeIntegrationSpecForPeer(u, c.capabilities?.features)
     c.conn.send('integration/upsert', spec, { epoch: c.sessionEpoch, agentId: u.agentId })
   }

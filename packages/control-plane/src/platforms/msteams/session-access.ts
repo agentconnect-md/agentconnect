@@ -5,6 +5,7 @@ import type { BotRecord } from '../../persistence/ports.js'
 import { BotAccessError, BotSessionAccessService, type BotSessionAccessDeps } from '../bot-session-access.js'
 import {
   MSTEAMS_DEPLOYMENT_SECRET_MARKER,
+  isMsTeamsDeploymentRow,
   usesMsTeamsDeploymentApp,
   type MsTeamsPlatformApp
 } from './deployment-app.js'
@@ -41,10 +42,11 @@ export function createMsTeamsSessionAccess(
     ttl: 60_000,
     fetchMethod: async (_key, _stale, { context, options }) => {
       const { bot, signal } = context
-      const deployment = usesMsTeamsDeploymentApp(bot, app)
+      // A deployment app's row uses only the configured app's credential, never what its secret slot holds.
+      const deployment = isMsTeamsDeploymentRow(bot, app) || context.secret === MSTEAMS_DEPLOYMENT_SECRET_MARKER
+      if (deployment && !usesMsTeamsDeploymentApp(bot, app)) throw new BotAccessError('app_authorization')
       const secret = deployment ? app!.clientSecret : context.secret
       const tenant = deployment ? app!.tenantId : msTeamsTokenTenant(bot)!
-      if (secret === MSTEAMS_DEPLOYMENT_SECRET_MARKER) throw new BotAccessError('app_authorization')
       const response = await fetchImpl(msTeamsTokenUrl(tenant), {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded' },

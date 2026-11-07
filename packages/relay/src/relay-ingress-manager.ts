@@ -427,10 +427,12 @@ export class RelayIngressManager {
   async handlePlatformRequest(fromDaemonId: string, req: RdPlatformRequest): Promise<RdPlatformReply> {
     const plugin = this.ingressPlugins.get(req.platformId)?.plugin
     if (!plugin?.daemonRequest) return { outcome: 'refused', reason: 'unsupported' }
+    // This relay's assignments may trail another's or the CP's, so both refusals are worth a retry elsewhere or later.
     const assignment = this.deploymentBots.has(req.botId) ? undefined : this.router.get(req.botId)
-    if (!assignment || assignment.platform !== req.platformId) return { outcome: 'refused', reason: 'unknown_bot' }
+    if (!assignment || assignment.platform !== req.platformId)
+      return { outcome: 'refused', reason: 'unknown_bot', retryable: true }
     if (!assignment.members.some((m) => m.daemonId === fromDaemonId))
-      return { outcome: 'refused', reason: 'not_member' }
+      return { outcome: 'refused', reason: 'not_member', retryable: true }
     return await plugin.daemonRequest(assignment, req.payload)
   }
 

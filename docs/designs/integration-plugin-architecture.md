@@ -601,6 +601,10 @@ redelivery is answered. A surface without the member posts nothing.
 conversation; core composes the platform-neutral welcome (`platforms/welcome.ts`)
 and the module posts it in its own form, as Teams does with a card.
 
+`DaemonPlatformModule.registrationFeatures?` lists the features the module adds
+to the daemon's registration; core appends every module's list, so a platform's
+capability bit is declared by its module rather than named in core.
+
 `DaemonPlatformModule.chatMemberKey?` is the same kind of member: the id a
 synced organization matches a platform's chat member to a console account by,
 which only Feishu/Lark's module overrides (§7.3).
@@ -820,6 +824,9 @@ interface CpPlatformProvider {
   // never growing a per-platform preload branch. Secret material is never
   // persisted inside platformConfig JSON.
   projectIntegrationConfig(integration, bot, secrets): Promise<unknown> // -> IntegrationSpec.config (§6.3)
+  // -> IntegrationSpec.requires: core removes the integration from a daemon
+  // lacking one of these features instead of sending a spec it would ignore.
+  requiredDaemonFeatures?(config): readonly string[]
   projectBotAssign(bot, secrets): Promise<{ secrets: unknown; ingress: unknown }> // -> rc/bot-assign (§6.6)
 }
 ```

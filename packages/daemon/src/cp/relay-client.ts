@@ -54,6 +54,7 @@ import {
   type RdRouteAck,
   type RdRouteReport,
   type RdRouteReportAck,
+  RD_PLATFORM_REQUEST_BUDGET_MS,
   RD_PLATFORM_REQUEST_V1,
   type RdPlatformRequest,
   type RdPlatformReply
@@ -65,8 +66,8 @@ import { AhpCarrier, ahpAvailable, type AhpCarrierDeps } from './ahp-carrier.js'
 const ACK_TIMEOUT_MS = 5000
 /** Longer than the relay's inner 5 s forward, so a slow target reads as the relay's `retry`, never a lost request. */
 const ROUTE_REQUEST_TIMEOUT_MS = 12_000
-/** Above the relay's own 12-second bound on one provider call, so a slow provider reads as its answer, not a lost request. */
-const PLATFORM_REQUEST_TIMEOUT_MS = 15_000
+/** Above the relay's whole-request budget, so a slow provider reads as the relay's answer, not a lost request. */
+const PLATFORM_REQUEST_TIMEOUT_MS = RD_PLATFORM_REQUEST_BUDGET_MS + 3_000
 /** rd/hello definitively rejected (bad/revoked key, daemonId mismatch) → stop dialing THIS relay. */
 const CLOSE_AUTH_FAILED = 4401
 

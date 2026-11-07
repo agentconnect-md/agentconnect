@@ -627,6 +627,9 @@ export interface CpPlatformProvider<TCredentials = unknown> {
     secrets: BotSecretMaterial
   ): Promise<unknown>
 
+  /** The daemon features a projected config needs; core removes the integration from a daemon that lacks one rather than send a spec it would ignore while keeping its last one. Absent ⇒ none. */
+  requiredDaemonFeatures?(config: unknown): readonly string[]
+
   /**
    * Project one HTTP bot's credentials + demux identity into the two opaque
    * bags of `rc/bot-assign` (§6.7) — today's per-platform forks inside

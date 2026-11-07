@@ -301,6 +301,23 @@ describe('MsTeamsApi through the relay (§8.5)', () => {
     expect(no.kind).toBe('forbidden')
   })
 
+  it('retries a refusal the relays’ assignments may still lift, a bounded number of times, even for a post', async () => {
+    const lagging = { outcome: 'refused' as const, reason: 'not_member', retryable: true }
+    const { client, sent, sleeps } = relayed([
+      lagging,
+      lagging,
+      { outcome: 'ok', payload: { status: 201, body: { id: 'act-3' } } }
+    ])
+    expect(await client.postActivity(ticketed, {})).toBe('act-3')
+    expect(sent).toHaveLength(3)
+    expect(sleeps).toHaveLength(2)
+
+    const stuck = relayed([lagging, lagging, lagging, lagging])
+    const err = (await stuck.client.postActivity(ticketed, {}).catch((e: unknown) => e)) as MsTeamsApiError
+    expect(err.kind).toBe('unavailable')
+    expect(stuck.sent).toHaveLength(4)
+  })
+
   it('takes a new 1:1 chat’s ticket from the relay’s answer and asks it only for the member', async () => {
     const { client, sent } = relayed([
       { outcome: 'ok', payload: { status: 201, body: { id: 'a:new-chat' }, tickets: { 'a:new-chat': 't1.chat.mac' } } }

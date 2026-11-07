@@ -2,6 +2,7 @@
 import {
   MSTEAMS_CARD_NOTE_MAX,
   MSTEAMS_PLATFORM,
+  MSTEAMS_RELAY_EGRESS_V1_FEATURE,
   WireMsTeamsCardAction,
   WireMsTeamsMembersAdded,
   type RdMsgPlatformAction,
@@ -72,6 +73,8 @@ export function msTeamsPlatformModule(host: MsTeamsRelayIngressHost): DaemonPlat
     chatMemberKey: msTeamsChatMemberKey,
     cardClicks: msTeamsCardClicks,
     memberJoins: msTeamsMemberJoins(host),
-    botAdds: msTeamsBotAdds(host)
+    botAdds: msTeamsBotAdds(host),
+    // A deployment app's row sends through the relay; the CP connects one only to a daemon listing this (§8.5).
+    registrationFeatures: [MSTEAMS_RELAY_EGRESS_V1_FEATURE]
   }
 }

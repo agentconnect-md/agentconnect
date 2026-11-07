@@ -288,7 +288,9 @@ export const IntegrationSpec = z.object({
   agentId: z.string().uuid(),
   platform: Platform,
   core: IntegrationCoreEnvelope,
-  config: z.unknown().optional()
+  config: z.unknown().optional(),
+  // Daemon features a holder must advertise; the CP removes the integration from a daemon without one instead of sending it.
+  requires: z.array(z.string().min(1).max(64)).max(16).optional()
 })
 export type IntegrationSpec = z.infer<typeof IntegrationSpec>
 

@@ -781,7 +781,15 @@ export const WireMsTeamsBotAdded = z.object({
 export type WireMsTeamsBotAdded = z.infer<typeof WireMsTeamsBotAdded>
 
 const MsTeamsTicket = z.string().min(1).max(MSTEAMS_TICKET_MAX)
-const MsTeamsConversationId = z.string().min(1).max(512)
+// A path segment the relay encodes; a dot segment would be collapsed out of the operation's path.
+const msTeamsSegment = (max: number) =>
+  z
+    .string()
+    .min(1)
+    .max(max)
+    .refine((value) => value !== '.' && value !== '..', 'a dot segment is not an ID')
+const MsTeamsConversationId = msTeamsSegment(512)
+const MsTeamsItemId = msTeamsSegment(256)
 
 /** A deployment Teams app's Bot Connector call in an `rd/platform/request` (teams-integration.md §8.5): a fixed set, whose URL and body the relay builds from the ticket. */
 export const WireMsTeamsCall = z.discriminatedUnion('op', [
@@ -795,20 +803,20 @@ export const WireMsTeamsCall = z.discriminatedUnion('op', [
     op: z.literal('update-activity'),
     ticket: MsTeamsTicket,
     conversationId: MsTeamsConversationId,
-    activityId: z.string().min(1).max(256),
+    activityId: MsTeamsItemId,
     activity: z.record(z.string(), z.unknown())
   }),
   z.object({
     op: z.literal('delete-activity'),
     ticket: MsTeamsTicket,
     conversationId: MsTeamsConversationId,
-    activityId: z.string().min(1).max(256)
+    activityId: MsTeamsItemId
   }),
   z.object({
     op: z.literal('get-member'),
     ticket: MsTeamsTicket,
     conversationId: MsTeamsConversationId,
-    memberId: z.string().min(1).max(256)
+    memberId: MsTeamsItemId
   }),
   z.object({
     op: z.literal('get-paged-members'),
@@ -819,7 +827,7 @@ export const WireMsTeamsCall = z.discriminatedUnion('op', [
   z.object({ op: z.literal('get-team'), ticket: MsTeamsTicket, teamId: MsTeamsConversationId }),
   z.object({ op: z.literal('get-team-conversations'), ticket: MsTeamsTicket, teamId: MsTeamsConversationId }),
   // A 1:1 chat with one member; the relay names the bot and the row's tenant itself.
-  z.object({ op: z.literal('create-conversation'), ticket: MsTeamsTicket, memberId: z.string().min(1).max(256) }),
+  z.object({ op: z.literal('create-conversation'), ticket: MsTeamsTicket, memberId: MsTeamsItemId }),
   // An app-only Microsoft Graph token for the row's own tenant, which the daemon then calls Graph with.
   z.object({ op: z.literal('graph-token') })
 ])
@@ -1401,13 +1409,17 @@ export const RdPlatformRequest = z.object({
 })
 export type RdPlatformRequest = z.infer<typeof RdPlatformRequest>
 
-// `refused` is final for this request; `unavailable` means the relay could not reach the provider and nothing was sent.
+// `refused` and `unavailable` both mean the provider was never called; `retryable` marks a refusal another relay, or this one once its assignments converge, may not repeat.
 export const RdPlatformReply = z.object({
   outcome: z.enum(['ok', 'refused', 'unavailable']),
   reason: z.string().max(64).optional(),
+  retryable: z.boolean().optional(),
   payload: z.unknown().optional()
 })
 export type RdPlatformReply = z.infer<typeof RdPlatformReply>
+
+/** The relay answers an `rd/platform/request` within this, provider calls and token requests included; a daemon waits longer. */
+export const RD_PLATFORM_REQUEST_BUDGET_MS = 12_000
 
 // ── webchat output stream (D→R) ──────────────────────────────────────────────
 

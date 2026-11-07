@@ -1,9 +1,10 @@
 // The deployment Teams app's egress on the relay (teams-integration.md §8.5): its customer rows' Bot Connector calls and Graph tokens, so its secret never reaches a daemon.
-import type {
-  RcMsTeamsDeploymentApp,
-  RdPlatformReply,
-  WireMsTeamsCall,
-  WireMsTeamsCallResult
+import {
+  RD_PLATFORM_REQUEST_BUDGET_MS,
+  type RcMsTeamsDeploymentApp,
+  type RdPlatformReply,
+  type WireMsTeamsCall,
+  type WireMsTeamsCallResult
 } from '@agentconnect.md/protocol'
 import {
   mintMsTeamsTicket,
@@ -18,8 +19,8 @@ export const MSTEAMS_GRAPH_SCOPE = 'https://graph.microsoft.com/.default'
 /** A token is refreshed this long before Entra says it expires. */
 const TOKEN_MARGIN_MS = 60_000
 const TOKEN_TIMEOUT_MS = 10_000
-/** One Bot Connector request's bound, under the daemon's 15-second wait for the reply. */
-const CALL_TIMEOUT_MS = 12_000
+/** A send is not started with less than this left of the request's budget. */
+const MIN_SEND_MS = 1_000
 const TOKENS_MAX = 1_000
 /** The least lifetime a Graph token handed to a daemon has left. */
 const GRAPH_HANDOUT_MIN_MS = 10 * 60_000
@@ -198,7 +199,24 @@ function retryAfterMs(res: Response, now: number): number | undefined {
 }
 
 const refused = (reason: string): RdPlatformReply => ({ outcome: 'refused', reason })
+const unavailable = (reason: string): RdPlatformReply => ({ outcome: 'unavailable', reason })
 const answered = (result: WireMsTeamsCallResult): RdPlatformReply => ({ outcome: 'ok', payload: result })
+
+// Settle with `undefined` once `ms` pass; the work goes on and may still fill the token cache.
+async function within<T>(work: Promise<T>, ms: number): Promise<T | undefined> {
+  if (ms <= 0) {
+    work.catch(() => {})
+    return undefined
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const late = new Promise<undefined>((resolve) => (timer = setTimeout(() => resolve(undefined), ms)))
+  try {
+    return await Promise.race([work, late])
+  } finally {
+    clearTimeout(timer)
+    work.catch(() => {})
+  }
+}
 
 /** The deployment app's sender for its customer rows: home-tenant Bot Connector tokens, Graph tokens for a row's own tenant, and tickets. */
 export class MsTeamsRelayEgress {
@@ -208,7 +226,11 @@ export class MsTeamsRelayEgress {
   constructor(
     private app: RcMsTeamsDeploymentApp,
     private readonly fetchImpl: typeof fetch,
-    private readonly now: () => number = Date.now
+    private readonly now: () => number = Date.now,
+    /** The whole call's bound, tokens and a 401 retry included, so the relay answers before the daemon stops waiting. */
+    private readonly budgetMs: number = RD_PLATFORM_REQUEST_BUDGET_MS,
+    /** Elapsed time for the budget, apart from `now`, which dates tokens. */
+    private readonly clock: () => number = () => performance.now()
   ) {
     this.tokens = new MsTeamsAppTokens(app, fetchImpl, now)
     this.key = Buffer.from(app.ticketKey, 'base64url')
@@ -230,26 +252,32 @@ export class MsTeamsRelayEgress {
     return mintMsTeamsTicket(this.key, binding, raw)
   }
 
-  /** Perform one call for a row of tenant `binding.tenantId`; the caller has checked the daemon serves the row. */
+  /** Perform one call for a row of tenant `binding.tenantId` within the request budget; the caller has checked the daemon serves the row. */
   async call(binding: MsTeamsTicketBinding, call: WireMsTeamsCall): Promise<RdPlatformReply> {
-    if (call.op === 'graph-token') return await this.graphToken(binding.tenantId)
+    const started = this.clock()
+    const left = () => this.budgetMs - (this.clock() - started)
+    if (call.op === 'graph-token') return await this.graphToken(binding.tenantId, left)
     const ticketed = openMsTeamsTicket(this.key, binding, call.ticket)
     if (!ticketed) return refused('ticket')
     const request = requestOf(call, ticketed, { ...binding, appId: this.app.appId })
     if (!request) return refused('ticket_mismatch')
     const base = new URL(ticketed.serviceUrl.endsWith('/') ? ticketed.serviceUrl : `${ticketed.serviceUrl}/`)
     const url = new URL(request.path, base)
+    // A dot segment or anything else the URL parser rewrites would leave the fixed operation's path.
+    if (url.pathname !== `${base.pathname}${request.path}`) return refused('invalid')
     for (const [name, value] of Object.entries(request.query ?? {})) url.searchParams.set(name, value)
     let result: WireMsTeamsCallResult | undefined
-    // One 401 may be a token that aged out under us: drop it and try once with a fresh one.
+    // One 401 may be a token that aged out under us: drop it and try once with a fresh one, while the budget lasts.
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      let token: string
+      let token: { value: string } | undefined
       try {
-        token = (await this.tokens.get(this.app.tenantId, MSTEAMS_BOT_SCOPE)).value
+        token = await within(this.tokens.get(this.app.tenantId, MSTEAMS_BOT_SCOPE), left())
       } catch (err) {
-        return this.tokenRefusal(err)
+        return result ? answered(result) : this.tokenRefusal(err)
       }
-      result = await this.send(url, request, token)
+      // Out of time before sending: nothing reached Microsoft, or the first attempt's answer stands.
+      if (!token || left() < MIN_SEND_MS) return result ? answered(result) : unavailable('deadline')
+      result = await this.send(url, request, token.value, left())
       if (result.status !== 401) break
       this.tokens.drop(this.app.tenantId, MSTEAMS_BOT_SCOPE)
     }
@@ -258,7 +286,12 @@ export class MsTeamsRelayEgress {
     return answered({ ...result, ...(tickets ? { tickets } : {}) })
   }
 
-  private async send(url: URL, request: ConnectorRequest, token: string): Promise<WireMsTeamsCallResult> {
+  private async send(
+    url: URL,
+    request: ConnectorRequest,
+    token: string,
+    timeoutMs: number
+  ): Promise<WireMsTeamsCallResult> {
     let res: Response
     try {
       res = await this.fetchImpl(url.toString(), {
@@ -269,7 +302,7 @@ export class MsTeamsRelayEgress {
           ...(request.body ? { 'content-type': 'application/json' } : {})
         },
         ...(request.body ? { body: JSON.stringify(request.body) } : {}),
-        signal: AbortSignal.timeout(CALL_TIMEOUT_MS)
+        signal: AbortSignal.timeout(Math.max(1, Math.floor(timeoutMs)))
       })
     } catch {
       // No answer: the write may have landed, which the daemon reads from a gateway timeout.
@@ -304,14 +337,15 @@ export class MsTeamsRelayEgress {
   }
 
   // An app-only Graph token minted in the row's own tenant, which carries only that tenant's consent.
-  private async graphToken(tenantId: string): Promise<RdPlatformReply> {
+  private async graphToken(tenantId: string, left: () => number): Promise<RdPlatformReply> {
     try {
-      let token = await this.tokens.get(tenantId, MSTEAMS_GRAPH_SCOPE)
+      let token = await within(this.tokens.get(tenantId, MSTEAMS_GRAPH_SCOPE), left())
       // The daemon renews five minutes early, so a token near its end is replaced rather than handed out again.
-      if (token.until - this.now() < GRAPH_HANDOUT_MIN_MS) {
+      if (token && token.until - this.now() < GRAPH_HANDOUT_MIN_MS) {
         this.tokens.drop(tenantId, MSTEAMS_GRAPH_SCOPE)
-        token = await this.tokens.get(tenantId, MSTEAMS_GRAPH_SCOPE)
+        token = await within(this.tokens.get(tenantId, MSTEAMS_GRAPH_SCOPE), left())
       }
+      if (!token) return unavailable('deadline')
       const expiresIn = Math.max(0, Math.floor((token.until - this.now()) / 1000))
       return answered({ status: 200, body: { access_token: token.value, expires_in: expiresIn } })
     } catch (err) {
@@ -324,6 +358,6 @@ export class MsTeamsRelayEgress {
     const status = err instanceof MsTeamsTokenError ? err.status : undefined
     if (status !== undefined && status >= 400 && status < 500)
       return answered({ status: 401, body: { error: { code: 'DeploymentTokenRefused' } } })
-    return { outcome: 'unavailable', reason: 'token' }
+    return unavailable('token')
   }
 }

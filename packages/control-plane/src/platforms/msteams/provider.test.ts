@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
-import { IntegrationMsTeamsConfig, type IntegrationCoreEnvelope } from '@agentconnect.md/protocol'
+import {
+  IntegrationMsTeamsConfig,
+  MSTEAMS_RELAY_EGRESS_V1_FEATURE,
+  type IntegrationCoreEnvelope
+} from '@agentconnect.md/protocol'
 import {
   MSTEAMS_TOKEN_SCOPE,
   createMsTeamsCpProvider,
@@ -187,10 +191,30 @@ describe('Teams installation', () => {
       expect(IntegrationMsTeamsConfig.parse(config)).toEqual(relayed)
       expect(JSON.stringify(config)).not.toContain(app.clientSecret)
     }
-    // The marker is never handed out as a secret, even with the deployment app unset.
-    expect(await project(createMsTeamsCpProvider(), MSTEAMS_DEPLOYMENT_SECRET_MARKER)).toEqual(relayed)
-    // An organization's own bot keeps its secret.
-    const own = { ...row, externalAppId: '88888888-8888-4888-8888-888888888888' } as BotRecord
+    const provider = createMsTeamsCpProvider({ app })
+    expect(provider.requiredDaemonFeatures!(relayed)).toEqual([MSTEAMS_RELAY_EGRESS_V1_FEATURE])
+    // With the app unset or replaced, a row an older build stamped delivers nothing, never its stored secret.
+    const replaced = createMsTeamsCpProvider({ app: { ...app, appId: '99999999-9999-4999-8999-999999999999' } })
+    for (const deployment of [createMsTeamsCpProvider(), replaced])
+      for (const stored of [app.clientSecret, MSTEAMS_DEPLOYMENT_SECRET_MARKER])
+        expect(await project(deployment, stored)).toBeUndefined()
+    // A prebuilt row from before the token tenant was recorded is one too.
+    const prebuilt = { ...row, prebuilt: true, platformConfig: { tenantId: TENANT_ID } } as unknown as BotRecord
+    expect(
+      await createMsTeamsCpProvider().projectIntegrationConfig(
+        {} as IntegrationRecord,
+        prebuilt,
+        {} as IntegrationCoreEnvelope,
+        { botToken: app.clientSecret, appToken: null, signingSecret: null }
+      )
+    ).toBeUndefined()
+    // An organization's own bot keeps its secret, and needs no feature.
+    const own = {
+      ...row,
+      externalAppId: '88888888-8888-4888-8888-888888888888',
+      prebuilt: false,
+      platformConfig: {}
+    } as unknown as BotRecord
     expect(
       await createMsTeamsCpProvider({ app }).projectIntegrationConfig(
         {} as IntegrationRecord,
@@ -199,6 +223,7 @@ describe('Teams installation', () => {
         { botToken: SECRET, appToken: null, signingSecret: null }
       )
     ).toEqual({ appId: own.externalAppId, tenantId: TENANT_ID, clientSecret: SECRET })
+    expect(provider.requiredDaemonFeatures!({ appId: APP_ID, tenantId: TENANT_ID, clientSecret: SECRET })).toEqual([])
   })
 
   it('exposes the credential block through the actual create schema, lower-casing both IDs', () => {

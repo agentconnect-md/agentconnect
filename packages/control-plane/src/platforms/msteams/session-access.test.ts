@@ -70,6 +70,17 @@ function fixture(
 }
 
 describe('Microsoft Teams session access', () => {
+  it('never checks a deployment app’s row with the secret it stored, once the app is gone', async () => {
+    const f = fixture(undefined, { stored: 'deployment-secret-example' })
+    Object.assign(f.bot, { prebuilt: true, platformConfig: { tokenTenantId: HOME } })
+    await f.service.addViewerIdentities(f.viewer)
+    const result = await f.service.resolve([f.scope()], f.viewer)
+    expect(result.allowedScopes).toEqual([])
+    expect(f.fetchImpl.mock.calls.some(([, init]) => String(init?.body).includes('deployment-secret-example'))).toBe(
+      false
+    )
+  })
+
   it('checks a deployment app’s row with the app’s own credential from its home tenant, not the row’s marker', async () => {
     const app = { appId: APP, tenantId: HOME, clientSecret: 'deployment-secret-example' }
     const f = fixture(undefined, { app, stored: MSTEAMS_DEPLOYMENT_SECRET_MARKER })
@@ -149,7 +160,7 @@ describe('Microsoft Teams session access', () => {
 
   it('takes a deployment app’s token from its home tenant and still fences on the tenant it serves', async () => {
     const HOME = '66666666-6666-4666-8666-666666666666'
-    const f = fixture()
+    const f = fixture(undefined, { app: { appId: APP, tenantId: HOME, clientSecret: 'deployment-secret-example' } })
     f.bot.platformConfig = { tenantId: TENANT, tokenTenantId: HOME }
     await f.service.addViewerIdentities(f.viewer)
     expect((await f.service.resolve([f.scope()], f.viewer)).allowedScopes).toHaveLength(1)

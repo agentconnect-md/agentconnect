@@ -707,9 +707,14 @@ Every connected tenant gets a **customer row**: the deployment app's ID as
 `(app, tenant)`, owned by one organization, marked prebuilt. Its public
 `platformConfig` records the home tenant as `tokenTenantId`. The row holds **no
 copy of the deployment secret**: its secret slot holds a fixed marker, and its
-daemon sends through the relay (§8.5). A row is a deployment-app row when its
-`externalAppId` is the configured app's ID. A boot pass replaces any secret an
-older build stamped on such a row with the marker and re-syncs the row.
+daemon sends through the relay (§8.5). A row is a deployment-app row by what it
+stores, so removing or replacing the configured app never turns it into an
+organization's own bot: `platformConfig.appOwner: deployment`, which every
+connect writes, or the `tokenTenantId` and prebuilt flag every earlier connect
+wrote; a row whose `externalAppId` is the configured app's ID is one too. A boot
+pass runs whatever the configuration is: it records `appOwner` on every such
+row, replaces any secret an older build stamped there with the marker, and
+re-syncs the row.
 
 With no row copies, rotating the secret touches only the identity provider's
 connector, the Control Plane and the relay, which take the new value from Setup
@@ -893,10 +898,19 @@ provider, and a row's daemon sends through the relay.
 **The spec.** A deployment-app row's `IntegrationMsTeamsConfig` carries the app
 and tenant IDs, `egress: 'relay'`, and the row's `botId`, and no `clientSecret`
 or token tenant. An organization's own bot keeps `clientSecret` and sends
-directly. The spec is projected the same way whatever the daemon's version: a
-daemon without `msteams-relay-egress-v1` refuses a config with no secret and
-opens no connection, so it cannot send, and the Control Plane never falls back
-to shipping the secret.
+directly. A deployment-app row whose app is not the configured one, or with no
+app configured, gets no spec at all, never its stored secret.
+
+**Older daemons.** The spec names `msteams-relay-egress-v1` in
+`IntegrationSpec.requires`, which a Teams daemon module advertises through its
+platform module's registration features. A daemon would ignore a spec it cannot
+parse and keep the one it holds, so the Control Plane never sends it one:
+wherever integrations reach a daemon (`register/ok`, `integration/upsert`,
+`agent/activate` and `duty/fetch/ok`), a daemon without a required feature gets
+the integration removed (`drop.integrations` or `integration/remove`) instead.
+The removal stops further use, but it cannot recall a secret an older build
+already delivered: **upgrading to this change requires rotating the deployment
+app's secret** once every Control Plane and relay runs it.
 
 **The relay's credential.** The Control Plane's deployment snapshot carries the
 app (`msTeamsApp`: app ID, home tenant, secret, and a ticket key) whenever the
@@ -931,8 +945,14 @@ relay checks, keeping no state of its own:
    and `smba.infra.dod.teams.microsoft.us`.
 
 It then builds the path and body itself under the ticket's service URL, never
-a path or URL from the request, attaches a home-tenant Bot Connector token, and
-answers Microsoft's status, `Retry-After` and JSON body. Opening a 1:1 chat
+a path or URL from the request, and refuses an ID that would change that path
+(a `.` or `..` segment, which the schema also rejects). It attaches a
+home-tenant Bot Connector token and answers Microsoft's status, `Retry-After`
+and JSON body. One budget of 12 seconds covers the token request, the send and
+a single retry after a 401, and the daemon waits 15 seconds, so the relay always
+answers first: out of time before sending, it answers `unavailable`; a send cut
+off by the budget answers a gateway timeout, which the daemon treats as a send
+that may have landed and never repeats for a post. Opening a 1:1 chat
 names the bot and sets `tenantId` and `channelData.tenant.id` to T whatever the
 daemon asked, and answers a ticket for the new chat; a team's channel list
 answers a ticket for each channel. A refused call answers `refused`; Entra
@@ -948,6 +968,16 @@ with the bot's own token, or the relay. Retries and their classification stay
 the daemon's: a call no relay took is retried even for a post, and one the
 relay may have sent is treated as a send that may have landed. Without a relay
 a deployment-app row cannot send.
+
+**Assignment lag.** Relays receive assignments independently, and a pool
+member's routes follow its duty with a delay, so one relay may not yet list the
+daemon. `refused` and `unavailable` both mean Microsoft was never called; a
+refusal the relay's assignments may still lift (`unknown_bot`, `not_member`,
+or no app in its snapshot yet) carries `retryable`. The daemon then asks the
+next ready relay, each of which checks membership on its own, and treats a
+refusal every relay returned as retryable as a call not sent, which its usual
+bounded backoff retries. A call that may have reached Microsoft is never sent to
+a second relay.
 
 **High availability.** No Control Plane call is on this path. A relay keeps
 serving from its last snapshot through a Control Plane outage, and any relay

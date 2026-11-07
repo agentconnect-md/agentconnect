@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { FakeClock, type Transport } from '@agentconnect.md/connection'
 import {
   buildRelayDaemonFrame,
+  RD_PLATFORM_REQUEST_V1,
   RD_WEBCHAT_IMAGES_V1,
   type RdMsg,
   type RelayDaemonFrame
@@ -237,5 +238,49 @@ describe('RelayManager.sendWebchatPost (#753)', () => {
       reason: 'offline'
     })
     expect(await mgr.sendRouteReport({} as never)).toEqual({ accepted: false, reason: 'offline' })
+  })
+})
+
+describe('RelayManager.request (platform requests)', () => {
+  const REQ = { platformId: 'msteams', botId: '11111111-1111-4111-8111-111111111111', payload: { op: 'graph-token' } }
+
+  // Answer a relay's pending rd/platform/request with `reply`, once it arrives.
+  async function answer(t: FakeTransport, reply: Record<string, unknown>): Promise<void> {
+    await vi.waitFor(() => expect(t.sent.some((f) => f.type === 'rd/platform/request')).toBe(true))
+    const req = t.sent.find((f) => f.type === 'rd/platform/request')!
+    t.inject(buildRelayDaemonFrame('rd/platform/reply', reply as never, { corr: req.id }))
+  }
+
+  async function twoRelays() {
+    const ready = readyManager()
+    ready.mgr.converge([entry(RELAY_1, 'wss://r1'), entry(RELAY_2, 'wss://r2')])
+    await toReady(ready.transports.get('wss://r1')!, RELAY_1, [RD_PLATFORM_REQUEST_V1])
+    await toReady(ready.transports.get('wss://r2')!, RELAY_2, [RD_PLATFORM_REQUEST_V1])
+    return { mgr: ready.mgr, r1: ready.transports.get('wss://r1')!, r2: ready.transports.get('wss://r2')! }
+  }
+
+  it('asks the next relay when one has not seen the daemon’s membership yet, since that relay never called the provider', async () => {
+    const { mgr, r1, r2 } = await twoRelays()
+    const pending = mgr.request(REQ)
+    await answer(r1, { outcome: 'refused', reason: 'not_member', retryable: true })
+    await answer(r2, { outcome: 'ok', payload: { status: 200 } })
+    expect(await pending).toEqual({ outcome: 'ok', payload: { status: 200 } })
+    await mgr.stop()
+  })
+
+  it('stops at a final refusal, and answers a retryable one when every relay refused', async () => {
+    const final = await twoRelays()
+    const refused = final.mgr.request(REQ)
+    await answer(final.r1, { outcome: 'refused', reason: 'ticket' })
+    expect(await refused).toEqual({ outcome: 'refused', reason: 'ticket' })
+    expect(final.r2.sent.some((f) => f.type === 'rd/platform/request')).toBe(false)
+    await final.mgr.stop()
+
+    const lagging = await twoRelays()
+    const both = lagging.mgr.request(REQ)
+    await answer(lagging.r1, { outcome: 'refused', reason: 'unknown_bot', retryable: true })
+    await answer(lagging.r2, { outcome: 'refused', reason: 'not_member', retryable: true })
+    expect(await both).toMatchObject({ outcome: 'refused', retryable: true })
+    await lagging.mgr.stop()
   })
 })
