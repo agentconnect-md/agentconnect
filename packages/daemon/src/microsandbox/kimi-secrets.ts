@@ -11,6 +11,7 @@ import {
   endpointHost,
   microsandboxPlaceholder,
   placeSecrets,
+  protectedCopyValue,
   replaceSecretValue,
   type KeyOwner,
   type SecretPlaceholder,
@@ -141,14 +142,14 @@ export function prepareKimiSecrets(
           if (file.destination !== config.destination) return replaceSeedText(text, replacements)
           const projected = document(text)
           for (const { path, value } of fileConfigApiKeys(projected)) {
-            const binding = bindings.get(JSON.stringify(path))
-            // An srt copy holds the key in the clear before the proxy and whenever it is off, which its placeholder replaces.
-            if (sources.protectRetained && retained) {
-              if (binding) setPath(projected, path, binding.placeholder)
-              continue
-            }
-            if (!binding || (retained ? value !== binding.placeholder : value !== binding.readValue()))
-              throw new Error('Kimi API credentials changed or are unprotected; start a new session')
+            const next = protectedCopyValue(
+              value,
+              bindings.get(JSON.stringify(path)),
+              retained,
+              sources,
+              'Kimi API credentials changed or are unprotected; start a new session'
+            )
+            if (next !== undefined) setPath(projected, path, next)
           }
           return stringifyToml(replaceValues(projected, replacements) as Record<string, unknown>)
         })

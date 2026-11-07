@@ -40,6 +40,19 @@ export function placeSecrets(
   return new Map([...values].map(([value, secret]) => [value, secret.placeholder]))
 }
 
+/** The placeholder a key in a private copy gets: a fresh copy must hold the host key and a retained VM copy the placeholder, else `refusal` is thrown; a retained srt copy is protected, an unbound key there left as it is. */
+export function protectedCopyValue(
+  value: string,
+  binding: MicrosandboxSecret | undefined,
+  retained: boolean,
+  sources: SecretSources,
+  refusal: string
+): string | undefined {
+  if (sources.protectRetained && retained) return binding?.placeholder
+  if (!binding || value !== (retained ? binding.placeholder : binding.readValue())) throw new Error(refusal)
+  return binding.placeholder
+}
+
 /** The host name of an endpoint the preparer knows, for a binding's `defaultHost`. */
 export function endpointHost(endpoint: unknown): string | undefined {
   return typeof endpoint === 'string' ? new URL(endpoint).hostname : undefined
