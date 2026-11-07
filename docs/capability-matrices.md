@@ -70,6 +70,22 @@ paths from proposals.
 
 ## ACP runtimes
 
+Codex uses the SDK's experimental ACP v2 client; Claude and other runtimes
+continue using ACP v1. The daemon normalizes both protocols before delivering
+events to chat or recording transcripts. On v2, a prompt acknowledgement does
+not finish the turn: the foreground idle state supplies completion and usage.
+Native instructions, steering, permissions, elicitation, configuration, resumed
+history, tool diffs and terminal output retain the existing host contract.
+The AIR session-failure extension remains enabled for typed error handling.
+This migration does not add background-task or subagent reporting.
+Codex receives native instructions at session creation; resumed sessions retain
+the existing inline standing-context refresh rather than relying on native
+instruction replacement during resume.
+
+The Codex adapter must support v2. Its wire format is still experimental; the
+integration is verified with SDK 2.4.0 and the managed Codex adapter
+2.5.0-agentconnect.1. ACP v2 accepts stdio and HTTP MCP transports, not SSE.
+
 The **selected daemon's reported runtime profiles are the live source of truth**,
 not this table or a historical test-results list. Install/sign in to the runtime
 on that daemon, then use the agent's Runtime settings. Availability depends on
@@ -89,7 +105,7 @@ values are fixed by this page.
 | Runtime or adapter       | Discovery and launch                              | AgentConnect-managed controls                     | MCP transports                                                        | Shared-login support                               | Runtime-native tool sandbox                         | Notes / source                                                                                                                                                                             |
 | ------------------------ | ------------------------------------------------- | ------------------------------------------------- | --------------------------------------------------------------------- | -------------------------------------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Claude (`claude-acp`)    | Available: registry + ACP probe                   | Advertised controls; Claude session metadata      | stdio; HTTP/SSE if reported                                           | Available on Linux                                 | Available: native Bash sandbox policy               | [Claude integration](../packages/daemon/src/runtime-defs/claude-runtime.ts), [ACP host](../packages/daemon/src/acp/acp-host.ts)                                                            |
-| Codex (`codex-acp`)      | Available: managed adapter + ACP probe            | Advertised controls                               | stdio; HTTP/SSE if reported                                           | Available on Linux                                 | Available: daemon-owned permission profiles         | [Managed adapter](../packages/daemon/src/runtimes/managed.ts), [permission profiles](../packages/daemon/src/acp/codex-permission-profiles.ts)                                              |
+| Codex (`codex-acp`)      | Available: managed adapter + ACP probe            | Advertised controls                               | stdio; HTTP if reported (ACP v2)                                      | Available on Linux                                 | Available: daemon-owned permission profiles         | [Managed adapter](../packages/daemon/src/runtimes/managed.ts), [permission profiles](../packages/daemon/src/acp/codex-permission-profiles.ts)                                              |
 | OpenCode / Kilo          | Available: registry + ACP probe                   | Advertised controls; native catalog (Kilo only)   | stdio; HTTP/SSE if reported; process-scoped server registration       | Not integrated (shared refresh)                    | Not integrated                                      | [Catalog drivers](../packages/daemon/src/runtimes/model-catalog.ts), [MCP scope](../packages/daemon/src/runtimes/session-mcp-servers.ts)                                                   |
 | Qoder CLI / Qoder CN CLI | Available: curated launcher + ACP admission       | Advertised controls                               | stdio; HTTP/SSE if reported                                           | Available on Linux                                 | Not integrated                                      | [Launchers](../packages/daemon/src/runtimes/curated.ts), [shared credentials](../packages/daemon/src/runtimes/runtime-credentials.ts)                                                      |
 | Kimi Code (`kimi`)       | Available: registry + ACP probe                   | Advertised controls                               | stdio; HTTP/SSE if reported                                           | Available on Linux                                 | Not integrated                                      | [Registry resolution](../packages/daemon/src/runtimes/registry.ts), [shared credentials](../packages/daemon/src/runtimes/runtime-credentials.ts)                                           |
