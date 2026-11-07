@@ -15,8 +15,6 @@ export type SecretPlaceholder = (binding: SecretBinding) => string
 export interface SecretSources {
   /** An srt resolution passes the export it already awaited. */
   openCodeAuthExport?: (env: NodeJS.ProcessEnv) => string
-  /** An srt private HOME held its keys in the clear before the proxy and again whenever it is off, so a retained copy is protected rather than refused. */
-  protectRetained?: boolean
   /** An srt launch runs the host's own runtime, not a VM image's pinned one, so a Codex key beside OPENAI_BASE_URL has no known endpoint. */
   hostRuntime?: boolean
 }
@@ -40,16 +38,15 @@ export function placeSecrets(
   return new Map([...values].map(([value, secret]) => [value, secret.placeholder]))
 }
 
-/** The placeholder a key in a private copy gets: a fresh copy must hold the host key and a retained VM copy the placeholder, else `refusal` is thrown; a retained srt copy is protected, an unbound key there left as it is. */
+/** The placeholder a key in a private copy gets: a retained copy's bound key is protected and an unbound one left as it is; a fresh copy must hold the host key, else `refusal` is thrown. */
 export function protectedCopyValue(
   value: string,
   binding: MicrosandboxSecret | undefined,
   retained: boolean,
-  sources: SecretSources,
   refusal: string
 ): string | undefined {
-  if (sources.protectRetained && retained) return binding?.placeholder
-  if (!binding || value !== (retained ? binding.placeholder : binding.readValue())) throw new Error(refusal)
+  if (retained) return binding?.placeholder
+  if (!binding || value !== binding.readValue()) throw new Error(refusal)
   return binding.placeholder
 }
 

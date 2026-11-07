@@ -651,12 +651,14 @@ broker/command/environment credentials and OAuth protection remain outside this
 path. Native OMP 18.1.17 completed an ACP model/tool turn through this proxy.
 
 OMP resume checks a host-only copy of the private database and WAL, opened through
-directory/file descriptors without following guest symlinks. The original files
-are never rewritten, preserving OAuth refreshes and usage records. This check is
-bounded to 256 MiB combined. Retained plaintext or incompatible API records require
-a new session; existing data is retained. Key values for unchanged bindings rotate
-through the stopped-VM lifecycle; changed login identities or shared-key groups
-may require a new session. OAuth-only and SRT launches keep native seeding.
+directory/file descriptors without following guest symlinks. This check is
+bounded to 256 MiB combined. A retained API record the host still binds, holding
+its key in the clear or a stale one, gets its placeholder in that copy, which then
+replaces the private database with OAuth refreshes and usage records intact; a
+record the host no longer binds is left as it is. When every record already holds
+its placeholder, the original files are not rewritten. A database that cannot be
+read safely requires a new session; existing data is retained. Key values rotate
+through the stopped-VM lifecycle. OAuth-only and SRT launches keep native seeding.
 
 Amp uses the same proxy for nonempty `apiKey@<service URL>` entries in its native
 `secrets.json`, including `XDG_DATA_HOME` relocation. The record's HTTPS host
@@ -682,12 +684,12 @@ credentials, `api_key_env`, provider `env` bags and arbitrary header credentials
 are outside this path. This is static API-key protection, not OAuth shielding.
 The native OAuth credentials directory remains shared and writable for refresh.
 
-Retained plaintext API configuration or changed credential identities requires a
-new session; existing data is not migrated or deleted. Guest settings survive
-resume, but cannot authorize new destinations. Native Kimi Code 2.1.1 accepted
-file keys and placeholders through ACP and sent them as Bearer headers to a
-synthetic local endpoint. Real provider TLS/model/tool turns inside a VM remain
-unverified.
+A retained configuration's keys the host still binds, in the clear or stale, are
+replaced by their placeholders; a key the host no longer binds is left as it is.
+Guest settings survive resume, but cannot authorize new destinations. Native Kimi
+Code 2.1.1 accepted file keys and placeholders through ACP and sent them as Bearer
+headers to a synthetic local endpoint. Real provider TLS/model/tool turns inside a
+VM remain unverified.
 
 When a DeepSeek key is available, the daemon projects the credential seed files
 with that ref replaced by the placeholder; other provider refs, OAuth records and
