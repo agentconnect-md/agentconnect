@@ -6,7 +6,13 @@ import { objectFromJson } from '../runtimes/codex-config.js'
 import { runtimeStateLocations } from '../runtimes/probe.js'
 import { projectRuntimeHomeSeedFile } from '../runtimes/runtime-home.js'
 import { MAX_SEED_FILE_BYTES } from '../runtimes/runtime-seeded-credentials.js'
-import { replaceSecretValue } from './secret-values.js'
+import {
+  microsandboxPlaceholder,
+  placeSecrets,
+  replaceSecretValue,
+  type KeyOwner,
+  type SecretPlaceholder
+} from './secret-values.js'
 import type { MicrosandboxCredentials, MicrosandboxSecret } from './secrets.js'
 
 function apiKeys(data: Record<string, unknown>): [string, string][] {
@@ -27,7 +33,14 @@ function allowedHost(name: string): string[] {
   return []
 }
 
-export function prepareAmpSecrets(hostEnv: NodeJS.ProcessEnv): MicrosandboxCredentials | undefined {
+// Each Amp key is stored under the service address it is for.
+const AMP: KeyOwner = { provider: 'amp', defaultHost: 'ampcode.com' }
+
+export function prepareAmpSecrets(
+  hostEnv: NodeJS.ProcessEnv,
+  _explicitEnv: Record<string, string> = {},
+  placeholder: SecretPlaceholder = microsandboxPlaceholder
+): MicrosandboxCredentials | undefined {
   const locations = runtimeStateLocations('amp-acp', hostEnv)
   const auth = locations.find((location) => location.credentialFiles?.some((file) => file.format === 'amp'))!
   let data: Record<string, unknown>
@@ -42,16 +55,21 @@ export function prepareAmpSecrets(hostEnv: NodeJS.ProcessEnv): MicrosandboxCrede
   }
   const bindings = new Map<string, MicrosandboxSecret>()
   const sharedKeys = new Map<string, MicrosandboxSecret>()
-  const replacements = new Map<string, string>()
+  const values: [string, MicrosandboxSecret][] = []
   for (const [name, value] of apiKeys(data).sort(([a], [b]) => a.localeCompare(b))) {
     const env = `AC_AMP_API_${createHash('sha256').update(name).digest('hex').slice(0, 16).toUpperCase()}`
-    const secret = sharedKeys.get(value) ?? { env, placeholder: `msb-secret-${env}`, host: [], readValue: () => value }
+    const secret = sharedKeys.get(value) ?? { env, placeholder: '', host: [], readValue: () => value }
     secret.host = [...new Set([secret.host, allowedHost(name)].flat())].sort()
     sharedKeys.set(value, secret)
     bindings.set(name, secret)
-    replacements.set(value, secret.placeholder)
+    values.push([value, secret])
   }
   if (!bindings.size) return undefined
+  const replacements = placeSecrets(
+    new Map([...sharedKeys.values()].map((secret) => [secret, AMP])),
+    values,
+    placeholder
+  )
   const configs = [
     ...locations.filter((location) => location !== auth && location.source === hostEnv.AMP_SETTINGS_FILE),
     ...locations

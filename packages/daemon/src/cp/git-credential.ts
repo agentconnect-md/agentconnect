@@ -39,7 +39,13 @@ import {
   type GitCredGrant,
   type GitCredRequest
 } from '@agentconnect.md/protocol'
-import { isLiveCredentialPurpose, type QualifiedCodeHostProvider } from '../codehost/credentials.js'
+import {
+  codeHostCredentials,
+  isLiveCredentialPurpose,
+  isProxyOnlyProvider,
+  type GitCredConsumer,
+  type QualifiedCodeHostProvider
+} from '../codehost/credentials.js'
 
 /** Hand out only while more than this remains (nests under the CP's 15min floor). */
 const HANDOUT_MIN_MS = 10 * 60 * 1000
@@ -88,6 +94,24 @@ const GITEA_EFFECT_KEY = (agentId: string, repoId: string): string => `fxgitea\u
 const GITHUB_EFFECT_KEY = (agentId: string, repo: string): string =>
   `fxgithub\u0000${agentId}\u0000${repo.toLowerCase()}`
 
+/** One credential-proxy lease of a proxy-only provider's repository: the access asked is part of the key, so a read lease never answers a push. */
+export interface ProxyLeaseAsk {
+  provider: QualifiedCodeHostProvider
+  externalRepoId: string
+  /** The repository's path for an additional repository; absent for the workspace's, which the lease names by the workspace alone. */
+  repoFullName?: string
+  requestedAccess?: 'read'
+}
+
+const PROXY_LEASE_KEY = (agentId: string, lease: ProxyLeaseAsk): string =>
+  `proxy\u0000${agentId}\u0000${lease.provider}\u0000${lease.externalRepoId}\u0000${lease.requestedAccess ?? ''}`
+
+/** Why a proxy-only provider's credential is refused to anyone but the proxy and the daemon's own Git. */
+export function proxyOnlyRefusal(provider: string | undefined): string {
+  const name = codeHostCredentials(provider)?.displayName ?? provider ?? 'this'
+  return `${name} credentials are presented only by the daemon's credential proxy; git and the CLI reach ${name} with the session's placeholder`
+}
+
 export class GitCredUnavailableError extends Error {
   constructor(
     message: string,
@@ -128,6 +152,7 @@ export interface GitCredentialCacheDeps {
     provider?: CodeHostProvider
     externalRepoId?: string
     requestedAccess?: 'read' | 'write'
+    consumer?: GitCredConsumer
   }) => Promise<GitCredGrant>
   log: { warn: (msg: string) => void }
   /** Rolling-upgrade gate: old CPs reject the new enum value, so request Actions
@@ -202,6 +227,8 @@ export class GitCredentialCache {
       provider?: QualifiedCodeHostProvider
       externalRepoId?: string
       requestedAccess?: 'read' | 'write'
+      /** Who will present it; a proxy-only provider is served to the proxy and the daemon's own Git alone. */
+      consumer?: GitCredConsumer
     } = {}
   ): Promise<Entry> {
     const plane = opts.plane ?? 'git'
@@ -211,6 +238,10 @@ export class GitCredentialCache {
         `the control plane is too old for ${opts.provider} credentials (gitcred-provider-v2 not advertised)`,
         false
       )
+    }
+    // azure-devops-integration.md §6.1, refused here too: a cached grant would otherwise answer an ask the CP refuses.
+    if (isProxyOnlyProvider(opts.provider) && opts.consumer !== 'proxy' && opts.consumer !== 'daemon') {
+      throw new GitCredUnavailableError(proxyOnlyRefusal(opts.provider), false, 'agent')
     }
     const withActions = plane === 'gh' && this.deps.actionsSupported?.() === true
     const cachePlane = withActions ? 'gh-actions' : plane
@@ -223,8 +254,41 @@ export class GitCredentialCache {
       ...(opts.repo !== undefined ? { repoFullName: opts.repo } : {}),
       ...(opts.provider !== undefined ? { provider: opts.provider } : this.githubProvider()),
       ...(opts.externalRepoId !== undefined ? { externalRepoId: opts.externalRepoId } : {}),
-      ...(opts.requestedAccess !== undefined ? { requestedAccess: opts.requestedAccess } : {})
+      ...(opts.requestedAccess !== undefined ? { requestedAccess: opts.requestedAccess } : {}),
+      ...(opts.consumer !== undefined ? { consumer: opts.consumer } : {})
     })
+  }
+
+  /** The credential proxy's lease of a proxy-only provider's repository (azure-devops-integration.md §6.1), in a keyspace of its own; after {@link invalidateProxyLease} the next one asks the CP to refresh. */
+  async getProxyLease(agentId: string, lease: ProxyLeaseAsk): Promise<Entry> {
+    if (!isProxyOnlyProvider(lease.provider)) {
+      throw new GitCredUnavailableError(`${lease.provider} credentials are not leased to the proxy alone`, false)
+    }
+    if (this.deps.providerV2Supported?.() !== true) {
+      throw new GitCredUnavailableError(
+        `the control plane is too old for ${lease.provider} credentials (gitcred-provider-v2 not advertised)`,
+        false
+      )
+    }
+    const key = PROXY_LEASE_KEY(agentId, lease)
+    const forceRefresh = this.refreshPosts.has(key)
+    const entry = await this.getKeyed(key, agentId, {
+      agentId,
+      reason: 'helper',
+      provider: lease.provider,
+      externalRepoId: lease.externalRepoId,
+      consumer: 'proxy',
+      ...(lease.repoFullName !== undefined ? { repoFullName: lease.repoFullName } : {}),
+      ...(lease.requestedAccess !== undefined ? { requestedAccess: lease.requestedAccess } : {}),
+      ...(forceRefresh ? { forceRefresh: true } : {})
+    })
+    if (forceRefresh) this.refreshPosts.delete(key)
+    return entry
+  }
+
+  /** Drop a proxy lease the upstream rejected with 401, so the next one asks the CP for a fresh token. */
+  invalidateProxyLease(agentId: string, lease: ProxyLeaseAsk, presentedToken?: string): void {
+    this.dropCached(PROXY_LEASE_KEY(agentId, lease), presentedToken)
   }
 
   /**

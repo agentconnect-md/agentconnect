@@ -6,7 +6,14 @@ import { objectFromJson } from '../runtimes/codex-config.js'
 import { runtimeStateLocations } from '../runtimes/probe.js'
 import { projectRuntimeHomeSeedFile } from '../runtimes/runtime-home.js'
 import { MAX_SEED_FILE_BYTES } from '../runtimes/runtime-seeded-credentials.js'
-import { replaceSecretValue } from './secret-values.js'
+import {
+  endpointHost,
+  microsandboxPlaceholder,
+  placeSecrets,
+  replaceSecretValue,
+  type KeyOwner,
+  type SecretPlaceholder
+} from './secret-values.js'
 import type { MicrosandboxCredentials, MicrosandboxSecret } from './secrets.js'
 
 // Audited pi 0.85.1 built-ins; other providers require a host models.json HTTPS baseUrl.
@@ -61,7 +68,11 @@ function allowedHost(endpoint: unknown): string[] {
   return []
 }
 
-export function preparePiSecrets(hostEnv: NodeJS.ProcessEnv): MicrosandboxCredentials | undefined {
+export function preparePiSecrets(
+  hostEnv: NodeJS.ProcessEnv,
+  _explicitEnv: Record<string, string> = {},
+  placeholder: SecretPlaceholder = microsandboxPlaceholder
+): MicrosandboxCredentials | undefined {
   const locations = runtimeStateLocations('pi-acp', hostEnv)
   const files = locations.flatMap((location) =>
     (location.seedFiles ?? ['']).map((path) => ({
@@ -76,7 +87,8 @@ export function preparePiSecrets(hostEnv: NodeJS.ProcessEnv): MicrosandboxCreden
   const providers = object(readDocument(modelsFile.source, true).providers)
   const bindings = new Map<string, MicrosandboxSecret>()
   const sharedKeys = new Map<string, MicrosandboxSecret>()
-  const replacements = new Map<string, string>()
+  const owners = new Map<MicrosandboxSecret, KeyOwner>()
+  const values: [string, MicrosandboxSecret][] = []
   const add = (provider: string, kind: string, value: unknown, env?: unknown) => {
     const scopedEnv = object(env)
     if (!nonempty(value) && !Object.values(scopedEnv).some(nonempty)) return
@@ -89,7 +101,7 @@ export function preparePiSecrets(hostEnv: NodeJS.ProcessEnv): MicrosandboxCreden
     ]
     const secret: MicrosandboxSecret = {
       env: name,
-      placeholder: `msb-secret-${name}`,
+      placeholder: '',
       host: literal ? [...new Set(endpoints.flatMap(allowedHost))].sort() : [],
       readValue: () => (nonempty(value) ? value : '')
     }
@@ -97,9 +109,10 @@ export function preparePiSecrets(hostEnv: NodeJS.ProcessEnv): MicrosandboxCreden
     if (shared) shared.host = [...new Set([shared.host, secret.host].flat())].sort()
     else if (literal) sharedKeys.set(value, secret)
     const binding = shared ?? secret
+    if (!shared) owners.set(secret, { provider, defaultHost: endpointHost(DEFAULT_ORIGINS[provider]) })
     bindings.set(`${kind}:${provider}`, binding)
     for (const raw of [value, ...Object.values(scopedEnv)]) {
-      if (nonempty(raw)) replacements.set(raw, binding.placeholder)
+      if (nonempty(raw)) values.push([raw, binding])
     }
   }
   for (const [provider, raw] of Object.entries(auth).sort(([a], [b]) => a.localeCompare(b))) {
@@ -110,6 +123,7 @@ export function preparePiSecrets(hostEnv: NodeJS.ProcessEnv): MicrosandboxCreden
     add(provider, 'models', object(raw).apiKey)
   }
   if (!bindings.size) return undefined
+  const replacements = placeSecrets(owners, values, placeholder)
   const project = (value: unknown): string =>
     JSON.stringify(value, (_key, item: unknown) =>
       typeof item === 'string' ? replaceSecretValue(item, replacements) : item

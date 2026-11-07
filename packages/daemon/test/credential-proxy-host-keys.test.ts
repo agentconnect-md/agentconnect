@@ -12,7 +12,9 @@ import {
 } from '../src/microsandbox/secrets.js'
 import { prepareOpenCodeSecrets } from '../src/microsandbox/opencode-secrets.js'
 import { openCodeKeyEnv } from '../src/runtimes/opencode-host-keys.js'
+import { prepareRuntimeHome } from '../src/runtimes/runtime-home.js'
 import { fakeOpenCode, openCodeKeyEntry } from './opencode-support.js'
+import { RUNTIME_KEY_FIXTURES } from './runtime-key-files-support.js'
 
 // github-app-git-credentials.md, Provider keys: the preparers' placeholder factory, and the host key slots srt seals with it.
 const CLAUDE_KEY = 'fixture-claude-file-key'
@@ -141,7 +143,104 @@ describe('the preparers placeholder factory', () => {
     expect(ambientCredentialRuntime('claude', claude)).toBe('claude-acp')
     expect(ambientCredentialRuntime('my-codex', codex)).toBe('codex-acp')
     expect(ambientCredentialRuntime('opencode', undefined)).toBe('opencode')
-    expect(ambientCredentialRuntime('pi-acp', undefined)).toBeUndefined()
+    expect(ambientCredentialRuntime('pi-acp', undefined)).toBe('pi-acp')
+    expect(ambientCredentialRuntime('goose', undefined)).toBeUndefined()
+  })
+})
+
+describe.each(RUNTIME_KEY_FIXTURES)("$runtime's own key files", (fixture) => {
+  const variable = new RegExp(`^${fixture.prefix}_[0-9A-F]{16}$`)
+  const proxied = (binding: SecretBinding) => `acph1_fixture-${binding.env}`
+
+  it('binds the key to the host its preparer names, with the VM placeholder by default', () => {
+    const HOME = hostHome()
+    fixture.seed(HOME)
+    const { bindings, placeholder } = recorder()
+    const credentials = prepareAmbientCredentials(fixture.runtime, undefined, { HOME }, {}, placeholder)!
+    expect(bindings).toEqual([
+      {
+        env: expect.stringMatching(variable),
+        provider: fixture.provider,
+        hosts: [fixture.host],
+        defaultHost: fixture.host
+      }
+    ])
+    const env = bindings[0]!.env
+    expect(credentials.secrets.map((secret) => [secret.env, secret.placeholder])).toEqual([[env, `sealed-${env}`]])
+    expect(credentials.replacements.get(fixture.key)).toBe(`sealed-${env}`)
+    expect(prepareMicrosandboxCredentials(fixture.runtime, undefined, { HOME })?.secrets[0]?.placeholder).toBe(
+      `msb-secret-${env}`
+    )
+  })
+
+  it('seals a slot at that host and reads the key again until it is gone', async () => {
+    const HOME = hostHome()
+    fixture.seed(HOME)
+    const source = { runtimeId: fixture.runtime, runtime: undefined, hostEnv: { HOME }, explicitEnv: {} }
+    const seal = (slot: ProviderSlot) => `acph1_fixture-${slot.id}`
+    expect(sealHostProviderKeys({ ...source, platform: 'darwin' }, seal)).toEqual({
+      kept: 'projecting a sign-in file into the private HOME needs Linux'
+    })
+    const result = sealHostProviderKeys({ ...source, platform: 'linux' }, seal)
+    if (!result || 'kept' in result) throw new Error('expected sealed keys')
+    const env = result.credentials.secrets[0]!.env
+    expect(result.slots.map(({ slot }) => slot)).toEqual([
+      { id: `host:${fixture.runtime}:${env}`, provider: fixture.provider, host: fixture.host, port: 443, saas: true }
+    ])
+    await expect(result.slots[0]!.read()).resolves.toBe(fixture.key)
+    for (const entry of ['.pi', '.grok', '.qwen', '.omp', '.local', '.kimi-code'])
+      rmSync(join(HOME, entry), { recursive: true, force: true })
+    await expect(result.slots[0]!.read()).rejects.toThrow(`this machine no longer holds ${env}`)
+  })
+
+  // The projection descends by file descriptor, which only Linux provides.
+  it.skipIf(process.platform !== 'linux')(
+    'projects a copy an earlier launch left in the clear, keeps the OAuth sign-in, and restores the key once unprotected',
+    () => {
+      const HOME = hostHome()
+      fixture.seed(HOME)
+      const root = hostHome()
+      const home = join(root, 'home')
+      fixture.seed(home)
+      const credentials = prepareAmbientCredentials(fixture.runtime, undefined, { HOME }, {}, proxied)!
+      const env = credentials.secrets[0]!.env
+      credentials.preparePrivateHome(home)
+      expect(fixture.stored(home)).toBe(`acph1_fixture-${env}`)
+      if (fixture.oauth) expect(fixture.oauth.read(home)).toEqual(fixture.oauth.expected)
+      // A launch the proxy no longer protects gets the host's key back in the same field.
+      prepareRuntimeHome(fixture.runtime, root, { HOME }, home)
+      expect(fixture.stored(home)).toBe(fixture.key)
+      if (fixture.oauth) expect(fixture.oauth.read(home)).toEqual(fixture.oauth.expected)
+    }
+  )
+})
+
+describe('a runtime key file the proxy cannot serve', () => {
+  const seal = (slot: ProviderSlot) => `acph1_fixture-${slot.id}`
+
+  it('keeps every key when one names no host, and says why without the key', () => {
+    const HOME = hostHome()
+    write(join(HOME, '.pi', 'agent', 'auth.json'), {
+      anthropic: { type: 'api_key', key: 'fixture-pi-key' },
+      custom: { type: 'api_key', key: 'fixture-custom-key' }
+    })
+    const kept = sealHostProviderKeys(
+      { runtimeId: 'pi-acp', runtime: undefined, hostEnv: { HOME }, explicitEnv: {}, platform: 'linux' },
+      seal
+    )
+    expect(kept).toEqual({ kept: expect.stringMatching(/^PI_API_[0-9A-F]{16} reach no single HTTPS host/) })
+    expect(JSON.stringify(kept)).not.toMatch(/fixture-/)
+  })
+
+  it("keeps Grok's sign-in key, whose host its file does not name", () => {
+    const HOME = hostHome()
+    write(join(HOME, '.grok', 'auth.json'), { 'xai::api_key': { auth_mode: 'api_key', key: 'fixture-grok-key' } })
+    expect(
+      sealHostProviderKeys(
+        { runtimeId: 'grok-build', runtime: undefined, hostEnv: { HOME }, explicitEnv: {}, platform: 'linux' },
+        seal
+      )
+    ).toEqual({ kept: expect.stringMatching(/^AC_GROK_API_[0-9A-F]{16} reach no single HTTPS host/) })
   })
 })
 

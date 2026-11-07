@@ -1,13 +1,27 @@
 import { createHash } from 'node:crypto'
-import { closeSync, constants, fstatSync, lstatSync, mkdtempSync, openSync, readSync, rmSync, writeSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
-import { extractOmpCredentials, readOmpApiCredentials } from '../runtimes/omp-credentials.js'
+import {
+  copyOmpDatabase,
+  extractOmpCredentials,
+  installOmpDatabase,
+  readOmpApiCredentials,
+  rewriteOmpApiKeys,
+  type OmpApiCredential
+} from '../runtimes/omp-credentials.js'
 import { runtimeStateLocations } from '../runtimes/probe.js'
 import { projectRuntimeHomeSeedFile } from '../runtimes/runtime-home.js'
 import { withDescentSync } from '../shim/safe-descent.js'
-import { replaceSecretValue } from './secret-values.js'
+import {
+  microsandboxPlaceholder,
+  placeSecrets,
+  replaceSecretValue,
+  type KeyOwner,
+  type SecretPlaceholder,
+  type SecretSources
+} from './secret-values.js'
 import type { MicrosandboxCredentials, MicrosandboxSecret } from './secrets.js'
 
 // OMP 18.1.17 bundled providers; custom model files are not part of the existing native HOME seed.
@@ -22,63 +36,28 @@ const HOSTS: Record<string, string> = {
   mistral: 'api.mistral.ai'
 }
 const PLACEHOLDER = /^msb-secret-AC_OMP_API_[A-F0-9]{16}$/
-const MAX_RETAINED_BYTES = 256 * 1024 * 1024
 
 // Inspect a private copy: SQLite must never resolve guest-controlled journal paths on the host.
-function checkRetainedDatabase(parent: string, bindings: ReadonlyMap<string, MicrosandboxSecret>): boolean {
+function checkRetainedDatabase(
+  parent: string,
+  bindings: ReadonlyMap<string, MicrosandboxSecret>,
+  protect: boolean
+): boolean {
   const temporary = mkdtempSync(join(tmpdir(), 'ac-omp-retained-'))
-  let bytes = 0
   try {
-    for (const suffix of ['', '-wal']) {
-      let input: number
-      try {
-        input = openSync(
-          join(parent, `agent.db${suffix}`),
-          constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
-        )
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-        if (!suffix) {
-          for (const sidecar of ['-wal', '-shm', '-journal']) {
-            try {
-              lstatSync(join(parent, `agent.db${sidecar}`))
-            } catch (error) {
-              if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
-              throw error
-            }
-            throw new Error('orphaned private database sidecar')
-          }
-          return false
-        }
-        continue
-      }
-      try {
-        const stat = fstatSync(input)
-        bytes += stat.size
-        if (!stat.isFile() || bytes > MAX_RETAINED_BYTES) throw new Error('invalid private database')
-        const output = openSync(join(temporary, `agent.db${suffix}`), 'wx', 0o600)
-        try {
-          const chunk = Buffer.alloc(64 * 1024)
-          let offset = 0
-          while (offset < stat.size) {
-            const count = readSync(input, chunk, 0, Math.min(chunk.length, stat.size - offset), offset)
-            if (!count) throw new Error('private database changed during inspection')
-            let written = 0
-            while (written < count) written += writeSync(output, chunk, written, count - written)
-            offset += count
-          }
-          if (readSync(input, chunk, 0, 1, offset)) throw new Error('private database grew during inspection')
-        } finally {
-          closeSync(output)
-        }
-      } finally {
-        closeSync(input)
-      }
-    }
-    for (const row of readOmpApiCredentials(join(temporary, 'agent.db'))) {
+    if (!copyOmpDatabase(parent, temporary)) return false
+    const copy = join(temporary, 'agent.db')
+    const stale: [OmpApiCredential, string][] = []
+    for (const row of readOmpApiCredentials(copy)) {
       const binding = bindings.get(`${row.id}:${row.provider}`)
-      if (!PLACEHOLDER.test(row.key) || (binding && row.key !== binding.placeholder))
-        throw new Error('unprotected or changed private credentials')
+      if (binding ? row.key === binding.placeholder : protect || PLACEHOLDER.test(row.key)) continue
+      // An srt copy holds the key in the clear before the proxy and whenever it is off, which its placeholder replaces.
+      if (!protect || !binding) throw new Error('unprotected or changed private credentials')
+      stale.push([row, binding.placeholder])
+    }
+    if (stale.length > 0) {
+      rewriteOmpApiKeys(copy, stale)
+      installOmpDatabase(copy, parent)
     }
     return true
   } catch {
@@ -90,32 +69,34 @@ function checkRetainedDatabase(parent: string, bindings: ReadonlyMap<string, Mic
   }
 }
 
-export function prepareOmpSecrets(hostEnv: NodeJS.ProcessEnv): MicrosandboxCredentials | undefined {
+export function prepareOmpSecrets(
+  hostEnv: NodeJS.ProcessEnv,
+  _explicitEnv: Record<string, string> = {},
+  placeholder: SecretPlaceholder = microsandboxPlaceholder,
+  sources: SecretSources = {}
+): MicrosandboxCredentials | undefined {
   const location = runtimeStateLocations('omp', hostEnv)[0]!
   const source = join(location.source, 'agent.db')
   const rows = readOmpApiCredentials(source)
   if (!rows.length) return undefined
   const bindings = new Map<string, MicrosandboxSecret>()
   const sharedKeys = new Map<string, MicrosandboxSecret>()
-  const replacements = new Map<string, string>()
+  const owners = new Map<MicrosandboxSecret, KeyOwner>()
+  const values: [string, MicrosandboxSecret][] = []
   for (const row of rows.sort((a, b) => a.id - b.id)) {
     const id = `${row.id}:${row.provider}`
     const env = `AC_OMP_API_${createHash('sha256').update(id).digest('hex').slice(0, 16).toUpperCase()}`
-    const secret = sharedKeys.get(row.key) ?? {
-      env,
-      placeholder: `msb-secret-${env}`,
-      host: [],
-      readValue: () => row.key
-    }
-    const host =
-      Object.hasOwn(HOSTS, row.provider) && !row.key.startsWith('!') && !row.key.includes('$')
-        ? [HOSTS[row.provider]!]
-        : []
+    const known = sharedKeys.get(row.key)
+    const secret = known ?? { env, placeholder: '', host: [], readValue: () => row.key }
+    const defaultHost = Object.hasOwn(HOSTS, row.provider) ? HOSTS[row.provider] : undefined
+    if (!known) owners.set(secret, { provider: row.provider, defaultHost })
+    const host = defaultHost && !row.key.startsWith('!') && !row.key.includes('$') ? [defaultHost] : []
     secret.host = [...new Set([secret.host, host].flat())].sort()
     bindings.set(id, secret)
     sharedKeys.set(row.key, secret)
-    replacements.set(row.key, secret.placeholder)
+    values.push([row.key, secret])
   }
+  const replacements = placeSecrets(owners, values, placeholder)
   const project = (value: unknown): string =>
     JSON.stringify(value, (_name, entry: unknown) =>
       typeof entry === 'string' ? replaceSecretValue(entry, replacements) : entry
@@ -135,7 +116,7 @@ export function prepareOmpSecrets(hostEnv: NodeJS.ProcessEnv): MicrosandboxCrede
     ],
     preparePrivateHome(home) {
       withDescentSync(home, location.destination.split('/'), (parent) => {
-        if (checkRetainedDatabase(parent, bindings)) return
+        if (checkRetainedDatabase(parent, bindings, sources.protectRetained === true)) return
         extractOmpCredentials(source, join(parent, 'agent.db'), (row) => {
           try {
             const data: unknown = JSON.parse(String(row.data))

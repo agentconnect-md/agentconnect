@@ -911,30 +911,42 @@ key in the daemon's environment or the runtime definition's (Claude's
 `COPILOT_PROVIDER_API_KEY` at its `COPILOT_PROVIDER_BASE_URL`, Antigravity's
 `GEMINI_API_KEY` at the Gemini API or its `GOOGLE_GEMINI_BASE_URL`), the API key
 field of a sign-in file (Claude's `primaryApiKey`, Codex's `auth.json` in API
-key mode, the DeepSeek harness's credential files, the provider entries of
-Cline's `providers.json` other than its OAuth sign-ins), and the API keys
-`opencode auth export` lists. Copilot's, Antigravity's and Cline's preparers
-protect the same keys in a VM. Devin's sign-in token travels inside its request
-bodies, Qoder's personal access token is exchanged in a request body for a token
-the runtime then holds, and Qoder's service account key is checked against a
-format no placeholder has, so none of them can go through a proxy that rewrites
-headers only; they stay in the session as they are. The preparers that protect
-these keys in a VM find them, with the proxy's placeholder in place of the VM's. Each key is a slot
+key mode, the DeepSeek harness's credential files), the API keys
+`opencode auth export` lists, and the API keys the other runtimes keep in their
+own files: pi's `auth.json` and `models.json`, Grok's model routes in
+`config.toml`, Qwen's `settings.json`, Oh My Pi's `agent.db`, Amp's
+`secrets.json`, the providers of Kimi's `config.toml`, and the provider entries
+of Cline's `providers.json` other than its OAuth sign-ins. The preparers that
+protect these keys in a VM find them, with the proxy's placeholder in place of
+the VM's, at the hosts they already bind each key to there; Copilot's,
+Antigravity's and Cline's preparers protect them in a VM as well. Devin's
+sign-in token travels inside its request bodies, Qoder's personal access token
+is exchanged in a request body for a token the runtime then holds, and Qoder's
+service account key is checked against a format no placeholder has, so none of
+them can go through a proxy that rewrites headers only; they stay in the session
+as they are. Each key is a slot
 `host:<runtime>:<variable>` at the host the runtime sends it to: the provider's
-default, which is `saas`, or the base URL the launch configures. The session's
-variable and its private HOME copy of the file hold the slot's placeholder, and
-the file is projected rather than shared. Resolving the slot reads the key again
-where the machine keeps it, and is refused once the key is gone or the runtime
-sends it to another host. Subscription sign-ins are shared as before. A runtime
-keeps its keys as before, and the daemon logs that once, when one of them
-reaches no single HTTPS host the proxy recognizes (a cleartext or ported base
-URL, Codex with `OPENAI_BASE_URL` set, a DeepSeek endpoint other than its own),
-when its sign-in file cannot be read safely, or when a sign-in file would need
-projecting on a platform other than Linux. When the proxy did not start, a launch
-puts the host's credential back where a private HOME copy holds a placeholder
-and keeps the rest of that copy: Claude's saved key, Codex's shared `auth.json`,
-the DeepSeek harness's key field, and each key field of an OpenCode config, taken
-from the same field of the host's file.
+default, which is `saas`, or the base URL the launch or the runtime's file
+configures; a key found in a file is named by the hashed variable its preparer
+gives it. The session's variable and its private HOME copy of the file hold the
+slot's placeholder, and the file is projected rather than shared. A private copy
+an earlier `srt` launch left with the key in the clear is projected too, where a
+VM refuses one. Resolving the slot reads the key again where the machine keeps
+it, and is refused once the key is gone or the runtime sends it to another host.
+Subscription and OAuth sign-ins are shared or seeded as before. A runtime keeps
+its keys as before, and the daemon logs that once, when one of them reaches no
+single HTTPS host the proxy recognizes (a cleartext or ported base URL, Codex
+with `OPENAI_BASE_URL` set, a DeepSeek endpoint other than its own, a key one
+file shares between providers at different hosts, a key read from a command or
+a variable, a Grok `auth.json` key or a Qwen key with no base URL, which name no
+host), when its sign-in file cannot be read safely, or when a sign-in file would
+need projecting on a platform other than Linux. When the proxy did not start, a
+launch puts the host's credential back where a private HOME copy holds a
+placeholder and keeps the rest of that copy: Claude's saved key, Codex's shared
+`auth.json`, the DeepSeek harness's key field, each key field of a JSON, TOML or
+YAML file the other runtimes' launches project, taken from the same field of the
+host's file, each Oh My Pi API key row, and the host's copy of any other
+projected file.
 
 A self-hosted pool's install-wide keys use it in pool pod sessions: the static
 pairs (`<PREFIX>MODEL_TOKEN` with its base URL, which `modelEgress.clients`
@@ -973,8 +985,8 @@ Not covered yet:
   for them, and an executor's sessions use that machine's own keys, which this
   daemon cannot read.
 - Keys the key server issues.
-- The other runtimes' sign-in files, and a provider variable the session's
-  runtime does not read, which reach an `srt` session as they are.
+- The sign-in files of runtimes without a preparer, and a provider variable the
+  session's runtime does not read, which reach an `srt` session as they are.
 
 - **Kind.** A provider placeholder is the same `acph1_` placeholder under the
   same sealing key, with a kind claim `k: provider` and a slot claim `p`. A

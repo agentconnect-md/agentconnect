@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { sessionHostKey } from '../src/acp/host-key.js'
 import { Daemon } from '../src/daemon.js'
 import { PLACEHOLDER_PREFIX } from '../src/credential-proxy/placeholder.js'
+import { RUNTIME_KEY_FIXTURES } from './runtime-key-files-support.js'
 
 // github-app-git-credentials.md, Provider keys: this machine's own provider keys reach an srt session only as placeholders.
 const ENV_KEY = 'fixture-host-anthropic-key'
@@ -47,7 +48,16 @@ function hostEnv(env: Record<string, string> = {}): string {
     'OPENAI_BASE_URL',
     'CODEX_CONFIG',
     'HTTPS_PROXY',
-    'https_proxy'
+    'https_proxy',
+    'PI_CODING_AGENT_DIR',
+    'GROK_HOME',
+    'GROK_AUTH_PATH',
+    'QWEN_HOME',
+    'KIMI_CODE_HOME',
+    'KIMI_SHARE_DIR',
+    'XDG_CONFIG_HOME',
+    'XDG_DATA_HOME',
+    'AMP_SETTINGS_FILE'
   ])
     vi.stubEnv(name, undefined)
   for (const [name, value] of Object.entries(env)) vi.stubEnv(name, value)
@@ -55,7 +65,7 @@ function hostEnv(env: Record<string, string> = {}): string {
 }
 
 /** A daemon with this runtime; `blockProxy` puts a file where the proxy keeps its key and CA, so it cannot start. */
-async function started(blockProxy: boolean, runtime: 'claude' | 'codex') {
+async function started(blockProxy: boolean, runtime: string) {
   const root = tempDir('acpr-')
   writeFileSync(
     join(root, 'config.json'),
@@ -64,7 +74,10 @@ async function started(blockProxy: boolean, runtime: 'claude' | 'codex') {
       controlPlane: { enabled: false },
       runtimes: {
         claude: { command: 'node', args: ['claude-agent-acp'] },
-        codex: { command: 'node', args: ['codex-acp'] }
+        codex: { command: 'node', args: ['codex-acp'] },
+        ...Object.fromEntries(
+          RUNTIME_KEY_FIXTURES.map(({ runtime: id }) => [id, { command: 'node', args: [`${id}-adapter`] }])
+        )
       }
     })
   )
@@ -217,4 +230,41 @@ describe.skipIf(process.platform === 'win32')("this machine's provider keys in s
       await daemon.stop()
     }
   })
+
+  // The private HOME's copy is projected by file descriptor, which only Linux provides.
+  it.skipIf(process.platform !== 'linux').each(RUNTIME_KEY_FIXTURES)(
+    'hands a $runtime session a placeholder for the key in its own files, which the proxy exchanges at that host',
+    async (fixture) => {
+      const home = hostEnv()
+      fixture.seed(home)
+      const before = filesUnder(home)
+      const { root, daemon, d, agent } = await started(false, fixture.runtime)
+      try {
+        const host = buildSrt(d, agent)
+        const env: Record<string, string> = host.opts.env
+        const [slot, ...others] = [...d.providerSlots.get('bot-a').values()]
+        expect(others).toEqual([])
+        const variable = slot.id.slice(`host:${fixture.runtime}:`.length)
+        expect(variable).toMatch(new RegExp(`^${fixture.prefix}_[0-9A-F]{16}$`))
+        expect(slot).toEqual({ id: slot.id, provider: fixture.provider, host: fixture.host, port: 443, saas: true })
+        const placeholder = fixture.stored(env.HOME!)!
+        expect(placeholder.startsWith(PLACEHOLDER_PREFIX)).toBe(true)
+        expect(env[variable]).toBe(placeholder)
+        if (fixture.oauth) expect(fixture.oauth.read(env.HOME!)).toEqual(fixture.oauth.expected)
+        expect(filesUnder(home)).toEqual(before)
+        expect(JSON.stringify(env)).not.toContain(fixture.key)
+        expect(JSON.stringify(host.opts.files ?? [])).not.toContain(fixture.key)
+        for (const text of filesUnder(root)) expect(text).not.toContain(fixture.key)
+        const headers: Record<string, string> = fixture.apiKeyHeader
+          ? { 'x-api-key': placeholder }
+          : { authorization: `Bearer ${placeholder}` }
+        expect(await decide(d, fixture.host, headers)).toMatchObject({
+          action: 'allow',
+          setHeaders: [fixture.apiKeyHeader ? ['x-api-key', fixture.key] : ['authorization', `Bearer ${fixture.key}`]]
+        })
+      } finally {
+        await daemon.stop()
+      }
+    }
+  )
 })

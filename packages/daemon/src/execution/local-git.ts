@@ -16,15 +16,19 @@ export function localShimGitRunner(options: {
   env?: Record<string, string>
   /** What the environment names over a caller's replacement env; absent ⇒ the HOME, PATH, XDG dirs and helper socket of `env`. */
   owned?: Record<string, string>
+  /** Rewrites a caller's replacement env before `owned` applies, such as the credential helpers of a host reached through the credential proxy. */
+  mapEnv?: (env: Record<string, string>) => Record<string, string>
   abort?: AbortSignal
 }): GitRunner {
   const owned =
     options.owned ?? Object.fromEntries(Object.entries(options.env ?? {}).filter(([name]) => environmentOwned(name)))
+  const mapEnv = options.mapEnv ?? ((env: Record<string, string>) => env)
   return new ShimGitRunner(
     {
       request: async (capability, payload, requestOptions) => {
         const { env } = payload as GitExecPayload
-        const mapped = env === undefined ? payload : { ...(payload as GitExecPayload), env: { ...env, ...owned } }
+        const mapped =
+          env === undefined ? payload : { ...(payload as GitExecPayload), env: { ...mapEnv(env), ...owned } }
         let reached = false
         try {
           return await options.run((session) => {

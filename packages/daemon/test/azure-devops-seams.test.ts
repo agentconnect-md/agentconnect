@@ -1,7 +1,22 @@
-// Azure DevOps before its daemon step (azure-devops-integration.md §13): known to every seam, served by none.
-import { describe, expect, it, vi } from 'vitest'
+// Azure DevOps's daemon seams (azure-devops-integration.md §4–§6, §11): a credential only the proxy and the daemon's own Git present, and no hooks in v1.
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { type RdMsgHook } from '@agentconnect.md/protocol'
-import { codeHostCredentials, managedHostTable } from '../src/codehost/credentials.js'
+import {
+  codeHostCredentials,
+  isProxyOnlyProvider,
+  managedHostTable,
+  proxyOnlyProvidersOf
+} from '../src/codehost/credentials.js'
+import {
+  CLI_STATE_DIR,
+  codeHostCliEnv,
+  codeHostCliReads,
+  reclaimCliStateDirs
+} from '../src/credential-proxy/cli-env.js'
+import { proxyOnlyHostRefusal, type ProxyOnlyReach } from '../src/credential-proxy/proxy-only.js'
 import { hookAdmissionFor } from '../src/codehost/hook-admission.js'
 import { codeHostHostFence, codeHostReplyTarget, type CodeHostTurnFinalHost } from '../src/codehost/turn-final.js'
 import { codeHostRepository } from '../src/codehost/repository.js'
@@ -34,27 +49,73 @@ function turnFinalHost() {
 describe('the credential seam', () => {
   const module = codeHostCredentials('azure-devops')!
 
-  it('knows the fixed host but serves no credential path, so the helper stays silent there', () => {
+  it('is presented only by the proxy and the daemon’s own Git, and is the only provider that is', () => {
+    expect(module.proxyOnly).toBe(true)
+    expect(['github', 'gitlab', 'gitea'].map(isProxyOnlyProvider)).toEqual([false, false, false])
+    expect(isProxyOnlyProvider('azure-devops')).toBe(true)
+    expect(module.liveCredentialPurposes).toEqual([])
+    expect(module.workspaceRepoId({ azureDevOpsRepoId: '42', giteaRepoId: '7' })).toBe('42')
+  })
+
+  it('reads git’s credential path on the fixed host, which git hands over already percent-decoded', () => {
     expect(module.hostFromSpec).toBe(false)
     expect(module.managedHost({})).toEqual({ provider: 'azure-devops', baseUrl: 'https://dev.azure.com' })
     const match = matchManagedHost(managedHostTable({}), {
       protocol: 'https',
       host: 'dev.azure.com',
-      path: 'example-org/Example%20Project/_git/Example%20Repo'
+      path: 'example-org/Example Project/_git/Example Repo'
     })
     expect(match?.entry.provider).toBe('azure-devops')
-    expect(credentialRepoPathParser('azure-devops')).toBeUndefined()
-    expect(module.credentialRepoPath('example-org/Example%20Project/_git/Example%20Repo')).toBeUndefined()
-    expect(module.liveCredentialPurposes).toEqual([])
+    expect(credentialRepoPathParser('azure-devops')).toBe(module.credentialRepoPath)
+    const path = module.credentialRepoPath
+    expect(path(match!.path!)).toBe('example-org/example project/example repo')
+    expect(path('example-org/Example Project/_git/Example Repo.git/info/lfs')).toBe(
+      'example-org/example project/example repo'
+    )
+    // The project-less form names the project like its repository.
+    expect(path('/example-org/_git/Example Repo')).toBe('example-org/example repo/example repo')
+    expect(path('Example-Org/Example Project/_GIT/Example Repo')).toBe('example-org/example project/example repo')
+    // Never decoded twice: a literal `%20` in a name stays one.
+    expect(path('example-org/Example%20Project/_git/Example Repo')).toBe('example-org/example%20project/example repo')
+    for (const refused of [
+      'example-org/Example Project/Example Repo',
+      'example-org/a/b/_git/Example Repo',
+      'example_org/Example Project/_git/Example Repo',
+      'example-org/../_git/Example Repo',
+      'example-org/Example Project/_git/',
+      'example-org/Example Project/_git/.git'
+    ]) {
+      expect(path(refused)).toBeUndefined()
+    }
   })
 
-  it('declines every additional repository and refuses to name a clone address for one', () => {
-    expect(module.placeSecondaryRoot({ repoFullName: 'example-org/Example Project/Example Repo', repoId: '42' })).toBe(
-      undefined
+  it('places an additional repository by its surrogate id, and clones it at its canonical address', () => {
+    expect(
+      module.placeSecondaryRoot({ repoFullName: 'example-org/Example Project/Example Repo', repoId: '42' })
+    ).toEqual({
+      provider: 'azure-devops',
+      repoFullName: 'example-org/Example Project/Example Repo',
+      subtreeName: '_azure-devops/42'
+    })
+    for (const row of [
+      { repoFullName: 'example-org/Example Project/Example Repo', repoId: '0' },
+      { repoFullName: 'example-org/Example Project/Example Repo', repoId: 'abc' },
+      { repoFullName: 'example-org/Example Repo', repoId: '42' },
+      { repoFullName: 'example-org/Example Project/..', repoId: '42' },
+      { repoFullName: 'example_org/Example Project/Example Repo', repoId: '42' }
+    ]) {
+      expect(module.placeSecondaryRoot(row)).toBeUndefined()
+    }
+    expect(module.secondaryCloneUrl('example-org/Example Project/Example Repo', {})).toBe(
+      'https://dev.azure.com/example-org/Example%20Project/_git/Example%20Repo'
     )
-    expect(() => module.secondaryCloneUrl('example-org/Example Project/Example Repo', {})).toThrow(
-      /^code_host_not_implemented: azure-devops/
-    )
+    expect(() => module.secondaryCloneUrl('example-org/Example Repo', {})).toThrow(/does not name/)
+    expect(module.secondaryCredentialScope({})).toEqual({
+      host: { provider: 'azure-devops', baseUrl: 'https://dev.azure.com' }
+    })
+    const canonical = 'https://dev.azure.com/example-org/Example%20Project/_git/Example%20Repo'
+    expect(module.canonicalCloneUrl(canonical)).toBe(canonical)
+    expect(module.managedRemoteUrl(canonical)).toBe(canonical)
     expect(codeHostRepository('azure-devops')).toBeUndefined()
   })
 
@@ -78,5 +139,122 @@ describe('hooks (no Azure DevOps hooks in v1)', () => {
 
   it('admits nothing: no trusted member can name the provider', () => {
     expect(hookAdmissionFor({ hookId: HOOK, agentId: AGENT })).toBeUndefined()
+  })
+})
+
+describe('where a host of an agent with Azure DevOps repositories may start', () => {
+  const reached: ProxyOnlyReach = {
+    proxyRunning: true,
+    managedCredential: true,
+    cluster: false,
+    placedOnExecutor: false,
+    strategy: 'host',
+    served: () => true
+  }
+  const REFUSAL =
+    /^azure_devops_requires_proxy: Azure DevOps repositories are reached only through this daemon's credential proxy, and /
+
+  it('names the agent’s proxy-only providers from its workspace credential and its additional repositories', () => {
+    const row = (provider?: string) => ({ ...(provider ? { provider } : {}) })
+    expect(proxyOnlyProvidersOf({ gitCredential: 'azure-devops' })).toEqual(['azure-devops'])
+    expect(
+      proxyOnlyProvidersOf({
+        gitCredential: 'github-app',
+        additionalRepos: [row(), row('azure-devops'), row('gitlab')]
+      })
+    ).toEqual(['azure-devops'])
+    expect(proxyOnlyProvidersOf({ gitCredential: 'gitlab', additionalRepos: [row('gitea'), row()] })).toEqual([])
+  })
+
+  it('starts on the host and in srt while the proxy serves the repositories, and is refused everywhere else', () => {
+    for (const strategy of ['host', 'srt']) {
+      expect(proxyOnlyHostRefusal(['azure-devops'], { ...reached, strategy })).toBeUndefined()
+    }
+    const refusals = [
+      [{ proxyRunning: false }, 'the credential proxy is not running on this daemon'],
+      [{ managedCredential: false }, 'the agent holds no managed code-host credential'],
+      [{ cluster: true }, "a pool pod's own Git does not reach the proxy yet"],
+      [
+        { placedOnExecutor: true },
+        "a session placed on another daemon's executor does not reach it with that daemon's Git yet"
+      ],
+      [{ strategy: 'microsandbox' }, "the microsandbox strategy's own Git does not reach it yet"],
+      [{ served: () => false }, 'the proxy serves none of those repositories, whose routing the spec does not carry']
+    ] as const
+    for (const [unreached, reason] of refusals) {
+      const refusal = proxyOnlyHostRefusal(['azure-devops'], { ...reached, ...unreached })
+      expect(refusal).toMatch(REFUSAL)
+      expect(refusal?.endsWith(reason)).toBe(true)
+    }
+    // An agent with no proxy-only repositories starts wherever it did, a proxy or none.
+    expect(proxyOnlyHostRefusal([], { ...reached, proxyRunning: false, strategy: 'microsandbox' })).toBeUndefined()
+  })
+})
+
+describe('the Azure CLI in a proxied session', () => {
+  const PLACEHOLDER = 'acph1_example.tag'
+  let root: string
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'ac-azure-cli-'))
+  })
+  afterEach(() => rmSync(root, { recursive: true, force: true }))
+
+  function cliEnv(overrides: Partial<Parameters<typeof codeHostCliEnv>[0]> = {}) {
+    return codeHostCliEnv({
+      providers: ['github', 'azure-devops', 'azure-devops'],
+      placeholder: PLACEHOLDER,
+      home: join(root, 'home'),
+      hostKey: AGENT,
+      config: { azureDevOps: { cliExtensionDir: join(root, 'cliextensions') } },
+      own: () => false,
+      ...overrides
+    })
+  }
+
+  it('presents the placeholder from a fresh, empty state directory of the host’s own, and loads extensions only where they exist', () => {
+    const first = cliEnv()
+    expect(first).toEqual({
+      AZURE_DEVOPS_EXT_PAT: PLACEHOLDER,
+      AZURE_CONFIG_DIR: expect.stringContaining(join(root, 'home', CLI_STATE_DIR)),
+      AZURE_CORE_COLLECT_TELEMETRY: 'false'
+    })
+    // A sign-in the last start left is gone on the next.
+    writeFileSync(join(first.AZURE_CONFIG_DIR!, 'azureProfile.json'), '{}')
+    mkdirSync(join(root, 'cliextensions'))
+    const second = cliEnv()
+    expect(second.AZURE_CONFIG_DIR).toBe(first.AZURE_CONFIG_DIR)
+    expect(readdirSync(second.AZURE_CONFIG_DIR!)).toEqual([])
+    expect(second.AZURE_EXTENSION_DIR).toBe(join(root, 'cliextensions'))
+    // Another host of the agent keeps its own.
+    expect(cliEnv({ hostKey: `${AGENT}\u0000session-1` }).AZURE_CONFIG_DIR).not.toBe(first.AZURE_CONFIG_DIR)
+    // A variable the session's own env sets is left to it, and a provider with no CLI adds nothing.
+    expect(cliEnv({ own: (name) => name === 'AZURE_DEVOPS_EXT_PAT' })).not.toHaveProperty('AZURE_DEVOPS_EXT_PAT')
+    expect(cliEnv({ providers: ['github', 'gitlab', 'gitea'] })).toEqual({})
+  })
+
+  // POSIX only: the planted link is a symbolic link.
+  it.skipIf(process.platform === 'win32')('refuses a link planted where the state directories are kept', () => {
+    const outside = join(root, 'outside')
+    mkdirSync(outside)
+    mkdirSync(join(root, 'home'))
+    symlinkSync(outside, join(root, 'home', CLI_STATE_DIR))
+    expect(() => cliEnv()).toThrow(/is not a real directory/)
+    expect(readdirSync(outside)).toEqual([])
+    // At boot the link itself is reclaimed, never what it points at.
+    writeFileSync(join(outside, 'kept'), '')
+    reclaimCliStateDirs(join(root, 'home'))
+    expect(existsSync(join(root, 'home', CLI_STATE_DIR))).toBe(false)
+    expect(readdirSync(outside)).toEqual(['kept'])
+  })
+
+  it('defaults the extensions to the daemon user’s, and has an OS sandbox read the CLI and the extensions that exist', () => {
+    expect(codeHostCredentials('azure-devops')!.cli!.extensionDir({})).toBe(join(homedir(), '.azure', 'cliextensions'))
+    const missing = { azureDevOps: { cliExtensionDir: join(root, 'missing') } }
+    expect(codeHostCliReads(['azure-devops'], missing)).toEqual({ commands: ['az'], paths: [] })
+    expect(codeHostCliReads(['github', 'azure-devops'], { azureDevOps: { cliExtensionDir: root } })).toEqual({
+      commands: ['az'],
+      paths: [root]
+    })
+    expect(codeHostCliReads(['github', 'gitlab', 'gitea'], {})).toEqual({ commands: [], paths: [] })
   })
 })

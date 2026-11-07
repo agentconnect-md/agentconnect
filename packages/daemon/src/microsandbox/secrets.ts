@@ -79,7 +79,7 @@ const hashed = (prefix: string): RegExp => new RegExp(`^${prefix}_[0-9A-F]{16}$`
 const CREDENTIAL_PREPARERS = new Map<string, CredentialPreparer>([
   ['dsh-acp', { prepare: prepareDeepSeekSecret, env: /^DEEPSEEK_API_KEY$/, ambient: {} }],
   ['opencode', { prepare: prepareOpenCodeSecrets, env: hashed('OPENCODE_API'), ambient: {} }],
-  ['pi-acp', { prepare: preparePiSecrets, env: hashed('PI_API') }],
+  ['pi-acp', { prepare: preparePiSecrets, env: hashed('PI_API'), ambient: {} }],
   [
     'claude-acp',
     {
@@ -96,11 +96,11 @@ const CREDENTIAL_PREPARERS = new Map<string, CredentialPreparer>([
       ambient: { envKey: prepareCodexEnvSecret }
     }
   ],
-  ['grok-build', { prepare: prepareGrokSecrets, env: hashed('AC_GROK_API') }],
-  ['qwen-code', { prepare: prepareQwenSecrets, env: hashed('AC_QWEN_API') }],
-  ['omp', { prepare: prepareOmpSecrets, env: hashed('AC_OMP_API') }],
-  ['amp-acp', { prepare: prepareAmpSecrets, env: hashed('AC_AMP_API') }],
-  ['kimi', { prepare: prepareKimiSecrets, env: hashed('AC_KIMI_API') }],
+  ['grok-build', { prepare: prepareGrokSecrets, env: hashed('AC_GROK_API'), ambient: {} }],
+  ['qwen-code', { prepare: prepareQwenSecrets, env: hashed('AC_QWEN_API'), ambient: {} }],
+  ['omp', { prepare: prepareOmpSecrets, env: hashed('AC_OMP_API'), ambient: {} }],
+  ['amp-acp', { prepare: prepareAmpSecrets, env: hashed('AC_AMP_API'), ambient: {} }],
+  ['kimi', { prepare: prepareKimiSecrets, env: hashed('AC_KIMI_API'), ambient: {} }],
   ['cline', { prepare: prepareClineSecrets, env: hashed('AC_CLINE_API'), ambient: {} }],
   ['github-copilot-cli', { prepare: prepareCopilotEnvSecret, env: /^COPILOT_PROVIDER_API_KEY$/, ambient: {} }],
   ['antigravity-acp', { prepare: prepareAntigravityEnvSecret, env: /^GEMINI_API_KEY$/, ambient: {} }]
@@ -135,9 +135,10 @@ export function prepareAmbientCredentials(
   const id = ambientCredentialRuntime(runtimeId, runtime)
   const preparer = id === undefined ? undefined : CREDENTIAL_PREPARERS.get(id)
   if (!preparer?.ambient) return undefined
+  const srt = { ...sources, protectRetained: true }
   return mergeCredentials(
-    preparer.prepare(hostEnv, explicitEnv, placeholder, sources),
-    preparer.ambient.envKey?.(hostEnv, explicitEnv, placeholder, sources)
+    preparer.prepare(hostEnv, explicitEnv, placeholder, srt),
+    preparer.ambient.envKey?.(hostEnv, explicitEnv, placeholder, srt)
   )
 }
 
