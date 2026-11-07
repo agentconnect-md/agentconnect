@@ -99,6 +99,30 @@ describe('applying a launch codehost env at spawn', () => {
     const own = { ...base, env: { ...base.env, HTTPS_PROXY: 'http://egress.example.test:3128' } }
     expect(applyCodehostSpawn({ ...own, codehost: OVERLAY }, listener)).toEqual(own)
   })
+
+  it("appends the codehost's command-scope helper after the pairs the launch already carries", () => {
+    const env = { ...base.env, GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'safe.directory', GIT_CONFIG_VALUE_0: '*' }
+    const codehost = {
+      env: {
+        ...OVERLAY.env,
+        GIT_CONFIG_COUNT: '2',
+        GIT_CONFIG_KEY_0: 'credential.https://github.com.helper',
+        GIT_CONFIG_VALUE_0: '',
+        GIT_CONFIG_KEY_1: 'credential.https://github.com.helper',
+        GIT_CONFIG_VALUE_1: '!placeholder'
+      }
+    }
+    const launch = applyCodehostSpawn({ ...base, env, codehost }, listener)
+    expect(launch.env).toMatchObject({
+      GIT_CONFIG_COUNT: '3',
+      GIT_CONFIG_KEY_0: 'safe.directory',
+      GIT_CONFIG_VALUE_0: '*',
+      GIT_CONFIG_KEY_1: 'credential.https://github.com.helper',
+      GIT_CONFIG_VALUE_1: '',
+      GIT_CONFIG_KEY_2: 'credential.https://github.com.helper',
+      GIT_CONFIG_VALUE_2: '!placeholder'
+    })
+  })
 })
 
 describe('the shim trust bundle beside microsandbox and a session own authorities', () => {
