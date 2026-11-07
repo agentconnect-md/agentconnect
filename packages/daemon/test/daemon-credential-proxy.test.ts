@@ -62,7 +62,8 @@ afterAll(() => {
     if (value === undefined) delete process.env[name]
     else process.env[name] = value
   }
-  for (const dir of dirs) rmSync(dir, { recursive: true, force: true })
+  // Windows releases a stopped daemon's file handles a moment late, so removal retries there.
+  for (const dir of dirs) rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
 })
 
 /** Short, so the daemon's sockets fit AF_UNIX on a host whose temp directory is long. */
