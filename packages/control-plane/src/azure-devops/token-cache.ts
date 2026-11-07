@@ -1,8 +1,13 @@
-// One Azure DevOps token per connection (azure-devops-integration.md §3.4): refreshed before the last ten minutes of its issued life, single-flight, purged by epoch.
+// One Azure DevOps token per connection (azure-devops-integration.md §3.4): refreshed before the last twenty minutes of its issued life, single-flight, purged by epoch.
 import type { AzureDevOpsAccessToken } from './api.js'
 
-/** Refresh once less than this much of the issued lifetime remains. */
-export const REFRESH_MARGIN_MS = 10 * 60_000
+/** A gitcred lease ends this long before the token inside it. */
+export const LEASE_MARGIN_MS = 5 * 60_000
+/** The daemon hands a cached grant out only while more than this remains (daemon `HANDOUT_MIN_MS`). */
+const DAEMON_HANDOUT_FLOOR_MS = 10 * 60_000
+const REFRESH_SLACK_MS = 5 * 60_000
+/** Refresh once less than this remains, so every lease outlives the daemon's handout floor with slack: 5 + 10 + 5 minutes. */
+export const REFRESH_MARGIN_MS = LEASE_MARGIN_MS + DAEMON_HANDOUT_FLOOR_MS + REFRESH_SLACK_MS
 
 export interface CachedAzureDevOpsToken {
   token: string

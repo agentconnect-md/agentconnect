@@ -45,7 +45,8 @@ const AzureDevOpsConnectErrorDto = ErrorDto.extend({
   checklist: z.array(z.string()).optional(),
   memberships: z.array(AzureDevOpsMembershipDto).optional(),
   inOrganization: z.boolean().optional(),
-  ticket: z.string().optional()
+  ticket: z.string().optional(),
+  authorizeUrl: z.string().optional()
 })
 
 const ERRORS = {

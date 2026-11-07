@@ -1,7 +1,12 @@
 // Azure DevOps gitcred leases (azure-devops-integration.md §3.4, §6.1, §6.3): authority, tier, and a TTL inside the token's life.
 import { describe, expect, it, vi } from 'vitest'
-import { AzureDevOpsGitcredService, LEASE_MARGIN_SEC } from './gitcred.service.js'
-import { AzureDevOpsApiClient } from './api.js'
+import {
+  AzureDevOpsGitcredService,
+  DEGRADED_PROBE_HOLD_MS,
+  FORCE_REFRESH_MIN_INTERVAL_MS,
+  LEASE_MARGIN_SEC
+} from './gitcred.service.js'
+import { AzureDevOpsApiClient, AzureDevOpsApiError } from './api.js'
 import type {
   AgentRecord,
   AgentRepoAuthorizationRecord,
@@ -32,7 +37,8 @@ const connection: AzureDevOpsConnectionRecord = {
   state: 'connected',
   stateReason: null,
   lastVerifiedAt: null,
-  createdAt: new Date(NOW)
+  createdAt: new Date(NOW),
+  secretFingerprint: null
 }
 
 function binding(
@@ -74,33 +80,39 @@ function harness(
     expiresInMs?: number
     grants?: Partial<AgentRepoAuthorizationRecord>[]
     bindings?: AzureDevOpsRepositoryBindingRecord[]
+    connection?: Partial<AzureDevOpsConnectionRecord>
+    probe?: () => Promise<unknown>
   } = {}
 ) {
   const bindings = opts.bindings ?? [binding(7n), binding(8n)]
+  const clock = { now: NOW }
   const accessToken = vi.fn(async () => ({
     token: 'example-token',
-    expiresAtMs: NOW + (opts.expiresInMs ?? 3_599_000)
+    expiresAtMs: clock.now + (opts.expiresInMs ?? 3_599_000)
   }))
+  const withApi = vi.fn(opts.probe ?? (async () => undefined))
+  const purgeToken = vi.fn()
   const service = new AzureDevOpsGitcredService({
-    connections: { get: async () => connection },
+    connections: { get: async () => ({ ...connection, ...opts.connection }) },
     bindings: {
       byRepo: async (_org, connectionId, repoId) =>
         bindings.find((b) => b.connectionId === connectionId && b.repoId === repoId) ?? null
     },
     repoAuths: { listForAgent: async () => (opts.grants ?? []) as AgentRepoAuthorizationRecord[] },
-    service: { accessToken, withApi: vi.fn() },
+    service: { accessToken, withApi: withApi as never, purgeToken },
     api: new AzureDevOpsApiClient(),
-    clock: { now: () => NOW } as never
+    clock: { now: () => clock.now } as never
   })
-  return { service, accessToken }
+  return { service, accessToken, withApi, purgeToken, clock }
 }
 
 describe('AzureDevOpsGitcredService', () => {
   it('serves the workspace repository under its tier, echoing provider, id, path and epoch', async () => {
     const { service } = harness()
     const grant = await service.grantForAgent(agent('write'))
+    // The basic-auth user is the identity's GUID, never its display name, which may hold a colon.
     expect(grant).toMatchObject({
-      username: 'Example Application',
+      username: '00000000-0000-4000-8000-0000000000f1',
       token: 'example-token',
       access: 'write',
       provider: 'azure-devops',
@@ -139,5 +151,41 @@ describe('AzureDevOpsGitcredService', () => {
     })
     await expect(service.grantForAgent(agent('read'))).rejects.toMatchObject({ code: 'LEASE_DENIED' })
     expect(accessToken).not.toHaveBeenCalled()
+  })
+
+  it('holds a degraded connection’s failed probe for a minute, refusing leases without any outbound call', async () => {
+    const h = harness({
+      connection: { state: 'degraded', stateReason: 'access_revoked' },
+      probe: async () => {
+        throw new AzureDevOpsApiError('not a member', 401, 'ACCESS_REVOKED', false)
+      }
+    })
+    await expect(h.service.grantForAgent(agent('read'))).rejects.toMatchObject({
+      code: 'LEASE_DENIED',
+      retryable: true
+    })
+    h.clock.now += DEGRADED_PROBE_HOLD_MS - 1
+    await expect(h.service.grantForAgent(agent('read'))).rejects.toMatchObject({
+      code: 'LEASE_DENIED',
+      retryable: true
+    })
+    expect(h.withApi).toHaveBeenCalledTimes(1)
+    expect(h.accessToken).not.toHaveBeenCalled()
+    h.clock.now += 1
+    await expect(h.service.grantForAgent(agent('read'))).rejects.toMatchObject({ code: 'LEASE_DENIED' })
+    expect(h.withApi).toHaveBeenCalledTimes(2)
+  })
+
+  it('honors forceRefresh by purging the cached token, at most once per interval per connection', async () => {
+    const h = harness()
+    await h.service.grantForAgent(agent('read'), undefined, undefined, true)
+    await h.service.grantForAgent(agent('read'), undefined, undefined, true)
+    expect(h.purgeToken).toHaveBeenCalledTimes(1)
+    expect(h.purgeToken).toHaveBeenCalledWith(CONNECTION_ID)
+    h.clock.now += FORCE_REFRESH_MIN_INTERVAL_MS
+    await h.service.grantForAgent(agent('read'), undefined, undefined, true)
+    expect(h.purgeToken).toHaveBeenCalledTimes(2)
+    await h.service.grantForAgent(agent('read'))
+    expect(h.purgeToken).toHaveBeenCalledTimes(2)
   })
 })

@@ -151,9 +151,17 @@ The Console's Azure DevOps card leads with **Connect with Microsoft**:
    stores no copy. Two Control Plane replicas therefore serve one flow alike.
 3. **Organization.** The Control Plane lists the Azure DevOps organizations the
    administrator belongs to in that tenant (the profile and accounts APIs), and
-   the administrator picks one. The Control Plane reads its `instanceId` with
-   the delegated token, refuses an organization another AgentConnect
-   organization holds before writing anything there, and answers its projects.
+   the administrator picks one. A guest signs in at their home tenant, so the
+   Control Plane first reads the organization's own Entra tenant: an
+   unauthenticated `GET dev.azure.com/{organization}/_apis/connectionData`
+   answers a redirect with the tenant in `x-vss-resourcetenant`. When it
+   differs from the signed-in tenant, the step is refused (`tenant_mismatch`)
+   with a new authorize URL at that tenant's authority, so the person signs in
+   again there as its member or guest; the connection then records that
+   tenant. Without the header, the signed-in tenant stands. The Control Plane
+   reads the organization's `instanceId` with the delegated token, refuses an
+   organization another AgentConnect organization holds before writing
+   anything there, and answers its projects.
 4. **Entitlement.** The Control Plane takes a client credentials token at the
    customer tenant and reads the service principal's object id from its `oid`
    claim, which works before the service principal is in the organization.
@@ -200,9 +208,22 @@ The Console's Azure DevOps card leads with **Connect with Microsoft**:
    done, `POST /orgs/:orgId/azure-devops/connect/:flow/verify` resumes: it
    re-reads `connectionData` as the application, raises a member below Basic
    when the caller may, makes the memberships the caller may, and runs steps 5
-   and 6. A raise refused with `5032` answers with the same checklist. A membership the caller may not make
-   does not stop it there, since a Project Collection Administrator may have
-   made it by hand; the repository list of step 5 decides.
+   and 6. A raise refused with `5032` answers with the same checklist. A
+   membership the caller may not make does not stop it there, since a Project
+   Collection Administrator may have made it by hand; the repository list of
+   step 5 decides.
+
+   A new connection must also prove that the caller administers the service
+   principal in that organization, or any plain member could connect a
+   service principal another deployment organization left behind and take
+   its rights. The caller proves it by adding the service principal, or by
+   making or confirming at least one of the chosen project memberships with
+   their own delegated token (an existing membership answered as such
+   counts). When the service principal is already a member and every
+   membership is refused, the step answers `insufficient_rights`, names
+   Project Administrator and Project Collection Administrator, and creates
+   nothing. Manage project access acts on a connection the organization
+   already holds and needs no such proof.
 
 5. **Verification.** As the application, the Control Plane takes a client
    credentials token at the customer tenant and reads
@@ -216,10 +237,11 @@ The Console's Azure DevOps card leads with **Connect with Microsoft**:
    Otherwise the connection records the tenant, the organization name and
    `instanceId`, the identity id and display name, the credential source
    (`deployment` or `own`), the own application's client ID, and a credential
-   epoch. The client secret is sealed in a side table: an own application's
-   secret, or, for a `deployment` connection, the deployment secret it was
-   verified with, which is how a rotation is recognized (§3.5). A connection is
-   `connected`, or `degraded` with the reason of §3.5.
+   epoch. An own application's secret is sealed in a side table. A
+   `deployment` connection keeps no copy of the deployment secret, only its
+   fingerprint: an HMAC under a key derived from the deployment's pepper for
+   this purpose alone, which is how a rotation is recognized (§3.5). A
+   connection is `connected`, or `degraded` with the reason of §3.5.
 
 The Console offers one Azure DevOps connection per AgentConnect organization in
 the first version. The model does not assume one: bindings, grants, and the
@@ -262,22 +284,29 @@ consulted in the first version (§10).
 ### 3.4 Tokens
 
 The Control Plane caches one Azure DevOps token per connection and refreshes
-it when less than ten minutes of the `expires_in` it was issued with remain;
-it never assumes a fixed lifetime, and a token issued for less than twenty
-minutes is kept for half of its life. Concurrent callers share one request
+it when less than twenty minutes of the `expires_in` it was issued with
+remain; it never assumes a fixed lifetime, and a token issued for less than
+forty minutes is kept for half of its life. Twenty minutes is the lease margin
+below (five) plus the daemon's handout floor (it hands a cached grant out only
+while more than ten minutes remain) plus five of slack, so every lease the
+daemon receives can be handed out. Concurrent callers share one request
 per connection, and a new credential epoch or a rejected answer drops the
 cached token. A gitcred lease for an Azure DevOps repository carries that
 token with a TTL of its remaining life less five minutes, at most an hour, so
-a lease never outlives the token inside it. The lease names the identity's
-display name as the Basic user. The daemon never sees a client secret.
+a lease never outlives the token inside it. The lease names the identity id,
+a GUID, as the Basic user; the display name is chosen in the customer's
+tenant and may hold a colon. A request with `forceRefresh`, as the proxy sends
+after a `401`, drops the connection's cached token first, at most once every
+thirty seconds per connection. The daemon never sees a client secret.
 
 ### 3.5 Rotation and Failure
 
 The deployment secret is rotated in Setup. The new value reaches every
 connection whose source is `deployment` at once, as it reaches Teams' customer
-rows: at boot, the Control Plane compares the configured secret with the one
-each such connection last sealed, and where they differ it seals the new one
-and increments the credential epoch, so daemon caches purge the old tokens.
+rows: at boot, the Control Plane compares the configured secret's fingerprint
+with the one each such connection recorded, and where they differ it records
+the new one and increments the credential epoch, so daemon caches purge the
+old tokens.
 An own application's secret is replaced on its card; the replacement runs
 §3.2's steps 5 and 6 and requires the same tenant, client ID, and identity id.
 
@@ -291,8 +320,12 @@ the organization has never seen, and `TF400813` for one that was removed. An
 application with no service principal left in the tenant (Entra `700016`) is
 read the same way. Any later success recovers them: a token proves the secret
 again, and an Azure DevOps answer proves access again, so a lease for a
-degraded connection first reads `connectionData`. Any other `401` is treated as
-a stale token and retried once with a fresh one.
+degraded connection first reads `connectionData`. A failed read is trusted for
+a minute: leases on that connection are refused as retryable without any call
+to Entra or Azure DevOps, and the next read follows the minute. A
+connection-level verdict and its recovery leave a binding that is
+`repository_unavailable` as it is; only the picker's read clears that. Any
+other `401` is treated as a stale token and retried once with a fresh one.
 
 ### 3.6 What the Organization Grants
 
@@ -331,7 +364,10 @@ beside the numeric id, because the Azure CLI and REST paths address a
 repository by GUID as often as by name (§6.2).
 
 `repoFullName` is `{organization}/{project}/{repository}`. It is display and
-matching text, refreshed when the binding converges; nothing is keyed on it.
+matching text, and nothing is keyed on it. When the picker or a bind sees a
+new path or clone URL for a bound GUID (a rename), the binding is refreshed and,
+as on Gitea, the workspaces' clone URLs and the grants' `repoFullName` follow,
+and the affected agents are projected again.
 A secondary root lives at `repos/_azure-devops/<numeric id>/`, and
 `_azure-devops` joins the reserved secondary-root directories. Project and
 repository names may contain spaces; paths are compared after percent-decoding.
@@ -517,8 +553,8 @@ Azure CLI or REST, and the first version adds no Azure DevOps tool:
 ### 6.4 Client Configuration
 
 git uses the session credential helper and the proxy like every other provider;
-the proxy presents the token as the Basic password with the identity's name as
-the user. The Azure CLI receives:
+the proxy presents the token as the Basic password with the identity id as the
+user (§3.4). The Azure CLI receives:
 
 - `AZURE_DEVOPS_EXT_PAT`, set to the placeholder; the CLI sends it as a Basic
   password, which the proxy already reads;
@@ -620,8 +656,14 @@ connection-write, and secret routes manage a credential and are
 
 ## 9. Security
 
-- Client secrets are sealed at rest and never leave the Control Plane.
-  Tokens exist in the Control Plane's cache, in leases over the authenticated
+- Client secrets are sealed at rest and never leave the Control Plane. An own
+  application's secret is sealed under its organization; the deployment
+  secret is not copied under any organization, and a `deployment` connection
+  keeps only its keyed fingerprint (§3.2 step 6).
+- A new connection to a service principal already in an Azure DevOps
+  organization needs the caller to prove they administer it there (§3.2
+  step 4), so a plain member cannot take over the rights it holds.
+- Tokens exist in the Control Plane's cache, in leases over the authenticated
   daemon WebSocket, and in the daemon's memory. They never appear in an
   environment, argv, a remote URL, `.git/config`, or a diagnostic.
 - An administrator's delegated token lives only for the connect flow,

@@ -135,7 +135,8 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
       const grant = await deps.azureDevOpsGitcred!.grantForAgent(
         agent,
         externalRepoId !== undefined ? BigInt(externalRepoId) : undefined,
-        requestedAccess
+        requestedAccess,
+        forceRefresh === true
       )
       conn.replyTo(frame, 'gitcred/grant', grant)
       return

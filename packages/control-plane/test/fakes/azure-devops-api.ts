@@ -94,6 +94,8 @@ export class FakeAzureDevOps {
   }
   /** The last code redemption's form, for the PKCE and redirect assertions. */
   redeemed: URLSearchParams | undefined
+  /** The tenant an unauthenticated connectionData names in `x-vss-resourcetenant`; null sends no header. */
+  resourceTenant: string | null = TENANT_ID
   secrets: Record<string, string>
   repositories: FakeAzureRepository[]
   expiresInSec: number
@@ -306,6 +308,16 @@ export class FakeAzureDevOps {
   private devOps(url: string, method: string, init?: RequestInit): Response {
     const auth = new Headers(init?.headers).get('authorization') ?? ''
     if (auth === `Bearer ${ADMIN_TOKEN}`) return this.adminDevOps(url)
+    // An unauthenticated read is sent to sign-in, naming the organization's Entra tenant in a header.
+    if (!auth && new URL(url).pathname === `/${ORGANIZATION}/_apis/connectionData`) {
+      return new Response(null, {
+        status: 302,
+        headers: {
+          location: 'https://login.example.test/',
+          ...(this.resourceTenant ? { 'x-vss-resourcetenant': this.resourceTenant } : {})
+        }
+      })
+    }
     if (!auth.startsWith('Bearer example-token-')) return this.json(401, { message: 'TF400813: unauthorized' })
     if (!this.admin.spInOrganization) {
       return this.json(401, { message: 'TF401444: Please sign-in at least once as the service principal.' })

@@ -20,7 +20,10 @@ import {
   SP_OBJECT_ID,
   TENANT_ID
 } from '../fakes/azure-devops-api.js'
-import { AzureDevOpsConnectionService } from '../../src/azure-devops/connection.service.js'
+import {
+  AzureDevOpsConnectionService,
+  azureDevOpsSecretFingerprint
+} from '../../src/azure-devops/connection.service.js'
 import { AzureDevOpsBindingService } from '../../src/azure-devops/binding.service.js'
 import { AzureDevOpsConnectFlowService } from '../../src/azure-devops/connect-flow.service.js'
 import { AzureDevOpsTokenCache } from '../../src/azure-devops/token-cache.js'
@@ -63,6 +66,7 @@ function harness(opts: { deploymentApplication?: boolean } = {}) {
     clock,
     api: fake.api,
     tokens: new AzureDevOpsTokenCache(() => clock.now()),
+    secretFingerprint: azureDevOpsSecretFingerprint('example-pepper-example-pepper-example-pepper'),
     ...(app ? { deploymentApplication: app } : {})
   })
   const connect = new AzureDevOpsConnectFlowService({
@@ -375,11 +379,20 @@ describe('below Project Collection Administrator (§3.2 step 4)', () => {
     expect(notYet.json()).toMatchObject({ code: 'not_in_organization' })
     expect(notYet.json().checklist.join('\n')).toContain(DEPLOYMENT_CLIENT_ID)
 
-    // The administrator adds it by hand, with Basic and the group.
+    // A Project Collection Administrator adds it by hand, with Basic and the group.
     h.fake.admin.spInOrganization = true
     h.fake.admin.spAccessLevel = 'express'
+    h.fake.admin.memberships.add(`aadsp.${IDENTITY_ID}|${contributors(PROJECT_ID)}`)
+    // The caller still cannot make or confirm any membership, so nothing proves they administer it there.
+    const unproven = await h.post(`/azure-devops/connect/${flowId}/verify`, {}, body.ticket)
+    expect(unproven.statusCode).toBe(403)
+    expect(unproven.json()).toMatchObject({ code: 'insufficient_rights' })
+    expect(await h.connectionRepo.listForOrg(DEFAULT_ORG_ID)).toHaveLength(0)
+    // As a Project Administrator of the project, the caller confirms the membership and connects.
+    h.fake.admin.membershipsAllowed = true
     const verified = await h.post(`/azure-devops/connect/${flowId}/verify`, {}, body.ticket)
     expect(verified.statusCode).toBe(200)
+    expect(verified.json().memberships).toEqual([expect.objectContaining({ outcome: 'already_member' })])
     expect(verified.json().connection).toMatchObject({ organization: ORGANIZATION, state: 'connected' })
     expect(h.calls('POST', ENTITLEMENTS_BASE)).toHaveLength(1)
     expect(h.calls('PATCH', ENTITLEMENTS_BASE)).toHaveLength(0)
@@ -440,6 +453,63 @@ describe('a member below Basic (§3.2 step 4)', () => {
     expect(res.statusCode).toBe(200)
     expect(h.calls('PATCH', ENTITLEMENTS_BASE)).toHaveLength(0)
     expect(h.fake.admin.spAccessLevel).toBe('advanced')
+  })
+})
+
+describe('authority and tenant (§3.2)', () => {
+  it('refuses to connect a service principal already in the organization when the caller can make no membership', async () => {
+    const h = harness()
+    h.fake.admin.membershipsAllowed = false
+    const { flowId, ticket } = await h.toProjects()
+    const res = await h.post(
+      `/azure-devops/connect/${flowId}/projects`,
+      {
+        projects: [
+          { projectId: PROJECT_ID, group: 'readers' },
+          { projectId: SECOND_PROJECT_ID, group: 'contributors' }
+        ]
+      },
+      ticket
+    )
+    expect(res.statusCode).toBe(403)
+    expect(res.json()).toMatchObject({ code: 'insufficient_rights', inOrganization: true })
+    expect(res.json().ticket).toBeUndefined()
+    const checklist = res.json().checklist.join('\n')
+    expect(checklist).toContain('Project Administrator')
+    expect(checklist).toContain('Project Collection Administrator')
+    expect(await h.connectionRepo.listForOrg(DEFAULT_ORG_ID)).toHaveLength(0)
+  })
+
+  it('sends a guest who signed in at another tenant back to the organization’s own tenant', async () => {
+    const h = harness()
+    const resourceTenant = '00000000-0000-4000-8000-0000000000a2'
+    h.fake.resourceTenant = resourceTenant
+    const { callback } = await h.signIn()
+    const { flowId, ticket } = callback.json() as { flowId: string; ticket: string }
+    const refused = await h.post(`/azure-devops/connect/${flowId}/organization`, { organization: ORGANIZATION }, ticket)
+    expect(refused.statusCode).toBe(409)
+    expect(refused.json()).toMatchObject({ code: 'tenant_mismatch' })
+    const again = new URL(refused.json().authorizeUrl as string)
+    expect(again.pathname).toBe(`/${resourceTenant}/oauth2/v2.0/authorize`)
+    expect(again.searchParams.get('code_challenge_method')).toBe('S256')
+    // The unauthenticated read carried no token.
+    const probe = h.fake.requests.find((r) => r.url === `https://dev.azure.com/${ORGANIZATION}/_apis/connectionData`)
+    expect(probe).toBeDefined()
+    // Signing in again at that tenant is a new connect pinned to it.
+    h.fake.admin.signInTenant = resourceTenant
+    const pinned = await h.post('/azure-devops/connect/callback', {
+      state: again.searchParams.get('state')!,
+      code: AUTH_CODE
+    })
+    expect(pinned.statusCode).toBe(200)
+    expect(pinned.json()).toMatchObject({ tenantId: resourceTenant, connectionId: null })
+    expect(h.fake.redeemed!.get('client_id')).toBe(DEPLOYMENT_CLIENT_ID)
+  })
+
+  it('falls back to the signed-in tenant when Azure DevOps names none', async () => {
+    const h = harness()
+    h.fake.resourceTenant = null
+    await h.toProjects()
   })
 })
 

@@ -18,13 +18,14 @@ CREATE TABLE "azure_devops_connection" (
     "state" TEXT NOT NULL,
     "stateReason" TEXT,
     "lastVerifiedAt" TIMESTAMPTZ(6),
+    "secretFingerprint" TEXT,
     "createdAt" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMPTZ(6) NOT NULL,
 
     CONSTRAINT "azure_devops_connection_pkey" PRIMARY KEY ("id")
 );
 
--- Sealed client secret: read only through the secret store, never joined by DTO queries.
+-- An own application's sealed client secret: read only through the secret store, never joined by DTO queries.
 CREATE TABLE "azure_devops_connection_secret" (
     "connectionId" UUID NOT NULL,
     "clientSecret" TEXT NOT NULL,

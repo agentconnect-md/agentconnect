@@ -14,6 +14,7 @@ import {
   raiseServicePrincipalToBasic,
   reachesRepositories,
   readGraphDescriptor,
+  readResourceTenant,
   readServicePrincipalAccessLevel,
   type AzureDevOpsMembershipOutcome
 } from './admin-api.js'
@@ -57,6 +58,8 @@ export interface AzureDevOpsConnectRefusalDetails {
   inOrganization?: boolean
   /** A flow that can resume at verification keeps its ticket; a terminal refusal returns none. */
   ticket?: string
+  /** A sign-in at the organization's own tenant, for a guest who signed in at their home tenant. */
+  authorizeUrl?: string
 }
 
 /** A refusal with what the person needs next: an admin-consent link, a manual checklist, or a ticket to resume with. */
@@ -332,6 +335,7 @@ export class AzureDevOpsConnectFlowService {
       )
     }
     const chosen = ticket.connectionId ? ticket.organization! : organization
+    if (!ticket.connectionId) await this.refuseOtherTenant(ticket, chosen)
     let instanceId: string
     let projects: Array<{ id: string; name: string }>
     try {
@@ -354,6 +358,31 @@ export class AzureDevOpsConnectFlowService {
     const next: AzureDevOpsFlowTicket = { ...ticket, organization: chosen, organizationInstanceId: instanceId }
     delete next.projects
     return { ticket: sealAzureDevOpsFlowTicket(this.deps.keys, next), organization: chosen, projects }
+  }
+
+  /** A guest signs in at their home tenant; the organization's own tenant, from an unauthenticated read, must be the one signed in at. */
+  private async refuseOtherTenant(ticket: AzureDevOpsFlowTicket, organization: string): Promise<void> {
+    const resourceTenant = await readResourceTenant(this.deps.api, organization)
+    if (resourceTenant === null || resourceTenant === ticket.tenantId) return
+    const { app, redirectUri } = this.live()
+    const state = mintAzureDevOpsConnectState(
+      this.deps.keys,
+      { orgId: ticket.orgId, userId: ticket.userId, tenantId: resourceTenant },
+      this.deps.clock
+    )
+    throw new AzureDevOpsConnectRefusal(
+      `${organization} belongs to another Microsoft Entra tenant than the one you signed in at — sign in again at that tenant, as its member or guest.`,
+      409,
+      'tenant_mismatch',
+      {
+        authorizeUrl: azureDevOpsAuthorizeUrl(this.deps.api, this.deps.keys, {
+          clientId: app.clientId,
+          redirectUri,
+          state,
+          tenantId: resourceTenant
+        })
+      }
+    )
   }
 
   private async refuseTaken(orgId: string, instanceId: string): Promise<void> {
@@ -532,6 +561,7 @@ export class AzureDevOpsConnectFlowService {
       const level = await this.ensureBasic(recorded, organization, identityId)
       const subject = await this.subjectOf(recorded, organization, identityId)
       const { memberships } = await this.applyMemberships(recorded, organization, recorded.projects!, subject)
+      this.requireAuthority(recorded, organization, sp, memberships)
       if (level.outcome === 'refused') {
         throw this.entitlementRefusal(organization, sp, level.errorCodes, memberships, true, resume)
       }
@@ -598,6 +628,29 @@ export class AzureDevOpsConnectFlowService {
       if (e instanceof AzureDevOpsApiError && e.code === 'FORBIDDEN') return { outcome: 'refused', errorCodes: [] }
       return delegatedDenied(e, organization)
     }
+  }
+
+  /** A new connection to a service principal already in the organization needs proof the caller administers it there: at least one membership made or confirmed with their token. */
+  private requireAuthority(
+    ticket: AzureDevOpsFlowTicket,
+    organization: string,
+    sp: ServicePrincipal,
+    memberships: AzureDevOpsMembershipReport[]
+  ): void {
+    if (ticket.connectionId || memberships.some((m) => SUCCEEDED.has(m.outcome))) return
+    throw new AzureDevOpsConnectRefusal(
+      `Your account could not make or confirm any of the chosen project memberships in ${organization}. Connecting needs a Project Administrator of those projects or a Project Collection Administrator.`,
+      403,
+      'insufficient_rights',
+      {
+        checklist: [
+          'Ask a Project Administrator of the chosen projects, or a Project Collection Administrator, to connect.',
+          ...this.checklist(organization, sp, memberships, true, true)
+        ],
+        memberships,
+        inOrganization: true
+      }
+    )
   }
 
   /** The entitlement add or raise refused: 5032 names the role; either way the checklist and a ticket for verify. */
@@ -670,6 +723,7 @@ export class AzureDevOpsConnectFlowService {
     const subject = await this.subjectOf(ticket, organization, identityId)
     // A membership the caller may not make may already exist by hand; steps 5 and 6 decide.
     const { memberships } = await this.applyMemberships(ticket, organization, ticket.projects, subject)
+    this.requireAuthority(ticket, organization, sp, memberships)
     if (level.outcome === 'refused') {
       throw this.entitlementRefusal(organization, sp, level.errorCodes, memberships, true, resume)
     }

@@ -5,7 +5,8 @@ import type {
   AzureDevOpsConnectionRecord,
   AzureDevOpsConnectionRepo,
   AzureDevOpsRepositoryBindingRecord,
-  AzureDevOpsRepositoryBindingRepo
+  AzureDevOpsRepositoryBindingRepo,
+  AzureDevOpsRepositoryFacts
 } from '../persistence/ports.js'
 import {
   evaluateRepositoryPermissions,
@@ -32,6 +33,23 @@ export interface AzureDevOpsBindingServiceDeps {
   bindings: AzureDevOpsRepositoryBindingRepo
   service: AzureDevOpsConnectionService
   api: AzureDevOpsApiClient
+  /** A bound repository's path or clone URL changed (a rename): converge workspaces and grants, then re-project their agents. */
+  onPathChanged?: (orgId: string, repoId: bigint, repoPath: string, cloneUrl: string) => Promise<void>
+}
+
+/** The facts a listed repository binds or refreshes with. */
+function factsOf(
+  connection: AzureDevOpsConnectionRecord,
+  repository: AzureDevOpsRepository
+): AzureDevOpsRepositoryFacts {
+  return {
+    repositoryId: repository.id,
+    projectId: repository.projectId,
+    organizationInstanceId: connection.organizationInstanceId,
+    repoPath: `${connection.organization}/${repository.projectName}/${repository.name}`,
+    cloneUrl: repository.cloneUrl,
+    defaultBranch: repository.defaultBranch
+  }
 }
 
 function same(a: string, b: string): boolean {
@@ -52,12 +70,19 @@ export class AzureDevOpsBindingService {
     const repositories = await this.deps.service.withApi(connection, (token) =>
       listRepositories(this.deps.api, token, connection.organization)
     )
-    const visible = new Set(repositories.map((repo) => repo.id))
+    const visible = new Map(repositories.map((repo) => [repo.id, repo]))
     for (const binding of await this.deps.bindings.listForConnection(connection.orgId, connection.id)) {
-      if (!visible.has(binding.repositoryId)) {
+      const repository = visible.get(binding.repositoryId)
+      if (!repository) {
         if (binding.state === 'ready') {
           await this.deps.bindings.setState(binding.id, 'runtime_degraded', 'repository_unavailable')
         }
+        continue
+      }
+      const facts = factsOf(connection, repository)
+      // A renamed repository keeps its GUID: refresh the binding and converge what replicates its path.
+      if (facts.repoPath !== binding.repoPath || facts.cloneUrl !== binding.cloneUrl) {
+        await this.refresh(connection, facts)
       } else if (binding.stateReason === 'repository_unavailable') {
         await this.deps.bindings.setState(binding.id, 'ready', null)
       }
@@ -112,20 +137,20 @@ export class AzureDevOpsBindingService {
 
   /** Binding on first use (§5): identity, claim, catalog row and binding in one transaction; an existing binding is refreshed. */
   async ensureBound(located: AzureDevOpsLocatedRepository): Promise<AzureDevOpsRepositoryBindingRecord> {
-    const { connection, repository } = located
+    return this.refresh(located.connection, factsOf(located.connection, located.repository))
+  }
+
+  private async refresh(
+    connection: AzureDevOpsConnectionRecord,
+    facts: AzureDevOpsRepositoryFacts
+  ): Promise<AzureDevOpsRepositoryBindingRecord> {
     try {
-      const { binding } = await this.deps.bindings.bind({
+      const { binding, pathChanged } = await this.deps.bindings.bind({
         orgId: connection.orgId,
         connectionId: connection.id,
-        facts: {
-          repositoryId: repository.id,
-          projectId: repository.projectId,
-          organizationInstanceId: connection.organizationInstanceId,
-          repoPath: `${connection.organization}/${repository.projectName}/${repository.name}`,
-          cloneUrl: repository.cloneUrl,
-          defaultBranch: repository.defaultBranch
-        }
+        facts
       })
+      if (pathChanged) await this.deps.onPathChanged?.(connection.orgId, binding.repoId, facts.repoPath, facts.cloneUrl)
       return binding
     } catch (e) {
       if (e instanceof AzureDevOpsRepositoryClaimConflict) {

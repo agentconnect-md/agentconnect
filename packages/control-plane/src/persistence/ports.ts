@@ -5138,7 +5138,12 @@ export interface AzureDevOpsConnectionRecord {
   stateReason: AzureDevOpsDegradedReason | null
   lastVerifiedAt: Date | null
   createdAt: Date
+  /** A `deployment` connection's fingerprint of the deployment secret it last saw (§3.5); never the secret. */
+  secretFingerprint: string | null
 }
+
+/** A connection's credential at rest: an own application's sealed secret, or the deployment secret's fingerprint only. */
+export type AzureDevOpsConnectionCredential = { sealedSecret: string } | { secretFingerprint: string }
 
 /** What verification (§3.2 step 5) read as the identity, written beside the connection. */
 export interface AzureDevOpsVerifiedIdentity {
@@ -5150,7 +5155,7 @@ export interface AzureDevOpsVerifiedIdentity {
 }
 
 export interface AzureDevOpsConnectionRepo {
-  /** Create atomically with the sealed secret; throws AzureDevOpsOrganizationTaken when another organization holds the instance. */
+  /** Create atomically with its credential; throws AzureDevOpsOrganizationTaken when another organization holds the instance. */
   create(input: {
     orgId: string
     createdByUserId?: string
@@ -5158,7 +5163,7 @@ export interface AzureDevOpsConnectionRepo {
     credentialSource: AzureDevOpsCredentialSource
     clientId: string | null
     identity: AzureDevOpsVerifiedIdentity
-    sealedSecret: string
+    credential: AzureDevOpsConnectionCredential
   }): Promise<AzureDevOpsConnectionRecord>
   get(orgId: string, connectionId: string): Promise<AzureDevOpsConnectionRecord | null>
   /** Deployment-global by id, for the token cache and the reconciler. */
@@ -5174,8 +5179,8 @@ export interface AzureDevOpsConnectionRepo {
     identity: AzureDevOpsVerifiedIdentity,
     sealedSecret: string
   ): Promise<AzureDevOpsConnectionRecord | null>
-  /** Advance the epoch alone (a rotated deployment secret), recording the sealed value now in force. */
-  advanceEpoch(connectionId: string, sealedSecret: string): Promise<AzureDevOpsConnectionRecord | null>
+  /** Advance the epoch alone (a rotated deployment secret), recording the fingerprint now in force. */
+  advanceEpoch(connectionId: string, secretFingerprint: string): Promise<AzureDevOpsConnectionRecord | null>
   setState(
     connectionId: string,
     state: AzureDevOpsConnectionState,
@@ -5224,12 +5229,14 @@ export interface AzureDevOpsRepositoryBindingRepo {
   bind(input: { orgId: string; connectionId: string; facts: AzureDevOpsRepositoryFacts }): Promise<{
     binding: AzureDevOpsRepositoryBindingRecord
     created: boolean
+    /** An existing binding whose path or clone URL this bind changed: a rename to converge. */
+    pathChanged: boolean
   }>
   get(orgId: string, bindingId: string): Promise<AzureDevOpsRepositoryBindingRecord | null>
   byRepo(orgId: string, connectionId: string, repoId: bigint): Promise<AzureDevOpsRepositoryBindingRecord | null>
   listForOrg(orgId: string): Promise<AzureDevOpsRepositoryBindingRecord[]>
   listForConnection(orgId: string, connectionId: string): Promise<AzureDevOpsRepositoryBindingRecord[]>
-  /** Move a connection's bindings to `runtime_degraded`, or back to `ready`; `fromReasons` limits it to bindings degraded for those reasons. */
+  /** Move a connection's bindings to `runtime_degraded`, or back to `ready`; `fromReasons` limits it, and `repository_unavailable` bindings are never touched. */
   setStateForConnection(
     connectionId: string,
     state: AzureDevOpsBindingState,

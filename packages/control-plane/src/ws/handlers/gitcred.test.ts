@@ -512,7 +512,14 @@ describe('handleGitCredRequest — repoFullName passthrough (issue #457)', () =>
       await handleGitCredRequest(frame, conn, deps)
       expect(conn.replyTo).toHaveBeenCalledWith(frame, 'gitcred/grant', lease)
     }
-    expect(grantForAgent).toHaveBeenCalledWith(PLACED_AGENT, 7n, 'read')
+    expect(grantForAgent).toHaveBeenCalledWith(PLACED_AGENT, 7n, 'read', false)
+    // A proxy that met a 401 asks again with forceRefresh, which reaches the lease service.
+    await handleGitCredRequest(
+      gitcredFrame({ provider: 'azure-devops', externalRepoId: '7', consumer: 'proxy', forceRefresh: true }),
+      fakeConn(),
+      deps
+    )
+    expect(grantForAgent).toHaveBeenLastCalledWith(PLACED_AGENT, 7n, undefined, true)
     // No purpose-gated lease exists for it, and the other hosts keep serving the helper.
     const conn = fakeConn()
     await handleGitCredRequest(

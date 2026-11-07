@@ -10,6 +10,7 @@ import type { PrismaLike } from '../prisma.js'
 import { AzureDevOpsOrganizationTaken, AzureDevOpsRepositoryClaimConflict } from '../errors.js'
 import type {
   AzureDevOpsBindingState,
+  AzureDevOpsConnectionCredential,
   AzureDevOpsConnectionRecord,
   AzureDevOpsConnectionRepo,
   AzureDevOpsConnectionSecretStore,
@@ -51,7 +52,8 @@ function toConnectionRecord(r: AzureDevOpsConnection): AzureDevOpsConnectionReco
     state,
     stateReason: state === 'connected' ? null : (toReason(r.stateReason) ?? 'secret_rejected'),
     lastVerifiedAt: r.lastVerifiedAt,
-    createdAt: r.createdAt
+    createdAt: r.createdAt,
+    secretFingerprint: r.secretFingerprint
   }
 }
 
@@ -78,8 +80,9 @@ export class PgAzureDevOpsConnectionRepo implements AzureDevOpsConnectionRepo {
     credentialSource: AzureDevOpsCredentialSource
     clientId: string | null
     identity: AzureDevOpsVerifiedIdentity
-    sealedSecret: string
+    credential: AzureDevOpsConnectionCredential
   }): Promise<AzureDevOpsConnectionRecord> {
+    const { credential } = input
     return this.prisma.$transaction(async (tx) => {
       await lockOrganizationInstance(tx, input.identity.organizationInstanceId)
       const holder = await tx.azureDevOpsConnection.findFirst({
@@ -97,10 +100,15 @@ export class PgAzureDevOpsConnectionRepo implements AzureDevOpsConnectionRepo {
           credentialSource: input.credentialSource,
           clientId: input.clientId,
           state: 'connected',
+          secretFingerprint: 'secretFingerprint' in credential ? credential.secretFingerprint : null,
           ...identityFacts(input.identity)
         }
       })
-      await tx.azureDevOpsConnectionSecret.create({ data: { connectionId: row.id, clientSecret: input.sealedSecret } })
+      if ('sealedSecret' in credential) {
+        await tx.azureDevOpsConnectionSecret.create({
+          data: { connectionId: row.id, clientSecret: credential.sealedSecret }
+        })
+      }
       return toConnectionRecord(row)
     })
   }
@@ -168,20 +176,12 @@ export class PgAzureDevOpsConnectionRepo implements AzureDevOpsConnectionRepo {
     })
   }
 
-  async advanceEpoch(connectionId: string, sealedSecret: string): Promise<AzureDevOpsConnectionRecord | null> {
-    return this.prisma.$transaction(async (tx) => {
-      const res = await tx.azureDevOpsConnection.updateMany({
-        where: { id: connectionId },
-        data: { credentialEpoch: { increment: 1n } }
-      })
-      if (res.count !== 1) return null
-      await tx.azureDevOpsConnectionSecret.upsert({
-        where: { connectionId },
-        create: { connectionId, clientSecret: sealedSecret },
-        update: { clientSecret: sealedSecret }
-      })
-      return toConnectionRecord(await tx.azureDevOpsConnection.findUniqueOrThrow({ where: { id: connectionId } }))
+  async advanceEpoch(connectionId: string, secretFingerprint: string): Promise<AzureDevOpsConnectionRecord | null> {
+    const res = await this.prisma.azureDevOpsConnection.updateMany({
+      where: { id: connectionId },
+      data: { credentialEpoch: { increment: 1n }, secretFingerprint }
     })
+    return res.count === 1 ? this.getUnscoped(connectionId) : null
   }
 
   async setState(
@@ -302,19 +302,32 @@ export class PgAzureDevOpsRepositoryBindingRepo implements AzureDevOpsRepository
     orgId: string
     connectionId: string
     facts: AzureDevOpsRepositoryFacts
-  }): Promise<{ binding: AzureDevOpsRepositoryBindingRecord; created: boolean }> {
+  }): Promise<{ binding: AzureDevOpsRepositoryBindingRecord; created: boolean; pathChanged: boolean }> {
+    // Two first binds through one connection can still race on the catalog or binding row: the loser retries once and refreshes.
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await this.bindOnce(input)
+      } catch (e) {
+        const unique = typeof e === 'object' && e !== null && 'code' in e && (e as { code: unknown }).code === 'P2002'
+        if (!unique || attempt > 0) throw e
+      }
+    }
+  }
+
+  private async bindOnce(input: {
+    orgId: string
+    connectionId: string
+    facts: AzureDevOpsRepositoryFacts
+  }): Promise<{ binding: AzureDevOpsRepositoryBindingRecord; created: boolean; pathChanged: boolean }> {
     const { orgId, connectionId, facts } = input
     return this.prisma.$transaction(async (tx) => {
-      // §4: allocated once per repository GUID and never reused; a project change is the one fact that moves.
-      const identity = await tx.azureDevOpsRepositoryIdentity.upsert({
-        where: { repositoryId: facts.repositoryId },
-        create: {
-          repositoryId: facts.repositoryId,
-          projectId: facts.projectId,
-          organizationInstanceId: facts.organizationInstanceId
-        },
-        update: { projectId: facts.projectId }
-      })
+      // §4: allocated once per GUID, never reused; ON CONFLICT keeps two first binds from racing into a unique violation.
+      const [allocated] = await tx.$queryRaw<{ id: bigint }[]>`
+        INSERT INTO "azure_devops_repository_identity" ("repositoryId", "projectId", "organizationInstanceId", "createdAt", "updatedAt")
+        VALUES (${facts.repositoryId}::uuid, ${facts.projectId}::uuid, ${facts.organizationInstanceId}::uuid, now(), now())
+        ON CONFLICT ("repositoryId") DO UPDATE SET "projectId" = EXCLUDED."projectId", "updatedAt" = now()
+        RETURNING "id"`
+      const identity = { id: allocated!.id }
       await joinClaim(tx, orgId, identity.id)
       await tx.codeHostRepository.upsert({
         where: { orgId_provider_externalId: { orgId, provider: PROVIDER, externalId: identity.id } },
@@ -329,7 +342,10 @@ export class PgAzureDevOpsRepositoryBindingRepo implements AzureDevOpsRepository
         update: { displayPath: facts.repoPath, cloneUrl: facts.cloneUrl, defaultBranch: facts.defaultBranch }
       })
       const key = { connectionId_identityId: { connectionId, identityId: identity.id } }
-      const existing = await tx.azureDevOpsRepositoryBinding.findUnique({ where: key, select: { id: true } })
+      const existing = await tx.azureDevOpsRepositoryBinding.findUnique({
+        where: key,
+        select: { id: true, repoPath: true, cloneUrl: true }
+      })
       // A rebind refreshes the facts and recovers a degraded binding: the identity just read the repository.
       const row = await tx.azureDevOpsRepositoryBinding.upsert({
         where: key,
@@ -355,7 +371,9 @@ export class PgAzureDevOpsRepositoryBindingRepo implements AzureDevOpsRepository
         where: { provider: PROVIDER, externalId: identity.id, orgId, bindingRef: null },
         data: { bindingRef: row.id }
       })
-      return { binding: toBindingRecord(row), created: existing === null }
+      const pathChanged =
+        existing !== null && (existing.repoPath !== facts.repoPath || existing.cloneUrl !== facts.cloneUrl)
+      return { binding: toBindingRecord(row), created: existing === null, pathChanged }
     })
   }
 
@@ -408,7 +426,12 @@ export class PgAzureDevOpsRepositoryBindingRepo implements AzureDevOpsRepository
       where: {
         connectionId,
         NOT: { state, stateReason: reason },
-        ...(fromReasons ? { stateReason: { in: [...fromReasons] } } : {})
+        // A repository-level verdict is the picker's to clear; a connection-level change leaves it as it is.
+        AND: [
+          fromReasons
+            ? { stateReason: { in: fromReasons.filter((r) => r !== 'repository_unavailable') } }
+            : { OR: [{ stateReason: null }, { stateReason: { not: 'repository_unavailable' } }] }
+        ]
       },
       data: { state, stateReason: reason }
     })

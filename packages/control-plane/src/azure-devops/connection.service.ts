@@ -1,4 +1,5 @@
 // An organization's Azure DevOps connections (azure-devops-integration.md §3.2-§3.5): verify, connect, replace a secret, mint tokens, and move binding states.
+import { createHmac } from 'node:crypto'
 import type { Clock } from '../domain/clock.js'
 import { OrgId } from '../domain/ids.js'
 import { AzureDevOpsOrganizationTaken } from '../persistence/errors.js'
@@ -28,6 +29,12 @@ export interface AzureDevOpsDeploymentApplication {
   clientId: string
   /** Secret material, never logged or returned. */
   clientSecret: string
+}
+
+/** HMAC-SHA256 of the deployment secret under a key derived from the pepper for this purpose alone; never reversible to the secret. */
+export function azureDevOpsSecretFingerprint(pepper: string): (secret: string) => string {
+  const key = createHmac('sha256', pepper).update('azure-devops-deployment-secret-fingerprint-v1').digest()
+  return (secret) => createHmac('sha256', key).update(secret).digest('base64url')
 }
 
 /** A refusal the routes answer with its status; `code` is the machine-readable reason. */
@@ -60,6 +67,8 @@ export interface AzureDevOpsConnectionServiceDeps {
   deploymentApplication?: AzureDevOpsDeploymentApplication
   /** After an epoch advanced: re-project every consumer so daemon caches purge (§3.5). */
   onCredentialEpochChanged?: (orgId: string, connection: AzureDevOpsConnectionRecord) => Promise<void> | void
+  /** The keyed fingerprint a `deployment` connection keeps instead of the deployment secret (§3.5). */
+  secretFingerprint: (secret: string) => string
   log?: { warn(obj: object, msg: string): void; info?(obj: object, msg: string): void }
 }
 
@@ -228,8 +237,11 @@ export class AzureDevOpsConnectionService {
     const { identity } = await this.verify(input)
     const holder = await this.deps.connections.holderOfInstance(identity.organizationInstanceId)
     if (holder !== null && holder !== orgId) throw taken()
-    // A deployment connection seals the secret it was verified with, so a rotation is recognized at boot (§3.5).
-    const sealedSecret = await this.deps.cipher.seal(input.clientSecret, orgScope(OrgId(orgId)))
+    // An own secret is sealed; a deployment connection keeps only a fingerprint, which is how a rotation is recognized (§3.5).
+    const credential =
+      source === 'own'
+        ? { sealedSecret: await this.deps.cipher.seal(input.clientSecret, orgScope(OrgId(orgId))) }
+        : { secretFingerprint: this.deps.secretFingerprint(input.clientSecret) }
     try {
       return await this.deps.connections.create({
         orgId,
@@ -238,7 +250,7 @@ export class AzureDevOpsConnectionService {
         credentialSource: source,
         clientId: source === 'own' ? input.clientId.toLowerCase() : null,
         identity,
-        sealedSecret
+        credential
       })
     } catch (e) {
       if (e instanceof AzureDevOpsOrganizationTaken) throw taken()
@@ -298,13 +310,11 @@ export class AzureDevOpsConnectionService {
     const app = this.deps.deploymentApplication
     if (!app) return 0
     let advanced = 0
+    const fingerprint = this.deps.secretFingerprint(app.clientSecret)
     for (const connection of await this.deps.connections.listBySource('deployment')) {
       try {
-        // Compared and never logged.
-        const seen = await this.deps.secrets.get(connection.orgId, connection.id)
-        if (seen === app.clientSecret) continue
-        const sealed = await this.deps.cipher.seal(app.clientSecret, orgScope(OrgId(connection.orgId)))
-        const updated = await this.deps.connections.advanceEpoch(connection.id, sealed)
+        if (connection.secretFingerprint === fingerprint) continue
+        const updated = await this.deps.connections.advanceEpoch(connection.id, fingerprint)
         this.deps.tokens.purge(connection.id)
         if (!updated) continue
         advanced += 1
@@ -340,6 +350,11 @@ export class AzureDevOpsConnectionService {
       throw new AzureDevOpsConnectDenied('the connection has no stored client secret', 409, 'secret_missing')
     }
     return { tenantId: connection.tenantId, clientId: connection.clientId, clientSecret }
+  }
+
+  /** Drop the connection's cached token so the next request mints a fresh one. */
+  purgeToken(connectionId: string): void {
+    this.deps.tokens.purge(connectionId)
   }
 
   /** The connection's cached token (§3.4); a definite refusal degrades the connection and every binding it serves. */

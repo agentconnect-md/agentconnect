@@ -60,7 +60,7 @@ import { GiteaConvergeSweeper } from './gitea/converge-sweeper.js'
 import { GiteaGitcredService } from './gitea/gitcred.service.js'
 import { AzureDevOpsApiClient, type FetchLike as AzureDevOpsFetchLike } from './azure-devops/api.js'
 import { AzureDevOpsTokenCache } from './azure-devops/token-cache.js'
-import { AzureDevOpsConnectionService } from './azure-devops/connection.service.js'
+import { AzureDevOpsConnectionService, azureDevOpsSecretFingerprint } from './azure-devops/connection.service.js'
 import { AzureDevOpsBindingService } from './azure-devops/binding.service.js'
 import { AzureDevOpsGitcredService } from './azure-devops/gitcred.service.js'
 import { AzureDevOpsConnectFlowService } from './azure-devops/connect-flow.service.js'
@@ -1846,6 +1846,7 @@ export function buildContainer(
         }
       : {}),
     onCredentialEpochChanged: (orgId, connection) => reprojectAzureDevOpsConsumers(orgId, connection.id),
+    secretFingerprint: azureDevOpsSecretFingerprint(config.API_KEY_PEPPER),
     log: { warn: (obj, msg) => http.log.warn(obj, msg), info: (obj, msg) => http.log.info(obj, msg) }
   })
   const azureDevOps = {
@@ -1854,7 +1855,29 @@ export function buildContainer(
       connections: repos.azureDevOpsConnection,
       bindings: repos.azureDevOpsRepositoryBinding,
       service: azureDevOpsConnectionService,
-      api: azureDevOpsApi
+      api: azureDevOpsApi,
+      // A rename converges workspace clone URLs and grant paths, then re-projects those agents, as for Gitea.
+      onPathChanged: async (orgId, repoId, repoPath, cloneUrl) => {
+        const agentIds = await repos.agent.refreshCodeHostRepositoryPath(
+          OrgId(orgId),
+          'azure-devops',
+          repoId,
+          repoPath,
+          cloneUrl
+        )
+        for (const agentId of agentIds) {
+          void repos.agent
+            .getUnscoped(agentId)
+            .then(
+              (agent) =>
+                agent &&
+                agentDelivery.upsert(agent, (err, daemonId) =>
+                  http.log.warn({ err, agentId, daemonId }, 'azure devops rename: agent/upsert failed')
+                )
+            )
+            .catch((err) => http.log.warn({ err, agentId }, 'azure devops rename: agent refresh fan-out failed'))
+        }
+      }
     }),
     connect: new AzureDevOpsConnectFlowService({
       api: azureDevOpsApi,

@@ -103,6 +103,23 @@ async function listAll(api: AzureDevOpsApiClient, token: string, url: string): P
 
 const org = (organization: string) => encodeURIComponent(organization)
 
+const ZERO_GUID = '00000000-0000-0000-0000-000000000000'
+
+/** The Entra tenant backing an organization, from the header Azure DevOps sends on an unauthenticated read; null when it names none. */
+export async function readResourceTenant(api: AzureDevOpsApiClient, organization: string): Promise<string | null> {
+  try {
+    const res = await api.fetch(`${api.devOpsBaseUrl}/${org(organization)}/_apis/connectionData`, {
+      method: 'GET',
+      redirect: 'manual'
+    })
+    const tenant = res.headers.get('x-vss-resourcetenant')?.trim().toLowerCase()
+    await res.body?.cancel().catch(() => {})
+    return isGuid(tenant) && tenant !== ZERO_GUID ? tenant : null
+  } catch {
+    return null
+  }
+}
+
 /** §3.2 step 3: the organizations the signed-in administrator belongs to, through the profile and accounts APIs. */
 export async function listMemberOrganizations(
   api: AzureDevOpsApiClient,

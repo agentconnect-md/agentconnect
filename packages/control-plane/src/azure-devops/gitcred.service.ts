@@ -11,34 +11,45 @@ import type {
 } from '../persistence/ports.js'
 import { AzureDevOpsApiError, readConnectionData, type AzureDevOpsApiClient } from './api.js'
 import { AzureDevOpsConnectDenied, type AzureDevOpsConnectionService } from './connection.service.js'
+import { LEASE_MARGIN_MS } from './token-cache.js'
 
 /** A lease ends this long before the token inside it, so the proxy never presents an expired one. */
-export const LEASE_MARGIN_SEC = 300
+export const LEASE_MARGIN_SEC = LEASE_MARGIN_MS / 1000
 /** And never runs longer than this, whatever the token's life. */
 const LEASE_MAX_SEC = 3600
+/** A degraded connection's failed probe is trusted this long, so leases do not re-probe Entra on every request. */
+export const DEGRADED_PROBE_HOLD_MS = 60_000
+/** A forced refresh purges the connection's token at most this often, so a client cannot hammer Entra. */
+export const FORCE_REFRESH_MIN_INTERVAL_MS = 30_000
 
 export interface AzureDevOpsGitcredDeps {
   connections: Pick<AzureDevOpsConnectionRepo, 'get'>
   bindings: Pick<AzureDevOpsRepositoryBindingRepo, 'byRepo'>
   /** The additional-repository allowlist, the second authority beside the workspace. */
   repoAuths: Pick<AgentRepoAuthorizationRepo, 'listForAgent'>
-  service: Pick<AzureDevOpsConnectionService, 'accessToken' | 'withApi'>
+  service: Pick<AzureDevOpsConnectionService, 'accessToken' | 'withApi' | 'purgeToken'>
   api: AzureDevOpsApiClient
   clock: Clock
 }
 
 export class AzureDevOpsGitcredService {
+  /** Connection → when its last degraded probe failed. */
+  private readonly failedProbes = new Map<string, number>()
+  /** Connection → when a forced refresh last purged its token. */
+  private readonly forcedAt = new Map<string, number>()
+
   constructor(private readonly deps: AzureDevOpsGitcredDeps) {}
 
   /** The workspace repository or an explicit grant, under that authority's tier; a requested access only narrows it. */
   async grantForAgent(
     agent: AgentRecord,
     requestedExternalRepoId?: bigint,
-    requestedAccess?: 'read' | 'write'
+    requestedAccess?: 'read' | 'write',
+    forceRefresh = false
   ): Promise<GitCredGrant> {
     const { repoId, connectionId, clamp } = await this.authority(agent, requestedExternalRepoId)
     const access: 'read' | 'write' = requestedAccess === 'read' ? 'read' : clamp
-    return this.lease(agent.orgId, connectionId, repoId, access)
+    return this.lease(agent.orgId, connectionId, repoId, access, forceRefresh)
   }
 
   /** The repository this request may be served for, the connection that serves it, and its ceiling. */
@@ -75,7 +86,8 @@ export class AzureDevOpsGitcredService {
     orgId: string,
     connectionId: string,
     repoId: bigint,
-    access: 'read' | 'write'
+    access: 'read' | 'write',
+    forceRefresh: boolean
   ): Promise<GitCredGrant> {
     const binding = await this.deps.bindings.byRepo(orgId, connectionId, repoId)
     if (!binding) {
@@ -94,6 +106,7 @@ export class AzureDevOpsGitcredService {
     }
     const connection = await this.deps.connections.get(orgId, connectionId)
     if (!connection) throw new GitCredDeniedError('the Azure DevOps connection is gone', 'SCOPE_DENIED', false)
+    if (forceRefresh) this.purgeForced(connection.id)
     const token = await this.token(connection)
     const nowMs = this.deps.clock.now()
     const remainingSec = Math.floor((token.expiresAtMs - nowMs) / 1000)
@@ -101,8 +114,8 @@ export class AzureDevOpsGitcredService {
     if (ttlSec <= 0)
       throw new GitCredDeniedError('the Azure DevOps token is about to expire — retry', 'LEASE_DENIED', true)
     return {
-      // Azure DevOps ignores the basic-auth user; the identity's name keeps it readable (§6.4).
-      username: connection.identityName ?? connection.identityId,
+      // Azure DevOps ignores the basic-auth user; the identity id is a GUID, never a customer-chosen name with a colon (§3.4).
+      username: connection.identityId,
       token: token.token,
       ttlSec,
       expiresAt: new Date(nowMs + ttlSec * 1000).toISOString(),
@@ -115,16 +128,41 @@ export class AzureDevOpsGitcredService {
     }
   }
 
-  /** The connection's token; a degraded connection first proves access again with one connectionData read (§3.5). */
+  /** A forced refresh drops the cached token, at most once per interval per connection. */
+  private purgeForced(connectionId: string): void {
+    const now = this.deps.clock.now()
+    const last = this.forcedAt.get(connectionId)
+    if (last !== undefined && now - last < FORCE_REFRESH_MIN_INTERVAL_MS) return
+    this.forcedAt.set(connectionId, now)
+    this.deps.service.purgeToken(connectionId)
+  }
+
+  /** The connection's token; a degraded connection first proves access again with one connectionData read, at most once a minute (§3.5). */
   private async token(connection: AzureDevOpsConnectionRecord): Promise<{ token: string; expiresAtMs: number }> {
+    const now = this.deps.clock.now()
     try {
       if (connection.state === 'degraded') {
-        await this.deps.service.withApi(connection, (token) =>
-          readConnectionData(this.deps.api, token, connection.organization)
-        )
+        const failedAt = this.failedProbes.get(connection.id)
+        if (failedAt !== undefined && now - failedAt < DEGRADED_PROBE_HOLD_MS) {
+          throw new GitCredDeniedError(
+            `the Azure DevOps connection is degraded (${connection.stateReason ?? 'unknown'}) — retry later`,
+            'LEASE_DENIED',
+            true
+          )
+        }
+        try {
+          await this.deps.service.withApi(connection, (token) =>
+            readConnectionData(this.deps.api, token, connection.organization)
+          )
+        } catch (e) {
+          this.failedProbes.set(connection.id, now)
+          throw e
+        }
+        this.failedProbes.delete(connection.id)
       }
       return await this.deps.service.accessToken(connection)
     } catch (e) {
+      if (e instanceof GitCredDeniedError) throw e
       if (e instanceof AzureDevOpsConnectDenied) throw new GitCredDeniedError(e.message, 'LEASE_DENIED', true)
       if (e instanceof AzureDevOpsApiError) {
         if (e.code === 'RATE_LIMITED') throw new GitCredDeniedError(`azure devops: ${e.message}`, 'RATE_LIMITED', true)

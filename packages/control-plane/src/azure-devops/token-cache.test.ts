@@ -11,7 +11,9 @@ function minter(expiresInSec: number) {
 }
 
 describe('AzureDevOpsTokenCache', () => {
-  it('keeps a token until fewer than ten minutes of its issued life remain, then refreshes', async () => {
+  it('keeps a token until fewer than twenty minutes of its issued life remain, then refreshes', async () => {
+    // Every lease then outlives the daemon's ten-minute handout floor: 20 − 5 (lease margin) > 10.
+    expect(REFRESH_MARGIN_MS).toBe(20 * 60_000)
     let now = 0
     const cache = new AzureDevOpsTokenCache(() => now)
     const mint = minter(3600)

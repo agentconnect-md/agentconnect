@@ -20,10 +20,14 @@ import {
   exampleRepository,
   type FakeAzureDevOpsOptions
 } from '../fakes/azure-devops-api.js'
-import { AzureDevOpsConnectionService } from '../../src/azure-devops/connection.service.js'
+import {
+  AzureDevOpsConnectionService,
+  azureDevOpsSecretFingerprint
+} from '../../src/azure-devops/connection.service.js'
 import { AzureDevOpsBindingService } from '../../src/azure-devops/binding.service.js'
 import { AzureDevOpsGitcredService } from '../../src/azure-devops/gitcred.service.js'
 import { AzureDevOpsTokenCache } from '../../src/azure-devops/token-cache.js'
+import { readConnectionData } from '../../src/azure-devops/api.js'
 import {
   PgAzureDevOpsConnectionRepo,
   PgAzureDevOpsConnectionSecretStore,
@@ -41,6 +45,7 @@ const ROUTING = { organization: ORGANIZATION, projectId: PROJECT_ID, repositoryI
 const clock = trackedTestClock()
 const cipher = makeSecretCipher({ SECRET_CIPHER: 'none' } as never)
 const OWN_APP = { organization: ORGANIZATION, tenantId: TENANT_ID, clientId: CLIENT_ID, clientSecret: 'example-secret' }
+const fingerprint = azureDevOpsSecretFingerprint('example-pepper-example-pepper-example-pepper')
 
 let running: HttpApp | undefined
 afterEach(async () => {
@@ -64,13 +69,26 @@ function harness(opts: { fake?: FakeAzureDevOpsOptions; deploymentSecret?: strin
     ...(opts.deploymentSecret !== undefined
       ? { deploymentApplication: { clientId: DEPLOYMENT_CLIENT_ID, clientSecret: opts.deploymentSecret } }
       : {}),
-    onCredentialEpochChanged: (_orgId, connection) => void epochChanges.push(connection.id)
+    onCredentialEpochChanged: (_orgId, connection) => void epochChanges.push(connection.id),
+    secretFingerprint: fingerprint
   })
+  const renames: Array<{ repoId: bigint; repoPath: string; cloneUrl: string; agentIds: string[] }> = []
+  const agents = new PgAgentRepo(prisma)
   const bindingService = new AzureDevOpsBindingService({
     connections: connectionRepo,
     bindings,
     service,
-    api: fake.api
+    api: fake.api,
+    onPathChanged: async (orgId, repoId, repoPath, cloneUrl) => {
+      const agentIds = await agents.refreshCodeHostRepositoryPath(
+        OrgId(orgId),
+        'azure-devops',
+        repoId,
+        repoPath,
+        cloneUrl
+      )
+      renames.push({ repoId, repoPath, cloneUrl, agentIds })
+    }
   })
   running = buildHttpApp(prisma, {}, undefined, undefined, {
     azureDevOps: { connections: service, bindings: bindingService }
@@ -88,7 +106,7 @@ function harness(opts: { fake?: FakeAzureDevOpsOptions; deploymentSecret?: strin
     expect(res.statusCode).toBe(200)
     return res.json() as { id: string; credentialEpoch: string }
   }
-  return { a: running, fake, service, bindings, connectionRepo, gitcred, epochChanges, connect }
+  return { a: running, fake, service, bindings, connectionRepo, gitcred, epochChanges, connect, renames }
 }
 
 async function createAgent(h: ReturnType<typeof harness>, gitRepo: string, access?: 'read' | 'write') {
@@ -205,6 +223,10 @@ describe('connecting an own application (§3.2)', () => {
       tenantId: TENANT_ID
     })
     expect(connection).toMatchObject({ credentialSource: 'deployment', clientId: null, credentialEpoch: 1n })
+    // Only a keyed fingerprint is kept for a deployment connection; no copy of the deployment secret under any organization.
+    expect(connection.secretFingerprint).toBe(fingerprint('deployment-secret'))
+    expect(connection.secretFingerprint).not.toContain('deployment-secret')
+    expect(await prisma.azureDevOpsConnectionSecret.count({ where: { connectionId: connection.id } })).toBe(0)
     expect(await h.service.reconcileDeploymentSecret()).toBe(0)
     const refused = await h.a.app.inject({
       method: 'POST',
@@ -220,10 +242,14 @@ describe('connecting an own application (§3.2)', () => {
       clock,
       api: h.fake.api,
       tokens: new AzureDevOpsTokenCache(() => clock.now()),
-      deploymentApplication: { clientId: DEPLOYMENT_CLIENT_ID, clientSecret: 'rotated-deployment-secret' }
+      deploymentApplication: { clientId: DEPLOYMENT_CLIENT_ID, clientSecret: 'rotated-deployment-secret' },
+      secretFingerprint: fingerprint
     })
     expect(await rotated.reconcileDeploymentSecret()).toBe(1)
-    expect((await h.connectionRepo.getUnscoped(connection.id))!.credentialEpoch).toBe(2n)
+    const advanced = (await h.connectionRepo.getUnscoped(connection.id))!
+    expect(advanced.credentialEpoch).toBe(2n)
+    expect(advanced.secretFingerprint).toBe(fingerprint('rotated-deployment-secret'))
+    expect(await prisma.azureDevOpsConnectionSecret.count({ where: { connectionId: connection.id } })).toBe(0)
     expect(await rotated.reconcileDeploymentSecret()).toBe(0)
   })
 })
@@ -434,7 +460,7 @@ describe('additional-repository grants and removal (§5)', () => {
         identityName: null,
         verifiedAt: new Date()
       },
-      sealedSecret: 'sealed'
+      credential: { sealedSecret: 'sealed' }
     })
     const facts = {
       repositoryId: REPOSITORY_ID,
@@ -467,7 +493,7 @@ describe('additional-repository grants and removal (§5)', () => {
         identityName: null,
         verifiedAt: new Date()
       },
-      sealedSecret: 'sealed'
+      credential: { sealedSecret: 'sealed' }
     })
     const { binding } = await h.bindings.bind({
       orgId: other.id,
@@ -551,7 +577,7 @@ describe('binding states (§3.5, §5)', () => {
     const agent = (await new PgAgentRepo(prisma).get(OrgId(DEFAULT_ORG_ID), AgentId(agentId)))!
     const lease = await h.gitcred.grantForAgent(agent)
     expect(lease).toMatchObject({
-      username: 'Example Application',
+      username: IDENTITY_ID,
       access: 'write',
       provider: 'azure-devops',
       repoFullName: 'example-org/Example Project/Example Repo',
@@ -572,5 +598,101 @@ describe('binding states (§3.5, §5)', () => {
     h.fake.repositories = [exampleRepository()]
     await h.a.app.inject({ method: 'GET', url: `${ORG}/azure-devops/connections/${connection.id}/repositories` })
     expect((await h.gitcred.grantForAgent(agent)).access).toBe('write')
+  })
+})
+
+describe('review fixes (§3.5, §4, §5)', () => {
+  const factsFor = (repositoryId: string, name: string) => ({
+    repositoryId,
+    projectId: PROJECT_ID,
+    organizationInstanceId: INSTANCE_ID,
+    repoPath: `example-org/Example Project/${name}`,
+    cloneUrl: `https://dev.azure.com/example-org/Example%20Project/_git/${encodeURIComponent(name)}`,
+    defaultBranch: 'main'
+  })
+
+  it('binds one repository from concurrent first uses without a unique violation', async () => {
+    const h = harness()
+    const connection = await h.connect()
+    const facts = factsFor(REPOSITORY_ID, 'Example Repo')
+    const results = await Promise.all(
+      Array.from({ length: 4 }, () => h.bindings.bind({ orgId: DEFAULT_ORG_ID, connectionId: connection.id, facts }))
+    )
+    expect(new Set(results.map((r) => r.binding.id)).size).toBe(1)
+    expect(new Set(results.map((r) => r.binding.repoId)).size).toBe(1)
+    expect(await prisma.azureDevOpsRepositoryIdentity.count({ where: { repositoryId: REPOSITORY_ID } })).toBe(1)
+  })
+
+  it('converges a renamed repository into the binding, the workspace clone URL and the grant path', async () => {
+    const h = harness({
+      fake: {
+        repositories: [exampleRepository(), exampleRepository({ id: SECOND_REPOSITORY_ID, name: 'Second Repo' })]
+      }
+    })
+    const connection = await h.connect()
+    const created = await createAgent(h, GIT_REPO, 'write')
+    const agentId = (created.json() as { id: string }).id
+    const granted = await h.a.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents/${agentId}/repos`,
+      payload: {
+        provider: 'azure-devops',
+        connectionId: connection.id,
+        repositoryId: SECOND_REPOSITORY_ID,
+        access: 'read'
+      }
+    })
+    expect(granted.statusCode).toBe(200)
+    h.fake.repositories = [
+      exampleRepository({ name: 'Renamed Repo' }),
+      exampleRepository({ id: SECOND_REPOSITORY_ID, name: 'Renamed Second' })
+    ]
+    const pick = () =>
+      h.a.app.inject({ method: 'GET', url: `${ORG}/azure-devops/connections/${connection.id}/repositories` })
+    expect((await pick()).statusCode).toBe(200)
+    const paths = (await h.bindings.listForOrg(DEFAULT_ORG_ID)).map((b) => b.repoPath).sort()
+    expect(paths).toEqual(['example-org/Example Project/Renamed Repo', 'example-org/Example Project/Renamed Second'])
+    expect(h.renames.map((r) => r.repoPath).sort()).toEqual(paths)
+    const agent = (await new PgAgentRepo(prisma).get(OrgId(DEFAULT_ORG_ID), AgentId(agentId)))!
+    expect(agent.workspace.mode === 'git' && agent.workspace.gitRepo).toBe(
+      'https://dev.azure.com/example-org/Example%20Project/_git/Renamed%20Repo'
+    )
+    const [grant] = await new PgAgentRepoAuthorizationRepo(prisma).listForAgent(AgentId(agentId))
+    expect(grant!.repoFullName).toBe('example-org/Example Project/Renamed Second')
+    expect(h.renames.flatMap((r) => r.agentIds)).toContain(agentId)
+    // A second read with nothing renamed converges nothing.
+    await pick()
+    expect(h.renames).toHaveLength(2)
+  })
+
+  it('leaves a repository_unavailable binding alone through a connection-level degrade and recovery', async () => {
+    const h = harness()
+    const connection = await h.connect()
+    const bind = (repositoryId: string, name: string) =>
+      h.bindings.bind({ orgId: DEFAULT_ORG_ID, connectionId: connection.id, facts: factsFor(repositoryId, name) })
+    const first = await bind(REPOSITORY_ID, 'Example Repo')
+    const second = await bind(SECOND_REPOSITORY_ID, 'Second Repo')
+    await h.bindings.setState(second.binding.id, 'runtime_degraded', 'repository_unavailable')
+    const record = (await h.connectionRepo.getUnscoped(connection.id))!
+    const states = async () =>
+      Object.fromEntries(
+        (await h.bindings.listForConnection(DEFAULT_ORG_ID, connection.id)).map((b) => [b.id, [b.state, b.stateReason]])
+      )
+    h.fake.revoked = 'TF400813'
+    await expect(
+      h.service.withApi(record, (token) => readConnectionData(h.fake.api, token, ORGANIZATION))
+    ).rejects.toMatchObject({ code: 'ACCESS_REVOKED' })
+    expect(await states()).toEqual({
+      [first.binding.id]: ['runtime_degraded', 'access_revoked'],
+      [second.binding.id]: ['runtime_degraded', 'repository_unavailable']
+    })
+    h.fake.revoked = undefined
+    await h.service.withApi({ ...record, state: 'degraded', stateReason: 'access_revoked' }, (token) =>
+      readConnectionData(h.fake.api, token, ORGANIZATION)
+    )
+    expect(await states()).toEqual({
+      [first.binding.id]: ['ready', null],
+      [second.binding.id]: ['runtime_degraded', 'repository_unavailable']
+    })
   })
 })

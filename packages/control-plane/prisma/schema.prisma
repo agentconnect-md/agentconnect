@@ -3771,13 +3771,14 @@ model AzureDevOpsConnection {
   organization           String // the organization name dev.azure.com addresses
   organizationInstanceId String    @db.Uuid // rename-stable organization identity from connectionData
   identityId             String    @db.Uuid // connectionData.authenticatedUser.id of the service principal
-  identityName           String? // its display name, the basic-auth username the proxy presents
+  identityName           String? // its display name, shown on the card; the lease's basic-auth user is identityId
   credentialSource       String
   clientId               String?   @db.Uuid // the own application's client ID; null for the deployment application
   credentialEpoch        BigInt    @default(1) // purge fence: bumped on every secret change
   state                  String
   stateReason            String?
   lastVerifiedAt         DateTime? @db.Timestamptz(6)
+  secretFingerprint      String? // a deployment connection's HMAC of the deployment secret last seen; never the secret
   createdAt              DateTime  @default(now()) @db.Timestamptz(6)
   updatedAt              DateTime  @updatedAt @db.Timestamptz(6)
 
@@ -3792,7 +3793,7 @@ model AzureDevOpsConnection {
   @@map("azure_devops_connection")
 }
 
-/// Sealed client secret, 1:1 with the connection: an own application's secret, or the deployment secret last seen.
+/// An own application's sealed client secret, 1:1 with its connection; a deployment connection has none.
 model AzureDevOpsConnectionSecret {
   connectionId String @id @db.Uuid
   clientSecret String // stored SecretCipher representation
