@@ -1,9 +1,19 @@
 // The credential proxy's certificate authority and the trust bundle a runtime verifies with (github-app-git-credentials.md, Phase 2, Trust).
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  writeFileSync
+} from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { getCACertificates } from 'node:tls'
 import { dirname, join } from 'node:path'
 import { generateCa } from '@anthropic-ai/sandbox-runtime'
+import { tlsTrustEnv } from '../config/tls-trust-env.js'
 
 export interface ProxyCa {
   /** The public half, the only directory a sandbox may read: the CA certificate and the bundle, never a key. */
@@ -38,10 +48,44 @@ export function loadProxyCa(dir: string): ProxyCa {
   }
   const certPem = readFileSync(certPath, 'utf8')
   const keyPem = readFileSync(keyPath, 'utf8')
-  const roots = new Set([...getCACertificates('default'), ...getCACertificates('system')])
   const bundlePath = join(trustDir, 'trust.pem')
-  writeAtomically(bundlePath, `${[...roots, certPem.trim()].join('\n')}\n`, 0o644)
+  writeAtomically(bundlePath, `${[...upstreamAuthorities(), certPem.trim()].join('\n')}\n`, 0o644)
   return { trustDir, certPem, keyPem, certPath, keyPath, bundlePath }
+}
+
+const PEM_CERTIFICATE = /-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g
+
+/** The certificates in one PEM file, or none for a file that cannot be read. */
+function pemCertificates(file: string): string[] {
+  try {
+    return readFileSync(file, 'utf8').match(PEM_CERTIFICATE) ?? []
+  } catch {
+    return []
+  }
+}
+
+/** The operator's authorities as `tlsTrustEnv` names them (gitlab-com-integration.md §24.5): its bundle files, and the files of a certificate directory. */
+export function operatorAuthorities(env: NodeJS.ProcessEnv = process.env): string[] {
+  const trust = tlsTrustEnv(env)
+  const files = [trust.NODE_EXTRA_CA_CERTS, trust.SSL_CERT_FILE, trust.GIT_SSL_CAINFO].filter(
+    (file): file is string => file !== undefined
+  )
+  if (trust.SSL_CERT_DIR) {
+    for (const dir of trust.SSL_CERT_DIR.split(':')) {
+      try {
+        for (const name of readdirSync(dir)) if (statSync(join(dir, name)).isFile()) files.push(join(dir, name))
+      } catch {
+        // A missing directory adds nothing, as it does for OpenSSL.
+      }
+    }
+  }
+  return files.flatMap(pemCertificates)
+}
+
+/** What a code host is verified with, upstream and in a runtime: the system roots plus the operator's authorities, since a self-managed instance often uses a private CA. */
+export function upstreamAuthorities(env: NodeJS.ProcessEnv = process.env): string[] {
+  const roots = [...getCACertificates('default'), ...getCACertificates('system'), ...operatorAuthorities(env)]
+  return [...new Set(roots.map((pem) => pem.trim()))]
 }
 
 /** The variables that point a runtime's clients at the bundle: OpenSSL and Go, curl, git, Python's requests, and Node. */

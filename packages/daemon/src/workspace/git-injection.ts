@@ -457,21 +457,21 @@ function repoBearingHosts(scope: ManagedCredentialScope): Partial<Record<CodeHos
   return { gitlab: scope.gitlabRepoBearing, gitea: scope.giteaRepoBearing }
 }
 
-/**
- * The hosts the SESSION config pins the helper for: the operation's own host, plus each spec-hosted
- * instance the spec carries a repo-bearing consumer for that is not the workspace (§24.4). Only
- * the session channel widens — a daemon-run clone, fetch or push always knows its exact target.
- */
-function sessionCredentialBases(scope: ManagedCredentialScope): string[] {
-  const bases = [scope.host.baseUrl]
+/** The hosts the session config pins the helper for, and the credential proxy serves: the operation's own, plus each spec-hosted instance a repo-bearing consumer rides on (§24.4). */
+export function sessionCredentialHosts(scope: ManagedCredentialScope): ManagedCredentialHost[] {
+  const hosts = [scope.host]
   const spec = scopeSpecHosts(scope)
   const bearing = repoBearingHosts(scope)
   for (const module of specHostCodeHosts()) {
     if (module.provider === scope.host.provider || bearing[module.provider] !== true) continue
-    const instance = module.managedHost(spec).baseUrl
-    if (!bases.includes(instance)) bases.push(instance)
+    const instance = module.managedHost(spec)
+    if (!hosts.some((host) => host.baseUrl === instance.baseUrl)) hosts.push(instance)
   }
-  return bases
+  return hosts
+}
+
+function sessionCredentialBases(scope: ManagedCredentialScope): string[] {
+  return sessionCredentialHosts(scope).map((host) => host.baseUrl)
 }
 
 /**
@@ -641,8 +641,6 @@ export function liveSecretsChannelEnv(
 /** The variable a proxied environment's placeholder rides in, which the helper below hands git. */
 export const CODE_HOST_CREDENTIAL_ENV = 'AC_CODEHOST_CREDENTIAL'
 
-const GITHUB_BASE_URL = 'https://github.com'
-
 // Quoted whole, since `;` would start a gitconfig comment; it answers only `get`, with the placeholder the proxy exchanges.
 const PLACEHOLDER_HELPER = `"!f() { test $1 = get || return 0; echo username=x-access-token; echo password=$${CODE_HOST_CREDENTIAL_ENV}; }; f"`
 
@@ -734,7 +732,7 @@ export function sessionGitConfig(
   // `null` is an agent the daemon issues NO managed credential to: it still gets the file for the
   // ambient policy, and nothing that would hand it a credential pointer or a socket capability.
   scope: ManagedCredentialScope | null = GITHUB_CREDENTIAL_SCOPE,
-  // The credential proxy carries GitHub's token: git presents the environment's placeholder instead of asking the helper.
+  // The credential proxy carries every pinned host's token: git presents the environment's placeholder instead of asking the helper.
   proxied = false
 ): { path: string; content: string; env: Record<string, string> } {
   // Keyed by content, a pure function of (agent, class, proxy) with identity in env, so a dream host never cuts the warm host's helper.
@@ -753,7 +751,7 @@ export function sessionGitConfig(
     ...bases.flatMap((base) => [
       `[credential "${base}"]`,
       '\thelper = ', // reset the accumulated helper list for this host
-      `\thelper = ${proxied && base === GITHUB_BASE_URL ? PLACEHOLDER_HELPER : quotedHelper(agentId, target)}`,
+      `\thelper = ${proxied ? PLACEHOLDER_HELPER : quotedHelper(agentId, target)}`,
       '\tuseHttpPath = true'
     ]),
     ''

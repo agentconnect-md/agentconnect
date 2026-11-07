@@ -550,6 +550,9 @@ repository's grant from satisfying another. The grant echoes provider,
 numeric repository id, path, username, access, credential epoch, host, and
 lease TTL, and the consumer verifies every field. The token is presented as
 the HTTPS password with the bot's username; Gitea accepts either form.
+Where the daemon's credential proxy runs, a host or `srt` session holds a
+placeholder and the proxy presents this token per request
+(github-app-git-credentials.md, Phase 2).
 
 There is no CLI wrapper. The agent reads issues, pull requests, diffs, and
 statuses through the provider read tools and mutates through the effect

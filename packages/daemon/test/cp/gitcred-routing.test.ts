@@ -218,6 +218,44 @@ describe('GitCredServer routing (gitcred.sock)', () => {
     ])
   })
 
+  it('serves the credential proxy exactly the ask the helper and the glab wrapper make', async () => {
+    const { sockPath, gets, capability } = await boot('example-group/example-project', {
+      providerOf: () => 'gitlab',
+      workspaceRepoIdOf: () => '4455667',
+      qualifiedRepoOf: (_agentId: string, repoFullName: string) =>
+        repoFullName === 'example-group/example-second'
+          ? ({ provider: 'gitlab', externalId: '4455668' } as const)
+          : undefined
+    })
+    const helper = await roundtrip(sockPath, {
+      op: 'get',
+      agentId: 'a1',
+      capability,
+      repoFullName: 'example-group/example-second',
+      provider: 'gitlab'
+    })
+    const proxied = await server!.agentCredential('a1', {
+      plane: 'git',
+      provider: 'gitlab',
+      repoFullName: 'example-group/example-second'
+    })
+    expect(proxied).toEqual({ username: 'x-access-token', token: helper.password })
+    expect(gets[1]).toEqual(gets[0])
+    // The workspace by path folds onto its repo-less key, and the API read takes glab's read clamp.
+    await server!.agentCredential('a1', {
+      plane: 'glab',
+      provider: 'gitlab',
+      repoFullName: 'example-group/example-project'
+    })
+    expect(gets[2]).toEqual({
+      agentId: 'a1',
+      opts: { plane: 'glab', provider: 'gitlab', externalRepoId: '4455667', requestedAccess: 'read' }
+    })
+    await expect(server!.agentCredential('a1', { plane: 'git', provider: 'gitea' })).rejects.toThrow(
+      'no managed gitea credential'
+    )
+  })
+
   it('routes a private GitHub skill source to GitHub even when the workspace credential is gitlab', async () => {
     // Skill acquisition sends no host hint, so without the spec's skill authority it would reach the gitlab broker.
     const { sockPath, gets, capability } = await boot('example-group/example-project', {
