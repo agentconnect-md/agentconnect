@@ -73,7 +73,7 @@ Two facts shape the design:
 | Where a tier is held  | a label on one token                  | the proxy; the token is organization-wide                                   |
 | Agent token delivery  | helper or proxy                       | proxy only                                                                  |
 | Provider CLI          | none                                  | the Azure CLI `azure-devops` extension through the proxy, writes by tier    |
-| API reads naming none | the workspace's credential            | `connectionData` and resource-area lookups only; everything else refused    |
+| API reads naming none | the workspace's credential            | the Azure CLI's discovery reads only; everything else refused               |
 | Webhooks              | managed per repository                | none in the first version (§11)                                             |
 | Rate limiting         | instance-defined                      | per identity, shared by every agent of the organization (§6.5)              |
 
@@ -542,7 +542,10 @@ rather than the one the request was routed by.
   the agent's authorized Azure DevOps repositories by name, or by GUID below a
   project; without a project it is the repository in the project of the same
   name, and a GUID without a project is refused, as Azure DevOps refuses it
-  (`TF200016`).
+  (`TF200016`). A `GET` or `HEAD` of `{repository}/vsts/info`, which the Azure
+  CLI reads to resolve a Git remote into its organization, project and
+  repository, is forwarded as a REST read under that repository's read lease;
+  any other path below the repository is refused.
 - **REST naming a repository**: `[{project}/]_apis/git/repositories/{id-or-name}/…`.
   The repository is resolved by GUID, with or without a project, or by project
   and name; Azure DevOps itself refuses a name without a project. The project
@@ -559,12 +562,12 @@ rather than the one the request was routed by.
   so a held repository's path never reaches another repository's pull request.
   Any other pull request, including one of another held repository, gets the
   `TF401180` answer for a missing id.
-- **REST naming no repository**: only `_apis/connectionData` and
-  `_apis/ResourceAreas[/{area}]`, one level deep, at the organization's root,
-  which the Azure CLI reads before any command. Each is forwarded as a read
+- **REST naming no repository**: only what the Azure CLI reads before any
+  command, at the organization's root: `_apis/connectionData`,
+  `_apis/ResourceAreas[/{area}]`, one level deep, and an `OPTIONS` of `_apis`
+  itself, which lists the API's resource locations. Each is forwarded as a read
   under a read lease of one of the agent's repositories in that organization:
-  the token is the same for all of them, and neither answer is about a
-  repository.
+  the token is the same for all of them, and no answer is about a repository.
 - **One pull request by id**: `GET [{project}/]_apis/git/pullrequests/{id}`
   names no repository, but the Azure CLI resolves `--id` through it before
   every repository-scoped call, including `az repos pr update` and
