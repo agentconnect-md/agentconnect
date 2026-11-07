@@ -21,9 +21,10 @@ import {
   projectRuntimeHomeSeedFile,
   runtimeHomeEnvironment
 } from '../src/runtimes/runtime-home.js'
-import { extractOmpCredentials } from '../src/runtimes/omp-credentials.js'
+import { extractOmpCredentials, readOmpApiCredentials } from '../src/runtimes/omp-credentials.js'
 import { discoverSeededRuntimeCredentials } from '../src/runtimes/runtime-seeded-credentials.js'
 import { fifoWriter, killFifoWriters, mkfifo } from './fifo-support.js'
+import { ompOAuth, writeOmpDatabase } from './runtime-key-files-support.js'
 
 afterEach(killFifoWriters)
 
@@ -204,6 +205,56 @@ describe('private runtime HOME', () => {
       provider: { anthropic: { options: { apiKey: 'synthetic-opencode-key', timeout: 5 } } },
       theme: 'private'
     })
+  })
+
+  it('puts the host keys back in a projected YAML config and a projected plain-text copy, and leaves an excluded one', () => {
+    const { hostHome, scopeDir } = fixture()
+    const omp = join(hostHome, '.omp', 'agent')
+    const kimi = join(hostHome, '.kimi-code')
+    mkdirSync(omp, { recursive: true })
+    mkdirSync(kimi)
+    writeFileSync(join(omp, 'config.yml'), 'providers:\n  example:\n    apiKey: synthetic-omp-key\n')
+    writeFileSync(join(kimi, 'config.toml.bak'), 'api_key = "synthetic-kimi-key"\n')
+    const ompHome = prepareRuntimeHome('omp', scopeDir, { HOME: hostHome })
+    const yaml = join(ompHome, '.omp', 'agent', 'config.yml')
+    writeFileSync(yaml, 'providers:\n  example:\n    apiKey: acph1_fixture-placeholder\n    timeout: 5\n')
+    prepareRuntimeHome('omp', scopeDir, { HOME: hostHome })
+    expect(readFileSync(yaml, 'utf8')).toBe('providers:\n  example:\n    apiKey: synthetic-omp-key\n    timeout: 5\n')
+    const kimiHome = prepareRuntimeHome('kimi', scopeDir, { HOME: hostHome })
+    const text = join(kimiHome, '.kimi-code', 'config.toml.bak')
+    writeFileSync(text, 'api_key = "acph1_fixture-placeholder"\n')
+    prepareRuntimeHome('kimi', scopeDir, { HOME: hostHome }, undefined, ['.kimi-code/config.toml.bak'])
+    expect(readFileSync(text, 'utf8')).toBe('api_key = "acph1_fixture-placeholder"\n')
+    prepareRuntimeHome('kimi', scopeDir, { HOME: hostHome })
+    expect(readFileSync(text, 'utf8')).toBe('api_key = "synthetic-kimi-key"\n')
+  })
+
+  it("puts the host's key back in an OMP database row that holds a placeholder, and keeps the database's own state", () => {
+    const { hostHome, scopeDir } = fixture()
+    const source = join(hostHome, '.omp', 'agent', 'agent.db')
+    writeOmpDatabase(source, 'synthetic-omp-key')
+    const home = prepareRuntimeHome('omp', scopeDir, { HOME: hostHome })
+    const path = join(home, '.omp', 'agent', 'agent.db')
+    const db = new DatabaseSync(path)
+    try {
+      db.exec('PRAGMA journal_mode=WAL')
+      db.exec("CREATE TABLE usage_history (value TEXT); INSERT INTO usage_history VALUES ('private-usage')")
+      db.prepare('UPDATE auth_credentials SET data=? WHERE id=1').run(JSON.stringify({ key: 'acph1_fixture' }))
+    } finally {
+      db.close()
+    }
+    prepareRuntimeHome('omp', scopeDir, { HOME: hostHome }, undefined, ['.omp/agent/agent.db'])
+    expect(readOmpApiCredentials(path)[0]?.key).toBe('acph1_fixture')
+    prepareRuntimeHome('omp', scopeDir, { HOME: hostHome })
+    expect(readOmpApiCredentials(path)[0]?.key).toBe('synthetic-omp-key')
+    expect(ompOAuth(path)).toEqual(ompOAuth(source))
+    const restored = new DatabaseSync(path, { readOnly: true })
+    try {
+      expect(restored.prepare('SELECT value FROM usage_history').get()?.value).toBe('private-usage')
+    } finally {
+      restored.close()
+    }
+    expect(existsSync(`${path}-wal`)).toBe(false)
   })
 
   it("gives a credential-proxy placeholder in retained private config way to the host's saved key", () => {

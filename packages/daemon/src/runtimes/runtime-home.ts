@@ -22,7 +22,32 @@ import { MAX_SEED_FILE_BYTES } from './runtime-seeded-credentials.js'
 import { withDescentSync } from '../shim/safe-descent.js'
 import { readRegularFileSync, RegularFileError } from '../fs/regular-file.js'
 import { looksLikePlaceholder } from '../credential-proxy/placeholder.js'
-import { restoreProxiedDeepSeekKey, restoreProxiedOpenCodeKeys } from './proxied-key-restore.js'
+import { restoreProxiedDeepSeekKey, restoreProxiedFileKeys, restoreProxiedOmpKeys } from './proxied-key-restore.js'
+import type { RuntimeStateLocation } from './probe.js'
+
+// The runtimes whose sign-in and config files an srt launch projects with the credential proxy's placeholders (github-app-git-credentials.md, Provider keys).
+const PROJECTED_KEY_RUNTIMES = new Set(['pi-acp', 'grok-build', 'qwen-code', 'amp-acp', 'kimi', 'omp'])
+
+/** The files of a location a protecting launch may have projected, relative to it: the location itself when it is a file, else its seeded and non-OAuth sign-in files. */
+function projectedKeyFiles(runtimeId: string, location: RuntimeStateLocation, destination: string): string[] {
+  if (runtimeId === 'opencode') return ['opencode.json', 'opencode.jsonc']
+  if (!PROJECTED_KEY_RUNTIMES.has(runtimeId)) return []
+  let stat
+  try {
+    stat = lstatSync(destination)
+  } catch {
+    return []
+  }
+  if (stat.isFile()) return ['']
+  if (!stat.isDirectory()) return []
+  const seeded =
+    location.seedFiles ??
+    readdirSync(destination, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && isRuntimeHomeSeedFile(entry.name))
+      .map((entry) => entry.name)
+  const signIns = (location.credentialFiles ?? []).filter((file) => file.format !== 'oauth').map((file) => file.path)
+  return [...new Set([...seeded, ...signIns])]
+}
 
 const LEGACY_RUNTIME_STATE: Record<string, string[]> = {
   'claude-acp': ['.claude'],
@@ -318,16 +343,16 @@ export function prepareRuntimeHome(
       if (file.format === 'dsh' || file.format === 'dsh-env')
         restoreProxiedDeepSeekKey(credentialDestination, join(location.source, file.path), file.format)
     }
-    // Configs a protecting launch projects are excluded then; any other launch restores their keys.
-    if (runtimeId === 'opencode') {
-      for (const name of ['opencode.json', 'opencode.jsonc']) {
-        const config = join(destination, name)
-        if (excluded.has(config)) continue
-        assertNoDestinationSymlink(home, config)
-        restoreProxiedOpenCodeKeys(config, join(location.source, name))
-      }
+    // Files a protecting launch projects are excluded then; any other launch restores their keys.
+    for (const name of projectedKeyFiles(runtimeId, location, destination)) {
+      const file = join(destination, name)
+      if (excluded.has(file)) continue
+      assertNoDestinationSymlink(home, file)
+      restoreProxiedFileKeys(file, join(location.source, name))
     }
     if (runtimeId === 'omp' && !excluded.has(join(destination, 'agent.db'))) {
+      if (existsSync(join(destination, 'agent.db')))
+        restoreProxiedOmpKeys(destination, join(location.source, 'agent.db'))
       extractOmpCredentials(join(location.source, 'agent.db'), join(destination, 'agent.db'))
     }
   }

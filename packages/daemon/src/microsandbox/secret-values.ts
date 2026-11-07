@@ -1,3 +1,5 @@
+import type { MicrosandboxSecret } from './secrets.js'
+
 /** One protected key as a placeholder factory sees it: its variable, its provider, the hosts it may reach, and the provider's own API host. */
 export interface SecretBinding {
   env: string
@@ -9,9 +11,36 @@ export interface SecretBinding {
 /** What a protected key's variable and files hold in its place. */
 export type SecretPlaceholder = (binding: SecretBinding) => string
 
-/** Where a preparer reads keys a command prints: an srt resolution passes the output it already awaited. */
+/** Where a preparer reads keys a command prints, and how an srt launch differs from a VM's. */
 export interface SecretSources {
+  /** An srt resolution passes the export it already awaited. */
   openCodeAuthExport?: (env: NodeJS.ProcessEnv) => string
+  /** An srt private HOME held its keys in the clear before the proxy and again whenever it is off, so a retained copy is protected rather than refused. */
+  protectRetained?: boolean
+}
+
+/** The provider a preparer's key belongs to, and that provider's own API host where it has one. */
+export interface KeyOwner {
+  provider: string
+  defaultHost?: string
+}
+
+/** Give each key its placeholder once every binding has added its hosts, then map each value standing for a key to that placeholder, in order. */
+export function placeSecrets(
+  owners: ReadonlyMap<MicrosandboxSecret, KeyOwner>,
+  values: Iterable<readonly [string, MicrosandboxSecret]>,
+  placeholder: SecretPlaceholder
+): Map<string, string> {
+  for (const [secret, owner] of owners) {
+    const hosts = Array.isArray(secret.host) ? secret.host : [secret.host]
+    secret.placeholder = placeholder({ env: secret.env, ...owner, hosts })
+  }
+  return new Map([...values].map(([value, secret]) => [value, secret.placeholder]))
+}
+
+/** The host name of an endpoint the preparer knows, for a binding's `defaultHost`. */
+export function endpointHost(endpoint: unknown): string | undefined {
+  return typeof endpoint === 'string' ? new URL(endpoint).hostname : undefined
 }
 
 /** A VM's placeholder, which its own proxy swaps on the binding's hosts. */

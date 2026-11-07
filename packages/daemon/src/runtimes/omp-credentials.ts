@@ -1,4 +1,23 @@
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import {
+  chmodSync,
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  readSync,
+  renameSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+  writeSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
@@ -7,6 +26,8 @@ const TABLES = ['auth_credentials', 'auth_schema_version'] as const
 const MAX_ROW_BYTES = 256 * 1024
 const MAX_TOTAL_BYTES = 1024 * 1024
 const MAX_DESTINATION_BYTES = 2 * 1024 * 1024
+const MAX_RETAINED_BYTES = 256 * 1024 * 1024
+const SIDECARS = ['-wal', '-shm', '-journal'] as const
 
 function quoted(identifier: string): string {
   return `"${identifier.replaceAll('"', '""')}"`
@@ -180,5 +201,93 @@ export function extractOmpCredentials(
     destination?.close()
     source?.close()
     rmSync(tempDir, { recursive: true, force: true })
+  }
+}
+
+/** Copy a private database and its WAL into `into`, never following a link; false when there is none, and a sidecar without it is refused. */
+export function copyOmpDatabase(parent: string, into: string): boolean {
+  let bytes = 0
+  for (const suffix of ['', '-wal']) {
+    let input: number
+    try {
+      input = openSync(
+        join(parent, `agent.db${suffix}`),
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+      )
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      if (!suffix) {
+        for (const sidecar of SIDECARS) {
+          try {
+            lstatSync(join(parent, `agent.db${sidecar}`))
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
+            throw error
+          }
+          throw new Error('orphaned private database sidecar')
+        }
+        return false
+      }
+      continue
+    }
+    try {
+      const stat = fstatSync(input)
+      bytes += stat.size
+      if (!stat.isFile() || bytes > MAX_RETAINED_BYTES) throw new Error('invalid private database')
+      const output = openSync(join(into, `agent.db${suffix}`), 'wx', 0o600)
+      try {
+        const chunk = Buffer.alloc(64 * 1024)
+        let offset = 0
+        while (offset < stat.size) {
+          const count = readSync(input, chunk, 0, Math.min(chunk.length, stat.size - offset), offset)
+          if (!count) throw new Error('private database changed during inspection')
+          let written = 0
+          while (written < count) written += writeSync(output, chunk, written, count - written)
+          offset += count
+        }
+        if (readSync(input, chunk, 0, 1, offset)) throw new Error('private database grew during inspection')
+      } finally {
+        closeSync(output)
+      }
+    } finally {
+      closeSync(input)
+    }
+  }
+  return true
+}
+
+/** Set the key of each listed API key row in a database copy this daemon made, folding its WAL in. */
+export function rewriteOmpApiKeys(copy: string, keys: ReadonlyArray<readonly [OmpApiCredential, string]>): void {
+  const database = new DatabaseSync(copy)
+  try {
+    database.exec('PRAGMA trusted_schema=OFF')
+    database.exec('BEGIN IMMEDIATE')
+    const update = database.prepare(
+      "UPDATE auth_credentials SET data = json_set(data, '$.key', ?) WHERE id = ? AND provider = ? AND credential_type = 'api_key'"
+    )
+    for (const [row, key] of keys) update.run(key, row.id, row.provider)
+    database.exec('COMMIT')
+    database.exec('PRAGMA journal_mode=DELETE')
+  } finally {
+    database.close()
+  }
+}
+
+/** Put a rewritten copy in place of the private database by rename, its stale sidecars removed first. */
+export function installOmpDatabase(copy: string, parent: string): void {
+  const temporary = join(parent, `.agent.db.${randomUUID()}.tmp`)
+  writeFileSync(temporary, readFileSync(copy), { flag: 'wx', mode: 0o600 })
+  try {
+    for (const sidecar of SIDECARS) {
+      try {
+        unlinkSync(join(parent, `agent.db${sidecar}`))
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      }
+    }
+    renameSync(temporary, join(parent, 'agent.db'))
+  } catch (error) {
+    rmSync(temporary, { force: true })
+    throw error
   }
 }

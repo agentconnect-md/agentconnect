@@ -6,7 +6,13 @@ import { objectFromJson } from '../runtimes/codex-config.js'
 import { runtimeStateLocations } from '../runtimes/probe.js'
 import { projectRuntimeHomeSeedFile } from '../runtimes/runtime-home.js'
 import { fileConfigApiKeys, MAX_SEED_FILE_BYTES } from '../runtimes/runtime-seeded-credentials.js'
-import { replaceSecretValue } from './secret-values.js'
+import {
+  microsandboxPlaceholder,
+  placeSecrets,
+  replaceSecretValue,
+  type KeyOwner,
+  type SecretPlaceholder
+} from './secret-values.js'
 import type { MicrosandboxCredentials, MicrosandboxSecret } from './secrets.js'
 
 function object(value: unknown): Record<string, unknown> {
@@ -64,7 +70,14 @@ function replaceValues(value: unknown, replacements: ReadonlyMap<string, string>
   return value
 }
 
-export function prepareGrokSecrets(hostEnv: NodeJS.ProcessEnv): MicrosandboxCredentials | undefined {
+// A Grok model route names its own base URL; xAI's API is the provider's own host.
+const XAI: KeyOwner = { provider: 'xai', defaultHost: 'api.x.ai' }
+
+export function prepareGrokSecrets(
+  hostEnv: NodeJS.ProcessEnv,
+  _explicitEnv: Record<string, string> = {},
+  placeholder: SecretPlaceholder = microsandboxPlaceholder
+): MicrosandboxCredentials | undefined {
   const files = runtimeStateLocations('grok-build', hostEnv).flatMap((location) =>
     (location.credentialFiles ?? []).map((file) => ({
       source: join(location.source, file.path),
@@ -74,7 +87,7 @@ export function prepareGrokSecrets(hostEnv: NodeJS.ProcessEnv): MicrosandboxCred
   )
   const bindings = new Map<string, MicrosandboxSecret>()
   const sharedKeys = new Map<string, MicrosandboxSecret>()
-  const replacements = new Map<string, string>()
+  const values: [string, MicrosandboxSecret][] = []
   const id = (destination: string, path: string[]) => JSON.stringify([destination, ...path])
   for (const file of files) {
     const data = readDocument(file.source, file.toml)
@@ -89,19 +102,19 @@ export function prepareGrokSecrets(hostEnv: NodeJS.ProcessEnv): MicrosandboxCred
         !value.includes('$')
           ? allowedHost(model.base_url)
           : []
-      const secret = sharedKeys.get(value) ?? {
-        env: name,
-        placeholder: `msb-secret-${name}`,
-        host: [],
-        readValue: () => value
-      }
+      const secret = sharedKeys.get(value) ?? { env: name, placeholder: '', host: [], readValue: () => value }
       secret.host = [...new Set([secret.host, host].flat())].sort()
       sharedKeys.set(value, secret)
       bindings.set(bindingId, secret)
-      replacements.set(value, secret.placeholder)
+      values.push([value, secret])
     }
   }
   if (!bindings.size) return undefined
+  const replacements = placeSecrets(
+    new Map([...sharedKeys.values()].map((secret) => [secret, XAI])),
+    values,
+    placeholder
+  )
   return {
     secrets: [...sharedKeys.values()].filter((secret) => secret.host.length > 0),
     replacements,

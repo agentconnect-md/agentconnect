@@ -1,11 +1,14 @@
 // A private HOME copy an srt launch projected for the credential proxy (github-app-git-credentials.md, Provider keys) gets its key field back from the host once a launch no longer protects it; the rest of the private state stays.
 import { randomUUID } from 'node:crypto'
-import { renameSync, unlinkSync, writeFileSync } from 'node:fs'
-import { basename, dirname, join } from 'node:path'
+import { mkdtempSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { basename, dirname, extname, join } from 'node:path'
+import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
 import stripJsonComments from 'strip-json-comments'
-import { stringify as stringifyYaml } from 'yaml'
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import { looksLikePlaceholder, PLACEHOLDER_PREFIX } from '../credential-proxy/placeholder.js'
 import { readRegularFileSync } from '../fs/regular-file.js'
+import { copyOmpDatabase, installOmpDatabase, readOmpApiCredentials, rewriteOmpApiKeys } from './omp-credentials.js'
 import { MAX_SEED_FILE_BYTES, parseDshCredentialDocument } from './runtime-seeded-credentials.js'
 
 const DEEPSEEK_KEY = 'DEEPSEEK_API_KEY'
@@ -57,36 +60,75 @@ export function restoreProxiedDeepSeekKey(destination: string, source: string, f
   replaceFile(destination, stringifyYaml(current.data))
 }
 
-/** Put the host's keys back where a private OpenCode config holds placeholders, each from the same field of the host's config. */
-export function restoreProxiedOpenCodeKeys(destination: string, source: string): void {
+const JSON_FORMAT = {
+  parse: (text: string): unknown =>
+    JSON.parse(stripJsonComments(text.replace(/^\uFEFF/, ''), { trailingCommas: true })),
+  write: (data: unknown) => `${JSON.stringify(data)}\n`
+}
+const YAML_FORMAT = { parse: (text: string): unknown => parseYaml(text), write: (data: unknown) => stringifyYaml(data) }
+/** A structured document's reader and writer, by extension; any other file is plain text. */
+const FORMATS: Record<string, typeof JSON_FORMAT> = {
+  '.json': JSON_FORMAT,
+  '.jsonc': JSON_FORMAT,
+  '.toml': { parse: (text) => parseToml(text), write: (data) => stringifyToml(data as Record<string, unknown>) },
+  '.yml': YAML_FORMAT,
+  '.yaml': YAML_FORMAT
+}
+
+/** Put the host's keys back where a private copy of a sign-in or config file holds placeholders, each from the same field of the host's file; a plain-text copy is the host's again. */
+export function restoreProxiedFileKeys(destination: string, source: string): void {
   const text = readSmall(destination)
   const hostText = text?.includes(PLACEHOLDER_PREFIX) ? readSmall(source) : undefined
-  if (text === undefined || hostText === undefined) return
+  if (text === undefined || hostText === undefined || hostText.includes(PLACEHOLDER_PREFIX)) return
+  const format = Object.hasOwn(FORMATS, extname(destination).toLowerCase())
+    ? FORMATS[extname(destination).toLowerCase()]
+    : undefined
+  if (!format) return replaceFile(destination, hostText)
   let data: unknown
   let host: unknown
   try {
-    data = JSON.parse(stripJsonComments(text, { trailingCommas: true }))
-    host = JSON.parse(stripJsonComments(hostText, { trailingCommas: true }))
+    data = format.parse(text)
+    host = format.parse(hostText)
   } catch {
     return
   }
   let changed = false
   const restore = (value: unknown, original: unknown): unknown => {
     if (typeof value === 'string') {
-      const bare = value.replace(/^Bearer\s+/i, '')
-      if (!looksLikePlaceholder(bare) || typeof original !== 'string' || original.includes(PLACEHOLDER_PREFIX))
-        return value
+      if (!looksLikePlaceholder(value.replace(/^Bearer\s+/i, '')) || typeof original !== 'string') return value
       changed = true
       return original
     }
     if (Array.isArray(value))
       return value.map((item, index) => restore(item, Array.isArray(original) ? original[index] : undefined))
-    if (value && typeof value === 'object') {
+    // A parsed date or any other non-plain value stays as it is.
+    if (value && typeof value === 'object' && [Object.prototype, null].includes(Object.getPrototypeOf(value))) {
       const from = original && typeof original === 'object' ? (original as Record<string, unknown>) : {}
       return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, restore(item, from[key])]))
     }
     return value
   }
   const restored = restore(data, host)
-  if (changed) replaceFile(destination, `${JSON.stringify(restored)}\n`)
+  if (changed) replaceFile(destination, format.write(restored))
+}
+
+/** Put the host's key back in each API key row of a private OMP database that holds a placeholder, through a copy outside it. */
+export function restoreProxiedOmpKeys(parent: string, source: string): void {
+  const temporary = mkdtempSync(join(tmpdir(), 'ac-omp-restore-'))
+  try {
+    if (!copyOmpDatabase(parent, temporary)) return
+    const copy = join(temporary, 'agent.db')
+    const host = new Map(readOmpApiCredentials(source).map((row) => [`${row.id}:${row.provider}`, row.key]))
+    const restored = readOmpApiCredentials(copy).flatMap((row) => {
+      const key = host.get(`${row.id}:${row.provider}`)
+      return looksLikePlaceholder(row.key) && key && !looksLikePlaceholder(key) ? [[row, key] as const] : []
+    })
+    if (restored.length === 0) return
+    rewriteOmpApiKeys(copy, restored)
+    installOmpDatabase(copy, parent)
+  } catch {
+    // A database that cannot be read safely is left as it is; nothing here may quote it.
+  } finally {
+    rmSync(temporary, { recursive: true, force: true })
+  }
 }
