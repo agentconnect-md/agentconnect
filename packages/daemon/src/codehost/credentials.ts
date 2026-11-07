@@ -12,7 +12,13 @@
  * nothing but node builtins, so the path grammars live in the `gitcred/repo-path.ts` leaf and each
  * entry points at its own.
  */
-import { CODE_HOST_PROVIDERS, gitRepoLabel, isCodeHostProvider, type CodeHostProvider } from '@agentconnect.md/protocol'
+import {
+  CODE_HOST_PROVIDERS,
+  gitRepoLabel,
+  isCodeHostProvider,
+  type CodeHostProvider,
+  type GitCredRequest
+} from '@agentconnect.md/protocol'
 import {
   IMPLICIT_CREDENTIAL_PROVIDER,
   parseManagedBaseUrl,
@@ -52,6 +58,7 @@ export function specHostsOf(agent: {
 export interface CodeHostWorkspaceIds {
   gitlabProjectId?: string
   giteaRepoId?: string
+  azureDevOpsRepoId?: string
 }
 
 /** An agent's managed workspace repository as its spec identifies it: provider, rename-stable id, and current path from the instance root. */
@@ -97,6 +104,24 @@ export interface CodeHostCredentialModule {
   secondaryCloneUrl(repoFullName: string, spec: CodeHostSpecHosts): string
   /** The credential scope one additional repository on this host rides. */
   secondaryCredentialScope(spec: CodeHostSpecHosts): ManagedCredentialScope
+  /** True when the credential is presented only by the credential proxy and the daemon's own Git, never the agent-facing helper (azure-devops-integration.md §6.1). */
+  readonly proxyOnly?: boolean
+}
+
+/** Who will present a credential: the credential proxy, the daemon's own Git, or the agent-facing helper. */
+export type GitCredConsumer = NonNullable<GitCredRequest['consumer']>
+
+/** Whether a provider's credential reaches only the credential proxy and the daemon's own Git. */
+export function isProxyOnlyProvider(provider: string | undefined): boolean {
+  return codeHostCredentials(provider)?.proxyOnly === true
+}
+
+/** The `consumer` a request names for a proxy-only provider, which alone reads it; none for any other. */
+export function proxyOnlyConsumer(
+  provider: string | undefined,
+  consumer: GitCredConsumer
+): { consumer?: GitCredConsumer } {
+  return isProxyOnlyProvider(provider) ? { consumer } : {}
 }
 
 /** Adding a code host is adding one entry; the record over the provider union makes a missing one a compile error. */

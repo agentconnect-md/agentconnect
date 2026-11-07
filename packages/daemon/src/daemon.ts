@@ -224,6 +224,8 @@ import { IMPLICIT_CREDENTIAL_PROVIDER } from './gitcred/managed-hosts.js'
 import {
   codeHostCredentials,
   credentialProviderOf,
+  isProxyOnlyProvider,
+  proxyOnlyConsumer,
   workspaceRepositoryPath,
   type ManagedWorkspaceRepo
 } from './codehost/credentials.js'
@@ -345,7 +347,7 @@ import {
 import { ADMIN_MCP_SERVER_NAME, RemoteWebchatGrantManager } from './mcp/remote-webchat-grant.js'
 import type { CodeHostEffectReq, MessageGateway, SessionContext } from './mcp/ops.js'
 import { notJoinedChannel } from './platforms/not-joined.js'
-import { GitCredentialCache } from './cp/git-credential.js'
+import { GitCredentialCache, type ProxyLeaseAsk } from './cp/git-credential.js'
 import { GitlabBroker } from './gitlab/broker.js'
 import { gitlabApiBaseUrl } from './gitlab/api-base.js'
 import { GiteaBroker } from './gitea/broker.js'
@@ -383,7 +385,6 @@ import {
 import {
   daemonGitCredentialTarget,
   initGitInjection,
-  managedCredentialScope,
   mergeGitConfigEnv,
   probeGitVersion,
   proxyCredentialResetEnv,
@@ -415,7 +416,12 @@ import {
   type PodModelConfigure
 } from './credential-proxy/pod-keys.js'
 import type { MicrosandboxCredentials } from './microsandbox/secrets.js'
-import { instanceHostnames, proxyInstance } from './credential-proxy/instance-route.js'
+import {
+  instanceHostnames,
+  proxyHosts,
+  proxyInstance,
+  type ProxyRepository
+} from './credential-proxy/instance-route.js'
 import { configureWorkspaceGitOrigins, permitsNoHttpsOrigin } from './workspace/git-origin-policy.js'
 import { buildMcpServers, buildSandboxMcpServers, type McpStdioServer } from './mcp/inject.js'
 import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-servers.js'
@@ -4312,7 +4318,8 @@ export class Daemon {
             repo: repository.repoFullName,
             ...(repository.provider === IMPLICIT_CREDENTIAL_PROVIDER
               ? {}
-              : { provider: repository.provider, externalRepoId: repository.repoId })
+              : { provider: repository.provider, externalRepoId: repository.repoId }),
+            ...proxyOnlyConsumer(repository.provider, 'daemon')
           })
           return
         }
@@ -4323,7 +4330,8 @@ export class Daemon {
           const externalRepoId = this.managedWorkspaceRepo(agentId)?.repoId
           await this.gitCreds.get(agentId, reason, {
             provider,
-            ...(externalRepoId !== undefined ? { externalRepoId } : {})
+            ...(externalRepoId !== undefined ? { externalRepoId } : {}),
+            ...proxyOnlyConsumer(provider, 'daemon')
           })
         } else await this.gitCreds.get(agentId, reason)
       }
@@ -6910,6 +6918,7 @@ export class Daemon {
           return workspace.gitRepo ? (gitRepoLabel(workspace.gitRepo) ?? undefined) : undefined
         },
         instancesOf: (agentId) => this.credentialProxyHosts(agentId),
+        repositoriesOf: (agentId, provider) => this.codeHostRepositories(agentId, provider),
         runningAgents: () => this.agents.keys(),
         knownAgent: (agentId) => this.agents.has(agentId),
         providerSlotsOf: (agentId) => [...(this.providerSlots.get(agentId)?.values() ?? [])],
@@ -6926,8 +6935,9 @@ export class Daemon {
     }
   }
 
-  /** The proxy's token for one request: GitHub's straight from the cache, as before; GitLab's and Gitea's through exactly the helper's ask; each with the helper's `erase` for it. */
+  /** The proxy's token for one request: GitHub's straight from the cache, as before; a proxy-only provider's by its own lease; GitLab's and Gitea's through exactly the helper's ask; each with its `erase`. */
   private async credentialProxyMint(agentId: string, ask: MintAsk): Promise<MintedCredential> {
+    if (isProxyOnlyProvider(ask.provider)) return await this.proxyOnlyLease(agentId, ask)
     if (ask.provider === 'github') {
       const plane = ask.plane === 'git' ? 'git' : 'gh'
       const repo = ask.repo !== undefined ? { repo: ask.repo } : {}
@@ -6969,16 +6979,64 @@ export class Daemon {
     }
   }
 
-  /** The code-host instances the proxy serves an agent on: the hosts its session config pins, resolved from its spec as a spawn resolves them. */
+  /** A proxy-only provider's lease (azure-devops-integration.md §6.1): named by the repository's numeric id, a read one for a read, and dropped on a 401 so the next asks the CP to refresh. */
+  private async proxyOnlyLease(agentId: string, ask: MintAsk): Promise<MintedCredential> {
+    const provider = codeHostCredentials(ask.provider)?.provider
+    const repository = this.codeHostRepositories(agentId, ask.provider).find((row) => row.repoId === ask.repoId)
+    if (!provider || provider === IMPLICIT_CREDENTIAL_PROVIDER || !repository) {
+      throw new Error(`${ask.repo ?? `repository ${ask.repoId ?? '(none)'}`} is not authorized for this agent`)
+    }
+    const lease: ProxyLeaseAsk = {
+      provider,
+      externalRepoId: repository.repoId,
+      ...(repository.workspace ? {} : { repoFullName: repository.repoFullName }),
+      ...(ask.readOnly ? { requestedAccess: 'read' as const } : {})
+    }
+    const cred = await this.gitCreds.getProxyLease(agentId, lease)
+    return {
+      username: cred.username,
+      token: cred.token,
+      access: cred.access,
+      invalidate: () => this.gitCreds.invalidateProxyLease(agentId, lease, cred.token)
+    }
+  }
+
+  /** The agent's authorized repositories on one provider from its spec, the workspace's first, as the proxy's routes resolve requests among them. */
+  private codeHostRepositories(agentId: string, provider: string): ProxyRepository[] {
+    const agent = this.agents.get(agentId)
+    if (!agent) return []
+    const managed = this.managedWorkspaceRepo(agentId)
+    const workspace = agent.workspace
+    const gitRepo = workspace.mode === 'git-repo' ? workspace.gitRepo : undefined
+    const repositories: ProxyRepository[] =
+      managed?.provider === provider && gitRepo
+        ? [
+            {
+              repoId: managed.repoId,
+              repoFullName: gitRepoLabel(gitRepo),
+              workspace: true,
+              ...(workspace.azureDevOps ? { azureDevOps: workspace.azureDevOps } : {})
+            }
+          ]
+        : []
+    for (const row of workspace.additionalRepos ?? []) {
+      if ((row.provider ?? IMPLICIT_CREDENTIAL_PROVIDER) !== provider) continue
+      repositories.push({
+        repoId: row.repoId,
+        repoFullName: row.repoFullName,
+        ...(row.azureDevOps ? { azureDevOps: row.azureDevOps } : {})
+      })
+    }
+    return repositories
+  }
+
+  /** The code-host instances the proxy serves an agent on: the hosts its session config pins, resolved from its spec as a spawn resolves them, each as its provider's routes serve it. */
   private credentialProxyHosts(agentId: string): ManagedCredentialHost[] {
     const agent = this.agents.get(agentId)
     const provider = agent ? credentialProviderOf(agent.workspace.gitCredential) : undefined
     if (!agent || provider === undefined) return []
-    return sessionCredentialHosts(
-      managedCredentialScope(provider, agent.gitlabHost, this.workspaces.gitlabRepoBearing(agent), {
-        host: agent.giteaHost,
-        repoBearing: this.workspaces.repoBearing(agent, 'gitea')
-      })
+    return sessionCredentialHosts(this.workspaces.credentialScopeOf(agent, provider)).flatMap((host) =>
+      proxyHosts(host, () => this.codeHostRepositories(agentId, host.provider))
     )
   }
 
@@ -7367,15 +7425,7 @@ export class Daemon {
       ? undefined
       : credentialProviderOf(agent.workspace.gitCredential)
     const managedCredentials = credentialProvider !== undefined
-    const scope = managedCredentialScope(
-      credentialProvider,
-      agent.gitlabHost,
-      !excludeAgentToolCredentials && this.workspaces.gitlabRepoBearing(agent),
-      {
-        host: agent.giteaHost,
-        repoBearing: !excludeAgentToolCredentials && this.workspaces.repoBearing(agent, 'gitea')
-      }
-    )
+    const scope = this.workspaces.credentialScopeOf(agent, credentialProvider, !excludeAgentToolCredentials)
     const git =
       managedCredentials || agent.workspace.mode === 'git-repo'
         ? sessionGitEnv(
@@ -9013,15 +9063,7 @@ export class Daemon {
     const gitlabCredentials = credentialProvider === 'gitlab'
     // §24.4: the pinned host comes from the SPEC, and a repo-bearing GitLab consumer that is not
     // the workspace pins its instance beside it. A dream host gets no tool credentials at all.
-    const managedScope = managedCredentialScope(
-      credentialProvider,
-      agent.gitlabHost,
-      !excludeAgentToolCredentials && this.workspaces.gitlabRepoBearing(agent),
-      {
-        host: agent.giteaHost,
-        repoBearing: !excludeAgentToolCredentials && this.workspaces.repoBearing(agent, 'gitea')
-      }
-    )
+    const managedScope = this.workspaces.credentialScopeOf(agent, credentialProvider, !excludeAgentToolCredentials)
     // The Git session policy runs for every configured repository, not only GitHub review:
     // repository hooks/fsmonitor stay disabled through the per-agent gitconfig the whole agent
     // process tree inherits. sessionGitEnv additionally supplies GitHub App identity.

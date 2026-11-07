@@ -918,6 +918,8 @@ export function applySpecFields(
       // verifies every echo against it.
       existing.gitlabProjectId = ws.projectId
       delete existing.giteaRepoId
+      delete existing.azureDevOpsRepoId
+      delete existing.azureDevOps
     } else if (ws.mode === 'git') {
       // The host-neutral arm (git-workspace-model.md §3): the credential union
       // is a near-identity map onto the internal marker pair, absent ⇒ anonymous.
@@ -928,15 +930,26 @@ export function applySpecFields(
       } else if (credential?.provider === 'gitea') {
         existing.gitCredential = 'gitea'
         existing.giteaRepoId = credential.repoId
+      } else if (credential?.provider === 'azure-devops') {
+        // The surrogate id is the grant identity; the routing is what the credential proxy resolves requests by.
+        existing.gitCredential = 'azure-devops'
+        existing.azureDevOpsRepoId = credential.repoId
+        existing.azureDevOps = credential.azureDevOps
       } else if (credential?.provider === 'github') existing.gitCredential = 'github-app'
       else delete existing.gitCredential
       if (credential?.provider !== 'gitlab') delete existing.gitlabProjectId
       if (credential?.provider !== 'gitea') delete existing.giteaRepoId
+      if (credential?.provider !== 'azure-devops') {
+        delete existing.azureDevOpsRepoId
+        delete existing.azureDevOps
+      }
     } else {
       if (ws.gitCredential !== undefined) existing.gitCredential = ws.gitCredential
       else delete existing.gitCredential
       delete existing.gitlabProjectId
       delete existing.giteaRepoId
+      delete existing.azureDevOpsRepoId
+      delete existing.azureDevOps
     }
     // The CP is the authority on the additional-repository allowlist and always ships
     // the full set, so mirror it exactly — [] must replicate as a cleared list.

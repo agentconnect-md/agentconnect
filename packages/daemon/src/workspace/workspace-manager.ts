@@ -603,14 +603,17 @@ export class WorkspaceManager {
   /** The credential scope this agent's primary workspace pins: its provider plus the spec's GitLab and
    *  Gitea instances (§24.4, gitea-integration.md §9). Anonymous workspaces resolve to github.com, as they always did. */
   managedScopeOf(agent: Agent): ManagedCredentialScope {
+    return this.credentialScopeOf(agent, this.managedCredentialProvider(agent))
+  }
+
+  /** The scope `provider` pins for this agent, with each repo-bearing host beside it unless `bearing` is false (a dream host). */
+  credentialScopeOf(agent: Agent, provider: CodeHostProvider | undefined, bearing = true): ManagedCredentialScope {
     return managedCredentialScope(
-      this.managedCredentialProvider(agent),
+      provider,
       agent.gitlabHost,
-      this.gitlabRepoBearing(agent),
-      {
-        host: agent.giteaHost,
-        repoBearing: this.repoBearing(agent, 'gitea')
-      }
+      bearing && this.gitlabRepoBearing(agent),
+      { host: agent.giteaHost, repoBearing: bearing && this.repoBearing(agent, 'gitea') },
+      bearing && this.repoBearing(agent, 'azure-devops')
     )
   }
 

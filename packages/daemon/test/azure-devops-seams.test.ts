@@ -1,7 +1,7 @@
-// Azure DevOps before its daemon step (azure-devops-integration.md §13): known to every seam, served by none.
+// Azure DevOps's daemon seams (azure-devops-integration.md §4–§6, §11): a credential only the proxy and the daemon's own Git present, and no hooks in v1.
 import { describe, expect, it, vi } from 'vitest'
 import { type RdMsgHook } from '@agentconnect.md/protocol'
-import { codeHostCredentials, managedHostTable } from '../src/codehost/credentials.js'
+import { codeHostCredentials, isProxyOnlyProvider, managedHostTable } from '../src/codehost/credentials.js'
 import { hookAdmissionFor } from '../src/codehost/hook-admission.js'
 import { codeHostHostFence, codeHostReplyTarget, type CodeHostTurnFinalHost } from '../src/codehost/turn-final.js'
 import { codeHostRepository } from '../src/codehost/repository.js'
@@ -34,27 +34,73 @@ function turnFinalHost() {
 describe('the credential seam', () => {
   const module = codeHostCredentials('azure-devops')!
 
-  it('knows the fixed host but serves no credential path, so the helper stays silent there', () => {
+  it('is presented only by the proxy and the daemon’s own Git, and is the only provider that is', () => {
+    expect(module.proxyOnly).toBe(true)
+    expect(['github', 'gitlab', 'gitea'].map(isProxyOnlyProvider)).toEqual([false, false, false])
+    expect(isProxyOnlyProvider('azure-devops')).toBe(true)
+    expect(module.liveCredentialPurposes).toEqual([])
+    expect(module.workspaceRepoId({ azureDevOpsRepoId: '42', giteaRepoId: '7' })).toBe('42')
+  })
+
+  it('reads git’s credential path on the fixed host, which git hands over already percent-decoded', () => {
     expect(module.hostFromSpec).toBe(false)
     expect(module.managedHost({})).toEqual({ provider: 'azure-devops', baseUrl: 'https://dev.azure.com' })
     const match = matchManagedHost(managedHostTable({}), {
       protocol: 'https',
       host: 'dev.azure.com',
-      path: 'example-org/Example%20Project/_git/Example%20Repo'
+      path: 'example-org/Example Project/_git/Example Repo'
     })
     expect(match?.entry.provider).toBe('azure-devops')
-    expect(credentialRepoPathParser('azure-devops')).toBeUndefined()
-    expect(module.credentialRepoPath('example-org/Example%20Project/_git/Example%20Repo')).toBeUndefined()
-    expect(module.liveCredentialPurposes).toEqual([])
+    expect(credentialRepoPathParser('azure-devops')).toBe(module.credentialRepoPath)
+    const path = module.credentialRepoPath
+    expect(path(match!.path!)).toBe('example-org/example project/example repo')
+    expect(path('example-org/Example Project/_git/Example Repo.git/info/lfs')).toBe(
+      'example-org/example project/example repo'
+    )
+    // The project-less form names the project like its repository.
+    expect(path('/example-org/_git/Example Repo')).toBe('example-org/example repo/example repo')
+    expect(path('Example-Org/Example Project/_GIT/Example Repo')).toBe('example-org/example project/example repo')
+    // Never decoded twice: a literal `%20` in a name stays one.
+    expect(path('example-org/Example%20Project/_git/Example Repo')).toBe('example-org/example%20project/example repo')
+    for (const refused of [
+      'example-org/Example Project/Example Repo',
+      'example-org/a/b/_git/Example Repo',
+      'example_org/Example Project/_git/Example Repo',
+      'example-org/../_git/Example Repo',
+      'example-org/Example Project/_git/',
+      'example-org/Example Project/_git/.git'
+    ]) {
+      expect(path(refused)).toBeUndefined()
+    }
   })
 
-  it('declines every additional repository and refuses to name a clone address for one', () => {
-    expect(module.placeSecondaryRoot({ repoFullName: 'example-org/Example Project/Example Repo', repoId: '42' })).toBe(
-      undefined
+  it('places an additional repository by its surrogate id, and clones it at its canonical address', () => {
+    expect(
+      module.placeSecondaryRoot({ repoFullName: 'example-org/Example Project/Example Repo', repoId: '42' })
+    ).toEqual({
+      provider: 'azure-devops',
+      repoFullName: 'example-org/Example Project/Example Repo',
+      subtreeName: '_azure-devops/42'
+    })
+    for (const row of [
+      { repoFullName: 'example-org/Example Project/Example Repo', repoId: '0' },
+      { repoFullName: 'example-org/Example Project/Example Repo', repoId: 'abc' },
+      { repoFullName: 'example-org/Example Repo', repoId: '42' },
+      { repoFullName: 'example-org/Example Project/..', repoId: '42' },
+      { repoFullName: 'example_org/Example Project/Example Repo', repoId: '42' }
+    ]) {
+      expect(module.placeSecondaryRoot(row)).toBeUndefined()
+    }
+    expect(module.secondaryCloneUrl('example-org/Example Project/Example Repo', {})).toBe(
+      'https://dev.azure.com/example-org/Example%20Project/_git/Example%20Repo'
     )
-    expect(() => module.secondaryCloneUrl('example-org/Example Project/Example Repo', {})).toThrow(
-      /^code_host_not_implemented: azure-devops/
-    )
+    expect(() => module.secondaryCloneUrl('example-org/Example Repo', {})).toThrow(/does not name/)
+    expect(module.secondaryCredentialScope({})).toEqual({
+      host: { provider: 'azure-devops', baseUrl: 'https://dev.azure.com' }
+    })
+    const canonical = 'https://dev.azure.com/example-org/Example%20Project/_git/Example%20Repo'
+    expect(module.canonicalCloneUrl(canonical)).toBe(canonical)
+    expect(module.managedRemoteUrl(canonical)).toBe(canonical)
     expect(codeHostRepository('azure-devops')).toBeUndefined()
   })
 

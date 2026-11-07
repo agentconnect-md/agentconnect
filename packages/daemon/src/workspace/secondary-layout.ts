@@ -66,9 +66,14 @@ export function giteaSubtreeName(repoId: string): string {
   return `${GITEA_ROOTS_DIR}/${repoId}`
 }
 
+/** The subtree name an Azure DevOps repository's root hangs at — its surrogate numeric id, which a rename or a move cannot change. */
+export function azureDevOpsSubtreeName(repoId: string): string {
+  return `${AZURE_DEVOPS_ROOTS_DIR}/${repoId}`
+}
+
 /** One secondary subtree's daemon-owned paths, in the shape a `WorkspaceRoot` needs. */
 export interface SecondarySubtree {
-  /** The `<a>/<b>` pair under `repos/` — `owner/repo` for GitHub, `_gitlab/<project id>` for GitLab, `_gitea/<repository id>` for Gitea. */
+  /** The `<a>/<b>` pair under `repos/`: `owner/repo` for GitHub, else `_<host>/<numeric id>`. */
   subtreeName: string
   /** The whole `repos/<owner>/<repo>` subtree — what retirement removal deletes. */
   subtree: string

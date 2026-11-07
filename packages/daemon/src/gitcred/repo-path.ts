@@ -30,13 +30,36 @@ export function repoFromPath(p: string): string | undefined {
   return `${owner}/${repo}`.toLowerCase()
 }
 
+/** An Azure DevOps organization name: letters, digits and inner hyphens. */
+export const AZURE_DEVOPS_ORGANIZATION = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,48}[A-Za-z0-9])?$/
+
+/** One decoded Azure Repos project or repository name, or undefined for an empty one, a dot segment, a separator or a control character. */
+export function azureDevOpsName(value: string | undefined): string | undefined {
+  if (!value || value === '.' || value === '..' || /[/\\\u0000-\u001f\u007f]/.test(value)) return undefined
+  return value
+}
+
+/** `{organization}/[{project}/]_git/{repository}[.git][/…]` on dev.azure.com as `organization/project/repository`, lowercased; git hands the path already percent-decoded, and the project-less form names the project like its repository. */
+export function azureDevOpsRepoFromPath(p: string): string | undefined {
+  const segs = p.replace(/^\/+/, '').split('/')
+  const at = segs[1]?.toLowerCase() === '_git' ? 1 : segs[2]?.toLowerCase() === '_git' ? 2 : -1
+  const organization = segs[0]
+  const repository = azureDevOpsName(segs[at + 1]?.replace(/\.git$/i, ''))
+  const project = at === 2 ? azureDevOpsName(segs[1]) : repository
+  if (at < 0 || !organization || !AZURE_DEVOPS_ORGANIZATION.test(organization) || !project || !repository) {
+    return undefined
+  }
+  return `${organization}/${project}/${repository}`.toLowerCase()
+}
+
 /** Keyed by the table's OPEN provider string: a host this side cannot parse is never ours. Gitea has
  *  no subgroups, so its `owner/repo` grammar is GitHub's, measured from the instance root the host
  *  match already stripped (gitea-integration.md §9). */
 const PARSERS: Record<string, CredentialRepoPathParser> = {
   github: repoFromPath,
   gitlab: projectFromPath,
-  gitea: repoFromPath
+  gitea: repoFromPath,
+  'azure-devops': azureDevOpsRepoFromPath
 }
 
 /** The grammar this provider's credential paths follow; undefined ⇒ a provider this build knows nothing about. */

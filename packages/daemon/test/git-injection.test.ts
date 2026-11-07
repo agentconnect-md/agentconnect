@@ -1186,3 +1186,18 @@ describe("git in a session's runtime", () => {
     }
   )
 })
+
+describe('an Azure DevOps repository beside the workspace', () => {
+  it('pins Azure DevOps’s fixed host beside the workspace’s, as a GitLab or Gitea repository pins its instance', () => {
+    const azure = { provider: 'azure-devops', baseUrl: 'https://dev.azure.com' }
+    expect(sessionCredentialHosts(managedCredentialScope('github', undefined, false, {}, true))).toEqual([
+      { provider: 'github', baseUrl: 'https://github.com' },
+      azure
+    ])
+    expect(managedCredentialScope('azure-devops')).toMatchObject({ host: azure, azureDevOpsRepoBearing: true })
+    expect(sessionCredentialHosts(managedCredentialScope('azure-devops'))).toEqual([azure])
+    expect(sessionCredentialHosts(managedCredentialScope('github'))).toEqual([
+      { provider: 'github', baseUrl: 'https://github.com' }
+    ])
+  })
+})

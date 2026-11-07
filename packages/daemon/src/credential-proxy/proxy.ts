@@ -24,9 +24,13 @@ import {
   instanceHostnames,
   instanceRoute,
   proxyInstance,
+  routeDescriptor,
   SAAS_HOSTS,
-  type ProxyInstance
+  type ProxyInstance,
+  type ProxyRepository
 } from './instance-route.js'
+import type { InstanceRoute } from './route-descriptor.js'
+import { upstreamGet, type UpstreamAnswer, type UpstreamRoute } from './upstream.js'
 import { looksLikePlaceholder, openPlaceholder, sealPlaceholder, type OpenedClaims } from './placeholder.js'
 import {
   providerKeyPlaceholders,
@@ -50,16 +54,18 @@ const MAX_GRAPHQL_BODY_BYTES = 1 << 20
 const GRAPHQL_WRITE_REFUSAL =
   'GraphQL writes are not available with this agent’s credential. Use the githubPullRequest, githubIssue or githubComment tool, or the REST API (`gh api -X POST …`).'
 
-/** What one request needs minted: a repository on an instance (none names the workspace), for git or an API read. */
+/** What one request needs minted: a repository on an instance (none names the workspace), for git or the API. */
 export interface MintAsk {
   provider: string
   repo?: string
-  /** A GitLab project the API names by numeric id. */
+  /** The repository's numeric id: GitLab's API names a project by it, and a proxy-only provider's lease always does. */
   repoId?: string
   plane: 'git' | 'api'
   readOnly: boolean
   /** A git push, refused unless the grant is `write`: some hosts cannot narrow the token itself. */
   push?: true
+  /** An API write, refused unless the grant is `write`, as a push is. */
+  write?: true
 }
 
 /** A minted credential and the tier its grant carries. */
@@ -80,6 +86,8 @@ export interface CredentialProxyDeps {
   workspaceRepo: (agentId: string) => string | undefined
   /** The code-host instances an agent's managed credential reaches, from its spec. */
   instancesOf: (agentId: string) => readonly ManagedCredentialHost[]
+  /** The agent's authorized repositories on one provider, from its spec, which that provider's routes resolve a request among. */
+  repositoriesOf?: (agentId: string, provider: string) => readonly ProxyRepository[]
   /** Every agent this daemon runs, whose instances the shared loopback listener serves. */
   runningAgents: () => Iterable<string>
   knownAgent: (agentId: string) => boolean
@@ -416,11 +424,10 @@ export class CredentialProxy {
   /** Which address space a name may not resolve into: all private space for a SaaS host or provider origin, only loopback, link-local and unspecified for a self-managed instance or an operator's endpoint. */
   private deniedFor(hostname: string): ((address: string) => boolean) | undefined {
     const slots = this.servedSlots().filter((slot) => slotHostname(slot) === hostname)
-    if (SAAS_HOSTS.includes(hostname) || slots.some((slot) => slot.saas)) return deniedAddress
-    if (slots.length > 0) return deniedSelfManagedAddress
-    return this.served().some((instance) => instanceHostnames(instance).includes(hostname))
-      ? deniedSelfManagedAddress
-      : undefined
+    const instances = this.served().filter((instance) => instanceHostnames(instance).includes(hostname))
+    if (SAAS_HOSTS.includes(hostname) || slots.some((slot) => slot.saas) || instances.some((i) => i.saas))
+      return deniedAddress
+    return slots.length > 0 || instances.length > 0 ? deniedSelfManagedAddress : undefined
   }
 
   /** A code host or provider named by an address in its denied space, which no name lookup on either route would catch. */
@@ -500,10 +507,12 @@ export class CredentialProxy {
     if (!carried) return deny(403, `the agent credential is not valid for ${hostKey(hostname, port)}`)
     const instance = this.instanceFor(claims.agentId, claims.hosts, hostname, port, target)
     if (!instance) return deny(403, `the agent credential is not valid for ${hostKey(hostname, port)}`)
+    // A descriptor may present every credential as Basic with the grant's user, whatever scheme the client used.
+    const scheme = routeDescriptor(instance.provider)?.basicAuthorization ? 'basic' : carried.authorization?.scheme
     const ask =
       instance.provider === 'github'
         ? await this.githubAsk(request, claims.agentId, hostname, target)
-        : this.instanceAsk(instance, request.method, target)
+        : await this.instanceAsk(claims.agentId, instance, request, { hostname, port, target, scheme })
     if (ask === 'anonymous')
       return {
         action: 'allow',
@@ -518,8 +527,10 @@ export class CredentialProxy {
       const minted = await this.deps.mint(claims.agentId, ask)
       if (ask.push && minted.access !== 'write')
         return deny(403, `this agent has ${minted.access} access to ${what}; pushing needs write access`)
+      if (ask.write && minted.access !== 'write')
+        return deny(403, `this agent has ${minted.access} access to ${what}; writing needs write access`)
       const setHeaders: [string, string][] = []
-      if (carried.authorization) setHeaders.push(['authorization', authorization(carried.authorization.scheme, minted)])
+      if (carried.authorization && scheme) setHeaders.push(['authorization', authorization(scheme, minted)])
       if (carried.privateToken) setHeaders.push(['private-token', minted.token])
       const { invalidate } = minted
       if (!invalidate) return { action: 'allow', setHeaders }
@@ -612,12 +623,15 @@ export class CredentialProxy {
     return applying[0] ?? candidates[0]
   }
 
-  private instanceAsk(
+  /** What a request on one of the agent's instances needs, by its provider's registered descriptor. */
+  private async instanceAsk(
+    agentId: string,
     instance: ProxyInstance,
-    method: string,
-    target: string
-  ): MintAsk | RequestDecision | 'anonymous' {
-    const route = instanceRoute(instance, method, target)
+    request: Request,
+    at: { hostname: string; port: number; target: string; scheme: Presented['scheme'] | undefined }
+  ): Promise<MintAsk | RequestDecision | 'anonymous'> {
+    const repositories = this.deps.repositoriesOf?.(agentId, instance.provider) ?? []
+    const route = instanceRoute(instance, request.method, at.target, { repositories })
     switch (route.kind) {
       case 'deny':
         return deny(route.status, route.reason)
@@ -628,11 +642,85 @@ export class CredentialProxy {
       case 'repository':
         return {
           provider: instance.provider,
-          ...('repo' in route ? { repo: route.repo } : { repoId: route.repoId }),
+          ...(route.repo !== undefined ? { repo: route.repo } : {}),
+          ...(route.repoId !== undefined ? { repoId: route.repoId } : {}),
           plane: route.plane,
-          readOnly: route.plane === 'api',
-          ...('push' in route && route.push ? { push: true as const } : {})
+          readOnly: route.readOnly ?? route.plane === 'api',
+          ...(route.push ? { push: true as const } : {}),
+          ...(route.write ? { write: true as const } : {})
         }
+      case 'lookup':
+        return await this.lookupOwner(agentId, instance.provider, route, request, at)
+    }
+  }
+
+  /** Ask the upstream itself, with a read lease, whose answer a request would get; one not of the agent's repositories is answered `hidden`. */
+  private async lookupOwner(
+    agentId: string,
+    provider: string,
+    route: Extract<InstanceRoute, { kind: 'lookup' }>,
+    request: Request,
+    at: { hostname: string; port: number; target: string; scheme: Presented['scheme'] | undefined }
+  ): Promise<MintAsk | RequestDecision> {
+    const lease: MintAsk = { provider, ...route.via, plane: 'api', readOnly: true }
+    // One retry after a 401, with the rejected token dropped, as a forwarded request's next one would be.
+    for (let attempt = 0; ; attempt += 1) {
+      let minted: MintedCredential
+      try {
+        minted = await this.deps.mint(agentId, lease)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        this.deps.log.warn(`credential proxy: no token for ${agentId} on ${route.via.repo}: ${message}`)
+        return deny(403, `this agent is not authorized for ${route.via.repo}`)
+      }
+      let answer: UpstreamAnswer
+      try {
+        answer = await upstreamGet(
+          at.hostname,
+          at.port,
+          at.target,
+          {
+            authorization: authorization(at.scheme ?? 'basic', minted),
+            accept: request.headers.get('accept') ?? 'application/json',
+            ...route.headers
+          },
+          this.upstreamRoute(at.port)
+        )
+      } catch (err) {
+        this.deps.log.warn(`credential proxy: lookup of ${at.target.split('?')[0]} failed: ${(err as Error).message}`)
+        return deny(502, 'the code host could not be reached to check this request')
+      }
+      if (answer.status === 401 && attempt === 0) {
+        minted.invalidate?.()
+        continue
+      }
+      if (answer.status === 404) return deny(route.hidden.status, route.hidden.reason)
+      if (answer.status === 429) {
+        const after = answer.headers['retry-after']
+        return deny(429, `the code host is rate limiting this identity${after ? ` (Retry-After: ${after})` : ''}`)
+      }
+      if (answer.status !== 200)
+        return deny(502, `the code host answered ${answer.status} when this request was checked`)
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(answer.body.toString('utf8'))
+      } catch {
+        return deny(502, 'the code host’s answer could not be read')
+      }
+      const owner = route.owner(parsed)
+      if (!owner) return deny(route.hidden.status, route.hidden.reason)
+      return { provider, ...owner, plane: 'api', readOnly: true }
+    }
+  }
+
+  /** How the proxy's own upstream request leaves: the route its forwarded legs take. */
+  private upstreamRoute(port: number): UpstreamRoute {
+    const lookupFor = this.deps.upstream?.lookupFor ?? guardedLookup((hostname) => this.deniedFor(hostname))
+    const trustedCa = this.deps.upstream?.trustedCa
+    return {
+      ...(this.parentProxy ? { parentProxy: this.parentProxy } : {}),
+      lookup: lookupFor(port),
+      ...(trustedCa !== undefined ? { trustedCa } : {})
     }
   }
 

@@ -448,6 +448,16 @@ and refuses `helper` and an absent field with `SCOPE_DENIED`, so a daemon that
 predates the field is refused rather than served. No purpose-gated lease
 exists for Azure DevOps in the first version.
 
+The daemon's credential module carries the same `proxyOnly` capability. Its
+gitcred server refuses such a credential to every capability but the daemon's
+own, by the provider the agent's spec resolves the ask to, and before the
+runtime capability's general refusal, so the rule holds even where a runtime
+capability may otherwise mint. Daemon-run Git names `consumer: 'daemon'` and
+the proxy names `proxy`. The daemon's credential cache refuses an Azure DevOps
+ask that names neither, without asking the Control Plane, since a grant it
+already holds would otherwise answer it. A request for any other provider names
+no consumer, as before.
+
 A daemon therefore advertises `azure-devops-v1` only while its credential proxy
 is enabled, and placement requires it. A session on a strategy the proxy does
 not reach yet is refused with `azure_devops_requires_proxy` rather than started
@@ -464,32 +474,55 @@ Two consequences follow from where the proxy stands today:
 
 ### 6.2 Instance and Routes
 
-An Azure DevOps connection contributes one proxy instance with two hosts:
-`dev.azure.com` with the path prefix `{organization}`, and
-`{organization}.visualstudio.com` at the root. Requests are routed by method and
-path:
+Each Azure DevOps organization the agent's repositories name in their spec
+routing contributes two proxy instances: `dev.azure.com` with the path prefix
+`{organization}`, and `{organization}.visualstudio.com` at the root, optionally
+under `DefaultCollection`. Both are SaaS names, so neither may resolve into
+private space. The placeholder is sealed for both and `srt` routes both to the
+proxy. The session helper is pinned for `dev.azure.com` whenever the workspace
+or an additional repository is on Azure DevOps, as a GitLab or Gitea
+repository pins its instance. A request's organization is the first path
+segment on `dev.azure.com`, or the host's own name; it must be the organization
+of one of the agent's repositories, compared case-insensitively, and any other
+is refused.
+
+Requests are routed by method and path. Names are compared after
+percent-decoding and case-insensitively, and a project segment may be a name or
+the project's GUID. A path with a segment that does not decode to one plain
+name, such as an encoded separator, a dot segment, or an empty segment, is
+refused.
 
 - **git**: `[{project}/]_git/{repository}[.git]/` followed by `info/refs`,
-  `git-upload-pack`, or `git-receive-pack`. The repository is resolved by name
-  among the agent's authorized Azure DevOps repositories.
+  `git-upload-pack`, or `git-receive-pack`, spelled as git sends them, so no
+  other spelling of a push reads as a fetch. The repository is resolved by name
+  among the agent's authorized Azure DevOps repositories; without a project it
+  is the repository in the project of the same name.
 - **REST naming a repository**: `[{project}/]_apis/git/repositories/{id-or-name}/…`.
   The repository is resolved by GUID, with or without a project, or by project
   and name; Azure DevOps itself refuses a name without a project. The project
   segment may be a name or a GUID, since the links Azure DevOps returns name
   the project by GUID.
-- **REST naming no repository**: only `_apis/connectionData` and the
-  resource-area lookups the Azure CLI makes. Each is forwarded as a read.
+- **REST naming no repository**: only `_apis/connectionData` and
+  `_apis/ResourceAreas[/…]` at the organization's root, which the Azure CLI
+  reads before any command. Each is forwarded as a read under a read lease of
+  one of the agent's repositories in that organization: the token is the same
+  for all of them, and neither answer is about a repository.
 - **One pull request by id**: `GET [{project}/]_apis/git/pullrequests/{id}`
   names no repository, but the Azure CLI resolves `--id` through it before
   every repository-scoped call, including `az repos pr update` and
-  `az repos pr show`. The proxy makes this request itself with the
-  connection's token and reads the answer's `repository.id`:
-  - when that repository is one the agent holds, it returns the answer;
-  - otherwise it returns the same 404 Azure DevOps gives for an id that does
-    not exist.
+  `az repos pr show`. The proxy makes this request itself, with a read lease
+  of one of the agent's repositories and over the route its forwarded requests
+  take, and reads the answer's `repository.id`:
+  - when that repository is one the agent holds, the request itself is
+    forwarded under that repository's read lease, so it reaches Azure DevOps
+    twice;
+  - otherwise, and for an id that does not exist, the proxy answers the
+    `TF401180` 404 below itself, so the two answers are the same.
 
   Walking ids therefore finds only the agent's own pull requests. Only `GET`
-  is answered this way; a write by id with no repository is refused.
+  is answered this way; a write by id with no repository is refused. A `401`
+  to the lookup drops its lease and retries once, a `429` is refused naming
+  Azure DevOps's `Retry-After`, and any other answer is refused with 502.
 
 - **Everything else is refused.** That includes:
   - the project and repository lists, at organization and at project scope;
@@ -512,15 +545,33 @@ leaves the proxy. The answer is the same whether or not such a repository
 exists, so the proxy is not an oracle for other repositories. What remains is
 what an authorized repository's own answers mention, such as a fork's parent.
 
-The provider contributes these rules to the proxy as its route descriptor, as
-GitLab and Gitea contribute theirs; the shared router has no Azure DevOps
-branch. The descriptor differs from the others in one place. The other
-providers map a read that names no repository to the workspace's credential,
-because their tokens are scoped by the provider. An Azure DevOps token is not,
-so its descriptor maps such a read to `deny` unless it is on the allowlist
-above, rather than borrowing the workspace's authority. The per-repository
-lease from the Control Plane and the push gate of §6.3 are already shared by
-every provider, so this descriptor is the only proxy code Azure DevOps adds.
+That answer is Azure DevOps's own for a repository it does not show: 404 and
+`TF401019: The Git repository with name or identifier {identifier} does not
+exist or you do not have permissions for the operation you are attempting.`,
+as plain text for git and in Azure DevOps's JSON error shape for REST, naming
+the identifier the client sent. Another repository's pull request gets Azure
+DevOps's `TF401180` answer for a missing id. The proxy writes these through its
+refusal path, so they carry its plain-text content type and marker header: a
+client can tell the proxy answered, but nothing in the answer depends on
+whether the repository or the pull request exists. Refusals that are not about
+existence (lists, writes below the tier, another organization) are the proxy's
+ordinary 403 with a short reason.
+
+Each of GitLab, Gitea and Azure DevOps registers a route descriptor with the
+proxy: the hosts it serves a managed host on, whether its credential always
+goes as Basic, and the route of one request. The router dispatches by provider
+and has no provider branch; GitHub keeps its own route, which reads GraphQL
+bodies. The Azure DevOps descriptor differs from the others in two places. It
+reads the agent's authorized repositories from its spec, the workspace's and
+the additional ones with their GUIDs, and resolves every request among them.
+And where the other providers map a read that names no repository to the
+workspace's credential, because their tokens are scoped by the provider, the
+Azure DevOps descriptor maps such a read to `deny` unless it is on the
+allowlist above, rather than borrowing the workspace's authority. Beside it
+the proxy gained three provider-neutral members that Azure DevOps is the first
+to use: a write gate beside the push gate (§6.3), a lookup route the proxy
+answers by asking the upstream itself, and a lease of its own for a proxy-only
+provider.
 
 ### 6.3 The Tier
 
@@ -538,9 +589,20 @@ grant's access, not the provider, so it lives in the proxy's shared git route.
 An API write follows the same rule as a push, as GitHub's REST writes do
 ([github-app-git-credentials.md](github-app-git-credentials.md#phase-2-the-daemon-credential-proxy)).
 A write that names an authorized repository is forwarded under a `write`
-grant and refused below it. A write that names no repository is refused. So
-an agent with `write` opens, updates, and completes pull requests through the
-Azure CLI or REST, and the first version adds no Azure DevOps tool:
+grant and refused below it, naming the agent's access as the push gate does
+(`this agent has read access to {repository}; writing needs write access`). A
+write that names no repository is refused.
+
+The proxy asks the Control Plane for a `read` lease for a fetch or a read, and
+for the agent's tier for a push or a write. It keeps each lease per repository
+and per access asked, so a read lease never answers a push. A lease names the
+repository's surrogate id and `consumer: 'proxy'`, and its token is presented
+as the Basic password with the identity id as the user, whatever scheme
+carried the placeholder. A `401` from Azure DevOps drops that lease, and the
+next request asks the Control Plane with `forceRefresh` once (§3.4).
+
+So an agent with `write` opens, updates, and completes pull requests through
+the Azure CLI or REST, and the first version adds no Azure DevOps tool:
 
 - `az repos pr create` posts to its repository;
 - `az repos pr update --id … --status completed` resolves the id through the
@@ -553,8 +615,10 @@ Azure CLI or REST, and the first version adds no Azure DevOps tool:
 ### 6.4 Client Configuration
 
 git uses the session credential helper and the proxy like every other provider;
-the proxy presents the token as the Basic password with the identity id as the
-user (§3.4). The Azure CLI receives:
+the helper is pinned for `dev.azure.com`, where every canonical remote points,
+and the proxy presents the token as the Basic password with the identity id as
+the user (§3.4). The proxy routes `{organization}.visualstudio.com` too, for the
+CLI and REST. The Azure CLI receives:
 
 - `AZURE_DEVOPS_EXT_PAT`, set to the placeholder; the CLI sends it as a Basic
   password, which the proxy already reads;
@@ -827,14 +891,19 @@ live organization before A2.
   picker; derivation and grant arms; gitcred leases served only to the proxy
   plane; and the REST routes.
 - **A3 — Daemon.** The credential module with its `proxyOnly` capability, the
-  proxy instance and route descriptor of §6.2, the client configuration of
-  §6.4, the feature advertisement tied to the proxy, the gitcred `consumer`
-  field of §6.1 on every request, and the strategy refusal. Tests pin each refusal of §6.2: the lists, the pull-request lists that name
-  no repository, and a repository outside the agent's authorizations. They
-  also pin the pull-request lookup by id: it answers for the agent's own
-  repository, and answers another repository's pull request exactly as it
-  answers a missing id.
-  They also pin §6.3: a write below `write` is refused, and a pull-request
+  proxy instances and route descriptor of §6.2 in the descriptor registry
+  GitLab and Gitea moved into, the proxy's leases and gates of §6.3, the client
+  configuration of §6.4, the feature advertisement tied to the proxy, the
+  gitcred `consumer` field of §6.1 on every Azure DevOps request, and the
+  strategy refusal. The first half is in place: everything but the client
+  configuration, the feature advertisement and the strategy refusal, which
+  follow; until the advertisement lands, no Azure DevOps agent is placed on a
+  daemon. Tests pin each refusal of §6.2: the lists, the pull-request lists
+  that name no repository, and a repository outside the agent's
+  authorizations, answered alike whether or not it exists. They also pin the
+  pull-request lookup by id: it answers for the agent's own repository, and
+  answers another repository's pull request exactly as it answers a missing
+  id. They also pin §6.3: a write below `write` is refused, and a pull-request
   write at `write` is forwarded.
 - **A4 — Console, Setup, and documentation.** The card, the pickers, the
   Microsoft section's redirect URI and wording, and the setup page on the
