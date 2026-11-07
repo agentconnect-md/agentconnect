@@ -175,6 +175,9 @@ function providerKeyId(agentId: string, slot: ProviderSlot): string {
   return `${agentId}\n${slot.id}\n${slot.provider}\n${slotHostKey(slot)}\n${slot.pathPrefix ?? ''}`
 }
 
+/** Which credentials a listener exchanges: an executor tunnel's socket carries one kind, every other listener both. */
+type ListenerScope = 'codehost' | 'provider' | 'both'
+
 function deny(status: number, reason: string): RequestDecision {
   return { action: 'deny', status, reason, mark: 'credential-proxy' }
 }
@@ -208,6 +211,8 @@ export class CredentialProxy {
   private readonly agentSockets = new Map<string, { path: string; server: Server }>()
   /** An executor's codehost tunnel per agent: the same binding, and a CONNECT only to that agent's code hosts. */
   private readonly tunnelSockets = new Map<string, { path: string; server: Server }>()
+  /** An executor's or VM's provider tunnel per agent: the same binding, and a CONNECT only to that agent's provider slots. */
+  private readonly providerTunnelSockets = new Map<string, { path: string; server: Server }>()
   private socketDir: string | undefined
   private mitmCa: MitmCA | undefined
   private readonly proxyToken = randomBytes(24).toString('base64url')
@@ -240,12 +245,15 @@ export class CredentialProxy {
   async stop(): Promise<void> {
     const servers = [
       ...(this.loopback ? [this.loopback] : []),
-      ...[...this.agentSockets.values(), ...this.tunnelSockets.values()].map((s) => s.server)
+      ...[...this.agentSockets.values(), ...this.tunnelSockets.values(), ...this.providerTunnelSockets.values()].map(
+        (s) => s.server
+      )
     ]
     await Promise.all(servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))))
     this.loopback = undefined
     this.agentSockets.clear()
     this.tunnelSockets.clear()
+    this.providerTunnelSockets.clear()
     if (this.mitmCa) disposeMitmCASync(this.mitmCa)
     this.mitmCa = undefined
   }
@@ -255,10 +263,15 @@ export class CredentialProxy {
     return this.agentSocket(this.agentSockets, agentId, '', () => this.server(undefined, agentId))
   }
 
-  /** The socket an executor's codehost tunnel reaches for this agent: its placeholder alone, and a CONNECT to nothing but its {@link tunnelRoutes}. */
+  /** The socket an executor's codehost tunnel reaches for this agent: its code-host placeholder alone, and a CONNECT to nothing but its {@link tunnelRoutes}. */
   tunnelSocketFor(agentId: string): string {
     return this.agentSocket(this.tunnelSockets, agentId, '-t', () =>
-      this.server(undefined, agentId, (port, host) => this.tunnelRoutes(agentId).includes(routeAuthority(host, port)))
+      this.server(
+        undefined,
+        agentId,
+        (port, host) => this.tunnelRoutes(agentId).includes(routeAuthority(host, port)),
+        'codehost'
+      )
     )
   }
 
@@ -269,8 +282,24 @@ export class CredentialProxy {
         ? instanceHostnames(instance).map((name) => routeAuthority(name, 443))
         : instance.hosts.map((host) => (/:\d+$/.test(host) ? host : `${host}:443`))
     )
-    const slots = this.slots(agentId).map((slot) => routeAuthority(slotHostname(slot), slot.port))
-    return [...new Set([...routes, ...slots])]
+    return [...new Set(routes)]
+  }
+
+  /** The socket a provider tunnel reaches for this agent: its provider placeholders alone, and a CONNECT to nothing but its {@link providerTunnelRoutes}. */
+  providerTunnelSocketFor(agentId: string): string {
+    return this.agentSocket(this.providerTunnelSockets, agentId, '-p', () =>
+      this.server(
+        undefined,
+        agentId,
+        (port, host) => this.providerTunnelRoutes(agentId).includes(routeAuthority(host, port)),
+        'provider'
+      )
+    )
+  }
+
+  /** The `host:port` authorities an agent's provider slots answer on. */
+  providerTunnelRoutes(agentId: string): string[] {
+    return [...new Set(this.slots(agentId).map((slot) => routeAuthority(slotHostname(slot), slot.port)))]
   }
 
   private agentSocket(
@@ -297,7 +326,7 @@ export class CredentialProxy {
   /** Retire an agent's routes with the agent: its listeners close and their sockets go. */
   release(agentId: string): void {
     for (const id of this.providerKeys.keys()) if (id.startsWith(`${agentId}\n`)) this.providerKeys.delete(id)
-    for (const sockets of [this.agentSockets, this.tunnelSockets]) {
+    for (const sockets of [this.agentSockets, this.tunnelSockets, this.providerTunnelSockets]) {
       const route = sockets.get(agentId)
       if (!route) continue
       sockets.delete(agentId)
@@ -369,17 +398,20 @@ export class CredentialProxy {
   private server(
     proxyAuthToken?: string,
     boundAgent?: string,
-    reachable: (port: number, host: string) => boolean = () => true
+    reachable: (port: number, host: string) => boolean = () => true,
+    scope: ListenerScope = 'both'
   ): Server {
     const trustedCa = this.deps.upstream?.trustedCa
     return createHttpProxyServer({
-      // Every host is reachable unless the listener narrows it; only the code-host instances are terminated and judged.
+      // Every host is reachable unless the listener narrows it; only the code-host instances and provider slots are terminated and judged.
       filter: (port, host) => reachable(port, host.toLowerCase().replace(/^\[(.*)\]$/, '$1')),
       mitmCA: this.mitmCa!,
       shouldTerminateTLS: (host, port) =>
-        this.served(boundAgent).some((instance) => instanceHost(instance, host.toLowerCase(), port) !== undefined) ||
-        this.servedSlots(boundAgent).some((slot) => slotServes(slot, host.toLowerCase(), port)),
-      filterRequest: (request, info) => this.decide(request, info, boundAgent),
+        (scope !== 'provider' &&
+          this.served(boundAgent).some((instance) => instanceHost(instance, host.toLowerCase(), port) !== undefined)) ||
+        (scope !== 'codehost' &&
+          this.servedSlots(boundAgent).some((slot) => slotServes(slot, host.toLowerCase(), port))),
+      filterRequest: (request, info) => this.decide(request, info, boundAgent, scope),
       onFilterRequestDenied: ({ method, url, reason }) =>
         this.deps.log.info(`credential proxy refused ${method} ${url.split('?')[0]}: ${reason}`),
       requireHostMatch: true,
@@ -390,14 +422,21 @@ export class CredentialProxy {
     })
   }
 
-  /** One request's decision: pass anything that is not ours untouched, and exchange our placeholder for the repository's token or the provider's key; over an agent's own socket, only that agent's. */
-  async decide(request: Request, info?: RequestInfo, boundAgent?: string): Promise<RequestDecision> {
+  /** One request's decision: pass anything that is not ours untouched, and exchange our placeholder for the repository's token or the provider's key; over an agent's own socket, only that agent's, and over a tunnel's, only its kind. */
+  async decide(
+    request: Request,
+    info?: RequestInfo,
+    boundAgent?: string,
+    scope: ListenerScope = 'both'
+  ): Promise<RequestDecision> {
     const url = new URL(request.url)
     const hostname = (info?.target?.host ?? url.hostname).toLowerCase().replace(/^\[(.*)\]$/, '$1')
     const port = info?.target?.port ?? (url.port ? Number(url.port) : url.protocol === 'http:' ? 80 : 443)
     // Judged by name on any port, so a placeholder sent in cleartext is refused below rather than forwarded.
-    const codeHost = this.served(boundAgent).some((instance) => instanceHostnames(instance).includes(hostname))
-    const providerHost = this.servedSlots(boundAgent).some((slot) => slotHostname(slot) === hostname)
+    const codeHost =
+      scope !== 'provider' && this.served(boundAgent).some((instance) => instanceHostnames(instance).includes(hostname))
+    const providerHost =
+      scope !== 'codehost' && this.servedSlots(boundAgent).some((slot) => slotHostname(slot) === hostname)
     if (!codeHost && !providerHost) return { action: 'allow' }
     const carried = codeHost ? carriedPlaceholders(request) : undefined
     const keyed = providerHost ? providerKeyPlaceholders(request.headers) : []

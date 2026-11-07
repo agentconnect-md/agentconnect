@@ -361,7 +361,7 @@ import {
   materializeConfigFiles
 } from './shim/config-file-env.js'
 import { DEFAULT_SHIM_RUNTIME_ROOT, shimPaths } from './shim/sandbox-paths.js'
-import type { CodehostSpawn, SpawnFile } from './acp/spawn-driver.js'
+import type { CodehostSpawn, ProviderSpawn, SpawnFile } from './acp/spawn-driver.js'
 import { writeGhShim } from './cp/gh-shim.js'
 import { glabSessionEnv, writeGlabShim } from './cp/glab-shim.js'
 import { GitCredServer, gitcredShimPath, gitcredSocketPath, writeGitcredShim } from './cp/gitcred-server.js'
@@ -835,6 +835,7 @@ import {
   applyModelCredential,
   applyOrganizationModelCredential,
   applyProxiedOrganizationModelCredential,
+  proxiedOrganizationModelOverlay,
   applyConfiguredModelProviders,
   applyKiloLaunchModel,
   configuredClaudeModelAliases,
@@ -3891,7 +3892,7 @@ export class Daemon {
       tunnelSocketPath: (tunnel, agentId) => this.tunnelSocketPath(root, tunnel, agentId),
       tunnelGreeting: (subject, tunnel) => this.gitcredTunnelGreeting(subject, tunnel),
       // A VM's sessions reach the credential proxy through its shim, which keeps microsandbox's own authority in their bundle at spawn.
-      extraTunnelsFor: (agentId) => this.codehostTunnelFor(agentId),
+      extraTunnelsFor: (agentId) => [...this.codehostTunnelFor(agentId), ...this.providerTunnelFor(agentId)],
       tunnelListenOptions: (agentId, tunnel) => this.tunnelListenOptions(agentId, tunnel),
       log: this.log,
       clock: this.clock
@@ -8080,14 +8081,28 @@ export class Daemon {
     return this.agents.has(agentId) && this.credentialProxyCodeHosts(agentId) ? ['codehost'] : []
   }
 
-  /** A placed session's tunnels: the pod's two, and `codehost` when it runs on its executor's host strategy for an agent the credential proxy intercepts. */
-  private tunnelsForPlaced(agentId: string, placed: PlacedSession | undefined): TunnelName[] {
-    const helpers = this.tunnelsForAgent(agentId)
-    const codehost = helpers.length > 0 && placed?.strategy === 'host' && this.credentialProxyCodeHosts(agentId)
-    return codehost ? [...helpers, 'codehost'] : helpers
+  /** `provider` for a known agent with a provider key slot, which its VM's or executor's sessions reach the proxy by; never a pool pod's yet. */
+  private providerTunnelFor(agentId: string): TunnelName[] {
+    return this.agents.has(agentId) && this.credentialProxyProviders(agentId) ? ['provider'] : []
   }
 
-  /** Every tunnel's daemon-side socket; `codehost` reaches the agent's own credential-proxy socket, and only while the proxy intercepts for it. */
+  /** Whether the proxy serves a provider key slot of this agent. */
+  private credentialProxyProviders(agentId: string): boolean {
+    return this.credentialProxy !== undefined && (this.providerSlots.get(agentId)?.size ?? 0) > 0
+  }
+
+  /** A placed session's tunnels: the pod's two, and on its executor's host strategy `codehost` and `provider` for an agent the credential proxy serves them. */
+  private tunnelsForPlaced(agentId: string, placed: PlacedSession | undefined): TunnelName[] {
+    const helpers = this.tunnelsForAgent(agentId)
+    if (helpers.length === 0 || placed?.strategy !== 'host') return helpers
+    return [
+      ...helpers,
+      ...(this.credentialProxyCodeHosts(agentId) ? (['codehost'] as const) : []),
+      ...this.providerTunnelFor(agentId)
+    ]
+  }
+
+  /** Every tunnel's daemon-side socket; `codehost` and `provider` reach the agent's own credential-proxy sockets, and only while the proxy serves it them. */
   private tunnelSocketPath(root: string, tunnel: TunnelName, agentId: string): string | undefined {
     return daemonTunnelSocketPath(tunnel, agentId, {
       gitcred: gitcredSocketPath(root),
@@ -8095,14 +8110,24 @@ export class Daemon {
       codehost: (id) =>
         this.credentialProxy && this.credentialProxyCodeHosts(id)
           ? this.credentialProxy.proxy.tunnelSocketFor(id)
+          : undefined,
+      provider: (id) =>
+        this.credentialProxy && this.credentialProxyProviders(id)
+          ? this.credentialProxy.proxy.providerTunnelSocketFor(id)
           : undefined
     })
   }
 
-  /** What a `codehost` listen carries: the agent's code-host routes and the CA certificate alone, which the shim merges with its own machine's roots. */
+  /** What a `codehost` or `provider` listen carries: the agent's routes for it and the CA certificate alone, which the shim merges with its own machine's roots. */
   private tunnelListenOptions(agentId: string, tunnel: TunnelName): TunnelListenOptions | undefined {
-    if (tunnel !== 'codehost' || !this.credentialProxy) return undefined
-    const routes = this.credentialProxy.proxy.tunnelRoutes(agentId)
+    if (!this.credentialProxy) return undefined
+    const proxy = this.credentialProxy.proxy
+    const routes =
+      tunnel === 'codehost'
+        ? proxy.tunnelRoutes(agentId)
+        : tunnel === 'provider'
+          ? proxy.providerTunnelRoutes(agentId)
+          : []
     return routes.length > 0 ? { routes, ca: this.credentialProxy.ca.certPem } : undefined
   }
 
@@ -8881,9 +8906,14 @@ export class Daemon {
     // A host or srt session with a managed code-host credential holds a placeholder the credential proxy exchanges.
     const proxied = managedCredentials && (remoteSession ? remoteCodehost !== undefined : localProxyRoute)
     const target = opts.modelCredential?.target ?? modelProviderTarget(agent, runtime)
-    // Its organization Provider key goes through the proxy too, registered before the launch so srt routes its host.
+    // A VM session or an executor's host session reaches it through its shim's provider listener, switched at spawn.
+    const shimProviderRoute =
+      this.credentialProxy !== undefined &&
+      !this.k8sPlane &&
+      (remoteSession ? remoteSession.strategy === 'host' : micro)
+    // Its organization Provider key goes through the proxy too, registered before the launch so srt routes its host and a shim is asked for its listener.
     const orgProvider =
-      localProxyRoute && !this.k8s && opts.providerCredential && agent.modelProvider
+      (localProxyRoute || shimProviderRoute) && !this.k8s && opts.providerCredential && agent.modelProvider
         ? organizationProviderOf(agent.modelProvider, target)
         : undefined
     const providerSlot =
@@ -8999,7 +9029,7 @@ export class Daemon {
         )
       )
     // A host session holding only a provider placeholder reaches the proxy the same way.
-    else if (providerPlaceholder && this.credentialProxy)
+    else if (providerPlaceholder && localProxyRoute && this.credentialProxy)
       Object.assign(
         env,
         this.credentialProxyRoute(this.credentialProxy, srtShim === undefined ? 'host' : 'srt', env, runtimeEnv)
@@ -9032,6 +9062,8 @@ export class Daemon {
         ? DEFAULT_SHIM_RUNTIME_ROOT
         : undefined
     if (launchFilesRoot !== undefined) configFileState = undefined
+    // The variables a shim-routed launch swaps in for its real key once its shim serves a provider listener.
+    const providerSpawn: Partial<ProviderSpawn> = {}
     let launchConfigFiles: { dir: string; files: SpawnFile[] } | undefined
     // Writable roots come from the trusted agent dir, never agent.json's workspace.path, and an un-sandboxable layout (SandboxError) refuses rather than runs unconfined.
     let launch: ReturnType<typeof prepareRuntimeLaunch>
@@ -9085,7 +9117,7 @@ export class Daemon {
             applyOpenCodeReadOnlyMode(target, launchEnv, this.k8s ? undefined : process.env.OPENCODE_CONFIG_CONTENT)
           }
           if (!this.k8s && opts.providerCredential && agent.modelProvider) {
-            if (providerPlaceholder)
+            if (providerPlaceholder && localProxyRoute)
               applyProxiedOrganizationModelCredential(
                 agent.modelProvider,
                 target,
@@ -9093,7 +9125,18 @@ export class Daemon {
                 opts.providerCredential,
                 providerPlaceholder
               )
-            else applyOrganizationModelCredential(agent.modelProvider, target, launchEnv, opts.providerCredential)
+            else {
+              // Until a shim reports its listener, the launch keeps the real key, as one whose shim predates `provider` does.
+              if (providerPlaceholder)
+                providerSpawn.env = proxiedOrganizationModelOverlay(
+                  agent.modelProvider,
+                  target,
+                  launchEnv,
+                  opts.providerCredential,
+                  providerPlaceholder
+                )
+              applyOrganizationModelCredential(agent.modelProvider, target, launchEnv, opts.providerCredential)
+            }
             return
           }
           if (!this.k8s) return
@@ -9205,6 +9248,7 @@ export class Daemon {
       ],
       ...(launchConfigFiles ? { clearDirs: [launchConfigFiles.dir] } : {}),
       ...(codehostSpawn ? { codehost: codehostSpawn } : {}),
+      ...(providerSpawn.env ? { provider: { env: providerSpawn.env } } : {}),
       inheritProcessEnv: launch.inheritProcessEnv,
       runtimeId: runtimeEntry?.aliasOf ?? agent.runtime,
       isolateAccountApps: cfg.security.isolateAccountApps,

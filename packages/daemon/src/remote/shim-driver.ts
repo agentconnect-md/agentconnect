@@ -7,7 +7,7 @@ import { ShimFileSink } from '../shim/channels.js'
 import { withStartupPhase } from '../session/startup-progress.js'
 import type { ChannelBinder } from './channel-binder.js'
 import type { Launch } from './launch-registry.js'
-import { applyCodehostSpawn, type CodehostListener } from './codehost-spawn.js'
+import { applyProxySpawn, type CodehostListener } from './codehost-spawn.js'
 import { createRemoteRuntime } from './remote-runtime.js'
 import {
   agentSandboxSubject,
@@ -29,6 +29,8 @@ export interface RemoteShimDriverDeps<L extends Launch = Launch> {
   metrics: ClusterMetrics
   /** The `codehost` listener the subject's bound shim reported; a launch's codehost env applies only beside one. */
   codehostFor?: (subject: SandboxSubject) => CodehostListener | undefined
+  /** The `provider` listener, asked for once the launch's slot is known; a launch's provider env applies only beside one. */
+  providerFor?: (subject: SandboxSubject) => Promise<CodehostListener | undefined>
 }
 
 /** Runs an ACP runtime through a shim it dials: bind at the launch's generation, write its files, open the runtime, hold the sandbox until it exits. */
@@ -68,8 +70,12 @@ export class RemoteShimDriver<L extends Launch = Launch> implements SpawnDriver 
       this.deps.metrics.channel('bound')
       const session = this.deps.binder.sessionFor(subject)
       if (!session) throw new Error(`no shim session for ${subject} after binding its channel`)
-      // Decided after the bind, since only the shim that will run the runtime can say whether it serves `codehost`.
-      const launch = applyCodehostSpawn(request, this.deps.codehostFor?.(subject))
+      // Decided after the bind, since only the shim that will run the runtime can say whether it serves `codehost` or `provider`.
+      const provider = request.provider ? await this.deps.providerFor?.(subject) : undefined
+      const launch = applyProxySpawn(request, {
+        ...(request.codehost ? { codehost: this.deps.codehostFor?.(subject) } : {}),
+        ...(provider ? { provider } : {})
+      })
       // Fail-closed and per-launch: the env points at these files and a resumed sandbox starts with an empty tmpfs, so the write belongs to every launch, not to the bind.
       const sink = new ShimFileSink(session)
       await clearSpawnDirs(sink, launch.clearDirs)

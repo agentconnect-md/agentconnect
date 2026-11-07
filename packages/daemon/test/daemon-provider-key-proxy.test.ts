@@ -185,6 +185,65 @@ describe.skipIf(process.platform === 'win32')('organization Provider keys throug
     }
   })
 
+  it('offers an executor-placed host session the placeholder at spawn, and its shim a provider tunnel', async () => {
+    const { root, daemon, d, agent } = await started(true)
+    const sessionKey = 'slack:T1:C1:1700000000.000100'
+    const placed = {
+      agentId: agent.id,
+      sessionKey,
+      leaf: 'leaf-example',
+      subject: `${agent.id}/session-example`,
+      executorDaemonId: 'executor-example',
+      strategy: 'host'
+    }
+    const realPlane = d.executorPlane
+    try {
+      d.cpClient = { requestProviderCredentials: vi.fn() }
+      // Before any launch the agent has no slot, so its placed sessions ask for no provider tunnel.
+      expect(d.tunnelsForPlaced(agent.id, placed)).not.toContain('provider')
+      d.executorPlane = {
+        placementOf: (key: string) => (key === sessionKey ? placed : undefined),
+        homeFor: () => '/home/agent/executor-home',
+        rootsFor: () => ({ runtimeRoot: '/home/agent/executor-run', missingHelpers: [] }),
+        codexStateFor: () => undefined,
+        runtimeDefFor: () => undefined,
+        codehostProxyFor: () => undefined,
+        spawnFor: () => ({})
+      }
+      const { host } = d.buildAcpHost(agent, d.cfg, {
+        hostKey: sessionHostKey(agent.id, sessionKey),
+        strategy: 'host',
+        cwd: agent.workspace.path,
+        providerCredential: credential(null)
+      })
+      // The launch keeps the real key until its shim reports a listener; the swap travels beside it.
+      expect(host.opts.env.ANTHROPIC_API_KEY).toBe(KEY)
+      expect(host.opts.env.HTTPS_PROXY).toBeUndefined()
+      const swap: Record<string, string> = host.opts.provider.env
+      expect(swap.ANTHROPIC_API_KEY!.startsWith(PLACEHOLDER_PREFIX)).toBe(true)
+      expect(swap.ANTHROPIC_CUSTOM_HEADERS).toBe('')
+      expect(JSON.stringify(swap)).not.toContain(KEY)
+      expect(JSON.stringify(swap)).not.toContain(HEADER)
+      // The slot now exists, so the session's shim is asked for a provider tunnel to the agent's own socket.
+      expect(d.tunnelsForPlaced(agent.id, placed)).toContain('provider')
+      expect(d.tunnelsForPlaced(agent.id, { ...placed, strategy: 'srt' })).not.toContain('provider')
+      expect(d.providerTunnelFor(agent.id)).toEqual(['provider'])
+      expect(d.tunnelListenOptions(agent.id, 'provider')).toEqual({
+        routes: ['api.anthropic.com:443'],
+        ca: d.credentialProxy.ca.certPem
+      })
+      expect(d.tunnelListenOptions(agent.id, 'codehost')).toBeUndefined()
+      expect(d.tunnelSocketPath(root, 'provider', agent.id)).toBe(
+        d.credentialProxy.proxy.providerTunnelSocketFor(agent.id)
+      )
+      expect(d.tunnelSocketPath(root, 'codehost', agent.id)).toBeUndefined()
+    } finally {
+      d.executorPlane = realPlane
+      d.cpClient = undefined
+      await daemon.stop()
+    }
+  })
+
   it('routes an srt session to the proxy for the provider host with the placeholder in env', async () => {
     const { daemon, d, agent } = await started(true)
     try {

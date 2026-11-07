@@ -1,17 +1,27 @@
 import { z } from 'zod'
 import { SANDBOX_TUNNEL_PATHS as SANDBOX_TUNNEL_PATH_SOURCE } from './sandbox-paths.js'
 
-/** The daemon-side servers a sandbox may reach, a closed set so a compromised runtime reaches only these: gitcred and mcp as in-pod sockets, codehost as a loopback proxy. */
-export const TunnelNameSchema = z.enum(['gitcred', 'mcp', 'codehost'])
+/** The daemon-side servers a sandbox may reach, a closed set so a compromised runtime reaches only these: gitcred and mcp as in-pod sockets, codehost and provider through one loopback proxy. */
+export const TunnelNameSchema = z.enum(['gitcred', 'mcp', 'codehost', 'provider'])
 export type TunnelName = z.infer<typeof TunnelNameSchema>
+
+/** The tunnels a shim serves through its loopback proxy listener, each with its own routes and stream budget. */
+export type ProxyTunnelName = 'codehost' | 'provider'
+
+/** Whether a tunnel is served through the loopback proxy listener rather than at an in-pod socket. */
+export function isProxyTunnel(tunnel: TunnelName): tunnel is ProxyTunnelName {
+  return tunnel === 'codehost' || tunnel === 'provider'
+}
 
 /** Bytes per chunk in either direction. One `shim/request` or `shim/event` carries at most one
  *  chunk, so this has to leave room under `MAX_FRAME_BYTES` (256 KiB) after base64 expansion. */
 export const MAX_TUNNEL_CHUNK_BYTES = 32 * 1024
-/** The most code-host authorities one agent's `codehost` listener forwards. */
+/** The most authorities one `codehost` or `provider` listen forwards. */
 export const MAX_CODEHOST_ROUTES = 64
 /** Concurrent `codehost` streams per sandbox, apart from the helper tunnels' own budget so a busy clone cannot starve `mcp` or `gitcred`. */
 export const MAX_CODEHOST_STREAMS = 16
+/** Concurrent `provider` streams per sandbox, its own budget: each session holds a few long-lived model connections (subagents, pooled keep-alives), so it is wider than a clone burst's. */
+export const MAX_PROVIDER_STREAMS = 64
 /** Data frames one stream may have unacknowledged, in either direction, before its local socket is paused (8 × 32 KiB). */
 export const MAX_IN_FLIGHT_FRAMES = 8
 /** How many shim-sent chunks the daemon writes out before acknowledging them, so a paused stream always earns an ack. */
@@ -31,7 +41,7 @@ const MAX_TUNNEL_CHUNK_BASE64 = Math.ceil(MAX_TUNNEL_CHUNK_BYTES / 3) * 4
 export const TunnelListenSchema = z.object({
   op: z.literal('listen'),
   tunnel: TunnelNameSchema,
-  // `codehost` only: the `host:port` authorities its listener forwards to the daemon, and the CA the session trusts for them.
+  // `codehost` and `provider` only: the `host:port` authorities the listener forwards into this tunnel, and the CA the session trusts for them.
   routes: z.array(z.string().min(1).max(270)).max(MAX_CODEHOST_ROUTES).optional(),
   ca: z
     .string()
@@ -41,7 +51,7 @@ export const TunnelListenSchema = z.object({
   // The daemon acknowledges this tunnel's shim-sent chunks; an older shim strips the field and is never sent an `ack`.
   acks: z.boolean().optional()
 })
-/** What the daemon sends with a `codehost` listen: the routes, and the CA certificate alone, which the shim merges with its own machine's roots. */
+/** What the daemon sends with a `codehost` or `provider` listen: the routes, and the CA certificate alone, which the shim merges with its own machine's roots. */
 export type TunnelListenOptions = { routes: string[]; ca: string }
 
 /**
@@ -78,7 +88,7 @@ export const TunnelPayloadSchema = z.discriminatedUnion('op', [
 ])
 export type TunnelPayload = z.infer<typeof TunnelPayloadSchema>
 
-/** What a `listen` reports back: the path the pod serves, and for `codehost` the loopback proxy a session is pointed at. */
+/** What a `listen` reports back: the path the pod serves, and for `codehost` or `provider` the loopback proxy a session is pointed at. */
 export const TunnelListeningSchema = z.object({
   socketPath: z.string().min(1),
   proxy: z

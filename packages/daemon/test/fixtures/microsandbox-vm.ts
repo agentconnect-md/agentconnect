@@ -13,7 +13,6 @@ import { resolveCommandInPath } from '../../src/shim/path-resolve.js'
 import { DEFAULT_SHIM_LISTEN_PORT } from '../../src/shim/protocol.js'
 import { ShimServer } from '../../src/shim/server.js'
 import { TunnelHost } from '../../src/shim/tunnel-host.js'
-import type { TunnelName } from '../../src/shim/tunnel.js'
 
 const silent = { info: () => {}, warn: () => {} }
 
@@ -53,8 +52,12 @@ class FrameQueue {
 
 /** A VM as the shim starter sees it: only the guest agent's exec and TCP streams are faked, and the shim they start and reach is the real one. */
 export function fakeVm(
-  guestSockets: Record<Exclude<TunnelName, 'codehost'>, string>,
-  options: { serve?: (capability: string, payload: unknown) => Promise<unknown> } = {}
+  guestSockets: Record<'gitcred' | 'mcp', string>,
+  options: {
+    serve?: (capability: string, payload: unknown) => Promise<unknown>
+    /** Tunnel names this shim predates, whose `listen` its schema refuses. */
+    refuseTunnels?: readonly string[]
+  } = {}
 ) {
   const execs: Array<{ cmd: string; args: string[]; env: string[]; user: string | null; stdin: string }> = []
   const cleanup: Array<() => void | Promise<void>> = []
@@ -67,7 +70,8 @@ export function fakeVm(
     const server = new ShimServer()
     const tunnels = new TunnelHost({
       emit: (streamId, event) => client.emit(streamId, event),
-      socketPathFor: (tunnel) => (tunnel === 'codehost' ? `${guestSockets.gitcred}.codehost` : guestSockets[tunnel])
+      socketPathFor: (tunnel) =>
+        tunnel === 'gitcred' || tunnel === 'mcp' ? guestSockets[tunnel] : `${guestSockets.gitcred}.${tunnel}`
     })
     const client = new ShimClient({
       endpoint: 'accepted-daemon-channel',
@@ -81,8 +85,11 @@ export function fakeVm(
           if (options.serve) return options.serve(capability, payload)
           throw new Error(`capability ${capability} is not served by this fake`)
         }
+        const { op, tunnel } = payload as { op: string; tunnel?: string }
+        if (op === 'listen' && tunnel && options.refuseTunnels?.includes(tunnel))
+          throw new Error(`Invalid enum value: ${tunnel}`)
         const held = hold
-        if (held && (payload as { op: string }).op === 'data') {
+        if (held && op === 'data') {
           hold = undefined
           held.reached()
           await held.released
