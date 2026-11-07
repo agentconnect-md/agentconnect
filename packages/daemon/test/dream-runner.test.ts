@@ -287,13 +287,17 @@ async function acceptedSkillBody(dir: string, name: string): Promise<string> {
   return readFile(join(source.sourceDir, 'SKILL.md'), 'utf8')
 }
 
+// A wall-clock deadline, not an iteration count: Windows timers tick at ~15ms and its file creation is slow.
+const SETTLE_DEADLINE_MS = 15_000
+
 async function settle(store: FakeStore, dreamId: string): Promise<DreamInfo> {
-  for (let i = 0; i < 200; i++) {
+  const deadline = Date.now() + SETTLE_DEADLINE_MS
+  for (;;) {
     const dream = store.dreams.get(dreamId)
     if (dream && dream.status !== 'pending' && dream.status !== 'running') return dream
+    if (Date.now() >= deadline) throw new Error(`dream never settled (last status: ${dream?.status ?? 'missing'})`)
     await new Promise((r) => setTimeout(r, 5))
   }
-  throw new Error('dream never settled')
 }
 
 describe('DreamRunner pipeline', () => {
