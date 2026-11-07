@@ -324,7 +324,7 @@ describe('executor/prepare', () => {
         psk: 'c2VjcmV0LXBpcGUta2V5',
         runtimeRoot: '/home/agent/workspace/hs/0a1b2c3d4e5f',
         helperRoot: '/opt/agentconnect',
-        missingHelpers: ['ghWrapperDir'],
+        missingHelpers: ['pathbinDir'],
         workspaceIncarnation: 'workspace:0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9',
         stableWorkspaceIncarnation: 'workspace:9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a0',
         liveCount: 4

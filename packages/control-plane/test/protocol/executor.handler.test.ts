@@ -37,7 +37,7 @@ const READY: ExecutorPrepareResult = {
   psk: PSK,
   runtimeRoot: '/home/agent/workspace/hs/0a1b2c3d4e5f',
   helperRoot: '/opt/agentconnect',
-  missingHelpers: ['ghWrapperDir'],
+  missingHelpers: ['pathbinDir'],
   liveCount: 4
 }
 
