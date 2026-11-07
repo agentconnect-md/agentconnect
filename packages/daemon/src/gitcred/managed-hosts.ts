@@ -71,12 +71,15 @@ export function gitlabManagedHost(gitlabHost?: string): ManagedCredentialHost {
   return { provider: 'gitlab', baseUrl: normalizeManagedBaseUrl(gitlabHost) ?? GITLAB_COM_BASE_URL }
 }
 
-/** The default table — GitHub, the one GitLab instance a spec names, and Gitea at its own axis
- *  default — and what an absent or unparseable env falls back to. It names the same providers the
- *  daemon's code-host credential registry injects, which this leaf cannot reach: a fallback that
- *  classified fewer hosts than a present table would make an absent env a different product. */
+/** Azure DevOps Services' one fixed host (azure-devops-integration.md §6.2); no spec field moves it. */
+export const AZURE_DEVOPS_MANAGED_HOST: ManagedCredentialHost = {
+  provider: 'azure-devops',
+  baseUrl: 'https://dev.azure.com'
+}
+
+/** What an absent or unparseable env falls back to: every provider the credential registry injects, so an absent env classifies the same hosts. */
 export function managedHostTableFor(gitlabHost?: string, giteaHost?: string): ManagedCredentialHost[] {
-  return [GITHUB_MANAGED_HOST, gitlabManagedHost(gitlabHost), giteaManagedHost(giteaHost)]
+  return [GITHUB_MANAGED_HOST, gitlabManagedHost(gitlabHost), giteaManagedHost(giteaHost), AZURE_DEVOPS_MANAGED_HOST]
 }
 
 /** `github=https://github.com gitlab=https://gitlab.example.test:8443/gitlab` — space separated,

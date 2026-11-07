@@ -51,19 +51,25 @@ export const CODE_HOST_PROJECTION: Record<CodeHostProvider, CodeHostProjection> 
     repoNounShort: 'repo',
     changeNoun: 'pull_request',
     docsPath: 'connect-automate/triggers-automation/gitea'
+  },
+  // A4 adds the setup page this names.
+  'azure-devops': {
+    label: 'Azure DevOps',
+    publicHost: 'dev.azure.com',
+    repoNoun: 'repository',
+    repoNounShort: 'repo',
+    changeNoun: 'pull_request',
+    docsPath: 'connect-automate/triggers-automation/azure-devops'
   }
 }
 
-/**
- * Whether the console has the complete surface a PICKER tile promises — the connect card, the
- * repository picker, the settings panes behind it.
- *
- * A provider is known to the wire before its console surface exists (gitea-integration.md §16: G1
- * made `gitea` a code host, G6 gave it a card), and a tile that opens nothing is worse than no
- * tile. Total over the providers rather than a list of exclusions, so the step that adds the surface
- * flips one value here.
- */
-const CODE_HOST_CONSOLE_READY: Record<CodeHostProvider, boolean> = { github: true, gitlab: true, gitea: true }
+/** Whether the console has the whole surface a picker tile promises; Azure DevOps flips with its Console step (azure-devops-integration.md §13, A4). */
+const CODE_HOST_CONSOLE_READY: Record<CodeHostProvider, boolean> = {
+  github: true,
+  gitlab: true,
+  gitea: true,
+  'azure-devops': false
+}
 
 /** The hosts the console OFFERS. Every `Record<CodeHostProvider, …>` above stays total regardless:
  *  a row, a label and a mark are needed wherever an existing hook or grant names the host. */

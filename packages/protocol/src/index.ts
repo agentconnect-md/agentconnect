@@ -12,6 +12,7 @@ export {
   AGENT_CONFIG_REVISION_FEATURE,
   AGENT_MEMORY_STORE_V1_FEATURE,
   AGENT_WAKE_FEATURE,
+  AZURE_DEVOPS_V1_FEATURE,
   PULL_REQUEST_FEEDBACK_FEATURE,
   BOT_CREDENTIAL_CHECK_FEATURE,
   BOT_TENANT_FEATURE,
@@ -235,6 +236,9 @@ export type { DecodeResultOf } from './wire.js'
 
 // ── git repo address helpers (normalize on write, shorten for display) ──
 export {
+  AZURE_DEVOPS_HOST,
+  azureDevOpsRepoAddress,
+  type AzureDevOpsRepoAddress,
   DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS,
   WORKSPACE_GIT_ANY_ORIGIN,
   DOT_PATH_SEGMENT_RE,

@@ -445,6 +445,11 @@ export const GITEA_V1_FEATURE = 'gitea-v1'
  *  default of one axis, never a separate mode. */
 export const GITEA_DEFAULT_BASE_URL = 'https://gitea.com'
 
+// ── Azure DevOps code-host feature (azure-devops-integration.md §7) ─────────
+
+/** Daemon serves Azure DevOps workspaces and additional repositories through its credential proxy; gates placement and spec projection, fail-closed by omission. */
+export const AZURE_DEVOPS_V1_FEATURE = 'azure-devops-v1'
+
 /** CP serves provider-qualified gitcred v2 request/grant fields. A daemon must not name a
  *  provider before seeing this, and must reject a grant whose provider or numeric repository
  *  id differs from its request (an older CP strips new fields and answers GitHub-shaped). */

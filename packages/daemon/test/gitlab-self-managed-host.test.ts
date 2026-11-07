@@ -53,13 +53,14 @@ describe('the injected host→provider table (§24.4)', () => {
   it('round-trips, and an absent table means every axis at its default value', () => {
     const table = managedHostTableFor(INSTANCE)
     expect(encodeManagedHostTable(table)).toBe(
-      `github=https://github.com gitlab=${INSTANCE} gitea=${GITEA_DEFAULT_BASE_URL}`
+      `github=https://github.com gitlab=${INSTANCE} gitea=${GITEA_DEFAULT_BASE_URL} azure-devops=https://dev.azure.com`
     )
     expect(decodeManagedHostTable(encodeManagedHostTable(table))).toEqual(table)
     expect(decodeManagedHostTable(undefined)).toEqual([
       { provider: 'github', baseUrl: 'https://github.com' },
       { provider: 'gitlab', baseUrl: GITLAB_DEFAULT_BASE_URL },
-      { provider: 'gitea', baseUrl: GITEA_DEFAULT_BASE_URL }
+      { provider: 'gitea', baseUrl: GITEA_DEFAULT_BASE_URL },
+      { provider: 'azure-devops', baseUrl: 'https://dev.azure.com' }
     ])
     expect(gitlabManagedHost().baseUrl).toBe(GITLAB_DEFAULT_BASE_URL)
     expect(gitlabManagedHost(`${INSTANCE}/`).baseUrl).toBe(INSTANCE)

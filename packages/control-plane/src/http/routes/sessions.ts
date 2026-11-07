@@ -329,14 +329,13 @@ function sessionIntegration(s: HookSessionRow, hook: HookSessionMetadata | undef
   return kind && isCodeHostHookKind(kind) ? kind : platform
 }
 
-/** Display name for a hook source with no name of its own. TOTAL over the hook-kind
- *  vocabulary, so a new code host cannot inherit the generic "Webhook" label the way
- *  GitLab did — adding one to the shared union fails this file's type-check first. */
+/** Display name for a hook source with no name of its own; total, so a new code host cannot inherit "Webhook". */
 const HOOK_KIND_LABEL: Record<HookKind, string> = {
   webhook: 'Webhook',
   github: 'GitHub',
   gitlab: 'GitLab',
-  gitea: 'Gitea'
+  gitea: 'Gitea',
+  'azure-devops': 'Azure DevOps'
 }
 
 /** A channel id is only unique within its platform, so the label cache keys on both.

@@ -438,7 +438,7 @@ export const CODE_HOST_ROUTING_FAMILIES = ['issues', 'pull_request', 'merge_requ
 export const CodeHostRoutingFamily = z.enum(CODE_HOST_ROUTING_FAMILIES)
 export type CodeHostRoutingFamily = z.infer<typeof CodeHostRoutingFamily>
 
-// Kept equal to CODE_HOST_PROVIDERS by a test: this leaf module may not import code-host.ts.
+// The code hosts with hooks, pinned against CODE_HOST_PROVIDERS by a test (this leaf may not import it); Azure DevOps has none in v1.
 export const CODE_HOST_ROUTING_PROVIDERS = ['github', 'gitlab', 'gitea'] as const
 export const CodeHostRoutingProvider = z.enum(CODE_HOST_ROUTING_PROVIDERS)
 export type CodeHostRoutingProvider = z.infer<typeof CodeHostRoutingProvider>

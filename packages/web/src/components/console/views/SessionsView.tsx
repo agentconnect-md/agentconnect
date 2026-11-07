@@ -49,7 +49,15 @@ import { isFlatSessionView, sessionListSearchParams, showsTasks, withShowTasks }
 import { useProfile } from '@/lib/profile'
 import { usePlayground } from '@/components/console/PlaygroundProvider'
 import { useMobileFilterSlot } from '@/components/console/Shell'
-import { AgentIconView, GiteaMark, GithubMark, GitlabMark, LoadingState, PlatformMark } from '@/components/marks'
+import {
+  AgentIconView,
+  AzureDevOpsMark,
+  GiteaMark,
+  GithubMark,
+  GitlabMark,
+  LoadingState,
+  PlatformMark
+} from '@/components/marks'
 import { RestrictedLock } from '@/components/console/VisibilityField'
 import { CoordinatorTag } from '@/components/console/CoordinatorTag'
 import { Avatar, Icon } from '@/components/ui'
@@ -489,6 +497,11 @@ export default function SessionsView() {
     gitea: (
       <span className="flex h-[15px] w-[15px] items-center justify-center">
         <GiteaMark color="var(--text-tertiary)" />
+      </span>
+    ),
+    'azure-devops': (
+      <span className="flex h-[15px] w-[15px] items-center justify-center">
+        <AzureDevOpsMark color="var(--text-tertiary)" />
       </span>
     ),
     webhook: catFace('webhook')

@@ -2,15 +2,14 @@
 
 import type { ComponentType } from 'react'
 import type { CodeHostProvider } from '@agentconnect.md/protocol/code-host'
-import { GiteaMark, GithubMark, GitlabMark } from '@/components/marks'
+import { AzureDevOpsMark, GiteaMark, GithubMark, GitlabMark } from '@/components/marks'
 
-// One mark per code host, normalized to the GitHub mark's prop set so a selection site can render
-// whichever provider it holds. The tanuki is multi-color and ignores `color`, exactly as it does
-// where it is named directly. Total: a new host brings its own mark here.
+// One mark per code host on the GitHub mark's prop set (the multi-color tanuki ignores `color`); total, so a new host brings its own.
 const CODE_HOST_MARK: Record<CodeHostProvider, ComponentType<{ color?: string; fillPct?: number }>> = {
   github: GithubMark,
   gitlab: GitlabMark,
-  gitea: GiteaMark
+  gitea: GiteaMark,
+  'azure-devops': AzureDevOpsMark
 }
 
 /** The brand mark of one code host — the provider-keyed reading of `GithubMark` / `GitlabMark`. */

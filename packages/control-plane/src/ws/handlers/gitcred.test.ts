@@ -484,6 +484,21 @@ describe('handleGitCredRequest — repoFullName passthrough (issue #457)', () =>
     expect(conn.replyTo).not.toHaveBeenCalled()
   })
 
+  it('refuses a known provider with no credential arm instead of minting through the GitHub arm', async () => {
+    const mintForAgent = vi.fn()
+    const deps = { agent: { get: async () => PLACED_AGENT }, github: { mintForAgent } } as unknown as DaemonWsDeps
+    const conn = fakeConn()
+    await handleGitCredRequest(gitcredFrame({ provider: 'azure-devops', externalRepoId: '7' }), conn, deps)
+    expect(conn.sendError).toHaveBeenCalledWith(
+      expect.anything(),
+      'SCOPE_DENIED',
+      'azure-devops workspaces are not enabled on this control plane',
+      false
+    )
+    expect(mintForAgent).not.toHaveBeenCalled()
+    expect(conn.replyTo).not.toHaveBeenCalled()
+  })
+
   it('maps a GitCredDeniedError onto a correlated error REP (code + retryable preserved)', async () => {
     const deps = {
       agent: { get: async () => PLACED_AGENT },

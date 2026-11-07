@@ -1,16 +1,8 @@
 // ⚠️ NO RELATIVE IMPORTS — a bundler compiles this from source; web's protocol-imports.leaf.test.ts enforces it.
 import { z } from 'zod'
 
-/**
- * Code-host provider identity (gitlab-com-integration.md §8.1).
- *
- * Code hosts are NOT chat platforms: they have no connection, no ingress plugin
- * identity, and no manifest entry. What they share is a provider-qualified
- * NUMERIC repository identity — paths and clone URLs are mutable display hints,
- * so authorization, hook matching, and run effects must key on
- * `(provider, externalId)` and never on a display path.
- */
-export const CODE_HOST_PROVIDERS = ['github', 'gitlab', 'gitea'] as const
+/** Code hosts (gitlab-com-integration.md §8.1) are not chat platforms; everything keys on `(provider, externalId)`, never a display path. */
+export const CODE_HOST_PROVIDERS = ['github', 'gitlab', 'gitea', 'azure-devops'] as const
 export type CodeHostProvider = (typeof CODE_HOST_PROVIDERS)[number]
 
 export function isCodeHostProvider(value: unknown): value is CodeHostProvider {

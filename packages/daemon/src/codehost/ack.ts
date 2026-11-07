@@ -20,6 +20,7 @@
 import type { CodeHostProvider } from '@agentconnect.md/protocol'
 import { replyTargetProvider, type CodeHostReplyTarget } from './reply-target.js'
 import { giteaAck } from '../gitea/ack.js'
+import { azureDevOpsAck } from '../azure-devops/ack.js'
 
 /** Bounded because it races a prompt that is already starting; an unreachable host must
  *  never hold a turn open, and a late reaction is worthless anyway. */
@@ -99,7 +100,8 @@ const gitlabAck: CodeHostAckAdapter = {
 const ACKS: { readonly [P in CodeHostProvider]: CodeHostAckAdapter } = {
   github: githubAck,
   gitlab: gitlabAck,
-  gitea: giteaAck
+  gitea: giteaAck,
+  'azure-devops': azureDevOpsAck
 }
 
 /**

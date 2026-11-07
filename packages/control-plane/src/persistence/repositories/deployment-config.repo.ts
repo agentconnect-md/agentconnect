@@ -79,15 +79,13 @@ function toRuntime(row: RuntimeRow): StoredDeploymentConfigRuntime {
   }
 }
 
-/**
- * Does any of one host's state still bind this deployment to its instance (§24.1)?
- * Keyed by provider here rather than in the code-host provider registry: the count
- * is a statement about Prisma models, which are persistence's knowledge.
- */
+/** Whether one host's state still binds this deployment to its instance (§24.1); keyed here because it counts Prisma models. */
 const CODE_HOST_STATE_EXISTS: Record<CodeHostProvider, (tx: Prisma.TransactionClient) => Promise<boolean>> = {
   // A GitHub App addresses github.com only: the deployment has no instance axis
   // for this host, so no state of its can pin one.
   github: async () => false,
+  // Azure DevOps Services is one fixed host as well.
+  'azure-devops': async () => false,
   // A `disconnected` connection is credential-free history and does not bind; a
   // binding (`cleanup_pending` included), an account, a hook, or a claim carrying
   // a tombstone or an unfinished cleanup obligation does.

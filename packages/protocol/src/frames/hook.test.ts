@@ -19,6 +19,7 @@ import {
   isFrame,
   CODE_HOST_PROVIDERS,
   CODE_HOST_ROUTING_PROVIDERS,
+  CodeHostRoutingProvider,
   isCodeHostRoutingScope,
   pickCodeHostHookMembers,
   RdAck,
@@ -623,10 +624,18 @@ describe('code-host Decision routing shapes (code-host-decisions.md §3-§5)', (
 })
 
 describe('code-host routing scopes', () => {
-  it('lists every code-host provider, each with its own routable families', () => {
-    expect([...CODE_HOST_ROUTING_PROVIDERS].sort()).toEqual([...CODE_HOST_PROVIDERS].sort())
+  it('lists every code-host provider with hooks, each with its own routable families', () => {
+    const withHooks = CODE_HOST_PROVIDERS.filter((provider) => provider !== 'azure-devops')
+    expect([...CODE_HOST_ROUTING_PROVIDERS].sort()).toEqual([...withHooks].sort())
     expect(isCodeHostRoutingScope('gitlab', 'merge_request')).toBe(true)
     expect(isCodeHostRoutingScope('github', 'merge_request')).toBe(false)
     expect(isCodeHostRoutingScope('gitea', 'pull_request')).toBe(false)
+  })
+
+  it('routes nothing on Azure DevOps, which has no hooks in v1', () => {
+    for (const family of ['issues', 'pull_request', 'merge_request']) {
+      expect(isCodeHostRoutingScope('azure-devops', family)).toBe(false)
+    }
+    expect(CodeHostRoutingProvider.safeParse('azure-devops').success).toBe(false)
   })
 })

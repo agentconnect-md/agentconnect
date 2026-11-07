@@ -24,6 +24,8 @@ const GITEA_HOOK = '44444444-4444-4444-8444-444444444444'
 const WEBHOOK = '33333333-3333-4333-8333-333333333333'
 
 const at = new Date('2026-08-22T00:00:00Z')
+// Azure DevOps has no hooks in v1 (azure-devops-integration.md §11), so it has no hook sessions to promote.
+const HOOKED_PROVIDERS = CODE_HOST_PROVIDERS.filter((provider) => provider !== 'azure-devops')
 
 function hookSession(hookId: string, id: string) {
   return {
@@ -135,7 +137,7 @@ describe('session integration facets across code hosts', () => {
       integrations: string[]
       triggers: Array<{ value: string; integration: string; hookKind: string | null; githubRepoId: string | null }>
     }
-    expect([...body.integrations].sort()).toEqual([...CODE_HOST_PROVIDERS, 'hook'].sort())
+    expect([...body.integrations].sort()).toEqual([...HOOKED_PROVIDERS, 'hook'].sort())
     expect(body.triggers).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ value: `hook:${GITLAB_HOOK}`, integration: 'gitlab', hookKind: 'gitlab' }),
@@ -160,8 +162,9 @@ describe('session integration facets across code hosts', () => {
       expect(res.statusCode).toBe(200)
       const passed = filterQueryOf(listPage)
       expect(passed.integration).toBe(provider)
-      // Exact, so another host's ids are never read for this filter.
-      expect(passed.codeHostHookIds).toEqual({ [provider]: [hookByProvider.get(provider)] })
+      // Exact, so another host's ids are never read for this filter; a host without hooks has none.
+      const ids = hookByProvider.has(provider) ? [hookByProvider.get(provider)] : []
+      expect(passed.codeHostHookIds).toEqual({ [provider]: ids })
     }
   })
 
@@ -200,14 +203,17 @@ describe('session integration facets across code hosts', () => {
       .triggers
     const facetOf = (kind: string) => triggers.find((t) => t.value === `hook:${hookById.get(kind)}`)
 
-    const projected = HOOK_KINDS.map((kind) => [kind, facetOf(kind)?.integration] as const)
+    const hooked = HOOK_KINDS.filter((kind) => kind !== 'azure-devops')
+    // The fixture covers every kind a hook row can store, so a new host must be added to it.
+    expect([...hookById.keys()].sort()).toEqual([...hooked].sort())
+    const projected = hooked.map((kind) => [kind, facetOf(kind)?.integration] as const)
     for (const [kind, integration] of projected) {
       expect(facetOf(kind)?.hookKind).toBe(kind)
       expect(integration).toBe(isCodeHostHookKind(kind) ? kind : 'hook')
     }
     // Distinctness is the property that failed in live testing: GitLab shared the
     // generic bucket, so its sessions were unreachable from the integration filter.
-    expect(new Set(projected.map(([, integration]) => integration)).size).toBe(HOOK_KINDS.length)
+    expect(new Set(projected.map(([, integration]) => integration)).size).toBe(hooked.length)
   })
 
   it('carries the hook kind on the session row so the console never has to guess', async () => {

@@ -337,14 +337,11 @@ const CoreConfigShape = {
   // Provider whitelist for the connectors catalog. '*' (or unset) ⇒ every provider;
   // otherwise a comma-separated list of `service` ids.
   OPEN_CONNECTOR_PROVIDER_WHITELIST: z.string().optional(),
-  // Provider blocklist applied after the whitelist. Defaults to the exact open-connector
-  // service ids that overlap AgentConnect's native integrations — CONVENTION: every new
-  // native integration (platform module or code host) adds its upstream service id here
-  // in the same change, so the catalog never offers a connector the product now owns.
+  // Applied after the whitelist; CONVENTION: every native integration adds its open-connector service id here in the same change.
   OPEN_CONNECTOR_PROVIDER_BLOCKLIST: z
     .string()
     .default(
-      'github,gitlab,gitea,linear,slack,slackbot,telegram,discord,discordbot,feishu,feishu_app_bot,feishu_custom_bot,googlechat,dingtalk_bot,dingtalk_mcp,microsoft_teams'
+      'github,gitlab,gitea,azure-devops,linear,slack,slackbot,telegram,discord,discordbot,feishu,feishu_app_bot,feishu_custom_bot,googlechat,dingtalk_bot,dingtalk_mcp,microsoft_teams'
     ),
   // ── in-cluster Kubernetes access — opt-in by running a daemon pool ──
   // THE switch for the cluster surface, and the only access knob: turning it on asserts this

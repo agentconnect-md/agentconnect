@@ -1,11 +1,9 @@
 import type { ReactNode } from 'react'
-import { GiteaMark, GithubMark, GitlabMark, PlatformMark } from '@/components/marks'
+import { AzureDevOpsMark, GiteaMark, GithubMark, GitlabMark, PlatformMark } from '@/components/marks'
 import type { HookKind } from '@/lib/api'
 import { credentialAttention } from '@/lib/data'
 
-// Total over the hook-kind vocabulary, so a new code host is given its own mark here
-// instead of inheriting the generic webhook glyph. The webhook mark is the brand-pink
-// plate rather than a white glyph, which had nothing to sit on when unplated on dark.
+// Total over the hook kinds, so no code host inherits the webhook glyph; the webhook mark is plated so it reads on dark.
 const HOOK_KIND_MARK: Record<HookKind, ReactNode> = {
   github: (
     <span className="flex h-[13px] w-[13px] items-center justify-center">
@@ -20,6 +18,11 @@ const HOOK_KIND_MARK: Record<HookKind, ReactNode> = {
   gitea: (
     <span className="flex h-[13px] w-[13px] items-center justify-center">
       <GiteaMark fillPct={90} />
+    </span>
+  ),
+  'azure-devops': (
+    <span className="flex h-[13px] w-[13px] items-center justify-center">
+      <AzureDevOpsMark fillPct={90} />
     </span>
   ),
   webhook: <PlatformMark platform="webhook" />

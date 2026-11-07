@@ -12,7 +12,6 @@ import {
   SUBSESSION_COORDINATE_PREFIX,
   isCoordinatorCoordinate,
   type CodeHostProvider,
-  type HookKind,
   type Platform,
   type SessionStayedHomeReason
 } from '@agentconnect.md/protocol'
@@ -24,7 +23,9 @@ import {
 } from '../../generated/prisma/client.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import { lockSessionLineage } from '../session-lineage-lock.js'
+import { isStoredHookKind } from '../hook-kind.js'
 import type {
+  HookKind,
   SessionRepo,
   SessionMilestoneResult,
   SessionVisibilityChange,
@@ -252,10 +253,10 @@ function hookIdOfEvent(ev: EventSessionInput): string | null {
   return UUID_RE.test(id) ? id : null
 }
 
-/** One code host's hook sessions. The row's own snapshot decides when it has one — that
- *  survives the definition being deleted — and only rows written before the column fall
- *  back to matching the live hook ids. */
+/** One code host's hook sessions: by the row's own kind snapshot, or the live hook ids for rows that predate it. */
 function codeHostHookSql(provider: CodeHostProvider, hookIds: string[], a: Prisma.Sql = S): Prisma.Sql {
+  // A host whose kind no row can store has no hook sessions, and casting its name to the enum would fail the query.
+  if (!isStoredHookKind(provider)) return Prisma.sql`FALSE`
   return Prisma.sql`
     ${a}."platform" = 'hook'
     AND (

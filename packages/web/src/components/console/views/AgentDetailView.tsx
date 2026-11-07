@@ -111,7 +111,15 @@ import { VisibilityValue } from '@/components/console/VisibilityField'
 import { IntegrationPlatformGroups, PLATFORM_TILE_WIDTH } from '@/components/console/IntegrationPlatformGroups'
 import { SelfAgentContext } from '@/components/console/SelfAgentTag'
 import LarkFeishuSwitcher from '@/components/LarkFeishuSwitcher'
-import { AgentMark, GiteaMark, GithubMark, GitlabMark, LoadingState, PlatformMark } from '@/components/marks'
+import {
+  AgentMark,
+  AzureDevOpsMark,
+  GiteaMark,
+  GithubMark,
+  GitlabMark,
+  LoadingState,
+  PlatformMark
+} from '@/components/marks'
 import { buildAgentReachabilityGraph } from '@/lib/agent-reachability'
 import type { Platform } from '@/components/console/modals/AddIntegrationModal'
 import { INTEGRATION_BLURB, isCoreTriggerKind } from '@/components/console/platforms/host-projections'
@@ -275,7 +283,8 @@ interface CodeHostReviewSettingsDraft {
 const REVIEW_DIALOG_MARK: Record<CodeHostProvider, ReactNode> = {
   github: <GithubMark color="#fff" />,
   gitlab: <GitlabMark fillPct={100} />,
-  gitea: <GiteaMark color="#fff" fillPct={100} />
+  gitea: <GiteaMark color="#fff" fillPct={100} />,
+  'azure-devops': <AzureDevOpsMark color="#fff" fillPct={100} />
 }
 
 // The dialog settles one subscription row, so its subject names it.
@@ -630,7 +639,9 @@ function AgentDetail() {
               reviewPolicy,
               reportingMode
             })
-        : null
+        : null,
+      // No hooks in v1 (azure-devops-integration.md §11), so no row opens this dialog.
+      'azure-devops': null
     }
     const save = writers[reviewSettingsDraft.kind]
     if (!save) return
@@ -693,7 +704,9 @@ function AgentDetail() {
           onReportingModeChange={onReportingModeChange}
           defaultExpanded
         />
-      )
+      ),
+      // Unreachable: no Azure DevOps hook row exists to settle.
+      'azure-devops': () => null
     }
     return (
       <div className="flex flex-col gap-4">

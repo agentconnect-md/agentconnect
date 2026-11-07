@@ -131,7 +131,8 @@ export interface CodeHostRepositoryModule {
 const MODULES: { readonly [P in CodeHostProvider]: CodeHostRepositoryModule | undefined } = {
   github: githubRepository,
   gitlab: gitlabRepository,
-  gitea: undefined
+  gitea: undefined,
+  'azure-devops': undefined
 }
 
 /** The resolution module owning one provider, or undefined when that host has none. */

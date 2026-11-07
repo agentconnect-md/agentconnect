@@ -594,6 +594,8 @@ interface CodeHostHookRuleByProvider {
   github: RcGithubHookRule
   gitlab: RcGitlabHookRule
   gitea: RcGiteaHookRule
+  // No hooks in v1 (azure-devops-integration.md §11), so no rule carries an Azure DevOps member.
+  'azure-devops': never
 }
 
 /** Decode-time view of a compiled code-host rule (gitea-integration.md §13): `kind` names the provider whose member carries the rule, plus the rename-stable repo key. */

@@ -90,14 +90,73 @@ function hasLocalPathPrefix(value: string): boolean {
   )
 }
 
-/**
- * Normalize and validate an untrusted git clone target.
- *
- * This shared codec remains host-agnostic so the CP can store repositories for
- * different daemon deployments. Only credential-free HTTPS and SSH transports
- * are accepted; the daemon applies its operator-owned exact-origin policy at
- * the execution boundary.
- */
+/** The one Azure DevOps Services host every canonical address uses (azure-devops-integration.md §5). */
+export const AZURE_DEVOPS_HOST = 'dev.azure.com'
+const VISUALSTUDIO_HOST_SUFFIX = '.visualstudio.com'
+const AZURE_DEVOPS_ORGANIZATION_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,48}[A-Za-z0-9])?$/
+
+/** An Azure Repos repository as its HTTPS address names it, with project and repository percent-decoded. */
+export interface AzureDevOpsRepoAddress {
+  organization: string
+  project: string
+  repository: string
+}
+
+function azureDevOpsSegment(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined
+  let decoded: string
+  try {
+    decoded = decodeURIComponent(value)
+  } catch {
+    return undefined
+  }
+  const unsafe = !decoded || decoded === '.' || decoded === '..' || /[/\\]/.test(decoded) || CONTROL_RE.test(decoded)
+  return unsafe ? undefined : decoded
+}
+
+/** The repository a dev.azure.com or {organization}.visualstudio.com Git address names; undefined for any other address. */
+function azureDevOpsRepoOf(url: URL): AzureDevOpsRepoAddress | undefined {
+  if (url.protocol !== 'https:' || url.port || url.search || url.hash) return undefined
+  const segments = url.pathname.split('/').slice(1)
+  let organization: string | undefined
+  if (url.hostname === AZURE_DEVOPS_HOST) {
+    organization = segments.shift()
+  } else if (url.hostname.endsWith(VISUALSTUDIO_HOST_SUFFIX)) {
+    organization = url.hostname.slice(0, -VISUALSTUDIO_HOST_SUFFIX.length)
+    if (segments[0]?.toLowerCase() === 'defaultcollection') segments.shift()
+  }
+  if (!organization || !AZURE_DEVOPS_ORGANIZATION_RE.test(organization)) return undefined
+  // `{project}/_git/{repository}`, or `_git/{repository}` for a repository named like its project.
+  const gitAt = segments.length === 3 ? 1 : segments.length === 2 ? 0 : -1
+  if (gitAt < 0 || segments[gitAt] !== '_git') return undefined
+  const repository = azureDevOpsSegment(segments[gitAt + 1]?.replace(/\.git$/i, ''))
+  const project = gitAt === 1 ? azureDevOpsSegment(segments[0]) : repository
+  return project && repository ? { organization, project, repository } : undefined
+}
+
+/** Azure DevOps puts the organization name in its clone URLs' user-info; that is not a credential, anything else is. */
+function azureDevOpsUserInfoAllowed(url: URL, repo: AzureDevOpsRepoAddress): boolean {
+  if (url.password) return false
+  if (!url.username) return true
+  return azureDevOpsSegment(url.username)?.toLowerCase() === repo.organization.toLowerCase()
+}
+
+function azureDevOpsCloneUrl(repo: AzureDevOpsRepoAddress): string {
+  const { organization, project, repository } = repo
+  return `https://${AZURE_DEVOPS_HOST}/${organization}/${encodeURIComponent(project)}/_git/${encodeURIComponent(repository)}`
+}
+
+/** The Azure DevOps repository a clone address names, in any accepted form; undefined for any other address. */
+export function azureDevOpsRepoAddress(input: string): AzureDevOpsRepoAddress | undefined {
+  try {
+    const normalized = normalizeGitCloneUrl(input)
+    return /^https:\/\//i.test(normalized) ? azureDevOpsRepoOf(new URL(normalized)) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** Normalize and validate an untrusted clone target: credential-free HTTPS or SSH, host-agnostic; the daemon applies its origin policy at execution. */
 export function normalizeGitCloneUrl(input: string): string {
   // Bound FIRST: every check below scans the value, and this is the one entry
   // point untrusted repo text reaches. A real address is nowhere near the cap.
@@ -142,6 +201,8 @@ export function normalizeGitCloneUrl(input: string): string {
   if (url.protocol !== 'https:' && url.protocol !== 'ssh:') {
     invalidCloneUrl('git clone url must use https or ssh')
   }
+  const azure = /[?#]/.test(normalized) ? undefined : azureDevOpsRepoOf(url)
+  if (azure && azureDevOpsUserInfoAllowed(url, azure)) return azureDevOpsCloneUrl(azure)
   if (url.protocol === 'https:' && (url.username || url.password)) {
     invalidCloneUrl('https git clone url must not contain credentials')
   }
@@ -431,12 +492,10 @@ export function normalizeGithubRepoUrl(input: string): string {
   return normalizeGitCloneUrl(`${label}${hasGitSuffix ? '.git' : ''}`)
 }
 
-/**
- * Shorten a stored git address to the `org/repo` display form.
- * `https://github.com/acme/infra.git` / `git@github.com:acme/infra` → `acme/infra`.
- * Unrecognized inputs come back unchanged (minus a trailing `.git`).
- */
+/** Shorten a stored git address for display: `org/repo`, or Azure Repos' decoded `organization/project/repository`; anything else minus `.git`. */
 export function gitRepoLabel(gitRepo: string): string {
+  const azure = azureDevOpsRepoAddress(gitRepo)
+  if (azure) return `${azure.organization}/${azure.project}/${azure.repository}`
   const s = trimTrailingSlashes(gitRepo.trim()).replace(/\.git$/, '')
   const scp = SCP_RE.exec(s)
   if (scp) return scp[1]!.replace(/^\/+/, '')

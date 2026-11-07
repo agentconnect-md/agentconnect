@@ -55,7 +55,7 @@ import type {
   CodeHostProvider,
   FollowUpEventKind,
   FollowUpWatchSubject,
-  HookKind,
+  HookKind as WireHookKind,
   PullRequestFeedbackSignal,
   SessionStayedHomeReason,
   BotRevocationEvidence,
@@ -3197,8 +3197,8 @@ export interface CronRepo {
 //   HookDef rows into rc/hook-assign rules; event payloads never land here.
 // ───────────────────────────────────────────────────────────────────────────
 
-/** Re-exported so the repository layer keeps one hook-kind vocabulary with the wire contract. */
-export type { HookKind }
+/** The wire vocabulary minus Azure DevOps, which has no hooks in v1 (azure-devops-integration.md §11) and so no stored kind. */
+export type HookKind = Exclude<WireHookKind, 'azure-devops'>
 export type HookSessionMode = 'perDelivery' | 'perThread' | 'perSubject' | 'shared'
 export type GithubCommentFamily = 'issues' | 'pull_request'
 /** The stored comment-family vocabulary across code hosts; rows carry one host's subset. */
@@ -3646,7 +3646,8 @@ export interface HookRepo {
    *  github recompile source: broadcast() converges each to assign-or-remove. */
   listForOrgKind(orgId: OrgId, kind: HookKind): Promise<HookRecord[]>
   /** Compact classifier input for historical session filtering. */
-  listIdsForOrgKind(orgId: OrgId, kind: HookKind): Promise<HookId[]>
+  /** Empty for a wire kind no row can store. */
+  listIdsForOrgKind(orgId: OrgId, kind: WireHookKind): Promise<HookId[]>
   /** Apply a relay `rc/run-report`. Upsert on (hookId, deliveryKey): a duplicate
    *  report (redelivery, reconcile re-post) lands on the existing row and never
    *  resets it. Bumps `lastFiredAt` latest-wins. Unknown hookId ⇒ false (drop). */

@@ -104,7 +104,10 @@ export class CodeHostTrustedActorService {
     const resolvers: { readonly [P in CodeHostProvider]: () => Promise<ResolvedActor | null> } = {
       github: () => this.resolveGithub(hook, login),
       gitlab: () => this.resolveGitlab(hook, repo.repoExternalId, login),
-      gitea: () => this.resolveGitea(hook, repo.repoExternalId, login)
+      gitea: () => this.resolveGitea(hook, repo.repoExternalId, login),
+      // No hooks in v1, so no hook can carry an Azure DevOps trusted-user list.
+      'azure-devops': () =>
+        Promise.reject(new TrustedActorResolutionUnavailable('Azure DevOps hooks are not available yet'))
     }
     return resolvers[repo.provider]()
   }

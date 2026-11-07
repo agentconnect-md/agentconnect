@@ -2342,7 +2342,8 @@
         "removalNote": {
           "github": "those GitHub events are ignored from now on. Past runs and their sessions stay.",
           "gitlab": "those GitLab events are ignored from now on. The project itself, its bot and its webhook are untouched. Past runs and their sessions stay.",
-          "gitea": "those Gitea events are ignored from now on. The repository itself, its bot and its webhook are untouched. Past runs and their sessions stay."
+          "gitea": "those Gitea events are ignored from now on. The repository itself, its bot and its webhook are untouched. Past runs and their sessions stay.",
+          "azure-devops": "those Azure DevOps events are ignored from now on. Past runs and their sessions stay."
         },
         "cancel": "Cancel",
         "disconnecting": "Disconnecting…",

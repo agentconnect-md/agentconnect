@@ -25,6 +25,7 @@ import type { Clock } from '@agentconnect.md/connection'
 import {
   codeHostHookMetadataOf,
   codeHostHookRuleOf,
+  AZURE_DEVOPS_V1_FEATURE,
   GITEA_V1_FEATURE,
   GITLAB_COM_V1_FEATURE,
   GITLAB_INSTANCE_V1_FEATURE,
@@ -94,10 +95,10 @@ const REQUIRED_DAEMON_FEATURES: {
     ...(isSelfManagedGitlabHost(host.metadata.host) ? [GITLAB_INSTANCE_V1_FEATURE] : []),
     ...(host.metadata.target.kind === 'release' ? [RD_CODEHOST_RELEASE_V1] : [])
   ],
-  // gitea-integration.md §11: one string covers gitea.com and a self-hosted address alike, so any
-  // gitea-shaped delivery needs the whole slice and there is no separate instance bit. A daemon
-  // without it never receives one — it would decode the member and normalize nothing.
-  gitea: (host) => [GITEA_V1_FEATURE, ...(host.metadata.target.kind === 'release' ? [RD_CODEHOST_RELEASE_V1] : [])]
+  // gitea-integration.md §11: one string covers gitea.com and a self-hosted address, so there is no instance bit.
+  gitea: (host) => [GITEA_V1_FEATURE, ...(host.metadata.target.kind === 'release' ? [RD_CODEHOST_RELEASE_V1] : [])],
+  // Unreachable: Azure DevOps has no hooks in v1 (azure-devops-integration.md §11), so no delivery carries its member.
+  'azure-devops': () => [AZURE_DEVOPS_V1_FEATURE]
 }
 
 /** The one generic hop over the provider key: the union-keyed index cannot narrow the pair itself. */
@@ -116,9 +117,10 @@ const RETRY_AUTHORITY: { readonly [P in CodeHostProvider]: (host: CodeHostHookRu
     sessionKeyPrefix: rule.sessionKeyPrefix ?? rule.repoFullName
   }),
   gitlab: ({ rule }) => rule,
-  // Every field of a gitea rule is authority: its path is display-only but its signing key, bot
-  // identity and event set are not, and G3 is what gives this host an ingress to retry at all.
-  gitea: ({ rule }) => rule
+  // Every field of a gitea rule is authority: its path is display-only, its signing key, bot and events are not.
+  gitea: ({ rule }) => rule,
+  // Unreachable for the same reason: no compiled rule carries an Azure DevOps member.
+  'azure-devops': ({ rule }) => rule
 }
 
 function retryAuthorityMember<P extends CodeHostProvider>(host: CodeHostHookRule<P>): unknown {

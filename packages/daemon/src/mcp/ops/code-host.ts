@@ -86,7 +86,8 @@ export interface CodeHostEffectTool {
 const REPOSITORY_FORM: Record<CodeHostProvider, string> = {
   github: '`owner/repo`',
   gitlab: 'its full project path (`group/subgroup/project`)',
-  gitea: '`owner/repo`'
+  gitea: '`owner/repo`',
+  'azure-devops': '`organization/project/repository`'
 }
 
 /** Every tool's optional `repository`: another repository the agent is authorized for, or the session's own when omitted. */

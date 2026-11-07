@@ -719,6 +719,14 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
     expect((genericOnly.json() as { sessions: Array<{ sessionId: string }> }).sessions.map((s) => s.sessionId)).toEqual(
       ['acp-webhook-gl']
     )
+
+    // A host whose kind no row can store filters to nothing rather than failing the enum cast.
+    const azureOnly = await running.app.inject({
+      method: 'GET',
+      url: `${ORG}/sessions?view=flat&integration=azure-devops`
+    })
+    expect(azureOnly.statusCode).toBe(200)
+    expect((azureOnly.json() as { total: number }).total).toBe(0)
   })
 
   it('keeps a code-host session on its own source after the hook is deleted and recreated', async () => {

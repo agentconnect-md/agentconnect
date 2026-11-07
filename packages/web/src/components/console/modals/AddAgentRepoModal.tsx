@@ -408,8 +408,7 @@ export default function AddAgentRepoModal({
   const typedIsListed = !!typedRepo && matches.some((r) => r.fullName.toLowerCase() === typedRepo.toLowerCase())
   const typedTaken = !!typedRepo && (isWorkspace(typedRepo) || isAuthorized(typedRepo))
 
-  // Each host's own footer gate and its own create payload — a grant is provider-qualified
-  // (§8.1). Total, so a new host states both instead of submitting through GitHub's.
+  // Each host's own footer gate and create payload (§8.1); total, so a new host never submits through GitHub's.
   const grantSubmit: Record<CodeHostProvider, { ready: boolean; input: Parameters<typeof createAgentRepo>[1] | null }> =
     {
       github: {
@@ -424,7 +423,9 @@ export default function AddAgentRepoModal({
         // Nothing to wait for: an unadded repository is bound by the grant itself (gitea-integration.md §6).
         ready: !!gtPick && gtTakenBy(gtPick) === null,
         input: { provider: 'gitea', repoId: gtPick, access, materialize }
-      }
+      },
+      // Not pickable until the Console step (azure-devops-integration.md §13, A4).
+      'azure-devops': { ready: false, input: null }
     }
   const installationPicked = provider === 'github' && pickedInstallation !== undefined
   const canSubmit = installationPicked ? canAuthorizeInstallation : grantSubmit[provider].ready
@@ -567,9 +568,7 @@ export default function AddAgentRepoModal({
     )
   }
 
-  // Each host's own picker — GitHub's installation roster, GitLab's project list. Total over the
-  // providers, so a new code host brings its own pane instead of inheriting the first one's; one
-  // whose console surface does not exist yet says so rather than rendering another host's.
+  // Each host's own picker pane; total, so a new code host never renders another host's.
   const grantPicker: Record<CodeHostProvider, () => ReactNode> = {
     gitea: () =>
       gt.error ? (
@@ -991,7 +990,9 @@ export default function AddAgentRepoModal({
           </div>
           <RepositoryMaterializeField value={materialize} decisionBlock={decisionBlock} onChange={setMaterialize} />
         </>
-      )
+      ),
+    // Unreachable: Azure DevOps is not among the pickable hosts yet.
+    'azure-devops': () => null
   }
 
   return (

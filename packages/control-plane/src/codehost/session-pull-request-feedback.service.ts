@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto'
 import {
   PULL_REQUEST_FEEDBACK_FEATURE,
   CODEHOST_FEEDBACK_FEATURE,
+  SessionPullRequestFeedback,
   type PullRequestFeedbackSignal,
-  type SessionPullRequestFeedback,
   type SessionPullRequestFeedbackResult
 } from '@agentconnect.md/protocol'
 import { servesSessionContent } from '../domain/session-content.js'
@@ -37,6 +37,14 @@ const UNMATCHED_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000
 const MAX_PER_TICK = 20
 const MAX_CAPTURES_PER_TICK = 5
+
+type FeedbackProvider = NonNullable<SessionPullRequestFeedback['provider']>
+const FEEDBACK_PROVIDERS: readonly string[] = SessionPullRequestFeedback.shape.provider.unwrap().options
+
+/** Whether the continuation frame can name this non-GitHub host; one it cannot has no feedback channel. */
+function isFeedbackProvider(provider: string): provider is FeedbackProvider {
+  return FEEDBACK_PROVIDERS.includes(provider)
+}
 
 /** An ended isolated session with content left, whose last turn is recent enough to still read its branch. */
 function owesCapture(session: SessionMetaRecord, nowMs: number): boolean {
@@ -221,6 +229,9 @@ export class SessionPullRequestFeedbackService {
   }
 
   private async deliver(item: PullRequestWakeRecord): Promise<boolean> {
+    const provider = item.provider && item.provider !== 'github' ? item.provider : undefined
+    // Dropped rather than retried: no daemon could ever take this wake.
+    if (provider !== undefined && !isFeedbackProvider(provider)) return true
     const session = await this.deps.sessions.getUnscoped(item.sessionId)
     if (!session || session.contentPurgedAt) return true
     const agent = await this.deps.agents.getUnscoped(session.agentId)
@@ -232,8 +243,7 @@ export class SessionPullRequestFeedbackService {
     const sharedStoreMembers = await this.deps.memberSets.sharedStoreMemberIdsOf(session)
     if (!servesSessionContent({ recordedDaemonId: session.daemonId, sharedStoreMembers }, daemonId)) return false
     const daemon = this.deps.daemon(daemonId)
-    const feature =
-      item.provider && item.provider !== 'github' ? CODEHOST_FEEDBACK_FEATURE : PULL_REQUEST_FEEDBACK_FEATURE
+    const feature = provider ? CODEHOST_FEEDBACK_FEATURE : PULL_REQUEST_FEEDBACK_FEATURE
     if (daemon?.state !== 'READY' || !daemon.capabilities?.features?.includes(feature)) return false
     const result = await this.deps.send(
       daemonId,
@@ -244,7 +254,7 @@ export class SessionPullRequestFeedbackService {
         repoId: item.repoId.toString(),
         repoFullName: item.repoFullName,
         pullNumber: item.pullNumber,
-        ...(item.provider && item.provider !== 'github' ? { provider: item.provider, host: item.host } : {})
+        ...(provider ? { provider, host: item.host } : {})
       },
       item.orgId
     )

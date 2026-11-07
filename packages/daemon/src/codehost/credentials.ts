@@ -24,6 +24,7 @@ import type { ManagedCredentialScope } from '../workspace/git-injection.js'
 import { githubCredentials } from '../github/credentials.js'
 import { gitlabCredentials } from '../gitlab/credentials.js'
 import { giteaCredentials } from '../gitea/credentials.js'
+import { azureDevOpsCredentials } from '../azure-devops/credentials.js'
 
 /** The provider a credential request carries only when it is not the implicit one (the empty cache-key segment). */
 export type QualifiedCodeHostProvider = Exclude<CodeHostProvider, typeof IMPLICIT_CREDENTIAL_PROVIDER>
@@ -102,7 +103,8 @@ export interface CodeHostCredentialModule {
 const MODULES: { readonly [P in CodeHostProvider]: CodeHostCredentialModule } = {
   github: githubCredentials,
   gitlab: gitlabCredentials,
-  gitea: giteaCredentials
+  gitea: giteaCredentials,
+  'azure-devops': azureDevOpsCredentials
 }
 
 /** The module owning one provider — undefined for an anonymous remote and for a name this build does not carry. */

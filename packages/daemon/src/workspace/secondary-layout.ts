@@ -14,9 +14,14 @@ export const SECONDARY_ROOTS_DIR = 'repos'
 export const GITLAB_ROOTS_DIR = '_gitlab'
 /** Gitea roots likewise: `repos/_gitea/<id>`. A Gitea username must start with a letter or digit, so no Gitea row can name it either. */
 export const GITEA_ROOTS_DIR = '_gitea'
-/** Owner directories under `repos/` a provider reserves for its own id-keyed subtrees: a row whose
- *  own text would place a subtree there is refused rather than allowed to collide with one. */
-export const RESERVED_SECONDARY_ROOT_DIRS: ReadonlySet<string> = new Set([GITLAB_ROOTS_DIR, GITEA_ROOTS_DIR])
+/** Azure DevOps roots by surrogate numeric id: `repos/_azure-devops/<id>`; no GitHub or Gitea owner may start with `_`, so no other row can name it. */
+export const AZURE_DEVOPS_ROOTS_DIR = '_azure-devops'
+/** Owner directories under `repos/` a provider reserves for its id-keyed subtrees; a row whose own text would place a subtree there is refused. */
+export const RESERVED_SECONDARY_ROOT_DIRS: ReadonlySet<string> = new Set([
+  GITLAB_ROOTS_DIR,
+  GITEA_ROOTS_DIR,
+  AZURE_DEVOPS_ROOTS_DIR
+])
 /** Every root's per-session worktrees hang off this leaf of it — the agent root for the primary, the subtree for a secondary. */
 export const WORKTREES_DIR = 'worktrees'
 /** A worktree-tier or shared session clones the repositories it was not handed into its own `clones/<id>` (decision 20). */
