@@ -2,8 +2,13 @@
 
 > **Status:** Implemented. Minting uses numeric `repository_ids` to prevent
 > authorization takeover through rename and reuse; serve-stale never revives a
-> denied token; the `gh` wrapper gives repository flags precedence over
-> environment; and it recognizes every `-R` form.
+> denied token; the `gh` wrapper gave repository flags precedence over
+> environment; and it recognized every `-R` form.
+>
+> **The `gh` wrapper is retired.** The credential proxy replaced it
+> (github-app-git-credentials.md, Phase 2): a session's `gh` presents the
+> proxy's placeholder, and the proxy mints the token of the repository each
+> request names. The wrapper sections below record the earlier design.
 >
 > **Installation grants** (decision 10): the control-plane half is implemented —
 > the table, the owner-only routes, the projected `additionalInstallations`, the
@@ -553,7 +558,9 @@ reports "no GitHub access at all" for a repository that merely lacks a row:
   in" advice. It still falls through to the real `gh` when the daemon could not
   be reached, where the user's own `gh` configuration may legitimately apply.
 
-### New `gh` wrapper in `cp/gh-shim.ts`
+### New `gh` wrapper in `cp/gh-shim.ts` (retired)
+
+Replaced by the credential proxy (github-app-git-credentials.md, Phase 2).
 
 - On every boot, rewrite secret-free `run/bin/gh` with mode 0755, following
   `writeGitcredShim` quoting discipline. Put `run/bin` **first** in the host

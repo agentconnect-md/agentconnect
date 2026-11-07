@@ -264,16 +264,13 @@ export const ConfigSchema = z.object({
       // Steer a message into the live turn over `_session/steering` instead of queueing it.
       sessionSteering: z.boolean().default(true),
       // Run the `auto` session mode and advertise it (auto-session-mode.md §3.1); off routes `auto` as Per thread and keeps every session's task tools.
-      autoSessionMode: z.boolean().default(true),
-      // Give host and srt sessions a GitHub placeholder exchanged by the daemon's credential proxy (github-app-git-credentials.md, Phase 2).
-      credentialProxy: z.boolean().default(false)
+      autoSessionMode: z.boolean().default(true)
     })
     .default({
       turnFinalContextRefresh: true,
       sessionSteering: true,
       ahp: { mode: 'on' },
-      autoSessionMode: true,
-      credentialProxy: false
+      autoSessionMode: true
     }),
   sessions: z
     .object({

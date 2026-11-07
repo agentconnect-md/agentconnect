@@ -22,7 +22,8 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-function scaffold(credentialProxy: boolean, runtime: 'claude' | 'codex' = 'claude'): string {
+/** A daemon root; `blockProxy` puts a file where the proxy keeps its key and CA, so it cannot start. */
+function scaffold(blockProxy: boolean, runtime: 'claude' | 'codex' = 'claude'): string {
   // Short, so the proxy's sockets fit AF_UNIX.
   const root = realpathSync(mkdtempSync(join('/tmp', 'acpk-')))
   roots.push(root)
@@ -31,13 +32,13 @@ function scaffold(credentialProxy: boolean, runtime: 'claude' | 'codex' = 'claud
     JSON.stringify({
       version: 1,
       controlPlane: { enabled: false },
-      features: { credentialProxy },
       runtimes: {
         claude: { command: 'node', args: ['claude-agent-acp'] },
         codex: { command: 'node', args: ['codex-acp'] }
       }
     })
   )
+  if (blockProxy) writeFileSync(join(root, 'credential-proxy'), 'not a directory')
   const agentDir = join(root, 'agents', 'bot-a')
   mkdirSync(join(agentDir, 'workspace'), { recursive: true })
   writeFileSync(
@@ -56,8 +57,8 @@ function scaffold(credentialProxy: boolean, runtime: 'claude' | 'codex' = 'claud
   return root
 }
 
-async function started(credentialProxy: boolean, runtime: 'claude' | 'codex' = 'claude') {
-  const root = scaffold(credentialProxy, runtime)
+async function started(blockProxy = false, runtime: 'claude' | 'codex' = 'claude') {
+  const root = scaffold(blockProxy, runtime)
   const daemon = new Daemon({ root, probeRuntimes: async () => [] })
   await daemon.start()
   const d = daemon as any
@@ -85,7 +86,7 @@ function build(d: any, agent: any, providerCredential: unknown, strategy = 'host
 
 describe.skipIf(process.platform === 'win32')('organization Provider keys through the credential proxy', () => {
   it('hands a host session a placeholder and the proxy route, never the key or its headers', async () => {
-    const { daemon, d, agent } = await started(true)
+    const { daemon, d, agent } = await started()
     try {
       const requestProviderCredentials = vi.fn().mockResolvedValue({ credentials: credential(null) })
       d.cpClient = { requestProviderCredentials }
@@ -134,7 +135,7 @@ describe.skipIf(process.platform === 'win32')('organization Provider keys throug
   })
 
   it("seals a Codex session's placeholder for an operator's endpoint and keeps the headers out of its auth request", async () => {
-    const { daemon, d, agent } = await started(true, 'codex')
+    const { daemon, d, agent } = await started(false, 'codex')
     try {
       d.cpClient = { requestProviderCredentials: vi.fn() }
       const { host } = build(d, agent, credential('https://gateway.example.test/v1'))
@@ -161,8 +162,8 @@ describe.skipIf(process.platform === 'win32')('organization Provider keys throug
     }
   })
 
-  it('keeps the key in env for a cleartext endpoint, and changes nothing with the proxy off', async () => {
-    const on = await started(true)
+  it('keeps the key in env for a cleartext endpoint, and changes nothing when the proxy did not start', async () => {
+    const on = await started()
     try {
       const { host } = build(on.d, on.agent, credential('http://gateway.example.test'))
       expect(host.opts.env.ANTHROPIC_API_KEY).toBe(KEY)
@@ -171,7 +172,7 @@ describe.skipIf(process.platform === 'win32')('organization Provider keys throug
     } finally {
       await on.daemon.stop()
     }
-    const off = await started(false)
+    const off = await started(true)
     try {
       const { host } = build(off.d, off.agent, credential(null))
       expect(host.opts.env).toMatchObject({
@@ -186,7 +187,7 @@ describe.skipIf(process.platform === 'win32')('organization Provider keys throug
   })
 
   it('offers an executor-placed host session the placeholder at spawn, and its shim a provider tunnel', async () => {
-    const { root, daemon, d, agent } = await started(true)
+    const { root, daemon, d, agent } = await started()
     const sessionKey = 'slack:T1:C1:1700000000.000100'
     const placed = {
       agentId: agent.id,
@@ -245,7 +246,7 @@ describe.skipIf(process.platform === 'win32')('organization Provider keys throug
   })
 
   it('routes an srt session to the proxy for the provider host with the placeholder in env', async () => {
-    const { daemon, d, agent } = await started(true)
+    const { daemon, d, agent } = await started()
     try {
       d.cpClient = { requestProviderCredentials: vi.fn() }
       d.assertStrategyRunnable = () => undefined

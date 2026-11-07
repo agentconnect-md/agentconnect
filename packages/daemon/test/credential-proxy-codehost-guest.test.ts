@@ -26,10 +26,8 @@ const ROUTES = ['github.com:443', 'api.github.com:443']
 const OVERLAY: CodehostSpawn = {
   env: {
     AC_CODEHOST_CREDENTIAL: 'placeholder-example',
-    GH_TOKEN: 'placeholder-example',
-    GIT_CONFIG_GLOBAL: '/run/agentconnect/git/agent-a.proxied.gitconfig'
-  },
-  files: [{ root: '/run/agentconnect/git', relPath: ['agent-a.proxied.gitconfig'], content: '[http]\n' }]
+    GH_TOKEN: 'placeholder-example'
+  }
 }
 
 let proxyCa = ''
@@ -76,7 +74,7 @@ describe('applying a launch codehost env at spawn', () => {
   const listener = LISTENER
   const base = { command: 'x', args: [], env: { AC_AGENT_ID: 'agent-a', NO_PROXY: 'internal.example.test' } }
 
-  it('points the session at its shim listener with the placeholder, the proxied gitconfig and the shim bundle', () => {
+  it('points the session at its shim listener with the placeholder and the shim bundle', () => {
     const launch = applyProxySpawn({ ...base, codehost: OVERLAY }, { codehost: listener })
     expect(launch.codehost).toBeUndefined()
     expect(launch.env).toMatchObject({
@@ -89,13 +87,12 @@ describe('applying a launch codehost env at spawn', () => {
       NODE_EXTRA_CA_CERTS: listener.trustBundle,
       GIT_SSL_CAINFO: listener.trustBundle
     })
-    expect(launch.files).toEqual(OVERLAY.files)
+    expect(launch.files).toBeUndefined()
     expect(launch.env[SESSION_TRUST_ENV]).toBeUndefined()
   })
 
-  it('keeps the helper path when the shim reported no listener, or the launch names a proxy of its own', () => {
-    const helper = applyProxySpawn({ ...base, codehost: OVERLAY }, {})
-    expect(helper).toEqual(base)
+  it('leaves the session without a credential when the shim reported no listener, or the launch names a proxy of its own', () => {
+    expect(applyProxySpawn({ ...base, codehost: OVERLAY }, {})).toEqual(base)
     const own = { ...base, env: { ...base.env, HTTPS_PROXY: 'http://egress.example.test:3128' } }
     expect(applyProxySpawn({ ...own, codehost: OVERLAY }, { codehost: listener })).toEqual(own)
   })
@@ -206,10 +203,10 @@ describe('a local VM session through its shim codehost listener', () => {
         env: {
           AC_AGENT_ID: 'agent-a',
           PATH: process.env.PATH ?? '',
-          GIT_CONFIG_GLOBAL: '/helper.gitconfig',
+          GIT_CONFIG_GLOBAL: '/session.gitconfig',
           NODE_EXTRA_CA_CERTS: msbFile
         },
-        codehost: { env: { ...OVERLAY.env, GIT_CONFIG_GLOBAL: join(root, 'agent-a.proxied.gitconfig') } }
+        codehost: OVERLAY
       })
     return { launch, listens }
   }
@@ -231,7 +228,7 @@ describe('a local VM session through its shim codehost listener', () => {
       expect(listens).toHaveBeenCalledWith('codehost')
       expect(env.HTTPS_PROXY).toMatch(/^http:\/\/codehost:[^@]+@127\.0\.0\.1:\d+$/)
       expect(env.AC_CODEHOST_CREDENTIAL).toBe('placeholder-example')
-      expect(env.GIT_CONFIG_GLOBAL).toMatch(/agent-a\.proxied\.gitconfig$/)
+      expect(env.GIT_CONFIG_GLOBAL).toBe('/session.gitconfig')
       const bundle = readFileSync(env.SSL_CERT_FILE!, 'utf8')
       expect(bundle).toContain(certificates(msbCa)[0])
       expect(bundle).toContain(certificates(proxyCa)[0])
@@ -239,14 +236,14 @@ describe('a local VM session through its shim codehost listener', () => {
   )
 
   it.skipIf(process.platform === 'win32')(
-    'asks for no codehost tunnel and keeps the helper path for an agent the proxy does not intercept',
+    'asks for no codehost tunnel and holds no placeholder for an agent the proxy does not intercept',
     async () => {
       const { launch, listens } = await fixture([])
       const env = await reported(await launch())
       expect(listens).not.toHaveBeenCalledWith('codehost')
       expect(env.HTTPS_PROXY).toBeUndefined()
       expect(env.AC_CODEHOST_CREDENTIAL).toBeUndefined()
-      expect(env.GIT_CONFIG_GLOBAL).toBe('/helper.gitconfig')
+      expect(env.GIT_CONFIG_GLOBAL).toBe('/session.gitconfig')
       expect(env.NODE_EXTRA_CA_CERTS).toMatch(/msb-ca\.pem$/)
     }
   )
