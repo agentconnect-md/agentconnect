@@ -73,7 +73,8 @@ const { WorkspaceManager } = await import('../src/workspace/workspace-manager.js
 
 // One plane per test file — the isolation Vitest's per-file module registry used to give.
 const workspaces = new WorkspaceManager()
-const { daemonGitCredentialTarget, initGitInjection } = await import('../src/workspace/git-injection.js')
+const { checkoutHelper, daemonGitCredentialTarget, initGitInjection } =
+  await import('../src/workspace/git-injection.js')
 
 // Made once and reused: `targetFor` is called on every pointer build, so minting a directory
 // inside it would leave one behind per resolution.
@@ -1057,7 +1058,10 @@ describe('prepareWorkspace repo-local helper re-pin (github-app)', () => {
     const configCalls = rawMock.mock.calls.map((c) => c[0] as string[])
     expect(configCalls).toContainEqual(['config', '--replace-all', 'credential.https://github.com.helper', ''])
     const add = configCalls.find((c) => c[1] === '--add')
-    expect(add?.[3]).toBe("!'/run/helper.sh' bot-git-app")
+    expect(add?.[3]).toBe(
+      checkoutHelper('bot-git-app', daemonGitCredentialTarget({ shimPath: '/run/helper.sh', runDir: gitcredRunDir() }))
+    )
+    expect(add?.[3]).toContain('else \'/run/helper.sh\' bot-git-app "$@"; fi')
     expect(configCalls).toContainEqual(['config', 'credential.https://github.com.useHttpPath', 'true'])
     expect(syncWrites().map((args) => args[0])).toEqual(['fetch', 'checkout']) // re-pin happens in addition to the sync, not instead of it
     expect(cloneImpl).not.toHaveBeenCalled()

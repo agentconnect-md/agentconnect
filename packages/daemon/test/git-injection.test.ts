@@ -1086,6 +1086,41 @@ describe('git in a proxied session', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
+  // Every platform: Git for Windows runs a `!` helper through its bundled sh, and this branch needs only its builtins.
+  it("answers the placeholder from the checkout's pin through git's own shell", () => {
+    const root = mkdtempSync(join(tmpdir(), 'acp-checkout-pin-'))
+    try {
+      const local = workspaceGitLocalEnv()
+      execFileSync('git', ['init', '-q', root], { env: local })
+      const target = daemonGitCredentialTarget({ shimPath: join(root, 'missing-helper'), runDir: root })
+      execFileSync(
+        'git',
+        ['config', '--add', 'credential.https://github.com.helper', checkoutHelper('agent-pin', target)],
+        {
+          cwd: root,
+          env: local
+        }
+      )
+      const answer = execFileSync('git', ['credential', 'fill'], {
+        cwd: root,
+        input: 'protocol=https\nhost=github.com\npath=o/r.git\n\n',
+        env: {
+          PATH: process.env.PATH ?? '',
+          HOME: root,
+          GIT_CONFIG_GLOBAL: join(root, 'empty.gitconfig'),
+          GIT_CONFIG_NOSYSTEM: '1',
+          GIT_CONFIG_COUNT: '0',
+          GIT_TERMINAL_PROMPT: '0',
+          [CODE_HOST_CREDENTIAL_ENV]: 'acph1_example.tag'
+        }
+      }).toString()
+      expect(answer).toContain('username=x-access-token')
+      expect(answer).toContain('password=acph1_example.tag')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   // POSIX only: the stand-in helper is a shell script, and the daemon target's include path is a Windows path there.
   it.skipIf(process.platform === 'win32')(
     "pins a checkout helper that answers a proxied session's placeholder and an unproxied one's real helper",

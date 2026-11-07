@@ -6,6 +6,11 @@ import {
   isValidBranchRef,
   validateGitArgs
 } from '../src/workspace/git-command-policy.js'
+import {
+  checkoutHelper,
+  daemonGitCredentialTarget,
+  sandboxGitCredentialTarget
+} from '../src/workspace/git-injection.js'
 
 // Pure, I/O-free table of the shim's Git argv policy; real-Git execution lives in shim-exec-handler.test.ts.
 
@@ -104,6 +109,28 @@ describe('config is restricted to managed-credential writes', () => {
     [['config', '--blob', 'not-hex', '--no-includes', '--null', '--list']],
     [['config', '--blob', 'a'.repeat(40), '--no-includes', '--null', '--list', 'extra']]
   ])('refuses %j', (args) => refuses(args))
+
+  const checkoutTargets = [
+    sandboxGitCredentialTarget(),
+    daemonGitCredentialTarget({ shimPath: "/opt/it's/helper", runDir: '/run/agentconnect' })
+  ]
+  it.each(checkoutTargets)("admits the checkout's conditional pin for the helper at $helper", (target) => {
+    const value = checkoutHelper('agent-abc', target)
+    admits(['config', '--add', 'credential.https://github.com.helper', value])
+    admits(['config', '--add', 'credential.https://gitlab.example.test:8443/gitlab.helper', value])
+  })
+
+  it('refuses a conditional pin with anything but an agent id or the helper in it', () => {
+    const value = checkoutHelper('agent-abc', sandboxGitCredentialTarget())
+    for (const tampered of [
+      value.replace('agent-abc', 'agent-abc;touch /tmp/pwned'),
+      value.replace('agent-abc', 'agent-abc $(id)'),
+      value.replace('echo username=x-access-token', 'touch /tmp/pwned'),
+      value.replace('; f', '; f; touch /tmp/pwned'),
+      `${value}\n`
+    ])
+      refuses(['config', '--add', 'credential.https://github.com.helper', tampered])
+  })
 })
 
 describe('clone --bundle-uri', () => {

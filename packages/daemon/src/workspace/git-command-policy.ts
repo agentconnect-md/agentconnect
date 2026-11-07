@@ -65,6 +65,9 @@ const REFUSED_SUBCOMMAND_ARGUMENT: Record<string, RegExp[]> = {
 const CREDENTIAL_CONFIG_KEY = /^credential\.[a-z][a-z0-9+.-]*:\/\/[^/?#\s]+(?:\/[^?#\s]*)?\.(helper|useHttpPath)$/i
 // Helper value: `!<quoted path> <agentId>` (`sh ` for sandbox helpers); reset is ''.
 const CREDENTIAL_HELPER_VALUE = /^!(?:sh )?'(?:[^']|'\\'')*' \S+$/
+// A checkout's pin (git-injection `checkoutHelper`): the environment's placeholder when set, else that same helper.
+const CHECKOUT_HELPER_VALUE =
+  /^!f\(\) \{ if test -n "\$AC_CODEHOST_CREDENTIAL"; then test "\$1" = get \|\| return 0; echo username=x-access-token; echo "password=\$AC_CODEHOST_CREDENTIAL"; else (?:sh )?'(?:[^']|'\\'')*' [\w.-]+ "\$@"; fi; \}; f$/
 
 // Clone's short options: `u`/`c` execute anywhere in a group (`-qu<cmd>`), and a value-taking letter ends the group.
 const CLONE_REFUSED_SHORT = new Set(['u', 'c'])
@@ -187,7 +190,8 @@ function validateConfigArgs(rest: string[]): void {
   // Helper write: config --replace-all|--add credential.<base>.helper <''|helper value>.
   if (rest.length === 3 && (a === '--replace-all' || a === '--add') && b !== undefined) {
     const match = CREDENTIAL_CONFIG_KEY.exec(b)
-    if (match?.[1] === 'helper' && (c === '' || (c !== undefined && CREDENTIAL_HELPER_VALUE.test(c)))) {
+    const helperValue = c !== undefined && (CREDENTIAL_HELPER_VALUE.test(c) || CHECKOUT_HELPER_VALUE.test(c))
+    if (match?.[1] === 'helper' && (c === '' || helperValue)) {
       return
     }
   }

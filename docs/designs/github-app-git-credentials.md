@@ -731,8 +731,8 @@ the proxy's CA certificate:
   code-host placeholder is refused on `provider` and a provider placeholder on
   `codehost`.
 - A session on an executor whose shim does not serve `codehost`, and an `srt`
-  or VM session placed on one, keeps the credential helper path, which the
-  runtime's capability no longer mints on.
+  or VM session placed on one, holds no code-host credential while the proxy
+  carries its agent's code hosts.
 
 A session in a local `microsandbox` VM or a pool pod reaches its own daemon's
 proxy the same way, through the shim inside the VM or pod. The daemon asks

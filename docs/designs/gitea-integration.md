@@ -243,9 +243,9 @@ with provider `gitea` exactly as §8.3 describes for GitLab, including the
 tier is served by the same token, so a tier is an AgentConnect clamp only,
 never a provider role. The daemon's credential proxy enforces the git tier by
 service (github-app-git-credentials.md, Phase 2): a push below `write` is
-refused before it reaches Gitea. A session outside the proxy (proxy off, a VM,
-a pool pod, a remote executor) holds the token itself, so a read or comment
-grant there can still push until those transports use the proxy.
+refused before it reaches Gitea. Only with the proxy off does a session hold
+the token itself, so a read or comment grant can push there; with it on, a
+session that does not reach the proxy holds no Gitea credential at all.
 
 ## 6. Repository Selection and Provisioning
 
