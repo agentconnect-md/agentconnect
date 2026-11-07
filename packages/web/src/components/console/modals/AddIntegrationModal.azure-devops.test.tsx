@@ -169,7 +169,7 @@ describe('AddIntegrationModal, Azure DevOps trigger', () => {
     )
   })
 
-  it('defaults to pull requests on any update, comments included, with no label filter and reviews off', async () => {
+  it('defaults to pull requests on any update, comments included, with no label filter, full reviews and a pull-request status', async () => {
     await renderAgent({ id: 'agent-default' })
     await pickRepository()
     expect(family('merge_request')).not.toBeNull()
@@ -186,8 +186,8 @@ describe('AddIntegrationModal, Azure DevOps trigger', () => {
       events: ['merge_request:*'],
       commentFamilies: ['merge_request'],
       mentionOnly: false,
-      reviewPolicy: 'off',
-      reportingMode: 'off'
+      reviewPolicy: 'full',
+      reportingMode: 'status'
     })
   })
 

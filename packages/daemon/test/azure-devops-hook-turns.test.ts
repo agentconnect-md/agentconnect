@@ -13,7 +13,11 @@ import {
 } from '../src/codehost/turn-final.js'
 import { acknowledgeCodeHostTrigger } from '../src/codehost/ack.js'
 import { hookAdmissionFor } from '../src/codehost/hook-admission.js'
-import { buildHookMessage, UNTRUSTED_CONTENT_BEGIN_AZURE_DEVOPS } from '../src/messages/hook-message.js'
+import {
+  buildHookMessage,
+  buildHookTurnFacts,
+  UNTRUSTED_CONTENT_BEGIN_AZURE_DEVOPS
+} from '../src/messages/hook-message.js'
 import { AZURE_DEVOPS_READ_FAILED, resolveAzureDevOpsDelivery } from '../src/azure-devops/turn-final.js'
 import { AzureDevOpsFinalPoster } from '../src/azure-devops/poster.js'
 import { HOOK_NOTICE_TEXT } from '../src/codehost/notice.js'
@@ -639,7 +643,7 @@ describe('the prompt (§11.5, §11.8)', () => {
     const { fetchImpl } = fakeAzure()
     const resolved = await resolveAzureDevOpsDelivery(comment(), host().turnFinalHost, fetchImpl)
     if (!resolved || 'refused' in resolved) throw new Error('expected a delivery')
-    const text = buildHookMessage(resolved.msg, 'trace', resolved.supplement).text
+    const text = buildHookMessage(resolved.msg, 'trace', resolved.supplement).turnBody!.prompt!
     expect(text).toContain(`Azure DevOps note:created — ${REPO_PATH}!7 "Tighten retry budget"`)
     expect(text).toContain(`Head SHA: ${NEW_SHA}`)
     expect(text).toContain('Branches: topic → main')
@@ -660,7 +664,7 @@ describe('the prompt (§11.5, §11.8)', () => {
       fakeAzure().fetchImpl
     )
     if (!reopened || 'refused' in reopened) throw new Error('expected a delivery')
-    const reopenedText = buildHookMessage(reopened.msg, 'trace', reopened.supplement).text
+    const reopenedText = buildHookMessage(reopened.msg, 'trace', reopened.supplement).turnBody!.prompt!
     expect(reopenedText).toContain('Azure DevOps merge_request:reopened')
     expect(reopenedText).toContain(`${UNTRUSTED_CONTENT_BEGIN_AZURE_DEVOPS}\nReworks the retry budget.`)
     expect(reopenedText).toContain('as one comment in a new thread')
@@ -670,18 +674,48 @@ describe('the prompt (§11.5, §11.8)', () => {
     const standing = buildHookMessage(fire(), 'trace').standingContext!
     expect(standing).toContain('`submitCodeReview`')
     expect(standing).toContain('connection identity every agent shares')
-    const reviewed = buildHookMessage(fire({ reviewPolicy: 'full' }), 'trace').text
+    const reviewed = buildHookMessage(fire({ reviewPolicy: 'full' }), 'trace').turnBody!.prompt!
     expect(reviewed).toContain('This delivery opens a review generation for the current pull-request revision')
     expect(reviewed).toContain('use APPROVE + pass when it passes, or REQUEST_CHANGES + fail')
     // A comment, or a hook whose review policy is off, keeps the ordinary reply.
-    expect(buildHookMessage(fire({ reviewPolicy: 'off' }), 'trace').text).not.toContain('submitCodeReview')
-    expect(buildHookMessage(comment({ reviewPolicy: 'full' }), 'trace').text).not.toContain('submitCodeReview')
+    expect(buildHookMessage(fire({ reviewPolicy: 'off' }), 'trace').turnBody!.prompt!).not.toContain('submitCodeReview')
+    expect(buildHookMessage(comment({ reviewPolicy: 'full' }), 'trace').turnBody!.prompt!).not.toContain(
+      'submitCodeReview'
+    )
   })
 
   it('says when the pull request could not be read', () => {
     const text = buildHookMessage(fire(), 'trace', {
       azureDevOps: { kind: 'unavailable', reason: 'Azure DevOps GET failed' }
-    }).text
+    }).turnBody!.prompt!
     expect(text).toContain('The pull request could not be read (Azure DevOps GET failed)')
+  })
+})
+
+describe('the turn facts (§11.8)', () => {
+  it('names the pull request with its head, draft state and thread link, and a push by its ref', () => {
+    const facts = buildHookTurnFacts(fire({ reviewPolicy: 'full' }))
+    expect(facts).toMatchObject({
+      provider: 'azure-devops',
+      event: 'merge_request:opened',
+      subject: {
+        kind: 'pull_request',
+        repo: REPO_PATH,
+        number: 7,
+        url: `https://dev.azure.com/${ORG}/Example%20Project/_git/Example%20Repo/pullrequest/7`
+      },
+      revision: { head: OLD_SHA },
+      draft: false,
+      review: 'generation'
+    })
+    const push = buildHookTurnFacts(
+      fire({ event: 'push' }, { deliveryKind: 'push', target: { kind: 'push', ref: 'refs/heads/main' } })
+    )
+    expect(push).toMatchObject({
+      provider: 'azure-devops',
+      subject: { kind: 'push', repo: REPO_PATH },
+      ref: 'refs/heads/main'
+    })
+    expect(push).not.toHaveProperty('review')
   })
 })
