@@ -277,6 +277,47 @@ describe('TelegramConnection gateway', () => {
     expect(id).toBe('777')
   })
 
+  it('postMessage resends the plain fallback when Telegram cannot parse the HTML', async () => {
+    const warn = vi.fn()
+    const sendMessage = vi.fn(async (_c: number | string, _t: string, opts?: { parse_mode?: string }) => {
+      if (opts?.parse_mode) throw Object.assign(new Error('400'), { description: "Bad Request: can't parse entities" })
+      return { message_id: 778 }
+    })
+    const { conn } = makeConn(
+      { log: { trace: vi.fn(), debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() } },
+      fakeApi({ sendMessage })
+    )
+    const id = await conn.postMessage('-100', '<b>x</b>', undefined, { parseMode: 'HTML', plainFallback: '**x**' })
+    expect(sendMessage).toHaveBeenNthCalledWith(1, '-100', '<b>x</b>', { parse_mode: 'HTML' })
+    expect(sendMessage).toHaveBeenNthCalledWith(2, '-100', '**x**', {})
+    expect(warn).toHaveBeenCalledOnce()
+    expect(id).toBe('778')
+  })
+
+  it('postMessage does not mask other send errors with the fallback', async () => {
+    const sendMessage = vi.fn(async () => {
+      throw Object.assign(new Error('403'), { description: 'Forbidden: bot was kicked' })
+    })
+    const { conn } = makeConn({}, fakeApi({ sendMessage }))
+    await expect(
+      conn.postMessage('-100', '<b>x</b>', undefined, { parseMode: 'HTML', plainFallback: '**x**' })
+    ).rejects.toThrow('403')
+    expect(sendMessage).toHaveBeenCalledOnce()
+  })
+
+  it('updateMessage edits with the plain fallback when Telegram cannot parse the HTML', async () => {
+    const editMessageText = vi.fn(
+      async (_c: number | string, _m: number, _t: string, opts?: { parse_mode?: string }) => {
+        if (opts?.parse_mode)
+          throw Object.assign(new Error('400'), { description: "Bad Request: can't parse entities" })
+        return true
+      }
+    )
+    const { conn } = makeConn({}, fakeApi({ editMessageText }))
+    await conn.updateMessage('-100', '5', '<b>x</b>', { parseMode: 'HTML', plainFallback: '**x**' })
+    expect(editMessageText).toHaveBeenLastCalledWith('-100', 5, '**x**')
+  })
+
   it('postMessage omits message_thread_id when no thread is given', async () => {
     const { conn, api } = makeConn()
     await conn.postMessage('-100', 'yo')

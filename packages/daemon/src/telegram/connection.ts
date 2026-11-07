@@ -34,6 +34,15 @@ function classifyTelegramUploadError(err: unknown): UploadFailReason {
   return 'platform_error'
 }
 
+function errorText(err: unknown): string {
+  return `${(err as { description?: string }).description ?? ''} ${(err as Error).message ?? ''}`.trim()
+}
+
+/** Telegram's 400 for a formatted text it cannot parse (`Bad Request: can't parse entities: …`). */
+export function isEntityParseError(err: unknown): boolean {
+  return /can't parse entities/i.test(errorText(err))
+}
+
 /** Telegram truncates a caption past this instead of rejecting it, so we never send one longer. */
 const TELEGRAM_CAPTION_LIMIT = 1024
 
@@ -438,17 +447,36 @@ export class TelegramConnection implements PlatformConnection {
     // MessageGateway contract passes a sender-identity object in this 4th slot, which
     // Telegram can't honor (no per-message identity) — so those fields are accepted
     // for structural compatibility and ignored.
-    opts?: { replyTo?: number; username?: string; icon_url?: string; agentAuthorId?: string }
+    // `parseMode` + `plainFallback`: a formatted body Telegram cannot parse is resent as the plain fallback.
+    opts?: {
+      replyTo?: number
+      parseMode?: string
+      plainFallback?: string
+      username?: string
+      icon_url?: string
+      agentAuthorId?: string
+    }
   ): Promise<string | undefined> {
     const replyTo = opts?.replyTo
     const thread = threadTs != null && /^\d+$/.test(threadTs) ? Number(threadTs) : undefined
+    const place = {
+      ...(thread !== undefined ? { message_thread_id: thread } : {}),
+      ...(replyTo !== undefined ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {})
+    }
     return this.queue.enqueue(async () => {
-      const res = await this.bot.api.sendMessage(channel, text, {
-        ...(thread !== undefined ? { message_thread_id: thread } : {}),
-        ...(replyTo !== undefined
-          ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } }
-          : {})
-      })
+      let res: { message_id: number }
+      try {
+        res = await this.bot.api.sendMessage(channel, text, {
+          ...place,
+          ...(opts?.parseMode ? { parse_mode: opts.parseMode } : {})
+        })
+      } catch (err) {
+        if (!opts?.parseMode || opts.plainFallback === undefined || !isEntityParseError(err)) throw err
+        this.deps.log?.warn(
+          `telegram: sendMessage ${opts.parseMode} rejected, resending as plain text: ${errorText(err)}`
+        )
+        res = await this.bot.api.sendMessage(channel, opts.plainFallback, place)
+      }
       return res?.message_id != null ? String(res.message_id) : undefined
     })
   }
@@ -676,13 +704,21 @@ export class TelegramConnection implements PlatformConnection {
     channel: string,
     messageId: string,
     text: string,
-    opts: { parseMode?: string } = {}
+    opts: { parseMode?: string; plainFallback?: string } = {}
   ): Promise<void> {
     await this.queue.enqueue(async () => {
       try {
-        await this.bot.api.editMessageText(channel, Number(messageId), text, {
-          ...(opts.parseMode ? { parse_mode: opts.parseMode } : {})
-        })
+        try {
+          await this.bot.api.editMessageText(channel, Number(messageId), text, {
+            ...(opts.parseMode ? { parse_mode: opts.parseMode } : {})
+          })
+        } catch (err) {
+          if (!opts.parseMode || opts.plainFallback === undefined || !isEntityParseError(err)) throw err
+          this.deps.log?.warn(
+            `telegram: editMessageText ${opts.parseMode} rejected, editing as plain text: ${errorText(err)}`
+          )
+          await this.bot.api.editMessageText(channel, Number(messageId), opts.plainFallback)
+        }
       } catch (err) {
         this.deps.log?.debug(
           `telegram: editMessageText failed (ch=${channel} id=${messageId}): ${(err as Error).message}`

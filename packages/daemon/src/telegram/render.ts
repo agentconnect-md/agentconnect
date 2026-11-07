@@ -12,12 +12,9 @@ import { extractToolOutput } from '../session/tool-output.js'
  * slack/render.ts's SlackAction + OutputConverger. The daemon's applyAction
  * resolves these against a live TelegramConnection.
  *
- * FORMATTING: the agent's own reply (`post`) is sent as PLAIN text (no parse_mode)
- * — robust against arbitrary markdown, no 400s from malformed MarkdownV2. Daemon
- * "chrome" (progress / reasoning / plan / tool-output / status) uses parse_mode
- * HTML, which only requires escaping `& < >` (see escapeHtml) — far safer than
- * MarkdownV2. Slack emoji shortcodes are replaced with real Unicode emoji, which
- * Telegram renders natively.
+ * FORMATTING: every message uses parse_mode HTML. The agent's reply (`post` / `live-reply`) stays Markdown
+ * here and the applier converts each section (markdown-html.ts), resending the plain source if Telegram rejects it.
+ * Daemon chrome (progress / reasoning / plan / tool-output / status) is built as HTML here, escaped via escapeHtml.
  *
  * Kinds mirror SlackAction so the daemon's dispatch stays parallel:
  *  - `post`        the agent's reply (recorded into the transcript).
@@ -42,7 +39,7 @@ export type TelegramAction =
   // the recorded transcript text (it is chrome, not the agent's words).
   | { kind: 'post'; text: string; recordOnly?: boolean; hint?: string }
   // `live-reply` is minimal mode's single, in-place agent reply (post-once/edit-thereafter,
-  // like `progress`) — display only, NOT recorded. Plain text, like `post`.
+  // like `progress`) — display only, NOT recorded. Markdown, like `post`.
   | { kind: 'live-reply'; text: string }
   // Append the continue-the-topic line to the body message ALREADY sent this turn (an
   // in-place edit). Emitted at turn end when the last reply body was flushed earlier — by
@@ -68,8 +65,7 @@ export const TELEGRAM_CALLBACK_ANSWER_LIMIT = 200
  * Telegram has no threads outside forum topics, so session continuity in a group runs
  * off the reply chain: a reply to a recorded bot message resolves back to the session
  * that message was posted in (LocalStore.threadForPlatformMessage). The line makes that
- * invisible rule visible. Plain text, because the agent's reply is sent without a
- * parse_mode (see the header note) — the leading ↩️ carries the "small print" weight.
+ * invisible rule visible. Plain text; the applier escapes it when the body is sent as HTML.
  */
 export const TELEGRAM_CONTINUE_HINT = '↩️ To continue this topic, please reply to this message.'
 
