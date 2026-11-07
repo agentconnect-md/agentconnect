@@ -7,6 +7,7 @@ import {
   type HookReviewAmendment,
   type HookReviewEvent,
   type HookReviewVerdict,
+  type AzureDevOpsHookMetadata,
   type GithubHookMetadata,
   type GiteaHookMetadata,
   type GitlabHookMetadata,
@@ -137,6 +138,8 @@ export interface HookDispatchContext {
   gitlab?: GitlabHookMetadata
   /** Gitea twin (gitea-integration.md §8). */
   gitea?: GiteaHookMetadata
+  /** Azure DevOps twin (azure-devops-integration.md §11.4). */
+  azureDevOps?: AzureDevOpsHookMetadata
   githubReply?: CodeHostReplyTarget
   githubReviewBatch?: GithubReviewBatch
   turnStartedAt?: string

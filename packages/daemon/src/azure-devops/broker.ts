@@ -54,6 +54,8 @@ export interface AzureDevOpsLease extends BrokerLease {
 export interface AzureDevOpsBrokerDeps {
   /** The repository's proxy lease at the agent's tier; the token is the organization's, so the allowlist is what scopes it. */
   lease: (target: CodeHostEffectTarget) => Promise<AzureDevOpsLease>
+  /** §11.5: in a hook turn, the hook's own lease at `comment`, which raises a repository held at `read` for comment calls. */
+  hookLease?: (target: CodeHostEffectTarget & { hookId: string }) => Promise<AzureDevOpsLease>
   /** The organization, project and repository GUIDs of the target, from the agent's spec. */
   routing: (target: CodeHostEffectTarget) => AzureDevOpsRepoRouting | undefined
   fetchImpl?: typeof fetch
@@ -184,6 +186,15 @@ interface BrokerPlan {
   run: (call: Caller) => Promise<unknown>
 }
 
+function covers(lease: BrokerLease, endpoint: BrokerEndpoint): boolean {
+  try {
+    enforceCapability(lease, endpoint, 'Azure DevOps repository')
+    return true
+  } catch {
+    return false
+  }
+}
+
 function using(...ids: (AzureDevOpsBrokerEndpointId | false)[]): AzureDevOpsBrokerEndpointId[] {
   return ids.filter((id): id is AzureDevOpsBrokerEndpointId => id !== false)
 }
@@ -197,12 +208,28 @@ export class AzureDevOpsBroker implements CodeHostEffectBroker {
     const routing = this.deps.routing(target)
     if (!routing) throw new Error(`repository ${target.repoPath ?? target.repoId} is not authorized for this agent`)
     const plan = this.plan(target, routing, op)
-    const lease = await this.deps.lease(target)
+    const source = await this.leaseSource(target, plan.uses)
+    const lease = await source()
     for (const id of plan.uses) this.enforce(lease, AZURE_DEVOPS_BROKER_ENDPOINTS[id])
     return plan.run(async (call) => {
       if (!plan.uses.includes(call.endpoint)) throw new Error(`broker plan used undeclared endpoint ${call.endpoint}`)
-      return this.call(target, call, lease)
+      return this.call(target, call, lease, source)
     })
+  }
+
+  /** The agent's own lease, or in a hook turn the hook's for a plan its own tier does not cover and `comment` does; a write always needs the agent's own. */
+  private async leaseSource(
+    target: CodeHostEffectTarget,
+    uses: AzureDevOpsBrokerEndpointId[]
+  ): Promise<() => Promise<AzureDevOpsLease>> {
+    const own = () => this.deps.lease(target)
+    const hookId = target.hookId
+    const hookLease = this.deps.hookLease
+    const writes = uses.some((id) => AZURE_DEVOPS_BROKER_ENDPOINTS[id].capability === 'write')
+    if (hookId === undefined || !hookLease || writes) return own
+    const held = await own().catch(() => undefined)
+    if (held && uses.every((id) => covers(held, AZURE_DEVOPS_BROKER_ENDPOINTS[id]))) return own
+    return () => hookLease({ ...target, hookId })
   }
 
   private enforce(lease: BrokerLease, endpoint: BrokerEndpoint): void {
@@ -373,7 +400,12 @@ export class AzureDevOpsBroker implements CodeHostEffectBroker {
   }
 
   /** Issue one allowlisted request; retry once, and only after a definite auth rejection. */
-  private call(target: CodeHostEffectTarget, call: PlannedCall, lease: AzureDevOpsLease): Promise<unknown> {
+  private call(
+    target: CodeHostEffectTarget,
+    call: PlannedCall,
+    lease: AzureDevOpsLease,
+    source: () => Promise<AzureDevOpsLease>
+  ): Promise<unknown> {
     const endpoint = AZURE_DEVOPS_BROKER_ENDPOINTS[call.endpoint]
     const path = renderPath(endpoint.path, call.params)
     return brokerCall(
@@ -384,7 +416,7 @@ export class AzureDevOpsBroker implements CodeHostEffectBroker {
           accept: 'application/json',
           'x-tfs-fedauthredirect': 'Suppress'
         }),
-        lease: () => this.deps.lease(target),
+        lease: source,
         invalidateLease: (token: string) => {
           if (token === lease.token) lease.invalidate?.()
         },

@@ -127,6 +127,8 @@ export interface RelayClientDeps extends AhpCarrierDeps {
   clusterIdentityToken?: () => string | undefined
   /** The daemon's adopted id (undefined until `auth/ok`; `rd/hello.daemonId` needs it). */
   daemonId: () => string | undefined
+  /** Capabilities that hold only while a runtime facet runs, read per connect. */
+  capabilities?: () => readonly string[]
   clock: Clock
   /** Dial factory — prod passes `ClientTransport.dial(url, { subprotocol, path })`; tests fake it. */
   connect: (url: string) => Promise<Transport>
@@ -342,6 +344,7 @@ export class RelayClient {
         daemonId,
         capabilities: [
           ...DAEMON_RD_CAPABILITIES,
+          ...(this.deps.capabilities?.() ?? []),
           ...(ahpAvailable(this.deps) ? [API_AHP_V1_FEATURE, API_AHP_HANDSHAKE_V1_FEATURE] : [])
         ]
       })

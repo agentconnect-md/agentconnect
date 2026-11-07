@@ -2855,6 +2855,75 @@ describe('Daemon rd/msg hook fires', () => {
     15_000
   )
 
+  it('classifies an Azure DevOps reviewer change on its turn-start read: ignored without a turn, or refused when unread', async () => {
+    const { factory, host } = streamingHost()
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    const cp = fakeCpClient()
+    ;(daemon as never as { cpClient: unknown }).cpClient = cp
+    const identity = '00000000-0000-4000-8000-0000000000b1'
+    const lease = vi
+      .spyOn((daemon as any).gitCreds, 'getAzureDevOpsPostLease')
+      .mockImplementation(async () => ({ token: 'hook-token', username: identity }))
+    const reads: string[] = []
+    let status = 200
+    vi.stubGlobal('fetch', async (url: string) => {
+      reads.push(String(url))
+      if (status !== 200) return new Response('', { status })
+      return String(url).includes('/iterations')
+        ? Response.json({ value: [{ id: 1, sourceRefCommit: { commitId: 'b'.repeat(40) } }] })
+        : Response.json({ pullRequestId: 7, status: 'active', reviewers: [{ id: identity, vote: 10 }] })
+    })
+    const azureFire = (deliveryKey: string): RdMsgHook =>
+      fire({
+        sessionKey: 'azure-devops:42:pull:7',
+        msgId: `${HOOK_ID}:${deliveryKey}`,
+        deliveryKey,
+        event: 'merge_request:review_requested',
+        azureDevOps: {
+          repoId: '42',
+          repoPath: 'example-org/Example Project/Example Repo',
+          organization: 'example-org',
+          projectId: '00000000-0000-4000-8000-0000000000a2',
+          repositoryId: '00000000-0000-4000-8000-0000000000a1',
+          deliveryKind: 'reviewers',
+          target: { kind: 'pull', pullRequestId: 7 }
+        },
+        context: {
+          source: 'azure-devops',
+          event: 'merge_request',
+          action: 'review_requested',
+          number: 7,
+          truncated: false
+        }
+      })
+    try {
+      // The identity already voted, so the change is not a request of it: acknowledged, no turn.
+      expect(await (daemon as any).handleRelayMsg(azureFire('r-1'), () => {})).toEqual({
+        msgId: `${HOOK_ID}:r-1`,
+        accepted: true
+      })
+      await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
+      expect(cp.hookReports[0]).toMatchObject({ status: 'success', reason: 'review_request_not_for_identity' })
+      expect(lease).toHaveBeenCalledWith(AGENT_ID, '42', HOOK_ID)
+      expect(reads[0]).toBe(
+        'https://dev.azure.com/example-org/00000000-0000-4000-8000-0000000000a2/_apis/git/repositories/00000000-0000-4000-8000-0000000000a1/pullRequests/7?api-version=7.1'
+      )
+      expect(host.newSession).not.toHaveBeenCalled()
+      // A read that fails cannot classify the change, so the delivery is refused before admission.
+      status = 500
+      expect(await (daemon as any).handleRelayMsg(azureFire('r-2'), () => {})).toEqual({
+        msgId: `${HOOK_ID}:r-2`,
+        accepted: false,
+        reason: 'azure_devops_read_failed'
+      })
+      expect(host.prompt).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+      await daemon.stop()
+    }
+  })
+
   it('replays a retained GitHub deleted event as a maintenance no-op after restart', async () => {
     const root = scaffold()
     const seedHost = streamingHost()

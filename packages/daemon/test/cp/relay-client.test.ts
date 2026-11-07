@@ -326,6 +326,20 @@ describe('RelayClient (daemon → one relay)', () => {
     expect(client.isReady()).toBe(true)
   })
 
+  it('adds the capabilities a running facet holds, read again on every connect', async () => {
+    let held: string[] = ['azure-devops-v1', 'azure-devops-hooks-v1']
+    const { client, transports } = make({ capabilities: () => held })
+    const first = await toReady(client, transports)
+    const firstHello = first.lastReq('rd/hello')!
+    expect(firstHello.type === 'rd/hello' && firstHello.payload.capabilities).toEqual(expect.arrayContaining(held))
+    await client.stop()
+    held = []
+    const second = await toReady(client, transports)
+    const secondHello = second.lastReq('rd/hello')!
+    expect(secondHello.type === 'rd/hello' && secondHello.payload.capabilities).not.toContain('azure-devops-hooks-v1')
+    await client.stop()
+  })
+
   it('refuses an old relay that would drop origin snapshots, and preserves them through a capable relay', async () => {
     const { client, transports } = make()
     const payload = {
