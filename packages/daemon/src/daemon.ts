@@ -401,6 +401,8 @@ import {
 } from './credential-proxy/trust-bundle.js'
 import { loadPlaceholderKey } from './credential-proxy/placeholder.js'
 import { endpointSlot, sameSlotOrigin, type ProviderSlot } from './credential-proxy/provider-route.js'
+import { sealHostProviderKeys } from './credential-proxy/host-keys.js'
+import type { MicrosandboxCredentials } from './microsandbox/secrets.js'
 import { instanceHostnames, proxyInstance } from './credential-proxy/instance-route.js'
 import { configureWorkspaceGitOrigins, permitsNoHttpsOrigin } from './workspace/git-origin-policy.js'
 import { buildMcpServers, buildSandboxMcpServers, type McpStdioServer } from './mcp/inject.js'
@@ -1710,7 +1712,9 @@ export class Daemon {
   private credentialProxy?: { proxy: CredentialProxy; ca: ProxyCa }
   /** Each agent's provider key slots the credential proxy serves, by slot id; registered as a host or srt session launches. */
   private readonly providerSlots = new Map<string, Map<string, ProviderSlot>>()
-  /** Agents and providers whose cleartext endpoint keeps the key in env, logged once each. */
+  /** How each agent's host key slots read their key again on this machine, by slot id. */
+  private readonly hostKeyReaders = new Map<string, Map<string, () => Promise<string>>>()
+  /** Agents and key sources whose keys stay in env, a cleartext endpoint's or a host's the proxy cannot serve, logged once each. */
   private readonly cleartextProviderLogged = new Set<string>()
   /** Leases over cluster pods, in memory: an open page's keep-alive, and this daemon's own on a pod it saw a watcher armed in. */
   private readonly sandboxHolds = new SandboxHolds({ now: () => Date.now() })
@@ -4282,7 +4286,7 @@ export class Daemon {
       // Git the daemon runs itself (skill acquisition) reads these on THIS filesystem, whatever
       // `targetFor` says about the agent's workspace git.
       daemonTarget: daemonCredentialTarget,
-      capabilityFor: (agentId) => this.gitCredServer!.capabilityFor(agentId),
+      capabilityFor: (agentId, holder) => this.gitCredServer!.capabilityFor(agentId, holder),
       // Daemon-run skill acquisition opens its own window per credential fill, except on the workspace repo (source-cache.md §8).
       openSkillCredentialWindow: (agentId, repo) => this.gitCredServer!.openDaemonSkillWindow(agentId, repo),
       preWarm: async (agentId, reason, repository) => {
@@ -4335,7 +4339,7 @@ export class Daemon {
       placementOf: (agentId, sessionId) => this.autoMergePlacement(agentId, sessionId),
       holdSandbox: (subject) => this.k8sPlane?.holdIfBound(subject),
       onArmed: (subject) => this.sandboxHolds.renew(subject, AUTO_MERGE_HOLDER, ['auto-merge-armed']),
-      capabilityFor: (agentId) => this.gitCredServer!.capabilityFor(agentId),
+      daemonCapabilityFor: (agentId) => this.gitCredServer!.capabilityFor(agentId, 'daemon'),
       tokenFor: async (agentId, repoFullName) =>
         (await this.gitCreds.get(agentId, 'helper', { plane: 'gh', repo: repoFullName })).token,
       log: { info: (m) => this.log.info(m), warn: (m) => this.log.warn(m) }
@@ -6639,6 +6643,7 @@ export class Daemon {
       // publishes hostStopping, and fences every older startup/retry generation.
       await this.stopHost(id)
       this.providerSlots.delete(id)
+      this.hostKeyReaders.delete(id)
       this.credentialProxy?.proxy.release(id)
       await this.modelSessions.releaseForAgent(id)
       await this.webchatMcpRevocations.revokeRemoteWebchatGrantsForAgent(id, 'agent_detached')
@@ -7025,13 +7030,49 @@ export class Daemon {
     return slot
   }
 
-  /** A provider slot's current key, fetched as a launch fetches it; refused once the organization moved the key to another endpoint. */
+  /** Register the slots of this machine's own provider keys an srt session would read, and return them as its launch protects them; undefined keeps today's launch. */
+  private registerHostProviderKeys(
+    agentId: string,
+    runtimeId: string,
+    runtime: RuntimeDef,
+    explicitEnv: Record<string, string>
+  ): MicrosandboxCredentials | undefined {
+    const proxy = this.credentialProxy?.proxy
+    if (!proxy) return undefined
+    const sealed = sealHostProviderKeys({ runtimeId, runtime, hostEnv: process.env, explicitEnv }, (slot) =>
+      proxy.sealProviderSlot(agentId, slot)
+    )
+    if (!sealed) return undefined
+    if ('kept' in sealed) {
+      const logged = `${agentId}\nhost:${runtimeId}`
+      if (!this.cleartextProviderLogged.has(logged)) {
+        this.cleartextProviderLogged.add(logged)
+        this.log.warn(
+          `credential proxy: agent "${agentId}" keeps this host's ${runtimeId} API keys in env: ${sealed.kept}`
+        )
+      }
+      return undefined
+    }
+    const slots = this.providerSlots.get(agentId) ?? new Map<string, ProviderSlot>()
+    const readers = this.hostKeyReaders.get(agentId) ?? new Map<string, () => Promise<string>>()
+    for (const { slot, read } of sealed.slots) {
+      slots.set(slot.id, slot)
+      readers.set(slot.id, read)
+    }
+    this.providerSlots.set(agentId, slots)
+    this.hostKeyReaders.set(agentId, readers)
+    return sealed.credentials
+  }
+
+  /** A provider slot's current key: a host key read again where this machine keeps it, an organization's fetched as a launch fetches it and refused once moved to another endpoint. */
   private async resolveProviderSlot(
     agentId: string,
     slotId: string
   ): Promise<{ key: string; headers: Record<string, string> }> {
     const slot = this.providerSlots.get(agentId)?.get(slotId)
     if (!slot) throw new Error(`no provider slot ${slotId}`)
+    const read = this.hostKeyReaders.get(agentId)?.get(slotId)
+    if (read) return { key: await read(), headers: {} }
     if (!this.cpClient) throw new Error('provider keys require a control-plane connection')
     const provider = slot.provider as AgentModelKeyProvider
     const { credentials } = await this.cpClient.requestProviderCredentials({ agentId, provider })
@@ -9036,6 +9077,14 @@ export class Daemon {
     if (shimDirs.size > 0) {
       env.PATH = `${[...shimDirs].join(':')}:${env.PATH ?? runtimeEnv.PATH ?? process.env.PATH ?? ''}`
     }
+    // This machine's own provider keys an srt session would read go through the proxy too, registered before its trust and routes are read.
+    const ambientCredentials =
+      srtShim && localProxyRoute && !opts.providerCredential
+        ? this.registerHostProviderKeys(agent.id, runtimeEntry?.aliasOf ?? agent.runtime, launchDef, {
+            ...runtimeEnv,
+            ...env
+          })
+        : undefined
     if (proxied && this.credentialProxy)
       Object.assign(
         env,
@@ -9115,6 +9164,7 @@ export class Daemon {
           : {}),
         ...(opts.sessionGitDirs ? { sessionGitDirs: opts.sessionGitDirs } : {}),
         ...(srtShim ? { srtShim: { runtimeRoot: srtShim.runtimeRoot } } : {}),
+        ...(ambientCredentials ? { ambientCredentials } : {}),
         runtimeId: runtimeEntry?.aliasOf ?? agent.runtime,
         runtime: launchDef,
         provider: memoryKindOf(agent),

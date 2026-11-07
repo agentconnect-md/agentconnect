@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { objectFromJson, record } from './codex-config.js'
 
@@ -13,6 +13,8 @@ export interface OpenCodeHostKey {
 export type OpenCodeAuthExport = (env: NodeJS.ProcessEnv) => string
 
 const EXPORT_TIMEOUT_MS = 15_000
+const ASYNC_EXPORT_TIMEOUT_MS = 10_000
+const EXPORT_MAX_BUFFER = 1024 * 1024
 const PROVIDER_ID = /^[A-Za-z0-9._-]+$/
 
 // --standalone runs a private server that exits with the command, so no background service is left on the host.
@@ -21,10 +23,23 @@ const runAuthExport: OpenCodeAuthExport = (env) =>
     env,
     encoding: 'utf8',
     timeout: EXPORT_TIMEOUT_MS,
-    maxBuffer: 1024 * 1024,
+    maxBuffer: EXPORT_MAX_BUFFER,
     stdio: ['ignore', 'pipe', 'ignore'],
     windowsHide: true
   })
+
+/** The same export without blocking the daemon, for a resolution the credential proxy awaits; any failure prints nothing. */
+export function openCodeAuthExportAsync(env: NodeJS.ProcessEnv): Promise<string> {
+  return new Promise((resolve) => {
+    const child = execFile(
+      'opencode',
+      ['auth', 'export', '--standalone'],
+      { env, encoding: 'utf8', timeout: ASYNC_EXPORT_TIMEOUT_MS, maxBuffer: EXPORT_MAX_BUFFER, windowsHide: true },
+      (error, stdout) => resolve(error ? '' : stdout)
+    )
+    child.stdin?.end()
+  })
+}
 
 /** The variable for one provider's key, hashed so a provider id never becomes part of a variable name. */
 export function openCodeKeyEnv(provider: string): string {

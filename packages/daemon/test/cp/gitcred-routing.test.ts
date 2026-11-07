@@ -136,9 +136,10 @@ describe('GitCredServer routing (gitcred.sock)', () => {
       ...(workspace ? { workspaceRepoOf: () => workspace } : {}),
       ...spec
     })
-    const capability = server.capabilityFor('a1')
+    const capability = server.capabilityFor('a1', 'daemon')
+    const runtimeCapability = server.capabilityFor('a1', 'runtime')
     await server.start()
-    return { sockPath, gets, erases, logs, warnings, capability }
+    return { sockPath, gets, erases, logs, warnings, capability, runtimeCapability }
   }
 
   function roundtrip(sockPath: string, msg: unknown): Promise<Record<string, unknown>> {
@@ -472,19 +473,47 @@ describe('GitCredServer routing (gitcred.sock)', () => {
     expect(erases).toEqual([{ agentId: 'a1', password: 'ghs_dead', opts: { plane: 'git', repo: 'other/tools' } }])
   })
 
-  it('rejects missing, cross-agent, and revoked capabilities before cache access', async () => {
-    const { sockPath, gets, warnings, capability } = await boot()
+  it('issues the daemon and the runtime distinct capabilities that both serve get and erase', async () => {
+    const { sockPath, gets, erases, capability, runtimeCapability } = await boot()
+    expect(runtimeCapability).not.toBe(capability)
+    // Stable per holder until the agent is revoked.
+    expect(server!.capabilityFor('a1', 'daemon')).toBe(capability)
+    expect(server!.capabilityFor('a1', 'runtime')).toBe(runtimeCapability)
+    for (const presented of [capability, runtimeCapability]) {
+      await expect(roundtrip(sockPath, { op: 'get', agentId: 'a1', capability: presented })).resolves.toMatchObject({
+        ok: true,
+        password: 'ghs_test'
+      })
+      await expect(
+        roundtrip(sockPath, { op: 'erase', agentId: 'a1', capability: presented, password: 'ghs_dead' })
+      ).resolves.toEqual({ ok: true })
+    }
+    expect(gets).toHaveLength(2)
+    expect(erases).toHaveLength(2)
+  })
+
+  it('rejects missing, cross-agent, and revoked capabilities of either holder before cache access', async () => {
+    const { sockPath, gets, warnings, capability, runtimeCapability } = await boot()
     await expect(roundtrip(sockPath, { op: 'get', agentId: 'a1' })).resolves.toMatchObject({ ok: false })
 
-    const otherCapability = server!.capabilityFor('a2')
-    await expect(roundtrip(sockPath, { op: 'get', agentId: 'a1', capability: otherCapability })).resolves.toMatchObject(
-      { ok: false }
-    )
+    for (const holder of ['daemon', 'runtime'] as const) {
+      const otherCapability = server!.capabilityFor('a2', holder)
+      await expect(
+        roundtrip(sockPath, { op: 'get', agentId: 'a1', capability: otherCapability })
+      ).resolves.toMatchObject({ ok: false })
+    }
 
     server!.revoke('a1')
-    await expect(roundtrip(sockPath, { op: 'get', agentId: 'a1', capability })).resolves.toMatchObject({ ok: false })
+    for (const presented of [capability, runtimeCapability]) {
+      await expect(roundtrip(sockPath, { op: 'get', agentId: 'a1', capability: presented })).resolves.toMatchObject({
+        ok: false
+      })
+    }
+    // Both rotate together: the next issue replaces each holder's capability.
+    expect(server!.capabilityFor('a1', 'daemon')).not.toBe(capability)
+    expect(server!.capabilityFor('a1', 'runtime')).not.toBe(runtimeCapability)
     expect(gets).toHaveLength(0)
-    expect(warnings).toHaveLength(3)
+    expect(warnings).toHaveLength(5)
   })
 
   describe('skill credential windows (source-cache.md §8)', () => {
@@ -506,9 +535,10 @@ describe('GitCredServer routing (gitcred.sock)', () => {
       roundtrip(sockPath, { op: 'get', agentId: 'a1', capability, repoFullName: SKILL, ...extra })
 
     it('refuses a private skill token to the agent capability alone and grants it inside a window', async () => {
-      const { sockPath, gets, warnings, logs, capability } = await bootGithub()
+      const { sockPath, gets, warnings, logs, capability, runtimeCapability } = await bootGithub()
       const refused = await ask(sockPath, capability)
       expect(refused).toMatchObject({ ok: false, denied: 'repository' })
+      expect(await ask(sockPath, runtimeCapability)).toMatchObject({ ok: false, denied: 'repository' })
       expect(gets).toHaveLength(0)
       expect(warnings.join('\n')).toContain('outcome=denied')
       expect(warnings.join('\n')).toContain('private skill outside a skill credential window')
@@ -524,7 +554,7 @@ describe('GitCredServer routing (gitcred.sock)', () => {
 
     it('refuses the agent capability an explicit github provider on a private skill repository', async () => {
       const { sockPath, gets } = await bootGithub()
-      expect(await ask(sockPath, server!.capabilityFor('a1'), { provider: 'github' })).toMatchObject({
+      expect(await ask(sockPath, server!.capabilityFor('a1', 'daemon'), { provider: 'github' })).toMatchObject({
         ok: false,
         denied: 'repository'
       })
@@ -562,7 +592,7 @@ describe('GitCredServer routing (gitcred.sock)', () => {
 
     it('scopes a window to its repositories and its agent', async () => {
       const { sockPath, gets } = await bootGithub()
-      server!.capabilityFor('a2')
+      server!.capabilityFor('a2', 'daemon')
       const window = server!.skillWindows.open({ agentId: 'a1', subject: 'daemon', repos: [SKILL] })
       // Repo B is also an enabled private skill source, but not this window's.
       expect(await ask(sockPath, window.capability, { repoFullName: OTHER_SKILL })).toMatchObject({

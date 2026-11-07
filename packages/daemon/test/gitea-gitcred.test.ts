@@ -241,7 +241,7 @@ describe('the credential helper on a prefixed instance (§9)', () => {
     expect(config.env[GITCRED_HOSTS_ENV]).toBe(table)
     // A github workspace on the same deployment still carries the instance in its table.
     expect(
-      gitCredentialEnv(AGENT, target, managedCredentialScope('github', undefined, false, { host: INSTANCE }))[
+      gitCredentialEnv(AGENT, target, managedCredentialScope('github', undefined, false, { host: INSTANCE }), 'daemon')[
         GITCRED_HOSTS_ENV
       ]
     ).toBe(table)

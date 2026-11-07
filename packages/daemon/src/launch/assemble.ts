@@ -6,6 +6,7 @@ import type { HostKey } from '../acp/host-key.js'
 import type { MemoryProviderKind } from '../memory/provider.js'
 import type { RuntimeDef, SandboxMount } from '../config/config-schema.js'
 import type { PrivateRuntimeState } from '../runtimes/private-runtime-state.js'
+import type { MicrosandboxCredentials } from '../microsandbox/secrets.js'
 
 /** The config-file plan plus the pre-strip env it came from, which the idle sweep re-materializes this disk's files from. */
 export interface AssembledConfigFiles extends MaterializeResult {
@@ -71,6 +72,8 @@ export interface AssembleRuntimeLaunchOptions {
   sessionGitDirs?: string[]
   /** A confined session launched through the SRT-wrapped shim rooted here (see prepareRuntimeLaunch). */
   srtShim?: { runtimeRoot: string }
+  /** An srt launch's host provider keys behind credential-proxy placeholders (see prepareRuntimeLaunch). */
+  ambientCredentials?: MicrosandboxCredentials
 }
 
 /** The single launch-assembly entry: turn `*_DATA` secrets (from either env, so an explicit pointer anywhere wins) into files and pointers, merge the child env, then compose the launch. */
@@ -105,6 +108,7 @@ export function assembleRuntimeLaunch(opts: AssembleRuntimeLaunchOptions): Assem
     ...(opts.executor ? { executor: opts.executor } : {}),
     ...(opts.sessionGitDirs ? { sessionGitDirs: opts.sessionGitDirs } : {}),
     ...(opts.srtShim ? { srtShim: opts.srtShim } : {}),
+    ...(opts.ambientCredentials ? { ambientCredentials: opts.ambientCredentials } : {}),
     runtimeId: opts.runtimeId,
     runtime: opts.runtime,
     provider: opts.provider,

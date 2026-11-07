@@ -6,7 +6,7 @@
  * A tiny newline-delimited-JSON server over a unix socket (0700 dir + 0600
  * socket, stale-socket cleanup — the `mcp/control-server.ts` pattern). Hidden
  * helper subcommands connect per invocation with a runtime-only, per-agent
- * capability:
+ * capability — the daemon's own or the agent runtime's (`GitCredHolder`):
  *   { op: 'get',   agentId, capability, repoFullName?, plane? }  → { ok, username, password } | { ok:false, error }
  *   { op: 'erase', agentId, capability, password?, repoFullName?, plane? } → { ok: true }
  *   { op: 'secret', agentId, capability, names? } → { ok, secrets: [{ name, value, description? }] }   (live secrets, capability-requests.md §4.9.2)
@@ -136,13 +136,36 @@ interface GitCredAnswer {
   denied?: 'repository' | 'agent'
 }
 
+/** Who a per-agent capability was issued to: the daemon's own git and helpers, or the agent's runtime. */
+export type GitCredHolder = 'daemon' | 'runtime'
+
+/** What a capability's holder may ask for: `mint` covers `get` and `erase`, `secrets` the live secrets. */
+export interface GitCredPermissions {
+  readonly mint: boolean
+  readonly secrets: boolean
+}
+
+// Both holders keep every op for now; a separate capability lets the runtime's be narrowed alone.
+const HOLDER_PERMISSIONS: Readonly<Record<GitCredHolder, GitCredPermissions>> = {
+  daemon: { mint: true, secrets: true },
+  runtime: { mint: true, secrets: true }
+}
+
+/** An agent capability as an admission sees it: its holder and that holder's permissions. */
+interface AgentPrincipal {
+  holder: GitCredHolder
+  permissions: GitCredPermissions
+}
+
+const isAgentPrincipal = (p: AgentPrincipal | AdmittedSkillWindow): p is AgentPrincipal => 'holder' in p
+
 /** The first line a tunnel proxy sends on a gitcred connection; it carries the server's per-boot key so no pod can forge one. */
 const TUNNEL_GREETING_OP = 'via'
 
 export class GitCredServer {
   private server?: Server
   private readonly tunnelKey = randomBytes(32).toString('base64url')
-  private readonly capabilities = new Map<string, string>()
+  private readonly capabilities = new Map<string, Readonly<Record<GitCredHolder, string>>>()
   private readonly log: GitCredServerDeps['log']
   private readonly workspaceRepoOf?: (agentId: string) => string | undefined
   private readonly providerOf?: GitCredServerDeps['providerOf']
@@ -214,14 +237,14 @@ export class GitCredServer {
     if (!isWindowsNamedPipe(this.path)) rmSync(this.path, { force: true })
   }
 
-  /** Runtime-only bearer used by the helper processes for one agent. */
-  capabilityFor(agentId: string): string {
-    let capability = this.capabilities.get(agentId)
-    if (!capability) {
-      capability = randomBytes(32).toString('base64url')
-      this.capabilities.set(agentId, capability)
+  /** Runtime-only bearer one holder's helper processes present for one agent; both holders' are minted, and revoked, together. */
+  capabilityFor(agentId: string, holder: GitCredHolder): string {
+    let issued = this.capabilities.get(agentId)
+    if (!issued) {
+      issued = { daemon: randomBytes(32).toString('base64url'), runtime: randomBytes(32).toString('base64url') }
+      this.capabilities.set(agentId, issued)
     }
-    return capability
+    return issued[holder]
   }
 
   revoke(agentId: string): void {
@@ -324,8 +347,19 @@ export class GitCredServer {
       return reply({ ok: false, error: 'local credential capability required' })
     }
     if (req.op === 'secret') return this.serveLiveSecrets(req, principal, reply)
+    if (isAgentPrincipal(principal) && !principal.permissions.mint) {
+      this.audit(
+        'denied',
+        req.agentId,
+        req.plane === 'gh' ? 'gh' : 'git',
+        req.repoFullName,
+        true,
+        `${principal.holder} capability`
+      )
+      return reply({ ok: false, error: 'this capability cannot mint git credentials', denied: 'agent' })
+    }
     // Every agent holds a capability for its live secrets; one without a managed git credential is answered as before it had one.
-    if (principal === 'agent' && this.credentialedOf && !this.credentialedOf(req.agentId)) {
+    if (isAgentPrincipal(principal) && this.credentialedOf && !this.credentialedOf(req.agentId)) {
       this.audit('rejected', req.agentId, req.plane === 'gh' ? 'gh' : 'git', req.repoFullName, true)
       return reply({ ok: false, error: 'local credential capability required' })
     }
@@ -335,7 +369,7 @@ export class GitCredServer {
     const githubAsk = req.provider === undefined || req.provider === IMPLICIT_CREDENTIAL_PROVIDER
     const privateSkill = repo !== undefined && githubAsk && this.privateGithubSkillRepoOf?.(req.agentId, repo) === true
     // A window capability opens exactly its own private skill repositories on the git plane, nothing else.
-    const window = principal === 'agent' ? undefined : principal
+    const window = isAgentPrincipal(principal) ? undefined : principal
     // A GitLab skill project is served only through a pod window that names it, read-clamped, by its numeric id.
     if (window && req.provider === 'gitlab' && plane === 'git' && repo !== undefined) {
       return await this.serveGitlabSkillWindow(req, reply, window, repo)
@@ -493,13 +527,19 @@ export class GitCredServer {
   /** The agent's live secrets, named ones only when `names` is given; unknown names are simply absent and values are never logged. */
   private serveLiveSecrets(
     req: GitCredIpcRequest,
-    principal: 'agent' | AdmittedSkillWindow,
+    principal: AgentPrincipal | AdmittedSkillWindow,
     reply: (msg: unknown) => void
   ): void {
     // A skill window opens its private repositories and nothing else.
-    if (principal !== 'agent') {
+    if (!isAgentPrincipal(principal)) {
       this.log.warn(`gitcred: live secrets refused agent=${JSON.stringify(req.agentId)} reason="skill window"`)
       return reply({ ok: false, error: 'a skill credential window carries no live secrets' })
+    }
+    if (!principal.permissions.secrets) {
+      this.log.warn(
+        `gitcred: live secrets refused agent=${JSON.stringify(req.agentId)} reason="${principal.holder} capability"`
+      )
+      return reply({ ok: false, error: 'this capability carries no live secrets' })
     }
     const wanted = Array.isArray(req.names)
       ? new Set(req.names.filter((n): n is string => typeof n === 'string'))
@@ -554,14 +594,20 @@ export class GitCredServer {
     }
   }
 
-  /** Who presented the request: the agent capability, a live skill window for this agent and this connection's subject, or nobody. */
-  private principalOf(agentId: string, presented?: string, via?: string): 'agent' | AdmittedSkillWindow | undefined {
+  /** Who presented the request: one of the agent's holder capabilities, a live skill window for this agent and this connection's subject, or nobody. */
+  private principalOf(
+    agentId: string,
+    presented?: string,
+    via?: string
+  ): AgentPrincipal | AdmittedSkillWindow | undefined {
     if (!presented) return undefined
-    const expected = this.capabilities.get(agentId)
-    if (expected) {
-      const a = Buffer.from(expected)
+    const issued = this.capabilities.get(agentId)
+    if (issued) {
       const b = Buffer.from(presented)
-      if (a.length === b.length && timingSafeEqual(a, b)) return 'agent'
+      for (const holder of ['daemon', 'runtime'] as const) {
+        const a = Buffer.from(issued[holder])
+        if (a.length === b.length && timingSafeEqual(a, b)) return { holder, permissions: HOLDER_PERMISSIONS[holder] }
+      }
     }
     // A pod window opens only through its own pod's tunnel; a daemon window only on an untunneled connection.
     return this.skillWindows.admit(agentId, presented, via ?? DAEMON_SKILL_WINDOW_SUBJECT)

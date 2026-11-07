@@ -53,6 +53,7 @@ const toLoopback: LookupFunction = (_host, options, callback) => {
 const dirs: string[] = []
 const cleanups: Array<() => Promise<void> | void> = []
 afterEach(async () => {
+  vi.unstubAllEnvs()
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup()
 })
 afterAll(() => {
@@ -338,7 +339,7 @@ async function holder(): Promise<{ d: any; agent: any; stop: () => Promise<void>
     JSON.stringify({
       version: 1,
       controlPlane: { enabled: false },
-      runtimes: { claude: { command: 'node', args: [] } },
+      runtimes: { claude: { command: 'node', args: ['claude-agent-acp'] } },
       features: { credentialProxy: true }
     })
   )
@@ -437,6 +438,20 @@ describe.skipIf(process.platform === 'win32')('the holder of an executor-placed 
       // The session gitconfig, written on the executor, presents the placeholder rather than asking the helper.
       expect(files.map((file) => file.content).join('\n')).toContain('password=$AC_CODEHOST_CREDENTIAL')
       expect(JSON.stringify(env)).not.toMatch(/ghs_/)
+    } finally {
+      await stop()
+    }
+  })
+
+  it('seals none of this holder’s own provider keys for it, since the keys there are its executor’s', async () => {
+    vi.stubEnv('ANTHROPIC_API_KEY', 'fixture-holder-anthropic-key')
+    const { d, agent, stop } = await holder()
+    try {
+      placedOnSrt(d, agent, { domains: d.codehostDomainsFor(agent.id), trustBundle: BUNDLE })
+      const { env } = launch(d, agent)
+      const slots = [...(d.providerSlots.get(agent.id)?.keys() ?? [])] as string[]
+      expect(slots.filter((id) => id.startsWith('host:'))).toEqual([])
+      expect(env.ANTHROPIC_API_KEY ?? '').not.toMatch(/^acph1_/)
     } finally {
       await stop()
     }
