@@ -43,8 +43,9 @@ Two facts shape the design:
    short-lived Azure DevOps tokens. An organization may use its own
    application instead. Personal access tokens are not accepted (§10).
 2. **Proxy only.** An Azure DevOps grant is presented only by the daemon
-   credential proxy. It never reaches an agent environment, the agent-facing
-   helper channel, or a CLI wrapper.
+   credential proxy and the daemon's own Git. It never reaches an agent
+   environment, the agent-facing helper channel, or a CLI wrapper. The `host`
+   strategy still does not stop a process of the same user (§6.1).
 3. **The tier is enforced in the proxy.** Requests are routed deny-by-default,
    and a push or an API write requires a `write` grant on the repository it
    names.
@@ -459,8 +460,8 @@ already holds would otherwise answer it. A request for any other provider names
 no consumer, as before.
 
 The real token is therefore presented only by the proxy and by the daemon's own
-Git on the daemon's host, outside every agent boundary. Where the daemon runs
-Git inside an agent's boundary, that Git must not hold the token either:
+Git on the daemon's machine, outside every sandbox. Where the daemon runs Git
+inside a sandbox, that Git must not hold the token either:
 
 - The gitcred server serves a proxy-only credential to no connection a shim's
   tunnel carries, whatever capability it presents, so daemon Git inside a
@@ -469,13 +470,15 @@ Git inside an agent's boundary, that Git must not hold the token either:
 - In a confined `srt` session the daemon's Git runs in the session's shim and
   reaches Azure DevOps over `srt`'s route to the proxy: its helper for the
   organization's host answers the session's placeholder instead of asking the
-  gitcred server, and the proxy presents the token.
+  gitcred server, and the proxy presents the token. The daemon's capability
+  stays out of that Git's environment unless another code host's real helper
+  in the same command needs it.
 - In a VM, in a pool pod and on another daemon's executor, the daemon's Git has
   no such route to the proxy yet, so those sessions are refused (below).
 
 The proxy reaches every strategy's sessions (github-app-git-credentials.md,
-Phase 2), but an Azure DevOps agent's host starts only on the daemon's host and
-in `srt` on that daemon. Its start is refused with
+Phase 2), but an Azure DevOps agent's host starts only in the `host` and `srt`
+strategies on the daemon itself. Its start is refused with
 `azure_devops_requires_proxy: …`, naming the reason, before any preparation
 runs Git, when:
 
@@ -488,6 +491,13 @@ runs Git, when:
 The refusal fails the turn as any other start failure does, and the agent is
 never started without credentials. A dream or a research host, which carries
 no code-host credential, is not refused.
+
+The `host` strategy keeps the token out of the agent's environment but confines
+nothing: a process of the same user can still recover the daemon's capability
+and ask for the token, as the
+[trust model](github-app-git-credentials.md#trust-model) says of every code
+host. Because this token is organization-wide, that costs more here than on a
+repository-scoped host.
 
 A daemon advertises `azure-devops-v1` only while its credential proxy runs and
 it is not a pool member, and placement requires it, so the Cloud pool cannot
@@ -812,8 +822,8 @@ connection-write, and secret routes manage a credential and are
   step 4), so a plain member cannot take over the rights it holds.
 - Tokens exist in the Control Plane's cache, in leases over the authenticated
   daemon WebSocket, and in the daemon's memory, and only the proxy and the
-  daemon's own Git outside every agent boundary present them (§6.1). They never
-  appear in an environment, argv, a remote URL, `.git/config`, or a diagnostic.
+  daemon's own Git outside every sandbox present them (§6.1). They never appear
+  in an environment, argv, a remote URL, `.git/config`, or a diagnostic.
 - An administrator's delegated token lives only for the connect flow,
   encrypted, and is never stored.
 - On a multi-tenant deployment, the deployment secret mints Azure DevOps tokens
@@ -828,6 +838,11 @@ connection-write, and secret routes manage a credential and are
   it names, and `write` reaches only the parts of a repository §6.3 lists,
   never the repository itself. A client that bypasses the proxy holds only a
   placeholder.
+- On the `host` strategy that does not hold against a process of the same user,
+  which can still recover the daemon's capability and ask for the token, as the
+  [trust model](github-app-git-credentials.md#trust-model) says of every code
+  host. Because this token is organization-wide, that costs more than on a
+  repository-scoped host (§6.1).
 - The proxy resolves a repository's name by Azure DevOps's own rules and never
   more loosely (§6.2): after percent-decoding, a `.git` suffix literally, a GUID
   as an id alone, and case folded only where lower- and upper-casing agree, so
@@ -841,7 +856,10 @@ connection-write, and secret routes manage a credential and are
 - A compromised daemon host yields the current token: the identity's full
   rights in the organization for up to an hour. That is wider than a GitHub
   installation token. The Console states this on the connect card, and §3.6's
-  advice to grant only the projects agents need is the mitigation.
+  advice to grant only the projects agents need is the mitigation. Whoever can
+  enroll a daemon and place an agent on it can obtain this identity's token too
+  ([placement trust](github-app-git-credentials.md#trust-model)), so what the
+  organization grants the identity (§3.6) is the real bound.
 
 ## 10. Non-Goals
 
