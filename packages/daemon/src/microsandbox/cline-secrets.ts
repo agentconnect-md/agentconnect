@@ -80,6 +80,7 @@ export function prepareClineSecrets(
   if (data.version !== 1) return undefined
   // One binding per distinct key, reaching every host a provider entry sends it to.
   const sharedKeys = new Map<string, MicrosandboxSecret>()
+  const bindings = new Map<string, MicrosandboxSecret>()
   const owners = new Map<MicrosandboxSecret, KeyOwner>()
   const values: [string, MicrosandboxSecret][] = []
   for (const [id, raw] of Object.entries(object(data.providers)).sort(([a], [b]) => a.localeCompare(b))) {
@@ -96,6 +97,7 @@ export function prepareClineSecrets(
       if (!known) owners.set(secret, { provider, defaultHost })
       secret.host = [...new Set([secret.host, hosts].flat())].sort()
       sharedKeys.set(value, secret)
+      bindings.set(`${id}:${field}`, secret)
       values.push([value, secret])
     }
   }
@@ -109,6 +111,16 @@ export function prepareClineSecrets(
     preparePrivateHome(home) {
       projectRuntimeHomeSeedFile(home, file.destination, file.source, (text) => {
         const projected = document(text)
+        // Each bound field holds its placeholder, so a retained copy's older key there does not stay in the clear.
+        for (const [id, raw] of Object.entries(object(projected.providers))) {
+          const settings = object(object(raw).settings)
+          for (const { field } of apiKeyFields(settings)) {
+            const binding = bindings.get(`${id}:${field}`)
+            if (!binding) continue
+            if (field === 'apiKey') settings.apiKey = binding.placeholder
+            else object(settings.auth).apiKey = binding.placeholder
+          }
+        }
         return `${JSON.stringify(projected, (_key, item: unknown) =>
           typeof item === 'string' ? replaceSecretValue(item, replacements) : item
         )}\n`

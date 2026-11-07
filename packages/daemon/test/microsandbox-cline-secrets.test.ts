@@ -179,4 +179,31 @@ describe.skipIf(process.platform !== 'linux')('Cline saved API keys in a VM', ()
     expect(projected.providers.bedrock.settings).toEqual(AWS)
     expect(readFileSync(source, 'utf8')).toContain(KEY)
   })
+
+  it('puts the placeholder in each bound field of a retained copy, even one holding a key the host rotated away', () => {
+    const { HOME, stored } = fixture({ anthropic: providers.anthropic, gemini: providers.gemini })
+    const home = join(realpathSync(mkdtempSync(join(tmpdir(), 'ac-cline-home-'))), 'home')
+    roots.push(dirname(home))
+    const target = join(home, '.cline', 'data', 'settings', 'providers.json')
+    write(target, {
+      ...stored,
+      providers: {
+        anthropic: entry({ provider: 'anthropic', apiKey: 'fixture-cline-old-key' }),
+        gemini: entry({ provider: 'gemini', auth: { apiKey: 'fixture-cline-old-key' } })
+      }
+    })
+    const credentials = prepareAmbientCredentials(
+      'cline',
+      runtime,
+      { HOME },
+      {},
+      (binding) => `acph1_fixture-${binding.env}`
+    )!
+    credentials.preparePrivateHome(home)
+    const projected = readFileSync(target, 'utf8')
+    expect(projected).not.toContain('fixture-cline-old-key')
+    const placeholder = credentials.replacements.get(KEY)!
+    expect(JSON.parse(projected).providers.anthropic.settings.apiKey).toBe(placeholder)
+    expect(JSON.parse(projected).providers.gemini.settings.auth.apiKey).toBe(placeholder)
+  })
 })
