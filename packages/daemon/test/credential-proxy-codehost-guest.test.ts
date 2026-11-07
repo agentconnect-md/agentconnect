@@ -11,7 +11,7 @@ import { LocalExecutor } from '../src/execution/local-executor.js'
 import type { EnvironmentDescriptor } from '../src/execution/strategies.js'
 import { applySessionTrust, SESSION_TRUST_ENV } from '../src/credential-proxy/trust-bundle.js'
 import { microsandboxCredentialStep } from '../src/microsandbox/secrets.js'
-import { applyCodehostSpawn } from '../src/remote/codehost-spawn.js'
+import { applyProxySpawn } from '../src/remote/codehost-spawn.js'
 import { TunnelHost } from '../src/shim/tunnel-host.js'
 import { TunnelProxy } from '../src/shim/tunnel-proxy.js'
 import { daemonSocket, fakeVm, fakeVmManager } from './fixtures/microsandbox-vm.js'
@@ -77,7 +77,7 @@ describe('applying a launch codehost env at spawn', () => {
   const base = { command: 'x', args: [], env: { AC_AGENT_ID: 'agent-a', NO_PROXY: 'internal.example.test' } }
 
   it('points the session at its shim listener with the placeholder, the proxied gitconfig and the shim bundle', () => {
-    const launch = applyCodehostSpawn({ ...base, codehost: OVERLAY }, listener)
+    const launch = applyProxySpawn({ ...base, codehost: OVERLAY }, { codehost: listener })
     expect(launch.codehost).toBeUndefined()
     expect(launch.env).toMatchObject({
       ...OVERLAY.env,
@@ -94,10 +94,10 @@ describe('applying a launch codehost env at spawn', () => {
   })
 
   it('keeps the helper path when the shim reported no listener, or the launch names a proxy of its own', () => {
-    const helper = applyCodehostSpawn({ ...base, codehost: OVERLAY }, undefined)
+    const helper = applyProxySpawn({ ...base, codehost: OVERLAY }, {})
     expect(helper).toEqual(base)
     const own = { ...base, env: { ...base.env, HTTPS_PROXY: 'http://egress.example.test:3128' } }
-    expect(applyCodehostSpawn({ ...own, codehost: OVERLAY }, listener)).toEqual(own)
+    expect(applyProxySpawn({ ...own, codehost: OVERLAY }, { codehost: listener })).toEqual(own)
   })
 
   it("appends the codehost's command-scope helper after the pairs the launch already carries", () => {
@@ -112,7 +112,7 @@ describe('applying a launch codehost env at spawn', () => {
         GIT_CONFIG_VALUE_1: '!placeholder'
       }
     }
-    const launch = applyCodehostSpawn({ ...base, env, codehost }, listener)
+    const launch = applyProxySpawn({ ...base, env, codehost }, { codehost: listener })
     expect(launch.env).toMatchObject({
       GIT_CONFIG_COUNT: '4',
       GIT_CONFIG_KEY_0: 'safe.directory',
@@ -131,7 +131,7 @@ describe('applying a launch codehost env at spawn', () => {
 describe('the shim trust bundle beside microsandbox and a session own authorities', () => {
   it('hands the shim the files protectEnv named, so the session keeps the substitution CA beside the proxy CA', () => {
     const env = protectedEnv(shortDir())
-    const launch = applyCodehostSpawn({ command: 'x', args: [], env, codehost: OVERLAY }, LISTENER)
+    const launch = applyProxySpawn({ command: 'x', args: [], env, codehost: OVERLAY }, { codehost: LISTENER })
     expect(launch.env.SSL_CERT_FILE).toBe(LISTENER.trustBundle)
     expect(launch.env.NODE_EXTRA_CA_CERTS).toBe(LISTENER.trustBundle)
     expect(JSON.parse(launch.env[SESSION_TRUST_ENV]!)).toEqual({
@@ -154,7 +154,7 @@ describe('the shim trust bundle beside microsandbox and a session own authoritie
         proxy: { trustBundle: string; port: number; token: string }
       }
       const env = { NODE_EXTRA_CA_CERTS: msbFile, SSL_CERT_FILE: sessionFile, AC_AGENT_ID: 'agent-a' }
-      const launch = applyCodehostSpawn({ command: 'x', args: [], env, codehost: OVERLAY }, proxy)
+      const launch = applyProxySpawn({ command: 'x', args: [], env, codehost: OVERLAY }, { codehost: proxy })
       // What the guest shim does before exec.
       applySessionTrust(launch.env, () => undefined)
       expect(launch.env[SESSION_TRUST_ENV]).toBeUndefined()
@@ -183,7 +183,7 @@ describe('a local VM session through its shim codehost listener', () => {
     const local = new LocalExecutor({
       launcher: microsandboxLauncher({ manager: () => fake.manager }),
       generations: { nextSandboxGeneration: async () => 1 },
-      tunnelSocketPath: (tunnel) => sockets[tunnel],
+      tunnelSocketPath: (tunnel) => (tunnel === 'provider' ? undefined : sockets[tunnel]),
       extraTunnelsFor: () => extraTunnels,
       tunnelListenOptions: (_agentId, tunnel) => {
         listens(tunnel)

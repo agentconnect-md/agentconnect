@@ -19,6 +19,7 @@ import {
   ACK_EVERY_FRAMES,
   MAX_CODEHOST_STREAMS,
   MAX_IN_FLIGHT_FRAMES,
+  MAX_PROVIDER_STREAMS,
   MAX_TUNNEL_CHUNK_BYTES,
   type TunnelName
 } from '../src/shim/tunnel.js'
@@ -46,6 +47,8 @@ const hosts: TunnelHost[] = []
 const proxies: TunnelProxy[] = []
 const sockets: Socket[] = []
 const dirs: string[] = []
+/** The routes the provider listen carries, which a test changes to see the listen asked again. */
+let providerRoutes = ['api.anthropic.com:443']
 
 afterEach(async () => {
   for (const socket of sockets.splice(0)) socket.destroy()
@@ -231,7 +234,8 @@ function proxyUnderTest(
         if (options.hold?.(payload)) {
           return await new Promise((resolve, reject) => held.push({ ack: () => resolve({}), fail: reject }))
         }
-        if ((payload as { tunnel?: string }).tunnel === 'codehost')
+        const named = (payload as { tunnel?: string }).tunnel
+        if (named === 'codehost' || named === 'provider')
           return { socketPath: '127.0.0.1:1', proxy: { port: 1, token: 'x'.repeat(32), trustBundle: '/rt/trust.pem' } }
         return { socketPath: '/run/agentconnect/gitcred.sock' }
       },
@@ -243,7 +247,11 @@ function proxyUnderTest(
     },
     socketPathFor: (tunnel) => `/daemon/${tunnel}.sock`,
     listenOptions: (tunnel) =>
-      tunnel === 'codehost' ? { routes: ['github.com:443'], ca: 'example certificate' } : undefined,
+      tunnel === 'codehost'
+        ? { routes: ['github.com:443'], ca: 'example certificate' }
+        : tunnel === 'provider'
+          ? { routes: providerRoutes, ca: 'example certificate' }
+          : undefined,
     dial: (path) => {
       dialled.push(path)
       const socket = new Socket()
@@ -527,17 +535,74 @@ describe('the shim tunnel', () => {
     expect(proxy.instance.listeningAt('codehost')?.proxy?.port).toBe(1)
     for (let i = 0; i < MAX_CODEHOST_STREAMS; i += 1)
       proxy.announce({ kind: 'connect', tunnel: 'codehost' }, randomUUID())
-    expect(proxy.instance.streamCount(true)).toBe(MAX_CODEHOST_STREAMS)
+    expect(proxy.instance.streamCount('codehost')).toBe(MAX_CODEHOST_STREAMS)
     expect(proxy.dialled.every((path) => path === '/daemon/codehost.sock')).toBe(true)
 
     const refused = randomUUID()
     proxy.announce({ kind: 'connect', tunnel: 'codehost' }, refused)
-    expect(proxy.instance.streamCount(true)).toBe(MAX_CODEHOST_STREAMS)
+    expect(proxy.instance.streamCount('codehost')).toBe(MAX_CODEHOST_STREAMS)
     expect(proxy.sent.at(-1)).toEqual(expect.objectContaining({ op: 'close', streamId: refused }))
 
     // A full codehost budget leaves the helpers theirs.
     proxy.announce({ kind: 'connect', tunnel: 'gitcred' }, randomUUID())
-    expect(proxy.instance.streamCount(false)).toBe(1)
+    expect(proxy.instance.streamCount('helpers')).toBe(1)
+  })
+
+  it('caps provider streams on a budget of their own, wider than codehost’s', async () => {
+    const proxy = proxyUnderTest()
+    await proxy.instance.ensure('codehost')
+    await proxy.instance.ensure('provider')
+    await proxy.instance.ensure('gitcred')
+    expect(MAX_PROVIDER_STREAMS).toBeGreaterThan(MAX_CODEHOST_STREAMS)
+    for (let i = 0; i < MAX_PROVIDER_STREAMS; i += 1)
+      proxy.announce({ kind: 'connect', tunnel: 'provider' }, randomUUID())
+    expect(proxy.instance.streamCount('provider')).toBe(MAX_PROVIDER_STREAMS)
+    expect(new Set(proxy.dialled)).toEqual(new Set(['/daemon/provider.sock']))
+    const refused = randomUUID()
+    proxy.announce({ kind: 'connect', tunnel: 'provider' }, refused)
+    expect(proxy.instance.streamCount('provider')).toBe(MAX_PROVIDER_STREAMS)
+    expect(proxy.sent.at(-1)).toEqual(expect.objectContaining({ op: 'close', streamId: refused }))
+    // A full provider budget leaves codehost and the helpers theirs.
+    proxy.announce({ kind: 'connect', tunnel: 'codehost' }, randomUUID())
+    proxy.announce({ kind: 'connect', tunnel: 'gitcred' }, randomUUID())
+    expect(proxy.instance.streamCount('codehost')).toBe(1)
+    expect(proxy.instance.streamCount('helpers')).toBe(1)
+  })
+
+  it('keeps a quiet provider stream through an idle window that ends a codehost one', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const proxy = proxyUnderTest()
+      await proxy.instance.ensure('codehost')
+      await proxy.instance.ensure('provider')
+      const clone = randomUUID()
+      const model = randomUUID()
+      proxy.announce({ kind: 'connect', tunnel: 'codehost' }, clone)
+      proxy.announce({ kind: 'connect', tunnel: 'provider' }, model)
+      vi.advanceTimersByTime(10 * 60_000)
+      expect(proxy.sent).toContainEqual(expect.objectContaining({ op: 'close', streamId: clone }))
+      expect(proxy.instance.streamCount('provider')).toBe(1)
+      vi.advanceTimersByTime(25 * 60_000)
+      expect(proxy.instance.streamCount('provider')).toBe(0)
+      expect(proxy.sent).toContainEqual(expect.objectContaining({ op: 'close', streamId: model }))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('asks a shim again when a provider tunnel’s routes changed, and not otherwise', async () => {
+    providerRoutes = ['api.anthropic.com:443']
+    try {
+      const proxy = proxyUnderTest()
+      await proxy.instance.ensure('provider')
+      await proxy.instance.ensure('provider')
+      expect(proxy.sent.filter((frame) => (frame as { op: string }).op === 'listen')).toHaveLength(1)
+      providerRoutes = ['llm.example.test:443']
+      await proxy.instance.ensure('provider')
+      expect(proxy.sent.at(-1)).toMatchObject({ op: 'listen', tunnel: 'provider', routes: ['llm.example.test:443'] })
+    } finally {
+      providerRoutes = ['api.anthropic.com:443']
+    }
   })
 
   it('serves no codehost tunnel on a shim that reports no listener for it', async () => {

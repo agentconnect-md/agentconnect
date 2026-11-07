@@ -517,6 +517,21 @@ export function applyProxiedOrganizationModelCredential(
   applyOrganizationModelCredential(selection, target, env, { ...credential, apiKey: placeholder, headers: {} })
 }
 
+/** The variables a launch carrying the real key changes to carry the placeholder instead, which a shim driver applies at spawn. */
+export function proxiedOrganizationModelOverlay(
+  selection: AgentModelProvider,
+  target: ModelProviderTarget | undefined,
+  env: Record<string, string>,
+  credential: ProviderCredential,
+  placeholder: string
+): Record<string, string> {
+  const real = { ...env }
+  applyOrganizationModelCredential(selection, target, real, credential)
+  const proxied = { ...env }
+  applyProxiedOrganizationModelCredential(selection, target, proxied, credential, placeholder)
+  return Object.fromEntries(Object.entries(proxied).filter(([name, value]) => real[name] !== value))
+}
+
 /** Where an organization Provider key is used: the configured endpoint, else the provider's default. */
 export function organizationProviderEndpoint(provider: AgentModelKeyProvider, credential: ProviderCredential): URL {
   return new URL(credential.endpoint ?? PROVIDER_KEY_PROFILES[provider].defaultEndpoint!)

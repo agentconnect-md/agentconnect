@@ -6,11 +6,14 @@ import { dirname, join } from 'node:path'
 import { getCACertificates } from 'node:tls'
 import type { ShimEvent } from './protocol.js'
 import {
+  isProxyTunnel,
   MAX_CODEHOST_STREAMS,
   MAX_IN_FLIGHT_FRAMES,
+  MAX_PROVIDER_STREAMS,
   MAX_TUNNEL_CHUNK_BYTES,
   SANDBOX_TUNNEL_PATHS,
   TunnelPayloadSchema,
+  type ProxyTunnelName,
   type TunnelListening,
   type TunnelName,
   type TunnelPayload
@@ -35,12 +38,13 @@ export class TunnelRefusedError extends Error {
   }
 }
 
-interface CodehostListener {
+/** The one loopback proxy a shim serves for both proxy tunnels, so a session needs a single `HTTPS_PROXY`. */
+interface ProxyListener {
   server: Server
   port: number
   token: string
-  /** `host:port` authorities forwarded into the tunnel, lower-cased. */
-  routes: Set<string>
+  /** `host:port` authorities forwarded into each tunnel, lower-cased; code-host routes are matched first. */
+  routes: Record<ProxyTunnelName, Set<string>>
 }
 
 interface HostStream {
@@ -98,6 +102,7 @@ export interface TunnelHostDeps {
   /** The helper tunnels' (`gitcred`, `mcp`) shared cap. */
   maxStreams?: number
   maxCodehostStreams?: number
+  maxProviderStreams?: number
   log?: { info: (m: string) => void; warn: (m: string) => void }
 }
 
@@ -120,26 +125,30 @@ export class TunnelHost {
   private readonly acked = new Set<TunnelName>()
   private readonly socketPathFor: (tunnel: TunnelName) => string
   private readonly maxStreams: number
-  private readonly maxCodehostStreams: number
-  private codehost?: Promise<CodehostListener>
-  /** Connections the codehost listener sent straight out, which never touch the channel. */
+  private readonly maxProxyStreams: Record<ProxyTunnelName, number>
+  private proxy?: Promise<ProxyListener>
+  /** The CA each proxy tunnel's latest listen carried, all of which the trust bundle holds. */
+  private readonly authorities = new Map<ProxyTunnelName, string>()
+  /** Connections the proxy listener sent straight out, which never touch the channel. */
   private readonly direct = new Set<Socket>()
   private closed = false
 
   constructor(private readonly deps: TunnelHostDeps) {
     this.socketPathFor = deps.socketPathFor ?? ((tunnel) => SANDBOX_TUNNEL_PATHS[tunnel])
     this.maxStreams = deps.maxStreams ?? MAX_TUNNEL_STREAMS
-    this.maxCodehostStreams = deps.maxCodehostStreams ?? MAX_CODEHOST_STREAMS
+    this.maxProxyStreams = {
+      codehost: deps.maxCodehostStreams ?? MAX_CODEHOST_STREAMS,
+      provider: deps.maxProviderStreams ?? MAX_PROVIDER_STREAMS
+    }
   }
 
   /** Serve one authorized `tunnel` request. Unknown ops fail the schema rather than this method. */
   async handle(payload: unknown): Promise<unknown> {
     const parsed: TunnelPayload = TunnelPayloadSchema.parse(payload)
     if (parsed.op === 'listen') {
-      const listening =
-        parsed.tunnel === 'codehost'
-          ? await this.listenCodehost(parsed.routes, parsed.ca)
-          : ({ socketPath: await this.listen(parsed.tunnel) } satisfies TunnelListening)
+      const listening = isProxyTunnel(parsed.tunnel)
+        ? await this.listenProxy(parsed.tunnel, parsed.routes, parsed.ca)
+        : ({ socketPath: await this.listen(parsed.tunnel) } satisfies TunnelListening)
       if (parsed.acks) this.acked.add(parsed.tunnel)
       else this.acked.delete(parsed.tunnel)
       return { ...listening, acks: true } satisfies TunnelListening
@@ -179,8 +188,8 @@ export class TunnelHost {
       server.close()
       rmSync(this.socketPathFor(tunnel), { force: true })
     }
-    void this.codehost?.then((listener) => listener.server.close()).catch(() => undefined)
-    this.codehost = undefined
+    void this.proxy?.then((listener) => listener.server.close()).catch(() => undefined)
+    this.proxy = undefined
   }
 
   private async listen(tunnel: TunnelName): Promise<string> {
@@ -211,19 +220,24 @@ export class TunnelHost {
     return path
   }
 
-  /** Serve `codehost` as a loopback HTTP proxy on an ephemeral port, since a host shim shares the machine's loopback with other shims. */
-  private async listenCodehost(routes: string[] | undefined, ca: string | undefined): Promise<TunnelListening> {
+  /** Serve `codehost` and `provider` as one loopback HTTP proxy on an ephemeral port, since a host shim shares the machine's loopback with other shims. */
+  private async listenProxy(
+    tunnel: ProxyTunnelName,
+    routes: string[] | undefined,
+    ca: string | undefined
+  ): Promise<TunnelListening> {
     if (this.closed) throw new TunnelRefusedError('shim is shutting down')
-    if (!routes?.length || !ca) throw new TunnelRefusedError('a codehost listener needs its routes and authority')
-    const trustBundle = this.writeTrustBundle(ca)
-    this.codehost ??= this.startCodehost().catch((error: unknown) => {
-      this.codehost = undefined
+    if (!routes?.length || !ca) throw new TunnelRefusedError(`a ${tunnel} listener needs its routes and authority`)
+    this.authorities.set(tunnel, ca)
+    const trustBundle = this.writeTrustBundle()
+    this.proxy ??= this.startProxy().catch((error: unknown) => {
+      this.proxy = undefined
       throw error
     })
-    const listener = await this.codehost
+    const listener = await this.proxy
     // Replaced on every listen, so the latest launch's routes are the ones honored.
-    listener.routes = new Set(routes.map((route) => route.toLowerCase()))
-    this.deps.log?.info(`shim: serving tunnel codehost on 127.0.0.1:${listener.port} for ${routes.length} routes`)
+    listener.routes[tunnel] = new Set(routes.map((route) => route.toLowerCase()))
+    this.deps.log?.info(`shim: serving tunnel ${tunnel} on 127.0.0.1:${listener.port} for ${routes.length} routes`)
     return {
       socketPath: `127.0.0.1:${listener.port}`,
       proxy: { port: listener.port, token: listener.token, trustBundle }
@@ -231,30 +245,33 @@ export class TunnelHost {
   }
 
   /** This machine's roots plus the daemon's CA, beside the shim's runtime files: SSL_CERT_FILE replaces a client's roots, so the CA alone would break every other host. */
-  private writeTrustBundle(ca: string): string {
+  private writeTrustBundle(): string {
     const path = join(dirname(this.socketPathFor('codehost')), 'codehost-trust.pem')
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
-    const roots = [...getCACertificates('default'), ...getCACertificates('system'), ca].map((pem) => pem.trim())
+    const authorities = [...this.authorities.values()]
+    const roots = [...getCACertificates('default'), ...getCACertificates('system'), ...authorities].map((pem) =>
+      pem.trim()
+    )
     const temporary = `${path}.${randomBytes(6).toString('hex')}.tmp`
     writeFileSync(temporary, `${[...new Set(roots)].join('\n')}\n`, { mode: 0o600 })
     renameSync(temporary, path)
     return path
   }
 
-  private async startCodehost(): Promise<CodehostListener> {
+  private async startProxy(): Promise<ProxyListener> {
     const server = createHttpServer((_request, response) => {
       // Only CONNECT is proxied: a session's HTTPS clients tunnel, and nothing here forwards plain HTTP.
       response.writeHead(405, { connection: 'close', 'content-length': '0' })
       response.end()
     })
-    const listener: CodehostListener = {
+    const listener: ProxyListener = {
       server,
       port: 0,
       token: randomBytes(24).toString('base64url'),
-      routes: new Set()
+      routes: { codehost: new Set(), provider: new Set() }
     }
     server.on('connect', (request: IncomingMessage, socket: Socket, head: Buffer) =>
-      this.codehostConnect(listener, request, socket, head)
+      this.proxyConnect(listener, request, socket, head)
     )
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject)
@@ -263,27 +280,29 @@ export class TunnelHost {
         resolve()
       })
     })
-    server.on('error', (err) => this.deps.log?.warn(`shim: codehost listener error: ${err.message}`))
+    server.on('error', (err) => this.deps.log?.warn(`shim: proxy listener error: ${err.message}`))
     listener.port = (server.address() as AddressInfo).port
     return listener
   }
 
-  /** A code-host CONNECT goes into the tunnel as the daemon's proxy expects it; any other host is reached directly, as the session would without a proxy. */
-  private codehostConnect(listener: CodehostListener, request: IncomingMessage, socket: Socket, head: Buffer): void {
+  /** A code-host or provider CONNECT goes into its tunnel as the daemon's proxy expects it; any other host is reached directly, as the session would without a proxy. */
+  private proxyConnect(listener: ProxyListener, request: IncomingMessage, socket: Socket, head: Buffer): void {
     socket.on('error', () => socket.destroy())
     if (this.closed) return refuseConnect(socket, 503, 'Service Unavailable')
     if (!proxyAuthorized(request.headers['proxy-authorization'], listener.token))
       return refuseConnect(socket, 407, 'Proxy Authentication Required')
     const authority = connectAuthority(request.url)
     if (!authority) return refuseConnect(socket, 400, 'Bad Request')
-    if (!listener.routes.has(authority.key)) return this.connectDirect(authority, socket, head)
-    if (this.streamCount(true) >= this.maxCodehostStreams) {
-      this.deps.log?.warn(`shim: refusing a codehost connection — ${this.maxCodehostStreams} streams already open`)
+    const tunnel = (['codehost', 'provider'] as const).find((name) => listener.routes[name].has(authority.key))
+    if (!tunnel) return this.connectDirect(authority, socket, head)
+    const cap = this.maxProxyStreams[tunnel]
+    if (this.streamCount(tunnel) >= cap) {
+      this.deps.log?.warn(`shim: refusing a ${tunnel} connection — ${cap} streams already open`)
       return refuseConnect(socket, 503, 'Service Unavailable')
     }
     // A clean CONNECT for the daemon's proxy, so no client header (this listener's credential among them) leaves the machine.
     const connect = Buffer.from(`CONNECT ${authority.key} HTTP/1.1\r\nHost: ${authority.key}\r\n\r\n`)
-    this.open('codehost', socket, head.length > 0 ? Buffer.concat([connect, head]) : connect)
+    this.open(tunnel, socket, head.length > 0 ? Buffer.concat([connect, head]) : connect)
   }
 
   private connectDirect(authority: ConnectAuthority, socket: Socket, head: Buffer): void {
@@ -308,7 +327,7 @@ export class TunnelHost {
   }
 
   private accept(tunnel: TunnelName, socket: Socket): void {
-    if (this.streamCount(false) >= this.maxStreams) {
+    if (this.streamCount('helpers') >= this.maxStreams) {
       this.deps.log?.warn(`shim: refusing a ${tunnel} connection — ${this.maxStreams} streams already open`)
       socket.destroy()
       return
@@ -316,9 +335,11 @@ export class TunnelHost {
     this.open(tunnel, socket)
   }
 
-  private streamCount(codehost: boolean): number {
+  /** Open streams on one proxy tunnel's budget, or on the helpers' shared one. */
+  private streamCount(budget: ProxyTunnelName | 'helpers'): number {
     let count = 0
-    for (const { tunnel } of this.streams.values()) if ((tunnel === 'codehost') === codehost) count += 1
+    for (const { tunnel } of this.streams.values())
+      if ((isProxyTunnel(tunnel) ? tunnel : 'helpers') === budget) count += 1
     return count
   }
 

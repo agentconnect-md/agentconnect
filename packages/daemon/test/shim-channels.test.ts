@@ -6,7 +6,7 @@ import { clearSpawnDirs } from '../src/acp/spawn-driver.js'
 import { configFilesDir, configFilesForLaunch, materializeConfigFiles } from '../src/shim/config-file-env.js'
 import { LocalFileSink, applyFileSinkPayload, resolveSinkPath, FileSinkPayloadSchema } from '../src/shim/file-sink.js'
 import { ShimChannel, ShimFileSink } from '../src/shim/channels.js'
-import { SANDBOX_TUNNEL_PATHS, TunnelPayloadSchema } from '../src/shim/tunnel.js'
+import { SANDBOX_TUNNEL_PATHS, TunnelNameSchema, TunnelPayloadSchema } from '../src/shim/tunnel.js'
 import { daemonTunnelSocketPath } from '../src/remote/tunnel-sockets.js'
 import type { SpawnRecord } from '../src/shim/binding.js'
 import type { ShimConnection } from '../src/shim/connection.js'
@@ -213,16 +213,19 @@ describe('shim channel', () => {
 
 describe('tunnels', () => {
   it('names a closed set of sockets rather than allowing any path', () => {
-    // One name per daemon server, each mapped to its fixed socket: `gh` shares gitcred.sock, and codehost reaches only the agent's credential-proxy socket.
-    expect(Object.keys(SANDBOX_TUNNEL_PATHS).sort()).toEqual(['codehost', 'gitcred', 'mcp'])
+    // One name per daemon server, each mapped to its fixed socket: `gh` shares gitcred.sock, and codehost and provider reach only the agent's own credential-proxy sockets.
+    expect(Object.keys(SANDBOX_TUNNEL_PATHS).sort()).toEqual(['codehost', 'gitcred', 'mcp', 'provider'])
+    expect(TunnelNameSchema.options.slice().sort()).toEqual(Object.keys(SANDBOX_TUNNEL_PATHS).sort())
     const sockets = {
       gitcred: '/d/gitcred.sock',
       mcp: '/d/mcp.sock',
-      codehost: (agentId: string) => `/d/proxy-${agentId}.sock`
+      codehost: (agentId: string) => `/d/proxy-${agentId}.sock`,
+      provider: (agentId: string) => `/d/provider-${agentId}.sock`
     }
     expect(daemonTunnelSocketPath('gitcred', 'a', sockets)).toBe('/d/gitcred.sock')
     expect(daemonTunnelSocketPath('mcp', 'a', sockets)).toBe('/d/mcp.sock')
     expect(daemonTunnelSocketPath('codehost', 'a', sockets)).toBe('/d/proxy-a.sock')
+    expect(daemonTunnelSocketPath('provider', 'a', sockets)).toBe('/d/provider-a.sock')
     // A generic "tunnel any socket" grant would let a compromised runtime reach whatever
     // the daemon happens to be listening on.
     expect(TunnelPayloadSchema.safeParse({ op: 'listen', tunnel: 'anything' }).success).toBe(false)

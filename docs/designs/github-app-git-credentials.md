@@ -552,12 +552,12 @@ through a tool or REST instead.
 in the daemon, for every execution strategy. Only how a request reaches the
 proxy differs:
 
-| Strategy                    | Transport                                                              |
-| --------------------------- | ---------------------------------------------------------------------- |
-| `microsandbox`              | the `codehost` tunnel, from a loopback listener in the VM's shim       |
-| pool pod                    | the `codehost` tunnel, from a loopback listener in the pod's shim      |
-| `srt` and host              | a loopback or Unix-socket listener under the daemon root               |
-| host, placed on an executor | the `codehost` tunnel, from a loopback listener in the executor's shim |
+| Strategy                    | Transport                                                                                |
+| --------------------------- | ---------------------------------------------------------------------------------------- |
+| `microsandbox`              | the `codehost` and `provider` tunnels, from one loopback listener in the VM's shim       |
+| pool pod                    | the `codehost` tunnel, from a loopback listener in the pod's shim                        |
+| `srt` and host              | a loopback or Unix-socket listener under the daemon root                                 |
+| host, placed on an executor | the `codehost` and `provider` tunnels, from one loopback listener in the executor's shim |
 
 **Client configuration.** Every strategy would get the same configuration.
 Only the proxy address differs:
@@ -697,6 +697,15 @@ the proxy's CA certificate:
   end after five idle minutes. A renewal of the shim channel ends a stream
   with a frame in flight, as for the helpers: a lost or repeated fragment
   corrupts a TLS record, so the client's retry is the only recovery.
+- The `provider` tunnel (Provider keys, below) is served by the same listener:
+  one `HTTPS_PROXY` per session, whose CONNECTs go into `codehost` for a
+  code-host route, into `provider` for a provider route, and straight out for
+  anything else. Each `listen` carries its own routes and the proxy's CA, and
+  the shim's one trust bundle holds every CA a `listen` carried. The holder
+  ends each tunnel at its own socket of the agent's, which exchanges only that
+  tunnel's kind of placeholder and CONNECTs only to that tunnel's routes, so a
+  code-host placeholder is refused on `provider` and a provider placeholder on
+  `codehost`.
 - A session on an executor whose shim does not serve `codehost`, and an `srt`
   or VM session placed on one, keeps the credential helper path.
 
@@ -791,7 +800,8 @@ it today, and is meant to replace the VM's hostname-scoped placeholders.
 Subscription sign-ins (OAuth) stay out: the daemon does not hold or refresh a
 person's subscription login on others' behalf.
 
-Organization Provider keys use it in host and `srt` sessions. When the proxy is
+Organization Provider keys use it in host, `srt`, local `microsandbox` VM and
+executor-placed host sessions. When the proxy is
 on, a launch with an organization key registers the agent's slot `org:<provider>`
 at the key's endpoint, or the provider's default endpoint when none is
 configured, and the runtime's key variable holds the slot's placeholder. The
@@ -808,6 +818,24 @@ Both trust the proxy bundle, through `CODEX_CA_CERTIFICATE` for Codex as well.
 An endpoint configured over plain `http:` keeps the real key in the
 environment, since a placeholder is exchanged only over TLS; the daemon logs
 that once.
+
+A VM session and an executor-placed host session reach the proxy over the
+`provider` shim tunnel, apart from `codehost` so long-lived model streams and
+code-host transfers do not share a budget:
+
+- The launch registers the slot as it is built, then carries the real key and,
+  beside it, the variables that would carry the placeholder instead. After the
+  bind, the driver asks the shim for `provider` with the slot's routes (again,
+  if they changed) and applies those variables, the listener's `HTTPS_PROXY`,
+  and the shim bundle (also as `CODEX_CA_CERTIFICATE`) only when the shim
+  reported the listener and the launch names no other proxy. An executor
+  session already routed to that listener for its code hosts keeps its route.
+- A shim that predates `provider` refuses the `listen`, so its sessions keep
+  the real key, as they did before.
+- `provider` streams have a cap of their own (64 per session), wider than
+  `codehost`'s since each session holds several long-lived model connections,
+  and end after 30 idle minutes, since a streamed response can be silent for
+  minutes and a client keeps its connection for the next turn.
 
 The keys the daemon's own machine supplies use it in `srt` sessions too: an API
 key in the daemon's environment or the runtime definition's (Claude's
@@ -834,9 +862,10 @@ Not covered yet:
 
 - Host-strategy sessions, by design: a process on the host can read the
   machine's own files.
-- Executor-placed, VM and Kubernetes pod sessions, which keep their current
-  handling: organization keys stay real there, and a VM keeps its own
-  placeholders for host keys.
+- Kubernetes pool pod sessions, which keep the real key.
+- Host keys in VM and executor-placed sessions: a VM keeps its own placeholders
+  for them, and an executor's sessions use that machine's own keys, which this
+  daemon cannot read.
 - Keys the key server issues.
 - The other runtimes' sign-in files, and a provider variable the session's
   runtime does not read, which reach an `srt` session as they are.
@@ -867,8 +896,8 @@ Not covered yet:
   and over an agent's own socket only that agent's. A provider's default origin
   never resolves into private space; an operator's endpoint is refused only
   loopback, link-local and unspecified addresses. The proxy terminates TLS and
-  routes (`srt` domains, tunnel routes) for each agent's slot origins alongside
-  its code hosts.
+  routes (`srt` domains, the loopback listener) for each agent's slot origins
+  alongside its code hosts; a shim tunnel's socket serves one kind only.
 - **Streaming.** Responses are piped, so a streamed (server-sent events)
   response reaches the client event by event.
 - **Not supported.** A key in the query string, a key in the request body, and
