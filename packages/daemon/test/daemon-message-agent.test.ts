@@ -1344,7 +1344,22 @@ describe('messageAgent: cross-daemon routing (P2, source side)', () => {
         number: 42,
         reviewThreadRootCommentId: '101'
       }
-      if (publicTurn) d.activeGateEntries.set(callerKey, { githubReply: target })
+      if (publicTurn)
+        d.activeGateEntries.set(callerKey, {
+          githubReply: target,
+          msg: {
+            msgId: 'hook:event-1',
+            traceId: 'trace-1',
+            source: 'hook',
+            platform: 'hook',
+            channel: 'acme/project',
+            thread: '42',
+            sender: { id: 'hook:hook-1', isBot: true },
+            text: 'event',
+            mentionedBots: [],
+            isDm: false
+          }
+        })
       await d.store.upsertSession({
         key: callerKey,
         agentId: 'bot-a',
@@ -1354,6 +1369,7 @@ describe('messageAgent: cross-daemon routing (P2, source side)', () => {
         transportScope: 'github:123',
         acpSessionId: 'acp-parent-1',
         sessionId: 'sid-parent-1',
+        initiatedBy: 'Webhook',
         state: 'prompting',
         lastDeliveredTs: null,
         updatedAt: Date.now()
@@ -1373,6 +1389,7 @@ describe('messageAgent: cross-daemon routing (P2, source side)', () => {
       expect(sent[0]).toMatchObject({
         originSessionId: 'sid-parent-1',
         needsReply: true,
+        initiatedBy: 'Webhook',
         originCodeHostReplyTarget: publicTurn ? target : null
       })
       d.activeGateEntries.delete(callerKey)
