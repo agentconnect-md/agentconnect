@@ -10,6 +10,31 @@ export function azureDevOpsOrganizationUrl(organization: string): string {
   return `${AZURE_DEVOPS_ORIGIN}/${encodeURIComponent(organization)}`
 }
 
+/** `{organization}/{project}/{repository}` split into its three segments, or null for any other shape. */
+function repositorySegments(repoPath: string): [string, string, string] | null {
+  const parts = repoPath.split('/')
+  return parts.length === 3 && parts.every((part) => part !== '') ? (parts as [string, string, string]) : null
+}
+
+/** A repository's page on Azure DevOps, from its `{organization}/{project}/{repository}` path; null for any other shape. */
+export function azureDevOpsRepositoryUrl(repoPath: string): string | null {
+  const segments = repositorySegments(repoPath)
+  if (!segments) return null
+  const [organization, project, repository] = segments.map(encodeURIComponent)
+  return `${AZURE_DEVOPS_ORIGIN}/${organization}/${project}/_git/${repository}`
+}
+
+/** A pull request's page (azure-devops-integration.md §11.8). */
+export function azureDevOpsPullRequestUrl(repoPath: string, pullRequestId: number): string | null {
+  const repository = azureDevOpsRepositoryUrl(repoPath)
+  return repository ? `${repository}/pullrequest/${pullRequestId}` : null
+}
+
+/** How a pull request is named to people: `{organization}/{project}/{repository}!{id}` (§11.8). */
+export function azureDevOpsPullRequestLabel(repoPath: string, pullRequestId: number): string {
+  return `${repoPath}!${pullRequestId}`
+}
+
 /** One pickable repository, keyed by GUID; `binding` null means the save that picks it binds it. */
 export interface AzureDevOpsRepositoryChoice {
   repositoryId: string

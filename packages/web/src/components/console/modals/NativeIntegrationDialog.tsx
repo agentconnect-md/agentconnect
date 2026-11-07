@@ -23,6 +23,7 @@ import {
   updateGithubHook,
   updateGitlabHook,
   updateGiteaHook,
+  updateAzureDevOpsHook,
   updateIntegrationChannel,
   type HookDto,
   type AgentInstallationAuthDto,
@@ -32,6 +33,13 @@ import {
 import { GithubReviewSettings } from '../GithubReviewSettings'
 import { GitlabReviewSettings } from '../GitlabReviewSettings'
 import { GiteaReviewSettings } from '../GiteaReviewSettings'
+import { AzureDevOpsReviewSettings } from '../AzureDevOpsReviewSettings'
+import {
+  azureDevOpsCommentFamilies,
+  azureDevOpsFamilySubscription,
+  azureDevOpsTriggerModeOf,
+  type AzFamily
+} from '@/lib/azure-devops-events'
 import { channelListSemantics } from '../platforms/registry'
 import {
   effectiveRepoAccess,
@@ -295,7 +303,9 @@ function EditSubscription({ ui, onClose, onCompleted }: Props) {
             ? triggerModeOf(found)
             : found.kind === 'gitlab'
               ? gitlabTriggerModeOf(found)
-              : giteaTriggerModeOf(found)
+              : found.kind === 'azure-devops'
+                ? azureDevOpsTriggerModeOf(found)
+                : giteaTriggerModeOf(found)
         )
       })
       .catch((e: unknown) => {
@@ -349,6 +359,22 @@ function EditSubscription({ ui, onClose, onCompleted }: Props) {
                   events: hook.events,
                   mentionOnly: hook.mentionOnly,
                   commentFamilies: gitlabCommentFamilies(hook.commentFamilies)
+                })
+          },
+          ui.orgId
+        )
+      else if (hook.kind === 'azure-devops')
+        await updateAzureDevOpsHook(
+          hook.id,
+          {
+            ...common,
+            repoId: hook.repoId!,
+            ...(modeChanged
+              ? azureDevOpsFamilySubscription(hook.family as AzFamily, mode as 'first' | 'every' | 'mention')
+              : {
+                  events: hook.events,
+                  mentionOnly: hook.mentionOnly,
+                  commentFamilies: azureDevOpsCommentFamilies(hook.commentFamilies)
                 })
           },
           ui.orgId
@@ -441,6 +467,13 @@ function EditSubscription({ ui, onClose, onCompleted }: Props) {
                   />
                 ) : hook.kind === 'gitlab' ? (
                   <GitlabReviewSettings
+                    value={{ reviewPolicy, reportingMode }}
+                    onReviewPolicyChange={setReviewPolicy}
+                    onReportingModeChange={setReportingMode}
+                    defaultExpanded
+                  />
+                ) : hook.kind === 'azure-devops' ? (
+                  <AzureDevOpsReviewSettings
                     value={{ reviewPolicy, reportingMode }}
                     onReviewPolicyChange={setReviewPolicy}
                     onReportingModeChange={setReportingMode}

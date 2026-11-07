@@ -3,7 +3,7 @@
 // The organization's one Azure DevOps connection and the repositories in use under it (azure-devops-integration.md §3.2, §5, §8).
 
 import { useEffect, useState, type ReactNode } from 'react'
-import { useLocale, useTranslations } from 'next-intl'
+import { useFormatter, useLocale, useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
 import { SQUARE_MARK_FILL_PCT } from '@/components/mark-box'
 import { AzureDevOpsMark, LoadingState } from '@/components/marks'
@@ -11,7 +11,7 @@ import { Scrim } from '@/components/console/Scrim'
 import { CODE_HOST_PROJECTION } from '@/lib/code-hosts'
 import { docsPageUrl } from '@/lib/help-links'
 import { useOrgs } from '@/lib/org-context'
-import { azureDevOpsOrganizationUrl } from '@/lib/azure-devops-repositories'
+import { azureDevOpsOrganizationUrl, azureDevOpsRepositoryUrl } from '@/lib/azure-devops-repositories'
 import {
   ApiError,
   connectAzureDevOps,
@@ -19,8 +19,11 @@ import {
   fetchAzureDevOpsConnections,
   fetchAzureDevOpsRepositories,
   replaceAzureDevOpsSecret,
+  rotateAzureDevOpsHookKey,
   startAzureDevOpsConnect,
   type AzureDevOpsConnectionDto,
+  type AzureDevOpsHookKeyRotationDto,
+  type AzureDevOpsHookReason,
   type AzureDevOpsRepositoryBindingDto,
   type AzureDevOpsStateReason
 } from '@/lib/api'
@@ -48,6 +51,44 @@ function goTo(url: string): void {
   window.location.assign(url)
 }
 
+/** Each hook reason's badge tone and message keys; a healthy repository shows nothing (§11.2). */
+const HOOK_REASON = {
+  webhook_unverified: {
+    badge: 'hookBadges.webhookUnverified',
+    reason: 'hookReasons.webhookUnverified',
+    tone: 'bg-(--status-info-soft) text-(--status-info)'
+  },
+  triggers_not_allowed: {
+    badge: 'hookBadges.triggersNotAllowed',
+    reason: 'hookReasons.triggersNotAllowed',
+    reasonOwn: 'hookReasons.triggersNotAllowedOwn',
+    tone: 'bg-(--status-paused-soft) text-(--amber-500)'
+  },
+  relay_url_unconfigured: {
+    badge: 'hookBadges.relayUrlUnconfigured',
+    reason: 'hookReasons.relayUrlUnconfigured',
+    tone: 'bg-(--status-error-soft) text-(--status-error)'
+  },
+  subscriptions_failed: {
+    badge: 'hookBadges.subscriptionsFailed',
+    reason: 'hookReasons.subscriptionsFailed',
+    tone: 'bg-(--status-error-soft) text-(--status-error)'
+  }
+} as const satisfies Record<AzureDevOpsHookReason, { badge: string; reason: string; reasonOwn?: string; tone: string }>
+
+/** Azure DevOps's own statuses: `enabled`, `onProbation`, and the `disabledBy…` family. */
+const subscriptionPaused = (status: string | null): boolean =>
+  status !== null && (status === 'onProbation' || status.startsWith('disabled'))
+
+/** A rotation refusal's message key. */
+function rotateRefusalKey(reason: string | null) {
+  if (reason === 'no_subscriptions') return 'rotateRefusals.noSubscriptions'
+  if (reason === 'convergence_in_progress') return 'rotateRefusals.busy'
+  if (reason === 'relay_url_unconfigured') return 'rotateRefusals.relayUrlUnconfigured'
+  if (reason === 'binding_missing' || reason === 'connection_missing') return 'rotateRefusals.missing'
+  return 'rotateRefusals.failed'
+}
+
 export default function AzureDevOpsCard({ canWrite }: { canWrite: boolean }) {
   const t = useTranslations('Integrations.azureDevOps')
   const locale = useLocale()
@@ -63,6 +104,8 @@ export default function AzureDevOpsCard({ canWrite }: { canWrite: boolean }) {
   const [err, setErr] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [disconnecting, setDisconnecting] = useState(false)
+  const [rotating, setRotating] = useState<AzureDevOpsRepositoryBindingDto | null>(null)
+  const [suspectedLeak, setSuspectedLeak] = useState(false)
 
   useEffect(() => {
     if (!activeOrg) return
@@ -142,6 +185,26 @@ export default function AzureDevOpsCard({ canWrite }: { canWrite: boolean }) {
         setBindings([])
       } finally {
         setDisconnecting(false)
+      }
+    })
+
+  const rotationText = (outcome: AzureDevOpsHookKeyRotationDto): string => {
+    const counts = { switched: outcome.switched, total: outcome.total }
+    if (outcome.rotated) return outcome.reason ? t('rotatedPartly', counts) : t('rotated', counts)
+    return t(rotateRefusalKey(outcome.reason))
+  }
+
+  const rotate = (target: AzureDevOpsRepositoryBindingDto, leak: boolean) =>
+    run('rotate', async () => {
+      try {
+        const outcome = await rotateAzureDevOpsHookKey(target.id, leak)
+        if (outcome.rotated) setNotice(rotationText(outcome))
+        else setErr(rotationText(outcome))
+        const rows = await fetchAzureDevOpsRepositories().catch(() => null)
+        if (rows) setBindings(rows)
+      } finally {
+        setRotating(null)
+        setSuspectedLeak(false)
       }
     })
 
@@ -261,6 +324,14 @@ export default function AzureDevOpsCard({ canWrite }: { canWrite: boolean }) {
           <div className="mt-[10px] flex items-start gap-[6px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
             <Icon name="users" size={13} className="mt-[2px] flex-none" />
             <span>{t('ownApplicationHint')}</span>
+          </div>
+          {/* Allow triggers runs only through the deployment application's sign-in (§11.1); an own application is granted by hand. */}
+          <div
+            data-azure-devops-own-triggers=""
+            className="mt-[6px] flex items-start gap-[6px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)"
+          >
+            <Icon name="zap" size={13} className="mt-[2px] flex-none" />
+            <span>{t('ownApplicationTriggers')}</span>
           </div>
           <div className="mt-3 flex flex-wrap items-center gap-[10px]">
             <Button size="sm" disabled={busy !== null || !ownComplete} onClick={() => void connectOwn()}>
@@ -403,30 +474,62 @@ export default function AzureDevOpsCard({ canWrite }: { canWrite: boolean }) {
       {enabled === true &&
         connection !== null &&
         bindings.map((binding) => (
-          <div key={binding.id} className="row grid-cols-1 gap-[11px]" data-azure-devops-repository={binding.id}>
-            <div className="min-w-0">
-              <div className="flex min-w-0 flex-wrap items-center gap-[10px]">
-                <a
-                  href={binding.cloneUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  title={t('openRepository', { repo: binding.repoPath })}
-                  className="mono min-w-0 truncate text-[12.5px] text-(--text-primary) no-underline hover:underline"
-                >
-                  {binding.repoPath}
-                </a>
-                {binding.state === 'runtime_degraded' && (
-                  <span className="badge bg-(--status-paused-soft) text-(--amber-500)">{t('degraded')}</span>
-                )}
-              </div>
-              {binding.state === 'runtime_degraded' && (
-                <div className="mt-[3px] font-sans text-[11.5px] font-normal leading-[1.45] text-(--text-tertiary)">
-                  {reasonText(binding.stateReason, own)}
-                </div>
-              )}
+          <RepositoryRow
+            key={binding.id}
+            binding={binding}
+            own={own}
+            canWrite={canWrite}
+            busy={busy !== null}
+            stateReason={binding.state === 'runtime_degraded' ? reasonText(binding.stateReason, own) : null}
+            onRotate={() => {
+              setSuspectedLeak(false)
+              setRotating(binding)
+            }}
+          />
+        ))}
+
+      {rotating && (
+        <Scrim onEscape={() => setRotating(null)} onClick={() => setRotating(null)}>
+          <div className="modal" data-azure-devops-rotate={rotating.id} onClick={(event) => event.stopPropagation()}>
+            <div className="modalhead">
+              <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] bg-(--surface-sunken)">
+                <Icon name="key-round" size={16} />
+              </span>
+              <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">{t('rotateTitle')}</span>
+              <button className="iconbtn" onClick={() => setRotating(null)} aria-label={t('close')}>
+                <Icon name="x" size={16} />
+              </button>
+            </div>
+            <div className="modalbody flex flex-col gap-3">
+              <p className="m-0 font-sans text-[13.5px] font-normal leading-[1.6] text-(--text-secondary)">
+                {t('rotateBody', { repo: rotating.repoPath })}
+              </p>
+              <label className="flex cursor-pointer items-start gap-2 font-sans text-[13px] font-normal leading-[1.5] text-(--text-primary)">
+                <input
+                  type="checkbox"
+                  className="mt-[3px]"
+                  checked={suspectedLeak}
+                  onChange={(event) => setSuspectedLeak(event.target.checked)}
+                />
+                <span>{t('suspectedLeak')}</span>
+              </label>
+            </div>
+            <div className="modalfoot">
+              <div className="flex-1" />
+              <Button variant="ghost" onClick={() => setRotating(null)}>
+                {t('cancel')}
+              </Button>
+              <Button
+                onClick={() => void rotate(rotating, suspectedLeak)}
+                className={busy === 'rotate' ? 'pointer-events-none opacity-50' : undefined}
+              >
+                <Icon name="refresh-cw" size={15} />
+                {busy === 'rotate' ? t('working') : t('rotate')}
+              </Button>
             </div>
           </div>
-        ))}
+        </Scrim>
+      )}
 
       {notice && (
         <div className="px-4 py-2 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
@@ -475,6 +578,101 @@ export default function AzureDevOpsCard({ canWrite }: { canWrite: boolean }) {
           </div>
         </Scrim>
       )}
+    </div>
+  )
+}
+
+/** One repository in use: its access state, its triggers' service hooks, and the key rotation. */
+function RepositoryRow({
+  binding,
+  own,
+  canWrite,
+  busy,
+  stateReason,
+  onRotate
+}: {
+  binding: AzureDevOpsRepositoryBindingDto
+  own: boolean
+  canWrite: boolean
+  busy: boolean
+  stateReason: string | null
+  onRotate: () => void
+}) {
+  const t = useTranslations('Integrations.azureDevOps')
+  const format = useFormatter()
+  const subscriptions = binding.subscriptions ?? []
+  const hook = binding.hookReason ? HOOK_REASON[binding.hookReason] : null
+  const paused = subscriptions.filter((subscription) => subscriptionPaused(subscription.status))
+  const lastDelivery = binding.lastVerifiedDeliveryAt
+    ? t('lastDelivery', { time: format.relativeTime(new Date(binding.lastVerifiedDeliveryAt), { now: Date.now() }) })
+    : t('noDeliveryYet')
+  return (
+    <div
+      className="row grid-cols-[minmax(0,1fr)_auto] items-center gap-[11px]"
+      data-azure-devops-repository={binding.id}
+    >
+      <div className="min-w-0">
+        <div className="flex min-w-0 flex-wrap items-center gap-[10px]">
+          <a
+            href={azureDevOpsRepositoryUrl(binding.repoPath) ?? binding.cloneUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={t('openRepository', { repo: binding.repoPath })}
+            className="mono min-w-0 truncate text-[12.5px] text-(--text-primary) no-underline hover:underline"
+          >
+            {binding.repoPath}
+          </a>
+          {binding.state === 'runtime_degraded' && (
+            <span className="badge bg-(--status-paused-soft) text-(--amber-500)">{t('degraded')}</span>
+          )}
+          {hook && (
+            <span className={`badge ${hook.tone}`} data-azure-devops-hook-reason={binding.hookReason}>
+              {t(hook.badge)}
+            </span>
+          )}
+        </div>
+        {stateReason && (
+          <div className="mt-[3px] font-sans text-[11.5px] font-normal leading-[1.45] text-(--text-tertiary)">
+            {stateReason}
+          </div>
+        )}
+        {hook && (
+          <div className="mt-[3px] font-sans text-[11.5px] font-normal leading-[1.45] text-(--text-tertiary)">
+            {t('reasonOwn' in hook && own ? hook.reasonOwn : hook.reason)}
+          </div>
+        )}
+        {/* Silent until a trigger needs the repository: no subscriptions is a resting state. */}
+        {subscriptions.length > 0 && (
+          <div
+            data-azure-devops-subscriptions={subscriptions.length}
+            className="mt-[3px] flex min-w-0 flex-wrap items-center gap-x-[6px] font-sans text-[11.5px] font-normal leading-[1.45] text-(--text-tertiary)"
+          >
+            <Icon name="webhook" size={12} className="flex-none" />
+            <span>{t('subscriptions', { count: subscriptions.length })}</span>
+            <span aria-hidden>·</span>
+            <span>{lastDelivery}</span>
+            {paused.length > 0 && (
+              <>
+                <span aria-hidden>·</span>
+                <span className="text-(--amber-500)">{t('subscriptionsPaused', { count: paused.length })}</span>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+      <span className="flex items-center justify-end gap-2">
+        {canWrite && subscriptions.length > 0 && (
+          <button
+            className="iconbtn h-7 w-7 flex-none"
+            title={t('rotateKey')}
+            aria-label={t('rotateKey')}
+            disabled={busy}
+            onClick={onRotate}
+          >
+            <Icon name="key-round" size={14} />
+          </button>
+        )}
+      </span>
     </div>
   )
 }

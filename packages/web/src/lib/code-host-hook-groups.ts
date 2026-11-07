@@ -12,11 +12,13 @@ import { githubHookScopeKey } from './github-hook-scope'
 import { GH_FAMILIES, githubHookFamily, type GhFamily } from './github-events'
 import { GT_FAMILIES, giteaHookFamily, type GtFamily } from './gitea-events'
 import { GL_FAMILIES, gitlabHookFamily, type GlFamily } from './gitlab-events'
+import { AZ_FAMILIES, azureDevOpsHookFamily, type AzFamily } from './azure-devops-events'
 
 // Sibling order for one repo: the change-proposal subject (it carries reviews), issues, deployments, then the held-back push.
 const GH_ROW_ORDER: readonly GhFamily[] = ['pull_request', 'issues', 'deployment', 'release', 'push']
 const GL_ROW_ORDER: readonly GlFamily[] = ['merge_request', 'issues', 'release', 'push']
 const GT_ROW_ORDER: readonly GtFamily[] = ['merge_request', 'issues', 'release', 'push']
+const AZ_ROW_ORDER: readonly AzFamily[] = ['merge_request', 'push']
 
 /** One listed subscription: its row, the family it covers (null on a legacy-inert row), and its place in the block. */
 export interface CodeHostHookRow<F extends string> {
@@ -96,5 +98,15 @@ export function orderedGiteaHookRows(hooks: readonly HookDto[]): CodeHostHookRow
     giteaHookFamily,
     GT_ROW_ORDER,
     GT_ROW_ORDER.filter((family) => GT_FAMILIES.some((tile) => tile.fam === family))
+  )
+}
+
+/** The agent's azure-devops rows in list order, each carrying its repository's add-family offer. */
+export function orderedAzureDevOpsHookRows(hooks: readonly HookDto[]): CodeHostHookRow<AzFamily>[] {
+  return orderRows(
+    hooks,
+    azureDevOpsHookFamily,
+    AZ_ROW_ORDER,
+    AZ_ROW_ORDER.filter((family) => AZ_FAMILIES.some((tile) => tile.fam === family))
   )
 }

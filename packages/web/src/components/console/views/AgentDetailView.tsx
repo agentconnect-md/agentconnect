@@ -41,6 +41,7 @@ import { useAgentGithubAppDialog } from '@/components/console/GithubAppDialog'
 import { useStrategyNames } from '@/components/console/ExecutionStrategyField'
 import { permissionModeLabelKey } from '@/lib/permission-mode-i18n'
 import {
+  createAzureDevOpsHook,
   createGithubHook,
   createGiteaHook,
   createGitlabHook,
@@ -55,6 +56,7 @@ import {
   fetchHookRuns,
   fetchSessionDetail,
   sessionFromDetailDto,
+  updateAzureDevOpsHook,
   updateGithubHook,
   updateWebhookInstructions,
   updateGiteaHook,
@@ -106,6 +108,7 @@ import { LocalSkillsList } from '@/components/console/LocalSkillsList'
 import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
 import { GiteaReviewSettings } from '@/components/console/GiteaReviewSettings'
 import { GitlabReviewSettings } from '@/components/console/GitlabReviewSettings'
+import { AzureDevOpsReviewSettings } from '@/components/console/AzureDevOpsReviewSettings'
 import { LabelFilterField } from '@/components/console/LabelFilterField'
 import { VisibilityValue } from '@/components/console/VisibilityField'
 import { IntegrationPlatformGroups, PLATFORM_TILE_WIDTH } from '@/components/console/IntegrationPlatformGroups'
@@ -161,7 +164,30 @@ import {
   type GlTriggerMode
 } from '@/lib/gitlab-events'
 import { gitlabInstanceHost, gitlabProjectUrl } from '@/lib/gitlab-projects'
-import { orderedGiteaHookRows, orderedGithubHookRows, orderedGitlabHookRows } from '@/lib/code-host-hook-groups'
+import {
+  AZ_TRIGGER_MODES,
+  AZ_TRIGGER_PILL,
+  azureDevOpsCadencePick,
+  azureDevOpsCommentFamilies,
+  azureDevOpsDefaultTriggerMode,
+  azureDevOpsFamilyCarriesReviews,
+  azureDevOpsFamilySubscription,
+  azureDevOpsFamilyTile,
+  azureDevOpsHookFamily,
+  azureDevOpsHookNeedsNormalization,
+  azureDevOpsTriggerModeOf,
+  azureDevOpsTriggerModes,
+  azureDevOpsTriggerTooltip,
+  type AzFamily,
+  type AzTriggerMode
+} from '@/lib/azure-devops-events'
+import { azureDevOpsRepositoryUrl } from '@/lib/azure-devops-repositories'
+import {
+  orderedAzureDevOpsHookRows,
+  orderedGiteaHookRows,
+  orderedGithubHookRows,
+  orderedGitlabHookRows
+} from '@/lib/code-host-hook-groups'
 import { AgentIconPicker } from '@/components/console/AgentIconPicker'
 import { BuiltinBadge } from '@/components/console/BuiltinBadge'
 import { NotFound } from '@/components/console/NotFound'
@@ -294,7 +320,9 @@ function rowSettingsTitle(hook: HookDto): string {
       ? githubFamilyTile(githubHookFamily(hook) ?? 'pull_request')?.label
       : hook.kind === 'gitlab'
         ? gitlabFamilyTile(gitlabHookFamily(hook) ?? 'merge_request')?.label
-        : giteaFamilyTile(giteaHookFamily(hook) ?? 'merge_request')?.label
+        : hook.kind === 'azure-devops'
+          ? azureDevOpsFamilyTile(azureDevOpsHookFamily(hook) ?? 'merge_request')?.label
+          : giteaFamilyTile(giteaHookFamily(hook) ?? 'merge_request')?.label
   return `${label ?? 'Subscription'} settings`
 }
 
@@ -436,7 +464,13 @@ function AgentDetail() {
   const githubRows = orderedGithubHookRows(githubHooks)
   // Each code-host row's subject family in its own host's stored vocabulary.
   const codeHostRowFamily = (h: HookDto) =>
-    h.kind === 'github' ? githubHookFamily(h) : h.kind === 'gitlab' ? gitlabHookFamily(h) : giteaHookFamily(h)
+    h.kind === 'github'
+      ? githubHookFamily(h)
+      : h.kind === 'gitlab'
+        ? gitlabHookFamily(h)
+        : h.kind === 'azure-devops'
+          ? azureDevOpsHookFamily(h)
+          : giteaHookFamily(h)
   // Issues and change-request rows of every host carry their scope's decision routing (code-host-decisions.md §7).
   const { rowOf: routingRowOf, drawer: routingEvaluationsDrawer } = useCodeHostRowRouting({
     hooks: Object.values(codeHostHooks).flat(),
@@ -449,6 +483,8 @@ function AgentDetail() {
   const gitlabRows = orderedGitlabHookRows(gitlabHooks)
   const giteaHooks = codeHostHooks.gitea
   const giteaRows = orderedGiteaHookRows(giteaHooks)
+  const azureDevOpsHooks = codeHostHooks['azure-devops']
+  const azureDevOpsRows = orderedAzureDevOpsHookRows(azureDevOpsHooks)
   // The agent works through one GitHub App: its installations back the rows, and GitHub's return lands back on its dialog.
   const githubAgentAppId = getAgent(id)?.githubAppId ?? null
   const returnedGithubApp = params.get('github-app')
@@ -481,10 +517,11 @@ function AgentDetail() {
   )
   const giteaInstanceUrl = giteaConnectionsData?.[0]?.instanceUrl ?? null
   // A watched repository's page on its host, once the host is known.
-  const repoPageUrl = (host: 'github' | 'gitlab' | 'gitea', repo: string | null): string | null => {
+  const repoPageUrl = (host: CodeHostProvider, repo: string | null): string | null => {
     if (!repo) return null
     if (host === 'github') return `https://github.com/${repo}`
     if (host === 'gitlab') return gitlabInstanceUrl ? gitlabProjectUrl(gitlabInstanceUrl, repo) : null
+    if (host === 'azure-devops') return azureDevOpsRepositoryUrl(repo)
     return giteaInstanceUrl ? giteaRepositoryUrl(giteaInstanceUrl, repo) : null
   }
 
@@ -640,8 +677,21 @@ function AgentDetail() {
               reportingMode
             })
         : null,
-      // No hooks in v1 (azure-devops-integration.md §11), so no row opens this dialog.
-      'azure-devops': null
+      // No label filter on Azure DevOps (§11.4), so the row's own fields go back without one.
+      'azure-devops': hook.repoId
+        ? () =>
+            updateAzureDevOpsHook(hook.id, {
+              agentId,
+              name: hook.name,
+              enabled: hook.enabled,
+              events: hook.events,
+              repoId: hook.repoId!,
+              commentFamilies: azureDevOpsCommentFamilies(hook.commentFamilies),
+              mentionOnly: hook.mentionOnly,
+              reviewPolicy,
+              reportingMode
+            })
+        : null
     }
     const save = writers[reviewSettingsDraft.kind]
     if (!save) return
@@ -705,8 +755,14 @@ function AgentDetail() {
           defaultExpanded
         />
       ),
-      // Unreachable: no Azure DevOps hook row exists to settle.
-      'azure-devops': () => null
+      'azure-devops': () => (
+        <AzureDevOpsReviewSettings
+          value={draft}
+          onReviewPolicyChange={onReviewPolicyChange}
+          onReportingModeChange={onReportingModeChange}
+          defaultExpanded
+        />
+      )
     }
     return (
       <div className="flex flex-col gap-4">
@@ -815,6 +871,31 @@ function AgentDetail() {
     const edit = giteaCadencePick(h, mode)
     if (edit) await saveGiteaHookEvents(h, edit.family, edit.mode)
   }
+  // The Azure DevOps counterpart — keyed on the bound repository's surrogate id, with no label filter.
+  const saveAzureDevOpsHookEvents = async (h: HookDto, fam: AzFamily, mode: AzTriggerMode) => {
+    if (hookBusy || !h.agentId || !h.repoId) return
+    setHookBusy(h.id)
+    try {
+      const updated = await updateAzureDevOpsHook(h.id, {
+        agentId: h.agentId,
+        name: h.name,
+        enabled: h.enabled,
+        repoId: h.repoId,
+        ...azureDevOpsFamilySubscription(fam, mode),
+        reviewPolicy: h.reviewPolicy,
+        reportingMode: h.reportingMode
+      })
+      void mutateHooks((rows) => rows?.map((r) => (r.id === h.id ? updated : r)), { revalidate: false })
+    } catch {
+      /* controls stay as they were — the next refresh interval reconciles */
+    } finally {
+      setHookBusy(null)
+    }
+  }
+  const setAzureDevOpsHookCadence = async (h: HookDto, mode: AzTriggerMode) => {
+    const edit = azureDevOpsCadencePick(h, mode)
+    if (edit) await saveAzureDevOpsHookEvents(h, edit.family, edit.mode)
+  }
   // A pure helper decides the gitlab edit: it refuses a no-op write, which is what leaves an inexpressible stored rule untouched.
   const setGitlabHookCadence = async (h: HookDto, mode: GlTriggerMode) => {
     const edit = gitlabCadencePick(h, mode)
@@ -898,6 +979,27 @@ function AgentDetail() {
       setAddFamilyBusy(null)
     }
   }
+  const addAzureDevOpsFamily = async (seed: HookDto, repoKey: string, fam: AzFamily) => {
+    if (addFamilyBusy || !seed.agentId || !seed.repoId) return
+    setAddFamilyBusy(addFamilyKey(repoKey, fam))
+    setAddFamilyError(null)
+    try {
+      await createAzureDevOpsHook({
+        agentId: seed.agentId,
+        name: seed.repoFullName ?? seed.name,
+        repoId: seed.repoId,
+        family: fam,
+        ...azureDevOpsFamilySubscription(fam, azureDevOpsDefaultTriggerMode(fam)),
+        reviewPolicy: 'off',
+        reportingMode: 'off'
+      })
+      await mutateHooks()
+    } catch (error) {
+      setAddFamilyError({ key: repoKey, message: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setAddFamilyBusy(null)
+    }
+  }
   // The row's family is a read-only fact now: it labels the row and decides
   // whether the review/Check surface applies to it at all.
   const ghRowPill = (h: HookDto) => {
@@ -938,12 +1040,37 @@ function AgentDetail() {
     const fam = giteaHookFamily(h)
     return !!fam && giteaFamilyCarriesReviews(fam)
   }
+  const azRowPill = (h: HookDto) => {
+    const fam = azureDevOpsHookFamily(h)
+    return fam ? (azureDevOpsFamilyTile(fam)?.pill ?? fam) : 'no events'
+  }
+  const azRowCarriesReviews = (h: HookDto) => {
+    const fam = azureDevOpsHookFamily(h)
+    return !!fam && azureDevOpsFamilyCarriesReviews(fam)
+  }
+  const azRowTriggerModes = (h: HookDto): readonly AzTriggerMode[] => {
+    const fam = azureDevOpsHookFamily(h)
+    return fam ? azureDevOpsTriggerModes(fam) : AZ_TRIGGER_MODES
+  }
   const codeHostRowPill = (h: HookDto) =>
-    h.kind === 'github' ? ghRowPill(h) : h.kind === 'gitlab' ? glRowPill(h) : gtRowPill(h)
+    h.kind === 'github'
+      ? ghRowPill(h)
+      : h.kind === 'gitlab'
+        ? glRowPill(h)
+        : h.kind === 'azure-devops'
+          ? azRowPill(h)
+          : gtRowPill(h)
   const rowCarriesReviews = (h: HookDto) =>
-    h.kind === 'github' ? ghRowCarriesReviews(h) : h.kind === 'gitlab' ? glRowCarriesReviews(h) : gtRowCarriesReviews(h)
-  // Labels are a thread's: a deployment or push row carries none, so such a row has no settings to open.
+    h.kind === 'github'
+      ? ghRowCarriesReviews(h)
+      : h.kind === 'gitlab'
+        ? glRowCarriesReviews(h)
+        : h.kind === 'azure-devops'
+          ? azRowCarriesReviews(h)
+          : gtRowCarriesReviews(h)
+  // Labels are a thread's: a deployment or push row carries none, and no Azure DevOps event reports a label (§11.4).
   const rowCarriesLabels = (h: HookDto) => {
+    if (h.kind === 'azure-devops') return false
     const fam = codeHostRowFamily(h)
     return fam === 'pull_request' || fam === 'merge_request' || fam === 'issues'
   }
@@ -2201,6 +2328,87 @@ function AgentDetail() {
                       )}
                     </div>
                   ))}
+                  {azureDevOpsRows.map(({ hook: h, repoKey, first, last, addFamilies }, i) => (
+                    <div
+                      key={h.id}
+                      data-azure-devops-hook-row={h.id}
+                      className={`${codeHostMobileRowCls(first, last)} ${
+                        first &&
+                        agentInts.length +
+                          webhookHooks.length +
+                          githubRows.length +
+                          gitlabRows.length +
+                          giteaRows.length +
+                          i >
+                          0
+                          ? 'border-t'
+                          : ''
+                      }`}
+                    >
+                      {first && (
+                        <span className="flex h-9 w-9 flex-none items-center justify-center rounded-md border border-(--border-subtle) bg-(--surface-sunken)">
+                          <span className="flex h-[18px] w-[18px] items-center justify-center">
+                            <AzureDevOpsMark fillPct={100} />
+                          </span>
+                        </span>
+                      )}
+                      <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
+                        {first && (
+                          <span className="flex min-w-0 items-center gap-2">
+                            <RepoName
+                              name={h.repoFullName ?? h.name}
+                              url={repoPageUrl('azure-devops', h.repoFullName)}
+                              className="mono min-w-0 truncate text-[13px] font-semibold"
+                            />
+                            {addFamilies.length > 0 && (
+                              <RowMoreMenu
+                                ariaLabel={`Watch more on ${h.repoFullName ?? h.name}`}
+                                icon="plus"
+                                title={t('integrations.watchAnotherSubject')}
+                                triggerClassName={ADD_SUBJECT_BTN}
+                                align="start"
+                                items={addFamilies.map((fam) => ({
+                                  icon: (azureDevOpsFamilyTile(fam)?.icon ?? 'plus') as Parameters<
+                                    typeof Icon
+                                  >[0]['name'],
+                                  label: `Add ${azureDevOpsFamilyTile(fam)?.label ?? fam}`,
+                                  onClick: () => void addAzureDevOpsFamily(h, repoKey, fam)
+                                }))}
+                              />
+                            )}
+                          </span>
+                        )}
+                        <span className="flex min-w-0 items-center gap-2">
+                          <span className="flex-none font-sans text-[12px] font-semibold leading-normal text-(--text-primary)">
+                            {azRowPill(h)}
+                          </span>
+                          <span className="truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                            {AZ_TRIGGER_PILL[azureDevOpsTriggerModeOf(h)]}
+                          </span>
+                        </span>
+                        {(h.reviewPolicy !== 'off' || h.reportingMode !== 'off') && (
+                          <span className="truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                            {reviewPolicyLabel(h.reviewPolicy)} {t('integrations.review')}
+                            {h.reportingMode === 'status' ? ` · ${t('integrations.pullRequestStatus')}` : ''}
+                          </span>
+                        )}
+                        {addFamilyError?.key === repoKey && addFamilies.length > 0 && (
+                          <span className="font-sans text-[11.5px] font-normal leading-[1.5] text-(--status-error)">
+                            {addFamilyError.message}
+                          </span>
+                        )}
+                      </span>
+                      {rowHasSettings(h) && (
+                        <button
+                          className="iconbtn flex-none"
+                          title={t('integrations.settings')}
+                          onClick={() => openReviewSettings(h)}
+                        >
+                          <Icon name="settings-2" size={15} />
+                        </button>
+                      )}
+                    </div>
+                  ))}
                   {apiEntries.length > 0 && (
                     <AgentApiCard
                       agent={da}
@@ -2820,6 +3028,151 @@ function AgentDetail() {
                       </div>
                     </div>
                   )}
+                  {/* Azure DevOps group — the same shape, without a label filter. */}
+                  {azureDevOpsHooks.length > 0 && (
+                    <div
+                      data-azure-devops-hooks=""
+                      className="overflow-hidden rounded-[9px] border border-(--border-subtle)"
+                    >
+                      <div className="flex items-center gap-3 px-[14px] py-3">
+                        <span className="flex h-[34px] w-[34px] flex-none items-center justify-center">
+                          <span className="flex h-[26px] w-[26px] items-center justify-center">
+                            <AzureDevOpsMark fillPct={100} />
+                          </span>
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="font-sans text-[13.5px] font-semibold leading-normal">
+                            {CODE_HOST_PROJECTION['azure-devops'].label}
+                          </div>
+                          <div className="mono mt-[3px] text-[11.5px] font-normal text-(--text-tertiary)">
+                            {CODE_HOST_PROJECTION['azure-devops'].publicHost}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="border-t border-(--border-subtle) bg-(--surface-app)">
+                        {azureDevOpsRows.map(({ hook: h, repoKey, first, last, addFamilies }) => {
+                          const routing = routingRowOf(h)
+                          return (
+                            <div key={h.id} className={last ? 'border-b border-(--border-subtle)' : undefined}>
+                              <div className={codeHostRowCls(first, last)}>
+                                {first ? (
+                                  <>
+                                    <Icon
+                                      name="folder-git-2"
+                                      size={14}
+                                      color="var(--text-tertiary)"
+                                      className="flex-none"
+                                    />
+                                    <RepoName
+                                      name={h.repoFullName ?? h.name}
+                                      url={repoPageUrl('azure-devops', h.repoFullName)}
+                                      className="mono min-w-[90px] max-w-full truncate text-[12px] text-(--text-primary)"
+                                    />
+                                  </>
+                                ) : null}
+                                {addFamilies.length > 0 && (
+                                  <RowMoreMenu
+                                    ariaLabel={`Watch more on ${h.repoFullName ?? h.name}`}
+                                    icon="plus"
+                                    title={t('integrations.watchAnotherSubject')}
+                                    triggerClassName={ADD_SUBJECT_BTN}
+                                    align="start"
+                                    items={addFamilies.map((fam) => ({
+                                      icon: (azureDevOpsFamilyTile(fam)?.icon ?? 'plus') as Parameters<
+                                        typeof Icon
+                                      >[0]['name'],
+                                      label: `Add ${azureDevOpsFamilyTile(fam)?.label ?? fam}`,
+                                      onClick: () => void addAzureDevOpsFamily(h, repoKey, fam)
+                                    }))}
+                                  />
+                                )}
+                                {azureDevOpsHookNeedsNormalization(h) && (
+                                  <span
+                                    className="badge flex-none bg-(--surface-active) text-(--text-tertiary)"
+                                    title={t('integrations.customRuleHint')}
+                                  >
+                                    {t('integrations.customRule')}
+                                  </span>
+                                )}
+                                <span className="ml-auto w-[56px] flex-none whitespace-nowrap text-right font-sans text-[12px] font-semibold leading-normal text-(--text-primary)">
+                                  {azRowPill(h)}
+                                </span>
+                                {routing.entry}
+                                <TriggerSelect
+                                  className="w-[126px] flex-none"
+                                  {...routing.trigger(
+                                    {
+                                      options: azRowTriggerModes(h).map((mode) => ({
+                                        value: mode,
+                                        label: AZ_TRIGGER_PILL[mode],
+                                        hint: azureDevOpsTriggerTooltip(
+                                          mode,
+                                          da.name,
+                                          azureDevOpsHookFamily(h) ?? undefined
+                                        )
+                                      })),
+                                      value: azureDevOpsTriggerModeOf(h),
+                                      onChange: (mode) => void setAzureDevOpsHookCadence(h, mode)
+                                    },
+                                    'every'
+                                  )}
+                                  ariaLabel={`Trigger for ${h.repoFullName ?? h.name} ${azRowPill(h)}`}
+                                  hint="Trigger — when this agent runs"
+                                  busy={hookBusy === h.id}
+                                />
+                                <span className="inline-flex flex-none gap-[2px]">
+                                  <RowMoreMenu
+                                    ariaLabel={`More for ${h.repoFullName ?? h.name} ${azRowPill(h)}`}
+                                    items={[
+                                      ...(rowHasSettings(h)
+                                        ? [
+                                            {
+                                              icon: 'settings-2' as const,
+                                              label: 'Settings…',
+                                              onClick: () => openReviewSettings(h)
+                                            }
+                                          ]
+                                        : []),
+                                      {
+                                        icon: 'rotate-ccw-clock' as const,
+                                        label: hookRunsFor === h.id ? 'Hide recent deliveries' : 'Recent deliveries',
+                                        onClick: () => setHookRunsFor(hookRunsFor === h.id ? null : h.id)
+                                      },
+                                      ...routing.menuItems
+                                    ]}
+                                  />
+                                  <button
+                                    className="iconbtn h-[26px] w-[26px] flex-none"
+                                    title={`Stop watching ${azRowPill(h)}`}
+                                    onClick={() => openModal('deleteHook', h)}
+                                  >
+                                    <Icon name="x" size={13} />
+                                  </button>
+                                </span>
+                              </div>
+                              {addFamilyError?.key === repoKey && addFamilies.length > 0 && (
+                                <div className="px-[14px] pb-[9px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--status-error)">
+                                  {addFamilyError.message}
+                                </div>
+                              )}
+                              {hookRunsFor === h.id && (
+                                <HookRunsPanel hookId={h.id} sessionHref={(sid) => orgPath(`/sessions/${sid}`)} />
+                              )}
+                            </div>
+                          )
+                        })}
+                        <div className="px-[14px] py-2">
+                          <button
+                            className="lnk text-[12px]"
+                            onClick={() => openModal('integration', da, { platform: 'azure-devops' })}
+                          >
+                            <Icon name="plus" size={13} />
+                            {t('integrations.addRepository')}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                   {apiEntries.length > 0 && (
                     <AgentApiCard
                       agent={da}
@@ -3157,7 +3510,7 @@ function AgentDetail() {
                 rowCarriesLabels(reviewSettingsHook)
               )}
               {/* Repository-wide, so it saves itself rather than riding the row's PUT; an installation row has no repository to keep it on. */}
-              {!reviewSettingsHook.installationAccount && (
+              {!reviewSettingsHook.installationAccount && reviewSettingsDraft.kind !== 'azure-devops' && (
                 <div className="mt-4">
                   <TrustedUsersField
                     hookId={reviewSettingsHook.id}
