@@ -9,8 +9,8 @@ export const GITHUB_PROXY_HOSTS: readonly string[] = [
 ]
 
 export type GithubRoute =
-  /** A repository's own token: `git` for smart HTTP (contents), `gh` for the API. */
-  | { kind: 'repository'; repo: string; plane: 'git' | 'gh'; readOnly: boolean }
+  /** A repository's own token: `git` for smart HTTP (contents), `gh` for the API; `push` for receive-pack, which needs write access. */
+  | { kind: 'repository'; repo: string; plane: 'git' | 'gh'; readOnly: boolean; push?: boolean }
   /** A GraphQL request: its body decides the repository and whether it may pass. */
   | { kind: 'graphql' }
   /** A read that names no repository, answered with the workspace's read-only token. */
@@ -30,6 +30,13 @@ function repository(owner: string | undefined, name: string | undefined): string
 
 const READS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS'])
 
+/** Whether a smart-HTTP request is a push: receive-pack itself, or its ref advertisement (any `service` naming it). */
+export function isGitPush(service: string, target: string): boolean {
+  if (service === 'git-receive-pack') return true
+  const query = target.includes('?') ? target.slice(target.indexOf('?') + 1) : ''
+  return new URLSearchParams(query).getAll('service').some((value) => value.toLowerCase() === 'git-receive-pack')
+}
+
 /** Route one request by its canonical host, method and path (query included or not). */
 export function githubRoute(host: string, method: string, target: string): GithubRoute {
   const path = target.split('?')[0] ?? ''
@@ -42,7 +49,7 @@ export function githubRoute(host: string, method: string, target: string): Githu
       if (GIT_SERVICE.test(service)) {
         const repo = repository(segments[0], segments[1])
         if (!repo) return { kind: 'deny', status: 400, reason: 'the git URL does not name a repository' }
-        return { kind: 'repository', repo, plane: 'git', readOnly: false }
+        return { kind: 'repository', repo, plane: 'git', readOnly: false, push: isGitPush(segments.at(-1)!, target) }
       }
       return { kind: 'anonymous' }
     }

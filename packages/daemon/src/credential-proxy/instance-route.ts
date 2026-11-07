@@ -1,6 +1,6 @@
 // Which credential a GitLab or Gitea request needs (github-app-git-credentials.md, Phase 2): the repository its path names under the instance's prefix.
 import { parseManagedBaseUrl, stripHostPathPrefix, type ManagedCredentialHost } from '../gitcred/managed-hosts.js'
-import { GITHUB_PROXY_HOSTS } from './github-route.js'
+import { GITHUB_PROXY_HOSTS, isGitPush } from './github-route.js'
 
 /** One code-host instance an agent's credential reaches, as the proxy matches it. */
 export interface ProxyInstance {
@@ -41,8 +41,10 @@ export function instanceHost(instance: ProxyInstance, hostname: string, port: nu
 }
 
 export type InstanceRoute =
-  /** A repository's own token: `git` for smart HTTP at the agent's tier, `api` for a read. */
-  | { kind: 'repository'; plane: 'git' | 'api'; repo: string }
+  /** A repository's smart HTTP at the agent's tier; `push` for receive-pack, which needs write access. */
+  | { kind: 'repository'; plane: 'git'; repo: string; push: boolean }
+  /** An API read of a repository. */
+  | { kind: 'repository'; plane: 'api'; repo: string }
   /** A GitLab API read naming its project by numeric id. */
   | { kind: 'repository'; plane: 'api'; repoId: string }
   /** An API read that names no repository, answered with the workspace's read token. */
@@ -106,7 +108,7 @@ export function instanceRoute(instance: ProxyInstance, method: string, target: s
   if (service) {
     const repo = repositoryPath(service, gitlab)
     if (!repo) return { kind: 'deny', status: 400, reason: 'the git URL does not name a repository' }
-    return { kind: 'repository', plane: 'git', repo }
+    return { kind: 'repository', plane: 'git', repo, push: isGitPush(segments.at(-1)!, target) }
   }
   if (segments[0] !== 'api') return { kind: 'anonymous' }
   const version = gitlab ? 'v4' : 'v1'

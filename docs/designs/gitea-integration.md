@@ -241,7 +241,11 @@ Hooks, workspaces, and `AgentRepoAuthorization` reference the catalog row
 with provider `gitea` exactly as §8.3 describes for GitLab, including the
 "a hook never creates a grant" 409 and the `RepoAccess` tiers; on Gitea every
 tier is served by the same token, so a tier is an AgentConnect clamp only,
-never a provider role.
+never a provider role. The daemon's credential proxy enforces the git tier by
+service (github-app-git-credentials.md, Phase 2): a push below `write` is
+refused before it reaches Gitea. A session outside the proxy (proxy off, a VM,
+a pool pod, a remote executor) holds the token itself, so a read or comment
+grant there can still push until those transports use the proxy.
 
 ## 6. Repository Selection and Provisioning
 

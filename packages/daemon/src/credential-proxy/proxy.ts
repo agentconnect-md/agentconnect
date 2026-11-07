@@ -39,13 +39,22 @@ export interface MintAsk {
   repoId?: string
   plane: 'git' | 'api'
   readOnly: boolean
+  /** A git push, refused unless the grant is `write`: some hosts cannot narrow the token itself. */
+  push?: true
+}
+
+/** A minted credential and the tier its grant carries. */
+export interface MintedCredential {
+  username: string
+  token: string
+  access: 'read' | 'comment' | 'write'
 }
 
 export interface CredentialProxyDeps {
   key: Buffer
   ca: ProxyCa
   /** The credential for the ask at the agent's tier (`readOnly` asks for read), from the daemon's credential cache. */
-  mint: (agentId: string, ask: MintAsk) => Promise<{ username: string; token: string }>
+  mint: (agentId: string, ask: MintAsk) => Promise<MintedCredential>
   /** The agent's GitHub workspace repository, `owner/repo`, for a read that names none. */
   workspaceRepo: (agentId: string) => string | undefined
   /** The code-host instances an agent's managed credential reaches, from its spec. */
@@ -317,6 +326,8 @@ export class CredentialProxy {
     const what = ask.repo ?? (ask.repoId !== undefined ? `project ${ask.repoId}` : 'the workspace repository')
     try {
       const minted = await this.deps.mint(claims.agentId, ask)
+      if (ask.push && minted.access !== 'write')
+        return deny(403, `this agent has ${minted.access} access to ${what}; pushing needs write access`)
       const setHeaders: [string, string][] = []
       if (carried.authorization) setHeaders.push(['authorization', authorization(carried.authorization.scheme, minted)])
       if (carried.privateToken) setHeaders.push(['private-token', minted.token])
@@ -365,7 +376,8 @@ export class CredentialProxy {
           provider: instance.provider,
           ...('repo' in route ? { repo: route.repo } : { repoId: route.repoId }),
           plane: route.plane,
-          readOnly: route.plane === 'api'
+          readOnly: route.plane === 'api',
+          ...('push' in route && route.push ? { push: true as const } : {})
         }
     }
   }
@@ -402,7 +414,8 @@ export class CredentialProxy {
           provider: 'github',
           repo: route.repo,
           plane: route.plane === 'git' ? 'git' : 'api',
-          readOnly: route.readOnly
+          readOnly: route.readOnly,
+          ...(route.push ? { push: true as const } : {})
         }
     }
   }
