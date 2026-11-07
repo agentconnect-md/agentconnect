@@ -522,9 +522,10 @@ describe('IntegrationChannelList By decision', () => {
 
   it('keeps a saved gate’s Respond to listed but inert, since its pill owns the trigger', async () => {
     await render([gated()])
-    expect(await openSettings()).toEqual(['@-mentions', 'All messages', 'Off', 'Per thread', 'Single session'])
+    // Off is left by the pill's own ×, so the menu leaves it out.
+    expect(await openSettings()).toEqual(['Per thread', 'Single session', '@-mentions', 'All messages'])
     const plain = all('[role="menuitemradio"][aria-disabled="true"]').map((node) => node.textContent?.trim())
-    expect(plain).toEqual(['@-mentions', 'All messages', 'Off'])
+    expect(plain).toEqual(['@-mentions', 'All messages'])
     expect(document.body.textContent).toContain('Respond to unavailable — By decision chooses which messages')
     await pick('@-mentions')
     expect(data.setChannelTrigger).not.toHaveBeenCalled()

@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-// Auto in a conversation's settings (auto-session-mode.md §3.3, §11): offered where the daemon reads it, and under it the trigger is Off or the coordinator's.
+// Auto in a conversation's settings (auto-session-mode.md §3.3, §11): a session mode offered where the daemon reads it, under which only Off is asked.
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -142,40 +142,64 @@ describe('Auto in a conversation’s settings', () => {
     expect(SESSION_MODE_AUTO_FEATURE).toBe(SESSION_MODE_AUTO_V1_FEATURE)
   })
 
-  it('offers Auto beside Per thread and Single session where the daemon reads it, and saves it', async () => {
+  it('leads with the session mode, offers Auto beside Per thread and Single session where the daemon reads it, and saves it', async () => {
     await render([room()])
-    await click(settings('Settings for general: @-mentions, Per thread'))
-    expect(options()).toEqual(['@-mentions', 'All messages', 'Off', 'Per thread', 'Single session', 'Auto'])
+    await click(settings('Settings for general: Per thread, @-mentions'))
+    expect(options()).toEqual(['Per thread', 'Single session', 'Auto', '@-mentions', 'All messages', 'Off'])
     await click(option('Auto'))
     expect(data.setChannelSessionMode).toHaveBeenCalledWith('int-1', 'C1', 'auto')
+    expect(data.setChannelTrigger).not.toHaveBeenCalled()
   })
 
   it('offers no Auto where the daemon does not read it', async () => {
     data.features.splice(0, data.features.length)
     await render([room()])
-    await click(settings('Settings for general: @-mentions, Per thread'))
+    await click(settings('Settings for general: Per thread, @-mentions'))
     expect(options()).not.toContain('Auto')
   })
 
-  it('offers no Auto on a DM', async () => {
+  it('offers no Auto on a DM, whose only reply choice is On', async () => {
     await render([room({ channelId: 'D1', name: '@alice', kind: 'im', trigger: 'any' })])
-    await click(settings('Settings for alice: On, Per thread'))
-    expect(options()).toEqual(['On', 'Off', 'Per thread', 'Single session'])
+    await click(settings('Settings for alice: Per thread'))
+    expect(options()).toEqual(['Per thread', 'Single session', 'Off'])
   })
 
-  it('under Auto offers only Off, and the other choices read Decided by the coordinator', async () => {
+  it('asks nothing about replies under Auto, which decides them, and keeps Off', async () => {
     await render([room({ sessionMode: 'auto', trigger: 'any' })])
     await click(settings('Settings for general: Auto'))
-    expect(options()).toEqual(['Decided by the coordinator', 'Off', 'Per thread', 'Single session', 'Auto'])
+    expect(options()).toEqual(['Per thread', 'Single session', 'Auto', 'Off'])
+    expect(document.body.textContent).not.toContain('Respond to')
     await click(option('Off'))
     expect(data.setChannelTrigger).toHaveBeenCalledWith('int-1', 'C1', 'off')
   })
 
-  it('turns an Off Auto row back on through the coordinator', async () => {
+  it('turns an Off Auto row back on by picking Auto, keeping its stored mode', async () => {
     await render([room({ sessionMode: 'auto', trigger: 'off' })])
     await click(settings('Settings for general: Off'))
-    await click(option('Decided by the coordinator'))
+    expect(options()).toEqual(['Per thread', 'Single session', 'Auto', 'Off'])
+    await click(option('Auto'))
+    expect(data.setChannelSessionMode).not.toHaveBeenCalled()
     expect(data.setChannelTrigger).toHaveBeenCalledWith('int-1', 'C1', 'mention')
+  })
+
+  it('turns an Off row on in the picked mode, the mode saved before replies resume', async () => {
+    const order: string[] = []
+    data.setChannelSessionMode.mockImplementation(async () => void order.push('session'))
+    data.setChannelTrigger.mockImplementation(async () => void order.push('trigger'))
+    await render([room({ trigger: 'off' })])
+    await click(settings('Settings for general: Off'))
+    await click(option('Single session'))
+    expect(data.setChannelSessionMode).toHaveBeenCalledWith('int-1', 'C1', 'append')
+    expect(data.setChannelTrigger).toHaveBeenCalledWith('int-1', 'C1', 'mention')
+    expect(order).toEqual(['session', 'trigger'])
+  })
+
+  it('leaves Auto for Per thread with the session mode alone', async () => {
+    await render([room({ sessionMode: 'auto', trigger: 'any' })])
+    await click(settings('Settings for general: Auto'))
+    await click(option('Per thread'))
+    expect(data.setChannelSessionMode).toHaveBeenCalledWith('int-1', 'C1', 'createNew')
+    expect(data.setChannelTrigger).not.toHaveBeenCalled()
   })
 
   it('keeps an Auto row listed as Auto after its daemon stops reading it', async () => {
@@ -192,12 +216,12 @@ describe('Auto in a conversation’s settings', () => {
   it('runs an assistant-mode place on its coordinator where the daemon reads Auto', async () => {
     await render([room({ sessionMode: 'createNew' })], true)
     await click(settings('Settings for general: Auto'))
-    expect(options()).toEqual(['Decided by the coordinator', 'Off', 'Auto'])
+    expect(options()).toEqual(['Auto', 'Off'])
   })
 
   it('keeps an assistant-mode place on one session where the daemon does not', async () => {
     data.features.splice(0, data.features.length)
     await render([room({ sessionMode: 'createNew' })], true)
-    expect(settings('Settings for general: @-mentions, Single session')).toBeTruthy()
+    expect(settings('Settings for general: Single session, @-mentions')).toBeTruthy()
   })
 })

@@ -1822,9 +1822,7 @@
         "dmOnHint": "Replies to every message in this conversation.",
         "hint": "Trigger — when the agent responds here",
         "decision": "By decision",
-        "decisionHint": "A saved decision judges each message in {room}; the agent answers only for the answers you pick.",
-        "coordinator": "Decided by the coordinator",
-        "coordinatorHint": "Under Auto every message in {room} reaches the coordinator, which decides what to answer."
+        "decisionHint": "A saved decision judges each message in {room}; the agent answers only for the answers you pick."
       },
       "action": {
         "leaveLabel": "Leave {noun}",
@@ -1876,7 +1874,7 @@
         "append": "Single session",
         "appendHint": "One session for {room}, shared across threads. Send <code>!new</code> to start a fresh one.",
         "auto": "Auto",
-        "autoHint": "A coordinator reads every message in {room} and hands it to a task, answers it, or lets it pass. A task answers in the thread of the message it opened for."
+        "autoHint": "Reads every message and decides what needs a reply: answers quick questions right away, takes bigger requests into their own thread, and stays quiet on the rest."
       },
       "settings": {
         "respondTo": "Respond to",

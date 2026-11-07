@@ -224,3 +224,19 @@ describe('ChannelSettingsPopover', () => {
     expect(save).not.toHaveBeenCalled()
   })
 })
+
+describe('a lone choice and an unchecked group', () => {
+  it('draws a heading-less group, and leaves an unchecked group out of the button and the footer', async () => {
+    const groups: ChannelSettingsGroup[] = [
+      { id: 'session', label: 'Session mode', options: SESSION, value: '', onPick: saved },
+      { id: 'off', options: [RESPOND[2]!], value: 'off', onPick: saved }
+    ]
+    act(() => root.render(<ChannelSettingsPopover groups={groups} name="deploys" />))
+    expect(button().getAttribute('aria-label')).toBe('Settings for deploys: Off')
+    expect(button().getAttribute('title')).toBe('Session mode')
+    await act(async () => button().click())
+    expect(checked()).toEqual(['Off'])
+    expect(described()).toEqual(['Off — Stays but never replies.'])
+    expect(menu()?.textContent).not.toContain('undefined')
+  })
+})

@@ -15,8 +15,10 @@ export interface ChannelSettingsOption<T extends string = string> {
 /** One radio group of the popover: its heading, its choices, and the save a pick runs. */
 export interface ChannelSettingsGroup {
   id: string
-  label: string
+  /** Absent for a lone choice that needs no heading, drawn under a divider. */
+  label?: string
   options: readonly ChannelSettingsOption[]
+  /** A value no option carries leaves the group unchecked, unsaid on the button and out of the footer. */
   value: string
   /** Whether the closed button reads this group's choice, given every group's; absent ⇒ always. */
   summarize?: (chosen: Readonly<Record<string, string>>) => boolean
@@ -48,10 +50,11 @@ export function ChannelSettingsPopover({
   // A refused save is told inside the popover, where the pick was made; anything drawn beside the rows would move them under it.
   const [error, setError] = useState<string | null>(null)
   const current = (g: ChannelSettingsGroup) => pending[g.id] ?? g.value
+  const selected = (g: ChannelSettingsGroup) => g.options.find((o) => o.value === current(g))
   const chosen = Object.fromEntries(groups.map((g) => [g.id, current(g)]))
   const summary = groups
-    .filter((g) => !g.locked && (g.summarize?.(chosen) ?? true))
-    .map((g) => g.options.find((o) => o.value === current(g))?.label ?? current(g))
+    .filter((g) => !g.locked && !!selected(g) && (g.summarize?.(chosen) ?? true))
+    .map((g) => selected(g)!.label)
   const pick = (g: ChannelSettingsGroup, value: string) => {
     if (disabled || g.locked || g.id in pending || value === current(g)) return
     setError(null)
@@ -77,7 +80,10 @@ export function ChannelSettingsPopover({
           aria-haspopup="menu"
           aria-expanded={open}
           aria-controls={open ? menuId : undefined}
-          title={groups.map((g) => g.label).join(' · ')}
+          title={groups
+            .map((g) => g.label)
+            .filter(Boolean)
+            .join(' · ')}
           onClick={() => {
             setError(null)
             toggle()
@@ -118,15 +124,17 @@ export function ChannelSettingsPopover({
               {index > 0 && (
                 <div role="separator" className="mx-3 my-[6px] h-px bg-(--border-subtle) desktop:mx-[10px]" />
               )}
-              <div
-                id={`${id}-${g.id}`}
-                className={`px-3 pb-[6px] font-sans text-[10px] font-semibold uppercase leading-normal tracking-[0.06em] text-(--text-tertiary) desktop:px-[10px] desktop:pb-[5px] ${
-                  index === 0 ? 'pt-[9px] desktop:pt-2' : 'pt-[7px] desktop:pt-[6px]'
-                }`}
-              >
-                {g.label}
-              </div>
-              <div role="group" aria-labelledby={`${id}-${g.id}`}>
+              {g.label && (
+                <div
+                  id={`${id}-${g.id}`}
+                  className={`px-3 pb-[6px] font-sans text-[10px] font-semibold uppercase leading-normal tracking-[0.06em] text-(--text-tertiary) desktop:px-[10px] desktop:pb-[5px] ${
+                    index === 0 ? 'pt-[9px] desktop:pt-2' : 'pt-[7px] desktop:pt-[6px]'
+                  }`}
+                >
+                  {g.label}
+                </div>
+              )}
+              <div role="group" {...(g.label ? { 'aria-labelledby': `${id}-${g.id}` } : {})}>
                 {g.options.map((o) => {
                   const on = !g.locked && o.value === current(g)
                   return (
@@ -180,6 +188,8 @@ export function ChannelSettingsPopover({
                     })}
                   </span>
                 )
+              // An unchecked group has no line to reserve, so hovering it would make the footer jump.
+              if (!selected(g)) return null
               const shown = peek?.group === g.id ? peek.value : current(g)
               return (
                 // Every description shares one cell, so the footer keeps its tallest height and never jumps on hover.

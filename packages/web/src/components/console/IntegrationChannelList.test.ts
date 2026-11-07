@@ -293,10 +293,10 @@ describe('IntegrationChannelList session mode', () => {
   const render = (channels: IntegrationChannelRow[], platform = 'slack', extra: { assistantMode?: boolean } = {}) =>
     renderToStaticMarkup(createElement(IntegrationChannelList, { platform, channels, ...extra }))
 
-  it('reads both choices on a channel row, defaulting to a session per thread', () => {
+  it('reads the session mode first, then what it answers, defaulting to a session per thread', () => {
     const html = render([{ channelId: 'C1', name: 'deploys', kind: 'channel', trigger: 'mention' }])
-    expect(html).toContain('aria-label="Settings for deploys: @-mentions, Per thread"')
-    expect(html).toContain('title="Respond to · Session mode"')
+    expect(html).toContain('aria-label="Settings for deploys: Per thread, @-mentions"')
+    expect(html).toContain('title="Session mode · Respond to"')
   })
 
   it('shows the conversation is on one session when it is', () => {
@@ -325,13 +325,14 @@ describe('IntegrationChannelList session mode', () => {
   // A Slack DM opens a session per top-level message, so its row may pick one session instead.
   // auto-session-mode.md §3.2: a Slack group DM is a small room, with a room's modes.
   it('offers it on a Slack DM and on a Slack group DM', () => {
+    // A DM's only reply choice is On, so it reads its session mode alone.
     const dm = render([{ channelId: 'D1', name: '@alice', kind: 'im', trigger: 'any', sessionMode: 'append' }])
-    expect(dm).toContain('title="Respond to · Session mode"')
+    expect(dm).toContain('aria-label="Settings for alice: Single session"')
     expect(dm).toContain('<span>Single session</span>')
     const group = render([
       { channelId: 'G1', name: '@alice, bob', kind: 'mpim', trigger: 'any', sessionMode: 'append' }
     ])
-    expect(group).toContain('title="Respond to · Session mode"')
+    expect(group).toContain('title="Session mode · Respond to"')
     expect(group).toContain('<span>Single session</span>')
   })
 
@@ -355,9 +356,9 @@ describe('IntegrationChannelList session mode', () => {
       'slack',
       { assistantMode: true }
     )
-    expect(html).toContain('aria-label="Settings for deploys: @-mentions, Single session"')
-    expect(html).toContain('aria-label="Settings for alice: On, Single session"')
-    expect(html.match(/, Single session"/g)).toHaveLength(3)
+    expect(html).toContain('aria-label="Settings for deploys: Single session, @-mentions"')
+    expect(html).toContain('aria-label="Settings for alice: Single session"')
+    expect(html.match(/: Single session[,"]/g)).toHaveLength(3)
     expect(html).not.toContain('Per thread')
   })
 
@@ -378,7 +379,7 @@ describe('IntegrationChannelList session mode', () => {
     const html = render([{ channelId: 'C1', name: 'deploys', kind: 'channel', trigger: 'mention' }], 'slack', {
       assistantMode: false
     })
-    expect(html).toContain('aria-label="Settings for deploys: @-mentions, Per thread"')
+    expect(html).toContain('aria-label="Settings for deploys: Per thread, @-mentions"')
   })
 })
 

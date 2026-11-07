@@ -69,7 +69,7 @@ type RowTrigger = IntegrationChannelRow['trigger'] | 'decision'
 
 type SessionMode = NonNullable<IntegrationChannelRow['sessionMode']>
 
-/** A row's two per-conversation choices behind one button: whether the agent responds here, and which session a message joins. */
+/** A row's per-conversation choices behind one button: its session mode, which messages it answers outside Auto, and Off. */
 function RowSettings({
   channel,
   platform,
@@ -181,57 +181,47 @@ function RowSettings({
         ? 'auto'
         : 'append'
       : null
-  // Under Auto the coordinator decides which messages get a reply, so Off is the one choice left (auto-session-mode.md §3.3).
-  const coordinated = (fixedSession ?? channel.sessionMode) === 'auto' && trigger !== 'decision'
-  const decided: RowTrigger =
+  const sessionValue: SessionMode = fixedSession ?? channel.sessionMode ?? 'createNew'
+  const off = trigger === 'off'
+  const offOption = plainRespond.find((o) => o.value === 'off')
+  const respondOn = plainRespond.filter((o) => o.value !== 'off')
+  // Turning a row back on lands on its own trigger, else @-mentions where the platform has them (On for a DM).
+  const resumeTrigger: RowTrigger =
     trigger === 'mention' || trigger === 'any'
       ? trigger
-      : (plainRespond.find((o) => o.value === 'mention' || o.value === 'any')?.value ?? 'mention')
-  const respond: ChannelSettingsOption<RowTrigger>[] = coordinated
-    ? [
-        {
-          value: decided,
-          label: translate('trigger.coordinator'),
-          hint: translate('trigger.coordinatorHint', { room: here })
-        },
-        ...plainRespond.filter((o) => o.value === 'off')
-      ]
-    : plainRespond
-  // While a decision owns the trigger, the plain choices stay listed but inert, and the footer says how to get them back.
-  const groups: ChannelSettingsGroup[] = [
-    {
-      id: 'trigger',
-      label: translate('settings.respondTo'),
-      options: gateOwnsTrigger ? respond.filter((o) => o.value !== 'decision') : respond,
-      value: trigger,
-      // Under Auto the button reads the mode alone until the row is Off.
-      summarize: (chosen) => chosen.session !== 'auto' || chosen.trigger === 'off',
-      onPick: (value) => onTrigger(value as RowTrigger),
-      ...(gateOwnsTrigger && {
-        locked: { label: translate('settings.respondLocked'), hint: translate('settings.respondLockedHint') }
-      })
-    }
-  ]
-  // One mode is no choice, so a platform that offers only one shows no group for it; a fixed one shows alone.
-  if (fixedSession) {
+      : (respondOn.find((o) => o.value === 'mention' || o.value === 'any')?.value ?? 'mention')
+  const respondGroup = (options: ChannelSettingsOption<RowTrigger>[]): ChannelSettingsGroup => ({
+    id: 'trigger',
+    label: translate('settings.respondTo'),
+    options: gateOwnsTrigger ? options.filter((o) => o.value !== 'decision') : options,
+    value: trigger,
+    onPick: (value) => onTrigger(value as RowTrigger),
+    ...(gateOwnsTrigger && {
+      locked: { label: translate('settings.respondLocked'), hint: translate('settings.respondLockedHint') }
+    })
+  })
+  const groups: ChannelSettingsGroup[] = []
+  if (!fixedSession && sessions.length < 2) {
+    // One mode is no choice, so the row keeps a single Respond to list with Off in it.
+    groups.push(respondGroup(plainRespond))
+  } else {
+    // How the agent works here leads; Auto decides on its own which messages get a reply (auto-session-mode.md §3.3).
     groups.push({
       id: 'session',
       label: translate('settings.sessionMode'),
-      options: fixedSession === 'auto' ? [autoOption] : sessions.filter((o) => o.value === 'append'),
-      value: fixedSession,
-      summarize: (chosen) => chosen.trigger !== 'off',
-      onPick: () => undefined
+      options:
+        fixedSession === 'auto' ? [autoOption] : fixedSession ? sessions.filter((o) => o.value === 'append') : sessions,
+      value: off ? '' : sessionValue,
+      onPick: async (value) => {
+        if (!fixedSession && value !== (channel.sessionMode ?? 'createNew')) await onSessionMode(value as SessionMode)
+        if (off) await onTrigger(resumeTrigger)
+      }
     })
-  } else if (sessions.length > 1) {
-    groups.push({
-      id: 'session',
-      label: translate('settings.sessionMode'),
-      options: sessions,
-      value: channel.sessionMode ?? 'createNew',
-      // An Off row starts no session, so the button leaves the mode unsaid.
-      summarize: (chosen) => chosen.trigger !== 'off',
-      onPick: (value) => onSessionMode(value as SessionMode)
-    })
+    if (!off && (sessionValue !== 'auto' || trigger === 'decision') && (respondOn.length > 1 || gateOwnsTrigger))
+      groups.push(respondGroup(respondOn))
+    // Off stands apart: it is no session mode, and a decision that owns the trigger is left by its own ×.
+    if (offOption && !gateOwnsTrigger)
+      groups.push({ id: 'off', options: [offOption], value: off ? 'off' : '', onPick: () => onTrigger('off') })
   }
   if (!groups.length) return null
   return (
