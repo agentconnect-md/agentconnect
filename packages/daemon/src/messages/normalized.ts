@@ -55,7 +55,7 @@ export interface NormalizedMessage extends Omit<
    *  merged-conversation-view.md §6) — persisted on the transcript row so
    *  cross-daemon copies share an explicit identity. */
   transcriptPostId?: string
-  source: 'user' | 'cron' | 'agent' | 'hook' | 'system'
+  source: 'user' | 'cron' | 'agent' | 'hook' | 'system' | 'doorbell'
   /** CP-owned schedule run identity, retained with an interrupted inbox delivery. */
   cronRun?: { cronId: string; firedAt: string }
   // S1a open reader (integration-plugin-architecture.md §6.2): the wire reads
@@ -96,7 +96,7 @@ export interface NormalizedMessage extends Omit<
   attachments?: Attachment[]
   /** Trusted activation cause when known. In particular, `mention` means the router
    *  matched a raw platform token against this integration's own bound bot identity. */
-  trigger?: 'mention' | 'dm' | 'keyword' | 'auto' | 'cron' | 'hook'
+  trigger?: 'mention' | 'dm' | 'keyword' | 'auto' | 'cron' | 'hook' | 'doorbell'
   /**
    * This delivery is a child session's REPORT into its parent (`sendMessage
    * {sessionId}` — replyToSession's local branch, the relay's lineage-reply

@@ -107,6 +107,14 @@ export const IntegrationSchema = z.object({
 })
 export type Integration = z.infer<typeof IntegrationSchema>
 
+/** Where a cron or a doorbell posts: a place an editor configured, which counts as consent to post there (#2979). */
+const TriggerTargetSchema = z.object({
+  // §6.8 open id; the daemon serves any platform it has a connection for.
+  platform: z.string().min(1),
+  channel: z.string(),
+  integrationId: z.string().optional()
+})
+
 /** A scheduled trigger for THIS agent: every `schedule` tick, prompt the agent
  *  with `trigger`. `target` is optional output routing — when present the daemon
  *  posts an anchor (name + fire time) into that channel and the session replies in its thread;
@@ -121,14 +129,7 @@ export const CronDefSchema = z.object({
   timezone: z.string().min(1).optional(),
   // integrationId picks which of the agent's integrations posts the anchor;
   // absent (legacy defs) ⇒ the agent's first integration.
-  target: z
-    .object({
-      // §6.8 open id; the daemon serves any platform it has a connection for.
-      platform: z.string().min(1),
-      channel: z.string(),
-      integrationId: z.string().optional()
-    })
-    .optional(),
+  target: TriggerTargetSchema.optional(),
   trigger: z.string(),
   // Display name shown on the channel anchor in place of the prompt; absent ⇒ the id (hand-authored) or a generic label.
   name: z.string().min(1).optional(),
@@ -136,6 +137,16 @@ export const CronDefSchema = z.object({
   origin: z.literal('cp').optional()
 })
 export type CronDef = z.infer<typeof CronDefSchema>
+
+/** A place a local process may ring this agent at over the local API (local-doorbell.md); the caller names it by `id`, never by channel. */
+export const DoorbellDefSchema = z.object({
+  // Lands in msgId, sender id and the session's `doorbell:<id>` trigger.
+  id: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/),
+  target: TriggerTargetSchema,
+  // The sender name the agent sees; absent ⇒ "Doorbell".
+  name: z.string().min(1).optional()
+})
+export type DoorbellDef = z.infer<typeof DoorbellDefSchema>
 
 export const AgentSchema = z.object({
   id: z.string(),
@@ -311,6 +322,7 @@ export const AgentSchema = z.object({
   permissions: z
     .object({ policy: z.enum(['ask', 'auto']).default('ask'), autoApprove: z.array(z.string()).default([]) })
     .default({ policy: 'ask', autoApprove: [] }),
-  crons: z.array(CronDefSchema).default([])
+  crons: z.array(CronDefSchema).default([]),
+  doorbells: z.array(DoorbellDefSchema).optional()
 })
 export type Agent = z.infer<typeof AgentSchema>

@@ -72,6 +72,7 @@ the picture it draws.
 ### Code hosts and triggers
 
 - [webhook-triggers-and-github-events.md](designs/webhook-triggers-and-github-events.md) — General webhook triggers: mapping one inbound delivery to one agent turn.
+- [local-doorbell.md](designs/local-doorbell.md) — The daemon's local API socket and its doorbell: a same-host process starts a turn at a target the agent declares.
 - [github-app-git-credentials.md](designs/github-app-git-credentials.md) — GitHub App repository selection and credential-free git on daemons.
 - [codehost-pr-feedback.md](designs/codehost-pr-feedback.md) — Continuing the author session after GitHub, GitLab or Gitea review and CI feedback.
 - [github-pr-review-checks.md](designs/github-pr-review-checks.md) — Formal GitHub PR reviews and durable informational Checks.

@@ -252,6 +252,7 @@ import {
   statePath,
   agentRemovalObligationsDir,
   mcpSocketPath,
+  localIpcPath,
   daemonEntryForShims,
   runtimeStoreDir
 } from './paths.js'
@@ -929,6 +930,8 @@ import { CP_IDENTITY_TOKEN_PATH, readClusterIdentityToken } from './cp/cluster-i
 import { CpCollabRoutes, isSyntheticA2aChannel } from './cp/cp-collab-routes.js'
 import { ClientTransport, systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
 import { z } from 'zod'
+import { LocalApiServer, type LocalApiReply } from './local-api/server.js'
+import { doorbellRoute, type DoorbellRequest } from './local-api/doorbell.js'
 import { OUTSIDE_HUMAN_SCOPE_REMINDER, isNoResponseBody, isNoResponsePrefix } from './session/no-response.js'
 import { promptSuggestionOf } from './session/prompt-suggestion.js'
 import { codeHostReplySnapshot, sessionReplyRoute, sessionWakeFields } from './session/reply-route.js'
@@ -2099,6 +2102,7 @@ export class Daemon {
   // Kubernetes readiness (#1043): the two sinks a pod probe reads, and the one fact only this
   // member knows — that the install-wide sandbox runtime probe came back.
   private readiness?: ReadinessGate
+  private localApi?: LocalApiServer
   // The executor facet (session-executors.md §3): dark unless `sandbox.share`, and all of its logic lives in `execution/executor-facet.ts`.
   private executorFacet?: ExecutorFacet
   // The holder half (§7): this daemon's own sessions placed on other machines of its group. Empty until one is.
@@ -3787,6 +3791,7 @@ export class Daemon {
     await this.registerAgentCrons(agents)
     this.watchAgentConfigs()
     await this.replayDurableWork()
+    await this.startLocalApi(root, cfg)
     this.armTimersAndReadiness(root, startControlPlane)
   }
 
@@ -21023,7 +21028,8 @@ export class Daemon {
       return built.unsupported ? undefined : built.state
     }
     const context = decisionAgentContext(agent)
-    if (msg.source === 'cron') return modelSelectionState('cron', msg.text, context)
+    // A doorbell, like a schedule, is a configured trigger whose prompt is its own text.
+    if (msg.source === 'cron' || msg.source === 'doorbell') return modelSelectionState('cron', msg.text, context)
     if (msg.source === 'agent') {
       const caller = this.agents.get(msg.sender.id)
       return modelSelectionState('agent', msg.text, context, {
@@ -30401,6 +30407,83 @@ export class Daemon {
     return { message: msg, postAttempted }
   }
 
+  /** Open the local API on `<root>/run/local.sock` (local-doorbell.md) once platform connections exist; a refusal is logged, never fatal. */
+  private async startLocalApi(root: string, cfg: Config): Promise<void> {
+    if (!cfg.localApi.enabled) return
+    this.localApi = new LocalApiServer({
+      socketPath: localIpcPath(root, 'local'),
+      routes: [doorbellRoute((req) => this.ringDoorbell(req))],
+      log: this.log
+    })
+    if (!(await this.localApi.start())) this.localApi = undefined
+  }
+
+  /** The doorbell: a local process asks an agent for a turn at a target its config declares, in a thread there or in a new top-level post. */
+  private async ringDoorbell(req: DoorbellRequest): Promise<LocalApiReply> {
+    const agent = this.agents.get(req.agent)
+    if (!agent) return { status: 404, body: { error: `unknown agent "${req.agent}"` } }
+    const doorbell = agent.doorbells?.find((d) => d.id === req.target)
+    if (!doorbell) return { status: 404, body: { error: `agent "${agent.id}" declares no doorbell "${req.target}"` } }
+    if (!this.servesAgent(agent.id)) return { status: 409, body: { error: 'agent is served by another member' } }
+    const { target } = doorbell
+    // Absent integrationId ⇒ the agent's first integration on the target's platform.
+    const integration = agent.integrations.find((i) =>
+      target.integrationId ? i.id === target.integrationId : i.platform === target.platform
+    )
+    if (integration?.platform !== target.platform)
+      return { status: 409, body: { error: `doorbell "${doorbell.id}" names no integration of this agent` } }
+    const traceId = randomUUID()
+    const triggerId = `doorbell:${doorbell.id}`
+    let msg: NormalizedMessage = {
+      msgId: `doorbell:${agent.id}:${doorbell.id}:${traceId}`,
+      traceId,
+      source: 'doorbell',
+      trigger: 'doorbell',
+      platform: integration.platform,
+      channel: target.channel,
+      thread: req.thread ?? `${triggerId}:${traceId}`,
+      // Stamped here, as ingress does, so keySession resolves the same append coordinate a person's message would.
+      transportScope: this.transportScopeForIntegrationIds([integration.id]),
+      sender: { id: triggerId, isBot: true, name: doorbell.name ?? 'Doorbell' },
+      sessionTriggerId: triggerId,
+      text: req.text,
+      mentionedBots: [],
+      isDm: false
+    }
+    if (req.thread) {
+      const conn = this.replyConnFor(agent.id, integration.id) as
+        { getChannelInfo?: (ch: string) => Promise<{ isIm?: boolean } | undefined> } | undefined
+      const info = await conn?.getChannelInfo?.(target.channel).catch(() => undefined)
+      if (info?.isIm) msg = { ...msg, isDm: true }
+      // An append-mode room or a task-held one keys this thread on its configured session, as anchorTrigger does for a new post.
+      await this.keySession(agent.id, integration.id, msg)
+    } else {
+      const { message } = await this.anchorTrigger(
+        agent.id,
+        msg,
+        { channel: target.channel, integrationId: integration.id },
+        req.post ?? req.text,
+        'doorbell'
+      )
+      // anchorTrigger runs on without output when the post fails; a doorbell caller needs the thread instead.
+      if (!message || message.thread === msg.thread)
+        return { status: 503, body: { error: 'could not post into the channel (paused, draining or not connected)' } }
+      msg = message
+    }
+    const admission = new Promise<{ accepted: boolean; reason?: string }>((resolve) => {
+      void this.dispatch(agent.id, msg, integration.id, undefined, undefined, {
+        requireDurable: true,
+        onAdmission: (result) => resolve(result)
+      })
+        .then(() => resolve({ accepted: false, reason: 'not admitted' }))
+        .catch((err) => resolve({ accepted: false, reason: formatErr(err) }))
+    })
+    const result = await admission
+    if (!result.accepted)
+      return { status: 409, body: { error: result.reason ?? 'refused', channel: msg.channel, thread: msg.thread } }
+    return { status: 202, body: { channel: msg.channel, thread: msg.thread } }
+  }
+
   /** A cron's or hook's own post into the target an editor configured: that target counts as consent, so a public channel the bot is not in is joined without asking (#2979). */
   private async postIntoConfiguredTarget<T>(
     conn: unknown,
@@ -31308,6 +31391,11 @@ export class Daemon {
     // from re-arming itself (its callback re-arms only `if (!this.draining)`), so a
     // sweep firing during the awaits below can't leave a dangling timer behind.
     this.draining = true
+    // Started now, awaited at the end: an await here would delay the draining digest below.
+    const localApiClosed = this.localApi?.stop().then(
+      () => undefined,
+      (e: unknown) => e
+    )
     // Stop claiming before anything else: no rendezvous claim, no grant admitted, and the next
     // digest says `draining` with zero headroom — sent now rather than at the next tick, so the CP
     // stops granting to this member within one round trip of the SIGTERM.
@@ -31482,6 +31570,8 @@ export class Daemon {
     // After the hosts (and thus their spawned mcp-bridge subprocesses) are gone,
     // so server.close() isn't left waiting on a live bridge connection.
     await Promise.resolve(this.mcp?.stop()).catch((e) => errors.push(e))
+    const localApiError = await localApiClosed
+    if (localApiError) errors.push(localApiError)
     await this.computerTools.close().catch((e: unknown) => errors.push(e))
     this.gitCredServer?.stop()
     void this.credentialProxy?.proxy.stop()

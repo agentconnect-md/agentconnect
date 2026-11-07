@@ -22,10 +22,8 @@
  */
 import type { SessionConversationKind, SessionVisibility, VisibilitySource } from '../persistence/ports.js'
 
-/** Automation `triggeredBy` prefixes (`cron:<id>` / `hook:<id>`) — already
- *  load-bearing in the session list filters. Dream sessions report neither a
- *  platform sender nor a conversation, so they fall through to the same arm. */
-const AUTOMATION_TRIGGER_PREFIXES = ['cron:', 'hook:', 'dream:'] as const
+/** Automation `triggeredBy` prefixes (`cron:` / `hook:` / `dream:` / a local doorbell's `doorbell:`), none of which names a person. */
+const AUTOMATION_TRIGGER_PREFIXES = ['cron:', 'hook:', 'dream:', 'doorbell:'] as const
 
 /** Everything the classifier needs, with the CP-side lookups already resolved. */
 export interface SessionClassificationInput {
@@ -81,7 +79,7 @@ function imOwnerIdentity(input: SessionClassificationInput): string | null {
  * | …that child's own conversation| `private` (DM) / `org` | null (the trigger is the agent) |
  * | webchat / Playground          | `private`       | `user:<WebchatConversation.userId>` |
  * | Web API launch (§4.4)         | `private`       | `user:<launch principal>`        |
- * | cron / hook / dream           | `org`           | null                             |
+ * | cron/hook/dream/doorbell      | `org`           | null                             |
  * | IM DM, platform names people  | `private`       | `<platform>:<scope>:<uid>`       |
  * | IM DM, platform cannot        | `org`           | `<platform>:<scope>:<uid>`       |
  * | IM group DM / channel / absent| `org`           | `<platform>:<scope>:<uid>`       |

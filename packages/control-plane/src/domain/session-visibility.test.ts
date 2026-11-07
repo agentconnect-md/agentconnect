@@ -80,7 +80,7 @@ describe('classifySession — the §4.2 default rules', () => {
   })
 
   it('classifies automation org with no owner', () => {
-    for (const triggeredBy of ['cron:abc', 'hook:def', 'dream:ghi']) {
+    for (const triggeredBy of ['cron:abc', 'hook:def', 'dream:ghi', 'doorbell:jkl']) {
       expect(classifySession({ platform: 'slack', triggeredBy, transportScope: 'T1' })).toEqual({
         visibility: 'org',
         ownerIdentity: null,

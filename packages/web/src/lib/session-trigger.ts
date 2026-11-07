@@ -15,7 +15,10 @@ import { isSelfSender } from './data'
  * That is the constraint GitLab was missing: it could be typed out of the union and
  * silently inherit the generic webhook rendering.
  */
-export type SessionTriggerKind = 'agent' | 'person' | 'schedule' | HookKind
+export type SessionTriggerKind = 'agent' | 'person' | 'schedule' | 'doorbell' | HookKind
+
+/** A local-socket doorbell (local-doorbell.md) triggers as `doorbell:<targetId>`; it is an automation, not a person. */
+export const DOORBELL_TRIGGER_PREFIX = 'doorbell:'
 
 /** Hook kinds in console display order — every code host first, the generic endpoint last. */
 export const HOOK_TRIGGER_KINDS = [...CODE_HOST_PROVIDERS, GENERIC_HOOK_KIND] as const
@@ -141,6 +144,7 @@ export function sessionTriggerKind(
   const trigger = session.triggeredBy
   if (!trigger) return null
   if (trigger.startsWith('cron:')) return 'schedule'
+  if (trigger.startsWith(DOORBELL_TRIGGER_PREFIX)) return 'doorbell'
   // A hook kind IS its own trigger kind. The generic kind is a mapping, never a
   // fallback: only a hook the CP could not resolve (deleted definition, local row)
   // arrives without one, and an unidentified hook source is generic by definition.
@@ -187,5 +191,6 @@ export function sessionSenderLabel(
   if (!sender) return fallback ?? '—'
   if (isSelfSender(sender, me)) return 'You'
   if (sender.startsWith('hook:')) return fallback ?? HOOK_KIND_LABEL[GENERIC_HOOK_KIND]
+  if (sender.startsWith(DOORBELL_TRIGGER_PREFIX)) return fallback ?? 'Doorbell'
   return agentNames.get(sender) ?? memberNames.get(sender) ?? fallback ?? sender
 }

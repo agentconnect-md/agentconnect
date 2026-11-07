@@ -798,6 +798,13 @@ private runtime root** (§5), never on TCP — `ShimServer.start` binds TCP only
 so the socket listener is part of the `host` launcher — and the only way to it from
 another machine is the executor's authenticated pipe. §15's rejection of dialing a
 shim port directly stands for the same reason.
+The daemon's own host-local listeners follow the same rule. The MCP bridge
+socket, the git-credential socket and the local API socket
+([local-doorbell.md](local-doorbell.md)) are the `mcp`, `gitcred` and `local`
+channels of `localIpcPath`: unix sockets in the owner-only `<root>/run/`. Only
+`mcp` and `gitcred` are tunneled into a VM or pod or re-opened inside an `srt`
+boundary. The local API socket never is, and it does not start on Windows, where
+the path is a named pipe.
 
 **Direction.** The executor facet listens; the holder dials. This is the pool's rule
 — the shim listens, the daemon dials the ready pod — applied to a machine instead of
