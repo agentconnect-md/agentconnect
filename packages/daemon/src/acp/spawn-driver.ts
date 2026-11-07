@@ -36,6 +36,12 @@ export interface SpawnFile {
   content: string
 }
 
+/** What a VM or pod launch holds in place of its credential-helper env once its shim serves a `codehost` listener: the placeholder variables and the proxied gitconfig. */
+export interface CodehostSpawn {
+  env: Record<string, string>
+  files?: SpawnFile[]
+}
+
 export interface SpawnRequest {
   command: string
   args: string[]
@@ -54,6 +60,8 @@ export interface SpawnRequest {
   sandbox?: AcpSandboxLaunch
   /** The host this launch is for; a cluster driver claims the pod that key names (git-workspace-model §11). */
   hostKey?: HostKey
+  /** Applied by a shim driver after its bind, and only when the shim reported a `codehost` listener; any other driver ignores it. */
+  codehost?: CodehostSpawn
 }
 
 /** A launched ACP runtime, reduced to what the protocol layer actually needs. */

@@ -17,6 +17,7 @@ import { SandboxLease } from './sandbox-lease.js'
 import { LaunchRegistry, type LaunchGenerations } from '../remote/launch-registry.js'
 import { ChannelBinder } from '../remote/channel-binder.js'
 import { RemoteShimDriver } from '../remote/shim-driver.js'
+import type { CodehostListener } from '../remote/codehost-spawn.js'
 import { sandboxEndpointProvider, type SandboxLaunch } from './endpoint-provider.js'
 import type { SandboxReadiness } from '../remote/channel-loss-watcher.js'
 import { withStartupPhase } from '../session/startup-progress.js'
@@ -59,6 +60,8 @@ export interface K8sDriverDeps {
    *  agent because `launch` binds on its own — a member's runtime probe runs an ACP runtime through
    *  the same driver and must not thereby receive an agent's workspace and tunnel authority. */
   grantsForAgent?: (agentId: string) => ShimCapability[]
+  /** The `codehost` listener a subject's bound shim reported, which a launch's codehost env needs. */
+  codehostFor?: (subject: string) => CodehostListener | undefined
   clock?: Clock
   log: { info: (m: string) => void; warn: (m: string) => void; debug?: (m: string) => void }
   /** How long to wait for a pod to become Ready and its shim to bind. */
@@ -130,7 +133,8 @@ export class K8sDriver implements SpawnDriver {
       grantsFor: (subject) => this.grantsFor(subject),
       clock: this.clock,
       log: deps.log,
-      metrics: this.metrics
+      metrics: this.metrics,
+      ...(deps.codehostFor ? { codehostFor: deps.codehostFor } : {})
     })
   }
 

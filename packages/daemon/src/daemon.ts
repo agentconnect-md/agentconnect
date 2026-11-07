@@ -210,7 +210,7 @@ import {
 import { ShimWorkspaceFs } from './shim/workspace-fs-channel.js'
 import { ShimWorkspaceFiles } from './shim/workspace-files-channel.js'
 import { ClusterSkillClient } from './shim/skill-client.js'
-import type { TunnelName } from './shim/tunnel.js'
+import type { TunnelListenOptions, TunnelName } from './shim/tunnel.js'
 import { ShimChannelLostError, type ShimRequester } from './shim/channels.js'
 import type { ClusterSkillLedger } from './store/cluster-skill-ledger.js'
 import { legacySandboxSkillLedger } from './skills/sandbox-skill-ledger.js'
@@ -359,7 +359,7 @@ import {
   materializeConfigFiles
 } from './shim/config-file-env.js'
 import { DEFAULT_SHIM_RUNTIME_ROOT, shimPaths } from './shim/sandbox-paths.js'
-import type { SpawnFile } from './acp/spawn-driver.js'
+import type { CodehostSpawn, SpawnFile } from './acp/spawn-driver.js'
 import { writeGhShim } from './cp/gh-shim.js'
 import { glabSessionEnv, writeGlabShim } from './cp/glab-shim.js'
 import { GitCredServer, gitcredShimPath, gitcredSocketPath, writeGitcredShim } from './cp/gitcred-server.js'
@@ -384,7 +384,8 @@ import {
   sessionGitEnv,
   sessionCredentialHosts,
   CODE_HOST_CREDENTIAL_ENV,
-  type ManagedCredentialHost
+  type ManagedCredentialHost,
+  type ManagedCredentialScope
 } from './workspace/git-injection.js'
 import { CredentialProxy, type MintAsk } from './credential-proxy/proxy.js'
 import { loadProxyCa, proxyTrustEnv, upstreamAuthorities, type ProxyCa } from './credential-proxy/ca.js'
@@ -3871,6 +3872,9 @@ export class Daemon {
       generations: { nextSandboxGeneration: (subject) => this.store.nextSandboxGeneration(subject) },
       tunnelSocketPath: (tunnel, agentId) => this.tunnelSocketPath(root, tunnel, agentId),
       tunnelGreeting: (subject, tunnel) => this.gitcredTunnelGreeting(subject, tunnel),
+      // A VM's sessions reach the credential proxy through its shim, which keeps microsandbox's own authority in their bundle at spawn.
+      extraTunnelsFor: (agentId) => this.codehostTunnelFor(agentId),
+      tunnelListenOptions: (agentId, tunnel) => this.tunnelListenOptions(agentId, tunnel),
       log: this.log,
       clock: this.clock
     })
@@ -4050,9 +4054,11 @@ export class Daemon {
           orgForAgent: (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
           servesAgent: (agentId) => this.servesAgent(agentId),
           // Which daemon sockets this agent's pod needs (see tunnelsForAgent); an unknown id, the member's own probe, gets none.
-          tunnelsFor: (agentId) => this.tunnelsForAgent(agentId),
+          // Plus `codehost` for an agent the credential proxy intercepts, which a pod image's shim from before it refuses.
+          tunnelsFor: (agentId) => [...this.tunnelsForAgent(agentId), ...this.codehostTunnelFor(agentId)],
           tunnelSocketPath: (tunnel, agentId) => this.tunnelSocketPath(root, tunnel, agentId),
           tunnelGreeting: (subject, tunnel) => this.gitcredTunnelGreeting(subject, tunnel),
+          tunnelListenOptions: (agentId, tunnel) => this.tunnelListenOptions(agentId, tunnel),
           // A bound sandbox is a reachable memory tree: drain any managed capture that waited for it.
           onSandboxBound: () => this.memoryOutbox?.wake(),
           log: {
@@ -6967,19 +6973,21 @@ export class Daemon {
   private credentialProxyEnv(
     proxy: { proxy: CredentialProxy; ca: ProxyCa },
     agentId: string,
-    route: 'srt' | 'host' | { url: string; trustBundle: string },
+    route: 'srt' | 'host' | 'shim' | { url: string; trustBundle: string },
     env: Record<string, string>,
     runtimeEnv: Record<string, string>,
     glab: boolean
   ): Record<string, string> {
     const placeholder = proxy.proxy.placeholderFor(agentId)
     const remote = typeof route === 'object' ? route : undefined
-    // An executor's session verifies with the bundle its shim wrote there, and that shim merges the session's own authority files, which are on that machine.
+    // An executor's session verifies with the bundle its shim wrote there, and that shim merges the session's own authority files, which are on that machine; a VM's or pod's spawn adds both.
     const files = remote ? sessionAuthorityFiles(env, runtimeEnv) : []
     const out: Record<string, string> = {
-      ...(remote
-        ? proxyTrustEnv({ bundlePath: remote.trustBundle })
-        : this.sessionProxyTrust(proxy.ca, env, runtimeEnv)),
+      ...(route === 'shim'
+        ? {}
+        : remote
+          ? proxyTrustEnv({ bundlePath: remote.trustBundle })
+          : this.sessionProxyTrust(proxy.ca, env, runtimeEnv)),
       ...(remote && files.length > 0
         ? { [SESSION_TRUST_ENV]: JSON.stringify({ bundle: remote.trustBundle, files }) }
         : {}),
@@ -7114,6 +7122,8 @@ export class Daemon {
             managedCredentials ? scope : null
           )
         : undefined
+    // The proxied gitconfig a session host may switch to is mounted beside the helper's, so both launches describe the same VM.
+    const proxiedGit = managedCredentials ? this.microsandboxProxiedGit(agent, scope) : undefined
     const launch = prepareMicrosandboxLaunch({
       runtimeId: runtimeEntry?.aliasOf ?? agent.runtime,
       runtime,
@@ -7136,10 +7146,19 @@ export class Daemon {
       trustedWorkspaceWriteRoots: placement.trustedSessionDir
         ? [placement.trustedSessionDir]
         : this.workspaces.trustedWorkspaceWriteRoots(agent),
-      trustedMounts: microsandboxSupportMounts(this.root, git?.GIT_CONFIG_GLOBAL),
+      trustedMounts: microsandboxSupportMounts(this.root, git?.GIT_CONFIG_GLOBAL, proxiedGit?.GIT_CONFIG_GLOBAL),
       mounts: this.cfg.sandbox.mounts
     })
     return { environment: localMicrosandboxEnvironment(placement.id, launch.microsandbox), launch }
+  }
+
+  /** The gitconfig a VM session reaching the credential proxy reads, written beside the helper's; undefined while the proxy does not intercept the agent. */
+  private microsandboxProxiedGit(
+    agent: LoadedAgent,
+    scope: ManagedCredentialScope
+  ): Record<string, string> | undefined {
+    if (!this.credentialProxyIntercepts(agent.id)) return undefined
+    return sessionGitEnv(agent.id, this.commitIdentityOf(agent), scope, true)
   }
 
   private microsandboxGit(agentId: string, cwd?: string, abort?: AbortSignal) {
@@ -7957,6 +7976,11 @@ export class Daemon {
     return this.agents.has(agentId) ? ['mcp', 'gitcred'] : []
   }
 
+  /** `codehost` for a known agent the credential proxy intercepts, which its VM's or pod's sessions reach the proxy by. */
+  private codehostTunnelFor(agentId: string): TunnelName[] {
+    return this.agents.has(agentId) && this.credentialProxyIntercepts(agentId) ? ['codehost'] : []
+  }
+
   /** A placed session's tunnels: the pod's two, and `codehost` when it runs on its executor's host strategy for an agent the credential proxy intercepts. */
   private tunnelsForPlaced(agentId: string, placed: PlacedSession | undefined): TunnelName[] {
     const helpers = this.tunnelsForAgent(agentId)
@@ -7976,8 +8000,8 @@ export class Daemon {
     })
   }
 
-  /** What a `codehost` listen carries: the agent's code-host routes and the CA its sessions verify them with. */
-  private tunnelListenOptions(agentId: string, tunnel: TunnelName): { routes: string[]; ca: string } | undefined {
+  /** What a `codehost` listen carries: the agent's code-host routes and the CA certificate alone, which the shim merges with its own machine's roots. */
+  private tunnelListenOptions(agentId: string, tunnel: TunnelName): TunnelListenOptions | undefined {
     if (tunnel !== 'codehost' || !this.credentialProxy) return undefined
     const routes = this.credentialProxy.proxy.tunnelRoutes(agentId)
     return routes.length > 0 ? { routes, ca: this.credentialProxy.ca.certPem } : undefined
@@ -8761,6 +8785,18 @@ export class Daemon {
       (this.k8sPlane || remoteRoots) && needsSessionGit
         ? sessionGitConfig(agent.id, sessionGitIdentity, sandboxGitTarget, sessionGitScope, proxied)
         : undefined
+    // A VM or pool pod session switches to the proxy at spawn, only once its own shim reports a codehost listener; until then it keeps the helper path.
+    const guestCodehost =
+      (micro || this.k8sPlane !== undefined) &&
+      !remoteSession &&
+      this.credentialProxy !== undefined &&
+      managedCredentials &&
+      this.credentialProxyIntercepts(agent.id)
+    const guestGit = !guestCodehost
+      ? undefined
+      : this.k8sPlane
+        ? sessionGitConfig(agent.id, sessionGitIdentity, sandboxGitTarget, managedScope, true)
+        : { env: this.microsandboxProxiedGit(agent, managedScope) ?? {} }
     // Held as its own value: the sandbox read grant must come from the path the DAEMON authored,
     // never read back out of the merged child env, where runtimeOverrides.env could name any file.
     const sessionGitInjection = needsSessionGit
@@ -8851,6 +8887,23 @@ export class Daemon {
     // Every session in an srt environment the proxy intercepts trusts its CA, a placeholder or not, or its code-host requests would fail verification.
     else if (srtShim && this.credentialProxy && this.credentialProxyIntercepts(agent.id))
       Object.assign(env, this.sessionProxyTrust(this.credentialProxy.ca, env, runtimeEnv))
+    // The placeholder variables and the proxied gitconfig; the spawn adds the listener and its trust bundle.
+    const codehostSpawn: CodehostSpawn | undefined =
+      guestGit && this.credentialProxy
+        ? {
+            env: {
+              ...this.credentialProxyEnv(this.credentialProxy, agent.id, 'shim', env, runtimeEnv, gitlabCredentials),
+              ...(guestGit.env.GIT_CONFIG_GLOBAL ? { GIT_CONFIG_GLOBAL: guestGit.env.GIT_CONFIG_GLOBAL } : {})
+            },
+            ...('path' in guestGit
+              ? {
+                  files: [
+                    { root: dirname(guestGit.path), relPath: [basename(guestGit.path)], content: guestGit.content }
+                  ]
+                }
+              : {})
+          }
+        : undefined
     const target = opts.modelCredential?.target ?? modelProviderTarget(agent, runtime)
     // A runtime on another filesystem reads its config files there, so they travel with its launch as the gitconfig does (§8): the pod's image root, or the one an executor reported.
     const launchFilesRoot = remoteRoots
@@ -8869,7 +8922,11 @@ export class Daemon {
           ? {
               microsandbox: {
                 mounts: this.cfg.sandbox.mounts,
-                trustedMounts: microsandboxSupportMounts(this.root, sessionGitInjection?.GIT_CONFIG_GLOBAL),
+                trustedMounts: microsandboxSupportMounts(
+                  this.root,
+                  sessionGitInjection?.GIT_CONFIG_GLOBAL,
+                  guestGit?.env.GIT_CONFIG_GLOBAL
+                ),
                 ...microPlacement
               }
             }
@@ -9019,6 +9076,7 @@ export class Daemon {
         ...(launchConfigFiles?.files ?? [])
       ],
       ...(launchConfigFiles ? { clearDirs: [launchConfigFiles.dir] } : {}),
+      ...(codehostSpawn ? { codehost: codehostSpawn } : {}),
       inheritProcessEnv: launch.inheritProcessEnv,
       runtimeId: runtimeEntry?.aliasOf ?? agent.runtime,
       isolateAccountApps: cfg.security.isolateAccountApps,

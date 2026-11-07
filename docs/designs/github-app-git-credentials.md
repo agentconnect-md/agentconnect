@@ -427,9 +427,9 @@ with a revision a daemon already applied without it.
 ## Daemon-Mediated Agent Access
 
 > **Status:** Phase 1 is implemented. Phase 2 is being built (#3382): the
-> proxy and its host and `srt` transports run behind the daemon's
-> `features.credentialProxy`, for GitHub, GitLab and Gitea; the rest is
-> proposed. Phase 2 would replace Trust Model item 3.
+> proxy and its host, `srt`, executor, `microsandbox` and pool pod transports
+> run behind the daemon's `features.credentialProxy`, for GitHub, GitLab and
+> Gitea; the rest is proposed. Phase 2 would replace Trust Model item 3.
 
 Agents write to GitHub with whatever their `gh` wrapper mints: a
 capability-clamped installation token at the repository's tier. The daemon
@@ -554,8 +554,8 @@ proxy differs:
 
 | Strategy                    | Transport                                                              |
 | --------------------------- | ---------------------------------------------------------------------- |
-| `microsandbox`              | the `codehost` tunnel beside `gitcred` and `mcp` over the VM bridge    |
-| pool pod                    | the same tunnel through the shim's tunnel host                         |
+| `microsandbox`              | the `codehost` tunnel, from a loopback listener in the VM's shim       |
+| pool pod                    | the `codehost` tunnel, from a loopback listener in the pod's shim      |
 | `srt` and host              | a loopback or Unix-socket listener under the daemon root               |
 | host, placed on an executor | the `codehost` tunnel, from a loopback listener in the executor's shim |
 
@@ -606,6 +606,17 @@ variables keeps their authorities: it is pointed at a copy of the bundle with
 them merged in, keyed by content, which the daemon writes beside the bundle on
 its own machine and an executor's shim writes beside its listener bundle on
 that machine, skipping a file it cannot read.
+
+A session behind a shim's `codehost` listener (an executor's host session, a
+VM, a pool pod) trusts a bundle that shim writes in its own environment: that
+environment's roots and the CA certificate the `listen` carried. The `listen`
+carries the certificate alone; a whole bundle would not fit a shim frame
+(256 KiB). A VM's or pod's launch switches its trust variables to that bundle
+at spawn and hands the shim the files they named before, which the shim merges
+in as it does a placed session's own. In a VM those include the files
+`microsandbox` names for its provider-key substitution (its own CA and the
+guest bundle it adds that CA to), so the session trusts both the substitution
+and the proxy.
 
 **Token selection.** The proxy takes the repository from the request path: a
 smart-HTTP path for git, and `/repos/{owner}/{repo}/…` for REST, and mints
@@ -688,6 +699,34 @@ the proxy's CA certificate:
   corrupts a TLS record, so the client's retry is the only recovery.
 - A session on an executor whose shim does not serve `codehost`, and an `srt`
   or VM session placed on one, keeps the credential helper path.
+
+A session in a local `microsandbox` VM or a pool pod reaches its own daemon's
+proxy the same way, through the shim inside the VM or pod. The daemon asks
+for `codehost` beside `gitcred` and `mcp` for an agent the proxy intercepts,
+and the switch happens at spawn, after the bind:
+
+- The launch carries the placeholder variables and the proxied gitconfig as
+  an alternative to its helper env. The driver applies them, with the
+  listener's `HTTPS_PROXY` and trust bundle, only when the shim it just bound
+  reported a `codehost` listener and the launch names no `HTTPS_PROXY` of its
+  own; otherwise the runtime starts on the helper path. A pod image whose
+  shim predates `codehost` refuses the `listen`, so its sessions keep the
+  helper path.
+- A VM mounts both gitconfigs, so a session host and the daemon's own Git in
+  that VM describe the same VM.
+- Inside a VM or pod a non-route CONNECT leaves from that guest's own network,
+  so a VM's provider-key substitution still applies to it.
+
+Pool members do not share the proxy's key or CA: each member keeps its own
+under its daemon root. None is needed, because the member that seals a pod
+session's placeholder is the member whose channel carries that pod's
+`codehost` streams. The spawn that receives the placeholder is made over the
+channel that member holds. A pod's channel moves to another member only by a
+new binding at a higher generation; the old member's hosts end with their
+channel, and the new member starts its runtimes with its own placeholder.
+That member's `listen` rewrites the pod's trust bundle with its own CA, and a
+runtime process that outlived the move presents a placeholder the new member
+refuses with 403, so the failure is closed.
 
 A SaaS
 code-host name (GitHub's, `gitlab.com`, `gitea.com`) never resolves to

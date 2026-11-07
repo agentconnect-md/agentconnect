@@ -35,7 +35,7 @@ import { sessionDirIn } from '../workspace/session-layout.js'
 import type { MemoryFs } from '../memory/fs.js'
 import { DEFAULT_SHIM_LISTEN_PORT, DEFAULT_SHIM_WORKSPACE_ROOT } from '../shim/protocol.js'
 import { resolveOrphanReconcilerSettings, stampRefreshMsFor } from './orphan-reconciler.js'
-import type { TunnelName } from '../shim/tunnel.js'
+import type { TunnelListenOptions, TunnelName } from '../shim/tunnel.js'
 import { K8sRuntimeTableSchema, type K8sRuntimeTable } from '../runtimes/k8s-runtimes.js'
 import type { GitRunner } from '../workspace/git-runner.js'
 import { deferredGitRunner } from '../workspace/git-runner.js'
@@ -95,6 +95,8 @@ export interface K8sRuntimePlaneOptions {
   tunnelSocketPath?: (tunnel: TunnelName, agentId: string) => string | undefined
   /** Tags a subject's daemon-socket connection with that subject (gitcred binds a pod window to its pod). */
   tunnelGreeting?: (subject: string, tunnel: TunnelName) => Buffer | undefined
+  /** What a `listen` carries beside the name: `codehost`'s routes and the proxy CA, its certificate alone. */
+  tunnelListenOptions?: (agentId: string, tunnel: TunnelName) => TunnelListenOptions | undefined
   /** Lifetime of an issued session credential. The shim renews at half of it, so a test that has
    *  to cross a renewal shortens it rather than waiting out the default. */
   credentialTtlMs?: number
@@ -280,6 +282,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     ...(options.tunnelsFor === undefined ? {} : { tunnelsFor: options.tunnelsFor }),
     ...(options.tunnelSocketPath === undefined ? {} : { tunnelSocketPath: options.tunnelSocketPath }),
     ...(options.tunnelGreeting === undefined ? {} : { tunnelGreeting: options.tunnelGreeting }),
+    ...(options.tunnelListenOptions === undefined ? {} : { tunnelListenOptions: options.tunnelListenOptions }),
     log: options.log ?? SILENT
   })
 
@@ -380,6 +383,8 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
           }
         : undefined,
     onChannelReady: (subject, session) => tunnels.ensure(subject, session),
+    // A pod whose image's shim predates `codehost` reports no listener, so its sessions keep the helper path.
+    codehostFor: (subject) => tunnels.listeningAt(subject, 'codehost')?.proxy,
     connectChannel: (record, podIp, timeoutMs) =>
       dialer.connect(shimEndpoint(podIp, settings.shimPort), record, timeoutMs),
     revokeChannel: (subject) => dialer.revoke(subject),
