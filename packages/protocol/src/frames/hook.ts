@@ -199,11 +199,56 @@ export const GiteaHookMetadata = z.object({
 })
 export type GiteaHookMetadata = z.infer<typeof GiteaHookMetadata>
 
+/** What one Azure DevOps service hook subscription delivers (azure-devops-integration.md §11.2); an update's kind is not in its body, so the subscription names it. */
+export const AZURE_DEVOPS_DELIVERY_KINDS = [
+  'opened',
+  'revision',
+  'reviewers',
+  'state',
+  'merged',
+  'comment',
+  'push'
+] as const
+export const AzureDevOpsDeliveryKind = z.enum(AZURE_DEVOPS_DELIVERY_KINDS)
+export type AzureDevOpsDeliveryKind = z.infer<typeof AzureDevOpsDeliveryKind>
+
+/** One Azure DevOps hook subject (§11.4): a pull request by id, or one pushed ref; there are no issues or releases. */
+export const AzureDevOpsHookTarget = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('pull'),
+    pullRequestId: z.number().int().positive(),
+    // The source commit an opened delivery's full resource names; the update kinds carry only the id, and the daemon reads the rest.
+    headSha: z.string().min(1).optional(),
+    isDraft: z.boolean().optional(),
+    // A state delivery only: this rule starts a turn if the daemon's read finds the pull request reopened; otherwise it is cleanup alone.
+    admitsReopened: z.boolean().optional()
+  }),
+  z.object({ kind: z.literal('push'), ref: z.string().min(1) })
+])
+export type AzureDevOpsHookTarget = z.infer<typeof AzureDevOpsHookTarget>
+
+/** Credential-verified, body-free Azure DevOps subject metadata, copied from the compiled rule and the checked resource; never inferred from model-visible text. */
+export const AzureDevOpsHookMetadata = z.object({
+  repoId: HookBigIntString, // the surrogate repository id — the match key
+  repoPath: z.string().min(1), // organization/project/repository — display only, never a match key
+  organization: z.string().min(1),
+  projectId: z.guid().toLowerCase(),
+  repositoryId: z.guid().toLowerCase(),
+  // The subscription's kind: the daemon classifies an update on its own read of the pull request, never on the body.
+  deliveryKind: AzureDevOpsDeliveryKind,
+  target: AzureDevOpsHookTarget,
+  // A comment delivery's thread and comment: the reply thread and the acknowledgement target.
+  threadId: HookBigIntString.optional(),
+  commentId: HookBigIntString.optional()
+})
+export type AzureDevOpsHookMetadata = z.infer<typeof AzureDevOpsHookMetadata>
+
 /** The wire shape every code-host member reader accepts: one optional member per provider, named by its id. */
 export interface CodeHostHookMembers {
   github?: GithubHookMetadata | undefined
   gitlab?: GitlabHookMetadata | undefined
   gitea?: GiteaHookMetadata | undefined
+  azureDevOps?: AzureDevOpsHookMetadata | undefined
 }
 
 /** The trusted member each provider's wire member carries; a provider missing here fails to compile below. */
@@ -211,8 +256,7 @@ interface CodeHostHookMetadataByProvider {
   github: GithubHookMetadata
   gitlab: GitlabHookMetadata
   gitea: GiteaHookMetadata
-  // No hooks in v1 (azure-devops-integration.md §11), so no frame carries an Azure DevOps member.
-  'azure-devops': never
+  'azure-devops': AzureDevOpsHookMetadata
 }
 
 /** The trusted member typed for one provider. */
@@ -238,6 +282,11 @@ function codeHostHookMembers(frame: CodeHostHookMembers): CodeHostHookMetadata[]
     const { repoId: externalId, repoPath: path } = frame.gitea
     members.push({ provider: 'gitea', repo: { provider: 'gitea', externalId, path }, metadata: frame.gitea })
   }
+  if (frame.azureDevOps) {
+    const { repoId: externalId, repoPath: path } = frame.azureDevOps
+    const repo = { provider: 'azure-devops', externalId, path } as const
+    members.push({ provider: 'azure-devops', repo, metadata: frame.azureDevOps })
+  }
   return members
 }
 
@@ -259,9 +308,12 @@ export function codeHostHookRevisionOf(
   } else if (member.provider === 'gitlab') {
     if (member.metadata.target.kind !== 'merge_request') return undefined
     ;({ headSha, baseSha } = member.metadata.target)
-  } else {
+  } else if (member.provider === 'gitea') {
     if (member.metadata.target.kind !== 'pull') return undefined
     ;({ headSha, baseSha } = member.metadata.target)
+  } else {
+    if (member.metadata.target.kind !== 'pull') return undefined
+    ;({ headSha } = member.metadata.target)
   }
   return headSha ? { headSha, ...(baseSha ? { baseSha } : {}) } : undefined
 }
@@ -271,7 +323,8 @@ export function pickCodeHostHookMembers(frame: CodeHostHookMembers): CodeHostHoo
   return {
     ...(frame.github ? { github: frame.github } : {}),
     ...(frame.gitlab ? { gitlab: frame.gitlab } : {}),
-    ...(frame.gitea ? { gitea: frame.gitea } : {})
+    ...(frame.gitea ? { gitea: frame.gitea } : {}),
+    ...(frame.azureDevOps ? { azureDevOps: frame.azureDevOps } : {})
   }
 }
 
@@ -435,6 +488,7 @@ export const HookReport = z
     github: GithubHookMetadata.optional(),
     gitlab: GitlabHookMetadata.optional(),
     gitea: GiteaHookMetadata.optional(),
+    azureDevOps: AzureDevOpsHookMetadata.optional(),
     status: z.enum(['success', 'failed']),
     durationMs: z.number().int().nonnegative().optional(), // dispatch → turn end
     sessionId: z.string().optional(), // the session the run prompted, by its outward id (§1.1)
@@ -533,6 +587,7 @@ export const HookStart = z
     github: GithubHookMetadata.optional(),
     gitlab: GitlabHookMetadata.optional(),
     gitea: GiteaHookMetadata.optional(),
+    azureDevOps: AzureDevOpsHookMetadata.optional(),
     reviewCheckout: ReviewCheckout.optional(), // only on a turn that prepared a formal review's workspace
     ...HookConfigSnapshot.shape
   })

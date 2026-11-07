@@ -3455,6 +3455,8 @@ export function buildContainer(
     // verified and a rotated key promoted; a provider this deployment does not manage is ignored.
     onCodeHostDelivery: async (observed) => {
       if (observed.provider !== 'gitea' || !/^[1-9]\d*$/.test(observed.repoExternalId)) return
+      // Gitea keeps no previous key, so a delivery verified under one names nothing this binding holds.
+      if (observed.verifiedWith === 'previous') return
       await giteaProvisioner.observeDelivery({
         repoId: BigInt(observed.repoExternalId),
         at: new Date(observed.receivedAt),

@@ -30,6 +30,7 @@ import {
   type FrameFragment,
   MAX_ASSEMBLED_FRAME_BYTES,
   GITEA_V1_FEATURE,
+  AZURE_DEVOPS_HOOKS_V1_FEATURE,
   DECISION_ROUTING_FORWARD_V1_FEATURE,
   DECISION_ROUTING_V1_FEATURE,
   DECISION_TRIGGER_V1_FEATURE,
@@ -779,6 +780,8 @@ export class RelayCpClient {
           // Holds the objects follow-ups watch and sends their wake-only events (assistant-mode.md §5.14).
           FOLLOW_UP_WATCH_FEATURE,
           GITEA_V1_FEATURE,
+          // Verifies and routes Azure DevOps service hook deliveries, so the CP may send it azure-devops rules (azure-devops-integration.md §11.9).
+          AZURE_DEVOPS_HOOKS_V1_FEATURE,
           // This relay arbitrates `decision` routes as human-only candidates and forwards their decisionId.
           DECISION_TRIGGER_V1_FEATURE,
           // Parses routedConversations, never as Any.

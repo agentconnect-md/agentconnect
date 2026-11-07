@@ -25,6 +25,7 @@ import {
   TurnThreadId
 } from './webchat.js'
 import {
+  AzureDevOpsHookMetadata,
   GiteaHookMetadata,
   GitlabHookMetadata,
   GithubHookMetadata,
@@ -1070,9 +1071,10 @@ export const RdMsgHook = z.object({
   // normalization discriminator. Optional member — an older daemon never sees
   // it (dispatch is gated on the daemon advertising gitlab-com-v1).
   gitlab: GitlabHookMetadata.optional(),
-  // Gitea counterpart (gitea-integration.md §8). Optional member — an older daemon never
-  // sees it (dispatch is gated on the daemon advertising gitea-v1).
+  // Gitea counterpart (gitea-integration.md §8); dispatch is gated on the daemon advertising gitea-v1.
   gitea: GiteaHookMetadata.optional(),
+  // Azure DevOps counterpart (azure-devops-integration.md §11.4); dispatch is gated on the daemon advertising azure-devops-hooks-v1.
+  azureDevOps: AzureDevOpsHookMetadata.optional(),
   context: HookContext.optional(), // trimmed envelope; message extraction/fencing happens on the daemon
   // A generic hook's owner-authored instructions; when present the payload is fenced data. Dispatch is gated on `hook-instructions-v1`.
   instructions: HookInstructions.optional(),

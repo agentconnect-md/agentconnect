@@ -1,15 +1,4 @@
-/**
- * `HookTable` — the relay's in-memory hook routing table
- * (webhook-triggers-and-github-events.md, relay side). Driven entirely by the
- * CP's `rc/hook-assign` / `rc/hook-remove` EVTs: upsert-by-hookId semantics,
- * a `urlToken` index for the generic ingress lookup and one
- * `(provider, externalId)` index for every code-host endpoint (one repository →
- * many hooks). The table is a memory copy — the CP replays every enabled hook
- * after this relay (re)registers, and a CP outage leaves the copy serving
- * (degradation matrix).
- *
- * Rules carry `hmacSecret` — NEVER log a rule object.
- */
+/** The relay's in-memory hook table, a replayed copy of `rc/hook-assign`/`rc/hook-remove` indexed by token, repository and Azure DevOps subscription; rules carry secrets, so NEVER log one. */
 import {
   codeHostHookRuleOf,
   type CodeHostProvider,
@@ -27,6 +16,12 @@ function repoIndexKey(provider: CodeHostProvider, externalId: string): string {
 function ruleRepoIndexKey(rule: RcHookAssign): string | undefined {
   const host = codeHostHookRuleOf(rule)
   return host && repoIndexKey(host.provider, host.repo.externalId)
+}
+
+/** The subscription ids an Azure DevOps rule is looked up by, lowercased as a GUID compares. */
+function azureDevOpsSubscriptionIds(rule: RcHookAssign | undefined): string[] {
+  if (rule?.kind !== 'azure-devops' || !rule.azureDevOps) return []
+  return rule.azureDevOps.subscriptions.map((subscription) => subscription.subscriptionId.toLowerCase())
 }
 
 export class HookTable {
@@ -50,6 +45,8 @@ export class HookTable {
   private byCodeHostRepo = new Map<string, Map<string, RcHookAssign>>()
   /** GitHub installation id → hookId → installation-wide rule. */
   private byGithubInstallation = new Map<string, Map<string, RcHookAssign>>()
+  /** Azure DevOps subscription id → hookId → every rule whose binding records it (azure-devops-integration.md §11.3). */
+  private byAzureDevOpsSubscription = new Map<string, Map<string, RcHookAssign>>()
   private readonly snapshot = new ProjectionSnapshot()
 
   upsert(rule: RcHookAssign): void {
@@ -77,6 +74,17 @@ export class HookTable {
       }
       bucket.set(rule.hookId, rule)
     }
+    for (const subscriptionId of azureDevOpsSubscriptionIds(prior)) {
+      this.dropFromIndex(this.byAzureDevOpsSubscription, subscriptionId, rule.hookId)
+    }
+    for (const subscriptionId of azureDevOpsSubscriptionIds(rule)) {
+      let bucket = this.byAzureDevOpsSubscription.get(subscriptionId)
+      if (!bucket) {
+        bucket = new Map()
+        this.byAzureDevOpsSubscription.set(subscriptionId, bucket)
+      }
+      bucket.set(rule.hookId, rule)
+    }
     this.byHookId.set(rule.hookId, rule)
     if (rule.kind === 'webhook' && rule.webhook) this.byToken.set(rule.webhook.urlToken, rule)
     if (repoKey !== undefined) {
@@ -97,6 +105,9 @@ export class HookTable {
     const repoKey = ruleRepoIndexKey(rule)
     if (repoKey !== undefined) this.dropFromRepoIndex(repoKey, hookId)
     if (rule.githubInstallation) this.dropFromInstallationIndex(rule.githubInstallation.installationId, hookId)
+    for (const subscriptionId of azureDevOpsSubscriptionIds(rule)) {
+      this.dropFromIndex(this.byAzureDevOpsSubscription, subscriptionId, hookId)
+    }
   }
 
   /** `rc/snapshot-begin`: the current rules keep routing while the replay lands. */
@@ -136,6 +147,12 @@ export class HookTable {
     return bucket ? [...bucket.values()] : []
   }
 
+  /** The Azure DevOps lookup: a delivery's subscription id → every rule recording it (undefined id = none). */
+  getByAzureDevOpsSubscription(subscriptionId: string): RcHookAssign[] {
+    const bucket = this.byAzureDevOpsSubscription.get(subscriptionId.toLowerCase())
+    return bucket ? [...bucket.values()] : []
+  }
+
   size(): number {
     return this.byHookId.size
   }
@@ -145,6 +162,13 @@ export class HookTable {
     if (!bucket) return
     bucket.delete(hookId)
     if (bucket.size === 0) this.byGithubInstallation.delete(installationId)
+  }
+
+  private dropFromIndex(index: Map<string, Map<string, RcHookAssign>>, key: string, hookId: string): void {
+    const bucket = index.get(key)
+    if (!bucket) return
+    bucket.delete(hookId)
+    if (bucket.size === 0) index.delete(key)
   }
 
   private dropFromRepoIndex(repoKey: string, hookId: string): void {

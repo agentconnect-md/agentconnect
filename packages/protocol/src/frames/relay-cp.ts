@@ -17,6 +17,8 @@ import { Platform } from './route.js'
 import { CollabRoutesSnapshot } from './collab.js'
 import { FrameFragment } from './fragment.js'
 import {
+  AzureDevOpsDeliveryKind,
+  AzureDevOpsHookMetadata,
   GiteaHookMetadata,
   GithubHookMetadata,
   GitlabHookMetadata,
@@ -27,7 +29,7 @@ import {
 import { WebchatRemoteMcpEntitlement } from './remote-mcp.js'
 import { PullRequestFeedbackSignal } from './session.js'
 import { FollowUpEventKind, FollowUpWatchSubject, RcFollowUpWatch } from './follow-up-watch.js'
-import { ChatCallerRole } from './agent.js'
+import { AzureDevOpsRepoRouting, ChatCallerRole } from './agent.js'
 import { buildEnvelopeRaw, decodeEnvelopeWith, type BuildOpts, type DecodeResultOf } from '../wire.js'
 
 /**
@@ -348,35 +350,41 @@ export type RcGithubCommentAuthzResult = z.infer<typeof RcGithubCommentAuthzResu
 export const RcHookFence = RcGithubHookFence
 export type RcHookFence = RcGithubHookFence
 
-// R→C REQ → rc/codehost-membership-authz/ok — the provider-neutral successor to
-// rc/github-comment-authz for hosts whose actor identity is numeric
-// (gitlab-com-integration.md §12.2, §17.2). Same discipline: metadata-only, the
-// CP re-resolves live membership and never trusts webhook-carried relationship
-// labels; authored content never crosses this wire. Deliberately NOT `.strict()`
-// — the GitHub frame's strictness is exactly why it could not be extended in
-// place. An older CP answers UNKNOWN_FRAME and the relay fails closed.
-export const RcCodeHostMembershipAuthz = z.object({
-  hookId: z.string().uuid(),
-  provider: z.string().min(1), // 'gitlab' today; open string so a new host degrades per-value
-  repoExternalId: z.string().regex(/^[1-9]\d*$/), // numeric project/repository id — the match key
-  actorExternalId: z.string().regex(/^[1-9]\d*$/), // sender/actor numeric user id
-  // The actor's current login beside its id, for a provider whose permission lookup is by name
-  // (Gitea, gitea-integration.md §8). The CP re-resolves the name to a numeric id and refuses a
-  // mismatch, so a renamed or reassigned login can never borrow a permission. Additive optional:
-  // an older relay omits it and a provider that looks up by id never needs it.
-  actorUsername: z.string().min(1).optional(),
-  // Unmentioned thread continuation also requires the subject author's current
-  // membership; an explicit maintainer summon omits this second actor.
-  subjectAuthorExternalId: z
-    .string()
-    .regex(/^[1-9]\d*$/)
-    .optional(),
-  subjectAuthorUsername: z.string().min(1).optional(),
-  // Fence authorization to the exact compiled rule that accepted the delivery.
-  configRevision: HookBigIntString,
-  dispatchRevision: HookBigIntString,
-  siblingFences: z.array(RcHookFence).min(1).optional()
-})
+// R→C REQ → rc/codehost-membership-authz/ok — metadata-only live membership (gitlab-com-integration.md §12.2), not `.strict()` so it can grow; an older CP fails closed.
+export const RcCodeHostMembershipAuthz = z
+  .object({
+    hookId: z.string().uuid(),
+    provider: z.string().min(1), // 'gitlab' today; open string so a new host degrades per-value
+    repoExternalId: z.string().regex(/^[1-9]\d*$/), // numeric project/repository id — the match key
+    // Sender/actor numeric user id; an Azure DevOps actor is named by `actorIdentityId` instead, exactly one of the two.
+    actorExternalId: z
+      .string()
+      .regex(/^[1-9]\d*$/)
+      .optional(),
+    // The actor's Azure DevOps identity id (azure-devops-integration.md §11.4); an older CP refuses the frame and the relay fails closed.
+    actorIdentityId: z.guid().toLowerCase().optional(),
+    // The actor's login for a provider that looks permission up by name (Gitea §8); the CP re-resolves it against the id.
+    actorUsername: z.string().min(1).optional(),
+    // An unmentioned thread continuation also gates the subject author; an explicit summon omits it.
+    subjectAuthorExternalId: z
+      .string()
+      .regex(/^[1-9]\d*$/)
+      .optional(),
+    subjectAuthorUsername: z.string().min(1).optional(),
+    // Fence authorization to the exact compiled rule that accepted the delivery.
+    configRevision: HookBigIntString,
+    dispatchRevision: HookBigIntString,
+    siblingFences: z.array(RcHookFence).min(1).optional()
+  })
+  .superRefine((request, ctx) => {
+    if ((request.actorExternalId === undefined) === (request.actorIdentityId === undefined)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['actorExternalId'],
+        message: 'exactly one of actorExternalId and actorIdentityId is required'
+      })
+    }
+  })
 export type RcCodeHostMembershipAuthz = z.infer<typeof RcCodeHostMembershipAuthz>
 
 // C→R REP (corr = rc/codehost-membership-authz id). One bit, same as GitHub.
@@ -545,6 +553,55 @@ export const RcGiteaHookRule = z.object({
 })
 export type RcGiteaHookRule = z.infer<typeof RcGiteaHookRule>
 
+/** The fixed Basic user name every Azure DevOps subscription is created with (azure-devops-integration.md §11.2); the password is the signing key. */
+export const AZURE_DEVOPS_HOOK_BASIC_USER = 'agentconnect'
+
+/** One recorded service hook subscription of the binding and the delivery kind it was created for. */
+export const RcAzureDevOpsHookSubscription = z.object({
+  subscriptionId: z.guid().toLowerCase(),
+  kind: AzureDevOpsDeliveryKind
+})
+export type RcAzureDevOpsHookSubscription = z.infer<typeof RcAzureDevOpsHookSubscription>
+
+/** The azureDevOps member of a compiled rule (azure-devops-integration.md §11.3); it carries the signing keys inline, so the rule is NEVER logged. */
+export const RcAzureDevOpsHookRule = z
+  .object({
+    repoId: z.string().regex(/^[1-9]\d*$/), // the surrogate repository id
+    repoPath: z.string().min(1), // organization/project/repository — display/logs only; never matched on
+    sessionKeyPrefix: z.string().min(1), // rename-stable per-thread namespace: azure-devops:<repoId>
+    ...AzureDevOpsRepoRouting.shape,
+    // The organization's collection id, which every delivery names in `resourceContainers.collection`.
+    instanceId: z.guid().toLowerCase(),
+    // Every subscription the binding records: the relay's lookup key, each with the one kind it delivers.
+    subscriptions: z.array(RcAzureDevOpsHookSubscription).min(1).max(16),
+    events: z.array(z.string()), // 'merge_request:*' / 'push:*' …; no issues, releases or labels
+    commentFamilies: z.array(z.enum(['pull_request'])).optional(),
+    mentionOnly: z.boolean(),
+    agentName: z.string().optional(),
+    // The connection's identity: the §11.4 veto set and the broadcast mention.
+    identityId: z.guid().toLowerCase(),
+    // The Basic password each subscription sends; mid-rotation the next one verifies too.
+    signingKey: z.string().min(1),
+    nextSigningKey: z.string().min(1).optional(),
+    // The key a promotion replaced, still accepted until its expiry so a queued retry is not refused.
+    previousSigningKey: z.string().min(1).optional(),
+    previousSigningKeyExpiresAt: z.string().datetime().optional()
+  })
+  .superRefine((rule, ctx) => {
+    if ((rule.previousSigningKey === undefined) !== (rule.previousSigningKeyExpiresAt === undefined)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['previousSigningKeyExpiresAt'],
+        message: 'previousSigningKey and previousSigningKeyExpiresAt go together'
+      })
+    }
+    const ids = rule.subscriptions.map((subscription) => subscription.subscriptionId)
+    if (new Set(ids).size !== ids.length) {
+      ctx.addIssue({ code: 'custom', path: ['subscriptions'], message: 'a subscription is recorded once' })
+    }
+  })
+export type RcAzureDevOpsHookRule = z.infer<typeof RcAzureDevOpsHookRule>
+
 /** A code-host rule's routing scope: one routing per organization, repository and subject family, hosted by one watching agent. */
 export const RcHookRouting = z.object({
   routingId: z.string().uuid(),
@@ -591,7 +648,9 @@ export const RcHookAssign = z
     // kind=gitlab (gitlab-com-integration.md §11.3) — required for that kind
     gitlab: RcGitlabHookRule.optional(),
     // kind=gitea (gitea-integration.md §7) — required for that kind
-    gitea: RcGiteaHookRule.optional()
+    gitea: RcGiteaHookRule.optional(),
+    // kind=azure-devops (azure-devops-integration.md §11.3) — required for that kind, only to relays advertising azure-devops-hooks-v1
+    azureDevOps: RcAzureDevOpsHookRule.optional()
   })
   .superRefine((rule, ctx) => {
     if (rule.github !== undefined && rule.githubInstallation !== undefined) {
@@ -616,8 +675,7 @@ interface CodeHostHookRuleByProvider {
   github: RcGithubHookRule
   gitlab: RcGitlabHookRule
   gitea: RcGiteaHookRule
-  // No hooks in v1 (azure-devops-integration.md §11), so no rule carries an Azure DevOps member.
-  'azure-devops': never
+  'azure-devops': RcAzureDevOpsHookRule
 }
 
 /** Decode-time view of a compiled code-host rule (gitea-integration.md §13): `kind` names the provider whose member carries the rule, plus the rename-stable repo key. */
@@ -627,7 +685,7 @@ export type CodeHostHookRule<P extends CodeHostProvider = CodeHostProvider> = {
 
 /** The code-host rule a compiled rule carries; undefined for the generic kind or a kind missing its member. */
 export function codeHostHookRuleOf(
-  rule: Pick<RcHookAssign, 'kind' | 'github' | 'gitlab' | 'gitea'>
+  rule: Pick<RcHookAssign, 'kind' | 'github' | 'gitlab' | 'gitea' | 'azureDevOps'>
 ): CodeHostHookRule | undefined {
   if (rule.kind === 'github' && rule.github) {
     const { repoId: externalId, repoFullName: path } = rule.github
@@ -640,6 +698,11 @@ export function codeHostHookRuleOf(
   if (rule.kind === 'gitea' && rule.gitea) {
     const { repoId: externalId, repoPath: path } = rule.gitea
     return { provider: 'gitea', repo: { provider: 'gitea', externalId, path }, rule: rule.gitea }
+  }
+  if (rule.kind === 'azure-devops' && rule.azureDevOps) {
+    const { repoId: externalId, repoPath: path } = rule.azureDevOps
+    const repo = { provider: 'azure-devops', externalId, path } as const
+    return { provider: 'azure-devops', repo, rule: rule.azureDevOps }
   }
   return undefined
 }
@@ -702,6 +765,7 @@ export const RcRunReport = z
     github: GithubHookMetadata.optional(),
     gitlab: GitlabHookMetadata.optional(),
     gitea: GiteaHookMetadata.optional(),
+    azureDevOps: AzureDevOpsHookMetadata.optional(),
     status: z.enum(['accepted', 'failed']),
     reason: z.string().optional() // delivery-stage reason; use isRetryableHookDeliveryReason before redelivery
   })
@@ -735,19 +799,14 @@ export const RcGithubInstallation = z.object({
 })
 export type RcGithubInstallation = z.infer<typeof RcGithubInstallation>
 
-// R→C EVT (fire-and-forget) — one signature-verified code-host delivery observed for a
-// repository the relay holds a rule for, matched or not (gitea-integration.md §6, §7). The CP
-// turns a managed webhook's test delivery into a verified binding and promotes a rotated
-// signing key once a delivery verifies under it. Body-free: provider, repository and delivery
-// identity only. A dropped observation leaves the binding `webhook_unverified`, which the next
-// delivery clears — never an error path.
+// R→C EVT — one verified, body-free code-host delivery, matched or not (gitea-integration.md §6, §7): it verifies the binding and promotes a rotated key; a drop is never an error.
 export const RcCodeHostDelivery = z.object({
   provider: CodeHostProviderString,
   repoExternalId: CodeHostExternalId,
   deliveryKey: z.string().min(1),
   receivedAt: z.string().datetime(),
-  // Which of the rule's signing keys verified the body; absent means the current one.
-  verifiedWith: z.enum(['current', 'next']).optional()
+  // Which of the rule's signing keys verified the body; absent means the current one. `previous` is Azure DevOps's retry window.
+  verifiedWith: z.enum(['current', 'next', 'previous']).optional()
 })
 export type RcCodeHostDelivery = z.infer<typeof RcCodeHostDelivery>
 
