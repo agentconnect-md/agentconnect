@@ -362,7 +362,7 @@ import {
 } from './shim/config-file-env.js'
 import { DEFAULT_SHIM_RUNTIME_ROOT, shimPaths } from './shim/sandbox-paths.js'
 import type { CodehostSpawn, ProviderSpawn, SpawnFile } from './acp/spawn-driver.js'
-import { writeGhShim } from './cp/gh-shim.js'
+import { writeGhShim, writeSecretsShim } from './cp/gh-shim.js'
 import { glabSessionEnv, writeGlabShim } from './cp/glab-shim.js'
 import { GitCredServer, gitcredShimPath, gitcredSocketPath, writeGitcredShim } from './cp/gitcred-server.js'
 import { AutoMergeViolationError, AutoMergeWatcher } from './github/auto-merge/watcher.js'
@@ -1722,10 +1722,11 @@ export class Daemon {
    *  because a watcher that cannot mint a gh token has nothing to poll with. Never persisted: this
    *  process going away is what unchecks the box. */
   private autoMergeWatcher?: AutoMergeWatcher
-  /** run/bin with the gh wrapper (multi-repo #457) — prepended to github-app
-   *  agents' PATH at host spawn; unset ⇒ shim write failed, spawn without it. */
+  /** run/bin with the gh wrapper (multi-repo #457), prepended to an unproxied github-app agent's PATH at host spawn; unset ⇒ the write failed. */
   private ghBinDir?: string
   private glabBinDir?: string
+  /** The `agentconnect-secrets` wrapper's own dir, on every local runtime's PATH that holds the credential channel. */
+  private secretsBinDir?: string
   /** Spawn-time config warnings per agent (config-file secrets: pointer-var
    *  conflicts, write failures) — flushed into the next dispatched session. */
   private pendingSpawnNotices = new Map<string, string[]>()
@@ -4267,7 +4268,9 @@ export class Daemon {
       credentialedOf: (agentId: string) =>
         credentialProviderOf(this.agents.get(agentId)?.workspace.gitCredential) !== undefined,
       // Read from the CURRENT agent on every call, so a live secret saved a moment ago is served (capability-requests.md §4.9.2).
-      liveSecretsOf: (agentId: string) => this.agents.get(agentId)?.liveSecrets ?? []
+      liveSecretsOf: (agentId: string) => this.agents.get(agentId)?.liveSecrets ?? [],
+      // A runtime whose code hosts the proxy carries holds their placeholder, never a token; its capability keeps the secrets.
+      runtimeMayMint: (agentId: string) => !this.credentialProxyCodeHosts(agentId)
     })
     const daemonCredentialTarget = daemonGitCredentialTarget({
       shimPath: writeGitcredShim(root, daemonEntryForShims(root)),
@@ -4319,6 +4322,11 @@ export class Daemon {
       this.ghBinDir = writeGhShim(root, daemonEntryForShims(root))
     } catch (err) {
       this.log.warn(`gitcred: gh wrapper shim write failed — spawning agents without it (${formatErr(err)})`)
+    }
+    try {
+      this.secretsBinDir = writeSecretsShim(root, daemonEntryForShims(root))
+    } catch (err) {
+      this.log.warn(`gitcred: live secrets wrapper write failed — spawning agents without it (${formatErr(err)})`)
     }
     try {
       // glab wrapper (§13.3) — read-only tokens for gitlab workspaces; same
@@ -6856,6 +6864,7 @@ export class Daemon {
     // Carved with or without credentials: the file carries the hook policy, and a hidden global
     // config is read by git as no config at all — a silent loss of the pins, not an error.
     if (sessionGitConfigPath) paths.push(sessionGitConfigPath)
+    if (this.secretsBinDir) paths.push(this.secretsBinDir)
     if (githubAppCredentials) {
       paths.push(gitcredShimPath(this.root))
       if (this.ghBinDir) paths.push(this.ghBinDir)
@@ -7109,14 +7118,14 @@ export class Daemon {
     return { ...proxyTrustEnv({ bundlePath }), [CODEX_CA_ENV]: bundlePath }
   }
 
-  /** What a proxied session's environment carries: the placeholder for gh and git, and its route to the proxy. */
+  /** What a proxied session's environment carries: the placeholder for git, gh and glab, and its route to the proxy. */
   private credentialProxyEnv(
     proxy: { proxy: CredentialProxy; ca: ProxyCa },
     agentId: string,
     route: 'srt' | 'host' | 'shim' | { url?: string; trustBundle: string },
     env: Record<string, string>,
     runtimeEnv: Record<string, string>,
-    glab: boolean
+    gitlab: boolean
   ): Record<string, string> {
     const placeholder = proxy.proxy.placeholderFor(agentId)
     const out: Record<string, string> = {
@@ -7126,8 +7135,9 @@ export class Daemon {
     // A GH_TOKEN or GITLAB_TOKEN the agent was configured with is its own, and wins as it always has.
     const github = this.credentialProxyHosts(agentId).some((host) => host.provider === 'github')
     if (github && env.GH_TOKEN === undefined && runtimeEnv.GH_TOKEN === undefined) out.GH_TOKEN = placeholder
-    // The glab wrapper passes a set GITLAB_TOKEN straight to glab, which the proxy then exchanges.
-    if (glab && env.GITLAB_TOKEN === undefined && runtimeEnv.GITLAB_TOKEN === undefined) out.GITLAB_TOKEN = placeholder
+    // A GitLab session's glab presents the placeholder itself, and a shim's glab wrapper passes a set GITLAB_TOKEN straight through.
+    if (gitlab && env.GITLAB_TOKEN === undefined && runtimeEnv.GITLAB_TOKEN === undefined)
+      out.GITLAB_TOKEN = placeholder
     return out
   }
 
@@ -7198,7 +7208,7 @@ export class Daemon {
     // This daemon's own helpers, which Git run through the shim needs before any runtime is launched: code, never state.
     try {
       const executables = ['gh', 'glab'].flatMap((name) => resolveCommandPath(name, process.env) ?? [])
-      const helpers = [gitcredShimPath(this.root), this.ghBinDir, this.glabBinDir].filter(
+      const helpers = [gitcredShimPath(this.root), this.ghBinDir, this.glabBinDir, this.secretsBinDir].filter(
         (path): path is string => path !== undefined && existsSync(path)
       )
       for (const path of trustedRuntimeReadRoots({
@@ -9032,9 +9042,6 @@ export class Daemon {
       // authorized repositories needs the capability for its git and gh exactly like a clone does.
       ...(sessionGitInjection ?? {})
     }
-    // A proxied session's command-scope helper is read after any pairs the runtime or agent env already carries.
-    if (sessionGitInjection?.GIT_CONFIG_COUNT !== undefined)
-      Object.assign(env, mergeGitConfigEnv({ ...runtimeEnv, ...baseEnv }, sessionGitInjection))
     // Config-file secrets are materialized by assembleRuntimeLaunch below; the pre-strip merged env
     // is snapshotted so the idle sweep can delete the files and rematerializeConfigFiles() can
     // re-write them before a later turn.
@@ -9065,28 +9072,24 @@ export class Daemon {
     // Every shim driver routes its launch by AC_AGENT_ID — a pod's, a VM's, and an executor environment's.
     if (this.k8sPlane || micro || remoteSession || srtShim) env.AC_AGENT_ID = agent.id
     const shimDirs = new Set<string>()
-    // The gh wrapper is a DAEMON path: prepending it to a pod launch would name a dir the pod
-    // never had, and the pod image ships no wrapper (gh there degrades to unauthenticated).
-    if (githubAppCredentials && this.ghBinDir && !this.k8sPlane && !micro && !remoteSession) {
-      // gh wrapper (multi-repo #457): PATH prepend + the agent identity the
-      // wrapper hands to the hidden token helper. sessionGitEnv supplies the
-      // matching runtime-only capability; a user PATH override must not
-      // shadow the wrapper.
+    // These wrappers are DAEMON paths; a pod's, VM's or placed session's shim puts its own wrapper dir first on PATH instead.
+    const daemonWrappers = !this.k8sPlane && !micro && !remoteSession
+    // A proxied session's gh and glab already hold the placeholder, and its capability mints no token for a wrapper to fetch.
+    if (githubAppCredentials && this.ghBinDir && daemonWrappers && !proxied) {
+      // gh wrapper (multi-repo #457): the agent identity it hands the token helper, ahead of any user PATH.
       env.AC_AGENT_ID = agent.id
       shimDirs.add(this.ghBinDir)
-    } else if (liveSecretsChannel && this.ghBinDir && !this.k8sPlane && !micro && !remoteSession) {
-      // `agentconnect-secrets` lives beside the gh wrapper; with no AC_AGENT_ID set here, that wrapper runs the real gh untouched.
-      shimDirs.add(this.ghBinDir)
     }
-    if (gitlabCredentials && this.glabBinDir && !this.k8sPlane && !micro && !remoteSession) {
+    // `agentconnect-secrets` (capability-requests.md §4.9.2), for every runtime holding the credential channel.
+    if (liveSecretsChannel && this.secretsBinDir && daemonWrappers) shimDirs.add(this.secretsBinDir)
+    if (gitlabCredentials && this.glabBinDir && daemonWrappers && !proxied) {
       // glab wrapper (§13.3): read-only project tokens for the managed workspace.
       env.AC_AGENT_ID = agent.id
-      // §24.4: point the real CLI at the deployment's instance, prefix and port included.
-      Object.assign(env, glabSessionEnv(managedScope.host.baseUrl))
       shimDirs.add(this.glabBinDir)
     }
-    // A placed session's glab wrapper is its executor's (written beside its shim); the instance it talks to still comes from here.
-    if (gitlabCredentials && remoteSession) Object.assign(env, glabSessionEnv(managedScope.host.baseUrl))
+    // §24.4: point the real CLI at the deployment's instance, prefix and port included; a placed session's wrapper is its executor's.
+    if (gitlabCredentials && (daemonWrappers || remoteSession))
+      Object.assign(env, glabSessionEnv(managedScope.host.baseUrl))
     if (shimDirs.size > 0) {
       env.PATH = `${[...shimDirs].join(':')}:${env.PATH ?? runtimeEnv.PATH ?? process.env.PATH ?? ''}`
     }
@@ -9107,8 +9110,7 @@ export class Daemon {
           remoteCodehost ?? (srtShim === undefined ? 'host' : 'srt'),
           env,
           runtimeEnv,
-          // A placed session's glab wrapper is its executor's, which passes a set GITLAB_TOKEN through as this one does.
-          gitlabCredentials && (remoteSession !== undefined || shimDirs.has(this.glabBinDir ?? ''))
+          gitlabCredentials
         )
       )
     // A host session holding only a provider placeholder reaches the proxy the same way.
@@ -9144,8 +9146,7 @@ export class Daemon {
         ? {
             env: {
               ...this.credentialProxyEnv(this.credentialProxy, agent.id, 'shim', env, runtimeEnv, gitlabCredentials),
-              ...(guestGit.env.GIT_CONFIG_GLOBAL ? { GIT_CONFIG_GLOBAL: guestGit.env.GIT_CONFIG_GLOBAL } : {}),
-              ...mergeGitConfigEnv({}, guestGit.env)
+              ...(guestGit.env.GIT_CONFIG_GLOBAL ? { GIT_CONFIG_GLOBAL: guestGit.env.GIT_CONFIG_GLOBAL } : {})
             },
             ...('path' in guestGit
               ? {
