@@ -11,7 +11,7 @@ import {
   proxyOnlyRefusal,
   type GitCredentialCacheDeps
 } from '../../src/cp/git-credential.js'
-import { GitCredServer, gitcredSocketPath, RUNTIME_NO_MINT_ERROR } from '../../src/cp/gitcred-server.js'
+import { AgentChannelServer, agentChannelSocketPath, RUNTIME_NO_MINT_ERROR } from '../../src/cp/agent-channel-server.js'
 
 const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const IDENTITY = '00000000-0000-4000-8000-0000000000a1'
@@ -20,7 +20,7 @@ const SECOND = 'example-org/Example Project/Second Repo'
 
 describe('the helper channel', () => {
   let dir: string | undefined
-  let server: GitCredServer | undefined
+  let server: AgentChannelServer | undefined
   afterEach(() => {
     server?.stop()
     if (dir) rmSync(dir, { recursive: true, force: true })
@@ -28,7 +28,7 @@ describe('the helper channel', () => {
 
   async function boot() {
     dir = mkdtempSync(join(tmpdir(), 'gitcred-azure-'))
-    const sockPath = gitcredSocketPath(dir)
+    const sockPath = agentChannelSocketPath(dir)
     const gets: { agentId: string; opts: Record<string, unknown> }[] = []
     const fakeCache = {
       get: async (agentId: string, _reason: string, opts: Record<string, unknown> = {}) => {
@@ -37,7 +37,7 @@ describe('the helper channel', () => {
       },
       invalidate: () => {}
     }
-    server = new GitCredServer(fakeCache as unknown as GitCredentialCache, sockPath, {
+    server = new AgentChannelServer(fakeCache as unknown as GitCredentialCache, sockPath, {
       log: { info: () => {}, warn: () => {} },
       providerOf: () => 'azure-devops',
       workspaceRepoOf: () => WORKSPACE,

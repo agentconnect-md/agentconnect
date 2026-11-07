@@ -450,7 +450,7 @@ predates the field is refused rather than served. No purpose-gated lease
 exists for Azure DevOps in the first version.
 
 The daemon's credential module carries the same `proxyOnly` capability. Its
-gitcred server refuses such a credential to every capability but the daemon's
+agent channel refuses such a credential to every capability but the daemon's
 own, by the provider the agent's spec resolves the ask to, and before the
 runtime capability's general refusal, so the rule holds even where a runtime
 capability may otherwise mint. Daemon-run Git names `consumer: 'daemon'` and
@@ -463,14 +463,14 @@ The real token is therefore presented only by the proxy and by the daemon's own
 Git on the daemon's machine, outside every sandbox. Where the daemon runs Git
 inside a sandbox, that Git must not hold the token either:
 
-- The gitcred server serves a proxy-only credential to no connection a shim's
+- The agent channel serves a proxy-only credential to no connection a shim's
   tunnel carries, whatever capability it presents, so daemon Git inside a
   confined `srt` session, a VM, a pool pod or an executor's environment is
   never handed the token.
 - In a confined `srt` session the daemon's Git runs in the session's shim and
   reaches Azure DevOps over `srt`'s route to the proxy: its helper for the
   organization's host answers the session's placeholder instead of asking the
-  gitcred server, and the proxy presents the token. The daemon's capability
+  agent channel, and the proxy presents the token. The daemon's capability
   stays out of that Git's environment unless another code host's real helper
   in the same command needs it.
 - In a VM, in a pool pod and on another daemon's executor, the daemon's Git has

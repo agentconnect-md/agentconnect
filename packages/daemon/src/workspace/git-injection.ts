@@ -720,7 +720,7 @@ export function proxiedDaemonGitEnv(
   const realHelper = pairs.some(
     ([key, value]) => /^credential\.(?:.*\.)?helper$/i.test(key) && value !== '' && value !== PLACEHOLDER_HELPER_COMMAND
   )
-  if (!realHelper) delete proxied[GITCRED_CAPABILITY_ENV]
+  if (!realHelper) delete proxied[AGENT_CHANNEL_CAPABILITY_ENV]
   return proxied
 }
 

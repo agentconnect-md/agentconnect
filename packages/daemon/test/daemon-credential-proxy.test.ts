@@ -723,11 +723,11 @@ describe('an Azure DevOps agent behind the credential proxy', () => {
       }
       const scope = d.workspaces.managedScopeOf(agent)
       const env = cloneGitEnv(AZURE_AGENT, undefined, scope, clone)
-      expect(env[GITCRED_CAPABILITY_ENV]).toBeDefined()
+      expect(env[AGENT_CHANNEL_CAPABILITY_ENV]).toBeDefined()
       await d.workspaces.runnerFor(AZURE_AGENT, clone).withEnv(env).raw(['ls-remote', AZURE_REPO])
       const sent = seen.at(-1)!.env!
       expect(sent.AC_CODEHOST_CREDENTIAL).toBe(d.credentialProxy.proxy.placeholderFor(AZURE_AGENT))
-      expect(sent).not.toHaveProperty(GITCRED_CAPABILITY_ENV)
+      expect(sent).not.toHaveProperty(AGENT_CHANNEL_CAPABILITY_ENV)
       const helpers = Object.entries(sent)
         .filter(([name, value]) => name.startsWith('GIT_CONFIG_KEY_') && value.endsWith('dev.azure.com.helper'))
         .map(([name]) => sent[name.replace('KEY', 'VALUE')])
@@ -791,11 +791,11 @@ describe('an Azure DevOps agent behind the credential proxy', () => {
         { provider: 'azure-devops', externalRepoId: '42', consumer: 'proxy' }
       ])
       // The runtime's capability, as the session holds it, is refused an Azure DevOps credential outright.
-      const presented = { agentId: own[GITCRED_AGENT_ENV], capability: own[GITCRED_CAPABILITY_ENV] }
+      const presented = { agentId: own[AGENT_CHANNEL_AGENT_ENV], capability: own[AGENT_CHANNEL_CAPABILITY_ENV] }
       const refusal = { ok: false, error: proxyOnlyRefusal('azure-devops'), denied: 'agent' }
-      expect(await gitcredIpc(gitcredSocketPath(root), { op: 'get', ...presented })).toEqual(refusal)
+      expect(await agentChannelIpc(agentChannelSocketPath(root), { op: 'get', ...presented })).toEqual(refusal)
       expect(
-        await gitcredIpc(gitcredSocketPath(root), {
+        await agentChannelIpc(agentChannelSocketPath(root), {
           op: 'get',
           ...presented,
           provider: 'azure-devops',

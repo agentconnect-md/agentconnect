@@ -1283,14 +1283,16 @@ describe('an Azure DevOps repository beside the workspace', () => {
   it('keeps the daemon’s capability out of the boundary where no real helper is left, and where one is', () => {
     const bases = ['https://dev.azure.com']
     const azure = cloneGitEnv('agent-azure', undefined, managedCredentialScope('azure-devops'))
-    expect(azure[GITCRED_CAPABILITY_ENV]).toBe('daemon-cap-agent-azure')
-    expect(proxiedDaemonGitEnv(azure, bases, 'acph1_example.tag')).not.toHaveProperty(GITCRED_CAPABILITY_ENV)
+    expect(azure[AGENT_CHANNEL_CAPABILITY_ENV]).toBe('daemon-cap-agent-azure')
+    expect(proxiedDaemonGitEnv(azure, bases, 'acph1_example.tag')).not.toHaveProperty(AGENT_CHANNEL_CAPABILITY_ENV)
     // GitHub's helper in the same session still presents it, alone or beside Azure DevOps's.
     const github = cloneGitEnv('agent-azure')
-    expect(proxiedDaemonGitEnv(github, bases, 'acph1_example.tag')[GITCRED_CAPABILITY_ENV]).toBe(
+    expect(proxiedDaemonGitEnv(github, bases, 'acph1_example.tag')[AGENT_CHANNEL_CAPABILITY_ENV]).toBe(
       'daemon-cap-agent-azure'
     )
     const both = { ...azure, ...mergeGitConfigEnv(azure, github) }
-    expect(proxiedDaemonGitEnv(both, bases, 'acph1_example.tag')[GITCRED_CAPABILITY_ENV]).toBe('daemon-cap-agent-azure')
+    expect(proxiedDaemonGitEnv(both, bases, 'acph1_example.tag')[AGENT_CHANNEL_CAPABILITY_ENV]).toBe(
+      'daemon-cap-agent-azure'
+    )
   })
 })
