@@ -360,13 +360,24 @@ path:
   the project by GUID.
 - **REST naming no repository**: only `_apis/connectionData` and the
   resource-area lookups the Azure CLI makes. Each is forwarded as a read.
+- **One pull request by id**: `GET [{project}/]_apis/git/pullrequests/{id}`
+  names no repository, but the Azure CLI resolves `--id` through it before
+  every repository-scoped call, including `az repos pr update` and
+  `az repos pr show`. The proxy makes this request itself with the
+  connection's token and reads the answer's `repository.id`:
+  - when that repository is one the agent holds, it returns the answer;
+  - otherwise it returns the same 404 Azure DevOps gives for an id that does
+    not exist.
+
+  Walking ids therefore finds only the agent's own pull requests. Only `GET`
+  is answered this way; a write by id with no repository is refused.
+
 - **Everything else is refused.** That includes:
   - the project and repository lists, at organization and at project scope;
-  - pull-request endpoints that name no repository:
+  - pull-request lists that name no repository, such as
     `{project}/_apis/git/pullrequests`, which `az repos pr list` calls when it
-    names no repository, and `{project}/_apis/git/pullrequests/{id}`. Every
-    pull request names its repository, and pull-request ids are sequential
-    across the organization, so either would enumerate other repositories;
+    names no repository. Every pull request names its repository, so a list
+    would name other repositories;
   - other cross-repository queries, such as commit search; and
   - other Azure DevOps services and hosts, such as code search, which the
     proxy does not terminate. A placeholder sent there is refused by Azure
@@ -410,11 +421,15 @@ An API write follows the same rule as a push, as GitHub's REST writes do
 A write that names an authorized repository is forwarded under a `write`
 grant and refused below it. A write that names no repository is refused. So
 an agent with `write` opens, updates, and completes pull requests through the
-Azure CLI or REST, and the first version adds no Azure DevOps tool. Such a pull
-request carries no AgentConnect footer. Completing a pull request is bounded
-by the organization's branch policies, such as required reviewers on the
-default branch, as merging is by branch protection on GitHub. Tools for pull
-requests and reviews come with the second step (§11).
+Azure CLI or REST, and the first version adds no Azure DevOps tool:
+
+- `az repos pr create` posts to its repository;
+- `az repos pr update --id … --status completed` resolves the id through the
+  lookup of §6.2, then writes to the repository it found. Such a pull
+  request carries no AgentConnect footer. Completing a pull request is bounded
+  by the organization's branch policies, such as required reviewers on the
+  default branch, as merging is by branch protection on GitHub. Tools for pull
+  requests and reviews come with the second step (§11).
 
 ### 6.4 Client Configuration
 
@@ -639,8 +654,9 @@ known only through consent.
    blob storage, and `github.com` (§6.4). Still to run with the placeholder
    through the proxy in A3.
 5. **Decided:** project and repository lists, at either scope, and
-   pull-request endpoints that name no repository are refused (§6.2). A
-   filtered list is the follow-up if agents need one.
+   pull-request lists that name no repository are refused. A single pull
+   request by id is answered only when it belongs to one of the agent's
+   repositories (§6.2). A filtered list is the follow-up if agents need one.
 6. **Decided:** no Azure DevOps tool in the first version. An agent with
    `write` opens and completes pull requests through the CLI or REST (§6.3);
    the tools come with the second step (§11).
@@ -673,8 +689,11 @@ live organization before A2.
 - **A3 — Daemon.** The credential module with its `proxyOnly` capability, the
   proxy instance and route descriptor of §6.2, the client configuration of
   §6.4, the feature advertisement tied to the proxy, and the strategy refusal.
-  Tests pin each refusal of §6.2: the lists, the pull-request endpoints that
-  name no repository, and a repository outside the agent's authorizations.
+  Tests pin each refusal of §6.2: the lists, the pull-request lists that name
+  no repository, and a repository outside the agent's authorizations. They
+  also pin the pull-request lookup by id: it answers for the agent's own
+  repository, and answers another repository's pull request exactly as it
+  answers a missing id.
   They also pin §6.3: a write below `write` is refused, and a pull-request
   write at `write` is forwarded.
 - **A4 — Console, Setup, and documentation.** The card, the pickers, the
