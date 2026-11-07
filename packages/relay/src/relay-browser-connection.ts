@@ -29,6 +29,7 @@ import {
   type RdWebchatPromptSuggestion,
   WEBCHAT_IMAGES_FEATURE,
   WEBCHAT_THREADS_FEATURE,
+  CONTINUATION_THREADS_FEATURE,
   WebchatTimeZone,
   type WebchatPost,
   type WebchatRemoteMcpEntitlement
@@ -117,7 +118,9 @@ export function parseBrowserFrame(
   user: string,
   userId?: string,
   userPicture?: string,
-  userIdentities?: string[]
+  userIdentities?: string[],
+  /** The conversation continues a session, whose coordinator's platform threads a turn may name. */
+  continued = false
 ): ParsedBrowserOp | null {
   if (typeof msg !== 'object' || msg === null) return null
   const m = msg as Record<string, unknown>
@@ -127,6 +130,9 @@ export function parseBrowserFrame(
     (typeof m.text === 'string' || Array.isArray(m.attachments) || Array.isArray(m.files))
   ) {
     const mentions = m.mentions !== undefined ? uuidArray(m.mentions, 16) : undefined
+    // Only a continued session's turn may name a platform thread; a conversation's own threads are its posts' UUIDs.
+    const uuidThread = typeof m.thread === 'string' && UUID_RE.test(m.thread)
+    if (m.thread !== undefined && !uuidThread && !continued) return null
     const parsed = RelayWebchatOp.safeParse({
       op: 'turn',
       text: typeof m.text === 'string' ? m.text : '',
@@ -136,7 +142,7 @@ export function parseBrowserFrame(
       ...(userIdentities?.length ? { userIdentities } : {}),
       ...(m.turnId !== undefined ? { turnId: m.turnId } : {}),
       // Shape only: a malformed thread refuses the turn rather than posting the reply at the root.
-      ...(m.thread !== undefined ? { thread: typeof m.thread === 'string' ? m.thread.toLowerCase() : m.thread } : {}),
+      ...(m.thread !== undefined ? { thread: uuidThread ? (m.thread as string).toLowerCase() : m.thread } : {}),
       ...(mentions ? { mentions } : {}),
       ...(m.attachments !== undefined ? { attachments: m.attachments } : {}),
       // Uploaded-file references only; the bytes went browser → bucket and never cross this socket.
@@ -303,7 +309,7 @@ export class RelayBrowserConnection implements ChatSink {
       type: 'ready',
       conversationId: this.deps.chatId,
       agentId: this.deps.agentId,
-      features: [WEBCHAT_IMAGES_FEATURE, WEBCHAT_THREADS_FEATURE],
+      features: [WEBCHAT_IMAGES_FEATURE, WEBCHAT_THREADS_FEATURE, CONTINUATION_THREADS_FEATURE],
       participants: this.deps.participants.map((p) => ({
         agentId: p.agentId,
         ...(p.primary ? { primary: true } : {})
@@ -363,7 +369,8 @@ export class RelayBrowserConnection implements ChatSink {
       this.deps.user,
       this.deps.userId,
       this.deps.userPicture,
-      this.deps.userIdentities
+      this.deps.userIdentities,
+      this.deps.targetSessionId !== undefined
     )
     if (!op) {
       this.deps.log.warn(`webchat: unrecognized frame in ${this.deps.chatId} (${frameShape(parsed)})`)
@@ -423,7 +430,8 @@ export class RelayBrowserConnection implements ChatSink {
       author: { kind: 'user', user: this.deps.user, ...(this.deps.userId ? { userId: this.deps.userId } : {}) },
       text: fileMarker ? `${op.text}\n${fileMarker}`.trim() : op.text,
       at: post.at,
-      ...(op.thread ? { thread: op.thread } : {}),
+      // A post's thread is a webchat root; a platform thread stays on the continued turn.
+      ...(op.thread && UUID_RE.test(op.thread) ? { thread: op.thread } : {}),
       ...(op.attachments?.length ? { attachments: op.attachments } : {})
     }
     for (const p of this.byAgentId.values()) {

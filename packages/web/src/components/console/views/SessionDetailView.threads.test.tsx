@@ -579,8 +579,29 @@ describe('a Slack coordinator’s page in Slack’s shape (webchat-threads.md §
       'In thread: Why is the deploy slow?'
     ])
     expect(q(`[data-turn-answered-in="${ROOT_TS}"]`)).not.toBeNull()
-    // Replying from the console in an unowned Slack thread is not offered here.
+    // A reader who may not continue the coordinator is offered no Reply in thread.
     expect(q('[data-reply-in-thread]')).toBeNull()
+  })
+
+  it('offers whoever may continue the coordinator Reply in thread, whose composer posts in the Slack thread', async () => {
+    channel()
+    daemonFeatures.push('continuation-threads-v1')
+    const { list, detail: read } = slack('slack')
+    await open(list, { ...read, canContinue: true, continuationUnavailableReason: null } as SessionDetailDto)
+    expect(container?.querySelectorAll('[data-reply-in-thread]')).toHaveLength(1)
+    await click('[data-reply-in-thread]')
+    const panel = q(`[data-thread-panel="${ROOT_TS}"]`)
+    expect(panel?.querySelector('[data-thread-composer]')).not.toBeNull()
+    expect(panel?.textContent).toContain('Posted in the Slack thread under your name; the coordinator answers there')
+  })
+
+  it('offers no Reply in thread on a Slack root where the daemon cannot continue a coordinator in its threads', async () => {
+    channel()
+    const { list, detail: read } = slack('slack')
+    await open(list, { ...read, canContinue: true, continuationUnavailableReason: null } as SessionDetailDto)
+    expect(q('[data-reply-in-thread]')).toBeNull()
+    await click(`[data-thread-footer="${ROOT_TS}"] [data-task-card-replies]`)
+    expect(q('[data-thread-composer]')).toBeNull()
   })
 
   it('opens a thread’s record from its footer at ?thread=, linked to the thread in Slack', async () => {

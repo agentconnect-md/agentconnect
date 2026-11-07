@@ -172,6 +172,7 @@ import {
   threadShapeOf,
   threadToAutoOpen,
   WEBCHAT_THREADS_FEATURE,
+  CONTINUATION_THREADS_FEATURE,
   type ThreadAutoOpen
 } from '@/components/console/coordinator-threads'
 import { type TaskLink } from '@/components/console/task-link'
@@ -2500,19 +2501,28 @@ export default function SessionDetailView() {
   const resumeState = isPg ? 'available' : sessionResumeState(persistedResumeMembers, placementByAgent)
   const resumeDisabled = (isWebchat && resumeState !== 'available') || continuationBlocked
   // The owner writes in their coordinator's threads where its daemon answers in them and the relay forwards `thread` (webchat-threads.md §10).
-  const relayFeatures = threadsView && isWebchat ? getPgRelayFeatures(session.id) : undefined
+  const relayFeatures = threadsView && (isWebchat || isContinuable) ? getPgRelayFeatures(session.id) : undefined
+  const ownerFeatures = owner ? agentCapabilitySource(owner, daemons, memberSets)?.caps.features : undefined
   const threadsWritable =
     threadsView &&
     isWebchat &&
     isLive &&
     !resumeDisabled &&
     ownsThisConversation === true &&
-    !!owner &&
-    agentCapabilitySource(owner, daemons, memberSets)?.caps.features?.includes(WEBCHAT_THREADS_FEATURE) === true &&
+    ownerFeatures?.includes(WEBCHAT_THREADS_FEATURE) === true &&
     (relayFeatures === undefined || relayFeatures.includes(WEBCHAT_THREADS_FEATURE))
+  // Whoever may continue a platform coordinator writes in its threads too, mirrored there (webchat-threads.md §7).
+  const continuedThreadsWritable =
+    threadsView &&
+    isContinuable &&
+    !resumeDisabled &&
+    ownerFeatures?.includes(CONTINUATION_THREADS_FEATURE) === true &&
+    (relayFeatures === undefined || relayFeatures.includes(CONTINUATION_THREADS_FEATURE))
   const threadWriter = threadsWritable
     ? { sessionId: session.id, ...(session.channelId ? { conversationId: session.channelId } : {}) }
-    : undefined
+    : continuedThreadsWritable
+      ? { sessionId: session.id, continues: composerSessionId }
+      : undefined
   // The task holding the open root's thread, so a daemon without thread reads still shows its session.
   const openRootSummary = openRoot ? threadSummaries.get(openRoot) : undefined
   const openRootTask: TaskLink | undefined =
@@ -2906,8 +2916,8 @@ export default function SessionDetailView() {
   // A root's thread in the roots view, named by its postId or platform ts as its shape says (webchat-threads.md §6.1, §7).
   const rootOf = (turn: Turn): string | undefined =>
     threadsView && turn.kind === 'user' && namesThread(threadShape, turn.messageId) ? turn.messageId : undefined
-  // A root the owner may reply under.
-  const replyRootOf = (turn: Turn): string | undefined => (threadsWritable ? rootOf(turn) : undefined)
+  // A root the reader may reply under.
+  const replyRootOf = (turn: Turn): string | undefined => (threadWriter ? rootOf(turn) : undefined)
   const replyInThread = (rootId: string) => openRootThread(rootId, { focus: true })
   const rootTextOf = new Map(
     turns.flatMap((turn) => (turn.kind === 'user' && turn.messageId ? [[turn.messageId, turn.text]] : []))

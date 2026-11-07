@@ -375,6 +375,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const reconnectAttempts = useRef<Map<string, number>>(new Map())
   // The thread each turn was sent in, and each stream turn whose frames answer in one, keyed by `id\nturnId`.
   const turnThreads = useRef<Map<string, string>>(new Map())
+  // Continued sessions whose page draws threads, so a message sent in one stays out of the main timeline.
+  const threadedTargets = useRef<Set<string>>(new Set())
   const streamThreads = useRef<Map<string, string>>(new Map())
   // What each session's relay announced in its `ready` frame.
   const [relayFeaturesBy, setRelayFeaturesBy] = useState<Record<string, readonly string[]>>({})
@@ -2098,8 +2100,9 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       // The files' marker is what the reloaded transcript row shows, so the optimistic step reads the same.
       const marker = filesMarker(files ?? [])
       const shown = marker ? (text ? `${text}\n${marker}` : marker) : text
-      // A task's page has no threads: a continuation's message and answer stay on its own timeline.
-      const shownIn = thread && !sessionTargets.current.has(id) ? thread : undefined
+      // A task's page has no threads: a continuation's message and answer stay on its own timeline, unless its page draws threads.
+      const shownIn =
+        thread && (!sessionTargets.current.has(id) || threadedTargets.current.has(id)) ? thread : undefined
       if (thread) turnThreads.current.set(`${id}\n${requestedTurnId}`, thread)
       pushStep(id, {
         kind: 'msg',
@@ -2661,7 +2664,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   )
   const pgSessionList = useMemo(() => Object.values(pgSessions), [pgSessions])
 
-  const markSessionTarget = useCallback((id: string, targetSessionId: string = id): void => {
+  const markSessionTarget = useCallback((id: string, targetSessionId: string = id, threads?: boolean): void => {
+    if (threads) threadedTargets.current.add(id)
     const previous = sessionTargets.current.get(id)
     sessionTargets.current.set(id, targetSessionId)
     if (previous === undefined || previous === targetSessionId) return

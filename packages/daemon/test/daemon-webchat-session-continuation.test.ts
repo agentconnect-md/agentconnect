@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { Daemon } from '../src/daemon.js'
 import { memberIdOn } from '../src/session/chat-continuation.js'
+import { sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import { webchatAuthorOf } from '../src/webchat/transport.js'
 import type { RdAck, RdChatEvent, RdMsgWebchat } from '@agentconnect.md/protocol'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
@@ -817,10 +818,142 @@ describe('webchat session-targeted continuation — a delegated task', () => {
   })
 })
 
+describe('webchat session-targeted continuation — a coordinator’s thread (webchat-threads.md §7)', () => {
+  const COORDINATE = 'append:coordinator-1700000000000'
+  const COORD_ACP = 'acp-coordinator'
+  const ROOT = '100.300000'
+  const SLACK_C1 = {
+    sourceBindingKind: 'external',
+    externalProvider: 'slack',
+    externalRealmKey: 'T1',
+    externalResourceKind: 'conversation',
+    externalResourceKey: 'C1',
+    externalIntegrationId: 'int-a'
+  }
+  const inThread = (text: string, thread = ROOT, targetSessionId = COORD_ACP) =>
+    turn(text, { targetSessionId, payload: { op: 'turn', text, user: 'owner', thread } })
+
+  // A channel coordinator on the workspace's transport scope that received one root.
+  async function coordinator(daemon: Daemon, d: Awaited<ReturnType<typeof boot>>['d']) {
+    const scope = (
+      daemon as never as { transportScopeForIntegrationIds(ids: string[]): string }
+    ).transportScopeForIntegrationIds(['int-a'])
+    const key = sessionKey('slack', 'C1', COORDINATE, AGENT, scope)
+    await d.store.upsertSession({
+      key,
+      agentId: AGENT,
+      platform: 'slack',
+      channel: 'C1',
+      thread: COORDINATE,
+      transportScope: scope,
+      acpSessionId: COORD_ACP,
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    await d.store.setSessionClassification(key, SLACK_C1)
+    const channel = transcriptChannelKey('C1', scope)
+    await (d.store as never as { appendTranscript(e: Record<string, unknown>): Promise<void> }).appendTranscript({
+      channel,
+      thread: ROOT,
+      ts: ROOT,
+      sender: 'U1',
+      kind: 'text',
+      text: 'Why is the deploy slow?',
+      admission: { agentId: AGENT, sessionKey: key }
+    })
+    return { scope, key, channel }
+  }
+
+  it('mirrors the message into the thread under the writer’s name, then hands it to the coordinator with the thread named', async () => {
+    const { daemon, d, prompts, postAsAuthor } = await boot(() => 'looking')
+    const { channel } = await coordinator(daemon, d)
+    const events: RdChatEvent[] = []
+
+    expect(await d.handleRelayMsg(inThread('and the cache?'), (e) => events.push(e))).toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(events.some((e) => e.kind === 'done')).toBe(true), WAIT)
+    expect(postAsAuthor).toHaveBeenCalledWith(
+      'C1',
+      ROOT,
+      { text: 'and the cache?', attributedText: '[owner via console] and the cache?' },
+      { name: 'owner' },
+      { agentAuthorId: AGENT }
+    )
+    expect(prompts).toHaveLength(1)
+    // The coordinator's own session took it, named as a message in the root's thread.
+    expect(prompts[0]!.sid).toBe(COORD_ACP)
+    expect(prompts[0]!.text).toContain(`thread="msg-${ROOT}"`)
+    // Recorded as the mirror, a reply in the thread.
+    const page = await d.store.transcriptPage(channel, ROOT, null, 50, AGENT)
+    expect(page.rows.map((r) => r.text)).toEqual(expect.arrayContaining(['Why is the deploy slow?', 'and the cache?']))
+    await daemon.stop()
+  })
+
+  it('hands the message to a task that holds the thread by then, mirrored all the same', async () => {
+    const { daemon, d, prompts, postAsAuthor } = await boot(() => 'warming it')
+    const { scope, key } = await coordinator(daemon, d)
+    const taskKey = sessionKey('slack', 'C1', ROOT, AGENT, scope)
+    await d.store.upsertSession({
+      key: taskKey,
+      agentId: AGENT,
+      platform: 'slack',
+      channel: 'C1',
+      thread: ROOT,
+      transportScope: scope,
+      acpSessionId: 'acp-thread-task',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    await d.store.setSessionClassification(taskKey, SLACK_C1)
+    const index = (d as never as { store: { assistantSubsessions: AssistantSubsessionIndexLike } }).store
+      .assistantSubsessions
+    await index.open({
+      agentId: AGENT,
+      childSessionKey: taskKey,
+      parentSessionId: COORD_ACP,
+      parentSessionKey: key,
+      title: 'Speed up the deploy'
+    })
+    await index.attachThread({
+      agentId: AGENT,
+      childSessionKey: taskKey,
+      platform: 'slack',
+      channel: 'C1',
+      transportScope: scope,
+      thread: ROOT,
+      sinceRound: 1,
+      now: Date.now()
+    })
+
+    expect(await d.handleRelayMsg(inThread('and the cache?'), () => {})).toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(prompts).toHaveLength(1), WAIT)
+    expect(postAsAuthor).toHaveBeenCalledWith('C1', ROOT, expect.anything(), expect.anything(), expect.anything())
+    // The task's own session took it, as any reply in its thread.
+    expect(prompts[0]!.sid).toBe('acp-thread-task')
+    expect(prompts[0]!.text).toContain('and the cache?')
+    expect(prompts[0]!.text).not.toContain(`thread="msg-${ROOT}"`)
+    await vi.waitFor(() => expect(d.inflight.size).toBe(0), WAIT)
+    await daemon.stop()
+  })
+
+  it('refuses a thread the coordinator never received, and any thread on a session that is no coordinator', async () => {
+    const { daemon, d, prompts, postAsAuthor, postMessage } = await boot()
+    await coordinator(daemon, d)
+    for (const msg of [inThread('hello?', '100.999999'), inThread('hello?', ROOT, TARGET_ACP)])
+      expect(await d.handleRelayMsg(msg, () => {})).toMatchObject({ accepted: false, reason: 'unknown_thread' })
+    expect(postAsAuthor).not.toHaveBeenCalled()
+    expect(postMessage).not.toHaveBeenCalled()
+    expect(prompts).toHaveLength(0)
+    await daemon.stop()
+  })
+})
+
 interface AssistantSubsessionIndexLike {
   open(input: Record<string, unknown>): Promise<boolean>
   finish(agentId: string, key: string, state: 'done' | 'failed'): Promise<boolean>
   get(agentId: string, key: string): Promise<{ state: string; endReport?: string } | undefined>
+  attachThread(input: Record<string, unknown>): Promise<boolean>
 }
 
 describe('webchat session-targeted continuation — attachments', () => {

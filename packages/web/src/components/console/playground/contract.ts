@@ -82,7 +82,7 @@ export interface PlaygroundData {
     conversationId?: string,
     participants?: Array<{ agentId: string; name: string; primary?: boolean }>
   ) => boolean
-  /** Send `text` in a thread of a coordinator conversation (webchat-threads.md §6.3), leaving its composer alone; a session-targeted continuation writes it in that thread of its task. */
+  /** Send `text` in a thread of a coordinator conversation (webchat-threads.md §6.3), leaving its composer alone; a session-targeted continuation writes it in that thread of its task or its coordinator (§7). */
   pgSendThread: (id: string, agentId: string, text: string, thread: string, conversationId?: string) => boolean
   /** The thread the turn in flight was sent in, undefined at the root or when idle. */
   getPgTurnThread: (id: string) => string | undefined
@@ -90,13 +90,8 @@ export interface PlaygroundData {
   getPgRelayFeatures: (id: string) => readonly string[] | undefined
   /** Probe the conversation's daemons for a turn this view is not streaming (after a reload, or one started elsewhere) and reattach on a hit; no-op while busy. */
   pgAttach: (id: string, agentId: string, conversationId: string) => void
-  /** Mark `id` (a CP session id) as a session-targeted continuation: the socket
-   *  mints through the session-target token route and the daemon dispatches
-   *  turns onto that session's own platform coordinates
-   *  (webchat-cross-integration-continuation.md §6.5). `targetSessionId` names
-   *  another member of the same merged conversation whose session the turns
-   *  continue instead; the live lane stays keyed by `id`. */
-  markSessionTarget: (id: string, targetSessionId?: string) => void
+  /** Make `id`'s socket continue `targetSessionId` (itself by default; webchat-cross-integration-continuation.md §6.5); `threads`: its page draws threads, so a message sent in one is drawn there. */
+  markSessionTarget: (id: string, targetSessionId?: string, threads?: boolean) => void
   /** Messages queued while a turn streams, oldest first. */
   getPgQueue: (id: string) => QueuedTurn[]
   /** Remove one queued message before it is sent. */

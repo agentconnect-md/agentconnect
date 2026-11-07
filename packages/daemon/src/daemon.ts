@@ -126,6 +126,7 @@ import {
   ACTIVITY_EVERY_AGENT_V1_FEATURE,
   SESSION_MODE_AUTO_V1_FEATURE,
   WEBCHAT_THREADS_FEATURE,
+  CONTINUATION_THREADS_FEATURE,
   SESSION_THREAD_READS_FEATURE,
   coordinatorConversationId,
   TASK_PAGE_MESSAGES_FEATURE,
@@ -3596,7 +3597,7 @@ export class Daemon {
       collabAdmits: (fromAgentId, toAgentId) => this.cpCollab.admits(fromAgentId, toAgentId),
       coordinatorCoordinate: (agentId, conversationId, authorId) =>
         this.webchatCoordinator(agentId, conversationId, authorId),
-      keyCoordinatorMessage: async (agentId, msg) => await this.keyWebchatCoordinatorMessage(agentId, msg),
+      keyCoordinatorMessage: async (agentId, msg) => await this.keyCoordinatorMessage(agentId, msg),
       continuationCommand: (agentId, msg, integrationId, reply) =>
         this.continuationCommand(agentId, msg, integrationId, reply)
     }
@@ -9533,6 +9534,8 @@ export class Daemon {
       ...(this.cfg.features.autoSessionMode ? [TASK_PAGE_MESSAGES_FEATURE] : []),
       // Answers a webchat coordinator's messages in their threads (webchat-threads.md §8); it rides the same switch.
       ...(this.cfg.features.autoSessionMode ? [WEBCHAT_THREADS_FEATURE] : []),
+      // Continues a platform coordinator in one of its threads, mirrored there (webchat-threads.md §7); the same switch.
+      ...(this.cfg.features.autoSessionMode ? [CONTINUATION_THREADS_FEATURE] : []),
       // Answers the `roots` view and `session/thread` from the channel record (webchat-threads.md §8); static.
       SESSION_THREAD_READS_FEATURE,
       // Keeps follow-ups in place of items: Activity carries them as tasks and answers no items; static.
@@ -14627,11 +14630,11 @@ export class Daemon {
     return session ? { channel: session.channel, thread: session.thread } : (await index.threadsOf(agentId, task))[0]
   }
 
-  /** A webchat coordinator routes as autoCoordinateFor does: a reply in a thread a task holds keys on the task, any other message stays on the coordinator (webchat-threads.md §4). */
-  private async keyWebchatCoordinatorMessage(agentId: string, msg: NormalizedMessage): Promise<void> {
+  /** A coordinator's message keyed outside ingress (a webchat turn, a console continuation) routes as autoCoordinateFor does: a reply in a thread a task holds keys on the task (webchat-threads.md §4). */
+  private async keyCoordinatorMessage(agentId: string, msg: NormalizedMessage): Promise<void> {
     const held = await this.threadTaskSession(
       agentId,
-      { platform: msg.platform, channel: msg.channel, transportScope: null },
+      { platform: msg.platform, channel: msg.channel, transportScope: msg.transportScope ?? null },
       msg
     )
     if (!held) return

@@ -314,6 +314,10 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
     expect(turn.frame.payload.payload).toMatchObject({ op: 'turn', thread })
     expect(RelayWebchatOp.safeParse({ op: 'turn', text: 'x', thread: 'webchat:conv' }).success).toBe(false)
     expect(RelayWebchatOp.safeParse({ op: 'turn', text: 'x', thread: '' }).success).toBe(false)
+    // A continued coordinator's turn may name its platform thread's root (webchat-threads.md §7); a post never does.
+    expect(RelayWebchatOp.safeParse({ op: 'turn', text: 'x', thread: '1720000000.000100' }).success).toBe(true)
+    expect(RelayWebchatOp.safeParse({ op: 'turn', text: 'x', thread: '.1720000000' }).success).toBe(false)
+    expect(RelayWebchatOp.safeParse({ op: 'turn', text: 'x', thread: 'x'.repeat(129) }).success).toBe(false)
 
     const post = {
       postId: TURN_ID,
@@ -328,6 +332,15 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
     )
     if (!posted.ok || posted.frame.type !== 'rd/webchat-post') throw new Error('narrow')
     expect(posted.frame.payload.post.thread).toBe(thread)
+    expect(
+      decodeRelayDaemonFrame(
+        envelope('rd/webchat-post', {
+          conversationId: CONV_ID,
+          agentId: AGENT_ID,
+          post: { ...post, thread: '1720000000.000100' }
+        })
+      ).ok
+    ).toBe(false)
     const context = decodeRelayDaemonFrame(envelope('rd/msg', { ...turnMsg, payload: { op: 'context', post } }))
     if (!context.ok || context.frame.type !== 'rd/msg' || context.frame.payload.source !== 'webchat') {
       throw new Error('narrow')
