@@ -6,7 +6,15 @@ import { objectFromJson } from '../runtimes/codex-config.js'
 import { runtimeStateLocations } from '../runtimes/probe.js'
 import { projectRuntimeHomeSeedFile } from '../runtimes/runtime-home.js'
 import { MAX_SEED_FILE_BYTES, qwenSettingsApiKeys } from '../runtimes/runtime-seeded-credentials.js'
-import { replaceSecretValue } from './secret-values.js'
+import { PROVIDER_DEFAULT_ENDPOINTS } from '../runtimes/provider-endpoints.js'
+import {
+  endpointHost,
+  microsandboxPlaceholder,
+  placeSecrets,
+  replaceSecretValue,
+  type KeyOwner,
+  type SecretPlaceholder
+} from './secret-values.js'
 import type { MicrosandboxCredentials, MicrosandboxSecret } from './secrets.js'
 
 function document(text: string, settings: boolean): unknown {
@@ -43,7 +51,19 @@ function allowedHost(endpoint: unknown): string[] {
   return []
 }
 
-export function prepareQwenSecrets(hostEnv: NodeJS.ProcessEnv): MicrosandboxCredentials | undefined {
+// The provider protocols whose own API host is known; a Qwen key reaches only the base URL its settings name.
+const DEFAULT_HOSTS: Record<string, string | undefined> = {
+  openai: endpointHost(PROVIDER_DEFAULT_ENDPOINTS.openai),
+  'openai-responses': endpointHost(PROVIDER_DEFAULT_ENDPOINTS.openai),
+  anthropic: endpointHost(PROVIDER_DEFAULT_ENDPOINTS.anthropic),
+  gemini: 'generativelanguage.googleapis.com'
+}
+
+export function prepareQwenSecrets(
+  hostEnv: NodeJS.ProcessEnv,
+  _explicitEnv: Record<string, string> = {},
+  placeholder: SecretPlaceholder = microsandboxPlaceholder
+): MicrosandboxCredentials | undefined {
   const files = runtimeStateLocations('qwen-code', hostEnv).flatMap((location) =>
     [...(location.seedFiles ?? []), ...(location.credentialFiles ?? []).map((file) => file.path)].map((path) => ({
       source: join(location.source, path),
@@ -54,24 +74,27 @@ export function prepareQwenSecrets(hostEnv: NodeJS.ProcessEnv): MicrosandboxCred
   const settingsFile = files.find((file) => file.settings)!
   const bindings = new Map<string, MicrosandboxSecret>()
   const sharedKeys = new Map<string, MicrosandboxSecret>()
-  const replacements = new Map<string, string>()
+  const owners = new Map<MicrosandboxSecret, KeyOwner>()
+  const values: [string, MicrosandboxSecret][] = []
   for (const ref of qwenSettingsApiKeys(readSettings(settingsFile.source))) {
     const id = JSON.stringify(ref.path)
     const name = `AC_QWEN_API_${createHash('sha256').update(id).digest('hex').slice(0, 16).toUpperCase()}`
-    const secret = sharedKeys.get(ref.value) ?? {
-      env: name,
-      placeholder: `msb-secret-${name}`,
-      host: [],
-      readValue: () => ref.value
-    }
+    const shared = sharedKeys.get(ref.value)
+    const secret = shared ?? { env: name, placeholder: '', host: [], readValue: () => ref.value }
+    if (!shared)
+      owners.set(secret, {
+        provider: ref.provider,
+        defaultHost: Object.hasOwn(DEFAULT_HOSTS, ref.provider) ? DEFAULT_HOSTS[ref.provider] : undefined
+      })
     secret.host = [
       ...new Set([secret.host, ref.value.includes('$') ? [] : ref.endpoints.flatMap(allowedHost)].flat())
     ].sort()
     sharedKeys.set(ref.value, secret)
     bindings.set(id, secret)
-    replacements.set(ref.value, secret.placeholder)
+    values.push([ref.value, secret])
   }
   if (!bindings.size) return undefined
+  const replacements = placeSecrets(owners, values, placeholder)
   return {
     secrets: [...sharedKeys.values()].filter((secret) => secret.host.length > 0),
     replacements,

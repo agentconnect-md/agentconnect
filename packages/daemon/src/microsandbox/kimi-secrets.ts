@@ -6,7 +6,16 @@ import { readRegularFileSync } from '../fs/regular-file.js'
 import { runtimeStateLocations } from '../runtimes/probe.js'
 import { isRuntimeHomeSeedFile, projectRuntimeHomeSeedFile } from '../runtimes/runtime-home.js'
 import { fileConfigApiKeys, MAX_SEED_FILE_BYTES } from '../runtimes/runtime-seeded-credentials.js'
-import { replaceSecretValue } from './secret-values.js'
+import { PROVIDER_DEFAULT_ENDPOINTS } from '../runtimes/provider-endpoints.js'
+import {
+  endpointHost,
+  microsandboxPlaceholder,
+  placeSecrets,
+  replaceSecretValue,
+  type KeyOwner,
+  type SecretPlaceholder,
+  type SecretSources
+} from './secret-values.js'
 import type { MicrosandboxCredentials, MicrosandboxSecret } from './secrets.js'
 
 function record(value: unknown): Record<string, unknown> {
@@ -41,6 +50,11 @@ function replaceValues(value: unknown, replacements: ReadonlyMap<string, string>
   return value
 }
 
+function setPath(data: Record<string, unknown>, path: readonly string[], value: string): void {
+  const parent = path.slice(0, -1).reduce((node, field) => record(node[field]), data)
+  parent[path.at(-1)!] = value
+}
+
 function replaceSeedText(text: string, replacements: ReadonlyMap<string, string>): string {
   for (const [value, placeholder] of replacements) {
     text = text.split(JSON.stringify(value).slice(1, -1)).join(placeholder).split(value).join(placeholder)
@@ -48,7 +62,20 @@ function replaceSeedText(text: string, replacements: ReadonlyMap<string, string>
   return text
 }
 
-export function prepareKimiSecrets(hostEnv: NodeJS.ProcessEnv): MicrosandboxCredentials | undefined {
+// The provider types whose own API host is known; a Kimi key reaches only the base URL its provider names.
+const DEFAULT_HOSTS: Record<string, string | undefined> = {
+  openai: endpointHost(PROVIDER_DEFAULT_ENDPOINTS.openai),
+  openai_responses: endpointHost(PROVIDER_DEFAULT_ENDPOINTS.openai),
+  anthropic: endpointHost(PROVIDER_DEFAULT_ENDPOINTS.anthropic),
+  'google-genai': 'generativelanguage.googleapis.com'
+}
+
+export function prepareKimiSecrets(
+  hostEnv: NodeJS.ProcessEnv,
+  _explicitEnv: Record<string, string> = {},
+  placeholder: SecretPlaceholder = microsandboxPlaceholder,
+  sources: SecretSources = {}
+): MicrosandboxCredentials | undefined {
   const files = new Map<string, { source: string; destination: string }>()
   for (const location of runtimeStateLocations('kimi', hostEnv)) {
     try {
@@ -72,7 +99,8 @@ export function prepareKimiSecrets(hostEnv: NodeJS.ProcessEnv): MicrosandboxCred
   }
   const bindings = new Map<string, MicrosandboxSecret>()
   const shared = new Map<string, MicrosandboxSecret>()
-  const replacements = new Map<string, string>()
+  const owners = new Map<MicrosandboxSecret, KeyOwner>()
+  const values: [string, MicrosandboxSecret][] = []
   for (const { path, value } of fileConfigApiKeys(data)) {
     const id = JSON.stringify(path)
     const env = `AC_KIMI_API_${createHash('sha256').update(id).digest('hex').slice(0, 16).toUpperCase()}`
@@ -87,13 +115,21 @@ export function prepareKimiSecrets(hostEnv: NodeJS.ProcessEnv): MicrosandboxCred
       !value.includes('$')
         ? allowedHost(provider.base_url)
         : []
-    const secret = shared.get(value) ?? { env, placeholder: `msb-secret-${env}`, host: [], readValue: () => value }
+    const known = shared.get(value)
+    const secret = known ?? { env, placeholder: '', host: [], readValue: () => value }
+    const type = String(provider.type)
+    if (!known)
+      owners.set(secret, {
+        provider: type,
+        defaultHost: Object.hasOwn(DEFAULT_HOSTS, type) ? DEFAULT_HOSTS[type] : undefined
+      })
     secret.host = [...new Set([secret.host, host].flat())].sort()
     shared.set(value, secret)
     bindings.set(id, secret)
-    replacements.set(value, secret.placeholder)
+    values.push([value, secret])
   }
   if (!bindings.size) return undefined
+  const replacements = placeSecrets(owners, values, placeholder)
   return {
     secrets: [...shared.values()].filter((secret) => secret.host.length > 0),
     replacements,
@@ -106,6 +142,11 @@ export function prepareKimiSecrets(hostEnv: NodeJS.ProcessEnv): MicrosandboxCred
           const projected = document(text)
           for (const { path, value } of fileConfigApiKeys(projected)) {
             const binding = bindings.get(JSON.stringify(path))
+            // An srt copy holds the key in the clear before the proxy and whenever it is off, which its placeholder replaces.
+            if (sources.protectRetained && retained) {
+              if (binding) setPath(projected, path, binding.placeholder)
+              continue
+            }
             if (!binding || (retained ? value !== binding.placeholder : value !== binding.readValue()))
               throw new Error('Kimi API credentials changed or are unprotected; start a new session')
           }
