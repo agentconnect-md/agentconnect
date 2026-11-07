@@ -77,8 +77,7 @@ const CODE_HOST_CONSOLE_READY: Record<CodeHostProvider, boolean> = {
   'azure-devops': true
 }
 
-/** The hosts the console OFFERS. Every `Record<CodeHostProvider, …>` above stays total regardless:
- *  a row, a label and a mark are needed wherever an existing hook or grant names the host. */
+/** The hosts the console offers; every `Record<CodeHostProvider, …>` stays total regardless. */
 export const PICKABLE_CODE_HOST_PROVIDERS: readonly CodeHostProvider[] = CODE_HOST_PROVIDERS.filter(
   (provider) => CODE_HOST_CONSOLE_READY[provider]
 )

@@ -7490,8 +7490,7 @@ export function deleteGiteaRepository(id: string): Promise<GiteaRepositoryRemova
   return apiDelete<GiteaRepositoryRemovalDto>(`${orgBase()}/gitea/repositories/${encodeURIComponent(id)}`)
 }
 
-// ── azure devops connection, connect flow and repositories (azure-devops-integration.md §3, §5, §8) ──
-// No route here ever returns a secret or token; a 404 on the list means a Control Plane without Azure DevOps.
+// ── azure devops connection, connect flow and repositories (azure-devops-integration.md §3, §5, §8); no route returns a secret ──
 
 export type AzureDevOpsStateReason = 'secret_rejected' | 'access_revoked' | 'repository_unavailable'
 
@@ -7725,6 +7724,8 @@ export interface AgentRepoAuthDto {
   createdAt: string // ISO-8601
   /** Set while the member who vouched for the grant fails re-attestation; absent on an older CP. */
   stale?: { since: string; reason: RepoGrantStaleReason } | null
+  /** The connection an `azure-devops` grant is served through; absent on every other host. */
+  connectionId?: string
 }
 
 /** Why re-attestation suspended a grant. */
