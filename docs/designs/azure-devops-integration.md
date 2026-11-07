@@ -112,7 +112,9 @@ APIs. A tenant can turn user consent off, or limit it to selected low-impact
 permissions, even for a verified publisher. The connect flow therefore keeps an
 Entra administrator-consent fallback: a refusal for missing consent tells the
 person to ask an Entra administrator to grant it, since Azure DevOps rights
-such as Project Collection Administrator do not override that policy. An
+such as Project Collection Administrator do not override that policy. A guest
+of the tenant cannot consent for itself at all, so an Azure DevOps
+administrator who is a guest always needs that grant. An
 application without a verified publisher is marked "unverified" there, and a
 tenant may forbid consent to such applications. A multi-tenant deployment
 application therefore needs Microsoft publisher verification before customers
@@ -147,14 +149,24 @@ The Console's Azure DevOps card leads with **Connect with Microsoft**:
    (`PUT vssps…/_apis/graph/memberships/{principal}/{group}`): Readers where
    agents only read, Contributors where any agent writes. The entitlement
    call's own `projectEntitlements` is not used: for a service principal it
-   reports success and grants nothing. An
-   administrator without that right (a Project Collection Administrator has it)
-   gets a refusal that names the role and a checklist for doing it by hand. The
-   checklist names the application by its client ID as well as its name: a
-   customer tenant keeps the display name the application had when it was
-   first consented to, so a later rename does not reach the Azure DevOps
-   member picker there. The flow resumes at step 5 once the service principal
-   is in the organization.
+   reports success and grants nothing. The entitlement call answers 200 even
+   when it refuses, so the Control Plane reads `isSuccess` and the result's
+   access level, not the status code.
+
+   Only a Project Collection Administrator can add the service principal with
+   Basic. A Project Administrator asking for Basic is refused (`5032`, "Add
+   Users"). Without an access level the same call succeeds at Stakeholder,
+   which reaches no repository, so the Control Plane always asks for Basic and
+   never omits it. A Project Administrator can still make the project-group
+   memberships, and a Project Collection Administrator can raise the access
+   level later (`PATCH …/serviceprincipalentitlements/{id}`). An administrator
+   below Project Collection Administrator therefore gets a refusal that names
+   the role, and a checklist for doing it by hand. The checklist names the
+   application by its client ID as well as its name: a customer tenant keeps
+   the display name the application had when it was first consented to, so a
+   later rename does not reach the Azure DevOps member picker there. The flow
+   resumes at step 5 once the service principal is in the organization.
+
 5. **Verification.** As the application, the Control Plane takes a client
    credentials token at the customer tenant and reads
    `GET https://dev.azure.com/{organization}/_apis/connectionData`, recording
@@ -209,9 +221,10 @@ and identity id.
 Entra does not tell an application when its own secret expires, so the product
 learns of expiry from the refusal. An `invalid_client` answer moves every
 binding of the affected connections to `runtime_degraded` with reason
-`secret_rejected`. A service principal removed from the tenant or from the
-organization (`TF401444`) moves them to `runtime_degraded` with reason
-`access_revoked`, and the card offers to connect again.
+`secret_rejected`. A service principal that is not in the organization moves
+them to `runtime_degraded` with reason `access_revoked`, and the card offers to
+connect again. Azure DevOps reports this two ways: `TF401444` for an identity
+the organization has never seen, and `TF400813` for one that was removed.
 
 ### 3.6 What the Organization Grants
 
@@ -534,9 +547,20 @@ known only through consent.
    and removes the service principal with Basic (200, 204). A Graph membership
    adds it to a project group (201), and its rights follow at once. The
    entitlement call's `projectEntitlements` reported success but added no
-   membership. A tenant's security defaults refuse a device-code sign-in. Open:
-   which of these calls an administrator below Project Collection Administrator
-   may make, since only the organization's owner was tried.
+   membership. A tenant's security defaults refuse a device-code sign-in.
+
+   The same calls were repeated as a guest of the tenant holding only Project
+   Administrator on one project, with the organization's default policy that
+   lets project administrators invite users. The guest's sign-in was refused
+   until an Entra administrator granted tenant-wide consent. Then:
+   - adding the service principal with Basic answered 200 with `isSuccess`
+     false, error `5032`;
+   - adding it without an access level succeeded at Stakeholder, and the
+     application then listed no repository and could not clone;
+   - the Graph membership succeeded (201);
+   - after the owner raised the access level to Basic through the entitlement
+     `PATCH`, the application listed and cloned the repository at once.
+
 3. **Verified:** git over HTTPS takes the Entra token as the Basic password. A
    Reader identity clones; its push is refused at the `git-receive-pack`
    advertisement with 403 `TF401027` (GenericContribute). A Contributor
