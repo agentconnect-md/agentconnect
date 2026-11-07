@@ -386,7 +386,8 @@ export class AzureDevOpsReviewAdapter extends CodeHostReviewAttemptAdapter<
       threadContext: { filePath: path, ...sides },
       pullRequestThreadContext: {
         ...(changeTrackingId !== undefined ? { changeTrackingId } : {}),
-        iterationContext: { firstComparingIteration: 1, secondComparingIteration: attempt.iteration }
+        // Equal iterations put the common commit on the left: the full pull-request diff the comment was written against.
+        iterationContext: { firstComparingIteration: attempt.iteration, secondComparingIteration: attempt.iteration }
       }
     })
   }

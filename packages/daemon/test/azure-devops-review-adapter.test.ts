@@ -446,7 +446,8 @@ describe('Azure DevOps review adapter — publication (§11.6 steps 1-4)', () =>
       },
       pullRequestThreadContext: {
         changeTrackingId: 7,
-        iterationContext: { firstComparingIteration: 1, secondComparingIteration: ITERATION }
+        // Equal iterations: the left side is the common commit, never the first push.
+        iterationContext: { firstComparingIteration: ITERATION, secondComparingIteration: ITERATION }
       }
     })
     expect(second!.body).toMatchObject({

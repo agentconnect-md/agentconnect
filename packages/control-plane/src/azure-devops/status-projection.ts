@@ -106,6 +106,12 @@ export function azureDevOpsStatusSpec(
   }
 }
 
+/** The Console link carrying one write's marker, the only evidence a listed status is that write. */
+export function withWriteMarker(consoleUrl: string | undefined, marker: string): string | undefined {
+  if (!consoleUrl) return undefined
+  return `${consoleUrl}${consoleUrl.includes('?') ? '&' : '?'}write=${encodeURIComponent(marker)}`
+}
+
 /** One lifecycle edge, as the WS/relay frame that carries it already presents it. */
 export interface AzureDevOpsStatusEdge {
   hookId: string
@@ -273,6 +279,8 @@ interface ListedStatus {
   description?: unknown
   context?: { genre?: unknown; name?: unknown }
   createdBy?: { id?: unknown }
+  iterationId?: unknown
+  targetUrl?: unknown
 }
 
 /** Durable periodic worker for one pull-request status per state change (§11.7). */
@@ -407,8 +415,8 @@ export class AzureDevOpsStatusReporter {
       await this.retry(row, errorLabel(err, 'iteration_read_failed'), false, retryAfter(err))
       return
     }
-    const spec = azureDevOpsStatusSpec(row, await this.consoleUrl(row))
     const marker = randomUUID()
+    const spec = azureDevOpsStatusSpec(row, withWriteMarker(await this.consoleUrl(row), marker))
     const now = new Date(this.deps.clock.now())
     const taken = await this.deps.projections.beginWrite(
       row.id,
@@ -466,11 +474,14 @@ export class AzureDevOpsStatusReporter {
     return found
   }
 
-  /** Proven by a newer entry than last observed with the sent state and description; absent past the grace window, it never landed. */
+  /** Proven only by a listed status carrying this write's marker on this head's iteration; absent past the grace window, it never landed. */
   private async reconcileAmbiguous(row: CodeHostRunProjectionRecord, target: StatusTarget): Promise<void> {
-    const spec = azureDevOpsStatusSpec(row, await this.consoleUrl(row))
+    const expectedUrl = withWriteMarker(await this.consoleUrl(row), row.writeMarker!)
+    const spec = azureDevOpsStatusSpec(row, expectedUrl)
     let statuses: ListedStatus[]
+    let iterationId: number | undefined
     try {
+      iterationId = await this.iterationOf(target, row.headSha)
       const listed = await this.deps.service.withApi(target.connection, (token) =>
         azureDevOpsCall<{ value?: ListedStatus[] }>(
           this.deps.api,
@@ -491,6 +502,9 @@ export class AzureDevOpsStatusReporter {
       .filter((status) => (statusIdOf(status.id) ? BigInt(statusIdOf(status.id)!) > lastObserved : false))
       .filter((status) => status.context?.genre === spec.context.genre && status.context?.name === spec.context.name)
       .filter((status) => typeof status.createdBy?.id !== 'string' || status.createdBy.id.toLowerCase() === identity)
+      // Without the marker in the link nothing proves the write; another head's or an earlier write's status never does.
+      .filter((status) => expectedUrl !== undefined && status.targetUrl === expectedUrl)
+      .filter((status) => (status.iterationId ?? undefined) === iterationId)
       .find((status) => status.state === spec.state && status.description === spec.description)
     if (landed) {
       await this.finish(row, row.writeMarker!, statusIdOf(landed.id)!)

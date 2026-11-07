@@ -383,7 +383,9 @@ describe('AzureDevOpsStatusReporter', () => {
       state: 'pending',
       description: 'AgentConnect review queued',
       context: { genre: 'agentconnect', name: 'reviewer' },
-      targetUrl: 'https://console.example.test/acme/sessions/session-1?source=azure-devops',
+      targetUrl: expect.stringMatching(
+        /^https:\/\/console\.example\.test\/acme\/sessions\/session-1\?source=azure-devops&write=[0-9a-f-]{36}$/
+      ),
       iterationId: 2
     })
     expect(ledger.rows.get(projection().id)).toMatchObject({ observedState: 'queued', noteId: '1', writeMarker: null })
@@ -395,7 +397,7 @@ describe('AzureDevOpsStatusReporter', () => {
   })
 
   it('reconciles a lost answer by the entry it left, and never posts twice', async () => {
-    const ledger = new FakeLedger(projection())
+    const ledger = new FakeLedger(projection({ sessionId: 'session-1' }))
     const { service, azureDevOps, clock } = reporter(ledger)
     azureDevOps.setFault('landed-but-lost')
     await service.tick()
@@ -406,6 +408,33 @@ describe('AzureDevOpsStatusReporter', () => {
     await service.tick()
     expect(azureDevOps.posts()).toHaveLength(1)
     expect(ledger.rows.get(projection().id)).toMatchObject({ observedState: 'queued', noteId: '1', writeMarker: null })
+  })
+
+  it('takes no other write’s status as proof: not another head’s, and not one without this write’s marker', async () => {
+    const ledger = new FakeLedger(projection({ sessionId: 'session-1' }))
+    const { service, azureDevOps, clock } = reporter(ledger)
+    // Same agent, state and description, but another head's iteration and an earlier write's link.
+    azureDevOps.statuses.push({
+      id: 50,
+      state: 'pending',
+      description: 'AgentConnect review queued',
+      context: { genre: 'agentconnect', name: 'reviewer' },
+      targetUrl: 'https://console.example.test/acme/sessions/session-1?source=azure-devops&write=earlier',
+      iterationId: 1,
+      createdBy: { id: IDENTITY }
+    })
+    azureDevOps.setFault('network')
+    await service.tick()
+    azureDevOps.setFault('none')
+    clock.advance(5_000)
+    await service.tick()
+    expect(ledger.rows.get(projection().id)).toMatchObject({ lastErrorCode: 'ambiguous_write' })
+    expect(ledger.rows.get(projection().id)!.writeMarker).not.toBeNull()
+    clock.advance(11 * 60_000)
+    await service.tick()
+    await service.tick()
+    expect(azureDevOps.posts()).toHaveLength(2)
+    expect(ledger.rows.get(projection().id)).toMatchObject({ observedState: 'queued', writeMarker: null })
   })
 
   it('posts again only once a lost write stayed absent past the grace window', async () => {
