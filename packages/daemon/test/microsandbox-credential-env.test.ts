@@ -25,7 +25,23 @@ describe('the provider credentials a runtime recognizes', () => {
   it.each([
     ['dsh-acp', {}, { DEEPSEEK_API_KEY: 'fixture-deepseek-key' }],
     ['claude-acp', { '.claude.json': { primaryApiKey: 'fixture-claude-key' } }, {}],
-    ['codex-acp', { '.codex/auth.json': { OPENAI_API_KEY: 'fixture-codex-key' } }, {}]
+    ['codex-acp', { '.codex/auth.json': { OPENAI_API_KEY: 'fixture-codex-key' } }, {}],
+    [
+      'cline',
+      {
+        '.cline/data/settings/providers.json': {
+          version: 1,
+          providers: { anthropic: { settings: { provider: 'anthropic', apiKey: 'fixture-cline-key' } } }
+        }
+      },
+      {}
+    ],
+    [
+      'github-copilot-cli',
+      {},
+      { COPILOT_PROVIDER_API_KEY: 'fixture-copilot-key', COPILOT_PROVIDER_BASE_URL: 'https://models.example.test/v1' }
+    ],
+    ['antigravity-acp', {}, { GEMINI_API_KEY: 'fixture-gemini-key' }]
   ])('covers every variable the %s preparer binds', (runtimeId, files, env) => {
     const credentials = prepareMicrosandboxCredentials(runtimeId, undefined, { HOME: home(files), ...env })
     expect(credentials?.secrets.length).toBeGreaterThan(0)
