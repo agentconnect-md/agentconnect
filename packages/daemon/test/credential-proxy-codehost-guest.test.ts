@@ -1,5 +1,6 @@
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import type { Server } from 'node:net'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { generateCa } from '@anthropic-ai/sandbox-runtime'
@@ -50,9 +51,9 @@ afterAll(() => {
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true })
 })
 
-/** Short, so each socket fits AF_UNIX on a host whose temp directory is long. */
+/** Short, so each socket fits AF_UNIX on a host whose temp directory is long; Windows has no /tmp and no sockets here. */
 function shortDir(): string {
-  const dir = realpathSync(mkdtempSync('/tmp/acg-'))
+  const dir = realpathSync(mkdtempSync(join(process.platform === 'win32' ? tmpdir() : '/tmp', 'acg-')))
   dirs.push(dir)
   return dir
 }
