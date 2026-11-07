@@ -47,6 +47,11 @@ const QWEN_SETTINGS = join('.qwen', 'settings.json')
 const OMP_DB = join('.omp', 'agent', 'agent.db')
 const AMP_SECRETS = join('.local', 'share', 'amp', 'secrets.json')
 const KIMI_CONFIG = join('.kimi-code', 'config.toml')
+const CLINE_PROVIDERS = join('.cline', 'data', 'settings', 'providers.json')
+const CLINE_OAUTH = {
+  provider: 'cline',
+  auth: { accessToken: 'fixture-cline-oauth', refreshToken: 'fixture-cline-refresh' }
+}
 
 /** An OMP credential database with one API key row and one OAuth row. */
 export function writeOmpDatabase(path: string, key: string): void {
@@ -170,5 +175,24 @@ export const RUNTIME_KEY_FIXTURES: RuntimeKeyFixture[] = [
     },
     stored: (home) => toml(join(home, KIMI_CONFIG)).providers?.main?.api_key,
     oauth: { read: (home) => json(join(home, '.kimi-code', 'credentials', 'kimi-code.json')), expected: KIMI_OAUTH }
+  },
+  {
+    runtime: 'cline',
+    key: 'fixture-cline-key',
+    prefix: 'AC_CLINE_API',
+    provider: 'anthropic',
+    host: 'api.anthropic.com',
+    apiKeyHeader: true,
+    seed: (home) =>
+      write(join(home, CLINE_PROVIDERS), {
+        version: 1,
+        modes: {},
+        providers: {
+          anthropic: { settings: { provider: 'anthropic', apiKey: 'fixture-cline-key' }, tokenSource: 'manual' },
+          cline: { settings: CLINE_OAUTH, tokenSource: 'oauth' }
+        }
+      }),
+    stored: (home) => json(join(home, CLINE_PROVIDERS)).providers?.anthropic?.settings?.apiKey,
+    oauth: { read: (home) => json(join(home, CLINE_PROVIDERS)).providers?.cline?.settings, expected: CLINE_OAUTH }
   }
 ]

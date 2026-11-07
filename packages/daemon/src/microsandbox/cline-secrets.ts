@@ -4,7 +4,13 @@ import { objectFromJson } from '../runtimes/codex-config.js'
 import { runtimeStateLocations } from '../runtimes/probe.js'
 import { projectRuntimeHomeSeedFile } from '../runtimes/runtime-home.js'
 import { MAX_SEED_FILE_BYTES } from '../runtimes/runtime-seeded-credentials.js'
-import { microsandboxPlaceholder, replaceSecretValue, type SecretPlaceholder } from './secret-values.js'
+import {
+  microsandboxPlaceholder,
+  placeSecrets,
+  replaceSecretValue,
+  type KeyOwner,
+  type SecretPlaceholder
+} from './secret-values.js'
 import type { MicrosandboxCredentials, MicrosandboxSecret } from './secrets.js'
 
 // Cline's built-in providers whose default endpoint takes a key in a header; others need an HTTPS baseUrl in the host file.
@@ -73,41 +79,30 @@ export function prepareClineSecrets(
   }
   if (data.version !== 1) return undefined
   // One binding per distinct key, reaching every host a provider entry sends it to.
-  const keys = new Map<string, { env: string; provider: string; hosts: Set<string>; defaultHost?: string }>()
+  const sharedKeys = new Map<string, MicrosandboxSecret>()
+  const owners = new Map<MicrosandboxSecret, KeyOwner>()
+  const values: [string, MicrosandboxSecret][] = []
   for (const [id, raw] of Object.entries(object(data.providers)).sort(([a], [b]) => a.localeCompare(b))) {
     const settings = object(object(raw).settings)
     // An OAuth sign-in's access token wins over any key beside it, and sign-ins are shared as they are.
     if (nonempty(object(settings.auth).accessToken)) continue
     const provider = nonempty(settings.provider) ? settings.provider : id
-    const hosts = allowedHost(settings.baseUrl ?? (DEFAULT_HOSTS[provider] && `https://${DEFAULT_HOSTS[provider]}`))
+    const defaultHost = Object.hasOwn(DEFAULT_HOSTS, provider) ? DEFAULT_HOSTS[provider] : undefined
+    const hosts = allowedHost(settings.baseUrl ?? (defaultHost && `https://${defaultHost}`))
     for (const { field, value } of apiKeyFields(settings)) {
       const env = `AC_CLINE_API_${createHash('sha256').update(`${id}:${field}`).digest('hex').slice(0, 16).toUpperCase()}`
-      const key = keys.get(value) ?? { env, provider, hosts: new Set<string>(), defaultHost: DEFAULT_HOSTS[provider] }
-      for (const host of hosts) key.hosts.add(host)
-      keys.set(value, key)
+      const known = sharedKeys.get(value)
+      const secret = known ?? { env, placeholder: '', host: [], readValue: () => value }
+      if (!known) owners.set(secret, { provider, defaultHost })
+      secret.host = [...new Set([secret.host, hosts].flat())].sort()
+      sharedKeys.set(value, secret)
+      values.push([value, secret])
     }
   }
-  if (!keys.size) return undefined
-  const secrets: MicrosandboxSecret[] = []
-  const replacements = new Map<string, string>()
-  for (const [value, key] of keys) {
-    const hosts = [...key.hosts].sort()
-    const secret: MicrosandboxSecret = {
-      env: key.env,
-      placeholder: placeholder({
-        env: key.env,
-        provider: key.provider,
-        hosts,
-        ...(key.defaultHost ? { defaultHost: key.defaultHost } : {})
-      }),
-      host: hosts,
-      readValue: () => value
-    }
-    secrets.push(secret)
-    replacements.set(value, secret.placeholder)
-  }
+  if (!sharedKeys.size) return undefined
+  const replacements = placeSecrets(owners, values, placeholder)
   return {
-    secrets: secrets.filter((secret) => secret.host.length > 0),
+    secrets: [...sharedKeys.values()].filter((secret) => secret.host.length > 0),
     replacements,
     sources: [file.source],
     seedExclusions: [file.destination],
