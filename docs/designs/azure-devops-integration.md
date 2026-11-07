@@ -2,8 +2,8 @@
 
 > Status: **Proposed**. Scope: **Azure DevOps Services** (`dev.azure.com`),
 > Git repositories in Azure Repos. The first version covers workspaces and
-> additional repositories only; pull-request hooks, reviews, and code-channel
-> pull-request views are the second step (§11). Platform facts were read from
+> additional repositories only; pull-request hooks, reviews, pull-request
+> tools, and code-channel pull-request views are the second step (§11). Platform facts were read from
 > Microsoft's documentation on 2026-11-06; each item marked **probe** in §12
 > must be confirmed against a live organization before the step that relies
 > on it.
@@ -45,7 +45,8 @@ Two facts shape the design:
    credential proxy. It never reaches an agent environment, the agent-facing
    helper channel, or a CLI wrapper.
 3. **The tier is enforced in the proxy.** Requests are routed deny-by-default,
-   a push requires a `write` grant, and API writes are refused.
+   and a push or an API write requires a `write` grant on the repository it
+   names.
 4. **A surrogate numeric identity.** Repository GUIDs map to a deployment-global
    numeric id, which is what every existing catalog, claim, grant, workspace,
    and wire field carries (§4).
@@ -53,8 +54,8 @@ Two facts shape the design:
    identity; it needs no administration rights on the Azure DevOps side and
    no provisioning saga.
 6. **The Azure CLI works unmodified.** `az repos` and the other `azure-devops`
-   extension commands reach the proxy with a placeholder and get reads; writes
-   are refused with a message naming the alternative.
+   extension commands reach the proxy with a placeholder. They read, and with a
+   `write` grant they also open, update, and complete pull requests.
 
 ## 2. What Differs From Gitea
 
@@ -69,7 +70,7 @@ Two facts shape the design:
 | Rights on the repo    | `admin` on every bound repository     | read on every bound repository; Contribute where any agent writes           |
 | Where a tier is held  | a label on one token                  | the proxy; the token is organization-wide                                   |
 | Agent token delivery  | helper or proxy                       | proxy only                                                                  |
-| Provider CLI          | none                                  | the Azure CLI `azure-devops` extension, read-only through the proxy         |
+| Provider CLI          | none                                  | the Azure CLI `azure-devops` extension through the proxy, writes by tier    |
 | API reads naming none | the workspace's credential            | `connectionData` and resource-area lookups only; everything else refused    |
 | Webhooks              | managed per repository                | none in the first version (§11)                                             |
 | Rate limiting         | instance-defined                      | per identity, shared by every agent of the organization (§6.5)              |
@@ -393,20 +394,27 @@ every provider, so this descriptor is the only proxy code Azure DevOps adds.
 
 ### 6.3 The Tier
 
-| Access    | git            | API                      |
-| --------- | -------------- | ------------------------ |
-| `read`    | fetch          | reads of that repository |
-| `comment` | fetch          | reads of that repository |
-| `write`   | fetch and push | reads of that repository |
+| Access    | git            | API                                 |
+| --------- | -------------- | ----------------------------------- |
+| `read`    | fetch          | reads of that repository            |
+| `comment` | fetch          | reads of that repository            |
+| `write`   | fetch and push | reads and writes of that repository |
 
 A push is `git-receive-pack`, or `info/refs?service=git-receive-pack`. The proxy
 refuses either unless the grant it obtained for that repository has access
 `write`, naming the agent's actual access in the refusal. The check reads the
 grant's access, not the provider, so it lives in the proxy's shared git route.
 
-API writes are refused for every tier in the first version. The refusal says
-that writes need a tool. Pushing a branch works and the pull request can be
-opened in Azure DevOps (§12, question 6).
+An API write follows the same rule as a push, as GitHub's REST writes do
+([github-app-git-credentials.md](github-app-git-credentials.md#phase-2-the-daemon-credential-proxy)).
+A write that names an authorized repository is forwarded under a `write`
+grant and refused below it. A write that names no repository is refused. So
+an agent with `write` opens, updates, and completes pull requests through the
+Azure CLI or REST, and the first version adds no Azure DevOps tool. Such a pull
+request carries no AgentConnect footer. Completing a pull request is bounded
+by the organization's branch policies, such as required reviewers on the
+default branch, as merging is by branch protection on GitHub. Tools for pull
+requests and reviews come with the second step (§11).
 
 ### 6.4 Client Configuration
 
@@ -513,8 +521,9 @@ The connect, connection, and secret routes manage a credential and are
   deployment's access on its own side by removing the service principal from
   its organization.
 - The proxy is the boundary for both the repository set and the tier: routing
-  is deny-by-default, a push needs `write`, and API writes are refused. A
-  client that bypasses the proxy holds only a placeholder.
+  is deny-by-default, and a push or an API write needs `write` on the
+  repository it names. A client that bypasses the proxy holds only a
+  placeholder.
 - A compromised daemon host yields the current token: the identity's full
   rights in the organization for up to an hour. That is wider than a GitHub
   installation token. The Console states this on the connect card, and §3.6's
@@ -535,7 +544,8 @@ The connect, connection, and secret routes manage a credential and are
 - More than one Azure DevOps organization per AgentConnect organization.
 - Pipelines, Boards, Wiki, and Artifacts, and publishing a Marketplace
   extension.
-- API writes.
+- Azure DevOps tools for pull requests and reviews, which come with the second
+  step (§11).
 - Several connections per AgentConnect organization, each agent choosing one.
   This is how an agent gets an identity of its own: the customer registers an
   application whose service principal reaches only that agent's repositories,
@@ -553,7 +563,7 @@ The connect, connection, and secret routes manage a credential and are
     the first version relies on the proxy. A customer whose review requires
     a provider-side bound can have it added as an option.
 
-## 11. Second Step: Hooks and Reviews
+## 11. Second Step: Hooks, Reviews, and Tools
 
 This step is out of scope here. Its constraints are recorded so the first
 version does not preclude them:
@@ -567,6 +577,9 @@ version does not preclude them:
   waiting for author, −10 rejected) and comments in threads. A pull-request
   status on the iteration can carry the run state, written by the Control
   Plane as Gitea's commit status is.
+- **Pull-request tools.** An Azure DevOps pull-request tool beside the GitHub,
+  GitLab, and Gitea ones. It adds the footer, and in a hook turn the guidance
+  points the agent to it rather than to the CLI.
 - **Code channels.** Pull-request links and views key on the surrogate
   identity plus the pull-request id.
 
@@ -628,8 +641,9 @@ known only through consent.
 5. **Decided:** project and repository lists, at either scope, and
    pull-request endpoints that name no repository are refused (§6.2). A
    filtered list is the follow-up if agents need one.
-6. Whether the first version needs a pull-request tool. Without one, an agent
-   pushes a branch and a person opens the pull request.
+6. **Decided:** no Azure DevOps tool in the first version. An agent with
+   `write` opens and completes pull requests through the CLI or REST (§6.3);
+   the tools come with the second step (§11).
 7. **Verified:** derivation can read the identity's own rights in one call.
    `POST _apis/security/permissionevaluationbatch` as the identity, Git
    Repositories namespace, token `repoV2/{project GUID}/{repository GUID}`,
@@ -661,6 +675,8 @@ live organization before A2.
   §6.4, the feature advertisement tied to the proxy, and the strategy refusal.
   Tests pin each refusal of §6.2: the lists, the pull-request endpoints that
   name no repository, and a repository outside the agent's authorizations.
+  They also pin §6.3: a write below `write` is refused, and a pull-request
+  write at `write` is forwarded.
 - **A4 — Console, Setup, and documentation.** The card, the pickers, the
   Microsoft section's redirect URI and wording, and the setup page on the
   documentation site.
