@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import stripJsonComments from 'strip-json-comments'
 import { objectFromJson } from '../runtimes/codex-config.js'
 import { openCodeConfigWithKeys, openCodeHostKeys } from '../runtimes/opencode-host-keys.js'
+import { OPENCODE_CONFIG_ENV, PROVIDER_DEFAULT_ENDPOINTS } from '../runtimes/provider-endpoints.js'
 import { runtimeStateLocations } from '../runtimes/probe.js'
 import { projectRuntimeHomeSeedFile } from '../runtimes/runtime-home.js'
 import { MAX_SEED_FILE_BYTES } from '../runtimes/runtime-seeded-credentials.js'
@@ -18,10 +19,8 @@ import {
 const DEFAULT_ORIGINS: Record<string, string> = {
   opencode: 'https://opencode.ai',
   'opencode-go': 'https://opencode.ai',
-  openai: 'https://api.openai.com',
-  anthropic: 'https://api.anthropic.com',
+  ...PROVIDER_DEFAULT_ENDPOINTS,
   google: 'https://generativelanguage.googleapis.com',
-  deepseek: 'https://api.deepseek.com',
   openrouter: 'https://openrouter.ai',
   xai: 'https://api.x.ai',
   groq: 'https://api.groq.com',
@@ -93,7 +92,7 @@ export function prepareOpenCodeSecrets(
   const env = { ...hostEnv, ...explicitEnv }
   const configs = [
     ...configFiles.map(({ source }) => readDocument(source)),
-    objectFromJson(env.OPENCODE_CONFIG_CONTENT, 'OPENCODE_CONFIG_CONTENT')
+    objectFromJson(env[OPENCODE_CONFIG_ENV.opencode], OPENCODE_CONFIG_ENV.opencode)
   ]
   // Providers signed in with one key share its binding, which reaches all their hosts under the first one's variable.
   const groups = new Map<string, { providers: string[]; env: string; hosts: Set<string> }>()
@@ -146,8 +145,8 @@ export function prepareOpenCodeSecrets(
     },
     // Each bound provider reads its key from the variable that holds its placeholder, which the proxy swaps on its hosts.
     prepareEnv(launchEnv) {
-      launchEnv.OPENCODE_CONFIG_CONTENT = openCodeConfigWithKeys(
-        launchEnv.OPENCODE_CONFIG_CONTENT,
+      launchEnv[OPENCODE_CONFIG_ENV.opencode] = openCodeConfigWithKeys(
+        launchEnv[OPENCODE_CONFIG_ENV.opencode],
         bound.map(([provider, secret]) => ({ provider, env: secret.env }))
       )
     }

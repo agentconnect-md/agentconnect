@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { carries, keyDestinations, launchOverlay, runtimeKeyEndpoint } from '../src/credential-proxy/pod-keys.js'
+import { carries, keyDestinations, launchOverlay } from '../src/credential-proxy/pod-keys.js'
+import { runtimeKeyEndpoint } from '../src/runtimes/provider-endpoints.js'
 
 // Where a pool pod's runtime sends an install key, read from its launch env as the runtime reads it.
 

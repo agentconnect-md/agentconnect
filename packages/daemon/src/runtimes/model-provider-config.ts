@@ -17,6 +17,12 @@ import {
   objectFromJson,
   record
 } from './codex-config.js'
+import {
+  COPILOT_PROVIDER_TYPE_ENV,
+  keyVariables,
+  OPENCODE_CONFIG_ENV,
+  RUNTIME_KEY_VARIABLES
+} from './provider-endpoints.js'
 
 export interface ModelCredential {
   key: string
@@ -36,8 +42,6 @@ export interface ModelProviderTarget {
   model?: string
 }
 
-/** The two runtimes that read an OpenCode configuration document, and the variable that carries it. */
-const OPENCODE_CONFIG_ENV = { opencode: 'OPENCODE_CONFIG_CONTENT', kilo: 'KILO_CONFIG_CONTENT' } as const
 type OpenCodeShapedKind = keyof typeof OPENCODE_CONFIG_ENV
 
 export function isOpenCodeShaped(target: Pick<ModelProviderTarget, 'runtime'> | undefined): boolean {
@@ -53,10 +57,10 @@ export function requiresSelectedModel(target: ModelProviderTarget): boolean {
   return isOpenCodeShaped(target) || isLaunchModelRuntime(target.runtime)
 }
 
-const OPENCODE_PROVIDERS: Record<string, { runtime: ModelRuntimeKind; keyEnv: string }> = {
-  anthropic: { runtime: 'claude', keyEnv: 'ANTHROPIC_API_KEY' },
-  openai: { runtime: 'codex', keyEnv: 'OPENAI_API_KEY' },
-  deepseek: { runtime: 'deepseek', keyEnv: 'DEEPSEEK_API_KEY' }
+const OPENCODE_PROVIDERS: Record<string, { runtime: ModelRuntimeKind }> = {
+  anthropic: { runtime: 'claude' },
+  openai: { runtime: 'codex' },
+  deepseek: { runtime: 'deepseek' }
 }
 
 // The deepseek pair speaks Messages, and Kilo's built-in deepseek provider sends chat completions whatever its `npm`.
@@ -130,7 +134,7 @@ function environmentLaunchModel(target: ModelProviderTarget, env: Record<string,
 
 function applyCodexBaseUrl(env: Record<string, string>, baseUrl: string): void {
   env.CODEX_CONFIG = codexConfigWithBaseUrl(env.CODEX_CONFIG, baseUrl)
-  env.OPENAI_BASE_URL = baseUrl
+  env[RUNTIME_KEY_VARIABLES.codex.openai.base] = baseUrl
 }
 
 export function modelProviderTarget(
@@ -166,7 +170,7 @@ function applyOpenCodeCredential(
   const providers = record(config.provider, `${configEnv}.provider`)
   const provider = record(providers[providerId], `${configEnv}.provider.${providerId}`)
   const options = record(provider.options, `${configEnv}.provider.${providerId}.options`)
-  const keyEnv = OPENCODE_PROVIDERS[providerId]?.keyEnv ?? 'MODEL_TOKEN'
+  const keyEnv = keyVariables(target.runtime, providerId)?.key ?? 'MODEL_TOKEN'
   if (credential.key) env[keyEnv] = credential.key
   let baseURL = credential.baseUrl
   // The deepseek pair is the DeepSeek Harness's Messages base, so OpenCode reaches it through its Anthropic SDK.
@@ -202,29 +206,29 @@ function applyLaunchModelCredential(
 ): void {
   const anthropic = target.provider === 'anthropic'
   const { key, baseUrl } = credential
+  const variables = RUNTIME_KEY_VARIABLES[target.runtime][anthropic ? 'anthropic' : 'openai']
   if (target.runtime === 'qwen') {
     // Qwen Code picks its auth type from whichever variable triple is complete, OpenAI first.
-    const prefix = anthropic ? 'ANTHROPIC_' : 'OPENAI_'
-    if (key) env[`${prefix}API_KEY`] = key
-    if (baseUrl) env[`${prefix}BASE_URL`] = baseUrl
-    if (target.model) env[`${prefix}MODEL`] = target.model
+    if (key) env[variables.key] = key
+    if (baseUrl) env[variables.base] = baseUrl
+    if (target.model) env[anthropic ? 'ANTHROPIC_MODEL' : 'OPENAI_MODEL'] = target.model
     if (anthropic) env.OPENAI_MODEL = env.QWEN_MODEL = ''
     // Also stops its models.dev catalog refresh; a deployment can still turn it back on.
     env.QWEN_USAGE_STATISTICS_ENABLED ??= 'false'
     return
   }
   if (target.runtime === 'copilot') {
-    env.COPILOT_PROVIDER_TYPE = target.provider
-    if (key) env.COPILOT_PROVIDER_API_KEY = key
-    if (baseUrl) env.COPILOT_PROVIDER_BASE_URL = baseUrl
+    env[COPILOT_PROVIDER_TYPE_ENV] = target.provider
+    if (key) env[variables.key] = key
+    if (baseUrl) env[variables.base] = baseUrl
     if (target.model) env.COPILOT_MODEL = target.model
     // No GitHub sign-in, telemetry or model service: the provider is the only endpoint.
     env.COPILOT_OFFLINE = 'true'
     return
   }
   env.GOOSE_PROVIDER = target.provider
-  if (key) env[anthropic ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY'] = key
-  if (baseUrl) env[anthropic ? 'ANTHROPIC_HOST' : 'OPENAI_BASE_URL'] = baseUrl
+  if (key) env[variables.key] = key
+  if (baseUrl) env[variables.base] = baseUrl
   if (target.model) env.GOOSE_MODEL = target.model
   // goose otherwise stores and reads provider keys through the OS keyring.
   env.GOOSE_DISABLE_KEYRING = '1'
@@ -237,33 +241,27 @@ export function applyModelCredential(
   credential: ModelCredential
 ): void {
   if (target.runtime === 'claude') {
-    // The x-api-key slot, matching the other runtimes' same-slot shape: the sandbox shim's
-    // per-variable AC_CLAUDE_API_KEY fill-in stays blocked, so exactly one credential travels.
-    env.ANTHROPIC_API_KEY = credential.key
+    // The x-api-key slot, so the shim's AC_CLAUDE_API_KEY fill-in stays blocked and exactly one credential travels.
+    const { key, base } = RUNTIME_KEY_VARIABLES.claude.anthropic
+    env[key] = credential.key
     delete env.ANTHROPIC_AUTH_TOKEN
-    if (credential.baseUrl) env.ANTHROPIC_BASE_URL = credential.baseUrl
+    if (credential.baseUrl) env[base] = credential.baseUrl
     return
   }
 
   if (target.runtime === 'deepseek') {
-    env.DEEPSEEK_API_KEY = credential.key
-    if (credential.baseUrl) env.DEEPSEEK_BASE_URL = credential.baseUrl
+    const { key, base } = RUNTIME_KEY_VARIABLES.deepseek.deepseek
+    env[key] = credential.key
+    if (credential.baseUrl) env[base] = credential.baseUrl
     return
   }
 
   if (target.runtime === 'codex') {
-    env.OPENAI_API_KEY = credential.key
-    // The key alone is not enough on a fresh CODEX_HOME: codex counts only an account (auth.json)
-    // as authentication, and a default auth request is what lets codex-acp satisfy authRequired
-    // itself. Every injected credential rides the GATEWAY method — process-ephemeral, so no
-    // persisted account (any shape) can override this launch's grant and concurrent hosts share
-    // no credential state. An endpoint-less key (a vault rotating real provider keys) carries NO
-    // request from here: the pod's AC_CODEX_BASE_URL floor outranks the runtime default and only
-    // the shim can see it, so the layer that knows the effective endpoint composes the request.
+    env[RUNTIME_KEY_VARIABLES.codex.openai.key] = credential.key
+    // A key rides codex-acp's gateway auth request; an endpoint-less one gets its request from the shim, which alone sees the pod's base floor.
     if (!credential.baseUrl) return
     env.DEFAULT_AUTH_REQUEST = codexGatewayAuthRequest(credential.baseUrl, credential.key)
-    // Kept beside the gateway method: an older codex-acp ignores an unknown methodId, and resumed
-    // threads pinned to the built-in provider still route by CODEX_CONFIG's openai_base_url.
+    // Kept beside the gateway method for an older codex-acp and for resumed threads on the built-in provider.
     applyCodexBaseUrl(env, credential.baseUrl)
     return
   }
@@ -399,8 +397,8 @@ export function applyStaticModelConfig(
     return
   }
   if (!configured.baseUrl) return
-  if (target.runtime === 'claude') env.ANTHROPIC_BASE_URL = configured.baseUrl
-  else if (target.runtime === 'deepseek') env.DEEPSEEK_BASE_URL = configured.baseUrl
+  if (target.runtime === 'claude') env[RUNTIME_KEY_VARIABLES.claude.anthropic.base] = configured.baseUrl
+  else if (target.runtime === 'deepseek') env[RUNTIME_KEY_VARIABLES.deepseek.deepseek.base] = configured.baseUrl
   else if (target.runtime === 'codex') applyCodexBaseUrl(env, configured.baseUrl)
 }
 

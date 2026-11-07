@@ -2,7 +2,13 @@ import { existsSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
 import { readRegularFileSync } from '../fs/regular-file.js'
-import { CODEX_DEFAULT_ENDPOINT, objectFromJson, record } from '../runtimes/codex-config.js'
+import { objectFromJson, record } from '../runtimes/codex-config.js'
+import {
+  hostCodexEndpoint,
+  hostKeyEndpoint,
+  PROVIDER_DEFAULT_ENDPOINTS,
+  RUNTIME_KEY_VARIABLES
+} from '../runtimes/provider-endpoints.js'
 import {
   resolveClaudeCredentialSources,
   resolveCodexCredentialSources
@@ -64,8 +70,11 @@ interface KeyProvider {
   defaultHost: string
 }
 
-const ANTHROPIC: KeyProvider = { provider: 'anthropic', defaultHost: 'api.anthropic.com' }
-const OPENAI: KeyProvider = { provider: 'openai', defaultHost: new URL(CODEX_DEFAULT_ENDPOINT).hostname }
+const ANTHROPIC: KeyProvider = {
+  provider: 'anthropic',
+  defaultHost: new URL(PROVIDER_DEFAULT_ENDPOINTS.anthropic!).hostname
+}
+const OPENAI: KeyProvider = { provider: 'openai', defaultHost: new URL(PROVIDER_DEFAULT_ENDPOINTS.openai!).hostname }
 
 function boundSecret(
   env: string,
@@ -119,8 +128,8 @@ function fileCredential(
   }
 }
 
-function claudeEndpoint(hostEnv: NodeJS.ProcessEnv, explicitEnv: Record<string, string>): string {
-  return explicitEnv.ANTHROPIC_BASE_URL ?? hostEnv.ANTHROPIC_BASE_URL ?? 'https://api.anthropic.com'
+function claudeEndpoint(hostEnv: NodeJS.ProcessEnv, explicitEnv: Record<string, string>): string | undefined {
+  return hostKeyEndpoint('claude', RUNTIME_KEY_VARIABLES.claude.anthropic.key, { ...hostEnv, ...explicitEnv })?.endpoint
 }
 
 /** A key the launch env holds in this variable, bound to the endpoint the runtime sends it to; files are left as they are. */
@@ -151,7 +160,7 @@ export function prepareClaudeEnvSecret(
   placeholder: SecretPlaceholder = microsandboxPlaceholder
 ): MicrosandboxCredentials | undefined {
   return variableCredential(
-    'ANTHROPIC_API_KEY',
+    RUNTIME_KEY_VARIABLES.claude.anthropic.key,
     hostEnv,
     explicitEnv,
     () => claudeEndpoint(hostEnv, explicitEnv),
@@ -189,8 +198,8 @@ export function prepareClaudeApiSecret(
   )
 }
 
-/** The endpoint Codex sends an OpenAI key to: its configured provider's, after the active profile and `CODEX_CONFIG`. */
-function codexEndpoint(hostEnv: NodeJS.ProcessEnv, explicitEnv: Record<string, string>): unknown {
+/** Codex's configuration as the host launch reads it: the config file, its active profile, then `CODEX_CONFIG`. */
+function codexConfig(hostEnv: NodeJS.ProcessEnv, explicitEnv: Record<string, string>): Record<string, unknown> {
   const source = resolveCodexCredentialSources(hostEnv)
   let config: Record<string, unknown>
   try {
@@ -201,17 +210,10 @@ function codexEndpoint(hostEnv: NodeJS.ProcessEnv, explicitEnv: Record<string, s
   const overrides = objectFromJson(explicitEnv.CODEX_CONFIG ?? hostEnv.CODEX_CONFIG, 'CODEX_CONFIG')
   const profile = overrides.profile ?? config.profile
   const profiles = record(config.profiles, 'Codex profiles')
-  config = mergeConfig(
+  return mergeConfig(
     mergeConfig(config, record(typeof profile === 'string' ? profiles[profile] : undefined, 'Codex profile')),
     overrides
   )
-  const provider = config.model_provider ?? 'openai'
-  const custom = record(record(config.model_providers, 'Codex providers')[String(provider)], 'Codex provider')
-  return provider === 'openai'
-    ? (config.openai_base_url ?? CODEX_DEFAULT_ENDPOINT)
-    : custom.requires_openai_auth === true
-      ? custom.base_url
-      : undefined
 }
 
 /** `OPENAI_API_KEY` in the launch env, at Codex's endpoint; an `OPENAI_BASE_URL` beside it leaves the key unbound. */
@@ -220,11 +222,13 @@ export function prepareCodexEnvSecret(
   explicitEnv: Record<string, string>,
   placeholder: SecretPlaceholder = microsandboxPlaceholder
 ): MicrosandboxCredentials | undefined {
+  const name = RUNTIME_KEY_VARIABLES.codex.openai.key
   return variableCredential(
-    'OPENAI_API_KEY',
+    name,
     hostEnv,
     explicitEnv,
-    () => ((explicitEnv.OPENAI_BASE_URL ?? hostEnv.OPENAI_BASE_URL) ? undefined : codexEndpoint(hostEnv, explicitEnv)),
+    () =>
+      hostKeyEndpoint('codex', name, { ...hostEnv, ...explicitEnv }, () => codexConfig(hostEnv, explicitEnv))?.endpoint,
     OPENAI,
     placeholder
   )
@@ -251,7 +255,7 @@ export function prepareCodexApiSecret(
     ...fileCredential(
       'CODEX',
       key,
-      codexEndpoint(hostEnv, explicitEnv),
+      hostCodexEndpoint(codexConfig(hostEnv, explicitEnv))?.endpoint,
       [
         { source: source.credentialFile, destination: join('.codex', 'auth.json') },
         { source: join(source.configDir, 'config.toml'), destination: join('.codex', 'config.toml'), toml: true }
