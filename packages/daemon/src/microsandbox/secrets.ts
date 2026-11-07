@@ -4,6 +4,7 @@ import { stringify as stringifyYaml } from 'yaml'
 import type { RuntimeDef } from '../config/config-schema.js'
 import { TLS_TRUST_ENV } from '../config/tls-trust-env.js'
 import { isDeepSeekRuntime } from '../runtimes/model-provider-config.js'
+import { hostKeyEndpoint, PROVIDER_DEFAULT_ENDPOINTS, RUNTIME_KEY_VARIABLES } from '../runtimes/provider-endpoints.js'
 import { runtimeStateLocations } from '../runtimes/probe.js'
 import { prepareSharedRuntimeCredentials, type SharedRuntimeCredentialAccess } from '../runtimes/runtime-credentials.js'
 import { prepareRuntimeHome, projectRuntimeHomeSeedFile } from '../runtimes/runtime-home.js'
@@ -250,7 +251,8 @@ function prepareDeepSeekSecret(
   explicitEnv: Record<string, string> = {},
   placeholder: SecretPlaceholder = microsandboxPlaceholder
 ) {
-  const env = 'DEEPSEEK_API_KEY'
+  const variables = RUNTIME_KEY_VARIABLES.deepseek.deepseek
+  const env = variables.key
   const files = runtimeStateLocations('dsh-acp', hostEnv).flatMap((location) =>
     (location.credentialFiles ?? []).map((file) => ({
       source: join(location.source, file.path),
@@ -259,7 +261,7 @@ function prepareDeepSeekSecret(
     }))
   )
   let key = explicitEnv[env] ?? hostEnv[env]
-  let baseUrl = explicitEnv.DEEPSEEK_BASE_URL ?? hostEnv.DEEPSEEK_BASE_URL
+  let baseUrl = explicitEnv[variables.base] ?? hostEnv[variables.base]
   for (const file of files) {
     if (file.format !== 'dsh' && file.format !== 'dsh-env') continue
     if (key && (baseUrl || file.format !== 'dsh-env')) continue
@@ -268,7 +270,7 @@ function prepareDeepSeekSecret(
       if (!stat.isFile() || stat.size > MAX_SEED_FILE_BYTES) continue
       const { refs } = parseDshCredentialDocument(readFileSync(file.source, 'utf8'), file.format)
       key ||= refs[env]
-      if (file.format === 'dsh-env') baseUrl ??= refs.DEEPSEEK_BASE_URL
+      if (file.format === 'dsh-env') baseUrl ??= refs[variables.base]
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
       // YAML parser errors can quote a line containing the key.
@@ -277,9 +279,10 @@ function prepareDeepSeekSecret(
   }
   const value = key?.trim()
   if (!value) return undefined
-  const host = 'api.deepseek.com'
+  const host = new URL(PROVIDER_DEFAULT_ENDPOINTS.deepseek!).hostname
   try {
-    const endpoint = new URL(baseUrl ?? 'https://api.deepseek.com')
+    // A blank base names no endpoint, which is refused like any other.
+    const endpoint = new URL(hostKeyEndpoint('deepseek', env, { [variables.base]: baseUrl })?.endpoint ?? '')
     if (
       endpoint.protocol !== 'https:' ||
       endpoint.hostname !== host ||
