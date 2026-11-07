@@ -14,8 +14,7 @@ import {
   protectedCopyValue,
   replaceSecretValue,
   type KeyOwner,
-  type SecretPlaceholder,
-  type SecretSources
+  type SecretPlaceholder
 } from './secret-values.js'
 import type { MicrosandboxCredentials, MicrosandboxSecret } from './secrets.js'
 
@@ -74,8 +73,7 @@ const DEFAULT_HOSTS: Record<string, string | undefined> = {
 export function prepareKimiSecrets(
   hostEnv: NodeJS.ProcessEnv,
   _explicitEnv: Record<string, string> = {},
-  placeholder: SecretPlaceholder = microsandboxPlaceholder,
-  sources: SecretSources = {}
+  placeholder: SecretPlaceholder = microsandboxPlaceholder
 ): MicrosandboxCredentials | undefined {
   const files = new Map<string, { source: string; destination: string }>()
   for (const location of runtimeStateLocations('kimi', hostEnv)) {
@@ -146,8 +144,7 @@ export function prepareKimiSecrets(
               value,
               bindings.get(JSON.stringify(path)),
               retained,
-              sources,
-              'Kimi API credentials changed or are unprotected; start a new session'
+              'Host Kimi API credentials changed; retry launch'
             )
             if (next !== undefined) setPath(projected, path, next)
           }

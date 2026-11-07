@@ -935,9 +935,11 @@ default, which is `saas`, or the base URL the launch or the runtime's file
 configures; a key found in a file is named by the hashed variable its preparer
 gives it. The session's variable and its private HOME copy of the file hold the
 slot's placeholder, and the file is projected rather than shared. A private copy
-an earlier `srt` launch left with the key in the clear is projected too, where a
-VM refuses one. Resolving the slot reads the key again where the machine keeps
-it, and is refused once the key is gone or the runtime sends it to another host.
+an earlier launch left, in `srt` or a VM, has each key the host still binds
+replaced by its placeholder, whether it holds that key in the clear or a stale
+one, and keeps a key the host no longer binds as it is. Resolving the slot reads
+the key again where the machine keeps it, and is refused once the key is gone or
+the runtime sends it to another host.
 Subscription and OAuth sign-ins are shared or seeded as before. A runtime keeps
 its keys as before, and the daemon logs that once, when one of them reaches no
 single HTTPS host the proxy recognizes (a cleartext or ported base URL, Codex
