@@ -1,11 +1,5 @@
-/**
- * Shared HMAC-SHA256 header verification — the security-sensitive core (hex
- * decode and length check BEFORE timingSafeEqual) used by every public ingress
- * endpoint: `X-AC-Signature` on the generic webhook, `X-Hub-Signature-256` on
- * the GitHub endpoint, and the bare-hex `X-Gitea-Signature` on the Gitea one.
- * One implementation so they cannot drift.
- */
-import { createHmac, timingSafeEqual } from 'node:crypto'
+/** Shared ingress credential checks (HMAC-SHA256 headers, Basic credentials), timing-safe, one implementation so the endpoints cannot drift. */
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto'
 
 /** True iff `hex` is the lowercase/uppercase hex HMAC-SHA256(secret, rawBody), timing-safe. */
 export function verifyHexHmacSha256(secret: string, rawBody: Buffer, hex: string | undefined): boolean {
@@ -24,6 +18,16 @@ export function verifyHexHmacSha256(secret: string, rawBody: Buffer, hex: string
 export function verifySha256Header(secret: string, rawBody: Buffer, header: string | undefined): boolean {
   if (!header || !header.startsWith('sha256=')) return false
   return verifyHexHmacSha256(secret, rawBody, header.slice('sha256='.length))
+}
+
+/** True iff `header` is `Basic base64(user:password)` for exactly this pair, compared timing-safe over fixed-length digests. */
+export function verifyBasicAuthorization(user: string, password: string, header: string | undefined): boolean {
+  if (!header) return false
+  const match = /^Basic +([A-Za-z0-9+/]+={0,2}) *$/i.exec(header)
+  if (!match) return false
+  const presented = createHash('sha256').update(Buffer.from(match[1]!, 'base64')).digest()
+  const expected = createHash('sha256').update(`${user}:${password}`, 'utf8').digest()
+  return timingSafeEqual(presented, expected)
 }
 
 /** Replay window for Slack's `X-Slack-Request-Timestamp` (Slack's own recommendation). */

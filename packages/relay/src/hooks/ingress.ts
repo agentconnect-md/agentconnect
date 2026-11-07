@@ -25,6 +25,7 @@ import type { Clock } from '@agentconnect.md/connection'
 import {
   codeHostHookMetadataOf,
   codeHostHookRuleOf,
+  AZURE_DEVOPS_HOOKS_V1_FEATURE,
   AZURE_DEVOPS_V1_FEATURE,
   GITEA_V1_FEATURE,
   GITLAB_COM_V1_FEATURE,
@@ -97,8 +98,8 @@ const REQUIRED_DAEMON_FEATURES: {
   ],
   // gitea-integration.md §11: one string covers gitea.com and a self-hosted address, so there is no instance bit.
   gitea: (host) => [GITEA_V1_FEATURE, ...(host.metadata.target.kind === 'release' ? [RD_CODEHOST_RELEASE_V1] : [])],
-  // Unreachable: Azure DevOps has no hooks in v1 (azure-devops-integration.md §11), so no delivery carries its member.
-  'azure-devops': () => [AZURE_DEVOPS_V1_FEATURE]
+  // azure-devops-integration.md §11.9: a daemon without the hooks slice never sees the member.
+  'azure-devops': () => [AZURE_DEVOPS_V1_FEATURE, AZURE_DEVOPS_HOOKS_V1_FEATURE]
 }
 
 /** The one generic hop over the provider key: the union-keyed index cannot narrow the pair itself. */
@@ -119,7 +120,7 @@ const RETRY_AUTHORITY: { readonly [P in CodeHostProvider]: (host: CodeHostHookRu
   gitlab: ({ rule }) => rule,
   // Every field of a gitea rule is authority: its path is display-only, its signing key, bot and events are not.
   gitea: ({ rule }) => rule,
-  // Unreachable for the same reason: no compiled rule carries an Azure DevOps member.
+  // Every field is authority, the subscriptions and signing keys included, as on Gitea.
   'azure-devops': ({ rule }) => rule
 }
 

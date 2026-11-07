@@ -75,7 +75,7 @@ export class GiteaMembershipAuthzService {
 
   private async resolve(req: RcCodeHostMembershipAuthz): Promise<boolean> {
     // Provider fail-per-value: this service answers only for gitea.
-    if (req.provider !== 'gitea') return false
+    if (req.provider !== 'gitea' || req.actorExternalId === undefined) return false
     const repoId = BigInt(req.repoExternalId)
     const fences = [
       { hookId: req.hookId, configRevision: req.configRevision, dispatchRevision: req.dispatchRevision },

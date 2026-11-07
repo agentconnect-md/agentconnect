@@ -48,6 +48,7 @@ import { GithubAppWebhookTable } from './hooks/github-app-table.js'
 import { FollowUpWatchTable } from './hooks/follow-up-watch-table.js'
 import { registerGitlabIngress } from './hooks/gitlab-ingress.js'
 import { registerGiteaIngress } from './hooks/gitea/ingress.js'
+import { registerAzureDevOpsIngress } from './hooks/azure-devops/ingress.js'
 import { McpBindingTable } from './mcp/binding-table.js'
 import { registerMcpProxy, registerMemoryPluginProxy } from './mcp/proxy.js'
 import { MemoryConnectionBindingTable } from './memory/binding-table.js'
@@ -337,6 +338,19 @@ async function main(): Promise<void> {
     log
   }
   registerGiteaIngress(server, giteaIngressDeps)
+
+  // Azure DevOps service hooks (azure-devops-integration.md §11.3): rules keyed by subscription id, Basic credentials, live membership through the CP.
+  registerAzureDevOpsIngress(server, {
+    table: hookTable,
+    daemons: () => held.rdServer,
+    report: (r: RcRunReport) => client.emitRunReport(r),
+    observe: (observed: RcCodeHostDelivery) => client.emitCodeHostDelivery(observed),
+    authorizeMembership: (request: RcCodeHostMembershipAuthz) => client.authorizeCodeHostMembership(request),
+    authzLimiter: new HookRateLimiter(systemClock, { capacity: 10, refillPerSec: 0.25 }),
+    limiter,
+    clock: systemClock,
+    log
+  })
 
   // MCP reverse proxy (ALL /mcp/:providerId) — resolves a grant to its upstream, SSRF-guards
   // + IP-pins the operator-supplied upstream, swaps the bearer for the real headers, streams

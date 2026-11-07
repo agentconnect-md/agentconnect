@@ -459,6 +459,9 @@ export const GITEA_DEFAULT_BASE_URL = 'https://gitea.com'
 /** Daemon serves Azure DevOps workspaces and additional repositories through its credential proxy; gates placement and spec projection, fail-closed by omission. */
 export const AZURE_DEVOPS_V1_FEATURE = 'azure-devops-v1'
 
+/** Relay/daemon serves Azure DevOps service hooks (azure-devops-integration.md §11.9): gates the compiled rule's `azureDevOps` member and the relay's dispatch target, fail-closed by omission. */
+export const AZURE_DEVOPS_HOOKS_V1_FEATURE = 'azure-devops-hooks-v1'
+
 /** CP serves provider-qualified gitcred v2 request/grant fields. A daemon must not name a
  *  provider before seeing this, and must reject a grant whose provider or numeric repository
  *  id differs from its request (an older CP strips new fields and answers GitHub-shaped). */
