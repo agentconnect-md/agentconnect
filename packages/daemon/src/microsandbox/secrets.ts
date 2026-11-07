@@ -70,40 +70,42 @@ interface CredentialPreparer {
   prepare: PrepareCredentials
   /** The launch variables it recognizes: the runtime's own for the key it protects, and those it binds a key to. */
   env: RegExp
-  /** Set where an srt launch protects the host's keys through the credential proxy: the runtime's own key variable, which a VM passes through. */
-  ambient?: { envKey?: PrepareCredentials }
 }
 
 const hashed = (prefix: string): RegExp => new RegExp(`^${prefix}_[0-9A-F]{16}$`)
 
+/** A runtime's sign-in file key and its own key variable, each under its own binding. */
+const withEnvKey =
+  (files: PrepareCredentials, variable: PrepareCredentials): PrepareCredentials =>
+  (...args) =>
+    mergeCredentials(files(...args), variable(...args))
+
 const CREDENTIAL_PREPARERS = new Map<string, CredentialPreparer>([
-  ['dsh-acp', { prepare: prepareDeepSeekSecret, env: /^DEEPSEEK_API_KEY$/, ambient: {} }],
-  ['opencode', { prepare: prepareOpenCodeSecrets, env: hashed('OPENCODE_API'), ambient: {} }],
-  ['pi-acp', { prepare: preparePiSecrets, env: hashed('PI_API'), ambient: {} }],
+  ['dsh-acp', { prepare: prepareDeepSeekSecret, env: /^DEEPSEEK_API_KEY$/ }],
+  ['opencode', { prepare: prepareOpenCodeSecrets, env: hashed('OPENCODE_API') }],
+  ['pi-acp', { prepare: preparePiSecrets, env: hashed('PI_API') }],
   [
     'claude-acp',
     {
-      prepare: prepareClaudeApiSecret,
-      env: /^(?:ANTHROPIC_API_KEY|AC_CLAUDE_API_KEY)$/,
-      ambient: { envKey: prepareClaudeEnvSecret }
+      prepare: withEnvKey(prepareClaudeApiSecret, prepareClaudeEnvSecret),
+      env: /^(?:ANTHROPIC_API_KEY|AC_CLAUDE_API_KEY)$/
     }
   ],
   [
     'codex-acp',
     {
-      prepare: prepareCodexApiSecret,
-      env: /^(?:OPENAI_API_KEY|AC_CODEX_API_KEY)$/,
-      ambient: { envKey: prepareCodexEnvSecret }
+      prepare: withEnvKey(prepareCodexApiSecret, prepareCodexEnvSecret),
+      env: /^(?:OPENAI_API_KEY|AC_CODEX_API_KEY)$/
     }
   ],
-  ['grok-build', { prepare: prepareGrokSecrets, env: hashed('AC_GROK_API'), ambient: {} }],
-  ['qwen-code', { prepare: prepareQwenSecrets, env: hashed('AC_QWEN_API'), ambient: {} }],
-  ['omp', { prepare: prepareOmpSecrets, env: hashed('AC_OMP_API'), ambient: {} }],
-  ['amp-acp', { prepare: prepareAmpSecrets, env: hashed('AC_AMP_API'), ambient: {} }],
-  ['kimi', { prepare: prepareKimiSecrets, env: hashed('AC_KIMI_API'), ambient: {} }],
-  ['cline', { prepare: prepareClineSecrets, env: hashed('AC_CLINE_API'), ambient: {} }],
-  ['github-copilot-cli', { prepare: prepareCopilotEnvSecret, env: /^COPILOT_PROVIDER_API_KEY$/, ambient: {} }],
-  ['antigravity-acp', { prepare: prepareAntigravityEnvSecret, env: /^GEMINI_API_KEY$/, ambient: {} }]
+  ['grok-build', { prepare: prepareGrokSecrets, env: hashed('AC_GROK_API') }],
+  ['qwen-code', { prepare: prepareQwenSecrets, env: hashed('AC_QWEN_API') }],
+  ['omp', { prepare: prepareOmpSecrets, env: hashed('AC_OMP_API') }],
+  ['amp-acp', { prepare: prepareAmpSecrets, env: hashed('AC_AMP_API') }],
+  ['kimi', { prepare: prepareKimiSecrets, env: hashed('AC_KIMI_API') }],
+  ['cline', { prepare: prepareClineSecrets, env: hashed('AC_CLINE_API') }],
+  ['github-copilot-cli', { prepare: prepareCopilotEnvSecret, env: /^COPILOT_PROVIDER_API_KEY$/ }],
+  ['antigravity-acp', { prepare: prepareAntigravityEnvSecret, env: /^GEMINI_API_KEY$/ }]
 ])
 
 function preparerFor(runtimeId: string, runtime: RuntimeDef | undefined): CredentialPreparer | undefined {
@@ -120,7 +122,7 @@ export function ambientCredentialRuntime(runtimeId: string, runtime: RuntimeDef 
       : profile === 'codex'
         ? 'codex-acp'
         : runtimeId
-  return CREDENTIAL_PREPARERS.get(id)?.ambient ? id : undefined
+  return CREDENTIAL_PREPARERS.has(id) ? id : undefined
 }
 
 /** The host's keys an srt launch of this runtime would hand it, each behind the factory's placeholder; undefined when it has none or no such preparer. */
@@ -134,12 +136,8 @@ export function prepareAmbientCredentials(
 ): MicrosandboxCredentials | undefined {
   const id = ambientCredentialRuntime(runtimeId, runtime)
   const preparer = id === undefined ? undefined : CREDENTIAL_PREPARERS.get(id)
-  if (!preparer?.ambient) return undefined
-  const srt = { ...sources, protectRetained: true }
-  return mergeCredentials(
-    preparer.prepare(hostEnv, explicitEnv, placeholder, srt),
-    preparer.ambient.envKey?.(hostEnv, explicitEnv, placeholder, srt)
-  )
+  if (!preparer) return undefined
+  return preparer.prepare(hostEnv, explicitEnv, placeholder, { ...sources, protectRetained: true })
 }
 
 /** A runtime's sign-in file credentials with its key variable's beside them; the file's sharing choice stands. */

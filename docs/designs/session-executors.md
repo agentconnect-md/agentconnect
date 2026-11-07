@@ -1195,8 +1195,7 @@ see the segment. TLS-PSK covers every byte above the handshake.
   in from its own runtime definitions and environment, with a local launch's
   precedence, through the
   shim's seed beneath the holder's environment: `host` as values, and a VM behind the
-  placeholders its preparers set, or as values where they set none, as a local VM
-  receives an environment-only Claude or Codex key.
+  placeholders its preparers set, or as values where they set none.
 - _Everything else_ configured on the agent — its environment and its secrets
   (`runtimeOverrides.secrets`) — travels with the launch and enters the runtime's
   environment as a plain value on every backend today, with output masking as its

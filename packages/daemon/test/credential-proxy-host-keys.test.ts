@@ -80,12 +80,15 @@ describe('the preparers placeholder factory', () => {
       ['AC_CLAUDE_API_KEY', 'sealed-AC_CLAUDE_API_KEY'],
       ['ANTHROPIC_API_KEY', 'sealed-ANTHROPIC_API_KEY']
     ])
-    // A VM passes the runtime's own variable through, as it did.
+    // A VM binds the runtime's own variable too, beside the file's key, with its own placeholders.
     expect(
       prepareMicrosandboxCredentials('claude-acp', claude, { HOME, ANTHROPIC_API_KEY: ENV_KEY }, {})?.secrets.map(
-        (secret) => secret.env
+        (secret) => [secret.env, secret.placeholder]
       )
-    ).toEqual(['AC_CLAUDE_API_KEY'])
+    ).toEqual([
+      ['AC_CLAUDE_API_KEY', 'msb-secret-AC_CLAUDE_API_KEY'],
+      ['ANTHROPIC_API_KEY', 'msb-secret-ANTHROPIC_API_KEY']
+    ])
   })
 
   // The projection descends by file descriptor, which only Linux provides.

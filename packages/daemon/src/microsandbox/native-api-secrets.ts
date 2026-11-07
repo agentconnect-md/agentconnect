@@ -265,7 +265,7 @@ export function prepareCodexEnvSecret(
   placeholder: SecretPlaceholder = microsandboxPlaceholder
 ): MicrosandboxCredentials | undefined {
   const name = RUNTIME_KEY_VARIABLES.codex.openai.key
-  return variableCredential(
+  const credential = variableCredential(
     name,
     hostEnv,
     explicitEnv,
@@ -274,6 +274,7 @@ export function prepareCodexEnvSecret(
     OPENAI,
     placeholder
   )
+  return credential && { ...credential, tlsTrustEnv: ['CODEX_CA_CERTIFICATE'] }
 }
 
 export function prepareCodexApiSecret(

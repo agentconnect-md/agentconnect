@@ -222,4 +222,62 @@ describe.skipIf(process.platform !== 'linux')('microsandbox native file API cred
       expect(launch.env.NODE_EXTRA_CA_CERTS).toBeUndefined()
     }
   )
+
+  it("binds Claude's saved key and its key variable apart, each to its own value", () => {
+    const opts = fixture('claude-acp')
+    write(join(opts.hostHome, '.claude.json'), { primaryApiKey: key })
+    const launch = prepareMicrosandboxLaunch({
+      ...opts,
+      stateSourceEnv: { ...opts.stateSourceEnv, ANTHROPIC_API_KEY: 'fixture-env-key' }
+    })
+    expect(launch.microsandbox.secrets!.map((secret) => [secret.env, secret.readValue()])).toEqual([
+      ['AC_CLAUDE_API_KEY', key],
+      ['ANTHROPIC_API_KEY', 'fixture-env-key']
+    ])
+    expect(launch.env.ANTHROPIC_API_KEY).toBe('msb-secret-ANTHROPIC_API_KEY')
+    expect(JSON.parse(readFileSync(join(launch.runtimeHome!, '.claude', '.claude.json'), 'utf8')).primaryApiKey).toBe(
+      'msb-secret-AC_CLAUDE_API_KEY'
+    )
+    expect(JSON.stringify(launch)).not.toContain('fixture-env-key')
+  })
+})
+
+describe.skipIf(process.platform === 'win32')("a runtime's own key variable in a VM", () => {
+  it.each([
+    ['claude-acp', 'ANTHROPIC_API_KEY', 'api.anthropic.com', 'host'],
+    ['codex-acp', 'OPENAI_API_KEY', 'api.openai.com', 'definition']
+  ] as const)('reaches a %s guest as its placeholder, bound to its provider', (runtimeId, env, host, source) => {
+    const opts = fixture(runtimeId)
+    const launch = prepareMicrosandboxLaunch({
+      ...opts,
+      ...(source === 'host'
+        ? { stateSourceEnv: { ...opts.stateSourceEnv, [env]: key } }
+        : { explicitEnv: { [env]: key } })
+    })
+    expect(launch.microsandbox.secrets!.map((secret) => [secret.env, secret.host, secret.readValue()])).toEqual([
+      [env, [host], key]
+    ])
+    expect(launch.env[env]).toBe(`msb-secret-${env}`)
+    expect(launch.env.NODE_EXTRA_CA_CERTS).toBe('/.msb/tls/ca.pem')
+    expect(JSON.stringify(launch)).not.toContain(key)
+  })
+
+  it("leaves Codex's key bound to no host beside OPENAI_BASE_URL, and refuses its own trust bundle", () => {
+    const opts = fixture('codex-acp')
+    const stateSourceEnv = { ...opts.stateSourceEnv, OPENAI_API_KEY: key }
+    const launch = prepareMicrosandboxLaunch({
+      ...opts,
+      stateSourceEnv: { ...stateSourceEnv, OPENAI_BASE_URL: 'https://gateway.example.test/v1' }
+    })
+    expect(launch.microsandbox.secrets!.map((secret) => [secret.env, secret.host])).toEqual([['OPENAI_API_KEY', []]])
+    expect(launch.env.OPENAI_API_KEY).toBe('msb-secret-OPENAI_API_KEY')
+    expect(JSON.stringify(launch)).not.toContain(key)
+    expect(() =>
+      prepareMicrosandboxLaunch({
+        ...opts,
+        stateSourceEnv,
+        explicitEnv: { CODEX_CA_CERTIFICATE: '/tmp/custom-ca.pem' }
+      })
+    ).toThrow('custom TLS trust')
+  })
 })
