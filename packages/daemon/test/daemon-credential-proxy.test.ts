@@ -62,8 +62,14 @@ afterAll(() => {
     if (value === undefined) delete process.env[name]
     else process.env[name] = value
   }
-  // Windows releases a stopped daemon's file handles a moment late, so removal retries there.
-  for (const dir of dirs) rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+  for (const dir of dirs) {
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+    } catch (err) {
+      // On Windows a child the daemon started can still hold the directory open; a leftover temp dir is not a test failure.
+      if (process.platform !== 'win32') throw err
+    }
+  }
 })
 
 /** Short, so the daemon's sockets fit AF_UNIX on a host whose temp directory is long. */
