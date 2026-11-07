@@ -180,8 +180,19 @@ The Console's Azure DevOps card leads with **Connect with Microsoft**:
    `instanceId`, the identity id, the credential source (`deployment` or
    `own`), and a credential epoch.
 
-One AgentConnect organization holds at most one Azure DevOps connection in the
-first version.
+The Console offers one Azure DevOps connection per AgentConnect organization in
+the first version. The model does not assume one: bindings, grants, and the
+workspace credential name their connection, so several connections, each chosen
+per agent, can follow without a migration (§10).
+
+**Managing project access.** Which projects the identity reaches is set in
+step 4 and can change later. The Control Plane keeps no administrator token, so
+it cannot change the organization's groups by itself. The card therefore offers
+**Manage project access**, which runs steps 1 to 4 again for the connection's
+organization. The administrator signs in, picks projects and their groups, and
+the Control Plane applies the change with the new delegated token and discards
+it. A change made directly in Azure DevOps works as well; the picker and the
+permission evaluation of §5 read the identity's rights as they are.
 
 **Use your own application instead** stays one click away, and is the only
 path when the deployment has no Microsoft application. The administrator enters
@@ -376,7 +387,9 @@ branch. The descriptor differs from the others in one place. The other
 providers map a read that names no repository to the workspace's credential,
 because their tokens are scoped by the provider. An Azure DevOps token is not,
 so its descriptor maps such a read to `deny` unless it is on the allowlist
-above, rather than borrowing the workspace's authority.
+above, rather than borrowing the workspace's authority. The per-repository
+lease from the Control Plane and the push gate of §6.3 are already shared by
+every provider, so this descriptor is the only proxy code Azure DevOps adds.
 
 ### 6.3 The Tier
 
@@ -435,10 +448,11 @@ Plane's picker and refresh honor `Retry-After` and `X-RateLimit-Remaining`.
   second step replaces them.
 - Feature string `azure-devops-v1` on the daemon gates placement and spec
   projection, with fail-closed-by-omission semantics (§6.1).
-- `AgentWorkspaceCredential` gains `{ provider: 'azure-devops', repoId }`, the
-  numeric identity of §4. The spec carries the organization name and each Azure
-  DevOps root's repository GUID. There is no host field, since the host is
-  fixed.
+- `AgentWorkspaceCredential` gains
+  `{ provider: 'azure-devops', repoId, connectionId }`: the numeric identity of
+  §4, and the connection whose identity serves it (§3.2). The spec carries the
+  organization name and each Azure DevOps root's repository GUID. There is no
+  host field, since the host is fixed.
 - gitcred grants echo the provider, numeric id, path, access, and credential
   epoch, which the daemon verifies as it does for the other providers.
 - The protocol's clone-URL normalizer and label learn the forms of §5.
@@ -448,6 +462,7 @@ Plane's picker and refresh honor `Retry-After` and `X-RateLimit-Remaining`.
 The Integrations page gains an Azure DevOps card. The card offers:
 
 - **Connect with Microsoft**, and **Use your own application instead**;
+- **Manage project access** (§3.2), for a connection made with Microsoft;
 - replace secret, for an own application only;
 - disconnect; and
 - the repositories in use.
@@ -468,7 +483,9 @@ REST at the organization scope:
   sign-in of §3.2;
 - `GET /azure-devops/connect/:flow/organizations`, then
   `POST /azure-devops/connect/:flow/organization` and
-  `POST /azure-devops/connect/:flow/projects`, for steps 3 and 4;
+  `POST /azure-devops/connect/:flow/projects`, for steps 3 and 4. A
+  `connectionId` on `POST /azure-devops/connect` starts **Manage project
+  access** for that connection, skipping step 3;
 - `POST /azure-devops/connections` for an own application,
   `GET /azure-devops/connections`, and `DELETE /azure-devops/connections/:id`;
 - `POST /azure-devops/connections/:id/secret`, for an own application only;
@@ -518,7 +535,14 @@ The connect, connection, and secret routes manage a credential and are
 - More than one Azure DevOps organization per AgentConnect organization.
 - Pipelines, Boards, Wiki, and Artifacts, and publishing a Marketplace
   extension.
-- API writes, and per-agent identities.
+- API writes.
+- Several connections per AgentConnect organization, each agent choosing one.
+  This is how an agent gets an identity of its own: the customer registers an
+  application whose service principal reaches only that agent's repositories,
+  so Azure DevOps itself bounds it. The model already keys everything by
+  connection (§3.2). Only the Console's choice is missing.
+- Finer control in the proxy than §6.2 describes, such as filtering a list down
+  to the agent's repositories instead of refusing it.
 - A second, read-only identity per organization beneath the proxy.
   - It would keep a read grant from pushing even if the proxy misrouted one.
   - It costs a second application registration, a second consent, a second
@@ -628,9 +652,10 @@ live organization before A2.
   `azure-devops-v1`, the credential arm, the clone-URL forms, and the reserved
   secondary-root directory.
 - **A2 — Control Plane.** The connect flow on the deployment application and
-  the own-application path; the token cache; the identity table, bindings, and
-  claims; the picker; derivation and grant arms; gitcred leases served only to
-  the proxy plane; and the REST routes.
+  the own-application path, and Manage project access; the token cache; the
+  identity table and claims, with bindings and grants keyed by connection; the
+  picker; derivation and grant arms; gitcred leases served only to the proxy
+  plane; and the REST routes.
 - **A3 — Daemon.** The credential module with its `proxyOnly` capability, the
   proxy instance and route descriptor of §6.2, the client configuration of
   §6.4, the feature advertisement tied to the proxy, and the strategy refusal.
