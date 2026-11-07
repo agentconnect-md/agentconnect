@@ -106,6 +106,7 @@ import type { GiteaApiClient } from '../gitea/api.js'
 import type { AzureDevOpsConnectionService } from '../azure-devops/connection.service.js'
 import type { AzureDevOpsBindingService } from '../azure-devops/binding.service.js'
 import type { AzureDevOpsConnectFlowService } from '../azure-devops/connect-flow.service.js'
+import type { AzureDevOpsHookService } from '../azure-devops/hook.service.js'
 import type { PullRequestViewService } from '../github/pull-request-view.service.js'
 import type { SessionPullRequestLinkService } from '../github/session-pull-request-link.service.js'
 import type { GithubUserAuthzService } from '../github/user-authz.js'
@@ -560,6 +561,8 @@ export interface HttpDeps {
     bindings: AzureDevOpsBindingService
     /** Connect with Microsoft and Manage project access (§3.2); absent ⇒ the connect routes refuse. */
     connect?: AzureDevOpsConnectFlowService
+    /** Service hook subscriptions (§11.2); absent ⇒ no Azure DevOps trigger can be saved. */
+    hooks?: AzureDevOpsHookService
   }
   /** The PR panel's read projection; absent like {@link github} ⇒ the route 404s, hiding the tab. */
   pullRequestView?: PullRequestViewService

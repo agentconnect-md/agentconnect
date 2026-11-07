@@ -196,8 +196,22 @@ async function devOpsRequest<T>(
   path: string,
   init: { method?: 'GET' | 'POST'; body?: unknown } = {}
 ): Promise<T> {
-  client.checkThrottle(organization)
   const url = `${client.devOpsBaseUrl}/${encodeURIComponent(organization)}/${path}`
+  const json = await azureDevOpsCall<T>(client, token, organization, url, init)
+  if (json === undefined)
+    throw new AzureDevOpsApiError('Azure DevOps answered without a body', 200, 'UNAVAILABLE', true)
+  return json
+}
+
+/** One call to an absolute Azure DevOps URL under the organization's throttle gate; a 204 or an empty answer is undefined. */
+export async function azureDevOpsCall<T>(
+  client: AzureDevOpsApiClient,
+  token: string,
+  organization: string,
+  url: string,
+  init: { method?: 'GET' | 'POST' | 'PUT' | 'DELETE'; body?: unknown } = {}
+): Promise<T | undefined> {
+  client.checkThrottle(organization)
   let res: Response
   try {
     res = await client.fetch(url, {
@@ -214,10 +228,8 @@ async function devOpsRequest<T>(
   }
   const retryAfterMs = client.observeThrottle(organization, res)
   if (res.ok) {
-    const json = (await res.json().catch(() => undefined)) as T | undefined
-    if (json === undefined)
-      throw new AzureDevOpsApiError('Azure DevOps answered without a body', res.status, 'UNAVAILABLE', true)
-    return json
+    if (res.status === 204) return undefined
+    return (await res.json().catch(() => undefined)) as T | undefined
   }
   const text = await res.text().catch(() => '')
   const serviceError = res.headers.get('x-tfs-serviceerror') ?? ''

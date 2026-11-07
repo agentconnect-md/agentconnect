@@ -673,6 +673,42 @@ export function hookRoutes(deps: HttpDeps) {
       }
     }
 
+    // azure-devops (azure-devops-integration.md §11.1): the repository is bound already, since a hook never creates a grant.
+    const azureDevOpsRepositoryFacts = async (
+      orgId: OrgId,
+      repoId: bigint
+    ): Promise<{ ok: true; repoPath: string } | { ok: false; status: 409; message: string }> => {
+      const hooks = deps.azureDevOps?.hooks
+      if (!hooks)
+        return { ok: false, status: 409, message: 'Azure DevOps triggers are not available on this deployment' }
+      const binding = await hooks.hookBinding(orgId, repoId)
+      if (!binding) {
+        return {
+          ok: false,
+          status: 409,
+          message: 'the repository is not bound through an Azure DevOps connection in this organization'
+        }
+      }
+      return { ok: true, repoPath: binding.repoPath }
+    }
+    // Reviews and the run status are written by later steps; until they exist the axes stay off rather than promising effects.
+    const validateAzureDevOpsEffects = (cfg: CodeHostEffectConfig): CodeHostEffectDenial | null =>
+      cfg.reviewPolicy !== 'off' || cfg.reportingMode !== 'off'
+        ? { status: 409, message: 'reviews and run reporting are not available for Azure DevOps repositories yet' }
+        : null
+    // §11.1: an enabled trigger needs the application's View and Edit subscriptions on the repository's project.
+    const azureDevOpsTriggersAllowed = async (orgId: OrgId, repoId: bigint, enabled: boolean) => {
+      const hooks = deps.azureDevOps?.hooks
+      if (!enabled) return { ok: true as const }
+      if (!hooks)
+        return {
+          ok: false as const,
+          status: 409 as const,
+          message: 'Azure DevOps triggers are not available on this deployment'
+        }
+      return hooks.triggersAllowed(orgId, repoId)
+    }
+
     // Validate the optional anchoring target against the hook's agent (the
     // anchor posts through one of THAT agent's integrations — cron semantics).
     const resolveTarget = async (
@@ -700,7 +736,7 @@ export function hookRoutes(deps: HttpDeps) {
           tags: [Tag.Hooks],
           summary: 'Create a hook',
           description:
-            'Create a trigger for one agent. `kind:"webhook"` mints an ingress URL (the response carries it plus — when requested — the one-time HMAC signing secret, never retrievable again). `kind:"github"` subscribes a repository covered by one of the organization’s GitHub App installations to issue, pull-request, push, deployment or release events, or, with `githubAccount` in place of `repoFullName`, every repository of that account’s installation, which needs the agent’s installation grant. A code-host trigger covers ONE subject `family`, so a repository watched for both pull requests and issues is two triggers, each with its own cadence and mention gate; a second trigger on the same family is a 409. A `deployment_status:<state>` pattern selects on the status state (`success`, `failure`, …).',
+            'Create a trigger for one agent. `kind:"webhook"` mints an ingress URL (the response carries it plus — when requested — the one-time HMAC signing secret, never retrievable again). `kind:"github"` subscribes a repository covered by one of the organization’s GitHub App installations to issue, pull-request, push, deployment or release events, or, with `githubAccount` in place of `repoFullName`, every repository of that account’s installation, which needs the agent’s installation grant. `kind:"azure-devops"` subscribes a bound Azure DevOps repository by its `repoId` to pull-request (`merge_request`) or push events through service hooks; an enabled one needs Allow triggers on the repository’s project, granted in Manage project access. A code-host trigger covers ONE subject `family`, so a repository watched for both pull requests and issues is two triggers, each with its own cadence and mention gate; a second trigger on the same family is a 409. A `deployment_status:<state>` pattern selects on the status state (`success`, `failure`, …).',
           operationId: 'createHook',
           body: CreateHookBody,
           response: {
@@ -835,62 +871,95 @@ export function hookRoutes(deps: HttpDeps) {
                       hmacSecret: null
                     }
                   })()
-                : await (async () => {
-                    const scope = req.body as { repoFullName?: string; githubAccount?: string }
-                    const scopeError = githubScopeError(scope)
-                    if (scopeError) return { ok: false as const, status: 400 as const, message: scopeError }
-                    if (scope.githubAccount !== undefined) {
-                      const row = await resolveInstallationRow(
-                        agent,
-                        scope.githubAccount,
+                : req.body.kind === 'azure-devops'
+                  ? await (async () => {
+                      const body = req.body as { repoId: string; enabled: boolean }
+                      const repoId = BigInt(body.repoId)
+                      const facts = await azureDevOpsRepositoryFacts(orgId, repoId)
+                      if (!facts.ok) return facts
+                      const siblingError = await siblingShapeError(
+                        agent.id,
+                        'azure-devops',
+                        repoId,
+                        facts.repoPath,
                         hookId,
                         {
                           targetPlatform: target.targetPlatform,
                           targetChannel: req.body.targetChannel ?? null,
                           targetIntegrationId: target.targetIntegrationId ?? null
-                        },
-                        effects!
+                        }
                       )
-                      if (!row.ok) return row
+                      if (siblingError) return { ok: false as const, status: 409 as const, message: siblingError }
+                      const authz = await watchRepoAuthorized(agent, 'azure-devops', repoId, facts.repoPath)
+                      if (!authz.ok) return authz
+                      const effectError = validateAzureDevOpsEffects(effects!)
+                      if (effectError) return { ok: false as const, ...effectError }
+                      const gate = await azureDevOpsTriggersAllowed(orgId, repoId, body.enabled)
+                      if (!gate.ok) return gate
                       return {
                         sessionMode: 'perThread' as const,
-                        installationId: row.installationId,
-                        installationAccount: row.installationAccount,
+                        repoId,
+                        repoFullName: facts.repoPath,
+                        githubSessionKey: `azure-devops:${repoId}`,
                         hmacSecret: null
                       }
-                    }
-                    const repo = await resolveGithubRepo(orgId, scope.repoFullName!, agent.githubAppId ?? null)
-                    if (!repo.ok) return repo
-                    const siblingError = await siblingShapeError(
-                      agent.id,
-                      'github',
-                      repo.repoId,
-                      repo.repoFullName,
-                      hookId,
-                      {
-                        targetPlatform: target.targetPlatform,
-                        targetChannel: req.body.targetChannel ?? null,
-                        targetIntegrationId: target.targetIntegrationId ?? null
+                    })()
+                  : await (async () => {
+                      const scope = req.body as { repoFullName?: string; githubAccount?: string }
+                      const scopeError = githubScopeError(scope)
+                      if (scopeError) return { ok: false as const, status: 400 as const, message: scopeError }
+                      if (scope.githubAccount !== undefined) {
+                        const row = await resolveInstallationRow(
+                          agent,
+                          scope.githubAccount,
+                          hookId,
+                          {
+                            targetPlatform: target.targetPlatform,
+                            targetChannel: req.body.targetChannel ?? null,
+                            targetIntegrationId: target.targetIntegrationId ?? null
+                          },
+                          effects!
+                        )
+                        if (!row.ok) return row
+                        return {
+                          sessionMode: 'perThread' as const,
+                          installationId: row.installationId,
+                          installationAccount: row.installationAccount,
+                          hmacSecret: null
+                        }
                       }
-                    )
-                    if (siblingError) {
-                      return { ok: false as const, status: 409 as const, message: siblingError }
-                    }
-                    const authz = await watchRepoAuthorized(agent, 'github', repo.repoId, repo.repoFullName)
-                    if (!authz.ok) return authz
-                    const configError = await validateGithubEffects(agent, repo.repoId, repo.repoFullName, effects!)
-                    if (configError) {
-                      return { ok: false as const, ...configError }
-                    }
-                    return {
-                      // github is perThread by definition — the same issue/PR
-                      // continues one session (design decision 7).
-                      sessionMode: 'perThread' as const,
-                      repoId: repo.repoId,
-                      repoFullName: repo.repoFullName,
-                      hmacSecret: null
-                    }
-                  })()
+                      const repo = await resolveGithubRepo(orgId, scope.repoFullName!, agent.githubAppId ?? null)
+                      if (!repo.ok) return repo
+                      const siblingError = await siblingShapeError(
+                        agent.id,
+                        'github',
+                        repo.repoId,
+                        repo.repoFullName,
+                        hookId,
+                        {
+                          targetPlatform: target.targetPlatform,
+                          targetChannel: req.body.targetChannel ?? null,
+                          targetIntegrationId: target.targetIntegrationId ?? null
+                        }
+                      )
+                      if (siblingError) {
+                        return { ok: false as const, status: 409 as const, message: siblingError }
+                      }
+                      const authz = await watchRepoAuthorized(agent, 'github', repo.repoId, repo.repoFullName)
+                      if (!authz.ok) return authz
+                      const configError = await validateGithubEffects(agent, repo.repoId, repo.repoFullName, effects!)
+                      if (configError) {
+                        return { ok: false as const, ...configError }
+                      }
+                      return {
+                        // github is perThread by definition — the same issue/PR
+                        // continues one session (design decision 7).
+                        sessionMode: 'perThread' as const,
+                        repoId: repo.repoId,
+                        repoFullName: repo.repoFullName,
+                        hmacSecret: null
+                      }
+                    })()
         if ('status' in kindFields) {
           const { status, message } = kindFields
           return reply.code(status).send({ error: ERROR_NAMES[status], statusCode: status, message })
@@ -928,6 +997,17 @@ export function hookRoutes(deps: HttpDeps) {
                   reviewPolicy: req.body.reviewPolicy,
                   reportingMode: req.body.reportingMode
                   // No gateMode: neither host has a required-gate surface, so the row stays informational.
+                }
+              : {}),
+            ...(req.body.kind === 'azure-devops'
+              ? {
+                  family: req.body.family,
+                  events: req.body.events,
+                  commentFamilies: req.body.commentFamilies,
+                  // No label filter: no Azure DevOps event reports a label change (§11.4).
+                  mentionOnly: req.body.mentionOnly,
+                  reviewPolicy: req.body.reviewPolicy,
+                  reportingMode: req.body.reportingMode
                 }
               : {}),
             targetPlatform: target.targetPlatform,
@@ -1413,6 +1493,73 @@ export function hookRoutes(deps: HttpDeps) {
             events: req.body.events,
             commentFamilies: req.body.commentFamilies ?? existing.commentFamilies,
             labelFilter: req.body.labelFilter ?? existing.labelFilter,
+            mentionOnly: req.body.mentionOnly ?? existing.mentionOnly,
+            ...effectConfig
+          }
+        } else if (req.body.kind === 'azure-devops') {
+          const repoId = BigInt(req.body.repoId)
+          const facts = await azureDevOpsRepositoryFacts(orgId, repoId)
+          if (!facts.ok) {
+            return reply.code(facts.status).send({
+              error: ERROR_NAMES[facts.status],
+              statusCode: facts.status,
+              message: facts.message
+            })
+          }
+          const siblingError = await siblingShapeError(agent.id, 'azure-devops', repoId, facts.repoPath, existing.id, {
+            targetPlatform: target.targetPlatform,
+            targetChannel: req.body.targetChannel ?? null,
+            targetIntegrationId: target.targetIntegrationId ?? null
+          })
+          if (siblingError) {
+            return reply.code(409).send({ error: ERROR_NAMES[409], statusCode: 409, message: siblingError })
+          }
+          if (repoId !== existing.repoId || agent.id !== existing.agentId) {
+            const authz = await watchRepoAuthorized(agent, 'azure-devops', repoId, facts.repoPath)
+            if (!authz.ok) {
+              return reply.code(authz.status).send({
+                error: ERROR_NAMES[authz.status],
+                statusCode: authz.status,
+                message: authz.message
+              })
+            }
+          }
+          const effectConfig = {
+            reviewPolicy: req.body.reviewPolicy ?? existing.reviewPolicy,
+            reportingMode: req.body.reportingMode ?? existing.reportingMode
+          }
+          const shapeError = existing.family
+            ? familyShapeError({
+                kind: 'azure-devops',
+                family: existing.family as HookFamily,
+                events: req.body.events,
+                commentFamilies: req.body.commentFamilies ?? existing.commentFamilies,
+                ...effectConfig
+              })
+            : null
+          if (shapeError) {
+            return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: shapeError })
+          }
+          const effectError = validateAzureDevOpsEffects(effectConfig)
+          if (effectError) {
+            return reply.code(effectError.status).send({
+              error: ERROR_NAMES[effectError.status],
+              statusCode: effectError.status,
+              message: effectError.message
+            })
+          }
+          const gate = await azureDevOpsTriggersAllowed(orgId, repoId, req.body.enabled ?? existing.enabled)
+          if (!gate.ok) {
+            return reply
+              .code(gate.status)
+              .send({ error: ERROR_NAMES[gate.status], statusCode: gate.status, message: gate.message })
+          }
+          kindFields = {
+            sessionMode: 'perThread',
+            repoId,
+            repoFullName: facts.repoPath,
+            events: req.body.events,
+            commentFamilies: req.body.commentFamilies ?? existing.commentFamilies,
             mentionOnly: req.body.mentionOnly ?? existing.mentionOnly,
             ...effectConfig
           }

@@ -24,6 +24,7 @@ import type {
   RcSnapshotKind
 } from '@agentconnect.md/protocol'
 import {
+  AZURE_DEVOPS_HOOKS_V1_FEATURE,
   CODEHOST_FEEDBACK_FEATURE,
   FOLLOW_UP_WATCH_FEATURE,
   GITHUB_APP_WEBHOOK_V1_FEATURE,
@@ -38,19 +39,30 @@ import type { RelayChannel, RelayRegistry } from '../ws/relay-registry.js'
 
 /** Whether a relay may hold this rule: a routed rule only where the relay routes its provider (code-host-decisions.md §3.3). */
 export function hookRuleSupported(
-  rule: Pick<RcHookAssign, 'routing' | 'kind' | 'github' | 'githubInstallation' | 'gitlab' | 'gitea' | 'webhook'>,
+  rule: Pick<
+    RcHookAssign,
+    'routing' | 'kind' | 'github' | 'githubInstallation' | 'gitlab' | 'gitea' | 'azureDevOps' | 'webhook'
+  >,
   features: readonly string[] | undefined
 ) {
   // A relay that cannot fill an installation rule's repository in never holds one.
   if (rule.githubInstallation && !advertises(features, [HOOK_GITHUB_INSTALLATION_V1_FEATURE])) return false
   // One that would drop a generic rule's instructions and run the payload as the instruction never holds it either.
   if (rule.webhook?.instructions !== undefined && !advertises(features, [HOOK_INSTRUCTIONS_V1_FEATURE])) return false
+  // An Azure DevOps rule only reaches a relay that serves its endpoint (azure-devops-integration.md §11.9).
+  if (rule.azureDevOps !== undefined && !advertises(features, [AZURE_DEVOPS_HOOKS_V1_FEATURE])) return false
   if (rule.routing === undefined) return true
   const host = codeHostHookRuleOf(rule)
   return advertises(
     features,
     host ? codeHostProviders[host.provider].routing.requiredFeatures : [HOOK_DECISION_ROUTING_V1_FEATURE]
   )
+}
+
+/** Features a relay must advertise before it holds one of this host's compiled rules. */
+export function relayRuleFeatures(host: NonNullable<ReturnType<typeof codeHostHookRuleOf>>): readonly string[] {
+  const features = codeHostProviders[host.provider].features
+  return features.ruleRequired?.() ?? features.required(features.ruleHost(host))
 }
 
 export class RelayControlSender {
@@ -106,8 +118,7 @@ export class RelayControlSender {
       // A routed rule on a relay that cannot route would fire unrouted, so that relay drops any copy instead.
       if (!hookRuleSupported(rule, ch.features)) return ch.send('rc/hook-remove', { hookId: rule.hookId })
       if (!host) return ch.send('rc/hook-assign', rule)
-      const features = codeHostProviders[host.provider].features
-      if (!advertises(ch.features, features.required(features.ruleHost(host)))) return
+      if (!advertises(ch.features, relayRuleFeatures(host))) return
       ch.send('rc/hook-assign', rule)
     }, 'hook')
   }

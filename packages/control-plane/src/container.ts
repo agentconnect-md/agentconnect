@@ -64,6 +64,9 @@ import { AzureDevOpsConnectionService, azureDevOpsSecretFingerprint } from './az
 import { AzureDevOpsBindingService } from './azure-devops/binding.service.js'
 import { AzureDevOpsGitcredService } from './azure-devops/gitcred.service.js'
 import { AzureDevOpsConnectFlowService } from './azure-devops/connect-flow.service.js'
+import { AzureDevOpsHookService } from './azure-devops/hook.service.js'
+import { AzureDevOpsHookSweeper } from './azure-devops/hook-sweeper.js'
+import { AzureDevOpsMembershipAuthzService } from './azure-devops/membership-authz.service.js'
 import { azureDevOpsConnectKeys } from './azure-devops/connect.js'
 import { GiteaStatusCoordinator, GiteaStatusReporter } from './gitea/status-projection.js'
 import { GiteaMembershipAuthzService } from './gitea/membership-authz.service.js'
@@ -195,6 +198,7 @@ import {
   PgGiteaWebhookSecretStore,
   PgAzureDevOpsConnectionRepo,
   PgAzureDevOpsConnectionSecretStore,
+  PgAzureDevOpsHookRepo,
   PgAzureDevOpsRepositoryBindingRepo,
   PgCodeHostReviewLeaseRepo,
   PgSocialIdentityMutationGate,
@@ -1001,6 +1005,8 @@ export function buildContainer(
   // The Gitea edge, bound once to the resolved instance; every Gitea URL in the process composes from it.
   const giteaApi = new GiteaApiClient(giteaCfg.baseUrl, opts.giteaFetch)
   const giteaWebhookSecretStore = new PgGiteaWebhookSecretStore(prisma, secretCipher)
+  // Azure DevOps service hook state (azure-devops-integration.md §11.2): sealed keys and recorded subscriptions.
+  const azureDevOpsHookRepo = new PgAzureDevOpsHookRepo(prisma, secretCipher)
   const hookService = new HookService(
     repos.hook,
     repos.hookSecret,
@@ -1034,7 +1040,13 @@ export function buildContainer(
       host: giteaCfg.baseUrl
     },
     repos.codeHostDecisionRouting,
-    githubAppCfg ? repos.githubApp : undefined
+    githubAppCfg ? repos.githubApp : undefined,
+    // azure-devops-kind compile sources (azure-devops-integration.md §11.3): the hooked binding, its connection, keys and subscriptions.
+    {
+      bindings: repos.azureDevOpsRepositoryBinding,
+      connections: repos.azureDevOpsConnection,
+      hooks: azureDevOpsHookRepo
+    }
   )
 
   // The single fencing site (allocates seq, stamps epoch/launchId on C→D frames).
@@ -1850,8 +1862,41 @@ export function buildContainer(
     secretFingerprint: azureDevOpsSecretFingerprint(config.API_KEY_PEPPER),
     log: { warn: (obj, msg) => http.log.warn(obj, msg), info: (obj, msg) => http.log.info(obj, msg) }
   })
+  // §11.2: subscriptions follow the repository's enabled hooks; every change recompiles the repository's rules.
+  const azureDevOpsHooks = new AzureDevOpsHookService({
+    connections: repos.azureDevOpsConnection,
+    bindings: repos.azureDevOpsRepositoryBinding,
+    hooks: azureDevOpsHookRepo,
+    service: azureDevOpsConnectionService,
+    api: azureDevOpsApi,
+    clock,
+    ...(config.PUBLIC_RELAY_URL ? { publicRelayUrl: config.PUBLIC_RELAY_URL } : {}),
+    listHooks: (orgId) => repos.hook.listForOrgKind(OrgId(orgId), 'azure-devops'),
+    onChanged: async (orgId, repoId) => {
+      for (const row of await repos.hook.listForOrgKind(OrgId(orgId), 'azure-devops')) {
+        if (row.repoId === repoId) await hookService.broadcast(row)
+      }
+    },
+    log: { warn: (obj, msg) => http.log.warn(obj, msg) }
+  })
+  const azureDevOpsHookSweeper = new AzureDevOpsHookSweeper({
+    hooks: azureDevOpsHooks,
+    clock,
+    log: { warn: (obj, msg) => http.log.warn(obj, msg) }
+  })
+  // The Azure DevOps arm of rc/codehost-membership-authz (§11.4): the actor's groups against the repository's list chain.
+  const azureDevOpsMembershipAuthz = new AzureDevOpsMembershipAuthzService({
+    hooks: repos.hook,
+    bindings: repos.azureDevOpsRepositoryBinding,
+    connections: repos.azureDevOpsConnection,
+    service: azureDevOpsConnectionService,
+    api: azureDevOpsApi,
+    clock,
+    log: { warn: (obj, msg) => http.log.warn(obj, msg) }
+  })
   const azureDevOps = {
     connections: azureDevOpsConnectionService,
+    hooks: azureDevOpsHooks,
     bindings: new AzureDevOpsBindingService({
       connections: repos.azureDevOpsConnection,
       bindings: repos.azureDevOpsRepositoryBinding,
@@ -1894,7 +1939,9 @@ export function buildContainer(
             }
           }
         : {}),
-      ...(webAppUrl ? { webAppUrl } : {})
+      ...(webAppUrl ? { webAppUrl } : {}),
+      // A project that now allows triggers recovers the hooked repositories that waited for it.
+      onTriggersAllowed: (orgId, connectionId) => azureDevOpsHooks.convergeConnection(orgId, connectionId)
     })
   }
   // The §6 convergence sweep, the half of a contended pass's obligation that survives a restart.
@@ -3449,12 +3496,23 @@ export function buildContainer(
     // Provider fail-per-value: each arm answers only for its own host; an unknown host is denied.
     authorizeCodeHostMembership: async (req) => {
       if (req.provider === 'gitea') return giteaMembershipAuthz.allowed(req)
+      if (req.provider === 'azure-devops') return azureDevOpsMembershipAuthz.allowed(req)
       return gitlabMembershipAuthz ? gitlabMembershipAuthz.allowed(req) : false
     },
     // One verified delivery the relay observed (gitea-integration.md §6, §7): the binding is marked
     // verified and a rotated key promoted; a provider this deployment does not manage is ignored.
     onCodeHostDelivery: async (observed) => {
-      if (observed.provider !== 'gitea' || !/^[1-9]\d*$/.test(observed.repoExternalId)) return
+      if (!/^[1-9]\d*$/.test(observed.repoExternalId)) return
+      // §11.2: the binding is verified, and a delivery under the next key promotes it once every subscription switched.
+      if (observed.provider === 'azure-devops') {
+        await azureDevOpsHooks.observeDelivery({
+          repoId: BigInt(observed.repoExternalId),
+          at: new Date(observed.receivedAt),
+          ...(observed.verifiedWith !== undefined ? { verifiedWith: observed.verifiedWith } : {})
+        })
+        return
+      }
+      if (observed.provider !== 'gitea') return
       // Gitea keeps no previous key, so a delivery verified under one names nothing this binding holds.
       if (observed.verifiedWith === 'previous') return
       await giteaProvisioner.observeDelivery({
@@ -3849,6 +3907,7 @@ export function buildContainer(
       gitlabRetirementSweeper?.start()
       gitlabConvergeSweeper?.start()
       giteaConvergeSweeper.start()
+      azureDevOpsHookSweeper.start()
       // §3.5: the deployment secret moves only across a restart, so one pass at boot re-stamps it.
       void azureDevOpsConnectionService
         .reconcileDeploymentSecret()
@@ -3891,6 +3950,7 @@ export function buildContainer(
       gitlabRetirementSweeper?.stop()
       gitlabConvergeSweeper?.stop()
       giteaConvergeSweeper.stop()
+      azureDevOpsHookSweeper.stop()
       installationDoorbell?.stop()
       for (const reaper of pendingInstallReapers) reaper.stop()
       relaySweeper.stop()

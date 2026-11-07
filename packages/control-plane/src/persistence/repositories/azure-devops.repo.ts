@@ -1,12 +1,15 @@
 // Azure DevOps connections, repository identities and bindings (azure-devops-integration.md §3-§5); the claim is deployment-global, keyed by the surrogate id.
 import type {
   AzureDevOpsConnection,
+  AzureDevOpsHookSecret,
+  AzureDevOpsHookSubscription,
   AzureDevOpsRepositoryBinding,
   AzureDevOpsRepositoryIdentity,
   Prisma,
   PrismaClient
 } from '../../generated/prisma/client.js'
 import type { PrismaLike } from '../prisma.js'
+import { AZURE_DEVOPS_DELIVERY_KINDS, type AzureDevOpsDeliveryKind } from '@agentconnect.md/protocol'
 import { AzureDevOpsOrganizationTaken, AzureDevOpsRepositoryClaimConflict } from '../errors.js'
 import type {
   AzureDevOpsBindingState,
@@ -17,6 +20,10 @@ import type {
   AzureDevOpsConnectionState,
   AzureDevOpsCredentialSource,
   AzureDevOpsDegradedReason,
+  AzureDevOpsHookKeys,
+  AzureDevOpsHookReason,
+  AzureDevOpsHookRepo,
+  AzureDevOpsHookSubscriptionRecord,
   AzureDevOpsRepositoryBindingRecord,
   AzureDevOpsRepositoryBindingRepo,
   AzureDevOpsRepositoryFacts,
@@ -254,8 +261,23 @@ function toBindingRecord(r: BindingRow): AzureDevOpsRepositoryBindingRecord {
     defaultBranch: r.defaultBranch,
     state,
     stateReason: state === 'ready' ? null : (toReason(r.stateReason) ?? 'repository_unavailable'),
+    hookReason: toHookReason(r.hookReason),
+    lastVerifiedDeliveryAt: r.lastVerifiedDeliveryAt,
     createdAt: r.createdAt
   }
+}
+
+const HOOK_REASONS: readonly AzureDevOpsHookReason[] = [
+  'webhook_unverified',
+  'triggers_not_allowed',
+  'relay_url_unconfigured',
+  'subscriptions_failed'
+]
+
+// An unknown persisted reason still reads as a failure, never as healthy.
+function toHookReason(value: string | null): AzureDevOpsHookReason | null {
+  if (value === null) return null
+  return (HOOK_REASONS as readonly string[]).includes(value) ? (value as AzureDevOpsHookReason) : 'subscriptions_failed'
 }
 
 /** The claim row, locked exclusively; the binding path locks it SHARED, so a removal and a bind never interleave. */
@@ -455,6 +477,24 @@ export class PgAzureDevOpsRepositoryBindingRepo implements AzureDevOpsRepository
     return row ? toBindingRecord(row) : null
   }
 
+  async listForRepo(orgId: string, repoId: bigint): Promise<AzureDevOpsRepositoryBindingRecord[]> {
+    const rows = await this.prisma.azureDevOpsRepositoryBinding.findMany({
+      where: { orgId, identityId: repoId },
+      include: withIdentity,
+      orderBy: { createdAt: 'asc' }
+    })
+    return rows.map(toBindingRecord)
+  }
+
+  async listForRepoUnscoped(repoId: bigint): Promise<AzureDevOpsRepositoryBindingRecord[]> {
+    const rows = await this.prisma.azureDevOpsRepositoryBinding.findMany({
+      where: { identityId: repoId },
+      include: withIdentity,
+      orderBy: { createdAt: 'asc' }
+    })
+    return rows.map(toBindingRecord)
+  }
+
   async remove(orgId: string, bindingId: string): Promise<'removed' | 'referenced' | 'missing'> {
     return this.prisma.$transaction(async (tx) => {
       const target = await tx.azureDevOpsRepositoryBinding.findFirst({
@@ -478,5 +518,221 @@ export class PgAzureDevOpsRepositoryBindingRepo implements AzureDevOpsRepository
       await tx.azureDevOpsRepositoryBinding.delete({ where: { id: bindingId } })
       return 'removed'
     })
+  }
+}
+
+// ── §11.2 service hooks: keys, recorded subscriptions, and the binding's hook state ──
+
+const DELIVERY_KINDS: ReadonlySet<string> = new Set(AZURE_DEVOPS_DELIVERY_KINDS)
+
+function toSubscriptionRecord(r: AzureDevOpsHookSubscription): AzureDevOpsHookSubscriptionRecord | null {
+  // A kind this build does not know is left alone, as a subscription the Control Plane never made.
+  if (!DELIVERY_KINDS.has(r.kind)) return null
+  return {
+    id: r.id,
+    bindingId: r.bindingId,
+    subscriptionId: r.subscriptionId,
+    kind: r.kind as AzureDevOpsDeliveryKind,
+    status: r.status,
+    keyGeneration: r.keyGeneration
+  }
+}
+
+export class PgAzureDevOpsHookRepo implements AzureDevOpsHookRepo {
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly cipher: SecretCipher
+  ) {}
+
+  private async open(orgId: string, row: AzureDevOpsHookSecret): Promise<AzureDevOpsHookKeys> {
+    const scope = orgScope(OrgId(orgId))
+    return {
+      current: await this.cipher.open(row.signingKey, scope),
+      generation: row.keyGeneration,
+      next: row.nextSigningKey === null ? null : await this.cipher.open(row.nextSigningKey, scope),
+      nextSuspectedLeak: row.nextSuspectedLeak,
+      previous: row.previousSigningKey === null ? null : await this.cipher.open(row.previousSigningKey, scope),
+      previousExpiresAt: row.previousExpiresAt
+    }
+  }
+
+  async keys(orgId: string, bindingId: string): Promise<AzureDevOpsHookKeys | null> {
+    const row = await this.prisma.azureDevOpsHookSecret.findFirst({ where: { bindingId, binding: { orgId } } })
+    return row ? this.open(orgId, row) : null
+  }
+
+  async ensureKeys(orgId: string, bindingId: string, current: string): Promise<AzureDevOpsHookKeys> {
+    if ((await this.prisma.azureDevOpsRepositoryBinding.count({ where: { id: bindingId, orgId } })) === 0) {
+      throw new Error('azure devops hook key write outside its organization')
+    }
+    const signingKey = await this.cipher.seal(current, orgScope(OrgId(orgId)))
+    await this.prisma.azureDevOpsHookSecret.upsert({
+      where: { bindingId },
+      create: { bindingId, signingKey },
+      update: {}
+    })
+    return (await this.keys(orgId, bindingId))!
+  }
+
+  async beginRotation(
+    orgId: string,
+    bindingId: string,
+    next: string,
+    suspectedLeak: boolean
+  ): Promise<AzureDevOpsHookKeys> {
+    const sealed = await this.cipher.seal(next, orgScope(OrgId(orgId)))
+    await this.prisma.$transaction(async (tx) => {
+      const rows = await tx.$queryRaw<Array<{ nextSigningKey: string | null }>>`
+        SELECT s."nextSigningKey" FROM "azure_devops_hook_secret" s
+          JOIN "azure_devops_repository_binding" b ON b."id" = s."bindingId"
+         WHERE s."bindingId" = ${bindingId}::uuid AND b."orgId" = ${orgId}
+           FOR UPDATE OF s`
+      const row = rows[0]
+      if (!row) throw new Error('azure devops hook keys missing')
+      // A rotation under way keeps its sealed key: no subscription is re-keyed twice under different secrets.
+      await tx.azureDevOpsHookSecret.update({
+        where: { bindingId },
+        data: {
+          ...(row.nextSigningKey === null ? { nextSigningKey: sealed } : {}),
+          ...(suspectedLeak ? { nextSuspectedLeak: true } : {})
+        }
+      })
+    })
+    return (await this.keys(orgId, bindingId))!
+  }
+
+  async promoteIfSwitched(
+    orgId: string,
+    bindingId: string,
+    previousExpiresAt: Date
+  ): Promise<AzureDevOpsHookKeys | null> {
+    const promoted = await this.prisma.$transaction(async (tx) => {
+      const rows = await tx.$queryRaw<AzureDevOpsHookSecret[]>`
+        SELECT s.* FROM "azure_devops_hook_secret" s
+          JOIN "azure_devops_repository_binding" b ON b."id" = s."bindingId"
+         WHERE s."bindingId" = ${bindingId}::uuid AND b."orgId" = ${orgId}
+           FOR UPDATE OF s`
+      const row = rows[0]
+      if (!row || row.nextSigningKey === null) return false
+      const nextGeneration = BigInt(row.keyGeneration) + 1n
+      // The barrier: there is a recorded subscription, and every one acknowledged the next key.
+      const total = await tx.azureDevOpsHookSubscription.count({ where: { bindingId } })
+      const behind = await tx.azureDevOpsHookSubscription.count({
+        where: { bindingId, keyGeneration: { lt: nextGeneration } }
+      })
+      if (total === 0 || behind > 0) return false
+      await tx.azureDevOpsHookSecret.update({
+        where: { bindingId },
+        data: {
+          signingKey: row.nextSigningKey,
+          keyGeneration: nextGeneration,
+          nextSigningKey: null,
+          nextSuspectedLeak: false,
+          // A suspected leak drops the old key at promotion; otherwise it verifies queued retries until it expires.
+          previousSigningKey: row.nextSuspectedLeak ? null : row.signingKey,
+          previousExpiresAt: row.nextSuspectedLeak ? null : previousExpiresAt
+        }
+      })
+      return true
+    })
+    return promoted ? this.keys(orgId, bindingId) : null
+  }
+
+  async dropExpiredPrevious(orgId: string, bindingId: string, now: Date): Promise<boolean> {
+    const res = await this.prisma.azureDevOpsHookSecret.updateMany({
+      where: { bindingId, binding: { orgId }, previousExpiresAt: { lte: now } },
+      data: { previousSigningKey: null, previousExpiresAt: null }
+    })
+    return res.count > 0
+  }
+
+  async deleteKeys(orgId: string, bindingId: string): Promise<void> {
+    await this.prisma.azureDevOpsHookSecret.deleteMany({ where: { bindingId, binding: { orgId } } })
+  }
+
+  async subscriptions(bindingId: string): Promise<AzureDevOpsHookSubscriptionRecord[]> {
+    const rows = await this.prisma.azureDevOpsHookSubscription.findMany({
+      where: { bindingId },
+      orderBy: { createdAt: 'asc' }
+    })
+    return rows.map(toSubscriptionRecord).filter((row): row is AzureDevOpsHookSubscriptionRecord => row !== null)
+  }
+
+  async recordSubscription(input: {
+    bindingId: string
+    subscriptionId: string
+    kind: AzureDevOpsDeliveryKind
+    status: string | null
+    keyGeneration: bigint
+  }): Promise<AzureDevOpsHookSubscriptionRecord> {
+    const row = await this.prisma.azureDevOpsHookSubscription.create({
+      data: {
+        bindingId: input.bindingId,
+        subscriptionId: input.subscriptionId.toLowerCase(),
+        kind: input.kind,
+        status: input.status,
+        keyGeneration: input.keyGeneration
+      }
+    })
+    return toSubscriptionRecord(row)!
+  }
+
+  async updateSubscription(id: string, patch: { status?: string | null; keyGeneration?: bigint }): Promise<void> {
+    await this.prisma.azureDevOpsHookSubscription.updateMany({
+      where: { id },
+      data: {
+        ...(patch.status !== undefined ? { status: patch.status } : {}),
+        ...(patch.keyGeneration !== undefined ? { keyGeneration: patch.keyGeneration } : {})
+      }
+    })
+  }
+
+  async removeSubscription(id: string): Promise<void> {
+    await this.prisma.azureDevOpsHookSubscription.deleteMany({ where: { id } })
+  }
+
+  async setHookState(
+    bindingId: string,
+    patch: { hookReason?: AzureDevOpsHookReason | null; lastVerifiedDeliveryAt?: Date | null }
+  ): Promise<void> {
+    await this.prisma.azureDevOpsRepositoryBinding.updateMany({
+      where: { id: bindingId },
+      data: {
+        ...(patch.hookReason !== undefined ? { hookReason: patch.hookReason } : {}),
+        ...(patch.lastVerifiedDeliveryAt !== undefined ? { lastVerifiedDeliveryAt: patch.lastVerifiedDeliveryAt } : {})
+      }
+    })
+  }
+
+  async acquireLease(bindingId: string, owner: string, until: Date, now: Date): Promise<boolean> {
+    const res = await this.prisma.azureDevOpsRepositoryBinding.updateMany({
+      where: { id: bindingId, OR: [{ hookLeaseUntil: null }, { hookLeaseUntil: { lt: now } }] },
+      data: { hookLeaseOwner: owner, hookLeaseUntil: until }
+    })
+    return res.count === 1
+  }
+
+  async releaseLease(bindingId: string, owner: string): Promise<void> {
+    await this.prisma.azureDevOpsRepositoryBinding.updateMany({
+      where: { id: bindingId, hookLeaseOwner: owner },
+      data: { hookLeaseOwner: null, hookLeaseUntil: null }
+    })
+  }
+
+  async markConvergeOwed(bindingId: string, at: Date | null): Promise<void> {
+    await this.prisma.azureDevOpsRepositoryBinding.updateMany({
+      where: { id: bindingId },
+      data: { hookConvergeOwedAt: at }
+    })
+  }
+
+  async listHooked(limit: number): Promise<AzureDevOpsRepositoryBindingRecord[]> {
+    const rows = await this.prisma.azureDevOpsRepositoryBinding.findMany({
+      where: { OR: [{ subscriptions: { some: {} } }, { hookConvergeOwedAt: { not: null } }] },
+      include: withIdentity,
+      orderBy: [{ updatedAt: 'asc' }],
+      take: limit
+    })
+    return rows.map(toBindingRecord)
   }
 }

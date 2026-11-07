@@ -555,6 +555,77 @@ describe('Manage project access (§3.2)', () => {
   })
 })
 
+describe('Allow triggers (§11.1)', () => {
+  const SP_DESCRIPTOR = `Microsoft.VisualStudio.Services.Claims.AadServicePrincipal;${TENANT_ID}\\${SP_OBJECT_ID}`
+
+  it('grants View and Edit subscriptions by default with Contributors, on request with Readers, and not otherwise', async () => {
+    const h = harness()
+    const { flowId, ticket } = await h.toProjects()
+    const res = await h.post(
+      `/azure-devops/connect/${flowId}/projects`,
+      {
+        projects: [
+          { projectId: PROJECT_ID, group: 'contributors' },
+          { projectId: SECOND_PROJECT_ID, group: 'readers' }
+        ]
+      },
+      ticket
+    )
+    expect(res.statusCode).toBe(200)
+    expect(h.fake.aceWrites).toEqual([
+      { token: `PublisherSecurity/${PROJECT_ID}`, descriptor: SP_DESCRIPTOR, allow: 3 }
+    ])
+    const [write] = h.calls('POST', `https://dev.azure.com/${ORGANIZATION}/_apis/accesscontrolentries/`)
+    expect(write!.url).toBe(
+      `https://dev.azure.com/${ORGANIZATION}/_apis/accesscontrolentries/cb594ebe-87dd-4fc9-ac2c-6a10a4c92046?api-version=7.1`
+    )
+    expect(JSON.parse(write!.body!)).toMatchObject({ merge: true, accessControlEntries: [{ allow: 3, deny: 0 }] })
+    expect(res.json()).toMatchObject({
+      triggers: [{ projectId: PROJECT_ID, outcome: 'granted' }]
+    })
+    expect(res.json().checklist).toBeUndefined()
+
+    const managed = await h.toProjects(res.json().connection.id)
+    const again = await h.post(
+      `/azure-devops/connect/${managed.flowId}/projects`,
+      {
+        projects: [
+          { projectId: PROJECT_ID, group: 'contributors', allowTriggers: false },
+          { projectId: SECOND_PROJECT_ID, group: 'readers', allowTriggers: true }
+        ]
+      },
+      managed.ticket
+    )
+    expect(again.statusCode).toBe(200)
+    expect(again.json().triggers).toEqual([
+      { projectId: SECOND_PROJECT_ID, projectName: 'Second Project', outcome: 'granted' }
+    ])
+    expect(h.fake.serviceHookGrants).toEqual(new Set([PROJECT_ID, SECOND_PROJECT_ID]))
+  })
+
+  it('reports a refused entry with a checklist naming the client ID, without failing the step', async () => {
+    const h = harness()
+    h.fake.aceWriteAllowed = false
+    const { flowId, ticket } = await h.toProjects()
+    const res = await h.post(
+      `/azure-devops/connect/${flowId}/projects`,
+      { projects: [{ projectId: PROJECT_ID, group: 'contributors' }] },
+      ticket
+    )
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({
+      connection: { state: 'connected' },
+      memberships: [{ projectId: PROJECT_ID, outcome: 'added' }],
+      triggers: [{ projectId: PROJECT_ID, projectName: 'Example Project', outcome: 'refused' }]
+    })
+    const [item] = res.json().checklist as string[]
+    expect(item).toContain('Example Project')
+    expect(item).toContain(DEPLOYMENT_CLIENT_ID)
+    expect(item).toContain('Project Collection Administrator')
+    expect(h.fake.serviceHookGrants.size).toBe(0)
+  })
+})
+
 describe('the flow ticket', () => {
   it('is never persisted, and an expired, foreign or missing ticket is refused', async () => {
     const h = harness()

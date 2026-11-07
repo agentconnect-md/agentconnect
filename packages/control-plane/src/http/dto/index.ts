@@ -2486,11 +2486,34 @@ export const AzureDevOpsRepositoryBindingDto = z.object({
   defaultBranch: z.string().nullable(),
   state: z.enum(['ready', 'runtime_degraded']),
   stateReason: z.enum(['secret_rejected', 'access_revoked', 'repository_unavailable']).nullable(),
+  /** Why the service hook subscriptions are not known to deliver (§11.2); null when healthy or when no trigger needs them. */
+  hookReason: z
+    .enum(['webhook_unverified', 'triggers_not_allowed', 'relay_url_unconfigured', 'subscriptions_failed'])
+    .nullable(),
+  /** When the relay last verified a delivery for this repository. */
+  lastVerifiedDeliveryAt: z.string().nullable(),
+  /** The subscriptions the Control Plane manages for it: one per delivery kind its triggers need. */
+  subscriptions: z.array(z.object({ kind: z.string(), status: z.string().nullable() })),
   createdAt: z.string()
 })
 export type AzureDevOpsRepositoryBindingDtoT = z.infer<typeof AzureDevOpsRepositoryBindingDto>
 
 export const AzureDevOpsRepositoryBindingListDto = z.object({ bindings: z.array(AzureDevOpsRepositoryBindingDto) })
+
+export const RotateAzureDevOpsHookKeyBody = z.strictObject({
+  suspectedLeak: z
+    .boolean()
+    .default(false)
+    .describe('The current key may have leaked: drop it at promotion instead of accepting it for 36 hours more.')
+})
+
+/** A rotation's progress (§11.2): promotion follows the first delivery verified under the next key once every subscription switched. */
+export const AzureDevOpsHookKeyRotationDto = z.object({
+  rotated: z.boolean(),
+  switched: z.number().int(),
+  total: z.number().int(),
+  reason: z.string().nullable()
+})
 
 /** Connect with Microsoft (§3.2 step 1); a connection id starts Manage project access for that connection. */
 export const StartAzureDevOpsConnectBody = z.strictObject({
@@ -2531,7 +2554,18 @@ export const AzureDevOpsProjectsDto = z.object({
 })
 export const ApplyAzureDevOpsProjectsBody = z.strictObject({
   projects: z
-    .array(z.strictObject({ projectId: z.guid(), group: z.enum(['readers', 'contributors']) }))
+    .array(
+      z.strictObject({
+        projectId: z.guid(),
+        group: z.enum(['readers', 'contributors']),
+        allowTriggers: z
+          .boolean()
+          .optional()
+          .describe(
+            'Allow triggers (§11.1): give the application View and Edit subscriptions on the project. Absent ⇒ on for Contributors, off for Readers.'
+          )
+      })
+    )
     .min(1)
     .max(100)
 })
@@ -2541,9 +2575,18 @@ export const AzureDevOpsMembershipDto = z.object({
   group: z.enum(['readers', 'contributors']),
   outcome: z.enum(['added', 'already_member', 'refused', 'failed', 'group_missing', 'not_attempted'])
 })
+export const AzureDevOpsTriggerGrantDto = z.object({
+  projectId: z.string(),
+  projectName: z.string(),
+  outcome: z.enum(['granted', 'refused', 'failed'])
+})
 export const AzureDevOpsConnectResultDto = z.object({
   connection: AzureDevOpsConnectionDto,
-  memberships: z.array(AzureDevOpsMembershipDto)
+  memberships: z.array(AzureDevOpsMembershipDto),
+  /** One entry per project with Allow triggers on; a refusal does not fail the step. */
+  triggers: z.array(AzureDevOpsTriggerGrantDto),
+  /** What is left to do by hand, such as Allow triggers the caller's role could not grant. */
+  checklist: z.array(z.string()).optional()
 })
 
 export const GithubAppDto = z.object({
@@ -3437,11 +3480,31 @@ export const CreateGiteaHookBody = HookBodyBase.extend({
   reportingMode: HookReportingModeEnum.default('off')
 })
 
+/** Azure DevOps families (azure-devops-integration.md §11.4): pull requests and pushes only; no issues, releases or labels. */
+export const AzureDevOpsHookFamily = z.enum(['merge_request', 'push'])
+export const AzureDevOpsHookEventPattern = /^(merge_request:(opened|synchronize|review_requested|reopened|\*)|push:\*)$/
+
+/** Azure DevOps rows speak the GitLab family vocabulary like Gitea's; the repository is the surrogate numeric id of a bound repository. */
+export const CreateAzureDevOpsHookBody = HookBodyBase.extend({
+  kind: z.literal('azure-devops'),
+  // perThread by definition; the repository must already be bound in this organization and authorized for the agent.
+  repoId: z.string().regex(/^[1-9]\d*$/),
+  family: AzureDevOpsHookFamily,
+  events: z.array(z.string().regex(AzureDevOpsHookEventPattern)).min(1).max(10),
+  // The pull-request comment family; empty = no comments.
+  commentFamilies: z.array(z.literal('merge_request')).max(1).default([]),
+  mentionOnly: z.boolean().default(false),
+  // Formal reviews and the run status land with their writers; until then only `off` is accepted.
+  reviewPolicy: HookReviewPolicyEnum.default('off'),
+  reportingMode: HookReportingModeEnum.default('off')
+})
+
 export const CreateHookBody = z.discriminatedUnion('kind', [
   CreateWebhookHookBody,
   CreateGithubHookBody,
   CreateGitlabHookBody,
-  CreateGiteaHookBody
+  CreateGiteaHookBody,
+  CreateAzureDevOpsHookBody
 ])
 
 // PUT: `kind` discriminates the body but STAYS OPTIONAL for webhook updates —
@@ -3470,6 +3533,13 @@ export const UpdateHookBody = z.union([
     enabled: z.boolean().optional(),
     commentFamilies: z.array(GitlabCommentFamily).max(2).optional(),
     labelFilter: HookLabelFilter.optional(),
+    mentionOnly: z.boolean().optional(),
+    reviewPolicy: HookReviewPolicyEnum.optional(),
+    reportingMode: HookReportingModeEnum.optional()
+  }),
+  CreateAzureDevOpsHookBody.omit({ family: true }).extend({
+    enabled: z.boolean().optional(),
+    commentFamilies: z.array(z.literal('merge_request')).max(1).optional(),
     mentionOnly: z.boolean().optional(),
     reviewPolicy: HookReviewPolicyEnum.optional(),
     reportingMode: HookReportingModeEnum.optional()

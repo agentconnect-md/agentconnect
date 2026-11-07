@@ -246,6 +246,8 @@ export interface AzureDevOpsProjectChoice {
   projectId: string
   projectName: string
   group: 'readers' | 'contributors'
+  /** §11.1 Allow triggers: the service principal's View and Edit subscriptions on the project. */
+  allowTriggers?: boolean
 }
 
 /** Everything a flow carries between steps; the delegated token exists nowhere else. */
@@ -273,7 +275,14 @@ const Ticket = z.object({
   organization: z.string().optional(),
   organizationInstanceId: z.string().optional(),
   projects: z
-    .array(z.object({ projectId: z.string(), projectName: z.string(), group: z.enum(['readers', 'contributors']) }))
+    .array(
+      z.object({
+        projectId: z.string(),
+        projectName: z.string(),
+        group: z.enum(['readers', 'contributors']),
+        allowTriggers: z.boolean().optional()
+      })
+    )
     .optional(),
   expiresAt: z.number()
 })

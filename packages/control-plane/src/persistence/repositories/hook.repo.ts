@@ -29,7 +29,7 @@ import type {
   User
 } from '../../generated/prisma/client.js'
 import { Prisma } from '../../generated/prisma/client.js'
-import { isStoredHookKind } from '../hook-kind.js'
+import { fromDbHookKind, isStoredHookKind, toDbHookKind } from '../hook-kind.js'
 import type { PrismaLike } from '../prisma.js'
 import { tombstoneCodeHostRunProjections } from './code-host-projection.repo.js'
 import type {
@@ -89,7 +89,7 @@ function toRecord(h: HookWithUsers): HookRecord {
     id: HookId(h.id),
     orgId: OrgId(h.orgId),
     agentId: h.agentId ? AgentId(h.agentId) : null,
-    kind: h.kind,
+    kind: fromDbHookKind(h.kind),
     name: h.name,
     enabled: h.enabled,
     sessionMode: h.sessionMode,
@@ -514,7 +514,7 @@ export class PgHookRepo implements HookRepo {
     const data = {
       orgId: input.orgId,
       agentId: input.agentId,
-      kind: input.kind,
+      kind: toDbHookKind(input.kind),
       name: input.name,
       sessionMode: input.sessionMode,
       ...(input.instructions !== undefined ? { instructions: input.instructions } : {}),
@@ -705,8 +705,12 @@ export class PgHookRepo implements HookRepo {
           existing.enabled !== h.enabled
         )
           await bumpCodeHostRoutingHosts(tx, h.orgId, [
-            { kind: existing?.kind, repoId: existing?.repoId, family: existing?.family },
-            { kind: h.kind, repoId: h.repoId, family: h.family }
+            {
+              kind: existing ? fromDbHookKind(existing.kind) : undefined,
+              repoId: existing?.repoId,
+              family: existing?.family
+            },
+            { kind: fromDbHookKind(h.kind), repoId: h.repoId, family: h.family }
           ])
         return { kind: 'done', hook: toRecord(h) } as const
       })
@@ -805,7 +809,7 @@ export class PgHookRepo implements HookRepo {
     for (const row of rows) {
       if (!row.agentId) continue
       const kinds = map.get(row.agentId) ?? []
-      kinds.push(row.kind)
+      kinds.push(fromDbHookKind(row.kind))
       map.set(row.agentId, kinds)
     }
     return map
@@ -813,7 +817,7 @@ export class PgHookRepo implements HookRepo {
 
   async listForOrgKind(orgId: OrgId, kind: HookRecord['kind']): Promise<HookRecord[]> {
     const rows = await this.db.hookDef.findMany({
-      where: { orgId, kind },
+      where: { orgId, kind: toDbHookKind(kind) },
       include: withUsers,
       orderBy: { createdAt: 'asc' }
     })
@@ -822,7 +826,7 @@ export class PgHookRepo implements HookRepo {
 
   async listIdsForOrgKind(orgId: OrgId, kind: WireHookKind): Promise<HookId[]> {
     if (!isStoredHookKind(kind)) return []
-    const rows = await this.db.hookDef.findMany({ where: { orgId, kind }, select: { id: true } })
+    const rows = await this.db.hookDef.findMany({ where: { orgId, kind: toDbHookKind(kind) }, select: { id: true } })
     return rows.map((row) => HookId(row.id))
   }
 
@@ -1735,7 +1739,7 @@ export class PgHookRepo implements HookRepo {
           (requiresProjectionFence &&
             (hook.kind !== 'github' ||
               !hook.enabled ||
-              !githubHookCovers(hook, r.repoId, r.sourceInstallationId) ||
+              !githubHookCovers({ ...hook, kind: fromDbHookKind(hook.kind) }, r.repoId, r.sourceInstallationId) ||
               r.headSha === undefined ||
               r.reportSha !== r.headSha ||
               r.agentId === undefined ||
@@ -2618,7 +2622,11 @@ export class PgHookRepo implements HookRepo {
           hook?.kind === 'github' &&
           hook.enabled &&
           hook.agentId === input.agentId &&
-          githubHookCovers(hook, input.repoId, incomingRun?.sourceInstallationId) &&
+          githubHookCovers(
+            { ...hook, kind: fromDbHookKind(hook.kind) },
+            input.repoId,
+            incomingRun?.sourceInstallationId
+          ) &&
           hook.projectionEpoch === input.projectionEpoch &&
           hook.reportingMode === input.mode &&
           hook.gateMode === input.gateMode &&
