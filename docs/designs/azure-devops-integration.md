@@ -1,6 +1,6 @@
 # Azure DevOps Integration
 
-> Status: **In progress** — A1 (protocol), A2 (Control Plane) and A3 (daemon) have landed; A4 follows (§13).
+> Status: **In progress** — A1 (protocol), A2 (Control Plane), A3 (daemon) and A4's Console and Setup have landed; the documentation-site setup page follows (§13).
 > Scope: **Azure DevOps Services** (`dev.azure.com`),
 > Git repositories in Azure Repos. The first version covers workspaces and
 > additional repositories only; pull-request hooks, reviews, pull-request
@@ -766,18 +766,33 @@ The Integrations page gains an Azure DevOps card. The card offers:
 - **Connect with Microsoft**, and **Use your own application instead**;
 - **Manage project access** (§3.2), for a connection made with Microsoft;
 - replace secret, for an own application only;
-- disconnect; and
-- the repositories in use.
+- disconnect;
+- the connection's state, and a degraded connection's reason with who fixes
+  it (the card for an own application's secret, Setup for the deployment's);
+- the repositories in use; and
+- one line on the identity's reach (§3.6, §9), linking the setup page on the
+  documentation site for the detail.
 
 Its copy is about Azure DevOps throughout. The administrator it asks for is a
 Project Collection Administrator, not a Teams administrator, and the manual
 checklist of §3.2 step 4 lists what §3.6 asks of the organization. The
-workspace picker gains an Azure DevOps tile, and the additional-repository
-picker lists what the identity can see, marking an unbound row "added on save".
+Console's `/azure-devops/connect` page runs steps 2 to 4: it posts what
+Microsoft returned, offers the organizations (skipped for Manage project
+access), then the projects with Readers or Contributors for each, and answers
+every refusal with its fix: the admin-consent URL, a sign-in at the
+organization's tenant, or the checklist with **Check again**, which calls
+`verify` with the ticket the refusal carries. The page holds the flow ticket
+in memory for the flow alone, never in storage or a URL. The workspace picker
+gains an Azure DevOps tile, and the additional-repository picker lists what
+the identity can see, marking an unbound row "added on save" and offering the
+`read` and `write` tiers. Trigger pickers read a hooks capability of the
+Console's code-host projection, so Azure DevOps stays out of them until §11.
 
 Setup's **Microsoft** section stays one section for the one application. It
-describes what that application serves (sign-in, Teams, Azure DevOps) and lists
-the connect page's redirect URI.
+describes what that application serves (sign-in, Teams, Azure DevOps),
+recommends an Entra display name that names no single Microsoft product
+(§3.1), and lists the connect page's redirect URI once the Console's address
+is HTTPS.
 
 REST at the organization scope:
 
@@ -1044,6 +1059,6 @@ live organization before A2.
   own ask, and advertises `azure-devops-v1` only while the proxy runs. Daemon
   Git for VM, pool-pod and executor sessions through the proxy is future work;
   until it lands those sessions are refused (§6.1).
-- **A4 — Console, Setup, and documentation.** The card, the pickers, the
-  Microsoft section's redirect URI and wording, and the setup page on the
-  documentation site.
+- **A4 — Console, Setup, and documentation.** _Landed, except the setup page
+  on the documentation site._ The card and the connect page, the pickers, and
+  the Microsoft section's redirect URI and wording.
