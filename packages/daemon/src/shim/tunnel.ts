@@ -1,21 +1,17 @@
 import { z } from 'zod'
 import { SANDBOX_TUNNEL_PATHS as SANDBOX_TUNNEL_PATH_SOURCE } from './sandbox-paths.js'
 
-/**
- * Unix sockets the daemon exposes into a sandbox. Each is a daemon-side server the runtime
- * expects to find locally: the git-credential helper (which `gh`'s token helper shares) and
- * the MCP bridge. The shim listens on the in-pod path and proxies bytes back over the channel.
- *
- * The set is closed on purpose. A generic "tunnel any socket" capability would let a
- * compromised runtime reach whatever the daemon happens to be listening on; naming the
- * servers keeps the grant meaningful.
- */
-export const TunnelNameSchema = z.enum(['gitcred', 'mcp'])
+/** The daemon-side servers a sandbox may reach, a closed set so a compromised runtime reaches only these: gitcred and mcp as in-pod sockets, codehost as a loopback proxy. */
+export const TunnelNameSchema = z.enum(['gitcred', 'mcp', 'codehost'])
 export type TunnelName = z.infer<typeof TunnelNameSchema>
 
 /** Bytes per chunk in either direction. One `shim/request` or `shim/event` carries at most one
  *  chunk, so this has to leave room under `MAX_FRAME_BYTES` (256 KiB) after base64 expansion. */
 export const MAX_TUNNEL_CHUNK_BYTES = 32 * 1024
+/** The most code-host authorities one agent's `codehost` listener forwards. */
+export const MAX_CODEHOST_ROUTES = 64
+/** Concurrent `codehost` streams per sandbox, apart from the helper tunnels' own budget so a busy clone cannot starve `mcp` or `gitcred`. */
+export const MAX_CODEHOST_STREAMS = 16
 const MAX_TUNNEL_CHUNK_BASE64 = Math.ceil(MAX_TUNNEL_CHUNK_BYTES / 3) * 4
 
 /**
@@ -30,7 +26,14 @@ const MAX_TUNNEL_CHUNK_BASE64 = Math.ceil(MAX_TUNNEL_CHUNK_BYTES / 3) * 4
  */
 export const TunnelListenSchema = z.object({
   op: z.literal('listen'),
-  tunnel: TunnelNameSchema
+  tunnel: TunnelNameSchema,
+  // `codehost` only: the `host:port` authorities its listener forwards to the daemon, and the CA the session trusts for them.
+  routes: z.array(z.string().min(1).max(270)).max(MAX_CODEHOST_ROUTES).optional(),
+  ca: z
+    .string()
+    .min(1)
+    .max(16 * 1024)
+    .optional()
 })
 
 /**
@@ -55,8 +58,18 @@ export const TunnelCloseSchema = z.object({
 export const TunnelPayloadSchema = z.discriminatedUnion('op', [TunnelListenSchema, TunnelDataSchema, TunnelCloseSchema])
 export type TunnelPayload = z.infer<typeof TunnelPayloadSchema>
 
-/** What a `listen` reports back, so the daemon logs the path the pod actually serves. */
-export const TunnelListeningSchema = z.object({ socketPath: z.string().min(1) })
+/** What a `listen` reports back: the path the pod serves, and for `codehost` the loopback proxy a session is pointed at. */
+export const TunnelListeningSchema = z.object({
+  socketPath: z.string().min(1),
+  proxy: z
+    .object({
+      port: z.number().int().min(1).max(65_535),
+      token: z.string().min(16).max(128),
+      trustBundle: z.string().min(1).max(4096)
+    })
+    .optional()
+})
+export type TunnelListening = z.infer<typeof TunnelListeningSchema>
 
 /**
  * Which in-pod path each tunnel is served at. Fixed by the runtime image, not by the daemon's own

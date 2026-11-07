@@ -15,7 +15,7 @@ import type { ShimTransport } from '../shim/client.js'
 import { ShimDialer } from '../shim/dialer.js'
 import { DEFAULT_SHIM_LISTEN_PORT } from '../shim/protocol.js'
 import type { ShimSession } from '../shim/session.js'
-import { TunnelNameSchema, type TunnelName } from '../shim/tunnel.js'
+import type { TunnelName } from '../shim/tunnel.js'
 import { EXECUTOR_GRANTS } from './executor-plane.js'
 import type { EnvironmentDescriptor, SessionEnvironment, StrategyLauncher } from './strategies.js'
 
@@ -23,6 +23,8 @@ import type { EnvironmentDescriptor, SessionEnvironment, StrategyLauncher } from
 const CREDENTIAL_TTL_MS = 24 * 60 * 60_000
 // The launcher answers once the shim listens, so the dial has only a stream to open.
 const CHANNEL_TIMEOUT_MS = 15_000
+// The helper tunnels only: a local VM or srt environment is never served the executor-only codehost tunnel.
+const LOCAL_TUNNELS: readonly TunnelName[] = ['gitcred', 'mcp']
 
 /** One environment life on this machine: the descriptor it started from, what its launcher started, and the holds on it. */
 interface LocalLaunch extends Launch {
@@ -41,7 +43,7 @@ export interface LocalExecutorDeps {
   /** This daemon's own allocator, the store's: a local environment's generation never goes backwards across restarts. */
   generations: LaunchGenerations
   /** Where this daemon's own sockets are; a local VM reaches every one of them through its shim. */
-  tunnelSocketPath: (tunnel: TunnelName) => string | undefined
+  tunnelSocketPath: (tunnel: TunnelName, agentId: string) => string | undefined
   /** Tags a subject's daemon-socket connection with that subject (gitcred binds a pod window to its pod). */
   tunnelGreeting?: (subject: string, tunnel: TunnelName) => Buffer | undefined
   log: Logger
@@ -82,7 +84,7 @@ export class LocalExecutor {
     })
     // Both helper endpoints, as a local VM always had: its launch names the git-credential socket whatever the agent's credential is.
     this.tunnels = new TunnelBinder({
-      tunnelsFor: () => [...TunnelNameSchema.options],
+      tunnelsFor: () => [...LOCAL_TUNNELS],
       tunnelSocketPath: deps.tunnelSocketPath,
       ...(deps.tunnelGreeting === undefined ? {} : { tunnelGreeting: deps.tunnelGreeting }),
       log: deps.log

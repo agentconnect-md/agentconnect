@@ -552,11 +552,12 @@ through a tool or REST instead.
 in the daemon, for every execution strategy. Only how a request reaches the
 proxy differs:
 
-| Strategy       | Transport                                                    |
-| -------------- | ------------------------------------------------------------ |
-| `microsandbox` | a third tunnel beside `gitcred` and `mcp` over the VM bridge |
-| pool pod       | the same tunnel through the shim's tunnel host               |
-| `srt` and host | a loopback or Unix-socket listener under the daemon root     |
+| Strategy                    | Transport                                                              |
+| --------------------------- | ---------------------------------------------------------------------- |
+| `microsandbox`              | the `codehost` tunnel beside `gitcred` and `mcp` over the VM bridge    |
+| pool pod                    | the same tunnel through the shim's tunnel host                         |
+| `srt` and host              | a loopback or Unix-socket listener under the daemon root               |
+| host, placed on an executor | the `codehost` tunnel, from a loopback listener in the executor's shim |
 
 **Client configuration.** Every strategy would get the same configuration.
 Only the proxy address differs:
@@ -649,7 +650,36 @@ in the daemon's run directory, which honors only that agent's placeholder: one
 that leaks into another agent's environment buys nothing there. On the host,
 the proxy listens on loopback and requires the proxy credential carried in the
 `HTTPS_PROXY` URL, so it is no open proxy to other local processes; a host
-session has no boundary from another agent's to begin with. A SaaS
+session has no boundary from another agent's to begin with.
+
+A host session a daemon-group member placed on another member's executor
+(session-executors.md §7) reaches its holder's proxy over the `codehost` shim
+tunnel. The holder asks a host-strategy session's shim for it only for an
+agent the proxy intercepts, and the `listen` carries the agent's code-host
+routes (each SaaS name on 443, a self-managed instance on its own port) and
+the proxy's CA certificate:
+
+- The executor's shim shares the machine's loopback with other shims, so it
+  serves `codehost` as an HTTP proxy on an ephemeral loopback port, with a
+  proxy credential of its own, and reports the port, the credential and a
+  trust bundle (that machine's roots and the CA) back. The session's
+  `HTTPS_PROXY` names that listener, `NO_PROXY` names loopback, and its trust
+  variables name that bundle.
+- A CONNECT to one of the routes enters the tunnel as a fresh CONNECT with
+  no client header; any other host is connected directly, as the session
+  would without a proxy, since `HTTPS_PROXY` cannot be scoped to some hosts.
+- On the holder, the tunnel ends at a Unix socket of the agent's own that
+  honors only that agent's placeholder and refuses a CONNECT to anything but
+  its routes, whatever the executor's shim forwards.
+- `codehost` streams have their own cap (16 per session) beside the helper
+  tunnels' 32, so a burst of clones cannot take `mcp` or `gitcred` slots, and
+  end after five idle minutes. A renewal of the shim channel ends a stream
+  with a frame in flight, as for the helpers: a lost or repeated fragment
+  corrupts a TLS record, so the client's retry is the only recovery.
+- A session on an executor whose shim does not serve `codehost`, and an `srt`
+  or VM session placed on one, keeps the credential helper path.
+
+A SaaS
 code-host name (GitHub's, `gitlab.com`, `gitea.com`) never resolves to
 loopback, private, link-local or unspecified space upstream. A self-managed
 instance may live at a private address, so its name is refused only loopback,

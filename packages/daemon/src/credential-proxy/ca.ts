@@ -89,7 +89,7 @@ export function upstreamAuthorities(env: NodeJS.ProcessEnv = process.env): strin
 }
 
 /** The variables that point a runtime's clients at the bundle: OpenSSL and Go, curl, git, Python's requests, and Node. */
-export function proxyTrustEnv(ca: Pick<ProxyCa, 'bundlePath' | 'certPath'>): Record<string, string> {
+export function proxyTrustEnv(ca: Pick<ProxyCa, 'bundlePath'>): Record<string, string> {
   return {
     SSL_CERT_FILE: ca.bundlePath,
     CURL_CA_BUNDLE: ca.bundlePath,

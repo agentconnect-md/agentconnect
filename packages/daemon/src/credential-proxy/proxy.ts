@@ -58,6 +58,11 @@ export interface CredentialProxyDeps {
   upstream?: { lookupFor?: DirectLookup; trustedCa?: string | string[] }
 }
 
+/** A `host:port` authority, an IPv6 host bracketed, as a codehost listener matches a CONNECT. */
+export function routeAuthority(hostname: string, port: number): string {
+  return `${hostname.includes(':') ? `[${hostname}]` : hostname}:${port}`
+}
+
 function ipv4Of(address: string): string {
   return address.startsWith('::ffff:') ? address.slice(7) : address
 }
@@ -164,6 +169,8 @@ export class CredentialProxy {
   private loopback: Server | undefined
   /** srt's routes, one socket per agent, so a placeholder is honored only over its own agent's. */
   private readonly agentSockets = new Map<string, { path: string; server: Server }>()
+  /** An executor's codehost tunnel per agent: the same binding, and a CONNECT only to that agent's code hosts. */
+  private readonly tunnelSockets = new Map<string, { path: string; server: Server }>()
   private socketDir: string | undefined
   private mitmCa: MitmCA | undefined
   private readonly proxyToken = randomBytes(24).toString('base64url')
@@ -192,37 +199,70 @@ export class CredentialProxy {
   }
 
   async stop(): Promise<void> {
-    const servers = [...(this.loopback ? [this.loopback] : []), ...[...this.agentSockets.values()].map((s) => s.server)]
+    const servers = [
+      ...(this.loopback ? [this.loopback] : []),
+      ...[...this.agentSockets.values(), ...this.tunnelSockets.values()].map((s) => s.server)
+    ]
     await Promise.all(servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))))
     this.loopback = undefined
     this.agentSockets.clear()
+    this.tunnelSockets.clear()
     if (this.mitmCa) disposeMitmCASync(this.mitmCa)
     this.mitmCa = undefined
   }
 
   /** The socket srt routes this agent's code-host domains to, listening from the first ask; only this agent's placeholder is honored there. */
   socketFor(agentId: string): string {
-    const existing = this.agentSockets.get(agentId)
+    return this.agentSocket(this.agentSockets, agentId, '', () => this.server(undefined, agentId))
+  }
+
+  /** The socket an executor's codehost tunnel reaches for this agent: its placeholder alone, and a CONNECT to nothing but its {@link tunnelRoutes}. */
+  tunnelSocketFor(agentId: string): string {
+    return this.agentSocket(this.tunnelSockets, agentId, '-t', () =>
+      this.server(undefined, agentId, (port, host) => this.tunnelRoutes(agentId).includes(routeAuthority(host, port)))
+    )
+  }
+
+  /** The `host:port` authorities an agent's code hosts answer on: each SaaS name on 443, a self-managed instance on its own port. */
+  tunnelRoutes(agentId: string): string[] {
+    const routes = this.instances(agentId).flatMap((instance) =>
+      instance.provider === 'github'
+        ? instanceHostnames(instance).map((name) => routeAuthority(name, 443))
+        : instance.hosts.map((host) => (/:\d+$/.test(host) ? host : `${host}:443`))
+    )
+    return [...new Set(routes)]
+  }
+
+  private agentSocket(
+    sockets: Map<string, { path: string; server: Server }>,
+    agentId: string,
+    suffix: string,
+    create: () => Server
+  ): string {
+    const existing = sockets.get(agentId)
     if (existing) return existing.path
     if (!this.socketDir) throw new Error('the credential proxy is not running')
     // A digest, not the id: the path must fit AF_UNIX beside a long daemon root.
-    const path = join(this.socketDir, `${createHash('sha256').update(agentId).digest('hex').slice(0, 16)}.sock`)
+    const digest = createHash('sha256').update(agentId).digest('hex').slice(0, 16)
+    const path = join(this.socketDir, `${digest}${suffix}.sock`)
     rmSync(path, { force: true })
-    const server = this.server(undefined, agentId)
+    const server = create()
     server.on('error', (err) => this.deps.log.warn(`credential proxy: socket for ${agentId} failed: ${err.message}`))
     // A Unix path binds inside listen() itself, so the socket exists before srt is handed it; only `listening` waits a tick.
     server.listen(path, () => chmodSync(path, 0o600))
-    this.agentSockets.set(agentId, { path, server })
+    sockets.set(agentId, { path, server })
     return path
   }
 
-  /** Retire an agent's route with the agent: its listener closes and its socket goes. */
+  /** Retire an agent's routes with the agent: its listeners close and their sockets go. */
   release(agentId: string): void {
-    const route = this.agentSockets.get(agentId)
-    if (!route) return
-    this.agentSockets.delete(agentId)
-    route.server.close()
-    rmSync(route.path, { force: true })
+    for (const sockets of [this.agentSockets, this.tunnelSockets]) {
+      const route = sockets.get(agentId)
+      if (!route) continue
+      sockets.delete(agentId)
+      route.server.close()
+      rmSync(route.path, { force: true })
+    }
   }
 
   /** The placeholder an agent's environment carries in place of a code-host token, sealed for its own instances' hosts. */
@@ -262,11 +302,15 @@ export class CredentialProxy {
       : undefined
   }
 
-  private server(proxyAuthToken?: string, boundAgent?: string): Server {
+  private server(
+    proxyAuthToken?: string,
+    boundAgent?: string,
+    reachable: (port: number, host: string) => boolean = () => true
+  ): Server {
     const trustedCa = this.deps.upstream?.trustedCa
     return createHttpProxyServer({
-      // Every host is reachable; only the code-host instances are terminated and judged.
-      filter: () => true,
+      // Every host is reachable unless the listener narrows it; only the code-host instances are terminated and judged.
+      filter: (port, host) => reachable(port, host.toLowerCase().replace(/^\[(.*)\]$/, '$1')),
       mitmCA: this.mitmCa!,
       shouldTerminateTLS: (host, port) =>
         this.served(boundAgent).some((instance) => instanceHost(instance, host.toLowerCase(), port) !== undefined),

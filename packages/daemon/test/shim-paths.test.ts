@@ -28,7 +28,11 @@ describe('shimPaths', () => {
       configFilesDir: '/run/agentconnect/config-files',
       skillStagingDir: '/run/agentconnect/skills-staging',
       bundleStagingDir: '/run/agentconnect/bundle-staging',
-      tunnels: { gitcred: '/run/agentconnect/gitcred.sock', mcp: '/run/agentconnect/mcp.sock' }
+      tunnels: {
+        gitcred: '/run/agentconnect/gitcred.sock',
+        mcp: '/run/agentconnect/mcp.sock',
+        codehost: '/run/agentconnect/codehost.sock'
+      }
     })
     expect(DEFAULT_SHIM_PATHS).toEqual(shimPaths())
     expect(SANDBOX_TUNNEL_PATHS).toBe(DEFAULT_SHIM_PATHS.tunnels)
@@ -42,10 +46,14 @@ describe('shimPaths', () => {
     const flat = (value: object): string[] =>
       Object.values(value).flatMap((entry) => (typeof entry === 'string' ? [entry] : flat(entry as object)))
     const all = flat(paths)
-    expect(all).toHaveLength(15)
+    expect(all).toHaveLength(16)
     expect(all.every((path) => path.startsWith('/tmp/rt/') || path.startsWith('/srv/helpers/'))).toBe(true)
     expect(all.some((path) => path.includes('/run/agentconnect') || path.includes('/opt/agentconnect'))).toBe(false)
-    expect(paths.tunnels).toEqual({ gitcred: '/tmp/rt/gitcred.sock', mcp: '/tmp/rt/mcp.sock' })
+    expect(paths.tunnels).toEqual({
+      gitcred: '/tmp/rt/gitcred.sock',
+      mcp: '/tmp/rt/mcp.sock',
+      codehost: '/tmp/rt/codehost.sock'
+    })
     expect(paths.gitConfigDir).toBe('/tmp/rt/git')
     expect(paths.configFilesDir).toBe('/tmp/rt/config-files')
     expect(paths.skillStagingDir).toBe('/tmp/rt/skills-staging')

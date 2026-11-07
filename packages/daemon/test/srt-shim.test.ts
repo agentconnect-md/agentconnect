@@ -574,7 +574,7 @@ process.stdout.write(JSON.stringify({ seen: fs.readFileSync(p, 'utf8') }) + '\\n
       const local = new LocalExecutor({
         launcher,
         generations: { nextSandboxGeneration: async () => ++generation },
-        tunnelSocketPath: (tunnel) => sockets[tunnel],
+        tunnelSocketPath: (tunnel) => (tunnel === 'codehost' ? undefined : sockets[tunnel]),
         log: quiet
       })
       closers.push(

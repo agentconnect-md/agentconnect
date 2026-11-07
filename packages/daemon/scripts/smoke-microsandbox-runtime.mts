@@ -156,7 +156,7 @@ const sdk = (await import(
 const local = new LocalExecutor({
   launcher: microsandboxLauncher({ manager: () => manager }),
   generations: { nextSandboxGeneration: async () => ++generation },
-  tunnelSocketPath: (tunnel) => sockets[tunnel],
+  tunnelSocketPath: (tunnel) => (tunnel === 'codehost' ? undefined : sockets[tunnel]),
   log: makeLogger('info')
 })
 let passed = false
