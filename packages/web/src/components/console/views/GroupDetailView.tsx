@@ -47,7 +47,7 @@ export default function GroupDetailView() {
   const t = useTranslations('Daemons.groupDetail')
   const tf = useTranslations('Common.fleetDetail')
   const strategyNames = useStrategyNames()
-  const { orgPath } = useOrgs()
+  const { orgPath, activeOrg } = useOrgs()
   const { id } = useParams<{ id: string }>()
   const router = useRouter()
   const { daemons, agents, agentsLoading, daemonsLoading, memberSets, memberSetsLoading } = useConsoleData()
@@ -183,37 +183,41 @@ export default function GroupDetailView() {
             </span>
           </div>
         </div>
-        <Button variant="secondary" size="sm" onClick={() => openModal('group', group)}>
-          {t('editGroup')}
-        </Button>
-        {/* Removal lives here too: the list card's menu is desktop-only, so this is the only path below 769px. */}
-        <div className="relative flex-none">
-          <button
-            className="iconbtn"
-            aria-label={t('groupActions')}
-            title={t('groupActions')}
-            onClick={() => setMenuOpen((v) => !v)}
-          >
-            <Icon name="ellipsis" size={16} />
-          </button>
-          {menuOpen && (
-            <>
-              <div onClick={() => setMenuOpen(false)} className="fixed inset-0 z-45" />
-              <div className="dmenu right-0" onClick={(e) => e.stopPropagation()}>
-                <button
-                  className="dmi danger"
-                  onClick={() => {
-                    setMenuOpen(false)
-                    openModal('deleteGroup', group)
-                  }}
-                >
-                  <Icon name="trash" size={15} />
-                  {t('removeGroup')}
-                </button>
-              </div>
-            </>
-          )}
-        </div>
+        {activeOrg?.role === 'owner' && (
+          <>
+            <Button variant="secondary" size="sm" onClick={() => openModal('group', group)}>
+              {t('editGroup')}
+            </Button>
+            {/* Removal lives here too: the list card's menu is desktop-only, so this is the only path below 769px. */}
+            <div className="relative flex-none">
+              <button
+                className="iconbtn"
+                aria-label={t('groupActions')}
+                title={t('groupActions')}
+                onClick={() => setMenuOpen((v) => !v)}
+              >
+                <Icon name="ellipsis" size={16} />
+              </button>
+              {menuOpen && (
+                <>
+                  <div onClick={() => setMenuOpen(false)} className="fixed inset-0 z-45" />
+                  <div className="dmenu right-0" onClick={(e) => e.stopPropagation()}>
+                    <button
+                      className="dmi danger"
+                      onClick={() => {
+                        setMenuOpen(false)
+                        openModal('deleteGroup', group)
+                      }}
+                    >
+                      <Icon name="trash" size={15} />
+                      {t('removeGroup')}
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </>
+        )}
       </div>
 
       {/* Band one — what the group holds, beside the machines that hold it. */}

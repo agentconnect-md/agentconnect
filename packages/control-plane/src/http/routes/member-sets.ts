@@ -1,32 +1,4 @@
-/**
- * `http/routes/member-sets.ts` (docs/designs/daemon-groups.md §2, §3) — an organization's own
- * member sets: named sets of its daemons within which an agent's duty may be claimed. Pointing an
- * agent at a set instead of a machine is what gives self-hosted installs the lease-driven failover
- * the install-wide pool already has.
- *
- * The install-wide pool is NOT reachable here. It is the org-less set, it belongs to no
- * organization, and its membership is automatic (a Pod is enrolled when it authenticates), so
- * every route below is fenced on the path org and answers 404 for a set that is not this org's.
- *
- * The tenancy invariants are the repository's, not this file's (`member-set.repo.ts`): an org set
- * accepts only that org's daemons, and a `set`-placed agent may reference only the org-less set or
- * one of its own. What this file owns is the TRANSITION safety of §3 — a membership change moves
- * runtime authority, so each direction is admitted only from a state where nothing is being taken
- * away from a running machine:
- *
- * - _Join_ requires the daemon to have no directly placed agents. A set member serves only what it
- *   holds a lease for, so a machine that still has agents pinned to it would render them
- *   unservable the moment it enrolled. Move them onto the set first; the design's one-action
- *   version (the move convention applied per agent inside one fence) is a follow-up.
- * - _Leave_ requires the daemon to hold no LIVE duty lease. That is the design's "stop the old
- *   authority and confirm it stopped, then commit", satisfied by an existing primitive rather than
- *   a new one: drain the daemon (or let its leases lapse — a lapsed lease is strictly later than
- *   the daemon's own self-fence, so it has provably stopped serving), then leave.
- *
- * Either way the daemon learns its new set the way it learns any set — from `auth/ok` — so a
- * connected one is closed with `1012` and reads it on the reconnect. Membership is never
- * negotiated on the wire; the CP tells the daemon, the daemon does not tell.
- */
+/** An organization's own daemon groups (docs/designs/daemon-groups.md §2, §3); every write is owner-only because a member serves the set's agents. */
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
@@ -39,7 +11,7 @@ import {
   MemberSetInUse,
   MemberSetTenancyMismatch
 } from '../../persistence/errors.js'
-import { orgOf, denyViewerWrite } from '../rbac.js'
+import { orgOf, denyNonOwner } from '../rbac.js'
 import {
   MemberSetBody,
   MemberSetDto,
@@ -119,14 +91,15 @@ export function memberSetRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.MemberSets],
           summary: 'Create a member set',
-          description: 'Create an empty member set. Daemons join it afterwards, one set per daemon.',
+          description:
+            'Create an empty member set. Daemons join it afterwards, one set per daemon. Organization owners only.',
           operationId: 'createMemberSet',
           body: MemberSetBody,
           response: { 201: MemberSetDto, 403: ErrorDto }
         }
       },
       async (req, reply) => {
-        if (denyViewerWrite(req, reply)) return reply
+        if (denyNonOwner(req, reply)) return reply
         const set = await deps.repos.memberSet.createForOrg(orgOf(req), req.body.name)
         return reply.code(201).send(await toDto(set))
       }
@@ -138,7 +111,8 @@ export function memberSetRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.MemberSets],
           summary: 'Rename a member set',
-          description: 'Change a member set’s display name. Membership and placements are untouched.',
+          description:
+            'Change a member set’s display name. Membership and placements are untouched. Organization owners only.',
           operationId: 'renameMemberSet',
           params: IdParam,
           body: MemberSetBody,
@@ -146,7 +120,7 @@ export function memberSetRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        if (denyViewerWrite(req, reply)) return reply
+        if (denyNonOwner(req, reply)) return reply
         const set = await deps.repos.memberSet.renameForOrg(orgOf(req), req.params.id, req.body.name)
         return set ? toDto(set) : notFound(reply)
       }
@@ -159,7 +133,7 @@ export function memberSetRoutes(deps: HttpDeps) {
           tags: [Tag.MemberSets],
           summary: 'Spread sessions across a member set',
           description:
-            'Turn the set’s session spreading on or off. On, an agent placed on the set may run its isolated sessions — with its repositories, provider credentials and agent secrets — on members other than the one holding it, provided that machine’s owner has opted it in with `sandbox.share`. Off (the default), every session runs on its holder. Every member-set response carries the current value as `spreadSessions`.',
+            'Turn the set’s session spreading on or off. On, an agent placed on the set may run its isolated sessions — with its repositories, provider credentials and agent secrets — on members other than the one holding it, provided that machine’s owner has opted it in with `sandbox.share`. Off (the default), every session runs on its holder. Every member-set response carries the current value as `spreadSessions`. Organization owners only.',
           operationId: 'setMemberSetSpreadSessions',
           params: IdParam,
           body: MemberSetSpreadSessionsBody,
@@ -167,7 +141,7 @@ export function memberSetRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        if (denyViewerWrite(req, reply)) return reply
+        if (denyNonOwner(req, reply)) return reply
         const set = await deps.repos.memberSet.setSpreadSessionsForOrg(orgOf(req), req.params.id, req.body.enabled)
         return set ? toDto(set) : notFound(reply)
       }
@@ -180,14 +154,14 @@ export function memberSetRoutes(deps: HttpDeps) {
           tags: [Tag.MemberSets],
           summary: 'Delete a member set',
           description:
-            'Delete an EMPTY member set. A set that still has members, or agents placed on it, returns 409 — dropping it would silently unplace them.',
+            'Delete an EMPTY member set. A set that still has members, or agents placed on it, returns 409 — dropping it would silently unplace them. Organization owners only.',
           operationId: 'deleteMemberSet',
           params: IdParam,
           response: { 204: z.null(), 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
         }
       },
       async (req, reply) => {
-        if (denyViewerWrite(req, reply)) return reply
+        if (denyNonOwner(req, reply)) return reply
         try {
           const deleted = await deps.repos.memberSet.deleteForOrg(orgOf(req), req.params.id)
           return deleted ? reply.code(204).send(null) : notFound(reply)
@@ -207,14 +181,14 @@ export function memberSetRoutes(deps: HttpDeps) {
           tags: [Tag.MemberSets],
           summary: 'Enroll a daemon in a member set',
           description:
-            'Add one of the organization’s daemons to the set. Agents pinned to that machine stay pinned to it and keep running: a `daemon` placement is eligible for exactly that machine, so joining changes how it holds them (a duty lease) rather than who serves them. Refused (409) only if it is already in another set.',
+            'Add one of the organization’s daemons to the set. Agents pinned to that machine stay pinned to it and keep running: a `daemon` placement is eligible for exactly that machine, so joining changes how it holds them (a duty lease) rather than who serves them. Refused (409) only if it is already in another set. Organization owners only, since a member serves every agent placed on the set and receives its credentials.',
           operationId: 'enrollDaemonInMemberSet',
           params: MemberSetMemberParams,
           response: { 200: MemberSetDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
         }
       },
       async (req, reply) => {
-        if (denyViewerWrite(req, reply)) return reply
+        if (denyNonOwner(req, reply)) return reply
         const orgId = orgOf(req)
         const set = await ownSet(orgId, req.params.id)
         if (!set) return notFound(reply)
@@ -254,14 +228,14 @@ export function memberSetRoutes(deps: HttpDeps) {
           tags: [Tag.MemberSets],
           summary: 'Withdraw a daemon from a member set',
           description:
-            'Remove one daemon from the set. Refused (409) while it still holds a live duty lease: drain it first (or wait for its leases to lapse, which is strictly later than its own self-fence) so it has provably stopped serving before the duties re-grant elsewhere. The set’s agents stay placed on the set and re-grant to its remaining members.',
+            'Remove one daemon from the set. Refused (409) while it still holds a live duty lease: drain it first (or wait for its leases to lapse, which is strictly later than its own self-fence) so it has provably stopped serving before the duties re-grant elsewhere. The set’s agents stay placed on the set and re-grant to its remaining members. Organization owners only.',
           operationId: 'withdrawDaemonFromMemberSet',
           params: MemberSetMemberParams,
           response: { 200: MemberSetDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
         }
       },
       async (req, reply) => {
-        if (denyViewerWrite(req, reply)) return reply
+        if (denyNonOwner(req, reply)) return reply
         const orgId = orgOf(req)
         const set = await ownSet(orgId, req.params.id)
         if (!set) return notFound(reply)

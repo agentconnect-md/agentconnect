@@ -1288,10 +1288,9 @@ it lends that machine's CPU and disk and — the part that is easy to miss — i
 runtime sign-in, since a spread session authenticates as whoever signed in on the
 machine it lands on (§8). Only the person who runs that machine can agree to that,
 so the key lives in its local config file and is deliberately not among the keys
-`config/push` may set. The group's switch is the **group admin's**: it lets the
-group's agents run their sessions — their repositories, provider credentials and
-agent secrets — on machines other than their holder. Only whoever administers the
-group can agree to that, so it is Control Plane metadata on the member set, default
+`config/push` may set. The group's switch is an **organization owner's** (sets have no admin of their own; see
+[daemon-groups.md §2](daemon-groups.md#2-model)): it lets the group's agents run their sessions — their repositories, provider credentials and
+agent secrets — on machines other than their holder. Only an organization owner can agree to that, so it is Control Plane metadata on the member set, default
 off, enforced where the facts are served: with the switch off,
 `executor/candidates` answers nobody and `executor/prepare` creates nothing (§13
 has the question of sessions already placed). Either consent alone would let one
