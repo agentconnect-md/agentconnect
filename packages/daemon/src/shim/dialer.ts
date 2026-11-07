@@ -178,6 +178,10 @@ export class ShimDialer {
         }
         this.deps.onConnection?.(connection)
         const close = await closed
+        // A renewal closes on purpose; anything else says which side dropped the channel and why.
+        this.deps.log[close.reason === 'rebinding' ? 'info' : 'warn'](
+          `shim: ${spawnSubject(dial.record)} channel closed (${close.code}${close.reason ? ` ${close.reason}` : ''})`
+        )
         if (dial.current === connection) {
           dial.current = undefined
           this.resetReady(dial)

@@ -18,6 +18,9 @@ const STREAM_IDLE_MS: Readonly<Record<TunnelName, number | null>> = { gitcred: 5
  *  protects the pod, and this one protects the daemon from a shim that does not. */
 const MAX_TUNNEL_STREAMS = 32
 
+/** Data frames one stream may have unacknowledged before its local socket is paused (8 × 32 KiB). */
+export const MAX_IN_FLIGHT_FRAMES = 8
+
 export interface TunnelProxyDeps {
   /** The agent's logical channel. Requests carry its credential and generation, so a frame from
    *  a superseded incarnation is refused on the far side. */
@@ -201,6 +204,8 @@ export class TunnelProxy {
         const slice = data.subarray(offset, offset + MAX_TUNNEL_CHUNK_BYTES)
         void this.deliver(streamId, { op: 'data', streamId, chunk: slice.toString('base64') })
       }
+      // Stop reading until the pod acknowledges enough, so a large transfer is not one burst of requests.
+      if (entry.inFlight >= MAX_IN_FLIGHT_FRAMES) entry.socket.pause()
     })
     socket.on('error', (err) => this.close(streamId, err.message))
     socket.on('close', () => this.close(streamId))
@@ -243,7 +248,9 @@ export class TunnelProxy {
     try {
       await this.deps.session.request('tunnel', payload)
       const current = this.streams.get(streamId)
-      if (current) current.inFlight -= 1
+      if (!current) return
+      current.inFlight -= 1
+      if (current.inFlight < MAX_IN_FLIGHT_FRAMES && current.socket.isPaused()) current.socket.resume()
     } catch (err) {
       const message = (err as Error).message
       this.deps.log.warn(`tunnel: agent ${this.deps.session.agentId} frame not delivered (${message})`)

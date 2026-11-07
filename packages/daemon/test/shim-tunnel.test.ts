@@ -9,13 +9,13 @@ import { startK8sRuntimePlane, type K8sRuntimePlane } from '../src/k8s/runtime-p
 import { ShimClient, type ShimTransport } from '../src/shim/client.js'
 import { ShimServer } from '../src/shim/server.js'
 import { TunnelHost } from '../src/shim/tunnel-host.js'
-import { TunnelProxy } from '../src/shim/tunnel-proxy.js'
+import { MAX_IN_FLIGHT_FRAMES, TunnelProxy } from '../src/shim/tunnel-proxy.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
 import type { Sandbox, SandboxClaim, SandboxFence } from '../src/k8s/sandbox-api.js'
 import { fakeGenerations } from './fake-generations.js'
 import { fenceFakeSandbox } from './fake-sandbox-fence.js'
 import type { ShimEvent } from '../src/shim/protocol.js'
-import type { TunnelName } from '../src/shim/tunnel.js'
+import { MAX_TUNNEL_CHUNK_BYTES, type TunnelName } from '../src/shim/tunnel.js'
 import { waitBudget } from './wait-support.js'
 
 /**
@@ -185,10 +185,14 @@ async function clusterWithTunnel(
  * The dial is stubbed to an unconnected socket rather than a real one: what these assert is which
  * announcements produce a dial at all, and a socket that fails asynchronously would race that.
  */
-function proxyUnderTest(options: { stall?: (payload: unknown) => boolean } = {}): {
+function proxyUnderTest(
+  options: { stall?: (payload: unknown) => boolean; hold?: (payload: unknown) => boolean } = {}
+): {
   instance: TunnelProxy
   dialled: string[]
   sent: unknown[]
+  /** Settles held frames in send order: `ack` acknowledges, `fail` rejects. */
+  held: Array<{ ack: () => void; fail: (error: Error) => void }>
   announce: (event: ShimEvent['event'], streamId: string) => void
   /** Fire the session's attach signal — what a credential renewal produces. */
   reattach: () => void
@@ -196,6 +200,7 @@ function proxyUnderTest(options: { stall?: (payload: unknown) => boolean } = {})
 } {
   const dialled: string[] = []
   const sent: unknown[] = []
+  const held: Array<{ ack: () => void; fail: (error: Error) => void }> = []
   const listeners: Array<(event: ShimEvent) => void> = []
   const attachListeners: Array<() => void> = []
   const dialledSockets = new Map<string, Socket>()
@@ -208,6 +213,9 @@ function proxyUnderTest(options: { stall?: (payload: unknown) => boolean } = {})
         // A frame the channel never settles: what an in-flight request looks like when the socket
         // it was written to is replaced underneath.
         if (options.stall?.(payload)) return await new Promise(() => {})
+        if (options.hold?.(payload)) {
+          return await new Promise((resolve, reject) => held.push({ ack: () => resolve({}), fail: reject }))
+        }
         return { socketPath: '/run/agentconnect/gitcred.sock' }
       },
       onEvent: (listener) => listeners.push(listener),
@@ -230,6 +238,7 @@ function proxyUnderTest(options: { stall?: (payload: unknown) => boolean } = {})
     instance,
     dialled,
     sent,
+    held,
     announce: (event, streamId) => {
       for (const listener of listeners) listener({ type: 'shim/event', streamId, event })
       if (event.kind === 'connect' && lastDialled) dialledSockets.set(streamId, lastDialled)
@@ -363,6 +372,43 @@ describe('the shim tunnel', () => {
         expect.objectContaining({ op: 'close', streamId, error: expect.stringContaining('renewed') })
       )
     )
+  })
+
+  it('pauses a stream past its in-flight window and resumes it as the pod acknowledges', async () => {
+    // An 8 MiB reply used to become ~256 concurrent shim requests; the window bounds what one stream has outstanding.
+    const isData = (payload: unknown): boolean => (payload as { op?: string }).op === 'data'
+    const proxy = proxyUnderTest({ hold: isData })
+    await proxy.instance.ensure('gitcred')
+    const streamId = randomUUID()
+    proxy.announce({ kind: 'connect', tunnel: 'gitcred' }, streamId)
+    const socket = proxy.socketFor(streamId)!
+
+    socket.emit('data', Buffer.alloc(MAX_IN_FLIGHT_FRAMES * MAX_TUNNEL_CHUNK_BYTES))
+    expect(proxy.sent.filter(isData)).toHaveLength(MAX_IN_FLIGHT_FRAMES)
+    expect(socket.isPaused()).toBe(true)
+
+    proxy.held.shift()!.ack()
+    await vi.waitFor(() => expect(socket.isPaused()).toBe(false))
+    expect(proxy.instance.streamCount()).toBe(1)
+  })
+
+  it('still ends a paused stream whose frame is not delivered, sending nothing again', async () => {
+    const isData = (payload: unknown): boolean => (payload as { op?: string }).op === 'data'
+    const proxy = proxyUnderTest({ hold: isData })
+    await proxy.instance.ensure('gitcred')
+    const streamId = randomUUID()
+    proxy.announce({ kind: 'connect', tunnel: 'gitcred' }, streamId)
+    proxy.socketFor(streamId)!.emit('data', Buffer.alloc(MAX_IN_FLIGHT_FRAMES * MAX_TUNNEL_CHUNK_BYTES))
+
+    proxy.held.shift()!.fail(new Error('socket replaced'))
+    await vi.waitFor(() => expect(proxy.instance.streamCount()).toBe(0))
+    for (const frame of proxy.held.splice(0)) frame.ack()
+    await vi.waitFor(() =>
+      expect(proxy.sent).toContainEqual(
+        expect.objectContaining({ op: 'close', streamId, error: expect.stringContaining('could not be delivered') })
+      )
+    )
+    expect(proxy.sent.filter(isData)).toHaveLength(MAX_IN_FLIGHT_FRAMES)
   })
 
   it('splits a reply larger than one frame instead of dropping it', async () => {

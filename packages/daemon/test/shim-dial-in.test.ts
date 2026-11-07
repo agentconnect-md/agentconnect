@@ -82,6 +82,8 @@ interface ScriptedPeer {
   closed?: { code: number; reason: string }
   /** Answer the daemon on this socket — including frames a real shim would never send. */
   reply: (frame: unknown) => void
+  /** Close this socket from the sandbox's end. */
+  hangUp: (code: number, reason: string) => void
 }
 
 /** A raw socket to the shim port, used where the assertion IS the close code. */
@@ -120,6 +122,7 @@ function scriptedDialer(deps: {
   clock: VirtualClock
   metrics?: ClusterMetrics
   warnings?: string[]
+  infos?: string[]
   /** Dials refused before the sandbox answers — a pod whose container started but whose shim is not listening. */
   refusals?: number
   /** Injected backoff; `'shipped'` runs the real per-phase policies instead of {@link pausedBackoff}. */
@@ -134,7 +137,8 @@ function scriptedDialer(deps: {
     let onClose: (code: number, reason: string) => void = () => {}
     const peer: ScriptedPeer = {
       received: [],
-      reply: (frame) => queueMicrotask(() => onMessage(JSON.stringify(frame)))
+      reply: (frame) => queueMicrotask(() => onMessage(JSON.stringify(frame))),
+      hangUp: (code, reason) => queueMicrotask(() => onClose(code, reason))
     }
     peers.push(peer)
     const transport: ShimTransport = {
@@ -161,7 +165,7 @@ function scriptedDialer(deps: {
     ...(deps.backoff === 'shipped' ? {} : { backoff: deps.backoff ?? pausedBackoff }),
     ...(deps.metrics ? { metrics: deps.metrics } : {}),
     ...(deps.onConnection ? { onConnection: deps.onConnection } : {}),
-    log: { info: () => {}, warn: (message) => deps.warnings?.push(message) }
+    log: { info: (message) => deps.infos?.push(message), warn: (message) => deps.warnings?.push(message) }
   })
   dialers.push(dialer)
   return { dialer, peers }
@@ -640,6 +644,33 @@ describe('dial pacing', () => {
     expect(bound).toHaveLength(2)
     expect(bound[1]).not.toBe(first)
     expect(clock.now() - droppedAt).toBeGreaterThanOrEqual(DEFAULT_BACKOFF_BASE_MS)
+  })
+
+  it('logs the close code and reason of a bound channel, quietly for a renewal', async () => {
+    const clock = new VirtualClock()
+    const warnings: string[] = []
+    const infos: string[] = []
+    let resolveRebound: () => void = () => {}
+    const rebound = new Promise<void>((resolve) => (resolveRebound = resolve))
+    const { dialer, peers } = scriptedDialer({
+      answer: (_hello, peer) => peer.reply({ type: 'shim/identity', token: 'projected-token' }),
+      verifier: bindsAsPodOne,
+      clock,
+      warnings,
+      infos,
+      onConnection: () => {
+        if (peers.length === 2) resolveRebound()
+      }
+    })
+
+    await runVirtual(clock, dialer.connect(SCRIPTED_ENDPOINT, record(), 30_000), 900)
+    peers[0]!.hangUp(1000, 'rebinding')
+    await runVirtual(clock, rebound, 900)
+    expect(infos).toContainEqual(expect.stringContaining('channel closed (1000 rebinding)'))
+    expect(warnings).toEqual([])
+
+    peers[1]!.hangUp(1006, '')
+    await vi.waitFor(() => expect(warnings).toContainEqual(expect.stringContaining('channel closed (1006)')))
   })
 })
 
