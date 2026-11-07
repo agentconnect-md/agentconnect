@@ -99,7 +99,9 @@ export const TunnelListeningSchema = z.object({
     })
     .optional(),
   // The shim takes `ack`s and bounds this tunnel's streams by them; absent from an older shim, which is never sent one.
-  acks: z.boolean().optional()
+  acks: z.boolean().optional(),
+  // `codehost` under `srt`: the names its boundary routes to the shim's codehost socket, which serves this listen's routes.
+  srt: z.object({ domains: z.array(z.string().min(1).max(253)).max(MAX_CODEHOST_ROUTES) }).optional()
 })
 export type TunnelListening = z.infer<typeof TunnelListeningSchema>
 

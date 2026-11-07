@@ -212,7 +212,7 @@ import {
 import { ShimWorkspaceFs } from './shim/workspace-fs-channel.js'
 import { ShimWorkspaceFiles } from './shim/workspace-files-channel.js'
 import { ClusterSkillClient } from './shim/skill-client.js'
-import type { TunnelListenOptions, TunnelName } from './shim/tunnel.js'
+import { MAX_CODEHOST_ROUTES, type TunnelListenOptions, type TunnelName } from './shim/tunnel.js'
 import { ShimChannelLostError, type ShimRequester } from './shim/channels.js'
 import type { ClusterSkillLedger } from './store/cluster-skill-ledger.js'
 import { legacySandboxSkillLedger } from './skills/sandbox-skill-ledger.js'
@@ -403,7 +403,7 @@ import { loadPlaceholderKey } from './credential-proxy/placeholder.js'
 import { endpointSlot, sameSlotOrigin, type ProviderSlot } from './credential-proxy/provider-route.js'
 import { sealHostProviderKeys } from './credential-proxy/host-keys.js'
 import type { MicrosandboxCredentials } from './microsandbox/secrets.js'
-import { proxyInstance } from './credential-proxy/instance-route.js'
+import { instanceHostnames, proxyInstance } from './credential-proxy/instance-route.js'
 import { configureWorkspaceGitOrigins, permitsNoHttpsOrigin } from './workspace/git-origin-policy.js'
 import { buildMcpServers, buildSandboxMcpServers, type McpStdioServer } from './mcp/inject.js'
 import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-servers.js'
@@ -5972,6 +5972,10 @@ export class Daemon {
       prepare: (launch) => {
         // Named so the executor can answer with its own install of it (§8).
         const runtime = this.sessionAgent(launch.agentId, launch.sessionKey)?.runtime
+        // An srt boundary routes the agent's code hosts to its shim, whose codehost tunnel reaches this daemon's proxy.
+        const domains = launch.strategy === 'srt' ? this.codehostDomainsFor(launch.agentId) : []
+        // More than the frame carries keeps the helper path rather than failing the prepare.
+        const codehostDomains = domains.length <= MAX_CODEHOST_ROUTES ? domains : []
         return this.requireCp('executor/prepare').executorPrepare(
           {
             agentId: launch.agentId,
@@ -5979,7 +5983,8 @@ export class Daemon {
             executorDaemonId: launch.executorDaemonId,
             launchId: launch.launchId,
             strategy: launch.strategy,
-            ...(runtime ? { runtime } : {})
+            ...(runtime ? { runtime } : {}),
+            ...(codehostDomains.length > 0 ? { codehostDomains } : {})
           },
           this.orgForAgent(launch.agentId)
         )
@@ -7108,7 +7113,7 @@ export class Daemon {
   private credentialProxyEnv(
     proxy: { proxy: CredentialProxy; ca: ProxyCa },
     agentId: string,
-    route: 'srt' | 'host' | 'shim' | { url: string; trustBundle: string },
+    route: 'srt' | 'host' | 'shim' | { url?: string; trustBundle: string },
     env: Record<string, string>,
     runtimeEnv: Record<string, string>,
     gitlab: boolean
@@ -7130,7 +7135,7 @@ export class Daemon {
   /** How a proxied session reaches the proxy: the trust bundle, and the proxy itself unless srt routes to it (the loopback listener here, or an executor shim's codehost listener there). */
   private credentialProxyRoute(
     proxy: { proxy: CredentialProxy; ca: ProxyCa },
-    route: 'srt' | 'host' | 'shim' | { url: string; trustBundle: string },
+    route: 'srt' | 'host' | 'shim' | { url?: string; trustBundle: string },
     env: Record<string, string>,
     runtimeEnv: Record<string, string>
   ): Record<string, string> {
@@ -8142,15 +8147,22 @@ export class Daemon {
     return this.credentialProxy !== undefined && (this.providerSlots.get(agentId)?.size ?? 0) > 0
   }
 
-  /** A placed session's tunnels: the pod's two, and on its executor's host strategy `codehost` and `provider` for an agent the credential proxy serves them. */
+  /** A placed session's tunnels: the pod's two, `codehost` on its executor's host or srt strategy and `provider` on host, for an agent the credential proxy serves them. */
   private tunnelsForPlaced(agentId: string, placed: PlacedSession | undefined): TunnelName[] {
     const helpers = this.tunnelsForAgent(agentId)
-    if (helpers.length === 0 || placed?.strategy !== 'host') return helpers
+    if (helpers.length === 0 || (placed?.strategy !== 'host' && placed?.strategy !== 'srt')) return helpers
     return [
       ...helpers,
       ...(this.credentialProxyCodeHosts(agentId) ? (['codehost'] as const) : []),
-      ...this.providerTunnelFor(agentId)
+      ...(placed.strategy === 'host' ? this.providerTunnelFor(agentId) : [])
     ]
+  }
+
+  /** The code-host names an executor's srt boundary routes to its shim for this agent: the instances the proxy serves it, none with the proxy off. */
+  private codehostDomainsFor(agentId: string): string[] {
+    if (!this.credentialProxy || !this.agents.has(agentId)) return []
+    const instances = this.credentialProxyHosts(agentId).flatMap((host) => proxyInstance(host) ?? [])
+    return [...new Set(instances.flatMap(instanceHostnames))]
   }
 
   /** Every tunnel's daemon-side socket; `codehost` and `provider` reach the agent's own credential-proxy sockets, and only while the proxy serves it them. */
@@ -8942,11 +8954,20 @@ export class Daemon {
     const sandboxGitTarget = remoteRoots
       ? sandboxGitCredentialTarget(remoteRoots.runtimeRoot, remoteRoots.helperRoot)
       : sandboxGitCredentialTarget()
-    // A placed host-strategy session reaches the proxy through its shim's codehost listener; an executor whose shim serves none keeps the helper path.
-    const remoteCodehost =
-      remoteSession?.strategy === 'host' && this.credentialProxy && managedCredentials
-        ? this.executorPlane?.codehostProxyFor(remoteSession.sessionKey)
+    // An executor's srt boundary that routes code hosts to its shim's codehost socket, which leads to this daemon's proxy.
+    const remoteSrt =
+      remoteSession?.strategy === 'srt' && this.credentialProxy
+        ? this.executorPlane?.srtCodehostFor(remoteSession.sessionKey)
         : undefined
+    // A placed host session reaches the proxy through its shim's codehost listener, a placed srt session through SRT's route to that shim for every name it has; otherwise the helper path.
+    const remoteCodehost =
+      !remoteSession || !this.credentialProxy || !managedCredentials
+        ? undefined
+        : remoteSession.strategy === 'host'
+          ? this.executorPlane?.codehostProxyFor(remoteSession.sessionKey)
+          : remoteSrt && this.codehostDomainsFor(agent.id).every((domain) => remoteSrt.domains.includes(domain))
+            ? { trustBundle: remoteSrt.trustBundle }
+            : undefined
     // A host or srt session here reaches the loopback listener or its srt route; a host behind its own outbound proxy keeps direct credentials.
     const localProxyRoute =
       this.credentialProxy !== undefined &&
@@ -9088,6 +9109,12 @@ export class Daemon {
     // Every session in an srt environment the proxy intercepts trusts its CA, a placeholder or not, or its code-host requests would fail verification.
     else if (srtShim && this.credentialProxy && this.credentialProxyIntercepts(agent.id))
       Object.assign(env, this.sessionProxyTrust(this.credentialProxy.ca, env, runtimeEnv))
+    // So does every session in an executor's srt environment that routes code hosts to this proxy, through the bundle its shim wrote.
+    else if (remoteSrt && this.credentialProxy)
+      Object.assign(
+        env,
+        this.credentialProxyRoute(this.credentialProxy, { trustBundle: remoteSrt.trustBundle }, env, runtimeEnv)
+      )
     // The placeholder variables and the proxied gitconfig; the spawn adds the listener and its trust bundle.
     const codehostSpawn: CodehostSpawn | undefined =
       guestGit && this.credentialProxy
