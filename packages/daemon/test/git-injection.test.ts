@@ -1074,66 +1074,70 @@ describe('git in a proxied session', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
-  it("hands the placeholder in a checkout whose own config pins the real helper, and only a proxied session's", async () => {
-    const root = mkdtempSync(join(tmpdir(), 'acp-proxied-checkout-'))
-    // The daemon target's helper, standing in for the real one: whatever it answers is the real token.
-    const helper = join(tmpRun, 'helper.sh')
-    writeFileSync(
-      helper,
-      '#!/bin/sh\ntest "$2" = get || exit 0\necho username=x-access-token\necho password=REAL-TOKEN-$1\n'
-    )
-    chmodSync(helper, 0o755)
-    const cases = [
-      { scope: managedCredentialScope('github'), host: 'github.com', path: 'owner/repo.git' },
-      {
-        scope: managedCredentialScope('gitlab', 'https://gitlab.example.test:8443/gitlab'),
-        host: 'gitlab.example.test:8443',
-        path: 'gitlab/group/project.git'
-      },
-      {
-        scope: managedCredentialScope('gitea', undefined, false, { host: 'https://gitea.example.test' }),
-        host: 'gitea.example.test',
-        path: 'owner/repo.git'
+  // POSIX only: the stand-in helper is a shell script, and the daemon target's include path is a Windows path there.
+  it.skipIf(process.platform === 'win32')(
+    "hands the placeholder in a checkout whose own config pins the real helper, and only a proxied session's",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), 'acp-proxied-checkout-'))
+      // The daemon target's helper, standing in for the real one: whatever it answers is the real token.
+      const helper = join(tmpRun, 'helper.sh')
+      writeFileSync(
+        helper,
+        '#!/bin/sh\ntest "$2" = get || exit 0\necho username=x-access-token\necho password=REAL-TOKEN-$1\n'
+      )
+      chmodSync(helper, 0o755)
+      const cases = [
+        { scope: managedCredentialScope('github'), host: 'github.com', path: 'owner/repo.git' },
+        {
+          scope: managedCredentialScope('gitlab', 'https://gitlab.example.test:8443/gitlab'),
+          host: 'gitlab.example.test:8443',
+          path: 'gitlab/group/project.git'
+        },
+        {
+          scope: managedCredentialScope('gitea', undefined, false, { host: 'https://gitea.example.test' }),
+          host: 'gitea.example.test',
+          path: 'owner/repo.git'
+        }
+      ]
+      try {
+        for (const [index, { scope, host, path }] of cases.entries()) {
+          const workspace = join(root, `checkout-${index}`)
+          const local = workspaceGitLocalEnv()
+          execFileSync('git', ['init', '-q', workspace], { env: local })
+          const runner = new LocalGitRunner(
+            gitFor(workspace, undefined, local),
+            workspace,
+            (overrides) => gitFor(workspace, undefined, overrides),
+            local
+          )
+          await writeRepoHelperConfig(runner, 'agent-checkout', scope)
+          const fill = (session: Record<string, string>) =>
+            execFileSync('git', ['credential', 'fill'], {
+              cwd: workspace,
+              input: `protocol=https\nhost=${host}\npath=${path}\n\n`,
+              env: {
+                PATH: process.env.PATH ?? '',
+                HOME: root,
+                GIT_CONFIG_NOSYSTEM: '1',
+                [CODE_HOST_CREDENTIAL_ENV]: 'acph1_example.tag',
+                ...session
+              }
+            }).toString()
+          const proxied = sessionGitEnv('agent-checkout', undefined, scope, true)
+          expect(fill(proxied)).toContain('password=acph1_example.tag')
+          // Pairs the session env already carries stay, read before the placeholder helper.
+          const prior = { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'safe.directory', GIT_CONFIG_VALUE_0: '*' }
+          const merged = { ...prior, ...proxied, ...mergeGitConfigEnv(prior, proxied) }
+          expect(configPairs(merged)[0]).toEqual(['safe.directory', '*'])
+          expect(fill(merged)).toContain('password=acph1_example.tag')
+          const direct = sessionGitEnv('agent-checkout', undefined, scope)
+          expect(direct.GIT_CONFIG_COUNT).toBeUndefined()
+          expect(fill(direct)).toContain('password=REAL-TOKEN-agent-checkout')
+        }
+      } finally {
+        rmSync(helper, { force: true })
+        rmSync(root, { recursive: true, force: true })
       }
-    ]
-    try {
-      for (const [index, { scope, host, path }] of cases.entries()) {
-        const workspace = join(root, `checkout-${index}`)
-        const local = workspaceGitLocalEnv()
-        execFileSync('git', ['init', '-q', workspace], { env: local })
-        const runner = new LocalGitRunner(
-          gitFor(workspace, undefined, local),
-          workspace,
-          (overrides) => gitFor(workspace, undefined, overrides),
-          local
-        )
-        await writeRepoHelperConfig(runner, 'agent-checkout', scope)
-        const fill = (session: Record<string, string>) =>
-          execFileSync('git', ['credential', 'fill'], {
-            cwd: workspace,
-            input: `protocol=https\nhost=${host}\npath=${path}\n\n`,
-            env: {
-              PATH: process.env.PATH ?? '',
-              HOME: root,
-              GIT_CONFIG_NOSYSTEM: '1',
-              [CODE_HOST_CREDENTIAL_ENV]: 'acph1_example.tag',
-              ...session
-            }
-          }).toString()
-        const proxied = sessionGitEnv('agent-checkout', undefined, scope, true)
-        expect(fill(proxied)).toContain('password=acph1_example.tag')
-        // Pairs the session env already carries stay, read before the placeholder helper.
-        const prior = { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'safe.directory', GIT_CONFIG_VALUE_0: '*' }
-        const merged = { ...prior, ...proxied, ...mergeGitConfigEnv(prior, proxied) }
-        expect(configPairs(merged)[0]).toEqual(['safe.directory', '*'])
-        expect(fill(merged)).toContain('password=acph1_example.tag')
-        const direct = sessionGitEnv('agent-checkout', undefined, scope)
-        expect(direct.GIT_CONFIG_COUNT).toBeUndefined()
-        expect(fill(direct)).toContain('password=REAL-TOKEN-agent-checkout')
-      }
-    } finally {
-      rmSync(helper, { force: true })
-      rmSync(root, { recursive: true, force: true })
     }
-  })
+  )
 })
