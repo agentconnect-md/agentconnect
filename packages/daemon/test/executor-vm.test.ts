@@ -149,7 +149,7 @@ describe('the microsandbox strategy launcher', () => {
     expect(JSON.stringify(prepared)).not.toContain(KEY)
   })
 
-  it("fills in the executor's own environment key a preparer does not protect, as a local VM on it inherits one", async () => {
+  it("protects the executor's own environment key behind its placeholder, as a local VM on it does", async () => {
     root = await mkdtemp(join(tmpdir(), 'ac-xv-'))
     const { manager, prepared } = stubManager()
     const launcher = microsandboxLauncher({
@@ -159,11 +159,13 @@ describe('the microsandbox strategy launcher', () => {
     })
     await startHosted(launcher, root)
 
-    // Claude's placeholder covers its saved login; an environment-only key reaches a local VM as its value, and so a hosted one.
-    expect(prepared[0]!.secrets).toBeUndefined()
-    // Linux also seeds the shared sign-in's pointer beside it, so only the key is asserted.
-    expect(prepared[0]!.hosted!.env.ANTHROPIC_API_KEY).toBe('fixture-executor-env-key')
-    expect(prepared[0]!.hosted!.env.NODE_EXTRA_CA_CERTS).toBeUndefined()
+    expect(prepared[0]!.secrets!.map((secret) => [secret.env, secret.host, secret.readValue()])).toEqual([
+      ['ANTHROPIC_API_KEY', ['api.anthropic.com'], 'fixture-executor-env-key']
+    ])
+    // Linux also seeds the shared sign-in's pointer beside it, so only the key and trust are asserted.
+    expect(prepared[0]!.hosted!.env.ANTHROPIC_API_KEY).toBe('msb-secret-ANTHROPIC_API_KEY')
+    expect(prepared[0]!.hosted!.env.NODE_EXTRA_CA_CERTS).toBe('/.msb/tls/ca.pem')
+    expect(JSON.stringify(prepared)).not.toContain('fixture-executor-env-key')
   })
 
   it.skipIf(process.platform !== 'linux')(

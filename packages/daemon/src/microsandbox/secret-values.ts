@@ -17,6 +17,8 @@ export interface SecretSources {
   openCodeAuthExport?: (env: NodeJS.ProcessEnv) => string
   /** An srt private HOME held its keys in the clear before the proxy and again whenever it is off, so a retained copy is protected rather than refused. */
   protectRetained?: boolean
+  /** An srt launch runs the host's own runtime, not a VM image's pinned one, so a Codex key beside OPENAI_BASE_URL has no known endpoint. */
+  hostRuntime?: boolean
 }
 
 /** The provider a preparer's key belongs to, and that provider's own API host where it has one. */
