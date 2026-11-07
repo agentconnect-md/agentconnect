@@ -1,6 +1,6 @@
 # Azure DevOps Integration
 
-> Status: **In progress** — A1 (protocol) has landed; A2 to A4 follow (§13).
+> Status: **In progress** — A1 (protocol) and A2 (Control Plane) have landed; A3 and A4 follow (§13).
 > Scope: **Azure DevOps Services** (`dev.azure.com`),
 > Git repositories in Azure Repos. The first version covers workspaces and
 > additional repositories only; pull-request hooks, reviews, pull-request
@@ -136,20 +136,51 @@ The Console's Azure DevOps card leads with **Connect with Microsoft**:
    `/azure-devops/connect` page as the redirect URI. A personal Microsoft
    account is refused.
 2. **Exchange.** The page posts the code and state back
-   (`POST /orgs/:orgId/azure-devops/connect/callback`). The Control Plane
-   redeems the code with the deployment secret and takes the customer tenant
-   from the ID token's `tid`. It keeps the administrator's delegated token only
-   for the rest of this flow, encrypted, as the Teams connect does, and never
-   stores it.
+   (`POST /orgs/:orgId/azure-devops/connect/callback`), or the error Microsoft
+   returned instead. The Control Plane redeems the code with the deployment
+   secret, asking for the Azure DevOps scope alone, since one token serves one
+   resource, and takes the customer tenant from the ID token's `tid`. Missing
+   consent (`consent_required`, `access_denied`, `AADSTS65001`, `AADSTS90094`)
+   is refused with the message of §3.1, and with the tenant's admin-consent
+   URL when the tenant is known. The administrator's delegated token lives
+   only in an encrypted flow ticket, as in the Teams connect: AES-GCM under a
+   key derived from the deployment's pepper, bound to the organization, the
+   caller, and a flow id, and expiring thirty minutes after the sign-in or
+   before the token does. The Console holds the ticket and sends it back as a
+   request header on each later step, never in a path; the Control Plane
+   stores no copy. Two Control Plane replicas therefore serve one flow alike.
 3. **Organization.** The Control Plane lists the Azure DevOps organizations the
-   administrator belongs to in that tenant, and the administrator picks one.
-4. **Entitlement.** With the administrator's delegated token, the Control Plane
+   administrator belongs to in that tenant (the profile and accounts APIs), and
+   the administrator picks one. A guest signs in at their home tenant, so the
+   Control Plane first reads the organization's own Entra tenant: an
+   unauthenticated `GET dev.azure.com/{organization}/_apis/connectionData`
+   answers a redirect with the tenant in `x-vss-resourcetenant`. When it
+   differs from the signed-in tenant, the step is refused (`tenant_mismatch`)
+   with a new authorize URL at that tenant's authority, so the person signs in
+   again there as its member or guest; the connection then records that
+   tenant. Without the header, the signed-in tenant stands. The Control Plane
+   reads the organization's `instanceId` with the delegated token, refuses an
+   organization another AgentConnect organization holds before writing
+   anything there, and answers its projects.
+4. **Entitlement.** The Control Plane takes a client credentials token at the
+   customer tenant and reads the service principal's object id from its `oid`
+   claim, which works before the service principal is in the organization.
+   With that token it reads `connectionData`: a 200 means the service principal
+   is already a member, so it is not added again, which also makes the step
+   safe to repeat; `TF401444` or `TF400813` means it is not. A member found
+   below Basic (Stakeholder or none) is raised to Basic with the entitlement
+   `PATCH`, which answers like the add; Basic and every level above it are left
+   alone. Otherwise, with the
+   administrator's delegated token, the Control Plane
    adds the application's service principal to the organization with the Basic
    access level (`POST vsaex…/_apis/serviceprincipalentitlements`). It then
    adds the service principal to the project groups the administrator picks,
    one Graph membership each
    (`PUT vssps…/_apis/graph/memberships/{principal}/{group}`): Readers where
-   agents only read, Contributors where any agent writes. The entitlement
+   agents only read, Contributors where any agent writes, never both. A group
+   is found in the project's scope by its principal name (`[Project]\Readers`,
+   `[Project]\Contributors`), not by its display name, which is localized. A
+   membership that already exists counts as made. The entitlement
    call's own `projectEntitlements` is not used: for a service principal it
    reports success and grants nothing. The entitlement call answers 200 even
    when it refuses, so the Control Plane reads `isSuccess` and the result's
@@ -166,8 +197,33 @@ The Console's Azure DevOps card leads with **Connect with Microsoft**:
    the role, and a checklist for doing it by hand. The checklist names the
    application by its client ID as well as its name: a customer tenant keeps
    the display name the application had when it was first consented to, so a
-   later rename does not reach the Azure DevOps member picker there. The flow
-   resumes at step 5 once the service principal is in the organization.
+   later rename does not reach the Azure DevOps member picker there.
+
+   The memberships are still attempted after that refusal. With no subject
+   descriptor yet, the first one adds the service principal to the
+   organization through its group
+   (`POST vssps…/_apis/graph/serviceprincipals?groupDescriptors=…`), which
+   leaves it at the organization's default access level; the refusal reports
+   which memberships were made and keeps the ticket. Once the checklist is
+   done, `POST /orgs/:orgId/azure-devops/connect/:flow/verify` resumes: it
+   re-reads `connectionData` as the application, raises a member below Basic
+   when the caller may, makes the memberships the caller may, and runs steps 5
+   and 6. A raise refused with `5032` answers with the same checklist. A
+   membership the caller may not make does not stop it there, since a Project
+   Collection Administrator may have made it by hand; the repository list of
+   step 5 decides.
+
+   A new connection must also prove that the caller administers the service
+   principal in that organization, or any plain member could connect a
+   service principal another deployment organization left behind and take
+   its rights. The caller proves it by adding the service principal, or by
+   making or confirming at least one of the chosen project memberships with
+   their own delegated token (an existing membership answered as such
+   counts). When the service principal is already a member and every
+   membership is refused, the step answers `insufficient_rights`, names
+   Project Administrator and Project Collection Administrator, and creates
+   nothing. Manage project access acts on a connection the organization
+   already holds and needs no such proof.
 
 5. **Verification.** As the application, the Control Plane takes a client
    credentials token at the customer tenant and reads
@@ -179,8 +235,13 @@ The Console's Azure DevOps card leads with **Connect with Microsoft**:
    deployment has connected is refused (`AZURE_DEVOPS_ORGANIZATION_TAKEN`,
    naming no organization), because two catalogs would claim one repository.
    Otherwise the connection records the tenant, the organization name and
-   `instanceId`, the identity id, the credential source (`deployment` or
-   `own`), and a credential epoch.
+   `instanceId`, the identity id and display name, the credential source
+   (`deployment` or `own`), the own application's client ID, and a credential
+   epoch. An own application's secret is sealed in a side table. A
+   `deployment` connection keeps no copy of the deployment secret, only its
+   fingerprint: an HMAC under a key derived from the deployment's pepper for
+   this purpose alone, which is how a rotation is recognized (§3.5). A
+   connection is `connected`, or `degraded` with the reason of §3.5.
 
 The Console offers one Azure DevOps connection per AgentConnect organization in
 the first version. The model does not assume one: bindings, grants, and the
@@ -191,9 +252,16 @@ per agent, can follow without a migration (§10).
 step 4 and can change later. The Control Plane keeps no administrator token, so
 it cannot change the organization's groups by itself. The card therefore offers
 **Manage project access**, which runs steps 1 to 4 again for the connection's
-organization. The administrator signs in, picks projects and their groups, and
-the Control Plane applies the change with the new delegated token and discards
-it. A change made directly in Azure DevOps works as well; the picker and the
+organization. The administrator signs in at the connection's tenant authority,
+so a guest of that tenant signs in there too, picks projects and their groups,
+and the Control Plane applies the change with the new delegated token and
+discards it; a service principal found below Basic is raised to Basic, so a
+Project Collection Administrator fixes a Stakeholder identity in one pass. It
+then re-verifies the connection with the same identity and
+organization required, and a degraded connection recovers. The flow adds
+memberships; it removes none, so taking a project away or lowering
+Contributors to Readers is done in Azure DevOps. A change made directly in
+Azure DevOps works as well; the picker and the
 permission evaluation of §5 read the identity's rights as they are.
 
 **Use your own application instead** stays one click away, and is the only
@@ -216,20 +284,31 @@ consulted in the first version (§10).
 ### 3.4 Tokens
 
 The Control Plane caches one Azure DevOps token per connection and refreshes
-it when less than ten minutes of the `expires_in` it was issued with remain;
-it never assumes a fixed lifetime. A gitcred lease for an Azure DevOps
-repository carries that token with a TTL no longer than the token's remaining
-life less a margin, so a lease never outlives the token inside it. The daemon
-never sees a client secret.
+it when less than twenty minutes of the `expires_in` it was issued with
+remain; it never assumes a fixed lifetime, and a token issued for less than
+forty minutes is kept for half of its life. Twenty minutes is the lease margin
+below (five) plus the daemon's handout floor (it hands a cached grant out only
+while more than ten minutes remain) plus five of slack, so every lease the
+daemon receives can be handed out. Concurrent callers share one request
+per connection, and a new credential epoch or a rejected answer drops the
+cached token. A gitcred lease for an Azure DevOps repository carries that
+token with a TTL of its remaining life less five minutes, at most an hour, so
+a lease never outlives the token inside it. The lease names the identity id,
+a GUID, as the Basic user; the display name is chosen in the customer's
+tenant and may hold a colon. A request with `forceRefresh`, as the proxy sends
+after a `401`, drops the connection's cached token first, at most once every
+thirty seconds per connection. The daemon never sees a client secret.
 
 ### 3.5 Rotation and Failure
 
 The deployment secret is rotated in Setup. The new value reaches every
 connection whose source is `deployment` at once, as it reaches Teams' customer
-rows, and each such connection's credential epoch increments so daemon caches
-purge the old tokens. An own application's secret is replaced on its card; the
-replacement runs §3.2's steps 5 and 6 and requires the same tenant, client ID,
-and identity id.
+rows: at boot, the Control Plane compares the configured secret's fingerprint
+with the one each such connection recorded, and where they differ it records
+the new one and increments the credential epoch, so daemon caches purge the
+old tokens.
+An own application's secret is replaced on its card; the replacement runs
+§3.2's steps 5 and 6 and requires the same tenant, client ID, and identity id.
 
 Entra does not tell an application when its own secret expires, so the product
 learns of expiry from the refusal. An `invalid_client` answer moves every
@@ -237,7 +316,16 @@ binding of the affected connections to `runtime_degraded` with reason
 `secret_rejected`. A service principal that is not in the organization moves
 them to `runtime_degraded` with reason `access_revoked`, and the card offers to
 connect again. Azure DevOps reports this two ways: `TF401444` for an identity
-the organization has never seen, and `TF400813` for one that was removed.
+the organization has never seen, and `TF400813` for one that was removed. An
+application with no service principal left in the tenant (Entra `700016`) is
+read the same way. Any later success recovers them: a token proves the secret
+again, and an Azure DevOps answer proves access again, so a lease for a
+degraded connection first reads `connectionData`. A failed read is trusted for
+a minute: leases on that connection are refused as retryable without any call
+to Entra or Azure DevOps, and the next read follows the minute. A
+connection-level verdict and its recovery leave a binding that is
+`repository_unavailable` as it is; only the picker's read clears that. Any
+other `401` is treated as a stale token and retried once with a fresh one.
 
 ### 3.6 What the Organization Grants
 
@@ -276,7 +364,10 @@ beside the numeric id, because the Azure CLI and REST paths address a
 repository by GUID as often as by name (§6.2).
 
 `repoFullName` is `{organization}/{project}/{repository}`. It is display and
-matching text, refreshed when the binding converges; nothing is keyed on it.
+matching text, and nothing is keyed on it. When the picker or a bind sees a
+new path or clone URL for a bound GUID (a rename), the binding is refreshed and,
+as on Gitea, the workspaces' clone URLs and the grants' `repoFullName` follow,
+and the affected agents are projected again.
 A secondary root lives at `repos/_azure-devops/<numeric id>/`, and
 `_azure-devops` joins the reserved secondary-root directories. Project and
 repository names may contain spaces; paths are compared after percent-decoding.
@@ -292,18 +383,32 @@ write that names a repository (a workspace, or an additional-repository grant)
 allocates the identity, takes the claim, and creates the binding and catalog
 row in one transaction. A binding records the path, the canonical clone URL,
 and the default branch. Its states are `ready` and `runtime_degraded`
-(`secret_rejected`, or `repository_unavailable` when the repository was deleted
-or disabled). Removing a binding that a workspace or grant still references is
-refused with 409 naming the reference; otherwise removal is immediate, since
-there is no webhook to clean up.
+(`secret_rejected` or `access_revoked` from §3.5, or `repository_unavailable`
+when the repository left the identity's list: deleted, disabled, in
+maintenance, or no longer granted). The picker's read moves a binding to
+`repository_unavailable` and back; a lease is refused while it lasts. Removing
+a binding that a workspace or grant still references is refused with 409
+naming the reference; otherwise removal is immediate, since there is no
+webhook to clean up.
+
+A binding belongs to one connection, and the workspace and grant rows name
+that connection beside the numeric id; a composite foreign key from those rows
+to the binding makes a referenced binding impossible to delete. The
+deployment-global claim of §4 is held while any binding of the organization
+names the repository, and released with the last one, an organization
+deletion included.
 
 Workspace derivation (git-workspace-model.md §6) gains two rows: an address in
 the connected organization that the identity can see yields
-`{ provider: 'azure-devops', repoId }`; one it cannot see is refused with "grant
-the application access to this repository". A `write` request on a repository
-where the identity lacks Contribute is refused the same way, read through one
-permission evaluation (§12, item 7). Every other Azure DevOps address stays
-anonymous, as any unmanaged host does.
+`{ provider: 'azure-devops', repoId, connectionId }`; one it cannot see is
+refused with "grant the application access to this repository". Project and
+repository names match case-insensitively, and a project GUID stands for the
+project name. A `write` request on a repository where the identity lacks
+Contribute is refused the same way, read through one permission evaluation
+(§12, item 7); a request that names no tier takes `write` where the identity
+holds Contribute and `read` otherwise. Every other Azure DevOps address stays
+anonymous, as any unmanaged host does, and a `write` request for one is
+refused.
 
 Clone addresses are normalized to `https://dev.azure.com/{organization}/{project}/_git/{repository}`.
 The normalizer accepts:
@@ -336,7 +441,12 @@ back. So the Control Plane serves an Azure DevOps grant only to the credential
 proxy and to the daemon's own Git operations, and refuses the agent-facing
 helper channel for it. This is a capability of the provider's credential module
 (`proxyOnly`), which the Control Plane's mint path reads, not a provider-name
-branch, as Gitea §13 requires of every provider difference.
+branch, as Gitea §13 requires of every provider difference. The gitcred request
+says who will present the credential, `consumer: 'proxy' | 'daemon' | 'helper'`;
+for a `proxyOnly` provider the Control Plane answers `proxy` and `daemon` only,
+and refuses `helper` and an absent field with `SCOPE_DENIED`, so a daemon that
+predates the field is refused rather than served. No purpose-gated lease
+exists for Azure DevOps in the first version.
 
 A daemon therefore advertises `azure-devops-v1` only while its credential proxy
 is enabled, and placement requires it. A session on a strategy the proxy does
@@ -443,8 +553,8 @@ Azure CLI or REST, and the first version adds no Azure DevOps tool:
 ### 6.4 Client Configuration
 
 git uses the session credential helper and the proxy like every other provider;
-the proxy presents the token as the Basic password with the identity's name as
-the user. The Azure CLI receives:
+the proxy presents the token as the Basic password with the identity id as the
+user (§3.4). The Azure CLI receives:
 
 - `AZURE_DEVOPS_EXT_PAT`, set to the placeholder; the CLI sends it as a Basic
   password, which the proxy already reads;
@@ -518,24 +628,42 @@ REST at the organization scope:
   sign-in of §3.2;
 - `GET /azure-devops/connect/:flow/organizations`, then
   `POST /azure-devops/connect/:flow/organization` and
-  `POST /azure-devops/connect/:flow/projects`, for steps 3 and 4. A
-  `connectionId` on `POST /azure-devops/connect` starts **Manage project
-  access** for that connection, skipping step 3;
-- `POST /azure-devops/connections` for an own application,
-  `GET /azure-devops/connections`, and `DELETE /azure-devops/connections/:id`;
+  `POST /azure-devops/connect/:flow/projects`, for steps 3 and 4, and
+  `POST /azure-devops/connect/:flow/verify` to resume after the manual
+  checklist. Each carries the flow ticket in the
+  `x-azure-devops-flow-ticket` header. A `connectionId` on
+  `POST /azure-devops/connect` starts **Manage project access** for that
+  connection, whose organization is fixed;
+- `POST /azure-devops/connections` for an own application (one per
+  organization, `connection_exists` otherwise),
+  `GET /azure-devops/connections`, and `DELETE /azure-devops/connections/:id`,
+  which removes the connection and its bindings at once and answers 409 while
+  a workspace or grant still uses one of them;
 - `POST /azure-devops/connections/:id/secret`, for an own application only;
-- `GET /azure-devops/connections/:id/repositories` for the picker; and
+- `GET /azure-devops/connections/:id/repositories` for the picker, each row
+  keyed by GUID and carrying its binding when bound;
+- `GET /azure-devops/repositories`, the bound repositories and their states;
+  and
 - `DELETE /azure-devops/repositories/:id`, which answers 409 when a workspace or
   grant still references the repository.
 
 The workspace and additional-repository routes bind on first use, as for Gitea.
-The connect, connection, and secret routes manage a credential and are
-`interactiveOnly`.
+An additional-repository grant names the repository by GUID and the connection
+that sees it, `{ provider: 'azure-devops', connectionId, repositoryId }`; a
+`write` grant, and raising one to `write`, require Contribute. The connect,
+connection-write, and secret routes manage a credential and are
+`interactiveOnly`; the reads are not.
 
 ## 9. Security
 
-- Client secrets are sealed at rest and never leave the Control Plane.
-  Tokens exist in the Control Plane's cache, in leases over the authenticated
+- Client secrets are sealed at rest and never leave the Control Plane. An own
+  application's secret is sealed under its organization; the deployment
+  secret is not copied under any organization, and a `deployment` connection
+  keeps only its keyed fingerprint (§3.2 step 6).
+- A new connection to a service principal already in an Azure DevOps
+  organization needs the caller to prove they administer it there (§3.2
+  step 4), so a plain member cannot take over the rights it holds.
+- Tokens exist in the Control Plane's cache, in leases over the authenticated
   daemon WebSocket, and in the daemon's memory. They never appear in an
   environment, argv, a remote URL, `.git/config`, or a diagnostic.
 - An administrator's delegated token lives only for the connect flow,
@@ -690,18 +818,18 @@ live organization before A2.
 
 - **A0 — Push gate.** The proxy refuses `git-receive-pack` under a grant below
   `write` (§6.3). This is #3767; it is not scheduled again here.
-- **A1 — Protocol.** _Landed._ The provider value with refusing hook entries,
+- **A1 — Protocol.** _Landed (#3781)._ The provider value with refusing hook entries,
   `azure-devops-v1`, the credential arm, the clone-URL forms, and the reserved
   secondary-root directory.
-- **A2 — Control Plane.** The connect flow on the deployment application and
+- **A2 — Control Plane.** _Landed._ The connect flow on the deployment application and
   the own-application path, and Manage project access; the token cache; the
   identity table and claims, with bindings and grants keyed by connection; the
   picker; derivation and grant arms; gitcred leases served only to the proxy
   plane; and the REST routes.
 - **A3 — Daemon.** The credential module with its `proxyOnly` capability, the
   proxy instance and route descriptor of §6.2, the client configuration of
-  §6.4, the feature advertisement tied to the proxy, and the strategy refusal.
-  Tests pin each refusal of §6.2: the lists, the pull-request lists that name
+  §6.4, the feature advertisement tied to the proxy, the gitcred `consumer`
+  field of §6.1 on every request, and the strategy refusal. Tests pin each refusal of §6.2: the lists, the pull-request lists that name
   no repository, and a repository outside the agent's authorizations. They
   also pin the pull-request lookup by id: it answers for the agent's own
   repository, and answers another repository's pull request exactly as it

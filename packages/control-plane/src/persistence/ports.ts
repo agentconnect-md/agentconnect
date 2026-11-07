@@ -53,6 +53,7 @@ import type {
   CodeHostReviewOpState,
   CodeHostReviewState,
   CodeHostProvider,
+  AzureDevOpsRepoRouting,
   FollowUpEventKind,
   FollowUpWatchSubject,
   HookKind as WireHookKind,
@@ -1175,6 +1176,13 @@ export type AgentWorkspaceCredential =
        *  one bot token serves it, and `workspaceRepoId` holds the numeric repository id. */
       provider: 'gitea'
       access: 'read' | 'write'
+    }
+  | {
+      /** A binding through one connection vouches (azure-devops-integration.md §4); routing is read from the binding. */
+      provider: 'azure-devops'
+      access: 'read' | 'write'
+      connectionId: string
+      azureDevOps: AzureDevOpsRepoRouting
     }
 
 export type AgentWorkspace =
@@ -5106,6 +5114,144 @@ export interface GiteaRepositoryBindingRepo {
 
 export type GiteaCleanupEntry = 'parked' | 'leased' | 'referenced'
 
+// Azure DevOps connections, identities and bindings (azure-devops-integration.md §3-§5); the secret only behind its store.
+
+export type AzureDevOpsCredentialSource = 'deployment' | 'own'
+export type AzureDevOpsConnectionState = 'connected' | 'degraded'
+/** Why a connection or binding stopped serving (§3.5, §5). */
+export type AzureDevOpsDegradedReason = 'secret_rejected' | 'access_revoked' | 'repository_unavailable'
+
+export interface AzureDevOpsConnectionRecord {
+  id: string
+  orgId: string
+  createdByUserId: string | null
+  tenantId: string
+  organization: string
+  organizationInstanceId: string
+  identityId: string
+  identityName: string | null
+  credentialSource: AzureDevOpsCredentialSource
+  /** The own application's client ID; null for the deployment application. */
+  clientId: string | null
+  credentialEpoch: bigint
+  state: AzureDevOpsConnectionState
+  stateReason: AzureDevOpsDegradedReason | null
+  lastVerifiedAt: Date | null
+  createdAt: Date
+  /** A `deployment` connection's fingerprint of the deployment secret it last saw (§3.5); never the secret. */
+  secretFingerprint: string | null
+}
+
+/** A connection's credential at rest: an own application's sealed secret, or the deployment secret's fingerprint only. */
+export type AzureDevOpsConnectionCredential = { sealedSecret: string } | { secretFingerprint: string }
+
+/** What verification (§3.2 step 5) read as the identity, written beside the connection. */
+export interface AzureDevOpsVerifiedIdentity {
+  organization: string
+  organizationInstanceId: string
+  identityId: string
+  identityName: string | null
+  verifiedAt: Date
+}
+
+export interface AzureDevOpsConnectionRepo {
+  /** Create atomically with its credential; throws AzureDevOpsOrganizationTaken when another organization holds the instance. */
+  create(input: {
+    orgId: string
+    createdByUserId?: string
+    tenantId: string
+    credentialSource: AzureDevOpsCredentialSource
+    clientId: string | null
+    identity: AzureDevOpsVerifiedIdentity
+    credential: AzureDevOpsConnectionCredential
+  }): Promise<AzureDevOpsConnectionRecord>
+  get(orgId: string, connectionId: string): Promise<AzureDevOpsConnectionRecord | null>
+  /** Deployment-global by id, for the token cache and the reconciler. */
+  getUnscoped(connectionId: string): Promise<AzureDevOpsConnectionRecord | null>
+  listForOrg(orgId: string): Promise<AzureDevOpsConnectionRecord[]>
+  listBySource(source: AzureDevOpsCredentialSource): Promise<AzureDevOpsConnectionRecord[]>
+  /** The AgentConnect organization that holds an Azure DevOps organization, if any. */
+  holderOfInstance(organizationInstanceId: string): Promise<string | null>
+  /** Swap the sealed secret and advance the epoch in ONE transaction; the identity must not change. */
+  replaceSecret(
+    orgId: string,
+    connectionId: string,
+    identity: AzureDevOpsVerifiedIdentity,
+    sealedSecret: string
+  ): Promise<AzureDevOpsConnectionRecord | null>
+  /** Advance the epoch alone (a rotated deployment secret), recording the fingerprint now in force. */
+  advanceEpoch(connectionId: string, secretFingerprint: string): Promise<AzureDevOpsConnectionRecord | null>
+  setState(
+    connectionId: string,
+    state: AzureDevOpsConnectionState,
+    stateReason: AzureDevOpsDegradedReason | null
+  ): Promise<AzureDevOpsConnectionRecord | null>
+  /** Drop the row, its secret and its unreferenced bindings; `referenced` while a workspace or grant names a binding. */
+  remove(orgId: string, connectionId: string): Promise<'removed' | 'referenced' | 'missing'>
+}
+
+export interface AzureDevOpsConnectionSecretStore {
+  get(orgId: string, connectionId: string): Promise<string | null>
+}
+
+export type AzureDevOpsBindingState = 'ready' | 'runtime_degraded'
+
+export interface AzureDevOpsRepositoryBindingRecord {
+  id: string
+  orgId: string
+  connectionId: string
+  /** The surrogate numeric id (§4): the repository's externalId everywhere. */
+  repoId: bigint
+  repositoryId: string
+  projectId: string
+  repoPath: string
+  cloneUrl: string
+  defaultBranch: string | null
+  state: AzureDevOpsBindingState
+  stateReason: AzureDevOpsDegradedReason | null
+  createdAt: Date
+}
+
+/** The repository facts a binding is created or refreshed from, as the identity read them (§5). */
+export interface AzureDevOpsRepositoryFacts {
+  repositoryId: string
+  projectId: string
+  organizationInstanceId: string
+  repoPath: string
+  cloneUrl: string
+  defaultBranch: string | null
+}
+
+export interface AzureDevOpsRepositoryBindingRepo {
+  /** The surrogate ids already allocated for these repository GUIDs; nothing is allocated. */
+  identitiesOf(repositoryIds: readonly string[]): Promise<Map<string, bigint>>
+  /** Identity, claim, catalog row and binding in ONE transaction (an existing binding is refreshed); another organization's claim throws. */
+  bind(input: { orgId: string; connectionId: string; facts: AzureDevOpsRepositoryFacts }): Promise<{
+    binding: AzureDevOpsRepositoryBindingRecord
+    created: boolean
+    /** An existing binding whose path or clone URL this bind changed: a rename to converge. */
+    pathChanged: boolean
+  }>
+  get(orgId: string, bindingId: string): Promise<AzureDevOpsRepositoryBindingRecord | null>
+  byRepo(orgId: string, connectionId: string, repoId: bigint): Promise<AzureDevOpsRepositoryBindingRecord | null>
+  listForOrg(orgId: string): Promise<AzureDevOpsRepositoryBindingRecord[]>
+  listForConnection(orgId: string, connectionId: string): Promise<AzureDevOpsRepositoryBindingRecord[]>
+  /** Move a connection's bindings to `runtime_degraded`, or back to `ready`; `fromReasons` limits it, and `repository_unavailable` bindings are never touched. */
+  setStateForConnection(
+    connectionId: string,
+    state: AzureDevOpsBindingState,
+    stateReason: AzureDevOpsDegradedReason | null,
+    fromReasons?: readonly AzureDevOpsDegradedReason[]
+  ): Promise<number>
+  setState(
+    bindingId: string,
+    state: AzureDevOpsBindingState,
+    stateReason: AzureDevOpsDegradedReason | null
+  ): Promise<AzureDevOpsRepositoryBindingRecord | null>
+  /** Remove under the binding's row lock; `referenced` while a workspace or grant names it. */
+  remove(orgId: string, bindingId: string): Promise<'removed' | 'referenced' | 'missing'>
+}
+
 /** The managed webhook's sealed signing keys (§7): the current one and, mid-rotation, its successor. */
 export interface GiteaWebhookSigningKeys {
   current: string
@@ -5327,6 +5473,9 @@ export interface AgentRepoAuthorizationRecord {
   createdBy: AgentCreator | null // audit: who authorized (identity-assertion subject)
   attestedByUserId: string | null // who vouched for the current tier; re-attestation re-checks this member
   stale: { since: Date; reason: RepoGrantStaleReason } | null // set while the attester fails the check
+  /** An `azure-devops` grant's connection and routing (azure-devops-integration.md §3.2, §4); absent on every other host. */
+  connectionId?: string
+  azureDevOps?: AzureDevOpsRepoRouting
 }
 
 /** A stale grant carries no authority: every mint, spec projection and gate reads it as absent. */
@@ -5354,6 +5503,7 @@ export interface AgentRepoAuthorizationRepo {
     materialize?: RepoMaterialization // absent ⇒ always
     createdByUserId?: string // also the first attester
     attestedAt?: Date // when the creator's access was checked; absent ⇒ never checked
+    connectionId?: string // required for an `azure-devops` grant, whose binding it names
   }): Promise<AgentRepoAuthorizationRecord>
   get(id: string): Promise<AgentRepoAuthorizationRecord | null>
   /** The agent's grants, stale ones included — the console card AND the mint-gate read (viewer-free). */

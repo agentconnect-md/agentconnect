@@ -49,7 +49,7 @@ import type {
   LiveSecret,
   IntegrationRepo
 } from '../persistence/ports.js'
-import { AgentWorkspaceIntegrationConflict, GiteaBindingUnavailable } from '../persistence/errors.js'
+import { AgentWorkspaceIntegrationConflict, CodeHostBindingUnavailable } from '../persistence/errors.js'
 import { isCanonicalGithubAddress } from '../domain/git-host.js'
 import type { AgentId, DaemonId, SessionId } from '../domain/ids.js'
 import {
@@ -212,7 +212,9 @@ function sameWorkspaceCredential(
   return (
     left.access === right.access &&
     (left.provider === 'github' ? left.installationId : undefined) ===
-      (right.provider === 'github' ? right.installationId : undefined)
+      (right.provider === 'github' ? right.installationId : undefined) &&
+    ('connectionId' in left ? left.connectionId : undefined) ===
+      ('connectionId' in right ? right.connectionId : undefined)
   )
 }
 
@@ -452,7 +454,7 @@ export class AgentMoveService {
         const observed = await this.deps.agents.getUnscoped(agent.id).catch(() => null)
         if (observed && !isPlaced(observed) && sameWorkspace(observed, workspace, workspaceRepoId)) {
           converted = observed
-        } else if (err instanceof AgentWorkspaceIntegrationConflict || err instanceof GiteaBindingUnavailable) {
+        } else if (err instanceof AgentWorkspaceIntegrationConflict || err instanceof CodeHostBindingUnavailable) {
           throw new AgentMoveConflict(err.message)
         } else {
           throw new AgentMoveFailed('failed to persist the workspace settings', err)
@@ -519,7 +521,7 @@ export class AgentMoveService {
         if (persistenceError) {
           if (
             persistenceError instanceof AgentWorkspaceIntegrationConflict ||
-            persistenceError instanceof GiteaBindingUnavailable
+            persistenceError instanceof CodeHostBindingUnavailable
           ) {
             throw new AgentMoveConflict(persistenceError.message)
           }

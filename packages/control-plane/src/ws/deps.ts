@@ -52,6 +52,7 @@ import type { GithubService } from '../github/service.js'
 import type { RepoCandidatesService } from '../github/repo-candidates.js'
 import type { GitlabGitcredService } from '../gitlab/gitcred.service.js'
 import type { GiteaGitcredService } from '../gitea/gitcred.service.js'
+import type { AzureDevOpsGitcredService } from '../azure-devops/gitcred.service.js'
 import type { LinearTokenService } from '../platforms/linear/token-service.js'
 import type { CodeHostReviewBrokerService } from '../codehost/review-lease.service.js'
 import type { GithubReviewBrokerService } from '../github/review-broker.service.js'
@@ -244,6 +245,8 @@ export interface DaemonWsDeps {
   gitlabGitcred?: GitlabGitcredService
   /** gitcred v2 Gitea grants (gitea-integration.md §4.2, §9); absent ⇒ gitea workspaces disabled. */
   giteaGitcred?: GiteaGitcredService
+  /** gitcred leases for Azure DevOps, served to the credential proxy only (azure-devops-integration.md §6.1); absent ⇒ disabled. */
+  azureDevOpsGitcred?: AzureDevOpsGitcredService
   /** Linear workspace token custody (linear-integration.md §7.3) — the one seam the `linearcred`
    *  broker calls; absent ⇒ `linearcred/request` answers SCOPE_DENIED. */
   linearTokens?: Pick<LinearTokenService, 'accessToken'>

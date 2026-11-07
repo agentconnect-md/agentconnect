@@ -18,6 +18,7 @@
  */
 import { PLACEMENT_ONLY } from '../../orchestrator/placementResolver.js'
 import { isCodeHostProvider, isFrame } from '@agentconnect.md/protocol'
+import { codeHostProviders } from '../../codehost/registry.js'
 import { AgentId, HookId } from '../../domain/ids.js'
 import { GitCredDeniedError } from '../../github/service.js'
 import { frameOrgId } from './frame-org.js'
@@ -66,7 +67,8 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
     forceRefresh,
     provider,
     externalRepoId,
-    requestedAccess
+    requestedAccess,
+    consumer
   } = frame.payload
 
   // v2 provider fail-per-value (§17.1): an open wire string, checked against the host set.
@@ -74,17 +76,27 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
     conn.sendError(frame.id, 'SCOPE_DENIED', `unknown git credential provider ${provider}`, false)
     return
   }
+  // azure-devops-integration.md §6.1: a proxy-only host's token never reaches the agent-facing helper; an older daemon names no consumer.
+  if (
+    provider !== undefined &&
+    codeHostProviders[provider].proxyOnly === true &&
+    consumer !== 'proxy' &&
+    consumer !== 'daemon'
+  ) {
+    conn.sendError(frame.id, 'SCOPE_DENIED', `${provider} credentials are served to the credential proxy only`, false)
+    return
+  }
   const gitlabRequest = provider === 'gitlab'
   const giteaRequest = provider === 'gitea'
+  const azureDevOpsRequest = provider === 'azure-devops'
   // §17.3: an explicit 'github' takes exactly the arms the absent form takes and adds the echo the
   // daemon verifies. The absent form stays unqualified — old daemons upgrade slowly and still send it.
   const githubQualified = provider === 'github'
-  // A known host with no credential arm here (Azure DevOps until A2) is refused, never served by the GitHub arm below.
-  if (provider !== undefined && !gitlabRequest && !giteaRequest && !githubQualified) {
-    conn.sendError(frame.id, 'SCOPE_DENIED', `${provider} workspaces are not enabled on this control plane`, false)
+  if (azureDevOpsRequest && !deps.azureDevOpsGitcred) {
+    conn.sendError(frame.id, 'SCOPE_DENIED', 'azure-devops workspaces are not enabled on this control plane', false)
     return
   }
-  if (!gitlabRequest && !giteaRequest && !deps.github) {
+  if (!gitlabRequest && !giteaRequest && !azureDevOpsRequest && !deps.github) {
     conn.sendError(frame.id, 'SCOPE_DENIED', 'github-app workspaces are not enabled on this control plane', false)
     return
   }
@@ -114,6 +126,21 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
   }
 
   try {
+    if (azureDevOpsRequest) {
+      // No hooks in v1 (§11), so no purpose-gated lease exists for Azure DevOps.
+      if (purpose !== undefined) {
+        conn.sendError(frame.id, 'SCOPE_DENIED', `azure-devops has no ${purpose} credential`, false)
+        return
+      }
+      const grant = await deps.azureDevOpsGitcred!.grantForAgent(
+        agent,
+        externalRepoId !== undefined ? BigInt(externalRepoId) : undefined,
+        requestedAccess,
+        forceRefresh === true
+      )
+      conn.replyTo(frame, 'gitcred/grant', grant)
+      return
+    }
     if (giteaRequest) {
       // gitea-integration.md §4.2/§10: one token serves every purpose; the authority differs per purpose.
       if (purpose === 'gitea_hook_reply') {

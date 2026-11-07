@@ -58,6 +58,13 @@ import { GiteaProvisioner } from './gitea/provisioner.js'
 import { GiteaBindingService } from './gitea/binding.service.js'
 import { GiteaConvergeSweeper } from './gitea/converge-sweeper.js'
 import { GiteaGitcredService } from './gitea/gitcred.service.js'
+import { AzureDevOpsApiClient, type FetchLike as AzureDevOpsFetchLike } from './azure-devops/api.js'
+import { AzureDevOpsTokenCache } from './azure-devops/token-cache.js'
+import { AzureDevOpsConnectionService, azureDevOpsSecretFingerprint } from './azure-devops/connection.service.js'
+import { AzureDevOpsBindingService } from './azure-devops/binding.service.js'
+import { AzureDevOpsGitcredService } from './azure-devops/gitcred.service.js'
+import { AzureDevOpsConnectFlowService } from './azure-devops/connect-flow.service.js'
+import { azureDevOpsConnectKeys } from './azure-devops/connect.js'
 import { GiteaStatusCoordinator, GiteaStatusReporter } from './gitea/status-projection.js'
 import { GiteaMembershipAuthzService } from './gitea/membership-authz.service.js'
 import { unionGiteaWebhookEvents } from './gitea/webhook-events.js'
@@ -186,6 +193,9 @@ import {
   PgGiteaConnectionSecretStore,
   PgGiteaRepositoryBindingRepo,
   PgGiteaWebhookSecretStore,
+  PgAzureDevOpsConnectionRepo,
+  PgAzureDevOpsConnectionSecretStore,
+  PgAzureDevOpsRepositoryBindingRepo,
   PgCodeHostReviewLeaseRepo,
   PgSocialIdentityMutationGate,
   PgGithubRepoIdentityStore,
@@ -463,6 +473,8 @@ export interface ContainerOpts {
   gitlabFetch?: GitlabFetchLike
   /** Gitea HTTP edge stub for tests (mirrors gitlabFetch). */
   giteaFetch?: GiteaFetchLike
+  /** Entra and Azure DevOps HTTP edge stub for tests. */
+  azureDevOpsFetch?: AzureDevOpsFetchLike
   /** Slack Web API fetch override for Session membership checks. */
   slackFetch?: FetchLike
   /** Feishu/Lark Open Platform fetch override for Session membership checks. */
@@ -653,7 +665,9 @@ export function buildContainer(
     gitlabOauthState: new PgGitlabOauthStateStore(prisma),
     gitlabInstanceState: new PgGitlabInstanceStateStore(prisma),
     giteaConnection: new PgGiteaConnectionRepo(prisma),
-    giteaRepositoryBinding: new PgGiteaRepositoryBindingRepo(prisma)
+    giteaRepositoryBinding: new PgGiteaRepositoryBindingRepo(prisma),
+    azureDevOpsConnection: new PgAzureDevOpsConnectionRepo(prisma),
+    azureDevOpsRepositoryBinding: new PgAzureDevOpsRepositoryBindingRepo(prisma)
   }
 
   // ── C3/C4/C5 services ─────────────────────────────────────────────────────
@@ -1794,6 +1808,94 @@ export function buildContainer(
     bindings: giteaBindingService,
     api: giteaApi
   }
+
+  // Azure DevOps (azure-devops-integration.md §3-§5): connections through the deployment's Microsoft application or an own one.
+  const azureDevOpsApi = new AzureDevOpsApiClient({
+    ...(opts.azureDevOpsFetch ? { fetch: opts.azureDevOpsFetch } : {}),
+    now: () => clock.now()
+  })
+  const azureDevOpsDeploymentApp = resolveMsTeamsPlatformApp(config)
+  // Every agent whose workspace or grant names the connection, re-projected so daemon caches purge (§3.5).
+  const reprojectAzureDevOpsConsumers = async (orgId: string, connectionId: string): Promise<void> => {
+    for (const agent of await repos.agent.list(OrgId(orgId))) {
+      const credential = agent.workspace.mode === 'git' ? agent.workspace.credential : undefined
+      const consumer =
+        (credential !== undefined && 'connectionId' in credential && credential.connectionId === connectionId) ||
+        (await repos.agentRepoAuth.listForAgent(agent.id)).some((row) => row.connectionId === connectionId)
+      if (!consumer) continue
+      await agentDelivery.upsert(agent, (err, daemonId) => {
+        if (!(err instanceof NoConnection))
+          http.log.warn({ err, agentId: agent.id, daemonId }, 'azure devops: agent re-projection failed')
+      })
+    }
+  }
+  const azureDevOpsConnectionService = new AzureDevOpsConnectionService({
+    connections: repos.azureDevOpsConnection,
+    secrets: new PgAzureDevOpsConnectionSecretStore(prisma, secretCipher),
+    bindings: repos.azureDevOpsRepositoryBinding,
+    cipher: secretCipher,
+    clock,
+    api: azureDevOpsApi,
+    tokens: new AzureDevOpsTokenCache(() => clock.now()),
+    ...(azureDevOpsDeploymentApp
+      ? {
+          deploymentApplication: {
+            clientId: azureDevOpsDeploymentApp.appId,
+            clientSecret: azureDevOpsDeploymentApp.clientSecret
+          }
+        }
+      : {}),
+    onCredentialEpochChanged: (orgId, connection) => reprojectAzureDevOpsConsumers(orgId, connection.id),
+    secretFingerprint: azureDevOpsSecretFingerprint(config.API_KEY_PEPPER),
+    log: { warn: (obj, msg) => http.log.warn(obj, msg), info: (obj, msg) => http.log.info(obj, msg) }
+  })
+  const azureDevOps = {
+    connections: azureDevOpsConnectionService,
+    bindings: new AzureDevOpsBindingService({
+      connections: repos.azureDevOpsConnection,
+      bindings: repos.azureDevOpsRepositoryBinding,
+      service: azureDevOpsConnectionService,
+      api: azureDevOpsApi,
+      // A rename converges workspace clone URLs and grant paths, then re-projects those agents, as for Gitea.
+      onPathChanged: async (orgId, repoId, repoPath, cloneUrl) => {
+        const agentIds = await repos.agent.refreshCodeHostRepositoryPath(
+          OrgId(orgId),
+          'azure-devops',
+          repoId,
+          repoPath,
+          cloneUrl
+        )
+        for (const agentId of agentIds) {
+          void repos.agent
+            .getUnscoped(agentId)
+            .then(
+              (agent) =>
+                agent &&
+                agentDelivery.upsert(agent, (err, daemonId) =>
+                  http.log.warn({ err, agentId, daemonId }, 'azure devops rename: agent/upsert failed')
+                )
+            )
+            .catch((err) => http.log.warn({ err, agentId }, 'azure devops rename: agent refresh fan-out failed'))
+        }
+      }
+    }),
+    connect: new AzureDevOpsConnectFlowService({
+      api: azureDevOpsApi,
+      keys: azureDevOpsConnectKeys(config.API_KEY_PEPPER),
+      clock,
+      connections: azureDevOpsConnectionService,
+      connectionRepo: repos.azureDevOpsConnection,
+      ...(azureDevOpsDeploymentApp
+        ? {
+            deploymentApplication: {
+              clientId: azureDevOpsDeploymentApp.appId,
+              clientSecret: azureDevOpsDeploymentApp.clientSecret
+            }
+          }
+        : {}),
+      ...(webAppUrl ? { webAppUrl } : {})
+    })
+  }
   // The §6 convergence sweep, the half of a contended pass's obligation that survives a restart.
   const giteaConvergeSweeper = new GiteaConvergeSweeper({
     provisioner: giteaProvisioner,
@@ -2405,6 +2507,8 @@ export function buildContainer(
       gitlabInstanceState: repos.gitlabInstanceState,
       giteaConnection: repos.giteaConnection,
       giteaRepositoryBinding: repos.giteaRepositoryBinding,
+      azureDevOpsConnection: repos.azureDevOpsConnection,
+      azureDevOpsRepositoryBinding: repos.azureDevOpsRepositoryBinding,
       audit: repos.audit,
       webchatMcpOperation: repos.webchatMcpOperation,
       oauth: repos.oauth
@@ -2461,6 +2565,7 @@ export function buildContainer(
     ...(githubApps ? { githubApps } : {}),
     ...(gitlab ? { gitlab } : {}),
     gitea,
+    azureDevOps,
     ...(pullRequestView ? { pullRequestView } : {}),
     ...(sessionPullRequestLink ? { sessionPullRequestLink } : {}),
     ...(githubUserAuthz ? { githubUserAuthz } : {}),
@@ -3220,6 +3325,15 @@ export function buildContainer(
       clock,
       baseUrl: giteaCfg.baseUrl
     }),
+    // Azure DevOps leases (azure-devops-integration.md §6.1): the connection's cached token, to the proxy plane only.
+    azureDevOpsGitcred: new AzureDevOpsGitcredService({
+      connections: repos.azureDevOpsConnection,
+      bindings: repos.azureDevOpsRepositoryBinding,
+      repoAuths: repos.agentRepoAuth,
+      service: azureDevOpsConnectionService,
+      api: azureDevOpsApi,
+      clock
+    }),
     // The SAME token service the funnel, the disconnect edge and the sweep hold — the `linearcred`
     // broker must not become a second opinion on when a grant is stale (linear-integration.md §4.4).
     linearTokens: linearTokenService,
@@ -3721,6 +3835,10 @@ export function buildContainer(
       gitlabRetirementSweeper?.start()
       gitlabConvergeSweeper?.start()
       giteaConvergeSweeper.start()
+      // §3.5: the deployment secret moves only across a restart, so one pass at boot re-stamps it.
+      void azureDevOpsConnectionService
+        .reconcileDeploymentSecret()
+        .catch((err) => http.log.warn({ err }, 'azure devops: deployment secret reconcile failed'))
       for (const reaper of pendingInstallReapers) reaper.start()
       relaySweeper.start()
       dutyRecompute.start()

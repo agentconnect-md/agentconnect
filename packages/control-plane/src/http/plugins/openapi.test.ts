@@ -26,6 +26,8 @@ function stubDeps(): HttpDeps {
     config: { NODE_ENV: 'test', DEFAULT_OWNER_ID: '00000000-0000-4000-8000-000000000000' },
     // Mounted only with the service; its handlers are never reached here.
     capabilityRequests: {},
+    // Mounted only with the surface; its handlers are never reached here.
+    azureDevOps: {},
     platforms: buildCpPlatformRegistry([
       createTelegramCpProvider({ verifyBot: async () => ({ status: 'unreachable' }) }),
       createDiscordCpProvider({ ensureMessageContentIntent: async () => 'ready' }),
@@ -348,7 +350,16 @@ describe('openapi plane', () => {
           'POST /api/v1/orgs/:orgId/capability-requests/:id/settle',
           'POST /api/v1/orgs/:orgId/capability-requests/:id/decline',
           'POST /api/v1/orgs/:orgId/capability-requests/:id/reopen',
-          'POST /api/v1/orgs/:orgId/capability-requests/:id/forward'
+          'POST /api/v1/orgs/:orgId/capability-requests/:id/forward',
+          'POST /api/v1/orgs/:orgId/azure-devops/connections',
+          'POST /api/v1/orgs/:orgId/azure-devops/connections/:id/secret',
+          'DELETE /api/v1/orgs/:orgId/azure-devops/connections/:id',
+          'POST /api/v1/orgs/:orgId/azure-devops/connect',
+          'POST /api/v1/orgs/:orgId/azure-devops/connect/callback',
+          'GET /api/v1/orgs/:orgId/azure-devops/connect/:flow/organizations',
+          'POST /api/v1/orgs/:orgId/azure-devops/connect/:flow/organization',
+          'POST /api/v1/orgs/:orgId/azure-devops/connect/:flow/projects',
+          'POST /api/v1/orgs/:orgId/azure-devops/connect/:flow/verify'
         ].sort()
       )
       const doc = (await app.inject({ method: 'GET', url: '/api/v1/openapi.json' })).json() as Record<string, any>

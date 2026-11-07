@@ -61,6 +61,8 @@ import { memoryConnectionRoutes } from './routes/memory-connections.js'
 import { githubRoutes, githubCallbackRoutes } from './routes/github.js'
 import { gitlabRoutes, gitlabOauthRoutes } from './routes/gitlab.js'
 import { giteaRoutes } from './routes/gitea.js'
+import { azureDevOpsRoutes } from './routes/azure-devops.js'
+import { azureDevOpsConnectRoutes } from './routes/azure-devops-connect.js'
 import { gitRoutes } from './routes/git.js'
 import { agentIconRoutes } from './routes/agent-icon.js'
 import { orgIconRoutes } from './routes/org-icon.js'
@@ -404,6 +406,8 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
           await scope.register(githubRoutes(deps))
           await scope.register(gitlabRoutes(deps))
           await scope.register(giteaRoutes(deps))
+          await scope.register(azureDevOpsRoutes(deps))
+          await scope.register(azureDevOpsConnectRoutes(deps))
           await scope.register(gitRoutes(deps))
           // Uploaded-icon write surface — mounted ONLY when the object store is
           // configured; absent ⇒ the routes don't exist and the console hides Upload.

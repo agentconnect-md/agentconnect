@@ -74,6 +74,8 @@ import type {
   FollowUpWatchRepo,
   GiteaConnectionRepo,
   GiteaRepositoryBindingRepo,
+  AzureDevOpsConnectionRepo,
+  AzureDevOpsRepositoryBindingRepo,
   DaemonLifecycleOpRepo,
   OAuthRepo,
   WebchatMcpOperationRepo
@@ -101,6 +103,9 @@ import type { GiteaConnectionService } from '../gitea/connection.service.js'
 import type { GiteaProvisioner } from '../gitea/provisioner.js'
 import type { GiteaBindingService } from '../gitea/binding.service.js'
 import type { GiteaApiClient } from '../gitea/api.js'
+import type { AzureDevOpsConnectionService } from '../azure-devops/connection.service.js'
+import type { AzureDevOpsBindingService } from '../azure-devops/binding.service.js'
+import type { AzureDevOpsConnectFlowService } from '../azure-devops/connect-flow.service.js'
 import type { PullRequestViewService } from '../github/pull-request-view.service.js'
 import type { SessionPullRequestLinkService } from '../github/session-pull-request-link.service.js'
 import type { GithubUserAuthzService } from '../github/user-authz.js'
@@ -347,6 +352,10 @@ export interface HttpDeps {
     giteaConnection: GiteaConnectionRepo
     /** Managed Gitea repository bindings (gitea-integration.md §5/§6). */
     giteaRepositoryBinding: GiteaRepositoryBindingRepo
+    /** Azure DevOps connections (azure-devops-integration.md §3.2); the client secret lives behind its secret store. */
+    azureDevOpsConnection: AzureDevOpsConnectionRepo
+    /** Azure DevOps repository bindings and their identities (azure-devops-integration.md §4, §5). */
+    azureDevOpsRepositoryBinding: AzureDevOpsRepositoryBindingRepo
     /** Append-only events feed (§3.12) — WebUI CRUD writes land here (`cron_change`, …). */
     audit: AuditRepo
     /** Durable browser-confirmed delegated MCP operation ledger. */
@@ -544,6 +553,13 @@ export interface HttpDeps {
     /** Binding on first use (§6): the one path a trigger, workspace, grant or the card binds a repository through. */
     bindings: GiteaBindingService
     api: GiteaApiClient
+  }
+  /** Azure DevOps connections and repositories (azure-devops-integration.md §3, §5); absent ⇒ routes 404 and addresses stay anonymous. */
+  azureDevOps?: {
+    connections: AzureDevOpsConnectionService
+    bindings: AzureDevOpsBindingService
+    /** Connect with Microsoft and Manage project access (§3.2); absent ⇒ the connect routes refuse. */
+    connect?: AzureDevOpsConnectFlowService
   }
   /** The PR panel's read projection; absent like {@link github} ⇒ the route 404s, hiding the tab. */
   pullRequestView?: PullRequestViewService

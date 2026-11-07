@@ -183,7 +183,7 @@ import {
   AGENT_WORKSPACE_INTEGRATION_CONFLICT_MESSAGE,
   AgentSetPlacementDenied,
   DaemonPlacementInSet,
-  GiteaBindingUnavailable,
+  CodeHostBindingUnavailable,
   MemoryConnectionBusy,
   MemoryConnectionMissing
 } from '../../persistence/errors.js'
@@ -324,6 +324,7 @@ import { buildAgentMoves } from '../agent-moves.js'
 import { GithubApiError } from '../../github/api.js'
 import { GitlabApiError, gitlabWorkspaceAccessLevel } from '../../gitlab/api.js'
 import { GiteaApiError } from '../../gitea/api.js'
+import { AzureDevOpsApiError } from '../../azure-devops/api.js'
 import { LogtoApiError } from '../../github/logto-identity.js'
 import { UserAuthzDeniedError } from '../../github/user-authz.js'
 import { syncAgentBotIcons } from '../agent-bot-icon-sync.js'
@@ -2118,12 +2119,13 @@ export function agentRoutes(deps: HttpDeps) {
                 message: `gitlab: ${e.message}`
               })
             }
-            if (e instanceof GiteaApiError) {
+            if (e instanceof GiteaApiError || e instanceof AzureDevOpsApiError) {
               const status = e.code === 'RATE_LIMITED' ? 429 : 502
+              const host = e instanceof GiteaApiError ? 'gitea' : 'azure devops'
               return reply.code(status).send({
                 error: status === 429 ? 'Too Many Requests' : 'Bad Gateway',
                 statusCode: status,
-                message: `gitea: ${e.message}`
+                message: `${host}: ${e.message}`
               })
             }
             throw e
@@ -2390,8 +2392,8 @@ export function agentRoutes(deps: HttpDeps) {
           if (e instanceof OrganizationEnvironmentAdmissionError) {
             return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: e.message })
           }
-          // The binding fence (gitea-integration.md §6): the repository was removed while this create was in flight.
-          if (e instanceof GiteaBindingUnavailable) return conflict(e.message)
+          // A code-host binding fence: the repository was removed while this create was in flight.
+          if (e instanceof CodeHostBindingUnavailable) return conflict(e.message)
           const refused = placementRefusalMessage(e)
           if (refused) return conflict(refused)
           throw e
@@ -3378,12 +3380,13 @@ export function agentRoutes(deps: HttpDeps) {
               message: `gitlab: ${err.message}`
             })
           }
-          if (err instanceof GiteaApiError) {
+          if (err instanceof GiteaApiError || err instanceof AzureDevOpsApiError) {
             const status = err.code === 'RATE_LIMITED' ? 429 : 502
+            const host = err instanceof GiteaApiError ? 'gitea' : 'azure devops'
             return reply.code(status).send({
               error: status === 429 ? 'Too Many Requests' : 'Bad Gateway',
               statusCode: status,
-              message: `gitea: ${err.message}`
+              message: `${host}: ${err.message}`
             })
           }
           throw err
