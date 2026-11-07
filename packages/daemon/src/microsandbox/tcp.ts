@@ -5,6 +5,16 @@ import { HOST_GENERATION, MessageSchema as Envelope } from './exec.js'
 const Data = z.object({ data: z.instanceof(Uint8Array) })
 const Failure = z.object({ error: z.string() })
 
+/** Largest payload per `core.tcp.data` message, well under agentd's 4 MiB frame limit (which refuses, not splits). */
+export const MAX_TCP_DATA_BYTES = 1024 * 1024
+
+/** Send `data` as consecutive messages of at most {@link MAX_TCP_DATA_BYTES}, in order. */
+export async function sendInPieces(data: Buffer, send: (piece: Buffer) => Promise<unknown>): Promise<void> {
+  for (let offset = 0; offset < data.length; offset += MAX_TCP_DATA_BYTES) {
+    await send(data.subarray(offset, offset + MAX_TCP_DATA_BYTES))
+  }
+}
+
 // Use agentd's TCP stream, also used by its SSH forwarding, without publishing a host port.
 export async function openGuestTcp(
   sdk: Pick<typeof import('microsandbox'), 'AgentClient'>,
@@ -30,6 +40,7 @@ export async function openGuestTcp(
     if ((await next())?.type !== 'core.tcp.connected') throw new Error('microsandbox TCP stream did not connect')
     clearTimeout(timer)
     const send = (type: string, payload: unknown) => client.send(stream.id, 0, message(type, payload))
+    const sendData = (data: Buffer) => sendInPieces(data, (piece) => send('data', { data: piece }))
     let wake: (() => void) | undefined
     const socket = new Duplex({
       read() {
@@ -37,14 +48,11 @@ export async function openGuestTcp(
         wake = undefined
       },
       write(chunk: Buffer, _encoding, callback) {
-        void send('data', { data: chunk }).then(() => callback(), callback)
+        void sendData(chunk).then(() => callback(), callback)
       },
       // ws corks its frame header and payload; sending them separately triggers delayed ACK latency.
       writev(chunks, callback) {
-        void send('data', { data: Buffer.concat(chunks.map(({ chunk }) => chunk as Buffer)) }).then(
-          () => callback(),
-          callback
-        )
+        void sendData(Buffer.concat(chunks.map(({ chunk }) => chunk as Buffer))).then(() => callback(), callback)
       },
       final(callback) {
         void send('eof', {}).then(() => callback(), callback)
