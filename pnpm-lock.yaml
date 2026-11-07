@@ -191,8 +191,8 @@ importers:
         specifier: workspace:*
         version: link:../protocol
       ws:
-        specifier: 8.22.0
-        version: 8.22.0
+        specifier: ^8.22.1
+        version: 8.22.1
     devDependencies:
       '@types/node':
         specifier: ^26.6.6
@@ -460,8 +460,8 @@ importers:
         specifier: ^4.7.1
         version: 4.7.1
       ws:
-        specifier: 8.22.0
-        version: 8.22.0
+        specifier: ^8.22.1
+        version: 8.22.1
       yaml:
         specifier: ^2.9.1
         version: 2.9.1
