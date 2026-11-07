@@ -226,6 +226,19 @@ describe('global login application configuration', () => {
     ])
   })
 
+  it('lists the Azure DevOps connect page beside the Microsoft redirect URIs, and names what the app serves', async () => {
+    const { app } = server()
+    const status = await app.inject({ method: 'GET', url: '/api/v1/deployment-config', headers })
+    expect(status.json().providerExpectations.azureDevOps).toEqual({
+      connectRedirectUri: 'https://console.example.test/azure-devops/connect'
+    })
+    const page = await app.inject({ method: 'GET', url: '/' })
+    expect(page.body).toContain('Microsoft sign-in, Teams, and Azure DevOps.')
+    expect(page.body).toContain('does not name a single Microsoft product')
+    expect(page.body).toContain('id="azuread-azure-devops-redirects"')
+    expect(page.body).toContain("renderUriList('azuread-azure-devops-redirects'")
+  })
+
   it('makes the Microsoft sign-in app the Teams app with its home tenant, checked with Entra, and turns it off with sign-in', async () => {
     const { app, admin, secrets } = server()
     const APP = '00000000-0000-4000-8000-0000000000c1'

@@ -68,6 +68,7 @@ import { probeBlocksSave as giteaProbeBlocksSave, probeGiteaInstance } from '../
 import { linearConfiguredUrls } from '../linear-app.js'
 import { googleChatConfiguredUrls } from '../google-chat-app.js'
 import { msTeamsConfiguredUrls } from '../msteams-app.js'
+import { azureDevOpsConfiguredUrls } from '../azure-devops-app.js'
 import { verifyMsTeamsApp } from '@agentconnect.md/control-plane/msteams-credential'
 import {
   auditSlackManifest,
@@ -710,6 +711,12 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
     } catch {
       // Teams needs HTTPS ingress and console URLs before its endpoints are publishable.
     }
+    let azureDevOps: ReturnType<typeof azureDevOpsConfiguredUrls> | null = null
+    try {
+      azureDevOps = azureDevOpsConfiguredUrls(providerAppConfig(localAuthBootstrap.services))
+    } catch {
+      // Azure DevOps needs an HTTPS console URL before its connect page is publishable.
+    }
     let googleChat: ReturnType<typeof googleChatConfiguredUrls> | null = null
     try {
       googleChat = googleChatConfiguredUrls(providerAppConfig(localAuthBootstrap.services))
@@ -733,6 +740,7 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
       linear,
       googleChat,
       msTeams,
+      azureDevOps,
       ...Object.fromEntries(
         LoginAppProvider.options.map((provider) => [
           provider,

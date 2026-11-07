@@ -431,7 +431,11 @@ export const SETUP_HTML = String.raw`<!doctype html>
           ([provider, app]) => String.raw`
       <section id="${provider}-section" class="panel setup-section" aria-labelledby="${provider}-heading">
         <div class="provider-head">
-          <div><h3 id="${provider}-heading">${app.name}</h3><p class="muted">Login app shared by all organizations. Agents keep their own chat bots.</p></div>
+          <div><h3 id="${provider}-heading">${app.name}</h3>${
+            provider === 'azuread'
+              ? String.raw`<p class="muted">One application shared by all organizations: Microsoft sign-in, Teams, and Azure DevOps.</p><p class="muted">Microsoft's consent page shows its Entra display name, so choose one that does not name a single Microsoft product.</p>`
+              : String.raw`<p class="muted">Login app shared by all organizations. Agents keep their own chat bots.</p>`
+          }</div>
           <span id="${provider}-match" class="badge">Not configured</span>
         </div>
         <dl class="credentials">
@@ -450,7 +454,10 @@ export const SETUP_HTML = String.raw`<!doctype html>
           <dt>Directory (tenant) ID</dt><dd class="value-line"><code id="azuread-teams-tenant-id">Not configured</code><button class="edit-configuration" data-provider="azuread">Edit</button></dd>
         </dl>
         <p>Messaging endpoint:</p><ul id="azuread-teams-endpoint" class="uris"></ul>
-        <p>Connect page (Web redirect URI):</p><ul id="azuread-teams-redirects" class="uris"></ul>`
+        <p>Connect page (Web redirect URI):</p><ul id="azuread-teams-redirects" class="uris"></ul>
+        <h4>Azure DevOps</h4>
+        <p class="muted">The same application connects Azure DevOps organizations: an administrator signs in from the console's Azure DevOps card. Add its connect page as another Web redirect URI.</p>
+        <p>Connect page (Web redirect URI):</p><ul id="azuread-azure-devops-redirects" class="uris"></ul>`
             : ''
         }
         <div class="row"><a class="button" href="${app.settingsUrl}" target="_blank" rel="noopener">Open ${app.name} settings</a></div>
@@ -1096,6 +1103,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
       el('azuread-teams-tenant-input').value = values.msTeams ? values.msTeams.tenantId : '';
       renderUriList('azuread-teams-endpoint', expectedTeams ? [expectedTeams.messagingEndpoint] : []);
       renderUriList('azuread-teams-redirects', expectedTeams ? [expectedTeams.connectRedirectUri] : []);
+      renderUriList('azuread-azure-devops-redirects', expected.azureDevOps ? [expected.azureDevOps.connectRedirectUri] : []);
 
       const feishuSecret = byKey.get('feishu.loginAppSecret');
       const larkSecret = byKey.get('lark.loginAppSecret');
