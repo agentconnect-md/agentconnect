@@ -626,7 +626,10 @@ that repository's token at its tier. A read that names no repository, such as
 refused. Because some hosts cannot narrow a token per repository, the proxy
 also enforces the git tier by service on every host: `git-receive-pack` and
 `info/refs?service=git-receive-pack` are refused with 403 unless the grant is
-`write` (`comment` counts as read), and nothing is forwarded. A session that
+`write` (`comment` counts as read), and nothing is forwarded. A 401 from the
+upstream drops the cache entry that minted the token it carried, as the
+helper's `erase` does, so a revoked or rotated token is minted afresh on the
+next request; a 403 keeps it. A session that
 does not use the proxy (proxy off, a VM, a pool pod, a remote executor) still
 holds the token itself, so there the tier is enforced only where the host
 narrows the token, until those transports use the proxy too.

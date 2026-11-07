@@ -62,7 +62,14 @@ afterAll(() => {
     if (value === undefined) delete process.env[name]
     else process.env[name] = value
   }
-  for (const dir of dirs) rmSync(dir, { recursive: true, force: true })
+  for (const dir of dirs) {
+    try {
+      rmSync(dir, { recursive: true, force: true })
+    } catch (err) {
+      // On Windows a child the daemon started can still hold the directory open; a leftover temp dir is not a test failure.
+      if (process.platform !== 'win32') throw err
+    }
+  }
 })
 
 /** Short, so the daemon's sockets fit AF_UNIX on a host whose temp directory is long. */
@@ -353,6 +360,37 @@ async function nodeRequest(
   const { stdout } = await run(process.execPath, ['-e', script, url, authorization], { env })
   return JSON.parse(stdout) as { status: number; body: string }
 }
+
+describe("the proxy's mint and its invalidate", () => {
+  it.each([
+    { provider: 'github', agentId: GITHUB_AGENT, spec: githubSpec },
+    { provider: 'gitlab', agentId: GITLAB_AGENT, spec: () => gitlabSpec('https://gitlab.example.test/gitlab') }
+  ])('drops exactly the $provider cache entry it minted, so the next request mints afresh', async (c) => {
+    const { d } = await startDaemon(true)
+    await admit(d, c.agentId, c.spec())
+    const asked = fakeControlPlane(d, 'write', 'https://gitlab.example.test/gitlab')
+    // Each control-plane mint is a token of its own, as a rotation would be.
+    const request = d.cpClient.requestGitCred
+    d.cpClient.requestGitCred = async (payload: GitCredRequest) => ({
+      ...(await request(payload)),
+      token: `token-${asked.length + 1}`
+    })
+    const ask = { provider: c.provider, plane: 'git', readOnly: false }
+    const first = await d.credentialProxyMint(c.agentId, ask)
+    expect((await d.credentialProxyMint(c.agentId, ask)).token).toBe(first.token)
+    expect(asked).toHaveLength(1)
+    first.invalidate()
+    await new Promise((resolve) => setImmediate(resolve))
+    const second = await d.credentialProxyMint(c.agentId, ask)
+    expect(asked).toHaveLength(2)
+    expect(second.token).not.toBe(first.token)
+    // A late 401 for the old token leaves the fresh one in place.
+    first.invalidate()
+    await new Promise((resolve) => setImmediate(resolve))
+    expect((await d.credentialProxyMint(c.agentId, ask)).token).toBe(second.token)
+    expect(asked).toHaveLength(2)
+  })
+})
 
 describe('a proxied host session end to end', () => {
   // POSIX only: the proxy's upstream leg and the placeholder helper are exercised as a POSIX session runs them.
