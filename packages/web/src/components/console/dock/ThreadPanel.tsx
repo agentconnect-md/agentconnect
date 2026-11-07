@@ -299,7 +299,8 @@ export function ThreadPanel({
       {...(record ? { 'data-thread-panel': record.rootId } : {})}
       className="flex min-h-0 flex-1 flex-col"
     >
-      <div className="flex h-[43px] min-w-0 flex-none items-center gap-[6px] border-b border-(--border-subtle) pr-2 pl-[10px]">
+      {/* Takes the tab strip's place, so on desktop it is the session header's 52px and its divider continues that line. */}
+      <div className="flex h-[43px] min-w-0 flex-none items-center gap-[6px] border-b border-(--border-subtle) pr-2 pl-[10px] desktop:h-[52px]">
         <button
           type="button"
           data-task-thread-back=""
