@@ -50,6 +50,9 @@ function slotsAt(port: number): ProviderSlot[] {
   ]
 }
 
+// The fake upstream's pause before its first SSE event.
+const FIRST_EVENT_DELAY_MS = 50
+
 const KEYS: Record<string, ResolvedProviderKey> = {
   'org:anthropic': { key: 'sk-ant-real' },
   'org:openai': { key: 'sk-openai-real', headers: { 'openai-organization': 'org-example' } },
@@ -295,7 +298,7 @@ describe('provider keys through the proxy end to end', () => {
             streamEnded = true
             res.end('event: two\ndata: {"n":2}\n\n')
           })
-        }, 50)
+        }, FIRST_EVENT_DELAY_MS)
         return
       }
       if (req.headers['x-api-key'] === 'sk-revoked') {
