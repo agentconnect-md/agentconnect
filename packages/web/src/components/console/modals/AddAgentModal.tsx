@@ -94,6 +94,9 @@ import {
 import { MemoryProviderPicker } from '@/components/console/MemoryProviderPicker'
 import type { MemoryProviderChoice } from '@/components/console/memory-settings'
 import {
+  AzureDevOpsNoRepositoriesNotice,
+  AzureDevOpsRepositoryField,
+  AzureDevOpsRepositoryOption,
   GithubConnectedBanner,
   GithubInstallPrompt,
   GithubPrivateReposNotice,
@@ -113,9 +116,11 @@ import {
   WorkspaceModeField,
   type WorkspaceMode
 } from '@/components/console/WorkspaceFormFields'
+import { matchAzureDevOpsRepositories, type AzureDevOpsRepositoryChoice } from '@/lib/azure-devops-repositories'
 import { matchGiteaRepositories, type GiteaRepositoryChoice } from '@/lib/gitea-repositories'
 import { matchGitlabProjects, type GitlabProjectChoice } from '@/lib/gitlab-projects'
 import { gitRepoUrlTileHint } from '@/lib/git-url-tile'
+import { useAzureDevOpsRepositories } from '@/lib/use-azure-devops-repositories'
 import { useGiteaRepositories } from '@/lib/use-gitea-repositories'
 import { useGitlabProjects } from '@/lib/use-gitlab-projects'
 import { useDaemonDetail } from '@/lib/use-daemon-detail'
@@ -251,6 +256,12 @@ export default function AddAgentModal({
   const [gtQ, setGtQ] = useState('')
   const [gtAccessOpen, setGtAccessOpen] = useState(false)
   const [gtPush, setGtPush] = useState(true)
+  // Azure DevOps path: a repository by GUID through the organization's one connection, bound by the create (azure-devops-integration.md §5).
+  const [azRepo, setAzRepo] = useState('')
+  const [azOpen, setAzOpen] = useState(false)
+  const [azQ, setAzQ] = useState('')
+  const [azAccessOpen, setAzAccessOpen] = useState(false)
+  const [azPush, setAzPush] = useState(true)
   const [sharing, setSharing] = useState<SharingValue>({ visibility: 'org', sharedWith: [] })
   // The org default seeds both directions; this form can still override either one.
   const [callPolicy, setCallPolicy] = useState<AgentCallPolicy>(defaultAgentVisibility)
@@ -486,6 +497,18 @@ export default function AddAgentModal({
   const gtNoRepositories = wsMode === 'gitea' && gt.empty
   const gtPicked = gt.choices.find((choice) => choice.repoId === gtRepo)
   const gtMatches = matchGiteaRepositories(gt.choices, gtQ)
+
+  // Only the Azure DevOps pane asks for repositories.
+  const az = useAzureDevOpsRepositories(wsMode === 'azure-devops')
+  const azNoRepositories = wsMode === 'azure-devops' && az.empty
+  const azPicked = az.choices.find((choice) => choice.repositoryId === azRepo)
+  const azMatches = matchAzureDevOpsRepositories(az.choices, azQ)
+  const pickAzRepository = (choice: AzureDevOpsRepositoryChoice) => {
+    setAzRepo(choice.repositoryId)
+    setAzOpen(false)
+    setBranch(choice.defaultBranch ?? '')
+    setErr(null)
+  }
 
   // An unadded repository is bound by the create itself, so the pick is only a pick.
   const pickGtRepository = (choice: GiteaRepositoryChoice) => {
@@ -759,6 +782,10 @@ export default function AddAgentModal({
       setErr(t('errors.pickGiteaRepository'))
       return
     }
+    if (wsMode === 'azure-devops' && !azPicked) {
+      setErr(t('errors.pickAzureDevOpsRepository'))
+      return
+    }
     if (wsMode === 'giturl' && (!urlInput.trim() || urlTileHint !== null)) {
       setErr(t('errors.cloneUrl'))
       return
@@ -811,43 +838,52 @@ export default function AddAgentModal({
               ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {}),
               access: gtPush ? ('write' as const) : ('read' as const)
             }
-          : wsMode === 'giturl'
+          : wsMode === 'azure-devops'
             ? {
                 mode: 'git',
-                gitRepo: urlInput.trim(),
+                gitRepo: azPicked?.cloneUrl ?? '',
                 worktree,
                 ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
                 ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {}),
-                ...draftedReadOnly
+                access: azPush ? ('write' as const) : ('read' as const)
               }
-            : wsMode === 'github'
-              ? usingPicker
-                ? picked
-                  ? {
-                      mode: 'git',
-                      gitRepo: picked.fullName, // owner/repo — GitHub-only sugar the CP normalizes
-                      worktree,
-                      ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
-                      ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {}),
-                      access: ghPush ? ('write' as const) : ('read' as const)
-                    }
+            : wsMode === 'giturl'
+              ? {
+                  mode: 'git',
+                  gitRepo: urlInput.trim(),
+                  worktree,
+                  ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
+                  ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {}),
+                  ...draftedReadOnly
+                }
+              : wsMode === 'github'
+                ? usingPicker
+                  ? picked
+                    ? {
+                        mode: 'git',
+                        gitRepo: picked.fullName, // owner/repo — GitHub-only sugar the CP normalizes
+                        worktree,
+                        ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
+                        ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {}),
+                        access: ghPush ? ('write' as const) : ('read' as const)
+                      }
+                    : {
+                        mode: 'git',
+                        gitRepo: publicRepo ?? ghRepo.trim(),
+                        worktree,
+                        ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
+                        ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {}),
+                        ...draftedReadOnly
+                      }
                   : {
                       mode: 'git',
-                      gitRepo: publicRepo ?? ghRepo.trim(),
+                      gitRepo: repo.trim(),
                       worktree,
                       ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
                       ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {}),
                       ...draftedReadOnly
                     }
-                : {
-                    mode: 'git',
-                    gitRepo: repo.trim(),
-                    worktree,
-                    ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
-                    ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {}),
-                    ...draftedReadOnly
-                  }
-              : { mode: 'scratch' }
+                : { mode: 'scratch' }
     try {
       const id = await createAgent({
         name: slug,
@@ -962,6 +998,8 @@ export default function AddAgentModal({
   else if (wsMode === 'gitlab' && !glProject && !glPublicPath) blockers.workspace = t('blockers.pickProject')
   else if (wsMode === 'gitea' && gtNoRepositories) blockers.workspace = t('blockers.noGiteaRepositories')
   else if (wsMode === 'gitea' && !gtRepo) blockers.workspace = t('blockers.pickRepository')
+  else if (wsMode === 'azure-devops' && azNoRepositories) blockers.workspace = t('blockers.noAzureDevOpsRepositories')
+  else if (wsMode === 'azure-devops' && !azPicked) blockers.workspace = t('blockers.pickRepository')
   else if (wsMode === 'giturl' && (!urlInput.trim() || urlTileHint !== null))
     blockers.workspace = t('blockers.enterCloneUrl')
   if (envSecretError) blockers.secrets = t(`errors.${envSecretError.key}`, envSecretError.values)
@@ -1450,6 +1488,89 @@ export default function AddAgentModal({
                       <WorkspaceBranchField
                         repositorySelected={!!gtRepo}
                         defaultBranchLabel={t('workspace.giteaDefaultBranch')}
+                        value={branch}
+                        branches={null}
+                        open={false}
+                        query=""
+                        onToggle={() => undefined}
+                        onClose={() => undefined}
+                        onQueryChange={() => undefined}
+                        onChange={setBranch}
+                      />
+                      <WorkingSubdirectoryField value={agentDir} onChange={setAgentDir} />
+                      <WorktreeField label={isolationMode} checked={worktree} onChange={setWorktree} />
+                    </div>
+                  </div>
+                ))}
+
+              {wsMode === 'azure-devops' &&
+                (az.error ? (
+                  <div className="font-sans text-[12px] font-normal leading-[1.5] text-(--status-error) desktop:col-span-2">
+                    {t('errors.azureDevOpsRepositories', { error: az.error })}
+                  </div>
+                ) : az.loading ? (
+                  <div className="desktop:col-span-2">
+                    <LoadingState size={20} padding={16} />
+                  </div>
+                ) : azNoRepositories ? (
+                  <AzureDevOpsNoRepositoriesNotice
+                    connected={az.connected}
+                    enabled={az.enabled}
+                    integrationsHref={orgPath('/integrations')}
+                    onSync={az.reload}
+                    syncing={az.reloading}
+                  />
+                ) : (
+                  <div className="grid grid-cols-1 gap-[14px] desktop:col-span-2 desktop:grid-cols-2 desktop:gap-x-7">
+                    <AzureDevOpsRepositoryField
+                      value={azPicked?.repoPath ?? ''}
+                      icon="book-bookmark"
+                      loading={false}
+                      open={azOpen}
+                      query={azQ}
+                      onToggle={() => {
+                        setAzQ('')
+                        setAzAccessOpen(false)
+                        setAzOpen((value) => !value)
+                      }}
+                      onClose={() => setAzOpen(false)}
+                      onQueryChange={setAzQ}
+                      error={az.listError ? t('errors.azureDevOpsRepositories', { error: az.listError }) : undefined}
+                      onRetry={az.reload}
+                    >
+                      {azMatches.map((choice) => (
+                        <AzureDevOpsRepositoryOption
+                          key={choice.repositoryId}
+                          choice={choice}
+                          selected={azRepo === choice.repositoryId}
+                          onSelect={() => pickAzRepository(choice)}
+                        />
+                      ))}
+                      {azMatches.length === 0 && (
+                        <div className="fnohit">{t('workspace.noRepositoriesMatch', { query: azQ })}</div>
+                      )}
+                    </AzureDevOpsRepositoryField>
+
+                    <RepositoryAccessField
+                      repositorySelected={!!azRepo}
+                      writeDescription={t('workspace.azureDevOpsWriteAccess')}
+                      value={azPush ? 'write' : 'read'}
+                      open={azAccessOpen}
+                      onToggle={() => {
+                        setAzOpen(false)
+                        setAzAccessOpen((value) => !value)
+                      }}
+                      onClose={() => setAzAccessOpen(false)}
+                      onChange={(value) => {
+                        setAzPush(value === 'write')
+                        setAzAccessOpen(false)
+                      }}
+                    />
+
+                    <div className="grid grid-cols-1 gap-[14px] desktop:col-span-2 desktop:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_96px] desktop:gap-x-[14px]">
+                      <WorkspaceBranchField
+                        repositorySelected={!!azRepo}
+                        defaultBranchLabel={t('workspace.azureDevOpsDefaultBranch')}
                         value={branch}
                         branches={null}
                         open={false}

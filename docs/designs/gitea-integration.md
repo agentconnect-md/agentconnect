@@ -883,7 +883,10 @@ diagnostic, and the daemon presents it only through the credential helper and
 the broker. A compromised agent process therefore has what a GitHub App
 installation token would give it on the same repository, plus repository
 settings. The Console states this trade-off on the connect card rather than
-implying a narrower posture.
+implying a narrower posture. Whoever can enroll a daemon and place an agent on
+it can obtain the bot token too
+([placement trust](github-app-git-credentials.md#trust-model)), so what the
+bot can reach is the real bound.
 
 Every delivery is signature-verified before the body is trusted; unmatched,
 malformed, and forged deliveries are indistinguishable from outside. The
