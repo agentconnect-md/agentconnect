@@ -105,12 +105,18 @@ Microsoft's consent page shows the application's Entra display name. Setup
 therefore recommends a name that does not name one Microsoft product, since
 the same application now serves sign-in, Teams, and Azure DevOps.
 
-The delegated Azure DevOps scope needs no administrator consent. Any member
-may consent for themselves, and the page describes the scope as full access to
-the Azure DevOps REST APIs. An application without a verified publisher is
-marked "unverified" there, and a tenant may forbid consent to such
-applications. A multi-tenant deployment application therefore needs Microsoft
-publisher verification before customers connect through it.
+The delegated Azure DevOps scope does not require administrator consent. A
+member may consent for themselves when the tenant's user-consent policy permits
+it, and the page describes the scope as full access to the Azure DevOps REST
+APIs. A tenant can turn user consent off, or limit it to selected low-impact
+permissions, even for a verified publisher. The connect flow therefore keeps an
+Entra administrator-consent fallback: a refusal for missing consent tells the
+person to ask an Entra administrator to grant it, since Azure DevOps rights
+such as Project Collection Administrator do not override that policy. An
+application without a verified publisher is marked "unverified" there, and a
+tenant may forbid consent to such applications. A multi-tenant deployment
+application therefore needs Microsoft publisher verification before customers
+connect through it.
 
 ### 3.2 Connecting
 
