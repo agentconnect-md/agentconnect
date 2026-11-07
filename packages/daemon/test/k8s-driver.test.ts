@@ -821,15 +821,11 @@ describe('cluster spawn driver', () => {
     env: { AC_AGENT_ID: 'agent-a', GIT_CONFIG_GLOBAL: '/run/agentconnect/git/agent-a.gitconfig' },
     files: [{ root: '/run/agentconnect/git', relPath: ['agent-a.gitconfig'], content: '[credential]\n' }],
     codehost: {
-      env: {
-        AC_CODEHOST_CREDENTIAL: 'placeholder-example',
-        GIT_CONFIG_GLOBAL: '/run/agentconnect/git/agent-a.proxied.gitconfig'
-      },
-      files: [{ root: '/run/agentconnect/git', relPath: ['agent-a.proxied.gitconfig'], content: '[http]\n' }]
+      env: { AC_CODEHOST_CREDENTIAL: 'placeholder-example' }
     }
   } as never
 
-  it("applies a launch's codehost env, and writes its gitconfig, only beside the pod shim's codehost listener", async () => {
+  it("applies a launch's codehost env only beside the pod shim's codehost listener", async () => {
     const served: Array<{ capability: string; payload: unknown }> = []
     const { api } = fakeApi()
     const listener = {
@@ -843,22 +839,19 @@ describe('cluster spawn driver', () => {
     })
     await instance.launch(codehostLaunch)
     const writes = served.filter((request) => request.capability === 'materialize').map((request) => request.payload)
-    expect(writes).toEqual([
-      expect.objectContaining({ relPath: ['agent-a.gitconfig'] }),
-      expect.objectContaining({ relPath: ['agent-a.proxied.gitconfig'] })
-    ])
+    expect(writes).toEqual([expect.objectContaining({ relPath: ['agent-a.gitconfig'] })])
     // The pod builds its own bundle from the CA certificate its listen carried, so no certificate travels in a launch file.
     expect(JSON.stringify(writes)).not.toContain('BEGIN CERTIFICATE')
     const acp = served.find((request) => request.capability === 'acp')!.payload as { env: Record<string, string> }
     expect(acp.env).toMatchObject({
       AC_CODEHOST_CREDENTIAL: 'placeholder-example',
-      GIT_CONFIG_GLOBAL: '/run/agentconnect/git/agent-a.proxied.gitconfig',
+      GIT_CONFIG_GLOBAL: '/run/agentconnect/git/agent-a.gitconfig',
       HTTPS_PROXY: 'http://codehost:listener-token-example@127.0.0.1:41234',
       SSL_CERT_FILE: listener.trustBundle
     })
   })
 
-  it('keeps the helper path on a pod whose image shim serves no codehost listener', async () => {
+  it('holds no placeholder on a pod whose image shim serves no codehost listener', async () => {
     const served: Array<{ capability: string; payload: unknown }> = []
     const { api } = fakeApi()
     const { instance } = driver(api, {
