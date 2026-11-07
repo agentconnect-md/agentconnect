@@ -50,6 +50,9 @@ export const SHIM_PARENT_FD_ENV = 'AC_SHIM_PARENT_FD'
 /** `1` under a boundary that passes stdio alone: stdin stays open past the identity line, and its end-of-file means stop or a gone daemon. */
 export const SHIM_STDIN_LIFELINE_ENV = 'AC_SHIM_STDIN_LIFELINE'
 
+/** Comma-separated: the code-host names an `srt` boundary routes to this shim's codehost socket, set by the executor that started it. */
+export const SHIM_CODEHOST_DOMAINS_ENV = 'AC_SHIM_CODEHOST_DOMAINS'
+
 /** `cluster-skills-v2` widens the manifest; `source-cache-bundle-v1` serves `bundle`; each `skill-git-*` feature serves its `skills-git*` grant. */
 export const ShimFeatureSchema = z.enum([
   'cluster-skills-v1',
