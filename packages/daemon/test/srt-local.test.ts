@@ -20,13 +20,18 @@ const environment = (over: Partial<EnvironmentDescriptor> = {}): EnvironmentDesc
 })
 
 /** The launcher over a stubbed shim start: what each start was asked for, and a shim that stops when told. */
-function stubbed() {
+function stubbed(domains?: () => string[]) {
   const inputs: HostShimInput[] = []
   const stops: string[] = []
   let clock = 1_000
   const launcher = srtLauncher(
     DAEMON,
-    { agentsRoot: join('/srv', 'agents'), readRoots: () => ['/usr/local/lib/node'], now: () => clock },
+    {
+      agentsRoot: join('/srv', 'agents'),
+      readRoots: () => ['/usr/local/lib/node'],
+      now: () => clock,
+      ...(domains ? { mitmProxy: () => ({ socketPath: '/d/run/p.sock', domains: domains(), trustEnv: {} }) } : {})
+    },
     async (input) => {
       inputs.push(input)
       let exit!: () => void
@@ -104,6 +109,24 @@ describe('the local srt launcher', () => {
     // A boundary anchored at one start serves no request that names another.
     expect(same(host, environment({ cwd: SESSION }))).toBe(true)
     expect(same(host, environment({ cwd: join(SESSION, 'workspace') }))).toBe(false)
+  })
+
+  // A shim routes only the domains the proxy served when it started, so one the proxy serves since, a provider host its first launch registered, needs a new start.
+  it('treats a running environment whose proxy domains no longer cover the request as another', async () => {
+    let domains = ['github.com']
+    const { launcher } = stubbed(() => domains)
+    const same = launcher.sameEnvironment!
+    // Nothing running yet: its start reads the domains then.
+    expect(same(environment(), environment())).toBe(true)
+    await launcher.start({ environment: environment(), log: quiet })
+    expect(same(environment(), environment())).toBe(true)
+    domains = ['github.com', 'api.anthropic.com']
+    expect(same(environment(), environment())).toBe(false)
+    await launcher.start({ environment: environment(), log: quiet })
+    expect(same(environment(), environment())).toBe(true)
+    // Fewer domains than it routes is still served.
+    domains = ['api.anthropic.com']
+    expect(same(environment(), environment())).toBe(true)
   })
 
   it('starts a hosted environment on a random root with its holder seed, outside the local lifecycle', async () => {

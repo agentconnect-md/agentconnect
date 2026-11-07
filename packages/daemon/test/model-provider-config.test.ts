@@ -4,6 +4,7 @@ import type { RuntimeDef } from '../src/config/config-schema.js'
 import {
   applyCodexSessionFloor,
   applyOrganizationModelCredential,
+  applyProxiedOrganizationModelCredential,
   applyConfiguredModelProviders,
   applyKiloLaunchModel,
   applyModelCredential,
@@ -87,6 +88,68 @@ describe('organization model credentials', () => {
         { apiKey: 'example-key', endpoint: null, headers: {} }
       )
     ).toThrow(/do not match/)
+  })
+})
+
+describe('proxied organization model credentials', () => {
+  const PLACEHOLDER = 'acph1_example.placeholder'
+  const credential = { apiKey: 'organization-key', endpoint: null, headers: { 'x-route': 'example-route' } }
+  const leaks = (env: Record<string, string>) => {
+    expect(JSON.stringify(env)).not.toContain('organization-key')
+    expect(JSON.stringify(env)).not.toContain('example-route')
+  }
+
+  it("puts the placeholder in Claude's key variable and leaves its headers to the proxy", () => {
+    const env: Record<string, string> = { ANTHROPIC_CUSTOM_HEADERS: 'x-route: local-route' }
+    applyProxiedOrganizationModelCredential(
+      'anthropic',
+      { provider: 'anthropic', runtime: 'claude' },
+      env,
+      credential,
+      PLACEHOLDER
+    )
+    expect(env).toMatchObject({
+      ANTHROPIC_API_KEY: PLACEHOLDER,
+      ANTHROPIC_BASE_URL: 'https://api.anthropic.com',
+      ANTHROPIC_CUSTOM_HEADERS: ''
+    })
+    leaks(env)
+  })
+
+  it("puts the placeholder in Codex's key and auth request, with no header values", () => {
+    const env: Record<string, string> = {}
+    applyProxiedOrganizationModelCredential(
+      'openai',
+      { provider: 'openai', runtime: 'codex' },
+      env,
+      { ...credential, endpoint: 'https://gateway.example.test/v1' },
+      PLACEHOLDER
+    )
+    expect(env.OPENAI_API_KEY).toBe(PLACEHOLDER)
+    expect(JSON.parse(env.DEFAULT_AUTH_REQUEST!)._meta.gateway).toMatchObject({
+      baseUrl: 'https://gateway.example.test/v1',
+      headers: { Authorization: `Bearer ${PLACEHOLDER}` }
+    })
+    leaks(env)
+  })
+
+  it("puts the placeholder in OpenCode's key variable and a launch-model runtime's, which then need no header support", () => {
+    const opencode: Record<string, string> = {}
+    const target = modelProviderTarget(agent('opencode', 'anthropic/claude-sonnet-4'), runtime('opencode', ['acp']))
+    applyProxiedOrganizationModelCredential('auto', target, opencode, credential, PLACEHOLDER)
+    expect(opencode.ANTHROPIC_API_KEY).toBe(PLACEHOLDER)
+    expect(JSON.parse(opencode.OPENCODE_CONFIG_CONTENT!).provider.anthropic.options.headers).toEqual({})
+    leaks(opencode)
+    const goose: Record<string, string> = {}
+    applyProxiedOrganizationModelCredential(
+      'openai',
+      { provider: 'openai', runtime: 'goose', model: 'gpt-5' },
+      goose,
+      credential,
+      PLACEHOLDER
+    )
+    expect(goose).toMatchObject({ OPENAI_API_KEY: PLACEHOLDER, OPENAI_BASE_URL: 'https://api.openai.com/v1' })
+    leaks(goose)
   })
 })
 

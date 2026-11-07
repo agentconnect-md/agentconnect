@@ -170,8 +170,9 @@ interface ProviderKeyEntry {
   key: Promise<ResolvedProviderKey>
 }
 
-function providerKeyId(agentId: string, slotId: string): string {
-  return `${agentId}\n${slotId}`
+// The slot's destination is part of the identity, so a slot replaced at another endpoint never reuses the old endpoint's key.
+function providerKeyId(agentId: string, slot: ProviderSlot): string {
+  return `${agentId}\n${slot.id}\n${slot.provider}\n${slotHostKey(slot)}\n${slot.pathPrefix ?? ''}`
 }
 
 function deny(status: number, reason: string): RequestDecision {
@@ -467,7 +468,7 @@ export class CredentialProxy {
     if (!underSlotPrefix(slot, target)) return { action: 'allow', removeHeaders: keyed.map((entry) => entry.header) }
     if (keyed.some((entry) => entry.scheme !== undefined && entry.scheme !== 'bearer'))
       return deny(400, 'a provider key is accepted in Authorization only as a Bearer token')
-    const id = providerKeyId(claims.agentId, slot.id)
+    const id = providerKeyId(claims.agentId, slot)
     const entry = this.providerKeyEntry(id, claims.agentId, slot.id)
     let resolved: ResolvedProviderKey
     try {

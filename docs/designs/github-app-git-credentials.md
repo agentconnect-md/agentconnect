@@ -791,8 +791,29 @@ it today, and is meant to replace the VM's hostname-scoped placeholders.
 Subscription sign-ins (OAuth) stay out: the daemon does not hold or refresh a
 person's subscription login on others' behalf.
 
-The proxy core carries provider keys; no launch hands a runtime a provider
-placeholder yet, and that wiring follows.
+Organization Provider keys use it in host and `srt` sessions. When the proxy is
+on, a launch with an organization key registers the agent's slot `org:<provider>`
+at the key's endpoint, or the provider's default endpoint when none is
+configured, and the runtime's key variable holds the slot's placeholder. The
+base URL stays the real origin. The organization's extra headers are not put in
+the environment (`ANTHROPIC_CUSTOM_HEADERS` stays empty, Codex's auth request
+carries only the placeholder); the proxy sets them with the key. Resolving the
+slot fetches the key again through the same control-plane request a launch
+makes, and a key whose endpoint has since moved is refused, so a new session
+picks up the new endpoint. The agent's slots go when the agent leaves this
+daemon. A host session reaches the loopback listener through `HTTPS_PROXY`; an
+`srt` environment routes the provider host to the agent's socket, and one
+started before a slot existed is started again before it serves a new launch.
+Both trust the proxy bundle, through `CODEX_CA_CERTIFICATE` for Codex as well.
+An endpoint configured over plain `http:` keeps the real key in the
+environment, since a placeholder is exchanged only over TLS; the daemon logs
+that once.
+
+Not covered yet:
+
+- Executor-placed, VM and Kubernetes pod sessions, which keep the real key.
+- Keys a host exports from its own sign-in, and keys the key server issues.
+- A host that runs behind its own outbound proxy, which keeps direct credentials.
 
 - **Kind.** A provider placeholder is the same `acph1_` placeholder under the
   same sealing key, with a kind claim `k: provider` and a slot claim `p`. A

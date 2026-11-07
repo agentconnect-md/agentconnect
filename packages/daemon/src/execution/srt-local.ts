@@ -39,6 +39,8 @@ interface Running {
   environment: EnvironmentDescriptor
   shim: HostShim
   startedAt: number
+  /** The domains SRT sends to the credential proxy in this launch. */
+  domains: readonly string[]
 }
 
 /** Holds on an environment id, counted from before its shim starts: the entry holds a launch first and starts it after. */
@@ -90,8 +92,11 @@ export function srtLauncher(
   const running = new Map<string, Running>()
   const usage = new Map<string, Usage>()
 
-  const boundary = (environment: EnvironmentDescriptor, log: Logger) => {
-    const proxy = deps.mitmProxy?.(environment)
+  const boundary = (
+    environment: EnvironmentDescriptor,
+    log: Logger,
+    proxy: ReturnType<NonNullable<typeof deps.mitmProxy>> = deps.mitmProxy?.(environment)
+  ) => {
     return srtShimBoundary({
       daemonRoot,
       ...(proxy
@@ -112,6 +117,11 @@ export function srtLauncher(
   const held = (id: string): boolean => (usage.get(id)?.holds ?? 0) > 0
   const forgetIdleUsage = (id: string): void => {
     if (!held(id) && !running.has(id)) usage.delete(id)
+  }
+  const routed = (requested: EnvironmentDescriptor): boolean => {
+    const state = running.get(requested.id)
+    if (!state) return true
+    return (deps.mitmProxy?.(requested)?.domains ?? []).every((domain) => state.domains.includes(domain))
   }
   const environmentOf = (shim: HostShim): SessionEnvironment => ({
     connect: () => connect(shim.socketPath),
@@ -137,15 +147,16 @@ export function srtLauncher(
       }
       // The entry starts an id again only once nothing holds its old launch: a changed descriptor, or a shim it gave up on, still owns the fixed root.
       await running.get(environment.id)?.shim.stop()
+      const proxy = deps.mitmProxy?.(environment)
       const shim = await start({
         daemonRoot,
         workspaceRoot: environment.workspaceRoot,
         log,
         runtimeRootName: localSrtRootName(environment.id),
         completeEnv: true,
-        boundary: boundary(environment, log)
+        boundary: boundary(environment, log, proxy)
       })
-      const state: Running = { environment, shim, startedAt: now() }
+      const state: Running = { environment, shim, startedAt: now(), domains: proxy?.domains ?? [] }
       running.set(environment.id, state)
       void shim.exited.then(() => {
         if (running.get(environment.id) === state) running.delete(environment.id)
@@ -172,8 +183,9 @@ export function srtLauncher(
         forgetIdleUsage(id)
       }
     },
-    // A request the running boundary already grants — the Git of a session whose runtime is up — reuses it; anything more is another environment.
-    sameEnvironment: (current, requested) => grants(current, requested, deps.hostEnv ?? process.env),
+    // A request the running boundary already grants — the Git of a session whose runtime is up — reuses it; anything more, a domain the proxy now serves included, is another environment.
+    sameEnvironment: (current, requested) =>
+      grants(current, requested, deps.hostEnv ?? process.env) && routed(requested),
     suspendIdle: async (before) => {
       const idle = [...running.entries()].filter(
         ([id, state]) => !held(id) && Math.max(state.startedAt, usage.get(id)?.lastUsed ?? 0) <= before
