@@ -756,6 +756,11 @@ import {
 import { GitlabReviewAdapter, type GitlabReviewAdapterDeps, type GitlabReviewTurn } from './gitlab/review-adapter.js'
 import { GiteaReviewAdapter, type GiteaReviewAdapterDeps, type GiteaReviewTurn } from './gitea/review-adapter.js'
 import {
+  AzureDevOpsReviewAdapter,
+  type AzureDevOpsReviewAdapterDeps,
+  type AzureDevOpsReviewTurn
+} from './azure-devops/review-adapter.js'
+import {
   collectHookQueueCandidates,
   combineCoordinationWaits,
   planQueuedRevisionRemovals,
@@ -2454,6 +2459,7 @@ export class Daemon {
   private readonly gitlabReviews: GitlabReviewAdapter
   /** gitea-integration.md §10.3: the Gitea formal-review adapter on the same seam. */
   private readonly giteaReviews: GiteaReviewAdapter
+  private readonly azureDevOpsReviews: AzureDevOpsReviewAdapter
   private readonly codeReviews = new CodeHostReviewRouter()
   // ── lifecycle (§2.5/§5.3/§7.2/§7.3) ──
   private clock: Clock
@@ -2867,9 +2873,11 @@ export class Daemon {
     })
     this.gitlabReviews = new GitlabReviewAdapter(this.gitlabReviewDeps())
     this.giteaReviews = new GiteaReviewAdapter(this.giteaReviewDeps())
+    this.azureDevOpsReviews = new AzureDevOpsReviewAdapter(this.azureDevOpsReviewDeps())
     this.codeReviews.register(this.githubReviews.reviewAdapter)
     this.codeReviews.register(this.gitlabReviews)
     this.codeReviews.register(this.giteaReviews)
+    this.codeReviews.register(this.azureDevOpsReviews)
     this.curatedRuntimeAdmission = new CuratedRuntimeAdmission({
       now: () => this.clock.now(),
       ttlMs: PROBE_TTL_MS
@@ -17592,6 +17600,20 @@ export class Daemon {
     }
   }
 
+  /** azure-devops-integration.md §11.6: the same seam over the `azure_devops_hook_reply` lease, whose user name is the identity. */
+  private azureDevOpsReviewDeps(): AzureDevOpsReviewAdapterDeps {
+    const lease = (turn: AzureDevOpsReviewTurn) =>
+      this.gitCreds.getAzureDevOpsPostLease(turn.agentId, turn.repoId, turn.hookId)
+    return {
+      ...this.codeHostReviewDeps<AzureDevOpsReviewTurn>('azure-devops'),
+      apiBaseUrl: (turn) => turn.apiRoot,
+      markerKey: this.reviewMarkerKey('azure-devops-review-marker-key'),
+      token: async (turn) => (await lease(turn)).token,
+      identity: async (turn) => (await lease(turn)).username,
+      invalidateToken: (turn, token) => this.gitCreds.invalidateAzureDevOpsPost(turn.agentId, turn.repoId, token)
+    }
+  }
+
   private codeHostTurnFinalHost(): CodeHostTurnFinalHost {
     return {
       getPostToken: (agentId, repo, hookId) => this.gitCreds.getPostToken(agentId, repo, hookId),
@@ -22298,6 +22320,7 @@ export class Daemon {
     githubReplyBatch?: ActiveGithubReplyBatchMeta
     gitlabReview?: GitlabReviewTurn
     giteaReview?: GiteaReviewTurn
+    azureDevOpsReview?: AzureDevOpsReviewTurn
   }> {
     const { entry, key, plan } = run
     const { agentId, callMeta } = entry
@@ -22369,6 +22392,8 @@ export class Daemon {
       barrier === 'failed' ? undefined : this.gitlabReviews.openTurn(key, hookContext, sessionId, reviewTurn)
     const giteaReview =
       barrier === 'failed' ? undefined : this.giteaReviews.openTurn(key, hookContext, sessionId, reviewTurn)
+    const azureDevOpsReview =
+      barrier === 'failed' ? undefined : this.azureDevOpsReviews.openTurn(key, hookContext, sessionId, reviewTurn)
     // A replayed delivery may still owe the control plane frames a previous incarnation
     // recorded; the ones needing no provider evidence are handed back before the turn runs.
     if (gitlabReview) {
@@ -22381,12 +22406,18 @@ export class Daemon {
         .recoverTurn(giteaReview)
         .catch((err) => this.log.warn(`gitea review: turn recovery deferred (${formatErr(err)})`))
     }
+    if (azureDevOpsReview) {
+      await this.azureDevOpsReviews
+        .recoverTurn(azureDevOpsReview)
+        .catch((err) => this.log.warn(`azure-devops review: turn recovery deferred (${formatErr(err)})`))
+    }
     const activeGithubReplyBatch = plan.githubReplyBatchActive ? { entry, sessionId, called: false } : undefined
     if (activeGithubReplyBatch) this.activeGithubReplyBatchMeta.set(key, activeGithubReplyBatch)
     return {
       ...(activeGithub ? { github: activeGithub } : {}),
       ...(gitlabReview ? { gitlabReview } : {}),
       ...(giteaReview ? { giteaReview } : {}),
+      ...(azureDevOpsReview ? { azureDevOpsReview } : {}),
       ...(activeGithubReplyBatch ? { githubReplyBatch: activeGithubReplyBatch } : {})
     }
   }
@@ -22394,7 +22425,8 @@ export class Daemon {
   /** The CP feature whose holder routes each provider-neutral arm of `hook/start`; an older CP cannot route the member. */
   private static readonly HOOK_START_BARRIER_FEATURE: Partial<Record<CodeHostProvider, string>> = {
     gitlab: CODEHOST_NOTE_PROJECTION_V1_FEATURE,
-    gitea: GITEA_V1_FEATURE
+    gitea: GITEA_V1_FEATURE,
+    'azure-devops': AZURE_DEVOPS_HOOKS_V1_FEATURE
   }
 
   /** Cross the hook/start barrier (§17.2): started = head recorded, legacy = CP without the barrier, failed = an advertised barrier refused. */
@@ -23480,6 +23512,7 @@ export class Daemon {
       githubReplyBatch?: ActiveGithubReplyBatchMeta
       gitlabReview?: GitlabReviewTurn
       giteaReview?: GiteaReviewTurn
+      azureDevOpsReview?: AzureDevOpsReviewTurn
     }
   ): Promise<void> {
     const { entry, key, plan } = run
@@ -23526,6 +23559,7 @@ export class Daemon {
     if (activeGithub && this.activeGithubTurnMeta.get(key) === activeGithub) this.activeGithubTurnMeta.delete(key)
     if (activeTurn.gitlabReview) this.gitlabReviews.closeTurn(key, activeTurn.gitlabReview)
     if (activeTurn.giteaReview) this.giteaReviews.closeTurn(key, activeTurn.giteaReview)
+    if (activeTurn.azureDevOpsReview) this.azureDevOpsReviews.closeTurn(key, activeTurn.azureDevOpsReview)
     if (activeGithubReplyBatch && this.activeGithubReplyBatchMeta.get(key) === activeGithubReplyBatch) {
       this.activeGithubReplyBatchMeta.delete(key)
     }

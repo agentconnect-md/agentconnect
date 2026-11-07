@@ -43,6 +43,8 @@ export const handleHookStart: Handler = async (frame, conn, deps) => {
       if (host.provider === 'gitlab') await deps.codeHostNoteProjection?.afterStart({ ...edge, gitlab: host.metadata })
       else if (host.provider === 'gitea')
         await deps.giteaStatusProjection?.afterStart({ ...edge, gitea: host.metadata })
+      else if (host.provider === 'azure-devops')
+        await deps.azureDevOpsStatusProjection?.afterStart({ ...edge, azureDevOps: host.metadata })
       conn.replyTo(frame, 'hook/start/ok', { accepted: true })
     } catch (error) {
       if (error instanceof CodeHostReviewBrokerError) {

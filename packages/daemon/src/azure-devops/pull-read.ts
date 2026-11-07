@@ -104,7 +104,7 @@ function requests(reviewers: unknown, identityId: string): boolean {
 }
 
 /** The newest iteration (the highest id) and its source commit. */
-function newestIteration(raw: unknown): { id: number; headSha?: string } | undefined {
+export function newestIteration(raw: unknown): { id: number; headSha?: string } | undefined {
   let newest: { id: number; headSha?: string } | undefined
   for (const entry of Array.isArray(record(raw).value) ? (record(raw).value as unknown[]) : []) {
     const iteration = record(entry)

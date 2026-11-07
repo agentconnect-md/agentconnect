@@ -666,6 +666,18 @@ describe('the prompt (§11.5, §11.8)', () => {
     expect(reopenedText).toContain('as one comment in a new thread')
   })
 
+  it('names submitCodeReview and the shared vote when a delivery opens a review generation (§11.6)', () => {
+    const standing = buildHookMessage(fire(), 'trace').standingContext!
+    expect(standing).toContain('`submitCodeReview`')
+    expect(standing).toContain('connection identity every agent shares')
+    const reviewed = buildHookMessage(fire({ reviewPolicy: 'full' }), 'trace').text
+    expect(reviewed).toContain('This delivery opens a review generation for the current pull-request revision')
+    expect(reviewed).toContain('use APPROVE + pass when it passes, or REQUEST_CHANGES + fail')
+    // A comment, or a hook whose review policy is off, keeps the ordinary reply.
+    expect(buildHookMessage(fire({ reviewPolicy: 'off' }), 'trace').text).not.toContain('submitCodeReview')
+    expect(buildHookMessage(comment({ reviewPolicy: 'full' }), 'trace').text).not.toContain('submitCodeReview')
+  })
+
   it('says when the pull request could not be read', () => {
     const text = buildHookMessage(fire(), 'trace', {
       azureDevOps: { kind: 'unavailable', reason: 'Azure DevOps GET failed' }

@@ -65,10 +65,12 @@ import { AzureDevOpsBindingService } from './azure-devops/binding.service.js'
 import { AzureDevOpsGitcredService } from './azure-devops/gitcred.service.js'
 import { AzureDevOpsConnectFlowService } from './azure-devops/connect-flow.service.js'
 import { AzureDevOpsHookService } from './azure-devops/hook.service.js'
+import { azureDevOpsReviewPublisher } from './azure-devops/review-publisher.js'
 import { AzureDevOpsHookSweeper } from './azure-devops/hook-sweeper.js'
 import { AzureDevOpsMembershipAuthzService } from './azure-devops/membership-authz.service.js'
 import { azureDevOpsConnectKeys } from './azure-devops/connect.js'
 import { GiteaStatusCoordinator, GiteaStatusReporter } from './gitea/status-projection.js'
+import { AzureDevOpsStatusCoordinator, AzureDevOpsStatusReporter } from './azure-devops/status-projection.js'
 import { GiteaMembershipAuthzService } from './gitea/membership-authz.service.js'
 import { unionGiteaWebhookEvents } from './gitea/webhook-events.js'
 import { resolveSlackPlatformAppConfig } from './config/slack-platform.js'
@@ -2017,6 +2019,34 @@ export function buildContainer(
   })
   giteaStatusReporterRef.current = giteaStatusReporter
 
+  // azure-devops-integration.md §11.7: a pull-request status the Control Plane writes with the connection's token.
+  const azureDevOpsStatusReporterRef: { current?: AzureDevOpsStatusReporter } = {}
+  const azureDevOpsStatusProjection = new AzureDevOpsStatusCoordinator({
+    projections: new PgCodeHostRunProjectionRepo(prisma),
+    runs: repos.hook,
+    agents: repos.agent,
+    bindings: repos.azureDevOpsRepositoryBinding,
+    connections: repos.azureDevOpsConnection,
+    clock,
+    kick: () => azureDevOpsStatusReporterRef.current?.kick()
+  })
+  const azureDevOpsStatusReporter = new AzureDevOpsStatusReporter({
+    projections: new PgCodeHostRunProjectionRepo(prisma),
+    bindings: repos.azureDevOpsRepositoryBinding,
+    connections: repos.azureDevOpsConnection,
+    service: azureDevOpsConnectionService,
+    api: azureDevOpsApi,
+    orgs: repos.org,
+    clock,
+    ...(webAppUrl ? { webAppUrl } : {}),
+    log: {
+      info: (o, m) => http.log.info(o, m),
+      warn: (o, m) => http.log.warn(o, m),
+      error: (o, m) => http.log.error(o, m)
+    }
+  })
+  azureDevOpsStatusReporterRef.current = azureDevOpsStatusReporter
+
   const readSessionBranch = async (
     agent: AgentRecord,
     session: SessionMetaRecord,
@@ -2173,7 +2203,7 @@ export function buildContainer(
         placement: placementResolver
       })
     : undefined
-  // Formal reviews (§15.1/§15.2): the publisher is GitLab's per-agent service account or the Gitea connection's bot user (§5).
+  // Formal reviews (§15.1/§15.2): GitLab's per-agent service account, the Gitea connection's bot user, or the Azure DevOps connection identity.
   const codeHostReviewBroker = new CodeHostReviewBrokerService({
     onPublished: (orgId, agentId, result, sessionId) =>
       codeHostFeedback.reviewPublished(orgId, agentId, result, sessionId),
@@ -2190,6 +2220,10 @@ export function buildContainer(
         const connection = await repos.giteaConnection.get(orgId, binding.connectionId)
         if (!connection || connection.state !== 'connected') return null
         return { serviceAccountExternalId: connection.botUserId, projectPath: binding.repoPath }
+      }
+      if (provider === 'azure-devops') {
+        const deps = { bindings: repos.azureDevOpsRepositoryBinding, connections: repos.azureDevOpsConnection }
+        return azureDevOpsReviewPublisher(deps, orgId, projectExternalId)
       }
       if (provider !== 'gitlab' || !gitlabAppCfg) return null
       const binding = await repos.gitlabProjectBinding.byProject(orgId, projectExternalId)
@@ -3401,6 +3435,7 @@ export function buildContainer(
     ...(githubRunCoordinator ? { githubRunCoordinator } : {}),
     ...(codeHostNoteProjection ? { codeHostNoteProjection } : {}),
     giteaStatusProjection,
+    azureDevOpsStatusProjection,
     relayRoster: () => relayRoster.entries(),
     clock,
     config: {
@@ -3758,6 +3793,28 @@ export function buildContainer(
           else await giteaStatusProjection.afterDeliveryFailed(edge)
         })().catch((err) => http.log.warn({ err, hookId: report.hookId }, 'gitea status: delivery convergence failed'))
       }
+      // azure-devops-integration.md §11.7: the same edge for the pull-request status; an update kind names no head yet.
+      if (host?.provider === 'azure-devops') {
+        void (async () => {
+          const hook = await repos.hook.getUnscoped(HookId(report.hookId))
+          if (hook?.kind !== host.provider) return
+          const edge = {
+            hookId: report.hookId,
+            agentId: report.agentId,
+            deliveryKey: report.deliveryKey,
+            orgId: hook.orgId,
+            state: 'queued' as const,
+            reason: report.reason ?? null,
+            azureDevOps: host.metadata,
+            snapshot: report,
+            at: firedAt
+          }
+          if (report.status === 'accepted') await azureDevOpsStatusProjection.afterAccepted(edge)
+          else await azureDevOpsStatusProjection.afterDeliveryFailed(edge)
+        })().catch((err) =>
+          http.log.warn({ err, hookId: report.hookId }, 'azure-devops status: delivery convergence failed')
+        )
+      }
     },
     // The in-Slack config modal picked a channel's default agent — persist + recompile
     // the bot's routes. Swallow+log: a store error must not close the shared relay link.
@@ -3900,6 +3957,7 @@ export function buildContainer(
       agentMemoryStagingSweeper.start()
       githubRunReporter?.start()
       giteaStatusReporter.start()
+      azureDevOpsStatusReporter.start()
       hookRedeliveryReconciler?.start()
       repositoryGrantReattestor?.start()
       mcpOauthRefresher.start()
@@ -3943,6 +4001,7 @@ export function buildContainer(
       githubApps?.stop()
       githubRunReporter?.stop()
       giteaStatusReporter.stop()
+      azureDevOpsStatusReporter.stop()
       hookRedeliveryReconciler?.stop()
       repositoryGrantReattestor?.stop()
       mcpOauthRefresher.stop()

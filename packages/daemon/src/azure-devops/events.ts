@@ -10,6 +10,12 @@ export const AZURE_DEVOPS_PULL_REVISION_EVENTS: ReadonlySet<string> = new Set([
 export const AZURE_DEVOPS_REVIEW_REQUESTED_EVENT = 'merge_request:review_requested'
 export const AZURE_DEVOPS_PULL_RERUN_EVENTS: ReadonlySet<string> = new Set([AZURE_DEVOPS_REVIEW_REQUESTED_EVENT])
 
+/** Deliveries that open a formal review generation for the current head (§11.6). */
+export const AZURE_DEVOPS_PULL_REVIEW_GENERATION_EVENTS: ReadonlySet<string> = new Set([
+  ...AZURE_DEVOPS_PULL_REVISION_EVENTS,
+  ...AZURE_DEVOPS_PULL_RERUN_EVENTS
+])
+
 /** What the relay forwards for a status change; the read classifies it, and one left unclassified is ignored. */
 export const AZURE_DEVOPS_STATE_CHANGED_EVENT = 'merge_request:state_changed'
 /** A reviewer change the read found is not a request of the connection identity. */

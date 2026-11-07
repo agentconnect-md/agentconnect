@@ -1286,6 +1286,35 @@ durable in its own summary thread and its own status context (§11.7), unlike
 Gitea, where two agents leave two reviews. An agent that needs a vote of its
 own needs an identity of its own: the several-connections path of §10.
 
+**As implemented (B4).** The adapter publishes under the `azure_devops_hook_reply`
+lease, whose user name is the identity's id: votes and threads need only the
+pull-request contribute permission that lease's `comment` tier stands for.
+The publication lease keys its publisher by a number, so both ends derive one
+from the identity's GUID (its first 60 bits), and the Control Plane resolves
+it from the repository's hooked binding. On the operation ledger an inline
+thread is a `draft_create` record carrying its ordinal, the summary thread the
+`bulk_publish` record, and the vote the `approval` record. The pieces:
+
+- An unknown answer is read back before the record settles. A thread is
+  sought by its marker for a bounded window; one that never appears is
+  absence, settled with its code, and written once more under a new record, so
+  a request that lands after the window leaves a duplicate thread, never a
+  deleted one. A vote is read back from the reviewer entry. Only when the
+  threads cannot be listed at all does the record stay ambiguous, and the pull
+  request locks. The lock's one exit is the locked attempt's summary thread,
+  which a later attempt finds from the lock's coordinates.
+- A recovered attempt settles each started record the same way, by marker or
+  read-back, and then writes what is missing.
+- A range is anchored as a range. A refused range is retried on its end line,
+  naming its first line; a refused line is listed under the summary instead.
+- A thread refused outright ends the attempt: `not_submitted` when nothing
+  was written, `review_state_not_recorded` otherwise. A refused vote is
+  `approval_not_recorded` for APPROVE, `review_state_not_recorded` for
+  REQUEST_CHANGES.
+- The prompt names `submitCodeReview` exactly when a delivery opens a review
+  generation, as Gitea's does: opened, a new revision, and a review request
+  of the identity, on the head the turn-start read fenced.
+
 ### 11.7 Run Projection
 
 The Control Plane writes a pull-request status with the connection's token:
@@ -1304,6 +1333,18 @@ writer stays in the Control Plane, as Gitea's commit status does.
 An administrator who adds a status check policy for `agentconnect/<agent-slug>`,
 optionally limited to the connection's identity, makes it a gate; the product
 does not.
+
+**As implemented (B4).** A hook reports with `reportingMode: status`; `check`
+is refused, since the run note has no Azure DevOps meaning. The context name
+is the agent's name. The writer reads the pull request's iterations before
+each write and names the newest one whose source commit is the projected
+head, or none. An update kind's accepted delivery names no head, so its
+status opens at `running`, on the head the daemon's read recorded through
+`hook/start`; the Control Plane advertises `azure-devops-hooks-v1` as the
+daemon's sign that it routes that arm. A write whose answer was lost is
+reconciled against the listed statuses: a newer entry by the identity with
+the same context, state and description proves it, and absence past the
+grace window lets it be written again.
 
 ### 11.8 Code Channels
 
@@ -1454,7 +1495,9 @@ Subscription` on `PublisherSecurity/{project GUID}`); after an
     - whether a Project Administrator below Project Collection Administrator
       may write §11.1's access-control entry (B2);
     - the content form of a mention of the identity (B1);
-    - a multi-line inline thread, and the `changeTrackingId` it needs (B4);
+    - a multi-line inline thread, and the `changeTrackingId` it needs (B4).
+      Implemented as a range, with the change id from the iteration's changes
+      and the fallbacks of §11.6; not yet run against a live organization;
     - whether a subscription `PUT` without the real password keeps the stored
       one (B2 never relies on it).
 
@@ -1519,7 +1562,8 @@ The second step (§11):
 - **B3 — Daemon hook turns.** Normalization and the hook-admission members, the
   turn-start read of the pull request, its iterations and threads, the final
   poster and the like, the standing context, and the tool guidance.
-- **B4 — Reviews and run projection.** The review adapter of §11.6 and the
+- **B4 — Reviews and run projection.** _Implemented; see "As implemented"
+  in §11.6 and §11.7._ The review adapter of §11.6 and the
   status writer of §11.7. Tests pin the shared vote: a second agent's verdict
   replaces the first, and a `COMMENT` review leaves the vote alone.
 - **B5 — Console.** The hook kind's families, Allow triggers, the binding's
