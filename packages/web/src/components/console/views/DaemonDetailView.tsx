@@ -65,7 +65,7 @@ export default function DaemonDetailView() {
   const tf = useTranslations('Common.fleetDetail')
   const strategyNames = useStrategyNames()
   const acpRegistry = useAcpRegistry()
-  const { orgPath } = useOrgs()
+  const { orgPath, activeOrg } = useOrgs()
   const { me } = useProfile()
   const { id } = useParams<{ id: string }>()
   const router = useRouter()
@@ -694,9 +694,8 @@ export default function DaemonDetailView() {
                     {t('actions.restart')}
                   </button>
                 )}
-                {/* Joining is refused while agents are still pinned here and leaving while the
-                    machine still holds live work — the CP answers 409 and the banner says so. */}
-                {groupsOffered && daemon.canEdit && !groupBusy && (
+                {/* Owner-only; leaving is refused while the machine still holds live work (409, shown in the banner). */}
+                {groupsOffered && activeOrg?.role === 'owner' && !groupBusy && (
                   <>
                     {group ? (
                       <button

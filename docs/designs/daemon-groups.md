@@ -86,6 +86,13 @@ tenancy, not by kind:
   read path never re-checks it. Without this, `mayHold`'s single rule would let org X's
   members claim an org Y agent that had been pointed at X's set.
 
+**Who may change an org set: organization owners only.** A member serves every agent
+placed on its set and receives what that agent's runtime needs: its code-host and provider
+credentials, its secrets, and its conversations. Creating, renaming and deleting a set,
+enrolling or withdrawing a daemon, and turning on `spreadSessions` therefore decide who can
+act for those agents, which is an owner's decision, not a collaborator's. Every member can
+still read the sets. A set has no visibility of its own.
+
 That is the whole schema. The duty ledger (`duty_group`, `duty_group_member`) is
 untouched: a duty group is the _thing claimed_, a member set is the _set that may claim
 it_ — the two share a word and nothing else, and the ledger's rows already exist for

@@ -159,6 +159,8 @@ export default function DaemonsView() {
 function GroupsSection({ groups, daemons }: { groups: MemberSetRow[]; daemons: DaemonRow[] }) {
   const { openModal } = useModal()
   const t = useTranslations('Daemons')
+  // Group writes are owner-only: a member serves every agent placed on the group.
+  const owner = useOrgs().activeOrg?.role === 'owner'
 
   return (
     <>
@@ -166,13 +168,15 @@ function GroupsSection({ groups, daemons }: { groups: MemberSetRow[]; daemons: D
         label={t('sections.groups')}
         count={groups.length}
         action={
-          <button
-            className="inline-flex cursor-pointer items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary) hover:text-(--brand)"
-            onClick={() => openModal('group')}
-          >
-            <Icon name="plus" size={13} />
-            {t('newGroup')}
-          </button>
+          owner ? (
+            <button
+              className="inline-flex cursor-pointer items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary) hover:text-(--brand)"
+              onClick={() => openModal('group')}
+            >
+              <Icon name="plus" size={13} />
+              {t('newGroup')}
+            </button>
+          ) : undefined
         }
       />
       {groups.length === 0 ? (
@@ -193,7 +197,7 @@ function GroupsSection({ groups, daemons }: { groups: MemberSetRow[]; daemons: D
 function GroupCard({ group, daemons }: { group: MemberSetRow; daemons: DaemonRow[] }) {
   const { openModal } = useModal()
   const t = useTranslations('Daemons')
-  const { orgPath } = useOrgs()
+  const { orgPath, activeOrg } = useOrgs()
   const router = useRouter()
   const [menuOpen, setMenuOpen] = useState(false)
   const s = status(groupFleetStatus(group, daemons))
@@ -255,44 +259,46 @@ function GroupCard({ group, daemons }: { group: MemberSetRow; daemons: DaemonRow
       </span>
       <Icon name="chevron-right" size={16} color="var(--text-tertiary)" className="desktop:hidden" />
       {/* Desktop-only like a daemon card's: below 769px the chevron leads to the group's page, which carries both. */}
-      <span className="relative hidden flex-none justify-end desktop:flex" onClick={(e) => e.stopPropagation()}>
-        <button
-          className="iconbtn h-7 w-7"
-          aria-label={t('groupActions')}
-          title={t('groupActions')}
-          onClick={() => setMenuOpen((v) => !v)}
-        >
-          <Icon name="ellipsis" size={16} />
-        </button>
-        {menuOpen && (
-          <>
-            <div className="fixed inset-0 z-[49]" onClick={() => setMenuOpen(false)} />
-            <span className="dmenu top-8">
-              <button
-                className="dmi"
-                onClick={() => {
-                  setMenuOpen(false)
-                  openModal('group', group)
-                }}
-              >
-                <Icon name="pencil" size={15} />
-                {t('editGroup')}
-              </button>
-              <span className="dmsep" />
-              <button
-                className="dmi danger"
-                onClick={() => {
-                  setMenuOpen(false)
-                  openModal('deleteGroup', group)
-                }}
-              >
-                <Icon name="trash" size={15} />
-                {t('removeGroup')}
-              </button>
-            </span>
-          </>
-        )}
-      </span>
+      {activeOrg?.role === 'owner' && (
+        <span className="relative hidden flex-none justify-end desktop:flex" onClick={(e) => e.stopPropagation()}>
+          <button
+            className="iconbtn h-7 w-7"
+            aria-label={t('groupActions')}
+            title={t('groupActions')}
+            onClick={() => setMenuOpen((v) => !v)}
+          >
+            <Icon name="ellipsis" size={16} />
+          </button>
+          {menuOpen && (
+            <>
+              <div className="fixed inset-0 z-[49]" onClick={() => setMenuOpen(false)} />
+              <span className="dmenu top-8">
+                <button
+                  className="dmi"
+                  onClick={() => {
+                    setMenuOpen(false)
+                    openModal('group', group)
+                  }}
+                >
+                  <Icon name="pencil" size={15} />
+                  {t('editGroup')}
+                </button>
+                <span className="dmsep" />
+                <button
+                  className="dmi danger"
+                  onClick={() => {
+                    setMenuOpen(false)
+                    openModal('deleteGroup', group)
+                  }}
+                >
+                  <Icon name="trash" size={15} />
+                  {t('removeGroup')}
+                </button>
+              </span>
+            </>
+          )}
+        </span>
+      )}
     </div>
   )
 }

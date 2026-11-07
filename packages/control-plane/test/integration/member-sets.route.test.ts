@@ -1,12 +1,4 @@
-/**
- * `/member-sets` — an organization's own member sets (docs/designs/daemon-groups.md §2, §3).
- *
- * Two things are load-bearing here and neither is CRUD. First, the route is fenced on the path
- * org and the install-wide pool is not this organization's to see or touch. Second, the two
- * directions are asymmetric: joining takes nothing away — a pinned agent stays pinned, because a
- * `daemon` placement is eligible for exactly that machine — while leaving is refused while the
- * machine still holds a live duty lease.
- */
+/** `/member-sets` (docs/designs/daemon-groups.md §2, §3): org-fenced, owner-only writes, and a join that takes nothing away while a leave waits for live leases. */
 import { randomUUID } from 'node:crypto'
 import { describe, it, expect } from 'vitest'
 import { prisma } from '../setup.db.js'
@@ -146,6 +138,42 @@ describe('member sets — CRUD is org-fenced (real Postgres)', () => {
       })
     } finally {
       await viewer.close()
+    }
+  })
+
+  it('leaves every write to an organization owner, so a collaborator cannot enroll a machine', async () => {
+    const users = new PgUserRepo(prisma)
+    const email = `mset-collaborator-${randomUUID()}@example.test`
+    const { userId } = await users.provisionOidcUser({ oidcSubject: email, email, emailVerified: true })
+    await users.addMemberByEmail(DEFAULT_ORG_ID, email, 'collaborator')
+    await seedDaemon(prisma, DAEMON)
+    const OTHER = 'd2222222-2222-4222-8222-222222222222'
+    await seedDaemon(prisma, OTHER)
+    const set = await prisma.memberSet.create({ data: { id: randomUUID(), orgId: DEFAULT_ORG_ID, name: 'lab' } })
+    await prisma.memberSetMember.create({ data: { setId: set.id, daemonId: OTHER } })
+    const collaborator = buildHttpApp(prisma, { DEFAULT_OWNER_ID: userId })
+    try {
+      const base = `${ORG}/member-sets`
+      const writes = [
+        { method: 'POST', url: base, payload: { name: 'mine' } },
+        { method: 'PATCH', url: `${base}/${set.id}`, payload: { name: 'renamed' } },
+        { method: 'PUT', url: `${base}/${set.id}/spread-sessions`, payload: { enabled: true } },
+        { method: 'PUT', url: `${base}/${set.id}/members/${DAEMON}` },
+        { method: 'DELETE', url: `${base}/${set.id}/members/${OTHER}` },
+        { method: 'DELETE', url: `${base}/${set.id}` }
+      ] as const
+      for (const write of writes) {
+        const refused = await collaborator.app.inject(write)
+        expect([write.method, write.url, refused.statusCode]).toEqual([write.method, write.url, 403])
+      }
+      expect(await prisma.memberSet.findMany({ where: { orgId: DEFAULT_ORG_ID } })).toEqual([
+        expect.objectContaining({ id: set.id, name: 'lab', spreadSessions: false })
+      ])
+      const members = await prisma.memberSetMember.findMany({ where: { setId: set.id } })
+      expect(members.map((m) => m.daemonId)).toEqual([OTHER])
+      expect((await collaborator.app.inject({ method: 'GET', url: base })).statusCode).toBe(200)
+    } finally {
+      await collaborator.close()
     }
   })
 
