@@ -7,7 +7,12 @@ import { runtimeStateLocations } from '../runtimes/probe.js'
 import { projectRuntimeHomeSeedFile } from '../runtimes/runtime-home.js'
 import { MAX_SEED_FILE_BYTES } from '../runtimes/runtime-seeded-credentials.js'
 import type { MicrosandboxCredentials, MicrosandboxSecret } from './secrets.js'
-import { microsandboxPlaceholder, replaceSecretValue, type SecretPlaceholder } from './secret-values.js'
+import {
+  microsandboxPlaceholder,
+  replaceSecretValue,
+  type SecretPlaceholder,
+  type SecretSources
+} from './secret-values.js'
 
 // A provider without a configured base URL reaches its SDK's default origin.
 const DEFAULT_ORIGINS: Record<string, string> = {
@@ -74,9 +79,10 @@ function providerEndpoints(configs: readonly Record<string, unknown>[], provider
 export function prepareOpenCodeSecrets(
   hostEnv: NodeJS.ProcessEnv,
   explicitEnv: Record<string, string>,
-  placeholder: SecretPlaceholder = microsandboxPlaceholder
+  placeholder: SecretPlaceholder = microsandboxPlaceholder,
+  sources: SecretSources = {}
 ): MicrosandboxCredentials | undefined {
-  const keys = openCodeHostKeys(hostEnv)
+  const keys = openCodeHostKeys(hostEnv, sources.openCodeAuthExport)
   if (!keys.length) return undefined
   const configFiles = runtimeStateLocations('opencode', hostEnv).flatMap((location) =>
     ['opencode.json', 'opencode.jsonc'].map((file) => ({

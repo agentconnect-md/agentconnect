@@ -9,6 +9,11 @@ export interface SecretBinding {
 /** What a protected key's variable and files hold in its place. */
 export type SecretPlaceholder = (binding: SecretBinding) => string
 
+/** Where a preparer reads keys a command prints: an srt resolution passes the output it already awaited. */
+export interface SecretSources {
+  openCodeAuthExport?: (env: NodeJS.ProcessEnv) => string
+}
+
 /** A VM's placeholder, which its own proxy swaps on the binding's hosts. */
 export const microsandboxPlaceholder: SecretPlaceholder = ({ env }) => `msb-secret-${env}`
 

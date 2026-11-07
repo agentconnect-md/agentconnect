@@ -8,12 +8,13 @@ import {
   type MicrosandboxCredentials,
   type SecretBinding
 } from '../microsandbox/secrets.js'
+import { openCodeAuthExportAsync } from '../runtimes/opencode-host-keys.js'
 import { sameSlotOrigin, type ProviderSlot } from './provider-route.js'
 
 /** One host key behind the proxy: its slot, and how the daemon reads the key again. */
 export interface HostKeySlot {
   slot: ProviderSlot
-  read: () => string
+  read: () => Promise<string>
 }
 
 /** A launch's host keys behind placeholders, or why it keeps them as they are. */
@@ -86,8 +87,9 @@ export function sealHostProviderKeys(
   }
 }
 
-/** A slot's key as the host holds it now; refused once it is gone or the runtime sends it to another origin. */
-function readHostKey(source: HostKeySource, runtime: string, slot: ProviderSlot, env: string): string {
+/** A slot's key as the host holds it now, awaiting any command that prints it; refused once it is gone or the runtime sends it to another origin. */
+async function readHostKey(source: HostKeySource, runtime: string, slot: ProviderSlot, env: string): Promise<string> {
+  const exported = runtime === 'opencode' ? await openCodeAuthExportAsync(source.hostEnv) : undefined
   const bindings = new Map<string, SecretBinding>()
   const credentials = prepareAmbientCredentials(
     source.runtimeId,
@@ -97,7 +99,8 @@ function readHostKey(source: HostKeySource, runtime: string, slot: ProviderSlot,
     (binding) => {
       bindings.set(binding.env, binding)
       return microsandboxPlaceholder(binding)
-    }
+    },
+    exported === undefined ? {} : { openCodeAuthExport: () => exported }
   )
   const secret = credentials?.secrets.find((candidate) => candidate.env === env)
   const binding = bindings.get(env)

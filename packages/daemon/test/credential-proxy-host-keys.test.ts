@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -18,6 +18,9 @@ import { fakeOpenCode, openCodeKeyEntry } from './opencode-support.js'
 const CLAUDE_KEY = 'fixture-claude-file-key'
 const ENV_KEY = 'fixture-claude-env-key'
 const CODEX_KEY = 'fixture-codex-file-key'
+// A slow export, and a timer that must fire while it runs.
+const SLOW_EXPORT_SECONDS = 1
+const CONCURRENT_TIMER_MS = 50
 const claude = { command: 'node', args: ['claude-agent-acp'], env: [] }
 const codex = { command: 'node', args: ['codex-acp'], env: [] }
 
@@ -152,7 +155,7 @@ describe('host key slots', () => {
     sealed.length = 0
   })
 
-  it("seals a slot per key at the runtime's endpoint and reads the key again from its file", () => {
+  it("seals a slot per key at the runtime's endpoint and reads the key again from its file", async () => {
     const HOME = hostHome()
     const auth = join(HOME, '.codex', 'auth.json')
     write(auth, { auth_mode: 'apikey', OPENAI_API_KEY: CODEX_KEY })
@@ -169,14 +172,14 @@ describe('host key slots', () => {
     expect(sealed).toEqual(result.slots.map(({ slot }) => slot))
     expect(result.credentials.secrets[0]!.placeholder).toBe('acph1_fixture-host:codex-acp:AC_CODEX_API_KEY')
     write(auth, { auth_mode: 'apikey', OPENAI_API_KEY: 'fixture-rotated-key' })
-    expect(result.slots[0]!.read()).toBe('fixture-rotated-key')
+    await expect(result.slots[0]!.read()).resolves.toBe('fixture-rotated-key')
     write(join(HOME, '.codex', 'config.toml'), 'openai_base_url = "https://gateway.example.test/v1"\n')
-    expect(() => result.slots[0]!.read()).toThrow(/endpoint for AC_CODEX_API_KEY changed/)
+    await expect(result.slots[0]!.read()).rejects.toThrow(/endpoint for AC_CODEX_API_KEY changed/)
     rmSync(auth)
-    expect(() => result.slots[0]!.read()).toThrow(/no longer holds AC_CODEX_API_KEY/)
+    await expect(result.slots[0]!.read()).rejects.toThrow(/no longer holds AC_CODEX_API_KEY/)
   })
 
-  it("marks an operator's endpoint as not the provider's own", () => {
+  it("marks an operator's endpoint as not the provider's own", async () => {
     const result = sealHostProviderKeys(
       {
         runtimeId: 'claude-acp',
@@ -196,7 +199,7 @@ describe('host key slots', () => {
         saas: false
       }
     ])
-    expect(result.slots[0]!.read()).toBe(ENV_KEY)
+    await expect(result.slots[0]!.read()).resolves.toBe(ENV_KEY)
   })
 
   it('keeps every key of a source the proxy cannot serve, and says why without the key', () => {
@@ -225,6 +228,40 @@ describe('host key slots', () => {
       sealHostProviderKeys({ runtimeId: 'pi-acp', runtime: undefined, hostEnv: {}, explicitEnv: {} }, seal)
     ).toBeUndefined()
   })
+
+  // The fake `opencode` is a shell script.
+  it.skipIf(process.platform === 'win32')(
+    "reads an OpenCode key again without blocking the daemon while the host's export runs",
+    async () => {
+      const HOME = hostHome()
+      const { PATH } = fakeOpenCode(HOME, [openCodeKeyEntry('anthropic', 'fixture-opencode-key')])
+      const source = { runtimeId: 'opencode', runtime: undefined, hostEnv: { HOME, PATH }, explicitEnv: {} }
+      const result = sealHostProviderKeys(source, seal)
+      if (!result || 'kept' in result) throw new Error('expected sealed keys')
+      expect(result.slots.map(({ slot }) => slot.id)).toEqual([`host:opencode:${openCodeKeyEnv('anthropic')}`])
+      // The export now takes a while, as a real one may.
+      const bin = join(HOME, 'opencode-bin')
+      writeFileSync(
+        join(bin, 'opencode'),
+        `#!/bin/sh\nsleep ${SLOW_EXPORT_SECONDS}\ncat '${join(bin, 'export.json')}'\n`
+      )
+      chmodSync(join(bin, 'opencode'), 0o755)
+      const order: string[] = []
+      const timer = new Promise<void>((resolve) =>
+        setTimeout(() => {
+          order.push('timer')
+          resolve()
+        }, CONCURRENT_TIMER_MS)
+      )
+      const key = result.slots[0]!.read().then((value) => {
+        order.push('key')
+        return value
+      })
+      await expect(key).resolves.toBe('fixture-opencode-key')
+      await timer
+      expect(order).toEqual(['timer', 'key'])
+    }
+  )
 
   it('needs exactly one host for a slot', () => {
     const binding = { env: 'X_KEY', provider: 'example', defaultHost: 'api.example.test' }

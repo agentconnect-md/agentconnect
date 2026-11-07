@@ -1712,7 +1712,7 @@ export class Daemon {
   /** Each agent's provider key slots the credential proxy serves, by slot id; registered as a host or srt session launches. */
   private readonly providerSlots = new Map<string, Map<string, ProviderSlot>>()
   /** How each agent's host key slots read their key again on this machine, by slot id. */
-  private readonly hostKeyReaders = new Map<string, Map<string, () => string>>()
+  private readonly hostKeyReaders = new Map<string, Map<string, () => Promise<string>>>()
   /** Agents and key sources whose keys stay in env, a cleartext endpoint's or a host's the proxy cannot serve, logged once each. */
   private readonly cleartextProviderLogged = new Set<string>()
   /** Leases over cluster pods, in memory: an open page's keep-alive, and this daemon's own on a pod it saw a watcher armed in. */
@@ -7048,7 +7048,7 @@ export class Daemon {
       return undefined
     }
     const slots = this.providerSlots.get(agentId) ?? new Map<string, ProviderSlot>()
-    const readers = this.hostKeyReaders.get(agentId) ?? new Map<string, () => string>()
+    const readers = this.hostKeyReaders.get(agentId) ?? new Map<string, () => Promise<string>>()
     for (const { slot, read } of sealed.slots) {
       slots.set(slot.id, slot)
       readers.set(slot.id, read)
@@ -7066,7 +7066,7 @@ export class Daemon {
     const slot = this.providerSlots.get(agentId)?.get(slotId)
     if (!slot) throw new Error(`no provider slot ${slotId}`)
     const read = this.hostKeyReaders.get(agentId)?.get(slotId)
-    if (read) return { key: read(), headers: {} }
+    if (read) return { key: await read(), headers: {} }
     if (!this.cpClient) throw new Error('provider keys require a control-plane connection')
     const provider = slot.provider as AgentModelKeyProvider
     const { credentials } = await this.cpClient.requestProviderCredentials({ agentId, provider })

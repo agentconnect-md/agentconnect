@@ -21,8 +21,18 @@ import { prepareQwenSecrets } from './qwen-secrets.js'
 import { prepareOmpSecrets } from './omp-secrets.js'
 import { prepareAmpSecrets } from './amp-secrets.js'
 import { prepareKimiSecrets } from './kimi-secrets.js'
-import { microsandboxPlaceholder, replaceEnvironmentSecrets, type SecretPlaceholder } from './secret-values.js'
-export { microsandboxPlaceholder, type SecretBinding, type SecretPlaceholder } from './secret-values.js'
+import {
+  microsandboxPlaceholder,
+  replaceEnvironmentSecrets,
+  type SecretPlaceholder,
+  type SecretSources
+} from './secret-values.js'
+export {
+  microsandboxPlaceholder,
+  type SecretBinding,
+  type SecretPlaceholder,
+  type SecretSources
+} from './secret-values.js'
 import { sharedCredentialProfile } from '../runtimes/runtime-credential-sources.js'
 
 export interface MicrosandboxSecret {
@@ -48,7 +58,8 @@ export interface MicrosandboxCredentials {
 type PrepareCredentials = (
   hostEnv: NodeJS.ProcessEnv,
   explicitEnv: Record<string, string>,
-  placeholder?: SecretPlaceholder
+  placeholder?: SecretPlaceholder,
+  sources?: SecretSources
 ) => MicrosandboxCredentials | undefined
 
 interface CredentialPreparer {
@@ -111,14 +122,15 @@ export function prepareAmbientCredentials(
   runtime: RuntimeDef | undefined,
   hostEnv: NodeJS.ProcessEnv,
   explicitEnv: Record<string, string>,
-  placeholder: SecretPlaceholder
+  placeholder: SecretPlaceholder,
+  sources: SecretSources = {}
 ): MicrosandboxCredentials | undefined {
   const id = ambientCredentialRuntime(runtimeId, runtime)
   const preparer = id === undefined ? undefined : CREDENTIAL_PREPARERS.get(id)
   if (!preparer?.ambient) return undefined
   return mergeCredentials(
-    preparer.prepare(hostEnv, explicitEnv, placeholder),
-    preparer.ambient.envKey?.(hostEnv, explicitEnv, placeholder)
+    preparer.prepare(hostEnv, explicitEnv, placeholder, sources),
+    preparer.ambient.envKey?.(hostEnv, explicitEnv, placeholder, sources)
   )
 }
 
