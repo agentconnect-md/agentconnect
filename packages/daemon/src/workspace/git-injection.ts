@@ -673,21 +673,23 @@ const PLACEHOLDER_HELPER_COMMAND = `!f() { test $1 = get || return 0; echo usern
 // Quoted whole in a gitconfig file, since `;` would start a comment there.
 const PLACEHOLDER_HELPER = `"${PLACEHOLDER_HELPER_COMMAND}"`
 
-/** The placeholder helper at command scope, which outranks the real helper a checkout's `.git/config` pins for the same base. */
-function proxiedHelperPairs(bases: readonly string[]): Array<[string, string]> {
-  return bases.flatMap((base): Array<[string, string]> => [
-    [`credential.${base}.helper`, ''],
-    [`credential.${base}.helper`, PLACEHOLDER_HELPER_COMMAND],
-    [`credential.${base}.useHttpPath`, 'true']
-  ])
-}
-
-function quotedHelper(agentId: string, target: GitCredentialTarget = targetOf(agentId)): string {
+/** The real helper's command line, without the `!` that has git run it through the shell. */
+function helperInvocation(agentId: string, target: GitCredentialTarget): string {
   const { helper } = target
   const quoted = `'${helper.replaceAll("'", "'\\''")}'`
   // A sandbox helper is read by `sh` rather than executed, so its mode does not matter: npm packs every non-`bin`
   // file as 0644, and the installed CLI that would restore the bit is not upgraded along with the daemon.
-  return target.kind === 'sandbox' ? `!sh ${quoted} ${agentId}` : `!${quoted} ${agentId}`
+  return target.kind === 'sandbox' ? `sh ${quoted} ${agentId}` : `${quoted} ${agentId}`
+}
+
+function quotedHelper(agentId: string, target: GitCredentialTarget = targetOf(agentId)): string {
+  return `!${helperInvocation(agentId, target)}`
+}
+
+/** A checkout's pinned helper: the placeholder in an environment that carries one, the real helper otherwise. */
+export function checkoutHelper(agentId: string, target: GitCredentialTarget = targetOf(agentId)): string {
+  const credential = `$${CODE_HOST_CREDENTIAL_ENV}`
+  return `!f() { if test -n "${credential}"; then test "$1" = get || return 0; echo username=x-access-token; echo "password=${credential}"; else ${helperInvocation(agentId, target)} "$@"; fi; }; f`
 }
 
 /** The three host-scoped config pairs both channels share. The host defaults to
@@ -800,7 +802,6 @@ export function sessionGitConfig(
     env: {
       ...(scope ? { ...gitCredentialEnv(agentId, target, scope, 'runtime'), GIT_TERMINAL_PROMPT: '0' } : {}),
       GIT_CONFIG_GLOBAL: file,
-      ...(proxied && bases.length > 0 ? gitConfigEnv(proxiedHelperPairs(bases)) : {}),
       ...(commitIdentity ? gitCommitIdentityEnv(commitIdentity) : {})
     }
   }
@@ -842,7 +843,7 @@ export function gitCommitIdentityEnv(identity: GitCommitIdentity): Record<string
   }
 }
 
-/** Post-clone: pin the repo-local helper so agent-run git in the checkout works. */
+/** Post-clone: pin the repo-local helper for the runtime's git in the checkout; daemon-run git sets its own at command scope. */
 export async function writeRepoHelperConfig(
   runner: GitRunner,
   agentId: string,
@@ -853,7 +854,7 @@ export async function writeRepoHelperConfig(
   // `--replace-all` on the first write resets any stale helper list from a
   // previous agent generation; addConfig(append=true) accumulates the rest.
   await git.raw(['config', '--replace-all', `credential.${base}.helper`, ''])
-  await git.raw(['config', '--add', `credential.${base}.helper`, quotedHelper(agentId)])
+  await git.raw(['config', '--add', `credential.${base}.helper`, checkoutHelper(agentId)])
   await git.raw(['config', `credential.${base}.useHttpPath`, 'true'])
 }
 

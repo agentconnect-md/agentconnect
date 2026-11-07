@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, wr
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { ghShimDir, renderGhWrapper, writeGhShim } from '../../src/cp/gh-shim.js'
+import { ghShimDir, renderGhWrapper, secretsShimDir, writeGhShim, writeSecretsShim } from '../../src/cp/gh-shim.js'
 
 describe('gh wrapper shim', () => {
   let root: string | undefined
@@ -195,7 +195,12 @@ describe.skipIf(process.platform === 'win32')('agentconnect-secrets wrapper', ()
       cliEntry,
       `process.stdout.write(JSON.stringify({ argv: process.argv.slice(2), root: process.env.AGENTCONNECT_ROOT }))\n`
     )
-    const wrapper = join(writeGhShim(root, cliEntry), 'agentconnect-secrets')
+    const dir = writeSecretsShim(root, cliEntry)
+    // Its own dir, apart from the token wrappers a proxied session goes without.
+    expect(dir).toBe(secretsShimDir(root))
+    expect(existsSync(join(dir, 'gh'))).toBe(false)
+    expect(existsSync(join(writeGhShim(root, cliEntry), 'agentconnect-secrets'))).toBe(false)
+    const wrapper = join(dir, 'agentconnect-secrets')
     expect(existsSync(wrapper)).toBe(true)
     const out = execFileSync('sh', [wrapper, 'exec', '--only', 'A', '--', 'curl'], { encoding: 'utf8' })
     expect(JSON.parse(out)).toEqual({ argv: ['secrets', 'exec', '--only', 'A', '--', 'curl'], root })

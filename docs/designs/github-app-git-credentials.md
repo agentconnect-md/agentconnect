@@ -571,6 +571,30 @@ Only the proxy address differs:
 - every other client sees the same variables, with `NODE_USE_ENV_PROXY=1`,
   since Node's `fetch` and `https` ignore `HTTPS_PROXY` without it.
 
+**The runtime holds no minting credential.** The daemon and the agent runtime
+hold separate gitcred capabilities. While the proxy carries an agent's code
+hosts, the runtime's capability serves only live secrets: a `get` or `erase`
+presented with it is refused with an error saying git and `gh` go through the
+proxy, so nothing in the session can obtain a real token. The daemon's own Git
+keeps minting with the daemon's capability. The check runs on each request,
+per agent, from the agent's spec and whether the proxy is running, because
+every session of the agent on that daemon shares the capability.
+
+- A checkout's `.git/config` pins a helper that answers with the placeholder
+  in `AC_CODEHOST_CREDENTIAL` when the environment carries one and calls the
+  real helper otherwise. The pin serves only the runtime, since the daemon's
+  own Git sets its helper at command scope, so a child that resets
+  `GIT_CONFIG_COUNT` still presents the placeholder and needs no command-scope
+  override of its own.
+- A session behind the proxy gets none of the daemon's `gh` or `glab`
+  wrappers on its `PATH`, since `GH_TOKEN` and `GITLAB_TOKEN` already carry
+  the placeholder; `GITLAB_TOKEN` is set for every GitLab-credentialed session
+  whatever wrapper exists. `agentconnect-secrets` has its own directory and
+  stays on the `PATH`. A shim (`srt`, a VM, a pod, an executor) still puts its
+  own wrappers first, and they pass the set token straight through.
+- A session of such an agent that does not reach the proxy, such as one on
+  the helper path below, holds no code-host credential.
+
 **Capture.** The proxy needs no transparent capture, because a client that
 bypasses it holds only the placeholder and fails closed. Whether a client
 reaches the proxy is therefore a matter of usability, never of exposure:
@@ -707,7 +731,8 @@ the proxy's CA certificate:
   code-host placeholder is refused on `provider` and a provider placeholder on
   `codehost`.
 - A session on an executor whose shim does not serve `codehost`, and an `srt`
-  or VM session placed on one, keeps the credential helper path.
+  or VM session placed on one, keeps the credential helper path, which the
+  runtime's capability no longer mints on.
 
 A session in a local `microsandbox` VM or a pool pod reaches its own daemon's
 proxy the same way, through the shim inside the VM or pod. The daemon asks

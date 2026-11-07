@@ -122,6 +122,8 @@ export interface GitCredServerDeps {
   credentialedOf?: (agentId: string) => boolean
   /** The agent's live secrets from the CURRENT in-memory agent, so a value saved a moment ago is served on the next call. */
   liveSecretsOf?: (agentId: string) => readonly LiveSecretEntry[]
+  /** Whether the agent's runtime capability may `get` and `erase`, read per request; false once the credential proxy carries its code hosts. Absent ⇒ it may. */
+  runtimeMayMint?: (agentId: string) => boolean
 }
 
 /** One reply on the helper channel for a `get` or `erase`. */
@@ -145,11 +147,13 @@ export interface GitCredPermissions {
   readonly secrets: boolean
 }
 
-// Both holders keep every op for now; a separate capability lets the runtime's be narrowed alone.
-const HOLDER_PERMISSIONS: Readonly<Record<GitCredHolder, GitCredPermissions>> = {
-  daemon: { mint: true, secrets: true },
-  runtime: { mint: true, secrets: true }
-}
+const FULL_PERMISSIONS: GitCredPermissions = { mint: true, secrets: true }
+// A runtime behind the credential proxy holds a placeholder for its code hosts, so its capability keeps only the secrets.
+const SECRETS_ONLY_PERMISSIONS: GitCredPermissions = { mint: false, secrets: true }
+
+/** Why a capability without `mint` is refused a `get` or an `erase`. */
+export const RUNTIME_NO_MINT_ERROR =
+  'git and gh reach code hosts through the credential proxy; this credential only serves secrets'
 
 /** An agent capability as an admission sees it: its holder and that holder's permissions. */
 interface AgentPrincipal {
@@ -176,6 +180,7 @@ export class GitCredServer {
   private readonly privateGitlabSkillProjectOf?: GitCredServerDeps['privateGitlabSkillProjectOf']
   private readonly credentialedOf?: GitCredServerDeps['credentialedOf']
   private readonly liveSecretsOf?: GitCredServerDeps['liveSecretsOf']
+  private readonly runtimeMayMint?: GitCredServerDeps['runtimeMayMint']
   readonly skillWindows: SkillCredentialWindows
 
   constructor(
@@ -193,6 +198,7 @@ export class GitCredServer {
     if (deps.privateGitlabSkillProjectOf) this.privateGitlabSkillProjectOf = deps.privateGitlabSkillProjectOf
     if (deps.credentialedOf) this.credentialedOf = deps.credentialedOf
     if (deps.liveSecretsOf) this.liveSecretsOf = deps.liveSecretsOf
+    if (deps.runtimeMayMint) this.runtimeMayMint = deps.runtimeMayMint
     this.skillWindows = deps.skillWindows ?? new SkillCredentialWindows()
   }
 
@@ -356,7 +362,7 @@ export class GitCredServer {
         true,
         `${principal.holder} capability`
       )
-      return reply({ ok: false, error: 'this capability cannot mint git credentials', denied: 'agent' })
+      return reply({ ok: false, error: RUNTIME_NO_MINT_ERROR, denied: 'agent' })
     }
     // Every agent holds a capability for its live secrets; one without a managed git credential is answered as before it had one.
     if (isAgentPrincipal(principal) && this.credentialedOf && !this.credentialedOf(req.agentId)) {
@@ -594,6 +600,13 @@ export class GitCredServer {
     }
   }
 
+  /** A holder's permissions as of this request: the daemon's are full, the runtime's lose `mint` while the proxy carries its code hosts. */
+  private permissionsOf(agentId: string, holder: GitCredHolder): GitCredPermissions {
+    return holder === 'runtime' && this.runtimeMayMint?.(agentId) === false
+      ? SECRETS_ONLY_PERMISSIONS
+      : FULL_PERMISSIONS
+  }
+
   /** Who presented the request: one of the agent's holder capabilities, a live skill window for this agent and this connection's subject, or nobody. */
   private principalOf(
     agentId: string,
@@ -606,7 +619,8 @@ export class GitCredServer {
       const b = Buffer.from(presented)
       for (const holder of ['daemon', 'runtime'] as const) {
         const a = Buffer.from(issued[holder])
-        if (a.length === b.length && timingSafeEqual(a, b)) return { holder, permissions: HOLDER_PERMISSIONS[holder] }
+        if (a.length === b.length && timingSafeEqual(a, b))
+          return { holder, permissions: this.permissionsOf(agentId, holder) }
       }
     }
     // A pod window opens only through its own pod's tunnel; a daemon window only on an untunneled connection.

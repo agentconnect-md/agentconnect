@@ -82,32 +82,52 @@ export function ghShimDir(root: string): string {
   return join(root, 'run', 'bin')
 }
 
-/** (Re)write `run/bin/gh` and `run/bin/agentconnect-secrets`, and return the bin dir to prepend to agent PATHs. */
-export function writeGhShim(root: string, cliEntry: string): string {
-  const dir = ghShimDir(root)
+/** The live secrets wrapper's own dir, apart from the token wrappers so a proxied session keeps it without them. */
+export function secretsShimDir(root: string): string {
+  return join(root, 'run', 'secrets-bin')
+}
+
+/** A wrapper dir private to this user. */
+function makeShimDir(dir: string): void {
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   try {
     chmodSync(dir, 0o700) // defeat a loose umask; best-effort on non-POSIX
   } catch {
     /* best-effort */
   }
+}
+
+/** The daemon CLI a wrapper runs, through tsx for a dev daemon's `.ts` entry (plain `node entry.ts` dies on `.js` imports). */
+function daemonCliArgv(cliEntry: string): string {
   const executableEntry = existsSync(cliEntry) ? realpathSync(cliEntry) : cliEntry
-  // Dev daemons run under tsx with a .ts argv[1] — route through the tsx CLI (the git-credential shim
-  // precedent; plain `node entry.ts` dies on .js-suffixed imports).
   const argv = [shQuote(realpathSync(process.execPath))]
   if (executableEntry.endsWith('.ts')) {
     const req = createRequire(import.meta.url)
     argv.push(shQuote(req.resolve('tsx/cli')))
   }
   argv.push(shQuote(executableEntry))
+  return argv.join(' ')
+}
+
+/** (Re)write `run/bin/gh`, and return the bin dir to prepend to agent PATHs. */
+export function writeGhShim(root: string, cliEntry: string): string {
+  const dir = ghShimDir(root)
+  makeShimDir(dir)
   const body = renderGhWrapper({
     selfDir: dir,
-    tokenCommand: `AGENTCONNECT_ROOT=${shQuote(root)} ${argv.join(' ')} gh-token "$AC_AGENT_ID" -- "$@"`
+    tokenCommand: `AGENTCONNECT_ROOT=${shQuote(root)} ${daemonCliArgv(cliEntry)} gh-token "$AC_AGENT_ID" -- "$@"`
   })
   writeFileSync(join(dir, 'gh'), body, { mode: 0o755 })
+  return dir
+}
+
+/** (Re)write `run/secrets-bin/agentconnect-secrets`, and return its dir to prepend to agent PATHs. */
+export function writeSecretsShim(root: string, cliEntry: string): string {
+  const dir = secretsShimDir(root)
+  makeShimDir(dir)
   writeFileSync(
     join(dir, SECRETS_WRAPPER_NAME),
-    renderSecretsWrapper(`env AGENTCONNECT_ROOT=${shQuote(root)} ${argv.join(' ')} secrets`),
+    renderSecretsWrapper(`env AGENTCONNECT_ROOT=${shQuote(root)} ${daemonCliArgv(cliEntry)} secrets`),
     { mode: 0o755 }
   )
   return dir

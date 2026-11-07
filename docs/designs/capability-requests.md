@@ -530,8 +530,9 @@ command needs it. Nothing is restarted and no turn is interrupted.
 child environment and **not** part of `hostSpawnSig`, so changing them is a soft change: the daemon
 replaces its in-memory agent and nothing else. Organization secrets stay spawn-only in this design.
 
-**Loading: a helper on the runtime's `PATH`.** `agentconnect-secrets`, next to the existing `gh`
-wrapper (`<root>/run/bin` self-hosted, `<runtimeRoot>/pathbin` under a host shim,
+**Loading: a helper on the runtime's `PATH`.** `agentconnect-secrets` (`<root>/run/secrets-bin`
+self-hosted, apart from the `gh` and `glab` wrappers so a session behind the credential proxy keeps
+it without them; next to those wrappers at `<runtimeRoot>/pathbin` under a host shim and
 `/opt/agentconnect/pathbin` in the sandbox image):
 
 | Command                                           | Does                                                                                                                                   |

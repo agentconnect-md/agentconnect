@@ -19,10 +19,10 @@ import {
   syncWorkspaceRef,
   sandboxGitCredentialTarget,
   managedCredentialScope,
-  mergeGitConfigEnv,
   sessionCredentialHosts,
   sessionGitConfig,
   sessionGitEnv,
+  checkoutHelper,
   workspaceGitEnvBase,
   workspaceGitLocalEnv,
   workspaceGitRemoteTarget,
@@ -938,12 +938,9 @@ describe.skipIf(process.platform === 'win32')('pointers for an agent whose git r
     await writeRepoHelperConfig(runner, 'pod-agent')
     // `.git/config` outlives a launch, so this is the pointer a later agent-run git in the pod
     // finds on disk — it has to name the image's helper too, not just the spawn env.
-    expect(argv).toContainEqual([
-      'config',
-      '--add',
-      'credential.https://github.com.helper',
-      `!sh '${SANDBOX_GIT_CREDENTIAL_HELPER}' pod-agent`
-    ])
+    const pinned = argv.find((args) => args[1] === '--add')?.[3]
+    expect(pinned).toBe(checkoutHelper('pod-agent', sandboxGitCredentialTarget()))
+    expect(pinned).toContain(`else sh '${SANDBOX_GIT_CREDENTIAL_HELPER}' pod-agent "$@"; fi`)
   })
 })
 
@@ -1091,7 +1088,7 @@ describe('git in a proxied session', () => {
 
   // POSIX only: the stand-in helper is a shell script, and the daemon target's include path is a Windows path there.
   it.skipIf(process.platform === 'win32')(
-    "hands the placeholder in a checkout whose own config pins the real helper, and only a proxied session's",
+    "pins a checkout helper that answers a proxied session's placeholder and an unproxied one's real helper",
     async () => {
       const root = mkdtempSync(join(tmpdir(), 'acp-proxied-checkout-'))
       // The daemon target's helper, standing in for the real one: whatever it answers is the real token.
@@ -1130,24 +1127,24 @@ describe('git in a proxied session', () => {
             execFileSync('git', ['credential', 'fill'], {
               cwd: workspace,
               input: `protocol=https\nhost=${host}\npath=${path}\n\n`,
-              env: {
-                PATH: process.env.PATH ?? '',
-                HOME: root,
-                GIT_CONFIG_NOSYSTEM: '1',
-                [CODE_HOST_CREDENTIAL_ENV]: 'acph1_example.tag',
-                ...session
-              }
+              env: { PATH: process.env.PATH ?? '', HOME: root, GIT_CONFIG_NOSYSTEM: '1', ...session }
             }).toString()
+          const placeholder = { [CODE_HOST_CREDENTIAL_ENV]: 'acph1_example.tag' }
           const proxied = sessionGitEnv('agent-checkout', undefined, scope, true)
-          expect(fill(proxied)).toContain('password=acph1_example.tag')
-          // Pairs the session env already carries stay, read before the placeholder helper.
+          // The checkout's own pin answers, so the session carries no command-scope override.
+          expect(proxied.GIT_CONFIG_COUNT).toBeUndefined()
+          expect(fill({ ...proxied, ...placeholder })).toContain('password=acph1_example.tag')
+          // A child that resets the command-scope pairs still presents the placeholder.
+          const reset = { ...proxied, ...placeholder, GIT_CONFIG_COUNT: '0' }
+          expect(fill(reset)).toContain('password=acph1_example.tag')
+          expect(fill(reset)).not.toContain('REAL-TOKEN')
+          // Pairs a session env already carries do not displace the pin.
           const prior = { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'safe.directory', GIT_CONFIG_VALUE_0: '*' }
-          const merged = { ...prior, ...proxied, ...mergeGitConfigEnv(prior, proxied) }
-          expect(configPairs(merged)[0]).toEqual(['safe.directory', '*'])
-          expect(fill(merged)).toContain('password=acph1_example.tag')
+          expect(fill({ ...proxied, ...placeholder, ...prior })).toContain('password=acph1_example.tag')
+          // Without a placeholder in the environment the same pin runs the real helper.
           const direct = sessionGitEnv('agent-checkout', undefined, scope)
-          expect(direct.GIT_CONFIG_COUNT).toBeUndefined()
           expect(fill(direct)).toContain('password=REAL-TOKEN-agent-checkout')
+          expect(fill(proxied)).toContain('password=REAL-TOKEN-agent-checkout')
         }
       } finally {
         rmSync(helper, { force: true })
