@@ -274,12 +274,23 @@ environment, it would reach every repository the identity can see at the
 identity's highest permission; no helper, wrapper, or label could take that
 back. So the Control Plane serves an Azure DevOps grant only to the credential
 proxy and to the daemon's own Git operations, and refuses the agent-facing
-helper channel for it.
+helper channel for it. This is a capability of the provider's credential module
+(`proxyOnly`), which the Control Plane's mint path reads, not a provider-name
+branch, as Gitea §13 requires of every provider difference.
 
 A daemon therefore advertises `azure-devops-v1` only while its credential proxy
 is enabled, and placement requires it. A session on a strategy the proxy does
 not reach yet is refused with `azure_devops_requires_proxy` rather than started
 without credentials.
+
+Two consequences follow from where the proxy stands today:
+
+- The proxy reaches `srt` and host sessions. Sessions in a VM, in a pool pod,
+  or placed on a remote executor are not covered yet. Until the pool-pod
+  tunnel lands, the Cloud pool cannot place an agent with an Azure DevOps
+  workspace or additional repository.
+- `features.credentialProxy` defaults to off, so Azure DevOps is off by default
+  as well. A self-hosted daemon gets it by turning the proxy on.
 
 ### 6.2 Instance and Routes
 
@@ -299,11 +310,13 @@ path:
 - **Everything else is refused**, including other Azure DevOps services and
   organization-wide content such as code search.
 
-The other providers forward a read that names no repository with the
-workspace's credential, because their tokens are scoped by the provider. An
-Azure DevOps token is not, so a read the proxy cannot attribute to an
-authorized repository is refused instead of borrowing the workspace's
-authority.
+The provider contributes these rules to the proxy as its route descriptor, as
+GitLab and Gitea contribute theirs; the shared router has no Azure DevOps
+branch. The descriptor differs from the others in one place. The other
+providers map a read that names no repository to the workspace's credential,
+because their tokens are scoped by the provider. An Azure DevOps token is not,
+so its descriptor maps such a read to `deny` unless it is on the allowlist
+above, rather than borrowing the workspace's authority.
 
 ### 6.3 The Tier
 
@@ -489,7 +502,7 @@ Each step is one pull request, merged in order. The probes of §12 run against a
 live organization before A2.
 
 - **A0 — Push gate.** The proxy refuses `git-receive-pack` under a grant below
-  `write` (§6.3).
+  `write` (§6.3). This is #3767; it is not scheduled again here.
 - **A1 — Protocol.** The provider value with refusing hook entries,
   `azure-devops-v1`, the credential arm, the clone-URL forms, and the reserved
   secondary-root directory.
@@ -497,9 +510,9 @@ live organization before A2.
   the own-application path; the token cache; the identity table, bindings, and
   claims; the picker; derivation and grant arms; gitcred leases served only to
   the proxy plane; and the REST routes.
-- **A3 — Daemon.** The credential module, the proxy instance and routes of
-  §6.2, the client configuration of §6.4, the feature advertisement tied to the
-  proxy, and the strategy refusal.
+- **A3 — Daemon.** The credential module with its `proxyOnly` capability, the
+  proxy instance and route descriptor of §6.2, the client configuration of
+  §6.4, the feature advertisement tied to the proxy, and the strategy refusal.
 - **A4 — Console, Setup, and documentation.** The card, the pickers, the
   Microsoft section's redirect URI and wording, and the setup page on the
   documentation site.
