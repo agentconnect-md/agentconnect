@@ -752,6 +752,8 @@ export function sessionGitConfig(
     '[core]',
     `\thooksPath = ${EMPTY_GIT_CONFIG}`,
     '\tfsmonitor = false',
+    // git's default `anyauth` sends CONNECT bare and waits for a scheme the credential proxy never offers.
+    ...(proxied ? ['[http]', '\tproxyAuthMethod = basic'] : []),
     ...bases.flatMap((base) => [
       `[credential "${base}"]`,
       '\thelper = ', // reset the accumulated helper list for this host
