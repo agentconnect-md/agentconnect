@@ -65,9 +65,10 @@ export interface FakeAdministration {
   signInTenant: string
   /** Refuse the code redemption as Entra does for missing consent. */
   consentRequired: boolean
-  /** Whether the application's service principal is in the organization, and at Basic. */
+  /** Whether the application's service principal is in the organization, and its access level there. */
   spInOrganization: boolean
-  spBasic: boolean
+  spAccessLevel: string
+  /** How the entitlement add and raise answer: a caller below Project Collection Administrator gets 5032. */
   entitlement: 'success' | 'refuse5032'
   /** Whether the caller may make Graph memberships, and add the principal through a group. */
   membershipsAllowed: boolean
@@ -82,7 +83,7 @@ export class FakeAzureDevOps {
     signInTenant: TENANT_ID,
     consentRequired: false,
     spInOrganization: true,
-    spBasic: true,
+    spAccessLevel: 'express',
     entitlement: 'success',
     membershipsAllowed: true,
     projects: [
@@ -191,6 +192,28 @@ export class FakeAzureDevOps {
       return this.json(404, { message: 'not found' })
     }
     const org = `/${ORGANIZATION}/_apis`
+    if (url.startsWith(ENTITLEMENTS_BASE) && path === `${org}/serviceprincipalentitlements/${IDENTITY_ID}`) {
+      if (!admin.spInOrganization) return this.json(404, { message: 'not found' })
+      if (method === 'GET')
+        return this.json(200, { id: IDENTITY_ID, accessLevel: { accountLicenseType: admin.spAccessLevel } })
+      if (method !== 'PATCH' || new Headers(init?.headers).get('content-type') !== 'application/json-patch+json') {
+        return this.json(400, { message: 'bad request' })
+      }
+      if (admin.entitlement === 'refuse5032') {
+        return this.json(200, {
+          isSuccess: false,
+          operationResults: [{ isSuccess: false, errors: [{ key: 5032, value: 'Add Users' }], result: null }]
+        })
+      }
+      const [patch] = JSON.parse(String(init?.body)) as Array<{ path: string; value: { accountLicenseType: string } }>
+      if (patch?.path === '/accessLevel') admin.spAccessLevel = patch.value.accountLicenseType
+      return this.json(200, {
+        isSuccess: true,
+        operationResults: [
+          { isSuccess: true, errors: [], result: { accessLevel: { accountLicenseType: admin.spAccessLevel } } }
+        ]
+      })
+    }
     if (url.startsWith(ENTITLEMENTS_BASE)) {
       if (path !== `${org}/serviceprincipalentitlements` || method !== 'POST') return this.json(404, {})
       if (admin.entitlement === 'refuse5032') {
@@ -200,7 +223,7 @@ export class FakeAzureDevOps {
         })
       }
       admin.spInOrganization = true
-      admin.spBasic = true
+      admin.spAccessLevel = 'express'
       return this.json(200, {
         isSuccess: true,
         operationResult: {
@@ -253,7 +276,7 @@ export class FakeAzureDevOps {
       const subject = `aadsp.${IDENTITY_ID}`
       admin.spInOrganization = true
       // Added through a group, the principal lands at the organization's default level, Stakeholder here.
-      admin.spBasic = false
+      admin.spAccessLevel = 'stakeholder'
       for (const group of (u.searchParams.get('groupDescriptors') ?? '').split(',').filter(Boolean)) {
         admin.memberships.add(`${subject}|${group}`)
       }
@@ -309,7 +332,7 @@ export class FakeAzureDevOps {
     }
     if (path === `/${ORGANIZATION}/_apis/git/repositories` && method === 'GET') {
       // Stakeholder reaches no repository (§12 item 2).
-      const visible = this.admin.spBasic ? this.repositories : []
+      const visible = ['stakeholder', 'none'].includes(this.admin.spAccessLevel) ? [] : this.repositories
       return this.json(200, {
         count: visible.length,
         value: visible.map((repo) => ({

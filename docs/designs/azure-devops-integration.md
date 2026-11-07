@@ -158,8 +158,11 @@ The Console's Azure DevOps card leads with **Connect with Microsoft**:
    customer tenant and reads the service principal's object id from its `oid`
    claim, which works before the service principal is in the organization.
    With that token it reads `connectionData`: a 200 means the service principal
-   is already a member, so no entitlement is requested, which also makes the
-   step safe to repeat; `TF401444` or `TF400813` means it is not. Then, with the
+   is already a member, so it is not added again, which also makes the step
+   safe to repeat; `TF401444` or `TF400813` means it is not. A member found
+   below Basic (Stakeholder or none) is raised to Basic with the entitlement
+   `PATCH`, which answers like the add; Basic and every level above it are left
+   alone. Otherwise, with the
    administrator's delegated token, the Control Plane
    adds the application's service principal to the organization with the Basic
    access level (`POST vsaex…/_apis/serviceprincipalentitlements`). It then
@@ -195,8 +198,9 @@ The Console's Azure DevOps card leads with **Connect with Microsoft**:
    leaves it at the organization's default access level; the refusal reports
    which memberships were made and keeps the ticket. Once the checklist is
    done, `POST /orgs/:orgId/azure-devops/connect/:flow/verify` resumes: it
-   re-reads `connectionData` as the application, makes the memberships the
-   caller may, and runs steps 5 and 6. A membership the caller may not make
+   re-reads `connectionData` as the application, raises a member below Basic
+   when the caller may, makes the memberships the caller may, and runs steps 5
+   and 6. A raise refused with `5032` answers with the same checklist. A membership the caller may not make
    does not stop it there, since a Project Collection Administrator may have
    made it by hand; the repository list of step 5 decides.
 
@@ -229,7 +233,9 @@ it cannot change the organization's groups by itself. The card therefore offers
 organization. The administrator signs in at the connection's tenant authority,
 so a guest of that tenant signs in there too, picks projects and their groups,
 and the Control Plane applies the change with the new delegated token and
-discards it. It then re-verifies the connection with the same identity and
+discards it; a service principal found below Basic is raised to Basic, so a
+Project Collection Administrator fixes a Stakeholder identity in one pass. It
+then re-verifies the connection with the same identity and
 organization required, and a degraded connection recovers. The flow adds
 memberships; it removes none, so taking a project away or lowering
 Contributors to Readers is done in Azure DevOps. A change made directly in

@@ -2,7 +2,7 @@
 import { describe, it, expect } from 'vitest'
 import type { Clock } from '../domain/clock.js'
 import { AzureDevOpsApiClient } from './api.js'
-import { addServicePrincipalEntitlement } from './admin-api.js'
+import { addServicePrincipalEntitlement, raiseServicePrincipalToBasic, reachesRepositories } from './admin-api.js'
 import {
   FLOW_TICKET_TTL_MS,
   azureDevOpsConnectKeys,
@@ -98,5 +98,35 @@ describe('the entitlement answer', () => {
       'oid'
     )
     expect(added).toEqual({ outcome: 'added', subjectDescriptor: 'aadsp.example' })
+  })
+
+  it('counts Basic and every level above it as enough, and only Stakeholder or none as not', () => {
+    for (const level of ['express', 'advanced', 'professional', 'earlyAdopter']) {
+      expect(reachesRepositories(level)).toBe(true)
+    }
+    for (const level of ['stakeholder', 'none', null, undefined, '']) expect(reachesRepositories(level)).toBe(false)
+  })
+
+  it('reads the patch answer’s operationResults', async () => {
+    const refused = await raiseServicePrincipalToBasic(
+      answering({
+        isSuccess: false,
+        operationResults: [{ isSuccess: false, errors: [{ key: 5032, value: 'Add Users' }] }]
+      }),
+      'token',
+      'example-org',
+      'id'
+    )
+    expect(refused).toEqual({ outcome: 'refused', errorCodes: [5032] })
+    const raised = await raiseServicePrincipalToBasic(
+      answering({
+        isSuccess: true,
+        operationResults: [{ isSuccess: true, result: { accessLevel: { accountLicenseType: 'express' } } }]
+      }),
+      'token',
+      'example-org',
+      'id'
+    )
+    expect(raised).toEqual({ outcome: 'raised' })
   })
 })

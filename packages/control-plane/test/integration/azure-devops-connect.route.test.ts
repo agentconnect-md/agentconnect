@@ -332,16 +332,18 @@ describe('below Project Collection Administrator (§3.2 step 4)', () => {
     expect(h.calls('POST', `${GRAPH_BASE}/${ORGANIZATION}/_apis/graph/serviceprincipals`)).toHaveLength(1)
     expect(await h.connectionRepo.listForOrg(DEFAULT_ORG_ID)).toHaveLength(0)
 
-    // At Stakeholder nothing is reachable yet; the ticket survives the refusal.
+    // Added through a group at Stakeholder: verify tries the raise, which the same caller is refused again.
     const early = await h.post(`/azure-devops/connect/${flowId}/verify`, {}, body.ticket)
-    expect(early.statusCode).toBe(409)
-    expect(early.json()).toMatchObject({ code: 'no_repository_access' })
+    expect(early.statusCode).toBe(403)
+    expect(early.json()).toMatchObject({ code: 'project_collection_administrator_required', inOrganization: true })
     expect(early.json().ticket).toBeTruthy()
 
-    // A Project Collection Administrator raises the level by hand; verify connects.
-    h.fake.admin.spBasic = true
+    // A caller who may grant Basic verifies: the raise goes through and the flow connects.
+    h.fake.admin.entitlement = 'success'
     const verified = await h.post(`/azure-devops/connect/${flowId}/verify`, {}, body.ticket)
     expect(verified.statusCode).toBe(200)
+    expect(h.calls('PATCH', ENTITLEMENTS_BASE)).toHaveLength(2)
+    expect(h.fake.admin.spAccessLevel).toBe('express')
     expect(verified.json().connection).toMatchObject({ credentialSource: 'deployment', state: 'connected' })
     expect(verified.json().memberships.map((m: { outcome: string }) => m.outcome)).toEqual([
       'already_member',
@@ -375,11 +377,69 @@ describe('below Project Collection Administrator (§3.2 step 4)', () => {
 
     // The administrator adds it by hand, with Basic and the group.
     h.fake.admin.spInOrganization = true
-    h.fake.admin.spBasic = true
+    h.fake.admin.spAccessLevel = 'express'
     const verified = await h.post(`/azure-devops/connect/${flowId}/verify`, {}, body.ticket)
     expect(verified.statusCode).toBe(200)
     expect(verified.json().connection).toMatchObject({ organization: ORGANIZATION, state: 'connected' })
     expect(h.calls('POST', ENTITLEMENTS_BASE)).toHaveLength(1)
+    expect(h.calls('PATCH', ENTITLEMENTS_BASE)).toHaveLength(0)
+  })
+})
+
+describe('a member below Basic (§3.2 step 4)', () => {
+  const apply = async (h: ReturnType<typeof harness>) => {
+    const { flowId, ticket } = await h.toProjects()
+    return h.post(
+      `/azure-devops/connect/${flowId}/projects`,
+      { projects: [{ projectId: PROJECT_ID, group: 'contributors' }] },
+      ticket
+    )
+  }
+
+  it('raises a Stakeholder member to Basic with the entitlement patch and connects', async () => {
+    const h = harness()
+    h.fake.admin.spAccessLevel = 'stakeholder'
+    const res = await apply(h)
+    expect(res.statusCode).toBe(200)
+    expect(h.calls('POST', ENTITLEMENTS_BASE)).toHaveLength(0)
+    const [patch] = h.calls('PATCH', ENTITLEMENTS_BASE)
+    expect(patch!.url).toBe(
+      `${ENTITLEMENTS_BASE}/${ORGANIZATION}/_apis/serviceprincipalentitlements/${IDENTITY_ID}?api-version=7.1-preview.1`
+    )
+    expect(JSON.parse(patch!.body!)).toEqual([
+      {
+        from: '',
+        op: 'replace',
+        path: '/accessLevel',
+        value: { accountLicenseType: 'express', licensingSource: 'account' }
+      }
+    ])
+    expect(res.json().connection).toMatchObject({ state: 'connected' })
+  })
+
+  it('answers a refused raise (5032) with the Project Collection Administrator checklist and a ticket', async () => {
+    const h = harness()
+    h.fake.admin.spAccessLevel = 'stakeholder'
+    h.fake.admin.entitlement = 'refuse5032'
+    const res = await apply(h)
+    expect(res.statusCode).toBe(403)
+    expect(res.json()).toMatchObject({
+      code: 'project_collection_administrator_required',
+      inOrganization: true,
+      memberships: [expect.objectContaining({ outcome: 'added' })]
+    })
+    expect(res.json().checklist.join('\n')).toContain('Basic')
+    expect(res.json().ticket).toBeTruthy()
+    expect(await h.connectionRepo.listForOrg(DEFAULT_ORG_ID)).toHaveLength(0)
+  })
+
+  it('leaves a member above Basic alone', async () => {
+    const h = harness()
+    h.fake.admin.spAccessLevel = 'advanced'
+    const res = await apply(h)
+    expect(res.statusCode).toBe(200)
+    expect(h.calls('PATCH', ENTITLEMENTS_BASE)).toHaveLength(0)
+    expect(h.fake.admin.spAccessLevel).toBe('advanced')
   })
 })
 

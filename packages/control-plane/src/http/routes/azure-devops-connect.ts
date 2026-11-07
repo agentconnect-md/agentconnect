@@ -235,7 +235,7 @@ export function azureDevOpsConnectRoutes(deps: HttpDeps) {
           tags: [Tag.AzureDevOps],
           summary: 'Give the application access to projects and connect',
           description:
-            'Adds the application’s service principal to the organization with the Basic access level unless it is already a member, adds it to each project’s Readers or Contributors group, then verifies as the application and records the connection (or, for Manage project access, re-verifies the existing one). Below Project Collection Administrator the entitlement is refused with a manual checklist naming the application’s client ID, the memberships the caller could make, and a ticket to verify with once the checklist is done.',
+            'Adds the application’s service principal to the organization with the Basic access level, or raises a member below Basic to Basic, adds it to each project’s Readers or Contributors group, then verifies as the application and records the connection (or, for Manage project access, re-verifies the existing one). Below Project Collection Administrator the entitlement is refused with a manual checklist naming the application’s client ID, the memberships the caller could make, and a ticket to verify with once the checklist is done.',
           operationId: 'applyAzureDevOpsConnectProjects',
           params: AzureDevOpsFlowParams,
           headers: AzureDevOpsFlowHeaders,
@@ -257,7 +257,7 @@ export function azureDevOpsConnectRoutes(deps: HttpDeps) {
           tags: [Tag.AzureDevOps],
           summary: 'Verify Azure DevOps access after a manual step',
           description:
-            'Resumes a flow whose projects were chosen: checks that the service principal is in the organization, makes the group memberships the caller may, then verifies as the application and records the connection (or re-verifies the existing one). Refused with `not_in_organization` and the checklist while the service principal is not a member.',
+            'Resumes a flow whose projects were chosen: checks that the service principal is in the organization, raises it to Basic when below, makes the group memberships the caller may, then verifies as the application and records the connection (or re-verifies the existing one). Refused with `not_in_organization` and the checklist while the service principal is not a member.',
           operationId: 'verifyAzureDevOpsConnect',
           params: AzureDevOpsFlowParams,
           headers: AzureDevOpsFlowHeaders,

@@ -24,7 +24,12 @@ async function adminRequest(
   api: AzureDevOpsApiClient,
   token: string,
   url: string,
-  init: { method?: 'GET' | 'POST' | 'PUT'; body?: unknown; okStatuses?: readonly number[] } = {}
+  init: {
+    method?: 'GET' | 'POST' | 'PUT' | 'PATCH'
+    body?: unknown
+    contentType?: string
+    okStatuses?: readonly number[]
+  } = {}
 ): Promise<AdminAnswer> {
   let res: Response
   try {
@@ -33,7 +38,7 @@ async function adminRequest(
       headers: {
         authorization: `Bearer ${token}`,
         accept: 'application/json',
-        ...(init.body !== undefined ? { 'content-type': 'application/json' } : {})
+        ...(init.body !== undefined ? { 'content-type': init.contentType ?? 'application/json' } : {})
       },
       ...(init.body !== undefined ? { body: JSON.stringify(init.body) } : {})
     })
@@ -149,19 +154,36 @@ export async function listProjects(
 export const BASIC_ACCESS_LEVEL = 'express'
 /** The entitlement error a caller below Project Collection Administrator gets ("Add Users"). */
 export const ADD_USERS_REFUSED = 5032
+/** The levels that reach no repository; Basic and everything above it (Basic + Test Plans, Visual Studio subscriber) do. */
+const BELOW_BASIC = new Set(['stakeholder', 'none'])
+
+/** Whether an access level reaches Azure Repos; an absent level is not known to. */
+export function reachesRepositories(level: unknown): boolean {
+  return typeof level === 'string' && !!level && !BELOW_BASIC.has(level.toLowerCase())
+}
 
 export type AzureDevOpsEntitlementResult =
   | { outcome: 'added'; subjectDescriptor: string | null }
   | { outcome: 'refused'; errorCodes: number[]; subjectDescriptor: string | null }
 
+interface RawOperationResult {
+  isSuccess?: unknown
+  errors?: Array<{ key?: unknown; value?: unknown }>
+  result?: RawEntitlement
+}
 interface RawEntitlementAnswer {
   isSuccess?: unknown
-  operationResult?: {
-    isSuccess?: unknown
-    errors?: Array<{ key?: unknown; value?: unknown }>
-    result?: RawEntitlement
-  }
+  operationResult?: RawOperationResult
+  /** The PATCH answers a list. */
+  operationResults?: RawOperationResult[]
   servicePrincipalEntitlement?: RawEntitlement
+}
+
+function errorCodesOf(operations: readonly RawOperationResult[]): number[] {
+  return operations
+    .flatMap((operation) => operation.errors ?? [])
+    .map((error) => Number(error.key ?? /\b(\d{4,})\b/.exec(String(error.value ?? ''))?.[1]))
+    .filter((code) => Number.isFinite(code))
 }
 interface RawEntitlement {
   accessLevel?: { accountLicenseType?: unknown }
@@ -193,16 +215,64 @@ export async function addServicePrincipalEntitlement(
   const descriptor = entitlement?.servicePrincipal?.descriptor
   const subjectDescriptor = typeof descriptor === 'string' && descriptor ? descriptor : null
   const success = (operation?.isSuccess ?? json.isSuccess) === true
-  const errorCodes = (operation?.errors ?? [])
-    .map((error) => Number(error.key ?? /\b(\d{4,})\b/.exec(String(error.value ?? ''))?.[1]))
-    .filter((code) => Number.isFinite(code))
+  const errorCodes = errorCodesOf(operation ? [operation] : [])
   const level = entitlement?.accessLevel?.accountLicenseType
   if (!success) return { outcome: 'refused', errorCodes, subjectDescriptor }
-  // A success at any level below Basic reaches no repository, so it is reported as refused (§3.2 step 4).
-  if (typeof level === 'string' && level !== BASIC_ACCESS_LEVEL) {
-    return { outcome: 'refused', errorCodes, subjectDescriptor }
-  }
+  // A success below Basic reaches no repository, so it is reported as refused (§3.2 step 4).
+  if (level !== undefined && !reachesRepositories(level)) return { outcome: 'refused', errorCodes, subjectDescriptor }
   return { outcome: 'added', subjectDescriptor }
+}
+
+const entitlementUrl = (organization: string, servicePrincipalId: string) =>
+  `${ENTITLEMENTS_BASE}/${org(organization)}/_apis/serviceprincipalentitlements/${encodeURIComponent(servicePrincipalId)}?api-version=${PREVIEW_VERSION}`
+
+/** A member's current access level by its Azure DevOps id; null when it holds no entitlement. */
+export async function readServicePrincipalAccessLevel(
+  api: AzureDevOpsApiClient,
+  token: string,
+  organization: string,
+  servicePrincipalId: string
+): Promise<string | null> {
+  try {
+    const answer = await adminRequest(api, token, entitlementUrl(organization, servicePrincipalId))
+    const level = (answer.json as RawEntitlement | null)?.accessLevel?.accountLicenseType
+    return typeof level === 'string' && level ? level : null
+  } catch (e) {
+    if (e instanceof AzureDevOpsApiError && e.code === 'NOT_FOUND') return null
+    throw e
+  }
+}
+
+/** Raise a member below Basic with the entitlement JSON patch; like the add, `isSuccess` decides, not the status code. */
+export async function raiseServicePrincipalToBasic(
+  api: AzureDevOpsApiClient,
+  token: string,
+  organization: string,
+  servicePrincipalId: string
+): Promise<{ outcome: 'raised' } | { outcome: 'refused'; errorCodes: number[] }> {
+  const answer = await adminRequest(api, token, entitlementUrl(organization, servicePrincipalId), {
+    method: 'PATCH',
+    contentType: 'application/json-patch+json',
+    body: [
+      {
+        from: '',
+        op: 'replace',
+        path: '/accessLevel',
+        value: { accountLicenseType: BASIC_ACCESS_LEVEL, licensingSource: 'account' }
+      }
+    ]
+  })
+  const json = (answer.json ?? {}) as RawEntitlementAnswer
+  const operations = json.operationResults ?? (json.operationResult ? [json.operationResult] : [])
+  const success = operations.length > 0 ? operations.every((o) => o.isSuccess === true) : json.isSuccess === true
+  if (!success) return { outcome: 'refused', errorCodes: errorCodesOf(operations) }
+  const level =
+    operations[0]?.result?.accessLevel?.accountLicenseType ??
+    json.servicePrincipalEntitlement?.accessLevel?.accountLicenseType
+  if (level !== undefined && !reachesRepositories(level)) {
+    return { outcome: 'refused', errorCodes: errorCodesOf(operations) }
+  }
+  return { outcome: 'raised' }
 }
 
 /** A Graph descriptor for a storage key: a project id gives the project's scope, an identity id its subject. */

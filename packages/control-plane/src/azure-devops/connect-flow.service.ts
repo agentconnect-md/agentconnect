@@ -11,7 +11,10 @@ import {
   findProjectGroup,
   listMemberOrganizations,
   listProjects,
+  raiseServicePrincipalToBasic,
+  reachesRepositories,
   readGraphDescriptor,
+  readServicePrincipalAccessLevel,
   type AzureDevOpsMembershipOutcome
 } from './admin-api.js'
 import {
@@ -525,11 +528,15 @@ export class AzureDevOpsConnectFlowService {
     const identityId = await this.memberIdentity(appToken, organization)
 
     if (identityId !== null) {
-      // Already in the organization: no entitlement call, whatever its level (§3.2 step 4).
+      // Already in the organization: no add, but a level below Basic is raised (§3.2 step 4).
+      const level = await this.ensureBasic(recorded, organization, identityId)
       const subject = await this.subjectOf(recorded, organization, identityId)
       const { memberships } = await this.applyMemberships(recorded, organization, recorded.projects!, subject)
+      if (level.outcome === 'refused') {
+        throw this.entitlementRefusal(organization, sp, level.errorCodes, memberships, true, resume)
+      }
       if (memberships.some((m) => !SUCCEEDED.has(m.outcome)))
-        throw this.incomplete(organization, sp, memberships, resume, false)
+        throw this.incomplete(organization, sp, memberships, resume, level.outcome === 'basic')
       return this.finish(recorded, memberships, resume)
     }
 
@@ -567,22 +574,52 @@ export class AzureDevOpsConnectFlowService {
       entitlement.subjectDescriptor,
       sp.objectId
     )
-    const inOrganization = subject !== null
+    throw this.entitlementRefusal(organization, sp, entitlement.errorCodes, memberships, subject !== null, resume)
+  }
+
+  /** A member's level as the delegated caller sees it, raised to Basic when below; `unknown` when the caller may not read it. */
+  private async ensureBasic(
+    ticket: AzureDevOpsFlowTicket,
+    organization: string,
+    identityId: string
+  ): Promise<{ outcome: 'basic' | 'unknown' } | { outcome: 'refused'; errorCodes: number[] }> {
+    let level: string | null
+    try {
+      level = await readServicePrincipalAccessLevel(this.deps.api, ticket.accessToken, organization, identityId)
+    } catch (e) {
+      if (e instanceof AzureDevOpsApiError && e.code === 'FORBIDDEN') return { outcome: 'unknown' }
+      return delegatedDenied(e, organization)
+    }
+    if (reachesRepositories(level)) return { outcome: 'basic' }
+    try {
+      const raised = await raiseServicePrincipalToBasic(this.deps.api, ticket.accessToken, organization, identityId)
+      return raised.outcome === 'raised' ? { outcome: 'basic' } : raised
+    } catch (e) {
+      if (e instanceof AzureDevOpsApiError && e.code === 'FORBIDDEN') return { outcome: 'refused', errorCodes: [] }
+      return delegatedDenied(e, organization)
+    }
+  }
+
+  /** The entitlement add or raise refused: 5032 names the role; either way the checklist and a ticket for verify. */
+  private entitlementRefusal(
+    organization: string,
+    sp: ServicePrincipal,
+    errorCodes: readonly number[],
+    memberships: AzureDevOpsMembershipReport[],
+    inOrganization: boolean,
+    ticket: string
+  ): AzureDevOpsConnectRefusal {
     const made = memberships.filter((m) => SUCCEEDED.has(m.outcome)).length
-    const pca = entitlement.errorCodes.includes(ADD_USERS_REFUSED)
+    const pca = errorCodes.includes(ADD_USERS_REFUSED)
+    const codes = errorCodes.length ? ` (error ${errorCodes.join(', ')})` : ''
     const message = pca
-      ? `Only a Project Collection Administrator of ${organization} can add the application with the Basic access level. ${made} of ${memberships.length} project memberships were made; ask a Project Collection Administrator to finish the checklist, then verify.`
-      : `Azure DevOps refused to add the application to ${organization} with the Basic access level${entitlement.errorCodes.length ? ` (error ${entitlement.errorCodes.join(', ')})` : ''}. ${made} of ${memberships.length} project memberships were made; finish the checklist, then verify.`
-    throw new AzureDevOpsConnectRefusal(
+      ? `Only a Project Collection Administrator of ${organization} can give the application the Basic access level. ${made} of ${memberships.length} project memberships were made; ask a Project Collection Administrator to finish the checklist, then verify.`
+      : `Azure DevOps refused to give the application the Basic access level in ${organization}${codes}. ${made} of ${memberships.length} project memberships were made; finish the checklist, then verify.`
+    return new AzureDevOpsConnectRefusal(
       message,
       403,
       pca ? 'project_collection_administrator_required' : 'entitlement_refused',
-      {
-        checklist: this.checklist(organization, sp, memberships, inOrganization),
-        memberships,
-        inOrganization,
-        ticket: resume
-      }
+      { checklist: this.checklist(organization, sp, memberships, inOrganization), memberships, inOrganization, ticket }
     )
   }
 
@@ -629,9 +666,13 @@ export class AzureDevOpsConnectFlowService {
         }
       )
     }
+    const level = await this.ensureBasic(ticket, organization, identityId)
     const subject = await this.subjectOf(ticket, organization, identityId)
     // A membership the caller may not make may already exist by hand; steps 5 and 6 decide.
     const { memberships } = await this.applyMemberships(ticket, organization, ticket.projects, subject)
+    if (level.outcome === 'refused') {
+      throw this.entitlementRefusal(organization, sp, level.errorCodes, memberships, true, resume)
+    }
     return this.finish(ticket, memberships, resume)
   }
 
