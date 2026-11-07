@@ -17,29 +17,38 @@ const OptionTag = ({ tag }: { tag: string }) => (
   <span className="flex-none font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">{tag}</span>
 )
 
-/** A form-field dropdown with the `.inp` trigger of `DaemonSelect`/`RuntimeSelect`, portaled so a modal body never clips it. */
+/** A form-field dropdown with the `.inp` trigger of `DaemonSelect`/`RuntimeSelect`, portaled so a modal body never clips it; `inline` draws the trigger as a dotted-underline word inside a sentence. */
 export function FieldSelect<T extends string>({
   value,
   options,
   onChange,
   ariaLabel,
-  disabled = false
+  disabled = false,
+  inline = false
 }: {
   value: T
   options: readonly FieldSelectOption<T>[]
   onChange: (value: T) => void
   ariaLabel: string
   disabled?: boolean
+  inline?: boolean
 }) {
   const current = options.find((o) => o.value === value)
+  const triggerClass = inline
+    ? `inline-flex items-center gap-[3px] rounded-xs border-0 bg-transparent p-0 font-sans text-[12px] font-medium leading-normal underline decoration-dotted decoration-(--text-tertiary) underline-offset-[3px] outline-none focus-visible:shadow-(--focus-shadow) ${
+        disabled
+          ? 'cursor-default text-(--text-tertiary)'
+          : 'cursor-pointer text-(--text-secondary) hover:text-(--text-primary)'
+      }`
+    : ''
   return (
     <AnchoredFlyout
       ariaLabel={ariaLabel}
       align="start"
       width={200}
-      matchTriggerWidth
+      matchTriggerWidth={!inline}
       estimatedHeight={12 + options.length * 34}
-      triggerClassName="flex w-full"
+      triggerClassName={inline ? 'inline-flex' : 'flex w-full'}
       trigger={({ open, menuId, toggle }) => (
         <button
           type="button"
@@ -55,21 +64,29 @@ export function FieldSelect<T extends string>({
               toggle()
             }
           }}
-          className={`inp relative w-full text-left outline-none transition-[background-color,border-color,box-shadow] ${
-            open
-              ? 'cursor-pointer border-(--border-strong) shadow-(--focus-shadow)'
-              : disabled
-                ? 'cursor-default opacity-60'
-                : 'cursor-pointer hover:border-(--border-strong) hover:bg-(--surface-hover)'
-          }`}
+          className={
+            inline
+              ? triggerClass
+              : `inp relative w-full text-left outline-none transition-[background-color,border-color,box-shadow] ${
+                  open
+                    ? 'cursor-pointer border-(--border-strong) shadow-(--focus-shadow)'
+                    : disabled
+                      ? 'cursor-default opacity-60'
+                      : 'cursor-pointer hover:border-(--border-strong) hover:bg-(--surface-hover)'
+                }`
+          }
         >
-          <span className="flex min-w-0 flex-1 items-center gap-2">
-            <span className="min-w-0 truncate">{current?.label ?? value}</span>
-            {current?.tag && <OptionTag tag={current.tag} />}
-          </span>
+          {inline ? (
+            <span>{current?.label ?? value}</span>
+          ) : (
+            <span className="flex min-w-0 flex-1 items-center gap-2">
+              <span className="min-w-0 truncate">{current?.label ?? value}</span>
+              {current?.tag && <OptionTag tag={current.tag} />}
+            </span>
+          )}
           <Icon
             name="chevron-down"
-            size={15}
+            size={inline ? 12 : 15}
             color="var(--text-tertiary)"
             className={`flex-none transition-transform ${open ? 'rotate-180' : ''}`}
           />

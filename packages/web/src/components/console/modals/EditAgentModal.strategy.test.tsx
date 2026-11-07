@@ -374,25 +374,3 @@ it('removes a live secret only after its removal is confirmed, and sends it as n
     'GRAFANA_TOKEN'
   ])
 })
-
-// What the agent's new rooms start at: an unset mode reads as Auto, and only a change is saved.
-it('shows the stored new-channel mode, unset as Auto, and saves only a change', async () => {
-  await openEditor({}, { displayName: 'Ops' })
-  expect(button('New channels start on').textContent).toContain('Auto')
-  await act(async () => saveButton().click())
-  await vi.waitFor(() => expect(mocks.updateAgent).toHaveBeenCalled())
-  expect(mocks.updateAgent.mock.calls[0]![1]).not.toHaveProperty('newConversationMode')
-})
-
-it('saves the new-channel mode picked in the editor', async () => {
-  await openEditor({ newConversationMode: 'off' })
-  expect(button('New channels start on').textContent).toContain('Off')
-  await act(async () => button('New channels start on').click())
-  const mention = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].find((row) =>
-    row.textContent?.includes('@-mentions, per thread')
-  )!
-  await act(async () => mention.click())
-  await act(async () => saveButton().click())
-  await vi.waitFor(() => expect(mocks.updateAgent).toHaveBeenCalled())
-  expect(mocks.updateAgent.mock.calls[0]![1]).toMatchObject({ newConversationMode: 'mention' })
-})

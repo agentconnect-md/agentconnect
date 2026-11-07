@@ -2243,6 +2243,7 @@ export function agentFromDto(d: AgentDto): Agent {
     allowedTargetAgentIds: d.allowedTargetAgentIds ?? [],
     // Unset (older CP) reads as off — the product default.
     introduceOnJoin: d.introduceOnJoin ?? false,
+    newConversationMode: d.newConversationMode ?? null,
     githubAppId: d.githubAppId ?? null,
     // An older CP that names no strategy is read as the unplaced agent's host-only table.
     execution: d.execution ?? HOST_STRATEGY,

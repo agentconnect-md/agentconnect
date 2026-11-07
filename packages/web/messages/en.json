@@ -2908,14 +2908,6 @@
         "introduceOnJoin": "Introduce on channel join",
         "introduceOnJoinOn": "On — greets peers on join",
         "introduceOnJoinHint": "Introduces itself to agents already in a channel it joins.",
-        "newConversations": "New channels start on",
-        "newConversationsHint": "Applies to channels and group DMs the agent joins from now on; existing ones keep their settings.",
-        "newConversationsAuto": "Auto",
-        "newConversationsAutoHint": "A coordinator reads every message and decides what to answer (where the daemon supports it; otherwise @-mentions).",
-        "newConversationsMention": "@-mentions, per thread",
-        "newConversationsMentionHint": "Replies only when @-mentioned; each thread is its own session.",
-        "newConversationsOff": "Off",
-        "newConversationsOffHint": "Stays in the channel but never replies until it is turned on.",
         "placeAgent": "Place agent",
         "saveChanges": "Save changes",
         "sourceForceOffline": "{daemon} is offline, so this move force reassigns; if it is still running, both copies may process messages.",
@@ -3285,7 +3277,11 @@
         "runbooksDirectory": "docs/runbooks/",
         "seconds": "{value}s",
         "githubVia": "via <slug></slug>",
-        "githubApp": "GitHub App"
+        "githubApp": "GitHub App",
+        "newChannels": "New channels start on",
+        "newChannelsAuto": "Auto",
+        "newChannelsMention": "@-mentions · Per thread",
+        "newChannelsOff": "Off"
       },
       "tools": {
         "loading": "Loading…",
