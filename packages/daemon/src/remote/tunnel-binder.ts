@@ -1,5 +1,5 @@
 import { TunnelProxy, type TunnelProxyDeps } from '../shim/tunnel-proxy.js'
-import type { TunnelListening, TunnelName } from '../shim/tunnel.js'
+import type { TunnelListening, TunnelListenOptions, TunnelName } from '../shim/tunnel.js'
 import { sandboxSubjectAgentId } from './sandbox-subject.js'
 
 /** What a bound channel has to offer this binder: the proxy's own session surface plus the
@@ -14,7 +14,7 @@ export interface TunnelBinderDeps {
   /** The line that tags a subject's connection to a daemon socket with that subject (gitcred's pod window binding). */
   tunnelGreeting?: (subject: string, tunnel: TunnelName) => Buffer | undefined
   /** What a subject's `listen` carries beside the name (`codehost`'s routes and CA). */
-  tunnelListenOptions?: (agentId: string, tunnel: TunnelName) => { routes: string[]; ca: string } | undefined
+  tunnelListenOptions?: (agentId: string, tunnel: TunnelName) => TunnelListenOptions | undefined
   log: { info: (m: string) => void; warn: (m: string) => void; debug?: (m: string) => void }
 }
 

@@ -5,6 +5,7 @@ import {
   MAX_TUNNEL_CHUNK_BYTES,
   TunnelListeningSchema,
   type TunnelListening,
+  type TunnelListenOptions,
   type TunnelName
 } from './tunnel.js'
 
@@ -39,7 +40,7 @@ export interface TunnelProxyDeps {
   /** Bytes written to the daemon socket before any pod byte, naming this pod to the server (gitcred's window binding). */
   greeting?: (tunnel: TunnelName) => Buffer | undefined
   /** What a `listen` carries beside the name: `codehost`'s routes and the CA its sessions trust. */
-  listenOptions?: (tunnel: TunnelName) => { routes: string[]; ca: string } | undefined
+  listenOptions?: (tunnel: TunnelName) => TunnelListenOptions | undefined
   /** Dials a local unix socket. Injected so a test can stand in for the daemon's server. */
   dial?: (path: string) => Socket
   log: { info: (m: string) => void; warn: (m: string) => void }

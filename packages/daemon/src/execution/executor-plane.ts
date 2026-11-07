@@ -8,6 +8,7 @@ import type { PrivateRuntimeState } from '../runtimes/private-runtime-state.js'
 import { sessionKeyDirName } from '../acp/host-key.js'
 import type { RuntimeDef } from '../config/config-schema.js'
 import { clusterMetrics } from '../metrics/cluster-metrics.js'
+import { codehostProxyUrl } from '../remote/codehost-spawn.js'
 import { ChannelBinder } from '../remote/channel-binder.js'
 import { LaunchRegistry } from '../remote/launch-registry.js'
 import { sandboxSubjectSessionLeaf, sessionSandboxSubject, type SandboxSubject } from '../remote/sandbox-subject.js'
@@ -24,7 +25,7 @@ import { shimPaths } from '../shim/sandbox-paths.js'
 import type { ShimSession } from '../shim/session.js'
 import { ShimWorkspaceFiles } from '../shim/workspace-files-channel.js'
 import { ShimWorkspaceFs } from '../shim/workspace-fs-channel.js'
-import type { TunnelName } from '../shim/tunnel.js'
+import type { TunnelListenOptions, TunnelName } from '../shim/tunnel.js'
 import type { GitRunner } from '../workspace/git-runner.js'
 import { RoutedWorkspaceFiles, WorkspaceViolationError, type WorkspaceFiles } from '../workspace/workspace-files.js'
 import { SESSIONS_DIR, sessionDirIn, sessionHomeIn } from '../workspace/session-layout.js'
@@ -74,7 +75,7 @@ export interface ExecutorPlaneDeps {
   /** Tags a subject's daemon-socket connection with that subject (gitcred binds a pod window to its pod). */
   tunnelGreeting?: (subject: string, tunnel: TunnelName) => Buffer | undefined
   /** What a `listen` carries beside the name: `codehost`'s routes and the CA its sessions trust. */
-  tunnelListenOptions?: (agentId: string, tunnel: TunnelName) => { routes: string[]; ca: string } | undefined
+  tunnelListenOptions?: (agentId: string, tunnel: TunnelName) => TunnelListenOptions | undefined
   log: { info: (m: string) => void; warn: (m: string) => void; debug?: (m: string) => void }
   clock?: Clock
   /** Test seams: the dial's budget and the loss grace. */
@@ -225,7 +226,7 @@ export class ExecutorPlane implements ExecutionPlane {
     const placed = this.placements.get(sessionKey)
     const proxy = placed && this.tunnels.listeningAt(placed.subject, 'codehost')?.proxy
     if (!proxy) return undefined
-    return { url: `http://codehost:${proxy.token}@127.0.0.1:${proxy.port}`, trustBundle: proxy.trustBundle }
+    return { url: codehostProxyUrl(proxy), trustBundle: proxy.trustBundle }
   }
 
   /** The runtime a placed session starts: the command its executor named for its own install (§8), else this machine's definition as before. */

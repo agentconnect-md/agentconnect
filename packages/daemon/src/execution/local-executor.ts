@@ -15,7 +15,7 @@ import type { ShimTransport } from '../shim/client.js'
 import { ShimDialer } from '../shim/dialer.js'
 import { DEFAULT_SHIM_LISTEN_PORT } from '../shim/protocol.js'
 import type { ShimSession } from '../shim/session.js'
-import type { TunnelName } from '../shim/tunnel.js'
+import type { TunnelListenOptions, TunnelName } from '../shim/tunnel.js'
 import { EXECUTOR_GRANTS } from './executor-plane.js'
 import type { EnvironmentDescriptor, SessionEnvironment, StrategyLauncher } from './strategies.js'
 
@@ -23,7 +23,7 @@ import type { EnvironmentDescriptor, SessionEnvironment, StrategyLauncher } from
 const CREDENTIAL_TTL_MS = 24 * 60 * 60_000
 // The launcher answers once the shim listens, so the dial has only a stream to open.
 const CHANNEL_TIMEOUT_MS = 15_000
-// The helper tunnels only: a local VM or srt environment is never served the executor-only codehost tunnel.
+// The helper tunnels, which every local environment gets; a VM adds `codehost` through its own policy.
 const LOCAL_TUNNELS: readonly TunnelName[] = ['gitcred', 'mcp']
 
 /** One environment life on this machine: the descriptor it started from, what its launcher started, and the holds on it. */
@@ -46,6 +46,10 @@ export interface LocalExecutorDeps {
   tunnelSocketPath: (tunnel: TunnelName, agentId: string) => string | undefined
   /** Tags a subject's daemon-socket connection with that subject (gitcred binds a pod window to its pod). */
   tunnelGreeting?: (subject: string, tunnel: TunnelName) => Buffer | undefined
+  /** Tunnels beyond the helpers an environment's agent gets (a VM's `codehost`); omitted means none. */
+  extraTunnelsFor?: (agentId: string) => TunnelName[]
+  /** What a `listen` carries beside the name (`codehost`'s routes and CA). */
+  tunnelListenOptions?: (agentId: string, tunnel: TunnelName) => TunnelListenOptions | undefined
   log: Logger
   clock?: Clock
   /** Test seam: the dial's budget. */
@@ -84,9 +88,10 @@ export class LocalExecutor {
     })
     // Both helper endpoints, as a local VM always had: its launch names the git-credential socket whatever the agent's credential is.
     this.tunnels = new TunnelBinder({
-      tunnelsFor: () => [...LOCAL_TUNNELS],
+      tunnelsFor: (agentId) => [...LOCAL_TUNNELS, ...(deps.extraTunnelsFor?.(agentId) ?? [])],
       tunnelSocketPath: deps.tunnelSocketPath,
       ...(deps.tunnelGreeting === undefined ? {} : { tunnelGreeting: deps.tunnelGreeting }),
+      ...(deps.tunnelListenOptions === undefined ? {} : { tunnelListenOptions: deps.tunnelListenOptions }),
       log: deps.log
     })
     this.binder = new ChannelBinder<LocalLaunch>({
@@ -107,7 +112,8 @@ export class LocalExecutor {
       grantsFor: () => EXECUTOR_GRANTS,
       clock,
       log: deps.log,
-      metrics: noopClusterMetrics
+      metrics: noopClusterMetrics,
+      codehostFor: (subject) => this.tunnels.listeningAt(subject, 'codehost')?.proxy
     })
   }
 

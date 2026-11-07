@@ -815,6 +815,64 @@ describe('cluster spawn driver', () => {
     expect(served[1]!.payload).toMatchObject({ op: 'write', relPath: ['kubeconfig'] })
   })
 
+  // A pod session's credential-proxy env is decided after the bind, by whether the pod's own shim reported a codehost listener.
+  const codehostLaunch = {
+    ...(launchRequest as object),
+    env: { AC_AGENT_ID: 'agent-a', GIT_CONFIG_GLOBAL: '/run/agentconnect/git/agent-a.gitconfig' },
+    files: [{ root: '/run/agentconnect/git', relPath: ['agent-a.gitconfig'], content: '[credential]\n' }],
+    codehost: {
+      env: {
+        AC_CODEHOST_CREDENTIAL: 'placeholder-example',
+        GIT_CONFIG_GLOBAL: '/run/agentconnect/git/agent-a.proxied.gitconfig'
+      },
+      files: [{ root: '/run/agentconnect/git', relPath: ['agent-a.proxied.gitconfig'], content: '[http]\n' }]
+    }
+  } as never
+
+  it("applies a launch's codehost env, and writes its gitconfig, only beside the pod shim's codehost listener", async () => {
+    const served: Array<{ capability: string; payload: unknown }> = []
+    const { api } = fakeApi()
+    const listener = {
+      port: 41_234,
+      token: 'listener-token-example',
+      trustBundle: '/run/agentconnect/codehost-trust.pem'
+    }
+    const { instance } = driver(api, {
+      connectChannel: async () => answeringConnection(served),
+      codehostFor: () => listener
+    })
+    await instance.launch(codehostLaunch)
+    const writes = served.filter((request) => request.capability === 'materialize').map((request) => request.payload)
+    expect(writes).toEqual([
+      expect.objectContaining({ relPath: ['agent-a.gitconfig'] }),
+      expect.objectContaining({ relPath: ['agent-a.proxied.gitconfig'] })
+    ])
+    // The pod builds its own bundle from the CA certificate its listen carried, so no certificate travels in a launch file.
+    expect(JSON.stringify(writes)).not.toContain('BEGIN CERTIFICATE')
+    const acp = served.find((request) => request.capability === 'acp')!.payload as { env: Record<string, string> }
+    expect(acp.env).toMatchObject({
+      AC_CODEHOST_CREDENTIAL: 'placeholder-example',
+      GIT_CONFIG_GLOBAL: '/run/agentconnect/git/agent-a.proxied.gitconfig',
+      HTTPS_PROXY: 'http://codehost:listener-token-example@127.0.0.1:41234',
+      SSL_CERT_FILE: listener.trustBundle
+    })
+  })
+
+  it('keeps the helper path on a pod whose image shim serves no codehost listener', async () => {
+    const served: Array<{ capability: string; payload: unknown }> = []
+    const { api } = fakeApi()
+    const { instance } = driver(api, {
+      connectChannel: async () => answeringConnection(served),
+      codehostFor: () => undefined
+    })
+    await instance.launch(codehostLaunch)
+    expect(served.map((request) => request.capability)).toEqual(['materialize', 'acp'])
+    const acp = served[1]!.payload as { env: Record<string, string> }
+    expect(acp.env.GIT_CONFIG_GLOBAL).toBe('/run/agentconnect/git/agent-a.gitconfig')
+    expect(acp.env.HTTPS_PROXY).toBeUndefined()
+    expect(acp.env.AC_CODEHOST_CREDENTIAL).toBeUndefined()
+  })
+
   it('fails the launch when a file cannot be materialized, releasing the hold', async () => {
     const served: Array<{ capability: string; payload: unknown }> = []
     const { api } = fakeApi()

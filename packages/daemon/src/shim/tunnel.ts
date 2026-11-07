@@ -35,6 +35,8 @@ export const TunnelListenSchema = z.object({
     .max(16 * 1024)
     .optional()
 })
+/** What the daemon sends with a `codehost` listen: the routes, and the CA certificate alone, which the shim merges with its own machine's roots. */
+export type TunnelListenOptions = { routes: string[]; ca: string }
 
 /**
  * Bytes toward one in-pod connection. The daemon sends these as requests; the shim reports the

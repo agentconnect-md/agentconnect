@@ -7,6 +7,7 @@ import { ShimFileSink } from '../shim/channels.js'
 import { withStartupPhase } from '../session/startup-progress.js'
 import type { ChannelBinder } from './channel-binder.js'
 import type { Launch } from './launch-registry.js'
+import { applyCodehostSpawn, type CodehostListener } from './codehost-spawn.js'
 import { createRemoteRuntime } from './remote-runtime.js'
 import {
   agentSandboxSubject,
@@ -26,6 +27,8 @@ export interface RemoteShimDriverDeps<L extends Launch = Launch> {
   clock: Clock
   log: { info: (m: string) => void; warn: (m: string) => void; debug?: (m: string) => void }
   metrics: ClusterMetrics
+  /** The `codehost` listener the subject's bound shim reported; a launch's codehost env applies only beside one. */
+  codehostFor?: (subject: SandboxSubject) => CodehostListener | undefined
 }
 
 /** Runs an ACP runtime through a shim it dials: bind at the launch's generation, write its files, open the runtime, hold the sandbox until it exits. */
@@ -65,13 +68,15 @@ export class RemoteShimDriver<L extends Launch = Launch> implements SpawnDriver 
       this.deps.metrics.channel('bound')
       const session = this.deps.binder.sessionFor(subject)
       if (!session) throw new Error(`no shim session for ${subject} after binding its channel`)
+      // Decided after the bind, since only the shim that will run the runtime can say whether it serves `codehost`.
+      const launch = applyCodehostSpawn(request, this.deps.codehostFor?.(subject))
       // Fail-closed and per-launch: the env points at these files and a resumed sandbox starts with an empty tmpfs, so the write belongs to every launch, not to the bind.
       const sink = new ShimFileSink(session)
-      await clearSpawnDirs(sink, request.clearDirs)
-      for (const file of request.files ?? []) await sink.write(file.root, file.relPath, file.content)
+      await clearSpawnDirs(sink, launch.clearDirs)
+      for (const file of launch.files ?? []) await sink.write(file.root, file.relPath, file.content)
       const runtime = createRemoteRuntime({
         session,
-        request,
+        request: launch,
         ...(target?.cwd === undefined ? {} : { cwd: target.cwd }),
         log: this.deps.log,
         metrics: this.deps.metrics,

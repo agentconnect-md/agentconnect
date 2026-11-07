@@ -5,7 +5,10 @@ import { gitcredShimPath } from '../cp/gitcred-server.js'
 
 const GIT_CREDENTIAL_HELPER = '#!/bin/sh\nexec /opt/agentconnect/bin/git-credential "$@"\n'
 
-export function microsandboxSupportMounts(root: string, sessionGitConfigPath?: string): SandboxMount[] {
+export function microsandboxSupportMounts(
+  root: string,
+  ...sessionGitConfigPaths: (string | undefined)[]
+): SandboxMount[] {
   const helpers = join(root, 'run', 'microsandbox-helpers')
   mkdirSync(helpers, { recursive: true, mode: 0o700 })
   chmodSync(helpers, 0o700)
@@ -16,8 +19,8 @@ export function microsandboxSupportMounts(root: string, sessionGitConfigPath?: s
   chmodSync(source, 0o755)
   return [
     { source: realpathSync(source), target: gitcredShimPath(root), mode: 'readonly' },
-    ...(sessionGitConfigPath && existsSync(sessionGitConfigPath)
-      ? [{ source: sessionGitConfigPath, target: sessionGitConfigPath, mode: 'readonly' as const }]
-      : [])
+    ...sessionGitConfigPaths
+      .filter((path): path is string => path !== undefined && existsSync(path))
+      .map((path) => ({ source: path, target: path, mode: 'readonly' as const }))
   ]
 }

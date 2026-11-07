@@ -43,6 +43,7 @@ import {
   LocalDriver,
   type AcpSandboxLaunch,
   type SpawnDriver,
+  type CodehostSpawn,
   type SpawnFile,
   type SpawnedRuntime
 } from './spawn-driver.js'
@@ -715,6 +716,8 @@ export class AcpHost {
       files?: SpawnFile[]
       /** Directories the driver empties there before writing `files`. */
       clearDirs?: string[]
+      /** The credential-proxy env a shim driver swaps in once its shim serves `codehost`. */
+      codehost?: CodehostSpawn
       /** Disposable compatibility probes suppress raw child stderr so a harness
        * cannot print credential material or host paths outside our sanitizer. */
       suppressChildStderr?: boolean
@@ -831,6 +834,7 @@ export class AcpHost {
       ...(hints.length > 0 ? { hints } : {}),
       ...(this.opts.files?.length ? { files: this.opts.files } : {}),
       ...(this.opts.clearDirs?.length ? { clearDirs: this.opts.clearDirs } : {}),
+      ...(this.opts.codehost ? { codehost: this.opts.codehost } : {}),
       ...(this.opts.suppressChildStderr !== undefined ? { suppressChildStderr: this.opts.suppressChildStderr } : {}),
       ...(this.opts.sandbox ? { sandbox: this.opts.sandbox } : {}),
       ...(this.opts.hostKey ? { hostKey: this.opts.hostKey } : {})
