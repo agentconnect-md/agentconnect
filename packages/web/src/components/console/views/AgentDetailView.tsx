@@ -116,6 +116,7 @@ import { buildAgentReachabilityGraph } from '@/lib/agent-reachability'
 import type { Platform } from '@/components/console/modals/AddIntegrationModal'
 import { INTEGRATION_BLURB, isCoreTriggerKind } from '@/components/console/platforms/host-projections'
 import { botCardCopy, platformAgentCard, withCredentialCode } from '@/components/console/platforms/registry'
+import { NewChannelsDefault } from '@/components/console/NewChannelsDefault'
 import {
   GT_TRIGGER_MODES,
   GT_TRIGGER_PILL,
@@ -1040,6 +1041,8 @@ function AgentDetail() {
   // Live integrations owned by THIS agent (the CP-managed ones; demo rows carry no
   // agentId so they never leak onto a real agent's page).
   const agentInts = integrations.filter((i) => i.agentId === da.id)
+  // The new-channel default applies only where the card draws a channel list, not a module's own card body.
+  const hasChannelList = agentInts.some((g) => !platformAgentCard(g.platform)?.Body)
   // Peer agents for the read-only Access card's agent-call summary (self excluded).
   const agentPeers = agents.filter((peer) => peer.id !== da.id)
   // The empty Integrations tab renders the SAME grid as the Add-integration modal, under this identical gate.
@@ -2813,6 +2816,14 @@ function AgentDetail() {
                     />
                   )}
                 </div>
+                {hasChannelList && (
+                  <NewChannelsDefault
+                    className="px-4 py-[10px] desktop:-mt-1 desktop:pb-[14px] desktop:pt-0"
+                    value={da.newConversationMode}
+                    disabled={!da.canEdit}
+                    onChange={(newConversationMode) => updateAgent(da.id, { newConversationMode })}
+                  />
+                )}
               </>
             ) : hooksLoadError ? (
               <div className="px-5 py-7 text-center font-sans text-[12.5px] font-normal leading-normal text-(--status-error)">
