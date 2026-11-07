@@ -271,6 +271,33 @@ describe('a host session with the credential proxy on', () => {
   )
 })
 
+describe('a host session on a daemon behind its own outbound proxy', () => {
+  it('is proxied, its NO_PROXY keeping the daemon’s entries but the code host’s, and the proxy’s upstream goes via the parent', async () => {
+    const names = ['HTTPS_PROXY', 'https_proxy', 'NO_PROXY', 'no_proxy'] as const
+    const before = Object.fromEntries(names.map((name) => [name, process.env[name]]))
+    // Cleared before set: on Windows the environment is case-insensitive, so no_proxy and NO_PROXY are one variable.
+    delete process.env.no_proxy
+    process.env.HTTPS_PROXY = 'http://parent.example.test:3128'
+    process.env.NO_PROXY = '.corp.example.test,gitlab.example.test'
+    try {
+      const { d } = await startDaemon(true)
+      expect(d.credentialProxy.proxy.parentProxy?.httpsUrl?.host).toBe('parent.example.test:3128')
+      await admit(d, GITLAB_AGENT, gitlabSpec('https://gitlab.example.test:8443/gitlab'))
+      const { own } = sessionEnv(d, GITLAB_AGENT)
+      expect(own.AC_CODEHOST_CREDENTIAL).toMatch(/^acph1_/)
+      expect(own.HTTPS_PROXY).toBe(d.credentialProxy.proxy.loopbackUrl())
+      expect(own.NO_PROXY!.split(',')).toEqual(['localhost', '127.0.0.1', '::1', '.corp.example.test'])
+      expect(own.no_proxy).toBe(own.NO_PROXY)
+      expect(JSON.stringify(own)).not.toMatch(/glpat/)
+    } finally {
+      for (const name of names) {
+        if (before[name] === undefined) delete process.env[name]
+        else process.env[name] = before[name]
+      }
+    }
+  })
+})
+
 describe('a host session with the credential proxy off', () => {
   it('keeps the helper path and no proxy', async () => {
     const { d, root } = await startDaemon(false)

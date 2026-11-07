@@ -7120,7 +7120,7 @@ export class Daemon {
   ): Record<string, string> {
     const placeholder = proxy.proxy.placeholderFor(agentId)
     const out: Record<string, string> = {
-      ...this.credentialProxyRoute(proxy, route, env, runtimeEnv),
+      ...this.credentialProxyRoute(proxy, agentId, route, env, runtimeEnv),
       [CODE_HOST_CREDENTIAL_ENV]: placeholder
     }
     // A GH_TOKEN or GITLAB_TOKEN the agent was configured with is its own, and wins as it always has.
@@ -7134,6 +7134,7 @@ export class Daemon {
   /** How a proxied session reaches the proxy: the trust bundle, and the proxy itself unless srt routes to it (the loopback listener here, or an executor shim's codehost listener there). */
   private credentialProxyRoute(
     proxy: { proxy: CredentialProxy; ca: ProxyCa },
+    agentId: string,
     route: 'srt' | 'host' | 'shim' | { url?: string; trustBundle: string },
     env: Record<string, string>,
     runtimeEnv: Record<string, string>
@@ -7153,10 +7154,13 @@ export class Daemon {
     }
     const url = remote ? remote.url : route === 'host' ? proxy.proxy.loopbackUrl() : undefined
     if (url) {
-      // This machine's own NO_PROXY means nothing on an executor.
-      const noProxy = ['localhost', '127.0.0.1', '::1', remote ? env.NO_PROXY : (env.NO_PROXY ?? process.env.NO_PROXY)]
-        .filter((entry) => entry)
-        .join(',')
+      // This machine's own NO_PROXY means nothing on an executor; here it keeps no entry that would route a proxied host around the proxy.
+      const noProxy = remote
+        ? ['localhost', '127.0.0.1', '::1', env.NO_PROXY].filter((entry) => entry).join(',')
+        : proxy.proxy.sessionNoProxy(
+            agentId,
+            env.NO_PROXY ?? env.no_proxy ?? process.env.NO_PROXY ?? process.env.no_proxy
+          )
       Object.assign(out, {
         HTTPS_PROXY: url,
         https_proxy: url,
@@ -8967,13 +8971,13 @@ export class Daemon {
           : remoteSrt && this.codehostDomainsFor(agent.id).every((domain) => remoteSrt.domains.includes(domain))
             ? { trustBundle: remoteSrt.trustBundle }
             : undefined
-    // A host or srt session here reaches the loopback listener or its srt route; a host behind its own outbound proxy keeps direct credentials.
+    // A host or srt session here reaches the loopback listener or its srt route; the proxy's upstream goes through this daemon's own outbound proxy.
     const localProxyRoute =
       this.credentialProxy !== undefined &&
       !this.k8sPlane &&
       !micro &&
       !remoteSession &&
-      (srtShim !== undefined || (!runInSandbox && !process.env.HTTPS_PROXY && !process.env.https_proxy))
+      (srtShim !== undefined || !runInSandbox)
     // A host or srt session with a managed code-host credential holds a placeholder the credential proxy exchanges.
     const proxied = managedCredentials && (remoteSession ? remoteCodehost !== undefined : localProxyRoute)
     const target = opts.modelCredential?.target ?? modelProviderTarget(agent, runtime)
@@ -9111,7 +9115,13 @@ export class Daemon {
     else if (providerPlaceholder && localProxyRoute && this.credentialProxy)
       Object.assign(
         env,
-        this.credentialProxyRoute(this.credentialProxy, srtShim === undefined ? 'host' : 'srt', env, runtimeEnv)
+        this.credentialProxyRoute(
+          this.credentialProxy,
+          agent.id,
+          srtShim === undefined ? 'host' : 'srt',
+          env,
+          runtimeEnv
+        )
       )
     // Every session in an srt environment the proxy intercepts trusts its CA, a placeholder or not, or its code-host requests would fail verification.
     else if (srtShim && this.credentialProxy && this.credentialProxyIntercepts(agent.id))
@@ -9120,7 +9130,13 @@ export class Daemon {
     else if (remoteSrt && this.credentialProxy)
       Object.assign(
         env,
-        this.credentialProxyRoute(this.credentialProxy, { trustBundle: remoteSrt.trustBundle }, env, runtimeEnv)
+        this.credentialProxyRoute(
+          this.credentialProxy,
+          agent.id,
+          { trustBundle: remoteSrt.trustBundle },
+          env,
+          runtimeEnv
+        )
       )
     // The placeholder variables and the proxied gitconfig; the spawn adds the listener and its trust bundle.
     const codehostSpawn: CodehostSpawn | undefined =

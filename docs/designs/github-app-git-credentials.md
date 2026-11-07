@@ -677,6 +677,18 @@ the proxy listens on loopback and requires the proxy credential carried in the
 `HTTPS_PROXY` URL, so it is no open proxy to other local processes; a host
 session has no boundary from another agent's to begin with.
 
+A daemon that reaches the network through its own outbound proxy
+(`HTTPS_PROXY`, `NO_PROXY`) sends every listener's upstream leg through it:
+terminated code-host and provider requests, the CONNECTs it does not
+intercept, and the `srt` sockets alike, with proxy authentication from the
+URL and TLS still verified against the daemon's upstream authorities, while
+a `NO_PROXY` host is dialed directly. A host session is proxied there too:
+its `HTTPS_PROXY` names the loopback listener, and its `NO_PROXY` keeps the
+daemon's entries except one that would route an intercepted host around the
+proxy. The outbound proxy resolves the names it carries, so on that route the
+daemon's address guard sees only an intercepted host named by an IP literal,
+which it refuses in denied space on either route; names are left to that proxy.
+
 A host session a daemon-group member placed on another member's executor
 (session-executors.md §7) reaches its holder's proxy over the `codehost` shim
 tunnel. The holder asks a host-strategy session's shim for it only for an
@@ -890,7 +902,6 @@ Not covered yet:
 - Keys the key server issues.
 - The other runtimes' sign-in files, and a provider variable the session's
   runtime does not read, which reach an `srt` session as they are.
-- A host that runs behind its own outbound proxy, which keeps direct credentials.
 
 - **Kind.** A provider placeholder is the same `acph1_` placeholder under the
   same sealing key, with a kind claim `k: provider` and a slot claim `p`. A
