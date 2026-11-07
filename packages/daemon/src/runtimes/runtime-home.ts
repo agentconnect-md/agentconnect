@@ -26,7 +26,7 @@ import { restoreProxiedDeepSeekKey, restoreProxiedFileKeys, restoreProxiedOmpKey
 import type { RuntimeStateLocation } from './probe.js'
 
 // The runtimes whose sign-in and config files an srt launch projects with the credential proxy's placeholders (github-app-git-credentials.md, Provider keys).
-const PROJECTED_KEY_RUNTIMES = new Set(['pi-acp', 'grok-build', 'qwen-code', 'amp-acp', 'kimi', 'omp'])
+const PROJECTED_KEY_RUNTIMES = new Set(['pi-acp', 'grok-build', 'qwen-code', 'amp-acp', 'kimi', 'omp', 'cline'])
 
 /** The files of a location a protecting launch may have projected, relative to it: the location itself when it is a file, else its seeded and non-OAuth sign-in files. */
 function projectedKeyFiles(runtimeId: string, location: RuntimeStateLocation, destination: string): string[] {

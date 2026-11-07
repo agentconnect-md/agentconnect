@@ -11,11 +11,14 @@ import { prepareRuntimeHome, projectRuntimeHomeSeedFile } from '../runtimes/runt
 import { MAX_SEED_FILE_BYTES, parseDshCredentialDocument } from '../runtimes/runtime-seeded-credentials.js'
 import { prepareOpenCodeSecrets } from './opencode-secrets.js'
 import {
+  prepareAntigravityEnvSecret,
   prepareClaudeApiSecret,
   prepareClaudeEnvSecret,
   prepareCodexApiSecret,
-  prepareCodexEnvSecret
+  prepareCodexEnvSecret,
+  prepareCopilotEnvSecret
 } from './native-api-secrets.js'
+import { prepareClineSecrets } from './cline-secrets.js'
 import { preparePiSecrets } from './pi-secrets.js'
 import { prepareGrokSecrets } from './grok-secrets.js'
 import { prepareQwenSecrets } from './qwen-secrets.js'
@@ -97,7 +100,10 @@ const CREDENTIAL_PREPARERS = new Map<string, CredentialPreparer>([
   ['qwen-code', { prepare: prepareQwenSecrets, env: hashed('AC_QWEN_API'), ambient: {} }],
   ['omp', { prepare: prepareOmpSecrets, env: hashed('AC_OMP_API'), ambient: {} }],
   ['amp-acp', { prepare: prepareAmpSecrets, env: hashed('AC_AMP_API'), ambient: {} }],
-  ['kimi', { prepare: prepareKimiSecrets, env: hashed('AC_KIMI_API'), ambient: {} }]
+  ['kimi', { prepare: prepareKimiSecrets, env: hashed('AC_KIMI_API'), ambient: {} }],
+  ['cline', { prepare: prepareClineSecrets, env: hashed('AC_CLINE_API'), ambient: {} }],
+  ['github-copilot-cli', { prepare: prepareCopilotEnvSecret, env: /^COPILOT_PROVIDER_API_KEY$/, ambient: {} }],
+  ['antigravity-acp', { prepare: prepareAntigravityEnvSecret, env: /^GEMINI_API_KEY$/, ambient: {} }]
 ])
 
 function preparerFor(runtimeId: string, runtime: RuntimeDef | undefined): CredentialPreparer | undefined {

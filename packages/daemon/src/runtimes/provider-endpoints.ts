@@ -6,7 +6,8 @@ import type { ModelProviderTarget, ModelRuntimeKind } from './model-provider-con
 export const PROVIDER_DEFAULT_ENDPOINTS: Readonly<Record<string, string>> = {
   anthropic: 'https://api.anthropic.com',
   openai: CODEX_DEFAULT_ENDPOINT,
-  deepseek: 'https://api.deepseek.com'
+  deepseek: 'https://api.deepseek.com',
+  google: 'https://generativelanguage.googleapis.com'
 }
 
 /** The variable a runtime reads a provider's key from, and the one naming its base URL where that is an env variable. */
@@ -39,6 +40,9 @@ export const RUNTIME_KEY_VARIABLES = {
   opencode: OPENCODE,
   kilo: OPENCODE
 } as const satisfies Record<ModelRuntimeKind, Partial<Record<Dialect, KeyVariables>>>
+
+/** Where Antigravity reads its Gemini API key and the base URL it sends that key to. */
+export const GEMINI_KEY_VARIABLES = { key: 'GEMINI_API_KEY', base: 'GOOGLE_GEMINI_BASE_URL' } as const
 
 /** The variable that picks Copilot's provider dialect for its one key. */
 export const COPILOT_PROVIDER_TYPE_ENV = 'COPILOT_PROVIDER_TYPE'

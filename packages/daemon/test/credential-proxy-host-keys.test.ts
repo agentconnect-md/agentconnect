@@ -188,7 +188,7 @@ describe.each(RUNTIME_KEY_FIXTURES)("$runtime's own key files", (fixture) => {
       { id: `host:${fixture.runtime}:${env}`, provider: fixture.provider, host: fixture.host, port: 443, saas: true }
     ])
     await expect(result.slots[0]!.read()).resolves.toBe(fixture.key)
-    for (const entry of ['.pi', '.grok', '.qwen', '.omp', '.local', '.kimi-code'])
+    for (const entry of ['.pi', '.grok', '.qwen', '.omp', '.local', '.kimi-code', '.cline'])
       rmSync(join(HOME, entry), { recursive: true, force: true })
     await expect(result.slots[0]!.read()).rejects.toThrow(`this machine no longer holds ${env}`)
   })

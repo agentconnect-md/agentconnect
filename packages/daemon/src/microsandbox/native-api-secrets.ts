@@ -4,6 +4,8 @@ import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
 import { readRegularFileSync } from '../fs/regular-file.js'
 import { objectFromJson, record } from '../runtimes/codex-config.js'
 import {
+  COPILOT_PROVIDER_TYPE_ENV,
+  GEMINI_KEY_VARIABLES,
   hostCodexEndpoint,
   hostKeyEndpoint,
   PROVIDER_DEFAULT_ENDPOINTS,
@@ -67,7 +69,7 @@ function mergeConfig(base: Record<string, unknown>, overrides: Record<string, un
 /** Which provider a runtime's own key belongs to, and that provider's API host. */
 interface KeyProvider {
   provider: string
-  defaultHost: string
+  defaultHost?: string
 }
 
 const ANTHROPIC: KeyProvider = {
@@ -75,6 +77,7 @@ const ANTHROPIC: KeyProvider = {
   defaultHost: new URL(PROVIDER_DEFAULT_ENDPOINTS.anthropic!).hostname
 }
 const OPENAI: KeyProvider = { provider: 'openai', defaultHost: new URL(PROVIDER_DEFAULT_ENDPOINTS.openai!).hostname }
+const GOOGLE: KeyProvider = { provider: 'google', defaultHost: new URL(PROVIDER_DEFAULT_ENDPOINTS.google!).hostname }
 
 function boundSecret(
   env: string,
@@ -151,6 +154,45 @@ function variableCredential(
     seedExclusions: [],
     preparePrivateHome: () => undefined
   }
+}
+
+/** `COPILOT_PROVIDER_API_KEY` in the launch env, at the base URL Copilot requires beside it for a provider of its own. */
+export function prepareCopilotEnvSecret(
+  hostEnv: NodeJS.ProcessEnv,
+  explicitEnv: Record<string, string>,
+  placeholder: SecretPlaceholder = microsandboxPlaceholder
+): MicrosandboxCredentials | undefined {
+  const variables = RUNTIME_KEY_VARIABLES.copilot.openai
+  const read = (name: string) => explicitEnv[name] ?? hostEnv[name]
+  const provider = read(COPILOT_PROVIDER_TYPE_ENV)?.trim() || 'openai'
+  const fallback = Object.hasOwn(PROVIDER_DEFAULT_ENDPOINTS, provider)
+    ? PROVIDER_DEFAULT_ENDPOINTS[provider]
+    : undefined
+  return variableCredential(
+    variables.key,
+    hostEnv,
+    explicitEnv,
+    () => read(variables.base),
+    { provider, ...(fallback ? { defaultHost: new URL(fallback).hostname } : {}) },
+    placeholder
+  )
+}
+
+/** `GEMINI_API_KEY` in the launch env, at Antigravity's Gemini endpoint. */
+export function prepareAntigravityEnvSecret(
+  hostEnv: NodeJS.ProcessEnv,
+  explicitEnv: Record<string, string>,
+  placeholder: SecretPlaceholder = microsandboxPlaceholder
+): MicrosandboxCredentials | undefined {
+  const base = explicitEnv[GEMINI_KEY_VARIABLES.base] ?? hostEnv[GEMINI_KEY_VARIABLES.base]
+  return variableCredential(
+    GEMINI_KEY_VARIABLES.key,
+    hostEnv,
+    explicitEnv,
+    () => base ?? PROVIDER_DEFAULT_ENDPOINTS.google,
+    GOOGLE,
+    placeholder
+  )
 }
 
 /** `ANTHROPIC_API_KEY` in the launch env, at Claude's endpoint. */

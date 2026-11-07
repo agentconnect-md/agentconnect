@@ -907,15 +907,24 @@ code-host transfers do not share a budget:
 
 The keys the daemon's own machine supplies use it in `srt` sessions too: an API
 key in the daemon's environment or the runtime definition's (Claude's
-`ANTHROPIC_API_KEY`, Codex's `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`), the API key
+`ANTHROPIC_API_KEY`, Codex's `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, Copilot's
+`COPILOT_PROVIDER_API_KEY` at its `COPILOT_PROVIDER_BASE_URL`, Antigravity's
+`GEMINI_API_KEY` at the Gemini API or its `GOOGLE_GEMINI_BASE_URL`), the API key
 field of a sign-in file (Claude's `primaryApiKey`, Codex's `auth.json` in API
 key mode, the DeepSeek harness's credential files), the API keys
 `opencode auth export` lists, and the API keys the other runtimes keep in their
 own files: pi's `auth.json` and `models.json`, Grok's model routes in
 `config.toml`, Qwen's `settings.json`, Oh My Pi's `agent.db`, Amp's
-`secrets.json`, and the providers of Kimi's `config.toml`. The preparers that
+`secrets.json`, the providers of Kimi's `config.toml`, and the provider entries
+of Cline's `providers.json` other than its OAuth sign-ins. The preparers that
 protect these keys in a VM find them, with the proxy's placeholder in place of
-the VM's, at the hosts they already bind each key to there. Each key is a slot
+the VM's, at the hosts they already bind each key to there; Copilot's,
+Antigravity's and Cline's preparers protect them in a VM as well. Devin's
+sign-in token travels inside its request bodies, Qoder's personal access token
+is exchanged in a request body for a token the runtime then holds, and Qoder's
+service account key is checked against a format no placeholder has, so none of
+them can go through a proxy that rewrites headers only; they stay in the session
+as they are. Each key is a slot
 `host:<runtime>:<variable>` at the host the runtime sends it to: the provider's
 default, which is `saas`, or the base URL the launch or the runtime's file
 configures; a key found in a file is named by the hashed variable its preparer
