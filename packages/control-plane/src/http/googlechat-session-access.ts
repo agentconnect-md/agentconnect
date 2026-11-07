@@ -2,7 +2,8 @@
 import { GOOGLE_CHAT_PLATFORM } from '@agentconnect.md/protocol'
 import type { UserRepo } from '../persistence/ports.js'
 import { BotSessionAccessService, type BotSessionAccessDeps } from '../platforms/bot-session-access.js'
-import { checkGoogleChatMembership } from '../platforms/googlechat/session-access.js'
+import type { GoogleChatPlatformAppConfig } from '../config/google-chat-platform.js'
+import { checkGoogleChatMembership, googleChatMembershipKey } from '../platforms/googlechat/session-access.js'
 import { type GoogleAccountIdentity, syncGoogleAccountId } from './google-account-id.js'
 import type { SessionAccessViewer } from './session-access-plugin.js'
 
@@ -17,14 +18,22 @@ export class GoogleChatSessionAccessService extends BotSessionAccessService {
       users: Pick<UserRepo, 'getGoogleAccountId' | 'setGoogleAccountId'>
       identity?: GoogleAccountIdentity
     },
-    fetchImpl: typeof fetch = fetch
+    fetchImpl: typeof fetch = fetch,
+    app?: GoogleChatPlatformAppConfig
   ) {
     super(
       GOOGLE_CHAT_PLATFORM,
       googleDeps,
       (_token, bot) => bot.externalAppId,
-      ({ token, resource, member }, signal) =>
-        checkGoogleChatMembership(token, resource, member, signal, fetchImpl, () => new Date(googleDeps.clock.now()))
+      async ({ token, bot, resource, member }, signal) =>
+        checkGoogleChatMembership(
+          googleChatMembershipKey(bot, token, app),
+          resource,
+          member,
+          signal,
+          fetchImpl,
+          () => new Date(googleDeps.clock.now())
+        )
     )
   }
 

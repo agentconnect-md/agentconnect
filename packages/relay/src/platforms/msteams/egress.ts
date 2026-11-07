@@ -13,6 +13,7 @@ import {
   type MsTeamsTicketBinding,
   type MsTeamsTicketed
 } from './ticket.js'
+import { retryAfterMs, within } from '../provider-call.js'
 
 export const MSTEAMS_BOT_SCOPE = 'https://api.botframework.com/.default'
 export const MSTEAMS_GRAPH_SCOPE = 'https://graph.microsoft.com/.default'
@@ -189,34 +190,9 @@ function requestOf(
   }
 }
 
-function retryAfterMs(res: Response, now: number): number | undefined {
-  const raw = res.headers?.get?.('retry-after')
-  if (!raw) return undefined
-  const seconds = Number(raw)
-  if (Number.isFinite(seconds)) return Math.max(0, Math.round(seconds * 1000))
-  const at = Date.parse(raw)
-  return Number.isNaN(at) ? undefined : Math.max(0, at - now)
-}
-
 const refused = (reason: string): RdPlatformReply => ({ outcome: 'refused', reason })
 const unavailable = (reason: string): RdPlatformReply => ({ outcome: 'unavailable', reason })
 const answered = (result: WireMsTeamsCallResult): RdPlatformReply => ({ outcome: 'ok', payload: result })
-
-// Settle with `undefined` once `ms` pass; the work goes on and may still fill the token cache.
-async function within<T>(work: Promise<T>, ms: number): Promise<T | undefined> {
-  if (ms <= 0) {
-    work.catch(() => {})
-    return undefined
-  }
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const late = new Promise<undefined>((resolve) => (timer = setTimeout(() => resolve(undefined), ms)))
-  try {
-    return await Promise.race([work, late])
-  } finally {
-    clearTimeout(timer)
-    work.catch(() => {})
-  }
-}
 
 /** The deployment app's sender for its customer rows: home-tenant Bot Connector tokens, Graph tokens for a row's own tenant, and tickets. */
 export class MsTeamsRelayEgress {

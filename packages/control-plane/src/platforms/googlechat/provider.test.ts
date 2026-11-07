@@ -12,8 +12,14 @@ import {
   googleChatClaimAnchor,
   googleChatRowKind,
   googleChatRowShadowsAnchor,
-  buildGoogleChatInstall
+  buildGoogleChatClaimInstall,
+  googleChatRequiredDaemonFeatures
 } from './provider.js'
+import {
+  GOOGLE_CHAT_DEPLOYMENT_KEY_MARKER,
+  GOOGLE_CHAT_DEPLOYMENT_OWNER,
+  GOOGLE_CHAT_ROW_OWNER_KEY
+} from './deployment-app.js'
 import { GOOGLE_CHAT_CLAIM_TAKEN_MESSAGE } from './tenant.js'
 import { decodeJwt } from 'jose'
 import {
@@ -451,21 +457,130 @@ describe('the rows one Chat app writes', () => {
     })
   })
 
-  it('writes a customer row with a copy of the deployment key and a refusal that names no organization', () => {
-    const install = buildGoogleChatInstall(
-      { projectId: PROJECT_ID, projectNumber: PROJECT_NUMBER, serviceAccountKey: JSON.stringify(KEY_FIELDS, null, 2) },
+  it('writes a customer row with a marker instead of the key, its owner, and a refusal that names no organization', () => {
+    const install = buildGoogleChatClaimInstall(
+      { projectId: PROJECT_ID, projectNumber: PROJECT_NUMBER },
       { domainIds: ['0000000000'] }
     )
     expect(install.bot).toEqual({
       externalAppId: PROJECT_NUMBER,
-      platformConfig: { projectId: PROJECT_ID, domainIds: '0000000000' }
+      platformConfig: {
+        projectId: PROJECT_ID,
+        domainIds: '0000000000',
+        [GOOGLE_CHAT_ROW_OWNER_KEY]: GOOGLE_CHAT_DEPLOYMENT_OWNER
+      }
     })
-    expect(install.secrets).toEqual({ botToken: JSON.stringify(KEY_FIELDS), appToken: null, signingSecret: null })
+    expect(install.secrets).toEqual({
+      botToken: GOOGLE_CHAT_DEPLOYMENT_KEY_MARKER,
+      appToken: null,
+      signingSecret: null
+    })
     expect(install.externalIdentity).toEqual({
       externalAppId: PROJECT_NUMBER,
       externalTenantId: 'domains/0000000000',
       conflictMessage: GOOGLE_CHAT_CLAIM_TAKEN_MESSAGE
     })
+  })
+
+  it('keeps the owner entry through the identity projection every new row passes', () => {
+    const projected = createGoogleChatCpProvider().projectBotIdentity!({
+      orgId: ORG,
+      platform: 'googlechat',
+      id: BotId('88888888-8888-4888-8888-888888888888'),
+      name: 'Google Chat',
+      externalAppId: PROJECT_NUMBER,
+      platformConfig: {
+        projectId: PROJECT_ID,
+        customerId: 'C0000000000',
+        [GOOGLE_CHAT_ROW_OWNER_KEY]: GOOGLE_CHAT_DEPLOYMENT_OWNER
+      }
+    } as CreateBotInput)
+    expect(projected.platformConfig).toEqual({
+      projectId: PROJECT_ID,
+      customerId: 'C0000000000',
+      [GOOGLE_CHAT_ROW_OWNER_KEY]: GOOGLE_CHAT_DEPLOYMENT_OWNER
+    })
+  })
+})
+
+describe('a deployment app’s row in the daemon spec (§10.10)', () => {
+  const secrets = { botToken: JSON.stringify(KEY_FIELDS), appToken: null, signingSecret: null }
+  const marker = { botToken: GOOGLE_CHAT_DEPLOYMENT_KEY_MARKER, appToken: null, signingSecret: null }
+  const deployment = createGoogleChatCpProvider({ app: { projectNumber: PROJECT_NUMBER } })
+  const customer = (over: Partial<BotRecord> = {}) =>
+    bot({
+      externalTenantId: 'customers/C0000000000',
+      prebuilt: true,
+      platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000', domainIds: '0000000000' },
+      ...over
+    })
+
+  it('carries the relay and its bot row, and no key even when a stale copy is stored', async () => {
+    for (const stored of [secrets, marker]) {
+      const row = customer()
+      const config = await deployment.projectIntegrationConfig(integration(), row, CORE, stored)
+      expect(IntegrationGoogleChatConfig.parse(config)).toEqual({
+        projectId: PROJECT_ID,
+        projectNumber: PROJECT_NUMBER,
+        tenantIds: ['customers/C0000000000', 'domains/0000000000'],
+        egress: 'relay',
+        botId: row.id
+      })
+      expect(JSON.stringify(config)).not.toContain('PRIVATE KEY')
+    }
+  })
+
+  it('requires the relay egress feature for that spec and nothing for an own app', async () => {
+    const relay = await deployment.projectIntegrationConfig(integration(), customer(), CORE, secrets)
+    expect(deployment.requiredDaemonFeatures?.(relay)).toEqual(['googlechat-relay-egress-v1'])
+    const own = await deployment.projectIntegrationConfig(
+      integration(),
+      bot({ externalAppId: '200000000000' }),
+      CORE,
+      secrets
+    )
+    expect(deployment.requiredDaemonFeatures?.(own)).toEqual([])
+    expect(googleChatRequiredDaemonFeatures(undefined)).toEqual([])
+  })
+
+  it('delivers nothing, and never the direct mode, without the matching configured app', async () => {
+    const owned = {
+      projectId: PROJECT_ID,
+      customerId: 'C0000000000',
+      [GOOGLE_CHAT_ROW_OWNER_KEY]: GOOGLE_CHAT_DEPLOYMENT_OWNER
+    }
+    const unconfigured = createGoogleChatCpProvider()
+    const otherApp = createGoogleChatCpProvider({ app: { projectNumber: '200000000000' } })
+    for (const provider of [unconfigured, otherApp]) {
+      for (const row of [
+        customer(),
+        customer({ prebuilt: false, platformConfig: owned }),
+        customer({ prebuilt: false, platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000' } })
+      ]) {
+        const stored = row.prebuilt || row.platformConfig?.[GOOGLE_CHAT_ROW_OWNER_KEY] ? secrets : marker
+        expect(await provider.projectIntegrationConfig(integration(), row, CORE, stored)).toBeUndefined()
+      }
+    }
+  })
+
+  it('never serves a tenantless row of the deployment project through the relay', async () => {
+    const row = bot({ prebuilt: true })
+    expect(await deployment.projectIntegrationConfig(integration(), row, CORE, marker)).toBeUndefined()
+  })
+
+  it('leaves an organization’s own app sending with its own key, keyed by its customer or not', async () => {
+    const own = bot({ externalAppId: '200000000000' })
+    expect(await deployment.projectIntegrationConfig(integration(), own, CORE, secrets)).toMatchObject({
+      serviceAccountKey: secrets.botToken
+    })
+    const keyed = bot({
+      externalAppId: '200000000000',
+      externalTenantId: 'customers/C0000000000',
+      platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000' }
+    })
+    const config = await deployment.projectIntegrationConfig(integration(), keyed, CORE, secrets)
+    expect(config).toMatchObject({ serviceAccountKey: secrets.botToken, tenantIds: ['customers/C0000000000'] })
+    expect(config).not.toHaveProperty('egress')
   })
 })
 
@@ -608,11 +723,11 @@ describe('composition', () => {
     expect(provider.backgroundLoops).toBeUndefined()
   })
 
-  it('declares the key re-stamp as its one background loop', () => {
+  it('declares the deployment key purge as its one background loop', () => {
     const credentialReconciler = { start: vi.fn(), stop: vi.fn() }
     const [loop, ...rest] = createGoogleChatCpProvider({ credentialReconciler }).backgroundLoops ?? []
     expect(rest).toEqual([])
-    expect(loop?.label).toBe('googlechat-credential-restamp')
+    expect(loop?.label).toBe('googlechat-deployment-key-purge')
     loop?.start()
     loop?.stop()
     expect(credentialReconciler.start).toHaveBeenCalledOnce()

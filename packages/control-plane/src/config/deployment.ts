@@ -1,6 +1,7 @@
 import type {
   RcDeploymentConfig,
   RcGoogleChatAnchor,
+  RcGoogleChatDeploymentApp,
   RcMsTeamsAnchor,
   RcMsTeamsDeploymentApp
 } from '@agentconnect.md/protocol'
@@ -144,9 +145,18 @@ export function relayDeploymentSnapshot(
   publicRelayUrl?: string,
   webAppUrl?: string,
   msTeamsAnchor?: RcMsTeamsAnchor,
-  msTeamsApp?: RcMsTeamsDeploymentApp
+  msTeamsApp?: RcMsTeamsDeploymentApp,
+  googleChatApp?: RcGoogleChatDeploymentApp
 ): RcDeploymentConfig | undefined {
-  if (!deployment && !googleChatAnchor && !msTeamsAnchor && !msTeamsApp && !publicRelayUrl && !webAppUrl)
+  if (
+    !deployment &&
+    !googleChatAnchor &&
+    !googleChatApp &&
+    !msTeamsAnchor &&
+    !msTeamsApp &&
+    !publicRelayUrl &&
+    !webAppUrl
+  )
     return undefined
   const githubWebhookSecret = deployment?.values.github ? deployment.secrets['github.webhookSecret'] : undefined
   return {
@@ -154,6 +164,7 @@ export function relayDeploymentSnapshot(
     revision: deployment?.revision ?? 0,
     ...(githubWebhookSecret ? { githubWebhookSecret } : {}),
     ...(googleChatAnchor ? { googleChatAnchor } : {}),
+    ...(googleChatApp ? { googleChatApp } : {}),
     ...(msTeamsAnchor ? { msTeamsAnchor } : {}),
     ...(msTeamsApp ? { msTeamsApp } : {}),
     ...(publicRelayUrl ? { publicRelayUrl } : {}),

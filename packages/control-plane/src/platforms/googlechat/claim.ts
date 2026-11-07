@@ -17,7 +17,7 @@ import { BotExternalIdentityTaken } from '../../persistence/errors.js'
 import { ErrorDto } from '../../http/dto/index.js'
 import type { BotRecord } from '../../persistence/ports.js'
 import { checkServiceAccountKey, googleChatAppReader, type GoogleChatAppRead } from './credential.js'
-import { buildGoogleChatInstall, googleChatRowKind, googleChatRowTenantKeys } from './provider.js'
+import { buildGoogleChatClaimInstall, googleChatRowKind, googleChatRowTenantKeys } from './provider.js'
 import { googleChatErrorLabel, googleChatInstallTarget } from './routes.js'
 import {
   GOOGLE_CHAT_CLAIM_TAKEN_MESSAGE,
@@ -389,8 +389,8 @@ export function googleChatClaimRoutes(deps: HttpDeps, googleChat: GoogleChatRout
           return refuse(reply, 409, 'GOOGLE_CHAT_CLAIM_CONFLICT', GOOGLE_CHAT_CLAIM_CONFLICT_MESSAGE)
         }
         if (plan.kind === 'conflict') return conflict(plan.row)
-        const install = buildGoogleChatInstall(
-          { projectId: platform.projectId, projectNumber: platform.projectNumber, serviceAccountKey: key.key.json },
+        const install = buildGoogleChatClaimInstall(
+          { projectId: platform.projectId, projectNumber: platform.projectNumber },
           proof.tenant
         )
 
@@ -442,7 +442,7 @@ export function googleChatClaimRoutes(deps: HttpDeps, googleChat: GoogleChatRout
             }
             throw err
           }
-          // A freed customer row goes back on the preset agent with the current deployment key, or Chat would prompt forever.
+          // A freed customer row goes back on the preset agent, its slot holding the marker, or Chat would prompt forever.
           if (held.agentIds.length === 0) {
             const target = await googleChatInstallTarget(deps, req)
             if (!('agent' in target)) return refuse(reply, target.status, 'GOOGLE_CHAT_CLAIM_NO_AGENT', target.message)

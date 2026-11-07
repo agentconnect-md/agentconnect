@@ -7,6 +7,11 @@ import { installZod } from '../../http/plugins/zod.js'
 import type { BotRecord } from '../../persistence/ports.js'
 import { AgentId, BotId, OrgId } from '../../domain/ids.js'
 import { GOOGLE_CHAT_PROBE_URL, GOOGLE_TOKEN_ENDPOINT, googleCloudProjectUrl } from './credential.js'
+import {
+  GOOGLE_CHAT_DEPLOYMENT_KEY_MARKER,
+  GOOGLE_CHAT_DEPLOYMENT_OWNER,
+  GOOGLE_CHAT_ROW_OWNER_KEY
+} from './deployment-app.js'
 import { GOOGLE_CHAT_DEPLOYMENT_KEY_MESSAGE, googleChatAppRoutes, googleChatKeyRoutes } from './routes.js'
 
 const ORG = OrgId('11111111-1111-4111-8111-111111111111')
@@ -78,7 +83,14 @@ describe('GET /integrations/googlechat/app', () => {
 })
 
 describe('PUT /bots/:id/googlechat/key', () => {
-  async function keyHarness(bot: BotRecord | null, opts: { crmNumber?: string } = {}) {
+  async function keyHarness(
+    bot: BotRecord | null,
+    opts: {
+      crmNumber?: string
+      stored?: string
+      app?: { projectId: string; projectNumber: string; serviceAccountKey: string }
+    } = {}
+  ) {
     const googleCalls: string[] = []
     const fetchImpl = (async (input: string | URL | Request) => {
       const url = String(input)
@@ -94,7 +106,13 @@ describe('PUT /bots/:id/googlechat/key', () => {
     const deps = {
       clock: { now: () => Date.parse('2026-09-27T00:00:00Z') },
       httpBot: { syncBot },
-      repos: { bot: { get: async () => bot }, botCredential: { install } },
+      repos: {
+        bot: { get: async () => bot },
+        botCredential: { install },
+        botSecret: {
+          get: async () => (opts.stored ? { botToken: opts.stored, appToken: null, signingSecret: null } : null)
+        }
+      },
       platforms: { get: () => undefined }
     } as unknown as HttpDeps
     const app = Fastify()
@@ -103,7 +121,7 @@ describe('PUT /bots/:id/googlechat/key', () => {
       req.principal = { userId: 'user-1' }
       req.orgCtx = { orgId: ORG, role: 'collaborator', userId: 'user-1' } as never
     })
-    await app.register(googleChatKeyRoutes(deps, { fetch: fetchImpl }))
+    await app.register(googleChatKeyRoutes(deps, { fetch: fetchImpl, ...(opts.app ? { app: opts.app } : {}) }))
     running = app
     const put = (serviceAccountKey: string) =>
       app.inject({ method: 'PUT', url: `/bots/${BOT}/googlechat/key`, payload: { serviceAccountKey } })
@@ -187,6 +205,30 @@ describe('PUT /bots/:id/googlechat/key', () => {
     expect(res.statusCode).toBe(409)
     expect(res.json().message).toBe(GOOGLE_CHAT_DEPLOYMENT_KEY_MESSAGE)
     expect(h.install).not.toHaveBeenCalled()
+  })
+
+  it('refuses a deployment row known only by its owner entry, its marker or the configured project', async () => {
+    const cases: Parameters<typeof keyHarness>[] = [
+      [
+        perAgentBot({
+          platformConfig: { projectId: PROJECT_ID, [GOOGLE_CHAT_ROW_OWNER_KEY]: GOOGLE_CHAT_DEPLOYMENT_OWNER }
+        })
+      ],
+      [perAgentBot(), { stored: GOOGLE_CHAT_DEPLOYMENT_KEY_MARKER }],
+      [
+        perAgentBot(),
+        { app: { projectId: PROJECT_ID, projectNumber: PROJECT_NUMBER, serviceAccountKey: JSON.stringify(ROTATED) } }
+      ]
+    ]
+    for (const args of cases) {
+      const h = await keyHarness(...args)
+      const res = await h.put(JSON.stringify(ROTATED))
+      expect(res.statusCode).toBe(409)
+      expect(h.googleCalls).toEqual([])
+      expect(h.install).not.toHaveBeenCalled()
+      await running?.close()
+      running = undefined
+    }
   })
 
   it('answers 404 for a bot of another platform', async () => {

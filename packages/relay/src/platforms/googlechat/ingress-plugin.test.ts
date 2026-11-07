@@ -689,7 +689,7 @@ describe('googlechat ingress plugin — the deployment app’s anchor and custom
 
   it('derives the anchor from the CP’s snapshot alone: the project number and the claim page, no secret, no member', () => {
     const { plugin } = setup()
-    expect(plugin.deploymentAssignments).toBe(googleChatAnchorAssignment)
+    expect(plugin.deploymentAssignments!({ revision: 4 })).toEqual([])
     const [anchored] = googleChatAnchorAssignment({
       revision: 4,
       googleChatAnchor: { projectNumber: PROJECT_NUMBER, claimUrl: CLAIM_URL }

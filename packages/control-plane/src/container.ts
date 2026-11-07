@@ -397,6 +397,7 @@ import { createGoogleChatCpProvider, googleChatClaimAnchor } from './platforms/g
 import { GoogleChatCredentialReconciler } from './platforms/googlechat/credential-reconciler.js'
 import { googleChatAppRoutes, googleChatKeyRoutes } from './platforms/googlechat/routes.js'
 import { googleChatClaimRoutes } from './platforms/googlechat/claim.js'
+import { googleChatRelayApp } from './platforms/googlechat/deployment-app.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from './http/routes/slack-install.js'
 import { slackPlatformInstallRoutes, slackPlatformCallbackRoutes } from './http/routes/slack-platform-install.js'
 import { slackWorkspaceIngress } from './platforms/slack/workspace-install.js'
@@ -2337,11 +2338,16 @@ export function buildContainer(
     clock,
     ...(logtoIdentity ? { identity: logtoIdentity } : {})
   }
-  const googleChatSessionAccess = new GoogleChatSessionAccessService({
-    ...botSessionAccessDeps,
-    users: repos.user,
-    configured: configuredSocialProviders.includes('google')
-  })
+  // The deployment's Chat app (google-chat-integration.md §10.10): its key stays on the CP and relay, so its rows' member checks use it from here.
+  const googleChatSessionAccess = new GoogleChatSessionAccessService(
+    {
+      ...botSessionAccessDeps,
+      users: repos.user,
+      configured: configuredSocialProviders.includes('google')
+    },
+    fetch,
+    googleChatPlatformApp
+  )
   const telegramSessionAccess = createTelegramSessionAccess({
     ...botSessionAccessDeps,
     configured: configuredSocialProviders.includes('telegram')
@@ -2980,7 +2986,7 @@ export function buildContainer(
   if (googleChatPlatformApp && !googleChatAnchor) {
     http.log.warn('google chat: no https console URL, so unclaimed Workspace organizations get no claim prompt')
   }
-  // A rotated deployment key reaches the claimed customer rows on the next boot (§10.3).
+  // Removes the deployment app's key from any of its rows an older build stamped (§10.10).
   const googleChatCredentialReconciler = new GoogleChatCredentialReconciler({
     bots: repos.bot,
     secrets: repos.botSecret,
@@ -3384,7 +3390,9 @@ export function buildContainer(
     // The relay answers a Teams tenant no organization connected with the deployment app's own card (teams-integration.md §8.4).
     msTeamsConnectAnchor(msTeamsPlatformApp, webAppUrl),
     // The relay sends the app's rows' Bot Connector calls and mints their Graph tokens (§8.5).
-    msTeamsRelayApp(msTeamsPlatformApp, config.API_KEY_PEPPER)
+    msTeamsRelayApp(msTeamsPlatformApp, config.API_KEY_PEPPER),
+    // The relay sends the app's customer rows' Chat API calls (google-chat-integration.md §10.10).
+    googleChatRelayApp(googleChatPlatformApp)
   )
   const relayWsDeps: RelayWsServerDeps = {
     log: http.log,

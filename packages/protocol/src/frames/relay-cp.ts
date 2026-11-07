@@ -70,6 +70,14 @@ export const RcGoogleChatAnchor = z.object({
 })
 export type RcGoogleChatAnchor = z.infer<typeof RcGoogleChatAnchor>
 
+/** The deployment Google Chat app the relay sends its customer rows' Chat API calls with (google-chat-integration.md §10.10). */
+export const RcGoogleChatDeploymentApp = z.object({
+  projectNumber: z.string().regex(/^[1-9]\d{0,19}$/),
+  /** Service-account key JSON; secret material, never logged. */
+  serviceAccountKey: z.string().min(1)
+})
+export type RcGoogleChatDeploymentApp = z.infer<typeof RcGoogleChatDeploymentApp>
+
 // The deployment Teams app's anchor (teams-integration.md §8.4): it answers a tenant no organization connected, so it carries the app's secret.
 export const RcMsTeamsAnchor = z.object({
   appId: z.string().uuid(),
@@ -99,6 +107,7 @@ export const RcDeploymentConfig = z.object({
   revision: z.number().int().nonnegative(),
   githubWebhookSecret: z.string().min(1).optional(),
   googleChatAnchor: RcGoogleChatAnchor.optional(),
+  googleChatApp: RcGoogleChatDeploymentApp.optional(),
   msTeamsAnchor: RcMsTeamsAnchor.optional(),
   msTeamsApp: RcMsTeamsDeploymentApp.optional(),
   // Console links in provider-owned onboarding use the configured origin, without an organization path.

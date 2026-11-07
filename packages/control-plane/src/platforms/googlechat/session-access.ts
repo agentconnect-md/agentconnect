@@ -1,12 +1,30 @@
 import { z } from 'zod'
 import { BotAccessError } from '../bot-session-access.js'
 import { checkServiceAccountKey, googleChatAppReader, serviceAccountProject } from './credential.js'
+import type { GoogleChatPlatformAppConfig } from '../../config/google-chat-platform.js'
+import type { BotRecord } from '../../persistence/ports.js'
+import {
+  GOOGLE_CHAT_DEPLOYMENT_KEY_MARKER,
+  isGoogleChatDeploymentRow,
+  usesGoogleChatDeploymentApp
+} from './deployment-app.js'
 
 const Membership = z.object({
   name: z.string(),
   state: z.enum(['JOINED', 'INVITED', 'NOT_A_MEMBER']),
   member: z.object({ name: z.string(), type: z.literal('HUMAN') })
 })
+
+/** The key a row's member checks use: a deployment app's row uses only the configured app's, never what its secret slot holds (§10.10). */
+export function googleChatMembershipKey(
+  bot: Pick<BotRecord, 'externalAppId' | 'prebuilt' | 'platformConfig'>,
+  stored: string,
+  app: Pick<GoogleChatPlatformAppConfig, 'projectNumber' | 'serviceAccountKey'> | undefined
+): string {
+  if (!isGoogleChatDeploymentRow(bot, app) && stored !== GOOGLE_CHAT_DEPLOYMENT_KEY_MARKER) return stored
+  if (!usesGoogleChatDeploymentApp(bot, app)) throw new BotAccessError('app_authorization')
+  return app!.serviceAccountKey
+}
 
 // The app's existing chat.bot grant reads human memberships without user impersonation.
 export async function checkGoogleChatMembership(
