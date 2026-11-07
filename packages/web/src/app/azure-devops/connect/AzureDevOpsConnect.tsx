@@ -129,6 +129,8 @@ export default function AzureDevOpsConnect() {
   const [groups, setGroups] = useState<Map<string, AzureDevOpsProjectGroup>>(new Map())
   // The flow ticket lives in this page's memory for the flow alone: never storage, never a URL.
   const flow = useRef<{ flowId: string; ticket: string } | null>(null)
+  // The landing's query, read once: the first effect run clears the address bar, and Strict Mode runs it again.
+  const landingSearch = useRef<string | null>(null)
   const [organizations, setOrganizations] = useState<Project[]>([])
   // Manage project access names its connection in the signed state.
   const [connectionId, setConnectionId] = useState<string | null>(null)
@@ -149,7 +151,8 @@ export default function AzureDevOpsConnect() {
   }
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search)
+    landingSearch.current ??= window.location.search
+    const params = new URLSearchParams(landingSearch.current)
     const state = params.get('state')
     const target = azureDevOpsConnectState(state)
     if (!state || !target) {

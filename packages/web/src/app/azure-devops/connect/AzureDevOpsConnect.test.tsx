@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 // The Azure DevOps connect landing (azure-devops-integration.md §3.2): finish the sign-in, pick the organization and projects, apply, and name each refusal with its fix.
-import { act } from 'react'
+import { act, StrictMode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -174,6 +174,26 @@ describe('AzureDevOpsConnect', () => {
     // Never kept anywhere a later page could read it.
     expect(JSON.stringify({ ...window.localStorage })).not.toContain('ticket')
     expect(JSON.stringify({ ...window.sessionStorage })).not.toContain('ticket')
+  })
+
+  it('redeems once and reaches the organization step when Strict Mode runs the landing effect twice', async () => {
+    mocks.finish.mockResolvedValue(started())
+    mocks.organizations.mockResolvedValue([
+      { id: 'acct-1', name: 'example-org' },
+      { id: 'acct-2', name: 'example-labs' }
+    ])
+    window.history.replaceState({}, '', `/azure-devops/connect?code=c&state=${STATE}`)
+    await act(async () =>
+      root.render(
+        <StrictMode>
+          <AzureDevOpsConnect />
+        </StrictMode>
+      )
+    )
+    await settle()
+    expect(mocks.finish).toHaveBeenCalledTimes(1)
+    expect(refusal()).toBeNull()
+    expect(host.textContent).toContain('example-labs')
   })
 
   it('skips the organization picker for Manage project access', async () => {
