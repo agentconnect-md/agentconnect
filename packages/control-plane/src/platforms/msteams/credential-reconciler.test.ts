@@ -93,6 +93,26 @@ describe('MsTeamsCredentialReconciler', () => {
     expect(resync).toHaveBeenCalledWith('stamped')
   })
 
+  it('takes a stored marker as ownership, recording it on a row that records nothing else', async () => {
+    for (const app of [undefined, { ...APP, appId: OTHER_APP }]) {
+      const stored = new Map([
+        ['marker-only', material(MSTEAMS_DEPLOYMENT_SECRET_MARKER)],
+        ['own', material('own-secret-example')]
+      ])
+      const own = '00000000-0000-4000-8000-0000000000a3'
+      const { reconciler, merged, install, resync } = reconcilerOver(
+        [row('marker-only'), row('own', { externalAppId: own })],
+        stored,
+        app
+      )
+      expect(await reconciler.run()).toBe(1)
+      expect(merged.get('marker-only')).toEqual({ [MSTEAMS_ROW_OWNER_KEY]: MSTEAMS_DEPLOYMENT_OWNER })
+      expect(install).not.toHaveBeenCalled()
+      expect(resync).toHaveBeenCalledWith('marker-only')
+      expect(merged.has('own')).toBe(false)
+    }
+  })
+
   it('purges a historical row with no app configured, or with the app since replaced', async () => {
     for (const app of [undefined, { ...APP, appId: OTHER_APP }]) {
       const stored = new Map([['old', material(APP.clientSecret)]])

@@ -343,7 +343,7 @@ describe('the Teams plugin for a deployment app’s rows', () => {
     expect(await plugin.daemonRequest!(assignment({ apiAppId: OTHER_APP_ID }), post)).toEqual({
       outcome: 'refused',
       reason: 'not_deployment_app',
-      retryable: false
+      retryable: true
     })
     expect(await plugin.daemonRequest!(assignment(), { op: 'get-anything', path: '/v3/x' })).toEqual({
       outcome: 'refused',

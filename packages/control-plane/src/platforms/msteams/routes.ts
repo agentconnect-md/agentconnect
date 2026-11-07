@@ -14,6 +14,7 @@ import { relayHttpBase } from '../../http/relay-ingress.js'
 import { agentIconBackgroundColor } from '../../agents/agent-icon.js'
 import { BotId, IntegrationId } from '../../domain/ids.js'
 import { MsTeamsCreateCredentials, msTeamsSecrets, verifyMsTeamsApp } from './provider.js'
+import { MSTEAMS_DEPLOYMENT_SECRET_MARKER, isMsTeamsDeploymentRow, type MsTeamsPlatformApp } from './deployment-app.js'
 import {
   MSTEAMS_APP_PACKAGE_FILENAME,
   msTeamsAppIcons,
@@ -64,7 +65,11 @@ async function packageSource(deps: HttpDeps, req: FastifyRequest<{ Params: { id:
   return { agent, bot, input, fingerprint: msTeamsPackageFingerprint(input, agent) }
 }
 
-export function msTeamsRoutes(deps: HttpDeps, fetchImpl: typeof fetch = fetch) {
+export function msTeamsRoutes(
+  deps: HttpDeps,
+  fetchImpl: typeof fetch = fetch,
+  deploymentApp?: Pick<MsTeamsPlatformApp, 'appId'>
+) {
   return async function msTeamsRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
 
@@ -88,8 +93,9 @@ export function msTeamsRoutes(deps: HttpDeps, fetchImpl: typeof fetch = fetch) {
         if (!bot || bot.platform !== MSTEAMS_PLATFORM || !bot.externalAppId || !bot.externalTenantId) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'Teams bot not found.' })
         }
-        // A connected tenant's row holds no secret; the deployment app's stays on the CP and relay (§8.5).
-        if (bot.prebuilt) {
+        // A deployment app's row, by what it stores or the marker in its secret slot, never takes a secret (§8.5).
+        const stored = await deps.repos.botSecret.get(bot.orgId, bot.id)
+        if (isMsTeamsDeploymentRow(bot, deploymentApp) || stored?.botToken === MSTEAMS_DEPLOYMENT_SECRET_MARKER) {
           return reply.code(409).send({
             error: 'Conflict',
             statusCode: 409,

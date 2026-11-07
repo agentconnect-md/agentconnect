@@ -224,8 +224,8 @@ export function createMsTeamsIngressPlugin(deps: MsTeamsIngressPluginDeps = {}):
     // A deployment app's customer row's Bot Connector call or Graph token (§8.5); core checked the daemon serves the row.
     async daemonRequest(a: BotAssignment, payload: unknown): Promise<RdPlatformReply> {
       const row = deploymentRow(a.botId, a.apiAppId, a.teamId)
-      // A relay still waiting for the snapshot that names the app may answer differently once it has it.
-      if (!row) return { outcome: 'refused', reason: 'not_deployment_app', retryable: !egress }
+      // Only a deployment row's daemon asks, so a mismatch is this relay's snapshot trailing another's; nothing was called yet.
+      if (!row) return { outcome: 'refused', reason: 'not_deployment_app', retryable: true }
       const call = WireMsTeamsCall.safeParse(payload)
       if (!call.success) return { outcome: 'refused', reason: 'invalid' }
       return await row.egress.call(row.binding, call.data)

@@ -390,6 +390,44 @@ describe('RelayDaemonConnection (rd/* accept FSM)', () => {
     await vi.waitFor(() => expect(bare.transport.lastRep('rd/platform/reply')).toBeDefined())
     expect(bare.transport.lastRep('rd/platform/reply')!.payload).toEqual({ outcome: 'refused', reason: 'unsupported' })
   })
+
+  it('answers a handler failure with an error, never a reply that says nothing was sent', async () => {
+    const { transport } = build({
+      onPlatformRequest: async () => {
+        throw new Error('failed after the provider call')
+      }
+    })
+    transport.feed('rd/hello', { apiKey: 'k', daemonId: DAEMON_ID })
+    await Promise.resolve()
+    await Promise.resolve()
+    transport.feed('rd/platform/request', { platformId: 'msteams', botId: RELAY_ID, payload: {} })
+    await vi.waitFor(() => expect(transport.sent.some((f) => f.type === 'error')).toBe(true))
+    expect(transport.lastRep('rd/platform/reply')).toBeUndefined()
+  })
+
+  it('posts once when the reply to a 201 cannot be sent, and sends no second answer', async () => {
+    const posts: string[] = []
+    const { transport } = build({
+      onPlatformRequest: async () => {
+        posts.push('POST')
+        return { outcome: 'ok' as const, payload: { status: 201, body: { id: 'act-1' } } }
+      }
+    })
+    transport.feed('rd/hello', { apiKey: 'k', daemonId: DAEMON_ID })
+    await Promise.resolve()
+    await Promise.resolve()
+    const send = transport.send.bind(transport)
+    transport.send = (text: string) => {
+      if (text.includes('rd/platform/reply')) throw new Error('socket write failed')
+      send(text)
+    }
+    const before = transport.sent.length
+    transport.feed('rd/platform/request', { platformId: 'msteams', botId: RELAY_ID, payload: {} })
+    await vi.waitFor(() => expect(posts).toHaveLength(1))
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(posts).toEqual(['POST'])
+    expect(transport.sent.slice(before)).toEqual([])
+  })
 })
 
 describe('AHP carrier binding', () => {

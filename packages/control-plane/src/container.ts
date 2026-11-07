@@ -3113,7 +3113,7 @@ export function buildContainer(
     createDingTalkCpProvider({ installRoutes: [dingTalkCredentialRoutes(httpDeps)] }),
     createMsTeamsCpProvider({
       installRoutes: [
-        msTeamsRoutes(httpDeps),
+        msTeamsRoutes(httpDeps, fetch, msTeamsPlatformApp),
         msTeamsConnectRoutes(httpDeps, {
           ...(msTeamsPlatformApp ? { app: msTeamsPlatformApp } : {}),
           keys: msTeamsConnectKeys(config.API_KEY_PEPPER),

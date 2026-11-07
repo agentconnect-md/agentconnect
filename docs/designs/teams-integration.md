@@ -711,10 +711,11 @@ daemon sends through the relay (§8.5). A row is a deployment-app row by what it
 stores, so removing or replacing the configured app never turns it into an
 organization's own bot: `platformConfig.appOwner: deployment`, which every
 connect writes, or the `tokenTenantId` and prebuilt flag every earlier connect
-wrote; a row whose `externalAppId` is the configured app's ID is one too. A boot
-pass runs whatever the configuration is: it records `appOwner` on every such
-row, replaces any secret an older build stamped there with the marker, and
-re-syncs the row.
+wrote; a row whose `externalAppId` is the configured app's ID, or whose secret
+slot holds the marker, is one too. A boot pass runs whatever the configuration
+is and reads every Teams row's slot: it records `appOwner` on every such row,
+replaces any secret an older build stamped there with the marker, and re-syncs
+the row. Replacing a Teams secret from the Console is refused for such a row.
 
 With no row copies, rotating the secret touches only the identity provider's
 connector, the Control Plane and the relay, which take the new value from Setup
@@ -972,8 +973,11 @@ a deployment-app row cannot send.
 **Assignment lag.** Relays receive assignments independently, and a pool
 member's routes follow its duty with a delay, so one relay may not yet list the
 daemon. `refused` and `unavailable` both mean Microsoft was never called; a
-refusal the relay's assignments may still lift (`unknown_bot`, `not_member`,
-or no app in its snapshot yet) carries `retryable`. The daemon then asks the
+refusal the relay's assignments or snapshot may still lift (`unknown_bot`,
+`not_member`, or `not_deployment_app` when its snapshot names no app or another
+one) carries `retryable`. A handler failure, which may follow the call to
+Microsoft, is answered with an error frame the daemon treats as a send that may
+have landed, and a reply the relay could not send is not replaced by another. The daemon then asks the
 next ready relay, each of which checks membership on its own, and treats a
 refusal every relay returned as retryable as a call not sent, which its usual
 bounded backoff retries. A call that may have reached Microsoft is never sent to

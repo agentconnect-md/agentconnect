@@ -297,17 +297,7 @@ export class RelayDaemonConnection {
           return
         }
         case 'rd/platform/request': {
-          const msg = frame.payload
-          const handle = this.deps.onPlatformRequest
-          void Promise.resolve()
-            .then(() =>
-              handle ? handle(this.daemonId, msg) : ({ outcome: 'refused', reason: 'unsupported' } as const)
-            )
-            .then((reply) => this.replyFrame(frame, 'rd/platform/reply', reply))
-            .catch((err) => {
-              this.deps.log.warn(`relay: rd/platform/request failed: ${(err as Error).message}`)
-              this.replyFrame(frame, 'rd/platform/reply', { outcome: 'unavailable', reason: 'error' })
-            })
+          void this.answerPlatformRequest(frame, frame.payload)
           return
         }
         default:
@@ -422,6 +412,24 @@ export class RelayDaemonConnection {
 
   private reply(req: RelayDaemonFrame, type: 'rd/hello/ok', payload: RdHelloOk): void {
     this.transport.send(JSON.stringify(buildRelayDaemonFrame(type, payload, { corr: req.id })))
+  }
+
+  // A handler failure may follow the provider call, so it answers an error the daemon reads as ambiguous, never `unavailable`; a failed reply is only logged.
+  private async answerPlatformRequest(frame: RelayDaemonFrame, msg: RdPlatformRequest): Promise<void> {
+    const handle = this.deps.onPlatformRequest
+    let reply: RdPlatformReply
+    try {
+      reply = handle ? await handle(this.daemonId, msg) : { outcome: 'refused', reason: 'unsupported' }
+    } catch (err) {
+      this.deps.log.warn(`relay: rd/platform/request failed: ${(err as Error).message}`)
+      if (this.state !== 'CLOSED') this.sendError(frame.id, 'INTERNAL', 'platform request failed', false)
+      return
+    }
+    try {
+      this.replyFrame(frame, 'rd/platform/reply', reply)
+    } catch (err) {
+      this.deps.log.warn(`relay: rd/platform/reply not sent: ${(err as Error).message}`)
+    }
   }
 
   /** Answer an inbound `rd/route`, `rd/route/report` or `rd/platform/request` request. */

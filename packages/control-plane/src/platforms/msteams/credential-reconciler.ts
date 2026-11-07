@@ -43,16 +43,17 @@ export class MsTeamsCredentialReconciler {
     let moved = 0
     try {
       for (const bot of await this.deps.bots.listForPlatform(MSTEAMS_PLATFORM)) {
-        if (!isMsTeamsDeploymentRow(bot, this.deps.app)) continue
         try {
+          // Compared and never logged; the marker an earlier pass stored is ownership too, so every row's slot is read.
+          const stored = await this.deps.secrets.get(bot.orgId, bot.id)
+          const held = stored?.botToken === MSTEAMS_DEPLOYMENT_SECRET_MARKER
+          if (!held && !isMsTeamsDeploymentRow(bot, this.deps.app)) continue
           const marked = bot.platformConfig?.[MSTEAMS_ROW_OWNER_KEY] === MSTEAMS_DEPLOYMENT_OWNER
           if (!marked)
             await this.deps.bots.mergeBotIdentity(bot.orgId, bot.id, () => ({
               platformConfig: { [MSTEAMS_ROW_OWNER_KEY]: MSTEAMS_DEPLOYMENT_OWNER }
             }))
-          // Compared and never logged; a row without a secret row has nothing to remove.
-          const stored = await this.deps.secrets.get(bot.orgId, bot.id)
-          const stamped = !!stored && stored.botToken !== MSTEAMS_DEPLOYMENT_SECRET_MARKER
+          const stamped = !!stored && !held
           if (stamped)
             await this.deps.credentials.install(
               bot.orgId,

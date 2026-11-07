@@ -9,6 +9,12 @@ import {
 } from '@agentconnect.md/protocol'
 import { RelayManager } from '../../src/cp/relay-manager.js'
 import { PlatformRelayUnsent } from '../../src/platforms/platform-relay.js'
+import {
+  MsTeamsApi,
+  MsTeamsApiError,
+  msTeamsRelayPort,
+  relayMsTeamsConnector
+} from '../../src/platforms/msteams/api.js'
 import type { RelayClientDeps } from '../../src/cp/relay-client.js'
 import type { Logger } from '../../src/log.js'
 
@@ -282,5 +288,26 @@ describe('RelayManager.request (platform requests)', () => {
     await answer(lagging.r2, { outcome: 'refused', reason: 'not_member', retryable: true })
     expect(await both).toMatchObject({ outcome: 'refused', retryable: true })
     await lagging.mgr.stop()
+  })
+
+  it('never re-sends a post a relay answered with an error, which may follow the provider call', async () => {
+    const { mgr, r1, r2 } = await twoRelays()
+    const api = new MsTeamsApi(relayMsTeamsConnector(msTeamsRelayPort(mgr), REQ.botId), {
+      sleep: async () => {},
+      random: () => 0
+    })
+    const target = { serviceUrl: 'https://smba.trafficmanager.net/teams/', conversationId: 'a:chat', ticket: 't1.x.y' }
+    const posting = api.postActivity(target, { type: 'message', text: 'hi' }).catch((e: unknown) => e)
+    await vi.waitFor(() => expect(r1.sent.some((f) => f.type === 'rd/platform/request')).toBe(true))
+    const req = r1.sent.find((f) => f.type === 'rd/platform/request')!
+    r1.inject(
+      buildRelayDaemonFrame('error', { code: 'INTERNAL', message: 'failed', retryable: false }, { corr: req.id })
+    )
+    const err = (await posting) as MsTeamsApiError
+    expect(err).toBeInstanceOf(MsTeamsApiError)
+    expect(err.kind).toBe('ambiguous')
+    const sent = [...r1.sent, ...r2.sent].filter((f) => f.type === 'rd/platform/request')
+    expect(sent).toHaveLength(1)
+    await mgr.stop()
   })
 })
