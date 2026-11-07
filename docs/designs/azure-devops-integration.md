@@ -70,7 +70,7 @@ Two facts shape the design:
 | Where a tier is held  | a label on one token                  | the proxy; the token is organization-wide                                   |
 | Agent token delivery  | helper or proxy                       | proxy only                                                                  |
 | Provider CLI          | none                                  | the Azure CLI `azure-devops` extension, read-only through the proxy         |
-| API reads naming none | the workspace's credential            | an allowlist of metadata reads; everything else refused                     |
+| API reads naming none | the workspace's credential            | `connectionData` and resource-area lookups only; everything else refused    |
 | Webhooks              | managed per repository                | none in the first version (§11)                                             |
 | Rate limiting         | instance-defined                      | per identity, shared by every agent of the organization (§6.5)              |
 
@@ -346,11 +346,29 @@ path:
   and name; Azure DevOps itself refuses a name without a project. The project
   segment may be a name or a GUID, since the links Azure DevOps returns name
   the project by GUID.
-- **REST naming no repository**: only `_apis/connectionData`, `_apis/projects`,
-  `_apis/git/repositories` (the list), and the resource-area lookups the Azure
-  CLI makes. Each is forwarded as a read.
-- **Everything else is refused**, including other Azure DevOps services and
-  organization-wide content such as code search.
+- **REST naming no repository**: only `_apis/connectionData` and the
+  resource-area lookups the Azure CLI makes. Each is forwarded as a read.
+- **Everything else is refused.** That includes:
+  - the project and repository lists, at organization and at project scope;
+  - pull-request endpoints that name no repository:
+    `{project}/_apis/git/pullrequests`, which `az repos pr list` calls when it
+    names no repository, and `{project}/_apis/git/pullrequests/{id}`. Every
+    pull request names its repository, and pull-request ids are sequential
+    across the organization, so either would enumerate other repositories;
+  - other cross-repository queries, such as commit search; and
+  - other Azure DevOps services and hosts, such as code search, which the
+    proxy does not terminate. A placeholder sent there is refused by Azure
+    DevOps.
+
+  An agent learns its own repositories from its standing context, and commands
+  that name a repository still work; listing commands such as `az repos list`
+  fail instead. If agents turn out to need a list, the proxy can filter it
+  down to the agent's repositories rather than forward it whole.
+
+A repository outside the agent's authorizations is refused before the request
+leaves the proxy. The answer is the same whether or not such a repository
+exists, so the proxy is not an oracle for other repositories. What remains is
+what an authorized repository's own answers mention, such as a fork's parent.
 
 The provider contributes these rules to the proxy as its route descriptor, as
 GitLab and Gitea contribute theirs; the shared router has no Azure DevOps
@@ -395,8 +413,8 @@ the user. The Azure CLI receives:
 - the proxy and trust variables of the credential proxy design, including
   `REQUESTS_CA_BUNDLE`.
 
-With these, the repository, pull-request, and project commands reach only
-`dev.azure.com`, and the CLI writes no credential into the session directory.
+With these, the commands that name a repository reach only `dev.azure.com`,
+and the CLI writes no credential into the session directory.
 The CLI only accepts `dev.azure.com` and `*.visualstudio.com` as organization
 hosts, which the proxy preserves, since it terminates TLS for those names
 rather than rewriting them. Its organization and project detection reads the
@@ -501,6 +519,15 @@ The connect, connection, and secret routes manage a credential and are
 - Pipelines, Boards, Wiki, and Artifacts, and publishing a Marketplace
   extension.
 - API writes, and per-agent identities.
+- A second, read-only identity per organization beneath the proxy.
+  - It would keep a read grant from pushing even if the proxy misrouted one.
+  - It costs a second application registration, a second consent, a second
+    entitlement, and a second licence.
+  - It does not narrow reads, and it does not help once the daemon host is
+    compromised, since both tokens are there.
+  - With the token never in the environment and one push gate in the proxy,
+    the first version relies on the proxy. A customer whose review requires
+    a provider-side bound can have it added as an option.
 
 ## 11. Second Step: Hooks and Reviews
 
@@ -574,8 +601,9 @@ known only through consent.
    without `AZURE_EXTENSION_DIR` reinstalled the extension from `aka.ms`, Azure
    blob storage, and `github.com` (§6.4). Still to run with the placeholder
    through the proxy in A3.
-5. Whether the repository list (names only) belongs in §6.2's allowlist, or
-   only repositories the agent holds.
+5. **Decided:** project and repository lists, at either scope, and
+   pull-request endpoints that name no repository are refused (§6.2). A
+   filtered list is the follow-up if agents need one.
 6. Whether the first version needs a pull-request tool. Without one, an agent
    pushes a branch and a person opens the pull request.
 7. **Verified:** derivation can read the identity's own rights in one call.
@@ -587,8 +615,7 @@ known only through consent.
 8. **Verified:** `remoteUrl` percent-encodes a space (`%20`) in both the project
    and the repository segment, carries the organization as user-info, and
    keeps the four-segment form when the repository has its project's name.
-9. Whether to offer a second, read-only identity per organization as defense
-   in depth beneath the proxy, at the cost of a second licence.
+9. **Decided:** no second, read-only identity in the first version (§10).
 
 ## 13. Implementation Plan
 
@@ -607,6 +634,8 @@ live organization before A2.
 - **A3 — Daemon.** The credential module with its `proxyOnly` capability, the
   proxy instance and route descriptor of §6.2, the client configuration of
   §6.4, the feature advertisement tied to the proxy, and the strategy refusal.
+  Tests pin each refusal of §6.2: the lists, the pull-request endpoints that
+  name no repository, and a repository outside the agent's authorizations.
 - **A4 — Console, Setup, and documentation.** The card, the pickers, the
   Microsoft section's redirect URI and wording, and the setup page on the
   documentation site.
