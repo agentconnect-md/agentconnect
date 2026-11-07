@@ -7,6 +7,7 @@ import {
   codexGatewayAuthRequest,
   objectFromJson
 } from '../runtimes/codex-config.js'
+import { applySessionTrust } from '../credential-proxy/trust-bundle.js'
 import { AcpStreamPayloadSchema, type AcpOpen } from './acp-stream.js'
 import { seedDshPreset } from './dsh-preset.js'
 import { SANDBOX_BROWSER_EXECUTABLE_ENV, SANDBOX_GH_WRAPPER_DIR } from './sandbox-paths.js'
@@ -280,6 +281,8 @@ export class AcpRunner {
   }
 
   private spawnChild(command: string, payload: AcpOpen, env: Record<string, string>): void {
+    // A placed session's own authority files are on this machine, so its proxy trust bundle is completed here.
+    applySessionTrust(env, (message) => this.deps.log?.warn(message))
     if (this.deps.runtimeMark) env[SHIM_RUNTIME_MARK_ENV] = this.deps.runtimeMark
     const child = spawn(command, payload.args, {
       stdio: ['pipe', 'pipe', 'inherit'],

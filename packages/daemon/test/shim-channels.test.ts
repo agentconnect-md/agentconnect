@@ -7,6 +7,7 @@ import { configFilesDir, configFilesForLaunch, materializeConfigFiles } from '..
 import { LocalFileSink, applyFileSinkPayload, resolveSinkPath, FileSinkPayloadSchema } from '../src/shim/file-sink.js'
 import { ShimChannel, ShimFileSink } from '../src/shim/channels.js'
 import { SANDBOX_TUNNEL_PATHS, TunnelPayloadSchema } from '../src/shim/tunnel.js'
+import { daemonTunnelSocketPath } from '../src/remote/tunnel-sockets.js'
 import type { SpawnRecord } from '../src/shim/binding.js'
 import type { ShimConnection } from '../src/shim/connection.js'
 import type { ShimCapability, ShimFrame } from '../src/shim/protocol.js'
@@ -212,9 +213,16 @@ describe('shim channel', () => {
 
 describe('tunnels', () => {
   it('names a closed set of sockets rather than allowing any path', () => {
-    // One entry per server the daemon actually runs. `gh`'s token helper shares gitcred.sock, so a
-    // third name would have been a second in-pod path onto the same socket.
-    expect(Object.keys(SANDBOX_TUNNEL_PATHS).sort()).toEqual(['gitcred', 'mcp'])
+    // One name per daemon server, each mapped to its fixed socket: `gh` shares gitcred.sock, and codehost reaches only the agent's credential-proxy socket.
+    expect(Object.keys(SANDBOX_TUNNEL_PATHS).sort()).toEqual(['codehost', 'gitcred', 'mcp'])
+    const sockets = {
+      gitcred: '/d/gitcred.sock',
+      mcp: '/d/mcp.sock',
+      codehost: (agentId: string) => `/d/proxy-${agentId}.sock`
+    }
+    expect(daemonTunnelSocketPath('gitcred', 'a', sockets)).toBe('/d/gitcred.sock')
+    expect(daemonTunnelSocketPath('mcp', 'a', sockets)).toBe('/d/mcp.sock')
+    expect(daemonTunnelSocketPath('codehost', 'a', sockets)).toBe('/d/proxy-a.sock')
     // A generic "tunnel any socket" grant would let a compromised runtime reach whatever
     // the daemon happens to be listening on.
     expect(TunnelPayloadSchema.safeParse({ op: 'listen', tunnel: 'anything' }).success).toBe(false)

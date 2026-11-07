@@ -601,7 +601,11 @@ directory holding the certificate and the bundle; the CA key and the
 placeholder key stay outside it. `srt` intercepts only the environments of an
 agent with a managed code-host credential, routes only that agent's instance
 hosts to the proxy, and every session there gets the trust variables, a
-placeholder or not.
+placeholder or not. A session whose own environment names files in those
+variables keeps their authorities: it is pointed at a copy of the bundle with
+them merged in, keyed by content, which the daemon writes beside the bundle on
+its own machine and an executor's shim writes beside its listener bundle on
+that machine, skipping a file it cannot read.
 
 **Token selection.** The proxy takes the repository from the request path: a
 smart-HTTP path for git, and `/repos/{owner}/{repo}/…` for REST, and mints

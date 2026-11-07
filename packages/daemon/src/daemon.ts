@@ -388,6 +388,7 @@ import {
 } from './workspace/git-injection.js'
 import { CredentialProxy, type MintAsk } from './credential-proxy/proxy.js'
 import { loadProxyCa, proxyTrustEnv, upstreamAuthorities, type ProxyCa } from './credential-proxy/ca.js'
+import { mergedTrustBundle, SESSION_TRUST_ENV, sessionAuthorityFiles } from './credential-proxy/trust-bundle.js'
 import { loadPlaceholderKey } from './credential-proxy/placeholder.js'
 import { configureWorkspaceGitOrigins, permitsNoHttpsOrigin } from './workspace/git-origin-policy.js'
 import { buildMcpServers, buildSandboxMcpServers, type McpStdioServer } from './mcp/inject.js'
@@ -6952,6 +6953,16 @@ export class Daemon {
     return this.credentialProxy !== undefined && this.credentialProxy.proxy.domainsFor(agentId).length > 0
   }
 
+  /** A host or srt session's trust: the proxy bundle plus the authorities its own env names, which the variables would otherwise replace. */
+  private sessionProxyTrust(
+    ca: ProxyCa,
+    env: Record<string, string>,
+    runtimeEnv: Record<string, string>
+  ): Record<string, string> {
+    const files = sessionAuthorityFiles(env, runtimeEnv)
+    return proxyTrustEnv({ bundlePath: mergedTrustBundle(ca.bundlePath, files, (message) => this.log.warn(message)) })
+  }
+
   /** What a proxied session's environment carries: the placeholder for gh and git, the trust bundle, and the proxy unless srt routes to it (the loopback listener here, or an executor shim's codehost listener there). */
   private credentialProxyEnv(
     proxy: { proxy: CredentialProxy; ca: ProxyCa },
@@ -6963,9 +6974,17 @@ export class Daemon {
   ): Record<string, string> {
     const placeholder = proxy.proxy.placeholderFor(agentId)
     const remote = typeof route === 'object' ? route : undefined
-    // An executor's session verifies with the bundle its shim wrote there, from that machine's roots and this CA.
-    const trust = proxyTrustEnv(remote ? { bundlePath: remote.trustBundle } : proxy.ca)
-    const out: Record<string, string> = { ...trust, [CODE_HOST_CREDENTIAL_ENV]: placeholder }
+    // An executor's session verifies with the bundle its shim wrote there, and that shim merges the session's own authority files, which are on that machine.
+    const files = remote ? sessionAuthorityFiles(env, runtimeEnv) : []
+    const out: Record<string, string> = {
+      ...(remote
+        ? proxyTrustEnv({ bundlePath: remote.trustBundle })
+        : this.sessionProxyTrust(proxy.ca, env, runtimeEnv)),
+      ...(remote && files.length > 0
+        ? { [SESSION_TRUST_ENV]: JSON.stringify({ bundle: remote.trustBundle, files }) }
+        : {}),
+      [CODE_HOST_CREDENTIAL_ENV]: placeholder
+    }
     // A GH_TOKEN or GITLAB_TOKEN the agent was configured with is its own, and wins as it always has.
     const github = this.credentialProxyHosts(agentId).some((host) => host.provider === 'github')
     if (github && env.GH_TOKEN === undefined && runtimeEnv.GH_TOKEN === undefined) out.GH_TOKEN = placeholder
@@ -8831,7 +8850,7 @@ export class Daemon {
       )
     // Every session in an srt environment the proxy intercepts trusts its CA, a placeholder or not, or its code-host requests would fail verification.
     else if (srtShim && this.credentialProxy && this.credentialProxyIntercepts(agent.id))
-      Object.assign(env, proxyTrustEnv(this.credentialProxy.ca))
+      Object.assign(env, this.sessionProxyTrust(this.credentialProxy.ca, env, runtimeEnv))
     const target = opts.modelCredential?.target ?? modelProviderTarget(agent, runtime)
     // A runtime on another filesystem reads its config files there, so they travel with its launch as the gitconfig does (§8): the pod's image root, or the one an executor reported.
     const launchFilesRoot = remoteRoots

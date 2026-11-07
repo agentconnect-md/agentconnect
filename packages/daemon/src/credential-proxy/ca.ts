@@ -14,6 +14,7 @@ import { getCACertificates } from 'node:tls'
 import { dirname, join } from 'node:path'
 import { generateCa } from '@anthropic-ai/sandbox-runtime'
 import { tlsTrustEnv } from '../config/tls-trust-env.js'
+import { PROXY_TRUST_VARS } from './trust-bundle.js'
 
 export interface ProxyCa {
   /** The public half, the only directory a sandbox may read: the CA certificate and the bundle, never a key. */
@@ -88,14 +89,7 @@ export function upstreamAuthorities(env: NodeJS.ProcessEnv = process.env): strin
   return [...new Set(roots.map((pem) => pem.trim()))]
 }
 
-/** The variables that point a runtime's clients at the bundle: OpenSSL and Go, curl, git, Python's requests, and Node. */
+/** The variables that point a runtime's clients at the bundle: OpenSSL and Go, curl, git, Python's requests, and Node, which adds it to its own roots. */
 export function proxyTrustEnv(ca: Pick<ProxyCa, 'bundlePath'>): Record<string, string> {
-  return {
-    SSL_CERT_FILE: ca.bundlePath,
-    CURL_CA_BUNDLE: ca.bundlePath,
-    GIT_SSL_CAINFO: ca.bundlePath,
-    REQUESTS_CA_BUNDLE: ca.bundlePath,
-    // Node adds these to its own roots; the bundle keeps any operator authority the daemon itself trusts.
-    NODE_EXTRA_CA_CERTS: ca.bundlePath
-  }
+  return Object.fromEntries(PROXY_TRUST_VARS.map((name) => [name, ca.bundlePath]))
 }

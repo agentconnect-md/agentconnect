@@ -1,14 +1,17 @@
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { request as httpRequest } from 'node:http'
 import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https'
 import { createServer, type AddressInfo, type LookupFunction, type Server, type Socket } from 'node:net'
-import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
 import { connect as tlsConnect } from 'node:tls'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { generateCa } from '@anthropic-ai/sandbox-runtime'
 import { createMitmCA } from '@anthropic-ai/sandbox-runtime/dist/sandbox/mitm-ca.js'
 import { mintLeafCert } from '@anthropic-ai/sandbox-runtime/dist/sandbox/mitm-leaf.js'
-import { loadProxyCa } from '../src/credential-proxy/ca.js'
+import { loadProxyCa, proxyTrustEnv } from '../src/credential-proxy/ca.js'
+import { mergedTrustBundle, SESSION_TRUST_ENV, sessionAuthorityFiles } from '../src/credential-proxy/trust-bundle.js'
+import { AcpRunner } from '../src/shim/acp-runner.js'
 import { loadPlaceholderKey } from '../src/credential-proxy/placeholder.js'
 import { CredentialProxy } from '../src/credential-proxy/proxy.js'
 import { GITHUB_MANAGED_HOST, type ManagedCredentialHost } from '../src/gitcred/managed-hosts.js'
@@ -81,7 +84,7 @@ async function placedSession(options: { maxCodehostStreams?: number } = {}) {
     [AGENT]: [GITHUB_MANAGED_HOST, { provider: 'gitlab', baseUrl: `https://gitlab.example.test:${upstreamPort}` }],
     [OTHER]: [{ provider: 'gitlab', baseUrl: `https://gitlab.example.test:${upstreamPort}` }]
   }
-  const mint = vi.fn(async () => ({ username: 'service-account', token: 'glpat_minted' }))
+  const mint = vi.fn(async () => ({ username: 'service-account', token: 'glpat_minted', access: 'write' as const }))
   const proxy = new CredentialProxy({
     key: loadPlaceholderKey(join(dir, 'proxy.key')),
     ca,
@@ -186,7 +189,8 @@ describe('a CONNECT target', () => {
   })
 })
 
-describe('the routes a codehost tunnel carries', () => {
+// Unix sockets carry the daemon side, which Windows never runs.
+describe.skipIf(process.platform === 'win32')('the routes a codehost tunnel carries', () => {
   it('are the agent’s SaaS names on 443 and its self-managed instance on its own port', async () => {
     const { proxy } = await placedSession()
     expect(proxy.tunnelRoutes(AGENT)).toEqual([
@@ -286,5 +290,82 @@ describe.skipIf(process.platform === 'win32')('an executor-placed session’s co
     expect(tunnel.streamCount(true)).toBe(1)
     expect(await connectThrough(shimDial(listening), gitlab())).toBe(503)
     expect(tunnel.streamCount(true)).toBe(1)
+  })
+})
+
+const certificates = (file: string): string[] =>
+  (readFileSync(file, 'utf8').match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g) ?? []).map((pem) =>
+    pem.trim()
+  )
+
+describe('a host session’s configured authorities', () => {
+  it('join the proxy bundle it is pointed at, and none configured keeps the default bundle', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'acct-'))
+    dirs.push(dir)
+    const ca = loadProxyCa(join(dir, 'ca'))
+    const privateCa = join(dir, 'private-ca.pem')
+    writeFileSync(privateCa, upstreamCaPem)
+    const warn = vi.fn()
+
+    const files = sessionAuthorityFiles({ SSL_CERT_FILE: privateCa }, { SSL_CERT_FILE: '/ignored.pem' })
+    expect(files).toEqual([privateCa])
+    const trust = proxyTrustEnv({ bundlePath: mergedTrustBundle(ca.bundlePath, files, warn) })
+    expect(trust.SSL_CERT_FILE).not.toBe(ca.bundlePath)
+    expect(dirname(trust.SSL_CERT_FILE!)).toBe(ca.trustDir)
+    expect(new Set(Object.values(trust))).toEqual(new Set([trust.SSL_CERT_FILE]))
+    const merged = certificates(trust.SSL_CERT_FILE!)
+    expect(merged).toContain(upstreamCaPem.trim())
+    expect(merged).toContain(ca.certPem.trim())
+    // The same authorities share one file.
+    expect(mergedTrustBundle(ca.bundlePath, [privateCa], warn)).toBe(trust.SSL_CERT_FILE)
+
+    expect(mergedTrustBundle(ca.bundlePath, sessionAuthorityFiles({}, {}), warn)).toBe(ca.bundlePath)
+    expect(mergedTrustBundle(ca.bundlePath, [ca.bundlePath], warn)).toBe(ca.bundlePath)
+    expect(warn).not.toHaveBeenCalled()
+  })
+})
+
+// Unix sockets carry the daemon side, which Windows never runs.
+describe.skipIf(process.platform === 'win32')('an executor-placed session’s configured authorities', () => {
+  it('are merged by its shim beside the listener bundle, an unreadable file skipped, and the seam stripped', async () => {
+    const { listening, dir } = await placedSession()
+    const privateCa = join(dir, 'private-ca.pem')
+    writeFileSync(privateCa, upstreamCaPem)
+    const output: string[] = []
+    let exited!: () => void
+    const done = new Promise<void>((resolve) => (exited = resolve))
+    const warnings: string[] = []
+    const runner = new AcpRunner({
+      emit: (event) => {
+        if (event.kind === 'chunk' && event.data) output.push(Buffer.from(event.data, 'base64').toString('utf8'))
+        if (event.kind === 'exit') exited()
+      },
+      completeEnv: true,
+      log: { info: () => {}, warn: (message) => warnings.push(message) }
+    })
+    await runner.apply({
+      op: 'open',
+      command: process.execPath,
+      args: ['-e', 'process.stdout.write(JSON.stringify(process.env))'],
+      env: {
+        PATH: process.env.PATH ?? '',
+        ...proxyTrustEnv({ bundlePath: listening.trustBundle }),
+        [SESSION_TRUST_ENV]: JSON.stringify({
+          bundle: listening.trustBundle,
+          files: [privateCa, join(dir, 'missing.pem')]
+        })
+      }
+    })
+    await done
+    const env = JSON.parse(output.join('')) as Record<string, string>
+    expect(env[SESSION_TRUST_ENV]).toBeUndefined()
+    expect(env.SSL_CERT_FILE).not.toBe(listening.trustBundle)
+    expect(dirname(env.SSL_CERT_FILE!)).toBe(dirname(listening.trustBundle))
+    expect(env.GIT_SSL_CAINFO).toBe(env.SSL_CERT_FILE)
+    expect(env.NODE_EXTRA_CA_CERTS).toBe(env.SSL_CERT_FILE)
+    const merged = certificates(env.SSL_CERT_FILE!)
+    expect(merged).toContain(upstreamCaPem.trim())
+    expect(merged).toEqual(expect.arrayContaining(certificates(listening.trustBundle)))
+    expect(warnings.some((message) => message.includes('missing.pem'))).toBe(true)
   })
 })
