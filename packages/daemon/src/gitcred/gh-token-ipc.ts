@@ -1,4 +1,5 @@
-// The gitcred socket call itself, for the in-sandbox entries that reach it (the auto-merge watcher, `agentconnect-secrets`).
+// The gitcred socket call itself, split out of `gh-token-client.ts` so a second in-sandbox entry can
+// reach a gh token without also pulling in the gh-argv target resolver and its `git remote` probe.
 // Node builtins only: every consumer of this file is bundled into the runtime image.
 import { createConnection } from 'node:net'
 import { GITCRED_CAPABILITY_ENV } from './env.js'

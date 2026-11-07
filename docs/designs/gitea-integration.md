@@ -74,7 +74,7 @@ parity table holds with `gitlab` replaced by `gitea`.
 | Informational run state  | Daemon-authored status note                       | Control-Plane-written commit status                                                                       |
 | Re-request               | Reviewer re-request, mention, reply, new revision | Same four; re-requesting the bot as reviewer is a plain `POST /requested_reviewers`                       |
 | Loop prevention veto set | Every bound service-account user id               | The connection's single bot user id                                                                       |
-| Read-only provider CLI   | `glab` through the credential proxy               | None in v1; `tea` has no read-only mode and a generic `tea api` escape hatch                              |
+| Read-only provider CLI   | `glab` wrapper                                    | None in v1; `tea` has no read-only mode and a generic `tea api` escape hatch                              |
 | Lost-delivery recovery   | Provider retries only                             | Provider retries only; Gitea exposes no delivery-history or redelivery API                                |
 
 ## 3. Instance Axis and Version Floor
@@ -554,9 +554,9 @@ repository's grant from satisfying another. The grant echoes provider,
 numeric repository id, path, username, access, credential epoch, host, and
 lease TTL, and the consumer verifies every field. The token is presented as
 the HTTPS password with the bot's username; Gitea accepts either form.
-Only daemon-run git asks the helper for this token. An agent's session holds
-the credential proxy's placeholder, and the proxy presents this token per
-request (github-app-git-credentials.md, Phase 2).
+Where the daemon's credential proxy runs, a host or `srt` session holds a
+placeholder and the proxy presents this token per request
+(github-app-git-credentials.md, Phase 2).
 
 There is no CLI wrapper. The agent reads issues, pull requests, diffs, and
 statuses through the provider read tools and mutates through the effect

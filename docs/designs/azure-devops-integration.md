@@ -349,8 +349,8 @@ Two consequences follow from where the proxy stands today:
   or placed on a remote executor are not covered yet. Until the pool-pod
   tunnel lands, the Cloud pool cannot place an agent with an Azure DevOps
   workspace or additional repository.
-- The proxy always runs (github-app-git-credentials.md, Phase 2), so no switch
-  gates Azure DevOps beyond the sessions the proxy reaches.
+- `features.credentialProxy` defaults to off, so Azure DevOps is off by default
+  as well. A self-hosted daemon gets it by turning the proxy on.
 
 ### 6.2 Instance and Routes
 

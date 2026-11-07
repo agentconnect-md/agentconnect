@@ -668,10 +668,10 @@ export function liveSecretsChannelEnv(
 /** The variable a proxied environment's placeholder rides in, which the helper below hands git. */
 export const CODE_HOST_CREDENTIAL_ENV = 'AC_CODEHOST_CREDENTIAL'
 
-// It answers only `get`, with the placeholder the proxy exchanges, and nothing in an environment without one.
-const PLACEHOLDER_HELPER_COMMAND = `!f() { test "$1" = get && test -n "$${CODE_HOST_CREDENTIAL_ENV}" || return 0; echo username=x-access-token; echo "password=$${CODE_HOST_CREDENTIAL_ENV}"; }; f`
+// It answers only `get`, with the placeholder the proxy exchanges.
+const PLACEHOLDER_HELPER_COMMAND = `!f() { test $1 = get || return 0; echo username=x-access-token; echo password=$${CODE_HOST_CREDENTIAL_ENV}; }; f`
 // Quoted whole in a gitconfig file, since `;` would start a comment there.
-const PLACEHOLDER_HELPER = `"${PLACEHOLDER_HELPER_COMMAND.replaceAll('"', '\\"')}"`
+const PLACEHOLDER_HELPER = `"${PLACEHOLDER_HELPER_COMMAND}"`
 
 /** The real helper's command line, without the `!` that has git run it through the shell. */
 function helperInvocation(agentId: string, target: GitCredentialTarget): string {
@@ -686,9 +686,10 @@ function quotedHelper(agentId: string, target: GitCredentialTarget = targetOf(ag
   return `!${helperInvocation(agentId, target)}`
 }
 
-/** A checkout's pinned helper, for the runtime's git: the environment's placeholder, or nothing. */
-export function checkoutHelper(): string {
-  return PLACEHOLDER_HELPER_COMMAND
+/** A checkout's pinned helper: the placeholder in an environment that carries one, the real helper otherwise. */
+export function checkoutHelper(agentId: string, target: GitCredentialTarget = targetOf(agentId)): string {
+  const credential = `$${CODE_HOST_CREDENTIAL_ENV}`
+  return `!f() { if test -n "${credential}"; then test "$1" = get || return 0; echo username=x-access-token; echo "password=${credential}"; else ${helperInvocation(agentId, target)} "$@"; fi; }; f`
 }
 
 /** The three host-scoped config pairs both channels share. The host defaults to
@@ -770,25 +771,27 @@ export function sessionGitConfig(
   target: GitCredentialTarget = targetOf(agentId),
   // `null` is an agent the daemon issues NO managed credential to: it still gets the file for the
   // ambient policy, and nothing that would hand it a credential pointer or a socket capability.
-  scope: ManagedCredentialScope | null = GITHUB_CREDENTIAL_SCOPE
+  scope: ManagedCredentialScope | null = GITHUB_CREDENTIAL_SCOPE,
+  // The credential proxy carries every pinned host's token: git presents the environment's placeholder instead of asking the helper.
+  proxied = false
 ): { path: string; content: string; env: Record<string, string> } {
-  // Keyed by content, a pure function of (agent, class) with identity in env, so a dream host never cuts the warm host's helper.
-  const file = join(target.configDir, `${agentId}${scope ? '' : '.policy'}.gitconfig`)
+  // Keyed by content, a pure function of (agent, class, proxy) with identity in env, so a dream host never cuts the warm host's helper.
+  const file = join(target.configDir, `${agentId}${scope ? (proxied ? '.proxied' : '') : '.policy'}.gitconfig`)
   const bases = scope ? sessionCredentialBases(scope) : []
   const lines = [
     '# agentconnect session git config — regenerated on agent start; NO secrets.',
-    `# Keeps non-identity host config and disables repository hooks${bases.length ? `, then pins ${bases.join(' + ')} credentials to the credential proxy's placeholder` : ''}.`,
+    `# Keeps non-identity host config and disables repository hooks${bases.length ? `, then pins ${bases.join(' + ')} credentials to the daemon helper` : ''}.`,
     ...(target.hostConfig ? ['[include]', `\tpath = ${target.hostConfig}`] : []),
     // AFTER the include, or a host ~/.gitconfig hooksPath would be the last writer and win.
     '[core]',
     `\thooksPath = ${EMPTY_GIT_CONFIG}`,
     '\tfsmonitor = false',
     // git's default `anyauth` sends CONNECT bare and waits for a scheme the credential proxy never offers.
-    ...(scope ? ['[http]', '\tproxyAuthMethod = basic'] : []),
+    ...(proxied ? ['[http]', '\tproxyAuthMethod = basic'] : []),
     ...bases.flatMap((base) => [
       `[credential "${base}"]`,
       '\thelper = ', // reset the accumulated helper list for this host
-      `\thelper = ${PLACEHOLDER_HELPER}`,
+      `\thelper = ${proxied ? PLACEHOLDER_HELPER : quotedHelper(agentId, target)}`,
       '\tuseHttpPath = true'
     ]),
     ''
@@ -815,12 +818,13 @@ export function sessionGitConfig(
 export function sessionGitEnv(
   agentId: string,
   commitIdentity?: GitCommitIdentity,
-  scope: ManagedCredentialScope | null = GITHUB_CREDENTIAL_SCOPE
+  scope: ManagedCredentialScope | null = GITHUB_CREDENTIAL_SCOPE,
+  proxied = false
 ): Record<string, string> {
   if (targetOf(agentId).kind !== 'daemon') {
     throw new Error(`agent ${agentId} runs its git in a sandbox — materialize its gitconfig instead of writing it`)
   }
-  const { path: file, content, env } = sessionGitConfig(agentId, commitIdentity, targetOf(agentId), scope)
+  const { path: file, content, env } = sessionGitConfig(agentId, commitIdentity, targetOf(agentId), scope, proxied)
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
   writeFileSync(file, content, { mode: 0o644 })
   return env
@@ -842,6 +846,7 @@ export function gitCommitIdentityEnv(identity: GitCommitIdentity): Record<string
 /** Post-clone: pin the repo-local helper for the runtime's git in the checkout; daemon-run git sets its own at command scope. */
 export async function writeRepoHelperConfig(
   runner: GitRunner,
+  agentId: string,
   scope: ManagedCredentialScope = GITHUB_CREDENTIAL_SCOPE
 ): Promise<void> {
   const git = runner.withEnv(workspaceGitLocalEnv())
@@ -849,7 +854,7 @@ export async function writeRepoHelperConfig(
   // `--replace-all` on the first write resets any stale helper list from a
   // previous agent generation; addConfig(append=true) accumulates the rest.
   await git.raw(['config', '--replace-all', `credential.${base}.helper`, ''])
-  await git.raw(['config', '--add', `credential.${base}.helper`, checkoutHelper()])
+  await git.raw(['config', '--add', `credential.${base}.helper`, checkoutHelper(agentId)])
   await git.raw(['config', `credential.${base}.useHttpPath`, 'true'])
 }
 

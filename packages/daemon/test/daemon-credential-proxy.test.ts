@@ -17,7 +17,8 @@ import {
 } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import { agentHostKey } from '../src/acp/host-key.js'
-import { secretsShimDir } from '../src/cp/secrets-shim.js'
+import { ghShimDir, secretsShimDir } from '../src/cp/gh-shim.js'
+import { glabShimDir } from '../src/cp/glab-shim.js'
 import {
   GITCRED_AGENT_ENV,
   GITCRED_CAPABILITY_ENV,
@@ -28,22 +29,15 @@ import {
 import { gitcredIpc } from '../src/gitcred/gh-token-ipc.js'
 import { CredentialProxy } from '../src/credential-proxy/proxy.js'
 import { PROXY_TRUST_VARS } from '../src/credential-proxy/trust-bundle.js'
-import {
-  checkoutHelper,
-  cloneGitEnv,
-  workspaceGitLocalEnv,
-  writeRepoHelperConfig
-} from '../src/workspace/git-injection.js'
+import { cloneGitEnv, workspaceGitLocalEnv, writeRepoHelperConfig } from '../src/workspace/git-injection.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
-// A host-strategy session of a real daemon behind its credential proxy, as the daemon itself assembles and serves it.
+// A host-strategy session of a real daemon with `features.credentialProxy`, as the daemon itself assembles and serves it.
 
 const run = promisify(execFile)
 const GITHUB_AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const GITLAB_AGENT = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 // What the daemon's own helper answers, standing in for the real one, and what the fake control plane mints.
-// Where the daemon once wrote its gh and glab token wrappers, which no session's PATH names anymore.
-const TOKEN_WRAPPER_DIR = (root: string) => join(root, 'run', 'bin')
 const HELPER_TOKEN = 'ghs_repo-helper-example'
 const MINTED_GITHUB = 'ghs_minted-example'
 const MINTED_GITLAB = 'glpat_minted-example'
@@ -94,18 +88,17 @@ function shortDir(): string {
   return dir
 }
 
-/** A daemon on a fresh root; `blockProxy` puts a file where the proxy keeps its key and CA, so it cannot start. */
-async function startDaemon(blockProxy = false): Promise<{ d: any; root: string }> {
+async function startDaemon(credentialProxy: boolean): Promise<{ d: any; root: string }> {
   const root = shortDir()
   writeFileSync(
     join(root, 'config.json'),
     JSON.stringify({
       version: 1,
       controlPlane: { enabled: false },
-      runtimes: { claude: { command: 'node', args: [] } }
+      runtimes: { claude: { command: 'node', args: [] } },
+      features: { credentialProxy }
     })
   )
-  if (blockProxy) writeFileSync(join(root, 'credential-proxy'), 'not a directory')
   const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, probeRuntimes: async () => [] })
   daemons.push(daemon)
   await daemon.start()
@@ -204,7 +197,7 @@ async function checkout(d: any, agent: any): Promise<string> {
       env: local,
       stdio: 'pipe'
     })
-    await writeRepoHelperConfig(d.workspaces.runnerFor(agent.id, path), d.workspaces.managedScopeOf(agent))
+    await writeRepoHelperConfig(d.workspaces.runnerFor(agent.id, path), agent.id, d.workspaces.managedScopeOf(agent))
   })
   return path
 }
@@ -221,7 +214,7 @@ function fill(cwd: string, env: NodeJS.ProcessEnv, host: string, path: string): 
 
 describe('a host session with the credential proxy on', () => {
   it('holds the placeholder, the loopback proxy and its trust bundle, and no token', async () => {
-    const { d } = await startDaemon()
+    const { d } = await startDaemon(true)
     expect(d.credentialProxy).toBeDefined()
     await admit(d, GITHUB_AGENT, githubSpec())
     const { own: env } = sessionEnv(d, GITHUB_AGENT)
@@ -250,9 +243,9 @@ describe('a host session with the credential proxy on', () => {
 
   // POSIX only: the stand-in helper is a shell script.
   it.skipIf(process.platform === 'win32')(
-    "hands git the placeholder in the agent's checkout, whose own pin names no helper",
+    "hands git the placeholder in the agent's checkout, over the real helper its own config pins",
     async () => {
-      const { d, root } = await startDaemon()
+      const { d, root } = await startDaemon(true)
       stubRealHelper(root)
       const agent = await admit(d, GITHUB_AGENT, githubSpec())
       const cwd = await checkout(d, agent)
@@ -260,8 +253,7 @@ describe('a host session with the credential proxy on', () => {
         cwd,
         env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1' }
       })
-      expect(pinned.toString()).toContain(checkoutHelper())
-      expect(pinned.toString()).not.toContain(gitcredShimPath(root))
+      expect(pinned.toString()).toContain(gitcredShimPath(root))
       const { own, child } = sessionEnv(d, GITHUB_AGENT)
       expect(fill(cwd, child, 'github.com', 'example-org/example-repo.git')).toBe(own.AC_CODEHOST_CREDENTIAL)
     }
@@ -271,7 +263,7 @@ describe('a host session with the credential proxy on', () => {
     'hands git the placeholder for a self-managed GitLab instance the spec names, and glab the same',
     async () => {
       const instance = 'https://gitlab.example.test:8443/gitlab'
-      const { d, root } = await startDaemon()
+      const { d, root } = await startDaemon(true)
       stubRealHelper(root)
       const agent = await admit(d, GITLAB_AGENT, gitlabSpec(instance))
       const cwd = await checkout(d, agent)
@@ -286,7 +278,7 @@ describe('a host session with the credential proxy on', () => {
       expect(JSON.stringify(own)).not.toMatch(/ghs_|glpat/)
       // No glab wrapper to fetch a token: glab presents the placeholder itself, at the spec's instance.
       expect(own.GITLAB_HOST).toBe(instance)
-      expect(own.PATH!.split(':')).not.toContain(TOKEN_WRAPPER_DIR(root))
+      expect(own.PATH!.split(':')).not.toContain(glabShimDir(root))
       expect(own.PATH!.split(':')).toContain(secretsShimDir(root))
     }
   )
@@ -295,7 +287,7 @@ describe('a host session with the credential proxy on', () => {
   it.skipIf(process.platform === 'win32')(
     'keeps every way to a real token out of the session, and leaves the daemon its own',
     async () => {
-      const { d, root } = await startDaemon()
+      const { d, root } = await startDaemon(true)
       stubRealHelper(root)
       const agent = await admit(d, GITHUB_AGENT, githubSpec())
       const cwd = await checkout(d, agent)
@@ -304,9 +296,9 @@ describe('a host session with the credential proxy on', () => {
       // The checkout's own pin answers, so a child that drops every command-scope pair still presents the placeholder.
       const reset = { ...child, GIT_CONFIG_COUNT: '0' }
       expect(fill(cwd, reset, 'github.com', 'example-org/example-repo.git')).toBe(own.AC_CODEHOST_CREDENTIAL)
-      // No gh wrapper; the secrets helper stays.
+      // No gh wrapper, whose token fetch the runtime's capability would be refused; the secrets helper stays.
       const path = own.PATH!.split(':')
-      expect(path).not.toContain(TOKEN_WRAPPER_DIR(root))
+      expect(path).not.toContain(ghShimDir(root))
       expect(path).toContain(secretsShimDir(root))
       expect(readFileSync(join(secretsShimDir(root), 'agentconnect-secrets'), 'utf8')).toContain(' secrets')
       // The runtime's capability, as the session holds it, mints nothing on any plane and still reads secrets.
@@ -343,7 +335,7 @@ describe('a host session on a daemon behind its own outbound proxy', () => {
     process.env.HTTPS_PROXY = 'http://parent.example.test:3128'
     process.env.NO_PROXY = '.corp.example.test,gitlab.example.test'
     try {
-      const { d } = await startDaemon()
+      const { d } = await startDaemon(true)
       expect(d.credentialProxy.proxy.parentProxy?.httpsUrl?.host).toBe('parent.example.test:3128')
       await admit(d, GITLAB_AGENT, gitlabSpec('https://gitlab.example.test:8443/gitlab'))
       const { own } = sessionEnv(d, GITLAB_AGENT)
@@ -361,41 +353,37 @@ describe('a host session on a daemon behind its own outbound proxy', () => {
   })
 })
 
-describe('a daemon whose credential proxy did not start', () => {
-  // POSIX only: the stand-in helper is a shell script.
-  it.skipIf(process.platform === 'win32')(
-    'gives a session no code-host credential at all, and says why once',
-    async () => {
-      const { d, root } = await startDaemon(true)
-      expect(d.credentialProxy).toBeUndefined()
-      stubRealHelper(root)
-      const agent = await admit(d, GITHUB_AGENT, githubSpec())
-      const cwd = await checkout(d, agent)
-      const warnings: string[] = []
-      const warn = d.log.warn
-      d.log = { ...d.log, warn: (message: string) => (warnings.push(message), warn(message)) }
-      const { own, child } = sessionEnv(d, GITHUB_AGENT)
-      expect(own.AC_CODEHOST_CREDENTIAL).toBeUndefined()
-      expect(own.GH_TOKEN).toBeUndefined()
-      expect(own.HTTPS_PROXY).toBeUndefined()
-      expect(own.PATH!.split(':')).not.toContain(TOKEN_WRAPPER_DIR(root))
-      expect(readFileSync(own.GIT_CONFIG_GLOBAL!, 'utf8')).not.toContain(gitcredShimPath(root))
-      // Neither the session config nor the checkout's pin falls back to the real helper.
-      expect(() =>
-        fill(cwd, { ...child, GIT_TERMINAL_PROMPT: '0' }, 'github.com', 'example-org/example-repo.git')
-      ).toThrow()
-      fakeControlPlane(d, 'write')
-      const presented = { agentId: own[GITCRED_AGENT_ENV], capability: own[GITCRED_CAPABILITY_ENV] }
-      expect(await gitcredIpc(gitcredSocketPath(root), { op: 'get', ...presented })).toEqual({
-        ok: false,
-        error: RUNTIME_NO_MINT_ERROR,
-        denied: 'agent'
-      })
-      expect(warnings.filter((message) => message.includes('has no code-host credential'))).toEqual([
-        `credential proxy: a session of agent "${GITHUB_AGENT}" has no code-host credential: the credential proxy is not running`
-      ])
-    }
-  )
+describe('a host session with the credential proxy off', () => {
+  it('keeps the helper path and no proxy', async () => {
+    const { d, root } = await startDaemon(false)
+    expect(d.credentialProxy).toBeUndefined()
+    await admit(d, GITHUB_AGENT, githubSpec())
+    const { own: env } = sessionEnv(d, GITHUB_AGENT)
+    expect(env.AC_CODEHOST_CREDENTIAL).toBeUndefined()
+    expect(env.HTTPS_PROXY).toBeUndefined()
+    expect(env.https_proxy).toBeUndefined()
+    expect(env.NODE_USE_ENV_PROXY).toBeUndefined()
+    expect(env.GIT_CONFIG_COUNT).toBeUndefined()
+    expect(readFileSync(env.GIT_CONFIG_GLOBAL!, 'utf8')).toContain(gitcredShimPath(root))
+  })
+
+  it.skipIf(process.platform === 'win32')('lets git in the checkout ask the real helper', async () => {
+    const { d, root } = await startDaemon(false)
+    stubRealHelper(root)
+    const agent = await admit(d, GITHUB_AGENT, githubSpec())
+    const cwd = await checkout(d, agent)
+    const { own, child } = sessionEnv(d, GITHUB_AGENT)
+    expect(fill(cwd, child, 'github.com', 'example-org/example-repo.git')).toBe(HELPER_TOKEN)
+    // Its gh fetches a token through the wrapper, which sits beside the secrets helper.
+    expect(own.PATH!.split(':')).toEqual(expect.arrayContaining([ghShimDir(root), secretsShimDir(root)]))
+    // And its runtime capability still mints.
+    fakeControlPlane(d, 'write')
+    const presented = { agentId: own[GITCRED_AGENT_ENV], capability: own[GITCRED_CAPABILITY_ENV] }
+    expect(await gitcredIpc(gitcredSocketPath(root), { op: 'get', ...presented })).toMatchObject({
+      ok: true,
+      password: MINTED_GITHUB
+    })
+  })
 })
 
 /** Every code-host name resolves to the loopback upstream. */
@@ -469,7 +457,7 @@ describe("the proxy's mint and its invalidate", () => {
     { provider: 'github', agentId: GITHUB_AGENT, spec: githubSpec },
     { provider: 'gitlab', agentId: GITLAB_AGENT, spec: () => gitlabSpec('https://gitlab.example.test/gitlab') }
   ])('drops exactly the $provider cache entry it minted, so the next request mints afresh', async (c) => {
-    const { d } = await startDaemon()
+    const { d } = await startDaemon(true)
     await admit(d, c.agentId, c.spec())
     const asked = fakeControlPlane(d, 'write', 'https://gitlab.example.test/gitlab')
     // Each control-plane mint is a token of its own, as a rotation would be.
@@ -503,7 +491,7 @@ describe('a proxied host session end to end', () => {
       const upstreamCa = generateCa({ cn: 'example upstream CA' })
       const api = await fakeCodeHost(upstreamCa, 'api.github.com')
       const git = await fakeCodeHost(upstreamCa, 'github.com')
-      const { d, root } = await startDaemon()
+      const { d, root } = await startDaemon(true)
       await admit(d, GITHUB_AGENT, githubSpec())
       await routeUpstream(d, root, upstreamCa.certPem)
       const asked = fakeControlPlane(d, 'read')
@@ -534,7 +522,7 @@ describe('a proxied host session end to end', () => {
       const upstreamCa = generateCa({ cn: 'example private CA' })
       const gitlab = await fakeCodeHost(upstreamCa, 'gitlab.example.test')
       const instance = `https://gitlab.example.test:${gitlab.port}/gitlab`
-      const { d, root } = await startDaemon()
+      const { d, root } = await startDaemon(true)
       const agent = await admit(d, GITLAB_AGENT, gitlabSpec(instance))
       stubRealHelper(root)
       const cwd = await checkout(d, agent)

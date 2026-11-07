@@ -16,13 +16,14 @@ export const SANDBOX_DSH_PRESET_ID = 'standard-no-search'
 /** Every image- or runtime-rooted location the shim derives; the defaults are the pod image's layout. */
 export interface ShimPaths {
   gitCredentialHelper: string
+  ghTokenEntry: string
   /** The in-image `agentconnect-secrets` entry (capability-requests.md §4.9.2). */
   secretsEntry: string
+  glabTokenEntry: string
   autoMergeEntry: string
   mcpBridgeEntry: string
-  /** The image's PATH entry: `agentconnect-secrets` and the agent-browser wrapper. */
-  pathbinDir: string
-  /** Where a host shim writes `agentconnect-secrets` at launch: an installation ships no `pathbin` it could run. */
+  ghWrapperDir: string
+  /** Where a host shim writes its gh and glab wrappers at launch: an installation ships no `pathbin` it could run. */
   runtimeWrapperDir: string
   dshPresetDir: string
   gitConfigDir: string
@@ -42,10 +43,12 @@ export const DEFAULT_SHIM_HELPER_ROOT = '/opt/agentconnect'
 export function shimPaths(runtimeRoot = DEFAULT_SHIM_RUNTIME_ROOT, helperRoot = DEFAULT_SHIM_HELPER_ROOT): ShimPaths {
   return Object.freeze({
     gitCredentialHelper: `${helperRoot}/bin/git-credential`,
+    ghTokenEntry: `${helperRoot}/shim/gh-token.js`,
     secretsEntry: `${helperRoot}/shim/secrets.js`,
+    glabTokenEntry: `${helperRoot}/shim/glab-token.js`,
     autoMergeEntry: `${helperRoot}/shim/auto-merge.js`,
     mcpBridgeEntry: `${helperRoot}/shim/mcp-bridge.js`,
-    pathbinDir: `${helperRoot}/pathbin`,
+    ghWrapperDir: `${helperRoot}/pathbin`,
     runtimeWrapperDir: `${runtimeRoot}/pathbin`,
     dshPresetDir: `${helperRoot}/dsh/agent-presets/${SANDBOX_DSH_PRESET_ID}`,
     gitConfigDir: `${runtimeRoot}/git`,
@@ -69,6 +72,9 @@ export const DEFAULT_SHIM_PATHS = shimPaths()
 /** The credential helper git runs inside the pod. Root-owned and read-only, like the shim. */
 export const SANDBOX_GIT_CREDENTIAL_HELPER = DEFAULT_SHIM_PATHS.gitCredentialHelper
 
+/** The gh wrapper's token fetch in the pod — the in-sandbox twin of the daemon's hidden `gh-token` subcommand. */
+export const SANDBOX_GH_TOKEN_ENTRY = DEFAULT_SHIM_PATHS.ghTokenEntry
+
 /** Must match the runtime image: `/opt/agentconnect/pathbin/agentconnect-secrets` runs this entry. */
 export const SANDBOX_SECRETS_ENTRY = DEFAULT_SHIM_PATHS.secretsEntry
 
@@ -81,10 +87,10 @@ export const SANDBOX_AUTO_MERGE_ENTRY = DEFAULT_SHIM_PATHS.autoMergeEntry
  *  Reported to the daemon by the probe rather than assumed: an image built before it ships none. */
 export const SANDBOX_MCP_BRIDGE_ENTRY = DEFAULT_SHIM_PATHS.mcpBridgeEntry
 
-/** The ONLY image directory prepended to the runtime's PATH: `agentconnect-secrets` and the agent-browser wrapper. */
+/** The ONLY image directory prepended to the runtime's PATH: the gh and agent-browser wrappers. */
 // Its own dir rather than reusing bin/ or shim/: those hold the credential helper and the runtime-table
 // generator, and neither should become a command an agent can run by name.
-export const SANDBOX_PATHBIN_DIR = DEFAULT_SHIM_PATHS.pathbinDir
+export const SANDBOX_GH_WRAPPER_DIR = DEFAULT_SHIM_PATHS.ghWrapperDir
 
 /** Pod env naming the Chrome the image bakes — agent-browser's only browser-location hook, so an ACP child
  *  without it downloads one of its own. Set by the image, projected onto the child by acp-runner. */

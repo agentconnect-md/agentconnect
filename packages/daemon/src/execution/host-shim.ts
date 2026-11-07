@@ -5,7 +5,8 @@ import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { AF_UNIX_PATH_MAX } from '../acp/sandbox-temp.js'
-import { renderSecretsWrapper, SECRETS_WRAPPER_NAME, shQuote } from '../cp/secrets-shim.js'
+import { renderGhWrapper, renderSecretsWrapper, SECRETS_WRAPPER_NAME, shQuote } from '../cp/gh-shim.js'
+import { renderGlabWrapper } from '../cp/glab-shim.js'
 import type { Logger } from '../log.js'
 import { sweepMarkedUntilClear } from '../shim/marked-sweep.js'
 import {
@@ -33,9 +34,11 @@ const STOP_TIMEOUT_MS = 10_000
 const INHERITED_ENV = ['PATH', 'LANG', 'LC_ALL', 'TZ'] as const
 const HELPER_KEYS: ReadonlyArray<Exclude<keyof ShimPaths, 'tunnels'>> = [
   'gitCredentialHelper',
+  'ghTokenEntry',
+  'glabTokenEntry',
   'autoMergeEntry',
   'mcpBridgeEntry',
-  'pathbinDir',
+  'ghWrapperDir',
   'dshPresetDir'
 ]
 
@@ -152,13 +155,26 @@ export function hostShimEnv(input: {
   return env
 }
 
-/** The `agentconnect-secrets` wrapper a shim's runtimes find first on PATH, written per launch: npm packs no executable bit, and a PATH lookup needs one. */
+/** The gh and glab wrappers a shim's runtimes find first on PATH, written per launch: npm packs no executable bit, and a PATH lookup needs one. */
 export async function writeRuntimeWrappers(paths: ShimPaths): Promise<void> {
-  // Only when this installation has the entry: a wrapper naming a missing one would fail every call on stderr.
-  if (!existsSync(paths.secretsEntry)) return
-  await mkdir(paths.runtimeWrapperDir, { mode: 0o755 })
-  const command = `${shQuote(process.execPath)} ${shQuote(paths.secretsEntry)}`
-  await writeFile(join(paths.runtimeWrapperDir, SECRETS_WRAPPER_NAME), renderSecretsWrapper(command), { mode: 0o755 })
+  const dir = paths.runtimeWrapperDir
+  // Only a wrapper whose token entry this installation has: one naming a missing entry would fail every call on stderr.
+  const wrappers = [
+    { name: 'gh', entry: paths.ghTokenEntry, render: renderGhWrapper },
+    { name: 'glab', entry: paths.glabTokenEntry, render: renderGlabWrapper }
+  ].filter((wrapper) => existsSync(wrapper.entry))
+  const secrets = existsSync(paths.secretsEntry)
+  if (wrappers.length === 0 && !secrets) return
+  await mkdir(dir, { mode: 0o755 })
+  for (const { name, entry, render } of wrappers) {
+    const tokenCommand = `${shQuote(process.execPath)} ${shQuote(entry)} "$AC_AGENT_ID" -- "$@"`
+    await writeFile(join(dir, name), render({ selfDir: dir, tokenCommand }), { mode: 0o755 })
+  }
+  // The live secrets helper (capability-requests.md §4.9.2), beside them on the same PATH entry.
+  if (secrets) {
+    const command = `${shQuote(process.execPath)} ${shQuote(paths.secretsEntry)}`
+    await writeFile(join(dir, SECRETS_WRAPPER_NAME), renderSecretsWrapper(command), { mode: 0o755 })
+  }
 }
 
 /** Runtime roots whose shim this process started and has not seen go. */

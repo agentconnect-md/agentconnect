@@ -43,7 +43,7 @@ active daemon and can respawn it after a planned restart.
 
 Every other positional command is delegated verbatim to the active daemon.
 This includes `chat`, `agent list`, the hidden `mcp-bridge`,
-`git-credential`, and `secrets` helpers, and daemon commands added in a later
+`git-credential`, and `gh-token` helpers, and daemon commands added in a later
 daemon release. The CLI forwards the original arguments, inherits standard I/O,
 and propagates the daemon process's exit status or terminating signal.
 

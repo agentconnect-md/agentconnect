@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { AcpRunner, wrapperPath, type ResolveCommand } from '../src/shim/acp-runner.js'
+import { AcpRunner, ghWrapperPath, type ResolveCommand } from '../src/shim/acp-runner.js'
 import { SHIM_SEED_ENV } from '../src/shim/protocol.js'
-import { SANDBOX_BROWSER_EXECUTABLE_ENV, SANDBOX_PATHBIN_DIR } from '../src/shim/sandbox-paths.js'
+import { SANDBOX_BROWSER_EXECUTABLE_ENV, SANDBOX_GH_WRAPPER_DIR } from '../src/shim/sandbox-paths.js'
 
 // The sandbox spawns with what the daemon sent PLUS the pod's own filesystem basics. The daemon
 // composes the agent's configuration but describes a different machine: it was sending its own
@@ -248,27 +248,31 @@ describe('sandbox spawn environment', () => {
     await runner.close(1_000).catch(() => {})
   })
 
-  // The wrapper dir is the IMAGE's, so the decision is made here rather than sent by a daemon that would be naming a path on a machine it is not on.
-  it('puts the image wrapper dir first on PATH when this image ships one', () => {
-    expect(wrapperPath('/usr/local/bin:/usr/bin', () => true)).toBe(`${SANDBOX_PATHBIN_DIR}:/usr/local/bin:/usr/bin`)
+  // `gh` reads a static GH_TOKEN fixed at spawn, so a pod agent gets per-repo tokens only when the image's
+  // wrapper is what PATH resolves first. The dir is the IMAGE's, so the decision is made here rather than sent
+  // by a daemon that would be naming a path on a machine it is not on.
+  it('puts the image gh wrapper first on PATH when this image ships one', () => {
+    expect(ghWrapperPath('/usr/local/bin:/usr/bin', () => true)).toBe(
+      `${SANDBOX_GH_WRAPPER_DIR}:/usr/local/bin:/usr/bin`
+    )
     // A PATH the daemon already sent may name it; the wrapper must still be first, and only once.
-    expect(wrapperPath(`/usr/bin:${SANDBOX_PATHBIN_DIR}`, () => true)).toBe(`${SANDBOX_PATHBIN_DIR}:/usr/bin`)
-    expect(wrapperPath(undefined, () => true)).toBe(SANDBOX_PATHBIN_DIR)
+    expect(ghWrapperPath(`/usr/bin:${SANDBOX_GH_WRAPPER_DIR}`, () => true)).toBe(`${SANDBOX_GH_WRAPPER_DIR}:/usr/bin`)
+    expect(ghWrapperPath(undefined, () => true)).toBe(SANDBOX_GH_WRAPPER_DIR)
   })
 
   it('leaves PATH exactly as it was on an image with no wrapper', () => {
-    expect(wrapperPath('/usr/local/bin:/usr/bin', () => false)).toBe('/usr/local/bin:/usr/bin')
-    expect(wrapperPath(undefined, () => false)).toBeUndefined()
+    expect(ghWrapperPath('/usr/local/bin:/usr/bin', () => false)).toBe('/usr/local/bin:/usr/bin')
+    expect(ghWrapperPath(undefined, () => false)).toBeUndefined()
   })
 
   // A host shim on an installation has no image directory: its launcher writes the wrappers into the runtime root.
   it("puts the host launcher's wrappers first when the image ships none", () => {
     const runtime = '/srv/daemon/hs/0a1b2c3d4e5f/pathbin'
     const only = (dir: string) => (candidate: string) => candidate === dir
-    expect(wrapperPath('/usr/bin', only(runtime), runtime)).toBe(`${runtime}:/usr/bin`)
-    expect(wrapperPath(`/usr/bin:${runtime}`, only(runtime), runtime)).toBe(`${runtime}:/usr/bin`)
+    expect(ghWrapperPath('/usr/bin', only(runtime), runtime)).toBe(`${runtime}:/usr/bin`)
+    expect(ghWrapperPath(`/usr/bin:${runtime}`, only(runtime), runtime)).toBe(`${runtime}:/usr/bin`)
     // The image's own wrapper stays the one a pod runs, whatever a launcher named.
-    expect(wrapperPath('/usr/bin', () => true, runtime)).toBe(`${SANDBOX_PATHBIN_DIR}:/usr/bin`)
-    expect(wrapperPath('/usr/bin', () => false, runtime)).toBe('/usr/bin')
+    expect(ghWrapperPath('/usr/bin', () => true, runtime)).toBe(`${SANDBOX_GH_WRAPPER_DIR}:/usr/bin`)
+    expect(ghWrapperPath('/usr/bin', () => false, runtime)).toBe('/usr/bin')
   })
 })

@@ -1718,8 +1718,7 @@ describe('daemon --k8s mode', () => {
       expect(planeOptions.tunnelsFor('plain')).toEqual(['mcp', 'gitcred'])
       expect(planeOptions.tunnelSocketPath('mcp')).toBe(mcpSocketPath(rootDir))
       ;(k8sDaemon as any).agents.set('gh', { id: 'gh', workspace: { mode: 'git-repo', gitCredential: 'github-app' } })
-      // A managed code-host credential also asks for `codehost`: the credential proxy is the only path to it.
-      expect(planeOptions.tunnelsFor('gh')).toEqual(['mcp', 'gitcred', 'codehost'])
+      expect(planeOptions.tunnelsFor('gh')).toEqual(['mcp', 'gitcred'])
       ;(k8sDaemon as any).agents.set('anon', {
         id: 'anon',
         workspace: { mode: 'git-repo', additionalRepos: [{ repoFullName: 'acme/own', repoId: '2' }] }

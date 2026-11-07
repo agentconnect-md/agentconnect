@@ -93,7 +93,7 @@ Non-goals:
 | The workspace clone already runs in the pod, through the shim                                              | `workspace-manager.ts` `cloneSessionRootAt` (blobless), `cloneInSandbox` (full)         |
 | On a pool member the daemon spawns no Git; every workspace Git crosses the shim's closed subcommand list   | [git-workspace-model.md](git-workspace-model.md) §11, `workspace/git-command-policy.ts` |
 | Git in the pod gets credentials on demand from the daemon through the `gitcred` tunnel; nothing long-lived | `shim/git-credential.ts`, `shim/tunnel.ts` (`gitcred`, `mcp`)                           |
-| GitHub and GitLab scoped tokens are already minted by the CP                                               | `gitlab/gitcred.service.ts`, `cp/gitcred-server.ts`                                     |
+| GitHub and GitLab scoped tokens are already minted by the CP                                               | `gitlab/gitcred.service.ts`, `gitcred/glab-token-client.ts`                             |
 | The runtime image bundles `skills@1.5.21`; the shim runs it in a per-source offline cell                   | `shim/skill-handler.ts`, `skills/skills-cli-cell.ts`                                    |
 | Cluster skill ledgers are keyed by (agent, SandboxClaim UID)                                               | `daemon.ts` `reconcileClusterSkills`, `local-store.ts`                                  |
 | The pool's durable store is the data-plane Postgres                                                        | [cloud-data-plane-postgres.md](cloud-data-plane-postgres.md)                            |

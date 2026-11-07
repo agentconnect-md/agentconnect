@@ -48,11 +48,9 @@ function assertImmutable(label, path) {
 const SHIM_PATH = '/opt/agentconnect/shim/index.js'
 // Must match SANDBOX_GIT_CREDENTIAL_HELPER in packages/daemon/src/shim/sandbox-paths.ts: git config carries this path.
 const CREDENTIAL_HELPER_PATH = '/opt/agentconnect/bin/git-credential'
-// Must match SANDBOX_PATHBIN_DIR in sandbox-paths.ts: the shim prepends exactly this directory to the runtime PATH.
-const PATHBIN_DIR = '/opt/agentconnect/pathbin'
-// The pinned gh a session runs directly, with the credential proxy's placeholder as GH_TOKEN.
-const GH_PATH = '/usr/local/bin/gh'
-// Must match SANDBOX_SECRETS_ENTRY in sandbox-paths.ts and SECRETS_WRAPPER_NAME in cp/secrets-shim.ts (capability-requests.md §4.9.2).
+// Must match SANDBOX_GH_WRAPPER_DIR in sandbox-paths.ts: the shim prepends exactly this directory to the runtime PATH.
+const GH_WRAPPER_PATH = '/opt/agentconnect/pathbin/gh'
+// Must match SANDBOX_SECRETS_ENTRY in sandbox-paths.ts and SECRETS_WRAPPER_NAME in cp/gh-shim.ts (capability-requests.md §4.9.2).
 const SECRETS_WRAPPER_PATH = '/opt/agentconnect/pathbin/agentconnect-secrets'
 // Must match SANDBOX_MCP_BRIDGE_ENTRY in sandbox-paths.ts: the daemon copies this path into the `mcpServers` spec.
 const MCP_BRIDGE_PATH = '/opt/agentconnect/shim/mcp-bridge.js'
@@ -146,13 +144,27 @@ check('the git credential helper is present, executable and root-owned', () => {
   return owner
 })
 
-// No wrapper stands in front of gh: it presents the placeholder the session holds.
-check('login shells resolve gh to the pinned binary', () => {
+// gh reads a static GH_TOKEN fixed at spawn, so a pod agent gets per-repo tokens only through this wrapper.
+check('the gh wrapper is present, executable and root-owned', () => {
+  const owner = assertImmutable('gh wrapper', GH_WRAPPER_PATH)
+  if (sh(`test -x ${GH_WRAPPER_PATH} && echo yes || echo no`) !== 'yes') {
+    throw new Error('gh wrapper is not executable, so the runtime would resolve the real gh instead')
+  }
+  return owner
+})
+
+check('login shells resolve gh through the wrapper', () => {
   assertImmutable('login shell PATH profile', '/etc/profile.d/agentconnect-path.sh')
   const resolved = execFileSync('bash', ['-lc', 'command -v gh'], { encoding: 'utf8' }).trim()
-  if (resolved !== GH_PATH) throw new Error(`login shell resolves gh to ${resolved}`)
-  const out = sh(`gh --version 2>&1 | head -1`)
-  if (!/^gh version /.test(out)) throw new Error(`gh did not run: ${out}`)
+  if (resolved !== GH_WRAPPER_PATH) throw new Error(`login shell resolves gh to ${resolved}`)
+  return resolved
+})
+
+// Prepending the wrapper's dir must not shadow the gh it execs; without an identity the agent still gets a plain gh.
+check('the gh wrapper defers to the real gh when no agent identity is present', () => {
+  const dir = GH_WRAPPER_PATH.replace(/\/gh$/, '')
+  const out = sh(`PATH=${dir}:$PATH gh --version 2>&1 | head -1`)
+  if (!/^gh version /.test(out)) throw new Error(`the wrapper did not reach the real gh: ${out}`)
   return out
 })
 
@@ -324,9 +336,9 @@ check('the baked Chrome is what agent-browser is pointed at and runs as the runt
   return `${version} at ${path} (${owner})`
 })
 
-// The wrapper keeps `agent-browser install` from fetching a browser the image already carries; root-owned like the secrets helper.
+// The wrapper keeps `agent-browser install` from fetching a browser the image already carries; root-owned like gh's.
 check('the agent-browser wrapper answers a bare install and defers otherwise', () => {
-  const wrapper = `${PATHBIN_DIR}/agent-browser`
+  const wrapper = `${GH_WRAPPER_PATH.replace(/\/gh$/, '')}/agent-browser`
   const owner = sh(`stat -c '%U:%G %a' ${wrapper}`)
   if (!owner.startsWith('root:root')) throw new Error(`the wrapper is not root-owned (${owner})`)
   if (sh(`(echo x >> ${wrapper} && echo WRITABLE) || echo refused`) !== 'refused') {

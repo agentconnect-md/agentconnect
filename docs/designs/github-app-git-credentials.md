@@ -3,9 +3,8 @@
 > **Status:** Implemented. The authoritative wire schema is
 > `packages/protocol/src/frames/gitcred.ts`. It includes repository,
 > capability, hook-purpose, and forced-refresh fields. Explicit additional
-> repositories are described in
-> [agent-multi-repo-authorization.md](agent-multi-repo-authorization.md); an
-> agent's runtime reaches them through the credential proxy (Phase 2 below).
+> repositories and the on-demand `gh` wrapper are described in
+> [agent-multi-repo-authorization.md](agent-multi-repo-authorization.md).
 >
 > Workspace changes use the dedicated cold action. Scratch and GitHub modes,
 > repository, branch, `agentDir`, and read/write access are editable.
@@ -160,9 +159,8 @@ stale until a network fetch succeeds.
    single-repository scope, the `access:read` switch, and the GitHub-side App
    audit log (which attributes pushes to the App). Shorter TTLs or human
    approval before push can be added later as gates.
-   Phase 2 of "Daemon-Mediated Agent Access" keeps the token out of the
-   execution environment, which retires this residual risk for the agent's
-   runtime: a session holds only a placeholder the credential proxy exchanges.
+   Phase 2 of "Daemon-Mediated Agent Access" proposes keeping the token out
+   of the execution environment, which would retire this residual risk.
 4. **Residual blast radius of the write tier, even for a single repository:**
    the token includes `contents:write + workflows:write`. It can push to any
    unprotected branch, rewrite history with force-push, delete branches/tags,
@@ -428,16 +426,14 @@ with a revision a daemon already applied without it.
 
 ## Daemon-Mediated Agent Access
 
-> **Status:** Phase 1 is implemented. Phase 2 is implemented for GitHub,
-> GitLab and Gitea (#3382): the credential proxy always runs, with no switch,
-> and is the only way a session reaches a code host with a credential, over
-> the host, `srt`, executor, `microsandbox` and pool pod transports. GraphQL
-> is read-only; the routed-write list is still proposed. Phase 2 replaces
-> Trust Model item 3.
+> **Status:** Phase 1 is implemented. Phase 2 is being built (#3382): the
+> proxy and its host, `srt`, executor, `microsandbox` and pool pod transports
+> run behind the daemon's `features.credentialProxy`, for GitHub, GitLab and
+> Gitea; the rest is proposed. Phase 2 would replace Trust Model item 3.
 
-Before Phase 2, agents wrote to GitHub with whatever their `gh` wrapper
-minted: a capability-clamped installation token at the repository's tier. The
-daemon never saw what `gh pr create` sent. A pull request an agent opened that way
+Agents write to GitHub with whatever their `gh` wrapper mints: a
+capability-clamped installation token at the repository's tier. The daemon
+never sees what `gh pr create` sends. A pull request an agent opened that way
 carried no attribution footer (#3261), and routing and Decisions that read the
 body on `pull_request.opened` saw only what the model chose to write.
 
@@ -578,29 +574,28 @@ Only the proxy address differs:
   since Node's `fetch` and `https` ignore `HTTPS_PROXY` without it.
 
 **The runtime holds no minting credential.** The daemon and the agent runtime
-hold separate gitcred capabilities. The runtime's serves only live secrets: a
-`get` or `erase` presented with it is always refused with an error saying git
-and `gh` go through the proxy, so nothing in a session can obtain a real
-token. The daemon's own Git keeps minting with the daemon's capability, and so
-does the in-pod auto-merge watcher.
+hold separate gitcred capabilities. While the proxy carries an agent's code
+hosts, the runtime's capability serves only live secrets: a `get` or `erase`
+presented with it is refused with an error saying git and `gh` go through the
+proxy, so nothing in the session can obtain a real token. The daemon's own Git
+keeps minting with the daemon's capability. The check runs on each request,
+per agent, from the agent's spec and whether the proxy is running, because
+every session of the agent on that daemon shares the capability.
 
-- The session gitconfig and a checkout's `.git/config` both pin a helper that
-  answers only with the placeholder in `AC_CODEHOST_CREDENTIAL`, and with
-  nothing when the environment carries none. The checkout pin serves only the
-  runtime, since the daemon's own Git sets its helper at command scope, so a
-  child that resets `GIT_CONFIG_COUNT` still presents the placeholder and
-  needs no command-scope override of its own.
-- No `gh` or `glab` wrapper stands in front of the real CLI: `GH_TOKEN` and
-  `GITLAB_TOKEN` carry the placeholder, and `GITLAB_HOST` names the spec's
-  instance for every GitLab-credentialed session. `agentconnect-secrets` has
-  its own directory on the `PATH`; a shim (`srt`, a VM, a pod, an executor)
-  puts its own copy first.
-- A session that does not reach the proxy holds no code-host credential: the
-  proxy did not start, its executor's shim serves no `codehost` listener, its
-  executor's `srt` boundary does not route all of the agent's code hosts, or
-  its VM or pod shim reports no `codehost` listener (for a VM placed on an
-  executor, none that keeps its seed's trust files). The daemon logs the
-  reason once per session.
+- A checkout's `.git/config` pins a helper that answers with the placeholder
+  in `AC_CODEHOST_CREDENTIAL` when the environment carries one and calls the
+  real helper otherwise. The pin serves only the runtime, since the daemon's
+  own Git sets its helper at command scope, so a child that resets
+  `GIT_CONFIG_COUNT` still presents the placeholder and needs no command-scope
+  override of its own.
+- A session behind the proxy gets none of the daemon's `gh` or `glab`
+  wrappers on its `PATH`, since `GH_TOKEN` and `GITLAB_TOKEN` already carry
+  the placeholder; `GITLAB_TOKEN` is set for every GitLab-credentialed session
+  whatever wrapper exists. `agentconnect-secrets` has its own directory and
+  stays on the `PATH`. A shim (`srt`, a VM, a pod, an executor) still puts its
+  own wrappers first, and they pass the set token straight through.
+- A session of such an agent that does not reach the proxy, such as one on
+  the helper path below, holds no code-host credential.
 
 **Capture.** The proxy needs no transparent capture, because a client that
 bypasses it holds only the placeholder and fails closed. Whether a client
@@ -661,8 +656,9 @@ also enforces the git tier by service on every host: `git-receive-pack` and
 `write` (`comment` counts as read), and nothing is forwarded. A 401 from the
 upstream drops the cache entry that minted the token it carried, as the
 helper's `erase` does, so a revoked or rotated token is minted afresh on the
-next request; a 403 keeps it. A session that does not reach the proxy holds
-no code-host credential at all.
+next request; a 403 keeps it. Only a session with the proxy off holds the
+token itself, and there the tier is enforced only where the host narrows the
+token.
 
 **Instances.** An agent's instances are the hosts its session Git
 configuration pins (gitlab-com-integration.md §24.4): GitHub, and the spec's
@@ -686,8 +682,8 @@ own socket only for that agent's.
   gets Basic with the grant's user name; the API gets the header and scheme
   the client used (`PRIVATE-TOKEN` or `Bearer` on GitLab, `token`, `Bearer` or
   Basic on Gitea).
-- The API is read-only on both hosts: a GitLab API read takes the read
-  credential of the `glab` plane, a write is refused
+- The API is read-only on both hosts, as `glab` already was: a GitLab API read
+  takes the read credential the `glab` wrapper requests, a write is refused
   with an error naming the host's effect tools, and a read naming no
   repository uses the workspace's credential. `glab` receives the placeholder
   as `GITLAB_TOKEN`.
@@ -764,28 +760,32 @@ the proxy's CA certificate:
   everything `srt` routes ends at the proxy.
 - A VM session placed on an executor switches at spawn, as a local VM's does
   (below): its holder asks the guest shim for `codehost` through the
-  executor's pipe, and its launch carries the placeholder variables. Its
-  trust variables come from the seed its executor started the shim with,
-  naming the substitution authority and the guest bundle, which the holder
-  cannot name. So the switch names no files and asks the shim to keep those
-  its seed names instead: the shim merges them into its listener bundle
-  before exec. A shim whose `codehost` reply does not say it keeps them is not
-  switched.
+  executor's pipe, and its launch carries the placeholder variables and the
+  proxied gitconfig as the alternative. Its trust variables come from the
+  seed its executor started the shim with, naming the substitution authority
+  and the guest bundle, which the holder cannot name. So the switch names no
+  files and asks the shim to keep those its seed names instead: the shim
+  merges them into its listener bundle before exec. A shim whose `codehost`
+  reply does not say it keeps them is not switched.
 - A session on an executor whose shim does not serve `codehost`, or whose VM
-  shim does not say it keeps its seed's trust files, holds no code-host
-  credential.
+  shim does not say it keeps its seed's trust files, stays on the credential
+  helper path, so it holds no code-host credential while the proxy carries its
+  agent's code hosts.
 
 A session in a local `microsandbox` VM or a pool pod reaches its own daemon's
 proxy the same way, through the shim inside the VM or pod. The daemon asks
 for `codehost` beside `gitcred` and `mcp` for an agent the proxy intercepts,
 and the switch happens at spawn, after the bind:
 
-- The launch carries the placeholder variables beside its env. The driver
-  applies them, with the listener's `HTTPS_PROXY` and trust bundle, only when
-  the shim it just bound reported a `codehost` listener and the launch names
-  no `HTTPS_PROXY` of its own; otherwise the runtime starts with no code-host
-  credential. A pod image whose shim predates `codehost` refuses the
-  `listen`, so its sessions hold none.
+- The launch carries the placeholder variables and the proxied gitconfig as
+  an alternative to its helper env. The driver applies them, with the
+  listener's `HTTPS_PROXY` and trust bundle, only when the shim it just bound
+  reported a `codehost` listener and the launch names no `HTTPS_PROXY` of its
+  own; otherwise the runtime starts on the helper path. A pod image whose
+  shim predates `codehost` refuses the `listen`, so its sessions keep the
+  helper path.
+- A VM mounts both gitconfigs, so a session host and the daemon's own Git in
+  that VM describe the same VM.
 - Inside a VM or pod a non-route CONNECT leaves from that guest's own network,
   so a VM's provider-key substitution still applies to it.
 
@@ -843,17 +843,14 @@ no rows, since it carries no writes.
 The list is not a security control: authority comes from the tier. A write
 the list misses produces the wrong product behavior, never excess access.
 
-**What it retired.** The daemon's `features.credentialProxy` switch; the
-runtime's token helpers, the hidden `gh-token` and `glab-token` commands and
-the image's `shim/gh-token.js` and `shim/glab-token.js`; the `gh` and `glab`
-wrappers that called them (the daemon's `run/bin` and the image's
-`pathbin/gh`) with their argv target resolution (`gh-target.ts`,
-`glab-target.ts`); and the runtime's ability to mint credentials over the
-helper channel. The channel and its per-agent capabilities stay: the daemon
-and the agent runtime each hold their own, the runtime's keeps serving live
-secrets, and the daemon's own Git operations keep using gitcred unchanged.
+**What it would retire.** The `gh` wrapper and its argv target resolution
+(`gh-target.ts`), the `glab` wrapper's token fetch (`glab-target.ts`), and the
+runtime's ability to mint credentials over the helper channel. The channel and
+its per-agent capabilities stay: the daemon and the agent runtime each hold
+their own, the runtime's keeps serving live secrets, and the daemon's own Git
+operations keep using gitcred unchanged.
 
-**What it does not cover.** Runtime sign-ins and provider credentials keep
+**What it would not cover.** Runtime sign-ins and provider credentials keep
 their own handling (session-executors.md §8), including the VM's
 hostname-scoped placeholders. Cluster access is expected through an MCP
 server running outside the execution environment, not through this proxy.
@@ -869,8 +866,8 @@ Subscription sign-ins (OAuth) stay out: the daemon does not hold or refresh a
 person's subscription login on others' behalf.
 
 Organization Provider keys use it in host, `srt`, local `microsandbox` VM and
-executor-placed host sessions. When the proxy runs,
-a launch with an organization key registers the agent's slot `org:<provider>`
+executor-placed host sessions. When the proxy is
+on, a launch with an organization key registers the agent's slot `org:<provider>`
 at the key's endpoint, or the provider's default endpoint when none is
 configured, and the runtime's key variable holds the slot's placeholder. The
 base URL stays the real origin. The organization's extra headers are not put in
@@ -922,7 +919,7 @@ keeps its keys as before, and the daemon logs that once, when one of them
 reaches no single HTTPS host the proxy recognizes (a cleartext or ported base
 URL, Codex with `OPENAI_BASE_URL` set, a DeepSeek endpoint other than its own),
 when its sign-in file cannot be read safely, or when a sign-in file would need
-projecting on a platform other than Linux. When the proxy did not start, a launch
+projecting on a platform other than Linux. With the proxy off again, a launch
 puts the host's credential back where a private HOME copy holds a placeholder
 and keeps the rest of that copy: Claude's saved key, Codex's shared `auth.json`,
 the DeepSeek harness's key field, and each key field of an OpenCode config, taken
@@ -1788,9 +1785,12 @@ the cache and stops requesting.
 
 ## Current Behavior and Remaining Questions
 
-1. **GitHub API capabilities:** the runtime's `GH_TOKEN` is the credential
-   proxy's placeholder; the proxy mints each request's token from the
-   repository it names, scoped by `GitCredRequest.capabilities` (Phase 2).
+1. **GitHub API capabilities:** a hidden `agentconnect gh-token` helper uses the
+   same socket and runtime-only per-agent capability to pull a fresh token on
+   demand. The runtime never injects a process-lifetime `GH_TOKEN`.
+   `GitCredRequest.capabilities` scopes each request, and the `gh` wrapper
+   routes per-repository requests as described in
+   [agent-multi-repo-authorization.md](agent-multi-repo-authorization.md).
 2. **Multi-tenancy / per-organization self-managed Apps.** The built-in App
    stays one instance-level App shared with sign-in. Organization GitHub Apps
    (see "Organization GitHub Apps") keep each App's key and installation set in
