@@ -22,6 +22,7 @@ import { MAX_SEED_FILE_BYTES } from './runtime-seeded-credentials.js'
 import { withDescentSync } from '../shim/safe-descent.js'
 import { readRegularFileSync, RegularFileError } from '../fs/regular-file.js'
 import { looksLikePlaceholder } from '../credential-proxy/placeholder.js'
+import { restoreProxiedDeepSeekKey, restoreProxiedOpenCodeKeys } from './proxied-key-restore.js'
 
 const LEGACY_RUNTIME_STATE: Record<string, string[]> = {
   'claude-acp': ['.claude'],
@@ -314,6 +315,17 @@ export function prepareRuntimeHome(
       if (excluded.has(credentialDestination)) continue
       assertNoDestinationSymlink(home, credentialDestination)
       seedLocation(home, join(location.source, file.path), credentialDestination, excluded)
+      if (file.format === 'dsh' || file.format === 'dsh-env')
+        restoreProxiedDeepSeekKey(credentialDestination, join(location.source, file.path), file.format)
+    }
+    // Configs a protecting launch projects are excluded then; any other launch restores their keys.
+    if (runtimeId === 'opencode') {
+      for (const name of ['opencode.json', 'opencode.jsonc']) {
+        const config = join(destination, name)
+        if (excluded.has(config)) continue
+        assertNoDestinationSymlink(home, config)
+        restoreProxiedOpenCodeKeys(config, join(location.source, name))
+      }
     }
     if (runtimeId === 'omp' && !excluded.has(join(destination, 'agent.db'))) {
       extractOmpCredentials(join(location.source, 'agent.db'), join(destination, 'agent.db'))

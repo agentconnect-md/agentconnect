@@ -854,9 +854,11 @@ keeps its keys as before, and the daemon logs that once, when one of them
 reaches no single HTTPS host the proxy recognizes (a cleartext or ported base
 URL, Codex with `OPENAI_BASE_URL` set, a DeepSeek endpoint other than its own),
 when its sign-in file cannot be read safely, or when a sign-in file would need
-projecting on a platform other than Linux. With the proxy off again, Claude's
-saved key and Codex's shared `auth.json` replace a placeholder left in a private
-HOME.
+projecting on a platform other than Linux. With the proxy off again, a launch
+puts the host's credential back where a private HOME copy holds a placeholder
+and keeps the rest of that copy: Claude's saved key, Codex's shared `auth.json`,
+the DeepSeek harness's key field, and each key field of an OpenCode config, taken
+from the same field of the host's file.
 
 Not covered yet:
 
