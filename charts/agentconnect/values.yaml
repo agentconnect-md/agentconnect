@@ -280,7 +280,9 @@ daemonPool:
   #
   # These reach a runtime at spawn and OUTRANK an agent's own variable of the same name, because
   # a credential pair travels whole rather than merging with another. Leave it empty to let every
-  # agent carry its own credential.
+  # agent carry its own credential. Only the daemon pool reads this Secret: a sandbox whose runtime
+  # image serves the credential proxy's provider tunnel holds a placeholder for a key sent over
+  # https, and the member puts the real key back on the way out; a plain http base URL keeps the key.
   #
   # Named, this Secret is the install's ONLY source for those variables: setting one of them in
   # `daemonPool.extraEnv`, or letting `modelEgress.clients` render one, is refused at render time.
@@ -292,6 +294,9 @@ daemonPool:
   # Per-runtime environment from one Secret, for any runtime in the selected image. Map each
   # runtime's own variable name to a Secret entry; the daemon resolves it at both model probe
   # and session launch. When existingSecret is empty, use modelCredentials.existingSecret.
+  # A provider key a recognized runtime sends to one https endpoint (ANTHROPIC_API_KEY,
+  # OPENAI_API_KEY, DEEPSEEK_API_KEY, COPILOT_PROVIDER_API_KEY) reaches its sessions as a
+  # credential-proxy placeholder, like the pairs above; any other entry reaches them as it is.
   # See the runtime's official API-key documentation for its variable names and endpoint format.
   runtimeEnvironment:
     existingSecret: ''
@@ -1068,6 +1073,8 @@ modelEgress:
   gatewayUrl: ''
   # Clients: claude, codex, deepseek, typesafe; each accepts an optional baseUrl override.
   # Runtime clients also accept apiKey and populate sandbox defaults; typesafe supplies only a daemon endpoint.
+  # Over an https endpoint the apiKey reaches the daemon pool alone, which gives each sandbox a
+  # credential-proxy placeholder in its place; a plain http endpoint keeps it in the sandbox too.
   #
   # The codex entry may also carry `sessionConfig`, a map of codex session config this deployment
   # asserts about the endpoint — e.g. disabling a feature whose request shape the gateway rejects.

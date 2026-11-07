@@ -182,9 +182,12 @@ app.kubernetes.io/component: {{ .component }}
 {{- with (get $profile $target) }}
 - name: {{ .base }}
   value: {{ $base | quote }}
+{{- /* Over https the member supplies the key at launch, as a credential-proxy placeholder once the pod's shim serves one. */}}
+{{- if or (eq $target "daemon") (not (hasPrefix "https://" (lower $base))) }}
 {{- with .key }}
 - name: {{ . }}
   value: {{ $cfg.apiKey | default "" | quote }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{- end }}

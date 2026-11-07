@@ -108,7 +108,11 @@ async function placedSession(options: { maxProviderStreams?: number; maxCodehost
     port,
     saas: false
   })
-  const slots: Record<string, ProviderSlot[]> = { [AGENT]: [slot('org:anthropic')], [OTHER]: [slot('org:anthropic')] }
+  // A pool pod's install key slot rides the same tunnel as an organization key's.
+  const slots: Record<string, ProviderSlot[]> = {
+    [AGENT]: [slot('org:anthropic'), slot('install:model:anthropic')],
+    [OTHER]: [slot('org:anthropic')]
+  }
   const instances: Record<string, ManagedCredentialHost[]> = {
     [AGENT]: [{ provider: 'gitlab', baseUrl: `https://gitlab.example.test:${port}` }]
   }
@@ -286,6 +290,30 @@ describe.skipIf(process.platform === 'win32')('an executor or VM session’s pro
     )
     expect(firstSeen).toBe(true)
     expect(reply.body).toContain('event: two')
+  })
+
+  it("streams a pool pod's install key slot the same way, resolving that slot", async () => {
+    const { proxy, listening, bundle, resolveProviderSlot } = await placedSession()
+    seen.length = 0
+    let firstSeen = false
+    const placeholder = proxy.providerPlaceholderFor(AGENT, 'install:model:anthropic')!
+    const reply = await through(
+      shimDial(listening),
+      provider(),
+      bundle,
+      { path: '/v1/stream', headers: { 'x-api-key': placeholder } },
+      (body) => {
+        if (!firstSeen && body.includes('event: one')) {
+          firstSeen = true
+          expect(body).not.toContain('event: two')
+          releaseStream()
+        }
+      }
+    )
+    expect(firstSeen).toBe(true)
+    expect(reply.body).toContain('event: two')
+    expect(seen.at(-1)?.headers['x-api-key']).toBe(REAL_KEY)
+    expect(resolveProviderSlot).toHaveBeenCalledWith(AGENT, 'install:model:anthropic')
   })
 
   it('refuses another agent’s placeholder, and a code-host placeholder, on the provider tunnel', async () => {

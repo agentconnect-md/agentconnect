@@ -62,6 +62,8 @@ export interface K8sDriverDeps {
   grantsForAgent?: (agentId: string) => ShimCapability[]
   /** The `codehost` listener a subject's bound shim reported, which a launch's codehost env needs. */
   codehostFor?: (subject: string) => CodehostListener | undefined
+  /** The `provider` listener, asked for once the launch's slots are registered; a launch's provider env needs it. */
+  providerFor?: (subject: string) => Promise<CodehostListener | undefined>
   clock?: Clock
   log: { info: (m: string) => void; warn: (m: string) => void; debug?: (m: string) => void }
   /** How long to wait for a pod to become Ready and its shim to bind. */
@@ -134,7 +136,8 @@ export class K8sDriver implements SpawnDriver {
       clock: this.clock,
       log: deps.log,
       metrics: this.metrics,
-      ...(deps.codehostFor ? { codehostFor: deps.codehostFor } : {})
+      ...(deps.codehostFor ? { codehostFor: deps.codehostFor } : {}),
+      ...(deps.providerFor ? { providerFor: deps.providerFor } : {})
     })
   }
 

@@ -59,6 +59,12 @@ the same way. The mapping reaches both
 the pool's model probe and agent sessions. See the
 [Kubernetes runtime authentication guide](https://www.agentconnect.md/docs/self-hosting/kubernetes/runtime-authentication).
 
+Only the daemon pool reads these keys. A session sandbox whose runtime image serves the credential
+proxy's provider tunnel holds a placeholder for each key its runtime sends to one HTTPS endpoint,
+and the pool member puts the real key back on the way out, so a command an agent runs cannot read
+it; a key sent over plain HTTP, and a key-server grant, reach the sandbox as they are. A `modelEgress.clients.<client>.apiKey` on an HTTPS endpoint
+is therefore no longer rendered into the sandbox template.
+
 A slimmer install turns the extras off explicitly — for example, no agent execution in
 this cluster and no public ingress:
 

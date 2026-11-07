@@ -168,6 +168,19 @@ describe('AcpRunner provider env fill-in', () => {
     })
   })
 
+  it("keeps a daemon-sent provider placeholder over the pod's own key, in Codex's composed auth request too", async () => {
+    const placeholder = 'acph1_example-placeholder'
+    const claude = await spawnAndReadEnv('claude-agent-acp', {
+      PATH: process.env.PATH ?? '',
+      ANTHROPIC_API_KEY: placeholder
+    })
+    expect(claude.A).toBe(placeholder)
+    const codex = await spawnAndReadEnv('codex-acp', { PATH: process.env.PATH ?? '', OPENAI_API_KEY: placeholder })
+    expect(codex.O).toBe(placeholder)
+    expect(JSON.parse(codex.R!)._meta.gateway.headers).toEqual({ Authorization: `Bearer ${placeholder}` })
+    expect(JSON.stringify([claude, codex])).not.toContain('-pod')
+  })
+
   it('lets a daemon-sent value win over the pod value', async () => {
     const seen = await spawnAndReadEnv('claude-agent-acp', {
       PATH: process.env.PATH ?? '',

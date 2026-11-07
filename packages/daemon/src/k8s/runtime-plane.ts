@@ -385,6 +385,12 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     onChannelReady: (subject, session) => tunnels.ensure(subject, session),
     // A pod whose image's shim predates `codehost` reports no listener, so its sessions keep the helper path.
     codehostFor: (subject) => tunnels.listeningAt(subject, 'codehost')?.proxy,
+    // Asked again at spawn, since the launch registers its slots after the pod bound; a shim that predates `provider` reports none.
+    providerFor: async (subject) => {
+      const session = driver.sessionFor(subject)
+      if (session?.isAttached()) await tunnels.ensure(subject, session)
+      return tunnels.listeningAt(subject, 'provider')?.proxy
+    },
     connectChannel: (record, podIp, timeoutMs) =>
       dialer.connect(shimEndpoint(podIp, settings.shimPort), record, timeoutMs),
     revokeChannel: (subject) => dialer.revoke(subject),

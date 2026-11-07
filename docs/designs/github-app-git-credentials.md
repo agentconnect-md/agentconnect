@@ -559,7 +559,7 @@ proxy differs:
 | Strategy                              | Transport                                                                                          |
 | ------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | `microsandbox`                        | the `codehost` and `provider` tunnels, from one loopback listener in the VM's shim                 |
-| pool pod                              | the `codehost` tunnel, from a loopback listener in the pod's shim                                  |
+| pool pod                              | the `codehost` and `provider` tunnels, from one loopback listener in the pod's shim                |
 | `srt` and host                        | a loopback or Unix-socket listener under the daemon root                                           |
 | host, placed on an executor           | the `codehost` and `provider` tunnels, from one loopback listener in the executor's shim           |
 | `srt`, placed on an executor          | the `codehost` tunnel, from the Unix socket in the executor's shim that `srt` routes code hosts to |
@@ -928,11 +928,39 @@ and keeps the rest of that copy: Claude's saved key, Codex's shared `auth.json`,
 the DeepSeek harness's key field, and each key field of an OpenCode config, taken
 from the same field of the host's file.
 
+A self-hosted pool's install-wide keys use it in pool pod sessions: the static
+pairs (`<PREFIX>MODEL_TOKEN` with its base URL, which `modelEgress.clients`
+renders too) and the provider key variables `daemonPool.runtimeEnvironment`
+maps (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`,
+`COPILOT_PROVIDER_API_KEY`). The pool member reads them from its own
+environment, so the pod needs none. A pair is a slot `install:model:<provider>`
+and a mapped variable a slot `install:<runtime>:<variable>`, each at the
+endpoint the launch's runtime sends that key to, read from the launch's final
+environment: its base URL variable, Codex's gateway auth request or configured
+base, the base URL an OpenCode or Kilo configuration names for that provider,
+else the provider's default. Every variable holding the key must agree on that
+one origin, so a token-only pair beside a gateway URL the launch names is
+slotted at the gateway. The
+launch carries the real key and, beside it, the variables that carry the
+placeholder instead (Codex's auth request among them); the driver asks the
+pod's shim for `provider` after the bind and applies them only when it reports
+the listener, as for a VM, so an image whose shim predates `provider` keeps the
+real key. Resolving the slot reads the member's configuration again. A key
+stays in the pod's environment, logged once, when its endpoint is plain
+`http:`, when its runtime is not known to send it to one endpoint (an
+unrecognized runtime, or a variable another OpenCode provider entry reads
+too), or when another launch variable also carries it, such as a configuration
+document that embeds it. A launch with a key-server grant is unchanged: the
+grant is short-lived and scoped to its session. The chart renders a
+`modelEgress.clients.<client>.apiKey` into the sandbox template only for a
+plain `http:` endpoint, since the member supplies it at launch.
+
 Not covered yet:
 
 - Host-strategy sessions, by design: a process on the host can read the
   machine's own files.
-- Kubernetes pool pod sessions, which keep the real key.
+- The pool's runtime probe pod, which lists models with the install's keys as
+  they are; it runs no agent.
 - Host keys in VM and executor-placed sessions: a VM keeps its own placeholders
   for them, and an executor's sessions use that machine's own keys, which this
   daemon cannot read.
