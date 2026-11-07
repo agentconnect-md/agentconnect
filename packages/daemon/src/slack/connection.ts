@@ -901,6 +901,9 @@ function slackApiErrorCode(err: unknown): string | undefined {
 // takes effect without requiring a daemon restart, while avoiding one rejected API
 // call per message for installations that have not been upgraded yet.
 const CUSTOM_USERNAME_REPROBE_MS = 5 * 60_000
+/** chat.postMessage answers `invalid_arguments` to an `icon_url` of 256 characters or more (measured
+ *  2026-11-07); a sign-in provider's picture URL runs far past that, so it is left off up front. */
+const SLACK_ICON_URL_MAX_LENGTH = 255
 
 /** Streaming re-probes on the same cadence: a workspace can GAIN the capability (plan
  *  change, app upgrade), so a permanent latch would be wrong. */
@@ -982,7 +985,7 @@ interface SlackDocumentShares {
 const COMPLETION_MAY_HAVE_LANDED = new Set(['internal_error', 'fatal_error'])
 
 /**
- * The only completion refusals worth a second, undecorated attempt: pure request validation
+ * The only refusals of a decorated post or share worth a second, undecorated attempt: pure request validation
  * (so provably before publication) AND plausibly caused by `username`/`icon_url` themselves,
  * which is the one thing the retry can change. A pre-publication refusal this set omits —
  * `not_in_channel`, `channel_not_found` — would fail identically undecorated, so retrying it
@@ -1800,7 +1803,7 @@ export class SlackConnection implements PlatformConnection {
     const username = options?.username?.trim()
     const iconUrl = options?.icon_url?.trim()
     if (username) customize.username = username
-    if (iconUrl) customize.icon_url = iconUrl
+    if (iconUrl && iconUrl.length <= SLACK_ICON_URL_MAX_LENGTH) customize.icon_url = iconUrl
     const wantsIdentity = Object.keys(customize).length > 0
     const plain = fallbackPayload ?? payload
     try {
@@ -1817,11 +1820,33 @@ export class SlackConnection implements PlatformConnection {
           this.customUsernameRetryAt = 0
         } catch (err) {
           this.rememberMissingScopes(err)
-          if (!isMissingCustomizeScope(err)) throw err
-          this.customUsernameRetryAt = Date.now() + CUSTOM_USERNAME_REPROBE_MS
-          this.deps.log?.debug('slack: chat:write.customize missing — retrying with the app default identity')
-          identityDropped = true
-          result = await this.postIfThreadExists(channel, threadTs, plain)
+          // Only a refusal the decoration itself can explain earns another attempt: a missing
+          // customize scope, or Slack rejecting the arguments (`invalid_arguments` for an icon URL
+          // it will not take). Anything else would fail identically without them.
+          const code = slackApiErrorCode(err)
+          const customizeMissing = isMissingCustomizeScope(err)
+          if (!customizeMissing && (code === undefined || code === 'missing_scope' || !DECORATION_REFUSALS.has(code)))
+            throw err
+          if (customizeMissing) this.customUsernameRetryAt = Date.now() + CUSTOM_USERNAME_REPROBE_MS
+          // An argument refusal with an icon in play is first retried with the name alone: the
+          // icon is the usual offender, and the name is what the attribution is for.
+          const nameOnly = !customizeMissing && username && customize.icon_url ? { username } : undefined
+          if (nameOnly) {
+            this.deps.log?.debug(`slack: decorated post refused (${code}) — retrying with the name only`)
+            try {
+              result = await this.postIfThreadExists(channel, threadTs, { ...payload, ...nameOnly })
+            } catch (retryErr) {
+              const retryCode = slackApiErrorCode(retryErr)
+              if (retryCode === undefined || !DECORATION_REFUSALS.has(retryCode)) throw retryErr
+              this.deps.log?.debug(`slack: named post refused (${retryCode}) — retrying with the app default identity`)
+              identityDropped = true
+              result = await this.postIfThreadExists(channel, threadTs, plain)
+            }
+          } else {
+            this.deps.log?.debug(`slack: decorated post refused (${code}) — retrying with the app default identity`)
+            identityDropped = true
+            result = await this.postIfThreadExists(channel, threadTs, plain)
+          }
         }
       }
       await this.postPermissionUpdateCard(channel, threadTs)

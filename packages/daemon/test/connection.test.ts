@@ -2197,6 +2197,95 @@ describe('SlackConnection chat.postMessage boundary', () => {
     })
   })
 
+  it('leaves an icon_url Slack would refuse for its length off the post, keeping the name', async () => {
+    const calls: any[] = []
+    const conn = new SlackConnection(
+      { ...deps(), sendIntervalMs: 0 } as any,
+      () => withPostMessage(async (payload) => (calls.push(payload), { ts: `t${calls.length}` })) as any
+    )
+    // A Google profile picture URL runs past the 255 characters chat.postMessage takes as an icon_url.
+    const iconUrl = `https://lh3.googleusercontent.com/a-/${'x'.repeat(1_100)}=s96-c`
+    const shortIconUrl = `https://cp/v1/users/u1/picture?v=${'9'.repeat(255 - 'https://cp/v1/users/u1/picture?v='.length)}`
+
+    const landed = await conn.postAsAuthor(
+      'D1',
+      '100.1',
+      { text: 'body', attributedText: '[Joeri via console] body' },
+      { name: 'Joeri', iconUrl }
+    )
+    // Posted under the writer's name in one call, so the body needs no attribution prefix.
+    expect(landed).toEqual({ ts: 't1', text: 'body' })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({ username: 'Joeri', blocks: [{ type: 'markdown', text: 'body' }] })
+    expect(calls[0]).not.toHaveProperty('icon_url')
+
+    // Exactly 255 characters still goes through.
+    await conn.postMessage('C1', 'body', '100.1', { username: 'Joeri', icon_url: shortIconUrl })
+    expect(calls[1]).toMatchObject({ username: 'Joeri', icon_url: shortIconUrl })
+  })
+
+  it('keeps the name and drops only the icon when Slack answers invalid_arguments for it', async () => {
+    const calls: any[] = []
+    const invalidArguments = Object.assign(new Error('An API error occurred: invalid_arguments'), {
+      data: { error: 'invalid_arguments' }
+    })
+    const conn = new SlackConnection(
+      { ...deps(), sendIntervalMs: 0 } as any,
+      () =>
+        withPostMessage(async (payload) => {
+          calls.push(payload)
+          if (payload.icon_url) throw invalidArguments
+          return { ts: `t${calls.length}` }
+        }) as any
+    )
+    const iconUrl = 'https://pictures/joeri.png'
+
+    const landed = await conn.postAsAuthor(
+      'D1',
+      '100.1',
+      { text: 'body', attributedText: '[Joeri via console] body' },
+      { name: 'Joeri', iconUrl }
+    )
+    // Posted under the writer's name, so the body needs no attribution prefix.
+    expect(landed).toEqual({ ts: 't2', text: 'body' })
+    expect(calls[0]).toMatchObject({ username: 'Joeri', icon_url: iconUrl })
+    expect(calls[1]).toMatchObject({ username: 'Joeri', blocks: [{ type: 'markdown', text: 'body' }] })
+    expect(calls[1]).not.toHaveProperty('icon_url')
+
+    // An argument refusal is not a workspace scope: the next decorated post is tried in full again.
+    await conn.postMessage('C1', 'body', '100.1', { username: 'Joeri', icon_url: iconUrl })
+    expect(calls[2]).toMatchObject({ username: 'Joeri', icon_url: iconUrl })
+  })
+
+  it('falls back to the app identity when Slack refuses the name as well', async () => {
+    const calls: any[] = []
+    const invalidArguments = Object.assign(new Error('An API error occurred: invalid_arguments'), {
+      data: { error: 'invalid_arguments' }
+    })
+    const conn = new SlackConnection(
+      { ...deps(), sendIntervalMs: 0 } as any,
+      () =>
+        withPostMessage(async (payload) => {
+          calls.push(payload)
+          if (payload.username || payload.icon_url) throw invalidArguments
+          return { ts: `t${calls.length}` }
+        }) as any
+    )
+
+    const landed = await conn.postAsAuthor(
+      'D1',
+      '100.1',
+      { text: 'body', attributedText: '[Joeri via console] body' },
+      { name: 'Joeri', iconUrl: 'https://pictures/joeri.png' }
+    )
+    expect(landed).toEqual({ ts: 't3', text: '[Joeri via console] body' })
+    expect(calls).toHaveLength(3)
+    expect(calls[1]).toMatchObject({ username: 'Joeri' })
+    expect(calls[1]).not.toHaveProperty('icon_url')
+    expect(calls[2]).not.toHaveProperty('username')
+    expect(calls[2]).toMatchObject({ blocks: [{ type: 'markdown', text: '[Joeri via console] body' }] })
+  })
+
   it('retries without username, backs off, then re-probes chat:write.customize', async () => {
     const calls: any[] = []
     const missingCustomize = Object.assign(new Error('An API error occurred: missing_scope'), {
