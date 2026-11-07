@@ -1,6 +1,6 @@
 # Azure DevOps Integration
 
-> Status: **In progress** — A1 (protocol) has landed; A2 to A4 follow (§13).
+> Status: **In progress** — A1 (protocol) and A2 (Control Plane) have landed; A3 and A4 follow (§13).
 > Scope: **Azure DevOps Services** (`dev.azure.com`),
 > Git repositories in Azure Repos. The first version covers workspaces and
 > additional repositories only; pull-request hooks, reviews, pull-request
@@ -821,7 +821,7 @@ live organization before A2.
 - **A1 — Protocol.** _Landed (#3781)._ The provider value with refusing hook entries,
   `azure-devops-v1`, the credential arm, the clone-URL forms, and the reserved
   secondary-root directory.
-- **A2 — Control Plane.** The connect flow on the deployment application and
+- **A2 — Control Plane.** _Landed._ The connect flow on the deployment application and
   the own-application path, and Manage project access; the token cache; the
   identity table and claims, with bindings and grants keyed by connection; the
   picker; derivation and grant arms; gitcred leases served only to the proxy
