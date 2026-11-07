@@ -371,13 +371,13 @@ export function WorkspaceModeField({
               aria-pressed={selected}
               className={
                 selected
-                  ? 'ptile on flex-1 justify-center px-[13px] py-[9px] desktop:min-w-0 desktop:basis-0 desktop:gap-[7px] desktop:px-2'
-                  : 'ptile flex-1 justify-center px-[13px] py-[9px] desktop:min-w-0 desktop:basis-0 desktop:gap-[7px] desktop:px-2'
+                  ? 'ptile on flex-1 justify-center px-[13px] py-[9px] desktop:min-w-0 desktop:basis-auto desktop:gap-[7px] desktop:px-2'
+                  : 'ptile flex-1 justify-center px-[13px] py-[9px] desktop:min-w-0 desktop:basis-auto desktop:gap-[7px] desktop:px-2'
               }
               onClick={() => onChange(option.value)}
             >
               {option.mark(selected)}
-              <span className="font-sans text-[13px] font-semibold leading-normal whitespace-nowrap">
+              <span className="font-sans text-[13px] font-semibold leading-normal min-w-0 truncate whitespace-nowrap">
                 {option.label}
               </span>
             </button>
