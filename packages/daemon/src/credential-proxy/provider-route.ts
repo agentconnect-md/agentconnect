@@ -69,3 +69,27 @@ export function underSlotPrefix(slot: ProviderSlot, target: string): boolean {
   const prefix = (slot.pathPrefix ?? '').replace(/^\/+|\/+$/g, '')
   return stripHostPathPrefix(target.split('?')[0] ?? '', prefix) !== undefined
 }
+
+/** The slot a key used at this endpoint goes through; undefined for a cleartext endpoint, where the proxy cannot exchange a placeholder. */
+export function endpointSlot(
+  id: string,
+  provider: string,
+  endpoint: URL,
+  defaultEndpoint: string | null
+): ProviderSlot | undefined {
+  if (endpoint.protocol !== 'https:') return undefined
+  const pathPrefix = endpoint.pathname.replace(/^\/+|\/+$/g, '')
+  return {
+    id,
+    provider,
+    host: endpoint.hostname,
+    port: endpoint.port ? Number(endpoint.port) : 443,
+    ...(pathPrefix ? { pathPrefix } : {}),
+    saas: defaultEndpoint !== null && new URL(defaultEndpoint).origin === endpoint.origin
+  }
+}
+
+/** Whether two slots send their key to the same provider, origin and path prefix. */
+export function sameSlotOrigin(a: ProviderSlot, b: ProviderSlot): boolean {
+  return a.provider === b.provider && slotHostKey(a) === slotHostKey(b) && (a.pathPrefix ?? '') === (b.pathPrefix ?? '')
+}

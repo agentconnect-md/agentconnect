@@ -450,6 +450,18 @@ export function organizationModelProvider(
   return target.provider
 }
 
+/** The provider an organization key for this target comes from; undefined where the launch refuses the selection anyway. */
+export function organizationProviderOf(
+  selection: AgentModelProvider,
+  target: ModelProviderTarget | undefined
+): AgentModelKeyProvider | undefined {
+  try {
+    return organizationModelProvider(selection, target)
+  } catch {
+    return undefined
+  }
+}
+
 // The model's provider supplies the whole connection; ambient auth must never change its billing or endpoint.
 export function applyOrganizationModelCredential(
   selection: AgentModelProvider,
@@ -492,4 +504,20 @@ export function applyOrganizationModelCredential(
       provider: { [provider]: { ...entry, options: { ...options, headers: credential.headers } } }
     })
   }
+}
+
+// The same connection through the credential proxy: the placeholder where the key goes, and no header values, which the proxy sets.
+export function applyProxiedOrganizationModelCredential(
+  selection: AgentModelProvider,
+  target: ModelProviderTarget | undefined,
+  env: Record<string, string>,
+  credential: ProviderCredential,
+  placeholder: string
+): void {
+  applyOrganizationModelCredential(selection, target, env, { ...credential, apiKey: placeholder, headers: {} })
+}
+
+/** Where an organization Provider key is used: the configured endpoint, else the provider's default. */
+export function organizationProviderEndpoint(provider: AgentModelKeyProvider, credential: ProviderCredential): URL {
+  return new URL(credential.endpoint ?? PROVIDER_KEY_PROFILES[provider].defaultEndpoint!)
 }

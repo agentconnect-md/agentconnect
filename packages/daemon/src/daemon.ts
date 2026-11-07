@@ -25,8 +25,10 @@ import {
   MEMORY_ENTRIES_V1_FEATURE,
   AGENT_MODEL_PROVIDER_FEATURE,
   AGENT_MODEL_PROVIDER_AUTO_FEATURE,
+  type AgentModelKeyProvider,
   type ProviderCredential,
   PROVIDER_CREDENTIALS_V1_FEATURE,
+  PROVIDER_KEY_PROFILES,
   DECISION_EVALUATIONS_V1_FEATURE,
   DECISION_MODEL_EVALUATIONS_V1_FEATURE,
   DECISION_EVALUATION_FILTER_V1_FEATURE,
@@ -390,8 +392,15 @@ import {
 } from './workspace/git-injection.js'
 import { CredentialProxy, type MintAsk } from './credential-proxy/proxy.js'
 import { loadProxyCa, proxyTrustEnv, upstreamAuthorities, type ProxyCa } from './credential-proxy/ca.js'
-import { mergedTrustBundle, SESSION_TRUST_ENV, sessionAuthorityFiles } from './credential-proxy/trust-bundle.js'
+import {
+  CODEX_CA_ENV,
+  mergedTrustBundle,
+  SESSION_TRUST_ENV,
+  sessionAuthorityFiles
+} from './credential-proxy/trust-bundle.js'
 import { loadPlaceholderKey } from './credential-proxy/placeholder.js'
+import { endpointSlot, sameSlotOrigin, type ProviderSlot } from './credential-proxy/provider-route.js'
+import { proxyInstance } from './credential-proxy/instance-route.js'
 import { configureWorkspaceGitOrigins, permitsNoHttpsOrigin } from './workspace/git-origin-policy.js'
 import { buildMcpServers, buildSandboxMcpServers, type McpStdioServer } from './mcp/inject.js'
 import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-servers.js'
@@ -824,6 +833,7 @@ import {
   applyClaudeModelAliases,
   applyModelCredential,
   applyOrganizationModelCredential,
+  applyProxiedOrganizationModelCredential,
   applyConfiguredModelProviders,
   applyKiloLaunchModel,
   configuredClaudeModelAliases,
@@ -832,6 +842,8 @@ import {
   modelProviderTarget,
   requiresSelectedModel,
   organizationModelProvider,
+  organizationProviderEndpoint,
+  organizationProviderOf,
   type ModelCredential,
   type ModelProviderTarget
 } from './runtimes/model-provider-config.js'
@@ -1694,6 +1706,10 @@ export class Daemon {
   private gitCredServer?: GitCredServer
   /** The code-host credential proxy, when `features.credentialProxy` is on and it started (github-app-git-credentials.md, Phase 2). */
   private credentialProxy?: { proxy: CredentialProxy; ca: ProxyCa }
+  /** Each agent's provider key slots the credential proxy serves, by slot id; registered as a host or srt session launches. */
+  private readonly providerSlots = new Map<string, Map<string, ProviderSlot>>()
+  /** Agents and providers whose cleartext endpoint keeps the key in env, logged once each. */
+  private readonly cleartextProviderLogged = new Set<string>()
   /** Leases over cluster pods, in memory: an open page's keep-alive, and this daemon's own on a pod it saw a watcher armed in. */
   private readonly sandboxHolds = new SandboxHolds({ now: () => Date.now() })
   /** Merge-when-ready's in-memory armed set (github/auto-merge). Built with the credential server,
@@ -3883,17 +3899,7 @@ export class Daemon {
     this.localSrt = srtLauncher(root, {
       ...(cfg.agentsDir ? { agentsRoot: cfg.agentsDir } : {}),
       readRoots: () => this.srtShimReadRoots(),
-      // Only an environment whose sessions receive the proxy's trust: its agent's own, never one hosted for another member.
-      mitmProxy: (environment) =>
-        this.credentialProxy &&
-        !environment.hosted &&
-        this.credentialProxyIntercepts(environment.id.split('/')[0] ?? '')
-          ? {
-              socketPath: this.credentialProxy.proxy.socketFor(environment.id.split('/')[0] ?? ''),
-              domains: this.credentialProxy.proxy.domainsFor(environment.id.split('/')[0] ?? ''),
-              trustEnv: proxyTrustEnv(this.credentialProxy.ca)
-            }
-          : undefined,
+      mitmProxy: (environment) => this.srtMitmProxy(environment),
       now: () => this.clock.now()
     })
     this.localSrtExecutor = new LocalExecutor({
@@ -6625,6 +6631,7 @@ export class Daemon {
       // Use the one generation-safe teardown path: it evicts the host synchronously,
       // publishes hostStopping, and fences every older startup/retry generation.
       await this.stopHost(id)
+      this.providerSlots.delete(id)
       this.credentialProxy?.proxy.release(id)
       await this.modelSessions.releaseForAgent(id)
       await this.webchatMcpRevocations.revokeRemoteWebchatGrantsForAgent(id, 'agent_detached')
@@ -6896,6 +6903,8 @@ export class Daemon {
         instancesOf: (agentId) => this.credentialProxyHosts(agentId),
         runningAgents: () => this.agents.keys(),
         knownAgent: (agentId) => this.agents.has(agentId),
+        providerSlotsOf: (agentId) => [...(this.providerSlots.get(agentId)?.values() ?? [])],
+        resolveProviderSlot: (agentId, slotId) => this.resolveProviderSlot(agentId, slotId),
         log: this.log,
         // A self-managed instance is often behind the operator's own authority, which the system roots alone would refuse.
         upstream: { trustedCa: upstreamAuthorities() }
@@ -6955,22 +6964,95 @@ export class Daemon {
     )
   }
 
-  /** Whether the proxy intercepts this agent's srt environments: an agent with a managed code-host credential. */
+  /** Where SRT sends an environment's code-host and provider domains: only one whose sessions receive the proxy's trust, its agent's own, never one hosted for another member. */
+  private srtMitmProxy(
+    environment: EnvironmentDescriptor
+  ): { socketPath: string; domains: string[]; trustEnv: Record<string, string> } | undefined {
+    const agentId = environment.id.split('/')[0] ?? ''
+    if (!this.credentialProxy || environment.hosted || !this.credentialProxyIntercepts(agentId)) return undefined
+    return {
+      socketPath: this.credentialProxy.proxy.socketFor(agentId),
+      domains: this.credentialProxy.proxy.domainsFor(agentId),
+      trustEnv: proxyTrustEnv(this.credentialProxy.ca)
+    }
+  }
+
+  /** Whether the proxy intercepts this agent's host and srt sessions: a managed code-host credential or a provider key slot. */
   private credentialProxyIntercepts(agentId: string): boolean {
     return this.credentialProxy !== undefined && this.credentialProxy.proxy.domainsFor(agentId).length > 0
   }
 
-  /** A host or srt session's trust: the proxy bundle plus the authorities its own env names, which the variables would otherwise replace. */
+  /** Whether the proxy serves this agent's code hosts, which a VM's, pod's or executor's sessions reach it for. */
+  private credentialProxyCodeHosts(agentId: string): boolean {
+    return (
+      this.credentialProxy !== undefined &&
+      this.credentialProxyHosts(agentId).some((host) => proxyInstance(host) !== undefined)
+    )
+  }
+
+  /** Register the organization Provider key slot a host or srt session uses, and return it; undefined for a cleartext endpoint, which keeps the key in env. */
+  private registerOrgProviderSlot(
+    agentId: string,
+    provider: AgentModelKeyProvider,
+    credential: ProviderCredential
+  ): ProviderSlot | undefined {
+    const slot = endpointSlot(
+      `org:${provider}`,
+      provider,
+      organizationProviderEndpoint(provider, credential),
+      PROVIDER_KEY_PROFILES[provider].defaultEndpoint
+    )
+    if (!slot) {
+      const logged = `${agentId}\n${provider}`
+      if (!this.cleartextProviderLogged.has(logged)) {
+        this.cleartextProviderLogged.add(logged)
+        this.log.warn(
+          `credential proxy: agent "${agentId}" keeps its ${provider} key in env, its endpoint is not HTTPS`
+        )
+      }
+      return undefined
+    }
+    const slots = this.providerSlots.get(agentId) ?? new Map<string, ProviderSlot>()
+    slots.set(slot.id, slot)
+    this.providerSlots.set(agentId, slots)
+    return slot
+  }
+
+  /** A provider slot's current key, fetched as a launch fetches it; refused once the organization moved the key to another endpoint. */
+  private async resolveProviderSlot(
+    agentId: string,
+    slotId: string
+  ): Promise<{ key: string; headers: Record<string, string> }> {
+    const slot = this.providerSlots.get(agentId)?.get(slotId)
+    if (!slot) throw new Error(`no provider slot ${slotId}`)
+    if (!this.cpClient) throw new Error('provider keys require a control-plane connection')
+    const provider = slot.provider as AgentModelKeyProvider
+    const { credentials } = await this.cpClient.requestProviderCredentials({ agentId, provider })
+    if (!credentials) throw new Error(`the ${provider} API key is no longer configured`)
+    const current = endpointSlot(
+      slot.id,
+      provider,
+      organizationProviderEndpoint(provider, credentials),
+      PROVIDER_KEY_PROFILES[provider].defaultEndpoint
+    )
+    if (!current || !sameSlotOrigin(current, slot))
+      throw new Error(`the ${provider} endpoint changed; a new session uses it`)
+    return { key: credentials.apiKey, headers: credentials.headers }
+  }
+
+  /** A host or srt session's trust: the proxy bundle plus the authorities its own env names, which the variables would otherwise replace; Codex reads its own variable first. */
   private sessionProxyTrust(
     ca: ProxyCa,
     env: Record<string, string>,
     runtimeEnv: Record<string, string>
   ): Record<string, string> {
-    const files = sessionAuthorityFiles(env, runtimeEnv)
-    return proxyTrustEnv({ bundlePath: mergedTrustBundle(ca.bundlePath, files, (message) => this.log.warn(message)) })
+    const codexCa = env[CODEX_CA_ENV] || runtimeEnv[CODEX_CA_ENV]
+    const files = [...new Set([...sessionAuthorityFiles(env, runtimeEnv), ...(codexCa ? [codexCa] : [])])]
+    const bundlePath = mergedTrustBundle(ca.bundlePath, files, (message) => this.log.warn(message))
+    return { ...proxyTrustEnv({ bundlePath }), [CODEX_CA_ENV]: bundlePath }
   }
 
-  /** What a proxied session's environment carries: the placeholder for gh and git, the trust bundle, and the proxy unless srt routes to it (the loopback listener here, or an executor shim's codehost listener there). */
+  /** What a proxied session's environment carries: the placeholder for gh and git, and its route to the proxy. */
   private credentialProxyEnv(
     proxy: { proxy: CredentialProxy; ca: ProxyCa },
     agentId: string,
@@ -6980,6 +7062,25 @@ export class Daemon {
     glab: boolean
   ): Record<string, string> {
     const placeholder = proxy.proxy.placeholderFor(agentId)
+    const out: Record<string, string> = {
+      ...this.credentialProxyRoute(proxy, route, env, runtimeEnv),
+      [CODE_HOST_CREDENTIAL_ENV]: placeholder
+    }
+    // A GH_TOKEN or GITLAB_TOKEN the agent was configured with is its own, and wins as it always has.
+    const github = this.credentialProxyHosts(agentId).some((host) => host.provider === 'github')
+    if (github && env.GH_TOKEN === undefined && runtimeEnv.GH_TOKEN === undefined) out.GH_TOKEN = placeholder
+    // The glab wrapper passes a set GITLAB_TOKEN straight to glab, which the proxy then exchanges.
+    if (glab && env.GITLAB_TOKEN === undefined && runtimeEnv.GITLAB_TOKEN === undefined) out.GITLAB_TOKEN = placeholder
+    return out
+  }
+
+  /** How a proxied session reaches the proxy: the trust bundle, and the proxy itself unless srt routes to it (the loopback listener here, or an executor shim's codehost listener there). */
+  private credentialProxyRoute(
+    proxy: { proxy: CredentialProxy; ca: ProxyCa },
+    route: 'srt' | 'host' | 'shim' | { url: string; trustBundle: string },
+    env: Record<string, string>,
+    runtimeEnv: Record<string, string>
+  ): Record<string, string> {
     const remote = typeof route === 'object' ? route : undefined
     // An executor's session verifies with the bundle its shim wrote there, and that shim merges the session's own authority files, which are on that machine; a VM's or pod's spawn adds both.
     const files = remote ? sessionAuthorityFiles(env, runtimeEnv) : []
@@ -6991,14 +7092,8 @@ export class Daemon {
           : this.sessionProxyTrust(proxy.ca, env, runtimeEnv)),
       ...(remote && files.length > 0
         ? { [SESSION_TRUST_ENV]: JSON.stringify({ bundle: remote.trustBundle, files }) }
-        : {}),
-      [CODE_HOST_CREDENTIAL_ENV]: placeholder
+        : {})
     }
-    // A GH_TOKEN or GITLAB_TOKEN the agent was configured with is its own, and wins as it always has.
-    const github = this.credentialProxyHosts(agentId).some((host) => host.provider === 'github')
-    if (github && env.GH_TOKEN === undefined && runtimeEnv.GH_TOKEN === undefined) out.GH_TOKEN = placeholder
-    // The glab wrapper passes a set GITLAB_TOKEN straight to glab, which the proxy then exchanges.
-    if (glab && env.GITLAB_TOKEN === undefined && runtimeEnv.GITLAB_TOKEN === undefined) out.GITLAB_TOKEN = placeholder
     const url = remote ? remote.url : route === 'host' ? proxy.proxy.loopbackUrl() : undefined
     if (url) {
       // This machine's own NO_PROXY means nothing on an executor.
@@ -7158,7 +7253,7 @@ export class Daemon {
     agent: LoadedAgent,
     scope: ManagedCredentialScope
   ): Record<string, string> | undefined {
-    if (!this.credentialProxyIntercepts(agent.id)) return undefined
+    if (!this.credentialProxyCodeHosts(agent.id)) return undefined
     return sessionGitEnv(agent.id, this.commitIdentityOf(agent), scope, true)
   }
 
@@ -7979,13 +8074,13 @@ export class Daemon {
 
   /** `codehost` for a known agent the credential proxy intercepts, which its VM's or pod's sessions reach the proxy by. */
   private codehostTunnelFor(agentId: string): TunnelName[] {
-    return this.agents.has(agentId) && this.credentialProxyIntercepts(agentId) ? ['codehost'] : []
+    return this.agents.has(agentId) && this.credentialProxyCodeHosts(agentId) ? ['codehost'] : []
   }
 
   /** A placed session's tunnels: the pod's two, and `codehost` when it runs on its executor's host strategy for an agent the credential proxy intercepts. */
   private tunnelsForPlaced(agentId: string, placed: PlacedSession | undefined): TunnelName[] {
     const helpers = this.tunnelsForAgent(agentId)
-    const codehost = helpers.length > 0 && placed?.strategy === 'host' && this.credentialProxyIntercepts(agentId)
+    const codehost = helpers.length > 0 && placed?.strategy === 'host' && this.credentialProxyCodeHosts(agentId)
     return codehost ? [...helpers, 'codehost'] : helpers
   }
 
@@ -7995,7 +8090,7 @@ export class Daemon {
       gitcred: gitcredSocketPath(root),
       mcp: mcpSocketPath(root),
       codehost: (id) =>
-        this.credentialProxy && this.credentialProxyIntercepts(id)
+        this.credentialProxy && this.credentialProxyCodeHosts(id)
           ? this.credentialProxy.proxy.tunnelSocketFor(id)
           : undefined
     })
@@ -8773,15 +8868,27 @@ export class Daemon {
       remoteSession?.strategy === 'host' && this.credentialProxy && managedCredentials
         ? this.executorPlane?.codehostProxyFor(remoteSession.sessionKey)
         : undefined
-    // A host or srt session with a managed code-host credential holds a placeholder the credential proxy exchanges; a host behind its own outbound proxy keeps direct credentials.
-    const proxied =
+    // A host or srt session here reaches the loopback listener or its srt route; a host behind its own outbound proxy keeps direct credentials.
+    const localProxyRoute =
       this.credentialProxy !== undefined &&
-      managedCredentials &&
       !this.k8sPlane &&
       !micro &&
-      (remoteSession
-        ? remoteCodehost !== undefined
-        : srtShim !== undefined || (!runInSandbox && !process.env.HTTPS_PROXY && !process.env.https_proxy))
+      !remoteSession &&
+      (srtShim !== undefined || (!runInSandbox && !process.env.HTTPS_PROXY && !process.env.https_proxy))
+    // A host or srt session with a managed code-host credential holds a placeholder the credential proxy exchanges.
+    const proxied = managedCredentials && (remoteSession ? remoteCodehost !== undefined : localProxyRoute)
+    const target = opts.modelCredential?.target ?? modelProviderTarget(agent, runtime)
+    // Its organization Provider key goes through the proxy too, registered before the launch so srt routes its host.
+    const orgProvider =
+      localProxyRoute && !this.k8s && opts.providerCredential && agent.modelProvider
+        ? organizationProviderOf(agent.modelProvider, target)
+        : undefined
+    const providerSlot =
+      orgProvider && opts.providerCredential
+        ? this.registerOrgProviderSlot(agent.id, orgProvider, opts.providerCredential)
+        : undefined
+    const providerPlaceholder =
+      providerSlot && this.credentialProxy?.proxy.providerPlaceholderFor(agent.id, providerSlot.id)
     const sandboxSessionGit =
       (this.k8sPlane || remoteRoots) && needsSessionGit
         ? sessionGitConfig(agent.id, sessionGitIdentity, sandboxGitTarget, sessionGitScope, proxied)
@@ -8792,7 +8899,7 @@ export class Daemon {
       !remoteSession &&
       this.credentialProxy !== undefined &&
       managedCredentials &&
-      this.credentialProxyIntercepts(agent.id)
+      this.credentialProxyCodeHosts(agent.id)
     const guestGit = !guestCodehost
       ? undefined
       : this.k8sPlane
@@ -8888,6 +8995,12 @@ export class Daemon {
           gitlabCredentials && (remoteSession !== undefined || shimDirs.has(this.glabBinDir ?? ''))
         )
       )
+    // A host session holding only a provider placeholder reaches the proxy the same way.
+    else if (providerPlaceholder && this.credentialProxy)
+      Object.assign(
+        env,
+        this.credentialProxyRoute(this.credentialProxy, srtShim === undefined ? 'host' : 'srt', env, runtimeEnv)
+      )
     // Every session in an srt environment the proxy intercepts trusts its CA, a placeholder or not, or its code-host requests would fail verification.
     else if (srtShim && this.credentialProxy && this.credentialProxyIntercepts(agent.id))
       Object.assign(env, this.sessionProxyTrust(this.credentialProxy.ca, env, runtimeEnv))
@@ -8909,7 +9022,6 @@ export class Daemon {
               : {})
           }
         : undefined
-    const target = opts.modelCredential?.target ?? modelProviderTarget(agent, runtime)
     // A runtime on another filesystem reads its config files there, so they travel with its launch as the gitconfig does (§8): the pod's image root, or the one an executor reported.
     const launchFilesRoot = remoteRoots
       ? remoteRoots.runtimeRoot
@@ -8970,7 +9082,15 @@ export class Daemon {
             applyOpenCodeReadOnlyMode(target, launchEnv, this.k8s ? undefined : process.env.OPENCODE_CONFIG_CONTENT)
           }
           if (!this.k8s && opts.providerCredential && agent.modelProvider) {
-            applyOrganizationModelCredential(agent.modelProvider, target, launchEnv, opts.providerCredential)
+            if (providerPlaceholder)
+              applyProxiedOrganizationModelCredential(
+                agent.modelProvider,
+                target,
+                launchEnv,
+                opts.providerCredential,
+                providerPlaceholder
+              )
+            else applyOrganizationModelCredential(agent.modelProvider, target, launchEnv, opts.providerCredential)
             return
           }
           if (!this.k8s) return

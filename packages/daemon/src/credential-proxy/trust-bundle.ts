@@ -12,6 +12,9 @@ export const PROXY_TRUST_VARS = [
   'NODE_EXTRA_CA_CERTS'
 ] as const
 
+/** The bundle Codex verifies with, which it reads before `SSL_CERT_FILE`. */
+export const CODEX_CA_ENV = 'CODEX_CA_CERTIFICATE'
+
 /** A placed session's `{ bundle, files }`: its executor's shim merges them there, where the files are, and strips this before exec. */
 export const SESSION_TRUST_ENV = 'AC_SHIM_SESSION_TRUST'
 
