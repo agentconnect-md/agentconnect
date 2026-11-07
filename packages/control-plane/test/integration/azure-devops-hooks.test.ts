@@ -356,6 +356,22 @@ describe('subscriptions and the compiled rule (§11.2, §11.3)', () => {
     expect(await h.freshBinding()).toMatchObject({ hookReason: null })
   })
 
+  it('keeps an enabled hook with no subscriptions in the sweep, so a repaired configuration recovers', async () => {
+    const h = await harness()
+    await hooked(h)
+    // The state a first pass leaves when the relay address is unset: no subscriptions, nothing owed.
+    await prisma.azureDevOpsHookSubscription.deleteMany({ where: { bindingId: h.binding.id } })
+    await prisma.azureDevOpsRepositoryBinding.update({
+      where: { id: h.binding.id },
+      data: { hookConvergeOwedAt: null, hookReason: 'relay_url_unconfigured' }
+    })
+    h.fake.subscriptions.clear()
+    expect((await h.hookRepo.listHooked(100)).map((b) => b.id)).toContain(h.binding.id)
+    await h.hooks.sweep()
+    expect(await h.recorded()).toHaveLength(5)
+    expect(h.fake.subscriptions.size).toBe(5)
+  })
+
   it('deletes the subscriptions of a removed binding', async () => {
     const h = await harness()
     await hooked(h)

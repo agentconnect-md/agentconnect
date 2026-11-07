@@ -11,6 +11,7 @@ import type {
 import type { PrismaLike } from '../prisma.js'
 import { AZURE_DEVOPS_DELIVERY_KINDS, type AzureDevOpsDeliveryKind } from '@agentconnect.md/protocol'
 import { AzureDevOpsOrganizationTaken, AzureDevOpsRepositoryClaimConflict } from '../errors.js'
+import { toDbHookKind } from '../hook-kind.js'
 import type {
   AzureDevOpsBindingState,
   AzureDevOpsConnectionCredential,
@@ -727,8 +728,20 @@ export class PgAzureDevOpsHookRepo implements AzureDevOpsHookRepo {
   }
 
   async listHooked(limit: number): Promise<AzureDevOpsRepositoryBindingRecord[]> {
+    // An enabled hook keeps its repository in the sweep even with no subscriptions yet, so a repaired configuration recovers.
+    const hooked = await this.prisma.hookDef.findMany({
+      where: { kind: toDbHookKind('azure-devops'), enabled: true, repoId: { not: null } },
+      select: { orgId: true, repoId: true },
+      distinct: ['orgId', 'repoId']
+    })
     const rows = await this.prisma.azureDevOpsRepositoryBinding.findMany({
-      where: { OR: [{ subscriptions: { some: {} } }, { hookConvergeOwedAt: { not: null } }] },
+      where: {
+        OR: [
+          { subscriptions: { some: {} } },
+          { hookConvergeOwedAt: { not: null } },
+          ...hooked.map((hook) => ({ orgId: hook.orgId, identityId: hook.repoId! }))
+        ]
+      },
       include: withIdentity,
       orderBy: [{ updatedAt: 'asc' }],
       take: limit
