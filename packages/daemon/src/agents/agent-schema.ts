@@ -12,6 +12,7 @@ import {
   AssistantModePolicy,
   AssistantOnboarding,
   ChatActions,
+  GitCommitIdentity,
   HookRoutingProjection,
   CompatibleAgentSkillEntry,
   IntegrationCoreEnvelope,
@@ -255,6 +256,8 @@ export const AgentSchema = z.object({
   gitlabHost: z.string().optional(),
   // Its Gitea twin (gitea-integration.md §11); absent ⇒ gitea.com, the axis default.
   giteaHost: z.string().optional(),
+  // The bot of the agent's own organization GitHub App; absent ⇒ the daemon's registered identity.
+  gitCommitIdentity: GitCommitIdentity.optional(),
   workspace: z.object({
     mode: z.enum(['git-repo', 'from-scratch']),
     // Internal isolation policy. Product surfaces call the session mode

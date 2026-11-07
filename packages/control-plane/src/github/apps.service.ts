@@ -123,6 +123,8 @@ export interface GithubAppsServiceDeps {
   onInstallationChanged?: (installationId: bigint, orgId: OrgId) => void | Promise<void>
   /** The org's Apps or an agent's App changed: compiled hook rules name each agent's App. */
   onAppsChanged?: (orgId: OrgId) => void | Promise<void>
+  /** One agent changed App: its spec carries the App's commit identity, so it is re-sent. */
+  onAgentAppChanged?: (orgId: OrgId, agentId: string) => void | Promise<void>
   log?: { warn(obj: unknown, msg?: string): void }
   fetchImpl?: FetchLike
   baseUrl?: string
@@ -345,6 +347,7 @@ export class GithubAppsService {
       return { ok: false, reason: switched.kind }
     }
     await this.deps.onAppsChanged?.(agent.orgId)
+    await this.deps.onAgentAppChanged?.(agent.orgId, agent.id)
     return { ok: true }
   }
 

@@ -12,6 +12,7 @@ import type {
   AgentRecord,
   AgentSecretStore,
   GitAgentWorkspace,
+  GithubAppRecord,
   HookRepo
 } from '../persistence/ports.js'
 import { AgentId, OrgId } from '../domain/ids.js'
@@ -564,5 +565,61 @@ describe('AgentSpecAssembler', () => {
     // Nothing hosted still ships [], so losing the last routing replicates; the daemon digests it as absent.
     expect((await hosting([]).assemble(AGENT)).hookRoutings).toEqual([])
     expect(await new AgentSpecAssembler(storeWith({})).assemble(AGENT)).not.toHaveProperty('hookRoutings')
+  })
+
+  describe('gitCommitIdentity', () => {
+    const APP: GithubAppRecord = {
+      id: 'app-row-1',
+      orgId: AGENT.orgId,
+      agentId: AGENT.id,
+      appId: 9001n,
+      slug: 'ops-agent-example',
+      clientId: null,
+      botUserId: 4242n,
+      createdAt: new Date(0)
+    }
+    /** The assembler's optional dependencies are positional; only the App repo matters here. */
+    const withApps = (rows: Record<string, GithubAppRecord>) =>
+      new AgentSpecAssembler(
+        storeWith({}),
+        {},
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { get: async (orgId, id) => (rows[id]?.orgId === orgId ? rows[id]! : null) }
+      )
+
+    it("ships the agent's own App bot identity when it works through an organization App", async () => {
+      const spec = await withApps({ [APP.id]: APP }).assemble({ ...AGENT, githubAppId: APP.id })
+      expect(spec.gitCommitIdentity).toEqual({
+        name: 'ops-agent-example[bot]',
+        email: '4242+ops-agent-example[bot]@users.noreply.github.com'
+      })
+      expect(AgentSpec.parse(spec).gitCommitIdentity).toEqual(spec.gitCommitIdentity)
+    })
+
+    it('omits it on the built-in App, so the daemon falls back to its registered identity', async () => {
+      expect(await withApps({ [APP.id]: APP }).assemble(AGENT)).not.toHaveProperty('gitCommitIdentity')
+      expect(await withApps({ [APP.id]: APP }).assemble({ ...AGENT, githubAppId: null })).not.toHaveProperty(
+        'gitCommitIdentity'
+      )
+    })
+
+    it("omits it when the App's bot user id is unknown, rather than guess an address", async () => {
+      const unknown = { ...APP, botUserId: null }
+      expect(await withApps({ [APP.id]: unknown }).assemble({ ...AGENT, githubAppId: APP.id })).not.toHaveProperty(
+        'gitCommitIdentity'
+      )
+    })
   })
 })

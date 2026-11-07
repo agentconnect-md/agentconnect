@@ -444,7 +444,8 @@ export function buildHttpApp(
     { routings: codeHostDecisionRoutingRepo, hooks: hookRepo },
     agentInstallationAuthRepo,
     new PgDecisionRepo(prisma),
-    computerRepo
+    computerRepo,
+    new PgGithubAppRepo(prisma)
   )
   const agentDelivery = new AgentDelivery({ control: sender, specs: agentSpecs, placement: placementResolver })
 

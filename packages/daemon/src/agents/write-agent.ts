@@ -820,6 +820,9 @@ export function applySpecFields(
   // The Gitea axis follows the same rule: absent means gitea.com (gitea-integration.md §11).
   if (spec.giteaHost !== undefined) raw.giteaHost = spec.giteaHost
   else delete raw.giteaHost
+  // Absent means the daemon's registered identity, so an absent value clears an App the agent left.
+  if (spec.gitCommitIdentity !== undefined) raw.gitCommitIdentity = spec.gitCommitIdentity
+  else delete raw.gitCommitIdentity
 
   // Output settings preserve sibling/future keys while applying CP-owned values.
   if (spec.outputMode !== undefined || spec.showFooter !== undefined || spec.showStatusBar !== undefined) {

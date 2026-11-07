@@ -78,6 +78,27 @@ describe('diffAgents', () => {
     expect(diffAgents([settled], actual(at({ provider: 'managed', home: 'control-plane' }))).toChange).toEqual([])
   })
 
+  it('respawns the host when the agent switches GitHub App, since the commit identity is baked into its env', () => {
+    const builtIn = a('x')
+    const own = {
+      ...builtIn,
+      gitCommitIdentity: {
+        name: 'ops-agent-example[bot]',
+        email: '5150+ops-agent-example[bot]@users.noreply.github.com'
+      }
+    } as Agent
+    for (const [before, after] of [
+      [builtIn, own],
+      [own, builtIn]
+    ]) {
+      expect(diffAgents([after!], actual(before!)).toChange[0]).toMatchObject({
+        hostRespawn: true,
+        workspace: false,
+        integrations: false
+      })
+    }
+  })
+
   it('classifies a change of execution strategy as a host-spawn change', () => {
     const unsandboxed = a('x')
     const sandboxed = { ...unsandboxed, execution: 'srt' } as Agent

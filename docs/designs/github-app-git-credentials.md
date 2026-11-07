@@ -399,11 +399,22 @@ cached per App because `mintAppJwt` keys its auth cache on the config object;
 creation and deletion invalidate the entry. Token caches stay keyed by
 installation id, so two Apps never share an entry.
 
+**Commit attribution.** The identity delivered at `register/ok` is the
+built-in App's bot. An agent on an organization App carries its own App's bot
+on its spec (`AgentSpec.gitCommitIdentity`, `ID+<slug>[bot]@users.noreply.github.com`
+from the App row's slug and bot user id), and the daemon pins it in place of
+the registered one for the agent's session commits and its console commits.
+The field is absent on the built-in App, and when the App's bot user id is
+unknown, so the daemon falls back to the registered identity. A switch bumps
+the agent's `configRevision` and re-sends its spec, the move bundle pins the
+identity with the rest of the spec, and a changed identity respawns the warm
+host, because the identity is fixed in the runtime's environment at spawn. The
+daemon's revision digest leaves the field out: it changes only with a switch,
+which bumps the revision, so a CP that starts shipping it does not conflict
+with a revision a daemon already applied without it.
+
 **Limits.**
 
-- The commit identity delivered at `register/ok` is the built-in App's; pushes
-  by an agent on an organization App are authenticated as that App, but
-  commits made through the console wand are attributed to the built-in bot.
 - An App gets its webhook only when the relay's public origin is HTTPS at
   creation; without one its events never arrive and its installations are
   refreshed only by the setup redirect.
@@ -1211,7 +1222,9 @@ Injection uses **two channels**:
      `ID+<slug>[bot]@users.noreply.github.com` form through
      `register/ok.gitCommitIdentity`. The daemon pins ordinary commit
      attribution through `GIT_AUTHOR_*` / `GIT_COMMITTER_*`, so each instance
-     automatically uses its own App bot. Git always reads global config;
+     automatically uses its own App bot; an agent on an organization App
+     uses that App's bot instead (§Organization GitHub Apps, Commit
+     attribution). Git always reads global config;
      children inherit the path, and no indexed-count conflict exists. Reserve
      indexed `GIT_CONFIG_*` variables for **short-lived subprocesses directly
      controlled by the daemon, such as clone**.
@@ -1236,8 +1249,9 @@ Injection uses **two channels**:
      than the credentialed one: landing policy-only content on the credentialed
      path would strip the live runtime's helper and reset until it rebuilt.
      Content is a pure function of (agent, class) — scope comes from the agent
-     spec and commit identity is daemon-global — so every writer of a path
-     writes identical bytes, and an agent never owns more than these two files.
+     spec and the commit identity rides the environment, not the file — so
+     every writer of a path writes identical bytes, and an agent never owns
+     more than these two files.
      Per-host names were rejected for the opposite reason: nothing reaps these
      files, so they would accumulate one per host indefinitely.
    - This injection must be spread **last, at the highest precedence** in the

@@ -352,6 +352,47 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     }
   })
 
+  it("attributes an App agent's commits to its own App bot, else to the daemon's registered identity", async () => {
+    const root = scaffold()
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root,
+      sandboxMechanism: 'bwrap',
+      probeRuntimes: async () => []
+    })
+    try {
+      await daemon.start()
+      const registered = { name: 'example-builtin[bot]', email: '1+example-builtin[bot]@users.noreply.github.com' }
+      const own = { name: 'ops-agent-example[bot]', email: '5150+ops-agent-example[bot]@users.noreply.github.com' }
+      ;(daemon as any).gitCommitIdentity = registered
+      const agent = (daemon as any).agents.get('bot-a')
+      const cwd = agent.workspace.path
+      agent.workspace = { mode: 'from-scratch', path: cwd, gitBranch: 'main', gitCredential: 'github-app', skills: [] }
+      const envOf = () =>
+        (
+          (daemon as any).buildAcpHost(agent, (daemon as any).cfg, {
+            hostKey: agentHostKey(agent.id),
+            strategy: 'srt',
+            cwd
+          }).host as any
+        ).opts.env
+      expect(envOf()).toMatchObject({ GIT_AUTHOR_NAME: registered.name, GIT_COMMITTER_EMAIL: registered.email })
+      agent.gitCommitIdentity = own
+      expect(envOf()).toMatchObject({
+        GIT_AUTHOR_NAME: own.name,
+        GIT_AUTHOR_EMAIL: own.email,
+        GIT_COMMITTER_NAME: own.name,
+        GIT_COMMITTER_EMAIL: own.email
+      })
+      // The console commit resolves the same way, per agent.
+      expect((daemon as any).commitIdentityOf((daemon as any).agents.get('bot-a'))).toEqual(own)
+      expect((daemon as any).commitIdentityOf(undefined)).toEqual(registered)
+    } finally {
+      await daemon.stop().catch(() => undefined)
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('keeps agent tool credentials out of the dream host without re-enabling repository hooks', async () => {
     const root = scaffold()
     const daemon = new Daemon({

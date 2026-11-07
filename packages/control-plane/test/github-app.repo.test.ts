@@ -76,15 +76,16 @@ describe('PgGithubAppRepo + PgGithubInstallationRepo (organization Apps)', () =>
     const moved = async () => ({
       agent: await prisma.agent.findUniqueOrThrow({
         where: { id: agentId },
-        select: { githubAppId: true, installationId: true }
+        select: { githubAppId: true, installationId: true, configRevision: true }
       }),
       grant: (await prisma.agentInstallationAuthorization.findFirstOrThrow({ where: { agentId } })).installationId,
       hook: (await prisma.hookDef.findFirstOrThrow({ where: { agentId } })).installationId
     })
 
     await expect(apps.switchAgent({ orgId: ORG, agentId, from: null, to: app.id })).resolves.toEqual({ ok: true })
+    // The App's commit identity rides the agent spec, so the switch joins its revision order.
     await expect(moved()).resolves.toEqual({
-      agent: { githubAppId: app.id, installationId: own.id },
+      agent: { githubAppId: app.id, installationId: own.id, configRevision: 1n },
       grant: 53n,
       hook: 53n
     })
@@ -104,7 +105,7 @@ describe('PgGithubAppRepo + PgGithubInstallationRepo (organization Apps)', () =>
     // Back to the built-in App: everything returns to its installation.
     await expect(apps.switchAgent({ orgId: ORG, agentId, from: app.id, to: null })).resolves.toEqual({ ok: true })
     await expect(moved()).resolves.toEqual({
-      agent: { githubAppId: null, installationId: builtIn.id },
+      agent: { githubAppId: null, installationId: builtIn.id, configRevision: 2n },
       grant: 52n,
       hook: 52n
     })

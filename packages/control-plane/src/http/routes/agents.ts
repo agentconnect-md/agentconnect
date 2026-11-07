@@ -6417,8 +6417,7 @@ export function agentRoutes(deps: HttpDeps) {
       }
     )
 
-    // Commit the staged changes on the owning daemon, attributed to the daemon's
-    // registered `gitCommitIdentity`. Every refusal is data carrying a closed `reason`.
+    // Commit on the owning daemon as the agent's App bot, else the registered identity; a refusal is data with a closed `reason`.
     r.post(
       '/agents/:id/workspace/gitcommit',
       {
@@ -6426,7 +6425,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Workspace],
           summary: 'Commit the staged workspace changes',
           description:
-            'Commit whatever is staged in the owning daemon’s checkout, or in an authorized isolated session worktree when sessionId is given. Requires edit access to the agent. The commit is attributed to the identity the daemon registered at handshake, never to the console user. Nothing staged, a blank message, a daemon with no registered identity and a git refusal all come back as ok:false with a machine `reason`, not an HTTP error; 409 when the agent is busy in its workspace, 503 when unplaced or the daemon is offline. The control plane forwards the message and stores neither it nor the diff. Pass repo (owner/repo) to address one of the agent’s authorized additional repositories instead of its primary workspace; an unauthorized name reads 404, and a daemon too old to scope by repository yields 409.',
+            'Commit whatever is staged in the owning daemon’s checkout, or in an authorized isolated session worktree when sessionId is given. Requires edit access to the agent. The commit is attributed to the bot of the agent’s own organization GitHub App when it has one, else to the identity the daemon registered at handshake, never to the console user. Nothing staged, a blank message, a daemon with no registered identity and a git refusal all come back as ok:false with a machine `reason`, not an HTTP error; 409 when the agent is busy in its workspace, 503 when unplaced or the daemon is offline. The control plane forwards the message and stores neither it nor the diff. Pass repo (owner/repo) to address one of the agent’s authorized additional repositories instead of its primary workspace; an unauthorized name reads 404, and a daemon too old to scope by repository yields 409.',
           operationId: 'commitAgentWorkspace',
           params: IdParam,
           querystring: WorkspaceScopeQueryDto,
