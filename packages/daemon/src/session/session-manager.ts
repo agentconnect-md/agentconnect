@@ -224,6 +224,8 @@ export class SessionManager {
   constructor(
     private deps: {
       store: LocalStore
+      /** Snapshot the human or automation behind a newly opened session. */
+      initiatorFor?: (msg: NormalizedMessage, originSessionId?: string) => Promise<string>
       /** Mint a slot's outward id (§1.1) and hand back the synchronous binder the runtime's raw
        *  `session/new` response calls — see the opener's `prepareOutwardBinding`. */
       prepareOutwardBinding?: (agentId: string, key: string) => Promise<(acpSessionId: string) => void>
@@ -799,6 +801,11 @@ export class SessionManager {
         thread,
         transportScope: transportScope ?? null,
         triggeredBy: msg.sessionTriggerId ?? msg.sender.id,
+        initiatedBy:
+          rec?.initiatedBy ??
+          (isNewLogicalSession
+            ? (msg.initiatedBy ?? (await this.deps.initiatorFor?.(msg, originSessionId)))
+            : undefined),
         ...(msg.threadUrl ? { threadUrl: msg.threadUrl } : {}),
         memoryProvider: currentMemoryProvider,
         workspaceIsolation,

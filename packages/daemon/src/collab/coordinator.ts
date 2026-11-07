@@ -386,6 +386,8 @@ export interface CollabCoreHost {
   /** Serialized queue depth and the entry executing now, keyed by logical sessionKey. */
   serialQueue(): ReadonlyMap<string, readonly QueueEntry[]>
   activeGateEntries(): ReadonlyMap<string, QueueEntry>
+  /** The originating person or automation, pinned for a task and sampled per turn in its coordinator. */
+  initiatedByForSession?(key: string): Promise<string | undefined>
   /** A sub-session was opened from the parent session's live turn, whose people it then reads for (assistant-mode.md §5.5). */
   noteSubsessionOpened?(childKey: string, parentKey: string): void
   /** A settled sub-session was given a new work round from the parent session's live turn. */
@@ -1625,6 +1627,7 @@ export class CollabCoordinator {
       // reports (identical to `req.channel` outside the channel-free branch).
       platform,
       channel: coordChannel,
+      initiatedBy: await this.host.initiatedByForSession?.(callerKey),
       thread: event.thread,
       ...(targetCoordinate !== undefined ? { sessionThread: targetCoordinate } : {}),
       ...(targetTransportScope !== undefined ? { transportScope: targetTransportScope } : {}),
@@ -3386,6 +3389,7 @@ export class CollabCoordinator {
           // canonical read cursor — same guarantee as the same-daemon path.
           ...(req.transcriptTs !== undefined ? { transcriptTs: req.transcriptTs } : {}),
           ...(ctx.originSessionId !== undefined ? { originSessionId: ctx.originSessionId } : {}),
+          initiatedBy: ctx.originSessionKey ? await this.host.initiatedByForSession?.(ctx.originSessionKey) : undefined,
           ...(ctx.originCodeHostReplyTarget !== undefined
             ? { originCodeHostReplyTarget: ctx.originCodeHostReplyTarget }
             : {}),

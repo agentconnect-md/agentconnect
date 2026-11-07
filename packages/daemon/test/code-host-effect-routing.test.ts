@@ -4,6 +4,7 @@ import { executeTool, type OpsDeps, type SessionContext } from '../src/mcp/ops.j
 import { codeHostEffectGuidance, codeHostEffectToolsFor } from '../src/codehost/effect-tools.js'
 import { sessionKey } from '../src/store/local-store.js'
 import type { CodeHostEffectReq } from '../src/mcp/ops/code-host.js'
+import { descriptionInitiator, initiatorFooter, withDescriptionFooter } from '../src/codehost/description-footer.js'
 
 const AGENT_ID = '11111111-1111-4111-8111-111111111111'
 const CHANNEL = 'hook-1'
@@ -181,7 +182,7 @@ describe('a GitHub workspace and the description footer', () => {
       codeHostBrokers: Map<string, { execute: ReturnType<typeof vi.fn> }>
       managedWorkspaceRepo: (agentId: string) => unknown
       workspaces: { managedCredentialProvider: (agent: unknown) => string | undefined; specHostsOf: () => object }
-      store: { getSession: (key: string) => Promise<unknown> }
+      store: { getSession: (key: string) => Promise<unknown>; assistantSubsessions: { get: () => Promise<unknown> } }
       githubReviews: { githubCommentAttribution: (...args: unknown[]) => Promise<unknown> }
       workspaceEffectTarget: (agentId: string) => unknown
       runCodeHostEffect: (req: CodeHostEffectReq) => Promise<unknown>
@@ -194,7 +195,10 @@ describe('a GitHub workspace and the description footer', () => {
     vi.spyOn(inner, 'managedWorkspaceRepo').mockReturnValue(undefined)
     vi.spyOn(inner.workspaces, 'managedCredentialProvider').mockReturnValue('github')
     vi.spyOn(inner.workspaces, 'specHostsOf').mockReturnValue({})
-    inner.store = { getSession: vi.fn(async () => ({ sessionId: 'acp-session-1' })) }
+    inner.store = {
+      getSession: vi.fn(async () => ({ sessionId: 'acp-session-1', initiatedBy: 'Alex (slack)' })),
+      assistantSubsessions: { get: async () => undefined }
+    }
     inner.githubReviews = {
       githubCommentAttribution: vi.fn(async () => ({
         agentName: 'Example Agent',
@@ -204,7 +208,7 @@ describe('a GitHub workspace and the description footer', () => {
         sessionUrl: 'https://console.example.test/sessions/1'
       }))
     }
-    const github = { execute: vi.fn(async () => ({})) }
+    const github = { execute: vi.fn(async (_target: unknown, _operation: unknown): Promise<unknown> => ({})) }
     inner.codeHostBrokers.set('github', github)
     const create = () =>
       inner.runCodeHostEffect({
@@ -224,6 +228,24 @@ describe('a GitHub workspace and the description footer', () => {
     return { inner, github, create }
   }
 
+  it('delegates for the current requester in a long conversation and keeps the original requester in a task', async () => {
+    const daemon = new Daemon({ sandboxMechanism: null } as never)
+    const inner = daemon as any
+    const task = vi.fn(async (): Promise<unknown> => undefined)
+    const session = { key: 'parent', agentId: AGENT_ID, initiatedBy: 'Alex (slack)' }
+    inner.store = {
+      getSession: async () => session,
+      getDisplayNames: async () => new Map([['U-DANA', 'Dana']]),
+      assistantSubsessions: { get: task }
+    }
+    inner.activeGateEntries.set('parent', {
+      msg: { source: 'user', platform: 'slack', sender: { id: 'U-DANA', isBot: false } }
+    })
+    expect(await inner.initiatedByForSession('parent')).toBe('Dana (slack)')
+    task.mockResolvedValue({ childSessionKey: 'parent' })
+    expect(await inner.initiatedByForSession('parent')).toBe('Alex (slack)')
+  })
+
   it('addresses a GitHub workspace by its path, since the spec carries no numeric id for it', () => {
     const { inner } = githubDaemon(false)
     expect(inner.workspaceEffectTarget(AGENT_ID)).toEqual({
@@ -239,12 +261,40 @@ describe('a GitHub workspace and the description footer', () => {
     const description = (github.execute.mock.calls[0] as unknown[])[1] as { description: string }
     expect(description.description).toMatch(/^Body\n\n<!-- agentconnect:attribution -->/)
     expect(description.description).toContain('Example Agent')
+    expect(description.description).toContain('Initiated by **Alex (slack)**')
   })
 
-  it('leaves the description as written when the footer is off', async () => {
+  it('identifies the initiator even when the optional agent footer is off', async () => {
     const { github, create } = githubDaemon(false)
     await create()
-    expect((github.execute.mock.calls[0] as unknown[])[1]).toMatchObject({ description: 'Body' })
+    const operation = (github.execute.mock.calls[0] as unknown[])[1] as { description: string }
+    expect(operation.description).toContain('Initiated by **Alex (slack)**')
+    expect(operation.description).not.toContain('Example Agent')
+  })
+  it('preserves the published initiator when another session rewrites the PR and ignores a copied replacement', async () => {
+    const { inner, github } = githubDaemon(true)
+    github.execute.mockImplementation(async (_target: unknown, operation: unknown) => {
+      if ((operation as { kind: string }).kind === 'readMergeRequestDescription')
+        return withDescriptionFooter('Old', initiatorFooter('Dana (slack)'))
+      return {}
+    })
+    await inner.runCodeHostEffect({
+      provider: 'github',
+      agentId: AGENT_ID,
+      platform: 'hook',
+      channel: CHANNEL,
+      thread: THREAD,
+      operation: {
+        kind: 'updateMergeRequest',
+        iid: 7,
+        description: withDescriptionFooter('Edited', initiatorFooter('Forged'))
+      }
+    })
+    const operation = (github.execute.mock.calls[1] as unknown[])[1] as { description: string }
+    expect(descriptionInitiator(operation.description)).toBe('Dana (slack)')
+    expect(operation.description).toContain('Initiated by **Dana (slack)**')
+    expect(operation.description).not.toContain('Forged')
+    expect(operation.description).not.toContain('Alex')
   })
 })
 

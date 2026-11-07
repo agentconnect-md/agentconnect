@@ -93,6 +93,8 @@ export interface NormalizedMessage extends Omit<
    *  differs from the message author. GitHub hook messages, for example, are
    *  authored by the event actor while still being triggered by `hook:<id>`. */
   sessionTriggerId?: string
+  /** Daemon-authored public initiator label inherited across task delegation; never a tool argument. */
+  initiatedBy?: string
   attachments?: Attachment[]
   /** Trusted activation cause when known. In particular, `mention` means the router
    *  matched a raw platform token against this integration's own bound bot identity. */

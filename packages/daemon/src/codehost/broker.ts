@@ -67,6 +67,7 @@ export const MAX_NAMED = 20
 
 /** The §14.2 operation set, exactly; every host resolves each member to its own allowlisted endpoint or refuses it. */
 export type CodeHostBrokerOperation =
+  | { kind: 'readMergeRequestDescription'; iid: number }
   | { kind: 'createComment'; subject: BrokerSubject; iid: number; body: string }
   | { kind: 'updateComment'; subject: BrokerSubject; iid: number; noteId: string; body: string }
   | { kind: 'readDiscussions'; subject: BrokerSubject; iid: number; discussionId?: string; limit?: number }

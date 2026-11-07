@@ -365,7 +365,12 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
 
     const ack = await route(
       D1,
-      baseMsg({ originSessionId: 'acp-parent-1', needsReply: true, originCodeHostReplyTarget: null })
+      baseMsg({
+        originSessionId: 'acp-parent-1',
+        needsReply: true,
+        originCodeHostReplyTarget: null,
+        initiatedBy: 'Alex (slack)'
+      })
     )
     expect(ack.delivered).toBe(true)
     // The router copies field-by-field, so a new optional field is silently dropped unless it is
@@ -373,6 +378,7 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     expect(forwards[0]!.needsReply).toBe(true)
     expect(forwards[0]!.originSessionId).toBe('acp-parent-1')
     expect(forwards[0]!.originCodeHostReplyTarget).toBeNull()
+    expect(forwards[0]!.initiatedBy).toBe('Alex (slack)')
   })
 
   it.each(['originCodeHostReplyTarget', 'codeHostReplyTarget'] as const)(

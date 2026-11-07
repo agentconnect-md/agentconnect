@@ -2393,6 +2393,23 @@ generic evaluation events, or logs. The Memory page links the execution session;
 source-session selection remains input metadata and must not displace that run's own
 usage in the history presentation.
 
+## Pull-request initiator attribution
+
+Pull requests and merge requests opened through the code-host tools carry an
+`Initiated by` line naming the person and source platform. This attribution is
+shown even when the optional agent/runtime/model footer is off. Names are plain
+text; a display name does not imply a linked code-host account or send a mention.
+Raw account IDs and sign-in addresses are not published as names.
+
+A task records its initiator when it starts and carries that attribution through
+delegation, including delegation to another daemon. A long conversation delegates
+for the person whose request it is handling; its first participant does not own
+everyone else's tasks. Scheduled runs and webhooks name the automation instead.
+
+An edit to a PR description retains the initiator already published on that PR,
+including when another person or agent makes the edit. An older PR without
+initiator attribution is not assigned to the person editing it.
+
 ## GitHub informational review checks
 
 An accepted review starts as `queued` until the daemon reports active preparation. When the daemon

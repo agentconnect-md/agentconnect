@@ -231,6 +231,7 @@ export function createAgentMsgRouter(deps: AgentMsgRouterDeps) {
         // Origin lineage (session-concept §5.3) is the caller's own, forwarded opaquely —
         // the relay neither mints nor validates it; it only lets the woken child reply back.
         ...(msg.originSessionId !== undefined ? { originSessionId: msg.originSessionId } : {}),
+        ...(msg.initiatedBy !== undefined ? { initiatedBy: msg.initiatedBy } : {}),
         ...(msg.originCodeHostReplyTarget !== undefined
           ? { originCodeHostReplyTarget: msg.originCodeHostReplyTarget }
           : {}),

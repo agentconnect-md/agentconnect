@@ -1525,7 +1525,7 @@ describe('LocalStore session/transcript read-back (session/list, session/history
     await s.close()
   })
 
-  it('triggeredBy is first-wins across upserts and survives state-only rewrites', async () => {
+  it('trigger and initiator are first-wins across upserts and survive state-only rewrites', async () => {
     const s = await store()
     const key = sessionKey('slack', 'C1', 'T1', 'bot-a')
     await s.upsertSession({
@@ -1538,12 +1538,19 @@ describe('LocalStore session/transcript read-back (session/list, session/history
       state: 'idle',
       lastDeliveredTs: null,
       updatedAt: 1,
-      triggeredBy: 'U-FIRST'
+      triggeredBy: 'U-FIRST',
+      initiatedBy: 'Alex (slack)'
     })
-    // A later turn's upsert (different sender, or a read-back row without the
-    // field) must not steal / clear the original credit.
-    await s.upsertSession({ ...(await s.getSession(key))!, state: 'prompting', updatedAt: 2, triggeredBy: 'U-SECOND' })
+    // A later turn cannot replace the opener or its public attribution.
+    await s.upsertSession({
+      ...(await s.getSession(key))!,
+      state: 'prompting',
+      updatedAt: 2,
+      triggeredBy: 'U-SECOND',
+      initiatedBy: 'Dana (slack)'
+    })
     expect((await s.getSession(key))?.triggeredBy).toBe('U-FIRST')
+    expect((await s.getSession(key))?.initiatedBy).toBe('Alex (slack)')
     expect((await s.listSessions('bot-a'))[0]?.triggeredBy).toBe('U-FIRST')
     await s.close()
   })
