@@ -3,10 +3,10 @@
 > Status: **Proposed**. Scope: **Azure DevOps Services** (`dev.azure.com`),
 > Git repositories in Azure Repos. The first version covers workspaces and
 > additional repositories only; pull-request hooks, reviews, pull-request
-> tools, and code-channel pull-request views are the second step (§11). Platform facts were read from
-> Microsoft's documentation on 2026-11-06; each item marked **probe** in §12
-> must be confirmed against a live organization before the step that relies
-> on it.
+> tools, and code-channel pull-request views are the second step (§11).
+> Platform facts were read from Microsoft's documentation on 2026-11-06; each
+> item marked **probe** in §12 must be confirmed against a live organization
+> before the step that relies on it.
 
 Azure DevOps is the fourth code host, after GitHub, GitLab, and Gitea. It is
 one more implementer of the code-host seam
