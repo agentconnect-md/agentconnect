@@ -20,6 +20,7 @@
  *     silently drop the reset and reopen the leak — and a child that inherits
  *     COUNT without the indexed pairs makes every git invocation fail with
  *     "unable to parse command-line config", measured per process in a pod.
+ *     A proxied session adds its placeholder helper there too, since a checkout's own helper outranks the global file.
  *
  * All config values single-quote the shim path (git runs `!`-helpers via
  * `sh -c` — a space in $HOME must not word-split), reset the helper list first
@@ -236,6 +237,26 @@ function gitConfigEnv(pairs: ReadonlyArray<readonly [string, string]>): Record<s
     env[`GIT_CONFIG_VALUE_${index}`] = value
   })
   return env
+}
+
+/** The command-scope config pairs an env carries, in order; an index with no key is skipped. */
+function gitConfigPairsOf(env: Record<string, string | undefined>): Array<[string, string]> {
+  const count = Number(env.GIT_CONFIG_COUNT)
+  const pairs: Array<[string, string]> = []
+  for (let index = 0; Number.isSafeInteger(count) && index < count; index += 1) {
+    const key = env[`GIT_CONFIG_KEY_${index}`]
+    if (key !== undefined) pairs.push([key, env[`GIT_CONFIG_VALUE_${index}`] ?? ''])
+  }
+  return pairs
+}
+
+/** `base`'s command-scope pairs followed by `overlay`'s as one channel, so the overlay's are read last; empty when neither carries any. */
+export function mergeGitConfigEnv(
+  base: Record<string, string | undefined>,
+  overlay: Record<string, string | undefined>
+): Record<string, string> {
+  const pairs = [...gitConfigPairsOf(base), ...gitConfigPairsOf(overlay)]
+  return pairs.length > 0 ? gitConfigEnv(pairs) : {}
 }
 
 /** Workspace clone/pull policy. Keep this separate from `gitEnvBase`: skill
@@ -641,8 +662,19 @@ export function liveSecretsChannelEnv(
 /** The variable a proxied environment's placeholder rides in, which the helper below hands git. */
 export const CODE_HOST_CREDENTIAL_ENV = 'AC_CODEHOST_CREDENTIAL'
 
-// Quoted whole, since `;` would start a gitconfig comment; it answers only `get`, with the placeholder the proxy exchanges.
-const PLACEHOLDER_HELPER = `"!f() { test $1 = get || return 0; echo username=x-access-token; echo password=$${CODE_HOST_CREDENTIAL_ENV}; }; f"`
+// It answers only `get`, with the placeholder the proxy exchanges.
+const PLACEHOLDER_HELPER_COMMAND = `!f() { test $1 = get || return 0; echo username=x-access-token; echo password=$${CODE_HOST_CREDENTIAL_ENV}; }; f`
+// Quoted whole in a gitconfig file, since `;` would start a comment there.
+const PLACEHOLDER_HELPER = `"${PLACEHOLDER_HELPER_COMMAND}"`
+
+/** The placeholder helper at command scope, which outranks the real helper a checkout's `.git/config` pins for the same base. */
+function proxiedHelperPairs(bases: readonly string[]): Array<[string, string]> {
+  return bases.flatMap((base): Array<[string, string]> => [
+    [`credential.${base}.helper`, ''],
+    [`credential.${base}.helper`, PLACEHOLDER_HELPER_COMMAND],
+    [`credential.${base}.useHttpPath`, 'true']
+  ])
+}
 
 function quotedHelper(agentId: string, target: GitCredentialTarget = targetOf(agentId)): string {
   const { helper } = target
@@ -762,6 +794,7 @@ export function sessionGitConfig(
     env: {
       ...(scope ? { ...gitCredentialEnv(agentId, target, scope), GIT_TERMINAL_PROMPT: '0' } : {}),
       GIT_CONFIG_GLOBAL: file,
+      ...(proxied && bases.length > 0 ? gitConfigEnv(proxiedHelperPairs(bases)) : {}),
       ...(commitIdentity ? gitCommitIdentityEnv(commitIdentity) : {})
     }
   }

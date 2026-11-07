@@ -377,6 +377,7 @@ import {
   daemonGitCredentialTarget,
   initGitInjection,
   managedCredentialScope,
+  mergeGitConfigEnv,
   probeGitVersion,
   sandboxGitCredentialTarget,
   sessionGitConfig,
@@ -8816,6 +8817,9 @@ export class Daemon {
       // authorized repositories needs the capability for its git and gh exactly like a clone does.
       ...(sessionGitInjection ?? {})
     }
+    // A proxied session's command-scope helper is read after any pairs the runtime or agent env already carries.
+    if (sessionGitInjection?.GIT_CONFIG_COUNT !== undefined)
+      Object.assign(env, mergeGitConfigEnv({ ...runtimeEnv, ...baseEnv }, sessionGitInjection))
     // Config-file secrets are materialized by assembleRuntimeLaunch below; the pre-strip merged env
     // is snapshotted so the idle sweep can delete the files and rematerializeConfigFiles() can
     // re-write them before a later turn.
@@ -8893,7 +8897,8 @@ export class Daemon {
         ? {
             env: {
               ...this.credentialProxyEnv(this.credentialProxy, agent.id, 'shim', env, runtimeEnv, gitlabCredentials),
-              ...(guestGit.env.GIT_CONFIG_GLOBAL ? { GIT_CONFIG_GLOBAL: guestGit.env.GIT_CONFIG_GLOBAL } : {})
+              ...(guestGit.env.GIT_CONFIG_GLOBAL ? { GIT_CONFIG_GLOBAL: guestGit.env.GIT_CONFIG_GLOBAL } : {}),
+              ...mergeGitConfigEnv({}, guestGit.env)
             },
             ...('path' in guestGit
               ? {
