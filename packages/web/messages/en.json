@@ -345,7 +345,6 @@
       "person": "Someone",
       "working": "{agent} is working…",
       "replyPlaceholder": "Reply in this task — only this task sees it",
-      "readOnly": "You can read this task, but not reply to it here.",
       "send": "Send reply",
       "replyHint": "Only this task sees it",
       "close": "Close",

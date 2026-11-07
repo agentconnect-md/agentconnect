@@ -299,7 +299,8 @@ export function ThreadPanel({
       {...(record ? { 'data-thread-panel': record.rootId } : {})}
       className="flex min-h-0 flex-1 flex-col"
     >
-      <div className="flex h-[43px] min-w-0 flex-none items-center gap-[6px] border-b border-(--border-subtle) pr-2 pl-[10px]">
+      {/* Takes the tab strip's place, so on desktop it is the session header's 52px and its divider continues that line. */}
+      <div className="flex h-[43px] min-w-0 flex-none items-center gap-[6px] border-b border-(--border-subtle) pr-2 pl-[10px] desktop:h-[52px]">
         <button
           type="button"
           data-task-thread-back=""
@@ -498,7 +499,6 @@ export function ThreadPanel({
             : mirrored
               ? { hint: t('threadHintMirrored', { platform: platName(platform) }) }
               : {})}
-          readOnly={t('readOnly')}
           // A thread send carries text alone, so only a reply onto the task's own session offers attachments.
           {...(MOCK_MODE || ownThread || (record && fromRecord) ? {} : { attach: { agentId, transfer: fileTransfer } })}
           sendLabel={t('send')}
@@ -549,7 +549,6 @@ function ThreadComposer({
   canReply,
   checking,
   placeholder,
-  readOnly,
   sendLabel,
   onSend,
   onStop,
@@ -569,7 +568,6 @@ function ThreadComposer({
   canReply: boolean
   checking: boolean
   placeholder: string
-  readOnly: string
   sendLabel: string
   onSend: () => void
   /** Stops the task's current turn; offered only while it runs. */
@@ -609,13 +607,8 @@ function ThreadComposer({
     const timer = window.setTimeout(() => boxRef.current?.focus(), 0)
     return () => window.clearTimeout(timer)
   }, [autoFocus, canReply])
-  if (!canReply && !checking)
-    return (
-      <div className="flex-none border-t border-(--border-subtle) px-4 py-3 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-        {dock}
-        {readOnly}
-      </div>
-    )
+  // No reply box where this reader may not continue the task; its background commands still show.
+  if (!canReply && !checking) return dock ? <div className="flex-none px-3 pb-3 empty:hidden">{dock}</div> : null
   // An image goes inline, as the conversation's composer sends it; any other file is uploaded and referenced.
   const pick = async (file: File | undefined) => {
     if (inputRef.current) inputRef.current.value = ''

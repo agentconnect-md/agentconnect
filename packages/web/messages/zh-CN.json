@@ -345,7 +345,6 @@
       "person": "某人",
       "working": "{agent} 正在处理…",
       "replyPlaceholder": "在这个任务里回复 — 只有这个任务能看到",
-      "readOnly": "你可以查看这个任务，但不能在这里回复。",
       "send": "发送回复",
       "replyHint": "只有这个任务能看到",
       "close": "关闭",
