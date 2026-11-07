@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
 import {
+  AZURE_DEVOPS_HOOKS_V1_FEATURE,
   CODEHOST_NOTE_PROJECTION_V1_FEATURE,
   CODEHOST_REVIEW_V1_FEATURE,
   GITEA_V1_FEATURE,
@@ -2851,6 +2852,81 @@ describe('Daemon rd/msg hook fires', () => {
       expect(host.newSession).not.toHaveBeenCalled()
       expect(host.prompt).not.toHaveBeenCalled()
       await daemon.stop()
+    },
+    15_000
+  )
+
+  // azure-devops-integration.md §11.6: the barrier records the head the read fenced, and the turn owns a formal review.
+  it.each([
+    { name: 'advertises Azure DevOps hooks', features: [AZURE_DEVOPS_HOOKS_V1_FEATURE], calls: 1 },
+    { name: 'advertises no code-host features', features: [] as string[], calls: 0 }
+  ])(
+    'sends the Azure DevOps hook/start barrier with the read head only when the control plane $name',
+    async ({ features, calls }) => {
+      const { factory } = streamingHost()
+      const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
+      await daemon.start()
+      const startHook = vi.fn(async (payload: HookStart, _orgId?: string) => ({
+        accepted: payload.azureDevOps !== undefined
+      }))
+      const openTurn = vi.spyOn((daemon as any).azureDevOpsReviews, 'openTurn')
+      const cp = { ...fakeCpClient(), startHook, supportsServerFeature: (name: string) => features.includes(name) }
+      ;(daemon as never as { cpClient: unknown }).cpClient = cp
+      vi.spyOn((daemon as any).gitCreds, 'getAzureDevOpsPostLease').mockImplementation(async () => ({
+        token: 'hook-token',
+        username: '00000000-0000-4000-8000-0000000000b1'
+      }))
+      vi.stubGlobal('fetch', async (url: string) =>
+        String(url).includes('/iterations')
+          ? Response.json({ value: [{ id: 2, sourceRefCommit: { commitId: 'b'.repeat(40) } }] })
+          : Response.json({ pullRequestId: 7, status: 'active', title: 'Tighten retry' })
+      )
+      ;(daemon as any).githubReviews.makeCodeHostReply = vi.fn(() => ({
+        poster: { publish: vi.fn(async () => ({ provider: 'azure-devops', kind: 'thread', externalId: '9001' })) },
+        collector: new GithubReplyCollector()
+      }))
+      const dispatchDaemonId = (daemon as any).cfg.daemonId as string
+      try {
+        await (daemon as any).handleRelayMsg(
+          fire({
+            sessionKey: 'azure-devops:42:pull:7',
+            event: 'merge_request:opened',
+            configRevision: '1',
+            dispatchRevision: '1',
+            dispatchDaemonId,
+            reviewPolicy: 'full',
+            reportingMode: 'status',
+            gateMode: 'informational',
+            azureDevOps: {
+              repoId: '42',
+              repoPath: 'example-org/Example Project/Example Repo',
+              organization: 'example-org',
+              projectId: '00000000-0000-4000-8000-0000000000a2',
+              repositoryId: '00000000-0000-4000-8000-0000000000a1',
+              deliveryKind: 'opened',
+              target: { kind: 'pull', pullRequestId: 7, headSha: 'a'.repeat(40) }
+            },
+            context: { source: 'azure-devops', event: 'merge_request', action: 'opened', number: 7, truncated: false }
+          }),
+          () => {}
+        )
+        await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
+        expect(startHook).toHaveBeenCalledTimes(calls)
+        if (calls === 1) {
+          expect(startHook.mock.calls[0]![0]).toMatchObject({
+            hookId: HOOK_ID,
+            reviewPolicy: 'full',
+            azureDevOps: { repoId: '42', target: { kind: 'pull', pullRequestId: 7, headSha: 'b'.repeat(40) } }
+          })
+          expect(startHook.mock.calls[0]![0].github).toBeUndefined()
+        }
+        // The turn holds a formal review on the head the read fenced, past the barrier or without one.
+        expect(openTurn).toHaveBeenCalledOnce()
+        expect(openTurn.mock.results[0]!.value).toMatchObject({ subjectNumber: 7, expectedHeadSha: 'b'.repeat(40) })
+      } finally {
+        vi.unstubAllGlobals()
+        await daemon.stop()
+      }
     },
     15_000
   )

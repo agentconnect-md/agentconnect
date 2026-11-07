@@ -41,6 +41,14 @@ export const CodeHostReviewLeaseGrant = z.object({
 })
 export type CodeHostReviewLeaseGrant = z.infer<typeof CodeHostReviewLeaseGrant>
 
+/** An Azure DevOps identity (a GUID) as the lease's numeric publisher key: its first 60 bits, so both ends derive the same value (azure-devops-integration.md §11.6). */
+export function azureDevOpsReviewPublisherId(identityId: string): string {
+  const hex = identityId.toLowerCase().replace(/-/g, '')
+  if (!/^[0-9a-f]{32}$/.test(hex)) throw new Error('an Azure DevOps identity id is a GUID')
+  const value = BigInt(`0x${hex.slice(0, 15)}`)
+  return (value === 0n ? 1n : value).toString()
+}
+
 /**
  * Why the Control Plane declined to authorize an attempt. These are ordinary
  * control outcomes the adapter must classify precisely, not transport failures,

@@ -165,6 +165,35 @@ describe('hook/start provider one-of (gitlab-com-integration.md §17.2)', () => 
     expect(conn.replyTo).toHaveBeenCalledWith(frame, 'hook/start/ok', { accepted: true })
   })
 
+  it('routes an azure-devops start through the code-host broker and the pull-request status projection only', async () => {
+    const conn = fakeConn()
+    const deps = gitlabDeps({
+      hook: { get: vi.fn(async () => ({ id: HOOK_ID, kind: 'azure-devops', projectionEpoch: 3n })) },
+      giteaStatusProjection: { afterStart: vi.fn(async () => {}) },
+      azureDevOpsStatusProjection: { afterStart: vi.fn(async () => {}) }
+    })
+    const azureDevOps = {
+      repoId: '41',
+      repoPath: 'example-org/Example Project/example-repo',
+      organization: 'example-org',
+      projectId: '00000000-0000-4000-8000-0000000000a1',
+      repositoryId: '00000000-0000-4000-8000-0000000000a2',
+      deliveryKind: 'revision' as const,
+      target: { kind: 'pull' as const, pullRequestId: 12, headSha: 'a'.repeat(40) }
+    }
+    const frame = startFrame({ azureDevOps })
+
+    await handleHookStart(frame, conn, deps)
+
+    expect(deps.codeHostReviewBroker!.start).toHaveBeenCalledWith(frame.payload, DAEMON_ID, 'org-a')
+    expect(deps.azureDevOpsStatusProjection!.afterStart).toHaveBeenCalledWith(
+      expect.objectContaining({ state: 'running', azureDevOps, sessionId: 'acp-gitlab-1' })
+    )
+    expect(deps.giteaStatusProjection!.afterStart).not.toHaveBeenCalled()
+    expect(deps.codeHostNoteProjection!.afterStart).not.toHaveBeenCalled()
+    expect(conn.replyTo).toHaveBeenCalledWith(frame, 'hook/start/ok', { accepted: true })
+  })
+
   it('refuses a gitea start whose hook is a gitlab hook, naming the member provider', async () => {
     const conn = fakeConn()
     const deps = gitlabDeps()

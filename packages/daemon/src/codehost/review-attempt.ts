@@ -167,8 +167,15 @@ export interface PreLeaseFacts {
 
 export type MutationOutcome =
   | { kind: 'sent'; status: number; parsed: unknown; recordId: string }
-  | { kind: 'rejected'; status: number; parsed: unknown; recordId: string }
+  | { kind: 'rejected'; status: number; parsed: unknown; recordId: string; absent?: true }
   | { kind: 'ambiguous'; recordId: string }
+
+/** What a provider's read-back proved about a write whose answer never arrived. */
+export type AmbiguousSendResolution =
+  { present: true; status: number; parsed: unknown; externalId?: string } | { present: false; code: string }
+
+/** The status a write proven absent after an unknown answer is settled with: the answer that never came. */
+export const ABSENT_AFTER_AMBIGUITY_STATUS = 504
 
 export function record(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {}
@@ -273,6 +280,15 @@ export abstract class CodeHostReviewAttemptAdapter<
     cp: CodeHostReviewControlPlane,
     attempt: Attempt
   ): Promise<CodeHostReviewOutcome | undefined>
+
+  /** A provider that can read an unknown write back resolves it here before it is settled ambiguous; undefined keeps it ambiguous. */
+  protected async resolveAmbiguousSend(
+    _attempt: Attempt,
+    _kind: CodeHostReviewOpKind,
+    _draftOrdinal: number | undefined
+  ): Promise<AmbiguousSendResolution | undefined> {
+    return undefined
+  }
 
   /** A typed refusal's second chance: a returned retry re-asks once, naming the locked object it identified. Default: none. */
   protected async onRefused(
@@ -583,6 +599,24 @@ export abstract class CodeHostReviewAttemptAdapter<
         result = await this.send(method, target, undefined, body, attempt.token, attempt.turn)
       } catch (err) {
         if (err instanceof AmbiguousSend) {
+          const resolved = await this.resolveAmbiguousSend(attempt, kind, draftOrdinal).catch(() => undefined)
+          if (resolved?.present) {
+            await this.settleAndClear(cp, attempt, issued.recordId, {
+              kind: 'deterministic',
+              status: resolved.status,
+              ...(resolved.externalId ? { externalId: resolved.externalId } : {})
+            })
+            return { kind: 'sent', status: resolved.status, parsed: resolved.parsed, recordId: issued.recordId }
+          }
+          if (resolved) {
+            const status = ABSENT_AFTER_AMBIGUITY_STATUS
+            await this.settleAndClear(cp, attempt, issued.recordId, {
+              kind: 'deterministic',
+              status,
+              code: resolved.code
+            })
+            return { kind: 'rejected', status, parsed: undefined, recordId: issued.recordId, absent: true }
+          }
           await this.settleAndClear(cp, attempt, issued.recordId, { kind: 'ambiguous', code: err.code }, true)
           return { kind: 'ambiguous', recordId: issued.recordId }
         }

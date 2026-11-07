@@ -3,6 +3,7 @@ import {
   CODEHOST_REVIEW_V1_FEATURE,
   CodeHostReviewAuthorize,
   CodeHostReviewAuthorized,
+  CodeHostReviewLeaseGrant,
   CodeHostReviewLeaseRenew,
   CodeHostReviewLeaseRenewed,
   CodeHostReviewOpAccepted,
@@ -12,6 +13,7 @@ import {
   CodeHostReviewResultReport,
   CodeHostReviewState,
   buildEnvelope,
+  azureDevOpsReviewPublisherId,
   codeHostReviewPublicEffect,
   decodeEnvelope,
   encode,
@@ -322,5 +324,15 @@ describe('codehost review frames (gitlab-com-integration.md §15, §17.2)', () =
     expect(shape).not.toContain('body')
     expect(shape).not.toContain('comments')
     expect(shape).not.toContain('summary')
+  })
+
+  it('derives one numeric publisher key from an Azure DevOps identity GUID (azure-devops-integration.md §11.6)', () => {
+    const id = azureDevOpsReviewPublisherId('00000000-0000-4000-8000-0000000000A1')
+    expect(id).toBe(BigInt('0x000000000000400').toString())
+    expect(azureDevOpsReviewPublisherId('00000000-0000-4000-8000-0000000000a1')).toBe(id)
+    expect(CodeHostReviewLeaseGrant.safeParse({ ...grant, serviceAccountUserId: id }).success).toBe(true)
+    expect(BigInt(azureDevOpsReviewPublisherId('ffffffff-ffff-4fff-8fff-ffffffffffff'))).toBeLessThan(2n ** 63n)
+    expect(azureDevOpsReviewPublisherId('00000000-0000-0000-0000-0000000000a1')).toBe('1')
+    expect(() => azureDevOpsReviewPublisherId('not-a-guid')).toThrow()
   })
 })

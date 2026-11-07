@@ -110,6 +110,8 @@ export const handleHookReport: Handler = async (frame, conn, deps) => {
       if (host.provider === 'gitlab') await deps.codeHostNoteProjection?.afterReport({ ...edge, gitlab: host.metadata })
       else if (host.provider === 'gitea')
         await deps.giteaStatusProjection?.afterReport({ ...edge, gitea: host.metadata })
+      else if (host.provider === 'azure-devops')
+        await deps.azureDevOpsStatusProjection?.afterReport({ ...edge, azureDevOps: host.metadata })
     }
     conn.replyTo(frame, 'ack', { ok: true })
   } catch (err) {

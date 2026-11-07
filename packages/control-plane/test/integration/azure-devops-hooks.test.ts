@@ -213,11 +213,15 @@ describe('the trigger write (§11.1, §11.9)', () => {
     expect(await h.keys()).toBeNull()
   })
 
-  it('refuses reviews and run reporting until their writers exist, and an issues family outright', async () => {
+  it('accepts every review policy and a status report, refuses a run note, and an issues family outright', async () => {
     const h = await harness()
     h.fake.serviceHookGrants.add(PROJECT_ID)
-    expect((await h.createHook({ reviewPolicy: 'comment' })).statusCode).toBe(409)
-    expect((await h.createHook({ reportingMode: 'status' })).statusCode).toBe(409)
+    const check = await h.createHook({ reportingMode: 'check' })
+    expect(check.statusCode).toBe(409)
+    expect(check.json().message).toContain('report a status')
+    const created = await h.createHook({ reviewPolicy: 'full', reportingMode: 'status' })
+    expect(created.statusCode).toBe(200)
+    expect(created.json()).toMatchObject({ reviewPolicy: 'full', reportingMode: 'status' })
     expect((await h.createHook({ family: 'issues', events: ['issues:opened'], commentFamilies: [] })).statusCode).toBe(
       400
     )

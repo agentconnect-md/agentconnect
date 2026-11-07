@@ -39,6 +39,7 @@ import {
 import { GITEA_COMMENT_FAMILIES, GITEA_PULL_REVIEW_GENERATION_EVENTS } from '../gitea/events.js'
 import type { GiteaReviewCorrelation } from '../gitea/review-correlation.js'
 import type { AzureDevOpsLineRange, AzureDevOpsTurnRead } from '../azure-devops/pull-read.js'
+import { AZURE_DEVOPS_PULL_REVIEW_GENERATION_EVENTS } from '../azure-devops/events.js'
 import { githubSourceThreadUrl } from './github-source-link.js'
 import type { NormalizedMessage } from './normalized.js'
 
@@ -779,6 +780,22 @@ function azureDevOpsSessionTitle(context: HookContext, azure: AzureDevOpsHookMet
   return clampSessionTitle(detail ? `${prefix}: ${detail}` : prefix)
 }
 
+/** True only when this delivery opens a formal review generation for the current pull-request head (azure-devops-integration.md §11.6). */
+export function azureDevOpsOpensReviewGeneration(
+  event: string | undefined,
+  azure: AzureDevOpsHookMetadata | undefined,
+  reviewPolicy: RdMsgHook['reviewPolicy']
+): boolean {
+  const target = azure?.target
+  return Boolean(
+    target?.kind === 'pull' &&
+    target.headSha &&
+    reviewPolicy !== undefined &&
+    reviewPolicy !== 'off' &&
+    AZURE_DEVOPS_PULL_REVIEW_GENERATION_EVENTS.has(event ?? '')
+  )
+}
+
 /** The Azure DevOps standing block (azure-devops-integration.md §11.5): the reply the daemon owns, and the tools before the CLI. */
 function azureDevOpsStandingContext(): string {
   return [
@@ -793,13 +810,36 @@ function azureDevOpsStandingContext(): string {
       '`azureDevOpsPullRequest` when you have them, and `readAzureDevOpsPullRequest` reads a pull request and its ' +
       'threads; the Azure CLI is for READ-only inspection those tools do not cover.',
     '- The daemon reads the pull request when the turn starts and lists its status, branches and head commit; for a ' +
-      'comment it adds the thread’s file and lines and its earlier comments, or says the read failed.'
+      'comment it adds the thread’s file and lines and its earlier comments, or says the read failed.',
+    '- A delivery that opens a review generation says so, and names the verdict events. Then use only the structured ' +
+      '`submitCodeReview` tool for COMMENT / REQUEST_CHANGES / APPROVE and inline diff comments: each inline comment ' +
+      'becomes its own thread, the `body` a summary thread, and APPROVE or REQUEST_CHANGES the vote (approved, or ' +
+      'waiting for the author); COMMENT casts no vote. The vote belongs to the connection identity every agent shares, ' +
+      'so a later verdict from another agent replaces it. The `body` must be a complete, self-contained, non-empty ' +
+      'public review summary (including for APPROVE), because a submitted, ambiguous, or otherwise unresolved formal ' +
+      'attempt suppresses the ordinary comment, which is posted only when no formal review was attempted or the ' +
+      'attempt definitively returns `not_submitted`. A vote from an earlier revision does not complete a later one; do ' +
+      'not merely describe the verdict in your final reply.',
+    REVIEW_REFUSAL_RULE
   ].join('\n')
 }
 
 /** The per-turn line for a pull request; a push has no thread to answer. */
-function azureDevOpsReplyHint(azure: AzureDevOpsHookMetadata): string {
+function azureDevOpsReplyHint(
+  c: HookContext,
+  azure: AzureDevOpsHookMetadata,
+  reviewPolicy: RdMsgHook['reviewPolicy']
+): string {
   if (azure.target.kind !== 'pull') return ''
+  const event = c.action ? `${c.event}:${c.action}` : (c.event ?? '')
+  if (azureDevOpsOpensReviewGeneration(event, azure, reviewPolicy)) {
+    const { passing, failing } = reviewVerdictEvents(reviewPolicy)
+    return (
+      '\n\nThis delivery opens a review generation for the current pull-request revision: record the verdict through ' +
+      `\`submitCodeReview\` — use ${passing} + pass when it passes, or ${failing} + fail when it has blocking findings. ` +
+      DAEMON_OWNS_REPLY
+    )
+  }
   const how = azure.threadId
     ? 'into that comment thread automatically as one reply'
     : 'to that pull request automatically as one comment in a new thread'
@@ -868,6 +908,7 @@ function renderAzureDevOpsRead(
 function buildAzureDevOpsHookText(
   c: HookContext,
   azure: AzureDevOpsHookMetadata,
+  reviewPolicy: RdMsgHook['reviewPolicy'],
   supplement?: HookPromptSupplement
 ): string {
   const event = c.action ? `${c.event}:${c.action}` : (c.event ?? 'event')
@@ -882,9 +923,10 @@ function buildAzureDevOpsHookText(
     ...(target.kind === 'pull' && target.isDraft !== undefined ? [`Draft: ${target.isDraft}`] : []),
     ...(target.kind === 'push' ? [`Ref: ${target.ref}`] : []),
     ...rendered.head,
-    ...(url ? [url] : [])
+    ...(url ? [url] : []),
+    ...(azureDevOpsOpensReviewGeneration(event, azure, reviewPolicy) ? [REVIEW_PUBLICATION_REQUESTED] : [])
   ].join('\n')
-  const tail = azureDevOpsReplyHint(azure)
+  const tail = azureDevOpsReplyHint(c, azure, reviewPolicy)
   if (!c.bodyExcerpt && rendered.body.length === 0) return head + tail
   return (
     [
@@ -1210,7 +1252,8 @@ const HOOK_NORMALIZERS: { readonly [P in CodeHostProvider]: HookNormalizer<P> } 
           ? azure.target.ref
           : 'Azure DevOps',
     eventLine: (_c, azure, subject) => (azure?.target.kind === 'push' ? `Pushed ${subject}` : undefined),
-    text: (c, azure, _reviewPolicy, supplement) => (azure ? buildAzureDevOpsHookText(c, azure, supplement) : undefined),
+    text: (c, azure, reviewPolicy, supplement) =>
+      azure ? buildAzureDevOpsHookText(c, azure, reviewPolicy, supplement) : undefined,
     anchorLine: (c, azure) =>
       azure
         ? anchorEventLine(c.action ? `${c.event}:${c.action}` : (c.event ?? 'event'), azureDevOpsSubjectRef(azure), c)

@@ -691,10 +691,10 @@ export function hookRoutes(deps: HttpDeps) {
       }
       return { ok: true, repoPath: binding.repoPath }
     }
-    // Reviews and the run status are written by later steps; until they exist the axes stay off rather than promising effects.
+    // §11.6/§11.7: every review policy votes and threads; the run is reported as a pull-request status, never a run note.
     const validateAzureDevOpsEffects = (cfg: CodeHostEffectConfig): CodeHostEffectDenial | null =>
-      cfg.reviewPolicy !== 'off' || cfg.reportingMode !== 'off'
-        ? { status: 409, message: 'reviews and run reporting are not available for Azure DevOps repositories yet' }
+      cfg.reportingMode === 'check'
+        ? { status: 409, message: 'run notes are not available for Azure DevOps repositories — report a status' }
         : null
     // §11.1: an enabled trigger needs the application's View and Edit subscriptions on the repository's project.
     const azureDevOpsTriggersAllowed = async (orgId: OrgId, repoId: bigint, enabled: boolean) => {
