@@ -401,6 +401,16 @@ import {
 import { loadPlaceholderKey } from './credential-proxy/placeholder.js'
 import { endpointSlot, sameSlotOrigin, type ProviderSlot } from './credential-proxy/provider-route.js'
 import { sealHostProviderKeys } from './credential-proxy/host-keys.js'
+import {
+  carries,
+  launchOverlay,
+  pairEndpoint,
+  POD_KEY_VARIABLES,
+  PROVIDER_DEFAULT_ENDPOINTS,
+  runtimeKeyEndpoint,
+  type KeyEndpoint,
+  type PodModelConfigure
+} from './credential-proxy/pod-keys.js'
 import type { MicrosandboxCredentials } from './microsandbox/secrets.js'
 import { instanceHostnames, proxyInstance } from './credential-proxy/instance-route.js'
 import { configureWorkspaceGitOrigins, permitsNoHttpsOrigin } from './workspace/git-origin-policy.js'
@@ -1709,9 +1719,9 @@ export class Daemon {
   private gitCredServer?: GitCredServer
   /** The credential proxy, once it started (github-app-git-credentials.md, Phase 2); without it no session holds a code-host credential. */
   private credentialProxy?: { proxy: CredentialProxy; ca: ProxyCa }
-  /** Each agent's provider key slots the credential proxy serves, by slot id; registered as a host or srt session launches. */
+  /** Each agent's provider key slots the credential proxy serves, by slot id; registered as a host, srt, VM or pool pod session launches. */
   private readonly providerSlots = new Map<string, Map<string, ProviderSlot>>()
-  /** How each agent's host key slots read their key again on this machine, by slot id. */
+  /** How each agent's host and install key slots read their key again on this machine, by slot id. */
   private readonly hostKeyReaders = new Map<string, Map<string, () => Promise<string>>>()
   /** Agents and key sources whose keys stay in env, a cleartext endpoint's or a host's the proxy cannot serve, logged once each. */
   private readonly cleartextProviderLogged = new Set<string>()
@@ -4066,8 +4076,12 @@ export class Daemon {
           orgForAgent: (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
           servesAgent: (agentId) => this.servesAgent(agentId),
           // Which daemon sockets this agent's pod needs (see tunnelsForAgent); an unknown id, the member's own probe, gets none.
-          // Plus `codehost` for an agent the credential proxy intercepts, which a pod image's shim from before it refuses.
-          tunnelsFor: (agentId) => [...this.tunnelsForAgent(agentId), ...this.codehostTunnelFor(agentId)],
+          // Plus `codehost` and `provider` for an agent the credential proxy serves them, which a pod image's shim from before each refuses.
+          tunnelsFor: (agentId) => [
+            ...this.tunnelsForAgent(agentId),
+            ...this.codehostTunnelFor(agentId),
+            ...this.providerTunnelFor(agentId)
+          ],
           tunnelSocketPath: (tunnel, agentId) => this.tunnelSocketPath(root, tunnel, agentId),
           tunnelGreeting: (subject, tunnel) => this.gitcredTunnelGreeting(subject, tunnel),
           tunnelListenOptions: (agentId, tunnel) => this.tunnelListenOptions(agentId, tunnel),
@@ -7053,6 +7067,96 @@ export class Daemon {
     return sealed.credentials
   }
 
+  /** A pool pod launch's static install keys behind slots: registers each and returns the variables that carry placeholders instead; undefined keeps every key as it is. */
+  private podStaticKeyOverlay(
+    agentId: string,
+    runtimeId: string,
+    target: ModelProviderTarget | undefined,
+    staged: Record<string, string>,
+    real: Record<string, string>,
+    configure: PodModelConfigure
+  ): Record<string, string> | undefined {
+    const proxy = this.credentialProxy?.proxy
+    if (!proxy) return undefined
+    type Pending = { slot: ProviderSlot; value: string; placeholder: string; read: () => Promise<string> }
+    const runtimeValues = this.runtimeEnvironment[runtimeId] ?? {}
+    const kept = new Map<string, string>()
+    const excluded = new Set<string>()
+    let pending: Map<string, Pending>
+    let proxied: Record<string, string>
+    let overlay: Record<string, string>
+    for (;;) {
+      pending = new Map()
+      proxied = { ...staged }
+      const seal = (id: string, endpoint: KeyEndpoint, value: string, read: () => Promise<string>) => {
+        if (excluded.has(id)) return undefined
+        const url = URL.canParse(endpoint.endpoint) ? new URL(endpoint.endpoint) : undefined
+        const slot =
+          url && endpointSlot(id, endpoint.provider, url, PROVIDER_DEFAULT_ENDPOINTS[endpoint.provider] ?? null)
+        if (!slot) {
+          kept.set(id, 'its endpoint is not HTTPS')
+          return undefined
+        }
+        const placeholder = proxy.sealProviderSlot(agentId, slot)
+        pending.set(id, { slot, value, placeholder, read })
+        return placeholder
+      }
+      for (const [name, value] of Object.entries(runtimeValues)) {
+        // Only a key the launch still holds as the install mapped it; a static pair may have replaced it.
+        if (!POD_KEY_VARIABLES.includes(name) || staged[name] !== value || real[name] !== value) continue
+        const id = `install:${runtimeId}:${name}`
+        const endpoint = runtimeKeyEndpoint(target, name, real)
+        if (!endpoint) {
+          kept.set(id, 'its runtime is not known to send it to one endpoint')
+          continue
+        }
+        const placeholder = seal(id, endpoint, value, async () => {
+          const current = this.runtimeEnvironment[runtimeId]?.[name]
+          if (!current) throw new Error(`the install no longer maps ${name} for ${runtimeId}`)
+          return current
+        })
+        if (placeholder) proxied[name] = placeholder
+      }
+      configure(proxied, (providerTarget) => {
+        const configured = this.modelSessions.staticCredential(providerTarget)
+        const endpoint = configured?.key ? pairEndpoint(providerTarget.provider, configured.baseUrl) : undefined
+        if (!configured || !endpoint) return configured
+        const placeholder = seal(`install:model:${providerTarget.provider}`, endpoint, configured.key, async () => {
+          const current = this.modelSessions.staticCredential(providerTarget)?.key
+          if (!current) throw new Error(`the install no longer configures a ${providerTarget.provider} key`)
+          return current
+        })
+        return placeholder ? { ...configured, key: placeholder } : configured
+      })
+      overlay = launchOverlay(real, proxied)
+      // A key some other variable still carries (a config document, a second mapping) stays as it is, so no launch holds it beside its placeholder.
+      const sent = { ...real, ...overlay }
+      const leaked = [...pending].filter(([, entry]) => carries(sent, entry.value)).map(([id]) => id)
+      if (leaked.length === 0) break
+      for (const id of leaked) {
+        excluded.add(id)
+        kept.set(id, 'another launch variable carries it too')
+      }
+    }
+    for (const [id, reason] of kept) {
+      const logged = `${agentId}\n${id}`
+      if (this.cleartextProviderLogged.has(logged)) continue
+      this.cleartextProviderLogged.add(logged)
+      this.log.warn(`credential proxy: agent "${agentId}" keeps the install's ${id} key in its pod env: ${reason}`)
+    }
+    const used = [...pending.values()].filter((entry) => carries(overlay, entry.placeholder))
+    if (used.length === 0) return undefined
+    const slots = this.providerSlots.get(agentId) ?? new Map<string, ProviderSlot>()
+    const readers = this.hostKeyReaders.get(agentId) ?? new Map<string, () => Promise<string>>()
+    for (const { slot, read } of used) {
+      slots.set(slot.id, slot)
+      readers.set(slot.id, read)
+    }
+    this.providerSlots.set(agentId, slots)
+    this.hostKeyReaders.set(agentId, readers)
+    return overlay
+  }
+
   /** A provider slot's current key: a host key read again where this machine keeps it, an organization's fetched as a launch fetches it and refused once moved to another endpoint. */
   private async resolveProviderSlot(
     agentId: string,
@@ -8110,7 +8214,7 @@ export class Daemon {
     return this.agents.has(agentId) && this.credentialProxyCodeHosts(agentId) ? ['codehost'] : []
   }
 
-  /** `provider` for a known agent with a provider key slot, which its VM's or executor's sessions reach the proxy by; never a pool pod's yet. */
+  /** `provider` for a known agent with a provider key slot, which its VM's, pool pod's or executor's sessions reach the proxy by. */
   private providerTunnelFor(agentId: string): TunnelName[] {
     return this.agents.has(agentId) && this.credentialProxyProviders(agentId) ? ['provider'] : []
   }
@@ -9191,16 +9295,31 @@ export class Daemon {
             return
           }
           if (!this.k8s) return
-          if (target) {
-            applyConfiguredModelProviders(target, launchEnv, (providerTarget) => {
-              const configured = this.modelSessions.staticCredential(providerTarget)
-              return configured && opts.modelCredential ? { ...configured, key: '' } : configured
-            })
-            if (opts.modelCredential) applyModelCredential(target, launchEnv, opts.modelCredential.credential)
-            if (this.codexSessionFloor) applyCodexSessionFloor(target, launchEnv, this.codexSessionFloor)
-            if (this.claudeModelAliases) applyClaudeModelAliases(target, launchEnv, this.claudeModelAliases)
-            applyKiloLaunchModel(target, launchEnv, agent.runtimeOverrides?.model)
+          const configurePod: PodModelConfigure = (podEnv, keyFor) => {
+            if (!target) return
+            applyConfiguredModelProviders(target, podEnv, keyFor)
+            if (opts.modelCredential) applyModelCredential(target, podEnv, opts.modelCredential.credential)
+            if (this.codexSessionFloor) applyCodexSessionFloor(target, podEnv, this.codexSessionFloor)
+            if (this.claudeModelAliases) applyClaudeModelAliases(target, podEnv, this.claudeModelAliases)
+            applyKiloLaunchModel(target, podEnv, agent.runtimeOverrides?.model)
           }
+          // A key-server grant stays as it is; the install's own keys are swapped for placeholders once the pod's shim serves `provider`.
+          const staged = this.k8sPlane && this.credentialProxy && !opts.modelCredential ? { ...launchEnv } : undefined
+          configurePod(launchEnv, (providerTarget) => {
+            const configured = this.modelSessions.staticCredential(providerTarget)
+            return configured && opts.modelCredential ? { ...configured, key: '' } : configured
+          })
+          const overlay =
+            staged &&
+            this.podStaticKeyOverlay(
+              agent.id,
+              runtimeEntry?.aliasOf ?? agent.runtime,
+              target,
+              staged,
+              launchEnv,
+              configurePod
+            )
+          if (overlay) providerSpawn.env = overlay
         },
         runtimeReadRoots:
           runInSandbox && !micro

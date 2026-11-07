@@ -866,6 +866,44 @@ describe('cluster spawn driver', () => {
     expect(acp.env.AC_CODEHOST_CREDENTIAL).toBeUndefined()
   })
 
+  // A pod session's static install key is swapped for its placeholder only once the pod's own shim reports a provider listener.
+  const providerLaunch = {
+    ...(launchRequest as object),
+    env: { AC_AGENT_ID: 'agent-a', ANTHROPIC_API_KEY: 'example-install-key' },
+    provider: { env: { ANTHROPIC_API_KEY: 'acph1_example-placeholder' } }
+  } as never
+
+  it("applies a launch's provider env only beside the pod shim's provider listener, asked for after the bind", async () => {
+    const served: Array<{ capability: string; payload: unknown }> = []
+    const { api } = fakeApi()
+    const listener = { port: 41_235, token: 'listener-token-example', trustBundle: '/run/agentconnect/proxy-trust.pem' }
+    const providerFor = vi.fn(async () => listener)
+    const { instance } = driver(api, { connectChannel: async () => answeringConnection(served), providerFor })
+    await instance.launch(providerLaunch)
+    expect(providerFor).toHaveBeenCalledWith('agent-a')
+    const acp = served.find((request) => request.capability === 'acp')!.payload as { env: Record<string, string> }
+    expect(acp.env).toMatchObject({
+      ANTHROPIC_API_KEY: 'acph1_example-placeholder',
+      HTTPS_PROXY: 'http://codehost:listener-token-example@127.0.0.1:41235',
+      SSL_CERT_FILE: listener.trustBundle,
+      CODEX_CA_CERTIFICATE: listener.trustBundle
+    })
+    expect(JSON.stringify(acp)).not.toContain('example-install-key')
+  })
+
+  it('keeps the real key on a pod whose image shim serves no provider listener', async () => {
+    const served: Array<{ capability: string; payload: unknown }> = []
+    const { api } = fakeApi()
+    const { instance } = driver(api, {
+      connectChannel: async () => answeringConnection(served),
+      providerFor: async () => undefined
+    })
+    await instance.launch(providerLaunch)
+    const acp = served.find((request) => request.capability === 'acp')!.payload as { env: Record<string, string> }
+    expect(acp.env.ANTHROPIC_API_KEY).toBe('example-install-key')
+    expect(acp.env.HTTPS_PROXY).toBeUndefined()
+  })
+
   it('fails the launch when a file cannot be materialized, releasing the hold', async () => {
     const served: Array<{ capability: string; payload: unknown }> = []
     const { api } = fakeApi()

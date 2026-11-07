@@ -276,6 +276,32 @@ abort('runtime container must root the workspace and place the shim listener') u
   { 'name' => 'AC_SHIM_WORKSPACE_ROOT', 'value' => '/agent' },
   { 'name' => 'AC_SHIM_PORT', 'value' => '8085' }
 ]
+# A model-egress key over https reaches the member alone, which hands the sandbox a credential-proxy
+# placeholder; a cleartext endpoint keeps its key in the sandbox template, where it always was.
+egress_rendered, egress_error, egress_status = Open3.capture3(
+  *command,
+  '--set', 'daemonPool.modelCredentials.existingSecret=',
+  '--set', 'daemonPool.runtimeEnvironment.existingSecret=example-runtime-environment',
+  '--set', 'modelEgress.enabled=true', '--set-json', 'modelEgress.ports=[8080]',
+  '--set', 'modelEgress.clients.claude.baseUrl=https://gateway.example.test/anthropic',
+  '--set', 'modelEgress.clients.claude.apiKey=example-https-key',
+  '--set', 'modelEgress.clients.codex.baseUrl=http://gateway.example.test:8080/openai',
+  '--set', 'modelEgress.clients.codex.apiKey=example-cleartext-key'
+)
+abort("helm template (model egress) failed:\n#{egress_error}") unless egress_status.success?
+egress_documents = YAML.load_stream(egress_rendered).compact
+egress_env = lambda do |kind, name, container_name|
+  doc = egress_documents.find { |item| item['kind'] == kind && item.dig('metadata', 'name') == name } || abort("missing #{kind}/#{name}")
+  pod_spec = kind == 'SandboxTemplate' ? doc.dig('spec', 'podTemplate', 'spec') : doc.dig('spec', 'template', 'spec')
+  pod_spec.fetch('containers').find { |item| item['name'] == container_name }.fetch('env').to_h { |item| [item.fetch('name'), item['value']] }
+end
+egress_member = egress_env.call('Deployment', 'example-agentconnect-daemon-pool', 'daemon-pool')
+egress_sandbox = egress_env.call('SandboxTemplate', 'example-agentconnect-runtime', 'runtime')
+abort('the member must hold every model-egress key') unless
+  egress_member['ANTHROPIC_MODEL_TOKEN'] == 'example-https-key' && egress_member['OPENAI_MODEL_TOKEN'] == 'example-cleartext-key'
+abort('an https model-egress key must stay out of the sandbox template') if egress_sandbox.key?('AC_CLAUDE_API_KEY')
+abort('the sandbox template must keep the https base URL') unless egress_sandbox['AC_CLAUDE_BASE_URL'] == 'https://gateway.example.test/anthropic'
+abort('a cleartext model-egress key must stay in the sandbox template') unless egress_sandbox['AC_CODEX_API_KEY'] == 'example-cleartext-key'
 # One value serves all three shim surfaces: the sandbox listener, the member's dialer, and the
 # ingress policy port. Split them and an override leaves the shim on its baked-in default while
 # every daemon-to-sandbox bind times out.
