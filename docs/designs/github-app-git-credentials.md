@@ -782,8 +782,10 @@ the list misses produces the wrong product behavior, never excess access.
 
 **What it would retire.** The `gh` wrapper and its argv target resolution
 (`gh-target.ts`), the `glab` wrapper's token fetch (`glab-target.ts`), and the
-agent-facing helper channel with its per-agent capability. The daemon's own
-Git operations keep using gitcred unchanged.
+runtime's ability to mint credentials over the helper channel. The channel and
+its per-agent capabilities stay: the daemon and the agent runtime each hold
+their own, the runtime's keeps serving live secrets, and the daemon's own Git
+operations keep using gitcred unchanged.
 
 **What it would not cover.** Runtime sign-ins and provider credentials keep
 their own handling (session-executors.md §8), including the VM's

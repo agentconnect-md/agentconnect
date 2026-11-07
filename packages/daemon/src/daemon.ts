@@ -4286,7 +4286,7 @@ export class Daemon {
       // Git the daemon runs itself (skill acquisition) reads these on THIS filesystem, whatever
       // `targetFor` says about the agent's workspace git.
       daemonTarget: daemonCredentialTarget,
-      capabilityFor: (agentId) => this.gitCredServer!.capabilityFor(agentId),
+      capabilityFor: (agentId, holder) => this.gitCredServer!.capabilityFor(agentId, holder),
       // Daemon-run skill acquisition opens its own window per credential fill, except on the workspace repo (source-cache.md §8).
       openSkillCredentialWindow: (agentId, repo) => this.gitCredServer!.openDaemonSkillWindow(agentId, repo),
       preWarm: async (agentId, reason, repository) => {
@@ -4339,7 +4339,7 @@ export class Daemon {
       placementOf: (agentId, sessionId) => this.autoMergePlacement(agentId, sessionId),
       holdSandbox: (subject) => this.k8sPlane?.holdIfBound(subject),
       onArmed: (subject) => this.sandboxHolds.renew(subject, AUTO_MERGE_HOLDER, ['auto-merge-armed']),
-      capabilityFor: (agentId) => this.gitCredServer!.capabilityFor(agentId),
+      daemonCapabilityFor: (agentId) => this.gitCredServer!.capabilityFor(agentId, 'daemon'),
       tokenFor: async (agentId, repoFullName) =>
         (await this.gitCreds.get(agentId, 'helper', { plane: 'gh', repo: repoFullName })).token,
       log: { info: (m) => this.log.info(m), warn: (m) => this.log.warn(m) }

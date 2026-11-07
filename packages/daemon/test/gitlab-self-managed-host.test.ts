@@ -287,7 +287,9 @@ describe('the credential helper on a prefixed instance (§24.4)', () => {
     expect(config.env[GITCRED_HOSTS_ENV]).toBe(table)
     // A github workspace on the same deployment still carries the instance in its table: an
     // additional-repository authorization is a GitLab consumer that is not the workspace.
-    expect(gitCredentialEnv(AGENT, target, managedCredentialScope('github', INSTANCE))[GITCRED_HOSTS_ENV]).toBe(table)
+    expect(
+      gitCredentialEnv(AGENT, target, managedCredentialScope('github', INSTANCE), 'daemon')[GITCRED_HOSTS_ENV]
+    ).toBe(table)
   })
 
   // §24.4: the session config pins the instance for a REPO-BEARING consumer — a gitlab workspace or

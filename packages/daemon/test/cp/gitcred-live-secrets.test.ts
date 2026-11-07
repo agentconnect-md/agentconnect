@@ -45,9 +45,11 @@ async function boot(opts: { credentialed?: boolean; secrets?: LiveSecretEntry[] 
     credentialedOf: () => opts.credentialed === true,
     liveSecretsOf: () => opts.secrets ?? SECRETS
   })
-  const capability = server.capabilityFor('a1')
+  // The runtime's capability is the one `agentconnect-secrets` holds.
+  const capability = server.capabilityFor('a1', 'runtime')
+  const daemonCapability = server.capabilityFor('a1', 'daemon')
   await server.start()
-  return { socketPath, capability, logs, gets }
+  return { socketPath, capability, daemonCapability, logs, gets }
 }
 
 describe('the credential channel’s live secrets', () => {
@@ -75,6 +77,27 @@ describe('the credential channel’s live secrets', () => {
     const { socketPath } = await boot()
     const res = await gitcredIpc(socketPath, { op: 'secret', agentId: 'a1', capability: 'forged' })
     expect(res.ok).toBe(false)
+  })
+
+  it('serves the daemon capability too, and refuses either holder’s capability of another agent', async () => {
+    const { socketPath, capability, daemonCapability } = await boot()
+    expect(daemonCapability).not.toBe(capability)
+    const own = (await gitcredIpc(socketPath, {
+      op: 'secret',
+      agentId: 'a1',
+      capability: daemonCapability
+    })) as unknown as {
+      ok: boolean
+      secrets: LiveSecretEntry[]
+    }
+    expect(own.ok).toBe(true)
+    expect(own.secrets.map((s) => s.name)).toEqual(['GRAFANA_TOKEN', 'KUBE_CONFIG'])
+    for (const holder of ['daemon', 'runtime'] as const) {
+      const other = server!.capabilityFor('a2', holder)
+      expect(await gitcredIpc(socketPath, { op: 'secret', agentId: 'a1', capability: other })).toMatchObject({
+        ok: false
+      })
+    }
   })
 
   it('answers `get` for an agent without a managed git credential exactly as before it held a capability', async () => {
