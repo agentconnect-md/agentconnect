@@ -1,5 +1,6 @@
 // The Azure DevOps calls Connect with Microsoft makes (azure-devops-integration.md §3.2 steps 3-4): the administrator's organizations and projects, the entitlement, and Graph memberships; never log a token or a body.
 import { AzureDevOpsApiError, isGuid, type AzureDevOpsApiClient } from './api.js'
+import { EDIT_SUBSCRIPTIONS, SERVICE_HOOKS_NAMESPACE, VIEW_SUBSCRIPTIONS, serviceHooksToken } from './hooks-api.js'
 
 /** The fixed hosts; the fake in tests answers for them in place of the network. */
 export const PROFILE_BASE = 'https://app.vssps.visualstudio.com'
@@ -358,6 +359,39 @@ export async function addGroupMembership(
     if (e.code === 'FORBIDDEN' || e.code === 'UNAUTHORIZED' || e.code === 'ACCESS_REVOKED') return 'refused'
     if (e.code === 'RATE_LIMITED') throw e
     return 'failed'
+  }
+}
+
+/** How allowing triggers on one project went (§11.1). */
+export type AzureDevOpsTriggerGrantOutcome = 'granted' | 'refused' | 'failed'
+
+/** §11.1: allow the service principal View and Edit subscriptions on a project, with the administrator's delegated token. */
+export async function allowServiceHookSubscriptions(
+  api: AzureDevOpsApiClient,
+  token: string,
+  organization: string,
+  input: { projectId: string; tenantId: string; servicePrincipalObjectId: string }
+): Promise<AzureDevOpsTriggerGrantOutcome> {
+  const descriptor = `Microsoft.VisualStudio.Services.Claims.AadServicePrincipal;${input.tenantId}\\${input.servicePrincipalObjectId}`
+  try {
+    await adminRequest(
+      api,
+      token,
+      `${api.devOpsBaseUrl}/${org(organization)}/_apis/accesscontrolentries/${SERVICE_HOOKS_NAMESPACE}?api-version=${API_VERSION}`,
+      {
+        method: 'POST',
+        body: {
+          token: serviceHooksToken(input.projectId),
+          merge: true,
+          accessControlEntries: [{ descriptor, allow: VIEW_SUBSCRIPTIONS | EDIT_SUBSCRIPTIONS, deny: 0 }]
+        }
+      }
+    )
+    return 'granted'
+  } catch (e) {
+    if (!(e instanceof AzureDevOpsApiError)) throw e
+    if (e.code === 'RATE_LIMITED') throw e
+    return e.code === 'FORBIDDEN' || e.code === 'UNAUTHORIZED' || e.code === 'ACCESS_REVOKED' ? 'refused' : 'failed'
   }
 }
 

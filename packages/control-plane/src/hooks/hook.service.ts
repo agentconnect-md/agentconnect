@@ -22,6 +22,9 @@ import { codeHostProviders } from '../codehost/registry.js'
 import type { AgentId, OrgId } from '../domain/ids.js'
 import type {
   AgentRecord,
+  AzureDevOpsConnectionRepo,
+  AzureDevOpsHookRepo,
+  AzureDevOpsRepositoryBindingRepo,
   CodeHostDecisionRoutingRepo,
   GiteaConnectionRepo,
   GiteaRepositoryBindingRepo,
@@ -36,11 +39,12 @@ import type {
   HookSecretStore
 } from '../persistence/ports.js'
 import { compilesHookRule } from '../gitea/binding-state.js'
-import { hookRuleSupported, type RelayControlSender } from '../orchestrator/relayControl.js'
+import { hookRuleSupported, relayRuleFeatures, type RelayControlSender } from '../orchestrator/relayControl.js'
 import { PLACEMENT_ONLY, type PlacementResolver } from '../orchestrator/placementResolver.js'
 import type { RelayChannel } from '../ws/relay-registry.js'
 import { toDbPlatform } from '../persistence/platform.js'
 import { routingScopeOf } from './hook-routing.js'
+import { hookBindingOf } from '../azure-devops/hook.service.js'
 
 /** The narrow agent read the compiler needs (placement lookup). */
 export interface HookAgentReads {
@@ -58,6 +62,13 @@ export interface GiteaHookCompileSources {
   webhookSecrets: Pick<GiteaWebhookSecretStore, 'get'>
   /** The deployment's normalized Gitea base URL (§3); it rides every compiled gitea rule as the fence host. */
   host: string
+}
+
+/** azure-devops-kind compile sources (azure-devops-integration.md §11.3): the hooked binding, its connection, its keys and recorded subscriptions. */
+export interface AzureDevOpsHookCompileSources {
+  bindings: Pick<AzureDevOpsRepositoryBindingRepo, 'listForRepo'>
+  connections: Pick<AzureDevOpsConnectionRepo, 'get'>
+  hooks: Pick<AzureDevOpsHookRepo, 'keys' | 'subscriptions'>
 }
 
 /** Re-converges code-host routing scopes (code-host-decisions.md §3.2): host choice, the scope's rules, the hosts' specs. */
@@ -105,7 +116,9 @@ export class HookService {
     /** The repository scopes' Decision routings; absent ⇒ every code-host rule compiles unrouted. */
     private readonly routings?: Pick<CodeHostDecisionRoutingRepo, 'get'>,
     /** The org's GitHub Apps: an agent's rules carry its own App, and every App's pull requests are the internal CI lane. */
-    private readonly githubApps?: Pick<GithubAppRepo, 'listForOrg'>
+    private readonly githubApps?: Pick<GithubAppRepo, 'listForOrg'>,
+    /** Absent ⇒ azure-devops hooks never compile. */
+    private readonly azureDevOps?: AzureDevOpsHookCompileSources
   ) {}
 
   /** Wire the scope reconciler (it rebroadcasts through this service, so it attaches after construction). */
@@ -299,6 +312,43 @@ export class HookService {
         }
       }
     }
+    if (hook.kind === 'azure-devops') {
+      // §11.3: Decision routing is not offered for Azure DevOps, so a routed rule never compiles; the relay would skip it.
+      if (routing || hook.repoId === null || !this.azureDevOps) return null
+      // The rule names every subscription of the hooked binding and its keys inline; without them it verifies nothing.
+      const binding = hookBindingOf(await this.azureDevOps.bindings.listForRepo(hook.orgId, hook.repoId))
+      if (!binding) return null
+      const connection = await this.azureDevOps.connections.get(hook.orgId, binding.connectionId)
+      if (!connection) return null
+      const subscriptions = await this.azureDevOps.hooks.subscriptions(binding.id)
+      const keys = await this.azureDevOps.hooks.keys(hook.orgId, binding.id)
+      if (subscriptions.length === 0 || !keys) return null
+      return {
+        ...base,
+        kind: 'azure-devops',
+        azureDevOps: {
+          repoId: hook.repoId.toString(),
+          repoPath: binding.repoPath,
+          sessionKeyPrefix: hook.githubSessionKey ?? `azure-devops:${hook.repoId}`,
+          organization: connection.organization,
+          projectId: binding.projectId,
+          repositoryId: binding.repositoryId,
+          instanceId: connection.organizationInstanceId,
+          subscriptions: subscriptions.map(({ subscriptionId, kind }) => ({ subscriptionId, kind })),
+          events: cadence.events,
+          // The row stores the merge_request family scope; the wire names the pull-request subject.
+          ...(cadence.commentFamilies.includes('merge_request') ? { commentFamilies: ['pull_request' as const] } : {}),
+          mentionOnly: cadence.mentionOnly,
+          agentName: agent.name,
+          identityId: connection.identityId,
+          signingKey: keys.current,
+          ...(keys.next !== null ? { nextSigningKey: keys.next } : {}),
+          ...(keys.previous !== null && keys.previousExpiresAt !== null
+            ? { previousSigningKey: keys.previous, previousSigningKeyExpiresAt: keys.previousExpiresAt.toISOString() }
+            : {})
+        }
+      }
+    }
     // github (P2): the rule carries the live installation ids of the App the agent works through, so only that App's deliveries fire it.
     if (!this.installations) return null
     const githubAppId = agent.githubAppId ?? null
@@ -410,8 +460,7 @@ export class HookService {
         const rule = await this.compile(hook)
         // The §17.3/§24.4 negotiation gate, per channel (mirrors RelayControlSender).
         const host = rule && codeHostHookRuleOf(rule)
-        const features = host && codeHostProviders[host.provider].features
-        if (features && !advertises(ch.features, features.required(features.ruleHost(host)))) continue
+        if (host && !advertises(ch.features, relayRuleFeatures(host))) continue
         if (rule && hookRuleSupported(rule, ch.features)) ch.send('rc/hook-assign', rule)
       } catch (err) {
         this.log?.warn({ hookId: hook.id, err }, 'hook replay: compile/send failed — skipped')

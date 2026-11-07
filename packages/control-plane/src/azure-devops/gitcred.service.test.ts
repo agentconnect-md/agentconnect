@@ -57,6 +57,8 @@ function binding(
     defaultBranch: 'main',
     state: 'ready',
     stateReason: null,
+    hookReason: null,
+    lastVerifiedDeliveryAt: null,
     createdAt: new Date(NOW),
     ...overrides
   }
@@ -96,7 +98,8 @@ function harness(
     connections: { get: async () => ({ ...connection, ...opts.connection }) },
     bindings: {
       byRepo: async (_org, connectionId, repoId) =>
-        bindings.find((b) => b.connectionId === connectionId && b.repoId === repoId) ?? null
+        bindings.find((b) => b.connectionId === connectionId && b.repoId === repoId) ?? null,
+      listForRepo: async (_org, repoId) => bindings.filter((b) => b.repoId === repoId)
     },
     repoAuths: { listForAgent: async () => (opts.grants ?? []) as AgentRepoAuthorizationRecord[] },
     service: { accessToken, withApi: withApi as never, purgeToken },

@@ -105,9 +105,9 @@ export class CodeHostTrustedActorService {
       github: () => this.resolveGithub(hook, login),
       gitlab: () => this.resolveGitlab(hook, repo.repoExternalId, login),
       gitea: () => this.resolveGitea(hook, repo.repoExternalId, login),
-      // No hooks in v1, so no hook can carry an Azure DevOps trusted-user list.
+      // The list keys people by numeric id; an Azure DevOps person is an identity GUID, so the gate alone decides (§11.4).
       'azure-devops': () =>
-        Promise.reject(new TrustedActorResolutionUnavailable('Azure DevOps hooks are not available yet'))
+        Promise.reject(new TrustedActorResolutionUnavailable('Azure DevOps triggers do not take a trusted-user list'))
     }
     return resolvers[repo.provider]()
   }

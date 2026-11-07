@@ -6,6 +6,7 @@ import { AzureDevOpsApiError, readConnectionData, requestAccessToken, type Azure
 import {
   ADD_USERS_REFUSED,
   addGroupMembership,
+  allowServiceHookSubscriptions,
   addServicePrincipalEntitlement,
   addServicePrincipalThroughGroup,
   findProjectGroup,
@@ -16,7 +17,8 @@ import {
   readGraphDescriptor,
   readResourceTenant,
   readServicePrincipalAccessLevel,
-  type AzureDevOpsMembershipOutcome
+  type AzureDevOpsMembershipOutcome,
+  type AzureDevOpsTriggerGrantOutcome
 } from './admin-api.js'
 import {
   AzureDevOpsSignInError,
@@ -48,6 +50,13 @@ export interface AzureDevOpsMembershipReport {
   projectName: string
   group: 'readers' | 'contributors'
   outcome: AzureDevOpsMembershipOutcome | 'group_missing' | 'not_attempted'
+}
+
+/** How Allow triggers went on one project (§11.1); `refused` names a role the caller lacks and is in the checklist. */
+export interface AzureDevOpsTriggerReport {
+  projectId: string
+  projectName: string
+  outcome: AzureDevOpsTriggerGrantOutcome
 }
 
 export interface AzureDevOpsConnectRefusalDetails {
@@ -85,6 +94,8 @@ export interface AzureDevOpsConnectFlowDeps {
   deploymentApplication?: AzureDevOpsDeploymentApplication
   /** The Console origin whose `/azure-devops/connect` page Microsoft redirects to. */
   webAppUrl?: string
+  /** After Allow triggers was granted somewhere: converge the connection's hooked repositories again. */
+  onTriggersAllowed?: (orgId: string, connectionId: string) => Promise<void> | void
 }
 
 export interface AzureDevOpsFlowStart {
@@ -99,6 +110,10 @@ export interface AzureDevOpsFlowStart {
 export interface AzureDevOpsFlowResult {
   connection: AzureDevOpsConnectionRecord
   memberships: AzureDevOpsMembershipReport[]
+  /** One entry per project with Allow triggers on. */
+  triggers: AzureDevOpsTriggerReport[]
+  /** What the caller could not do here and someone must do by hand; absent when nothing is left. */
+  checklist?: string[]
 }
 
 /** Connect-time answers the new and managed flows share; never a token. */
@@ -532,7 +547,7 @@ export class AzureDevOpsConnectFlowService {
   /** Step 4: the entitlement and the memberships, then steps 5 and 6. */
   async applyProjects(
     ticket: AzureDevOpsFlowTicket,
-    requested: ReadonlyArray<{ projectId: string; group: 'readers' | 'contributors' }>
+    requested: ReadonlyArray<{ projectId: string; group: 'readers' | 'contributors'; allowTriggers?: boolean }>
   ): Promise<AzureDevOpsFlowResult> {
     const organization = await this.guard(ticket)
     let projects: Array<{ id: string; name: string }>
@@ -543,13 +558,18 @@ export class AzureDevOpsConnectFlowService {
     }
     const byId = new Map(projects.map((project) => [project.id, project]))
     const choices = new Map<string, AzureDevOpsProjectChoice>()
-    for (const { projectId, group } of requested) {
+    for (const { projectId, group, allowTriggers } of requested) {
       const project = byId.get(projectId.toLowerCase())
       if (!project) {
         throw new AzureDevOpsConnectDenied(`no project ${projectId} in ${organization}`, 400, 'project_not_found')
       }
-      // Contributors already reads; one group per project.
-      choices.set(project.id, { projectId: project.id, projectName: project.name, group })
+      // Contributors already reads; one group per project. Allow triggers defaults on with Contributors (§11.1).
+      choices.set(project.id, {
+        projectId: project.id,
+        projectName: project.name,
+        group,
+        allowTriggers: allowTriggers ?? group === 'contributors'
+      })
     }
     const recorded: AzureDevOpsFlowTicket = { ...ticket, projects: [...choices.values()] }
     const resume = sealAzureDevOpsFlowTicket(this.deps.keys, recorded)
@@ -567,7 +587,7 @@ export class AzureDevOpsConnectFlowService {
       }
       if (memberships.some((m) => !SUCCEEDED.has(m.outcome)))
         throw this.incomplete(organization, sp, memberships, resume, level.outcome === 'basic')
-      return this.finish(recorded, memberships, resume)
+      return this.finish(recorded, sp, memberships, resume)
     }
 
     let entitlement: Awaited<ReturnType<typeof addServicePrincipalEntitlement>>
@@ -593,7 +613,7 @@ export class AzureDevOpsConnectFlowService {
       const { memberships } = await this.applyMemberships(recorded, organization, recorded.projects!, subject)
       if (memberships.some((m) => !SUCCEEDED.has(m.outcome)))
         throw this.incomplete(organization, sp, memberships, resume, true)
-      return this.finish(recorded, memberships, resume)
+      return this.finish(recorded, sp, memberships, resume)
     }
 
     // Refused: a Project Administrator may still make the memberships, which also bring the service principal in at the default level.
@@ -696,6 +716,44 @@ export class AzureDevOpsConnectFlowService {
     )
   }
 
+  /** §11.1 Allow triggers on each chosen project, with the delegated token; a refusal is reported, never fatal to the step. */
+  private async allowTriggers(
+    ticket: AzureDevOpsFlowTicket,
+    sp: ServicePrincipal
+  ): Promise<AzureDevOpsTriggerReport[]> {
+    const reports: AzureDevOpsTriggerReport[] = []
+    for (const choice of ticket.projects ?? []) {
+      if (!choice.allowTriggers) continue
+      let outcome: AzureDevOpsTriggerGrantOutcome
+      try {
+        outcome = await allowServiceHookSubscriptions(this.deps.api, ticket.accessToken, ticket.organization!, {
+          projectId: choice.projectId,
+          tenantId: ticket.tenantId,
+          servicePrincipalObjectId: sp.objectId
+        })
+      } catch {
+        // Throttled: the rest of the step stands, and the checklist says what is left.
+        outcome = 'failed'
+      }
+      reports.push({ projectId: choice.projectId, projectName: choice.projectName, outcome })
+    }
+    return reports
+  }
+
+  /** What is left for Allow triggers: the role that can grant it, and where to grant it by hand. */
+  private triggerChecklist(
+    organization: string,
+    sp: ServicePrincipal,
+    refused: readonly AzureDevOpsTriggerReport[]
+  ): string[] {
+    const { app } = this.live()
+    const named = sp.displayName ? ` (${sp.displayName})` : ''
+    return refused.map(
+      (report) =>
+        `Allow triggers on ${report.projectName}: in ${organization}, Project settings → Service hooks → Security, allow the application's service principal (client ID ${app.clientId}${named}) View subscriptions and Edit subscriptions, or ask a Project Collection Administrator to run Manage project access with Allow triggers on.`
+    )
+  }
+
   /** Resume after a manual step: re-check membership, make the memberships the caller may, then steps 5 and 6. */
   async verify(ticket: AzureDevOpsFlowTicket): Promise<AzureDevOpsFlowResult> {
     const organization = await this.guard(ticket)
@@ -727,12 +785,13 @@ export class AzureDevOpsConnectFlowService {
     if (level.outcome === 'refused') {
       throw this.entitlementRefusal(organization, sp, level.errorCodes, memberships, true, resume)
     }
-    return this.finish(ticket, memberships, resume)
+    return this.finish(ticket, sp, memberships, resume)
   }
 
   /** Steps 5 and 6: a new connection, or for Manage project access the existing one re-verified; a refusal it can recover from keeps the ticket. */
   private async finish(
     ticket: AzureDevOpsFlowTicket,
+    sp: ServicePrincipal,
     memberships: AzureDevOpsMembershipReport[],
     resume: string
   ): Promise<AzureDevOpsFlowResult> {
@@ -744,7 +803,21 @@ export class AzureDevOpsConnectFlowService {
             { organization: ticket.organization!, tenantId: ticket.tenantId },
             ticket.userId
           )
-      return { connection, memberships }
+      const triggers = await this.allowTriggers(ticket, sp)
+      const refused = triggers.filter((report) => report.outcome !== 'granted')
+      if (triggers.some((report) => report.outcome === 'granted')) {
+        try {
+          await this.deps.onTriggersAllowed?.(ticket.orgId, connection.id)
+        } catch {
+          // Convergence is retried by its own sweep; the connection already stands.
+        }
+      }
+      return {
+        connection,
+        memberships,
+        triggers,
+        ...(refused.length > 0 ? { checklist: this.triggerChecklist(ticket.organization!, sp, refused) } : {})
+      }
     } catch (e) {
       if (e instanceof AzureDevOpsConnectDenied && RESUMABLE.has(e.code)) {
         throw new AzureDevOpsConnectRefusal(e.message, e.status, e.code, {

@@ -117,7 +117,7 @@ const REQUEST_CHANGES_NEEDS_REVIEWER: Readonly<Record<CodeHostProvider, boolean>
   github: false,
   gitlab: true,
   gitea: false,
-  // Unreachable: no hooks in v1, so no review turn names Azure DevOps.
+  // A vote needs no reviewer record (azure-devops-integration.md §11.6).
   'azure-devops': false
 }
 

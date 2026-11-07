@@ -48,6 +48,7 @@ import {
   PgGiteaRepositoryBindingRepo,
   PgGiteaWebhookSecretStore,
   PgAzureDevOpsConnectionRepo,
+  PgAzureDevOpsHookRepo,
   PgAzureDevOpsRepositoryBindingRepo,
   PgOrgRepo,
   PgOrgInviteLinkRepo,
@@ -524,7 +525,16 @@ export function buildHttpApp(
           host: giteaSeam.api.baseUrl
         }
       : undefined,
-    codeHostDecisionRoutingRepo
+    codeHostDecisionRoutingRepo,
+    undefined,
+    // A suite that brings Azure DevOps service hooks compiles their rules from the same tables production reads.
+    depsOverrides?.azureDevOps?.hooks
+      ? {
+          bindings: new PgAzureDevOpsRepositoryBindingRepo(prisma),
+          connections: new PgAzureDevOpsConnectionRepo(prisma),
+          hooks: new PgAzureDevOpsHookRepo(prisma, cipher)
+        }
+      : undefined
   )
   // Same scope reconciler as production; host choice reads the live connection's features.
   const hookRouting = new HookRoutingService({

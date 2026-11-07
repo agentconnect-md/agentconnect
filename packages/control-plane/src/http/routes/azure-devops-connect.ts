@@ -113,7 +113,9 @@ export function azureDevOpsConnectRoutes(deps: HttpDeps) {
         outcome.connection,
         (await deps.repos.azureDevOpsRepositoryBinding.listForConnection(orgId, outcome.connection.id)).length
       ),
-      memberships: outcome.memberships
+      memberships: outcome.memberships,
+      triggers: outcome.triggers,
+      ...(outcome.checklist ? { checklist: outcome.checklist } : {})
     })
     /** Runs one step of an open flow: the ticket must be this flow's, for this organization and caller. */
     const step = async <T>(
@@ -236,7 +238,7 @@ export function azureDevOpsConnectRoutes(deps: HttpDeps) {
           tags: [Tag.AzureDevOps],
           summary: 'Give the application access to projects and connect',
           description:
-            'Adds the application’s service principal to the organization with the Basic access level, or raises a member below Basic to Basic, adds it to each project’s Readers or Contributors group, then verifies as the application and records the connection (or, for Manage project access, re-verifies the existing one). Below Project Collection Administrator the entitlement is refused with a manual checklist naming the application’s client ID, the memberships the caller could make, and a ticket to verify with once the checklist is done.',
+            'Adds the application’s service principal to the organization with the Basic access level, or raises a member below Basic to Basic, adds it to each project’s Readers or Contributors group, then verifies as the application and records the connection (or, for Manage project access, re-verifies the existing one). For each project with Allow triggers (on by default with Contributors) it then gives the application View and Edit subscriptions there; a refusal is reported in `triggers` with a `checklist` entry and does not fail the step. Below Project Collection Administrator the entitlement is refused with a manual checklist naming the application’s client ID, the memberships the caller could make, and a ticket to verify with once the checklist is done.',
           operationId: 'applyAzureDevOpsConnectProjects',
           params: AzureDevOpsFlowParams,
           headers: AzureDevOpsFlowHeaders,

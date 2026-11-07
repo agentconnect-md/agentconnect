@@ -1,5 +1,6 @@
 // Azure DevOps's entry in the code-host registry (azure-devops-integration.md §5, §6.1, §7): a binding through one connection vouches, and its credential is proxy-only.
 import {
+  AZURE_DEVOPS_HOOKS_V1_FEATURE,
   AZURE_DEVOPS_V1_FEATURE,
   azureDevOpsRepoAddress,
   normalizeGitUrl,
@@ -163,7 +164,9 @@ export const azureDevOpsCodeHostProvider: CodeHostProviderModule = {
     specHost: () => undefined,
     ruleHost: () => undefined,
     required: () => [AZURE_DEVOPS_V1_FEATURE],
-    requiredForInstance: () => []
+    requiredForInstance: () => [],
+    // A relay serves service hooks under its own string; it never runs the proxy `azure-devops-v1` names (§11.9).
+    ruleRequired: () => [AZURE_DEVOPS_HOOKS_V1_FEATURE]
   },
   workspace: {
     derive: deriveAzureDevOpsWorkspace,
@@ -205,17 +208,21 @@ export const azureDevOpsCodeHostProvider: CodeHostProviderModule = {
     legacySpecArm: () => null
   },
   hooks: {
-    // No hooks in v1 (§11): the create body admits no `azure-devops` arm and no row can store the kind.
+    // Run state is a pull-request status, informational by construction (§11.7): an administrator makes it a gate.
     effects: (body) => ({
       reviewPolicy: body.reviewPolicy ?? 'off',
       reportingMode: body.reportingMode ?? 'off',
       gateMode: 'informational'
     }),
-    // No webhook to converge: a binding is a catalog row and an identity (§5).
-    convergeManagedRepository: () => {}
+    // §11.2: the repository's subscriptions follow the union of its enabled hooks' kinds, and its rules are recompiled.
+    convergeManagedRepository: (deps, orgId, repoId, onError) => {
+      const hooks = deps.azureDevOps?.hooks
+      if (!hooks || repoId === null) return
+      return hooks.convergeRepository(orgId, repoId).catch(onError)
+    }
   },
   routing: {
-    // Unreachable: no routing family is registered for this provider, so no routed scope names it.
+    // Unreachable: Decision routing is not offered for Azure DevOps (§11.3), so no routed scope names it.
     requiredFeatures: [AZURE_DEVOPS_V1_FEATURE],
     familyLabel: (family) => family,
     anyUpdateCadence: () => ({ events: [], commentFamilies: [], mentionOnly: false }),

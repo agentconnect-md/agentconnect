@@ -2194,6 +2194,7 @@ enum HookKind {
   github // GitHub event subscription (P2)
   gitlab // GitLab.com event subscription (gitlab-com-integration.md §8.3)
   gitea // Gitea event subscription (gitea-integration.md §5)
+  azure_devops @map("azure-devops") // Azure DevOps service hook subscriptions (azure-devops-integration.md §11)
 }
 
 enum HookSessionMode {
@@ -3819,28 +3820,69 @@ model AzureDevOpsRepositoryIdentity {
 
 /// One repository bound through one connection (§5), no webhook; state ready|runtime_degraded with its reason.
 model AzureDevOpsRepositoryBinding {
-  id            String   @id @default(uuid()) @db.Uuid
-  orgId         String
-  connectionId  String   @db.Uuid
-  identityId    BigInt // the surrogate numeric id: the repository's externalId everywhere
-  repoPath      String // {organization}/{project}/{repository}, decoded; display and matching only
-  cloneUrl      String // the canonical https://dev.azure.com/{organization}/{project}/_git/{repository}
-  defaultBranch String?
-  state         String
-  stateReason   String?
-  createdAt     DateTime @default(now()) @db.Timestamptz(6)
-  updatedAt     DateTime @updatedAt @db.Timestamptz(6)
+  id                     String    @id @default(uuid()) @db.Uuid
+  orgId                  String
+  connectionId           String    @db.Uuid
+  identityId             BigInt // the surrogate numeric id: the repository's externalId everywhere
+  repoPath               String // {organization}/{project}/{repository}, decoded; display and matching only
+  cloneUrl               String // the canonical https://dev.azure.com/{organization}/{project}/_git/{repository}
+  defaultBranch          String?
+  state                  String
+  stateReason            String?
+  // §11.2 service hooks: the subscriptions' health, kept apart from the state leases read.
+  hookReason             String? // webhook_unverified, triggers_not_allowed, relay_url_unconfigured, subscriptions_failed
+  lastVerifiedDeliveryAt DateTime? @db.Timestamptz(6) // the relay last verified a delivery for this repository
+  hookLeaseOwner         String? // the convergence run holding the binding's subscription writes
+  hookLeaseUntil         DateTime? @db.Timestamptz(6)
+  hookConvergeOwedAt     DateTime? @db.Timestamptz(6) // a contended pass still owes convergence
+  createdAt              DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt              DateTime  @updatedAt @db.Timestamptz(6)
 
-  org        Org                           @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  connection AzureDevOpsConnection         @relation(fields: [connectionId], references: [id], onDelete: Cascade)
-  identity   AzureDevOpsRepositoryIdentity @relation(fields: [identityId], references: [id], onDelete: Restrict)
-  workspaces Agent[]                       @relation("AzureDevOpsWorkspace")
-  grants     AgentRepoAuthorization[]      @relation("AzureDevOpsGrant")
+  org           Org                           @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  connection    AzureDevOpsConnection         @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  identity      AzureDevOpsRepositoryIdentity @relation(fields: [identityId], references: [id], onDelete: Restrict)
+  workspaces    Agent[]                       @relation("AzureDevOpsWorkspace")
+  grants        AgentRepoAuthorization[]      @relation("AzureDevOpsGrant")
+  hookSecret    AzureDevOpsHookSecret?
+  subscriptions AzureDevOpsHookSubscription[]
 
   @@unique([connectionId, identityId])
   @@index([orgId])
   @@index([identityId])
+  @@index([hookConvergeOwedAt])
   @@map("azure_devops_repository_binding")
+}
+
+/// The binding's sealed service hook keys (§11.2): current, a rotation's next, and the promoted-away previous until it expires. Relay-only material.
+model AzureDevOpsHookSecret {
+  bindingId          String    @id @db.Uuid
+  signingKey         String // stored SecretCipher representation of the hex key
+  keyGeneration      BigInt    @default(1) // the current key's generation; the next key is this plus one
+  nextSigningKey     String?
+  nextSuspectedLeak  Boolean   @default(false) // a rotation for a possibly leaked key drops the old one at promotion
+  previousSigningKey String?
+  previousExpiresAt  DateTime? @db.Timestamptz(6)
+
+  binding AzureDevOpsRepositoryBinding @relation(fields: [bindingId], references: [id], onDelete: Cascade)
+
+  @@map("azure_devops_hook_secret")
+}
+
+/// One service hook subscription the Control Plane created for a binding (§11.2): one per delivery kind, and only these are ever touched.
+model AzureDevOpsHookSubscription {
+  id             String   @id @default(uuid()) @db.Uuid
+  bindingId      String   @db.Uuid
+  subscriptionId String   @unique @db.Uuid
+  kind           String // opened, revision, reviewers, state, merged, comment or push
+  status         String? // the status a read last observed
+  keyGeneration  BigInt // the key generation the last acknowledged create or PUT carried
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(6)
+
+  binding AzureDevOpsRepositoryBinding @relation(fields: [bindingId], references: [id], onDelete: Cascade)
+
+  @@unique([bindingId, kind])
+  @@map("azure_devops_hook_subscription")
 }
 
 // ───────────────────────────────────────────────────────────────────────────

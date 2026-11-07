@@ -4,7 +4,7 @@ import { AZURE_DEVOPS_V1_FEATURE } from '@agentconnect.md/protocol'
 import { codeHostProviders } from '../codehost/registry.js'
 import { requiredDaemonFeatures } from '../domain/daemon-features.js'
 import { CreateAgentRepoAuthBody, CreateHookBody, UpdateHookBody } from '../http/dto/index.js'
-import { isStoredHookKind } from '../persistence/hook-kind.js'
+import { fromDbHookKind, isStoredHookKind, toDbHookKind } from '../persistence/hook-kind.js'
 import type { CodeHostDeps, CodeHostRepoAuthorizationContext } from '../codehost/provider.js'
 
 const provider = codeHostProviders['azure-devops']
@@ -102,13 +102,37 @@ describe('the grant body (§5)', () => {
   })
 })
 
-describe('no Azure DevOps hooks in v1', () => {
-  it('refuses the kind before the database: no create or update body admits it, and no row can store it', () => {
-    const hook = { kind: 'azure-devops', agentId: AGENT_ID, name: 'example', repoId: '42', events: ['push'] }
-    expect(CreateHookBody.safeParse(hook).success).toBe(false)
-    expect(UpdateHookBody.safeParse(hook).success).toBe(false)
-    expect(isStoredHookKind('azure-devops')).toBe(false)
-    expect(isStoredHookKind('gitea')).toBe(true)
-    expect(isStoredHookKind('webhook')).toBe(true)
+describe('the hook body (§11.4, §11.9)', () => {
+  const base = { kind: 'azure-devops', agentId: AGENT_ID, name: 'example', repoId: '42' }
+
+  it('admits the pull-request and push families, stored under the kind the database spells azure_devops', () => {
+    const pulls = { ...base, family: 'merge_request', events: ['merge_request:reopened', 'merge_request:synchronize'] }
+    expect(CreateHookBody.safeParse({ ...pulls, commentFamilies: ['merge_request'] }).success).toBe(true)
+    expect(CreateHookBody.safeParse({ ...base, family: 'push', events: ['push:*'] }).success).toBe(true)
+    expect(UpdateHookBody.safeParse({ ...pulls, enabled: false }).success).toBe(true)
+    expect(isStoredHookKind('azure-devops')).toBe(true)
+    expect(toDbHookKind('azure-devops')).toBe('azure_devops')
+    expect(fromDbHookKind('azure_devops')).toBe('azure-devops')
+    expect(fromDbHookKind('azure-devops')).toBe('azure-devops')
+  })
+
+  it('refuses issues, releases, labels-only cadences and unknown actions', () => {
+    for (const [family, events] of [
+      ['issues', ['issues:opened']],
+      ['release', ['release:published']],
+      ['merge_request', ['merge_request:labeled']],
+      ['merge_request', ['merge_request:closed']],
+      ['push', ['push:main']]
+    ] as const) {
+      expect(CreateHookBody.safeParse({ ...base, family, events }).success).toBe(false)
+    }
+    expect(
+      CreateHookBody.safeParse({
+        ...base,
+        family: 'merge_request',
+        events: ['merge_request:*'],
+        commentFamilies: ['issues']
+      }).success
+    ).toBe(false)
   })
 })

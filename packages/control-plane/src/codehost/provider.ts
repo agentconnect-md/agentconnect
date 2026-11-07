@@ -194,6 +194,8 @@ export interface CodeHostProviderFeatures {
   required(host: string | undefined): readonly string[]
   /** The §24.4 addition ALONE — for a gate that must not start requiring §17.3's bit as well. */
   requiredForInstance(host: string | undefined): readonly string[]
+  /** Features a relay must advertise before it holds a compiled rule of this host; absent ⇒ {@link required}. */
+  ruleRequired?(): readonly string[]
 }
 
 /** The workspace-provenance arms, one per host (git-workspace-model.md §5/§6). */

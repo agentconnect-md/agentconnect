@@ -61,9 +61,16 @@ export const GitCredRequest = z.object({
   // gitea_hook_reply and gitea_effect are the Gitea twins (gitea-integration.md §10.1, §10.2):
   // one connection token serves both, so the helper/broker split of the GitLab arm does not apply.
   // A new value here is frame-fatal to an older CP (§17.3): name it only after GITLAB_EFFECT_V1_FEATURE
-  // (gitea values only after GITEA_V1_FEATURE).
+  // (gitea values only after GITEA_V1_FEATURE). azure_devops_hook_reply is the final poster's lease (azure-devops-integration.md §11.5), served to consumer 'daemon' only.
   purpose: z
-    .enum(['github_hook_reply', 'gitlab_hook_reply', 'gitlab_effect', 'gitea_hook_reply', 'gitea_effect'])
+    .enum([
+      'github_hook_reply',
+      'gitlab_hook_reply',
+      'gitlab_effect',
+      'gitea_hook_reply',
+      'gitea_effect',
+      'azure_devops_hook_reply'
+    ])
     .optional(),
   // Trusted hook identity copied from the relay-delivered rd/msg. Required by
   // the CP for purpose=github_hook_reply so authorization stays rename-safe on
