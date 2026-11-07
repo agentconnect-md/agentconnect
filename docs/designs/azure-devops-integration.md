@@ -105,6 +105,13 @@ Microsoft's consent page shows the application's Entra display name. Setup
 therefore recommends a name that does not name one Microsoft product, since
 the same application now serves sign-in, Teams, and Azure DevOps.
 
+The delegated Azure DevOps scope needs no administrator consent. Any member
+may consent for themselves, and the page describes the scope as full access to
+the Azure DevOps REST APIs. An application without a verified publisher is
+marked "unverified" there, and a tenant may forbid consent to such
+applications. A multi-tenant deployment application therefore needs Microsoft
+publisher verification before customers connect through it.
+
 ### 3.2 Connecting
 
 The Console's Azure DevOps card leads with **Connect with Microsoft**:
@@ -128,8 +135,12 @@ The Console's Azure DevOps card leads with **Connect with Microsoft**:
    administrator belongs to in that tenant, and the administrator picks one.
 4. **Entitlement.** With the administrator's delegated token, the Control Plane
    adds the application's service principal to the organization with the Basic
-   access level, then to the project groups the administrator picks: Readers
-   where agents only read, Contributors where any agent writes. An
+   access level (`POST vsaex…/_apis/serviceprincipalentitlements`). It then
+   adds the service principal to the project groups the administrator picks,
+   one Graph membership each
+   (`PUT vssps…/_apis/graph/memberships/{principal}/{group}`): Readers where
+   agents only read, Contributors where any agent writes. The entitlement call's own `projectEntitlements` is not used:
+   for a service principal it reports success and grants nothing. An
    administrator without that right (a Project Collection Administrator has it)
    gets a refusal that names the role and a checklist for doing it by hand. The
    flow resumes at step 5 once the service principal is in the organization.
@@ -487,12 +498,17 @@ home tenant.
    `connectionData` answers 401 `TF401444`; after it, 200, and the repository
    list returns only projects the identity was granted. Open: the same in a
    customer tenant, for a service principal created there by consent.
-2. **Probe:** with the administrator's delegated token, the Service Principal
-   Entitlements API adds that service principal with Basic, the group
-   membership calls add it to project groups, and the organizations the
-   administrator belongs to can be listed. Which role each call needs. Open:
-   it needs the authorization-code sign-in of §3.2, since the tenant's
-   security defaults refuse a device-code sign-in.
+2. **Verified, through §3.2's sign-in:** the deployment application's
+   authorization-code flow with PKCE at the `organizations` authority returns a
+   delegated token with `scp=user_impersonation`, and the ID token carries the
+   tenant. With that token, the profile and accounts APIs list the
+   administrator's organizations. The Service Principal Entitlements API adds
+   and removes the service principal with Basic (200, 204). A Graph membership
+   adds it to a project group (201), and its rights follow at once. The
+   entitlement call's `projectEntitlements` reported success but added no
+   membership. A tenant's security defaults refuse a device-code sign-in. Open:
+   which of these calls an administrator below Project Collection Administrator
+   may make, since only the organization's owner was tried.
 3. **Verified:** git over HTTPS takes the Entra token as the Basic password. A
    Reader identity clones; its push is refused at the `git-receive-pack`
    advertisement with 403 `TF401027` (GenericContribute). A Contributor
