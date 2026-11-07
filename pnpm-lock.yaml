@@ -400,8 +400,8 @@ importers:
         specifier: 1.0.5
         version: 1.0.5
       cborg:
-        specifier: ^6.2.1
-        version: 6.2.1
+        specifier: 6.1.5
+        version: 6.1.5
       chokidar:
         specifier: ^6.0.0
         version: 6.0.0
@@ -4742,8 +4742,8 @@ packages:
   caniuse-lite@1.0.30001820:
     resolution: {integrity: sha512-gfWD6MxqVCqAOwmODfZf7DchWvlrA+SRdNX7ceLfg3xRqe5ssjjpF7EgslC/0tiLiNTajdaNN/q8c/5u/7Gz8w==}
 
-  cborg@6.2.1:
-    resolution: {integrity: sha512-DwiF3Jd5RW6kJuTQMzQb/sdZD03utp15EcQNOMTvE/ZYCdDPzETsGOY5lj8imKxbsEuYvOzcMSiKLiT4C2/2Lw==}
+  cborg@6.1.5:
+    resolution: {integrity: sha512-1aoxfkckZmul5tFUL0p1+VRiZrXUGMxk6JQVpVv42yD21K7fh86L5WlyYgzsNv4w6Nm9ysQI9c6yDemom24HUQ==}
     hasBin: true
 
   ccount@2.0.1:
@@ -13563,7 +13563,7 @@ snapshots:
 
   caniuse-lite@1.0.30001820: {}
 
-  cborg@6.2.1: {}
+  cborg@6.1.5: {}
 
   ccount@2.0.1: {}
 
