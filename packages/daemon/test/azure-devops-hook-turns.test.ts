@@ -162,7 +162,7 @@ const THREAD = {
 }
 
 /** Answers by path: the pull request, its iterations, and the thread; `statuses` fails calls in order. */
-function fakeAzure(opts: { pull?: Record<string, unknown>; statuses?: number[] } = {}) {
+function fakeAzure(opts: { pull?: Record<string, unknown>; statuses?: number[]; iterations?: unknown[] } = {}) {
   const calls: Call[] = []
   const fetchImpl = (async (url: string, init?: RequestInit) => {
     const index = calls.length
@@ -176,7 +176,8 @@ function fakeAzure(opts: { pull?: Record<string, unknown>; statuses?: number[] }
     if (status !== undefined && status >= 400) return new Response('', { status })
     const path = String(url).slice(API.length).replace(V, '')
     if (path === '/pullRequests/7') return Response.json(opts.pull ?? pullBody())
-    if (path === '/pullRequests/7/iterations') return Response.json(ITERATIONS)
+    if (path === '/pullRequests/7/iterations')
+      return Response.json(opts.iterations ? { value: opts.iterations } : ITERATIONS)
     if (path === '/pullRequests/7/threads/12') return Response.json(THREAD)
     return new Response('', { status: 404 })
   }) as typeof fetch
@@ -324,6 +325,21 @@ describe('the turn-start read (§11.4)', () => {
     // A refused lease is the same failure.
     const refusedLease = host({ mint: async () => Promise.reject(new Error('hook is not enabled')) })
     expect(await resolveAzureDevOpsDelivery(reviewers, refusedLease.turnFinalHost, failing)).toEqual({
+      refused: AZURE_DEVOPS_READ_FAILED
+    })
+  })
+
+  it('refuses a revision whose read fails or finds no head, since supersession keys on that head', async () => {
+    const failing = (async () => new Response('', { status: 500 })) as unknown as typeof fetch
+    const revision = fire(
+      { event: 'merge_request:synchronize' },
+      { deliveryKind: 'revision', target: { kind: 'pull', pullRequestId: 7 } }
+    )
+    expect(await resolveAzureDevOpsDelivery(revision, host().turnFinalHost, failing)).toEqual({
+      refused: AZURE_DEVOPS_READ_FAILED
+    })
+    const noIterations = fakeAzure({ iterations: [], pull: pullBody({ lastMergeSourceCommit: undefined }) })
+    expect(await resolveAzureDevOpsDelivery(revision, host().turnFinalHost, noIterations.fetchImpl)).toEqual({
       refused: AZURE_DEVOPS_READ_FAILED
     })
   })

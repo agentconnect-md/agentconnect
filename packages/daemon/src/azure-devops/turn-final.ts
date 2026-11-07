@@ -166,18 +166,21 @@ export async function resolveAzureDevOpsDelivery(
   const azure = msg.azureDevOps
   // A merge is cleanup on the wire; a push has no pull request to read.
   if (!azure || azure.target.kind !== 'pull' || azure.deliveryKind === 'merged') return undefined
-  const classifies = azure.deliveryKind === 'reviewers' || azure.deliveryKind === 'state'
+  // The update kinds need the read: three to classify, and a revision for the head its lane and supersession key on.
+  const needsRead =
+    azure.deliveryKind === 'reviewers' || azure.deliveryKind === 'state' || azure.deliveryKind === 'revision'
   let read: AzureDevOpsPullRead
   try {
     read = await readUnderLease(msg, azure, azure.target.pullRequestId, host, fetchImpl)
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err)
     host.log.warn(`hook: azure-devops read for ${msg.msgId} failed (${reason})`)
-    if (classifies) return { refused: AZURE_DEVOPS_READ_FAILED }
+    if (needsRead) return { refused: AZURE_DEVOPS_READ_FAILED }
     return { msg, supplement: { azureDevOps: { kind: 'unavailable', reason } } }
   }
   const event = classify(azure, msg.event, read)
   const { headSha, isDraft, title } = read.pull
+  if (azure.deliveryKind === 'revision' && !headSha) return { refused: AZURE_DEVOPS_READ_FAILED }
   const target = {
     ...azure.target,
     ...(headSha ? { headSha } : {}),
