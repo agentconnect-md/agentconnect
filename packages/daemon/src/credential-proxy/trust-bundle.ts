@@ -15,7 +15,7 @@ export const PROXY_TRUST_VARS = [
 /** The bundle Codex verifies with, which it reads before `SSL_CERT_FILE`. */
 export const CODEX_CA_ENV = 'CODEX_CA_CERTIFICATE'
 
-/** A placed session's `{ bundle, files }`: its executor's shim merges them there, where the files are, and strips this before exec. */
+/** A placed session's `{ bundle, files, guest? }`: its shim merges them there, where the files are, with `guest` the files its own seed names, and strips this before exec. */
 export const SESSION_TRUST_ENV = 'AC_SHIM_SESSION_TRUST'
 
 const PEM_CERTIFICATE = /-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g
@@ -63,24 +63,28 @@ export function mergedTrustBundle(base: string, files: readonly string[], warn: 
   }
 }
 
-/** On the executor: merge a placed session's authority files into its listener bundle and repoint the variables that still name it; never fails a spawn. */
-export function applySessionTrust(env: Record<string, string>, warn: (message: string) => void): void {
+/** In the shim: merge a session's authority files, and on `guest` those `guestEnv` names, into its listener bundle and repoint the variables that still name it; never fails a spawn. */
+export function applySessionTrust(
+  env: Record<string, string>,
+  warn: (message: string) => void,
+  guestEnv: Record<string, string> = {}
+): void {
   const raw = env[SESSION_TRUST_ENV]
   delete env[SESSION_TRUST_ENV]
   if (!raw) return
-  let request: { bundle?: unknown; files?: unknown }
+  let request: { bundle?: unknown; files?: unknown; guest?: unknown }
   try {
     request = JSON.parse(raw) as typeof request
   } catch {
     return warn(`acp: ignoring an unreadable ${SESSION_TRUST_ENV}`)
   }
-  const { bundle, files } = request ?? {}
+  const { bundle, files, guest } = request ?? {}
   if (typeof bundle !== 'string' || !Array.isArray(files))
     return warn(`acp: ignoring an unreadable ${SESSION_TRUST_ENV}`)
-  const merged = mergedTrustBundle(
-    bundle,
-    files.filter((file): file is string => typeof file === 'string' && file !== ''),
-    warn
-  )
+  // A hosted VM's own trust files (microsandbox's CA and the guest bundle) are named by its executor's seed, which its holder never sees.
+  const codexCa = guest === true ? guestEnv[CODEX_CA_ENV] : undefined
+  const own = guest === true ? [...sessionAuthorityFiles(guestEnv, {}), ...(codexCa ? [codexCa] : [])] : []
+  const named = files.filter((file): file is string => typeof file === 'string' && file !== '')
+  const merged = mergedTrustBundle(bundle, [...new Set([...named, ...own])], warn)
   for (const name of [...PROXY_TRUST_VARS, CODEX_CA_ENV]) if (env[name] === bundle) env[name] = merged
 }
