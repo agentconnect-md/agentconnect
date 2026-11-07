@@ -152,9 +152,19 @@ export class CredentialProxy {
     rmSync(path, { force: true })
     const server = this.server(undefined, agentId)
     server.on('error', (err) => this.deps.log.warn(`credential proxy: socket for ${agentId} failed: ${err.message}`))
+    // A Unix path binds inside listen() itself, so the socket exists before srt is handed it; only `listening` waits a tick.
     server.listen(path, () => chmodSync(path, 0o600))
     this.agentSockets.set(agentId, { path, server })
     return path
+  }
+
+  /** Retire an agent's route with the agent: its listener closes and its socket goes. */
+  release(agentId: string): void {
+    const route = this.agentSockets.get(agentId)
+    if (!route) return
+    this.agentSockets.delete(agentId)
+    route.server.close()
+    rmSync(route.path, { force: true })
   }
 
   /** The placeholder an agent's environment carries in place of a code-host token. */

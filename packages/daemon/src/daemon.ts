@@ -6614,6 +6614,7 @@ export class Daemon {
       // Use the one generation-safe teardown path: it evicts the host synchronously,
       // publishes hostStopping, and fences every older startup/retry generation.
       await this.stopHost(id)
+      this.credentialProxy?.proxy.release(id)
       await this.modelSessions.releaseForAgent(id)
       await this.webchatMcpRevocations.revokeRemoteWebchatGrantsForAgent(id, 'agent_detached')
       // Preserve lifecycle/move gates that predated this reconcile. A plain file/CP

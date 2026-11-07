@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { request as httpRequest } from 'node:http'
 import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https'
 import type { AddressInfo, LookupFunction } from 'node:net'
@@ -313,7 +313,8 @@ describe('the proxy end to end', () => {
       try {
         const socketPath = proxy.socketFor(AGENT)
         expect(proxy.socketFor(AGENT)).toBe(socketPath)
-        await new Promise((resolve) => setTimeout(resolve, 50))
+        // Bound inside listen(): the path is usable the moment it is handed out.
+        expect(existsSync(socketPath)).toBe(true)
         const placeholder = proxy.placeholderFor(AGENT)
         const url = new URL(proxy.loopbackUrl()!)
         const proxyAuth = `Basic ${Buffer.from(`${url.username}:${url.password}`).toString('base64')}`
@@ -330,9 +331,12 @@ describe('the proxy end to end', () => {
         // Another agent's socket honors only its own agent's placeholder.
         const other = proxy.socketFor('22222222-2222-4222-8222-222222222222')
         expect(other).not.toBe(socketPath)
-        await new Promise((resolve) => setTimeout(resolve, 50))
         expect(await getThrough({ socketPath: other }, upstreamPort, placeholder, ca.certPem)).toBe(403)
         expect(seen).toHaveLength(2)
+        // A removed agent's route goes with it.
+        proxy.release('22222222-2222-4222-8222-222222222222')
+        expect(existsSync(other)).toBe(false)
+        expect(proxy.socketFor('22222222-2222-4222-8222-222222222222')).toBe(other)
         expect(proxyTrustEnv(ca).SSL_CERT_FILE).toBe(ca.bundlePath)
         // The loopback listener is no open proxy: a CONNECT without its credential is refused.
         expect(await connectStatus({ host: url.hostname, port: Number(url.port) }, upstreamPort)).toBe(407)
