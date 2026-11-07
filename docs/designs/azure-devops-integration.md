@@ -1487,6 +1487,12 @@ Subscription` on `PublisherSecurity/{project GUID}`); after an
     - the identity votes on its own pull request, posts pull-request statuses
       (each write a new entry), opens a single-line inline thread anchored to
       an iteration, likes a comment, and resolves a thread;
+    - multi-line inline threads as §11.6 writes them: a right-side range on
+      added lines and a left-side range on removed lines, each with the file's
+      `changeTrackingId` from the iteration's changes and the current
+      iteration as both comparing iterations, are accepted and read back
+      unchanged, on the first iteration and after a second push; the
+      left-side range shows on the removed base lines;
     - an access-control list query for a member answers no effective
       permission from that member's groups, while `queryMembership=ExpandedUp`
       lists the groups and the repository's list chain names which of them
@@ -1495,9 +1501,6 @@ Subscription` on `PublisherSecurity/{project GUID}`); after an
     - whether a Project Administrator below Project Collection Administrator
       may write §11.1's access-control entry (B2);
     - the content form of a mention of the identity (B1);
-    - a multi-line inline thread, and the `changeTrackingId` it needs (B4).
-      Implemented as a range, with the change id from the iteration's changes
-      and the fallbacks of §11.6; not yet run against a live organization;
     - whether a subscription `PUT` without the real password keeps the stored
       one (B2 never relies on it).
 
