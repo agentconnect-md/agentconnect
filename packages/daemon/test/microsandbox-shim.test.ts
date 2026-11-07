@@ -57,7 +57,7 @@ async function fixture(
         return ++generation
       }
     },
-    tunnelSocketPath: (tunnel) => (tunnel === 'codehost' ? undefined : sockets[tunnel]),
+    tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' || tunnel === 'mcp' ? sockets[tunnel] : undefined),
     log,
     ...(options.channelTimeoutMs ? { channelTimeoutMs: options.channelTimeoutMs } : {}),
     ...(options.clock ? { clock: options.clock } : {})

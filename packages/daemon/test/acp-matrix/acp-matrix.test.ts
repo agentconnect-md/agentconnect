@@ -436,7 +436,7 @@ async function startVm(config: Config, catalog: ResolvedRuntimeCatalog): Promise
     const local = new LocalExecutor({
       launcher: microsandboxLauncher({ manager: () => manager }),
       generations: { nextSandboxGeneration: async () => ++generation },
-      tunnelSocketPath: (tunnel) => (tunnel === 'codehost' ? undefined : sockets[tunnel]),
+      tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' || tunnel === 'mcp' ? sockets[tunnel] : undefined),
       log
     })
     vm = { manager, local, runtimes: declaredRuntimeCatalog(catalog, table).catalog.runtimes, servers }

@@ -61,7 +61,8 @@ describe('shim entry options', () => {
     expect(host.paths.tunnels).toEqual({
       gitcred: '/d/hs/x/gitcred.sock',
       mcp: '/d/hs/x/mcp.sock',
-      codehost: '/d/hs/x/codehost.sock'
+      codehost: '/d/hs/x/codehost.sock',
+      provider: '/d/hs/x/provider.sock'
     })
     expect(host.paths.mcpBridgeEntry).toBe('/d/dist/shim/mcp-bridge.js')
   })

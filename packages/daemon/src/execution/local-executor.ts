@@ -46,9 +46,9 @@ export interface LocalExecutorDeps {
   tunnelSocketPath: (tunnel: TunnelName, agentId: string) => string | undefined
   /** Tags a subject's daemon-socket connection with that subject (gitcred binds a pod window to its pod). */
   tunnelGreeting?: (subject: string, tunnel: TunnelName) => Buffer | undefined
-  /** Tunnels beyond the helpers an environment's agent gets (a VM's `codehost`); omitted means none. */
+  /** Tunnels beyond the helpers an environment's agent gets (a VM's `codehost` and `provider`); omitted means none. */
   extraTunnelsFor?: (agentId: string) => TunnelName[]
-  /** What a `listen` carries beside the name (`codehost`'s routes and CA). */
+  /** What a `listen` carries beside the name (`codehost`'s or `provider`'s routes and CA). */
   tunnelListenOptions?: (agentId: string, tunnel: TunnelName) => TunnelListenOptions | undefined
   log: Logger
   clock?: Clock
@@ -113,8 +113,16 @@ export class LocalExecutor {
       clock,
       log: deps.log,
       metrics: noopClusterMetrics,
-      codehostFor: (subject) => this.tunnels.listeningAt(subject, 'codehost')?.proxy
+      codehostFor: (subject) => this.tunnels.listeningAt(subject, 'codehost')?.proxy,
+      providerFor: (subject) => this.providerListener(subject)
     })
+  }
+
+  /** The `provider` listener of the subject's bound shim, asked for again since its slot is registered as the launch is built. */
+  private async providerListener(subject: string) {
+    const session = this.binder.sessionFor(subject)
+    if (session) await this.tunnels.ensure(subject, session)
+    return this.tunnels.listeningAt(subject, 'provider')?.proxy
   }
 
   /** The driver a host launches into this environment with. */

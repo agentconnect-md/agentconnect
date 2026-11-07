@@ -8,7 +8,7 @@
  * `docker/runtime-sandbox.Dockerfile`, and changing one without the other breaks the pod.
  */
 
-export type SandboxTunnelName = 'gitcred' | 'mcp' | 'codehost'
+export type SandboxTunnelName = 'gitcred' | 'mcp' | 'codehost' | 'provider'
 
 /** The preset id the DSH preset directory supplies — the roster reads it from the directory NAME. */
 export const SANDBOX_DSH_PRESET_ID = 'standard-no-search'
@@ -59,7 +59,9 @@ export function shimPaths(runtimeRoot = DEFAULT_SHIM_RUNTIME_ROOT, helperRoot = 
       gitcred: `${runtimeRoot}/gitcred.sock`,
       mcp: `${runtimeRoot}/mcp.sock`,
       // Served as a loopback proxy rather than at this path; the session's trust bundle is written beside it.
-      codehost: `${runtimeRoot}/codehost.sock`
+      codehost: `${runtimeRoot}/codehost.sock`,
+      // The same loopback proxy as codehost, for provider routes.
+      provider: `${runtimeRoot}/provider.sock`
     })
   })
 }

@@ -124,7 +124,8 @@ async function placedSession(options: { maxCodehostStreams?: number } = {}) {
       daemonTunnelSocketPath(name, AGENT, {
         gitcred: join(dir, 'none.sock'),
         mcp: join(dir, 'none.sock'),
-        codehost: (agentId) => proxy.tunnelSocketFor(agentId)
+        codehost: (agentId) => proxy.tunnelSocketFor(agentId),
+        provider: () => undefined
       }),
     listenOptions: (name) => (name === 'codehost' ? { routes: proxy.tunnelRoutes(AGENT), ca: ca.certPem } : undefined),
     log: quiet
@@ -287,9 +288,9 @@ describe.skipIf(process.platform === 'win32')('an executor-placed session’s co
       cleanups.push(() => void socket.destroy())
     )
     expect(held).toBe(200)
-    expect(tunnel.streamCount(true)).toBe(1)
+    expect(tunnel.streamCount('codehost')).toBe(1)
     expect(await connectThrough(shimDial(listening), gitlab())).toBe(503)
-    expect(tunnel.streamCount(true)).toBe(1)
+    expect(tunnel.streamCount('codehost')).toBe(1)
   })
 })
 

@@ -42,6 +42,11 @@ export interface CodehostSpawn {
   files?: SpawnFile[]
 }
 
+/** What a VM or executor launch holds in place of its organization Provider key once its shim serves a `provider` listener: the variables that carry the placeholder instead. */
+export interface ProviderSpawn {
+  env: Record<string, string>
+}
+
 export interface SpawnRequest {
   command: string
   args: string[]
@@ -62,6 +67,8 @@ export interface SpawnRequest {
   hostKey?: HostKey
   /** Applied by a shim driver after its bind, and only when the shim reported a `codehost` listener; any other driver ignores it. */
   codehost?: CodehostSpawn
+  /** Applied the same way, only when the shim reported a `provider` listener. */
+  provider?: ProviderSpawn
 }
 
 /** A launched ACP runtime, reduced to what the protocol layer actually needs. */

@@ -226,7 +226,9 @@ describe('a provider placeholder', () => {
     expect(proxy.domainsFor(AGENT)).toEqual(
       expect.arrayContaining(['github.com', 'api.anthropic.com', 'api.openai.com', 'llm.example.test'])
     )
-    expect(proxy.tunnelRoutes(OTHER)).toEqual([
+    // A codehost tunnel stays a code-host matter; the slots ride the provider tunnel.
+    expect(proxy.tunnelRoutes(OTHER)).toEqual([])
+    expect(proxy.providerTunnelRoutes(OTHER)).toEqual([
       'api.anthropic.com:443',
       'api.openai.com:443',
       'llm.example.test:443',

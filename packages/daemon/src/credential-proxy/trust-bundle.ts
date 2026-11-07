@@ -82,5 +82,5 @@ export function applySessionTrust(env: Record<string, string>, warn: (message: s
     files.filter((file): file is string => typeof file === 'string' && file !== ''),
     warn
   )
-  for (const name of PROXY_TRUST_VARS) if (env[name] === bundle) env[name] = merged
+  for (const name of [...PROXY_TRUST_VARS, CODEX_CA_ENV]) if (env[name] === bundle) env[name] = merged
 }

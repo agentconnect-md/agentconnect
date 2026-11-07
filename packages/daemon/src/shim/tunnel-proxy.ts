@@ -2,10 +2,13 @@ import { createConnection, type Socket } from 'node:net'
 import type { ShimCapability, ShimEvent } from './protocol.js'
 import {
   ACK_EVERY_FRAMES,
+  isProxyTunnel,
   MAX_CODEHOST_STREAMS,
   MAX_IN_FLIGHT_FRAMES,
+  MAX_PROVIDER_STREAMS,
   MAX_TUNNEL_CHUNK_BYTES,
   TunnelListeningSchema,
+  type ProxyTunnelName,
   type TunnelListening,
   type TunnelListenOptions,
   type TunnelName
@@ -15,11 +18,25 @@ import {
 const STREAM_IDLE_MS: Readonly<Record<TunnelName, number | null>> = {
   gitcred: 5 * 60_000,
   mcp: null,
-  codehost: 5 * 60_000
+  codehost: 5 * 60_000,
+  // A model stream can sit silent for minutes while the model thinks, and a client keeps its connection for the next turn.
+  provider: 30 * 60_000
 }
 
 /** This side's own cap on concurrent helper (`gitcred`, `mcp`) streams per agent, protecting the daemon from a shim that does not enforce its own. */
 const MAX_TUNNEL_STREAMS = 32
+
+/** Each stream budget's cap: the helpers share one, and each proxy tunnel has its own. */
+const STREAM_CAPS: Readonly<Record<ProxyTunnelName | 'helpers', number>> = {
+  helpers: MAX_TUNNEL_STREAMS,
+  codehost: MAX_CODEHOST_STREAMS,
+  provider: MAX_PROVIDER_STREAMS
+}
+
+/** The budget a tunnel's streams count against. */
+function streamBudget(tunnel: TunnelName): ProxyTunnelName | 'helpers' {
+  return isProxyTunnel(tunnel) ? tunnel : 'helpers'
+}
 
 export interface TunnelProxyDeps {
   /** The agent's logical channel. Requests carry its credential and generation, so a frame from
@@ -38,7 +55,7 @@ export interface TunnelProxyDeps {
   socketPathFor: (tunnel: TunnelName) => string | undefined
   /** Bytes written to the daemon socket before any pod byte, naming this pod to the server (gitcred's window binding). */
   greeting?: (tunnel: TunnelName) => Buffer | undefined
-  /** What a `listen` carries beside the name: `codehost`'s routes and the CA its sessions trust. */
+  /** What a `listen` carries beside the name: `codehost`'s or `provider`'s routes and the CA its sessions trust. */
   listenOptions?: (tunnel: TunnelName) => TunnelListenOptions | undefined
   /** Dials a local unix socket. Injected so a test can stand in for the daemon's server. */
   dial?: (path: string) => Socket
@@ -67,6 +84,8 @@ interface ProxyStream {
 export class TunnelProxy {
   private readonly streams = new Map<string, ProxyStream>()
   private readonly listening = new Map<TunnelName, TunnelListening | undefined>()
+  /** The options each tunnel was last listened with, so changed routes are sent again. */
+  private readonly listenedWith = new Map<TunnelName, string>()
   private readonly onEvent = (event: ShimEvent): void => this.accept(event)
   private readonly onAttach = (): void => this.dropUnaccountedStreams()
   private stopped = false
@@ -99,18 +118,20 @@ export class TunnelProxy {
    */
   async ensure(tunnel: TunnelName): Promise<void> {
     if (this.stopped) throw new Error(`agent ${this.deps.session.agentId} has no live shim channel`)
-    if (this.listening.has(tunnel)) return
+    const options = this.deps.listenOptions?.(tunnel)
+    // A proxy tunnel is asked again when its routes changed, as when a provider slot moved to another endpoint.
+    if (this.listening.has(tunnel) && this.listenedWith.get(tunnel) === JSON.stringify(options ?? null)) return
     if (!this.deps.socketPathFor(tunnel)) {
       throw new Error(`this daemon serves no ${tunnel} socket to tunnel into the sandbox`)
     }
-    const options = this.deps.listenOptions?.(tunnel)
-    if (tunnel === 'codehost' && !options) throw new Error('this agent has no code-host routes to tunnel')
+    if (isProxyTunnel(tunnel) && !options) throw new Error(`this agent has no ${tunnel} routes to tunnel`)
     const reply = TunnelListeningSchema.safeParse(
       await this.deps.session.request('tunnel', { op: 'listen', tunnel, ...options, acks: true })
     )
-    // A session is pointed at the codehost listener by what its reply reports, so one without it is not served.
-    if (tunnel === 'codehost' && !reply.data?.proxy) throw new Error('the sandbox reported no codehost listener')
+    // A session is pointed at the proxy listener by what its reply reports, so one without it is not served.
+    if (isProxyTunnel(tunnel) && !reply.data?.proxy) throw new Error(`the sandbox reported no ${tunnel} listener`)
     this.listening.set(tunnel, reply.success ? reply.data : undefined)
+    this.listenedWith.set(tunnel, JSON.stringify(options ?? null))
     this.deps.log.info(
       `tunnel: agent ${this.deps.session.agentId} serves ${tunnel} in its sandbox` +
         (reply.success ? ` at ${reply.data.socketPath}` : '')
@@ -125,13 +146,14 @@ export class TunnelProxy {
     this.deps.session.offAttach(this.onAttach)
     for (const streamId of [...this.streams.keys()]) this.close(streamId, reason)
     this.listening.clear()
+    this.listenedWith.clear()
   }
 
-  /** Open streams: all of them, or only the codehost ones (`true`) or the helper ones (`false`). */
-  streamCount(codehost?: boolean): number {
-    if (codehost === undefined) return this.streams.size
+  /** Open streams: all of them, or only those on one budget (a proxy tunnel's, or the helpers' shared one). */
+  streamCount(budget?: ProxyTunnelName | 'helpers'): number {
+    if (budget === undefined) return this.streams.size
     let count = 0
-    for (const { tunnel } of this.streams.values()) if ((tunnel === 'codehost') === codehost) count += 1
+    for (const { tunnel } of this.streams.values()) if (streamBudget(tunnel) === budget) count += 1
     return count
   }
 
@@ -165,11 +187,11 @@ export class TunnelProxy {
         this.refuse(event.streamId, 'that tunnel stream is already open')
         return
       }
-      // Code-host streams have their own budget, so a burst of clones cannot take the helpers' slots.
-      const codehost = event.event.tunnel === 'codehost'
-      const cap = codehost ? MAX_CODEHOST_STREAMS : MAX_TUNNEL_STREAMS
-      if (this.streamCount(codehost) >= cap) {
-        this.refuse(event.streamId, `${cap} ${codehost ? 'codehost' : 'tunnel'} streams are already open`)
+      // Each proxy tunnel has its own budget, so a burst of clones or model streams cannot take the helpers' slots or each other's.
+      const budget = streamBudget(event.event.tunnel)
+      const cap = STREAM_CAPS[budget]
+      if (this.streamCount(budget) >= cap) {
+        this.refuse(event.streamId, `${cap} ${budget === 'helpers' ? 'tunnel' : budget} streams are already open`)
         return
       }
       this.open(event.streamId, event.event.tunnel)

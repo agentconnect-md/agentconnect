@@ -135,17 +135,24 @@ describe('the daemon socket each tunnel reaches', () => {
   const sockets = {
     gitcred: '/daemon/gitcred.sock',
     mcp: '/daemon/mcp.sock',
-    codehost: (agentId: string) => `/daemon/codehost/${agentId}.sock`
+    codehost: (agentId: string) => `/daemon/codehost/${agentId}.sock`,
+    provider: (agentId: string) => `/daemon/provider/${agentId}.sock`
   }
 
   it('names every tunnel explicitly, each its own socket', () => {
     const paths = TunnelNameSchema.options.map((tunnel) => daemonTunnelSocketPath(tunnel, 'agent-a', sockets))
-    expect(paths).toEqual(['/daemon/gitcred.sock', '/daemon/mcp.sock', '/daemon/codehost/agent-a.sock'])
+    expect(paths).toEqual([
+      '/daemon/gitcred.sock',
+      '/daemon/mcp.sock',
+      '/daemon/codehost/agent-a.sock',
+      '/daemon/provider/agent-a.sock'
+    ])
     expect(new Set(paths).size).toBe(TunnelNameSchema.options.length)
   })
 
   it('dials nothing for a name it does not know, rather than a plausible socket', () => {
     expect(daemonTunnelSocketPath('other' as TunnelName, 'agent-a', sockets)).toBeUndefined()
     expect(daemonTunnelSocketPath('codehost', 'agent-b', { ...sockets, codehost: () => undefined })).toBeUndefined()
+    expect(daemonTunnelSocketPath('provider', 'agent-b', { ...sockets, provider: () => undefined })).toBeUndefined()
   })
 })

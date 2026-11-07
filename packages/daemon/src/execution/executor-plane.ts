@@ -74,7 +74,7 @@ export interface ExecutorPlaneDeps {
   tunnelSocketPath?: (tunnel: TunnelName, agentId: string) => string | undefined
   /** Tags a subject's daemon-socket connection with that subject (gitcred binds a pod window to its pod). */
   tunnelGreeting?: (subject: string, tunnel: TunnelName) => Buffer | undefined
-  /** What a `listen` carries beside the name: `codehost`'s routes and the CA its sessions trust. */
+  /** What a `listen` carries beside the name: `codehost`'s or `provider`'s routes and the CA its sessions trust. */
   tunnelListenOptions?: (agentId: string, tunnel: TunnelName) => TunnelListenOptions | undefined
   log: { info: (m: string) => void; warn: (m: string) => void; debug?: (m: string) => void }
   clock?: Clock
@@ -178,8 +178,17 @@ export class ExecutorPlane implements ExecutionPlane {
       grantsFor: () => EXECUTOR_GRANTS,
       clock: this.clock,
       log: deps.log,
-      metrics: clusterMetrics
+      metrics: clusterMetrics,
+      // A host session's organization key is switched at spawn, once its slot exists: it is registered as the launch is built.
+      providerFor: (subject) => this.providerListener(subject)
     })
+  }
+
+  /** The `provider` listener of the subject's bound shim, asked for again since its slot is registered as the launch is built. */
+  private async providerListener(subject: string) {
+    const session = this.binder.sessionFor(subject)
+    if (session) await this.tunnels.ensure(subject, session)
+    return this.tunnels.listeningAt(subject, 'provider')?.proxy
   }
 
   /** Record where a session was born, or where it moved to. */
