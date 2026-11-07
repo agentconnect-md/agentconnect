@@ -64,7 +64,7 @@ afterAll(() => {
   }
   for (const dir of dirs) {
     try {
-      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+      rmSync(dir, { recursive: true, force: true })
     } catch (err) {
       // On Windows a child the daemon started can still hold the directory open; a leftover temp dir is not a test failure.
       if (process.platform !== 'win32') throw err
