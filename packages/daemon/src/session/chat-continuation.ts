@@ -1,5 +1,6 @@
 import {
   continuableSession,
+  isCoordinatorCoordinate,
   isDelegatedTaskCoordinate,
   isSubsessionCoordinate,
   originKindOf
@@ -8,7 +9,14 @@ import { webchatCoordinatorTask } from '../auto-session/webchat-task.js'
 import { LifecycleCleanupBlockedError } from '../daemon/turn-types.js'
 import { formatErr } from '../daemon/text.js'
 import { isHeadlessCronSession } from '../scheduler/scheduler.js'
-import { sessionThreadOf, wakeThreadFields, type Attachment, type NormalizedMessage } from '../messages/normalized.js'
+import {
+  sessionChannelOf,
+  sessionThreadOf,
+  wakeThreadFields,
+  type Attachment,
+  type NormalizedMessage
+} from '../messages/normalized.js'
+import { sessionReceivedRoot } from '../cp/session-reader.js'
 import type { UploadOutcome } from '../mcp/ops/context.js'
 import type { SlackConnection } from '../slack/connection.js'
 import type { TelegramConnection } from '../telegram/connection.js'
@@ -31,7 +39,7 @@ export interface ChatContinuationRequest {
   post?: { postId: string; at: number }
   /** Images and files sent with the message; only a coordinator's task takes them (its own thread is its composer). */
   attachments?: Attachment[]
-  /** The root postId of the webchat thread written in, one a coordinator's task holds (webchat-threads.md §6.3). */
+  /** The thread written in: a webchat root a coordinator's task holds (webchat-threads.md §6.3), or a root a platform coordinator received (§7). */
   thread?: string
 }
 
@@ -61,7 +69,16 @@ export type ChatContinuationVerdict = { accepted: true } | Refusal
 
 export interface ChatContinuationHost extends Pick<
   ChatApplicationHost,
-  'info' | 'warn' | 'store' | 'agents' | 'paused' | 'startFailure' | 'safetyDraining' | 'draining' | 'agentDraining'
+  | 'info'
+  | 'warn'
+  | 'store'
+  | 'agents'
+  | 'paused'
+  | 'startFailure'
+  | 'safetyDraining'
+  | 'draining'
+  | 'agentDraining'
+  | 'keyCoordinatorMessage'
 > {
   error(message: string): void
   integrationIdForSessionTransport(
@@ -142,8 +159,14 @@ export class ChatSessionContinuation {
     if (!local) return { accepted: false, reason: 'not_found' }
     // A webchat coordinator's task keyed on its thread takes messages in the threads it holds, as their replies.
     const threadTask = await this.webchatThreadTask(agentId, local)
+    // A platform coordinator takes a message in a thread of a root it received, mirrored there and routed as any reply in it (webchat-threads.md §7).
+    const coordinatorThread =
+      thread !== undefined &&
+      !threadTask &&
+      isCoordinatorCoordinate(local.thread) &&
+      (await sessionReceivedRoot(this.host.store(), local, thread))
     const writesIn = thread ?? (threadTask ? local.thread : undefined)
-    if (writesIn !== undefined && !threadTask?.held.includes(writesIn))
+    if (writesIn !== undefined && !coordinatorThread && !threadTask?.held.includes(writesIn))
       return { accepted: false, reason: 'unknown_thread' }
     if (!continuableSession({ ...local, taskParentSessionId: threadTask?.parentSessionId }))
       return { accepted: false, reason: 'not_found' }
@@ -186,7 +209,16 @@ export class ChatSessionContinuation {
       this.host.warn(`chat continuation: key mismatch for session ${targetSessionId} (${key} != ${local.key})`)
       return { accepted: false, reason: 'not_found' }
     }
-    return { accepted: true, turn: { agentId, sessionKey: key, message, local, integration, request } }
+    // A task that holds the thread by now takes the message, as it takes any reply there (webchat-threads.md §4).
+    if (coordinatorThread) await this.host.keyCoordinatorMessage?.(agentId, message)
+    const routed = sessionKey(
+      message.platform,
+      sessionChannelOf(message),
+      sessionThreadOf(message),
+      agentId,
+      message.transportScope
+    )
+    return { accepted: true, turn: { agentId, sessionKey: routed, message, local, integration, request } }
   }
 
   /** The live coordinator task `local` is keyed on its webchat thread for, with the webchat threads it holds; undefined for any other session. */
@@ -334,7 +366,7 @@ export class ChatSessionContinuation {
       if (!finalized) this.host.warn(`chat continuation: mirror finalization failed for ${local.key} (peers unrouted)`)
     }
     this.host.info(
-      `chat continuation: ${author.name} → session ${local.key} (conversation ${conversationId}, turn ${turnId})`
+      `chat continuation: ${author.name} → session ${turn.sessionKey} (conversation ${conversationId}, turn ${turnId})`
     )
     return { accepted: true }
   }

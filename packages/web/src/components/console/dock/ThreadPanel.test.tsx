@@ -120,7 +120,8 @@ vi.mock('@/components/console/PlaygroundProvider', () => {
     setPgFiles: () => {},
     pgCancel: (id: string, agentId: string) => wire.calls.push(`cancel:${id}:${agentId}`),
     reconcileLiveSteps: () => {},
-    markSessionTarget: (id: string) => wire.calls.push(`target:${id}`),
+    markSessionTarget: (id: string, target?: string, threads?: boolean) =>
+      wire.calls.push(`target:${id}${target ? `:${target}` : ''}${threads ? ':threads' : ''}`),
     pgAnswerElicitation: (id: string, agentId: string, requestId: string, value: unknown) =>
       wire.calls.push(`answer:${id}:${agentId}:${requestId}:${String(value)}`),
     pgNotice: (id: string, agentId: string, text: string) => {
@@ -816,7 +817,7 @@ describe('ThreadPanel on a Slack thread’s record (webchat-threads.md §7)', ()
     expect(wire.calls.some((call) => call.startsWith('thread:'))).toBe(false)
   })
 
-  it('offers no composer in an unowned Slack thread, and no link without one', async () => {
+  it('offers no composer in an unowned Slack thread to a reader who may not continue its coordinator, and no link without one', async () => {
     wire.record = recordPage()
     withTask = false
     props = { record: ref, platform: 'slack' }
@@ -825,6 +826,42 @@ describe('ThreadPanel on a Slack thread’s record (webchat-threads.md §7)', ()
     expect(panel.querySelectorAll('[data-thread-message]')).toHaveLength(3)
     expect(panel.querySelector('textarea')).toBeNull()
     expect(panel.querySelector('[data-thread-platform-link]')).toBeNull()
+  })
+
+  it('writes in an unowned Slack thread through the continued coordinator, mirrored there (webchat-threads.md §7)', async () => {
+    wire.record = recordPage()
+    withTask = false
+    props = { record: ref, platform: 'slack', writer: { sessionId: 'ses_coordinator', continues: 'ses_coordinator' } }
+    wire.drafts['ses_coordinator#post-root'] = 'and the cache?'
+    await render()
+    const panel = container.querySelector('[data-thread-panel="post-root"]')!
+    expect(panel.textContent).toContain('Posted in the Slack thread under your name; the coordinator answers there')
+    act(() => {
+      panel
+        .querySelector<HTMLTextAreaElement>('textarea')!
+        .dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    expect(wire.calls).toEqual([
+      'target:ses_coordinator:ses_coordinator:threads',
+      'thread:ses_coordinator:agent_1:and the cache?:post-root'
+    ])
+  })
+
+  it('continues the holding task in a held Slack thread even where the reader may write to its coordinator', async () => {
+    wire.record = recordPage({ summary: held })
+    withTask = false
+    props = { record: ref, platform: 'slack', writer: { sessionId: 'ses_coordinator', continues: 'ses_coordinator' } }
+    wire.drafts.ses_task = 'try a warm cache'
+    await render()
+    const panel = container.querySelector('[data-thread-panel="post-root"]')!
+    expect(panel.textContent).toContain('the task holding it answers there')
+    act(() => {
+      panel
+        .querySelector<HTMLTextAreaElement>('textarea')!
+        .dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    expect(wire.calls).toContain('send:ses_task:agent_1:try a warm cache')
+    expect(wire.calls.some((call) => call.startsWith('thread:'))).toBe(false)
   })
 })
 

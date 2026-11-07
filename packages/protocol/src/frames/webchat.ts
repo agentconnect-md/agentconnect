@@ -125,6 +125,15 @@ export const WEBCHAT_THREADS_FEATURE = 'webchat-threads-v1'
 /** A thread is named by its root's `postId`; the relay checks only this shape, the daemon whether the root exists. */
 export const WebchatThreadId = z.string().uuid()
 
+/** A continued coordinator takes a turn in one of its platform's threads: the relay forwards that root's id, the daemon mirrors the message there (webchat-threads.md §7). */
+export const CONTINUATION_THREADS_FEATURE = 'continuation-threads-v1'
+
+/** A platform thread's root id (a Slack ts), which only a continued session's turn may name; the daemon checks the coordinator received that root. */
+export const PlatformThreadId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/)
+
+/** The thread a turn is written in: a webchat root's `postId`, or a continued coordinator's platform thread. */
+export const TurnThreadId = z.union([WebchatThreadId, PlatformThreadId])
+
 /** Daemon and relay carry `rd/webchat-prompt-suggestion`; the relay hands it to the console as `prompt_suggestion`. */
 export const WEBCHAT_PROMPT_SUGGESTION_FEATURE = 'webchat-prompt-suggestion-v1'
 

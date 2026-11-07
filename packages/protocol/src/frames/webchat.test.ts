@@ -8,6 +8,7 @@ import {
   WebchatAck,
   WebchatOutput,
   WebchatStatus,
+  CONTINUATION_THREADS_FEATURE,
   WEBCHAT_THREADS_FEATURE
 } from '../index.js'
 
@@ -415,6 +416,7 @@ describe('McpAppRpc — the four host methods a view may reach the daemon with',
 describe('webchat threads (webchat-threads.md §8)', () => {
   it('names the feature and refuses a turn on a thread the daemon cannot place', () => {
     expect(WEBCHAT_THREADS_FEATURE).toBe('webchat-threads-v1')
+    expect(CONTINUATION_THREADS_FEATURE).toBe('continuation-threads-v1')
     expect(WebchatAck.parse({ accepted: false, turnId: TURN, reason: 'unknown_thread' }).reason).toBe('unknown_thread')
   })
 })

@@ -136,6 +136,16 @@ describe('parseBrowserFrame', () => {
       expect(parseBrowserFrame({ text: 'hi', thread }, USER)).toBeNull()
   })
 
+  it('carries a platform thread only on a continued session’s turn, as typed (webchat-threads.md §7)', () => {
+    const ts = '1720000000.000100'
+    expect(parseBrowserFrame({ text: 'hi', thread: ts }, USER)).toBeNull()
+    expect(parseBrowserFrame({ text: 'hi', thread: ts }, USER, undefined, undefined, undefined, true)).toEqual({
+      op: { op: 'turn', text: 'hi', user: USER, thread: ts }
+    })
+    for (const thread of [`webchat:${CHAT}`, '', '.1720000000'])
+      expect(parseBrowserFrame({ text: 'hi', thread }, USER, undefined, undefined, undefined, true)).toBeNull()
+  })
+
   it('forwards the browser time zone on the turn it bridges to the daemon', async () => {
     const { transport, sent } = build()
     transport.feed({ text: 'hi', turnId: AGENT, timeZone: 'Asia/Shanghai' })
@@ -351,7 +361,7 @@ describe('RelayBrowserConnection', () => {
       type: 'ready',
       conversationId: CHAT,
       agentId: AGENT,
-      features: ['webchat-images-v1', 'webchat-threads-v1'],
+      features: ['webchat-images-v1', 'webchat-threads-v1', 'continuation-threads-v1'],
       participants: [{ agentId: AGENT, primary: true }]
     })
   })
@@ -433,6 +443,13 @@ describe('RelayBrowserConnection', () => {
     conn['onClose']()
     await tick()
     expect(sent.at(-1)).toMatchObject({ targetSessionId: TARGET, payload: { op: 'close' } })
+  })
+
+  it('forwards a continued coordinator’s platform thread on the targeted turn', async () => {
+    const { transport, sent } = build({ targetSessionId: 'acp-session-cont-1' })
+    transport.feed(JSON.stringify({ text: 'in the thread', thread: '1720000000.000100' }))
+    await tick()
+    expect(sent[0]).toMatchObject({ payload: { op: 'turn', thread: '1720000000.000100' } })
   })
 
   it("stamps each continued participant's own session and sends no context copy to a member left out", async () => {

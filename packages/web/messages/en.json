@@ -370,7 +370,8 @@
       "answeredInThread": "Answered in the thread",
       "messageActions": "Message actions",
       "openOnPlatform": "Open in {platform}",
-      "threadHintMirrored": "Posted in the {platform} thread under your name; the task holding it answers there"
+      "threadHintMirrored": "Posted in the {platform} thread under your name; the task holding it answers there",
+      "threadHintMirroredCoordinator": "Posted in the {platform} thread under your name; the coordinator answers there"
     },
     "githubApp": {
       "title": "GitHub App",

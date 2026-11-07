@@ -163,6 +163,7 @@ vi.mock('@/components/console/PlaygroundProvider', () => {
     openPlayground: () => 'pg_new',
     pgSend: spies.pgSend,
     markSessionTarget: spies.markSessionTarget,
+    getPgRelayFeatures: () => undefined,
     pgAttach: spies.pgAttach,
     getPgQueue: () => [],
     pgCancelQueued: () => {},

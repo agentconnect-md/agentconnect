@@ -106,8 +106,8 @@ export function ThreadPanel({
   }
   /** A person's console photo by sender, as the session page draws it; undefined asks for this visit's own sends. */
   personPicture?: (sender: string | undefined) => string | undefined
-  /** The reader's own coordinator conversation, whose socket a message in this record's thread goes out on; absent for another member, who writes through the holding task. */
-  writer?: { sessionId: string; conversationId?: string }
+  /** The socket a message in this record's thread goes out on: the owner's coordinator conversation, or a continued platform coordinator (`continues` its session); absent for another member, who writes through the holding task. */
+  writer?: { sessionId: string; conversationId?: string; continues?: string }
   /** Focus the composer when it first shows, as Reply in thread asks. */
   focusComposer?: boolean
   /** Told each footer the record's reads return, so the timeline's footer keeps up with an open thread. */
@@ -144,13 +144,15 @@ export function ThreadPanel({
   const unreadable = fromRecord && summary?.readable === false
   const holderId = task?.sessionId ?? (unreadable ? null : (summary?.task?.sessionId ?? null))
   const id = holderId ?? ''
-  // The owner writes in any thread of their conversation, held or not, and routing takes it to the task or the coordinator.
-  const ownThread =
-    writer && record && fromRecord && !unreadable && !thread.missing ? { ...writer, rootId: record.rootId } : null
   // A webchat task takes the thread a message is written in; a platform's task its own, mirrored into the platform thread.
   const shape = threadShapeOf(platform)
   const inThread = !!record && fromRecord && shape?.continuesInThread === true
   const mirrored = fromRecord && !!shape && !shape.continuesInThread
+  // The writer writes in any thread, and routing takes it to the task or the coordinator; a platform's held thread continues its task instead.
+  const ownThread =
+    writer && record && fromRecord && !unreadable && !thread.missing && !(mirrored && holderId)
+      ? { ...writer, rootId: record.rootId }
+      : null
   const row = useTaskRow(agentId, holderId, parentSessionId)
   const { stopOf, stop } = useTaskStops(agentId, parentSessionId ?? id, () => {})
   const stopState = row ? stopOf(row) : undefined
@@ -262,6 +264,8 @@ export function ThreadPanel({
   const draftId = ownThread ? `${ownThread.sessionId}#${ownThread.rootId}` : id
   const send = (): void => {
     if (ownThread) {
+      // A continued coordinator's socket mints for its session, and its page draws the thread the message goes in.
+      if (ownThread.continues) markSessionTarget(ownThread.sessionId, ownThread.continues, true)
       if (pgSendThread(ownThread.sessionId, agentId, getPgInput(draftId), ownThread.rootId, ownThread.conversationId))
         setPgInput(draftId, '')
       return
@@ -495,7 +499,13 @@ export function ThreadPanel({
           placeholder={ownThread || mirrored ? t('threadPlaceholder') : t('replyPlaceholder')}
           // Who answers a message in a thread; a task's reply box has its attach button there instead.
           {...(ownThread
-            ? { hint: holderId ? t('threadHintTask') : t('threadHintCoordinator') }
+            ? {
+                hint: mirrored
+                  ? t('threadHintMirroredCoordinator', { platform: platName(platform) })
+                  : holderId
+                    ? t('threadHintTask')
+                    : t('threadHintCoordinator')
+              }
             : mirrored
               ? { hint: t('threadHintMirrored', { platform: platName(platform) }) }
               : {})}

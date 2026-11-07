@@ -8,6 +8,9 @@ import { platformThreadShape } from '@/components/console/platforms/registry'
 /** A daemon or relay that serves a coordinator's threads (protocol `WEBCHAT_THREADS_FEATURE`). */
 export const WEBCHAT_THREADS_FEATURE = 'webchat-threads-v1'
 
+/** A daemon or relay that carries a continued coordinator's message into one of its platform's threads (protocol `CONTINUATION_THREADS_FEATURE`). */
+export const CONTINUATION_THREADS_FEATURE = 'continuation-threads-v1'
+
 /** The prefix the coordinator names a delivered message by (daemon `coordinatorMessageId`). */
 const COORDINATOR_MESSAGE_ID_PREFIX = 'msg-'
 

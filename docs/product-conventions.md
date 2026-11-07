@@ -1421,9 +1421,11 @@ thread stay in that thread. Its turns are labelled as on a console conversation.
 beside the page at `?thread=` with the whole Slack thread, including what people said there without
 addressing the agent, and the header's "Open in Slack" links the thread. In a thread a task holds,
 the composer continues that task as its own page does, posting in the task's Slack thread under the
-writer's name. The console offers no Reply in thread on a Slack root and no composer in a thread no
-task holds. A Slack task's own page shrinks back into its first thread. Platforms whose module
-declares no thread shape keep a coordinator's flat transcript.
+writer's name. In a thread no task holds, and from Reply in thread on a root, whoever may continue
+the coordinator writes too: the message is posted in the Slack thread under their name first, then
+reaches the coordinator, which is told the thread it sits in, or the task that holds the thread by
+then. A Slack task's own page shrinks back into its first thread. Platforms whose module declares no
+thread shape keep a coordinator's flat transcript.
 
 A Code channel's Tasks tab reads the same task and runtime background-work sources as
 the console's Tasks panel. Open work stays visible, finished work is grouped and collapsed,

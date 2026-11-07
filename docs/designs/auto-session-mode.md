@@ -731,7 +731,10 @@ not addressed to this agent. Cost grows with the number of agents.
   roots with their threads' footers, keeps thread replies in their threads, labels the turns that
   answer them, and opens a thread's whole record beside the page at `?thread=<ts>`, linked to the
   thread in Slack. In a held thread the composer continues the task as its page does, mirrored into
-  the Slack thread; a Slack task's page shrinks into its first thread (webchat-threads.md §7). Other
+  the Slack thread. In a thread no task holds, and from Reply in thread on a root, whoever may
+  continue the coordinator writes there too: the message is mirrored into the Slack thread, then
+  routed as any reply in it, to the coordinator with its thread named or to a task holding the
+  thread by then. A Slack task's page shrinks into its first thread (webchat-threads.md §7). Other
   platforms keep the flat transcript.
 
 ## 12. Validation

@@ -249,7 +249,10 @@ the existing output rules.**
   conversation (an `append` or channel-coordinator coordinate,
   [channel-session-mode.md](channel-session-mode.md) §3) has no platform thread, so
   its mirror and replies post at the conversation's top level; the coordinate stays
-  the session's key and is never sent to the platform as a thread. Once the mirror
+  the session's key and is never sent to the platform as a thread. A turn written in
+  one of a coordinator's threads names that thread's root instead: its mirror posts in
+  the thread, and it is routed as any reply there, to the coordinator or to a task
+  holding the thread ([webchat-threads.md](webchat-threads.md) §7). Once the mirror
   lands, its provider message id becomes the message's own, as channel ingress
   names a message: the transcript row carries it, and a coordinator that opens a
   task for the message opens it in that post's thread.

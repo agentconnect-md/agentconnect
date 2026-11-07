@@ -2855,4 +2855,21 @@ describe('messages in a coordinator conversation’s threads (webchat-threads.md
     expect(frames(socket).at(-1)).toMatchObject({ text: 'try a warm cache', thread: ROOT })
     expect(getLiveSteps('ses_task')[0]).not.toHaveProperty('thread')
   })
+
+  it('draws a continued coordinator’s message in the platform thread it is written in (webchat-threads.md §7)', async () => {
+    const TS = '1754123456.000200'
+    ThreadSocket.instances = []
+    Reflect.set(globalThis, 'WebSocket', ThreadSocket)
+    await act(async () => {
+      markSessionTarget('ses_coordinator', 'ses_coordinator', true)
+      pgSendThread('ses_coordinator', 'agent-1', 'and the cache?', TS)
+    })
+    const socket = ThreadSocket.instances[0]!
+    await act(async () => {
+      socket.readyState = 1
+      socket.onopen?.()
+    })
+    expect(frames(socket).at(-1)).toMatchObject({ text: 'and the cache?', thread: TS })
+    expect(getLiveSteps('ses_coordinator')[0]).toMatchObject({ kind: 'msg', thread: TS })
+  })
 })

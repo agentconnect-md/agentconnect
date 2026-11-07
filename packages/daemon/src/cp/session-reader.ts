@@ -285,6 +285,13 @@ async function isRootRow(store: LocalStore, scope: TranscriptSessionScope, row: 
   return !(await store.threadRootRows(scope, [row.thread])).some((r) => r.seq !== row.seq)
 }
 
+/** Whether `rootId` names a root `rec` received, the roots `session/thread` answers for (webchat-threads.md §8). */
+export async function sessionReceivedRoot(store: LocalStore, rec: SessionRecord, rootId: string): Promise<boolean> {
+  const scope = sessionReadScope(rec, undefined)
+  const root = await store.threadRootInSession(scope, rootId)
+  return !!root && (await isRootRow(store, scope, root))
+}
+
 /** The start of a message on one line, cut to the summary's excerpt length without splitting a surrogate pair. */
 function excerptOf(text: string, names: Map<string, string>): string {
   const line = substituteUserMentions(text, names).replace(/\s+/g, ' ').trim()

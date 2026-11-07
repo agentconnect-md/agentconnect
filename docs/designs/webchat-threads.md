@@ -146,7 +146,7 @@ that allows a second participant. Slack's own thread participation rules are unc
 ### 4.3 As implemented (PR 5)
 
 - **Keying.** `prepareTurn` still recognizes a coordinator conversation by `coordinatorCoordinate`, then
-  asks the daemon's `keyWebchatCoordinatorMessage` where the message goes. It shares
+  asks the daemon's `keyCoordinatorMessage` where the message goes. It shares
   `threadTaskSession` with `autoCoordinateFor`, so a reply in a thread a task holds keys on the task's
   session and anything else stays on the coordinator. Webchat has no integration from which `keySession`
   could read a mode, so the call is made at turn preparation instead.
@@ -504,6 +504,28 @@ As implemented (PR 12):
 - **Not drawn yet:** a task's Code channel in its footer. The summary (§5.3) names only the holding
   task, not the other threads it holds, so the footer cannot show the channel until it does.
 
+As implemented (PR 13):
+
+- **Who.** Reply in thread on a Slack root, and the panel's composer in a thread no task holds, show
+  where the reader may continue the coordinator (the page's own `canContinue`), its agent's daemon
+  advertises `continuation-threads-v1`, and the relay's `ready` frame, once read, lists it. The panel
+  writes through the coordinator's session-targeted continuation (`writer.continues`) with `thread`
+  set to the root's ts, and draws the message in the thread (`markSessionTarget(…, threads)`); the
+  coordinator's answer streams in the main timeline, labelled. A held thread's composer still
+  continues the task.
+- **Wire.** This row also touches protocol and relay. A turn's `thread` is a `TurnThreadId`: a webchat root's UUID, or, on a continued
+  session's socket only, a platform root id (`PlatformThreadId`). The relay refuses a non-UUID
+  `thread` on any other conversation, keeps it out of peers' context copies, and announces
+  `continuation-threads-v1` in `ready`. An older relay refuses the frame, so nothing posts at the
+  root.
+- **Daemon.** `ChatSessionContinuation.prepare` takes a `thread` on a coordinator's coordinate when
+  the coordinator received that root (`sessionReceivedRoot`, the check `session/thread` makes), and
+  refuses any other `unknown_thread`, as an older daemon does. The mirror posts in the thread and
+  becomes the message's own id, then `keyCoordinatorMessage` keys it as `autoCoordinateFor` keys a
+  Slack reply: on the task holding the thread, else on the coordinator with the thread named. The
+  daemon advertises `continuation-threads-v1` with `session-mode-auto-v1`. Nothing names a platform:
+  the daemon reads a coordinate and the channel record, the console the module's thread shape.
+
 ### 7.1 Who may read a thread
 
 A thread is read through its conversation: whoever may view the coordinator session may read its
@@ -540,11 +562,12 @@ As implemented (PR 8):
 
 | Surface                                   | Change                                                                                                            |
 | ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| Browser → relay `turn`                    | `thread?: string`                                                                                                 |
+| Browser → relay `turn`                    | `thread?: string`; a platform root id only on a continued session's socket (§7)                                   |
 | `RelayWebchatOp.turn`, `WebchatPost`      | `thread?: string`                                                                                                 |
 | Daemon → relay posts and streams          | `thread?: string` on `WebchatPost`, `WebchatOutput` and `WebchatDone`: the thread they answer in                  |
 | Turn ack reasons                          | `unknown_thread`                                                                                                  |
 | Daemon feature                            | `webchat-threads-v1`, advertised with `session-mode-auto-v1` under `features.autoSessionMode`                     |
+| Continued coordinator threads             | `continuation-threads-v1` from the daemon (same switch) and in the relay's `ready` (§7, PR 13)                    |
 | Relay → browser hello                     | `webchat-threads-v1` in the `ready` frame's `features` once the relay forwards `thread`                           |
 | `session/history` (daemon control RPC)    | A `roots` view: roots and coordinator turns with the §5.3 summaries, paged like today                             |
 | `session/thread` (new daemon control RPC) | One thread record by `(sessionId, rootId)`, paged; authorized by §7.1                                             |
@@ -557,8 +580,9 @@ Session lists leave tasks out by default and list them under "Show tasks" throug
 `taskParentSessionId` (product-conventions.md "Tasks"), so a task thread appears only there, as its
 own entry linked to its coordinator, never folded into the coordinator's entry.
 
-A `thread` is a root's `postId`, so the wire admits only a UUID (`WebchatThreadId`); the relay
-refuses a turn whose `thread` is malformed rather than post it at the root. The protocol names the
+A `thread` is a root's `postId`, so the wire admits only a UUID (`WebchatThreadId`), except a
+continued coordinator's platform root (§7, PR 13); the relay refuses a turn whose `thread` is
+malformed rather than post it at the root. The protocol names the
 feature `WEBCHAT_THREADS_FEATURE`; the daemon advertises it from PR 5, once its coordinator answers in
 threads, so the console never offers threads to a daemon that only records them.
 
