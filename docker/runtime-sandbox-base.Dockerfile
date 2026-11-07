@@ -72,10 +72,10 @@ RUN mkdir -p /opt/agentconnect/bin \
   && chown -R root:root /opt/agentconnect/bin \
   && chmod 0555 /opt/agentconnect/bin /opt/agentconnect/bin/git-credential
 
-# The token-aware gh wrapper in the final image delegates to this pinned binary.
+# The pinned gh a session runs with the credential proxy's placeholder as GH_TOKEN.
 COPY --from=gh-cli --chown=0:0 /out/gh /usr/local/bin/gh
 
-# Only /opt/agentconnect/pathbin is prepended to runtime PATH; the final image supplies its gh wrapper.
+# Only /opt/agentconnect/pathbin is prepended to runtime PATH; the final image supplies agentconnect-secrets.
 RUN mkdir -p /opt/agentconnect/pathbin \
   && chmod 0555 /opt/agentconnect/pathbin
 

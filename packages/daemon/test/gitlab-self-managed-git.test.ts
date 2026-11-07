@@ -1,6 +1,6 @@
 /**
  * The self-managed GitLab slice end to end (gitlab-com-integration.md §24.4/§24.5): a REAL git
- * clone and push, and a REAL `glab` invocation, against an instance served on a non-default port
+ * clone and push against an instance served on a non-default port
  * behind a path prefix — through the shim, the injected host table, and the operator's TLS bundle.
  *
  * Nothing here is stubbed on the git side: git dials TLS with `GIT_SSL_CAINFO`, `git-http-backend`
@@ -20,7 +20,6 @@ import { fileURLToPath } from 'node:url'
 import { DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS } from '@agentconnect.md/protocol'
 import { createRequire } from 'node:module'
 import { gitcredSocketPath } from '../src/cp/gitcred-server.js'
-import { writeGlabShim } from '../src/cp/glab-shim.js'
 import {
   cloneGitEnv,
   gitFor,
@@ -272,52 +271,5 @@ describe.skipIf(tls === undefined)('a prefixed, non-default-port instance, end t
     for (const request of gitcred.requests) {
       expect(request).toMatchObject({ agentId: AGENT, provider: 'gitlab', repoFullName: PROJECT })
     }
-  }, 120_000)
-
-  it('runs the real glab against the instance, with a read token and the host export', async () => {
-    const binDir = writeGlabShim(root, daemonEntry)
-    const fakeGlab = join(mkdtempSync(join(tmpdir(), 'ac-gl-realglab-')), 'glab')
-    const observed = join(root, 'glab-env.json')
-    writeFileSync(
-      fakeGlab,
-      [
-        '#!/bin/sh',
-        `cat > ${JSON.stringify(observed)} <<EOF`,
-        '{"token":"$GITLAB_TOKEN","host":"$GITLAB_HOST","argv":"$*"}',
-        'EOF',
-        ''
-      ].join('\n'),
-      { mode: 0o755 }
-    )
-    chmodSync(fakeGlab, 0o755)
-
-    const before = gitcred.requests.length
-    const glab = await run(join(binDir, 'glab'), ['mr', 'view', '1'], {
-      cwd: join(root, 'checkout'),
-      timeout: 120_000,
-      env: {
-        ...process.env,
-        PATH: `${dirname(fakeGlab)}:${process.env.PATH ?? ''}`,
-        AC_AGENT_ID: AGENT,
-        AC_GITCRED_CAPABILITY: 'cap-test',
-        // Exactly what the daemon injects at spawn: the table plus the host export.
-        AC_GITCRED_HOSTS: `github=https://github.com gitlab=${instance}`,
-        GITLAB_HOST: instance,
-        GITLAB_TOKEN: '',
-        ...SOURCE_CONDITION_ENV
-      }
-    })
-    // The wrapper passes the token command's stderr straight through, so a refusal is visible here.
-    expect(glab.stderr).toBe('')
-
-    expect(JSON.parse(readFileSync(observed, 'utf8'))).toEqual({
-      token: TOKEN,
-      host: instance,
-      argv: 'mr view 1'
-    })
-    // The token was minted for THIS project, resolved from the prefixed origin of the cwd checkout.
-    expect(gitcred.requests.slice(before)).toEqual([
-      { op: 'get', agentId: AGENT, capability: 'cap-test', plane: 'glab', provider: 'gitlab', repoFullName: PROJECT }
-    ])
   }, 120_000)
 })

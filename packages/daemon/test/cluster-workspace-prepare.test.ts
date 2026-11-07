@@ -431,14 +431,14 @@ describe('preparing a cluster git-repo workspace', () => {
     expect(existsSync(POD_ROOT)).toBe(false)
   })
 
-  it('pins the repo-local helper in the pod after cloning', async () => {
+  it('pins the placeholder helper in the pod after cloning', async () => {
     await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT)
-    // `.git/config` outlives the launch, so the helper a later agent-run git finds has to be the
-    // image's path — written through the runner, in the checkout.
+    // Written through the runner, in the checkout: a later agent-run git there presents its placeholder, never the image's helper.
     const helper = calls.filter((call) => call.args[0] === 'config' && call.args.includes('--add'))
     expect(helper).toHaveLength(1)
     expect(helper[0]).toMatchObject({ cwd: CHECKOUT })
-    expect(helper[0]!.args.at(-1)).toContain('/opt/agentconnect/bin/git-credential')
+    expect(helper[0]!.args.at(-1)).toContain('AC_CODEHOST_CREDENTIAL')
+    expect(helper[0]!.args.at(-1)).not.toContain('/opt/agentconnect/bin/git-credential')
   })
 
   it('syncs an existing checkout instead of cloning over it', async () => {

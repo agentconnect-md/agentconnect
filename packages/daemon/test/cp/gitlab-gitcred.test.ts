@@ -184,37 +184,3 @@ describe('injection host selection (§13.2)', () => {
     expect(github.content).not.toContain('gitlab.com')
   })
 })
-
-describe('glab target resolution (§13.3)', () => {
-  it('resolves -R/--repo, GITLAB_REPO, then the cwd origin, at full subgroup depth', async () => {
-    const { resolveGlabTargetProject } = await import('../../src/cp/glab-target.js')
-    const none = () => undefined
-    expect(resolveGlabTargetProject(['mr', 'view', '-R', 'group/sub/proj'], {}, none)).toEqual({
-      project: 'group/sub/proj'
-    })
-    expect(resolveGlabTargetProject(['issue', 'list', '--repo=Group/Proj'], {}, none)).toEqual({
-      project: 'group/proj'
-    })
-    expect(resolveGlabTargetProject([], { GITLAB_REPO: 'group/env-proj' }, none)).toEqual({
-      project: 'group/env-proj'
-    })
-    expect(resolveGlabTargetProject([], {}, () => 'https://gitlab.com/example-group/example-project.git')).toEqual({
-      project: 'example-group/example-project'
-    })
-    expect(resolveGlabTargetProject([], {}, () => 'git@gitlab.com:group/sub/proj.git')).toEqual({
-      project: 'group/sub/proj'
-    })
-  })
-
-  it('defers non-gitlab.com hosts to the real glab (exit-2 contract)', async () => {
-    const { resolveGlabTargetProject, normalizeProjectArg } = await import('../../src/cp/glab-target.js')
-    expect(normalizeProjectArg('https://code.example.test/g/p')).toEqual({ defer: true })
-    expect(normalizeProjectArg('git.example.test/g/p')).toEqual({ defer: true })
-    expect(normalizeProjectArg('gitlab.com/group/proj')).toEqual({ project: 'group/proj' })
-    expect(resolveGlabTargetProject([], { GITLAB_HOST: 'gitlab.example.test' }, () => 'group/p')).toEqual({
-      defer: true
-    })
-    // Unparseable ⇒ the workspace ask (project undefined, no defer).
-    expect(resolveGlabTargetProject([], {}, () => undefined)).toEqual({})
-  })
-})

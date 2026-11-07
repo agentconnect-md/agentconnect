@@ -4,8 +4,7 @@
  * A LEAF module on purpose: node builtins and `fetch`, nothing else. It is bundled into the
  * in-sandbox `auto-merge.js` entry (its own graph, everything inlined) as well as compiled into
  * the daemon, and an import that reached the CP client or the credential cache from here would
- * copy that graph into the half-trusted runtime image. Same reason `gitcred/gh-token-client.ts`
- * keeps its distance.
+ * copy that graph into the half-trusted runtime image.
  *
  * Why this exists at all instead of GitHub's `enablePullRequestAutoMerge`: that mutation refuses
  * every pull request whose `mergeStateStatus` is not BLOCKED — "clean status" when the checks

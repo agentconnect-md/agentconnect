@@ -1,5 +1,5 @@
 /**
- * gitcred.sock — the local credential channel for agent-run git AND gh
+ * gitcred.sock — the local credential channel for daemon-run git, the in-pod auto-merge watcher and live secrets
  * (docs/designs/github-app-git-credentials.md §Local Helper Channel;
  * agent-multi-repo-authorization.md §Daemon for per-repo routing, #457).
  *
@@ -24,8 +24,8 @@
  *
  * Alongside the socket the daemon (re)writes SECRET-FREE files per boot:
  * the shim `run/git-credential-helper.sh` (pins the current node + CLI path so
- * `.git/config` survives daemon upgrades), the `run/bin/gh` wrapper (see
- * cp/gh-shim.ts) and per-agent gitconfig includes for the session-env channel
+ * `.git/config` survives daemon upgrades), the `run/secrets-bin` wrapper (see
+ * cp/secrets-shim.ts) and per-agent gitconfig includes for the session-env channel
  * (see workspace/git-injection.ts).
  */
 import { randomBytes, timingSafeEqual } from 'node:crypto'
@@ -51,7 +51,7 @@ import {
 // credential cache into an image whose bundle may import only node builtins).
 export { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV, GITCRED_SOCKET_ENV } from '../gitcred/env.js'
 import { GITCRED_SOCKET_ENV } from '../gitcred/env.js'
-import { shQuote } from './gh-shim.js'
+import { shQuote } from './secrets-shim.js'
 
 /** The socket a helper should dial: an explicit override, else this daemon's own. */
 export function gitcredSocketFrom(env: NodeJS.ProcessEnv, root: string): string {
@@ -122,8 +122,6 @@ export interface GitCredServerDeps {
   credentialedOf?: (agentId: string) => boolean
   /** The agent's live secrets from the CURRENT in-memory agent, so a value saved a moment ago is served on the next call. */
   liveSecretsOf?: (agentId: string) => readonly LiveSecretEntry[]
-  /** Whether the agent's runtime capability may `get` and `erase`, read per request; false once the credential proxy carries its code hosts. Absent ⇒ it may. */
-  runtimeMayMint?: (agentId: string) => boolean
 }
 
 /** One reply on the helper channel for a `get` or `erase`. */
@@ -148,7 +146,7 @@ export interface GitCredPermissions {
 }
 
 const FULL_PERMISSIONS: GitCredPermissions = { mint: true, secrets: true }
-// A runtime behind the credential proxy holds a placeholder for its code hosts, so its capability keeps only the secrets.
+// A runtime holds a placeholder for its code hosts, so its capability keeps only the secrets.
 const SECRETS_ONLY_PERMISSIONS: GitCredPermissions = { mint: false, secrets: true }
 
 /** Why a capability without `mint` is refused a `get` or an `erase`. */
@@ -180,7 +178,6 @@ export class GitCredServer {
   private readonly privateGitlabSkillProjectOf?: GitCredServerDeps['privateGitlabSkillProjectOf']
   private readonly credentialedOf?: GitCredServerDeps['credentialedOf']
   private readonly liveSecretsOf?: GitCredServerDeps['liveSecretsOf']
-  private readonly runtimeMayMint?: GitCredServerDeps['runtimeMayMint']
   readonly skillWindows: SkillCredentialWindows
 
   constructor(
@@ -198,7 +195,6 @@ export class GitCredServer {
     if (deps.privateGitlabSkillProjectOf) this.privateGitlabSkillProjectOf = deps.privateGitlabSkillProjectOf
     if (deps.credentialedOf) this.credentialedOf = deps.credentialedOf
     if (deps.liveSecretsOf) this.liveSecretsOf = deps.liveSecretsOf
-    if (deps.runtimeMayMint) this.runtimeMayMint = deps.runtimeMayMint
     this.skillWindows = deps.skillWindows ?? new SkillCredentialWindows()
   }
 
@@ -619,11 +615,9 @@ export class GitCredServer {
     }
   }
 
-  /** A holder's permissions as of this request: the daemon's are full, the runtime's lose `mint` while the proxy carries its code hosts. */
-  private permissionsOf(agentId: string, holder: GitCredHolder): GitCredPermissions {
-    return holder === 'runtime' && this.runtimeMayMint?.(agentId) === false
-      ? SECRETS_ONLY_PERMISSIONS
-      : FULL_PERMISSIONS
+  /** A holder's permissions: the daemon's are full, the runtime's never mint. */
+  private permissionsOf(holder: GitCredHolder): GitCredPermissions {
+    return holder === 'runtime' ? SECRETS_ONLY_PERMISSIONS : FULL_PERMISSIONS
   }
 
   /** Who presented the request: one of the agent's holder capabilities, a live skill window for this agent and this connection's subject, or nobody. */
@@ -638,8 +632,7 @@ export class GitCredServer {
       const b = Buffer.from(presented)
       for (const holder of ['daemon', 'runtime'] as const) {
         const a = Buffer.from(issued[holder])
-        if (a.length === b.length && timingSafeEqual(a, b))
-          return { holder, permissions: this.permissionsOf(agentId, holder) }
+        if (a.length === b.length && timingSafeEqual(a, b)) return { holder, permissions: this.permissionsOf(holder) }
       }
     }
     // A pod window opens only through its own pod's tunnel; a daemon window only on an untunneled connection.

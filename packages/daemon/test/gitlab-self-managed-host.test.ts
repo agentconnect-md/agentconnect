@@ -1,7 +1,7 @@
 /**
  * Self-managed GitLab, daemon side (gitlab-com-integration.md §24.4/§24.5): the injected
  * host→provider table that replaced the two-literal classifier, the prefix stripping a relative URL
- * root forces, the grant host echo, the `glab` target resolver, and the spec-admission origin
+ * root forces, the grant host echo, and the spec-admission origin
  * refusal. GitLab.com is the default value of the axis, so every case here also pins that nothing
  * changes for a deployment that names no host.
  */
@@ -33,7 +33,6 @@ import {
 import { runGitCredential } from '../src/gitcred/helper.js'
 import { GITCRED_CAPABILITY_ENV } from '../src/gitcred/env.js'
 import { GitCredentialCache, GitCredUnavailableError } from '../src/cp/git-credential.js'
-import { normalizeProjectArg, resolveGlabTargetProject } from '../src/cp/glab-target.js'
 import {
   gitCredentialEnv,
   initGitInjection,
@@ -431,35 +430,6 @@ describe('the grant host echo (§24.4)', () => {
     await expect(ask(cache({}, INSTANCE))).rejects.toThrow(/gitlab instance https:\/\/gitlab\.com/)
     // …and an echoed GitLab.com against an unset axis is the same host, so it passes.
     await expect(ask(cache({ host: GITLAB_DEFAULT_BASE_URL }))).resolves.toMatchObject({ token: 'glpat-x' })
-  })
-})
-
-describe('glab target resolution against the configured instance (§13.3, §24.4)', () => {
-  const none = () => undefined
-
-  it('strips the instance prefix from every candidate form', () => {
-    expect(normalizeProjectArg('https://gitlab.example.test:8443/gitlab/group/sub/proj.git', INSTANCE)).toEqual({
-      project: 'group/sub/proj'
-    })
-    expect(normalizeProjectArg('gitlab.example.test/gitlab/group/proj', INSTANCE)).toEqual({ project: 'group/proj' })
-    // A bare path is already relative to the instance root.
-    expect(normalizeProjectArg('group/proj', INSTANCE)).toEqual({ project: 'group/proj' })
-    // A neighbouring path root on the same host names no project of this instance.
-    expect(normalizeProjectArg('https://gitlab.example.test:8443/other/group/proj.git', INSTANCE)).toEqual({})
-  })
-
-  it('defers only on a genuine mismatch, and honours the export the shim makes', () => {
-    expect(
-      resolveGlabTargetProject([], { GITLAB_HOST: INSTANCE }, () => `${INSTANCE}/group/proj.git`, INSTANCE)
-    ).toEqual({ project: 'group/proj' })
-    // glab also accepts a scheme-less host; the same instance is still the same instance.
-    expect(resolveGlabTargetProject([], { GITLAB_HOST: 'gitlab.example.test:8443/gitlab' }, none, INSTANCE)).toEqual({})
-    expect(resolveGlabTargetProject([], { GITLAB_HOST: 'gitlab.com' }, none, INSTANCE)).toEqual({ defer: true })
-    expect(resolveGlabTargetProject(['mr', 'view', '-R', 'gitlab.com/g/p'], {}, none, INSTANCE)).toEqual({
-      defer: true
-    })
-    // Unset axis: GitLab.com is the expected instance and nothing defers.
-    expect(resolveGlabTargetProject([], {}, () => 'https://gitlab.com/g/p.git')).toEqual({ project: 'g/p' })
   })
 })
 

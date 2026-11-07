@@ -363,8 +363,7 @@ import {
 } from './shim/config-file-env.js'
 import { DEFAULT_SHIM_RUNTIME_ROOT, shimPaths } from './shim/sandbox-paths.js'
 import type { CodehostSpawn, ProviderSpawn, SpawnFile } from './acp/spawn-driver.js'
-import { writeGhShim, writeSecretsShim } from './cp/gh-shim.js'
-import { glabSessionEnv, writeGlabShim } from './cp/glab-shim.js'
+import { writeSecretsShim } from './cp/secrets-shim.js'
 import { GitCredServer, gitcredShimPath, gitcredSocketPath, writeGitcredShim } from './cp/gitcred-server.js'
 import { AutoMergeViolationError, AutoMergeWatcher } from './github/auto-merge/watcher.js'
 import { AUTO_MERGE_HOLDER, SandboxHolds } from './k8s/sandbox-hold.js'
@@ -389,8 +388,7 @@ import {
   sessionGitEnv,
   sessionCredentialHosts,
   CODE_HOST_CREDENTIAL_ENV,
-  type ManagedCredentialHost,
-  type ManagedCredentialScope
+  type ManagedCredentialHost
 } from './workspace/git-injection.js'
 import { CredentialProxy, type MintAsk, type MintedCredential } from './credential-proxy/proxy.js'
 import { loadProxyCa, proxyTrustEnv, upstreamAuthorities, type ProxyCa } from './credential-proxy/ca.js'
@@ -1709,7 +1707,7 @@ export class Daemon {
   /** The CP's transfer cache from the last register; where a shared image's large original goes. */
   private fileTransfer?: { maxBytes: number }
   private gitCredServer?: GitCredServer
-  /** The code-host credential proxy, when `features.credentialProxy` is on and it started (github-app-git-credentials.md, Phase 2). */
+  /** The credential proxy, once it started (github-app-git-credentials.md, Phase 2); without it no session holds a code-host credential. */
   private credentialProxy?: { proxy: CredentialProxy; ca: ProxyCa }
   /** Each agent's provider key slots the credential proxy serves, by slot id; registered as a host or srt session launches. */
   private readonly providerSlots = new Map<string, Map<string, ProviderSlot>>()
@@ -1717,15 +1715,14 @@ export class Daemon {
   private readonly hostKeyReaders = new Map<string, Map<string, () => Promise<string>>>()
   /** Agents and key sources whose keys stay in env, a cleartext endpoint's or a host's the proxy cannot serve, logged once each. */
   private readonly cleartextProviderLogged = new Set<string>()
+  /** Sessions logged as holding no code-host credential because the proxy cannot reach them, once each. */
+  private readonly noCodeHostCredentialLogged = new Set<string>()
   /** Leases over cluster pods, in memory: an open page's keep-alive, and this daemon's own on a pod it saw a watcher armed in. */
   private readonly sandboxHolds = new SandboxHolds({ now: () => Date.now() })
   /** Merge-when-ready's in-memory armed set (github/auto-merge). Built with the credential server,
    *  because a watcher that cannot mint a gh token has nothing to poll with. Never persisted: this
    *  process going away is what unchecks the box. */
   private autoMergeWatcher?: AutoMergeWatcher
-  /** run/bin with the gh wrapper (multi-repo #457), prepended to an unproxied github-app agent's PATH at host spawn; unset ⇒ the write failed. */
-  private ghBinDir?: string
-  private glabBinDir?: string
   /** The `agentconnect-secrets` wrapper's own dir, on every local runtime's PATH that holds the credential channel. */
   private secretsBinDir?: string
   /** Spawn-time config warnings per agent (config-file secrets: pointer-var
@@ -4269,9 +4266,7 @@ export class Daemon {
       credentialedOf: (agentId: string) =>
         credentialProviderOf(this.agents.get(agentId)?.workspace.gitCredential) !== undefined,
       // Read from the CURRENT agent on every call, so a live secret saved a moment ago is served (capability-requests.md §4.9.2).
-      liveSecretsOf: (agentId: string) => this.agents.get(agentId)?.liveSecrets ?? [],
-      // A runtime whose code hosts the proxy carries holds their placeholder, never a token; its capability keeps the secrets.
-      runtimeMayMint: (agentId: string) => !this.credentialProxyCodeHosts(agentId)
+      liveSecretsOf: (agentId: string) => this.agents.get(agentId)?.liveSecrets ?? []
     })
     const daemonCredentialTarget = daemonGitCredentialTarget({
       shimPath: writeGitcredShim(root, daemonEntryForShims(root)),
@@ -4317,27 +4312,12 @@ export class Daemon {
       }
     })
     try {
-      // gh wrapper (multi-repo #457) — secret-free, regenerated per boot like
-      // the git shim. A write failure only costs gh per-repo credentials, so it
-      // must not block startup.
-      this.ghBinDir = writeGhShim(root, daemonEntryForShims(root))
-    } catch (err) {
-      this.log.warn(`gitcred: gh wrapper shim write failed — spawning agents without it (${formatErr(err)})`)
-    }
-    try {
       this.secretsBinDir = writeSecretsShim(root, daemonEntryForShims(root))
     } catch (err) {
       this.log.warn(`gitcred: live secrets wrapper write failed — spawning agents without it (${formatErr(err)})`)
     }
-    try {
-      // glab wrapper (§13.3) — read-only tokens for gitlab workspaces; same
-      // regenerate-per-boot, never-block-startup discipline as gh.
-      this.glabBinDir = writeGlabShim(root, daemonEntryForShims(root))
-    } catch (err) {
-      this.log.warn(`gitcred: glab wrapper shim write failed — spawning agents without it (${formatErr(err)})`)
-    }
     await this.gitCredServer.start()
-    if (this.cfg.features.credentialProxy) await this.startCredentialProxy(root)
+    await this.startCredentialProxy(root)
     // A cluster agent's watcher runs in a pod's `automerge` channel, a local agent's loop in this process; both read a token through the clamped credential path the agent's own gh does.
     this.autoMergeWatcher = new AutoMergeWatcher({
       knownAgent: (agentId) => this.agents.has(agentId),
@@ -6866,20 +6846,10 @@ export class Daemon {
     // config is read by git as no config at all — a silent loss of the pins, not an error.
     if (sessionGitConfigPath) paths.push(sessionGitConfigPath)
     if (this.secretsBinDir) paths.push(this.secretsBinDir)
-    if (githubAppCredentials) {
-      paths.push(gitcredShimPath(this.root))
-      if (this.ghBinDir) paths.push(this.ghBinDir)
-      const gh = resolveCommandPath('gh', process.env)
-      if (gh) executableCommands.push(gh)
-    }
-    if (gitlabCredentials) {
-      // The gitlab twin: same helper socket/shim, the glab wrapper dir, and the
-      // real glab binary for the OS sandbox's read allowlist (§13.3).
-      paths.push(gitcredShimPath(this.root))
-      if (this.glabBinDir) paths.push(this.glabBinDir)
-      const glab = resolveCommandPath('glab', process.env)
-      if (glab) executableCommands.push(glab)
-    }
+    // The real CLI the session's placeholder serves, for the OS sandbox's read allowlist (§13.3).
+    const cli = githubAppCredentials ? 'gh' : gitlabCredentials ? 'glab' : undefined
+    const resolved = cli ? resolveCommandPath(cli, process.env) : undefined
+    if (resolved) executableCommands.push(resolved)
     return trustedRuntimeReadRoots({
       runtime,
       hostEnv: process.env,
@@ -6908,7 +6878,7 @@ export class Daemon {
   }
 
   /** What an srt shim reads of this machine's code (§5): node, the runtime store whole — an adapter it installs after the start must be visible — and each admitted runtime's install. */
-  /** Start the code-host credential proxy; a failure leaves every session on its direct credentials. */
+  /** Start the credential proxy, the only way a session reaches a code host with a credential; a failure leaves sessions with none. */
   private async startCredentialProxy(root: string): Promise<void> {
     const dir = join(root, 'credential-proxy')
     try {
@@ -6933,9 +6903,9 @@ export class Daemon {
       })
       await proxy.start(join(root, 'run'))
       this.credentialProxy = { proxy, ca }
-      this.log.info('credential proxy: host and srt sessions on a managed code host hold a placeholder')
+      this.log.info('credential proxy: sessions on a managed code host hold a placeholder')
     } catch (err) {
-      this.log.warn(`credential proxy: not started, sessions keep their direct credentials (${formatErr(err)})`)
+      this.log.error(`credential proxy: not started, sessions get no code-host credential (${formatErr(err)})`)
     }
   }
 
@@ -7209,7 +7179,7 @@ export class Daemon {
     // This daemon's own helpers, which Git run through the shim needs before any runtime is launched: code, never state.
     try {
       const executables = ['gh', 'glab'].flatMap((name) => resolveCommandPath(name, process.env) ?? [])
-      const helpers = [gitcredShimPath(this.root), this.ghBinDir, this.glabBinDir, this.secretsBinDir].filter(
+      const helpers = [gitcredShimPath(this.root), this.secretsBinDir].filter(
         (path): path is string => path !== undefined && existsSync(path)
       )
       for (const path of trustedRuntimeReadRoots({
@@ -7292,8 +7262,6 @@ export class Daemon {
             managedCredentials ? scope : null
           )
         : undefined
-    // The proxied gitconfig a session host may switch to is mounted beside the helper's, so both launches describe the same VM.
-    const proxiedGit = managedCredentials ? this.microsandboxProxiedGit(agent, scope) : undefined
     const launch = prepareMicrosandboxLaunch({
       runtimeId: runtimeEntry?.aliasOf ?? agent.runtime,
       runtime,
@@ -7316,19 +7284,10 @@ export class Daemon {
       trustedWorkspaceWriteRoots: placement.trustedSessionDir
         ? [placement.trustedSessionDir]
         : this.workspaces.trustedWorkspaceWriteRoots(agent),
-      trustedMounts: microsandboxSupportMounts(this.root, git?.GIT_CONFIG_GLOBAL, proxiedGit?.GIT_CONFIG_GLOBAL),
+      trustedMounts: microsandboxSupportMounts(this.root, git?.GIT_CONFIG_GLOBAL),
       mounts: this.cfg.sandbox.mounts
     })
     return { environment: localMicrosandboxEnvironment(placement.id, launch.microsandbox), launch }
-  }
-
-  /** The gitconfig a VM session reaching the credential proxy reads, written beside the helper's; undefined while the proxy does not intercept the agent. */
-  private microsandboxProxiedGit(
-    agent: LoadedAgent,
-    scope: ManagedCredentialScope
-  ): Record<string, string> | undefined {
-    if (!this.credentialProxyCodeHosts(agent.id)) return undefined
-    return sessionGitEnv(agent.id, this.commitIdentityOf(agent), scope, true)
   }
 
   private microsandboxGit(agentId: string, cwd?: string, abort?: AbortSignal) {
@@ -8973,7 +8932,7 @@ export class Daemon {
       remoteSession?.strategy === 'srt' && this.credentialProxy
         ? this.executorPlane?.srtCodehostFor(remoteSession.sessionKey)
         : undefined
-    // A placed host session reaches the proxy through its shim's codehost listener, a placed srt session through SRT's route to that shim for every name it has; otherwise the helper path.
+    // A placed host session reaches the proxy through its shim's codehost listener, a placed srt session through SRT's route to that shim for every name it has; otherwise it holds no code-host credential.
     const remoteCodehost =
       !remoteSession || !this.credentialProxy || !managedCredentials
         ? undefined
@@ -9010,24 +8969,41 @@ export class Daemon {
       providerSlot && this.credentialProxy?.proxy.providerPlaceholderFor(agent.id, providerSlot.id)
     const sandboxSessionGit =
       (this.k8sPlane || remoteRoots) && needsSessionGit
-        ? sessionGitConfig(agent.id, sessionGitIdentity, sandboxGitTarget, sessionGitScope, proxied)
+        ? sessionGitConfig(agent.id, sessionGitIdentity, sandboxGitTarget, sessionGitScope)
         : undefined
-    // A VM (here or placed on an executor) or pool pod session switches to the proxy at spawn, only once its own shim reports a codehost listener; until then it keeps the helper path.
+    // A VM (here or placed on an executor) or pool pod session gets the placeholder at spawn, only once its own shim reports a codehost listener.
     const hostedVm = remoteSession?.strategy === 'microsandbox'
     const guestCodehost =
       (remoteSession ? hostedVm : micro || this.k8sPlane !== undefined) &&
       this.credentialProxy !== undefined &&
       managedCredentials &&
       this.credentialProxyCodeHosts(agent.id)
-    const guestGit = !guestCodehost
-      ? undefined
-      : this.k8sPlane || hostedVm
-        ? sessionGitConfig(agent.id, sessionGitIdentity, sandboxGitTarget, managedScope, true)
-        : { env: this.microsandboxProxiedGit(agent, managedScope) ?? {} }
+    // A managed session the proxy cannot reach holds no code-host credential at all.
+    const noCodeHostCredential =
+      !managedCredentials || proxied || guestCodehost
+        ? undefined
+        : !this.credentialProxy
+          ? 'the credential proxy is not running'
+          : remoteSession?.strategy === 'host'
+            ? "its executor's shim serves no codehost listener"
+            : remoteSession?.strategy === 'srt'
+              ? "its executor's srt boundary does not route all of the agent's code hosts"
+              : remoteSession && !hostedVm
+                ? `a ${remoteSession.strategy} session placed on an executor does not reach the credential proxy`
+                : 'none of its code hosts is served over HTTPS'
+    if (noCodeHostCredential) {
+      const logged = `${agent.id}\n${hostKeySessionKey(opts.hostKey) ?? ''}`
+      if (!this.noCodeHostCredentialLogged.has(logged)) {
+        this.noCodeHostCredentialLogged.add(logged)
+        this.log.warn(
+          `credential proxy: a session of agent "${agent.id}" has no code-host credential: ${noCodeHostCredential}`
+        )
+      }
+    }
     // Held as its own value: the sandbox read grant must come from the path the DAEMON authored,
     // never read back out of the merged child env, where runtimeOverrides.env could name any file.
     const sessionGitInjection = needsSessionGit
-      ? (sandboxSessionGit?.env ?? sessionGitEnv(agent.id, sessionGitIdentity, sessionGitScope, proxied))
+      ? (sandboxSessionGit?.env ?? sessionGitEnv(agent.id, sessionGitIdentity, sessionGitScope))
       : undefined
     // Every runtime but a dream's gets the credential channel for its live secrets; the session channel above re-states it where it applies.
     const liveSecretsChannel =
@@ -9072,28 +9048,11 @@ export class Daemon {
     }
     // Every shim driver routes its launch by AC_AGENT_ID — a pod's, a VM's, and an executor environment's.
     if (this.k8sPlane || micro || remoteSession || srtShim) env.AC_AGENT_ID = agent.id
-    const shimDirs = new Set<string>()
-    // These wrappers are DAEMON paths; a pod's, VM's or placed session's shim puts its own wrapper dir first on PATH instead.
-    const daemonWrappers = !this.k8sPlane && !micro && !remoteSession
-    // A proxied session's gh and glab already hold the placeholder, and its capability mints no token for a wrapper to fetch.
-    if (githubAppCredentials && this.ghBinDir && daemonWrappers && !proxied) {
-      // gh wrapper (multi-repo #457): the agent identity it hands the token helper, ahead of any user PATH.
-      env.AC_AGENT_ID = agent.id
-      shimDirs.add(this.ghBinDir)
-    }
-    // `agentconnect-secrets` (capability-requests.md §4.9.2), for every runtime holding the credential channel.
-    if (liveSecretsChannel && this.secretsBinDir && daemonWrappers) shimDirs.add(this.secretsBinDir)
-    if (gitlabCredentials && this.glabBinDir && daemonWrappers && !proxied) {
-      // glab wrapper (§13.3): read-only project tokens for the managed workspace.
-      env.AC_AGENT_ID = agent.id
-      shimDirs.add(this.glabBinDir)
-    }
-    // §24.4: point the real CLI at the deployment's instance, prefix and port included; a placed session's wrapper is its executor's.
-    if (gitlabCredentials && (daemonWrappers || remoteSession))
-      Object.assign(env, glabSessionEnv(managedScope.host.baseUrl))
-    if (shimDirs.size > 0) {
-      env.PATH = `${[...shimDirs].join(':')}:${env.PATH ?? runtimeEnv.PATH ?? process.env.PATH ?? ''}`
-    }
+    // `agentconnect-secrets` (capability-requests.md §4.9.2), a DAEMON path; a pod's, VM's or placed session's shim puts its own first on PATH instead.
+    if (liveSecretsChannel && this.secretsBinDir && !this.k8sPlane && !micro && !remoteSession)
+      env.PATH = `${this.secretsBinDir}:${env.PATH ?? runtimeEnv.PATH ?? process.env.PATH ?? ''}`
+    // §24.4: point the real glab at the deployment's instance, prefix and port included.
+    if (gitlabCredentials) env.GITLAB_HOST = managedScope.host.baseUrl
     // This machine's own provider keys an srt session would read go through the proxy too, registered before its trust and routes are read.
     const ambientCredentials =
       srtShim && localProxyRoute && !opts.providerCredential
@@ -9141,21 +9100,11 @@ export class Daemon {
           runtimeEnv
         )
       )
-    // The placeholder variables and the proxied gitconfig; the spawn adds the listener and its trust bundle.
+    // The placeholder variables; the spawn adds the listener and its trust bundle.
     const codehostSpawn: CodehostSpawn | undefined =
-      guestGit && this.credentialProxy
+      guestCodehost && this.credentialProxy
         ? {
-            env: {
-              ...this.credentialProxyEnv(this.credentialProxy, agent.id, 'shim', env, runtimeEnv, gitlabCredentials),
-              ...(guestGit.env.GIT_CONFIG_GLOBAL ? { GIT_CONFIG_GLOBAL: guestGit.env.GIT_CONFIG_GLOBAL } : {})
-            },
-            ...('path' in guestGit
-              ? {
-                  files: [
-                    { root: dirname(guestGit.path), relPath: [basename(guestGit.path)], content: guestGit.content }
-                  ]
-                }
-              : {}),
+            env: this.credentialProxyEnv(this.credentialProxy, agent.id, 'shim', env, runtimeEnv, gitlabCredentials),
             // Its executor seeded the VM's trust variables (microsandbox's CA and the guest bundle), so its shim names them.
             ...(hostedVm ? { guestTrust: true } : {})
           }
@@ -9179,11 +9128,7 @@ export class Daemon {
           ? {
               microsandbox: {
                 mounts: this.cfg.sandbox.mounts,
-                trustedMounts: microsandboxSupportMounts(
-                  this.root,
-                  sessionGitInjection?.GIT_CONFIG_GLOBAL,
-                  guestGit?.env.GIT_CONFIG_GLOBAL
-                ),
+                trustedMounts: microsandboxSupportMounts(this.root, sessionGitInjection?.GIT_CONFIG_GLOBAL),
                 ...microPlacement
               }
             }

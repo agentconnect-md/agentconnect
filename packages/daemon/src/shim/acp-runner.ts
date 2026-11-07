@@ -10,7 +10,7 @@ import {
 import { applySessionTrust } from '../credential-proxy/trust-bundle.js'
 import { AcpStreamPayloadSchema, type AcpOpen } from './acp-stream.js'
 import { seedDshPreset } from './dsh-preset.js'
-import { SANDBOX_BROWSER_EXECUTABLE_ENV, SANDBOX_GH_WRAPPER_DIR } from './sandbox-paths.js'
+import { SANDBOX_BROWSER_EXECUTABLE_ENV, SANDBOX_PATHBIN_DIR } from './sandbox-paths.js'
 import { SHIM_RUNTIME_MARK_ENV, SHIM_SEED_ENV, type ShimEvent } from './protocol.js'
 import { applySrtProxyEnv } from './srt-route.js'
 
@@ -58,14 +58,14 @@ function seedEnv(podEnv: Record<string, string | undefined>): Record<string, str
   }
 }
 
-/** PATH with the image's gh wrapper first, else the host launcher's, or unchanged when neither exists on THIS machine. */
+/** PATH with the image's wrapper dir first, else the host launcher's, or unchanged when neither exists on THIS machine. */
 // Decided here, not sent by the daemon: a daemon naming a path on a machine it is not on is the bug sandbox-paths.ts keeps out.
-export function ghWrapperPath(
+export function wrapperPath(
   path: string | undefined,
   exists: (dir: string) => boolean = existsSync,
   runtimeWrapperDir?: string
 ): string | undefined {
-  const dir = [SANDBOX_GH_WRAPPER_DIR, runtimeWrapperDir].find((candidate) => candidate && exists(candidate))
+  const dir = [SANDBOX_PATHBIN_DIR, runtimeWrapperDir].find((candidate) => candidate && exists(candidate))
   if (!dir) return path
   const entries = (path ?? '').split(':').filter((entry) => entry && entry !== dir)
   return [dir, ...entries].join(':')
@@ -216,16 +216,16 @@ export class AcpRunner {
     // sandboxProviderEnv, not in bulk.
     const env = { ...podBaseEnv(this.deps.podEnv ?? {}), ...seedEnv(this.deps.podEnv ?? {}), ...payload.env }
     applySrtProxyEnv(env, this.deps.podEnv ?? {})
-    // After the daemon's env, so an agent's `gh` reaches the image's per-repo wrapper even when a PATH travelled.
-    const ghPath = ghWrapperPath(env.PATH, existsSync, this.deps.runtimeWrapperDir)
-    if (ghPath !== undefined) env.PATH = ghPath
+    // After the daemon's env, so the image's wrappers come first even when a PATH travelled.
+    const wrapped = wrapperPath(env.PATH, existsSync, this.deps.runtimeWrapperDir)
+    if (wrapped !== undefined) env.PATH = wrapped
     this.fillHints(payload, env)
     // Fill-in only, like hints: an env the daemon decided (per-agent key/gateway) stays authoritative.
     const podEnv = this.deps.podEnv ?? {}
     for (const [name, value] of Object.entries(sandboxProviderEnv(payload.command, podEnv))) {
       if (!env[name]) env[name] = value
     }
-    // The baked browser, decided by the IMAGE like the gh wrapper dir above: the pod env is where a machine
+    // The baked browser, decided by the IMAGE like the wrapper dir above: the pod env is where a machine
     // the daemon is not on names its own path, and a child without it downloads a Chrome the pod already has.
     const bakedBrowser = podEnv[SANDBOX_BROWSER_EXECUTABLE_ENV]
     if (bakedBrowser && !env[SANDBOX_BROWSER_EXECUTABLE_ENV]) env[SANDBOX_BROWSER_EXECUTABLE_ENV] = bakedBrowser

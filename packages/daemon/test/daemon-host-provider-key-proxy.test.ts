@@ -54,20 +54,21 @@ function hostEnv(env: Record<string, string> = {}): string {
   return home
 }
 
-async function started(credentialProxy: boolean, runtime: 'claude' | 'codex') {
+/** A daemon with this runtime; `blockProxy` puts a file where the proxy keeps its key and CA, so it cannot start. */
+async function started(blockProxy: boolean, runtime: 'claude' | 'codex') {
   const root = tempDir('acpr-')
   writeFileSync(
     join(root, 'config.json'),
     JSON.stringify({
       version: 1,
       controlPlane: { enabled: false },
-      features: { credentialProxy },
       runtimes: {
         claude: { command: 'node', args: ['claude-agent-acp'] },
         codex: { command: 'node', args: ['codex-acp'] }
       }
     })
   )
+  if (blockProxy) writeFileSync(join(root, 'credential-proxy'), 'not a directory')
   const agentDir = join(root, 'agents', 'bot-a')
   mkdirSync(join(agentDir, 'workspace'), { recursive: true })
   writeFileSync(
@@ -117,7 +118,7 @@ function decide(d: any, host: string, headers: Record<string, string>) {
 describe.skipIf(process.platform === 'win32')("this machine's provider keys in srt sessions", () => {
   it('hands the session a placeholder for the key in the daemon env, which the proxy exchanges', async () => {
     hostEnv({ ANTHROPIC_API_KEY: ENV_KEY })
-    const { root, daemon, d, agent } = await started(true, 'claude')
+    const { root, daemon, d, agent } = await started(false, 'claude')
     try {
       const host = buildSrt(d, agent)
       const env: Record<string, string> = {
@@ -148,9 +149,9 @@ describe.skipIf(process.platform === 'win32')("this machine's provider keys in s
     }
   })
 
-  it('changes nothing with the proxy off', async () => {
+  it('changes nothing when the proxy did not start', async () => {
     hostEnv({ ANTHROPIC_API_KEY: ENV_KEY })
-    const { daemon, d, agent } = await started(false, 'claude')
+    const { daemon, d, agent } = await started(true, 'claude')
     try {
       const host = buildSrt(d, agent)
       expect(host.opts.env.ANTHROPIC_API_KEY).toBe(ENV_KEY)
@@ -168,7 +169,7 @@ describe.skipIf(process.platform === 'win32')("this machine's provider keys in s
       const auth = join(home, '.codex', 'auth.json')
       mkdirSync(join(home, '.codex'))
       writeFileSync(auth, JSON.stringify({ auth_mode: 'apikey', OPENAI_API_KEY: CODEX_KEY }))
-      const { root, daemon, d, agent } = await started(true, 'codex')
+      const { root, daemon, d, agent } = await started(false, 'codex')
       try {
         const host = buildSrt(d, agent)
         const env: Record<string, string> = host.opts.env
@@ -203,7 +204,7 @@ describe.skipIf(process.platform === 'win32')("this machine's provider keys in s
     mkdirSync(join(home, '.codex'))
     const text = JSON.stringify(OAUTH)
     writeFileSync(auth, text)
-    const { daemon, d, agent } = await started(true, 'codex')
+    const { daemon, d, agent } = await started(false, 'codex')
     try {
       const host = buildSrt(d, agent)
       // Linux shares the sign-in through a link; elsewhere a runtime named by its adapter seeds none.
