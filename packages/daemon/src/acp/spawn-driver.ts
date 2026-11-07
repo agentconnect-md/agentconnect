@@ -36,10 +36,9 @@ export interface SpawnFile {
   content: string
 }
 
-/** What a VM or pod launch holds in place of its credential-helper env once its shim serves a `codehost` listener: the placeholder variables and the proxied gitconfig. */
+/** What a VM or pod launch adds once its shim serves a `codehost` listener: the placeholder variables. */
 export interface CodehostSpawn {
   env: Record<string, string>
-  files?: SpawnFile[]
   /** A hosted VM's: the shim also keeps the trust files its executor's seed names, which this launch cannot. */
   guestTrust?: boolean
 }

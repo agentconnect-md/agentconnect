@@ -28,10 +28,8 @@ const LISTENER = { port: 41_234, token: 'listener-token-example', trustBundle: '
 const OVERLAY: CodehostSpawn = {
   env: {
     AC_CODEHOST_CREDENTIAL: 'placeholder-example',
-    GH_TOKEN: 'placeholder-example',
-    GIT_CONFIG_GLOBAL: '/run/agentconnect/git/agent-a.proxied.gitconfig'
+    GH_TOKEN: 'placeholder-example'
   },
-  files: [{ root: '/run/agentconnect/git', relPath: ['agent-a.proxied.gitconfig'], content: '[http]\n' }],
   guestTrust: true
 }
 
@@ -101,10 +99,10 @@ describe("a hosted VM launch's switch to its shim's codehost listener", () => {
       files: [],
       guest: true
     })
-    expect(launch.files).toEqual(OVERLAY.files)
+    expect(launch.files).toBeUndefined()
   })
 
-  it('keeps the helper path where the shim reported no listener', () => {
+  it('leaves the session without a credential where the shim reported no listener', () => {
     expect(applyProxySpawn({ ...base, codehost: OVERLAY }, {})).toEqual(base)
   })
 
@@ -174,11 +172,8 @@ describe('a hosted VM session through its guest shim', () => {
       local.driverFor(environment).launch({
         command: process.execPath,
         args: ['-e', REPORTER],
-        env: { AC_AGENT_ID: 'agent-a', PATH: process.env.PATH ?? '', GIT_CONFIG_GLOBAL: '/helper.gitconfig' },
-        codehost: {
-          env: { ...OVERLAY.env, GIT_CONFIG_GLOBAL: join(root, 'agent-a.proxied.gitconfig') },
-          guestTrust: true
-        }
+        env: { AC_AGENT_ID: 'agent-a', PATH: process.env.PATH ?? '', GIT_CONFIG_GLOBAL: '/session.gitconfig' },
+        codehost: OVERLAY
       })
     return { launch, seed }
   }
@@ -200,7 +195,7 @@ describe('a hosted VM session through its guest shim', () => {
       expect(env.HTTPS_PROXY).toMatch(/^http:\/\/codehost:[^@]+@127\.0\.0\.1:\d+$/)
       expect(env.AC_CODEHOST_CREDENTIAL).toBe('placeholder-example')
       expect(env.GH_TOKEN).toBe('placeholder-example')
-      expect(env.GIT_CONFIG_GLOBAL).toMatch(/agent-a\.proxied\.gitconfig$/)
+      expect(env.GIT_CONFIG_GLOBAL).toBe('/session.gitconfig')
       expect(env[SESSION_TRUST_ENV]).toBeUndefined()
       for (const name of PROXY_TRUST_VARS) expect(env[name]).toBe(env.SSL_CERT_FILE)
       const bundle = readFileSync(env.SSL_CERT_FILE!, 'utf8')
@@ -209,13 +204,13 @@ describe('a hosted VM session through its guest shim', () => {
   )
 
   it.skipIf(process.platform === 'win32')(
-    'keeps the helper path and the seeded trust where its shim serves no codehost listener',
+    'holds no placeholder and keeps the seeded trust where its shim serves no codehost listener',
     async () => {
       const { launch, seed } = await fixture([])
       const env = await reported(await launch())
       expect(env.HTTPS_PROXY).toBeUndefined()
       expect(env.AC_CODEHOST_CREDENTIAL).toBeUndefined()
-      expect(env.GIT_CONFIG_GLOBAL).toBe('/helper.gitconfig')
+      expect(env.GIT_CONFIG_GLOBAL).toBe('/session.gitconfig')
       expect(env.NODE_EXTRA_CA_CERTS).toBe(seed.NODE_EXTRA_CA_CERTS)
       expect(env.SSL_CERT_FILE).toBe(seed.SSL_CERT_FILE)
     }
@@ -312,12 +307,12 @@ describe.skipIf(process.platform === 'win32')('the holder of an executor-placed 
     }
   })
 
-  it('hands the launch the placeholder and the proxied gitconfig as the switch its shim keeps the seeded trust under', async () => {
+  it('hands the launch the placeholder as the switch its shim keeps the seeded trust under', async () => {
     const { d, agent, stop } = await holder()
     try {
       placedOn(d, agent, 'microsandbox')
       const { env, codehost } = launch(d, agent, 'microsandbox')
-      // The helper path until the bound shim reports its listener.
+      // No code-host credential until the bound shim reports its listener.
       expect(env.AC_CODEHOST_CREDENTIAL).toBeUndefined()
       expect(env.GH_TOKEN).toBeUndefined()
       expect(env.HTTPS_PROXY).toBeUndefined()
@@ -325,9 +320,9 @@ describe.skipIf(process.platform === 'win32')('the holder of an executor-placed 
       const placeholder = codehost!.env.AC_CODEHOST_CREDENTIAL!
       expect(placeholder).toMatch(/^acph1_/)
       expect(codehost!.env.GH_TOKEN).toBe(placeholder)
-      // Written in the VM at the roots its executor reported, beside the helper gitconfig rather than over it.
-      expect(codehost!.env.GIT_CONFIG_GLOBAL).toBe(`${RUNTIME_ROOT}/git/${agent.id}.proxied.gitconfig`)
-      expect(codehost!.files!.map((file) => file.content).join('\n')).toContain('password=$AC_CODEHOST_CREDENTIAL')
+      // The one session gitconfig, in the VM at the roots its executor reported, already presents the placeholder.
+      expect(env.GIT_CONFIG_GLOBAL).toBe(`${RUNTIME_ROOT}/git/${agent.id}.gitconfig`)
+      expect(codehost!.env.GIT_CONFIG_GLOBAL).toBeUndefined()
       for (const name of PROXY_TRUST_VARS) expect(codehost!.env[name]).toBeUndefined()
 
       const switched = applyProxySpawn({ command: 'x', args: [], env, codehost }, { codehost: LISTENER })

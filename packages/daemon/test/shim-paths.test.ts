@@ -16,12 +16,10 @@ describe('shimPaths', () => {
   it('defaults to the literals the runtime image fixes', () => {
     expect(shimPaths()).toEqual({
       gitCredentialHelper: '/opt/agentconnect/bin/git-credential',
-      ghTokenEntry: '/opt/agentconnect/shim/gh-token.js',
-      glabTokenEntry: '/opt/agentconnect/shim/glab-token.js',
       autoMergeEntry: '/opt/agentconnect/shim/auto-merge.js',
       mcpBridgeEntry: '/opt/agentconnect/shim/mcp-bridge.js',
       secretsEntry: '/opt/agentconnect/shim/secrets.js',
-      ghWrapperDir: '/opt/agentconnect/pathbin',
+      pathbinDir: '/opt/agentconnect/pathbin',
       runtimeWrapperDir: '/run/agentconnect/pathbin',
       dshPresetDir: '/opt/agentconnect/dsh/agent-presets/standard-no-search',
       gitConfigDir: '/run/agentconnect/git',
@@ -47,7 +45,7 @@ describe('shimPaths', () => {
     const flat = (value: object): string[] =>
       Object.values(value).flatMap((entry) => (typeof entry === 'string' ? [entry] : flat(entry as object)))
     const all = flat(paths)
-    expect(all).toHaveLength(17)
+    expect(all).toHaveLength(15)
     expect(all.every((path) => path.startsWith('/tmp/rt/') || path.startsWith('/srv/helpers/'))).toBe(true)
     expect(all.some((path) => path.includes('/run/agentconnect') || path.includes('/opt/agentconnect'))).toBe(false)
     expect(paths.tunnels).toEqual({
@@ -61,7 +59,7 @@ describe('shimPaths', () => {
     expect(paths.skillStagingDir).toBe('/tmp/rt/skills-staging')
     expect(paths.bundleStagingDir).toBe('/tmp/rt/bundle-staging')
     expect(paths.mcpBridgeEntry).toBe('/srv/helpers/shim/mcp-bridge.js')
-    expect(paths.glabTokenEntry).toBe('/srv/helpers/shim/glab-token.js')
+    expect(paths.secretsEntry).toBe('/srv/helpers/shim/secrets.js')
     expect(paths.runtimeWrapperDir).toBe('/tmp/rt/pathbin')
   })
 
