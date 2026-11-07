@@ -1037,7 +1037,7 @@ describe('Git skill source policy boundary', () => {
           targetFor: () => target,
           daemonTarget: target,
           preWarm: async () => {},
-          capabilityFor: (agentId) => server.capabilityFor(agentId)
+          capabilityFor: (agentId, holder) => server.capabilityFor(agentId, holder)
         })
         await expect(loadScopedGitSkillCredential(request)).rejects.toThrow('unavailable')
         expect(asked).toEqual([])
@@ -1046,7 +1046,7 @@ describe('Git skill source policy boundary', () => {
           targetFor: () => target,
           daemonTarget: target,
           preWarm: async () => {},
-          capabilityFor: (agentId) => server.capabilityFor(agentId),
+          capabilityFor: (agentId, holder) => server.capabilityFor(agentId, holder),
           openSkillCredentialWindow: (agentId, repo) => server.openDaemonSkillWindow(agentId, repo)
         })
         await expect(loadScopedGitSkillCredential(request)).resolves.toEqual({
@@ -1080,7 +1080,7 @@ describe('Git skill source policy boundary', () => {
             targetFor: () => target,
             daemonTarget: target,
             preWarm: async () => {},
-            capabilityFor: (agentId) => server.capabilityFor(agentId),
+            capabilityFor: (agentId, holder) => server.capabilityFor(agentId, holder),
             openSkillCredentialWindow: () => window
           })
           await expect(loadScopedGitSkillCredential(workspaceSkill)).rejects.toThrow('unavailable')

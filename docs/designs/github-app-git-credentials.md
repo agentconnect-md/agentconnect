@@ -552,12 +552,13 @@ through a tool or REST instead.
 in the daemon, for every execution strategy. Only how a request reaches the
 proxy differs:
 
-| Strategy                    | Transport                                                                                |
-| --------------------------- | ---------------------------------------------------------------------------------------- |
-| `microsandbox`              | the `codehost` and `provider` tunnels, from one loopback listener in the VM's shim       |
-| pool pod                    | the `codehost` tunnel, from a loopback listener in the pod's shim                        |
-| `srt` and host              | a loopback or Unix-socket listener under the daemon root                                 |
-| host, placed on an executor | the `codehost` and `provider` tunnels, from one loopback listener in the executor's shim |
+| Strategy                     | Transport                                                                                          |
+| ---------------------------- | -------------------------------------------------------------------------------------------------- |
+| `microsandbox`               | the `codehost` and `provider` tunnels, from one loopback listener in the VM's shim                 |
+| pool pod                     | the `codehost` tunnel, from a loopback listener in the pod's shim                                  |
+| `srt` and host               | a loopback or Unix-socket listener under the daemon root                                           |
+| host, placed on an executor  | the `codehost` and `provider` tunnels, from one loopback listener in the executor's shim           |
+| `srt`, placed on an executor | the `codehost` tunnel, from the Unix socket in the executor's shim that `srt` routes code hosts to |
 
 **Client configuration.** Every strategy would get the same configuration.
 Only the proxy address differs:
@@ -718,8 +719,21 @@ the proxy's CA certificate:
   tunnel's kind of placeholder and CONNECTs only to that tunnel's routes, so a
   code-host placeholder is refused on `provider` and a provider placeholder on
   `codehost`.
-- A session on an executor whose shim does not serve `codehost`, and an `srt`
-  or VM session placed on one, keeps the credential helper path.
+- An `srt` session placed on an executor reaches the same tunnel through `srt`.
+  Its `prepare` names the agent's code-host names, and the executor starts
+  the boundary with `mitmProxy` routing them to a Unix socket in the shim's
+  runtime root; a later `prepare` naming others starts it again. The shim
+  serves that socket at the holder's `codehost` listen and reports the names.
+  A CONNECT to one of the routes enters the tunnel, and any other is refused,
+  since the network namespace has no other way out. The session gets the
+  placeholder only when those names cover all of the agent's code hosts, and
+  every session and the holder's Git there trust the shim's bundle, since
+  everything `srt` routes ends at the proxy.
+- A session on an executor whose shim does not serve `codehost`, and a VM
+  session placed on one, keeps the credential helper path. A hosted VM's
+  trust variables name the substitution authority its executor seeded, which
+  the holder cannot name, so switching it to the shim's bundle waits for the
+  shim to merge those files itself.
 
 A session in a local `microsandbox` VM or a pool pod reaches its own daemon's
 proxy the same way, through the shim inside the VM or pod. The daemon asks
@@ -794,8 +808,10 @@ the list misses produces the wrong product behavior, never excess access.
 
 **What it would retire.** The `gh` wrapper and its argv target resolution
 (`gh-target.ts`), the `glab` wrapper's token fetch (`glab-target.ts`), and the
-agent-facing helper channel with its per-agent capability. The daemon's own
-Git operations keep using gitcred unchanged.
+runtime's ability to mint credentials over the helper channel. The channel and
+its per-agent capabilities stay: the daemon and the agent runtime each hold
+their own, the runtime's keeps serving live secrets, and the daemon's own Git
+operations keep using gitcred unchanged.
 
 **What it would not cover.** Runtime sign-ins and provider credentials keep
 their own handling (session-executors.md §8), including the VM's

@@ -79,7 +79,8 @@ export function seedHostedHome(
 export function hostedEnvironment(
   daemonRoot: string,
   sessionLeaf: string,
-  seed: SessionSeed = { env: {}, paths: [] }
+  seed: SessionSeed = { env: {}, paths: [] },
+  codehostDomains: string[] = []
 ): EnvironmentDescriptor {
   const directory = join(daemonRoot, SESSIONS_DIR, sessionLeaf)
   return {
@@ -88,7 +89,7 @@ export function hostedEnvironment(
     mounts: [directory, ...seed.paths].map((path) => ({ source: path, target: path, mode: 'writable' as const })),
     workspaceRoot: directory,
     ...(seed.secrets?.length ? { secrets: seed.secrets } : {}),
-    hosted: { env: seed.env }
+    hosted: { env: seed.env, ...(codehostDomains.length > 0 ? { codehostDomains } : {}) }
   }
 }
 

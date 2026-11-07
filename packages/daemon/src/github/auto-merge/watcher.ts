@@ -56,8 +56,8 @@ export interface AutoMergeWatcherDeps {
   holdSandbox?: (subject: string) => (() => void) | undefined
   /** A pod answered with a watcher armed in it: renew the idle sweep's own hold on that pod. */
   onArmed?: (subject: string) => void
-  /** The agent's runtime-only gitcred capability, so the POD's watcher can fetch its own token. */
-  capabilityFor: (agentId: string) => string
+  /** The agent's daemon gitcred capability (never the runtime's), so the POD's watcher can fetch its own token. */
+  daemonCapabilityFor: (agentId: string) => string
   /** A GH_TOKEN-plane token for the LOCAL loop; the pod fetches its own over the gitcred tunnel. */
   tokenFor: (agentId: string, repoFullName: string) => Promise<string>
   log?: { info: (message: string) => void; warn: (message: string) => void }
@@ -166,7 +166,10 @@ export class AutoMergeWatcher {
       throw sandboxAsleep(subject)
     }
     try {
-      const answer = await sandbox.arm({ ...this.call(target), capability: this.deps.capabilityFor(target.agentId) })
+      const answer = await sandbox.arm({
+        ...this.call(target),
+        capability: this.deps.daemonCapabilityFor(target.agentId)
+      })
       if (answer.armed) this.deps.onArmed?.(subject)
       return this.project(target, 'sandbox', answer)
     } finally {

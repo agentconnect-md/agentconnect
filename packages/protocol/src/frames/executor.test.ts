@@ -308,6 +308,13 @@ describe('executor/prepare', () => {
     expect(ExecutorPrepareReq.safeParse({ ...PREPARE, strategy: 'docker' }).success).toBe(true)
   })
 
+  it('carries the code-host names an srt boundary routes to its shim, and refuses an empty list', () => {
+    const srt = { ...PREPARE, strategy: 'srt', codehostDomains: ['github.com', 'gitlab.example.test'] }
+    expect(roundTrip('executor/prepare', srt)).toEqual(srt)
+    expect(ExecutorPrepareReq.safeParse({ ...srt, codehostDomains: [] }).success).toBe(false)
+    expect(ExecutorPrepareReq.safeParse({ ...srt, codehostDomains: [''] }).success).toBe(false)
+  })
+
   it('every arm of the reply round-trips', () => {
     const arms: ExecutorPrepareResult[] = [
       {

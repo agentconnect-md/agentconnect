@@ -39,7 +39,12 @@ import { tlsTrustEnv } from '../config/tls-trust-env.js'
 import type { GitPullSummary, GitRunner } from './git-runner.js'
 import { simpleGit, type SimpleGit } from 'simple-git'
 import { normalizeGitCloneUrl, type CodeHostProvider, type GitCommitIdentity } from '@agentconnect.md/protocol'
-import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV, GITCRED_SOCKET_ENV } from '../cp/gitcred-server.js'
+import {
+  GITCRED_AGENT_ENV,
+  GITCRED_CAPABILITY_ENV,
+  GITCRED_SOCKET_ENV,
+  type GitCredHolder
+} from '../cp/gitcred-server.js'
 import {
   codeHostCredentials,
   managedHostTable,
@@ -325,7 +330,7 @@ export function workspaceGitRemoteTarget(
     env: {
       ...env,
       ...gitConfigEnv(pairs),
-      ...(credentialAgentId ? gitCredentialEnv(credentialAgentId, targetOf(credentialAgentId), scope) : {}),
+      ...(credentialAgentId ? gitCredentialEnv(credentialAgentId, targetOf(credentialAgentId), scope, 'daemon') : {}),
       // A missing credential must fail immediately rather than block on a prompt nobody answers.
       GIT_TERMINAL_PROMPT: '0'
     }
@@ -564,7 +569,7 @@ export interface GitCredRepository {
 let targetFor: ((agentId: string, cwd?: string) => GitCredentialTarget) | undefined
 let daemonTarget: GitCredentialTarget | undefined
 let preWarm: ((agentId: string, reason: 'clone' | 'pull', repository?: GitCredRepository) => Promise<void>) | undefined
-let capabilityFor: ((agentId: string) => string) | undefined
+let capabilityFor: ((agentId: string, holder: GitCredHolder) => string) | undefined
 let openSkillWindow: ((agentId: string, repo: string) => SkillCredentialWindowHandle | undefined) | undefined
 
 /** A daemon-opened skill credential window: its capability replaces the agent's for one acquisition. */
@@ -584,8 +589,8 @@ export function initGitInjection(opts: {
   daemonTarget?: GitCredentialTarget
   /** Warm the daemon credential cache BEFORE a timed git op (never inside its budget): the named repository's own credential, else the workspace's. */
   preWarm: (agentId: string, reason: 'clone' | 'pull', repository?: GitCredRepository) => Promise<void>
-  /** Runtime-only local socket capability. Never written to a config file. */
-  capabilityFor: (agentId: string) => string
+  /** Runtime-only local socket capability for one holder: daemon-run git, or the agent's runtime. Never written to a config file. */
+  capabilityFor: (agentId: string, holder: GitCredHolder) => string
   /** Opens a daemon-subject skill credential window (source-cache.md §8); absent or undefined ⇒ the agent capability is presented. */
   openSkillCredentialWindow?: (agentId: string, repo: string) => SkillCredentialWindowHandle | undefined
 }): void {
@@ -630,20 +635,16 @@ function targetOf(agentId: string, cwd?: string): GitCredentialTarget {
   return targetFor(agentId, cwd)
 }
 
-/** Auth for helper subprocesses. Keep separate from the persisted config pointers.
- *  Identity and capability are minted as a PAIR: the helper prefers this env
- *  identity over the agentId baked into a `.git/config` helper line, so a stale
- *  repo-local pin (previous agent generation) can never desync the two.
- *  The socket rides along for a target that is not this daemon's filesystem: the helper cannot
- *  derive a daemon root it does not have. */
+/** Helper auth, never in a config file: the identity paired with `holder`'s capability (outranking a stale `.git/config` pin), plus the socket for a target off this filesystem. */
 export function gitCredentialEnv(
   agentId: string,
-  target: GitCredentialTarget = targetOf(agentId),
-  scope: ManagedCredentialScope = GITHUB_CREDENTIAL_SCOPE
+  target: GitCredentialTarget,
+  scope: ManagedCredentialScope,
+  holder: GitCredHolder
 ): Record<string, string> {
   if (!capabilityFor) throw new Error('git credential injection is not initialized')
   return {
-    [GITCRED_CAPABILITY_ENV]: capabilityFor(agentId),
+    [GITCRED_CAPABILITY_ENV]: capabilityFor(agentId, holder),
     [GITCRED_AGENT_ENV]: agentId,
     // §24.4: which hosts are ours is injected, never sniffed by the helper from two literals.
     [GITCRED_HOSTS_ENV]: encodeManagedHostTable(scopeHostTable(scope)),
@@ -651,14 +652,14 @@ export function gitCredentialEnv(
   }
 }
 
-/** The credential channel alone, for every agent's runtime: its live secrets ride it, and `get` stays refused without a managed credential (capability-requests.md §4.9.2). */
+/** The credential channel alone, for every agent's runtime under its runtime capability: its live secrets ride it, and `get` stays refused without a managed credential (capability-requests.md §4.9.2). */
 export function liveSecretsChannelEnv(
   agentId: string,
   target: GitCredentialTarget = targetOf(agentId)
 ): Record<string, string> {
   if (!capabilityFor) throw new Error('git credential injection is not initialized')
   return {
-    [GITCRED_CAPABILITY_ENV]: capabilityFor(agentId),
+    [GITCRED_CAPABILITY_ENV]: capabilityFor(agentId, 'runtime'),
     [GITCRED_AGENT_ENV]: agentId,
     ...(target.socketPath ? { [GITCRED_SOCKET_ENV]: target.socketPath } : {})
   }
@@ -744,7 +745,7 @@ function gitEnvFor(
 ): Record<string, string> {
   const pairs = [...workspaceGitConfigPairs(repository), ...credentialConfigPairs(agentId, scope, target)]
   const env: Record<string, string> = {
-    ...gitCredentialEnv(agentId, target, scope),
+    ...gitCredentialEnv(agentId, target, scope, 'daemon'),
     GIT_TERMINAL_PROMPT: '0',
     ...gitConfigEnv(pairs)
   }
@@ -797,7 +798,7 @@ export function sessionGitConfig(
     path: file,
     content: lines.join('\n'),
     env: {
-      ...(scope ? { ...gitCredentialEnv(agentId, target, scope), GIT_TERMINAL_PROMPT: '0' } : {}),
+      ...(scope ? { ...gitCredentialEnv(agentId, target, scope, 'runtime'), GIT_TERMINAL_PROMPT: '0' } : {}),
       GIT_CONFIG_GLOBAL: file,
       ...(proxied && bases.length > 0 ? gitConfigEnv(proxiedHelperPairs(bases)) : {}),
       ...(commitIdentity ? gitCommitIdentityEnv(commitIdentity) : {})

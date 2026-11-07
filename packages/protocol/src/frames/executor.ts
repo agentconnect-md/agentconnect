@@ -103,7 +103,9 @@ export const ExecutorPrepareReq = z.object({
       diskGiB: z.number().int().positive().optional()
     })
     .optional(),
-  image: z.string().min(1).max(512).optional()
+  image: z.string().min(1).max(512).optional(),
+  // `srt` only: the code-host names its boundary routes to the shim's codehost socket, which leads to the holder's credential proxy.
+  codehostDomains: z.array(z.string().min(1).max(253)).min(1).max(64).optional()
 })
 export type ExecutorPrepareReq = z.infer<typeof ExecutorPrepareReq>
 

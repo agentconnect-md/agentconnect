@@ -9,10 +9,12 @@ import { LocalGitRunner, type GitRunner } from '../src/workspace/git-runner.js'
 import {
   canonicalWorkspaceGitUrl,
   cloneGitEnv,
+  daemonLocalGitEnv,
   gitEnvBase,
   gitFor,
   daemonGitCredentialTarget,
   initGitInjection,
+  liveSecretsChannelEnv,
   parseGitVersion,
   syncWorkspaceRef,
   sandboxGitCredentialTarget,
@@ -91,7 +93,8 @@ beforeAll(() => {
           ? sandboxGitCredentialTarget(join(tmpRun, 'hs'), join(tmpRun, 'installation'))
           : daemonGitCredentialTarget({ shimPath: join(tmpRun, 'helper.sh'), runDir: tmpRun }),
     preWarm: async () => undefined,
-    capabilityFor: (agentId) => `cap-${agentId}`
+    // Holder-tagged, so each env shows whose capability it carries.
+    capabilityFor: (agentId, holder) => `${holder}-cap-${agentId}`
   })
 })
 
@@ -542,10 +545,22 @@ describe('cloneGitEnv', () => {
   })
 
   it('injects the runtime capability without writing it to the session gitconfig', () => {
-    expect(cloneGitEnv('agent-1')[GITCRED_CAPABILITY_ENV]).toBe('cap-agent-1')
+    expect(cloneGitEnv('agent-1')[GITCRED_CAPABILITY_ENV]).toBe('daemon-cap-agent-1')
     const session = sessionGitEnv('agent-1')
-    expect(session[GITCRED_CAPABILITY_ENV]).toBe('cap-agent-1')
+    expect(session[GITCRED_CAPABILITY_ENV]).toBe('runtime-cap-agent-1')
     expect(readFileSync(session.GIT_CONFIG_GLOBAL!, 'utf8')).not.toContain('cap-agent-1')
+  })
+
+  it('gives git the daemon runs the daemon capability and the agent runtime its own, in every filesystem', () => {
+    for (const agentId of ['agent-1', 'pod-1', 'installed-1']) {
+      expect(cloneGitEnv(agentId)[GITCRED_CAPABILITY_ENV]).toBe(`daemon-cap-${agentId}`)
+      expect(daemonLocalGitEnv(agentId)[GITCRED_CAPABILITY_ENV]).toBe(`daemon-cap-${agentId}`)
+      expect(workspaceGitRemoteTarget('https://github.com/acme/repo.git', agentId).env[GITCRED_CAPABILITY_ENV]).toBe(
+        `daemon-cap-${agentId}`
+      )
+      expect(sessionGitConfig(agentId).env[GITCRED_CAPABILITY_ENV]).toBe(`runtime-cap-${agentId}`)
+      expect(liveSecretsChannelEnv(agentId)[GITCRED_CAPABILITY_ENV]).toBe(`runtime-cap-${agentId}`)
+    }
   })
 
   it('mints the env identity as a pair with the capability (helper outranks config-embedded ids)', () => {
@@ -658,7 +673,7 @@ describe('workspaceGitRemoteTarget', () => {
     expect(reset).toBeGreaterThanOrEqual(0)
     expect(helper).toBeGreaterThan(reset)
     expect(pairs).toContainEqual(['credential.https://github.com.useHttpPath', 'true'])
-    expect(target.env[GITCRED_CAPABILITY_ENV]).toBe('cap-agent-1')
+    expect(target.env[GITCRED_CAPABILITY_ENV]).toBe('daemon-cap-agent-1')
     expect(target.env[GITCRED_AGENT_ENV]).toBe('agent-1')
   })
 

@@ -6,6 +6,10 @@ import { AF_UNIX_PATH_MAX, SANDBOX_TEMP_DIR_ENV, WIDEST_SRT_SOCKET } from '../ac
 import type { SandboxMount } from '../config/config-schema.js'
 import type { Logger } from '../log.js'
 import { canonicalPath, compactReadRoots, contains, protectedSandboxRoots } from '../runtimes/read-roots.js'
+import { proxyTrustEnv } from '../credential-proxy/ca.js'
+import { SHIM_CODEHOST_DOMAINS_ENV } from '../shim/protocol.js'
+import { shimPaths } from '../shim/sandbox-paths.js'
+import { codehostTrustBundleBeside, writeCodehostTrustBundle } from '../shim/tunnel-host.js'
 import type { HostShimBoundary, HostShimLayout } from './host-shim.js'
 
 export interface SrtShimPolicyInput {
@@ -99,6 +103,8 @@ export function srtShimBoundary(input: {
   mitmProxy?: { socketPath: string; domains: string[] }
   /** The proxy's trust variables, which the shim and the Git it runs inherit wherever SRT intercepts. */
   trustEnv?: Record<string, string>
+  /** A hosted environment's code-host names, which SRT routes to the shim's own codehost socket and its tunnel to the holder's proxy. */
+  shimCodehost?: string[]
 }): HostShimBoundary {
   return {
     wrap: (shim, layout) => {
@@ -126,7 +132,9 @@ export function srtShimBoundary(input: {
       })
       for (const path of skipped)
         input.log?.warn(`srt: not reopening ${path} for a shim — it would expose a protected path`)
-      const policy = input.mitmProxy ? { ...confined, mitmProxy: input.mitmProxy } : confined
+      const shimRoute = input.mitmProxy ? undefined : shimCodehostRoute(layout.runtimeRoot, input.shimCodehost)
+      const mitmProxy = input.mitmProxy ?? shimRoute?.mitmProxy
+      const policy = mitmProxy ? { ...confined, mitmProxy } : confined
       // Outside every path the sandbox can write, so nothing inside rewrites the policy it runs under.
       const settingsPath = writeSandboxSettingsUnder(
         input.daemonRoot,
@@ -140,7 +148,26 @@ export function srtShimBoundary(input: {
         cwd,
         provider: { cmd: process.execPath, args: [...layout.entry.execArgv, layout.entry.path] }
       })
-      return { ...launch, env: { ...(input.mitmProxy ? input.trustEnv : undefined), [SANDBOX_TEMP_DIR_ENV]: tempDir } }
+      return {
+        ...launch,
+        env: { ...(input.mitmProxy ? input.trustEnv : shimRoute?.env), [SANDBOX_TEMP_DIR_ENV]: tempDir }
+      }
     }
+  }
+}
+
+/** SRT's route for a hosted environment's code hosts: the shim's codehost socket, and the bundle it rewrites with the holder's CA, roots alone until then. */
+function shimCodehostRoute(
+  runtimeRoot: string,
+  domains: string[] | undefined
+): { mitmProxy: { socketPath: string; domains: string[] }; env: Record<string, string> } | undefined {
+  if (!domains?.length) return undefined
+  const socketPath = shimPaths(runtimeRoot).tunnels.codehost
+  const bundlePath = codehostTrustBundleBeside(socketPath)
+  // Written now so the trust variables name a file from the start, as the shim and its Git read them.
+  writeCodehostTrustBundle(bundlePath, [])
+  return {
+    mitmProxy: { socketPath, domains },
+    env: { ...proxyTrustEnv({ bundlePath }), [SHIM_CODEHOST_DOMAINS_ENV]: domains.join(',') }
   }
 }
