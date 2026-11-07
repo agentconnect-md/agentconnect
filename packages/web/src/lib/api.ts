@@ -365,6 +365,9 @@ export type AgentMemoryConfig =
       capture?: { mode: 'turn' | 'manual' }
     }
 
+/** What an agent's new rooms and group DMs start at: Auto, @-mentions on Per thread, or Off. */
+export type NewConversationMode = 'auto' | 'mention' | 'off'
+
 export interface AgentDto {
   id: string
   orgId: string
@@ -430,6 +433,7 @@ export interface AgentDto {
   outboundPolicy: AgentCallPolicy // which peer agents this agent may discover/call
   allowedTargetAgentIds: string[] // agent.id set, meaningful when outboundPolicy='selected'
   introduceOnJoin: boolean // #536: self-introduce to peers on a genuine channel join
+  newConversationMode?: NewConversationMode | null // what its new rooms and group DMs start at; null or absent ⇒ the platform default (Auto where the daemon reads it, else @-mentions)
   githubAppId?: string | null // the organization GitHub App the agent works through; null or absent ⇒ the built-in App
   execution?: string // the strategy slug sessions run in (session-executors.md §5); absent only on an older CP
   strategies?: StrategyTable // what the placement offers `execution`, host alone for an unplaced agent; absent only on an older CP
@@ -1169,6 +1173,8 @@ export interface UpdateAgentInput {
   pause?: boolean | null
   /** #536: self-introduce to peers on a genuine channel join (default off). */
   introduceOnJoin?: boolean
+  /** What new rooms and group DMs start at; null restores the platform default. Existing conversations keep theirs. */
+  newConversationMode?: NewConversationMode | null
   /** The managed computer mode, replaced wholesale; null clears (computer-use.md §4.1). */
   computerUse?: AgentComputerSetting | null
   /** The strategy new sessions run in, checked against the placement's table (409 with the reason when it cannot run there). */

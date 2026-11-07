@@ -465,6 +465,7 @@ function toDto(
     outboundPolicy: a.outboundPolicy,
     allowedTargetAgentIds: a.allowedTargetAgentIds,
     introduceOnJoin: a.introduceOnJoin,
+    newConversationMode: a.newConversationMode,
     githubAppId: a.githubAppId ?? null,
     execution: a.execution,
     strategies: placementView.strategies,
@@ -2233,6 +2234,9 @@ export function agentRoutes(deps: HttpDeps) {
                   ...(req.body.chatActions !== undefined ? { chatActions: req.body.chatActions } : {}),
                   ...(req.body.pause !== undefined ? { pause: req.body.pause } : {}),
                   ...(req.body.introduceOnJoin !== undefined ? { introduceOnJoin: req.body.introduceOnJoin } : {}),
+                  ...(req.body.newConversationMode !== undefined
+                    ? { newConversationMode: req.body.newConversationMode }
+                    : {}),
                   ...(req.body.computerUse !== undefined ? { computerUse: req.body.computerUse } : {}),
                   execution: executionChoice.execution,
                   ...(req.body.env !== undefined ? { env: req.body.env } : {}),

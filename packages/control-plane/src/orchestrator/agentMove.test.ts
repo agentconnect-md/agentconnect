@@ -103,6 +103,7 @@ function agent(daemonId: string | null): AgentRecord {
     outboundPolicy: 'all',
     allowedTargetAgentIds: [],
     introduceOnJoin: false,
+    newConversationMode: null,
     execution: 'host',
     lastModifiedAt: MODIFIED_AT,
     lastModifiedBy: null,

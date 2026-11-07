@@ -57,6 +57,7 @@ import type {
   ReportedChannel,
   ChannelTrigger,
   SeedTrigger,
+  NewConversationMode,
   ChannelActivation,
   DecisionChannelUsage,
   ConversationKind,
@@ -996,8 +997,9 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
       removed?: string[]
       migrated?: readonly { from: string; to: string }[]
       autoKinds?: readonly ConversationKind[]
+      newConversationMode?: NewConversationMode | null
     }
-  ): Promise<{ externalChanged: boolean; migrated?: boolean; sessionModeChanged?: boolean }> {
+  ): Promise<{ externalChanged: boolean; migrated?: boolean; sessionModeChanged?: boolean; offSeeded?: boolean }> {
     // Read first only to decide whether the spec needs a push; the register snapshot backs up a missed one.
     const known = new Map(
       (
@@ -1031,6 +1033,16 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
       const converts = (c.kind === 'im' || c.kind === 'mpim') && row.kind !== c.kind
       return converts && row.sessionMode !== mode
     })
+    // A new row the agent's mode seeded Off is muted only once the daemon's spec lists it, so it has to reach the daemon too.
+    const offSeeded =
+      opts?.newConversationMode === 'off' &&
+      channels.some(
+        (c) =>
+          !removed.has(c.id) &&
+          !known.has(c.id) &&
+          (opts.defaultTriggerByChannel?.get(c.id) ?? opts.defaultTrigger ?? openConversationTrigger(c, 'off')) ===
+            'off'
+      )
     for (const c of channels) {
       if (removed.has(c.id)) continue
       // Which columns a re-report is allowed to overwrite. An absent name/isPrivate is
@@ -1043,7 +1055,9 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
       const direct = c.kind === 'im' || c.kind === 'mpim'
       // A per-conversation seed (§14.8) outranks the install-wide default (restricted 'off'), which outranks the open one (§14.9); all seed a NEW row only.
       const createTrigger: SeedTrigger =
-        opts?.defaultTriggerByChannel?.get(c.id) ?? opts?.defaultTrigger ?? openConversationTrigger(c)
+        opts?.defaultTriggerByChannel?.get(c.id) ??
+        opts?.defaultTrigger ??
+        openConversationTrigger(c, opts?.newConversationMode)
       const createMode = openConversationSessionMode(c, opts?.autoKinds)
       await this.db.$executeRaw`
         INSERT INTO "integration_channel"
@@ -1152,7 +1166,12 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         where: { integrationId, channelId: { in: [...removed] } }
       })
     }
-    return { externalChanged, ...(migrated ? { migrated } : {}), ...(sessionModeChanged ? { sessionModeChanged } : {}) }
+    return {
+      externalChanged,
+      ...(migrated ? { migrated } : {}),
+      ...(sessionModeChanged ? { sessionModeChanged } : {}),
+      ...(offSeeded ? { offSeeded } : {})
+    }
   }
 
   // Move one conversation's operator-owned settings to its new platform id and drop the old row; false when there was nothing to move.
@@ -1196,7 +1215,11 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
   async upsertConversation(
     integrationId: IntegrationId,
     conversation: ReportedChannel,
-    opts?: { defaultTrigger?: SeedTrigger; autoKinds?: readonly ConversationKind[] }
+    opts?: {
+      defaultTrigger?: SeedTrigger
+      autoKinds?: readonly ConversationKind[]
+      newConversationMode?: NewConversationMode | null
+    }
   ): Promise<IntegrationChannelRecord> {
     const row = await this.db.integrationChannel.upsert({
       include: CHANNEL_INCLUDE,
@@ -1217,7 +1240,7 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         dmUserId: conversation.dmUserId ?? null,
         externalReason: conversation.externalReason ?? null,
         // Restricted installs supply Off; otherwise the same open default replaceSnapshot seeds (§14.9).
-        trigger: opts?.defaultTrigger ?? openConversationTrigger(conversation),
+        trigger: opts?.defaultTrigger ?? openConversationTrigger(conversation, opts?.newConversationMode),
         sessionMode: openConversationSessionMode(conversation, opts?.autoKinds)
       },
       // Refresh only known metadata; trigger/agentId stay operator-owned.

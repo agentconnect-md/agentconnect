@@ -401,6 +401,7 @@ function toRecord(a: AgentWithUsers): AgentRecord {
     outboundPolicy: a.outboundPolicy as AgentCallPolicy,
     allowedTargetAgentIds: a.allowedTargetAgentIds,
     introduceOnJoin: a.introduceOnJoin,
+    newConversationMode: a.newConversationMode ?? null,
     execution: a.execution,
     lastModifiedAt: a.lastModifiedAt,
     lastModifiedBy: a.lastModifiedBy
@@ -523,6 +524,7 @@ export class PgAgentRepo implements AgentRepo {
           capabilities: input.capabilities ?? [],
           // #536 self-introduce-on-join (dedicated column; absent ⇒ DB default false).
           ...(input.introduceOnJoin !== undefined ? { introduceOnJoin: input.introduceOnJoin } : {}),
+          ...(input.newConversationMode !== undefined ? { newConversationMode: input.newConversationMode } : {}),
           // The strategy sessions run in (session-executors.md §5); absent ⇒ DB default `host`.
           ...(input.execution !== undefined ? { execution: input.execution } : {}),
           // Initial visibility (absent ⇒ DB default 'org'). sharedWith only bites
@@ -873,6 +875,7 @@ export class PgAgentRepo implements AgentRepo {
         ...(patch.runtime !== undefined ? { runtime: patch.runtime } : {}),
         ...(patch.capabilities !== undefined ? { capabilities: patch.capabilities } : {}),
         ...(patch.introduceOnJoin !== undefined ? { introduceOnJoin: patch.introduceOnJoin } : {}),
+        ...(patch.newConversationMode !== undefined ? { newConversationMode: patch.newConversationMode } : {}),
         ...(patch.execution !== undefined ? { execution: patch.execution } : {}),
         ...(patch.gitAccess !== undefined ? { gitAccess: patch.gitAccess } : {}),
         ...(patch.agentDir !== undefined ? { agentDir: patch.agentDir } : {}),

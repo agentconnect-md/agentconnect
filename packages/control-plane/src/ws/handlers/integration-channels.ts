@@ -60,6 +60,7 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
   let externalChanged = false
   let migrated = false
   let sessionModeChanged = false
+  let offSeeded = false
   try {
     // Ownership may have changed while the first repository read was in flight.
     // Re-check under the shared mutation lease before accepting this daemon's
@@ -81,34 +82,47 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
     // no Off to override — and a resolver that answers nothing leaves §14.2 intact.
     const bot = defaultTrigger && deps.bot ? await deps.bot.get(OrgId(integration.orgId), integration.botId) : null
     seeded = owner && bot && deps.gatedDmSeeds ? await deps.gatedDmSeeds(p.channels, owner, bot) : undefined
-    // A new room or group DM starts on Auto where the reporting daemon reads it (auto-session-mode.md §3.2).
+    // A new room or group DM starts on Auto where the reporting daemon reads it (auto-session-mode.md §3.2), unless its agent starts new rooms on Mention or Off.
+    const newConversationMode = owner?.newConversationMode ?? null
     const autoKinds = autoConversationKinds(
       integration.platform,
-      deps.connReg.get(conn.daemonId)?.capabilities?.features
+      deps.connReg.get(conn.daemonId)?.capabilities?.features,
+      newConversationMode
     )
     const written = await deps.integrationChannel.replaceSnapshot(
       integration.id,
       p.channels,
-      defaultTrigger || p.authoritative === false || p.removed?.length || p.migrated?.length || autoKinds.length
+      defaultTrigger ||
+        p.authoritative === false ||
+        p.removed?.length ||
+        p.migrated?.length ||
+        autoKinds.length ||
+        newConversationMode
         ? {
             ...(defaultTrigger ? { defaultTrigger } : {}),
             ...(seeded?.size ? { defaultTriggerByChannel: seeded } : {}),
             ...(p.authoritative === false ? { authoritative: false } : {}),
             ...(p.removed?.length ? { removed: p.removed } : {}),
             ...(p.migrated?.length ? { migrated: p.migrated } : {}),
-            ...(autoKinds.length ? { autoKinds } : {})
+            ...(autoKinds.length ? { autoKinds } : {}),
+            ...(newConversationMode ? { newConversationMode } : {})
           }
         : undefined
     )
     externalChanged = written?.externalChanged === true
     migrated = written?.migrated === true
     sessionModeChanged = written?.sessionModeChanged === true
+    offSeeded = written?.offSeeded === true
   } finally {
     release()
   }
 
-  // The reporting daemon's spec predates this write, so push what it changed there: a §14.8 opened DM, the external set (assistant-mode.md §5.3), a migrated trigger, a session mode it does not list; best-effort.
-  if ((seeded?.size || externalChanged || migrated || sessionModeChanged) && owner && deps.integrationConverge) {
+  // The reporting daemon's spec predates this write, so push what it changed there: a §14.8 opened DM, the external set (assistant-mode.md §5.3), a migrated trigger, a session mode it does not list, a room its agent's mode started Off; best-effort.
+  if (
+    (seeded?.size || externalChanged || migrated || sessionModeChanged || offSeeded) &&
+    owner &&
+    deps.integrationConverge
+  ) {
     try {
       await deps.integrationConverge(owner)
     } catch {

@@ -1211,6 +1211,7 @@ export interface CreateAgentInput {
   chatActions?: ChatActions // what people can do in chat; absent ⇒ 'approve'
   pause?: boolean // operational message-processing toggle (#288); true ⇒ daemon skips all turns
   introduceOnJoin?: boolean // #536: self-introduce to peers on a genuine channel join (absent ⇒ DB default false)
+  newConversationMode?: NewConversationMode // what its new rooms and group DMs start at; absent ⇒ the platform default
   computerUse?: AgentComputerSetting // the managed computer mode (computer-use.md §4.1); absent ⇒ none
   execution?: string // the strategy slug sessions run in (session-executors.md §5); absent ⇒ DB default host
   env?: Record<string, string> // extra env injected into the runtime (AgentSpec.env)
@@ -1267,6 +1268,7 @@ export interface UpdateAgentInput {
   chatActions?: ChatActions
   pause?: boolean | null // operational message-processing toggle (#288); null clears
   introduceOnJoin?: boolean // #536: self-introduce to peers on a genuine channel join
+  newConversationMode?: NewConversationMode | null // what its new rooms and group DMs start at; null restores the platform default
   computerUse?: AgentComputerSetting | null // the managed computer mode (computer-use.md §4.1); replaced wholesale, null clears
   execution?: string // the strategy slug, resolved by the route against the placement's table
   /** Widen an existing App-backed GitHub workspace from read to write. */
@@ -1367,6 +1369,7 @@ export interface AgentRecord {
   outboundPolicy: AgentCallPolicy
   allowedTargetAgentIds: string[] // agent.id set; meaningful only when outboundPolicy='selected'
   introduceOnJoin: boolean // #536: self-introduce to peers on a genuine channel join (default false)
+  newConversationMode: NewConversationMode | null // what its new rooms and group DMs start at; null ⇒ the platform default (Auto where the daemon reads it, else Mention)
   computerUse?: AgentComputerSetting // from runtimeOverrides.computerUse: the managed mode only, access lives on each Computer
   execution: string // the strategy slug sessions run in (session-executors.md §5)
   lastModifiedAt: Date // last human edit (create/PATCH); defaults to createdAt
@@ -6283,6 +6286,9 @@ export type ChannelTrigger = 'off' | 'mention' | 'any' | 'decision'
 /** A trigger a row can be seeded or defaulted to; By decision is only ever chosen, with its binding. */
 export type SeedTrigger = Exclude<ChannelTrigger, 'decision'>
 
+/** What an agent's new rooms and group DMs start at: Auto (where the daemon reads it), Mention on Per thread, or Off. DMs are not affected. */
+export type NewConversationMode = 'auto' | 'mention' | 'off'
+
 /** A trigger write: By decision carries its binding, so a decision trigger without one is unrepresentable. */
 export type ChannelActivation =
   | { trigger: SeedTrigger }
@@ -6405,8 +6411,16 @@ export interface IntegrationChannelRepo {
       migrated?: readonly { from: string; to: string }[]
       /** The kinds a NEW row starts on Auto in (auto-session-mode.md §3.2); absent ⇒ every new row is Per thread. `sessionModeChanged` says a mode the daemon's spec lacks was written. */
       autoKinds?: readonly ConversationKind[]
+      /** The agent's default for a NEW room or group DM; `off` seeds Off where no other seed applies. */
+      newConversationMode?: NewConversationMode | null
     }
-  ): Promise<{ externalChanged: boolean; migrated?: boolean; sessionModeChanged?: boolean }>
+  ): Promise<{
+    externalChanged: boolean
+    migrated?: boolean
+    sessionModeChanged?: boolean
+    /** A NEW row was seeded Off by the agent's `off` mode, which the daemon mutes only once its spec lists it. */
+    offSeeded?: boolean
+  }>
   /** Forget one conversation row. Console-driven cleanup for a conversation the bot
    *  is no longer in on a platform that cannot say so itself; returns whether a row
    *  was actually removed. Metadata only — sessions and transcripts are untouched. */
@@ -6416,7 +6430,11 @@ export interface IntegrationChannelRepo {
   upsertConversation(
     integrationId: IntegrationId,
     conversation: ReportedChannel,
-    opts?: { defaultTrigger?: SeedTrigger; autoKinds?: readonly ConversationKind[] }
+    opts?: {
+      defaultTrigger?: SeedTrigger
+      autoKinds?: readonly ConversationKind[]
+      newConversationMode?: NewConversationMode | null
+    }
   ): Promise<IntegrationChannelRecord>
   /** Conversations across EVERY integration of a shared bot — the route compiler's
    *  ownership source. */

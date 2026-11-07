@@ -27,7 +27,7 @@ import {
   type AgentCallPolicy
 } from '@/lib/data'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
-import { fetchAgentDto, type AgentCallPolicyInput, type UpdateAgentInput } from '@/lib/api'
+import { fetchAgentDto, type AgentCallPolicyInput, type NewConversationMode, type UpdateAgentInput } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { useOrgs } from '@/lib/org-context'
@@ -56,6 +56,7 @@ import {
 import { OutputModeField } from '@/components/console/OutputModeField'
 import { ChatActionsField } from '@/components/console/ChatActionsField'
 import { ExecutionStrategyField } from '@/components/console/ExecutionStrategyField'
+import { FieldSelect } from '@/components/console/FieldSelect'
 import {
   agentStrategies,
   agentStrategyValue,
@@ -207,6 +208,9 @@ export default function EditAgentModal({
   const initialChatActions = useRef(agent.chatActions)
   const [introduceOnJoin, setIntroduceOnJoin] = useState(agent.introduceOnJoin)
   const initialIntroduceOnJoin = useRef(agent.introduceOnJoin)
+  // Unset is the platform default, which starts new rooms on Auto wherever the daemon reads it.
+  const [newConversationMode, setNewConversationMode] = useState<NewConversationMode>('auto')
+  const initialNewConversationMode = useRef<NewConversationMode>('auto')
   const [execution, setExecution] = useState(() => agentStrategyValue(agent))
   const initialExecution = useRef(agentStrategyValue(agent))
   // Agent-call visibility (both directions) — prefilled from the list `Agent`
@@ -301,6 +305,8 @@ export default function EditAgentModal({
         initialChatActions.current = dto.chatActions ?? 'talk'
         setIntroduceOnJoin(dto.introduceOnJoin ?? false)
         initialIntroduceOnJoin.current = dto.introduceOnJoin ?? false
+        setNewConversationMode(dto.newConversationMode ?? 'auto')
+        initialNewConversationMode.current = dto.newConversationMode ?? 'auto'
         // An older CP that names no strategy reads as the unplaced agent's host-only table.
         const storedExecution = agentStrategyValue({ execution: dto.execution ?? HOST_STRATEGY })
         setExecution(storedExecution)
@@ -667,6 +673,7 @@ export default function EditAgentModal({
       : {}),
     ...(chatActions !== initialChatActions.current ? { chatActions } : {}),
     ...(introduceOnJoin !== initialIntroduceOnJoin.current ? { introduceOnJoin } : {}),
+    ...(newConversationMode !== initialNewConversationMode.current ? { newConversationMode } : {}),
     // Saved before any move, so it is asked of the saved placement.
     ...(execution !== initialExecution.current ? executionAsk(savedStrategies, execution) : {}),
     ...(envChanged ? { env: envRecord } : {}),
@@ -994,6 +1001,28 @@ export default function EditAgentModal({
                     <Toggle checked={introduceOnJoin} onChange={setIntroduceOnJoin} />
                   </div>
                   <span className="mt-[6px] text-[11px] text-(--text-secondary)">{t('edit.introduceOnJoinHint')}</span>
+                </div>
+                <div className="fld desktop:col-span-2">
+                  <span className="fldlbl">{t('edit.newConversations')}</span>
+                  <FieldSelect
+                    value={newConversationMode}
+                    options={[
+                      {
+                        value: 'auto',
+                        label: t('edit.newConversationsAuto'),
+                        title: t('edit.newConversationsAutoHint')
+                      },
+                      {
+                        value: 'mention',
+                        label: t('edit.newConversationsMention'),
+                        title: t('edit.newConversationsMentionHint')
+                      },
+                      { value: 'off', label: t('edit.newConversationsOff'), title: t('edit.newConversationsOffHint') }
+                    ]}
+                    ariaLabel={t('edit.newConversations')}
+                    onChange={setNewConversationMode}
+                  />
+                  <span className="mt-[6px] text-[11px] text-(--text-secondary)">{t('edit.newConversationsHint')}</span>
                 </div>
               </div>
             </section>

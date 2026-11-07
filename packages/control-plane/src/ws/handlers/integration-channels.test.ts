@@ -22,7 +22,12 @@ function fakeDeps(
   platform = 'slack',
   known = true,
   externalChanged = false,
-  reporter: { features?: string[]; sessionModeChanged?: boolean } = {}
+  reporter: {
+    features?: string[]
+    sessionModeChanged?: boolean
+    offSeeded?: boolean
+    newConversationMode?: 'auto' | 'mention' | 'off' | null
+  } = {}
 ) {
   const dropPublicAudiences = vi.fn()
   const integrationConverge = vi.fn(async () => {})
@@ -33,7 +38,11 @@ function fakeDeps(
     slackSessionAccess: { dropPublicAudiences },
     agentMutations: { tryBeginMutation: vi.fn(() => vi.fn()) },
     agent: {
-      get: vi.fn(async () => ({ id: AGENT, visibility: 'org' })),
+      get: vi.fn(async () => ({
+        id: AGENT,
+        visibility: 'org',
+        newConversationMode: reporter.newConversationMode ?? null
+      })),
       listForDaemon: vi.fn(async () => [{ id: AGENT }]),
       listByIds: vi.fn(async () => [])
     },
@@ -41,7 +50,8 @@ function fakeDeps(
     integrationChannel: {
       replaceSnapshot: vi.fn(async () => ({
         externalChanged,
-        ...(reporter.sessionModeChanged ? { sessionModeChanged: true } : {})
+        ...(reporter.sessionModeChanged ? { sessionModeChanged: true } : {}),
+        ...(reporter.offSeeded ? { offSeeded: true } : {})
       }))
     },
     integrationConverge,
@@ -172,5 +182,50 @@ describe('handleIntegrationChannels — new conversations on Auto', () => {
     const { deps, replaceSnapshot } = fakeDeps('linear', true, false, { features: [SESSION_MODE_AUTO_V1_FEATURE] })
     await handleIntegrationChannels(frame([{ id: 'team-1' }]), conn, deps)
     expect(replaceSnapshot.mock.calls[0]![2]).toBeUndefined()
+  })
+})
+
+// An agent's new-conversation mode decides what its new rooms start at, ahead of the daemon's Auto default.
+describe("handleIntegrationChannels — the agent's new-conversation mode", () => {
+  const reads = [SESSION_MODE_AUTO_V1_FEATURE]
+
+  it('starts new rooms on Mention, Per thread, for an agent set to Mention, where the daemon reads Auto', async () => {
+    const { deps, replaceSnapshot } = fakeDeps('slack', true, false, {
+      features: reads,
+      newConversationMode: 'mention'
+    })
+    await handleIntegrationChannels(frame([{ id: 'C1' }]), conn, deps)
+    expect(replaceSnapshot.mock.calls[0]![2]).toEqual({ newConversationMode: 'mention' })
+  })
+
+  it('seeds new rooms Off for an agent set to Off, and pushes the spec that mutes them', async () => {
+    const { deps, replaceSnapshot, integrationConverge } = fakeDeps('slack', true, false, {
+      features: reads,
+      newConversationMode: 'off',
+      offSeeded: true
+    })
+    await handleIntegrationChannels(frame([{ id: 'C1' }]), conn, deps)
+    expect(replaceSnapshot.mock.calls[0]![2]).toEqual({ newConversationMode: 'off' })
+    expect(integrationConverge).toHaveBeenCalledTimes(1)
+  })
+
+  it('pushes nothing for a report that seeded no room Off', async () => {
+    const { deps, integrationConverge } = fakeDeps('slack', true, false, {
+      features: reads,
+      newConversationMode: 'off'
+    })
+    await handleIntegrationChannels(frame([{ id: 'C1' }]), conn, deps)
+    expect(integrationConverge).not.toHaveBeenCalled()
+  })
+
+  it('keeps the Auto default for an agent set to Auto or not set', async () => {
+    for (const newConversationMode of ['auto', null] as const) {
+      const { deps, replaceSnapshot } = fakeDeps('slack', true, false, { features: reads, newConversationMode })
+      await handleIntegrationChannels(frame([{ id: 'C1' }]), conn, deps)
+      expect(replaceSnapshot.mock.calls[0]![2]).toEqual({
+        autoKinds: ['channel', 'mpim'],
+        ...(newConversationMode ? { newConversationMode } : {})
+      })
+    }
   })
 })

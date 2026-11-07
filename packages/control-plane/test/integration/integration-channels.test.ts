@@ -2224,6 +2224,58 @@ describe('PATCH /integrations/:id/channels/:channelId — session mode', () => {
     await reportOne({ id: 'D1', name: '@alice', kind: 'im' })
     expect(pushes).toHaveLength(2)
   })
+
+  // An agent's new-conversation mode (PATCH /agents/:id) decides what its new rooms start at, ahead of the daemon's Auto default; DMs and known rows never change.
+  it("starts new rooms at the agent's new-conversation mode, set through PATCH /agents/:id", async () => {
+    await seedDaemon(prisma, DAEMON)
+    const http = buildHttpApp(prisma)
+    running = http
+    const id = await install(http)
+    await report(DAEMON, id, [{ id: 'C0', name: 'before' }])
+    const { agentId } = await prisma.integration.findUniqueOrThrow({ where: { id } })
+    const setMode = async (newConversationMode: string | null) => {
+      const res = await http.app.inject({
+        method: 'PATCH',
+        url: `${ORG}/agents/${agentId}`,
+        payload: { newConversationMode }
+      })
+      expect(res.statusCode).toBe(200)
+      expect(res.json()).toMatchObject({ newConversationMode })
+    }
+    const rows = async () =>
+      Object.fromEntries(
+        (await prisma.integrationChannel.findMany({ where: { integrationId: id } })).map((row) => [
+          row.channelId,
+          `${row.trigger}/${row.sessionMode}`
+        ])
+      )
+    const seen = (ids: string[]) => ids.map((channelId) => ({ id: channelId, name: channelId }))
+    // The daemon mutes an Off room only once its spec lists it, so a report that seeds one pushes the spec.
+    let pushes = 0
+    const reportPushing = (channels: IntegrationChannel[]) =>
+      report(DAEMON, id, channels, undefined, undefined, false, undefined, undefined, async () => void pushes++)
+    reporterFeatures = [SESSION_MODE_AUTO_V1_FEATURE]
+
+    await setMode('off')
+    await reportPushing([...seen(['C0', 'C1']), { id: 'D1', name: '@alice', kind: 'im' }])
+    expect(pushes).toBe(1)
+    await reportPushing(seen(['C1']))
+    expect(pushes).toBe(1)
+    await setMode('mention')
+    await reportPushing(seen(['C2']))
+    expect(pushes).toBe(1)
+    await setMode(null)
+    await reportPushing(seen(['C3']))
+    expect(pushes).toBe(2)
+
+    expect(await rows()).toEqual({
+      C0: 'mention/createNew',
+      C1: 'off/createNew',
+      D1: 'any/createNew',
+      C2: 'mention/createNew',
+      C3: 'mention/auto'
+    })
+  })
 })
 
 /**
