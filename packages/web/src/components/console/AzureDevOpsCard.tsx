@@ -13,6 +13,7 @@ import { docsPageUrl } from '@/lib/help-links'
 import { useOrgs } from '@/lib/org-context'
 import { azureDevOpsOrganizationUrl } from '@/lib/azure-devops-repositories'
 import {
+  ApiError,
   connectAzureDevOps,
   disconnectAzureDevOps,
   fetchAzureDevOpsConnections,
@@ -24,8 +25,6 @@ import {
   type AzureDevOpsStateReason
 } from '@/lib/api'
 
-const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e))
-
 type Panel = 'own' | 'secret' | null
 
 interface OwnApplicationDraft {
@@ -36,6 +35,13 @@ interface OwnApplicationDraft {
 }
 
 const EMPTY_DRAFT: OwnApplicationDraft = { organization: '', tenantId: '', clientId: '', clientSecret: '' }
+
+/** Control Plane refusals the card words itself; anything else is shown as the Control Plane wrote it. */
+const REFUSAL_KEYS = {
+  connection_exists: 'refusals.connectionExists',
+  AZURE_DEVOPS_ORGANIZATION_TAKEN: 'refusals.organizationTaken',
+  deployment_application_missing: 'refusals.deploymentApplicationMissing'
+} as const
 
 /** Microsoft's sign-in is a full-page hop; the connect page brings the person back. */
 function goTo(url: string): void {
@@ -78,6 +84,12 @@ export default function AzureDevOpsCard({ canWrite }: { canWrite: boolean }) {
     }
   }, [activeOrg])
 
+  const errorText = (e: unknown): string => {
+    const key = e instanceof ApiError && e.code ? REFUSAL_KEYS[e.code as keyof typeof REFUSAL_KEYS] : undefined
+    if (key) return t(key)
+    return e instanceof Error ? e.message : String(e)
+  }
+
   const run = async (key: string, action: () => Promise<void>) => {
     if (busy) return
     setBusy(key)
@@ -106,6 +118,7 @@ export default function AzureDevOpsCard({ canWrite }: { canWrite: boolean }) {
         clientSecret: draft.clientSecret.trim()
       })
       setConnection(record)
+      setBindings([])
       setDraft(EMPTY_DRAFT)
       setPanel(null)
     })
@@ -116,7 +129,9 @@ export default function AzureDevOpsCard({ canWrite }: { canWrite: boolean }) {
       setSecret('')
       setPanel(null)
       setNotice(t('secretReplaced'))
-      setBindings(await fetchAzureDevOpsRepositories().catch(() => bindings))
+      // A replaced secret recovers the bindings it degraded, so re-read them.
+      const rows = await fetchAzureDevOpsRepositories().catch(() => null)
+      if (rows) setBindings(rows)
     })
 
   const disconnect = (target: AzureDevOpsConnectionDto) =>
@@ -143,38 +158,16 @@ export default function AzureDevOpsCard({ canWrite }: { canWrite: boolean }) {
     draft.clientId.trim() !== '' &&
     draft.clientSecret.trim() !== ''
 
-  const reasonText = (reason: AzureDevOpsStateReason | null, source: AzureDevOpsConnectionDto['credentialSource']) =>
-    reason === 'secret_rejected'
-      ? source === 'own'
-        ? t('reasons.secretRejectedOwn')
-        : t('reasons.secretRejectedDeployment')
-      : reason === 'access_revoked'
-        ? t('reasons.accessRevoked')
-        : reason === 'repository_unavailable'
-          ? t('reasons.repositoryUnavailable')
-          : null
+  // The fix differs by who holds the secret: the card for an own application, Setup for the deployment's.
+  const reasonText = (reason: AzureDevOpsStateReason | null, own: boolean): string => {
+    if (reason === 'secret_rejected')
+      return own ? t('reasons.secretRejectedOwn') : t('reasons.secretRejectedDeployment')
+    if (reason === 'access_revoked') return own ? t('reasons.accessRevokedOwn') : t('reasons.accessRevoked')
+    if (reason === 'repository_unavailable') return t('reasons.repositoryUnavailable')
+    return t('reasons.unknown')
+  }
 
-  // One short line about the shared identity's reach, with the docs page for the detail (§3.6, §9).
-  const attention = (
-    <div
-      data-azure-devops-attention=""
-      className="flex items-start gap-2 border-b border-(--border-subtle) px-4 py-[9px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)"
-    >
-      <Icon name="shield-alert" size={13} className="mt-[2px] flex-none" />
-      <span>
-        {t('attention')}{' '}
-        <a
-          className="lnk inline-flex items-center gap-[2px] whitespace-nowrap"
-          href={docsPageUrl(CODE_HOST_PROJECTION['azure-devops'].docsPath, locale)}
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          {t('learnMore')}
-          <Icon name="arrow-up-right" size={12} />
-        </a>
-      </span>
-    </div>
-  )
+  const own = connection?.credentialSource === 'own'
 
   return (
     <div className="card">
@@ -210,6 +203,9 @@ export default function AzureDevOpsCard({ canWrite }: { canWrite: boolean }) {
       {enabled === true && connection === null && panel === null && (
         <div className="px-4 py-7 text-center">
           <div className="font-sans text-[13px] font-semibold leading-normal">{t('notConnected')}</div>
+          <div className="mt-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+            {deploymentApplication ? t('notConnectedHint') : t('ownApplicationOnly')}
+          </div>
           {canWrite && deploymentApplication && (
             <button
               type="button"
@@ -218,11 +214,6 @@ export default function AzureDevOpsCard({ canWrite }: { canWrite: boolean }) {
             >
               {t('useOwnApplication')}
             </button>
-          )}
-          {canWrite && !deploymentApplication && (
-            <div className="mt-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-              {t('ownApplicationOnly')}
-            </div>
           )}
         </div>
       )}
@@ -267,6 +258,10 @@ export default function AzureDevOpsCard({ canWrite }: { canWrite: boolean }) {
               />
             </OwnField>
           </div>
+          <div className="mt-[10px] flex items-start gap-[6px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
+            <Icon name="users" size={13} className="mt-[2px] flex-none" />
+            <span>{t('ownApplicationHint')}</span>
+          </div>
           <div className="mt-3 flex flex-wrap items-center gap-[10px]">
             <Button size="sm" disabled={busy !== null || !ownComplete} onClick={() => void connectOwn()}>
               <Icon name="plug" size={13} />
@@ -310,7 +305,7 @@ export default function AzureDevOpsCard({ canWrite }: { canWrite: boolean }) {
             </div>
             {canWrite && (
               <span className="flex flex-wrap items-center justify-end gap-3">
-                {connection.credentialSource === 'deployment' && (
+                {!own && (
                   <Button
                     variant="ghost"
                     size="xs"
@@ -321,7 +316,7 @@ export default function AzureDevOpsCard({ canWrite }: { canWrite: boolean }) {
                     {busy === 'manage' ? t('redirecting') : t('manageProjectAccess')}
                   </Button>
                 )}
-                {connection.credentialSource === 'own' && panel === null && (
+                {own && panel === null && (
                   <Button variant="ghost" size="xs" onClick={() => setPanel('secret')}>
                     <Icon name="key-round" size={13} />
                     {t('replaceSecret')}
@@ -346,10 +341,10 @@ export default function AzureDevOpsCard({ canWrite }: { canWrite: boolean }) {
               className="flex items-start gap-2 border-b border-(--border-subtle) bg-(--status-paused-soft) px-4 py-[9px] font-sans text-[12px] font-normal leading-[1.5] text-(--amber-500)"
             >
               <Icon name="triangle-alert" size={14} color="var(--amber-500)" className="mt-[2px] flex-none" />
-              <span>{reasonText(connection.stateReason, connection.credentialSource) ?? t('reasons.unknown')}</span>
+              <span>{reasonText(connection.stateReason, own)}</span>
             </div>
           )}
-          {canWrite && panel === 'secret' && connection.credentialSource === 'own' && (
+          {canWrite && panel === 'secret' && own && (
             <div data-azure-devops-secret="" className="border-b border-(--border-subtle) px-4 py-[13px]">
               <OwnField label={t('fields.newClientSecret')}>
                 <input
@@ -378,7 +373,27 @@ export default function AzureDevOpsCard({ canWrite }: { canWrite: boolean }) {
         </div>
       )}
 
-      {enabled === true && attention}
+      {/* One line on the shared identity's reach; the docs page carries the detail (§3.6, §9). */}
+      {enabled === true && (
+        <div
+          data-azure-devops-attention=""
+          className="flex items-start gap-2 border-b border-(--border-subtle) px-4 py-[9px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)"
+        >
+          <Icon name="shield-alert" size={13} className="mt-[2px] flex-none" />
+          <span>
+            {t('attention')}{' '}
+            <a
+              className="lnk inline-flex items-center gap-[2px] whitespace-nowrap"
+              href={docsPageUrl(CODE_HOST_PROJECTION['azure-devops'].docsPath, locale)}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {t('learnMore')}
+              <Icon name="arrow-up-right" size={12} />
+            </a>
+          </span>
+        </div>
+      )}
 
       {enabled === true && connection !== null && bindings.length === 0 && (
         <div className="px-4 py-5 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
@@ -387,29 +402,31 @@ export default function AzureDevOpsCard({ canWrite }: { canWrite: boolean }) {
       )}
       {enabled === true &&
         connection !== null &&
-        bindings.map((binding) => {
-          const reason =
-            binding.state === 'runtime_degraded' ? reasonText(binding.stateReason, connection.credentialSource) : null
-          return (
-            <div key={binding.id} className="row grid-cols-1 gap-[11px]" data-azure-devops-repository={binding.id}>
-              <div className="min-w-0">
-                <div className="flex min-w-0 flex-wrap items-center gap-[10px]">
-                  <span className="mono min-w-0 truncate text-[12.5px] text-(--text-primary)" title={binding.repoPath}>
-                    {binding.repoPath}
-                  </span>
-                  {binding.state === 'runtime_degraded' && (
-                    <span className="badge bg-(--status-paused-soft) text-(--amber-500)">{t('degraded')}</span>
-                  )}
-                </div>
-                {reason && (
-                  <div className="mt-[3px] font-sans text-[11.5px] font-normal leading-[1.45] text-(--text-tertiary)">
-                    {reason}
-                  </div>
+        bindings.map((binding) => (
+          <div key={binding.id} className="row grid-cols-1 gap-[11px]" data-azure-devops-repository={binding.id}>
+            <div className="min-w-0">
+              <div className="flex min-w-0 flex-wrap items-center gap-[10px]">
+                <a
+                  href={binding.cloneUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={t('openRepository', { repo: binding.repoPath })}
+                  className="mono min-w-0 truncate text-[12.5px] text-(--text-primary) no-underline hover:underline"
+                >
+                  {binding.repoPath}
+                </a>
+                {binding.state === 'runtime_degraded' && (
+                  <span className="badge bg-(--status-paused-soft) text-(--amber-500)">{t('degraded')}</span>
                 )}
               </div>
+              {binding.state === 'runtime_degraded' && (
+                <div className="mt-[3px] font-sans text-[11.5px] font-normal leading-[1.45] text-(--text-tertiary)">
+                  {reasonText(binding.stateReason, own)}
+                </div>
+              )}
             </div>
-          )
-        })}
+          </div>
+        ))}
 
       {notice && (
         <div className="px-4 py-2 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">

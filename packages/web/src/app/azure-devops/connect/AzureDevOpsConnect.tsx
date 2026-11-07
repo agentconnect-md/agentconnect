@@ -15,6 +15,7 @@ import {
   listAzureDevOpsConnectOrganizations,
   startAzureDevOpsConnect,
   verifyAzureDevOpsConnect,
+  type AzureDevOpsConnectFlowDto,
   type AzureDevOpsConnectResultDto,
   type AzureDevOpsProjectGroup
 } from '@/lib/api'
@@ -34,6 +35,24 @@ export function azureDevOpsConnectState(state: string | null): { orgId: string; 
   }
 }
 
+// The code is single-use: Strict Mode's second effect run shares the first run's redemption.
+const redemptions = new Map<string, Promise<AzureDevOpsConnectFlowDto>>()
+
+function redeemOnce(
+  orgId: string,
+  input: { state: string; code?: string; error?: string; error_description?: string }
+): Promise<AzureDevOpsConnectFlowDto> {
+  const pending = redemptions.get(input.state)
+  if (pending) return pending
+  const started = finishAzureDevOpsSignIn(orgId, input)
+  redemptions.set(input.state, started)
+  void started.then(
+    () => redemptions.delete(input.state),
+    () => redemptions.delete(input.state)
+  )
+  return started
+}
+
 interface Refusal {
   code: string
   message: string
@@ -43,10 +62,12 @@ interface Refusal {
   ticket?: string
 }
 
+type Project = { id: string; name: string }
+
 type Step =
   | { kind: 'loading' }
-  | { kind: 'organization'; organizations: Array<{ id: string; name: string }> }
-  | { kind: 'projects'; organization: string; projects: Array<{ id: string; name: string }> }
+  | { kind: 'organization'; organizations: Project[] }
+  | { kind: 'projects'; organization: string; projects: Project[] }
   | { kind: 'done'; result: AzureDevOpsConnectResultDto }
   | { kind: 'refused'; refusal: Refusal }
 
@@ -59,6 +80,24 @@ const MANUAL = new Set([
   'no_repository_access',
   'access_revoked'
 ])
+
+/** Each refusal's title and what the person must do, as message keys under `refusals`. */
+const REFUSAL_COPY = {
+  consent_required: ['consentTitle', 'consentBody'],
+  tenant_mismatch: ['tenantTitle', 'tenantBody'],
+  project_collection_administrator_required: ['pcaTitle', 'pcaBody'],
+  entitlement_refused: ['entitlementTitle', 'manualBody'],
+  memberships_incomplete: ['membershipsTitle', 'manualBody'],
+  not_in_organization: ['notInOrganizationTitle', 'manualBody'],
+  access_revoked: ['notInOrganizationTitle', 'notInOrganizationBody'],
+  no_repository_access: ['noRepositoryTitle', 'noRepositoryBody'],
+  insufficient_rights: ['insufficientTitle', 'insufficientBody'],
+  personal_account: ['personalTitle', 'personalBody'],
+  AZURE_DEVOPS_ORGANIZATION_TAKEN: ['takenTitle', 'takenBody'],
+  connection_exists: ['connectionExistsTitle', 'connectionExistsBody'],
+  connect_flow_invalid: ['expiredTitle', 'expiredBody'],
+  connect_state_invalid: ['expiredTitle', 'expiredBody']
+} as const satisfies Record<string, readonly [string, string]>
 
 function refusalOf(e: unknown): Refusal {
   if (!(e instanceof ApiError)) return { code: 'unknown', message: e instanceof Error ? e.message : String(e) }
@@ -89,8 +128,8 @@ export default function AzureDevOpsConnect() {
   const [chosenOrganization, setChosenOrganization] = useState('')
   const [groups, setGroups] = useState<Map<string, AzureDevOpsProjectGroup>>(new Map())
   // The flow ticket lives in this page's memory for the flow alone: never storage, never a URL.
-  const flow = useRef<{ flowId: string; ticket: string; connectionId: string | null } | null>(null)
-  const [organizations, setOrganizations] = useState<Array<{ id: string; name: string }>>([])
+  const flow = useRef<{ flowId: string; ticket: string } | null>(null)
+  const [organizations, setOrganizations] = useState<Project[]>([])
   // Manage project access names its connection in the signed state.
   const [connectionId, setConnectionId] = useState<string | null>(null)
 
@@ -100,17 +139,13 @@ export default function AzureDevOpsConnect() {
     setStep({ kind: 'refused', refusal })
   }
 
-  const showProjects = (organization: string, projects: Array<{ id: string; name: string }>) => {
-    setGroups(new Map())
-    setStep({ kind: 'projects', organization, projects })
-  }
-
   const chooseOrganization = async (org: string, organization: string) => {
     const current = flow.current
     if (!current) return
     const chosen = await chooseAzureDevOpsConnectOrganization(org, current.flowId, current.ticket, organization)
     flow.current = { ...current, ticket: chosen.ticket }
-    showProjects(chosen.organization, chosen.projects)
+    setGroups(new Map())
+    setStep({ kind: 'projects', organization: chosen.organization, projects: chosen.projects })
   }
 
   useEffect(() => {
@@ -130,22 +165,26 @@ export default function AzureDevOpsConnect() {
         await login()
         return
       }
-      const slug = (await fetchOrgs().catch(() => [])).find((o) => o.id === target.orgId)?.slug
-      if (!cancelled && slug) setIntegrationsHref(`/${slug}/integrations`)
+      const code = params.get('code')
+      const error = params.get('error')
+      const description = params.get('error_description')
+      // The code is single-use, so the address bar drops it before anything can replay it.
+      window.history.replaceState(null, '', window.location.pathname)
+      void fetchOrgs()
+        .catch(() => [])
+        .then((orgs) => {
+          const slug = orgs.find((o) => o.id === target.orgId)?.slug
+          if (!cancelled && slug) setIntegrationsHref(`/${slug}/integrations`)
+        })
       try {
-        const code = params.get('code')
-        const error = params.get('error')
-        const description = params.get('error_description')
-        // The code is single-use, so the address bar drops it before anything can replay it.
-        window.history.replaceState(null, '', window.location.pathname)
-        const started = await finishAzureDevOpsSignIn(target.orgId, {
+        const started = await redeemOnce(target.orgId, {
           state,
           ...(code ? { code } : {}),
           ...(error ? { error } : {}),
           ...(description ? { error_description: description } : {})
         })
         if (cancelled) return
-        flow.current = { flowId: started.flowId, ticket: started.ticket, connectionId: started.connectionId }
+        flow.current = { flowId: started.flowId, ticket: started.ticket }
         // Manage project access keeps its organization, so the picker is skipped.
         if (started.organization) {
           await chooseOrganization(target.orgId, started.organization)
@@ -232,11 +271,7 @@ export default function AzureDevOpsConnect() {
           </div>
         ) : step.kind === 'organization' ? (
           <>
-            <div>
-              <h1 className="text-[18px] font-semibold leading-normal text-(--text-primary)">
-                {t('organizationTitle')}
-              </h1>
-            </div>
+            <h1 className="text-[18px] font-semibold leading-normal text-(--text-primary)">{t('organizationTitle')}</h1>
             {step.organizations.length === 0 ? (
               <p className="text-[13px] leading-[1.55] text-(--text-secondary)">{t('noOrganizations')}</p>
             ) : (
@@ -395,38 +430,11 @@ function RefusalView({
 }) {
   const t = useTranslations('Auth.azureDevOpsConnect')
   const manual = MANUAL.has(refusal.code)
-  const copy = (() => {
-    switch (refusal.code) {
-      case 'consent_required':
-        return { title: t('refusals.consentTitle'), body: t('refusals.consentBody') }
-      case 'tenant_mismatch':
-        return { title: t('refusals.tenantTitle'), body: t('refusals.tenantBody') }
-      case 'project_collection_administrator_required':
-        return { title: t('refusals.pcaTitle'), body: t('refusals.manualBody') }
-      case 'entitlement_refused':
-        return { title: t('refusals.entitlementTitle'), body: t('refusals.manualBody') }
-      case 'memberships_incomplete':
-        return { title: t('refusals.membershipsTitle'), body: t('refusals.manualBody') }
-      case 'not_in_organization':
-      case 'access_revoked':
-        return { title: t('refusals.notInOrganizationTitle'), body: t('refusals.manualBody') }
-      case 'no_repository_access':
-        return { title: t('refusals.noRepositoryTitle'), body: t('refusals.manualBody') }
-      case 'insufficient_rights':
-        return { title: t('refusals.insufficientTitle'), body: t('refusals.insufficientBody') }
-      case 'personal_account':
-        return { title: t('refusals.personalTitle'), body: t('refusals.personalBody') }
-      case 'AZURE_DEVOPS_ORGANIZATION_TAKEN':
-        return { title: t('refusals.takenTitle'), body: t('refusals.takenBody') }
-      case 'connect_flow_invalid':
-      case 'connect_state_invalid':
-        return { title: t('refusals.expiredTitle'), body: t('refusals.expiredBody') }
-      default:
-        return { title: t('refusals.genericTitle'), body: refusal.message || t('refusals.expiredBody') }
-    }
-  })()
-  // A manual refusal without its own checklist says what to do in the Control Plane's message.
-  const steps = refusal.checklist ?? (manual && refusal.message ? [refusal.message] : undefined)
+  const keys = REFUSAL_COPY[refusal.code as keyof typeof REFUSAL_COPY]
+  const title = keys ? t(`refusals.${keys[0]}`) : t('refusals.genericTitle')
+  // Unlisted refusals say what to do in the Control Plane's own message.
+  const body = keys ? t(`refusals.${keys[1]}`) : refusal.message || t('refusals.expiredBody')
+  const checkAgain = manual && refusal.ticket !== undefined
   return (
     <div data-azure-devops-refusal={refusal.code} className="flex flex-col gap-4">
       <div className="flex items-start gap-3">
@@ -434,15 +442,16 @@ function RefusalView({
           <Icon name={manual ? 'list-checks' : 'link-2-off'} size={19} color="var(--amber-500)" />
         </span>
         <div className="min-w-0">
-          <h1 className="text-[18px] font-semibold leading-normal text-(--text-primary)">{copy.title}</h1>
+          <h1 className="text-[18px] font-semibold leading-normal text-(--text-primary)">{title}</h1>
           <p role="alert" className="mt-1 text-[13px] leading-[1.55] text-(--text-secondary)">
-            {copy.body}
+            {body}
           </p>
         </div>
       </div>
-      {steps && (
+      {/* The checklist comes from the Control Plane: it names the application by its client ID. */}
+      {refusal.checklist && (
         <ol className="m-0 flex list-decimal flex-col gap-[6px] pl-5 text-[13px] leading-[1.55] text-(--text-primary)">
-          {steps.map((item) => (
+          {refusal.checklist.map((item) => (
             <li key={item} className="break-words">
               {item}
             </li>
@@ -463,7 +472,7 @@ function RefusalView({
         </div>
       )}
       <div className="flex flex-wrap gap-[10px]">
-        {manual && refusal.ticket ? (
+        {checkAgain ? (
           <Button onClick={onCheckAgain} disabled={busy}>
             <Icon name="rotate-ccw" size={14} />
             {busy ? t('working') : t('checkAgain')}
@@ -475,7 +484,7 @@ function RefusalView({
           </Button>
         ) : refusal.code === 'AZURE_DEVOPS_ORGANIZATION_TAKEN' && canChooseAnother ? (
           <Button onClick={onChooseAnother}>{t('chooseAnother')}</Button>
-        ) : canStartOver ? (
+        ) : canStartOver && refusal.code !== 'connection_exists' ? (
           <Button onClick={onStartOver} disabled={busy}>
             {busy ? t('working') : t('startOver')}
           </Button>
