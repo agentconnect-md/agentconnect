@@ -5,12 +5,14 @@ import type { CodeHostEffectTool } from '../mcp/ops/code-host.js'
 import { GITHUB_EFFECT_TOOLS } from '../github/effect-tools.js'
 import { GITLAB_EFFECT_TOOLS } from '../gitlab/effect-tools.js'
 import { GITEA_EFFECT_TOOLS } from '../gitea/effect-tools.js'
+import { AZURE_DEVOPS_EFFECT_TOOLS } from '../azure-devops/effect-tools.js'
 
 /** Every host's tools; a name belongs to exactly one host. */
 export const CODE_HOST_EFFECT_TOOLS: readonly CodeHostEffectTool[] = [
   ...GITHUB_EFFECT_TOOLS,
   ...GITLAB_EFFECT_TOOLS,
-  ...GITEA_EFFECT_TOOLS
+  ...GITEA_EFFECT_TOOLS,
+  ...AZURE_DEVOPS_EFFECT_TOOLS
 ]
 
 /** The descriptors a session on this host's repository is offered. */
