@@ -1,3 +1,22 @@
+/** One protected key as a placeholder factory sees it: its variable, its provider, the hosts it may reach, and the provider's own API host. */
+export interface SecretBinding {
+  env: string
+  provider: string
+  hosts: readonly string[]
+  defaultHost?: string
+}
+
+/** What a protected key's variable and files hold in its place. */
+export type SecretPlaceholder = (binding: SecretBinding) => string
+
+/** Where a preparer reads keys a command prints: an srt resolution passes the output it already awaited. */
+export interface SecretSources {
+  openCodeAuthExport?: (env: NodeJS.ProcessEnv) => string
+}
+
+/** A VM's placeholder, which its own proxy swaps on the binding's hosts. */
+export const microsandboxPlaceholder: SecretPlaceholder = ({ env }) => `msb-secret-${env}`
+
 export function replaceSecretValue(value: string, replacements: ReadonlyMap<string, string>): string {
   const replacement = replacements.get(value)
   if (replacement !== undefined) return replacement

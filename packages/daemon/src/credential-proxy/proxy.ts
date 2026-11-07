@@ -353,7 +353,11 @@ export class CredentialProxy {
   /** The placeholder an agent's environment carries in place of one provider slot's key; undefined for a slot it does not have. */
   providerPlaceholderFor(agentId: string, slotId: string): string | undefined {
     const slot = this.slots(agentId).find((candidate) => candidate.id === slotId)
-    if (!slot) return undefined
+    return slot && this.sealProviderSlot(agentId, slot)
+  }
+
+  /** The placeholder for one provider slot, which the proxy accepts once the agent's deps name that slot. */
+  sealProviderSlot(agentId: string, slot: ProviderSlot): string {
     return sealPlaceholder(this.deps.key, { agentId, hosts: [slotHostKey(slot)], kind: 'provider', slot: slot.id })
   }
 

@@ -10,7 +10,7 @@ import {
 import { projectRuntimeHomeSeedFile } from '../runtimes/runtime-home.js'
 import { runtimeStateLocations } from '../runtimes/probe.js'
 import { MAX_SEED_FILE_BYTES } from '../runtimes/runtime-seeded-credentials.js'
-import { replaceSecretValue } from './secret-values.js'
+import { microsandboxPlaceholder, replaceSecretValue, type SecretPlaceholder } from './secret-values.js'
 import type { MicrosandboxCredentials, MicrosandboxSecret } from './secrets.js'
 
 function readFile(path: string): string | undefined {
@@ -58,20 +58,37 @@ function mergeConfig(base: Record<string, unknown>, overrides: Record<string, un
   return result
 }
 
+/** Which provider a runtime's own key belongs to, and that provider's API host. */
+interface KeyProvider {
+  provider: string
+  defaultHost: string
+}
+
+const ANTHROPIC: KeyProvider = { provider: 'anthropic', defaultHost: 'api.anthropic.com' }
+const OPENAI: KeyProvider = { provider: 'openai', defaultHost: new URL(CODEX_DEFAULT_ENDPOINT).hostname }
+
+function boundSecret(
+  env: string,
+  key: string,
+  endpoint: unknown,
+  owner: KeyProvider,
+  placeholder: SecretPlaceholder
+): MicrosandboxSecret {
+  const host = allowedHost(endpoint)
+  return { env, placeholder: placeholder({ env, ...owner, hosts: host }), host, readValue: () => key }
+}
+
 function fileCredential(
   name: string,
   key: string,
   endpoint: unknown,
   files: { source: string; destination: string; keys?: readonly string[]; toml?: boolean }[],
   field: string,
-  shareNativeCredentials: boolean
+  shareNativeCredentials: boolean,
+  owner: KeyProvider,
+  placeholder: SecretPlaceholder
 ): MicrosandboxCredentials {
-  const secret: MicrosandboxSecret = {
-    env: `AC_${name}_API_KEY`,
-    placeholder: `msb-secret-AC_${name}_API_KEY`,
-    host: allowedHost(endpoint),
-    readValue: () => key
-  }
+  const secret = boundSecret(`AC_${name}_API_KEY`, key, endpoint, owner, placeholder)
   const replacements = new Map([[key, secret.placeholder]])
   files = files.map((file) => ({ ...file, source: existsSync(file.source) ? realpathSync(file.source) : file.source }))
   return {
@@ -102,9 +119,51 @@ function fileCredential(
   }
 }
 
+function claudeEndpoint(hostEnv: NodeJS.ProcessEnv, explicitEnv: Record<string, string>): string {
+  return explicitEnv.ANTHROPIC_BASE_URL ?? hostEnv.ANTHROPIC_BASE_URL ?? 'https://api.anthropic.com'
+}
+
+/** A key the launch env holds in this variable, bound to the endpoint the runtime sends it to; files are left as they are. */
+function variableCredential(
+  env: string,
+  hostEnv: NodeJS.ProcessEnv,
+  explicitEnv: Record<string, string>,
+  endpoint: () => unknown,
+  owner: KeyProvider,
+  placeholder: SecretPlaceholder
+): MicrosandboxCredentials | undefined {
+  const key = (explicitEnv[env] ?? hostEnv[env])?.trim()
+  if (!key) return undefined
+  const secret = boundSecret(env, key, endpoint(), owner, placeholder)
+  return {
+    secrets: [secret],
+    replacements: new Map([[key, secret.placeholder]]),
+    sources: [],
+    seedExclusions: [],
+    preparePrivateHome: () => undefined
+  }
+}
+
+/** `ANTHROPIC_API_KEY` in the launch env, at Claude's endpoint. */
+export function prepareClaudeEnvSecret(
+  hostEnv: NodeJS.ProcessEnv,
+  explicitEnv: Record<string, string>,
+  placeholder: SecretPlaceholder = microsandboxPlaceholder
+): MicrosandboxCredentials | undefined {
+  return variableCredential(
+    'ANTHROPIC_API_KEY',
+    hostEnv,
+    explicitEnv,
+    () => claudeEndpoint(hostEnv, explicitEnv),
+    ANTHROPIC,
+    placeholder
+  )
+}
+
 export function prepareClaudeApiSecret(
   hostEnv: NodeJS.ProcessEnv,
-  explicitEnv: Record<string, string>
+  explicitEnv: Record<string, string>,
+  placeholder: SecretPlaceholder = microsandboxPlaceholder
 ): MicrosandboxCredentials | undefined {
   const source = resolveClaudeCredentialSources(hostEnv)
   const key = document(readFile(source.globalConfigFile)).primaryApiKey
@@ -121,29 +180,18 @@ export function prepareClaudeApiSecret(
   return fileCredential(
     'CLAUDE',
     key,
-    explicitEnv.ANTHROPIC_BASE_URL ?? hostEnv.ANTHROPIC_BASE_URL ?? 'https://api.anthropic.com',
+    claudeEndpoint(hostEnv, explicitEnv),
     files,
     'primaryApiKey',
-    existsSync(source.credentialFile)
+    existsSync(source.credentialFile),
+    ANTHROPIC,
+    placeholder
   )
 }
 
-export function prepareCodexApiSecret(
-  hostEnv: NodeJS.ProcessEnv,
-  explicitEnv: Record<string, string>
-): MicrosandboxCredentials | undefined {
+/** The endpoint Codex sends an OpenAI key to: its configured provider's, after the active profile and `CODEX_CONFIG`. */
+function codexEndpoint(hostEnv: NodeJS.ProcessEnv, explicitEnv: Record<string, string>): unknown {
   const source = resolveCodexCredentialSources(hostEnv)
-  const auth = document(readFile(source.credentialFile))
-  const key = auth.OPENAI_API_KEY
-  if (typeof key !== 'string' || !key.trim()) return undefined
-  if (
-    (auth.auth_mode && auth.auth_mode !== 'apikey') ||
-    auth.personal_access_token ||
-    auth.bedrock_api_key ||
-    auth.bedrock_access_keys
-  ) {
-    throw new Error('Codex launch refused: combined API key and non-API authentication cannot be safely shared')
-  }
   let config: Record<string, unknown>
   try {
     config = parseToml(readFile(join(source.configDir, 'config.toml')) ?? '')
@@ -159,23 +207,59 @@ export function prepareCodexApiSecret(
   )
   const provider = config.model_provider ?? 'openai'
   const custom = record(record(config.model_providers, 'Codex providers')[String(provider)], 'Codex provider')
-  const endpoint =
-    provider === 'openai'
-      ? (config.openai_base_url ?? CODEX_DEFAULT_ENDPOINT)
-      : custom.requires_openai_auth === true
-        ? custom.base_url
-        : undefined
+  return provider === 'openai'
+    ? (config.openai_base_url ?? CODEX_DEFAULT_ENDPOINT)
+    : custom.requires_openai_auth === true
+      ? custom.base_url
+      : undefined
+}
+
+/** `OPENAI_API_KEY` in the launch env, at Codex's endpoint; an `OPENAI_BASE_URL` beside it leaves the key unbound. */
+export function prepareCodexEnvSecret(
+  hostEnv: NodeJS.ProcessEnv,
+  explicitEnv: Record<string, string>,
+  placeholder: SecretPlaceholder = microsandboxPlaceholder
+): MicrosandboxCredentials | undefined {
+  return variableCredential(
+    'OPENAI_API_KEY',
+    hostEnv,
+    explicitEnv,
+    () => ((explicitEnv.OPENAI_BASE_URL ?? hostEnv.OPENAI_BASE_URL) ? undefined : codexEndpoint(hostEnv, explicitEnv)),
+    OPENAI,
+    placeholder
+  )
+}
+
+export function prepareCodexApiSecret(
+  hostEnv: NodeJS.ProcessEnv,
+  explicitEnv: Record<string, string>,
+  placeholder: SecretPlaceholder = microsandboxPlaceholder
+): MicrosandboxCredentials | undefined {
+  const source = resolveCodexCredentialSources(hostEnv)
+  const auth = document(readFile(source.credentialFile))
+  const key = auth.OPENAI_API_KEY
+  if (typeof key !== 'string' || !key.trim()) return undefined
+  if (
+    (auth.auth_mode && auth.auth_mode !== 'apikey') ||
+    auth.personal_access_token ||
+    auth.bedrock_api_key ||
+    auth.bedrock_access_keys
+  ) {
+    throw new Error('Codex launch refused: combined API key and non-API authentication cannot be safely shared')
+  }
   return {
     ...fileCredential(
       'CODEX',
       key,
-      endpoint,
+      codexEndpoint(hostEnv, explicitEnv),
       [
         { source: source.credentialFile, destination: join('.codex', 'auth.json') },
         { source: join(source.configDir, 'config.toml'), destination: join('.codex', 'config.toml'), toml: true }
       ],
       'OPENAI_API_KEY',
-      false
+      false,
+      OPENAI,
+      placeholder
     ),
     tlsTrustEnv: ['CODEX_CA_CERTIFICATE']
   }
