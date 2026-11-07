@@ -46,9 +46,9 @@ import {
   type AgentChannelHolder
 } from '../cp/agent-channel-server.js'
 import {
+  codeHostCredentialModules,
   codeHostCredentials,
   managedHostTable,
-  specHostCodeHosts,
   type CodeHostSpecHosts
 } from '../codehost/credentials.js'
 import {
@@ -431,6 +431,10 @@ export interface ManagedCredentialScope {
   /** The Gitea twins (gitea-integration.md §9, §13): the spec's instance, and whether a repo-bearing Gitea consumer rides beside the workspace. */
   giteaHost?: string
   giteaRepoBearing?: boolean
+  /** Whether an Azure DevOps repository rides beside the workspace; its host is fixed, so there is no host field. */
+  azureDevOpsRepoBearing?: boolean
+  /** Further base URLs the session pins its placeholder for, where the proxy serves the same repositories under another name (an Azure DevOps organization's own host). */
+  proxyNames?: readonly string[]
 }
 
 /** Anonymous and github-app operations both pin github.com; only a gitlab or gitea consumer moves the axis. */
@@ -469,7 +473,8 @@ export function managedCredentialScope(
   provider: CodeHostProvider | undefined,
   gitlabHost?: string,
   gitlabRepoBearing = false,
-  gitea: GiteaScopeAxis = {}
+  gitea: GiteaScopeAxis = {},
+  azureDevOpsRepoBearing = false
 ): ManagedCredentialScope {
   const spec = scopeSpecHosts({ gitlabHost, giteaHost: gitea.host })
   const host = codeHostCredentials(provider)?.managedHost(spec) ?? GITHUB_MANAGED_HOST
@@ -479,21 +484,26 @@ export function managedCredentialScope(
     // A gitlab or gitea workspace is repo-bearing by construction; the flag only adds the other consumer.
     // Each names its provider because the field is that provider's host axis itself (gitea-integration.md §13).
     ...(gitlabRepoBearing || provider === 'gitlab' ? { gitlabRepoBearing: true } : {}),
-    ...(gitea.repoBearing || provider === 'gitea' ? { giteaRepoBearing: true } : {})
+    ...(gitea.repoBearing || provider === 'gitea' ? { giteaRepoBearing: true } : {}),
+    ...(azureDevOpsRepoBearing || provider === 'azure-devops' ? { azureDevOpsRepoBearing: true } : {})
   }
 }
 
-/** Which spec-hosted providers a scope bears a repository on beside the workspace, by provider. */
+/** Which providers a scope bears a repository on beside the workspace, by provider; GitHub never rides here. */
 function repoBearingHosts(scope: ManagedCredentialScope): Partial<Record<CodeHostProvider, boolean | undefined>> {
-  return { gitlab: scope.gitlabRepoBearing, gitea: scope.giteaRepoBearing }
+  return {
+    gitlab: scope.gitlabRepoBearing,
+    gitea: scope.giteaRepoBearing,
+    'azure-devops': scope.azureDevOpsRepoBearing
+  }
 }
 
-/** The hosts the session config pins the helper for, and the credential proxy serves: the operation's own, plus each spec-hosted instance a repo-bearing consumer rides on (§24.4). */
+/** The hosts the session config pins the helper for, and the credential proxy serves: the operation's own, plus each host a repo-bearing consumer rides on (§24.4). */
 export function sessionCredentialHosts(scope: ManagedCredentialScope): ManagedCredentialHost[] {
   const hosts = [scope.host]
   const spec = scopeSpecHosts(scope)
   const bearing = repoBearingHosts(scope)
-  for (const module of specHostCodeHosts()) {
+  for (const module of codeHostCredentialModules()) {
     if (module.provider === scope.host.provider || bearing[module.provider] !== true) continue
     const instance = module.managedHost(spec)
     if (!hosts.some((host) => host.baseUrl === instance.baseUrl)) hosts.push(instance)
@@ -502,7 +512,7 @@ export function sessionCredentialHosts(scope: ManagedCredentialScope): ManagedCr
 }
 
 function sessionCredentialBases(scope: ManagedCredentialScope): string[] {
-  return sessionCredentialHosts(scope).map((host) => host.baseUrl)
+  return [...new Set([...sessionCredentialHosts(scope).map((host) => host.baseUrl), ...(scope.proxyNames ?? [])])]
 }
 
 /**
@@ -689,6 +699,29 @@ function quotedHelper(agentId: string, target: GitCredentialTarget = targetOf(ag
 /** A checkout's pinned helper, for the runtime's git: the environment's placeholder, or nothing. */
 export function checkoutHelper(): string {
   return PLACEHOLDER_HELPER_COMMAND
+}
+
+/** Daemon Git inside an agent's boundary, behind the credential proxy: each of `bases`' helpers answers `placeholder`, never a real token, and the daemon's capability goes where no real helper is left (azure-devops-integration.md §6.1). */
+export function proxiedDaemonGitEnv(
+  env: Record<string, string>,
+  bases: readonly string[],
+  placeholder: string
+): Record<string, string> {
+  const helpers = new Set(bases.map((base) => `credential.${base}.helper`))
+  const pairs = gitConfigPairsOf(env).map(([key, value]): [string, string] =>
+    helpers.has(key) && value !== '' ? [key, PLACEHOLDER_HELPER_COMMAND] : [key, value]
+  )
+  const proxied: Record<string, string> = {
+    ...env,
+    ...(pairs.length > 0 ? gitConfigEnv(pairs) : {}),
+    [CODE_HOST_CREDENTIAL_ENV]: placeholder
+  }
+  // The daemon's capability serves only a real helper, so with none left it stays outside the boundary.
+  const realHelper = pairs.some(
+    ([key, value]) => /^credential\.(?:.*\.)?helper$/i.test(key) && value !== '' && value !== PLACEHOLDER_HELPER_COMMAND
+  )
+  if (!realHelper) delete proxied[AGENT_CHANNEL_CAPABILITY_ENV]
+  return proxied
 }
 
 /** The three host-scoped config pairs both channels share. The host defaults to

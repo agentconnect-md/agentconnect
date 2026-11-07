@@ -6,9 +6,14 @@ import { chmodSync, existsSync, mkdirSync, realpathSync, rmSync, writeFileSync }
 import { createRequire } from 'node:module'
 import { createServer, type Server, type Socket } from 'node:net'
 import { dirname, join } from 'node:path'
-import { GitCredentialCache, GitCredUnavailableError, type CredPlane } from './git-credential.js'
+import { GitCredentialCache, GitCredUnavailableError, proxyOnlyRefusal, type CredPlane } from './git-credential.js'
 import type { CodeHostProvider, GitCredGrant } from '@agentconnect.md/protocol'
-import type { QualifiedCodeHostProvider } from '../codehost/credentials.js'
+import {
+  isProxyOnlyProvider,
+  proxyOnlyConsumer,
+  type GitCredConsumer,
+  type QualifiedCodeHostProvider
+} from '../codehost/credentials.js'
 import { IMPLICIT_CREDENTIAL_PROVIDER } from '../gitcred/managed-hosts.js'
 import { isWindowsNamedPipe, localIpcPath } from '../paths.js'
 import {
@@ -324,6 +329,21 @@ export class AgentChannelServer {
       return reply({ ok: false, error: 'local credential capability required' })
     }
     if (req.op === 'secret') return this.serveLiveSecrets(req, principal, reply)
+    const plane: CredPlane = req.plane === 'gh' ? 'gh' : req.plane === 'glab' ? 'glab' : 'git'
+    const repo = typeof req.repoFullName === 'string' && req.repoFullName.includes('/') ? req.repoFullName : undefined
+    // An omitted provider and an explicit `github` are the same GitHub ask; both meet the private-skill gate.
+    const githubAsk = req.provider === undefined || req.provider === IMPLICIT_CREDENTIAL_PROVIDER
+    const privateSkill = repo !== undefined && githubAsk && this.privateGithubSkillRepoOf?.(req.agentId, repo) === true
+    // azure-devops-integration.md §6.1: a proxy-only provider's credential is served only to the daemon's own Git on this host, never through a tunnel from inside a boundary.
+    if (isAgentPrincipal(principal) && (principal.holder !== 'daemon' || via !== undefined)) {
+      const { provider } = this.servedAs(req, repo, privateSkill, undefined)
+      if (isProxyOnlyProvider(provider)) {
+        const from =
+          via === undefined ? `${principal.holder} capability` : `${principal.holder} capability through a tunnel`
+        this.audit('denied', req.agentId, plane, repo, true, `${from}, proxy-only provider`)
+        return reply({ ok: false, error: proxyOnlyRefusal(provider), denied: 'agent' })
+      }
+    }
     if (isAgentPrincipal(principal) && !principal.permissions.mint) {
       this.audit(
         'denied',
@@ -340,11 +360,6 @@ export class AgentChannelServer {
       this.audit('rejected', req.agentId, req.plane === 'gh' ? 'gh' : 'git', req.repoFullName, true)
       return reply({ ok: false, error: 'local credential capability required' })
     }
-    const plane: CredPlane = req.plane === 'gh' ? 'gh' : req.plane === 'glab' ? 'glab' : 'git'
-    const repo = typeof req.repoFullName === 'string' && req.repoFullName.includes('/') ? req.repoFullName : undefined
-    // An omitted provider and an explicit `github` are the same GitHub ask; both meet the private-skill gate.
-    const githubAsk = req.provider === undefined || req.provider === IMPLICIT_CREDENTIAL_PROVIDER
-    const privateSkill = repo !== undefined && githubAsk && this.privateGithubSkillRepoOf?.(req.agentId, repo) === true
     // A window capability opens exactly its own private skill repositories on the git plane, nothing else.
     const window = isAgentPrincipal(principal) ? undefined : principal
     // A GitLab skill project is served only through a pod window that names it, read-clamped, by its numeric id.
@@ -359,29 +374,24 @@ export class AgentChannelServer {
         denied: 'repository'
       })
     }
-    const { access: _access, ...answer } = await this.answer(req, plane, repo, privateSkill, window)
+    // The daemon's own Git holds the daemon capability; a window opens for a private skill's acquisition.
+    const consumer: GitCredConsumer = isAgentPrincipal(principal) && principal.holder === 'daemon' ? 'daemon' : 'helper'
+    const { access: _access, ...answer } = await this.answer(req, plane, repo, privateSkill, window, consumer)
     return reply(answer)
   }
 
-  /** What the agent capability, or a window that covers the repository, is served for one admitted ask: the provider from the spec, the workspace fold, then the credential. */
-  private async answer(
+  /** The provider an ask is served under and the repository it names after the workspace fold, from the spec alone: the host hint only picks between authorities the spec carries (§13.2, §8.3). */
+  private servedAs(
     req: AgentChannelRequest,
-    plane: CredPlane,
     asked: string | undefined,
     privateSkill: boolean,
     window: AdmittedSkillWindow | undefined
-  ): Promise<GitCredAnswer> {
+  ): {
+    repo: string | undefined
+    named: ReturnType<NonNullable<AgentChannelServerDeps['qualifiedRepoOf']>>
+    provider: CodeHostProvider
+  } {
     let repo = asked
-    // The SPEC decides the provider; a helper whose host hint disagrees is
-    // asking for another host's credential and gets a clean denial (§13.2).
-    // A named repository the spec lists as an additional authorization on another host (§8.3) is the
-    // second spec-derived authority; the host hint only disambiguates between authorities the spec
-    // already carries, it never introduces one.
-    //
-    // Resolved BEFORE the op split: erase has to reach the key get stored, and an additional
-    // repository on another host rides a scratch or github workspace whose spec alone says github.
-    // Deriving erase from the workspace would invalidate the wrong entry and leave the rejected
-    // token live to TTL.
     const workspaceProvider = this.providerOf?.(req.agentId) ?? IMPLICIT_CREDENTIAL_PROVIDER
     // The host the REQUEST is for: the helper names every provider but the implicit one.
     const requestProvider: string = req.provider ?? IMPLICIT_CREDENTIAL_PROVIDER
@@ -390,12 +400,7 @@ export class AgentChannelServer {
       repo !== undefined &&
       requestProvider === IMPLICIT_CREDENTIAL_PROVIDER &&
       (privateSkill || this.githubAdditionalRepoOf?.(req.agentId, repo) === true)
-    // Workspace normalization: a request naming the workspace repo folds onto
-    // the repo-less key (one cache entry with pre-warm/spawn; and old CPs that
-    // strip the wire field keep serving the workspace unchanged) — only when the
-    // ask is for the workspace's own host. The same path on another host is
-    // another repository, never the workspace.
-    // A window ask stays named, so a window never reaches the workspace key.
+    // The workspace repo folds onto the repo-less key, on its own host only; a window ask stays named, so a window never reaches it.
     if (repo !== undefined && requestProvider === workspaceProvider && !window) {
       const workspace = this.workspaceRepoOf?.(req.agentId)
       if (workspace && workspace.toLowerCase() === repo.toLowerCase()) repo = undefined
@@ -406,6 +411,24 @@ export class AgentChannelServer {
       : named !== undefined && (req.provider === named.provider || workspaceProvider === named.provider)
         ? named.provider
         : workspaceProvider
+    return { repo, named, provider }
+  }
+
+  /** What the agent capability, or a window that covers the repository, is served for one admitted ask: the provider from the spec, the workspace fold, then the credential. */
+  private async answer(
+    req: AgentChannelRequest,
+    plane: CredPlane,
+    asked: string | undefined,
+    privateSkill: boolean,
+    window: AdmittedSkillWindow | undefined,
+    consumer: GitCredConsumer
+  ): Promise<GitCredAnswer> {
+    const { repo, named, provider } = this.servedAs(req, asked, privateSkill, window)
+    // §6.1: a proxy-only provider's credential is never handed to the agent-facing helper.
+    if (consumer === 'helper' && isProxyOnlyProvider(provider)) {
+      this.audit('denied', req.agentId, plane, repo, true, 'proxy-only provider')
+      return { ok: false, error: proxyOnlyRefusal(provider), denied: 'agent' }
+    }
     // Only a provider that is not the implicit one is named on the wire (the empty cache-key segment).
     const qualifier = provider === IMPLICIT_CREDENTIAL_PROVIDER ? {} : { provider }
     if (req.op === 'erase') {
@@ -440,10 +463,7 @@ export class AgentChannelServer {
       return { ok: false, error: 'glab credentials require a managed GitLab workspace' }
     }
     try {
-      // §17.1: every qualified ask names the rename-stable numeric identity so the consumer can
-      // reject a wrong-repository grant echo — the authorized repository for a named ask, the
-      // workspace's own for the repo-less one. Without it a named repository resolves to the
-      // workspace grant and the echo check rejects it.
+      // §17.1: a qualified ask names the numeric identity its grant echo is verified against: the named repository's, else the workspace's.
       const externalId =
         named?.provider === provider
           ? named.externalId
@@ -457,7 +477,8 @@ export class AgentChannelServer {
         ...(externalId !== undefined ? { externalRepoId: externalId } : {}),
         // §13.3: the CLI wrapper is read-only BY DESIGN — a mutating glab
         // command never receives effect authority and fails at GitLab.
-        ...(plane === 'glab' ? { requestedAccess: 'read' as const } : {})
+        ...(plane === 'glab' ? { requestedAccess: 'read' as const } : {}),
+        ...proxyOnlyConsumer(provider, consumer)
       })
       this.audit('served', req.agentId, plane, repo ?? cred.repoFullName)
       return {
@@ -517,7 +538,7 @@ export class AgentChannelServer {
       ...(ask.provider !== undefined ? { provider: ask.provider } : {}),
       ...(password !== undefined ? { password } : {})
     }
-    return this.answer(request, ask.plane, repo, privateSkill, undefined)
+    return this.answer(request, ask.plane, repo, privateSkill, undefined, 'proxy')
   }
 
   /** The agent's live secrets, named ones only when `names` is given; unknown names are simply absent and values are never logged. */

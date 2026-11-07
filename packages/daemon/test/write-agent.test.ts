@@ -843,6 +843,64 @@ describe('writeAgentSpec — merge (agent.json exists)', () => {
     expect(readJson(file).workspace).not.toHaveProperty('gitCredential')
     expect(readJson(file).workspace).not.toHaveProperty('gitlabProjectId')
   })
+
+  it('maps an Azure DevOps workspace onto its marker, surrogate id and routing, keeps its rows’ routing, and clears them when it becomes anonymous', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: './workspace' }
+    })
+    const routing = {
+      organization: 'example-org',
+      projectId: '00000000-0000-4000-8000-000000000001',
+      repositoryId: '00000000-0000-4000-8000-000000000011'
+    }
+    const second = { ...routing, repositoryId: '00000000-0000-4000-8000-000000000012' }
+    writeAgentSpec(
+      dir,
+      'bot-a',
+      baseSpec({
+        workspace: {
+          mode: 'git',
+          gitRepo: 'https://example-org@dev.azure.com/example-org/Example%20Project/_git/Example%20Repo',
+          branch: 'main',
+          credential: { provider: 'azure-devops', repoId: '42', connectionId: 'connection-1', azureDevOps: routing },
+          additionalRepos: [
+            {
+              repoFullName: 'example-org/Example Project/Second Repo',
+              repoId: '43',
+              provider: 'azure-devops',
+              azureDevOps: second
+            }
+          ]
+        }
+      }),
+      deps
+    )
+    expect(readJson(file).workspace).toMatchObject({
+      mode: 'git-repo',
+      gitRepo: 'https://dev.azure.com/example-org/Example%20Project/_git/Example%20Repo',
+      gitCredential: 'azure-devops',
+      azureDevOpsRepoId: '42',
+      azureDevOps: routing
+    })
+    const written = readJson(file)
+    const parsed = AgentSchema.parse({
+      ...written,
+      workspace: { ...(written.workspace as Record<string, unknown>), path: dir }
+    })
+    expect(parsed.workspace.azureDevOps).toEqual(routing)
+    expect(parsed.workspace.additionalRepos[0]?.azureDevOps).toEqual(second)
+
+    const gitRepo = 'https://dev.azure.com/example-org/Example%20Project/_git/Example%20Repo'
+    writeAgentSpec(dir, 'bot-a', baseSpec({ workspace: { mode: 'git', gitRepo, branch: 'main' } }), deps)
+    for (const key of ['gitCredential', 'azureDevOpsRepoId', 'azureDevOps']) {
+      expect(readJson(file).workspace).not.toHaveProperty(key)
+    }
+  })
 })
 
 describe('writeAgentSpec — create (no agent.json)', () => {

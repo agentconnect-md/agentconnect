@@ -123,3 +123,25 @@ describe.skipIf(process.platform === 'win32')("Git over a local environment's sh
     await expect(runner.raw(['rev-parse', '--verify', 'missing'])).rejects.toBeInstanceOf(GitExecError)
   })
 })
+
+describe("Git over a local environment's shim behind the credential proxy", () => {
+  it('rewrites a caller replacement env before the environment names its own, and leaves a bare request alone', async () => {
+    const seen: GitExecPayload[] = []
+    const reply = { code: 0, stdout: '', stderr: '' }
+    const owned = { HOME: '/session/home', AC_GITCRED_SOCKET: '/session/gitcred.sock' }
+    const runner = localShimGitRunner({
+      run: (work) => work({ request: async (_capability, payload) => (seen.push(payload as GitExecPayload), reply) }),
+      cwd: '/session/workspace',
+      owned,
+      mapEnv: (env) => ({ ...env, AC_CODEHOST_CREDENTIAL: 'acph1_example.tag', HOME: '/mapped/home' })
+    })
+    await runner.raw(['rev-parse', 'HEAD'])
+    expect(seen.at(-1)!.env).toBeUndefined()
+    await runner.withEnv({ PATH: '/host/bin', HOME: '/host/home' }).raw(['rev-parse', 'HEAD'])
+    expect(seen.at(-1)!.env).toEqual({
+      PATH: '/host/bin',
+      AC_CODEHOST_CREDENTIAL: 'acph1_example.tag',
+      ...owned
+    })
+  })
+})

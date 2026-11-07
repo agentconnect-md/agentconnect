@@ -1,22 +1,34 @@
 import { execFile, execFileSync } from 'node:child_process'
-import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs'
+import { createServer as createHttpServer } from 'node:http'
 import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https'
-import type { AddressInfo, LookupFunction } from 'node:net'
+import { connect as netConnect, type AddressInfo, type LookupFunction } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { Duplex } from 'node:stream'
 import { promisify } from 'node:util'
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { generateCa } from '@anthropic-ai/sandbox-runtime'
 import { createMitmCA } from '@anthropic-ai/sandbox-runtime/dist/sandbox/mitm-ca.js'
 import { mintLeafCert } from '@anthropic-ai/sandbox-runtime/dist/sandbox/mitm-leaf.js'
 import {
+  AZURE_DEVOPS_V1_FEATURE,
   GITCRED_PROVIDER_V2_FEATURE,
   type AgentSpec,
   type GitCredGrant,
   type GitCredRequest
 } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
-import { agentHostKey } from '../src/acp/host-key.js'
+import { agentHostKey, sessionKeyDirName } from '../src/acp/host-key.js'
 import { secretsShimDir } from '../src/cp/secrets-shim.js'
 import {
   AGENT_CHANNEL_AGENT_ENV,
@@ -26,6 +38,8 @@ import {
   RUNTIME_NO_MINT_ERROR
 } from '../src/cp/agent-channel-server.js'
 import { agentChannelIpc } from '../src/agent-channel/ipc.js'
+import { proxyOnlyRefusal } from '../src/cp/git-credential.js'
+import { CLI_STATE_DIR } from '../src/credential-proxy/cli-env.js'
 import { CredentialProxy } from '../src/credential-proxy/proxy.js'
 import { PROXY_TRUST_VARS } from '../src/credential-proxy/trust-bundle.js'
 import {
@@ -41,12 +55,17 @@ import { fakeSlackAppFactory } from './fakes/slack-app.js'
 const run = promisify(execFile)
 const GITHUB_AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const GITLAB_AGENT = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+const AZURE_AGENT = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
 // What the daemon's own helper answers, standing in for the real one, and what the fake control plane mints.
 // Where the daemon once wrote its gh and glab token wrappers, which no session's PATH names anymore.
 const TOKEN_WRAPPER_DIR = (root: string) => join(root, 'run', 'bin')
 const HELPER_TOKEN = 'ghs_repo-helper-example'
 const MINTED_GITHUB = 'ghs_minted-example'
 const MINTED_GITLAB = 'glpat_minted-example'
+const MINTED_AZURE = 'azure-minted-example'
+// The identity an Azure DevOps connection signs in as, which its grants name as the user.
+const AZURE_IDENTITY = '00000000-0000-4000-8000-0000000000a1'
+const AZURE_REPO = 'https://dev.azure.com/example-org/Example%20Project/_git/Example%20Repo'
 const SHA = '1111111111111111111111111111111111111111'
 
 const dirs: string[] = []
@@ -141,12 +160,42 @@ const gitlabSpec = (instance: string): AgentSpec =>
     }
   }) as unknown as AgentSpec
 
+const azureSpec = (): AgentSpec =>
+  ({
+    name: 'ado',
+    runtime: 'claude',
+    workspace: {
+      mode: 'git',
+      isolation: 'shared',
+      gitRepo: AZURE_REPO,
+      branch: 'main',
+      credential: {
+        provider: 'azure-devops',
+        repoId: '42',
+        connectionId: 'connection-1',
+        azureDevOps: {
+          organization: 'example-org',
+          projectId: '00000000-0000-4000-8000-000000000001',
+          repositoryId: '00000000-0000-4000-8000-000000000011'
+        }
+      },
+      additionalRepos: []
+    }
+  }) as unknown as AgentSpec
+
 /** Admit `spec` as the control plane would, and let its prefetch clone settle: with no control plane yet it fails before any network. */
 async function admit(d: any, agentId: string, spec: AgentSpec): Promise<any> {
   expect(await d.cpConfigApply().applyAgentUpsert({ agentId, spec })).toEqual({ ok: true })
   const agent = d.agents.get(agentId)
   await d.enqueueAgentWorkspacePreparation(agent, async () => undefined)
   return agent
+}
+
+/** What the fake control plane mints on each provider, and the workspace repository a repo-less ask names. */
+const MINTS: Record<string, { username: string; token: string; repo: string }> = {
+  github: { username: 'x-access-token', token: MINTED_GITHUB, repo: 'example-org/example-repo' },
+  gitlab: { username: 'service-account', token: MINTED_GITLAB, repo: 'group/project' },
+  'azure-devops': { username: AZURE_IDENTITY, token: MINTED_AZURE, repo: 'example-org/Example Project/Example Repo' }
 }
 
 /** A control plane that mints every repository at `access`, echoing what a provider-qualified ask named. */
@@ -157,12 +206,13 @@ function fakeControlPlane(d: any, access: 'read' | 'write', gitlabHost?: string)
     requestGitCred: async (payload: GitCredRequest): Promise<GitCredGrant> => {
       asked.push(payload)
       const gitlab = payload.provider === 'gitlab'
+      const minted = MINTS[payload.provider ?? 'github']!
       return {
-        username: gitlab ? 'service-account' : 'x-access-token',
-        token: gitlab ? MINTED_GITLAB : MINTED_GITHUB,
+        username: minted.username,
+        token: minted.token,
         ttlSec: 3600,
         expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
-        repoFullName: payload.repoFullName ?? (gitlab ? 'group/project' : 'example-org/example-repo'),
+        repoFullName: payload.repoFullName ?? minted.repo,
         access: payload.requestedAccess === 'read' ? 'read' : access,
         ...(payload.provider !== undefined ? { provider: payload.provider } : {}),
         ...(payload.externalRepoId !== undefined ? { externalRepoId: payload.externalRepoId } : {}),
@@ -442,13 +492,54 @@ async function fakeCodeHost(
   return { port: (server.address() as AddressInfo).port, seen }
 }
 
-/** Restart the daemon's proxy on its own deps, with only its upstream leg pointed at the fake code host. */
-async function routeUpstream(d: any, root: string, trustedCa: string): Promise<void> {
+/** Restart the daemon's proxy on its own deps, its upstream leg pointed at the fake code host: by name, or through `outbound` as the daemon's own proxy. */
+async function routeUpstream(d: any, root: string, trustedCa: string, outbound?: string): Promise<void> {
   const running = d.credentialProxy.proxy
   await running.stop()
-  const proxy = new CredentialProxy({ ...running.deps, upstream: { lookupFor: () => toLoopback, trustedCa } })
+  // The proxy reads the daemon's outbound proxy from the environment as it is made.
+  const names = ['HTTPS_PROXY', 'https_proxy', 'NO_PROXY', 'no_proxy'] as const
+  const before = Object.fromEntries(names.map((name) => [name, process.env[name]]))
+  for (const name of names) delete process.env[name]
+  if (outbound) process.env.HTTPS_PROXY = outbound
+  let proxy: CredentialProxy
+  try {
+    proxy = new CredentialProxy({ ...running.deps, upstream: { lookupFor: () => toLoopback, trustedCa } })
+  } finally {
+    for (const name of names) {
+      if (before[name] === undefined) delete process.env[name]
+      else process.env[name] = before[name]
+    }
+  }
   await proxy.start(join(root, 'run'))
   d.credentialProxy = { ...d.credentialProxy, proxy }
+}
+
+/** The daemon's outbound proxy, which reaches the fake code host at `port` for any name, as a corporate proxy resolves Azure DevOps's fixed host. */
+async function outboundProxy(port: number): Promise<{ url: string; seen: string[] }> {
+  const seen: string[] = []
+  const tunnels = new Set<Duplex>()
+  const server = createHttpServer()
+  server.on('connect', (req, socket, head) => {
+    seen.push(req.url ?? '')
+    tunnels.add(socket)
+    const out = netConnect(port, '127.0.0.1', () => {
+      socket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
+      if (head.length > 0) out.write(head)
+      out.pipe(socket)
+      socket.pipe(out)
+    })
+    tunnels.add(out)
+    out.on('error', () => socket.destroy())
+    socket.on('error', () => out.destroy())
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  // First, so the fake code host's close finds no tunnel still holding a connection; a CONNECT tunnel is no HTTP connection.
+  closers.unshift(async () => {
+    for (const tunnel of tunnels) tunnel.destroy()
+    server.closeAllConnections()
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  })
+  return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, seen }
 }
 
 /** One HTTPS request from a Node child with `env`, as a session's tools make it: through its env proxy and trust. */
@@ -558,6 +649,164 @@ describe('a proxied host session end to end', () => {
       // The machine's own helper never kept the proxy's credential, nor any other.
       const kept = readFileSync(machineHelperLog, { encoding: 'utf8', flag: 'a+' })
       expect(kept).not.toContain(new URL(child.HTTPS_PROXY!).password)
+      expect(kept).not.toContain('op=store')
+    }
+  )
+})
+
+describe('an Azure DevOps agent behind the credential proxy', () => {
+  it('holds the placeholder for git and the Azure CLI, and the daemon advertises Azure DevOps', async () => {
+    const { d } = await startDaemon()
+    const extensions = shortDir()
+    d.cfg.azureDevOps = { cliExtensionDir: extensions }
+    const agent = await admit(d, AZURE_AGENT, azureSpec())
+    expect(d.registrationFeatures()).toContain(AZURE_DEVOPS_V1_FEATURE)
+    const { own } = sessionEnv(d, AZURE_AGENT)
+    const placeholder = own.AC_CODEHOST_CREDENTIAL!
+    expect(placeholder).toMatch(/^acph1_/)
+    expect(own.HTTPS_PROXY).toBe(d.credentialProxy.proxy.loopbackUrl())
+    // The CLI presents the same placeholder, from an empty configuration of this host's own, with the operator's extensions.
+    expect(own.AZURE_DEVOPS_EXT_PAT).toBe(placeholder)
+    expect(own.AZURE_CONFIG_DIR!.startsWith(join(agent.dir, 'home', CLI_STATE_DIR))).toBe(true)
+    expect(readdirSync(own.AZURE_CONFIG_DIR!)).toEqual([])
+    expect(own.AZURE_EXTENSION_DIR).toBe(extensions)
+    expect(own.AZURE_CORE_COLLECT_TELEMETRY).toBe('false')
+    // Python's requests verifies with the merged bundle, as every other client does.
+    expect(own.REQUESTS_CA_BUNDLE).toBe(own.SSL_CERT_FILE)
+    expect(readFileSync(own.REQUESTS_CA_BUNDLE!, 'utf8')).toContain(d.credentialProxy.ca.certPem.trim())
+    // Both of the organization's names are routed to the proxy and take the placeholder in the session's git.
+    expect(d.credentialProxy.proxy.domainsFor(AZURE_AGENT)).toEqual(['dev.azure.com', 'example-org.visualstudio.com'])
+    const config = readFileSync(own.GIT_CONFIG_GLOBAL!, 'utf8')
+    expect(config).toContain('[credential "https://dev.azure.com"]')
+    expect(config).toContain('[credential "https://example-org.visualstudio.com"]')
+    expect(JSON.stringify(own)).not.toContain(MINTED_AZURE)
+    // A strategy whose own Git does not reach the proxy is refused before anything is built.
+    d.hosts.delete(agentHostKey(AZURE_AGENT))
+    d.agents.get(AZURE_AGENT).execution = 'microsandbox'
+    expect(() => d.ensureHost(agentHostKey(AZURE_AGENT), d.cfg)).toThrow(
+      /^azure_devops_requires_proxy: .* the microsandbox strategy's own Git does not reach it yet$/
+    )
+  })
+
+  it('is refused a host before any preparation where the proxy did not start, which advertises no Azure DevOps', async () => {
+    const { d } = await startDaemon(true)
+    expect(d.credentialProxy).toBeUndefined()
+    await admit(d, AZURE_AGENT, azureSpec())
+    expect(d.registrationFeatures()).not.toContain(AZURE_DEVOPS_V1_FEATURE)
+    const refusal = /^azure_devops_requires_proxy: .* the credential proxy is not running on this daemon$/
+    expect(() => d.ensureHost(agentHostKey(AZURE_AGENT), d.cfg)).toThrow(refusal)
+    const prepared = vi.spyOn(d, 'prepareAgentWorkspace')
+    await expect(d.ensureHostAsync(agentHostKey(AZURE_AGENT))).rejects.toThrow(refusal)
+    expect(prepared).not.toHaveBeenCalled()
+  })
+
+  // POSIX only: srt confines nothing on Windows.
+  it.skipIf(process.platform === 'win32')(
+    "hands the daemon's own Git in a confined srt session the placeholder, and neither the real helper nor its capability",
+    async () => {
+      const { d } = await startDaemon()
+      // After the startup sweep, which retires a session directory the store has no row for.
+      await vi.waitFor(() => expect(d.sessionRetentionSweepInFlight).toBe(false))
+      const agent = await admit(d, AZURE_AGENT, azureSpec())
+      agent.execution = 'srt'
+      const clone = join(agent.dir, 'sessions', sessionKeyDirName('example-session'), 'workspace')
+      mkdirSync(clone, { recursive: true })
+      const seen: { env?: Record<string, string> }[] = []
+      d.localSrtExecutor = {
+        withEnvironment: (_environment: unknown, work: (session: unknown) => Promise<unknown>) =>
+          work({
+            request: async (_capability: string, payload: { env?: Record<string, string> }) => {
+              seen.push(payload)
+              return { code: 0, stdout: '', stderr: '' }
+            }
+          })
+      }
+      const scope = d.workspaces.managedScopeOf(agent)
+      const env = cloneGitEnv(AZURE_AGENT, undefined, scope, clone)
+      expect(env[AGENT_CHANNEL_CAPABILITY_ENV]).toBeDefined()
+      await d.workspaces.runnerFor(AZURE_AGENT, clone).withEnv(env).raw(['ls-remote', AZURE_REPO])
+      const sent = seen.at(-1)!.env!
+      expect(sent.AC_CODEHOST_CREDENTIAL).toBe(d.credentialProxy.proxy.placeholderFor(AZURE_AGENT))
+      expect(sent).not.toHaveProperty(AGENT_CHANNEL_CAPABILITY_ENV)
+      const helpers = Object.entries(sent)
+        .filter(([name, value]) => name.startsWith('GIT_CONFIG_KEY_') && value.endsWith('dev.azure.com.helper'))
+        .map(([name]) => sent[name.replace('KEY', 'VALUE')])
+      expect(helpers).toEqual(['', checkoutHelper()])
+      // It crosses the proxy, so it trusts the proxy's authority.
+      expect(sent.GIT_SSL_CAINFO).toBe(d.credentialProxy.ca.bundlePath)
+    }
+  )
+
+  // POSIX only: the proxy's upstream leg and the placeholder helper are exercised as a POSIX session runs them.
+  it.skipIf(process.platform === 'win32')(
+    "runs git ls-remote through the daemon's proxy, and refuses a push on a read grant, an unauthorized repository and the runtime's own ask",
+    async () => {
+      const upstreamCa = generateCa({ cn: 'example upstream CA' })
+      const azure = await fakeCodeHost(upstreamCa, 'dev.azure.com')
+      const outbound = await outboundProxy(azure.port)
+      const { d, root } = await startDaemon()
+      const agent = await admit(d, AZURE_AGENT, azureSpec())
+      stubRealHelper(root)
+      const cwd = await checkout(d, agent)
+      await routeUpstream(d, root, upstreamCa.certPem, outbound.url)
+      const asked = fakeControlPlane(d, 'read')
+      const { own, child } = sessionEnv(d, AZURE_AGENT)
+      const { stdout } = await run('git', ['ls-remote', AZURE_REPO], { cwd, env: child })
+      expect(stdout).toContain(`${SHA}\trefs/heads/main`)
+      const minted = `Basic ${Buffer.from(`${AZURE_IDENTITY}:${MINTED_AZURE}`).toString('base64')}`
+      expect(azure.seen.filter((entry) => entry.authorization)).toEqual([
+        {
+          url: '/example-org/Example%20Project/_git/Example%20Repo/info/refs?service=git-upload-pack',
+          authorization: minted
+        }
+      ])
+      // Azure DevOps's fixed host was reached through the daemon's own outbound proxy.
+      expect(outbound.seen.length).toBeGreaterThan(0)
+      expect(outbound.seen.every((target) => target === 'dev.azure.com:443')).toBe(true)
+      const pushed = await run('git', ['push', AZURE_REPO, 'HEAD:refs/heads/main'], { cwd, env: child }).then(
+        () => undefined,
+        (err: { stderr?: string }) => err.stderr ?? ''
+      )
+      expect(pushed).toContain('403')
+      expect(azure.seen.filter((entry) => entry.url.includes('git-receive-pack') && entry.authorization)).toEqual([])
+      // A repository outside the authorizations is answered as missing, and never forwarded.
+      const cli = `Basic ${Buffer.from(`:${own.AZURE_DEVOPS_EXT_PAT}`).toString('base64')}`
+      const hidden = await nodeRequest(
+        child,
+        'https://dev.azure.com/example-org/Example%20Project/_apis/git/repositories/Hidden%20Repo?api-version=7.1',
+        cli
+      )
+      expect(hidden.status).toBe(404)
+      expect(hidden.body).toContain('TF401019')
+      expect(azure.seen.some((entry) => entry.url.includes('Hidden'))).toBe(false)
+      // Every lease was the proxy's: a read one for the fetch, the agent's tier for the push.
+      const leases = asked.map(({ provider, externalRepoId, consumer, requestedAccess }) => ({
+        provider,
+        externalRepoId,
+        consumer,
+        requestedAccess
+      }))
+      expect(leases).toEqual([
+        { provider: 'azure-devops', externalRepoId: '42', consumer: 'proxy', requestedAccess: 'read' },
+        { provider: 'azure-devops', externalRepoId: '42', consumer: 'proxy' }
+      ])
+      // The runtime's capability, as the session holds it, is refused an Azure DevOps credential outright.
+      const presented = { agentId: own[AGENT_CHANNEL_AGENT_ENV], capability: own[AGENT_CHANNEL_CAPABILITY_ENV] }
+      const refusal = { ok: false, error: proxyOnlyRefusal('azure-devops'), denied: 'agent' }
+      expect(await agentChannelIpc(agentChannelSocketPath(root), { op: 'get', ...presented })).toEqual(refusal)
+      expect(
+        await agentChannelIpc(agentChannelSocketPath(root), {
+          op: 'get',
+          ...presented,
+          provider: 'azure-devops',
+          repoFullName: 'example-org/example project/example repo'
+        })
+      ).toEqual(refusal)
+      expect(asked).toHaveLength(2)
+      expect(JSON.stringify(azure.seen)).not.toContain(HELPER_TOKEN)
+      // The machine's own helper never kept the placeholder, nor any other credential.
+      const kept = readFileSync(machineHelperLog, { encoding: 'utf8', flag: 'a+' })
+      expect(kept).not.toContain(own.AC_CODEHOST_CREDENTIAL!)
       expect(kept).not.toContain('op=store')
     }
   )

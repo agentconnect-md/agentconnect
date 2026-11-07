@@ -11,6 +11,7 @@ import {
   AgentMemoryBinding,
   AssistantModePolicy,
   AssistantOnboarding,
+  AzureDevOpsRepoRouting,
   ChatActions,
   GitCommitIdentity,
   HookRoutingProjection,
@@ -272,7 +273,7 @@ export const AgentSchema = z.object({
     // Remote-git credential mode. Absent ⇒ anonymous (public repos). 'github-app' ⇒
     // clone/fetch/push authenticate via the local credential helper backed by
     // CP-minted short-lived installation tokens — nothing durable on this host.
-    gitCredential: z.enum(['github-app', 'gitlab', 'gitea']).optional(),
+    gitCredential: z.enum(['github-app', 'gitlab', 'gitea', 'azure-devops']).optional(),
     // gitlab mode: the v2 rename-stable numeric project id (gitlab-com-integration.md
     // §17.1) — the identity the credential consumer verifies against every grant echo.
     gitlabProjectId: z
@@ -284,6 +285,12 @@ export const AgentSchema = z.object({
       .string()
       .regex(/^[1-9]\d*$/)
       .optional(),
+    // azure-devops mode: the surrogate numeric id (azure-devops-integration.md §4), and the routing the credential proxy resolves requests by.
+    azureDevOpsRepoId: z
+      .string()
+      .regex(/^[1-9]\d*$/)
+      .optional(),
+    azureDevOps: AzureDevOpsRepoRouting.optional(),
     // The CP-replicated allowlist (multi-repository-workspaces.md decisions 2, 13): rename-proof `repoId` qualified by `provider` (absent ⇒ github), and `materialize` (absent ⇒ always, the only rows checked out).
     additionalRepos: z
       .array(
@@ -291,7 +298,9 @@ export const AgentSchema = z.object({
           repoFullName: z.string(),
           repoId: z.string(),
           provider: z.string().min(1).default('github'),
-          materialize: z.enum(['always', 'decision', 'on-demand']).default('always')
+          materialize: z.enum(['always', 'decision', 'on-demand']).default('always'),
+          // An Azure DevOps row's routing, which the credential proxy resolves requests by.
+          azureDevOps: AzureDevOpsRepoRouting.optional()
         })
       )
       .default([]),
