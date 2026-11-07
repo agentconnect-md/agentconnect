@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { createConnection, createServer, Socket, type Server } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -9,13 +9,19 @@ import { startK8sRuntimePlane, type K8sRuntimePlane } from '../src/k8s/runtime-p
 import { ShimClient, type ShimTransport } from '../src/shim/client.js'
 import { ShimServer } from '../src/shim/server.js'
 import { TunnelHost } from '../src/shim/tunnel-host.js'
-import { MAX_IN_FLIGHT_FRAMES, TunnelProxy } from '../src/shim/tunnel-proxy.js'
+import { TunnelProxy } from '../src/shim/tunnel-proxy.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
 import type { Sandbox, SandboxClaim, SandboxFence } from '../src/k8s/sandbox-api.js'
 import { fakeGenerations } from './fake-generations.js'
 import { fenceFakeSandbox } from './fake-sandbox-fence.js'
 import type { ShimEvent } from '../src/shim/protocol.js'
-import { MAX_CODEHOST_STREAMS, MAX_TUNNEL_CHUNK_BYTES, type TunnelName } from '../src/shim/tunnel.js'
+import {
+  ACK_EVERY_FRAMES,
+  MAX_CODEHOST_STREAMS,
+  MAX_IN_FLIGHT_FRAMES,
+  MAX_TUNNEL_CHUNK_BYTES,
+  type TunnelName
+} from '../src/shim/tunnel.js'
 import { waitBudget } from './wait-support.js'
 
 /**
@@ -37,18 +43,27 @@ const clients: ShimClient[] = []
 const servers: Server[] = []
 const shimServers: ShimServer[] = []
 const hosts: TunnelHost[] = []
+const proxies: TunnelProxy[] = []
 const sockets: Socket[] = []
 const dirs: string[] = []
 
 afterEach(async () => {
   for (const socket of sockets.splice(0)) socket.destroy()
   for (const host of hosts.splice(0)) host.close()
+  for (const proxy of proxies.splice(0)) proxy.stop('test over')
   for (const client of clients.splice(0)) client.stop()
   for (const plane of planes.splice(0)) await plane.stop()
   for (const server of shimServers.splice(0)) await server.stop()
   await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))))
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
+
+/** A short directory for sockets, since a unix socket path is capped near 104 bytes and the platform temp dir can be long. */
+function socketDir(): string {
+  const dir = mkdtempSync('/tmp/actb-')
+  dirs.push(dir)
+  return dir
+}
 
 function scratchDir(): string {
   const dir = mkdtempSync(join(tmpdir(), 'ac-tunnel-'))
@@ -506,7 +521,8 @@ describe('the shim tunnel', () => {
       op: 'listen',
       tunnel: 'codehost',
       routes: ['github.com:443'],
-      ca: 'example certificate'
+      ca: 'example certificate',
+      acks: true
     })
     expect(proxy.instance.listeningAt('codehost')?.proxy?.port).toBe(1)
     for (let i = 0; i < MAX_CODEHOST_STREAMS; i += 1)
@@ -585,4 +601,219 @@ describe('the shim tunnel', () => {
     // The two that were already open are untouched: the cap sheds new work, not live work.
     expect(held.every((client) => !client.ended())).toBe(true)
   })
+})
+
+/** The daemon's server for a transfer: once `total` bytes arrive it answers with their SHA-256. */
+function hashingServer(total: number): string {
+  const path = join(socketDir(), 'daemon.sock')
+  const server = createServer((socket) => {
+    const hash = createHash('sha256')
+    let received = 0
+    socket.on('data', (chunk: Buffer) => {
+      hash.update(chunk)
+      received += chunk.length
+      if (received === total) socket.write(hash.digest('hex'))
+    })
+    socket.on('error', () => undefined)
+  })
+  servers.push(server)
+  server.listen(path)
+  return path
+}
+
+/** A real proxy and host joined in memory; `legacy` strips the ack fields an older peer neither sends nor reads. */
+async function tunnelPair(
+  daemonSocketPath: string,
+  options: { legacy?: 'shim' | 'holder'; failAcks?: number } = {}
+): Promise<{ podPath: string; requests: Array<{ op?: string }>; maxOutstanding: () => number; proxy: TunnelProxy }> {
+  const podPath = join(socketDir(), 'pod.sock')
+  const listeners: Array<(event: ShimEvent) => void> = []
+  const requests: Array<{ op?: string }> = []
+  let emitted = 0
+  let acked = 0
+  let maxOutstanding = 0
+  let failAcks = options.failAcks ?? 0
+  const host = new TunnelHost({
+    emit: (streamId, event) => {
+      if (event.kind === 'chunk') maxOutstanding = Math.max(maxOutstanding, ++emitted - acked)
+      queueMicrotask(() => {
+        for (const listener of listeners) listener({ type: 'shim/event', streamId, event })
+      })
+    },
+    socketPathFor: () => podPath
+  })
+  hosts.push(host)
+  const strip = (value: unknown): unknown => {
+    if (!value || typeof value !== 'object') return value
+    const { acks: _acks, ...rest } = value as Record<string, unknown>
+    return rest
+  }
+  const proxy = new TunnelProxy({
+    session: {
+      agentId: 'agent-a',
+      request: async (_capability, payload) => {
+        const frame = payload as { op?: string; received?: number }
+        requests.push(frame)
+        if (frame.op === 'ack' && options.legacy === 'shim') throw new Error('invalid tunnel payload')
+        if (frame.op === 'ack' && failAcks > 0) {
+          failAcks -= 1
+          throw new Error('shim channel renewed')
+        }
+        const reply = await host.handle(options.legacy && frame.op === 'listen' ? strip(payload) : payload)
+        if (frame.op === 'ack') acked = frame.received!
+        return options.legacy ? strip(reply) : reply
+      },
+      onEvent: (listener) => listeners.push(listener),
+      offEvent: () => undefined,
+      onAttach: () => undefined,
+      offAttach: () => undefined,
+      onLost: () => undefined
+    },
+    socketPathFor: () => daemonSocketPath,
+    log: { info: () => {}, warn: () => {} }
+  })
+  proxies.push(proxy)
+  await proxy.ensure('gitcred')
+  return { podPath, requests, maxOutstanding: () => maxOutstanding, proxy }
+}
+
+/** Write `bytes` from inside the pod and resolve with the daemon server's digest of what it received. */
+async function transfer(podPath: string, bytes: Buffer): Promise<string> {
+  const client = inPodClient(podPath)
+  client.socket.write(bytes)
+  await vi.waitFor(() => expect(client.received()).toHaveLength(64), waitBudget(20_000))
+  return client.received()
+}
+
+const digest = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex')
+
+describe('shim-side tunnel flow control', () => {
+  it('pauses a shim-side stream at its window and resumes it as the daemon acknowledges', async () => {
+    // A large push through the codehost tunnel used to be read as fast as the runtime wrote it and queued on the channel.
+    const chunks: string[] = []
+    let streamId = ''
+    const path = join(socketDir(), 'pod.sock')
+    const host = new TunnelHost({
+      emit: (id, event) => {
+        if (event.kind === 'connect') streamId = id
+        if (event.kind === 'chunk') chunks.push(event.data)
+      },
+      socketPathFor: () => path
+    })
+    hosts.push(host)
+    expect(await host.handle({ op: 'listen', tunnel: 'gitcred', acks: true })).toEqual(
+      expect.objectContaining({ acks: true })
+    )
+    const bytes = randomBytes(3 * MAX_IN_FLIGHT_FRAMES * MAX_TUNNEL_CHUNK_BYTES)
+    inPodClient(path).socket.write(bytes)
+
+    await vi.waitFor(() => expect(chunks.length).toBeGreaterThanOrEqual(MAX_IN_FLIGHT_FRAMES))
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    // One socket read may straddle the window by a frame, never more.
+    expect(chunks.length).toBeLessThanOrEqual(MAX_IN_FLIGHT_FRAMES + 1)
+
+    const paused = chunks.length
+    await host.handle({ op: 'ack', streamId, received: ACK_EVERY_FRAMES })
+    await vi.waitFor(() => expect(chunks.length).toBeGreaterThan(paused))
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    expect(chunks.length).toBeLessThanOrEqual(ACK_EVERY_FRAMES + MAX_IN_FLIGHT_FRAMES + 1)
+
+    // A repeated or overstated ack is harmless: acks are cumulative and capped at what was sent.
+    await host.handle({ op: 'ack', streamId, received: ACK_EVERY_FRAMES })
+    const sent = (): number => chunks.reduce((length, chunk) => length + Buffer.from(chunk, 'base64').length, 0)
+    for (let i = 0; i < 1_000 && sent() < bytes.length; i += 1) {
+      await host.handle({ op: 'ack', streamId, received: Number.MAX_SAFE_INTEGER })
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+    await vi.waitFor(() => expect(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk, 'base64')))).toEqual(bytes))
+  })
+
+  it('keeps a shim-side stream unpaused for a daemon that never acknowledges', async () => {
+    const chunks: string[] = []
+    const path = join(socketDir(), 'pod.sock')
+    const host = new TunnelHost({
+      emit: (_id, event) => (event.kind === 'chunk' ? chunks.push(event.data) : undefined),
+      socketPathFor: () => path
+    })
+    hosts.push(host)
+    await host.handle({ op: 'listen', tunnel: 'gitcred' })
+    const bytes = randomBytes(3 * MAX_IN_FLIGHT_FRAMES * MAX_TUNNEL_CHUNK_BYTES)
+    inPodClient(path).socket.write(bytes)
+    await vi.waitFor(() => expect(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk, 'base64')))).toEqual(bytes))
+  })
+
+  it('carries a large upload intact, bounded by the window, between current peers', async () => {
+    const bytes = randomBytes(4 * 1024 * 1024)
+    const pair = await tunnelPair(hashingServer(bytes.length))
+    expect(await transfer(pair.podPath, bytes)).toBe(digest(bytes))
+    expect(pair.requests.filter((frame) => frame.op === 'ack').length).toBeGreaterThan(0)
+    expect(pair.maxOutstanding()).toBeLessThanOrEqual(MAX_IN_FLIGHT_FRAMES + 1)
+  })
+
+  it.each(['shim', 'holder'] as const)(
+    'carries a large upload intact with an older %s, sending no ack',
+    async (legacy) => {
+      const bytes = randomBytes(1024 * 1024)
+      const pair = await tunnelPair(hashingServer(bytes.length), { legacy })
+      expect(await transfer(pair.podPath, bytes)).toBe(digest(bytes))
+      expect(pair.requests.filter((frame) => frame.op === 'ack')).toEqual([])
+    }
+  )
+
+  it('resends an acknowledgement a renewal lost, with no further chunk to prompt it', async () => {
+    const sent: Array<{ op?: string; received?: number }> = []
+    const listeners: Array<(event: ShimEvent) => void> = []
+    let failAcks = 1
+    const proxy = new TunnelProxy({
+      session: {
+        agentId: 'agent-a',
+        request: async (_capability, payload) => {
+          const frame = payload as { op?: string; received?: number }
+          sent.push(frame)
+          if (frame.op === 'ack' && failAcks-- > 0) throw new Error('shim channel renewed')
+          return frame.op === 'listen' ? { socketPath: '/run/agentconnect/gitcred.sock', acks: true } : null
+        },
+        onEvent: (listener) => listeners.push(listener),
+        offEvent: () => undefined,
+        onAttach: () => undefined,
+        offAttach: () => undefined,
+        onLost: () => undefined
+      },
+      socketPathFor: () => hashingServer(Number.MAX_SAFE_INTEGER),
+      log: { info: () => {}, warn: () => {} }
+    })
+    proxies.push(proxy)
+    await proxy.ensure('gitcred')
+    const streamId = randomUUID()
+    const announce = (event: ShimEvent['event']): void => {
+      for (const listener of listeners) listener({ type: 'shim/event', streamId, event })
+    }
+    announce({ kind: 'connect', tunnel: 'gitcred' })
+    // Exactly one ack's worth: the shim, paused at its window, sends nothing more until this one lands.
+    for (let i = 0; i < ACK_EVERY_FRAMES; i += 1) announce({ kind: 'chunk', data: Buffer.from('x').toString('base64') })
+
+    await vi.waitFor(() =>
+      expect(sent.filter((frame) => frame.op === 'ack')).toEqual([
+        { op: 'ack', streamId, received: ACK_EVERY_FRAMES },
+        { op: 'ack', streamId, received: ACK_EVERY_FRAMES }
+      ])
+    )
+    expect(proxy.streamCount()).toBe(1)
+  })
+
+  it('ends a stream whose acknowledgement is lost twice, rather than leave it paused', async () => {
+    const pair = await tunnelPair(hashingServer(Number.MAX_SAFE_INTEGER), { failAcks: 2 })
+    const client = inPodClient(pair.podPath)
+    client.socket.write(randomBytes(4 * MAX_IN_FLIGHT_FRAMES * MAX_TUNNEL_CHUNK_BYTES))
+    await vi.waitFor(() => expect(client.ended()).toBe(true), waitBudget(10_000))
+    expect(pair.requests).toContainEqual(
+      expect.objectContaining({ op: 'close', error: expect.stringContaining('acknowledgement could not be delivered') })
+    )
+  })
+
+  it('carries a large upload intact through a real shim channel', async () => {
+    const bytes = randomBytes(1024 * 1024)
+    const { podSocketPath } = await clusterWithTunnel({ daemonSocketPath: hashingServer(bytes.length) })
+    expect(await transfer(podSocketPath, bytes)).toBe(digest(bytes))
+  }, 40_000)
 })

@@ -7,6 +7,7 @@ import { getCACertificates } from 'node:tls'
 import type { ShimEvent } from './protocol.js'
 import {
   MAX_CODEHOST_STREAMS,
+  MAX_IN_FLIGHT_FRAMES,
   MAX_TUNNEL_CHUNK_BYTES,
   SANDBOX_TUNNEL_PATHS,
   TunnelPayloadSchema,
@@ -40,6 +41,13 @@ interface CodehostListener {
   token: string
   /** `host:port` authorities forwarded into the tunnel, lower-cased. */
   routes: Set<string>
+}
+
+interface HostStream {
+  socket: Socket
+  tunnel: TunnelName
+  /** Chunks emitted and acknowledged, on a stream whose daemon acknowledges them. */
+  flow?: { sent: number; acked: number }
 }
 
 interface ConnectAuthority {
@@ -100,7 +108,9 @@ export interface TunnelHostDeps {
  */
 export class TunnelHost {
   private readonly servers = new Map<TunnelName, Server>()
-  private readonly streams = new Map<string, { socket: Socket; tunnel: TunnelName }>()
+  private readonly streams = new Map<string, HostStream>()
+  /** Tunnels whose daemon acknowledges chunks, as its latest `listen` said; only their streams are paused. */
+  private readonly acked = new Set<TunnelName>()
   private readonly socketPathFor: (tunnel: TunnelName) => string
   private readonly maxStreams: number
   private readonly maxCodehostStreams: number
@@ -118,11 +128,22 @@ export class TunnelHost {
   /** Serve one authorized `tunnel` request. Unknown ops fail the schema rather than this method. */
   async handle(payload: unknown): Promise<unknown> {
     const parsed: TunnelPayload = TunnelPayloadSchema.parse(payload)
-    if (parsed.op === 'listen')
-      return parsed.tunnel === 'codehost'
-        ? await this.listenCodehost(parsed.routes, parsed.ca)
-        : ({ socketPath: await this.listen(parsed.tunnel) } satisfies TunnelListening)
-    const socket = this.streams.get(parsed.streamId)?.socket
+    if (parsed.op === 'listen') {
+      const listening =
+        parsed.tunnel === 'codehost'
+          ? await this.listenCodehost(parsed.routes, parsed.ca)
+          : ({ socketPath: await this.listen(parsed.tunnel) } satisfies TunnelListening)
+      if (parsed.acks) this.acked.add(parsed.tunnel)
+      else this.acked.delete(parsed.tunnel)
+      return { ...listening, acks: true } satisfies TunnelListening
+    }
+    const stream = this.streams.get(parsed.streamId)
+    if (parsed.op === 'ack') {
+      // An unknown id is ordinary, as for a close: the stream may have ended as the ack was in flight.
+      if (stream?.flow) this.acknowledge(stream, stream.flow, parsed.received)
+      return null
+    }
+    const socket = stream?.socket
     if (parsed.op === 'close') {
       // An unknown id is ordinary here: the connection may have ended on its own as the close
       // was in flight, and reporting that as a failure would make every race look like a bug.
@@ -296,7 +317,7 @@ export class TunnelHost {
 
   private open(tunnel: TunnelName, socket: Socket, preface?: Buffer): void {
     const streamId = randomUUID()
-    this.streams.set(streamId, { socket, tunnel })
+    this.streams.set(streamId, { socket, tunnel, ...(this.acked.has(tunnel) ? { flow: { sent: 0, acked: 0 } } : {}) })
     // Announced BEFORE any byte is read, so the daemon has dialled its end (or refused) before
     // the first chunk arrives — chunks for a stream it never saw open have nowhere to go.
     this.deps.emit(streamId, { kind: 'connect', tunnel })
@@ -308,12 +329,23 @@ export class TunnelHost {
     socket.on('close', () => this.finish(streamId, socket))
   }
 
-  // Sliced, one chunk per frame; not flow-controlled, since an event carries no acknowledgement.
+  // Sliced, one chunk per frame; a stream whose daemon acknowledges chunks stops reading at its window.
   private forward(streamId: string, data: Buffer): void {
+    const stream = this.streams.get(streamId)
+    if (!stream) return
+    const flow = stream.flow
     for (let offset = 0; offset < data.length; offset += MAX_TUNNEL_CHUNK_BYTES) {
       const slice = data.subarray(offset, offset + MAX_TUNNEL_CHUNK_BYTES)
       this.deps.emit(streamId, { kind: 'chunk', data: slice.toString('base64') })
+      if (flow) flow.sent += 1
     }
+    if (flow && flow.sent - flow.acked >= MAX_IN_FLIGHT_FRAMES) stream.socket.pause()
+  }
+
+  /** Apply a cumulative ack, never past what was sent, and resume a stream back inside its window. */
+  private acknowledge(stream: HostStream, flow: { sent: number; acked: number }, received: number): void {
+    flow.acked = Math.max(flow.acked, Math.min(received, flow.sent))
+    if (flow.sent - flow.acked < MAX_IN_FLIGHT_FRAMES && stream.socket.isPaused()) stream.socket.resume()
   }
 
   private finish(streamId: string, socket: Socket, error?: string): void {
