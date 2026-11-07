@@ -153,17 +153,21 @@ function ref(repository: ProxyRepository): RepositoryRef {
   return { repo: repository.repoFullName, repoId: repository.repoId }
 }
 
-/** `{repository}/(info/refs | git-upload-pack | git-receive-pack)`, the service spelled exactly as git sends it; a GUID names the repository only below its project. */
+/** `{repository}/(info/refs | git-upload-pack | git-receive-pack)`, the service spelled exactly as git sends it, or a read of the `vsts/info` the Azure CLI resolves a remote with; a GUID names the repository only below its project. */
 function gitRoute(
   held: readonly ProxyRepository[],
   project: string | undefined,
   after: string[],
+  method: string,
   target: string
 ): InstanceRoute {
   const repository = decodedName(after[0])
-  if (!repository || !GIT_SERVICES.has(after.slice(1).join('/'))) return deny(403, NOT_AVAILABLE)
+  const service = after.slice(1).join('/')
+  const info = service === 'vsts/info' && READS.has(method.toUpperCase())
+  if (!repository || !(info || GIT_SERVICES.has(service))) return deny(403, NOT_AVAILABLE)
   const found = GUID.test(repository) && project === undefined ? undefined : heldBySegment(held, project, repository)
   if (!found) return repositoryNotFound(repository, 'git')
+  if (info) return { kind: 'repository', plane: 'api', ...ref(found), readOnly: true }
   const push = isGitPush(after.at(-1)!, target)
   return { kind: 'repository', plane: 'git', ...ref(found), push, readOnly: !push }
 }
@@ -259,8 +263,9 @@ function apiRoute(
     if (!PULL_REQUEST_ID.test(after[2])) return deny(400, NOT_A_PULL_REQUEST)
     return pullRequestLookup(held[0]!, apis, after[2], (id) => heldById(held, undefined, id), false)
   }
-  // The lookups the Azure CLI makes before any command, one level deep; they show nothing repository-specific.
+  // The lookups the Azure CLI makes before any command, one level deep, and its OPTIONS of the API's locations; none shows a repository.
   const allowlisted =
+    (method.toUpperCase() === 'OPTIONS' && (after.length === 0 || (after.length === 1 && after[0] === ''))) ||
     (is(after[0], 'connectionData') && after.length === 1) ||
     (is(after[0], 'ResourceAreas') && (after.length === 1 || (after.length === 2 && after[1] !== '')))
   if (project === undefined && allowlisted) {
@@ -303,7 +308,7 @@ export const azureDevOpsProxyRoute: ProxyRouteDescriptor = {
     const project = at === 1 ? decodedName(rest[0]) : undefined
     if (at === 1 && project === undefined) return deny(400, NOT_A_REPOSITORY)
     const after = rest.slice(at + 1)
-    if (is(rest[at], '_git')) return gitRoute(held, project, after, target)
+    if (is(rest[at], '_git')) return gitRoute(held, project, after, method, target)
     // The proxy's own lookups address the organization and project the request does.
     const apis = `/${[...prefix, ...rest.slice(0, at), '_apis'].join('/')}`
     return apiRoute(held, project, after, method, target, apis)
