@@ -1,4 +1,4 @@
-// Google Chat's relay ingress plugin (google-chat-integration.md §2, §4, §11): a pure HTTP decoder of add-on requests with no secret on the relay.
+// Google Chat's relay ingress plugin (google-chat-integration.md §2, §4, §10.10, §11): a decoder of add-on requests; only the deployment app's key reaches the relay, for its customer rows' egress.
 import { createHash, randomUUID } from 'node:crypto'
 import {
   googleChatEventObjectOf,
@@ -11,9 +11,11 @@ import {
 import {
   GOOGLE_CHAT_ELICIT_FUNCTION,
   GOOGLE_CHAT_PLATFORM,
+  WireGoogleChatCall,
   googleChatEventsUrl,
   type RcDeploymentConfig,
   type RdMsgPlatformAction,
+  type RdPlatformReply,
   type WireGoogleChatCardAction
 } from '@agentconnect.md/protocol'
 import {
@@ -27,6 +29,7 @@ import {
   provenAppUserName,
   type VerifiedGoogleChatDelivery
 } from './http-ingest.js'
+import { GoogleChatRelayEgress } from './egress.js'
 import { googleChatHelp, googleChatWelcome } from './help.js'
 import { registerGoogleChatHttpIngress } from './http-ingress.js'
 import { GoogleChatTokenVerifier, bearerToken, unverifiedProjectNumber } from './token.js'
@@ -158,6 +161,7 @@ export function createGoogleChatIngressPlugin(deps: GoogleChatIngressPluginDeps 
   const verifier = new GoogleChatTokenVerifier((input, init) => (deps.fetch ?? fetch)(input, init))
   const unclaimed = new UnclaimedTenantMemo()
   const refused = new UnclaimedTenantMemo()
+  let egress: GoogleChatRelayEgress | undefined
   return {
     platformId: GOOGLE_CHAT_PLATFORM,
     verifier,
@@ -165,7 +169,24 @@ export function createGoogleChatIngressPlugin(deps: GoogleChatIngressPluginDeps 
     // `POST /googlechat/events`, the path the Setup Server publishes; pinned by route-mounts.test.ts.
     installRoutes: registerGoogleChatHttpIngress,
 
-    deploymentAssignments: googleChatAnchorAssignment,
+    deploymentAssignments(snapshot: RcDeploymentConfig | undefined): BotAssignment[] {
+      // The deployment app's egress for its customer rows (§10.10), kept in place so a call in flight finishes.
+      const app = snapshot?.googleChatApp
+      if (!app) egress = undefined
+      else if (egress) egress.update(app)
+      else egress = new GoogleChatRelayEgress(app, (input, init) => (deps.fetch ?? fetch)(input, init))
+      return googleChatAnchorAssignment(snapshot)
+    },
+
+    // A deployment app's customer row's Chat API call (§10.10); core checked the daemon serves the row, and only the row's assignment names its tenants.
+    async daemonRequest(a: BotAssignment, payload: unknown): Promise<RdPlatformReply> {
+      // Only a customer row's daemon asks, so a mismatch is this relay's snapshot trailing another's; nothing was called yet.
+      if (!egress || a.apiAppId !== egress.projectNumber || !a.tenantIds?.length)
+        return { outcome: 'refused', reason: 'not_deployment_app', retryable: true }
+      const call = WireGoogleChatCall.safeParse(payload)
+      if (!call.success) return { outcome: 'refused', reason: 'invalid' }
+      return await egress.call({ botId: a.botId, tenantIds: a.tenantIds }, call.data)
+    },
 
     buildIngest(a: BotAssignment, host: RelayIngressHost): GoogleChatHttpIngest | undefined {
       // No Google secret here, the signed token is the check; a row cannot be a customer and the anchor, nor own-fenced and either.

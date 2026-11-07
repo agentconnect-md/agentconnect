@@ -1,5 +1,7 @@
+import { generateKeyPairSync } from 'node:crypto'
 import { describe, it, expect, vi } from 'vitest'
 import {
+  type WireGoogleChatCall,
   buildRelayDaemonFrame,
   API_AHP_V1_FEATURE,
   RELAY_DAEMON_SUBPROTOCOL,
@@ -12,6 +14,7 @@ import {
   type RcVerifyResult
 } from '@agentconnect.md/protocol'
 import { FakeClock, type ServerTransport } from '@agentconnect.md/connection'
+import { GOOGLE_TOKEN_ENDPOINT, GoogleChatRelayEgress } from './platforms/googlechat/egress.js'
 import { RelayDaemonConnection, type RelayDaemonConnDeps } from './relay-daemon-connection.js'
 import type { Logger } from './log.js'
 
@@ -426,6 +429,55 @@ describe('RelayDaemonConnection (rd/* accept FSM)', () => {
     await vi.waitFor(() => expect(posts).toHaveLength(1))
     await new Promise((resolve) => setTimeout(resolve, 10))
     expect(posts).toEqual(['POST'])
+    expect(transport.sent.slice(before)).toEqual([])
+  })
+})
+
+describe('a Google Chat create through the relay', () => {
+  it('reaches Google once when the reply to it cannot be sent, and no second answer goes out', async () => {
+    const creates: string[] = []
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input)
+      if (url === GOOGLE_TOKEN_ENDPOINT) return Response.json({ access_token: 'token', expires_in: 3600 })
+      if (init?.method === 'POST') {
+        creates.push(url)
+        return Response.json({ name: 'spaces/S1/messages/m1' })
+      }
+      return Response.json({ name: 'spaces/S1', spaceType: 'SPACE', customer: 'customers/C0000000001' })
+    }) as typeof fetch
+    const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
+    const egress = new GoogleChatRelayEgress(
+      {
+        projectNumber: '100000000000',
+        serviceAccountKey: JSON.stringify({
+          type: 'service_account',
+          private_key: privateKey.export({ type: 'pkcs8', format: 'pem' }),
+          client_email: 'chat-app@example.test'
+        })
+      },
+      fetchImpl
+    )
+    const { transport } = build({
+      onPlatformRequest: (_daemon, req) =>
+        egress.call({ botId: req.botId, tenantIds: ['customers/C0000000001'] }, req.payload as WireGoogleChatCall)
+    })
+    transport.feed('rd/hello', { apiKey: 'k', daemonId: DAEMON_ID })
+    await Promise.resolve()
+    await Promise.resolve()
+    const send = transport.send.bind(transport)
+    transport.send = (text: string) => {
+      if (text.includes('rd/platform/reply')) throw new Error('socket write failed')
+      send(text)
+    }
+    const before = transport.sent.length
+    transport.feed('rd/platform/request', {
+      platformId: 'googlechat',
+      botId: RELAY_ID,
+      payload: { op: 'create-message', space: 'spaces/S1', requestId: 'client-1', messageId: 'client-1', text: 'hello' }
+    })
+    await vi.waitFor(() => expect(creates).toHaveLength(1))
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(creates).toHaveLength(1)
     expect(transport.sent.slice(before)).toEqual([])
   })
 })

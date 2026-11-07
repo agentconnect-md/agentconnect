@@ -13,6 +13,7 @@ import { integrationPlatformAvailability } from '../../http/daemon-platform-capa
 import type { AgentRecord } from '../../persistence/ports.js'
 import { BotDto, ErrorDto, IdParam } from '../../http/dto/index.js'
 import { toBotDto } from '../../http/routes/bots.js'
+import { GOOGLE_CHAT_DEPLOYMENT_KEY_MARKER, isGoogleChatDeploymentRow } from './deployment-app.js'
 import { buildGoogleChatInstall, resolveGoogleChatApp } from './provider.js'
 
 /** A per-agent Chat app's replacement key (write-only). */
@@ -124,7 +125,7 @@ export function googleChatKeyRoutes(deps: HttpDeps, googleChat: GoogleChatRouteS
           tags: [Tag.Bots],
           summary: 'Replace a Google Chat app key',
           description:
-            'Validate a new service-account key for this bot’s Google Chat app exactly as a new install does (the key’s own project, its number from Cloud Resource Manager, one Chat API read), require the same project and number, then store it in place of the current key and push it to every serving daemon. The key is write-only. The deployment-owned app takes its key from the Setup Server instead (409).',
+            'Validate a new service-account key for this bot’s Google Chat app exactly as a new install does (the key’s own project, its number from Cloud Resource Manager, one Chat API read), require the same project and number, then store it in place of the current key and push it to every serving daemon. The key is write-only. The deployment-owned app takes its key from the Setup Server and reaches no daemon (409).',
           operationId: 'replaceGoogleChatKey',
           params: IdParam,
           body: ReplaceGoogleChatKeyBody,
@@ -138,7 +139,9 @@ export function googleChatKeyRoutes(deps: HttpDeps, googleChat: GoogleChatRouteS
         if (!bot || bot.platform !== GOOGLE_CHAT_PLATFORM || !bot.externalAppId || typeof projectId !== 'string') {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'Google Chat bot not found' })
         }
-        if (bot.prebuilt) {
+        // A deployment app's row, by what it stores or the marker in its secret slot, never takes a key (§10.10).
+        const stored = await deps.repos.botSecret.get(bot.orgId, bot.id)
+        if (isGoogleChatDeploymentRow(bot, googleChat.app) || stored?.botToken === GOOGLE_CHAT_DEPLOYMENT_KEY_MARKER) {
           return reply
             .code(409)
             .send({ error: 'Conflict', statusCode: 409, message: GOOGLE_CHAT_DEPLOYMENT_KEY_MESSAGE })

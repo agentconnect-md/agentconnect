@@ -889,8 +889,9 @@ Later, separately: the
   `RD_PLATFORM_REQUEST_BUDGET_MS`, which the daemon's wait exceeds. `refused`
   and `unavailable` mean the provider was never called, so the daemon asks the
   next ready relay; `retryable` marks a refusal that assignment lag may explain.
-  The deployment-owned Teams app is the one user
-  ([teams-integration.md §8.5](teams-integration.md#85-egress-for-the-deployment-apps-rows)).
+  The deployment-owned Teams and Google Chat apps use it
+  ([teams-integration.md §8.5](teams-integration.md#85-egress-for-the-deployment-apps-rows),
+  [google-chat-integration.md §10.10](google-chat-integration.md#1010-egress-for-the-deployment-apps-customer-rows)).
 - Webchat output is returned through `rd/chat` to the relay holding the browser
   session. That relay delivers output, completion, and canonical posts to every
   verified browser connection for the conversation; opening or closing another
@@ -1004,8 +1005,8 @@ guarantees. Relay crash-delivery and replay guarantees remain unchanged.
 | Partial daemon-to-pool connectivity | A Slack callback landing without its target socket is answered 503 and redelivered, possibly to another instance; a Lark / Feishu one is dropped and counted                            | Same bounded-loss outcome                                        | A browser must reconnect to an instance with the target connection | Unaffected                                    |
 
 Direct integrations do not depend on relay availability. The rows of a
-deployment-owned Teams app send through the relay, so they cannot send while no
-relay is reachable; any relay can serve them, from its last snapshot through a
+deployment-owned Teams or Google Chat app send through the relay, so they cannot
+send while no relay is reachable; any relay can serve them, from its last snapshot through a
 CP outage.
 
 ## 14. Security and Trust Boundaries
@@ -1025,6 +1026,14 @@ CP outage.
   `rd/platform/request`, and the relay checks the daemon's membership, a
   relay-signed conversation ticket and an allowlisted Bot Connector host
   ([teams-integration.md §8.5](teams-integration.md#85-egress-for-the-deployment-apps-rows)).
+- A Google Chat app's service-account key differs by owner the same way. An
+  organization's own app's key is sent only to member daemons. The
+  deployment-owned app's key reaches every customer that installed it, so it
+  stays on CP and relays: its customer rows' daemons send every Chat API call
+  through a relay, which checks the daemon's membership and the target Space's
+  Workspace customer as Google reports it, and limits each row's share of the
+  project's quota
+  ([google-chat-integration.md §10.10](google-chat-integration.md#1010-egress-for-the-deployment-apps-customer-rows)).
 - Hook verification secrets are stored by CP and broadcast only to trusted
   relays.
 - Stored credential material passes through `SecretCipher`. Secret-bearing

@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { GOOGLE_CHAT_MARKUP } from '../consts.js'
 import { RdAhpOpen, RdAhpOpened, RdAhpAuthorize, RdAhpAuthorized, RdAhpMessage, RdAhpClose } from '../ahp.js'
 import { CodeHostReplyTarget } from '../code-host.js'
 import { ExternalSessionAudience } from './telemetry.js'
@@ -842,6 +843,124 @@ export const WireMsTeamsCallResult = z.object({
   tickets: z.record(z.string(), MsTeamsTicket).optional()
 })
 export type WireMsTeamsCallResult = z.infer<typeof WireMsTeamsCallResult>
+
+// The alphabet the message normalizer takes Google's names in; a whole dot segment would be collapsed out of the operation's path.
+const GOOGLE_CHAT_SEGMENT = '[A-Za-z0-9._-]{1,256}'
+const googleChatName = (pattern: string) =>
+  z
+    .string()
+    .regex(new RegExp(`^${pattern}$`))
+    .refine((name) => name.split('/').every((part) => part !== '.' && part !== '..'), 'a dot segment is not an ID')
+const GoogleChatSpaceName = googleChatName(`spaces/${GOOGLE_CHAT_SEGMENT}`)
+const GoogleChatMessageName = googleChatName(`spaces/${GOOGLE_CHAT_SEGMENT}/messages/${GOOGLE_CHAT_SEGMENT}`)
+const GoogleChatThreadName = googleChatName(`spaces/${GOOGLE_CHAT_SEGMENT}/threads/${GOOGLE_CHAT_SEGMENT}`)
+const GoogleChatUserName = googleChatName(`users/${GOOGLE_CHAT_SEGMENT}`)
+const GoogleChatClientId = z.string().regex(/^[A-Za-z0-9._-]{1,128}$/)
+const GoogleChatCards = z.array(z.record(z.string(), z.unknown())).max(100)
+const GoogleChatText = z.string().max(40_000)
+
+/** A deployment Google Chat app's Chat API call in an `rd/platform/request` (google-chat-integration.md §10.10): a fixed set, whose URL and body the relay builds, each inside the row's own Workspace customer. */
+export const WireGoogleChatCall = z.discriminatedUnion('op', [
+  z.object({
+    op: z.literal('create-message'),
+    space: GoogleChatSpaceName,
+    requestId: GoogleChatClientId,
+    messageId: GoogleChatClientId.optional(),
+    thread: GoogleChatThreadName.optional(),
+    text: GoogleChatText.optional(),
+    cardsV2: GoogleChatCards.optional(),
+    fallbackText: GoogleChatText.optional(),
+    privateViewer: GoogleChatUserName.optional()
+  }),
+  z.object({ op: z.literal('patch-text'), message: GoogleChatMessageName, text: GoogleChatText }),
+  z.object({ op: z.literal('patch-cards'), message: GoogleChatMessageName, cardsV2: GoogleChatCards }),
+  z.object({ op: z.literal('delete-message'), message: GoogleChatMessageName }),
+  z.object({ op: z.literal('get-message'), message: GoogleChatMessageName }),
+  z.object({ op: z.literal('get-space'), space: GoogleChatSpaceName }),
+  z.object({ op: z.literal('list-dm-humans'), space: GoogleChatSpaceName }),
+  z.object({ op: z.literal('find-direct-message'), user: GoogleChatUserName }),
+  z.object({ op: z.literal('list-spaces'), pageToken: z.string().min(1).max(4096).optional() })
+])
+export type WireGoogleChatCall = z.infer<typeof WireGoogleChatCall>
+
+/** What the relay answers a {@link WireGoogleChatCall} with: Google's status and JSON body. */
+export const WireGoogleChatCallResult = z.object({
+  status: z.number().int().min(100).max(599),
+  body: z.record(z.string(), z.unknown()).optional(),
+  retryAfterMs: z.number().int().nonnegative().optional()
+})
+export type WireGoogleChatCallResult = z.infer<typeof WireGoogleChatCallResult>
+
+/** One Chat API request, relative to the API root. */
+export interface GoogleChatHttpRequest {
+  method: 'GET' | 'POST' | 'PATCH' | 'DELETE'
+  path: string
+  query?: Record<string, string>
+  body?: Record<string, unknown>
+}
+
+const GOOGLE_CHAT_SPACES_PAGE_SIZE = 100
+const encodeGoogleChatName = (name: string) => name.split('/').map(encodeURIComponent).join('/')
+
+/** The one request each call makes, on the daemon with an organization's own key and on the relay with the deployment's: a call never names a path. */
+export function googleChatCallRequest(call: WireGoogleChatCall): GoogleChatHttpRequest {
+  switch (call.op) {
+    case 'create-message':
+      return {
+        method: 'POST',
+        path: `${encodeGoogleChatName(call.space)}/messages`,
+        query: {
+          ...(call.messageId ? { messageId: call.messageId } : {}),
+          requestId: call.requestId,
+          ...(call.thread ? { messageReplyOption: 'REPLY_MESSAGE_OR_FAIL' } : {})
+        },
+        body: {
+          ...(call.text !== undefined ? { text: call.text, markupSyntax: GOOGLE_CHAT_MARKUP } : {}),
+          ...(call.cardsV2 ? { cardsV2: call.cardsV2 } : {}),
+          ...(call.fallbackText ? { fallbackText: call.fallbackText } : {}),
+          ...(call.thread ? { thread: { name: call.thread } } : {}),
+          ...(call.privateViewer ? { privateMessageViewer: { name: call.privateViewer } } : {})
+        }
+      }
+    case 'patch-text':
+      return {
+        method: 'PATCH',
+        path: encodeGoogleChatName(call.message),
+        query: { updateMask: 'text' },
+        body: { text: call.text, markupSyntax: GOOGLE_CHAT_MARKUP }
+      }
+    case 'patch-cards':
+      return {
+        method: 'PATCH',
+        path: encodeGoogleChatName(call.message),
+        query: { updateMask: 'cardsV2' },
+        body: { cardsV2: call.cardsV2 }
+      }
+    case 'delete-message':
+      return { method: 'DELETE', path: encodeGoogleChatName(call.message) }
+    case 'get-message':
+      return { method: 'GET', path: encodeGoogleChatName(call.message) }
+    case 'get-space':
+      return { method: 'GET', path: encodeGoogleChatName(call.space) }
+    case 'list-dm-humans':
+      return {
+        method: 'GET',
+        path: `${encodeGoogleChatName(call.space)}/members`,
+        query: { pageSize: '2', filter: 'member.type = "HUMAN"' }
+      }
+    case 'find-direct-message':
+      return { method: 'GET', path: 'spaces:findDirectMessage', query: { name: call.user } }
+    case 'list-spaces':
+      return {
+        method: 'GET',
+        path: 'spaces',
+        query: {
+          pageSize: String(GOOGLE_CHAT_SPACES_PAGE_SIZE),
+          ...(call.pageToken ? { pageToken: call.pageToken } : {})
+        }
+      }
+  }
+}
 
 /** The longest note a Teams card click's ack may hand the relay to show the clicker. */
 export const MSTEAMS_CARD_NOTE_MAX = 500

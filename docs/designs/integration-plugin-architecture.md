@@ -703,7 +703,8 @@ interface RelayPlatformIngressPlugin<TIngest, TVerified> {
     Promise<{ syncResponse?: unknown; admission?: RelayAdmission }>
   // A daemon's `rd/platform/request` for one of this platform's bots, for a
   // credential that must not reach daemons; core has already checked the
-  // daemon is a member of the assignment (teams-integration.md §8.5).
+  // daemon is a member of the assignment (teams-integration.md §8.5,
+  // google-chat-integration.md §10.10).
   daemonRequest?(assignment, payload): Promise<RdPlatformReply>
 }
 

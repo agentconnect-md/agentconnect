@@ -1154,9 +1154,11 @@ export class ConnectionReconciler {
         continue
       }
       if (!this.googleChatPool.beginConnect(group.key)) continue
+      const relay = this.host.platformRelay?.()
       const conn = new GoogleChatConnection({
         group,
         log: this.log,
+        ...(relay ? { relay } : {}),
         budget: this.host.googleChatWriteBudgets().for(group.config.projectNumber)
       })
       try {

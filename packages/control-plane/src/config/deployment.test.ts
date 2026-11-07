@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { DeploymentConfigRuntime } from '../persistence/deployment-config.js'
+import { googleChatRelayApp } from '../platforms/googlechat/deployment-app.js'
 import { googleChatClaimAnchor } from '../platforms/googlechat/provider.js'
 import { msTeamsConnectAnchor, msTeamsRelayApp } from '../platforms/msteams/deployment-app.js'
 import { applyDeploymentEnvironment, relayDeploymentSnapshot } from './deployment.js'
@@ -259,6 +260,18 @@ describe('relayDeploymentSnapshot', () => {
     expect(relayDeploymentSnapshot(undefined, undefined, undefined, undefined, undefined, app)).toEqual({
       revision: 0,
       msTeamsApp: app
+    })
+  })
+
+  // google-chat-integration.md §10.10: the relay sends the app's rows' calls, with or without an anchor.
+  it('carries the Google Chat app the relay sends its rows’ calls with whenever it is configured', () => {
+    const app = googleChatRelayApp({
+      projectNumber: '100000000000',
+      serviceAccountKey: '{"type":"service_account"}'
+    })!
+    expect(relayDeploymentSnapshot(undefined, undefined, undefined, undefined, undefined, undefined, app)).toEqual({
+      revision: 0,
+      googleChatApp: app
     })
   })
 

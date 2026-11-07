@@ -247,11 +247,11 @@ describe('token mint', () => {
       sleep: clock.sleep,
       sendIntervalMs: 0
     })
-    const first = await conn.token().catch((e: unknown) => e)
+    const first = await conn.start().catch((e: unknown) => e)
     expect(first).toBeInstanceOf(GoogleChatApiError)
     expect((first as GoogleChatApiError).kind).toBe('credential_rejected')
     // The backoff holds the failure without a second round trip.
-    const second = await conn.token().catch((e: unknown) => e)
+    const second = await conn.start().catch((e: unknown) => e)
     expect(second).toBe(first)
     const everything = [...log, (first as Error).message].join('\n')
     expect(everything).not.toContain('PRIVATE KEY')

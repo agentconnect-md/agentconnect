@@ -11,6 +11,7 @@ import {
   GOOGLE_TOKEN_ENDPOINT,
   googleCloudProjectUrl
 } from '../../src/platforms/googlechat/credential.js'
+import { GOOGLE_CHAT_DEPLOYMENT_KEY_MARKER } from '../../src/platforms/googlechat/deployment-app.js'
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
 import type { RelayChannel } from '../../src/ws/relay-registry.js'
 import type { IntegrationRemove, IntegrationUpsert } from '@agentconnect.md/protocol'
@@ -276,11 +277,12 @@ describe('POST /integrations/googlechat/claim (§10.5)', () => {
     })
     await prisma.user.update({ where: { id: DEFAULT_OWNER_ID }, data: { googleAccountId: GOOGLE_USER } })
     const relaySends: { type: string; payload: unknown }[] = []
+    const control = new SpyControl()
     const app = buildHttpApp(
       prisma,
       { PUBLIC_RELAY_URL: 'https://relay.example.test' },
       undefined,
-      new SpyControl() as unknown as ControlSender,
+      control as unknown as ControlSender,
       { googleChatFetch: claimGoogle(), googleChatPlatformApp: DEPLOYMENT_APP }
     )
     app.relayReg.add({
@@ -289,7 +291,7 @@ describe('POST /integrations/googlechat/claim (§10.5)', () => {
       close() {}
     } as unknown as RelayChannel)
     running = app
-    return { app, relaySends }
+    return { app, relaySends, control }
   }
 
   const state = (kind: 'dm' | 'space', redirect: string | null) =>
@@ -344,7 +346,9 @@ describe('POST /integrations/googlechat/claim (§10.5)', () => {
       externalTenantId: 'domains/0000000000',
       platformConfig: { projectId: PROJECT_ID, domainIds: '0000000000' }
     })
-    expect(row!.secret?.botToken).toBe(KEY)
+    // A marker and the owner entry, never the deployment key (§10.10).
+    expect(row!.secret?.botToken).toBe(GOOGLE_CHAT_DEPLOYMENT_KEY_MARKER)
+    expect(row!.platformConfig).toMatchObject({ appOwner: 'deployment' })
     expect(assignOf(relaySends, row!.id)).toEqual({ apiAppId: PROJECT_NUMBER, tenantIds: ['domains/0000000000'] })
 
     const upgraded = await claim(app, 'space')
@@ -361,6 +365,42 @@ describe('POST /integrations/googlechat/claim (§10.5)', () => {
       apiAppId: PROJECT_NUMBER,
       tenantIds: ['customers/C0000000000', 'domains/0000000000']
     })
+  })
+
+  it('hands the serving daemon the relay as the row’s egress, under the feature it needs, and never the key', async () => {
+    const { app, control } = await claimHarness()
+
+    expect((await claim(app, 'space')).statusCode).toBe(201)
+    const [row] = await customerRows()
+    const specs = control.upserts.filter((u) => u.platform === 'googlechat')
+    expect(specs.length).toBeGreaterThan(0)
+    for (const spec of specs) {
+      expect(spec).toMatchObject({
+        requires: ['googlechat-relay-egress-v1'],
+        config: {
+          projectNumber: PROJECT_NUMBER,
+          egress: 'relay',
+          botId: row!.id,
+          tenantIds: ['customers/C0000000000', 'domains/0000000000']
+        }
+      })
+      expect(spec.config).not.toHaveProperty('serviceAccountKey')
+    }
+    expect(JSON.stringify(control.upserts)).not.toContain('PRIVATE KEY')
+  })
+
+  it('refuses a key for a claimed customer row', async () => {
+    const { app } = await claimHarness()
+
+    expect((await claim(app, 'space')).statusCode).toBe(201)
+    const [row] = await customerRows()
+    const res = await app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/bots/${row!.id}/googlechat/key`,
+      payload: { serviceAccountKey: KEY }
+    })
+    expect(res.statusCode).toBe(409)
+    expect((await customerRows())[0]!.secret?.botToken).toBe(GOOGLE_CHAT_DEPLOYMENT_KEY_MARKER)
   })
 
   it('keeps an unrelated customer’s DM on a row of its own, which its Space proof then upgrades', async () => {

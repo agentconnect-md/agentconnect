@@ -9,6 +9,7 @@ import { BotExternalIdentityTaken } from '../../persistence/errors.js'
 import { AgentId, BotId, OrgId } from '../../domain/ids.js'
 import type { GoogleChatPlatformAppConfig } from '../../config/google-chat-platform.js'
 import { GOOGLE_CHAT_API_ROOT, GOOGLE_TOKEN_ENDPOINT } from './credential.js'
+import { GOOGLE_CHAT_DEPLOYMENT_KEY_MARKER } from './deployment-app.js'
 import { decodeGoogleChatClaimState, googleChatClaimRoutes, isGoogleChatRedirect } from './claim.js'
 import { GOOGLE_CHAT_CLAIM_TAKEN_MESSAGE } from './tenant.js'
 
@@ -323,7 +324,12 @@ describe('POST /integrations/googlechat/claim: a new customer', () => {
     expect(res.statusCode).toBe(201)
     expect(h.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000', domainIds: '0000000000' }
+        platformConfig: {
+          projectId: PROJECT_ID,
+          customerId: 'C0000000000',
+          domainIds: '0000000000',
+          appOwner: 'deployment'
+        }
       })
     )
     expect(h.merged).toEqual([])
@@ -342,12 +348,17 @@ describe('POST /integrations/googlechat/claim: a new customer', () => {
         transport: 'http',
         prebuilt: true,
         externalAppId: PROJECT_NUMBER,
-        platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000', domainIds: '0000000000' }
+        platformConfig: {
+          projectId: PROJECT_ID,
+          customerId: 'C0000000000',
+          domainIds: '0000000000',
+          appOwner: 'deployment'
+        }
       })
     )
-    // A copy of the deployment key in canonical JSON, exactly as the deployment-app install stores it.
+    // A marker and never the key, which stays on the deployment's own components (§10.10).
     expect(h.put).toHaveBeenCalledWith(ORG, expect.anything(), {
-      botToken: JSON.stringify(KEY),
+      botToken: GOOGLE_CHAT_DEPLOYMENT_KEY_MARKER,
       appToken: null,
       signingSecret: null
     })
@@ -383,7 +394,9 @@ describe('POST /integrations/googlechat/claim: a new customer', () => {
     const res = await h.claim(dmState())
     expect(res.statusCode).toBe(201)
     expect(h.create).toHaveBeenCalledWith(
-      expect.objectContaining({ platformConfig: { projectId: PROJECT_ID, domainIds: '0000000000' } })
+      expect.objectContaining({
+        platformConfig: { projectId: PROJECT_ID, domainIds: '0000000000', appOwner: 'deployment' }
+      })
     )
   })
 
@@ -407,7 +420,12 @@ describe('POST /integrations/googlechat/claim: a new customer', () => {
     expect(h.merged).toEqual([])
     expect(h.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        platformConfig: { projectId: PROJECT_ID, customerId: 'C0000000000', domainIds: '0000000000' }
+        platformConfig: {
+          projectId: PROJECT_ID,
+          customerId: 'C0000000000',
+          domainIds: '0000000000',
+          appOwner: 'deployment'
+        }
       })
     )
   })
@@ -422,7 +440,9 @@ describe('POST /integrations/googlechat/claim: a new customer', () => {
     expect((await h.claim(dmState({ tenant: 'domains/0000000005' }))).statusCode).toBe(201)
     expect(h.merged).toEqual([])
     expect(h.create).toHaveBeenCalledWith(
-      expect.objectContaining({ platformConfig: { projectId: PROJECT_ID, domainIds: '0000000005' } })
+      expect.objectContaining({
+        platformConfig: { projectId: PROJECT_ID, domainIds: '0000000005', appOwner: 'deployment' }
+      })
     )
   })
 
@@ -682,14 +702,14 @@ describe('POST /integrations/googlechat/claim: a customer that already has a row
     expect(h.syncBot).not.toHaveBeenCalled()
   })
 
-  it('puts a freed customer row back on the preset agent with the current deployment key', async () => {
+  it('puts a freed customer row back on the preset agent with the marker, not the key', async () => {
     const h = await harness({ rows: [customerRow({ agentIds: [] })] })
 
     expect((await h.claim()).statusCode).toBe(200)
     expect(h.credentialInstall).toHaveBeenCalledWith(
       ORG,
       BOT,
-      { botToken: JSON.stringify(KEY), appToken: null, signingSecret: null },
+      { botToken: GOOGLE_CHAT_DEPLOYMENT_KEY_MARKER, appToken: null, signingSecret: null },
       expect.any(Date)
     )
     expect(h.addBotMembership).toHaveBeenCalledWith(expect.objectContaining({ agentId: PRESET, botId: BOT }))

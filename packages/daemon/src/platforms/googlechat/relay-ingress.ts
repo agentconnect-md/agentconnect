@@ -1,5 +1,5 @@
 // Google Chat's §7.4 relay-ingress strategy (google-chat-integration.md §4): a durable receipt per delivery, no pre-spawn acknowledgement.
-import { GOOGLE_CHAT_PLATFORM, type RdMsgIm } from '@agentconnect.md/protocol'
+import { GOOGLE_CHAT_PLATFORM, GOOGLE_CHAT_RELAY_EGRESS_V1_FEATURE, type RdMsgIm } from '@agentconnect.md/protocol'
 import { formatErr } from '../../daemon/text.js'
 import { stableMessageId, type NormalizedMessage } from '../../messages/normalized.js'
 import type { DaemonPlatformModule, RelayIngressStrategy } from '../contract.js'
@@ -18,7 +18,12 @@ export function googleChatDeliveryReceiptId(deliveryId: string): string {
 
 /** Google Chat's daemon platform module, bound to one daemon's host. */
 export function googleChatPlatformModule(host: GoogleChatRelayIngressHost): DaemonPlatformModule {
-  return { platformId: GOOGLE_CHAT_PLATFORM, relayIngress: googleChatRelayIngress(host) }
+  return {
+    platformId: GOOGLE_CHAT_PLATFORM,
+    relayIngress: googleChatRelayIngress(host),
+    // A deployment app's customer row sends through the relay; the CP connects one only to a daemon listing this (§10.10).
+    registrationFeatures: [GOOGLE_CHAT_RELAY_EGRESS_V1_FEATURE]
+  }
 }
 
 function googleChatRelayIngress(host: GoogleChatRelayIngressHost): RelayIngressStrategy {

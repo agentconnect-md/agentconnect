@@ -1,6 +1,7 @@
 // An integration whose spec requires a daemon feature is removed from a daemon without it, never sent (teams-integration.md §8.5).
 import { describe, expect, it, vi } from 'vitest'
 import {
+  GOOGLE_CHAT_RELAY_EGRESS_V1_FEATURE,
   MSTEAMS_RELAY_EGRESS_V1_FEATURE,
   type Ack,
   type AgentActivate,
@@ -70,6 +71,27 @@ describe('integrations a daemon must advertise a feature to hold', () => {
 
     const capable = sender([MSTEAMS_RELAY_EGRESS_V1_FEATURE])
     await capable.control.integrationUpsert(DAEMON, spec)
+    expect(capable.send.mock.calls[0]![0]).toBe('integration/upsert')
+  })
+
+  it('hold a Google Chat deployment row back from a daemon without its relay egress (google-chat-integration.md §10.10)', async () => {
+    const googleChat: IntegrationSpec = {
+      ...spec,
+      platform: 'googlechat',
+      config: {
+        projectId: 'example-project',
+        projectNumber: '100000000000',
+        tenantIds: ['customers/C0000000001'],
+        egress: 'relay',
+        botId: '77777777-7777-4777-8777-777777777777'
+      },
+      requires: [GOOGLE_CHAT_RELAY_EGRESS_V1_FEATURE]
+    }
+    const old = sender([MSTEAMS_RELAY_EGRESS_V1_FEATURE])
+    await old.control.integrationUpsert(DAEMON, googleChat)
+    expect(old.send.mock.calls[0]![0]).toBe('integration/remove')
+    const capable = sender([GOOGLE_CHAT_RELAY_EGRESS_V1_FEATURE])
+    await capable.control.integrationUpsert(DAEMON, googleChat)
     expect(capable.send.mock.calls[0]![0]).toBe('integration/upsert')
   })
 
