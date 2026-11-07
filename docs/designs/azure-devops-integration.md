@@ -145,11 +145,16 @@ The Console's Azure DevOps card leads with **Connect with Microsoft**:
    adds the service principal to the project groups the administrator picks,
    one Graph membership each
    (`PUT vssps…/_apis/graph/memberships/{principal}/{group}`): Readers where
-   agents only read, Contributors where any agent writes. The entitlement call's own `projectEntitlements` is not used:
-   for a service principal it reports success and grants nothing. An
+   agents only read, Contributors where any agent writes. The entitlement
+   call's own `projectEntitlements` is not used: for a service principal it
+   reports success and grants nothing. An
    administrator without that right (a Project Collection Administrator has it)
    gets a refusal that names the role and a checklist for doing it by hand. The
-   flow resumes at step 5 once the service principal is in the organization.
+   checklist names the application by its client ID as well as its name: a
+   customer tenant keeps the display name the application had when it was
+   first consented to, so a later rename does not reach the Azure DevOps
+   member picker there. The flow resumes at step 5 once the service principal
+   is in the organization.
 5. **Verification.** As the application, the Control Plane takes a client
    credentials token at the customer tenant and reads
    `GET https://dev.azure.com/{organization}/_apis/connectionData`, recording
@@ -503,15 +508,24 @@ version does not preclude them:
 
 ## 12. Open Questions and Probes
 
-Results of 2026-11-07 are against a test organization in the application's
-home tenant.
+Results of 2026-11-07 are against two test organizations: one in the
+application's home tenant, and one in a second tenant where the application is
+known only through consent.
 
-1. **Probe, half verified:** an application's service principal added to an
-   Azure DevOps organization is accepted with a client credentials token.
-   Verified in the application's home tenant: before the entitlement,
-   `connectionData` answers 401 `TF401444`; after it, 200, and the repository
-   list returns only projects the identity was granted. Open: the same in a
-   customer tenant, for a service principal created there by consent.
+1. **Verified in both tenants:** an application's service principal added to
+   an Azure DevOps organization is accepted with a client credentials token at
+   that organization's tenant. Before the entitlement, `connectionData` answers
+   401 `TF401444` naming the service principal of that tenant; after it, 200,
+   and the repository list returns only projects the identity was granted. In
+   the consenting tenant, the whole of §3.2 ran as written:
+   - the sign-in at that tenant;
+   - project creation, the entitlement, and the Contributors membership with
+     the delegated token;
+   - then, as the application, the permission check, a clone, and a push.
+
+   The service principal there carried the display name from its first
+   consent, not the application's current one (§3.2, step 4).
+
 2. **Verified, through §3.2's sign-in:** the deployment application's
    authorization-code flow with PKCE at the `organizations` authority returns a
    delegated token with `scp=user_impersonation`, and the ID token carries the
