@@ -268,9 +268,10 @@ describe('a host session on a daemon behind its own outbound proxy', () => {
   it('is proxied, its NO_PROXY keeping the daemon’s entries but the code host’s, and the proxy’s upstream goes via the parent', async () => {
     const names = ['HTTPS_PROXY', 'https_proxy', 'NO_PROXY', 'no_proxy'] as const
     const before = Object.fromEntries(names.map((name) => [name, process.env[name]]))
+    // Cleared before set: on Windows the environment is case-insensitive, so no_proxy and NO_PROXY are one variable.
+    delete process.env.no_proxy
     process.env.HTTPS_PROXY = 'http://parent.example.test:3128'
     process.env.NO_PROXY = '.corp.example.test,gitlab.example.test'
-    delete process.env.no_proxy
     try {
       const { d } = await startDaemon(true)
       expect(d.credentialProxy.proxy.parentProxy?.httpsUrl?.host).toBe('parent.example.test:3128')
