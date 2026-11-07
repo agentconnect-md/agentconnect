@@ -101,7 +101,9 @@ export function srtLauncher(
       daemonRoot,
       ...(proxy
         ? { mitmProxy: { socketPath: proxy.socketPath, domains: proxy.domains }, trustEnv: proxy.trustEnv }
-        : {}),
+        : environment.hosted?.codehostDomains?.length
+          ? { shimCodehost: environment.hosted.codehostDomains }
+          : {}),
       ...(deps.agentsRoot ? { agentsRoot: deps.agentsRoot } : {}),
       mounts: environment.mounts,
       ...(environment.cwd ? { cwd: environment.cwd } : {}),

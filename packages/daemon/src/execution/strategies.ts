@@ -128,7 +128,11 @@ export interface EnvironmentDescriptor {
   mounts: SandboxMount[]
   secrets?: MicrosandboxSecret[]
   /** A session this machine hosts for another member: its shim bound by that member through the executor's pipe (§6), and started with what the HOME seed points a runtime at. Absent on every local environment. */
-  hosted?: { env: Record<string, string> }
+  hosted?: {
+    env: Record<string, string>
+    /** srt only: the code-host names its holder asked SRT to route to the shim's codehost socket. */
+    codehostDomains?: string[]
+  }
 }
 
 /** How one strategy starts an environment it is handed: everything above this is strategy-agnostic (§5). */

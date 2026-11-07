@@ -1,6 +1,7 @@
 import {
   DEFAULT_SHIM_LISTEN_PORT,
   DEFAULT_SHIM_WORKSPACE_ROOT,
+  SHIM_CODEHOST_DOMAINS_ENV,
   SHIM_COMPLETE_ENV_FLAG,
   SHIM_HELPER_ROOT_ENV,
   SHIM_LISTEN_PORT_ENV,
@@ -26,6 +27,8 @@ export interface ShimEntryOptions {
   parentFd?: number
   /** Host mode under a boundary: stdin stays open past the identity line, and its end-of-file means stop. */
   stdinLifeline?: boolean
+  /** Under `srt`: the code-host names the boundary routes to the codehost socket, which this shim then serves. */
+  codehostDomains?: string[]
 }
 
 /** What the entrypoint reads from its environment; unset keeps the image's fixed layout, and `||` keeps '' from rooting paths at '/'. */
@@ -36,6 +39,10 @@ export function shimEntryOptions(env: Record<string, string | undefined>): ShimE
     throw new Error(`${SHIM_LISTEN_PORT_ENV} is not a valid port`)
   }
   const parentFd = Number(env[SHIM_PARENT_FD_ENV])
+  const codehostDomains = (env[SHIM_CODEHOST_DOMAINS_ENV] ?? '')
+    .split(',')
+    .map((domain) => domain.trim())
+    .filter((domain) => domain)
   return {
     // A pod or a VM ends with its sandbox, so only a shim on a host socket watches for its daemon.
     ...(socketPath && Number.isInteger(parentFd) && parentFd > 2 ? { parentFd } : {}),
@@ -44,6 +51,7 @@ export function shimEntryOptions(env: Record<string, string | undefined>): ShimE
     workspaceRoot: env[SHIM_WORKSPACE_ROOT_ENV] ?? DEFAULT_SHIM_WORKSPACE_ROOT,
     paths: shimPaths(env[SHIM_RUNTIME_ROOT_ENV]?.trim() || undefined, env[SHIM_HELPER_ROOT_ENV]?.trim() || undefined),
     completeEnv: env[SHIM_COMPLETE_ENV_FLAG] === '1',
-    ...(env[SHIM_RUNTIME_MARK_ENV] ? { runtimeMark: env[SHIM_RUNTIME_MARK_ENV] } : {})
+    ...(env[SHIM_RUNTIME_MARK_ENV] ? { runtimeMark: env[SHIM_RUNTIME_MARK_ENV] } : {}),
+    ...(socketPath && codehostDomains.length > 0 ? { codehostDomains } : {})
   }
 }

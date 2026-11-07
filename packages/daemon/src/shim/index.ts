@@ -100,6 +100,7 @@ async function main(): Promise<number> {
   const tunnels = new TunnelHost({
     emit: (streamId, event) => client.emit(streamId, event),
     socketPathFor: (tunnel) => paths.tunnels[tunnel],
+    ...(options.codehostDomains ? { srtCodehostDomains: options.codehostDomains } : {}),
     log
   })
   const client = new ShimClient({

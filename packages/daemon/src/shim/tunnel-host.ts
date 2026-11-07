@@ -88,6 +88,22 @@ function proxyAuthorized(header: string | undefined, token: string): boolean {
   return presented.length === expected.length && timingSafeEqual(presented, expected)
 }
 
+/** Where a shim writes the bundle its sessions trust the proxy CA by: beside its codehost socket path. */
+export function codehostTrustBundleBeside(codehostSocketPath: string): string {
+  return join(dirname(codehostSocketPath), 'codehost-trust.pem')
+}
+
+/** This machine's roots plus `authorities`, written atomically: SSL_CERT_FILE replaces a client's roots, so a CA alone would break every other host. */
+export function writeCodehostTrustBundle(path: string, authorities: string[]): void {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
+  const roots = [...getCACertificates('default'), ...getCACertificates('system'), ...authorities].map((pem) =>
+    pem.trim()
+  )
+  const temporary = `${path}.${randomBytes(6).toString('hex')}.tmp`
+  writeFileSync(temporary, `${[...new Set(roots)].join('\n')}\n`, { mode: 0o600 })
+  renameSync(temporary, path)
+}
+
 function refuseConnect(socket: Socket, status: number, reason: string): void {
   const challenge = status === 407 ? 'Proxy-Authenticate: Basic realm="agentconnect"\r\n' : ''
   socket.end(`HTTP/1.1 ${status} ${reason}\r\n${challenge}Content-Length: 0\r\nConnection: close\r\n\r\n`)
@@ -103,6 +119,8 @@ export interface TunnelHostDeps {
   maxStreams?: number
   maxCodehostStreams?: number
   maxProviderStreams?: number
+  /** Under `srt`: the code-host names the boundary routes to the codehost socket, which a `codehost` listen then serves. */
+  srtCodehostDomains?: string[]
   log?: { info: (m: string) => void; warn: (m: string) => void }
 }
 
@@ -238,23 +256,55 @@ export class TunnelHost {
     // Replaced on every listen, so the latest launch's routes are the ones honored.
     listener.routes[tunnel] = new Set(routes.map((route) => route.toLowerCase()))
     this.deps.log?.info(`shim: serving tunnel ${tunnel} on 127.0.0.1:${listener.port} for ${routes.length} routes`)
+    const srtDomains = tunnel === 'codehost' ? this.deps.srtCodehostDomains : undefined
+    if (srtDomains?.length) await this.listenSrtCodehost(listener)
     return {
       socketPath: `127.0.0.1:${listener.port}`,
-      proxy: { port: listener.port, token: listener.token, trustBundle }
+      proxy: { port: listener.port, token: listener.token, trustBundle },
+      ...(srtDomains?.length ? { srt: { domains: srtDomains } } : {})
     }
   }
 
-  /** This machine's roots plus the daemon's CA, beside the shim's runtime files: SSL_CERT_FILE replaces a client's roots, so the CA alone would break every other host. */
-  private writeTrustBundle(): string {
-    const path = join(dirname(this.socketPathFor('codehost')), 'codehost-trust.pem')
+  /** The unix socket SRT's proxy sends the code-host names to, from outside the network namespace: a CONNECT to a codehost route enters the tunnel, anything else is refused. */
+  private async listenSrtCodehost(listener: ProxyListener): Promise<void> {
+    if (this.servers.has('codehost')) return
+    const path = this.socketPathFor('codehost')
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
-    const authorities = [...this.authorities.values()]
-    const roots = [...getCACertificates('default'), ...getCACertificates('system'), ...authorities].map((pem) =>
-      pem.trim()
-    )
-    const temporary = `${path}.${randomBytes(6).toString('hex')}.tmp`
-    writeFileSync(temporary, `${[...new Set(roots)].join('\n')}\n`, { mode: 0o600 })
-    renameSync(temporary, path)
+    rmSync(path, { force: true })
+    const server = createHttpServer((_request, response) => {
+      response.writeHead(405, { connection: 'close', 'content-length': '0' })
+      response.end()
+    })
+    server.on('connect', (request: IncomingMessage, socket: Socket, head: Buffer) => {
+      socket.on('error', () => socket.destroy())
+      if (this.closed) return refuseConnect(socket, 503, 'Service Unavailable')
+      const authority = connectAuthority(request.url)
+      if (!authority) return refuseConnect(socket, 400, 'Bad Request')
+      // SRT sends only the names it routes here; nothing but a codehost route leaves, since this namespace has no other way out.
+      if (!listener.routes.codehost.has(authority.key)) return refuseConnect(socket, 403, 'Forbidden')
+      this.tunnelConnect('codehost', authority, socket, head)
+    })
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(path, () => {
+        server.removeListener('error', reject)
+        resolve()
+      })
+    })
+    try {
+      chmodSync(path, 0o600)
+    } catch {
+      /* best-effort */
+    }
+    server.on('error', (err) => this.deps.log?.warn(`shim: srt codehost socket error: ${err.message}`))
+    this.servers.set('codehost', server)
+    this.deps.log?.info(`shim: serving tunnel codehost at ${path} for srt`)
+  }
+
+  /** Every CA a proxy tunnel's listen carried, beside the shim's runtime files. */
+  private writeTrustBundle(): string {
+    const path = codehostTrustBundleBeside(this.socketPathFor('codehost'))
+    writeCodehostTrustBundle(path, [...this.authorities.values()])
     return path
   }
 
@@ -295,6 +345,11 @@ export class TunnelHost {
     if (!authority) return refuseConnect(socket, 400, 'Bad Request')
     const tunnel = (['codehost', 'provider'] as const).find((name) => listener.routes[name].has(authority.key))
     if (!tunnel) return this.connectDirect(authority, socket, head)
+    this.tunnelConnect(tunnel, authority, socket, head)
+  }
+
+  /** A routed CONNECT into its tunnel, within that tunnel's stream cap. */
+  private tunnelConnect(tunnel: ProxyTunnelName, authority: ConnectAuthority, socket: Socket, head: Buffer): void {
     const cap = this.maxProxyStreams[tunnel]
     if (this.streamCount(tunnel) >= cap) {
       this.deps.log?.warn(`shim: refusing a ${tunnel} connection — ${cap} streams already open`)

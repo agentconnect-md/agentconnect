@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import type { Socket } from 'node:net'
 import { ClientTransport, systemClock, type Clock } from '@agentconnect.md/connection'
 import type { ExecutorPrepareResult, ExecutorReleaseResult } from '@agentconnect.md/protocol'
+import { proxyTrustEnv } from '../credential-proxy/ca.js'
 import { GITCRED_SOCKET_ENV } from '../gitcred/env.js'
 import type { PrivateRuntimeState } from '../runtimes/private-runtime-state.js'
 import { sessionKeyDirName } from '../acp/host-key.js'
@@ -238,6 +239,14 @@ export class ExecutorPlane implements ExecutionPlane {
     return { url: codehostProxyUrl(proxy), trustBundle: proxy.trustBundle }
   }
 
+  /** The code-host names a placed srt session's boundary routes to its shim's codehost socket, and the trust bundle that shim wrote; undefined while it routes none. */
+  srtCodehostFor(sessionKey: string): { domains: string[]; trustBundle: string } | undefined {
+    const placed = this.placements.get(sessionKey)
+    const listening = placed && this.tunnels.listeningAt(placed.subject, 'codehost')
+    if (!listening?.srt?.domains.length || !listening.proxy) return undefined
+    return { domains: listening.srt.domains, trustBundle: listening.proxy.trustBundle }
+  }
+
   /** The runtime a placed session starts: the command its executor named for its own install (§8), else this machine's definition as before. */
   runtimeDefFor(sessionKey: string, runtime: RuntimeDef): RuntimeDef {
     const placed = this.placements.get(sessionKey)
@@ -433,13 +442,16 @@ export class ExecutorPlane implements ExecutionPlane {
     const roots = this.rootsFor(placed.sessionKey)
     if (!roots) return new ShimGitRunner(session, cwd, undefined, abort)
     const socket = shimPaths(roots.runtimeRoot).tunnels.gitcred
+    // Where srt routes the code hosts to this holder's proxy, its Git verifies them with the bundle the shim wrote, over any it sent.
+    const srt = this.srtCodehostFor(placed.sessionKey)
+    const trust = srt ? proxyTrustEnv({ bundlePath: srt.trustBundle }) : {}
     const requester: ShimRequester = {
       request: (capability, payload, options) => {
         const { env } = payload as GitExecPayload
         const mapped =
           env === undefined
             ? payload
-            : { ...(payload as GitExecPayload), env: { ...env, [GITCRED_SOCKET_ENV]: socket } }
+            : { ...(payload as GitExecPayload), env: { ...env, [GITCRED_SOCKET_ENV]: socket, ...trust } }
         return session.request(capability, mapped, options)
       }
     }

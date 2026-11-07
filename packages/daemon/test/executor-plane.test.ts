@@ -331,6 +331,28 @@ describe("a placed session's Git", () => {
     await executor.gitRunnerFor(AGENT, CWD, undefined, KEY)!.raw(['rev-parse', 'HEAD'])
     expect((request.mock.calls[0] as unknown as [string, { env?: unknown }])[1].env).toBeUndefined()
   })
+
+  // github-app-git-credentials.md, Listeners: srt sends the code hosts to this holder's proxy, whose CA the shim's bundle holds.
+  it('verifies the code hosts with the shim’s bundle where its srt boundary routes them to the proxy', async () => {
+    const { executor, request } = await placed()
+    const bundle = '/var/lib/agentconnect/hs/ab12cd/codehost-trust.pem'
+    const tunnels = (executor as unknown as { tunnels: { listeningAt: (s: string, t: string) => unknown } }).tunnels
+    tunnels.listeningAt = (subject, tunnel) =>
+      subject === SUBJECT && tunnel === 'codehost'
+        ? {
+            socketPath: '127.0.0.1:1',
+            proxy: { port: 1, token: 't'.repeat(16), trustBundle: bundle },
+            srt: { domains: ['github.com'] }
+          }
+        : undefined
+    expect(executor.srtCodehostFor(KEY)).toEqual({ domains: ['github.com'], trustBundle: bundle })
+    await executor
+      .gitRunnerFor(AGENT, CWD, undefined, KEY)!
+      .withEnv({ HOME: '/home/holder', SSL_CERT_FILE: '/home/holder/ca.pem' })
+      .raw(['ls-remote', 'origin'])
+    const env = (request.mock.calls[0] as unknown as [string, { env: Record<string, string> }])[1].env
+    expect(env).toMatchObject({ SSL_CERT_FILE: bundle, GIT_SSL_CAINFO: bundle, NODE_EXTRA_CA_CERTS: bundle })
+  })
 })
 
 describe('the adapter a placed session starts', () => {

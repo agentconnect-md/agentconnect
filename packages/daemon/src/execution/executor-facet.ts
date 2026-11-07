@@ -74,6 +74,8 @@ interface Environment extends EnvironmentRecord {
   /** The applied generation's answer, for as long as that launch lives here. */
   reply?: Extract<ExecutorPrepareResult, { status: 'ready' }>
   launching?: Promise<ExecutorPrepareResult>
+  /** The code-host names the running shim's srt boundary routes to it, fixed when it started. */
+  codehostDomains?: string
   stopping?: Promise<void>
   discarding?: Promise<void>
   idle?: TimerHandle
@@ -358,7 +360,9 @@ class Facet implements ExecutorFacet {
     this.environments.set(leaf, env)
     // Rotation is the fence (§6): the old key, its cached answer and the pipe it admitted go before the new launch starts.
     this.retire(env)
-    const launching = this.launch(env, generation, launcher, req.runtime)
+    // Only an srt boundary routes code hosts to its shim; the names are fixed when it starts.
+    const domains = strategy === 'srt' ? [...new Set(req.codehostDomains ?? [])].sort() : []
+    const launching = this.launch(env, generation, launcher, req.runtime, domains)
     env.launching = launching
     const settled = (): void => {
       if (env.launching !== launching) return
@@ -374,22 +378,27 @@ class Facet implements ExecutorFacet {
     env: Environment,
     generation: number,
     launcher: StrategyLauncher,
-    runtimeId?: string
+    runtimeId?: string,
+    codehostDomains: string[] = []
   ): Promise<ExecutorPrepareResult> {
     await this.serializeStart(async () => {
       if (env.stopping) await env.stopping
+      // A boundary routing other code-host names than this launch's holder listens for starts again: its old launch is already fenced.
+      if (env.shim && env.generation === generation && env.codehostDomains !== codehostDomains.join(','))
+        await this.stopEnvironment(env)
       if (this.stopped) throw new Error('the executor facet is stopping')
       if (env.shim || env.generation !== generation) return
       const home = join(this.sessionsDir, env.leaf, 'home')
       const seed = launcher.seedHome ? await launcher.seedHome(home, this.deps.log) : this.deps.seedHome(home)
       // Built from the leaf alone, whatever the strategy: `executor/<leaf>` over the session's directory (§11 step 3).
-      const environment = hostedEnvironment(this.deps.daemonRoot, env.leaf, seed || undefined)
+      const environment = hostedEnvironment(this.deps.daemonRoot, env.leaf, seed || undefined, codehostDomains)
       const shim = await launcher.start({ environment, log: this.deps.log })
       if (this.stopped) {
         await shim.stop()
         throw new Error('the executor facet is stopping')
       }
       env.shim = shim
+      env.codehostDomains = codehostDomains.join(',')
       void shim.exited.then(() => this.shimExited(env, shim))
     })
     // Outside the start gate: a first install of the adapter may take a while, and it holds up no other environment.

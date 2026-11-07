@@ -514,6 +514,30 @@ describe('executor facet', () => {
       expect(ready(await facet.prepare(req(3, { strategy: 'srt' }))).generation).toBe(2)
     })
 
+    it('hands an srt environment the code-host names its holder routes, and starts it again for a launch naming others', async () => {
+      const { facet } = await start()
+      ready(await facet.prepare(req(1, { strategy: 'srt', codehostDomains: ['github.com', 'api.github.com'] })))
+      expect(environments[0]?.hosted?.codehostDomains).toEqual(['api.github.com', 'github.com'])
+      const first = shims.get(LEAF)!
+      // The same names in another order are the same route: the shim is kept.
+      ready(await facet.prepare(req(2, { strategy: 'srt', codehostDomains: ['api.github.com', 'github.com'] })))
+      expect(starts).toHaveLength(1)
+      // A launch whose holder routes nothing finds no boundary sending code hosts to a socket nobody serves.
+      ready(await facet.prepare(req(3, { strategy: 'srt' })))
+      expect(first.stopped).toBe(true)
+      expect(starts).toHaveLength(2)
+      expect(environments[1]?.hosted?.codehostDomains).toBeUndefined()
+      expect(record()).toMatchObject({ generation: 3, launchId: LAUNCH(3), strategy: 'srt' })
+    })
+
+    it('ignores code-host names for every strategy but srt', async () => {
+      const { facet } = await start()
+      ready(await facet.prepare(req(1, { codehostDomains: ['github.com'] })))
+      ready(await facet.prepare(req(2)))
+      expect(starts).toHaveLength(1)
+      expect(environments[0]?.hosted?.codehostDomains).toBeUndefined()
+    })
+
     it.skipIf(process.platform !== 'linux')(
       'ends what a killed daemon left — its marked processes and its runtime roots — before it starts any shim',
       async () => {
