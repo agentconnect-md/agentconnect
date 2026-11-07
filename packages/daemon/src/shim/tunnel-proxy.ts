@@ -1,7 +1,9 @@
 import { createConnection, type Socket } from 'node:net'
 import type { ShimCapability, ShimEvent } from './protocol.js'
 import {
+  ACK_EVERY_FRAMES,
   MAX_CODEHOST_STREAMS,
+  MAX_IN_FLIGHT_FRAMES,
   MAX_TUNNEL_CHUNK_BYTES,
   TunnelListeningSchema,
   type TunnelListening,
@@ -18,9 +20,6 @@ const STREAM_IDLE_MS: Readonly<Record<TunnelName, number | null>> = {
 
 /** This side's own cap on concurrent helper (`gitcred`, `mcp`) streams per agent, protecting the daemon from a shim that does not enforce its own. */
 const MAX_TUNNEL_STREAMS = 32
-
-/** Data frames one stream may have unacknowledged before its local socket is paused (8 × 32 KiB). */
-export const MAX_IN_FLIGHT_FRAMES = 8
 
 export interface TunnelProxyDeps {
   /** The agent's logical channel. Requests carry its credential and generation, so a frame from
@@ -46,6 +45,15 @@ export interface TunnelProxyDeps {
   log: { info: (m: string) => void; warn: (m: string) => void }
 }
 
+interface ProxyStream {
+  socket: Socket
+  tunnel: TunnelName
+  timer?: NodeJS.Timeout
+  inFlight: number
+  /** Shim chunks written out and acknowledged, on a stream whose shim takes acks; `sending` while one ack is in flight. */
+  acks?: { received: number; acked: number; sending: boolean }
+}
+
 /**
  * The daemon-side half of the tunnel: one local socket per connection a sandbox reports.
  *
@@ -57,10 +65,7 @@ export interface TunnelProxyDeps {
  * filesystem.
  */
 export class TunnelProxy {
-  private readonly streams = new Map<
-    string,
-    { socket: Socket; tunnel: TunnelName; timer?: NodeJS.Timeout; inFlight: number }
-  >()
+  private readonly streams = new Map<string, ProxyStream>()
   private readonly listening = new Map<TunnelName, TunnelListening | undefined>()
   private readonly onEvent = (event: ShimEvent): void => this.accept(event)
   private readonly onAttach = (): void => this.dropUnaccountedStreams()
@@ -101,7 +106,7 @@ export class TunnelProxy {
     const options = this.deps.listenOptions?.(tunnel)
     if (tunnel === 'codehost' && !options) throw new Error('this agent has no code-host routes to tunnel')
     const reply = TunnelListeningSchema.safeParse(
-      await this.deps.session.request('tunnel', { op: 'listen', tunnel, ...options })
+      await this.deps.session.request('tunnel', { op: 'listen', tunnel, ...options, acks: true })
     )
     // A session is pointed at the codehost listener by what its reply reports, so one without it is not served.
     if (tunnel === 'codehost' && !reply.data?.proxy) throw new Error('the sandbox reported no codehost listener')
@@ -175,7 +180,17 @@ export class TunnelProxy {
     if (!entry) return
     if (event.event.kind === 'chunk') {
       entry.timer?.refresh()
-      entry.socket.write(Buffer.from(event.event.data, 'base64'))
+      const acks = entry.acks
+      if (!acks) {
+        entry.socket.write(Buffer.from(event.event.data, 'base64'))
+        return
+      }
+      // Counted once written out, so a slow daemon-side server holds the shim's window too.
+      entry.socket.write(Buffer.from(event.event.data, 'base64'), (err) => {
+        if (err || this.streams.get(event.streamId) !== entry) return
+        acks.received += 1
+        void this.acknowledge(event.streamId, entry)
+      })
       return
     }
     // The pod reported its own end closing, so it needs no close frame back — only the local
@@ -203,7 +218,8 @@ export class TunnelProxy {
     const idleMs = STREAM_IDLE_MS[tunnel]
     const timer = idleMs === null ? undefined : setTimeout(() => this.close(streamId, `idle for ${idleMs}ms`), idleMs)
     timer?.unref?.()
-    this.streams.set(streamId, { socket, tunnel, ...(timer ? { timer } : {}), inFlight: 0 })
+    const acks = this.listening.get(tunnel)?.acks ? { received: 0, acked: 0, sending: false } : undefined
+    this.streams.set(streamId, { socket, tunnel, ...(timer ? { timer } : {}), inFlight: 0, ...(acks ? { acks } : {}) })
     socket.on('data', (data: Buffer) => {
       const entry = this.streams.get(streamId)
       if (!entry) return
@@ -264,6 +280,30 @@ export class TunnelProxy {
       this.deps.log.warn(`tunnel: agent ${this.deps.session.agentId} frame not delivered (${message})`)
       this.close(streamId, `a frame could not be delivered to the sandbox (${message})`)
     }
+  }
+
+  /** Tell the shim how many of its chunks are written out; cumulative, so one resend covers a renewal, and a second loss ends the stream rather than hang it paused. */
+  private async acknowledge(streamId: string, entry: ProxyStream, resend = false): Promise<void> {
+    const acks = entry.acks
+    if (!acks || acks.sending || this.stopped) return
+    if (!resend && acks.received - acks.acked < ACK_EVERY_FRAMES) return
+    const received = acks.received
+    acks.sending = true
+    try {
+      await this.deps.session.request('tunnel', { op: 'ack', streamId, received })
+    } catch (err) {
+      acks.sending = false
+      if (this.streams.get(streamId) !== entry) return
+      const message = (err as Error).message
+      if (!resend) return await this.acknowledge(streamId, entry, true)
+      this.deps.log.warn(`tunnel: agent ${this.deps.session.agentId} ack not delivered (${message})`)
+      this.close(streamId, `an acknowledgement could not be delivered to the sandbox (${message})`)
+      return
+    }
+    acks.sending = false
+    acks.acked = Math.max(acks.acked, received)
+    // Chunks written while this ack was in flight may already make up the next one.
+    if (this.streams.get(streamId) === entry) await this.acknowledge(streamId, entry)
   }
 
   // Best-effort by design: a hang-up for a stream this side has already dropped. It cannot be

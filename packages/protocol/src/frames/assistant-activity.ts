@@ -251,6 +251,9 @@ export const AssistantActivityPermission = z.object({
 })
 export type AssistantActivityPermission = z.infer<typeof AssistantActivityPermission>
 
+/** Sent to a daemon whose store holds the conversation after the agent moved away: answer from the store with this assistant-mode state. */
+const heldElsewhere = z.object({ assistantMode: z.boolean() }).optional()
+
 /** C→D REQ: one section of the view. `items` lists the open ones (active, waiting) or the closed ones (done, dropped). */
 export const AssistantActivityReadReq = z.discriminatedUnion('operation', [
   z.object({
@@ -265,10 +268,11 @@ export const AssistantActivityReadReq = z.discriminatedUnion('operation', [
     operation: z.literal('subsessions'),
     limit: z.number().int().min(1).max(ASSISTANT_ACTIVITY_SUBSESSIONS_MAX),
     /** Only the background work this conversation started, newest first and paged; absent lists the agent's, running first. */
-    parent: z.object({ sessionId: ref, cursor: AssistantSubsessionCursor.optional() }).optional()
+    parent: z.object({ sessionId: ref, cursor: AssistantSubsessionCursor.optional() }).optional(),
+    heldElsewhere
   }),
   /** One task by its own session's outward id, from a daemon with `assistant-task-handle-v1`. */
-  z.object({ agentId, operation: z.literal('task'), sessionId: ref }),
+  z.object({ agentId, operation: z.literal('task'), sessionId: ref, heldElsewhere }),
   z.object({
     agentId,
     operation: z.literal('drafts'),

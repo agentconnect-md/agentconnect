@@ -31,7 +31,7 @@ describe('tunnel binder', () => {
     const { session, request } = fakeSession(1)
     await binder().ensure('agent-a', session)
 
-    expect(request).toHaveBeenCalledWith('tunnel', { op: 'listen', tunnel: 'gitcred' })
+    expect(request).toHaveBeenCalledWith('tunnel', { op: 'listen', tunnel: 'gitcred', acks: true })
   })
 
   it('opens a session pod’s tunnels by its agent’s policy, so a watcher armed there can fetch its token', async () => {
@@ -43,7 +43,7 @@ describe('tunnel binder', () => {
     )
 
     expect(tunnelsFor).toHaveBeenCalledWith('agent-a', 'agent-a/session-0123')
-    expect(request).toHaveBeenCalledWith('tunnel', { op: 'listen', tunnel: 'gitcred' })
+    expect(request).toHaveBeenCalledWith('tunnel', { op: 'listen', tunnel: 'gitcred', acks: true })
   })
 
   it('keeps one proxy per agent across preparations of the same launch', async () => {
@@ -64,7 +64,7 @@ describe('tunnel binder', () => {
     await subject.ensure('agent-a', second.session)
 
     expect(first.offEvent).toHaveBeenCalled()
-    expect(second.request).toHaveBeenCalledWith('tunnel', { op: 'listen', tunnel: 'gitcred' })
+    expect(second.request).toHaveBeenCalledWith('tunnel', { op: 'listen', tunnel: 'gitcred', acks: true })
   })
 
   it('opens nothing when the daemon serves no socket for the tunnel', async () => {
@@ -115,7 +115,8 @@ describe('tunnel binder', () => {
       op: 'listen',
       tunnel: 'codehost',
       routes: ['agent-a.example.test:443'],
-      ca: 'example certificate'
+      ca: 'example certificate',
+      acks: true
     })
     expect(subject.listeningAt('agent-a/session-0123', 'codehost')?.proxy?.port).toBe(4100)
   })

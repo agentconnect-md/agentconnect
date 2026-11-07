@@ -101,7 +101,9 @@ const ANSWER_OVERHEAD_BYTES = 1_024
 export async function readTaskSubsessions(
   store: AssistantActivityStore,
   req: Extract<AssistantActivityReadReq, { operation: 'subsessions' }>,
-  assistant: boolean
+  assistant: boolean,
+  /** Re-home follow-ups to the place's current session; never for an agent this daemon no longer holds. */
+  { adopt = true }: { adopt?: boolean } = {}
 ): Promise<Extract<AssistantActivityReadResult, { operation: 'subsessions' }>> {
   const subsessionOf = (row: AssistantSubsession) => taskOf(store, req.agentId, row)
   const delegationsOnly = !assistant
@@ -115,7 +117,7 @@ export async function readTaskSubsessions(
       followUps: true
     }
   }
-  if (assistant && req.parent.cursor === undefined) {
+  if (assistant && adopt && req.parent.cursor === undefined) {
     const rec = await store.getSessionByOutwardId(req.parent.sessionId, req.agentId)
     if (rec?.agentId === req.agentId && !isSubsessionCoordinate(rec.thread)) {
       const place = await store.placeSession(req.agentId, rec.platform, rec.channel, rec.transportScope ?? null)
@@ -146,6 +148,12 @@ export async function readTaskSubsessions(
   }
 }
 
+// Only a read of one conversation's tasks or of one task may be answered for an agent this daemon no longer holds.
+function heldElsewhere(req: AssistantActivityReadReq): { assistantMode: boolean } | undefined {
+  if (req.operation === 'task') return req.heldElsewhere
+  return req.operation === 'subsessions' && req.parent ? req.heldElsewhere : undefined
+}
+
 export function createAssistantActivity(deps: AssistantActivityDeps): AssistantActivity {
   // Only an agent this daemon holds; true while it is in assistant mode, whose follow-ups and proposals the view adds.
   const admit = (agentId: string): boolean => {
@@ -173,7 +181,10 @@ export function createAssistantActivity(deps: AssistantActivityDeps): AssistantA
   }
   return {
     async read(req) {
-      const assistant = admit(req.agentId)
+      // A conversation's tasks stay in this store after the agent moved away, so the CP may read them here with the mode it holds.
+      const asked = heldElsewhere(req)
+      const away = asked && !deps.agent(req.agentId) ? asked : undefined
+      const assistant = away ? away.assistantMode : admit(req.agentId)
       const store = deps.store()
       switch (req.operation) {
         // Items became follow-ups (assistant-mode.md §5.12), which the task list carries.
@@ -182,7 +193,7 @@ export function createAssistantActivity(deps: AssistantActivityDeps): AssistantA
         case 'item':
           return { operation: 'item', item: null }
         case 'subsessions':
-          return readTaskSubsessions(store, req, assistant)
+          return readTaskSubsessions(store, req, assistant, { adopt: !away })
         case 'task': {
           const child = await store.getSessionByOutwardId(req.sessionId, req.agentId)
           const row =

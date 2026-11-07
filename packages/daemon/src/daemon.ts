@@ -381,6 +381,7 @@ import {
   managedCredentialScope,
   mergeGitConfigEnv,
   probeGitVersion,
+  proxyCredentialResetEnv,
   sandboxGitCredentialTarget,
   sessionGitConfig,
   liveSecretsChannelEnv,
@@ -7105,7 +7106,9 @@ export class Daemon {
         https_proxy: url,
         NO_PROXY: noProxy,
         no_proxy: noProxy,
-        NODE_USE_ENV_PROXY: '1'
+        NODE_USE_ENV_PROXY: '1',
+        // Read after every pair the session already carries, so no machine helper keeps the proxy's own credential.
+        ...mergeGitConfigEnv({ ...runtimeEnv, ...env }, proxyCredentialResetEnv(url))
       })
     }
     return out

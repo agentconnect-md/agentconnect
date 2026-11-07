@@ -12,6 +12,10 @@ export const MAX_TUNNEL_CHUNK_BYTES = 32 * 1024
 export const MAX_CODEHOST_ROUTES = 64
 /** Concurrent `codehost` streams per sandbox, apart from the helper tunnels' own budget so a busy clone cannot starve `mcp` or `gitcred`. */
 export const MAX_CODEHOST_STREAMS = 16
+/** Data frames one stream may have unacknowledged, in either direction, before its local socket is paused (8 × 32 KiB). */
+export const MAX_IN_FLIGHT_FRAMES = 8
+/** How many shim-sent chunks the daemon writes out before acknowledging them, so a paused stream always earns an ack. */
+export const ACK_EVERY_FRAMES = MAX_IN_FLIGHT_FRAMES / 2
 const MAX_TUNNEL_CHUNK_BASE64 = Math.ceil(MAX_TUNNEL_CHUNK_BYTES / 3) * 4
 
 /**
@@ -33,7 +37,9 @@ export const TunnelListenSchema = z.object({
     .string()
     .min(1)
     .max(16 * 1024)
-    .optional()
+    .optional(),
+  // The daemon acknowledges this tunnel's shim-sent chunks; an older shim strips the field and is never sent an `ack`.
+  acks: z.boolean().optional()
 })
 /** What the daemon sends with a `codehost` listen: the routes, and the CA certificate alone, which the shim merges with its own machine's roots. */
 export type TunnelListenOptions = { routes: string[]; ca: string }
@@ -57,7 +63,19 @@ export const TunnelCloseSchema = z.object({
   error: z.string().max(200).optional()
 })
 
-export const TunnelPayloadSchema = z.discriminatedUnion('op', [TunnelListenSchema, TunnelDataSchema, TunnelCloseSchema])
+/** Daemon → shim: how many of a stream's `chunk` events the daemon has written out, cumulative so a repeat is harmless. */
+export const TunnelAckSchema = z.object({
+  op: z.literal('ack'),
+  streamId: z.string().uuid(),
+  received: z.number().int().nonnegative()
+})
+
+export const TunnelPayloadSchema = z.discriminatedUnion('op', [
+  TunnelListenSchema,
+  TunnelDataSchema,
+  TunnelCloseSchema,
+  TunnelAckSchema
+])
 export type TunnelPayload = z.infer<typeof TunnelPayloadSchema>
 
 /** What a `listen` reports back: the path the pod serves, and for `codehost` the loopback proxy a session is pointed at. */
@@ -69,7 +87,9 @@ export const TunnelListeningSchema = z.object({
       token: z.string().min(16).max(128),
       trustBundle: z.string().min(1).max(4096)
     })
-    .optional()
+    .optional(),
+  // The shim takes `ack`s and bounds this tunnel's streams by them; absent from an older shim, which is never sent one.
+  acks: z.boolean().optional()
 })
 export type TunnelListening = z.infer<typeof TunnelListeningSchema>
 

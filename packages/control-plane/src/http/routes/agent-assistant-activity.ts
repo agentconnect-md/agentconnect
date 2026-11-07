@@ -34,7 +34,8 @@ import {
 } from '@agentconnect.md/protocol'
 import { canContinueSession, canEdit, canView, canViewSession } from '../../authorization/policy.js'
 import { ProtocolError } from '../../domain/errors.js'
-import { AgentId, SessionId, type DaemonId } from '../../domain/ids.js'
+import { AgentId, DaemonId, SessionId } from '../../domain/ids.js'
+import { sessionContentReaders } from '../../domain/session-content.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import type { AgentRecord, SessionMetaRecord } from '../../persistence/ports.js'
 import { ConnectionClosed } from '../../ws/registry.js'
@@ -226,6 +227,9 @@ const CONVERSATION_PROPOSALS = {
   refusal: 'this agent version cannot show a conversation’s proposals; upgrade its daemon'
 }
 const OkDto = z.object({ ok: z.literal(true) })
+
+/** The daemon a task read goes to; `heldElsewhere` when its store outlived the agent there. */
+type StoreReader = { daemonId: string; heldElsewhere?: { assistantMode: boolean }; taskHandle: boolean }
 
 type Failure = { status: 400 | 404 | 409 | 503; error: string; message: string; code: string }
 
@@ -442,6 +446,47 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
       }
     }
 
+    // A conversation's tasks stay in the store that holds it after the agent moves away (auto-session-mode.md §6.2), so they are read where that store is.
+    const storeReader = async (
+      req: FastifyRequest,
+      reply: FastifyReply,
+      admitted: { daemonId: DaemonId; assistant: boolean; taskHandle: boolean },
+      row: SessionMetaRecord,
+      need: { feature: string; refusal: string }
+    ): Promise<StoreReader | null> => {
+      const readers = sessionContentReaders({
+        recordedDaemonId: row.daemonId,
+        sharedStoreMembers: await deps.repos.memberSet.sharedStoreMemberIdsOf(row)
+      })
+      if (readers.length === 0 || readers.includes(admitted.daemonId)) return admitted
+      let missing = false
+      for (const id of readers) {
+        if (!deps.liveness.get(id)?.reachable) continue
+        const features = (await deps.registry.getAvailable(orgOf(req), DaemonId(id)))?.capabilities.features
+        if (!features) continue
+        if (!features.includes(need.feature)) {
+          missing = true
+          continue
+        }
+        return {
+          daemonId: id,
+          heldElsewhere: { assistantMode: admitted.assistant },
+          taskHandle: features.includes(ASSISTANT_TASK_HANDLE_FEATURE)
+        }
+      }
+      await send(
+        reply,
+        missing
+          ? { status: 409, error: 'Conflict', message: need.refusal, code: 'DAEMON_FEATURE_MISSING' }
+          : { status: 503, error: 'Service Unavailable', message: 'owning daemon is offline', code: 'DAEMON_OFFLINE' }
+      )
+      return null
+    }
+
+    // Stop goes to the daemon serving the agent, which holds nothing of a store the agent left.
+    const storeTask = <T extends { canStop: boolean }>(reader: StoreReader, dto: T): T =>
+      reader.heldElsewhere ? { ...dto, canStop: false } : dto
+
     // One task as the caller sees it: its session, label and details only where they may view it, and whether they may stop it.
     const taskDto = (
       req: FastifyRequest,
@@ -634,7 +679,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Agents],
           summary: 'List an agent’s tasks',
-          description: `Lists the tasks the agent started (its delegated tasks, follow-ups and approved proposals), running first and then the most recent, at most \`limit\` (${ASSISTANT_ACTIVITY_SUBSESSIONS_MAX} by default and at most). With \`parentSessionId\` it lists only what that conversation started, newest first, a page at a time: pass a page’s \`nextCursor\` back as \`cursor\` for the next one; the conversation must be one the caller may view, and the agent’s daemon must support it (409 \`DAEMON_FEATURE_MISSING\` otherwise). Anyone who can view the agent sees each one’s state and start; its title, its session and the conversation that started it are included only where the caller may view that conversation, and \`canStop\` says whether the caller may stop its current turn. An agent outside assistant mode is answered only when its daemon lists every agent’s tasks, and 409 \`ASSISTANT_MODE_OFF\` otherwise. From an agent whose daemon keeps follow-ups, each row names its \`kind\` and the page says \`followUps: true\`; a follow-up carries its status (waiting, checking, paused after five failed checks, done or stopped) and next check, and, where the caller may view its conversation, what counts as done, its newest checks with what started each (its time, a message, or events on what it watches), the pull request, merge request or issue it watches with that watch's state, and, from a daemon that ends one by it, its \`id\` for \`stopAssistantFollowUp\`: until its first check runs it has no session, and \`canStop\` follows its conversation. A follow-up is listed under its place’s current long session. A task carries \`threaded\` when a platform thread is attached and, where the caller may view it, its own \`summary\` with \`summaryUpdatedAt\`, the \`background\` it was opened with, its \`replies\` (the messages its people and the task posted after the one that opened it) with \`lastReplyAt\`, and the \`openedForMessageId\` of the message a coordinator opened it for, from a daemon that keeps them; each call reads them from the daemon again. Nothing is stored by this call.`,
+          description: `Lists the tasks the agent started (its delegated tasks, follow-ups and approved proposals), running first and then the most recent, at most \`limit\` (${ASSISTANT_ACTIVITY_SUBSESSIONS_MAX} by default and at most). With \`parentSessionId\` it lists only what that conversation started, newest first, a page at a time: pass a page’s \`nextCursor\` back as \`cursor\` for the next one; the conversation must be one the caller may view, and the agent’s daemon must support it (409 \`DAEMON_FEATURE_MISSING\` otherwise). Anyone who can view the agent sees each one’s state and start; its title, its session and the conversation that started it are included only where the caller may view that conversation, and \`canStop\` says whether the caller may stop its current turn. A conversation whose agent has since moved is read from the daemon holding its store, with \`canStop\` false. An agent outside assistant mode is answered only when its daemon lists every agent’s tasks, and 409 \`ASSISTANT_MODE_OFF\` otherwise. From an agent whose daemon keeps follow-ups, each row names its \`kind\` and the page says \`followUps: true\`; a follow-up carries its status (waiting, checking, paused after five failed checks, done or stopped) and next check, and, where the caller may view its conversation, what counts as done, its newest checks with what started each (its time, a message, or events on what it watches), the pull request, merge request or issue it watches with that watch's state, and, from a daemon that ends one by it, its \`id\` for \`stopAssistantFollowUp\`: until its first check runs it has no session, and \`canStop\` follows its conversation. A follow-up is listed under its place’s current long session. A task carries \`threaded\` when a platform thread is attached and, where the caller may view it, its own \`summary\` with \`summaryUpdatedAt\`, the \`background\` it was opened with, its \`replies\` (the messages its people and the task posted after the one that opened it) with \`lastReplyAt\`, and the \`openedForMessageId\` of the message a coordinator opened it for, from a daemon that keeps them; each call reads them from the daemon again. Nothing is stored by this call.`,
           operationId: 'listAssistantSubsessions',
           params: IdParam,
           querystring: SubsessionsQuery,
@@ -670,11 +715,16 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
             return send(reply, notFound('conversation not found'))
           }
         }
-        const page = await readSection(reply, admitted.daemonId, {
+        const reader: StoreReader | null = parentRow
+          ? await storeReader(req, reply, admitted, parentRow, SUBSESSION_PANEL)
+          : admitted
+        if (!reader) return reply
+        const page = await readSection(reply, reader.daemonId, {
           agentId: admitted.agent.id,
           operation: 'subsessions',
           limit,
-          ...(parentRow ? { parent: { sessionId: String(parentRow.id), ...(cursor ? { cursor } : {}) } } : {})
+          ...(parentRow ? { parent: { sessionId: String(parentRow.id), ...(cursor ? { cursor } : {}) } } : {}),
+          ...(reader.heldElsewhere ? { heldElsewhere: reader.heldElsewhere } : {})
         })
         if (!page) return reply
         // A daemon answers for the conversation asked about only; anything else is dropped rather than shown.
@@ -687,7 +737,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
           listed.flatMap((s) => [s.parentSessionId, ...(s.sessionId ? [s.sessionId] : [])])
         )
         return {
-          subsessions: listed.map((s) => taskDto(req, s, seen, admitted.taskHandle)),
+          subsessions: listed.map((s) => storeTask(reader, taskDto(req, s, seen, reader.taskHandle))),
           truncated: page.truncated,
           nextCursor: parentRow ? (page.nextCursor ?? null) : null,
           ...(admitted.followUps ? { followUps: true } : {})
@@ -745,7 +795,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Get one of an agent’s tasks',
           description:
-            'Reads one task the agent started (a delegated task, a coordinator’s threaded task, a follow-up or an approved proposal) by its own session id, as `listAssistantSubsessions` lists it: its state, start, title, the conversation it belongs to where the caller may view it, and `canStop`; a follow-up also carries its status, next check, what counts as done and its newest checks. Only a session of this agent the caller may view is read, and one its daemon does not hold as a task answers 404. Answers 409 `DAEMON_FEATURE_MISSING` when the agent’s daemon cannot read one task, and 409 `ASSISTANT_MODE_OFF` for an agent outside assistant mode whose daemon serves only assistant mode’s. Nothing is stored by this call.',
+            'Reads one task the agent started (a delegated task, a coordinator’s threaded task, a follow-up or an approved proposal) by its own session id, as `listAssistantSubsessions` lists it: its state, start, title, the conversation it belongs to where the caller may view it, and `canStop`; a follow-up also carries its status, next check, what counts as done and its newest checks. Only a session of this agent the caller may view is read, and one its daemon does not hold as a task answers 404. A task whose agent has since moved is read from the daemon holding its store, with `canStop` false. Answers 409 `DAEMON_FEATURE_MISSING` when the agent’s daemon cannot read one task, and 409 `ASSISTANT_MODE_OFF` for an agent outside assistant mode whose daemon serves only assistant mode’s. Nothing is stored by this call.',
           operationId: 'getAssistantSubsession',
           params: SubsessionParam,
           response: { 200: SubsessionDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
@@ -763,17 +813,20 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         if (!canViewSession(row, ctxOf(req), audience.identitySet, audience.externalAccess)) {
           return send(reply, notFound('task not found'))
         }
-        const answer = await readSection(reply, admitted.daemonId, {
+        const reader = await storeReader(req, reply, admitted, row, TASK_HANDLE)
+        if (!reader) return reply
+        const answer = await readSection(reply, reader.daemonId, {
           agentId: admitted.agent.id,
           operation: 'task',
-          sessionId: String(row.id)
+          sessionId: String(row.id),
+          ...(reader.heldElsewhere ? { heldElsewhere: reader.heldElsewhere } : {})
         })
         if (!answer) return reply
         // A daemon answers for the task asked about only.
         const task = answer.task
         if (!task || task.sessionId !== String(row.id)) return send(reply, notFound('task not found'))
         const seen = await sessionsOf(req, admitted.agent.id, [task.parentSessionId, String(row.id)])
-        return taskDto(req, task, seen, admitted.taskHandle)
+        return storeTask(reader, taskDto(req, task, seen, reader.taskHandle))
       }
     )
 

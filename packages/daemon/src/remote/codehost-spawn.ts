@@ -3,7 +3,7 @@ import type { SpawnRequest } from '../acp/spawn-driver.js'
 import { proxyTrustEnv } from '../credential-proxy/ca.js'
 import { SESSION_TRUST_ENV, sessionAuthorityFiles } from '../credential-proxy/trust-bundle.js'
 import type { TunnelListening } from '../shim/tunnel.js'
-import { mergeGitConfigEnv } from '../workspace/git-injection.js'
+import { mergeGitConfigEnv, proxyCredentialResetEnv } from '../workspace/git-injection.js'
 
 export type CodehostListener = NonNullable<TunnelListening['proxy']>
 
@@ -28,8 +28,8 @@ export function applyCodehostSpawn(request: SpawnRequest, listener: CodehostList
     env: {
       ...launch.env,
       ...codehost.env,
-      // The codehost's command-scope helper is read after any pairs the launch already carries.
-      ...mergeGitConfigEnv(launch.env, codehost.env),
+      // The codehost's command-scope helper is read after any pairs the launch already carries, then the listener's own helper reset.
+      ...mergeGitConfigEnv(mergeGitConfigEnv(launch.env, codehost.env), proxyCredentialResetEnv(url)),
       ...proxyTrustEnv({ bundlePath: listener.trustBundle }),
       ...(authorities.length > 0
         ? { [SESSION_TRUST_ENV]: JSON.stringify({ bundle: listener.trustBundle, files: authorities }) }
