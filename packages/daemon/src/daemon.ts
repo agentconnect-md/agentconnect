@@ -388,6 +388,7 @@ import {
 } from './workspace/git-injection.js'
 import { CredentialProxy, type MintAsk } from './credential-proxy/proxy.js'
 import { loadProxyCa, proxyTrustEnv, upstreamAuthorities, type ProxyCa } from './credential-proxy/ca.js'
+import { mergedTrustBundle, SESSION_TRUST_ENV, sessionAuthorityFiles } from './credential-proxy/trust-bundle.js'
 import { loadPlaceholderKey } from './credential-proxy/placeholder.js'
 import { configureWorkspaceGitOrigins, permitsNoHttpsOrigin } from './workspace/git-origin-policy.js'
 import { buildMcpServers, buildSandboxMcpServers, type McpStdioServer } from './mcp/inject.js'
@@ -747,6 +748,7 @@ import { K8sHttp, loadInClusterConfig } from '@agentconnect.md/k8s-client'
 import type { ExecutionPlane, PlaneLaunch, PlaneScope } from './execution/plane.js'
 import { seedSessionHome, startExecutorFacet, type ExecutorFacet } from './execution/executor-facet.js'
 import { ExecutorPlane, executorMcpBridge, type PlacedSession } from './execution/executor-plane.js'
+import { daemonTunnelSocketPath } from './remote/tunnel-sockets.js'
 import {
   candidateEligible,
   catalogOffers,
@@ -3867,7 +3869,7 @@ export class Daemon {
     this.localExecutor = new LocalExecutor({
       launcher: this.vmLauncher,
       generations: { nextSandboxGeneration: (subject) => this.store.nextSandboxGeneration(subject) },
-      tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : mcpSocketPath(root)),
+      tunnelSocketPath: (tunnel, agentId) => this.tunnelSocketPath(root, tunnel, agentId),
       tunnelGreeting: (subject, tunnel) => this.gitcredTunnelGreeting(subject, tunnel),
       log: this.log,
       clock: this.clock
@@ -3892,7 +3894,7 @@ export class Daemon {
     this.localSrtExecutor = new LocalExecutor({
       launcher: this.localSrt,
       generations: { nextSandboxGeneration: (subject) => this.store.nextSandboxGeneration(subject) },
-      tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : mcpSocketPath(root)),
+      tunnelSocketPath: (tunnel, agentId) => this.tunnelSocketPath(root, tunnel, agentId),
       tunnelGreeting: (subject, tunnel) => this.gitcredTunnelGreeting(subject, tunnel),
       log: this.log,
       clock: this.clock
@@ -4049,7 +4051,7 @@ export class Daemon {
           servesAgent: (agentId) => this.servesAgent(agentId),
           // Which daemon sockets this agent's pod needs (see tunnelsForAgent); an unknown id, the member's own probe, gets none.
           tunnelsFor: (agentId) => this.tunnelsForAgent(agentId),
-          tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : mcpSocketPath(root)),
+          tunnelSocketPath: (tunnel, agentId) => this.tunnelSocketPath(root, tunnel, agentId),
           tunnelGreeting: (subject, tunnel) => this.gitcredTunnelGreeting(subject, tunnel),
           // A bound sandbox is a reachable memory tree: drain any managed capture that waited for it.
           onSandboxBound: () => this.memoryOutbox?.wake(),
@@ -5966,10 +5968,11 @@ export class Daemon {
           this.orgForAgent(placed.agentId)
         ),
       replace: (placed) => this.replaceLostExecutor(placed),
-      // The same policy the pool's plane is given: only the daemon knows which of its own sockets this agent needs.
-      tunnelsFor: (agentId) => this.tunnelsForAgent(agentId),
-      tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : mcpSocketPath(root)),
+      // The pool's policy, plus the code-host route a host-strategy session reaches the credential proxy by.
+      tunnelsFor: (agentId, placed) => this.tunnelsForPlaced(agentId, placed),
+      tunnelSocketPath: (tunnel, agentId) => this.tunnelSocketPath(root, tunnel, agentId),
       tunnelGreeting: (subject, tunnel) => this.gitcredTunnelGreeting(subject, tunnel),
+      tunnelListenOptions: (agentId, tunnel) => this.tunnelListenOptions(agentId, tunnel),
       log: {
         info: (m) => this.log.info(m),
         warn: (m) => this.log.warn(m),
@@ -6950,25 +6953,47 @@ export class Daemon {
     return this.credentialProxy !== undefined && this.credentialProxy.proxy.domainsFor(agentId).length > 0
   }
 
-  /** What a proxied session's environment carries: the placeholder for gh and git, the trust bundle, and on the host the proxy itself. */
+  /** A host or srt session's trust: the proxy bundle plus the authorities its own env names, which the variables would otherwise replace. */
+  private sessionProxyTrust(
+    ca: ProxyCa,
+    env: Record<string, string>,
+    runtimeEnv: Record<string, string>
+  ): Record<string, string> {
+    const files = sessionAuthorityFiles(env, runtimeEnv)
+    return proxyTrustEnv({ bundlePath: mergedTrustBundle(ca.bundlePath, files, (message) => this.log.warn(message)) })
+  }
+
+  /** What a proxied session's environment carries: the placeholder for gh and git, the trust bundle, and the proxy unless srt routes to it (the loopback listener here, or an executor shim's codehost listener there). */
   private credentialProxyEnv(
     proxy: { proxy: CredentialProxy; ca: ProxyCa },
     agentId: string,
-    onHost: boolean,
+    route: 'srt' | 'host' | { url: string; trustBundle: string },
     env: Record<string, string>,
     runtimeEnv: Record<string, string>,
     glab: boolean
   ): Record<string, string> {
     const placeholder = proxy.proxy.placeholderFor(agentId)
-    const out: Record<string, string> = { ...proxyTrustEnv(proxy.ca), [CODE_HOST_CREDENTIAL_ENV]: placeholder }
+    const remote = typeof route === 'object' ? route : undefined
+    // An executor's session verifies with the bundle its shim wrote there, and that shim merges the session's own authority files, which are on that machine.
+    const files = remote ? sessionAuthorityFiles(env, runtimeEnv) : []
+    const out: Record<string, string> = {
+      ...(remote
+        ? proxyTrustEnv({ bundlePath: remote.trustBundle })
+        : this.sessionProxyTrust(proxy.ca, env, runtimeEnv)),
+      ...(remote && files.length > 0
+        ? { [SESSION_TRUST_ENV]: JSON.stringify({ bundle: remote.trustBundle, files }) }
+        : {}),
+      [CODE_HOST_CREDENTIAL_ENV]: placeholder
+    }
     // A GH_TOKEN or GITLAB_TOKEN the agent was configured with is its own, and wins as it always has.
     const github = this.credentialProxyHosts(agentId).some((host) => host.provider === 'github')
     if (github && env.GH_TOKEN === undefined && runtimeEnv.GH_TOKEN === undefined) out.GH_TOKEN = placeholder
     // The glab wrapper passes a set GITLAB_TOKEN straight to glab, which the proxy then exchanges.
     if (glab && env.GITLAB_TOKEN === undefined && runtimeEnv.GITLAB_TOKEN === undefined) out.GITLAB_TOKEN = placeholder
-    const url = onHost ? proxy.proxy.loopbackUrl() : undefined
+    const url = remote ? remote.url : route === 'host' ? proxy.proxy.loopbackUrl() : undefined
     if (url) {
-      const noProxy = ['localhost', '127.0.0.1', '::1', env.NO_PROXY ?? process.env.NO_PROXY]
+      // This machine's own NO_PROXY means nothing on an executor.
+      const noProxy = ['localhost', '127.0.0.1', '::1', remote ? env.NO_PROXY : (env.NO_PROXY ?? process.env.NO_PROXY)]
         .filter((entry) => entry)
         .join(',')
       Object.assign(out, {
@@ -7932,6 +7957,32 @@ export class Daemon {
     return this.agents.has(agentId) ? ['mcp', 'gitcred'] : []
   }
 
+  /** A placed session's tunnels: the pod's two, and `codehost` when it runs on its executor's host strategy for an agent the credential proxy intercepts. */
+  private tunnelsForPlaced(agentId: string, placed: PlacedSession | undefined): TunnelName[] {
+    const helpers = this.tunnelsForAgent(agentId)
+    const codehost = helpers.length > 0 && placed?.strategy === 'host' && this.credentialProxyIntercepts(agentId)
+    return codehost ? [...helpers, 'codehost'] : helpers
+  }
+
+  /** Every tunnel's daemon-side socket; `codehost` reaches the agent's own credential-proxy socket, and only while the proxy intercepts for it. */
+  private tunnelSocketPath(root: string, tunnel: TunnelName, agentId: string): string | undefined {
+    return daemonTunnelSocketPath(tunnel, agentId, {
+      gitcred: gitcredSocketPath(root),
+      mcp: mcpSocketPath(root),
+      codehost: (id) =>
+        this.credentialProxy && this.credentialProxyIntercepts(id)
+          ? this.credentialProxy.proxy.tunnelSocketFor(id)
+          : undefined
+    })
+  }
+
+  /** What a `codehost` listen carries: the agent's code-host routes and the CA its sessions verify them with. */
+  private tunnelListenOptions(agentId: string, tunnel: TunnelName): { routes: string[]; ca: string } | undefined {
+    if (tunnel !== 'codehost' || !this.credentialProxy) return undefined
+    const routes = this.credentialProxy.proxy.tunnelRoutes(agentId)
+    return routes.length > 0 ? { routes, ca: this.credentialProxy.ca.certPem } : undefined
+  }
+
   /** D→C `agent/skill-status` after a completed skill reconcile: names and codes only, best-effort (source-cache.md §11). */
   private reportSkillSourceFailures(agentId: string, failed: SkillSourceFailureEntry[]): void {
     try {
@@ -8692,20 +8743,26 @@ export class Daemon {
     const sandboxGitTarget = remoteRoots
       ? sandboxGitCredentialTarget(remoteRoots.runtimeRoot, remoteRoots.helperRoot)
       : sandboxGitCredentialTarget()
-    const sandboxSessionGit =
-      (this.k8sPlane || remoteRoots) && needsSessionGit
-        ? sessionGitConfig(agent.id, sessionGitIdentity, sandboxGitTarget, sessionGitScope)
+    // A placed host-strategy session reaches the proxy through its shim's codehost listener; an executor whose shim serves none keeps the helper path.
+    const remoteCodehost =
+      remoteSession?.strategy === 'host' && this.credentialProxy && managedCredentials
+        ? this.executorPlane?.codehostProxyFor(remoteSession.sessionKey)
         : undefined
-    // Held as its own value: the sandbox read grant must come from the path the DAEMON authored,
-    // never read back out of the merged child env, where runtimeOverrides.env could name any file.
     // A host or srt session with a managed code-host credential holds a placeholder the credential proxy exchanges; a host behind its own outbound proxy keeps direct credentials.
     const proxied =
       this.credentialProxy !== undefined &&
       managedCredentials &&
       !this.k8sPlane &&
       !micro &&
-      !remoteSession &&
-      (srtShim !== undefined || (!runInSandbox && !process.env.HTTPS_PROXY && !process.env.https_proxy))
+      (remoteSession
+        ? remoteCodehost !== undefined
+        : srtShim !== undefined || (!runInSandbox && !process.env.HTTPS_PROXY && !process.env.https_proxy))
+    const sandboxSessionGit =
+      (this.k8sPlane || remoteRoots) && needsSessionGit
+        ? sessionGitConfig(agent.id, sessionGitIdentity, sandboxGitTarget, sessionGitScope, proxied)
+        : undefined
+    // Held as its own value: the sandbox read grant must come from the path the DAEMON authored,
+    // never read back out of the merged child env, where runtimeOverrides.env could name any file.
     const sessionGitInjection = needsSessionGit
       ? (sandboxSessionGit?.env ?? sessionGitEnv(agent.id, sessionGitIdentity, sessionGitScope, proxied))
       : undefined
@@ -8784,15 +8841,16 @@ export class Daemon {
         this.credentialProxyEnv(
           this.credentialProxy,
           agent.id,
-          srtShim === undefined,
+          remoteCodehost ?? (srtShim === undefined ? 'host' : 'srt'),
           env,
           runtimeEnv,
-          gitlabCredentials && shimDirs.has(this.glabBinDir ?? '')
+          // A placed session's glab wrapper is its executor's, which passes a set GITLAB_TOKEN through as this one does.
+          gitlabCredentials && (remoteSession !== undefined || shimDirs.has(this.glabBinDir ?? ''))
         )
       )
     // Every session in an srt environment the proxy intercepts trusts its CA, a placeholder or not, or its code-host requests would fail verification.
     else if (srtShim && this.credentialProxy && this.credentialProxyIntercepts(agent.id))
-      Object.assign(env, proxyTrustEnv(this.credentialProxy.ca))
+      Object.assign(env, this.sessionProxyTrust(this.credentialProxy.ca, env, runtimeEnv))
     const target = opts.modelCredential?.target ?? modelProviderTarget(agent, runtime)
     // A runtime on another filesystem reads its config files there, so they travel with its launch as the gitconfig does (§8): the pod's image root, or the one an executor reported.
     const launchFilesRoot = remoteRoots

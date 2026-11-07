@@ -15,7 +15,7 @@ import type { Sandbox, SandboxClaim, SandboxFence } from '../src/k8s/sandbox-api
 import { fakeGenerations } from './fake-generations.js'
 import { fenceFakeSandbox } from './fake-sandbox-fence.js'
 import type { ShimEvent } from '../src/shim/protocol.js'
-import { MAX_TUNNEL_CHUNK_BYTES, type TunnelName } from '../src/shim/tunnel.js'
+import { MAX_CODEHOST_STREAMS, MAX_TUNNEL_CHUNK_BYTES, type TunnelName } from '../src/shim/tunnel.js'
 import { waitBudget } from './wait-support.js'
 
 /**
@@ -216,6 +216,8 @@ function proxyUnderTest(
         if (options.hold?.(payload)) {
           return await new Promise((resolve, reject) => held.push({ ack: () => resolve({}), fail: reject }))
         }
+        if ((payload as { tunnel?: string }).tunnel === 'codehost')
+          return { socketPath: '127.0.0.1:1', proxy: { port: 1, token: 'x'.repeat(32), trustBundle: '/rt/trust.pem' } }
         return { socketPath: '/run/agentconnect/gitcred.sock' }
       },
       onEvent: (listener) => listeners.push(listener),
@@ -224,7 +226,9 @@ function proxyUnderTest(
       offAttach: () => undefined,
       onLost: () => undefined
     },
-    socketPathFor: (tunnel) => (tunnel === 'gitcred' ? '/daemon/gitcred.sock' : '/daemon/mcp.sock'),
+    socketPathFor: (tunnel) => `/daemon/${tunnel}.sock`,
+    listenOptions: (tunnel) =>
+      tunnel === 'codehost' ? { routes: ['github.com:443'], ca: 'example certificate' } : undefined,
     dial: (path) => {
       dialled.push(path)
       const socket = new Socket()
@@ -489,6 +493,68 @@ describe('the shim tunnel', () => {
       expect(proxy.instance.streamCount()).toBe(1)
       expect(proxy.sent).toContainEqual(expect.objectContaining({ op: 'close', streamId: credential }))
       expect(proxy.sent).not.toContainEqual(expect.objectContaining({ op: 'close', streamId: bridge }))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('caps codehost streams on their own budget, so they cannot take the helper tunnels’ slots', async () => {
+    const proxy = proxyUnderTest()
+    await proxy.instance.ensure('codehost')
+    await proxy.instance.ensure('gitcred')
+    expect(proxy.sent[0]).toEqual({
+      op: 'listen',
+      tunnel: 'codehost',
+      routes: ['github.com:443'],
+      ca: 'example certificate'
+    })
+    expect(proxy.instance.listeningAt('codehost')?.proxy?.port).toBe(1)
+    for (let i = 0; i < MAX_CODEHOST_STREAMS; i += 1)
+      proxy.announce({ kind: 'connect', tunnel: 'codehost' }, randomUUID())
+    expect(proxy.instance.streamCount(true)).toBe(MAX_CODEHOST_STREAMS)
+    expect(proxy.dialled.every((path) => path === '/daemon/codehost.sock')).toBe(true)
+
+    const refused = randomUUID()
+    proxy.announce({ kind: 'connect', tunnel: 'codehost' }, refused)
+    expect(proxy.instance.streamCount(true)).toBe(MAX_CODEHOST_STREAMS)
+    expect(proxy.sent.at(-1)).toEqual(expect.objectContaining({ op: 'close', streamId: refused }))
+
+    // A full codehost budget leaves the helpers theirs.
+    proxy.announce({ kind: 'connect', tunnel: 'gitcred' }, randomUUID())
+    expect(proxy.instance.streamCount(false)).toBe(1)
+  })
+
+  it('serves no codehost tunnel on a shim that reports no listener for it', async () => {
+    // An older shim refuses the name outright; one that answers without a listener must not be pointed at either.
+    const sessionRequest = vi.fn(async () => ({ socketPath: '127.0.0.1:1' }))
+    const bare = new TunnelProxy({
+      session: {
+        agentId: 'agent-a',
+        request: sessionRequest,
+        onEvent: () => undefined,
+        offEvent: () => undefined,
+        onAttach: () => undefined,
+        offAttach: () => undefined,
+        onLost: () => undefined
+      },
+      socketPathFor: () => '/daemon/codehost.sock',
+      listenOptions: () => ({ routes: ['github.com:443'], ca: 'example certificate' }),
+      log: { info: () => {}, warn: () => {} }
+    })
+    await expect(bare.ensure('codehost')).rejects.toThrow(/no codehost listener/)
+    expect(bare.serves('codehost')).toBe(false)
+  })
+
+  it('ends an idle codehost stream, as it does a gitcred one', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const proxy = proxyUnderTest()
+      await proxy.instance.ensure('codehost')
+      const streamId = randomUUID()
+      proxy.announce({ kind: 'connect', tunnel: 'codehost' }, streamId)
+      vi.advanceTimersByTime(10 * 60_000)
+      expect(proxy.instance.streamCount()).toBe(0)
+      expect(proxy.sent).toContainEqual(expect.objectContaining({ op: 'close', streamId }))
     } finally {
       vi.useRealTimers()
     }

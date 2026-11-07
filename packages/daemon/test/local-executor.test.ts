@@ -32,7 +32,7 @@ async function fixture(runtimeEnv?: Record<string, string>) {
   const local = new LocalExecutor({
     launcher: microsandboxLauncher({ manager: () => fake.manager }),
     generations: { nextSandboxGeneration: allocated },
-    tunnelSocketPath: (tunnel) => sockets[tunnel],
+    tunnelSocketPath: (tunnel) => (tunnel === 'codehost' ? undefined : sockets[tunnel]),
     log: quiet
   })
   const environment: EnvironmentDescriptor = { id: 'agent/session-example', mounts: [], workspaceRoot: root }

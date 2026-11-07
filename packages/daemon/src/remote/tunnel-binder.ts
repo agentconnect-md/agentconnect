@@ -1,5 +1,5 @@
 import { TunnelProxy, type TunnelProxyDeps } from '../shim/tunnel-proxy.js'
-import type { TunnelName } from '../shim/tunnel.js'
+import type { TunnelListening, TunnelName } from '../shim/tunnel.js'
 import { sandboxSubjectAgentId } from './sandbox-subject.js'
 
 /** What a bound channel has to offer this binder: the proxy's own session surface plus the
@@ -7,17 +7,14 @@ import { sandboxSubjectAgentId } from './sandbox-subject.js'
 export type TunnelSession = TunnelProxyDeps['session'] & { generation: number }
 
 export interface TunnelBinderDeps {
-  /**
-   * Which daemon-side sockets an agent's sandbox needs a tunnel to, and where each one lives.
-   *
-   * Both halves are the DAEMON's to answer: only it knows that this agent authenticates git
-   * through a GitHub App, and only it knows the path its own server listens on. The binder holds
-   * the mechanism and no policy — omit either and no tunnel is opened.
-   */
-  tunnelsFor?: (agentId: string) => TunnelName[]
-  tunnelSocketPath?: (tunnel: TunnelName) => string | undefined
+  /** Which daemon-side sockets a subject's sandbox needs, by its agent and the subject itself; the daemon's policy, omitted means none. */
+  tunnelsFor?: (agentId: string, subject: string) => TunnelName[]
+  /** Where this daemon serves a tunnel for an agent: one socket per daemon for the helpers, the agent's own for `codehost`. */
+  tunnelSocketPath?: (tunnel: TunnelName, agentId: string) => string | undefined
   /** The line that tags a subject's connection to a daemon socket with that subject (gitcred's pod window binding). */
   tunnelGreeting?: (subject: string, tunnel: TunnelName) => Buffer | undefined
+  /** What a subject's `listen` carries beside the name (`codehost`'s routes and CA). */
+  tunnelListenOptions?: (agentId: string, tunnel: TunnelName) => { routes: string[]; ca: string } | undefined
   log: { info: (m: string) => void; warn: (m: string) => void; debug?: (m: string) => void }
 }
 
@@ -33,7 +30,8 @@ export class TunnelBinder {
 
   /** Open every tunnel this subject's agent wants on the session that just bound. */
   async ensure(subject: string, session: TunnelSession): Promise<void> {
-    const wanted = this.deps.tunnelsFor?.(sandboxSubjectAgentId(subject)) ?? []
+    const agentId = sandboxSubjectAgentId(subject)
+    const wanted = this.deps.tunnelsFor?.(agentId, subject) ?? []
     const socketPathFor = this.deps.tunnelSocketPath
     if (wanted.length === 0 || !socketPathFor) return
     const existing = this.proxies.get(subject)
@@ -49,15 +47,15 @@ export class TunnelBinder {
         generation: session.generation,
         proxy: new TunnelProxy({
           session,
-          socketPathFor,
+          socketPathFor: (tunnel) => socketPathFor(tunnel, agentId),
           greeting: (tunnel) => this.deps.tunnelGreeting?.(subject, tunnel),
+          listenOptions: (tunnel) => this.deps.tunnelListenOptions?.(agentId, tunnel),
           log: this.deps.log
         })
       }
       this.proxies.set(subject, entry)
     }
-    // Sequential rather than concurrent: this is on the launch path, the list has two members at
-    // most, and one failing tunnel must not lose the report of the other.
+    // Sequential: the list is short, and one failing tunnel must not lose the report of the others.
     for (const tunnel of wanted) {
       await entry.proxy.ensure(tunnel).catch((err: unknown) => {
         this.deps.log.warn(`k8s: sandbox ${subject} has no ${tunnel} tunnel — ${(err as Error).message}`)
@@ -68,6 +66,11 @@ export class TunnelBinder {
   /** Whether the subject's bound pod serves `tunnel`: a pod bound by an older daemon may lack `gitcred` (source-cache.md §8). */
   serves(subject: string, tunnel: TunnelName): boolean {
     return this.proxies.get(subject)?.proxy.serves(tunnel) === true
+  }
+
+  /** Where the subject's bound sandbox serves `tunnel`, as its shim reported it. */
+  listeningAt(subject: string, tunnel: TunnelName): TunnelListening | undefined {
+    return this.proxies.get(subject)?.proxy.listeningAt(tunnel)
   }
 
   /** Drop the subject's proxy: this member no longer serves the launch its streams belong to. */

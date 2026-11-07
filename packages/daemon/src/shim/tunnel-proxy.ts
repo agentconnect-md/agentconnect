@@ -1,21 +1,21 @@
 import { createConnection, type Socket } from 'node:net'
 import type { ShimCapability, ShimEvent } from './protocol.js'
-import { MAX_TUNNEL_CHUNK_BYTES, TunnelListeningSchema, type TunnelName } from './tunnel.js'
+import {
+  MAX_CODEHOST_STREAMS,
+  MAX_TUNNEL_CHUNK_BYTES,
+  TunnelListeningSchema,
+  type TunnelListening,
+  type TunnelName
+} from './tunnel.js'
 
-/**
- * How long a stream may stay silent before this side ends it, per tunnel — `null` for none.
- *
- * `gitcred` carries one request and its reply, so silence past a few minutes means no answer is
- * coming and the stream is holding one of the pod's few slots for nothing. `mcp` is the opposite
- * shape: the harness spawns one bridge per ACP session and it stays connected, idle between tool
- * calls, so the same deadline would take the agent's tool surface away a few quiet minutes into
- * every session. Its bound is the channel instead — a lost or superseded one stops every stream,
- * and the pod dies with its sandbox.
- */
-const STREAM_IDLE_MS: Readonly<Record<TunnelName, number | null>> = { gitcred: 5 * 60_000, mcp: null }
+/** Silence after which a stream ends, per tunnel (`null` for none): gitcred and codehost carry finite exchanges, while mcp's bridge idles between tool calls for a whole session and is bounded by its channel. */
+const STREAM_IDLE_MS: Readonly<Record<TunnelName, number | null>> = {
+  gitcred: 5 * 60_000,
+  mcp: null,
+  codehost: 5 * 60_000
+}
 
-/** This side's own ceiling on concurrent streams per agent. The shim enforces one too; that one
- *  protects the pod, and this one protects the daemon from a shim that does not. */
+/** This side's own cap on concurrent helper (`gitcred`, `mcp`) streams per agent, protecting the daemon from a shim that does not enforce its own. */
 const MAX_TUNNEL_STREAMS = 32
 
 /** Data frames one stream may have unacknowledged before its local socket is paused (8 × 32 KiB). */
@@ -38,6 +38,8 @@ export interface TunnelProxyDeps {
   socketPathFor: (tunnel: TunnelName) => string | undefined
   /** Bytes written to the daemon socket before any pod byte, naming this pod to the server (gitcred's window binding). */
   greeting?: (tunnel: TunnelName) => Buffer | undefined
+  /** What a `listen` carries beside the name: `codehost`'s routes and the CA its sessions trust. */
+  listenOptions?: (tunnel: TunnelName) => { routes: string[]; ca: string } | undefined
   /** Dials a local unix socket. Injected so a test can stand in for the daemon's server. */
   dial?: (path: string) => Socket
   log: { info: (m: string) => void; warn: (m: string) => void }
@@ -54,8 +56,11 @@ export interface TunnelProxyDeps {
  * filesystem.
  */
 export class TunnelProxy {
-  private readonly streams = new Map<string, { socket: Socket; timer?: NodeJS.Timeout; inFlight: number }>()
-  private readonly listening = new Set<TunnelName>()
+  private readonly streams = new Map<
+    string,
+    { socket: Socket; tunnel: TunnelName; timer?: NodeJS.Timeout; inFlight: number }
+  >()
+  private readonly listening = new Map<TunnelName, TunnelListening | undefined>()
   private readonly onEvent = (event: ShimEvent): void => this.accept(event)
   private readonly onAttach = (): void => this.dropUnaccountedStreams()
   private stopped = false
@@ -72,23 +77,7 @@ export class TunnelProxy {
     deps.session.onLost((reason) => this.stop(reason))
   }
 
-  /**
-   * End every stream whose delivery stopped being accountable, at the moment a replacement channel
-   * binds.
-   *
-   * A renewal aborts the requests in flight on the socket it replaced, and that abort says a REPLY
-   * was lost — not whether the request itself ever landed. So the bytes of an in-flight `data`
-   * frame are in an unknown state, and neither choice is safe to make silently: re-sending can
-   * duplicate them, and these tunnels carry request/response protocols where a duplicated fragment
-   * is a corrupt request rather than a retry.
-   *
-   * Terminating instead makes the in-pod client see EOF at once. For gitcred that is git reporting
-   * an authentication failure it can be retried — the alternative, leaving the stream open on a
-   * reply that will never arrive, is git waiting out {@link STREAM_IDLE_MS}.
-   *
-   * A stream that was idle across the renewal is untouched: nothing was in doubt, and its next
-   * frame travels on the new socket.
-   */
+  /** On a renewal, end each stream with a frame in flight, whose bytes may be lost or would duplicate on a resend (a corrupt request for gitcred, a corrupt TLS record for codehost); an idle stream is untouched. */
   private dropUnaccountedStreams(): void {
     for (const [streamId, entry] of [...this.streams]) {
       if (entry.inFlight === 0) continue
@@ -108,8 +97,14 @@ export class TunnelProxy {
     if (!this.deps.socketPathFor(tunnel)) {
       throw new Error(`this daemon serves no ${tunnel} socket to tunnel into the sandbox`)
     }
-    const reply = TunnelListeningSchema.safeParse(await this.deps.session.request('tunnel', { op: 'listen', tunnel }))
-    this.listening.add(tunnel)
+    const options = this.deps.listenOptions?.(tunnel)
+    if (tunnel === 'codehost' && !options) throw new Error('this agent has no code-host routes to tunnel')
+    const reply = TunnelListeningSchema.safeParse(
+      await this.deps.session.request('tunnel', { op: 'listen', tunnel, ...options })
+    )
+    // A session is pointed at the codehost listener by what its reply reports, so one without it is not served.
+    if (tunnel === 'codehost' && !reply.data?.proxy) throw new Error('the sandbox reported no codehost listener')
+    this.listening.set(tunnel, reply.success ? reply.data : undefined)
     this.deps.log.info(
       `tunnel: agent ${this.deps.session.agentId} serves ${tunnel} in its sandbox` +
         (reply.success ? ` at ${reply.data.socketPath}` : '')
@@ -126,8 +121,12 @@ export class TunnelProxy {
     this.listening.clear()
   }
 
-  streamCount(): number {
-    return this.streams.size
+  /** Open streams: all of them, or only the codehost ones (`true`) or the helper ones (`false`). */
+  streamCount(codehost?: boolean): number {
+    if (codehost === undefined) return this.streams.size
+    let count = 0
+    for (const { tunnel } of this.streams.values()) if ((tunnel === 'codehost') === codehost) count += 1
+    return count
   }
 
   isStopped(): boolean {
@@ -137,6 +136,11 @@ export class TunnelProxy {
   /** Whether the pod serves `tunnel` on this live proxy. */
   serves(tunnel: TunnelName): boolean {
     return !this.stopped && this.listening.has(tunnel)
+  }
+
+  /** What the pod reported serving `tunnel` at, while this proxy is live. */
+  listeningAt(tunnel: TunnelName): TunnelListening | undefined {
+    return this.stopped ? undefined : this.listening.get(tunnel)
   }
 
   private accept(event: ShimEvent): void {
@@ -155,8 +159,11 @@ export class TunnelProxy {
         this.refuse(event.streamId, 'that tunnel stream is already open')
         return
       }
-      if (this.streams.size >= MAX_TUNNEL_STREAMS) {
-        this.refuse(event.streamId, `${MAX_TUNNEL_STREAMS} tunnel streams are already open`)
+      // Code-host streams have their own budget, so a burst of clones cannot take the helpers' slots.
+      const codehost = event.event.tunnel === 'codehost'
+      const cap = codehost ? MAX_CODEHOST_STREAMS : MAX_TUNNEL_STREAMS
+      if (this.streamCount(codehost) >= cap) {
+        this.refuse(event.streamId, `${cap} ${codehost ? 'codehost' : 'tunnel'} streams are already open`)
         return
       }
       this.open(event.streamId, event.event.tunnel)
@@ -195,7 +202,7 @@ export class TunnelProxy {
     const idleMs = STREAM_IDLE_MS[tunnel]
     const timer = idleMs === null ? undefined : setTimeout(() => this.close(streamId, `idle for ${idleMs}ms`), idleMs)
     timer?.unref?.()
-    this.streams.set(streamId, { socket, ...(timer ? { timer } : {}), inFlight: 0 })
+    this.streams.set(streamId, { socket, tunnel, ...(timer ? { timer } : {}), inFlight: 0 })
     socket.on('data', (data: Buffer) => {
       const entry = this.streams.get(streamId)
       if (!entry) return

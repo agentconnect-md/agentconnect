@@ -69,10 +69,12 @@ export interface ExecutorPlaneDeps {
   /** The session's environment is gone: re-place it, record the new verdict and tell the user, or answer undefined to leave it where it is (§7). */
   replace: (placed: PlacedSession, lastSeenAt: string | null) => Promise<PlacementChoice | undefined>
   /** Which of this daemon's own sockets a session needs a tunnel to, and where each one is — the same policy the pool's plane is given. */
-  tunnelsFor?: (agentId: string) => TunnelName[]
-  tunnelSocketPath?: (tunnel: TunnelName) => string | undefined
+  tunnelsFor?: (agentId: string, placed: PlacedSession | undefined) => TunnelName[]
+  tunnelSocketPath?: (tunnel: TunnelName, agentId: string) => string | undefined
   /** Tags a subject's daemon-socket connection with that subject (gitcred binds a pod window to its pod). */
   tunnelGreeting?: (subject: string, tunnel: TunnelName) => Buffer | undefined
+  /** What a `listen` carries beside the name: `codehost`'s routes and the CA its sessions trust. */
+  tunnelListenOptions?: (agentId: string, tunnel: TunnelName) => { routes: string[]; ca: string } | undefined
   log: { info: (m: string) => void; warn: (m: string) => void; debug?: (m: string) => void }
   clock?: Clock
   /** Test seams: the dial's budget and the loss grace. */
@@ -137,10 +139,15 @@ export class ExecutorPlane implements ExecutionPlane {
       generations: { nextSandboxGeneration: () => Promise.resolve(0) },
       clock: this.clock
     })
+    const tunnelsFor = deps.tunnelsFor
     this.tunnels = new TunnelBinder({
-      ...(deps.tunnelsFor === undefined ? {} : { tunnelsFor: deps.tunnelsFor }),
+      // The policy may depend on where the subject runs, which only this plane knows.
+      ...(tunnelsFor === undefined
+        ? {}
+        : { tunnelsFor: (agentId, subject) => tunnelsFor(agentId, this.bySubject.get(subject)) }),
       ...(deps.tunnelSocketPath === undefined ? {} : { tunnelSocketPath: deps.tunnelSocketPath }),
       ...(deps.tunnelGreeting === undefined ? {} : { tunnelGreeting: deps.tunnelGreeting }),
+      ...(deps.tunnelListenOptions === undefined ? {} : { tunnelListenOptions: deps.tunnelListenOptions }),
       log: deps.log
     })
     this.binder = new ChannelBinder<ExecutorLaunch>({
@@ -211,6 +218,14 @@ export class ExecutorPlane implements ExecutionPlane {
       ...(ready.helperRoot === undefined ? {} : { helperRoot: ready.helperRoot }),
       missingHelpers: ready.missingHelpers ?? []
     }
+  }
+
+  /** The loopback proxy a placed session's shim serves for its code-host traffic, and the trust bundle it wrote there; undefined while its shim serves none. */
+  codehostProxyFor(sessionKey: string): { url: string; trustBundle: string } | undefined {
+    const placed = this.placements.get(sessionKey)
+    const proxy = placed && this.tunnels.listeningAt(placed.subject, 'codehost')?.proxy
+    if (!proxy) return undefined
+    return { url: `http://codehost:${proxy.token}@127.0.0.1:${proxy.port}`, trustBundle: proxy.trustBundle }
   }
 
   /** The runtime a placed session starts: the command its executor named for its own install (§8), else this machine's definition as before. */

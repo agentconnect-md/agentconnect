@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { TunnelBinder, type TunnelSession } from '../src/remote/tunnel-binder.js'
+import { daemonTunnelSocketPath } from '../src/remote/tunnel-sockets.js'
+import { TunnelNameSchema, type TunnelName } from '../src/shim/tunnel.js'
 
 const log = { info: () => {}, warn: () => {}, debug: () => {} }
 
@@ -40,7 +42,7 @@ describe('tunnel binder', () => {
       session
     )
 
-    expect(tunnelsFor).toHaveBeenCalledWith('agent-a')
+    expect(tunnelsFor).toHaveBeenCalledWith('agent-a', 'agent-a/session-0123')
     expect(request).toHaveBeenCalledWith('tunnel', { op: 'listen', tunnel: 'gitcred' })
   })
 
@@ -92,6 +94,32 @@ describe('tunnel binder', () => {
     expect(offEvent).toHaveBeenCalled()
   })
 
+  it('dials a session’s codehost tunnel at its own agent’s socket, and asks with that agent’s routes', async () => {
+    const { session, request } = fakeSession(1)
+    request.mockResolvedValue({
+      socketPath: '127.0.0.1:4100',
+      proxy: { port: 4100, token: 't'.repeat(32), trustBundle: '/rt/codehost-trust.pem' }
+    } as never)
+    const tunnelSocketPath = vi.fn((tunnel: string, agentId: string) => `/daemon/${tunnel}/${agentId}.sock`)
+    const subject = new TunnelBinder({
+      tunnelsFor: () => ['codehost'],
+      tunnelSocketPath,
+      tunnelListenOptions: (agentId, tunnel) =>
+        tunnel === 'codehost' ? { routes: [`${agentId}.example.test:443`], ca: 'example certificate' } : undefined,
+      log
+    })
+    await subject.ensure('agent-a/session-0123', session)
+
+    expect(tunnelSocketPath).toHaveBeenCalledWith('codehost', 'agent-a')
+    expect(request).toHaveBeenCalledWith('tunnel', {
+      op: 'listen',
+      tunnel: 'codehost',
+      routes: ['agent-a.example.test:443'],
+      ca: 'example certificate'
+    })
+    expect(subject.listeningAt('agent-a/session-0123', 'codehost')?.proxy?.port).toBe(4100)
+  })
+
   it('stops every proxy when the plane goes down', async () => {
     const subject = binder()
     const first = fakeSession(1)
@@ -99,5 +127,24 @@ describe('tunnel binder', () => {
     subject.releaseAll('daemon is shutting down')
 
     expect(first.offEvent).toHaveBeenCalled()
+  })
+})
+
+describe('the daemon socket each tunnel reaches', () => {
+  const sockets = {
+    gitcred: '/daemon/gitcred.sock',
+    mcp: '/daemon/mcp.sock',
+    codehost: (agentId: string) => `/daemon/codehost/${agentId}.sock`
+  }
+
+  it('names every tunnel explicitly, each its own socket', () => {
+    const paths = TunnelNameSchema.options.map((tunnel) => daemonTunnelSocketPath(tunnel, 'agent-a', sockets))
+    expect(paths).toEqual(['/daemon/gitcred.sock', '/daemon/mcp.sock', '/daemon/codehost/agent-a.sock'])
+    expect(new Set(paths).size).toBe(TunnelNameSchema.options.length)
+  })
+
+  it('dials nothing for a name it does not know, rather than a plausible socket', () => {
+    expect(daemonTunnelSocketPath('other' as TunnelName, 'agent-a', sockets)).toBeUndefined()
+    expect(daemonTunnelSocketPath('codehost', 'agent-b', { ...sockets, codehost: () => undefined })).toBeUndefined()
   })
 })
