@@ -329,14 +329,55 @@ export class GiteaConnectionExists extends Error {
   }
 }
 
-/** A write would reference a Gitea binding that is gone or parked (gitea-integration.md §6): the removal fence refused it. */
-export class GiteaBindingUnavailable extends Error {
+/** A write would reference a code-host binding that is gone or parked: the removal fence refused it, which routes answer as 409. */
+export abstract class CodeHostBindingUnavailable extends Error {
+  constructor(
+    message: string,
+    readonly repoId: bigint
+  ) {
+    super(message)
+  }
+}
+
+/** The Gitea binding fence (gitea-integration.md §6). */
+export class GiteaBindingUnavailable extends CodeHostBindingUnavailable {
   readonly code = 'GITEA_BINDING_UNAVAILABLE' as const
-  constructor(readonly repoId: bigint) {
+  constructor(repoId: bigint) {
     super(
-      `gitea repository ${repoId} is no longer a live managed binding in this organization — it was removed while this write was in flight`
+      `gitea repository ${repoId} is no longer a live managed binding in this organization — it was removed while this write was in flight`,
+      repoId
     )
     this.name = 'GiteaBindingUnavailable'
+  }
+}
+
+/** The Azure DevOps binding fence (azure-devops-integration.md §5). */
+export class AzureDevOpsBindingUnavailable extends CodeHostBindingUnavailable {
+  readonly code = 'AZURE_DEVOPS_BINDING_UNAVAILABLE' as const
+  constructor(repoId: bigint) {
+    super(
+      `azure devops repository ${repoId} is no longer bound through that connection — it was removed while this write was in flight`,
+      repoId
+    )
+    this.name = 'AzureDevOpsBindingUnavailable'
+  }
+}
+
+/** Another AgentConnect organization on this deployment already connected this Azure DevOps organization (§3.2 step 6). */
+export class AzureDevOpsOrganizationTaken extends Error {
+  readonly code = 'AZURE_DEVOPS_ORGANIZATION_TAKEN' as const
+  constructor() {
+    super('this Azure DevOps organization is already connected to another organization on this deployment')
+    this.name = 'AzureDevOpsOrganizationTaken'
+  }
+}
+
+/** The deployment-global claim on an Azure DevOps repository is held by another organization. */
+export class AzureDevOpsRepositoryClaimConflict extends Error {
+  readonly code = 'AZURE_DEVOPS_REPOSITORY_CLAIMED' as const
+  constructor(readonly repoId: bigint) {
+    super('this repository is already claimed by another organization')
+    this.name = 'AzureDevOpsRepositoryClaimConflict'
   }
 }
 

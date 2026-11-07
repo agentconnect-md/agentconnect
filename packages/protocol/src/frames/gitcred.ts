@@ -91,7 +91,9 @@ export const GitCredRequest = z.object({
   // v2 access floor (§17.1): request LESS than the workspace clamp — the read-only CLI wrapper asks
   // for 'read' even on a write workspace, so a mutating command cannot ride its token. Honored on
   // both provider arms; absent ⇒ the clamp itself, which is what every GitHub caller asks for today.
-  requestedAccess: z.enum(['read', 'write']).optional()
+  requestedAccess: z.enum(['read', 'write']).optional(),
+  // Who will present the credential (azure-devops-integration.md §6.1): a proxy-only provider is served to `proxy` and `daemon` alone; absent ⇒ `helper`.
+  consumer: z.enum(['proxy', 'daemon', 'helper']).optional()
 })
 export type GitCredRequest = z.infer<typeof GitCredRequest>
 

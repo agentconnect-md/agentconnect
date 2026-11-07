@@ -484,19 +484,56 @@ describe('handleGitCredRequest — repoFullName passthrough (issue #457)', () =>
     expect(conn.replyTo).not.toHaveBeenCalled()
   })
 
-  it('refuses a known provider with no credential arm instead of minting through the GitHub arm', async () => {
+  it('serves a proxy-only host to the proxy and the daemon only, never through the GitHub arm (azure-devops §6.1)', async () => {
     const mintForAgent = vi.fn()
-    const deps = { agent: { get: async () => PLACED_AGENT }, github: { mintForAgent } } as unknown as DaemonWsDeps
+    const lease = { username: 'Example Application', token: 'example-token', ttlSec: 3000 }
+    const grantForAgent = vi.fn(async () => lease)
+    const deps = {
+      agent: { get: async () => PLACED_AGENT },
+      github: { mintForAgent },
+      azureDevOpsGitcred: { grantForAgent }
+    } as unknown as DaemonWsDeps
+    // An older daemon names no consumer, and the helper is the agent-facing channel: both are refused.
+    for (const consumer of [undefined, 'helper']) {
+      const conn = fakeConn()
+      const payload = { provider: 'azure-devops', externalRepoId: '7', ...(consumer ? { consumer } : {}) }
+      await handleGitCredRequest(gitcredFrame(payload), conn, deps)
+      expect(conn.sendError).toHaveBeenCalledWith(
+        expect.anything(),
+        'SCOPE_DENIED',
+        'azure-devops credentials are served to the credential proxy only',
+        false
+      )
+      expect(conn.replyTo).not.toHaveBeenCalled()
+    }
+    for (const consumer of ['proxy', 'daemon']) {
+      const conn = fakeConn()
+      const frame = gitcredFrame({ provider: 'azure-devops', externalRepoId: '7', requestedAccess: 'read', consumer })
+      await handleGitCredRequest(frame, conn, deps)
+      expect(conn.replyTo).toHaveBeenCalledWith(frame, 'gitcred/grant', lease)
+    }
+    expect(grantForAgent).toHaveBeenCalledWith(PLACED_AGENT, 7n, 'read')
+    // No purpose-gated lease exists for it, and the other hosts keep serving the helper.
     const conn = fakeConn()
-    await handleGitCredRequest(gitcredFrame({ provider: 'azure-devops', externalRepoId: '7' }), conn, deps)
+    await handleGitCredRequest(
+      gitcredFrame({ provider: 'azure-devops', consumer: 'proxy', purpose: 'gitea_effect', externalRepoId: '7' }),
+      conn,
+      deps
+    )
+    expect(conn.sendError).toHaveBeenCalledWith(expect.anything(), 'SCOPE_DENIED', expect.any(String), false)
+    expect(mintForAgent).not.toHaveBeenCalled()
+  })
+
+  it('refuses Azure DevOps when the control plane wires no lease service', async () => {
+    const deps = { agent: { get: async () => PLACED_AGENT } } as unknown as DaemonWsDeps
+    const conn = fakeConn()
+    await handleGitCredRequest(gitcredFrame({ provider: 'azure-devops', consumer: 'proxy' }), conn, deps)
     expect(conn.sendError).toHaveBeenCalledWith(
       expect.anything(),
       'SCOPE_DENIED',
       'azure-devops workspaces are not enabled on this control plane',
       false
     )
-    expect(mintForAgent).not.toHaveBeenCalled()
-    expect(conn.replyTo).not.toHaveBeenCalled()
   })
 
   it('maps a GitCredDeniedError onto a correlated error REP (code + retryable preserved)', async () => {

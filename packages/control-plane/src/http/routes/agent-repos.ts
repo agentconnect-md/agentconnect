@@ -32,10 +32,17 @@ import {
   type RepoAccess,
   type RepoMaterialization
 } from '../../persistence/ports.js'
-import { AgentWorkspaceRepoConflict, GiteaBindingUnavailable } from '../../persistence/errors.js'
+import {
+  AgentWorkspaceRepoConflict,
+  CodeHostBindingUnavailable,
+  GiteaBindingUnavailable
+} from '../../persistence/errors.js'
 import { GithubApiError } from '../../github/api.js'
 import { GiteaApiError } from '../../gitea/api.js'
 import { GiteaConnectDenied } from '../../gitea/connection.service.js'
+import { AzureDevOpsApiError } from '../../azure-devops/api.js'
+import { AzureDevOpsConnectDenied } from '../../azure-devops/connection.service.js'
+import { grantAccessMessage } from '../../azure-devops/binding.service.js'
 import { gitlabAuthorizationAccessLevel } from '../../gitlab/api.js'
 import { gitlabAccountUnavailableMessage } from '../../gitlab/account.service.js'
 import { UserAuthzDeniedError } from '../../github/user-authz.js'
@@ -87,7 +94,8 @@ function toDto(r: AgentRepoAuthorizationRecord): AgentRepoAuthDtoT {
     materialize: r.materialize,
     createdBy: r.createdBy && !isSyntheticEmail(r.createdBy.email) ? r.createdBy.userId : null,
     createdAt: r.createdAt.toISOString(),
-    stale: r.stale ? { since: r.stale.since.toISOString(), reason: r.stale.reason } : null
+    stale: r.stale ? { since: r.stale.since.toISOString(), reason: r.stale.reason } : null,
+    ...(r.connectionId !== undefined ? { connectionId: r.connectionId } : {})
   }
 }
 
@@ -354,6 +362,86 @@ export function agentRepoRoutes(deps: HttpDeps) {
       return toDto(row)
     }
 
+    /** The azure-devops arm (azure-devops-integration.md §5): the repository by GUID through one connection, bound on first use; `write` needs Contribute. */
+    const authorizeAzureDevOpsRepository = async (
+      req: FastifyRequest,
+      reply: FastifyReply,
+      agent: AgentRecord,
+      body: { connectionId: string; repositoryId: string; access: RepoAccess; materialize: RepoMaterialization }
+    ): Promise<AgentRepoAuthDtoT | undefined> => {
+      const refused = (status: 400 | 403 | 404 | 409 | 429 | 502, message: string): undefined => {
+        void reply.code(status).send({ error: ERROR_NAMES[status], statusCode: status, message })
+      }
+      const azure = deps.azureDevOps
+      if (!azure) return refused(409, 'Azure DevOps is not configured on this deployment')
+      const orgId = orgOf(req)
+      let binding
+      try {
+        const located = await azure.bindings.byRepositoryId(orgId, body.connectionId, body.repositoryId)
+        const path = `${located.connection.organization}/${located.repository.projectName}/${located.repository.name}`
+        if (body.access === 'write' && !(await azure.bindings.canContribute(located))) {
+          return refused(409, grantAccessMessage(path, located.connection.organization, true))
+        }
+        // The grant is the consumer that binds the repository when nothing else has (§5).
+        binding = await azure.bindings.ensureBound(located)
+      } catch (e) {
+        if (e instanceof AzureDevOpsConnectDenied) return refused(e.status, e.message)
+        if (e instanceof AzureDevOpsApiError) {
+          return refused(e.code === 'RATE_LIMITED' ? 429 : 502, `azure devops: ${e.message}`)
+        }
+        throw e
+      }
+      const workspace = agent.workspace.mode === 'git' ? agent.workspace.credential : undefined
+      if (workspace?.provider === 'azure-devops' && agent.workspaceRepoId === binding.repoId) {
+        return refused(409, 'this is already the agent’s workspace repository')
+      }
+      const held = await deps.repos.agentRepoAuth.listForAgent(agent.id)
+      if (held.some((row) => row.provider === 'azure-devops' && row.repoId === binding.repoId)) {
+        return refused(
+          409,
+          `${binding.repoPath} is already authorized for this agent — upgrade that grant or remove it to lower the tier`
+        )
+      }
+      let row: AgentRepoAuthorizationRecord
+      try {
+        row = await deps.repos.agentRepoAuth.create({
+          agentId: agent.id,
+          provider: 'azure-devops',
+          repoId: binding.repoId,
+          repoFullName: binding.repoPath,
+          access: body.access,
+          materialize: body.materialize,
+          connectionId: binding.connectionId,
+          ...(req.principal ? { createdByUserId: req.principal.userId } : {})
+        })
+      } catch (e) {
+        // The binding fence (§5): the repository was removed while this grant was in flight.
+        if (e instanceof CodeHostBindingUnavailable || e instanceof AgentWorkspaceRepoConflict) {
+          return refused(409, e.message)
+        }
+        throw e
+      }
+      void deps.repos.audit
+        .append({
+          kind: 'agent_repo_change',
+          orgId,
+          agentId: agent.id,
+          ...(req.principal ? { actorUserId: req.principal.userId } : {}),
+          frameType: 'gitcred/grant',
+          message: `azure devops repository ${row.repoFullName} authorized (${row.access}, ${row.materialize})`,
+          details: {
+            repoAuthId: row.id,
+            provider: 'azure-devops',
+            repoFullName: row.repoFullName,
+            access: row.access,
+            materialize: row.materialize
+          }
+        })
+        .catch(() => {})
+      await replicateUpsert(agent)
+      return toDto(row)
+    }
+
     r.get(
       '/agents/:agentId/repos',
       {
@@ -382,7 +470,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Authorize a repository for an agent',
           description:
-            'Grant the agent access to one code-host repository. With `provider: github` (the default) the repository is named `owner/repo` and must be covered by one of the organization’s GitHub App installations; App-backed workspaces may add repositories beyond their implicit workspace grant, scratch workspaces may add any covered repository, and a manual GitHub workspace may explicitly authorize only its own repository for control-plane review/check effects. With the per-user gate configured, the caller must hold the matching GitHub permission (`read`/`comment` tiers need read, `write` needs write). With `provider: gitlab` the project is named by its numeric id and must already be a managed GitLab project in this organization; authorizing it provisions the agent’s own GitLab bot account and project membership before the grant lands. With `provider: gitea` the repository is named by its numeric id and must already be a managed Gitea repository in this organization; the organization’s bot token serves every tier, so the tier is a clamp on what the agent may do, never a provider role. `materialize` chooses how sessions stand in the repository: `always` (the default) clones it as a secondary workspace root on every session, `on-demand` grants credentials only and the agent clones during the turn, and `decision` makes it a candidate the per-session repository selector may check out. `decision` needs the agent’s `repositorySelector` (409 `REPOSITORY_SELECTOR_MISSING` otherwise) and daemons serving the agent that advertise `repo-selector-v1` (409 `DAEMON_FEATURE_MISSING` otherwise).',
+            'Grant the agent access to one code-host repository. With `provider: github` (the default) the repository is named `owner/repo` and must be covered by one of the organization’s GitHub App installations; App-backed workspaces may add repositories beyond their implicit workspace grant, scratch workspaces may add any covered repository, and a manual GitHub workspace may explicitly authorize only its own repository for control-plane review/check effects. With the per-user gate configured, the caller must hold the matching GitHub permission (`read`/`comment` tiers need read, `write` needs write). With `provider: gitlab` the project is named by its numeric id and must already be a managed GitLab project in this organization; authorizing it provisions the agent’s own GitLab bot account and project membership before the grant lands. With `provider: gitea` the repository is named by its numeric id and must already be a managed Gitea repository in this organization; the organization’s bot token serves every tier, so the tier is a clamp on what the agent may do, never a provider role. With `provider: azure-devops` the repository is named by its GUID and the connection that sees it; it is bound on first use, and `write` requires the connection’s identity to hold Contribute on it. `materialize` chooses how sessions stand in the repository: `always` (the default) clones it as a secondary workspace root on every session, `on-demand` grants credentials only and the agent clones during the turn, and `decision` makes it a candidate the per-session repository selector may check out. `decision` needs the agent’s `repositorySelector` (409 `REPOSITORY_SELECTOR_MISSING` otherwise) and daemons serving the agent that advertise `repo-selector-v1` (409 `DAEMON_FEATURE_MISSING` otherwise).',
           operationId: 'createAgentRepoAuthorization',
           params: z.object({ agentId: z.string() }),
           body: CreateAgentRepoAuthBody,
@@ -404,6 +492,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
         if (await refuseDecisionMaterialize(reply, agent, req.body.materialize)) return
         if (req.body.provider === 'gitlab') return authorizeGitlabProject(req, reply, agent, req.body)
         if (req.body.provider === 'gitea') return authorizeGiteaRepository(req, reply, agent, req.body)
+        if (req.body.provider === 'azure-devops') return authorizeAzureDevOpsRepository(req, reply, agent, req.body)
         if (!deps.github) {
           return reply.code(409).send({
             error: 'Conflict',

@@ -179,8 +179,12 @@ The Console's Azure DevOps card leads with **Connect with Microsoft**:
    deployment has connected is refused (`AZURE_DEVOPS_ORGANIZATION_TAKEN`,
    naming no organization), because two catalogs would claim one repository.
    Otherwise the connection records the tenant, the organization name and
-   `instanceId`, the identity id, the credential source (`deployment` or
-   `own`), and a credential epoch.
+   `instanceId`, the identity id and display name, the credential source
+   (`deployment` or `own`), the own application's client ID, and a credential
+   epoch. The client secret is sealed in a side table: an own application's
+   secret, or, for a `deployment` connection, the deployment secret it was
+   verified with, which is how a rotation is recognized (§3.5). A connection is
+   `connected`, or `degraded` with the reason of §3.5.
 
 The Console offers one Azure DevOps connection per AgentConnect organization in
 the first version. The model does not assume one: bindings, grants, and the
@@ -217,19 +221,23 @@ consulted in the first version (§10).
 
 The Control Plane caches one Azure DevOps token per connection and refreshes
 it when less than ten minutes of the `expires_in` it was issued with remain;
-it never assumes a fixed lifetime. A gitcred lease for an Azure DevOps
-repository carries that token with a TTL no longer than the token's remaining
-life less a margin, so a lease never outlives the token inside it. The daemon
-never sees a client secret.
+it never assumes a fixed lifetime, and a token issued for less than twenty
+minutes is kept for half of its life. Concurrent callers share one request
+per connection, and a new credential epoch or a rejected answer drops the
+cached token. A gitcred lease for an Azure DevOps repository carries that
+token with a TTL of its remaining life less five minutes, at most an hour, so
+a lease never outlives the token inside it. The lease names the identity's
+display name as the Basic user. The daemon never sees a client secret.
 
 ### 3.5 Rotation and Failure
 
 The deployment secret is rotated in Setup. The new value reaches every
 connection whose source is `deployment` at once, as it reaches Teams' customer
-rows, and each such connection's credential epoch increments so daemon caches
-purge the old tokens. An own application's secret is replaced on its card; the
-replacement runs §3.2's steps 5 and 6 and requires the same tenant, client ID,
-and identity id.
+rows: at boot, the Control Plane compares the configured secret with the one
+each such connection last sealed, and where they differ it seals the new one
+and increments the credential epoch, so daemon caches purge the old tokens.
+An own application's secret is replaced on its card; the replacement runs
+§3.2's steps 5 and 6 and requires the same tenant, client ID, and identity id.
 
 Entra does not tell an application when its own secret expires, so the product
 learns of expiry from the refusal. An `invalid_client` answer moves every
@@ -237,7 +245,12 @@ binding of the affected connections to `runtime_degraded` with reason
 `secret_rejected`. A service principal that is not in the organization moves
 them to `runtime_degraded` with reason `access_revoked`, and the card offers to
 connect again. Azure DevOps reports this two ways: `TF401444` for an identity
-the organization has never seen, and `TF400813` for one that was removed.
+the organization has never seen, and `TF400813` for one that was removed. An
+application with no service principal left in the tenant (Entra `700016`) is
+read the same way. Any later success recovers them: a token proves the secret
+again, and an Azure DevOps answer proves access again, so a lease for a
+degraded connection first reads `connectionData`. Any other `401` is treated as
+a stale token and retried once with a fresh one.
 
 ### 3.6 What the Organization Grants
 
@@ -292,18 +305,32 @@ write that names a repository (a workspace, or an additional-repository grant)
 allocates the identity, takes the claim, and creates the binding and catalog
 row in one transaction. A binding records the path, the canonical clone URL,
 and the default branch. Its states are `ready` and `runtime_degraded`
-(`secret_rejected`, or `repository_unavailable` when the repository was deleted
-or disabled). Removing a binding that a workspace or grant still references is
-refused with 409 naming the reference; otherwise removal is immediate, since
-there is no webhook to clean up.
+(`secret_rejected` or `access_revoked` from §3.5, or `repository_unavailable`
+when the repository left the identity's list: deleted, disabled, in
+maintenance, or no longer granted). The picker's read moves a binding to
+`repository_unavailable` and back; a lease is refused while it lasts. Removing
+a binding that a workspace or grant still references is refused with 409
+naming the reference; otherwise removal is immediate, since there is no
+webhook to clean up.
+
+A binding belongs to one connection, and the workspace and grant rows name
+that connection beside the numeric id; a composite foreign key from those rows
+to the binding makes a referenced binding impossible to delete. The
+deployment-global claim of §4 is held while any binding of the organization
+names the repository, and released with the last one, an organization
+deletion included.
 
 Workspace derivation (git-workspace-model.md §6) gains two rows: an address in
 the connected organization that the identity can see yields
-`{ provider: 'azure-devops', repoId }`; one it cannot see is refused with "grant
-the application access to this repository". A `write` request on a repository
-where the identity lacks Contribute is refused the same way, read through one
-permission evaluation (§12, item 7). Every other Azure DevOps address stays
-anonymous, as any unmanaged host does.
+`{ provider: 'azure-devops', repoId, connectionId }`; one it cannot see is
+refused with "grant the application access to this repository". Project and
+repository names match case-insensitively, and a project GUID stands for the
+project name. A `write` request on a repository where the identity lacks
+Contribute is refused the same way, read through one permission evaluation
+(§12, item 7); a request that names no tier takes `write` where the identity
+holds Contribute and `read` otherwise. Every other Azure DevOps address stays
+anonymous, as any unmanaged host does, and a `write` request for one is
+refused.
 
 Clone addresses are normalized to `https://dev.azure.com/{organization}/{project}/_git/{repository}`.
 The normalizer accepts:
@@ -336,7 +363,12 @@ back. So the Control Plane serves an Azure DevOps grant only to the credential
 proxy and to the daemon's own Git operations, and refuses the agent-facing
 helper channel for it. This is a capability of the provider's credential module
 (`proxyOnly`), which the Control Plane's mint path reads, not a provider-name
-branch, as Gitea §13 requires of every provider difference.
+branch, as Gitea §13 requires of every provider difference. The gitcred request
+says who will present the credential, `consumer: 'proxy' | 'daemon' | 'helper'`;
+for a `proxyOnly` provider the Control Plane answers `proxy` and `daemon` only,
+and refuses `helper` and an absent field with `SCOPE_DENIED`, so a daemon that
+predates the field is refused rather than served. No purpose-gated lease
+exists for Azure DevOps in the first version.
 
 A daemon therefore advertises `azure-devops-v1` only while its credential proxy
 is enabled, and placement requires it. A session on a strategy the proxy does
@@ -521,16 +553,25 @@ REST at the organization scope:
   `POST /azure-devops/connect/:flow/projects`, for steps 3 and 4. A
   `connectionId` on `POST /azure-devops/connect` starts **Manage project
   access** for that connection, skipping step 3;
-- `POST /azure-devops/connections` for an own application,
-  `GET /azure-devops/connections`, and `DELETE /azure-devops/connections/:id`;
+- `POST /azure-devops/connections` for an own application (one per
+  organization, `connection_exists` otherwise),
+  `GET /azure-devops/connections`, and `DELETE /azure-devops/connections/:id`,
+  which removes the connection and its bindings at once and answers 409 while
+  a workspace or grant still uses one of them;
 - `POST /azure-devops/connections/:id/secret`, for an own application only;
-- `GET /azure-devops/connections/:id/repositories` for the picker; and
+- `GET /azure-devops/connections/:id/repositories` for the picker, each row
+  keyed by GUID and carrying its binding when bound;
+- `GET /azure-devops/repositories`, the bound repositories and their states;
+  and
 - `DELETE /azure-devops/repositories/:id`, which answers 409 when a workspace or
   grant still references the repository.
 
 The workspace and additional-repository routes bind on first use, as for Gitea.
-The connect, connection, and secret routes manage a credential and are
-`interactiveOnly`.
+An additional-repository grant names the repository by GUID and the connection
+that sees it, `{ provider: 'azure-devops', connectionId, repositoryId }`; a
+`write` grant, and raising one to `write`, require Contribute. The connect,
+connection-write, and secret routes manage a credential and are
+`interactiveOnly`; the reads are not.
 
 ## 9. Security
 
@@ -700,8 +741,8 @@ live organization before A2.
   plane; and the REST routes.
 - **A3 — Daemon.** The credential module with its `proxyOnly` capability, the
   proxy instance and route descriptor of §6.2, the client configuration of
-  §6.4, the feature advertisement tied to the proxy, and the strategy refusal.
-  Tests pin each refusal of §6.2: the lists, the pull-request lists that name
+  §6.4, the feature advertisement tied to the proxy, the gitcred `consumer`
+  field of §6.1 on every request, and the strategy refusal. Tests pin each refusal of §6.2: the lists, the pull-request lists that name
   no repository, and a repository outside the agent's authorizations. They
   also pin the pull-request lookup by id: it answers for the agent's own
   repository, and answers another repository's pull request exactly as it

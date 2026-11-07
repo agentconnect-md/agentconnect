@@ -496,6 +496,13 @@ export const AgentWorkspaceCredentialDto = z.discriminatedUnion('provider', [
     provider: z.literal('gitea'),
     access: z.enum(['read', 'write']),
     repoId: z.string() // rename-stable numeric repository id (workspaceRepoId)
+  }),
+  z.object({
+    provider: z.literal('azure-devops'),
+    access: z.enum(['read', 'write']),
+    repoId: z.string(), // the surrogate numeric id (azure-devops-integration.md §4)
+    connectionId: z.string(),
+    azureDevOps: z.object({ organization: z.string(), projectId: z.string(), repositoryId: z.string() })
   })
 ])
 export type AgentWorkspaceCredentialDtoT = z.infer<typeof AgentWorkspaceCredentialDto>
@@ -904,7 +911,7 @@ export const SetAgentWorkspaceBody = AgentWorkspaceInputBody
  *  write path about what a pick means. Never consulted to display a stored workspace. */
 export const GitResolveDto = z.object({
   /** Who would vouch for this address if written now; 'anonymous' ⇒ read-only clone. */
-  provider: z.enum(['github', 'gitlab', 'gitea', 'anonymous']),
+  provider: z.enum(['github', 'gitlab', 'gitea', 'azure-devops', 'anonymous']),
   /** Canonical cloneable address the write would persist. */
   gitRepo: z.string(),
   /** The acting caller's access ceiling on this target. */
@@ -2410,6 +2417,81 @@ export const GiteaWebhookRotationDto = z.object({
   reason: z.string().nullable()
 })
 
+// ── azure devops (azure-devops-integration.md §3, §5, §8) ────────────────────
+/** One Azure DevOps connection — identity facts only, NEVER a secret or token. */
+export const AzureDevOpsConnectionDto = z.object({
+  id: z.string(),
+  organization: z.string(),
+  organizationInstanceId: z.string(),
+  tenantId: z.string(),
+  identityId: z.string(),
+  identityName: z.string().nullable(),
+  credentialSource: z.enum(['deployment', 'own']),
+  /** The own application's client ID; null for the deployment application. */
+  clientId: z.string().nullable(),
+  state: z.enum(['connected', 'degraded']),
+  stateReason: z.enum(['secret_rejected', 'access_revoked', 'repository_unavailable']).nullable(),
+  credentialEpoch: z.string(),
+  boundRepositories: z.number().int(),
+  connectedBy: z.string().nullable(),
+  lastVerifiedAt: z.string().nullable(),
+  createdAt: z.string()
+})
+export type AzureDevOpsConnectionDtoT = z.infer<typeof AzureDevOpsConnectionDto>
+
+export const AzureDevOpsConnectionListDto = z.object({
+  connections: z.array(AzureDevOpsConnectionDto),
+  /** Whether the deployment's Microsoft application can connect, so the card offers Connect with Microsoft. */
+  deploymentApplication: z.boolean()
+})
+
+const AzureDevOpsOrganizationName = z
+  .string()
+  .trim()
+  .regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,48}[A-Za-z0-9])?$/, 'expected an Azure DevOps organization name')
+
+/** "Use your own application instead" (§3.2): the secret is write-only — verified, sealed, never echoed. */
+export const ConnectAzureDevOpsBody = z.strictObject({
+  organization: AzureDevOpsOrganizationName,
+  tenantId: z.guid(),
+  clientId: z.guid(),
+  clientSecret: z.string().trim().min(1).max(1024)
+})
+
+export const ReplaceAzureDevOpsSecretBody = z.strictObject({ clientSecret: z.string().trim().min(1).max(1024) })
+
+/** One repository the identity can see (§5), keyed by GUID; `repoId` is set once it was ever bound on this deployment. */
+export const AzureDevOpsRepositoryDto = z.object({
+  repositoryId: z.string(),
+  projectId: z.string(),
+  path: z.string(), // {organization}/{project}/{repository}, decoded — display only
+  cloneUrl: z.string(),
+  defaultBranch: z.string().nullable(),
+  repoId: z.string().nullable(),
+  /** The binding through this connection, when the repository is bound; an unbound row is bound on save. */
+  bindingId: z.string().nullable()
+})
+
+export const AzureDevOpsRepositoryListDto = z.object({ repositories: z.array(AzureDevOpsRepositoryDto) })
+
+/** One bound repository (§5): a catalog row and an identity, no webhook. */
+export const AzureDevOpsRepositoryBindingDto = z.object({
+  id: z.string(),
+  connectionId: z.string(),
+  repoId: z.string(),
+  repositoryId: z.string(),
+  projectId: z.string(),
+  repoPath: z.string(),
+  cloneUrl: z.string(),
+  defaultBranch: z.string().nullable(),
+  state: z.enum(['ready', 'runtime_degraded']),
+  stateReason: z.enum(['secret_rejected', 'access_revoked', 'repository_unavailable']).nullable(),
+  createdAt: z.string()
+})
+export type AzureDevOpsRepositoryBindingDtoT = z.infer<typeof AzureDevOpsRepositoryBindingDto>
+
+export const AzureDevOpsRepositoryBindingListDto = z.object({ bindings: z.array(AzureDevOpsRepositoryBindingDto) })
+
 export const GithubAppDto = z.object({
   enabled: z.boolean(),
   /** github.com/apps/<slug>; null when the feature is disabled. */
@@ -2551,7 +2633,9 @@ export const AgentRepoAuthDto = z.object({
       since: z.string(), // ISO-8601
       reason: z.enum(['access_lost', 'identity_unlinked', 'attester_removed'])
     })
-    .nullable()
+    .nullable(),
+  /** The connection an `azure-devops` grant is served through (azure-devops-integration.md §3.2); absent on every other host. */
+  connectionId: z.string().optional()
 })
 export const AgentRepoAuthListDto = z.array(AgentRepoAuthDto)
 export type AgentRepoAuthDtoT = z.infer<typeof AgentRepoAuthDto>
@@ -2576,6 +2660,14 @@ export const CreateAgentRepoAuthBody = z.union([
   z.strictObject({
     provider: z.literal('gitea'),
     repoId: z.string().regex(/^[1-9]\d*$/),
+    access: RepoAccessDto.default('read'),
+    materialize: RepoMaterializationDto.default('always')
+  }),
+  // An Azure DevOps repository by GUID through one connection (azure-devops-integration.md §5); it is bound on first use.
+  z.strictObject({
+    provider: z.literal('azure-devops'),
+    connectionId: z.uuid(),
+    repositoryId: z.guid(),
     access: RepoAccessDto.default('read'),
     materialize: RepoMaterializationDto.default('always')
   }),

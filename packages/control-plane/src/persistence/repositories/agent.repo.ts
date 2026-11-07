@@ -75,6 +75,7 @@ import {
 } from '../../agents/assistant-mode.js'
 import { PgHookRepo } from './hook.repo.js'
 import { joinGiteaBindingFence } from './gitea-binding-fence.js'
+import { joinAzureDevOpsBindingFence } from './azure-devops-binding-fence.js'
 import { lockAgentPlacement, settlePlacementChange } from './agent-placement.js'
 import { assertAgentMayUseSet, assertDaemonNotInSet } from './member-set.repo.js'
 
@@ -161,8 +162,40 @@ type AgentWithUsers = Agent & {
   createdBy: User | null
   lastModifiedBy: User | null
   presetRecords: { preset: string }[]
+  azureDevOpsWorkspace: AzureDevOpsWorkspaceJoin | null
 }
-const withUsers = { createdBy: true, lastModifiedBy: true, presetRecords: { select: { preset: true } } } as const
+// An Azure DevOps workspace's routing (azure-devops-integration.md §4) is read through its binding, never stored twice.
+const azureDevOpsWorkspaceJoin = {
+  select: {
+    connection: { select: { organization: true } },
+    identity: { select: { projectId: true, repositoryId: true } }
+  }
+} as const
+type AzureDevOpsWorkspaceJoin = {
+  connection: { organization: string }
+  identity: { projectId: string; repositoryId: string }
+}
+const withUsers = {
+  createdBy: true,
+  lastModifiedBy: true,
+  presetRecords: { select: { preset: true } },
+  azureDevOpsWorkspace: azureDevOpsWorkspaceJoin
+} as const
+
+/** The binding fence a workspace write joins: a managed workspace commits only while its binding is live. */
+async function joinWorkspaceBindingFence(
+  tx: Prisma.TransactionClient,
+  orgId: string,
+  workspace: AgentWorkspace,
+  workspaceRepoId: bigint | undefined
+): Promise<void> {
+  if (workspace.mode !== 'git' || workspaceRepoId === undefined) return
+  const credential = workspace.credential
+  if (credential?.provider === 'gitea') await joinGiteaBindingFence(tx, orgId, workspaceRepoId)
+  if (credential?.provider === 'azure-devops') {
+    await joinAzureDevOpsBindingFence(tx, orgId, credential.connectionId, workspaceRepoId)
+  }
+}
 
 async function assertWorkspaceIntegrationCompatible(
   tx: Prisma.TransactionClient,
@@ -289,7 +322,7 @@ async function settlePresetPlacement(tx: Prisma.TransactionClient, agentId: stri
 }
 
 // Each host's persisted credential needs the column holding the identity that makes it mintable; without it the row reads as anonymous.
-const CREDENTIAL_OF: Record<CodeHostProvider, (a: Agent) => AgentWorkspaceCredential | undefined> = {
+const CREDENTIAL_OF: Record<CodeHostProvider, (a: AgentWithUsers) => AgentWorkspaceCredential | undefined> = {
   github: (a) =>
     a.installationId !== null
       ? { provider: 'github', installationId: a.installationId, access: a.gitAccess }
@@ -297,18 +330,30 @@ const CREDENTIAL_OF: Record<CodeHostProvider, (a: Agent) => AgentWorkspaceCreden
   gitlab: (a) => (a.workspaceRepoId !== null ? { provider: 'gitlab', access: a.gitAccess } : undefined),
   // The same shape as GitLab's: the numeric repository id is what the bot token is served for (gitea-integration.md §5).
   gitea: (a) => (a.workspaceRepoId !== null ? { provider: 'gitea', access: a.gitAccess } : undefined),
-  // A2 adds the connection this credential names; until then a row naming the host reads as anonymous.
-  'azure-devops': () => undefined
+  // The connection and the binding it names; the routing is the binding's (azure-devops-integration.md §4).
+  'azure-devops': (a) =>
+    a.workspaceRepoId !== null && a.workspaceConnectionId !== null && a.azureDevOpsWorkspace
+      ? {
+          provider: 'azure-devops',
+          access: a.gitAccess,
+          connectionId: a.workspaceConnectionId,
+          azureDevOps: {
+            organization: a.azureDevOpsWorkspace.connection.organization,
+            projectId: a.azureDevOpsWorkspace.identity.projectId,
+            repositoryId: a.azureDevOpsWorkspace.identity.repositoryId
+          }
+        }
+      : undefined
 }
 
-function credentialOf(a: Agent): AgentWorkspaceCredential | undefined {
+function credentialOf(a: AgentWithUsers): AgentWorkspaceCredential | undefined {
   // Provider is the explicit column (git-workspace-model.md §4); a value no host
   // claims reads as anonymous, never as another host's credential.
   const provider = a.gitCredentialProvider
   return provider !== null && isCodeHostProvider(provider) ? CREDENTIAL_OF[provider](a) : undefined
 }
 
-function workspaceOf(a: Agent): AgentWorkspace {
+function workspaceOf(a: AgentWithUsers): AgentWorkspace {
   if (a.workspaceMode === 'git') {
     const credential = credentialOf(a)
     return {
@@ -337,6 +382,7 @@ function workspaceColumns(workspace: AgentWorkspace) {
     agentDir: workspace.mode !== 'scratch' ? (workspace.agentDir ?? null) : null,
     gitCredentialProvider: credential?.provider ?? null,
     installationId: credential?.provider === 'github' ? credential.installationId : null,
+    workspaceConnectionId: credential?.provider === 'azure-devops' ? credential.connectionId : null,
     // An anonymous checkout provably cannot push, so its row says `read`;
     // scratch keeps the column's legacy `write` default (nothing reads it there).
     gitAccess: credential?.access ?? (workspace.mode === 'git' ? 'read' : 'write')
@@ -445,10 +491,8 @@ export class PgAgentRepo implements AgentRepo {
       // the two writers in a cycle. Full order for every agent-config writer:
       // skill-source name scopes → org row (create only) → agent rows.
       await lockOrgForConfigWrite(tx, input.orgId)
-      // A gitea workspace references a binding (gitea-integration.md §6): it commits only while that binding is live.
-      if (ws.mode === 'git' && ws.credential?.provider === 'gitea' && input.workspaceRepoId !== undefined) {
-        await joinGiteaBindingFence(tx, input.orgId, input.workspaceRepoId)
-      }
+      // A managed workspace references a binding: it commits only while that binding is live.
+      await joinWorkspaceBindingFence(tx, input.orgId, ws, input.workspaceRepoId)
       const bindId = externalConnectionIdOf(input.memory)[0]
       await fenceMemoryConnections(tx, input.orgId, externalConnectionIdOf(input.memory), bindId)
       const orgDefault =
@@ -945,10 +989,8 @@ export class PgAgentRepo implements AgentRepo {
           await lockHookReviewAgentRepoScope(tx, agentId, repoId)
         }
         await assertWorkspaceIntegrationCompatible(tx, agentId, affectedRepoIds, workspace, workspaceRepoId)
-        // A gitea workspace references a binding (gitea-integration.md §6): it commits only while that binding is live.
-        if (workspace.mode === 'git' && workspace.credential?.provider === 'gitea' && workspaceRepoId !== undefined) {
-          await joinGiteaBindingFence(tx, orgId, workspaceRepoId)
-        }
+        // A managed workspace references a binding: it commits only while that binding is live.
+        await joinWorkspaceBindingFence(tx, orgId, workspace, workspaceRepoId)
         const a = await tx.agent.update({
           where: { id: agentId, orgId, workspaceMode: expectedMode, lastModifiedAt: expectedLastModifiedAt },
           data: {
@@ -990,10 +1032,8 @@ export class PgAgentRepo implements AgentRepo {
           await lockHookReviewAgentRepoScope(tx, agentId, repoId)
         }
         await assertWorkspaceIntegrationCompatible(tx, agentId, affectedRepoIds, workspace, workspaceRepoId)
-        // A rollback onto a gitea workspace is a reference too (§6): it fails closed if the binding went meanwhile.
-        if (workspace.mode === 'git' && workspace.credential?.provider === 'gitea' && workspaceRepoId !== undefined) {
-          await joinGiteaBindingFence(tx, orgId, workspaceRepoId)
-        }
+        // A rollback onto a managed workspace is a reference too: it fails closed if the binding went meanwhile.
+        await joinWorkspaceBindingFence(tx, orgId, workspace, workspaceRepoId)
         const a = await tx.agent.update({
           where: {
             id: agentId,

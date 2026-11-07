@@ -110,6 +110,8 @@ model Org {
   gitlabAgentAccounts       GitlabAgentAccount[]
   giteaConnections          GiteaConnection[]
   giteaRepositoryBindings   GiteaRepositoryBinding[]
+  azureDevOpsConnections    AzureDevOpsConnection[]
+  azureDevOpsBindings       AzureDevOpsRepositoryBinding[]
   slackUserConfigs          SlackUserConfig[]
   linearTokens              LinearToken[]
   inviteLink                OrgInviteLink?
@@ -222,6 +224,7 @@ model User {
   githubRepoIdentity               GithubRepoIdentity?
   githubRepoIdentityState          GithubRepoIdentityState?
   giteaConnections                 GiteaConnection[]          @relation("GiteaConnectionCreatedBy")
+  azureDevOpsConnections           AzureDevOpsConnection[]    @relation("AzureDevOpsConnectionCreatedBy")
   slackConfigs                     SlackUserConfig[]
   createdInviteLinks               OrgInviteLink[]            @relation("OrgInviteLinkCreatedBy")
   inviteRedemptions                OrgInviteRedemption[]
@@ -942,6 +945,8 @@ model Agent {
   // `gitCredentialProvider` qualifies which host numbered it.
   // Nullable for pre-migration/anonymous workspaces and lazily repairable.
   workspaceRepoId       BigInt?
+  // The connection whose identity serves an `azure-devops` workspace (azure-devops-integration.md §3.2); null for every other host.
+  workspaceConnectionId String?            @db.Uuid
   // The organization GitHub App this agent works through (GithubApp.id), one agent per App. Null ⇒ the built-in App.
   githubAppId           String?            @unique @db.Uuid
   gitAccess             GitAccess          @default(write) // ceiling for minted tokens; meaningful only with a credential provider
@@ -985,6 +990,8 @@ model Agent {
 
   org                   Org                        @relation(fields: [orgId], references: [id], onDelete: Cascade)
   githubApp             GithubApp?                 @relation(fields: [githubAppId], references: [id], onDelete: SetNull)
+  // Enforced only when both columns are set (MATCH SIMPLE), so it binds Azure DevOps rows alone; a referenced binding cannot go.
+  azureDevOpsWorkspace  AzureDevOpsRepositoryBinding? @relation("AzureDevOpsWorkspace", fields: [workspaceConnectionId, workspaceRepoId], references: [connectionId, identityId], onDelete: NoAction, onUpdate: NoAction)
   daemon                Daemon?                    @relation(fields: [daemonId], references: [id], onDelete: SetNull)
   set                   MemberSet?                 @relation(fields: [setId], references: [id], onDelete: SetNull)
   createdBy             User?                      @relation("AgentCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
@@ -1026,6 +1033,7 @@ model Agent {
   @@index([orgId])
   @@index([daemonId])
   @@index([setId])
+  @@index([workspaceConnectionId, workspaceRepoId])
   @@map("agent")
 }
 
@@ -1146,12 +1154,17 @@ model AgentRepoAuthorization {
   /// Set while the attester fails the access check; the grant is not honored meanwhile.
   staleSince DateTime? @db.Timestamptz(6)
   staleReason RepoGrantStaleReason?
+  /// The connection whose identity serves an `azure-devops` grant (azure-devops-integration.md §3.2); null for every other host.
+  connectionId String? @db.Uuid
 
   agent      Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
   createdBy  User? @relation("AgentRepoAuthCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   attestedBy User? @relation("AgentRepoAuthAttestedBy", fields: [attestedByUserId], references: [id], onDelete: SetNull)
+  /// Enforced only when `connectionId` is set, so it binds Azure DevOps rows alone; a referenced binding cannot go.
+  azureDevOpsBinding AzureDevOpsRepositoryBinding? @relation("AzureDevOpsGrant", fields: [connectionId, repoId], references: [connectionId, identityId], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([agentId, provider, repoId])
+  @@index([connectionId, repoId])
   @@index([agentId])
   @@index([provider, attestationCheckedAt])
   @@map("agent_repo_authorization")
@@ -3745,6 +3758,88 @@ model GiteaWebhookSecret {
   binding GiteaRepositoryBinding @relation(fields: [bindingId], references: [id], onDelete: Cascade)
 
   @@map("gitea_webhook_secret")
+}
+
+// Azure DevOps (azure-devops-integration.md §3-§5): metadata here, the sealed client secret only in its side table.
+
+/// One Azure DevOps organization through one Entra identity (§3.2); source deployment|own, state connected|degraded.
+model AzureDevOpsConnection {
+  id                     String    @id @default(uuid()) @db.Uuid
+  orgId                  String
+  createdByUserId        String?
+  tenantId               String    @db.Uuid // the customer tenant the token is requested at
+  organization           String // the organization name dev.azure.com addresses
+  organizationInstanceId String    @db.Uuid // rename-stable organization identity from connectionData
+  identityId             String    @db.Uuid // connectionData.authenticatedUser.id of the service principal
+  identityName           String? // its display name, the basic-auth username the proxy presents
+  credentialSource       String
+  clientId               String?   @db.Uuid // the own application's client ID; null for the deployment application
+  credentialEpoch        BigInt    @default(1) // purge fence: bumped on every secret change
+  state                  String
+  stateReason            String?
+  lastVerifiedAt         DateTime? @db.Timestamptz(6)
+  createdAt              DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt              DateTime  @updatedAt @db.Timestamptz(6)
+
+  org       Org                            @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy User?                          @relation("AzureDevOpsConnectionCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  secret    AzureDevOpsConnectionSecret?
+  bindings  AzureDevOpsRepositoryBinding[]
+
+  @@unique([orgId, identityId])
+  @@index([orgId])
+  @@index([organizationInstanceId])
+  @@map("azure_devops_connection")
+}
+
+/// Sealed client secret, 1:1 with the connection: an own application's secret, or the deployment secret last seen.
+model AzureDevOpsConnectionSecret {
+  connectionId String @id @db.Uuid
+  clientSecret String // stored SecretCipher representation
+
+  connection AzureDevOpsConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@map("azure_devops_connection_secret")
+}
+
+/// The deployment-global surrogate numeric id of one repository GUID (§4): allocated once, never reused or deleted.
+model AzureDevOpsRepositoryIdentity {
+  id                     BigInt   @id @default(autoincrement())
+  repositoryId           String   @unique @db.Uuid
+  projectId              String   @db.Uuid
+  organizationInstanceId String   @db.Uuid
+  createdAt              DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt              DateTime @updatedAt @db.Timestamptz(6)
+
+  bindings AzureDevOpsRepositoryBinding[]
+
+  @@map("azure_devops_repository_identity")
+}
+
+/// One repository bound through one connection (§5), no webhook; state ready|runtime_degraded with its reason.
+model AzureDevOpsRepositoryBinding {
+  id            String   @id @default(uuid()) @db.Uuid
+  orgId         String
+  connectionId  String   @db.Uuid
+  identityId    BigInt // the surrogate numeric id: the repository's externalId everywhere
+  repoPath      String // {organization}/{project}/{repository}, decoded; display and matching only
+  cloneUrl      String // the canonical https://dev.azure.com/{organization}/{project}/_git/{repository}
+  defaultBranch String?
+  state         String
+  stateReason   String?
+  createdAt     DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime @updatedAt @db.Timestamptz(6)
+
+  org        Org                           @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  connection AzureDevOpsConnection         @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  identity   AzureDevOpsRepositoryIdentity @relation(fields: [identityId], references: [id], onDelete: Restrict)
+  workspaces Agent[]                       @relation("AzureDevOpsWorkspace")
+  grants     AgentRepoAuthorization[]      @relation("AzureDevOpsGrant")
+
+  @@unique([connectionId, identityId])
+  @@index([orgId])
+  @@index([identityId])
+  @@map("azure_devops_repository_binding")
 }
 
 // ───────────────────────────────────────────────────────────────────────────

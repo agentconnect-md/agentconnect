@@ -279,13 +279,15 @@ export class AgentSpecAssembler {
   async additionalReposOf(a: Pick<AgentRecord, 'id'>): Promise<AgentAdditionalRepo[]> {
     const rows = (await this.agentRepoAuth?.listForAgent(a.id)) ?? []
     // A stale grant is neither cloned nor offered to the selector until it is honored again.
+    // A host that routes by more than the numeric id carries it beside the entry (azure-devops-integration.md §4).
     return rows
       .filter(isHonoredRepoGrant)
       .map((row) => ({
         repoFullName: row.repoFullName,
         repoId: row.repoId.toString(),
         provider: row.provider,
-        materialize: row.materialize
+        materialize: row.materialize,
+        ...(row.azureDevOps ? { azureDevOps: row.azureDevOps } : {})
       }))
       .sort((x, y) => cmp(x.provider, y.provider) || cmp(x.repoFullName, y.repoFullName))
   }

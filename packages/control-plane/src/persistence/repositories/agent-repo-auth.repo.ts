@@ -21,11 +21,27 @@ import { PgHookRepo } from './hook.repo.js'
 import { lockHookReviewAgentRepoScope } from '../review-projection-lock.js'
 import { AgentWorkspaceRepoConflict } from '../errors.js'
 import { joinGiteaBindingFence } from './gitea-binding-fence.js'
+import { joinAzureDevOpsBindingFence } from './azure-devops-binding-fence.js'
 import { bumpAgentConfigRevisions } from './organization-environment-fence.js'
 
-const withCreator = { createdBy: true } as const
+// An Azure DevOps grant's routing is read through the binding its connection column names (azure-devops-integration.md §4).
+const withCreator = {
+  createdBy: true,
+  azureDevOpsBinding: {
+    select: {
+      connection: { select: { organization: true } },
+      identity: { select: { projectId: true, repositoryId: true } }
+    }
+  }
+} as const
 
-type Row = AgentRepoAuthorization & { createdBy: User | null }
+type Row = AgentRepoAuthorization & {
+  createdBy: User | null
+  azureDevOpsBinding: {
+    connection: { organization: string }
+    identity: { projectId: string; repositoryId: string }
+  } | null
+}
 
 // The wire spells it `on-demand`; the Prisma enum member is `on_demand` (its `@map` keeps the DB value on the wire spelling).
 const toDbMaterialization = (m: RepoMaterialization): DbRepoMaterialization => (m === 'on-demand' ? 'on_demand' : m)
@@ -52,7 +68,18 @@ function toRecord(r: Row): AgentRepoAuthorizationRecord {
       ? { userId: r.createdBy.id, displayName: r.createdBy.displayName, email: r.createdBy.email }
       : null,
     attestedByUserId: r.attestedByUserId,
-    stale: r.staleSince && r.staleReason ? { since: r.staleSince, reason: r.staleReason as RepoGrantStaleReason } : null
+    stale:
+      r.staleSince && r.staleReason ? { since: r.staleSince, reason: r.staleReason as RepoGrantStaleReason } : null,
+    ...(r.connectionId !== null ? { connectionId: r.connectionId } : {}),
+    ...(r.azureDevOpsBinding
+      ? {
+          azureDevOps: {
+            organization: r.azureDevOpsBinding.connection.organization,
+            projectId: r.azureDevOpsBinding.identity.projectId,
+            repositoryId: r.azureDevOpsBinding.identity.repositoryId
+          }
+        }
+      : {})
   }
 }
 
@@ -73,6 +100,7 @@ export class PgAgentRepoAuthorizationRepo implements AgentRepoAuthorizationRepo 
     materialize?: RepoMaterialization
     createdByUserId?: string
     attestedAt?: Date
+    connectionId?: string
   }): Promise<AgentRepoAuthorizationRecord> {
     return this.transaction(async (tx) => {
       // Linearize with lazy workspace-id repair. If create wins first, repair
@@ -90,6 +118,11 @@ export class PgAgentRepoAuthorizationRepo implements AgentRepoAuthorizationRepo 
       }
       // A gitea grant references a binding (gitea-integration.md §6): it commits only while that binding is live.
       if (input.provider === 'gitea' && agent) await joinGiteaBindingFence(tx, agent.orgId, input.repoId)
+      // An Azure DevOps grant names its connection's binding (azure-devops-integration.md §5), under the same kind of fence.
+      if (input.provider === 'azure-devops' && agent) {
+        if (input.connectionId === undefined) throw new Error('an azure-devops grant names its connection')
+        await joinAzureDevOpsBindingFence(tx, agent.orgId, input.connectionId, input.repoId)
+      }
       const row = await tx.agentRepoAuthorization.create({
         data: {
           agentId: input.agentId,
@@ -98,6 +131,7 @@ export class PgAgentRepoAuthorizationRepo implements AgentRepoAuthorizationRepo 
           repoFullName: input.repoFullName,
           access: input.access,
           materialize: toDbMaterialization(input.materialize ?? 'always'),
+          ...(input.provider === 'azure-devops' ? { connectionId: input.connectionId ?? null } : {}),
           ...(input.createdByUserId
             ? { createdByUserId: input.createdByUserId, attestedByUserId: input.createdByUserId }
             : {}),

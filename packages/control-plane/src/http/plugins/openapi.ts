@@ -81,7 +81,8 @@ export const Tag = {
   Stream: 'Stream',
   GitHub: 'GitHub',
   GitLab: 'GitLab',
-  Gitea: 'Gitea'
+  Gitea: 'Gitea',
+  AzureDevOps: 'Azure DevOps'
 } as const
 
 /** Group order + blurbs for the docs sidebar (OpenAPI top-level `tags`). */
@@ -150,6 +151,11 @@ const TAG_DESCRIPTIONS: ReadonlyArray<{ name: string; description: string }> = [
   {
     name: Tag.GitLab,
     description: 'GitLab.com OAuth connections — the administration identity for project discovery and provisioning.'
+  },
+  {
+    name: Tag.AzureDevOps,
+    description:
+      'Azure DevOps organizations reached through an Entra application’s service principal, and the repositories bound through them.'
   }
 ]
 

@@ -36,6 +36,7 @@
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import type {
   AgentSpec,
+  AzureDevOpsRepoRouting,
   AgentWorkspaceCredential as SpecWorkspaceCredential,
   CodeHostHookRule,
   CodeHostProvider,
@@ -91,6 +92,16 @@ export type DerivedWorkspace =
       kind: 'gitea'
       repoId: bigint
       gitRepo: string // the catalog row's provider-authored clone URL (gitea-integration.md §6)
+      defaultBranch: string
+      access: 'read' | 'write'
+    }
+  | {
+      kind: 'azure-devops'
+      /** The surrogate numeric id (azure-devops-integration.md §4); allocated only by a persisting derivation. */
+      repoId?: bigint
+      connectionId: string
+      azureDevOps: AzureDevOpsRepoRouting
+      gitRepo: string // the canonical four-segment address of the listed repository
       defaultBranch: string
       access: 'read' | 'write'
     }
@@ -242,6 +253,8 @@ export interface CodeHostProviderModule {
   readonly workspace: CodeHostProviderWorkspace
   readonly hooks: CodeHostProviderHooks
   readonly routing: CodeHostProviderRouting
+  /** Its credential reaches only the daemon's credential proxy and the daemon's own Git, never the agent-facing helper (azure-devops-integration.md §6.1). */
+  readonly proxyOnly?: boolean
   /** Raise one additional-repository grant to a stronger tier (§8.3). */
   upgradeRepoAuthorization(ctx: CodeHostRepoAuthorizationContext): Promise<AgentRepoAuthDtoT | undefined>
 }
