@@ -114,13 +114,16 @@ describe('applying a launch codehost env at spawn', () => {
     }
     const launch = applyCodehostSpawn({ ...base, env, codehost }, listener)
     expect(launch.env).toMatchObject({
-      GIT_CONFIG_COUNT: '3',
+      GIT_CONFIG_COUNT: '4',
       GIT_CONFIG_KEY_0: 'safe.directory',
       GIT_CONFIG_VALUE_0: '*',
       GIT_CONFIG_KEY_1: 'credential.https://github.com.helper',
       GIT_CONFIG_VALUE_1: '',
       GIT_CONFIG_KEY_2: 'credential.https://github.com.helper',
-      GIT_CONFIG_VALUE_2: '!placeholder'
+      GIT_CONFIG_VALUE_2: '!placeholder',
+      // No machine helper is handed the listener's own credential.
+      GIT_CONFIG_KEY_3: 'credential.http://127.0.0.1:41234.helper',
+      GIT_CONFIG_VALUE_3: ''
     })
   })
 })

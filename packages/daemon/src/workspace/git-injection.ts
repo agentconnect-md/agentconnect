@@ -259,6 +259,11 @@ export function mergeGitConfigEnv(
   return pairs.length > 0 ? gitConfigEnv(pairs) : {}
 }
 
+/** An empty helper list for a proxy's own origin: git approves a proxy's URL credential to the machine's helpers, which would keep it. */
+export function proxyCredentialResetEnv(proxyUrl: string): Record<string, string> {
+  return gitConfigEnv([[`credential.${new URL(proxyUrl).origin}.helper`, '']])
+}
+
 /** Workspace clone/pull policy. Keep this separate from `gitEnvBase`: skill
  * installation intentionally supports a broader set of operator-chosen sources. */
 export function workspaceGitEnvBase(repository?: string): Record<string, string> {
