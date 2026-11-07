@@ -781,13 +781,50 @@ their own handling (session-executors.md §8), including the VM's
 hostname-scoped placeholders. Cluster access is expected through an MCP
 server running outside the execution environment, not through this proxy.
 
-**A later phase: provider API keys.** The proxy's transport is independent of
-where a credential comes from, so provider API keys, whether exported from the
-host's sign-in or issued by the key server, could later use it too. That would
-take the real key out of the `srt` and host environments, where a command the
-agent runs can read it today, and would replace the VM's hostname-scoped
-placeholders. Subscription sign-ins (OAuth) stay out: the daemon does not hold
-or refresh a person's subscription login on others' behalf.
+#### Provider keys
+
+The proxy's transport is independent of where a credential comes from, so
+provider API keys (Anthropic, OpenAI and the like), whether exported from the
+host's sign-in or issued by the key server, use it too. That takes the real key
+out of the `srt` and host environments, where a command the agent runs can read
+it today, and is meant to replace the VM's hostname-scoped placeholders.
+Subscription sign-ins (OAuth) stay out: the daemon does not hold or refresh a
+person's subscription login on others' behalf.
+
+The proxy core carries provider keys; no launch hands a runtime a provider
+placeholder yet, and that wiring follows.
+
+- **Kind.** A provider placeholder is the same `acph1_` placeholder under the
+  same sealing key, with a kind claim `k: provider` and a slot claim `p`. A
+  placeholder without `k` is a code host's, so ones sealed before the claim
+  existed keep working. The kind is checked first: a code-host placeholder
+  presented to a provider origin, or a provider placeholder to a code host, is
+  refused with 403.
+- **Slots.** An agent's provider keys are slots, each with a stable source
+  name (such as `org:anthropic`), its provider, and its upstream origin: host,
+  port and an optional path prefix, and whether that origin is the provider's
+  own default or an endpoint the operator configured. A placeholder is sealed
+  for one slot and its origin, and the daemon resolves the slot's real key, with
+  any extra headers the upstream needs, when a request presents it. A resolved
+  key is reused briefly; an upstream 401 drops it, so the next request resolves
+  it again.
+- **Routing.** A request matches a slot by host and port. Under the slot's
+  path prefix, the proxy finds the placeholder in `x-api-key`,
+  `Authorization: Bearer`, `api-key` or `x-goog-api-key`, puts the real key
+  back in the same header, and sets the slot's extra headers. Outside the
+  prefix the placeholder is removed and the request forwarded without a
+  credential. The body is never read, and a key the agent brought itself
+  passes untouched.
+- **Boundaries.** As for code hosts, a placeholder is accepted only over HTTPS,
+  and over an agent's own socket only that agent's. A provider's default origin
+  never resolves into private space; an operator's endpoint is refused only
+  loopback, link-local and unspecified addresses. The proxy terminates TLS and
+  routes (`srt` domains, tunnel routes) for each agent's slot origins alongside
+  its code hosts.
+- **Streaming.** Responses are piped, so a streamed (server-sent events)
+  response reaches the client event by event.
+- **Not supported.** A key in the query string, a key in the request body, and
+  any Authorization scheme other than Bearer, which is refused with 400.
 
 ## Protocol Contract (`packages/protocol`)
 

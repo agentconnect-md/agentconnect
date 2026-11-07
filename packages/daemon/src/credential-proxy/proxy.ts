@@ -1,4 +1,4 @@
-// The daemon's code-host credential proxy (github-app-git-credentials.md, Phase 2): the environment holds a sealed placeholder, and each request is authenticated here with a token minted at its repository's tier.
+// The daemon's credential proxy (github-app-git-credentials.md, Phase 2): the environment holds sealed placeholders, and each request is authenticated here with a token minted at its repository's tier or its provider slot's API key.
 import { createHash, randomBytes } from 'node:crypto'
 import { chmodSync, mkdirSync, rmSync } from 'node:fs'
 import type { Server } from 'node:http'
@@ -21,8 +21,21 @@ import {
   SAAS_HOSTS,
   type ProxyInstance
 } from './instance-route.js'
-import { looksLikePlaceholder, openPlaceholder, sealPlaceholder } from './placeholder.js'
+import { looksLikePlaceholder, openPlaceholder, sealPlaceholder, type OpenedClaims } from './placeholder.js'
+import {
+  providerKeyPlaceholders,
+  slotHostKey,
+  slotHostname,
+  slotServes,
+  underSlotPrefix,
+  type CarriedKey,
+  type ProviderSlot,
+  type ResolvedProviderKey
+} from './provider-route.js'
 import { stripHostPathPrefix, type ManagedCredentialHost } from '../gitcred/managed-hosts.js'
+
+/** How long a resolved provider key is reused; a 401 from the upstream drops it sooner. */
+const PROVIDER_KEY_TTL_MS = 60_000
 
 /** A GraphQL body larger than this is refused rather than buffered. */
 const MAX_GRAPHQL_BODY_BYTES = 1 << 20
@@ -62,6 +75,10 @@ export interface CredentialProxyDeps {
   /** Every agent this daemon runs, whose instances the shared loopback listener serves. */
   runningAgents: () => Iterable<string>
   knownAgent: (agentId: string) => boolean
+  /** The provider API key slots an agent may use; none when unset. */
+  providerSlotsOf?: (agentId: string) => readonly ProviderSlot[]
+  /** A slot's real key, resolved when a request presents its placeholder. */
+  resolveProviderSlot?: (agentId: string, slotId: string) => Promise<ResolvedProviderKey>
   log: { info: (message: string) => void; warn: (message: string) => void }
   /** How upstream names resolve (a test seam), and the authorities the upstream leg trusts. */
   upstream?: { lookupFor?: DirectLookup; trustedCa?: string | string[] }
@@ -147,6 +164,16 @@ export function presentedCredential(header: string | null): Presented | undefine
   return { scheme: 'basic', value: password || user }
 }
 
+/** One slot's key resolution and when it started. */
+interface ProviderKeyEntry {
+  at: number
+  key: Promise<ResolvedProviderKey>
+}
+
+function providerKeyId(agentId: string, slotId: string): string {
+  return `${agentId}\n${slotId}`
+}
+
 function deny(status: number, reason: string): RequestDecision {
   return { action: 'deny', status, reason, mark: 'credential-proxy' }
 }
@@ -184,6 +211,8 @@ export class CredentialProxy {
   private mitmCa: MitmCA | undefined
   private readonly proxyToken = randomBytes(24).toString('base64url')
   private loopbackPort: number | undefined
+  /** Resolved provider keys by agent and slot, each kept until its TTL or the upstream's 401. */
+  private readonly providerKeys = new Map<string, ProviderKeyEntry>()
 
   constructor(private readonly deps: CredentialProxyDeps) {}
 
@@ -239,7 +268,8 @@ export class CredentialProxy {
         ? instanceHostnames(instance).map((name) => routeAuthority(name, 443))
         : instance.hosts.map((host) => (/:\d+$/.test(host) ? host : `${host}:443`))
     )
-    return [...new Set(routes)]
+    const slots = this.slots(agentId).map((slot) => routeAuthority(slotHostname(slot), slot.port))
+    return [...new Set([...routes, ...slots])]
   }
 
   private agentSocket(
@@ -265,6 +295,7 @@ export class CredentialProxy {
 
   /** Retire an agent's routes with the agent: its listeners close and their sockets go. */
   release(agentId: string): void {
+    for (const id of this.providerKeys.keys()) if (id.startsWith(`${agentId}\n`)) this.providerKeys.delete(id)
     for (const sockets of [this.agentSockets, this.tunnelSockets]) {
       const route = sockets.get(agentId)
       if (!route) continue
@@ -280,9 +311,18 @@ export class CredentialProxy {
     return sealPlaceholder(this.deps.key, { agentId, hosts })
   }
 
-  /** The host names srt routes to this agent's socket: its instances', never another agent's. */
+  /** The placeholder an agent's environment carries in place of one provider slot's key; undefined for a slot it does not have. */
+  providerPlaceholderFor(agentId: string, slotId: string): string | undefined {
+    const slot = this.slots(agentId).find((candidate) => candidate.id === slotId)
+    if (!slot) return undefined
+    return sealPlaceholder(this.deps.key, { agentId, hosts: [slotHostKey(slot)], kind: 'provider', slot: slot.id })
+  }
+
+  /** The host names srt routes to this agent's socket: its instances' and its provider slots', never another agent's. */
   domainsFor(agentId: string): string[] {
-    return [...new Set(this.instances(agentId).flatMap(instanceHostnames))]
+    return [
+      ...new Set([...this.instances(agentId).flatMap(instanceHostnames), ...this.slots(agentId).map(slotHostname)])
+    ]
   }
 
   /** The proxy URL a runtime on this host reaches the loopback listener by, its proxy credential included. */
@@ -303,9 +343,23 @@ export class CredentialProxy {
       : [...this.deps.runningAgents()].flatMap((id) => this.instances(id))
   }
 
-  /** Which address space a code-host name may not resolve into: all private space for a SaaS host, only loopback, link-local and unspecified for a self-managed one. */
+  /** An agent's provider slots, as its deps name them. */
+  private slots(agentId: string): readonly ProviderSlot[] {
+    return this.deps.providerSlotsOf?.(agentId) ?? []
+  }
+
+  /** The provider slots a listener serves: its own agent's on a socket, every running agent's on loopback. */
+  private servedSlots(boundAgent?: string): ProviderSlot[] {
+    return boundAgent !== undefined
+      ? [...this.slots(boundAgent)]
+      : [...this.deps.runningAgents()].flatMap((id) => this.slots(id))
+  }
+
+  /** Which address space a name may not resolve into: all private space for a SaaS host or provider origin, only loopback, link-local and unspecified for a self-managed instance or an operator's endpoint. */
   private deniedFor(hostname: string): ((address: string) => boolean) | undefined {
-    if (SAAS_HOSTS.includes(hostname)) return deniedAddress
+    const slots = this.servedSlots().filter((slot) => slotHostname(slot) === hostname)
+    if (SAAS_HOSTS.includes(hostname) || slots.some((slot) => slot.saas)) return deniedAddress
+    if (slots.length > 0) return deniedSelfManagedAddress
     return this.served().some((instance) => instanceHostnames(instance).includes(hostname))
       ? deniedSelfManagedAddress
       : undefined
@@ -322,7 +376,8 @@ export class CredentialProxy {
       filter: (port, host) => reachable(port, host.toLowerCase().replace(/^\[(.*)\]$/, '$1')),
       mitmCA: this.mitmCa!,
       shouldTerminateTLS: (host, port) =>
-        this.served(boundAgent).some((instance) => instanceHost(instance, host.toLowerCase(), port) !== undefined),
+        this.served(boundAgent).some((instance) => instanceHost(instance, host.toLowerCase(), port) !== undefined) ||
+        this.servedSlots(boundAgent).some((slot) => slotServes(slot, host.toLowerCase(), port)),
       filterRequest: (request, info) => this.decide(request, info, boundAgent),
       onFilterRequestDenied: ({ method, url, reason }) =>
         this.deps.log.info(`credential proxy refused ${method} ${url.split('?')[0]}: ${reason}`),
@@ -334,24 +389,39 @@ export class CredentialProxy {
     })
   }
 
-  /** One request's decision: pass anything that is not ours untouched, and exchange our placeholder for the repository's token; over an agent's own socket, only that agent's. */
+  /** One request's decision: pass anything that is not ours untouched, and exchange our placeholder for the repository's token or the provider's key; over an agent's own socket, only that agent's. */
   async decide(request: Request, info?: RequestInfo, boundAgent?: string): Promise<RequestDecision> {
     const url = new URL(request.url)
     const hostname = (info?.target?.host ?? url.hostname).toLowerCase().replace(/^\[(.*)\]$/, '$1')
     const port = info?.target?.port ?? (url.port ? Number(url.port) : url.protocol === 'http:' ? 80 : 443)
-    // Judged by name on any port, so a placeholder sent in cleartext to a code host is refused below rather than forwarded.
-    if (!this.served(boundAgent).some((instance) => instanceHostnames(instance).includes(hostname)))
-      return { action: 'allow' }
-    const carried = carriedPlaceholders(request)
-    if (!carried) return { action: 'allow' }
+    // Judged by name on any port, so a placeholder sent in cleartext is refused below rather than forwarded.
+    const codeHost = this.served(boundAgent).some((instance) => instanceHostnames(instance).includes(hostname))
+    const providerHost = this.servedSlots(boundAgent).some((slot) => slotHostname(slot) === hostname)
+    if (!codeHost && !providerHost) return { action: 'allow' }
+    const carried = codeHost ? carriedPlaceholders(request) : undefined
+    const keyed = providerHost ? providerKeyPlaceholders(request.headers) : []
+    const presented = [
+      ...(carried?.authorization ? [carried.authorization.value] : []),
+      ...(carried?.privateToken ? [carried.privateToken] : []),
+      ...keyed.map((entry) => entry.value)
+    ]
+    if (presented.length === 0) return { action: 'allow' }
     if (info?.scheme !== 'https') return deny(403, 'the agent credential is only accepted over HTTPS')
-    const claims = openPlaceholder(this.deps.key, carried.authorization?.value ?? carried.privateToken!)
-    if (!claims) return deny(403, 'the agent credential was not issued by this daemon')
+    const opened = presented.map((value) => openPlaceholder(this.deps.key, value))
+    if (opened.some((claims) => !claims)) return deny(403, 'the agent credential was not issued by this daemon')
+    const claims = opened[0]!
+    if (opened.some((o) => o!.agentId !== claims.agentId || o!.kind !== claims.kind || o!.slot !== claims.slot))
+      return deny(403, 'the request carries more than one agent credential')
+    // The kind first: a code-host credential is never a provider key, nor the reverse.
+    if (claims.kind === 'provider' ? keyed.length === 0 : !carried)
+      return deny(403, `the agent credential is not valid for ${hostKey(hostname, port)}`)
     if (!this.deps.knownAgent(claims.agentId)) return deny(403, 'the agent credential belongs to no running agent')
     if (boundAgent !== undefined && claims.agentId !== boundAgent)
       return deny(403, 'the agent credential belongs to another agent')
     // Routed by the bytes that go upstream; an ambiguous spelling was refused before this runs.
     const target = info.requestTarget ?? `${url.pathname}${url.search}`
+    if (claims.kind === 'provider') return this.providerDecision(claims, keyed, hostname, port, target)
+    if (!carried) return deny(403, `the agent credential is not valid for ${hostKey(hostname, port)}`)
     const instance = this.instanceFor(claims.agentId, claims.hosts, hostname, port, target)
     if (!instance) return deny(403, `the agent credential is not valid for ${hostKey(hostname, port)}`)
     const ask =
@@ -381,6 +451,61 @@ export class CredentialProxy {
       this.deps.log.warn(`credential proxy: no token for ${claims.agentId} on ${what}: ${message}`)
       return deny(403, `this agent is not authorized for ${what}`)
     }
+  }
+
+  /** A provider placeholder's decision: the slot's real key in each header it came in plus the slot's extra headers; outside the slot's prefix, no key at all. */
+  private async providerDecision(
+    claims: OpenedClaims,
+    keyed: CarriedKey[],
+    hostname: string,
+    port: number,
+    target: string
+  ): Promise<RequestDecision> {
+    const slot = this.slots(claims.agentId).find((candidate) => candidate.id === claims.slot)
+    if (!slot || !slotServes(slot, hostname, port) || !claims.hosts.includes(slotHostKey(slot)))
+      return deny(403, `the agent credential is not valid for ${hostKey(hostname, port)}`)
+    if (!underSlotPrefix(slot, target)) return { action: 'allow', removeHeaders: keyed.map((entry) => entry.header) }
+    if (keyed.some((entry) => entry.scheme !== undefined && entry.scheme !== 'bearer'))
+      return deny(400, 'a provider key is accepted in Authorization only as a Bearer token')
+    const id = providerKeyId(claims.agentId, slot.id)
+    const entry = this.providerKeyEntry(id, claims.agentId, slot.id)
+    let resolved: ResolvedProviderKey
+    try {
+      resolved = await entry.key
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      this.deps.log.warn(`credential proxy: no ${slot.provider} key for ${claims.agentId} (${slot.id}): ${message}`)
+      return deny(403, `this agent has no ${slot.provider} key available`)
+    }
+    const keyHeaders = keyed.map((carried): [string, string] => [
+      carried.header,
+      carried.header === 'authorization' ? `Bearer ${resolved.key}` : resolved.key
+    ])
+    return {
+      action: 'allow',
+      setHeaders: [...keyHeaders, ...Object.entries(resolved.headers ?? {})],
+      // A key the upstream rejects is resolved afresh on the next request.
+      onResponse: (status) => {
+        if (status === 401 && this.providerKeys.get(id) === entry) this.providerKeys.delete(id)
+      }
+    }
+  }
+
+  /** The cached resolution of a slot's key, started afresh past its TTL; a failed one is not kept. */
+  private providerKeyEntry(id: string, agentId: string, slotId: string): ProviderKeyEntry {
+    const cached = this.providerKeys.get(id)
+    if (cached && Date.now() - cached.at < PROVIDER_KEY_TTL_MS) return cached
+    const resolve = this.deps.resolveProviderSlot
+    const key = (async () => {
+      if (!resolve) throw new Error('no provider key resolver')
+      return resolve(agentId, slotId)
+    })()
+    const entry = { at: Date.now(), key }
+    this.providerKeys.set(id, entry)
+    key.catch(() => {
+      if (this.providerKeys.get(id) === entry) this.providerKeys.delete(id)
+    })
+    return entry
   }
 
   /** The agent's instance a request reaches, among those its placeholder was sealed for: the longest path prefix that applies. */

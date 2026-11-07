@@ -1,4 +1,4 @@
-// The code-host credential an agent's environment holds (github-app-git-credentials.md, Phase 2): a sealed placeholder the proxy verifies offline and exchanges for a real token.
+// The credential an agent's environment holds (github-app-git-credentials.md, Phase 2): a sealed placeholder the proxy verifies offline and exchanges for a code-host token or a provider API key.
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -6,11 +6,20 @@ import { dirname, join } from 'node:path'
 /** Every placeholder starts with this, so the proxy tells it from a credential the agent brought itself. */
 export const PLACEHOLDER_PREFIX = 'acph1_'
 
-/** What a placeholder vouches for: the agent it was issued to and the hosts it may be presented to. */
+/** What a placeholder stands in for: a code-host token, or one provider API key slot. */
+export type PlaceholderKind = 'codehost' | 'provider'
+
+/** What a placeholder vouches for: the agent it was issued to, the hosts it may be presented to, and its kind (a code host when unset). */
 export interface PlaceholderClaims {
   agentId: string
   hosts: string[]
+  kind?: PlaceholderKind
+  /** The provider slot a `provider` placeholder stands in for, such as `org:anthropic`. */
+  slot?: string
 }
+
+/** Claims as opened: the kind always set, a placeholder sealed before kinds existed reading as a code host's. */
+export type OpenedClaims = PlaceholderClaims & { kind: PlaceholderKind }
 
 const KEY_BYTES = 32
 
@@ -36,12 +45,15 @@ function mac(key: Buffer, body: string): Buffer {
 
 /** Seal claims into a placeholder: prefix, base64url claims, `.`, base64url MAC. */
 export function sealPlaceholder(key: Buffer, claims: PlaceholderClaims): string {
-  const body = Buffer.from(JSON.stringify({ a: claims.agentId, h: claims.hosts })).toString('base64url')
+  const kind = claims.kind ?? 'codehost'
+  if (kind === 'provider' && !claims.slot) throw new Error('a provider placeholder needs its slot')
+  const sealed = { a: claims.agentId, h: claims.hosts, k: kind, ...(kind === 'provider' ? { p: claims.slot } : {}) }
+  const body = Buffer.from(JSON.stringify(sealed)).toString('base64url')
   return `${PLACEHOLDER_PREFIX}${body}.${mac(key, body).toString('base64url')}`
 }
 
 /** The claims a placeholder carries, or undefined for anything this daemon did not seal; never throws. */
-export function openPlaceholder(key: Buffer, value: string): PlaceholderClaims | undefined {
+export function openPlaceholder(key: Buffer, value: string): OpenedClaims | undefined {
   if (!value.startsWith(PLACEHOLDER_PREFIX)) return undefined
   const [body, tag, ...rest] = value.slice(PLACEHOLDER_PREFIX.length).split('.')
   if (!body || !tag || rest.length > 0) return undefined
@@ -49,10 +61,17 @@ export function openPlaceholder(key: Buffer, value: string): PlaceholderClaims |
   const presented = Buffer.from(tag, 'base64url')
   if (presented.length !== expected.length || !timingSafeEqual(presented, expected)) return undefined
   try {
-    const parsed = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as { a?: unknown; h?: unknown }
+    const parsed = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as {
+      a?: unknown
+      h?: unknown
+      k?: unknown
+      p?: unknown
+    }
     if (typeof parsed.a !== 'string' || !Array.isArray(parsed.h)) return undefined
     const hosts = parsed.h.filter((host): host is string => typeof host === 'string')
-    return { agentId: parsed.a, hosts }
+    if (parsed.k === undefined || parsed.k === 'codehost') return { agentId: parsed.a, hosts, kind: 'codehost' }
+    if (parsed.k !== 'provider' || typeof parsed.p !== 'string' || parsed.p === '') return undefined
+    return { agentId: parsed.a, hosts, kind: 'provider', slot: parsed.p }
   } catch {
     return undefined
   }
