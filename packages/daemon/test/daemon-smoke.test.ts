@@ -82,13 +82,11 @@ describe('Daemon (no Slack, injected ACP host)', () => {
         cwd: agent.workspace.path,
         providerCredential: credentials
       })
-      // The credential proxy always runs, so the session holds its placeholder for the key, never the key.
       expect(host.opts.env).toMatchObject({
-        ANTHROPIC_API_KEY: expect.stringMatching(/^acph1_/),
+        ANTHROPIC_API_KEY: 'example-provider-key',
         ANTHROPIC_AUTH_TOKEN: '',
         ANTHROPIC_BASE_URL: 'https://api.example.test'
       })
-      expect(JSON.stringify(host.opts.env)).not.toContain('example-provider-key')
       expect(d.maskAgentSecrets(agent.id, 'echo example-provider-key example-workspace')).not.toContain(
         'example-provider-key'
       )

@@ -76,10 +76,6 @@ export class RemoteShimDriver<L extends Launch = Launch> implements SpawnDriver 
         ...(request.codehost ? { codehost: this.deps.codehostFor?.(subject) } : {}),
         ...(provider ? { provider } : {})
       })
-      if (request.codehost && launch.env.AC_CODEHOST_CREDENTIAL === undefined)
-        this.deps.log.warn(
-          `credential proxy: a session of agent "${agentId}" has no code-host credential: its shim serves no usable codehost listener`
-        )
       // Fail-closed and per-launch: the env points at these files and a resumed sandbox starts with an empty tmpfs, so the write belongs to every launch, not to the bind.
       const sink = new ShimFileSink(session)
       await clearSpawnDirs(sink, launch.clearDirs)

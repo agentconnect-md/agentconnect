@@ -128,7 +128,7 @@ GitHub modes.
 | Private clone/fetch/pull               | HTTPS credential helper using the read token                                              | Equivalent                                                                                     |
 | Push                                   | HTTPS credential helper using the Git-write token                                         | Equivalent, subject to GitLab branch permissions                                               |
 | Additional repository grants           | Provider-qualified `read`, `comment`, or `write` authorization                            | Equivalent                                                                                     |
-| Issue and merge-request reads          | Read-only `glab` through the credential proxy, or provider read tools                     | Equivalent                                                                                     |
+| Issue and merge-request reads          | Read-only `glab` wrapper or provider read tools                                           | Equivalent                                                                                     |
 | Controlled comments and mutations      | Daemon-owned effect broker                                                                | Equivalent                                                                                     |
 | Managed event ingress                  | Automatically reconciled project webhook                                                  | Equivalent                                                                                     |
 | Created, updated, mention-only cadence | GitLab issue, merge-request, note, and push event mapping                                 | Equivalent                                                                                     |
@@ -1162,12 +1162,11 @@ Credential injection must cover all three existing paths:
 3. repository-local helper configuration.
 
 Each path resets inherited helpers for `https://gitlab.com` before installing
-its own helper, preventing fallback to a developer's personal credentials.
-Daemon-run git installs the daemon helper at command scope. The agent's
-runtime holds no minting credential: its session configuration and the
-checkout's pin hand git the credential proxy's placeholder, which the proxy
-exchanges for this credential per request (github-app-git-credentials.md,
-Phase 2).
+the daemon helper, preventing fallback to a developer's personal credentials.
+
+Where the daemon's credential proxy runs (github-app-git-credentials.md,
+Phase 2), a host or `srt` session's helper hands git a placeholder instead,
+and the proxy exchanges it for this credential per request.
 
 The managed feature allows only the exact `https://gitlab.com` origin. An
 operator-supplied `workspaceGitAllowedOrigins` remains authoritative; the
@@ -1180,19 +1179,25 @@ Core GitLab support does not depend on a separately installed CLI. The daemon
 provides bounded read operations for project, issue, merge-request, discussion,
 diff, and pipeline source-of-truth data.
 
-When `glab` is installed, a session runs it directly: `GITLAB_HOST` names
-the spec's instance and `GITLAB_TOKEN` carries the credential proxy's
-placeholder. The proxy resolves the project each API request names, serves a
-read with the binding's `read` credential, and refuses an unbound or
-unauthorized project (github-app-git-credentials.md, Phase 2).
+When `glab` is installed, a hidden wrapper additionally resolves the target
+project using explicit repository arguments, environment, and the current
+remote in provider-defined precedence. It requests the binding's `read`
+credential for that invocation and starts the real CLI with a read-only token.
+It refuses an unbound or unauthorized project.
 
-Mutating API requests are refused at the proxy with an error naming the
-effect tools. Supported mutations use structured broker tools, so prompt
-content can pick a target only among the agent's own authorizations and
-cannot change them. A user-supplied GitLab token passes through the proxy
-untouched and is outside the managed credential guarantee, matching the
-`GH_TOKEN` pass-through, which is silent today; a warning would be new
-behavior and should land on both providers together.
+Mutating CLI commands do not receive the effect token and fail at GitLab.
+This is deliberately stricter than the GitHub precedent, whose CLI wrapper
+serves a capability-clamped write-capable token so `gh issue comment` works.
+Supported mutations use structured broker tools, so prompt content can pick a
+target only among the agent's own authorizations and cannot change them. A
+user-supplied GitLab token wins over the managed wrapper and is outside the
+managed credential guarantee, matching the existing `GH_TOKEN` pass-through,
+which is silent today; a warning would be new behavior and should land on both
+providers together.
+
+Where the credential proxy runs, `glab` receives a placeholder as
+`GITLAB_TOKEN` and the proxy serves each API read this same read credential
+(github-app-git-credentials.md, Phase 2).
 
 ## 14. Output Ownership
 

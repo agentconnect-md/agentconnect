@@ -234,8 +234,8 @@ describe('the credential helper on a prefixed instance (§9)', () => {
     const scope = managedCredentialScope('gitea', undefined, false, { host: INSTANCE })
     expect(scope).toEqual({ host: giteaManagedHost(INSTANCE), giteaHost: INSTANCE, giteaRepoBearing: true })
     const config = sessionGitConfig(AGENT, undefined, target, scope)
-    // Inherited helpers are reset for the Gitea origin before the placeholder helper is installed with useHttpPath.
-    expect(config.content).toContain(`[credential "${INSTANCE}"]\n\thelper = \n\thelper = "!f()`)
+    // Inherited helpers are reset for the Gitea origin before the daemon helper is installed with useHttpPath.
+    expect(config.content).toContain(`[credential "${INSTANCE}"]\n\thelper = \n\thelper = !'`)
     expect(config.content).toContain('useHttpPath = true')
     expect(config.content).not.toContain('github.com')
     expect(config.env[GITCRED_HOSTS_ENV]).toBe(table)

@@ -9,7 +9,6 @@ import {
   GITCRED_CAPABILITY_ENV,
   GitCredServer,
   gitcredSocketPath,
-  RUNTIME_NO_MINT_ERROR,
   type LiveSecretEntry
 } from '../../src/cp/gitcred-server.js'
 import type { GitCredentialCache } from '../../src/cp/git-credential.js'
@@ -101,40 +100,20 @@ describe('the credential channel’s live secrets', () => {
     }
   })
 
-  it('refuses the runtime capability `get` whether or not the spec carries a managed credential', async () => {
-    for (const credentialed of [false, true]) {
-      const { socketPath, capability, gets } = await boot({ credentialed })
-      expect(await gitcredIpc(socketPath, { op: 'get', agentId: 'a1', capability })).toEqual({
-        ok: false,
-        error: RUNTIME_NO_MINT_ERROR,
-        denied: 'agent'
-      })
-      expect(gets).toEqual([])
-      server?.stop()
-      rmSync(dir!, { recursive: true, force: true })
-    }
+  it('answers `get` for an agent without a managed git credential exactly as before it held a capability', async () => {
+    const { socketPath, capability, gets } = await boot({ credentialed: false })
+    const res = await gitcredIpc(socketPath, { op: 'get', agentId: 'a1', capability })
+    expect(res).toEqual({ ok: false, error: 'local credential capability required' })
+    // Not `denied`: the gh wrapper then runs the real gh untouched, as it did when this agent had no capability.
+    expect(res.denied).toBeUndefined()
+    expect(gets).toEqual([])
   })
 
-  it("serves the daemon capability's `get` only to an agent whose spec carries a managed credential", async () => {
-    const uncredentialed = await boot({ credentialed: false })
-    expect(
-      await gitcredIpc(uncredentialed.socketPath, {
-        op: 'get',
-        agentId: 'a1',
-        capability: uncredentialed.daemonCapability
-      })
-    ).toEqual({ ok: false, error: 'local credential capability required' })
-    expect(uncredentialed.gets).toEqual([])
-    server?.stop()
-    rmSync(dir!, { recursive: true, force: true })
-    const credentialed = await boot({ credentialed: true })
-    const res = await gitcredIpc(credentialed.socketPath, {
-      op: 'get',
-      agentId: 'a1',
-      capability: credentialed.daemonCapability
-    })
+  it('still serves `get` to an agent whose spec carries a managed credential', async () => {
+    const { socketPath, capability, gets } = await boot({ credentialed: true })
+    const res = await gitcredIpc(socketPath, { op: 'get', agentId: 'a1', capability })
     expect(res.ok).toBe(true)
-    expect(credentialed.gets).toEqual(['a1'])
+    expect(gets).toEqual(['a1'])
   })
 })
 

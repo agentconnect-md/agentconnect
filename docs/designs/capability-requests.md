@@ -531,8 +531,9 @@ child environment and **not** part of `hostSpawnSig`, so changing them is a soft
 replaces its in-memory agent and nothing else. Organization secrets stay spawn-only in this design.
 
 **Loading: a helper on the runtime's `PATH`.** `agentconnect-secrets` (`<root>/run/secrets-bin`
-self-hosted, `<runtimeRoot>/pathbin` under a host shim and `/opt/agentconnect/pathbin` in the
-sandbox image):
+self-hosted, apart from the `gh` and `glab` wrappers so a session behind the credential proxy keeps
+it without them; next to those wrappers at `<runtimeRoot>/pathbin` under a host shim and
+`/opt/agentconnect/pathbin` in the sandbox image):
 
 | Command                                           | Does                                                                                                                                   |
 | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |

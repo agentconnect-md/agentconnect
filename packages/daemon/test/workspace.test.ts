@@ -1049,7 +1049,7 @@ describe('prepareWorkspace repo-local helper re-pin (github-app)', () => {
     rawMock.mockImplementation(syncProbes())
   })
 
-  it('re-pins an existing checkout to the placeholder helper (a stale pin is replaced)', async () => {
+  it('re-pins an existing checkout to the CURRENT agent id (a recreated agent adopts a stale pin)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'ac-ws-repin-'))
     mkdirSync(join(dir, '.git'))
 
@@ -1058,8 +1058,10 @@ describe('prepareWorkspace repo-local helper re-pin (github-app)', () => {
     const configCalls = rawMock.mock.calls.map((c) => c[0] as string[])
     expect(configCalls).toContainEqual(['config', '--replace-all', 'credential.https://github.com.helper', ''])
     const add = configCalls.find((c) => c[1] === '--add')
-    expect(add?.[3]).toBe(checkoutHelper())
-    expect(add?.[3]).not.toContain('/run/helper.sh')
+    expect(add?.[3]).toBe(
+      checkoutHelper('bot-git-app', daemonGitCredentialTarget({ shimPath: '/run/helper.sh', runDir: gitcredRunDir() }))
+    )
+    expect(add?.[3]).toContain('else \'/run/helper.sh\' bot-git-app "$@"; fi')
     expect(configCalls).toContainEqual(['config', 'credential.https://github.com.useHttpPath', 'true'])
     expect(syncWrites().map((args) => args[0])).toEqual(['fetch', 'checkout']) // re-pin happens in addition to the sync, not instead of it
     expect(cloneImpl).not.toHaveBeenCalled()

@@ -1172,12 +1172,13 @@ network listener.
   second shim over a session directory an earlier life's shim still runs in.
 - **Helpers from the daemon's installation.** `AC_SHIM_HELPER_ROOT` is the
   directory that holds `shim/index.js`, which resolves the MCP bridge, the
-  merge-when-ready watcher, the `agentconnect-secrets` entry and the git-credential wrapper
+  merge-when-ready watcher, the `gh` token entry and the git-credential wrapper
   (`bin/git-credential`, emitted by the build beside `shim/`) from the daemon's own
   bundle. Git runs a sandbox helper through `sh`, because npm ships that wrapper
-  without its executable bit. The `agentconnect-secrets` wrapper cannot ship that way, since
-  a runtime finds it by PATH lookup: the launcher writes it per launch into
-  `<runtimeRoot>/pathbin` (`runtimeWrapperDir`) when the helper root has `shim/secrets.js`, and the
+  without its executable bit. The `gh` and `glab` wrappers cannot ship that way, since
+  a runtime finds them by PATH lookup: the launcher writes them per launch into
+  `<runtimeRoot>/pathbin` (`runtimeWrapperDir`), each only when its token entry exists, fetching tokens through the helper
+  root's `shim/gh-token.js` and `shim/glab-token.js` over the gitcred tunnel, and the
   ACP runner puts that directory first on PATH when the image's `pathbin` is absent.
   The image's `pathbin` and the DeepSeek preset have no counterpart in an installation;
   the launcher reports them in `missingHelpers` rather than naming a path that is not there.

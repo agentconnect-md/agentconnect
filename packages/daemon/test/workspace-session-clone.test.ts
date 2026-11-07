@@ -675,14 +675,12 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
     expect(git(cwd, ['rev-parse', 'HEAD'])).toBe(revision.head)
   })
 
-  it('pins the placeholder helper in a github-app clone and converges its origin on resume', async () => {
+  it('pins the credential helper in a github-app clone and converges its origin on resume', async () => {
     const agent = agentFixture({ githubApp: true })
     serveAll(agent)
     const cwd = await workspaces.prepareSessionWorkspace(agent, confined())
 
-    const pinned = git(cwd, ['config', '--get-all', 'credential.https://github.com.helper'])
-    expect(pinned).toContain('AC_CODEHOST_CREDENTIAL')
-    expect(pinned).not.toContain(SHIM)
+    expect(git(cwd, ['config', '--get-all', 'credential.https://github.com.helper'])).toContain(SHIM)
     // The fixture's `file://` origin is what a real clone would have recorded as the authorized URL.
     git(agent.workspace.path, ['remote', 'set-url', 'origin', PRIMARY_URL])
     // A resumed clone is converged like a resumed primary: an origin off the managed host is refused...

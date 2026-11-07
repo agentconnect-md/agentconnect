@@ -34,6 +34,7 @@ export const MOCKING_TESTS = [
 export const WINDOWS_EXCLUDED = [
   // A filesystem path handed to `net.Server.listen`; on Windows that argument is a named pipe name.
   'test/mcp-bridge-e2e.test.ts',
+  'test/shim-gh-token.test.ts',
   'test/shim-tunnel.test.ts',
   'test/microsandbox-shim.test.ts',
   'test/local-executor.test.ts',
@@ -52,7 +53,7 @@ export const WINDOWS_EXCLUDED = [
   'test/runtime-launch.test.ts',
   'test/microsandbox-launch.test.ts',
   // The sandbox-pod plane. A pod is always Linux, so its coordinates, its shim and its confined
-  // shells are POSIX by construction — a Windows daemon never stands one up. A new suite
+  // `gh`/`glab` shells are POSIX by construction — a Windows daemon never stands one up. A new suite
   // over that plane belongs here; the ones absent from this list do pass on Windows today.
   'test/cluster-workspace-prepare.test.ts',
   'test/shim-workspace-files.test.ts',
@@ -67,6 +68,7 @@ export const WINDOWS_EXCLUDED = [
   'test/shim-handshake.test.ts',
   'test/k8s-runtime-plane.test.ts',
   'test/k8s-isolated-session-one-pod.test.ts',
+  'test/cp/gh-shim.test.ts',
   'test/gitlab-self-managed-git.test.ts',
   // Every case stands up a second daemon on one root, which EADDRINUSEs on Windows: `start()` clears
   // a stale UDS before listening and a named pipe has no equivalent. Restore once that is fixed.

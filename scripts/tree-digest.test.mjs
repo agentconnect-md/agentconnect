@@ -16,7 +16,7 @@ const payload = () => ({
   files: {
     'shim/index.js': ['export const shim = 1\n', 0o444],
     'shim/skills/package.json': ['{"name":"skills"}\n', 0o444],
-    'pathbin/agentconnect-secrets': ['#!/bin/sh\nexec node /opt/agentconnect/shim/secrets.js "$@"\n', 0o555]
+    'pathbin/gh': ['#!/bin/sh\nexec gh "$@"\n', 0o555]
   },
   dirs: { shim: 0o555, 'shim/skills': 0o555, pathbin: 0o555 }
 })

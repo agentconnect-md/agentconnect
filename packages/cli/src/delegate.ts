@@ -6,7 +6,7 @@ import { cliCommand } from './invocation.js'
 /**
  * Delegation (cli-daemon-split.md §4.2): the CLI owns lifecycle/version/upgrade
  * itself and hands every other subcommand (run/chat/agent/mcp-bridge/
- * git-credential/secrets, plus any future/unknown daemon command) to the ACTIVE
+ * git-credential/gh-token, plus any future/unknown daemon command) to the ACTIVE
  * daemon version by re-executing its bundle with the argv passed through
  * verbatim. The daemon's commander entry is unaware it was delegated to.
  */

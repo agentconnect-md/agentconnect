@@ -339,7 +339,8 @@ async function holder(): Promise<{ d: any; agent: any; stop: () => Promise<void>
     JSON.stringify({
       version: 1,
       controlPlane: { enabled: false },
-      runtimes: { claude: { command: 'node', args: ['claude-agent-acp'] } }
+      runtimes: { claude: { command: 'node', args: ['claude-agent-acp'] } },
+      features: { credentialProxy: true }
     })
   )
   const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, probeRuntimes: async () => [] })
@@ -460,13 +461,12 @@ describe.skipIf(process.platform === 'win32')('the holder of an executor-placed 
     }
   })
 
-  it('gives no code-host credential where the shim routes nothing or misses a code host, which still trusts the bundle', async () => {
+  it('keeps the helper path for a shim that routes nothing, and for one missing a code host, which still trusts the bundle', async () => {
     const { d, agent, stop } = await holder()
     try {
       placedOnSrt(d, agent, undefined)
       const { env: none, files } = launch(d, agent)
-      // The session config presents only a placeholder the environment does not carry, never the helper.
-      expect(files.map((file) => file.content).join('\n')).not.toContain('bin/git-credential')
+      expect(files.map((file) => file.content).join('\n')).not.toContain('password=$AC_CODEHOST_CREDENTIAL')
       expect(none.AC_CODEHOST_CREDENTIAL).toBeUndefined()
       expect(none.GH_TOKEN).toBeUndefined()
       expect(none.SSL_CERT_FILE).toBeUndefined()

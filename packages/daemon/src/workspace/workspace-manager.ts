@@ -1313,7 +1313,7 @@ export class WorkspaceManager {
       }
       const resolved = { ...root, branch: recorded.branch }
       await this.convergeOriginInPlaceFor(agent.id, resolved, root.path)
-      await writeRepoHelperConfig(this.runnerFor(agent.id, root.path), root.managed).catch(() => undefined)
+      await writeRepoHelperConfig(this.runnerFor(agent.id, root.path), agent.id, root.managed).catch(() => undefined)
       if (pull) await this.pullRoot(agent.id, resolved, root.path)
       return { ...resolved, path: this.canonicalWorkspacePath(agent.id, root.path) }
     } catch (err) {
@@ -1675,7 +1675,7 @@ export class WorkspaceManager {
     if (root.githubApp) {
       // Follow the CP's canonical repository rename without replacing the checkout.
       await this.convergeWorkspaceOrigin(agent, cwd)
-      await writeRepoHelperConfig(this.runnerFor(agent.id, cwd), root.managed).catch(() => undefined)
+      await writeRepoHelperConfig(this.runnerFor(agent.id, cwd), agent.id, root.managed).catch(() => undefined)
     } else {
       // Historical anonymous checkouts can retain unsafe origins after their CP row has been sanitized.
       await this.convergeWorkspaceOrigin(agent, cwd)
@@ -2716,7 +2716,7 @@ export class WorkspaceManager {
       if (taken.githubApp) {
         // A resumed clone gets the canonical origin and a live helper pin.
         await this.convergeOriginInPlaceFor(agent.id, taken, cwd)
-        await writeRepoHelperConfig(this.runnerFor(agent.id, cwd), taken.managed).catch(() => undefined)
+        await writeRepoHelperConfig(this.runnerFor(agent.id, cwd), agent.id, taken.managed).catch(() => undefined)
       }
       await this.prepareSessionCloneCheckout(agent.id, taken, cwd, request, true, discover)
     }
@@ -2851,7 +2851,7 @@ export class WorkspaceManager {
         ])
       )
     )
-    if (root.githubApp) await writeRepoHelperConfig(this.runnerFor(agentId, cwd), root.managed)
+    if (root.githubApp) await writeRepoHelperConfig(this.runnerFor(agentId, cwd), agentId, root.managed)
     return (checkout) => this.scheduleWriteBack(agentId, checkout, plan, read, root.githubApp)
   }
 
@@ -3013,7 +3013,7 @@ export class WorkspaceManager {
       // `.git/config`, whose agent id goes stale when an agent is recreated over a surviving volume.
       await this.convergeOriginInPlace(agent, checkout)
       if (githubApp) {
-        await writeRepoHelperConfig(this.runnerFor(agent.id, checkout), this.managedScopeOf(agent)).catch(
+        await writeRepoHelperConfig(this.runnerFor(agent.id, checkout), agent.id, this.managedScopeOf(agent)).catch(
           () => undefined
         )
       }
@@ -3344,7 +3344,7 @@ export class WorkspaceManager {
       throw err
     }
     if (githubApp) {
-      await writeRepoHelperConfig(this.runnerFor(agent.id, checkout), this.managedScopeOf(agent))
+      await writeRepoHelperConfig(this.runnerFor(agent.id, checkout), agent.id, this.managedScopeOf(agent))
     }
     this.scheduleWriteBack(agent.id, checkout, plan, read, githubApp)
   }
@@ -3691,7 +3691,7 @@ export class WorkspaceManager {
       // through the daemon too — the "no credentials on the machine, but the agent
       // can still push" half of the design.
       if (githubApp) {
-        await writeRepoHelperConfig(this.runnerFor(agentId, cwd), managed)
+        await writeRepoHelperConfig(this.runnerFor(agentId, cwd), agentId, managed)
       }
     })().finally(() => {
       this.cloneInFlight.delete(key)

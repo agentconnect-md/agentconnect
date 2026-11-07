@@ -498,10 +498,8 @@ describe('secondary root materialization', () => {
       repoFullName: 'example-group/sub/example-project',
       branch: 'develop'
     })
-    // Agent-run git in this checkout presents its placeholder on the GitLab instance, never on github.com.
-    const pinned = git(checkout, ['config', '--get-all', 'credential.https://gitlab.com.helper'])
-    expect(pinned).toContain('AC_CODEHOST_CREDENTIAL')
-    expect(pinned).not.toContain(SHIM)
+    // Agent-run git in this checkout authenticates on the GitLab instance, never on github.com.
+    expect(git(checkout, ['config', '--get-all', 'credential.https://gitlab.com.helper'])).toContain(SHIM)
     expect(git(checkout, ['config', '--get', 'credential.https://gitlab.com.useHttpPath']).trim()).toBe('true')
     expect(() => git(checkout, ['config', '--get-all', 'credential.https://github.com.helper'])).toThrow()
     // The session gets the directory, and its standing context names it by the project's own path.
