@@ -19,6 +19,10 @@ updates:
           - version-update:semver-major
       # The daemon mirrors this CLI's discovery internals and asserts the exact version at build time; upgrade it manually with that audit.
       - dependency-name: skills
+      # 8.22.1 drops the microsandbox shim connection during a large daemon-to-guest transfer; the daemon pins 8.22.0.
+      - dependency-name: ws
+        versions:
+          - 8.22.1
     groups:
       # Stable and experimental SDK releases must move together, including major updates.
       opentelemetry:
