@@ -476,6 +476,7 @@ async function main(): Promise<void> {
     onAgentMsg: (fromDaemonId, msg) => routeAgentMsg(fromDaemonId, msg),
     onRoute: (fromDaemonId, msg) => relayIngress.handleRoute(fromDaemonId, msg),
     onRouteReport: (fromDaemonId, msg) => relayIngress.applyRouteReport(fromDaemonId, msg),
+    onPlatformRequest: (fromDaemonId, msg) => relayIngress.handlePlatformRequest(fromDaemonId, msg),
     onDaemonReady: (daemonId) => router.deliverDaemonReady(daemonId),
     log
   })

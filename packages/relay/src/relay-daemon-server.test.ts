@@ -9,6 +9,7 @@ import {
   RELAY_DAEMON_WS_PATH,
   RD_CODEHOST_REPLY_TARGET_V1,
   RD_DECISION_ROUTE_V1,
+  RD_PLATFORM_REQUEST_V1,
   RD_WEBCHAT_IMAGES_V1,
   RD_WEBCHAT_PROMPT_SUGGESTION_V1,
   type RcVerifyResult,
@@ -93,6 +94,7 @@ describe('createRelayDaemonServer (rd/* accept edge)', () => {
       capabilities: [
         RD_CODEHOST_REPLY_TARGET_V1,
         RD_DECISION_ROUTE_V1,
+        RD_PLATFORM_REQUEST_V1,
         RD_WEBCHAT_IMAGES_V1,
         RD_WEBCHAT_PROMPT_SUGGESTION_V1
       ]

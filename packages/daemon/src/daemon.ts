@@ -970,6 +970,7 @@ import { CodeHostRefResolver } from './codehost/ref-resolver.js'
 import { gitCredReadTokens } from './codehost/repository.js'
 import { CpClient } from './cp/client.js'
 import { RelayManager } from './cp/relay-manager.js'
+import { PlatformRelayUnsent } from './platforms/platform-relay.js'
 import { CP_IDENTITY_TOKEN_PATH, readClusterIdentityToken } from './cp/cluster-identity.js'
 import { CpCollabRoutes, isSyntheticA2aChannel } from './cp/cp-collab-routes.js'
 import { ClientTransport, systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
@@ -3112,6 +3113,13 @@ export class Daemon {
       evaluationIntegrationIds: () => this.evaluationIntegrationIds,
       store: () => this.store,
       cpClient: () => this.cpClient,
+      // Late-bound: the relays start with the CP's roster, which may come after a connection opens.
+      platformRelay: () => ({
+        request: async (req) => {
+          if (!this.relays) throw new PlatformRelayUnsent('no relay roster yet')
+          return await this.relays.request(req)
+        }
+      }),
       channelSnapshots: () => this.channelSnapshots,
       boundIntegrationIds: () => Object.keys(this.botUserIds),
       bindings: () => ({
@@ -9824,7 +9832,9 @@ export class Daemon {
       // multi-repository-workspaces.md decisions 15–19: this daemon selects a session's `decision` repositories before it starts; the CP refuses `decision` for a daemon without it. Static.
       REPO_SELECTOR_V1_FEATURE,
       // computer-use.md §15.5: this daemon reads the `quota_exceeded` refusal of computer-pool/acquire. Static.
-      COMPUTER_POOL_QUOTA_FEATURE
+      COMPUTER_POOL_QUOTA_FEATURE,
+      // What each platform module declares for itself (§7.4).
+      ...this.platformModules.registrationFeatures()
     ]
   }
 

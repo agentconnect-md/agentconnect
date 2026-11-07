@@ -53,7 +53,11 @@ import {
   type RdRoute,
   type RdRouteAck,
   type RdRouteReport,
-  type RdRouteReportAck
+  type RdRouteReportAck,
+  RD_PLATFORM_REQUEST_BUDGET_MS,
+  RD_PLATFORM_REQUEST_V1,
+  type RdPlatformRequest,
+  type RdPlatformReply
 } from '@agentconnect.md/protocol'
 import { Backoff, ReqRep, WireError, type Clock, type TimerHandle, type Transport } from '@agentconnect.md/connection'
 import type { Logger } from '../log.js'
@@ -62,6 +66,8 @@ import { AhpCarrier, ahpAvailable, type AhpCarrierDeps } from './ahp-carrier.js'
 const ACK_TIMEOUT_MS = 5000
 /** Longer than the relay's inner 5 s forward, so a slow target reads as the relay's `retry`, never a lost request. */
 const ROUTE_REQUEST_TIMEOUT_MS = 12_000
+/** Above the relay's whole-request budget, so a slow provider reads as the relay's answer, not a lost request. */
+const PLATFORM_REQUEST_TIMEOUT_MS = RD_PLATFORM_REQUEST_BUDGET_MS + 3_000
 /** rd/hello definitively rejected (bad/revoked key, daemonId mismatch) → stop dialing THIS relay. */
 const CLOSE_AUTH_FAILED = 4401
 
@@ -264,6 +270,24 @@ export class RelayClient {
     )
     if (rep.type !== 'rd/route/report/ack')
       throw new WireError('INTERNAL', `expected rd/route/report/ack, got ${rep.type}`, false)
+    return rep.payload
+  }
+
+  /** Did this relay advertise `rd/platform/request`? */
+  supportsPlatformRequest(): boolean {
+    return this.isReady() && this.relayCapabilities?.has(RD_PLATFORM_REQUEST_V1) === true
+  }
+
+  /** One platform module's provider call through this relay, single-shot: a provider write must never be sent twice by a retransmit. */
+  async sendPlatformRequest(payload: RdPlatformRequest): Promise<RdPlatformReply> {
+    if (this.state !== 'READY') throw new WireError('INTERNAL', `rd link not ready (${this.state})`, true)
+    const rep = await this.correlator.request(
+      buildRelayDaemonFrame('rd/platform/request', payload),
+      (e) => this.transport!.send(e),
+      { maxTries: 1, ackTimeoutMs: PLATFORM_REQUEST_TIMEOUT_MS }
+    )
+    if (rep.type !== 'rd/platform/reply')
+      throw new WireError('INTERNAL', `expected rd/platform/reply, got ${rep.type}`, false)
     return rep.payload
   }
 

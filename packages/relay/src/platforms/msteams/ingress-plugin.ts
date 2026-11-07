@@ -1,11 +1,14 @@
-// Microsoft Teams' relay ingress plugin (teams-integration.md §3, §4): a pure HTTP decoder of Bot Connector activities with no secret on the relay.
+// Microsoft Teams' relay ingress plugin (teams-integration.md §3, §4, §8.5): a decoder of Bot Connector activities; only the deployment app's credential reaches the relay, for its anchor and its rows' egress.
 import { randomUUID } from 'node:crypto'
-import { msTeamsActivityTenantId, normalizeMsTeamsActivity } from '@agentconnect.md/message'
+import { msTeamsActivityTenantId, normalizeMsTeamsActivity, type MsTeamsAdapterExt } from '@agentconnect.md/message'
 import {
   MSTEAMS_PLATFORM,
+  WireMsTeamsCall,
   WireMsTeamsCardActionResponse,
   type RcDeploymentConfig,
   type RdMsgPlatformAction,
+  type RdPlatformReply,
+  type WireNormalizedMessage,
   type WireMsTeamsBotAdded,
   type WireMsTeamsCardAction,
   type WireMsTeamsMembersAdded
@@ -26,6 +29,7 @@ import {
 } from './http-ingest.js'
 import { registerMsTeamsHttpIngress } from './http-ingress.js'
 import { MsTeamsAnchorEgress, answerMsTeamsAnchor } from './anchor.js'
+import { MsTeamsRelayEgress } from './egress.js'
 import { MsTeamsTokenVerifier, bearerToken, unverifiedAppId } from './token.js'
 import type { BotAssignment } from '../../bot-arbitration.js'
 import type { DemuxHints, HandledDelivery, RelayIngressHost, RelayPlatformIngressPlugin } from '../contract.js'
@@ -135,6 +139,18 @@ function triggerOf(isDm: boolean, mentionedBots: readonly string[], appId: strin
   return mentionedBots.some((id) => id.toLowerCase() === `28:${appId}`) ? 'mention' : undefined
 }
 
+// A normalized message with the relay's tickets beside the reply coordinates it carries in `adapterExt.msteams`.
+function withMessageTickets(
+  message: WireNormalizedMessage,
+  tickets: (conversationId: string, serviceUrl: string, teamId?: string) => { ticket?: string; teamTicket?: string }
+): WireNormalizedMessage {
+  const ext = message.adapterExt?.[MSTEAMS_PLATFORM] as MsTeamsAdapterExt | undefined
+  if (!ext) return message
+  const added = tickets(ext.conversationId, ext.serviceUrl, ext.teamId)
+  if (!added.ticket && !added.teamTicket) return message
+  return { ...message, adapterExt: { ...message.adapterExt, [MSTEAMS_PLATFORM]: { ...ext, ...added } } }
+}
+
 /** The deployment app's anchor id: not a UUID, so no CP row can ever carry it. */
 export const MSTEAMS_ANCHOR_BOT_ID = 'deployment:msteams:anchor'
 
@@ -143,6 +159,12 @@ export function createMsTeamsIngressPlugin(deps: MsTeamsIngressPluginDeps = {}):
   const verifier = new MsTeamsTokenVerifier(fetchImpl)
   // The latest snapshot's anchor, which carries the secret the anchor's ingest sends with; an assignment never does.
   let anchor: MsTeamsAnchorEgress | undefined
+  let egress: MsTeamsRelayEgress | undefined
+  // The egress and ticket binding of a deployment app's customer row; undefined for an organization's own bot.
+  const deploymentRow = (botId: string, appId: string | undefined, tenantId: string | undefined) =>
+    egress && appId && tenantId && appId.toLowerCase() === egress.appId && botId !== MSTEAMS_ANCHOR_BOT_ID
+      ? { egress, binding: { botId, tenantId: tenantId.toLowerCase() } }
+      : undefined
   return {
     platformId: MSTEAMS_PLATFORM,
     verifier,
@@ -152,6 +174,11 @@ export function createMsTeamsIngressPlugin(deps: MsTeamsIngressPluginDeps = {}):
 
     // The anchor the CP's snapshot names (§8.4): an app-only entry that answers a tenant no customer row serves.
     deploymentAssignments(snapshot: RcDeploymentConfig | undefined): BotAssignment[] {
+      // The deployment app's egress for its customer rows (§8.5), kept in place so a call in flight finishes.
+      const app = snapshot?.msTeamsApp
+      if (!app) egress = undefined
+      else if (egress) egress.update(app)
+      else egress = new MsTeamsRelayEgress(app, fetchImpl)
       const config = snapshot?.msTeamsAnchor
       if (!config) {
         anchor = undefined
@@ -194,6 +221,16 @@ export function createMsTeamsIngressPlugin(deps: MsTeamsIngressPluginDeps = {}):
       )
     },
 
+    // A deployment app's customer row's Bot Connector call or Graph token (§8.5); core checked the daemon serves the row.
+    async daemonRequest(a: BotAssignment, payload: unknown): Promise<RdPlatformReply> {
+      const row = deploymentRow(a.botId, a.apiAppId, a.teamId)
+      // Only a deployment row's daemon asks, so a mismatch is this relay's snapshot trailing another's; nothing was called yet.
+      if (!row) return { outcome: 'refused', reason: 'not_deployment_app', retryable: true }
+      const call = WireMsTeamsCall.safeParse(payload)
+      if (!call.success) return { outcome: 'refused', reason: 'invalid' }
+      return await row.egress.call(row.binding, call.data)
+    },
+
     extractDemuxHints(_rawBody: Buffer, body: unknown, headers): DemuxHints {
       // The token's unverified audience picks the candidate app and the activity's tenant its row; `verify` decides.
       const appId = unverifiedAppId(headers.authorization)
@@ -218,6 +255,14 @@ export function createMsTeamsIngressPlugin(deps: MsTeamsIngressPluginDeps = {}):
         await answerMsTeamsAnchor(ingest.anchor, activity, msTeamsActivityTenantId(activity)?.toLowerCase(), host.log)
         return {}
       }
+      // A deployment app's row sends through the relay, so what the verified activity names is ticketed for it (§8.5).
+      const row = deploymentRow(botId, ingest.appId, ingest.tenantId)
+      const tickets = (conversationId: string, serviceUrl: string, teamId?: string) => {
+        if (!row) return {}
+        const ticket = row.egress.ticket(row.binding, { conversationId, serviceUrl })
+        const teamTicket = teamId ? row.egress.ticket(row.binding, { conversationId: teamId, serviceUrl }) : undefined
+        return { ...(ticket ? { ticket } : {}), ...(teamTicket ? { teamTicket } : {}) }
+      }
       if (activity.type === 'invoke') {
         // Every invoke is answered 200; only a card click carries a note, and an unknown invoke an empty body.
         if (activity.name !== MSTEAMS_CARD_ACTION_INVOKE) return {}
@@ -226,7 +271,9 @@ export function createMsTeamsIngressPlugin(deps: MsTeamsIngressPluginDeps = {}):
           host.log.warn(`relay-ingress(${botId}): dropped a malformed Teams card click`)
           return { syncResponse: msTeamsInvokeNote(MSTEAMS_CLICK_NOTES.unsupported) }
         }
-        return { syncResponse: msTeamsInvokeNote(await forwardCardClick(host, botId, click)) }
+        const { ticket } = tickets(click.conversationId, click.serviceUrl)
+        const ticketed = ticket ? { ...click, ticket } : click
+        return { syncResponse: msTeamsInvokeNote(await forwardCardClick(host, botId, ticketed)) }
       }
       // The bot's own install is welcomed once in the conversation it joined (teams-integration.md §4.7).
       const added = msTeamsBotAdded(activity, ingest.appId)
@@ -234,7 +281,7 @@ export function createMsTeamsIngressPlugin(deps: MsTeamsIngressPluginDeps = {}):
         await forwardRosterChange(host, botId, {
           sessionKey: `msteams-bot-added:${added.conversationId}`,
           msgId: msTeamsBotAddedMsgId(botId, activity),
-          payload: added,
+          payload: { ...added, ...tickets(added.conversationId, added.serviceUrl, added.teamId) },
           what: 'bot install'
         })
       // People added to a conversation are looked up for a guest or another organization (assistant-mode.md §5.3).
@@ -243,7 +290,7 @@ export function createMsTeamsIngressPlugin(deps: MsTeamsIngressPluginDeps = {}):
         await forwardRosterChange(host, botId, {
           sessionKey: `msteams-members:${joined.conversationId}`,
           msgId: msTeamsMembersAddedMsgId(botId, activity),
-          payload: joined,
+          payload: { ...joined, ...tickets(joined.conversationId, joined.serviceUrl, joined.teamId) },
           what: 'member join'
         })
       if (added || joined) return {}
@@ -264,7 +311,7 @@ export function createMsTeamsIngressPlugin(deps: MsTeamsIngressPluginDeps = {}):
         host.dedupMark(dedupKey)
         return {}
       }
-      const message = result.message
+      const message = withMessageTickets(result.message, tickets)
       const trigger = triggerOf(message.isDm, message.mentionedBots, ingest.appId)
       // A repeat of a settled attempt answers 200 without forwarding; an unsettled one is forwarded again.
       if (host.dedupPeek(dedupKey)) return {}

@@ -1,6 +1,8 @@
 // The deployment-owned Teams app (teams-integration.md §8.2), projected from the Setup Server's `msTeams` slice; all three keys or none.
+import { createHmac } from 'node:crypto'
 import { z, type ZodRawShape } from 'zod'
-import { RcMsTeamsAnchor } from '@agentconnect.md/protocol'
+import { RcMsTeamsAnchor, RcMsTeamsDeploymentApp } from '@agentconnect.md/protocol'
+import type { BotSecretMaterial } from '../../persistence/ports.js'
 
 export const MsTeamsCpEnvSchema = {
   MSTEAMS_PLATFORM_APP_ID: z.string().optional(),
@@ -14,7 +16,7 @@ export interface MsTeamsPlatformApp {
   appId: string
   /** The app's home tenant, which issues the bot's tokens for every customer tenant. */
   tenantId: string
-  /** Secret material, never logged or returned. */
+  /** Secret material, never logged or returned; it reaches the relay and never a daemon (§8.5). */
   clientSecret: string
 }
 
@@ -29,6 +31,59 @@ export function resolveMsTeamsPlatformApp(env: Env): MsTeamsPlatformApp | undefi
   if (set < 3 || !appId || !tenantId || !clientSecret)
     throw new Error('microsoft teams platform app config is partial (set all three MSTEAMS_PLATFORM_* keys or none)')
   return { appId: appId.toLowerCase(), tenantId: tenantId.toLowerCase(), clientSecret }
+}
+
+/** A row named as the configured deployment app's by its app ID. */
+export function usesMsTeamsDeploymentApp(
+  bot: { externalAppId: string | null },
+  app: Pick<MsTeamsPlatformApp, 'appId'> | undefined
+): boolean {
+  return !!app && bot.externalAppId === app.appId
+}
+
+/** The `platformConfig` entry every deployment app's row carries, so it is one whatever the deployment's settings say later (§8.5). */
+export const MSTEAMS_ROW_OWNER_KEY = 'appOwner'
+export const MSTEAMS_DEPLOYMENT_OWNER = 'deployment'
+
+/** A deployment app's row by facts stored on it: the owner entry, or the token tenant and prebuilt flag every connect has written; or by the configured app's ID. */
+export function isMsTeamsDeploymentRow(
+  bot: { externalAppId: string | null; prebuilt?: boolean; platformConfig: Record<string, unknown> | null },
+  app?: Pick<MsTeamsPlatformApp, 'appId'>
+): boolean {
+  const stored = bot.platformConfig ?? {}
+  return (
+    stored[MSTEAMS_ROW_OWNER_KEY] === MSTEAMS_DEPLOYMENT_OWNER ||
+    (typeof stored.tokenTenantId === 'string' && stored.tokenTenantId !== '') ||
+    bot.prebuilt === true ||
+    usesMsTeamsDeploymentApp(bot, app)
+  )
+}
+
+/** What a deployment app's row stores in its secret slot: a marker, not a secret, since the app's secret never leaves the deployment (§8.5). */
+export const MSTEAMS_DEPLOYMENT_SECRET_MARKER = 'msteams-deployment-app:no-secret'
+
+export function msTeamsDeploymentSecrets(): BotSecretMaterial {
+  return { botToken: MSTEAMS_DEPLOYMENT_SECRET_MARKER, appToken: null, signingSecret: null }
+}
+
+/** The key relays sign conversation tickets with, derived from the pepper like the CP's other signing keys; base64url. */
+export function msTeamsRelayTicketKey(pepper: string): string {
+  return createHmac('sha256', pepper).update('msteams-relay-ticket-v1').digest('base64url')
+}
+
+/** The deployment app as the relay sends its rows' egress with (§8.5); none without an app. */
+export function msTeamsRelayApp(
+  app: MsTeamsPlatformApp | undefined,
+  pepper: string
+): RcMsTeamsDeploymentApp | undefined {
+  if (!app) return undefined
+  const parsed = RcMsTeamsDeploymentApp.safeParse({
+    appId: app.appId,
+    tenantId: app.tenantId,
+    clientSecret: app.clientSecret,
+    ticketKey: msTeamsRelayTicketKey(pepper)
+  })
+  return parsed.success ? parsed.data : undefined
 }
 
 /** A customer row of the deployment app: its app, a tenant other than the app's home, and the home recorded as its token tenant. */

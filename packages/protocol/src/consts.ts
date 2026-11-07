@@ -63,6 +63,9 @@ export function msTeamsMessagesUrl(publicRelayUrl: string): string {
   return `${publicRelayUrl.replace(/\/+$/, '')}${MSTEAMS_MESSAGES_PATH}`
 }
 
+/** The daemon sends a deployment-owned Teams app's Bot Connector calls through the relay and holds none of its credentials (teams-integration.md §8.5). */
+export const MSTEAMS_RELAY_EGRESS_V1_FEATURE = 'msteams-relay-egress-v1'
+
 /** The action an elicitation card's buttons invoke; the relay forwards its click to the owning daemon. */
 export const GOOGLE_CHAT_ELICIT_FUNCTION = 'agentconnect.elicit'
 

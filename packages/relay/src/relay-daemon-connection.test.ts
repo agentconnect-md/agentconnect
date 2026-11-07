@@ -5,6 +5,7 @@ import {
   RELAY_DAEMON_SUBPROTOCOL,
   RD_CODEHOST_REPLY_TARGET_V1,
   RD_DECISION_ROUTE_V1,
+  RD_PLATFORM_REQUEST_V1,
   RD_WEBCHAT_IMAGES_V1,
   RD_WEBCHAT_PROMPT_SUGGESTION_V1,
   type RelayDaemonFrame,
@@ -46,6 +47,7 @@ class FakeServerTransport implements ServerTransport {
       | 'rd/ack'
       | 'rd/route'
       | 'rd/route/report'
+      | 'rd/platform/request'
       | 'rd/webchat-image-update'
       | 'rd/webchat-prompt-suggestion',
     payload: unknown
@@ -67,6 +69,7 @@ function build(
     relayId?: string | undefined
     onRoute?: RelayDaemonConnDeps['onRoute']
     onRouteReport?: RelayDaemonConnDeps['onRouteReport']
+    onPlatformRequest?: RelayDaemonConnDeps['onPlatformRequest']
     onWebchatImageUpdate?: RelayDaemonConnDeps['onWebchatImageUpdate']
     onWebchatPromptSuggestion?: RelayDaemonConnDeps['onWebchatPromptSuggestion']
     bufferedAmount?: () => number
@@ -88,6 +91,7 @@ function build(
     onAgentMsg: async () => ({ deliveryId: 'unused', delivered: false }),
     onRoute: opts.onRoute ?? (async (_from, msg) => ({ deliveryId: msg.deliveryId, disposition: 'admitted' as const })),
     onRouteReport: opts.onRouteReport ?? (() => ({ accepted: true })),
+    ...(opts.onPlatformRequest ? { onPlatformRequest: opts.onPlatformRequest } : {}),
     onReady,
     onClosed,
     log: silentLog,
@@ -109,6 +113,7 @@ describe('RelayDaemonConnection (rd/* accept FSM)', () => {
       capabilities: [
         RD_CODEHOST_REPLY_TARGET_V1,
         RD_DECISION_ROUTE_V1,
+        RD_PLATFORM_REQUEST_V1,
         RD_WEBCHAT_IMAGES_V1,
         RD_WEBCHAT_PROMPT_SUGGESTION_V1
       ]
@@ -360,6 +365,68 @@ describe('RelayDaemonConnection (rd/* accept FSM)', () => {
       reason: 'offline'
     })
     expect(transport.lastRep('rd/route/report/ack')!.payload).toEqual({ accepted: false, reason: 'not_host' })
+  })
+
+  it('binds rd/platform/request to the authenticated daemon and refuses it where no handler is wired', async () => {
+    const onPlatformRequest = vi.fn(async () => ({ outcome: 'ok' as const, payload: { status: 200 } }))
+    const { transport } = build({ onPlatformRequest })
+    transport.feed('rd/hello', { apiKey: 'k', daemonId: DAEMON_ID })
+    await Promise.resolve()
+    await Promise.resolve()
+    transport.feed('rd/platform/request', { platformId: 'msteams', botId: RELAY_ID, payload: { op: 'graph-token' } })
+    await vi.waitFor(() => expect(transport.lastRep('rd/platform/reply')).toBeDefined())
+    expect(onPlatformRequest).toHaveBeenCalledWith(DAEMON_ID, {
+      platformId: 'msteams',
+      botId: RELAY_ID,
+      payload: { op: 'graph-token' }
+    })
+    expect(transport.lastRep('rd/platform/reply')!.payload).toEqual({ outcome: 'ok', payload: { status: 200 } })
+
+    const bare = build()
+    bare.transport.feed('rd/hello', { apiKey: 'k', daemonId: DAEMON_ID })
+    await Promise.resolve()
+    await Promise.resolve()
+    bare.transport.feed('rd/platform/request', { platformId: 'msteams', botId: RELAY_ID, payload: {} })
+    await vi.waitFor(() => expect(bare.transport.lastRep('rd/platform/reply')).toBeDefined())
+    expect(bare.transport.lastRep('rd/platform/reply')!.payload).toEqual({ outcome: 'refused', reason: 'unsupported' })
+  })
+
+  it('answers a handler failure with an error, never a reply that says nothing was sent', async () => {
+    const { transport } = build({
+      onPlatformRequest: async () => {
+        throw new Error('failed after the provider call')
+      }
+    })
+    transport.feed('rd/hello', { apiKey: 'k', daemonId: DAEMON_ID })
+    await Promise.resolve()
+    await Promise.resolve()
+    transport.feed('rd/platform/request', { platformId: 'msteams', botId: RELAY_ID, payload: {} })
+    await vi.waitFor(() => expect(transport.sent.some((f) => f.type === 'error')).toBe(true))
+    expect(transport.lastRep('rd/platform/reply')).toBeUndefined()
+  })
+
+  it('posts once when the reply to a 201 cannot be sent, and sends no second answer', async () => {
+    const posts: string[] = []
+    const { transport } = build({
+      onPlatformRequest: async () => {
+        posts.push('POST')
+        return { outcome: 'ok' as const, payload: { status: 201, body: { id: 'act-1' } } }
+      }
+    })
+    transport.feed('rd/hello', { apiKey: 'k', daemonId: DAEMON_ID })
+    await Promise.resolve()
+    await Promise.resolve()
+    const send = transport.send.bind(transport)
+    transport.send = (text: string) => {
+      if (text.includes('rd/platform/reply')) throw new Error('socket write failed')
+      send(text)
+    }
+    const before = transport.sent.length
+    transport.feed('rd/platform/request', { platformId: 'msteams', botId: RELAY_ID, payload: {} })
+    await vi.waitFor(() => expect(posts).toHaveLength(1))
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(posts).toEqual(['POST'])
+    expect(transport.sent.slice(before)).toEqual([])
   })
 })
 

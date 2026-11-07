@@ -23,6 +23,7 @@ import {
   decodeRelayDaemonFrame,
   RD_CODEHOST_REPLY_TARGET_V1,
   RD_DECISION_ROUTE_V1,
+  RD_PLATFORM_REQUEST_V1,
   RD_WEBCHAT_IMAGES_V1,
   RD_WEBCHAT_PROMPT_SUGGESTION_V1,
   type RdWebchatImageUpdate,
@@ -32,6 +33,8 @@ import {
   type RdRouteAck,
   type RdRouteReport,
   type RdRouteReportAck,
+  type RdPlatformRequest,
+  type RdPlatformReply,
   type RdHello,
   type RdHelloOk,
   type RdMsg,
@@ -89,6 +92,8 @@ export interface RelayDaemonConnDeps {
   onRoute: (fromDaemonId: string, msg: RdRoute) => Promise<RdRouteAck>
   /** An evaluation host's owner/participant report, bound the same way. */
   onRouteReport: (fromDaemonId: string, msg: RdRouteReport) => RdRouteReportAck | Promise<RdRouteReportAck>
+  /** A platform module's provider call for a bot, bound to the socket's authenticated daemonId; absent ⇒ refused. */
+  onPlatformRequest?: (fromDaemonId: string, msg: RdPlatformRequest) => Promise<RdPlatformReply>
   log: Logger
   bufferedAmount?: () => number
 }
@@ -291,6 +296,10 @@ export class RelayDaemonConnection {
             })
           return
         }
+        case 'rd/platform/request': {
+          void this.answerPlatformRequest(frame, frame.payload)
+          return
+        }
         default:
           this.sendError(frame.id, 'PROTOCOL_STATE', `unsupported: ${frame.type}`)
       }
@@ -315,7 +324,8 @@ export class RelayDaemonConnection {
           type === 'rd/webchat-prompt-suggestion' ||
           type === 'rd/agentmsg' ||
           type === 'rd/route' ||
-          type === 'rd/route/report'
+          type === 'rd/route/report' ||
+          type === 'rd/platform/request'
         )
       default:
         return false
@@ -392,6 +402,7 @@ export class RelayDaemonConnection {
       capabilities: [
         RD_CODEHOST_REPLY_TARGET_V1,
         RD_DECISION_ROUTE_V1,
+        RD_PLATFORM_REQUEST_V1,
         RD_WEBCHAT_IMAGES_V1,
         RD_WEBCHAT_PROMPT_SUGGESTION_V1
       ]
@@ -403,11 +414,29 @@ export class RelayDaemonConnection {
     this.transport.send(JSON.stringify(buildRelayDaemonFrame(type, payload, { corr: req.id })))
   }
 
-  /** Answer an inbound `rd/route` or `rd/route/report` request. */
-  private replyFrame<T extends 'rd/route/ack' | 'rd/route/report/ack'>(
+  // A handler failure may follow the provider call, so it answers an error the daemon reads as ambiguous, never `unavailable`; a failed reply is only logged.
+  private async answerPlatformRequest(frame: RelayDaemonFrame, msg: RdPlatformRequest): Promise<void> {
+    const handle = this.deps.onPlatformRequest
+    let reply: RdPlatformReply
+    try {
+      reply = handle ? await handle(this.daemonId, msg) : { outcome: 'refused', reason: 'unsupported' }
+    } catch (err) {
+      this.deps.log.warn(`relay: rd/platform/request failed: ${(err as Error).message}`)
+      if (this.state !== 'CLOSED') this.sendError(frame.id, 'INTERNAL', 'platform request failed', false)
+      return
+    }
+    try {
+      this.replyFrame(frame, 'rd/platform/reply', reply)
+    } catch (err) {
+      this.deps.log.warn(`relay: rd/platform/reply not sent: ${(err as Error).message}`)
+    }
+  }
+
+  /** Answer an inbound `rd/route`, `rd/route/report` or `rd/platform/request` request. */
+  private replyFrame<T extends 'rd/route/ack' | 'rd/route/report/ack' | 'rd/platform/reply'>(
     req: RelayDaemonFrame,
     type: T,
-    payload: T extends 'rd/route/ack' ? RdRouteAck : RdRouteReportAck
+    payload: T extends 'rd/route/ack' ? RdRouteAck : T extends 'rd/platform/reply' ? RdPlatformReply : RdRouteReportAck
   ): void {
     if (this.state === 'CLOSED') return
     this.transport.send(JSON.stringify(buildRelayDaemonFrame(type, payload as never, { corr: req.id })))

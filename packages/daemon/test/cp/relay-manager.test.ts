@@ -2,11 +2,19 @@ import { describe, it, expect, vi } from 'vitest'
 import { FakeClock, type Transport } from '@agentconnect.md/connection'
 import {
   buildRelayDaemonFrame,
+  RD_PLATFORM_REQUEST_V1,
   RD_WEBCHAT_IMAGES_V1,
   type RdMsg,
   type RelayDaemonFrame
 } from '@agentconnect.md/protocol'
 import { RelayManager } from '../../src/cp/relay-manager.js'
+import { PlatformRelayUnsent } from '../../src/platforms/platform-relay.js'
+import {
+  MsTeamsApi,
+  MsTeamsApiError,
+  msTeamsRelayPort,
+  relayMsTeamsConnector
+} from '../../src/platforms/msteams/api.js'
 import type { RelayClientDeps } from '../../src/cp/relay-client.js'
 import type { Logger } from '../../src/log.js'
 
@@ -103,6 +111,14 @@ describe('RelayManager.converge', () => {
     mgr.converge([entry('r1', 'wss://r1')])
     await mgr.stop()
     expect(mgr.size()).toBe(0)
+  })
+
+  it('reports a platform request no relay could take as unsent', async () => {
+    const { mgr } = manager()
+    mgr.converge([entry('r1', 'wss://r1')])
+    await expect(
+      mgr.request({ platformId: 'msteams', botId: '11111111-1111-4111-8111-111111111111', payload: {} })
+    ).rejects.toBeInstanceOf(PlatformRelayUnsent)
   })
 })
 
@@ -228,5 +244,70 @@ describe('RelayManager.sendWebchatPost (#753)', () => {
       reason: 'offline'
     })
     expect(await mgr.sendRouteReport({} as never)).toEqual({ accepted: false, reason: 'offline' })
+  })
+})
+
+describe('RelayManager.request (platform requests)', () => {
+  const REQ = { platformId: 'msteams', botId: '11111111-1111-4111-8111-111111111111', payload: { op: 'graph-token' } }
+
+  // Answer a relay's pending rd/platform/request with `reply`, once it arrives.
+  async function answer(t: FakeTransport, reply: Record<string, unknown>): Promise<void> {
+    await vi.waitFor(() => expect(t.sent.some((f) => f.type === 'rd/platform/request')).toBe(true))
+    const req = t.sent.find((f) => f.type === 'rd/platform/request')!
+    t.inject(buildRelayDaemonFrame('rd/platform/reply', reply as never, { corr: req.id }))
+  }
+
+  async function twoRelays() {
+    const ready = readyManager()
+    ready.mgr.converge([entry(RELAY_1, 'wss://r1'), entry(RELAY_2, 'wss://r2')])
+    await toReady(ready.transports.get('wss://r1')!, RELAY_1, [RD_PLATFORM_REQUEST_V1])
+    await toReady(ready.transports.get('wss://r2')!, RELAY_2, [RD_PLATFORM_REQUEST_V1])
+    return { mgr: ready.mgr, r1: ready.transports.get('wss://r1')!, r2: ready.transports.get('wss://r2')! }
+  }
+
+  it('asks the next relay when one has not seen the daemon’s membership yet, since that relay never called the provider', async () => {
+    const { mgr, r1, r2 } = await twoRelays()
+    const pending = mgr.request(REQ)
+    await answer(r1, { outcome: 'refused', reason: 'not_member', retryable: true })
+    await answer(r2, { outcome: 'ok', payload: { status: 200 } })
+    expect(await pending).toEqual({ outcome: 'ok', payload: { status: 200 } })
+    await mgr.stop()
+  })
+
+  it('stops at a final refusal, and answers a retryable one when every relay refused', async () => {
+    const final = await twoRelays()
+    const refused = final.mgr.request(REQ)
+    await answer(final.r1, { outcome: 'refused', reason: 'ticket' })
+    expect(await refused).toEqual({ outcome: 'refused', reason: 'ticket' })
+    expect(final.r2.sent.some((f) => f.type === 'rd/platform/request')).toBe(false)
+    await final.mgr.stop()
+
+    const lagging = await twoRelays()
+    const both = lagging.mgr.request(REQ)
+    await answer(lagging.r1, { outcome: 'refused', reason: 'unknown_bot', retryable: true })
+    await answer(lagging.r2, { outcome: 'refused', reason: 'not_member', retryable: true })
+    expect(await both).toMatchObject({ outcome: 'refused', retryable: true })
+    await lagging.mgr.stop()
+  })
+
+  it('never re-sends a post a relay answered with an error, which may follow the provider call', async () => {
+    const { mgr, r1, r2 } = await twoRelays()
+    const api = new MsTeamsApi(relayMsTeamsConnector(msTeamsRelayPort(mgr), REQ.botId), {
+      sleep: async () => {},
+      random: () => 0
+    })
+    const target = { serviceUrl: 'https://smba.trafficmanager.net/teams/', conversationId: 'a:chat', ticket: 't1.x.y' }
+    const posting = api.postActivity(target, { type: 'message', text: 'hi' }).catch((e: unknown) => e)
+    await vi.waitFor(() => expect(r1.sent.some((f) => f.type === 'rd/platform/request')).toBe(true))
+    const req = r1.sent.find((f) => f.type === 'rd/platform/request')!
+    r1.inject(
+      buildRelayDaemonFrame('error', { code: 'INTERNAL', message: 'failed', retryable: false }, { corr: req.id })
+    )
+    const err = (await posting) as MsTeamsApiError
+    expect(err).toBeInstanceOf(MsTeamsApiError)
+    expect(err.kind).toBe('ambiguous')
+    const sent = [...r1.sent, ...r2.sent].filter((f) => f.type === 'rd/platform/request')
+    expect(sent).toHaveLength(1)
+    await mgr.stop()
   })
 })

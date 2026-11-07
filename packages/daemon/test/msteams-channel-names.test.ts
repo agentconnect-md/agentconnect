@@ -145,7 +145,7 @@ describe('a Teams channel’s space', () => {
 describe('a team-wide install’s places', () => {
   it('are the team’s standard channels, General included, with the team as their space', async () => {
     const { conn } = team()
-    expect(await conn.teamInstallPlaces(SERVICE_URL, TEAM)).toEqual([
+    expect(await conn.teamInstallPlaces({ serviceUrl: SERVICE_URL, conversationId: TEAM })).toEqual([
       { id: TEAM, name: 'General', spaceId: TEAM, space: 'Example Team' },
       { id: DESIGN, name: 'Design', spaceId: TEAM, space: 'Example Team' }
     ])
@@ -153,7 +153,7 @@ describe('a team-wide install’s places', () => {
 
   it('carry no space while the team’s name cannot be read', async () => {
     const { conn } = team(() => new Response(null, { status: 403 }))
-    expect(await conn.teamInstallPlaces(SERVICE_URL, TEAM)).toEqual([
+    expect(await conn.teamInstallPlaces({ serviceUrl: SERVICE_URL, conversationId: TEAM })).toEqual([
       { id: TEAM, name: 'General' },
       { id: DESIGN, name: 'Design' }
     ])

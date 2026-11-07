@@ -880,6 +880,17 @@ Later, separately: the
   token. Replies, attachment downloads, cron anchors, and platform tools reuse
   the normal daemon path.
 - Direct Slack integrations retain their daemon-owned socket transport.
+- A platform whose credential must not reach daemons sends through the relay:
+  `rd/platform/request { platformId, botId, payload }` →
+  `rd/platform/reply { outcome, reason?, retryable?, payload? }`, sent to a
+  relay that advertised `platform-request-v1`. The relay answers only for a bot
+  whose assignment names the requesting daemon as a member, and the bot's relay
+  platform module checks the payload. It answers within
+  `RD_PLATFORM_REQUEST_BUDGET_MS`, which the daemon's wait exceeds. `refused`
+  and `unavailable` mean the provider was never called, so the daemon asks the
+  next ready relay; `retryable` marks a refusal that assignment lag may explain.
+  The deployment-owned Teams app is the one user
+  ([teams-integration.md §8.5](teams-integration.md#85-egress-for-the-deployment-apps-rows)).
 - Webchat output is returned through `rd/chat` to the relay holding the browser
   session. That relay delivers output, completion, and canonical posts to every
   verified browser connection for the conversation; opening or closing another
@@ -992,7 +1003,10 @@ guarantees. Relay crash-delivery and replay guarantees remain unchanged.
 | Target daemon unavailable           | Slack redelivers its messages until its last attempt (about six minutes), then they are dropped and counted; Lark / Feishu messages are dropped and counted; unrelated daemons continue | Target delivery fails visibly                                    | Target session cannot start or continue                            | That daemon cannot send                       |
 | Partial daemon-to-pool connectivity | A Slack callback landing without its target socket is answered 503 and redelivered, possibly to another instance; a Lark / Feishu one is dropped and counted                            | Same bounded-loss outcome                                        | A browser must reconnect to an instance with the target connection | Unaffected                                    |
 
-Direct integrations do not depend on relay availability.
+Direct integrations do not depend on relay availability. The rows of a
+deployment-owned Teams app send through the relay, so they cannot send while no
+relay is reachable; any relay can serve them, from its last snapshot through a
+CP outage.
 
 ## 14. Security and Trust Boundaries
 
@@ -1003,6 +1017,14 @@ Direct integrations do not depend on relay availability.
 - The Lark / Feishu Verification Token and optional Encrypt Key are stored by CP
   and held by assigned relays. The Lark / Feishu App Secret is sent only to member daemons
   and is never placed in a relay assignment.
+- A Microsoft Teams bot's secret differs by owner. An organization's own bot's
+  secret is sent only to member daemons and never to a relay. The
+  deployment-owned Teams app's secret works in every tenant the app serves, so
+  it stays on CP and relays and never reaches a daemon or a customer row: its
+  rows' daemons send every Bot Connector call through a relay with
+  `rd/platform/request`, and the relay checks the daemon's membership, a
+  relay-signed conversation ticket and an allowlisted Bot Connector host
+  ([teams-integration.md §8.5](teams-integration.md#85-egress-for-the-deployment-apps-rows)).
 - Hook verification secrets are stored by CP and broadcast only to trusted
   relays.
 - Stored credential material passes through `SecretCipher`. Secret-bearing

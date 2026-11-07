@@ -136,6 +136,8 @@ export interface HarnessOpts {
   dutyLease?: Partial<DutyLeaseConfig>
   /** The §24.1 GitLab host axis this control plane serves; absent ⇒ GitLab unconfigured. */
   gitlabBaseUrl?: string
+  /** The deployment's Teams app; absent ⇒ none configured. */
+  msTeamsApp?: { appId: string; tenantId: string; clientSecret: string }
   /** The handshake gate every connection shares, as the gateway passes one; absent ⇒ ungated. */
   handshakes?: HandshakeGate
 }
@@ -177,7 +179,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     createFeishuCpProvider({}),
     createLinearCpProvider({ app: TEST_LINEAR_APP, tokens: linearTokenStore, tokenService: linearTokens }),
     createDingTalkCpProvider(),
-    createMsTeamsCpProvider()
+    createMsTeamsCpProvider(opts.msTeamsApp ? { app: opts.msTeamsApp } : {})
   ])
   const repos = {
     daemon: new PgDaemonRepo(prisma),

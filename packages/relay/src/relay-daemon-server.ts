@@ -35,6 +35,8 @@ export interface RelayDaemonServerDeps {
   /** Route an evaluation host's `rd/route` and `rd/route/report` (message-intake.md §6). */
   onRoute: RelayDaemonConnDeps['onRoute']
   onRouteReport: RelayDaemonConnDeps['onRouteReport']
+  /** Answer a daemon's `rd/platform/request` through the bot's platform plugin. */
+  onPlatformRequest?: RelayDaemonConnDeps['onPlatformRequest']
   log: RelayDaemonConnDeps['log']
   /** A daemon's `rd/*` link became READY (first dial or redial); frames it streamed while unlinked were dropped. */
   onDaemonReady?: (daemonId: string) => void
@@ -82,6 +84,7 @@ export function createRelayDaemonServer(app: FastifyInstance, deps: RelayDaemonS
     onAgentMsg: deps.onAgentMsg,
     onRoute: deps.onRoute,
     onRouteReport: deps.onRouteReport,
+    ...(deps.onPlatformRequest ? { onPlatformRequest: deps.onPlatformRequest } : {}),
     log: deps.log,
     onReady: (daemonId, conn) => {
       const set = byDaemon.get(daemonId) ?? new Set()

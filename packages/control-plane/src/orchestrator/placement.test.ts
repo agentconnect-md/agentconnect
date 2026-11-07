@@ -763,6 +763,29 @@ describe('a provider with no deliverable payload withholds the integration', () 
   })
 })
 
+describe('a provider that needs a daemon feature', () => {
+  it('stamps the spec with it, so core can keep the integration off a daemon without it', async () => {
+    const needy = buildCpPlatformRegistry([
+      {
+        platformId: 'slack',
+        installRoutes: () => [],
+        credentialBodySchema: z.object({}),
+        validateConfig: () => Promise.resolve({ ok: true as const, identity: {} }),
+        buildNewBotInstall: () => ({ secrets: { botToken: '', appToken: null, signingSecret: null } }),
+        secretShape: { slots: {}, httpAssignRequires: [] },
+        projectIntegrationConfig: () => Promise.resolve({ relay: true }),
+        requiredDaemonFeatures: (config) => ((config as { relay?: boolean }).relay ? ['example-feature-v1'] : [])
+      }
+    ])
+    expect(await integrationToSpec(needy, NO_SESSION_SYNC, INTEGRATION, bot(), SECRET, [])).toMatchObject({
+      requires: ['example-feature-v1']
+    })
+    expect(await integrationToSpec(PLATFORMS, NO_SESSION_SYNC, INTEGRATION, bot(), SECRET, [])).not.toHaveProperty(
+      'requires'
+    )
+  })
+})
+
 describe('agentRecordToSpec runtime overrides', () => {
   it('ships displayName as either its value or explicit null so clearing it replicates', () => {
     const agent: AgentRecord = {

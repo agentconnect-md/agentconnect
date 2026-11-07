@@ -1,6 +1,6 @@
 // The Microsoft Graph history reads a Teams bot makes with an app-only token under the resource-specific consent its package asks for (teams-integration.md §4.1).
 import { MSTEAMS_ADAPTIVE_CARD_TYPE } from './connection.js'
-import { MsTeamsApiError, type MsTeamsApi, type MsTeamsMember } from './api.js'
+import { MsTeamsApiError, type MsTeamsMember, type MsTeamsReader } from './api.js'
 
 const GRAPH_ROOT = 'https://graph.microsoft.com/v1.0/'
 /** Graph's largest `$top` for channel messages, replies and chat messages; a larger one answers 400. */
@@ -183,7 +183,7 @@ function refusal(err: unknown, source: MsTeamsHistorySource): unknown {
 
 /** One bot's Graph reads: newest-first pages of a conversation's messages or a thread's replies, and one message. */
 export class MsTeamsGraph {
-  constructor(private readonly api: MsTeamsApi) {}
+  constructor(private readonly api: MsTeamsReader) {}
 
   async page(
     source: MsTeamsHistorySource,

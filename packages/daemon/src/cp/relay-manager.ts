@@ -13,6 +13,8 @@ import type {
   RelayRosterEntry,
   RdAgentMsg,
   RdAgentMsgAck,
+  RdPlatformReply,
+  RdPlatformRequest,
   RdRoute,
   RdRouteAck,
   RdRouteReport,
@@ -21,9 +23,10 @@ import type {
   WebchatImageUpdate,
   WebchatPromptSuggestion
 } from '@agentconnect.md/protocol'
+import { PlatformRelayUnsent, type PlatformRelay } from '../platforms/platform-relay.js'
 import { RelayClient, type RelayClientDeps } from './relay-client.js'
 
-export class RelayManager {
+export class RelayManager implements PlatformRelay {
   private readonly clients = new Map<string, RelayClient>() // keyed by relayId
   private webchatImagesAdvertised = false
 
@@ -107,6 +110,22 @@ export class RelayManager {
       }
     }
     return last
+  }
+
+  /** A platform module's provider call over a READY relay that serves it; each relay checks the daemon on its own, so one that answered without calling the provider is followed by the next. */
+  async request(req: RdPlatformRequest): Promise<RdPlatformReply> {
+    let declined: RdPlatformReply | undefined
+    for (const client of this.clients.values()) {
+      if (!client.supportsPlatformRequest()) continue
+      // A request with no answer may have reached the provider, so its rejection ends the walk.
+      const reply = await client.sendPlatformRequest(req)
+      if (reply.outcome === 'ok') return reply
+      // A final refusal outranks one another relay may yet lift.
+      if (!declined || (declined.retryable === true && reply.retryable !== true)) declined = reply
+      if (reply.outcome === 'refused' && reply.retryable !== true) return reply
+    }
+    if (declined) return declined
+    throw new PlatformRelayUnsent('no READY relay serves platform requests')
   }
 
   /**

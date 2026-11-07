@@ -75,7 +75,11 @@ import {
   type MemoryDefinitionDeps
 } from './agentDefinitions.js'
 import { daemonSupportsAgent, encodeAgentSpecForPeer, requiredDaemonFeatures } from '../domain/daemon-features.js'
-import { encodeIntegrationSpecForPeer, type ProjectedSessionMode } from '../domain/decision-trigger-features.js'
+import {
+  encodeIntegrationSpecForPeer,
+  integrationDeliverableToPeer,
+  type ProjectedSessionMode
+} from '../domain/decision-trigger-features.js'
 import type { AgentId, DaemonId } from '../domain/ids.js'
 import { AgentId as toAgentId, DaemonId as toDaemonId, IntegrationId as toIntegrationId } from '../domain/ids.js'
 import { sessionKeyStr, type SessionKey } from '../domain/sessionKey.js'
@@ -446,7 +450,16 @@ async function projectSpec(
   if (!provider) throw new Error(`no control-plane platform provider registered for ${i.platform}`)
   const config = await provider.projectIntegrationConfig(i, bot, core, secret)
   if (config === undefined) return null
-  return { orgId: i.orgId, integrationId: i.id, agentId: i.agentId, platform: i.platform, core, config }
+  const requires = provider.requiredDaemonFeatures?.(config) ?? []
+  return {
+    orgId: i.orgId,
+    integrationId: i.id,
+    agentId: i.agentId,
+    platform: i.platform,
+    core,
+    config,
+    ...(requires.length ? { requires: [...requires] } : {})
+  }
 }
 
 /** Union two roster halves by row id, keeping the first occurrence — the placement
@@ -606,9 +619,14 @@ export class Placement implements ReconcileService {
       return false
     })
 
-    const desiredIntegrations = assembledIntegrations.filter(
+    const servable = assembledIntegrations.filter(
       (spec): spec is IntegrationSpec => spec !== null && !quarantinedAgentIds.has(spec.agentId)
     )
+    // A daemon that would ignore a spec keeps its last one, so one it cannot take is dropped explicitly instead.
+    const desiredIntegrations = servable.filter((spec) => integrationDeliverableToPeer(spec, req.capabilities.features))
+    const withheldIntegrationIds = servable
+      .filter((spec) => !integrationDeliverableToPeer(spec, req.capabilities.features))
+      .map((spec) => spec.integrationId)
 
     const desiredAssignments = activeAssignments
       .filter((assignment) => !quarantinedAgentIds.has(assignment.agentId))
@@ -725,9 +743,14 @@ export class Placement implements ReconcileService {
     // A CP-owned integration omitted from the deliverable roster is pruned,
     // including when its secret is unavailable. Future non-active statuses must
     // make an explicit retain-versus-remove choice here.
-    const dropIntegrations = staleIntegrationCandidates
-      .filter((local) => local.origin === 'cp' || orgIntegrationIds.has(local.integrationId))
-      .map((local) => local.integrationId)
+    const dropIntegrations = [
+      ...new Set([
+        ...staleIntegrationCandidates
+          .filter((local) => local.origin === 'cp' || orgIntegrationIds.has(local.integrationId))
+          .map((local) => local.integrationId),
+        ...withheldIntegrationIds
+      ])
+    ]
 
     // Console-set retention, the reconnect baseline for the config/push hot update; an unexpected stored value is omitted ("keep local config").
     const sessionRetention = SessionRetentionSetting.safeParse(daemon.sessionRetention)

@@ -32,6 +32,7 @@ export {
   googleChatEventsUrl,
   MSTEAMS_MESSAGES_PATH,
   msTeamsMessagesUrl,
+  MSTEAMS_RELAY_EGRESS_V1_FEATURE,
   INTEGRATION_REVOKED_FEATURE,
   INTEGRATION_TENANT_FEATURE,
   isSelfManagedGitlabHost,

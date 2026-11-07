@@ -6,7 +6,7 @@
 import { isFrame, type DutyAgentBundle } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId } from '../../domain/ids.js'
 import { encodeAgentSpecForPeer } from '../../domain/daemon-features.js'
-import { encodeIntegrationSpecForPeer } from '../../domain/decision-trigger-features.js'
+import { encodeIntegrationSpecForPeer, integrationDeliverableToPeer } from '../../domain/decision-trigger-features.js'
 import type { DaemonWsDeps } from '../deps.js'
 import { frameOrgId } from './frame-org.js'
 import type { Handler } from './index.js'
@@ -39,12 +39,24 @@ export const handleDutyFetch: Handler = async (frame, conn, deps) => {
   const bundle = await deps.agentBundle(agent)
   rememberScopes(conn.daemonId, deps, bundle)
   // Workspace dual-encoded per the asking member's advertised features (§8).
-  const features = deps.connReg.get(conn.daemonId)?.capabilities?.features
+  const state = deps.connReg.get(conn.daemonId)
+  const features = state?.capabilities?.features
+  // An integration the member cannot take is removed rather than sent, so no earlier copy of it survives there.
+  for (const i of bundle.integrations)
+    if (!integrationDeliverableToPeer(i, features))
+      conn.send(
+        'integration/remove',
+        { integrationId: i.integrationId },
+        state ? { epoch: state.sessionEpoch } : undefined,
+        i.orgId ?? orgId
+      )
   conn.replyTo(frame, 'duty/fetch/ok', {
     bundle: {
       ...bundle,
       spec: encodeAgentSpecForPeer(bundle.spec, features),
-      integrations: bundle.integrations.map((i) => encodeIntegrationSpecForPeer(i, features))
+      integrations: bundle.integrations
+        .filter((i) => integrationDeliverableToPeer(i, features))
+        .map((i) => encodeIntegrationSpecForPeer(i, features))
     }
   })
 }

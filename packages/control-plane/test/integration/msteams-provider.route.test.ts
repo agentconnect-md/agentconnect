@@ -8,6 +8,7 @@ import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { msTeamsTokenUrl } from '../../src/platforms/msteams/provider.js'
 import { msTeamsPackageId } from '../../src/platforms/msteams/app-package.js'
+import { MSTEAMS_DEPLOYMENT_SECRET_MARKER } from '../../src/platforms/msteams/deployment-app.js'
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
 import type { RelayChannel } from '../../src/ws/relay-registry.js'
 import type { IntegrationRemove, IntegrationUpsert } from '@agentconnect.md/protocol'
@@ -193,6 +194,24 @@ describe('PUT /bots/:id/msteams/credentials', () => {
       platform: 'msteams',
       config: { appId: APP_ID, tenantId: TENANT_ID, clientSecret: ROTATED }
     })
+  })
+
+  it('refuses a secret for a row that holds the deployment app’s marker, whatever else the row records', async () => {
+    const agentId = await placedAgent()
+    const { app, control } = harness()
+    const { botId } = (await install(app, agentId)).json() as { botId: string }
+    // A row an earlier pass purged while its app ID was the deployment app's, with nothing else recorded.
+    await prisma.botSecret.update({ where: { botId }, data: { botToken: MSTEAMS_DEPLOYMENT_SECRET_MARKER } })
+    const upserts = control.upserts.length
+    const res = await app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/bots/${botId}/msteams/credentials`,
+      payload: { clientSecret: ROTATED }
+    })
+    expect(res.statusCode).toBe(409)
+    expect(res.json().code).toBe('MSTEAMS_DEPLOYMENT_APP')
+    expect((await prisma.botSecret.findUnique({ where: { botId } }))?.botToken).toBe(MSTEAMS_DEPLOYMENT_SECRET_MARKER)
+    expect(control.upserts.length).toBe(upserts)
   })
 
   it('answers 404 for a bot that is not a Teams bot', async () => {

@@ -14,6 +14,7 @@ import { relayHttpBase } from '../../http/relay-ingress.js'
 import { agentIconBackgroundColor } from '../../agents/agent-icon.js'
 import { BotId, IntegrationId } from '../../domain/ids.js'
 import { MsTeamsCreateCredentials, msTeamsSecrets, verifyMsTeamsApp } from './provider.js'
+import { MSTEAMS_DEPLOYMENT_SECRET_MARKER, isMsTeamsDeploymentRow, type MsTeamsPlatformApp } from './deployment-app.js'
 import {
   MSTEAMS_APP_PACKAGE_FILENAME,
   msTeamsAppIcons,
@@ -64,7 +65,11 @@ async function packageSource(deps: HttpDeps, req: FastifyRequest<{ Params: { id:
   return { agent, bot, input, fingerprint: msTeamsPackageFingerprint(input, agent) }
 }
 
-export function msTeamsRoutes(deps: HttpDeps, fetchImpl: typeof fetch = fetch) {
+export function msTeamsRoutes(
+  deps: HttpDeps,
+  fetchImpl: typeof fetch = fetch,
+  deploymentApp?: Pick<MsTeamsPlatformApp, 'appId'>
+) {
   return async function msTeamsRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
 
@@ -75,7 +80,7 @@ export function msTeamsRoutes(deps: HttpDeps, fetchImpl: typeof fetch = fetch) {
           tags: [Tag.Bots],
           summary: 'Replace a Teams bot client secret',
           description:
-            'Check a new Microsoft Entra client secret for this bot’s app with the same token request a new install runs, then store it in place of the current one and push it to every serving daemon. The app ID and tenant ID stay the bot’s identity; the secret is write-only and never reaches the relay.',
+            'Check a new Microsoft Entra client secret for this bot’s app with the same token request a new install runs, then store it in place of the current one and push it to every serving daemon. The app ID and tenant ID stay the bot’s identity; the secret is write-only and never reaches the relay. The deployment’s own Teams app is refused: its secret is managed in the Setup Server and reaches no daemon.',
           operationId: 'replaceMsTeamsBotSecret',
           params: IdParam,
           body: ReplaceMsTeamsSecretBody,
@@ -88,8 +93,9 @@ export function msTeamsRoutes(deps: HttpDeps, fetchImpl: typeof fetch = fetch) {
         if (!bot || bot.platform !== MSTEAMS_PLATFORM || !bot.externalAppId || !bot.externalTenantId) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'Teams bot not found.' })
         }
-        // A connected tenant's row takes its secret from the deployment app (§8.2).
-        if (bot.prebuilt) {
+        // A deployment app's row, by what it stores or the marker in its secret slot, never takes a secret (§8.5).
+        const stored = await deps.repos.botSecret.get(bot.orgId, bot.id)
+        if (isMsTeamsDeploymentRow(bot, deploymentApp) || stored?.botToken === MSTEAMS_DEPLOYMENT_SECRET_MARKER) {
           return reply.code(409).send({
             error: 'Conflict',
             statusCode: 409,
