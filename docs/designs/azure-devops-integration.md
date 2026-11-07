@@ -1003,8 +1003,8 @@ subscription per delivery kind its enabled hooks need, never one per hook:
 | ------------- | ------------------------------------------- | ------------------------------------------------------ | ---------------- |
 | opened        | `git.pullrequest.created`                   | `projectId`, `repository`                              | all              |
 | revision      | `git.pullrequest.updated`                   | … plus `notificationType: PushNotification`            | `minimal`        |
-| reviewers     | `git.pullrequest.updated`                   | … plus `notificationType: ReviewersUpdateNotification` | `minimal`        |
-| state         | `git.pullrequest.updated`                   | … plus `notificationType: StatusUpdateNotification`    | `minimal`        |
+| reviewers     | `git.pullrequest.updated`                   | … plus `notificationType: ReviewersUpdateNotification` | all              |
+| state         | `git.pullrequest.updated`                   | … plus `notificationType: StatusUpdateNotification`    | all              |
 | merged        | `git.pullrequest.merged`                    | … plus `mergeResult: Succeeded`                        | `minimal`        |
 | comment       | `ms.vss-code.git-pullrequest-comment-event` | `projectId`, `repository`                              | all              |
 | push          | `git.push`                                  | `projectId`, `repository`                              | `minimal`        |
@@ -1022,11 +1022,18 @@ The kind of an update is not in its body, and a body's resource is the pull
 request as it stood when the notification was sent, not when the event
 happened: a vote and a push that preceded a completion both arrived showing
 `completed` (**verified**). One subscription per update kind is therefore how
-the relay knows what happened, and the resource of those deliveries is only
-an identifier (`minimal` sends the pull request's `url` and `pullRequestId`,
+the relay knows what happened. A revision, a merge and a push need only an
+identifier (`minimal` sends the pull request's `url` and `pullRequestId`,
 **verified**). Opened and comment deliveries carry the whole resource, because
 the relay matches mentions and vetoes the identity's own traffic on what they
-say (§11.4).
+say. Reviewers and state carry it too, because the relay gates them on the pull
+request's author, which a minimal resource does not name (§11.4). A
+subscription still sending a minimal resource for those two kinds is drift, and
+the convergence rewrites it.
+
+A hook that watches pull requests also gets the merged and state kinds, even
+when it subscribes to neither event: they carry the cleanup that retires a
+pull request's checkout (§11.4).
 
 The binding records each subscription id with its kind. The Control Plane's
 `convergeManagedRepository` makes the set match the union of the enabled
@@ -1129,7 +1136,7 @@ belong to the binding, so the frame needs no subscription id.
 | `merge_request:synchronize`      | revision: a new iteration                                                             |
 | `merge_request:review_requested` | reviewers: the connection identity among the reviewers, with no vote and not declined |
 | `merge_request:reopened`         | state: `active` again after `abandoned`                                               |
-| maintenance cleanup family       | merged; state: `abandoned`                                                            |
+| maintenance cleanup family       | merged; state: `abandoned` or `completed`                                             |
 | pull-request comment             | comment: a `text` comment on a thread, conversation or diff                           |
 | `push:*`                         | push                                                                                  |
 
@@ -1141,11 +1148,17 @@ as a draft is admitted as Gitea §8 admits one; toggling draft fires none of
 the update kinds subscribed here and is inert.
 
 For the three update kinds and merged, the relay forwards the pull-request id
-from the minimal resource, and the daemon reads the pull request, its
-iterations and its reviewers at turn start under the binding's lease; the
-state classification above is made on that read, not on the body. The head
+and no classification. The daemon reads the pull request and its iterations at
+turn start under the hook-reply lease of §11.5, and classifies on that read,
+not on the body. A reviewer change is a review request only while the pull
+request is `active` and the lease's identity is among its reviewers with no
+vote and not declined. A status change is a reopening when the pull request is
+`active` and the rule admits reopened, and cleanup when it is `abandoned` or
+`completed`. Any other reviewer or status change completes without a turn. An
+update kind whose read fails is refused, since it cannot be classified; any
+other delivery keeps its turn and its prompt says the read failed. The head
 fence is the newest iteration's `sourceRefCommit`, which is the pull request's
-`lastMergeSourceCommit`.
+`lastMergeSourceCommit`. The daemon reads nothing for a merge or a push.
 
 A comment delivery's resource is the comment alone: `id`, `parentCommentId`,
 `author`, `content`, `commentType`, and `_links` (**verified**). The pull
@@ -1191,9 +1204,13 @@ let push; it never admits one Azure DevOps would not. Branch-level entries are
 not read. The repository's lists are cached for a minute per binding.
 
 The update kinds name no actor, so a review request and a reopening are gated
-on the pull request's author: anyone holding the pull-request contribute
-permission, which Readers have, can add a reviewer, and the review then reads
-code the author wrote. A revision and a push need no gate, since pushing to
+on the pull request's author, `createdBy.id` of the whole resource: anyone
+holding the pull-request contribute permission, which Readers have, can add a
+reviewer, and the review then reads code the author wrote. The relay gates
+without classifying. A refused reviewer change goes nowhere. A refused state
+change still reaches the daemon for its cleanup, but cannot reopen into a turn.
+The identity's own pull request from the same repository is not gated, as its
+opened delivery is not. A revision and a push need no gate, since pushing to
 the repository already takes Contribute. An external pull request from a fork
 starts only through the explicit paths of GitLab §12.2.
 
@@ -1210,22 +1227,26 @@ members.
 
 ### 11.5 Output
 
-**Final reply.** A comment trigger is answered in its own thread; any other
-trigger opens a thread on the pull request. It is written by the daemon's
+**Final reply.** A comment trigger is answered in its own thread, as a reply
+to the triggering comment; any other trigger opens a thread on the pull
+request. Comments coalesce per thread, so a batch is answered in the thread
+its first comment fired in. It is written by the daemon's
 final poster under a lease of purpose `azure_devops_hook_reply`, which the
 Control Plane serves to `consumer: 'daemon'` only and at `comment` for a
 repository with an enabled hook, whatever the agent's own tier. The standing
 context block is `# Azure DevOps`.
 
 **Acknowledgement.** A comment trigger gets a like on the triggering comment
-(`POST …/threads/{t}/comments/{c}/likes`, **verified**). Whether a like
-emits a comment delivery is a probe (§12 item 11); if it does, the relay
-drops a comment delivery whose content did not change. Other triggers get
-none, since a pull request has no reaction of its own.
+(`POST …/threads/{t}/comments/{c}/likes`, **verified**). A new comment is
+one whose `lastContentUpdatedDate` equals its `publishedDate`; the relay drops
+any other comment delivery, so neither an edit nor a like starts a turn. Other
+triggers get none, since a pull request has no reaction of its own. A failed
+like never fails the turn.
 
 **Controlled effects.** The tools of §6.6. In a hook turn the guidance names
 them before the Azure CLI, and the hook's lease raises a repository held at
-`read` to `comment` for them, as in Gitea §10.2.
+`read` to `comment` for them, as in Gitea §10.2. A write still needs the
+agent's own `write`.
 
 ### 11.6 Formal Reviews
 
@@ -1297,7 +1318,9 @@ as the tools' opened-object record already does (§6.6).
   Console's hook tables, replacing the refusing entries of §7.
 - Feature string `azure-devops-hooks-v1` on the relay and the daemon gates the
   compiled rule's `azureDevOps` member, the relay's dispatch target, and the
-  review adapter, fail-closed by omission.
+  review adapter, fail-closed by omission. The daemon advertises it with
+  `azure-devops-v1`, to the Control Plane and in every relay hello, exactly
+  while its credential proxy runs.
 - Hook and relay frames gain an `azureDevOps` optional member beside `github`,
   `gitlab` and `gitea`, with its arm in the decode-time view of Gitea §13.
 - The gitcred purpose enum gains `azure_devops_hook_reply`; the
@@ -1430,8 +1453,7 @@ Subscription` on `PublisherSecurity/{project GUID}`); after an
 11. **Probe, before the step that relies on it:**
     - whether a Project Administrator below Project Collection Administrator
       may write §11.1's access-control entry (B2);
-    - the content form of a mention of the identity, and whether a like emits
-      a comment delivery (B1);
+    - the content form of a mention of the identity (B1);
     - a multi-line inline thread, and the `changeTrackingId` it needs (B4);
     - whether a subscription `PUT` without the real password keeps the stored
       one (B2 never relies on it).

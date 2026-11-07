@@ -21,6 +21,7 @@ import { generateCa } from '@anthropic-ai/sandbox-runtime'
 import { createMitmCA } from '@anthropic-ai/sandbox-runtime/dist/sandbox/mitm-ca.js'
 import { mintLeafCert } from '@anthropic-ai/sandbox-runtime/dist/sandbox/mitm-leaf.js'
 import {
+  AZURE_DEVOPS_HOOKS_V1_FEATURE,
   AZURE_DEVOPS_V1_FEATURE,
   GITCRED_PROVIDER_V2_FEATURE,
   type AgentSpec,
@@ -661,6 +662,9 @@ describe('an Azure DevOps agent behind the credential proxy', () => {
     d.cfg.azureDevOps = { cliExtensionDir: extensions }
     const agent = await admit(d, AZURE_AGENT, azureSpec())
     expect(d.registrationFeatures()).toContain(AZURE_DEVOPS_V1_FEATURE)
+    // Its hooks ride the same proxy, so the control plane and every relay hear both together (§11.9).
+    expect(d.registrationFeatures()).toContain(AZURE_DEVOPS_HOOKS_V1_FEATURE)
+    expect(d.azureDevOpsFeatures()).toEqual([AZURE_DEVOPS_V1_FEATURE, AZURE_DEVOPS_HOOKS_V1_FEATURE])
     const { own } = sessionEnv(d, AZURE_AGENT)
     const placeholder = own.AC_CODEHOST_CREDENTIAL!
     expect(placeholder).toMatch(/^acph1_/)
@@ -693,6 +697,8 @@ describe('an Azure DevOps agent behind the credential proxy', () => {
     expect(d.credentialProxy).toBeUndefined()
     await admit(d, AZURE_AGENT, azureSpec())
     expect(d.registrationFeatures()).not.toContain(AZURE_DEVOPS_V1_FEATURE)
+    expect(d.registrationFeatures()).not.toContain(AZURE_DEVOPS_HOOKS_V1_FEATURE)
+    expect(d.azureDevOpsFeatures()).toEqual([])
     const refusal = /^azure_devops_requires_proxy: .* the credential proxy is not running on this daemon$/
     expect(() => d.ensureHost(agentHostKey(AZURE_AGENT), d.cfg)).toThrow(refusal)
     const prepared = vi.spyOn(d, 'prepareAgentWorkspace')

@@ -61,6 +61,10 @@ describe('subscription bodies (§11.2)', () => {
     })
     expect(subscriptionBody('reviewers', TARGET).publisherInputs.notificationType).toBe('ReviewersUpdateNotification')
     expect(subscriptionBody('state', TARGET).publisherInputs.notificationType).toBe('StatusUpdateNotification')
+    // §11.4: the relay gates these on the pull request's author, so they carry the whole resource.
+    for (const kind of ['reviewers', 'state'] as const) {
+      expect(subscriptionBody(kind, TARGET).consumerInputs).not.toHaveProperty('resourceDetailsToSend')
+    }
     expect(subscriptionBody('merged', TARGET)).toMatchObject({
       eventType: 'git.pullrequest.merged',
       publisherInputs: { mergeResult: 'Succeeded' },
@@ -89,6 +93,21 @@ describe('subscription bodies (§11.2)', () => {
         TARGET
       )
     ).toBe(false)
+  })
+
+  it('rewrites a reviewers or state subscription still sending the minimal resource', () => {
+    for (const kind of ['reviewers', 'state'] as const) {
+      const s = stored(kind)
+      const minimal = { ...s, consumerInputs: { ...s.consumerInputs, resourceDetailsToSend: 'minimal' } }
+      expect(subscriptionDrifted(minimal, kind, TARGET)).toBe(true)
+      expect(
+        subscriptionDrifted(
+          { ...s, consumerInputs: { ...s.consumerInputs, resourceDetailsToSend: 'all' } },
+          kind,
+          TARGET
+        )
+      ).toBe(false)
+    }
   })
 
   it('finds drift in the event type, a filter, the address, the user, a header, or the details sent', () => {

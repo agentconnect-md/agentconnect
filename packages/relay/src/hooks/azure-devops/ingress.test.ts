@@ -547,28 +547,71 @@ describe('azure devops ingress', () => {
     expect(h.sent[0]!.azureDevOps?.deliveryKind).toBe('revision')
   })
 
-  it('a reviewer change is forwarded as a candidate for the daemon to confirm', async () => {
+  it("a reviewer change is gated on the pull request's author and forwarded unclassified for the daemon to confirm", async () => {
     h.table.upsert(rule({}, { events: ['push:*'], commentFamilies: [] }))
     h.table.upsert(
       rule({ hookId: HOOK_B, agentId: AGENT_B }, { events: ['merge_request:opened'], commentFamilies: [] })
     )
-    await post(h, envelope('reviewers', { url: pullUrl(), pullRequestId: 7 }))
+    // Whoever added the reviewer, the review reads code the author wrote (§11.4).
+    await post(h, envelope('reviewers', pullResource({ reviewers: [{ id: IDENTITY, vote: 0 }] })))
     await flush()
-    expect(h.authzRequests).toEqual([])
+    expect(h.authzRequests).toEqual([
+      expect.objectContaining({ hookId: HOOK_B, actorIdentityId: HUMAN, configRevision: '3', dispatchRevision: '5' })
+    ])
     expect(h.sent.map((m) => [m.hookId, m.event, m.azureDevOps?.deliveryKind])).toEqual([
       [HOOK_B, 'merge_request:review_requested', 'reviewers']
     ])
+    // The relay names no reviewer and no classification: the daemon reads them.
+    expect(h.sent[0]!.azureDevOps?.target).toEqual({ kind: 'pull', pullRequestId: 7 })
+    expect(h.sent[0]!.context?.senderLogin).toBeUndefined()
   })
 
-  it('state and merged reach every pull-request rule; only a rule that admits reopened may start a turn', async () => {
+  it('a reviewer change on an untrusted author, or one naming no author, starts nothing and leaves no row', async () => {
+    h.table.upsert(rule())
+    h.authzResult = false
+    await post(h, envelope('reviewers', pullResource()))
+    await flush()
+    expect(h.authzRequests).toHaveLength(1)
+    h.authzResult = true
+    await post(h, envelope('reviewers', { url: pullUrl(), pullRequestId: 7 }))
+    await flush()
+    expect(h.authzRequests).toHaveLength(1)
+    expect(h.sent).toEqual([])
+    expect(h.reports).toEqual([])
+  })
+
+  it("the identity's own same-repository pull request is not gated, its fork is", async () => {
+    h.table.upsert(rule())
+    await post(h, envelope('reviewers', pullResource({ createdBy: identity(IDENTITY) })))
+    await flush()
+    expect(h.authzRequests).toEqual([])
+    expect(h.sent).toHaveLength(1)
+    const fork = pullResource({ createdBy: identity(IDENTITY), forkSource: { repository: {} } })
+    await post(h, envelope('reviewers', fork, { id: '00000000-0000-4000-8000-0000000000e2' }))
+    await flush()
+    expect(h.authzRequests).toEqual([expect.objectContaining({ actorIdentityId: IDENTITY })])
+  })
+
+  it("state and merged reach every pull-request rule; only a rule that admits reopened, on a trusted author's pull request, may start a turn", async () => {
     h.table.upsert(rule({}, { events: ['merge_request:reopened'] }))
     h.table.upsert(rule({ hookId: HOOK_B, agentId: AGENT_B }, { events: ['merge_request:opened'] }))
-    await post(h, envelope('state', { url: pullUrl(), pullRequestId: 7 }))
+    await post(h, envelope('state', pullResource()))
     await flush()
-    expect(h.sent.map((m) => [m.hookId, m.event, m.azureDevOps?.target])).toEqual([
-      [HOOK, 'merge_request:state_changed', { kind: 'pull', pullRequestId: 7, admitsReopened: true }],
-      [HOOK_B, 'merge_request:state_changed', { kind: 'pull', pullRequestId: 7, admitsReopened: false }]
-    ])
+    expect(h.authzRequests).toEqual([expect.objectContaining({ hookId: HOOK, actorIdentityId: HUMAN })])
+    const byHook = () => Object.fromEntries(h.sent.map((m) => [m.hookId, [m.event, m.azureDevOps?.target]]))
+    expect(byHook()).toEqual({
+      [HOOK]: ['merge_request:state_changed', { kind: 'pull', pullRequestId: 7, admitsReopened: true }],
+      [HOOK_B]: ['merge_request:state_changed', { kind: 'pull', pullRequestId: 7, admitsReopened: false }]
+    })
+    // A refused author still gets the cleanup: the delivery goes out, it just cannot reopen into a turn.
+    h.sent.length = 0
+    h.authzResult = false
+    await post(h, envelope('state', pullResource(), { id: '00000000-0000-4000-8000-0000000000e2' }))
+    await flush()
+    expect(byHook()).toEqual({
+      [HOOK]: ['merge_request:state_changed', { kind: 'pull', pullRequestId: 7, admitsReopened: false }],
+      [HOOK_B]: ['merge_request:state_changed', { kind: 'pull', pullRequestId: 7, admitsReopened: false }]
+    })
     h.sent.length = 0
     await post(h, envelope('merged', { url: pullUrl(), pullRequestId: 7 }))
     await flush()

@@ -312,6 +312,61 @@ describe('a rejected lease', () => {
   })
 })
 
+describe('a hook turn (§11.5)', () => {
+  const HOOKED: CodeHostEffectTarget = { ...TARGET, hookId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }
+  const COMMENT: CodeHostBrokerOperation = { kind: 'createComment', subject: 'merge_request', iid: 7, body: 'Hello' }
+
+  function hooked(own: BrokerCapability | 'none', fetchImpl: typeof fetch) {
+    const ownLease = vi.fn(async () => {
+      if (own === 'none') throw new Error('repository 42 is not authorized for this agent')
+      return { token: 'own', access: own }
+    })
+    const hookLease = vi.fn(async () => ({ token: 'hook', access: 'comment' as const }))
+    const instance = new AzureDevOpsBroker({
+      routing: () => ROUTING,
+      lease: ownLease,
+      hookLease,
+      fetchImpl
+    })
+    return { instance, ownLease, hookLease }
+  }
+
+  it('raises a repository held at read to comment through the hook’s lease', async () => {
+    const { fetchImpl, calls } = fakeFetch({ body: JSON.stringify({ id: 31, comments: [{ id: 1 }] }) })
+    const { instance, hookLease } = hooked('read', fetchImpl)
+    await instance.execute(HOOKED, COMMENT)
+    expect(hookLease).toHaveBeenCalledWith(HOOKED)
+    expect(calls[0]!.auth).toBe('Bearer hook')
+  })
+
+  it('keeps the agent’s own lease where it already covers the call', async () => {
+    const { fetchImpl, calls } = fakeFetch({ body: JSON.stringify({ id: 31, comments: [{ id: 1 }] }) })
+    const { instance, hookLease } = hooked('write', fetchImpl)
+    await instance.execute(HOOKED, COMMENT)
+    expect(hookLease).not.toHaveBeenCalled()
+    expect(calls[0]!.auth).toBe('Bearer own')
+  })
+
+  it('never lends the hook’s lease to a write, nor outside a hook turn', async () => {
+    const { fetchImpl, calls } = fakeFetch()
+    const { instance, hookLease } = hooked('read', fetchImpl)
+    await expect(
+      instance.execute(HOOKED, { kind: 'setState', subject: 'merge_request', iid: 7, state: 'closed' })
+    ).rejects.toThrow('needs write authority')
+    await expect(instance.execute(TARGET, COMMENT)).rejects.toThrow('needs comment authority')
+    expect(hookLease).not.toHaveBeenCalled()
+    expect(calls).toEqual([])
+  })
+
+  it('reads through the hook’s lease when the agent holds no lease on the repository', async () => {
+    const { fetchImpl, calls } = fakeFetch()
+    const { instance, hookLease } = hooked('none', fetchImpl)
+    await instance.execute(HOOKED, { kind: 'readDiscussions', subject: 'merge_request', iid: 7 })
+    expect(hookLease).toHaveBeenCalledOnce()
+    expect(calls.map((call) => call.auth)).toEqual(['Bearer hook', 'Bearer hook'])
+  })
+})
+
 describe('the tools', () => {
   it('offers a pull-request tool, a comment tool and a read, with no issue, assignee or reviewer fields', () => {
     const names = AZURE_DEVOPS_EFFECT_TOOLS.map((tool) => tool.descriptor.name)

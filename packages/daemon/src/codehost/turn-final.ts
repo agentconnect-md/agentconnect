@@ -67,7 +67,11 @@ export type CodeHostDelivery = CodeHostHookMembers & { event?: string }
 /** Trusted coordinates available both at ingress and when replaying a retained hook. */
 export type CodeHostReplySource = CodeHostHookMembers & Pick<RdMsgHook, 'hookId' | 'context'>
 
-export type CodeHostThreadWorktreeCleanup = 'pull_request_merged' | 'issue_closed' | 'issue_deleted'
+export type CodeHostThreadWorktreeCleanup =
+  'pull_request_merged' | 'pull_request_closed' | 'issue_closed' | 'issue_deleted'
+
+/** A delivery a host classified on a turn-start read: as classified, with what the read found for the prompt, or refused. */
+export type CodeHostResolvedDelivery = { msg: RdMsgHook; supplement?: HookPromptSupplement } | { refused: string }
 
 /** What the daemon lends these members; each provider declares only the part it reads. */
 export type CodeHostTurnFinalHost = GithubTurnFinalHost &
@@ -84,6 +88,10 @@ export interface CodeHostTurnFinal<P extends CodeHostProvider = CodeHostProvider
   hostFence(msg: RdMsgHook, host: CodeHostTurnFinalHost): string | undefined
   /** The lifecycle pairing that retires the per-thread checkout, read off the normalized event and trusted metadata. */
   worktreeCleanup(delivery: CodeHostDelivery): CodeHostThreadWorktreeCleanup | undefined
+  /** Why a classified delivery is acknowledged without a turn; absent for a host that classifies nothing. */
+  ignoredReason?(delivery: CodeHostDelivery): string | undefined
+  /** The delivery as a turn-start read classifies it (azure-devops-integration.md §11.4); absent or undefined ⇒ complete on the wire. */
+  resolveDelivery?(msg: RdMsgHook, host: CodeHostTurnFinalHost): Promise<CodeHostResolvedDelivery | undefined>
   /** The lease this target's public output publishes under, resolved per turn. */
   effectLease(agentId: string, target: CodeHostReplyTarget, host: CodeHostTurnFinalHost): CodeHostEffectLease
   /** The turn's one poster, tokened through that lease. */
@@ -161,6 +169,34 @@ export function codeHostHostFence(msg: RdMsgHook, host: CodeHostTurnFinalHost): 
   for (const member of TURN_FINAL_MEMBERS) {
     const refusal = member.hostFence(msg, host)
     if (refusal !== undefined) return refusal
+  }
+  return undefined
+}
+
+/** The delivery as its host classifies it before admission; a host that reads nothing hands it back as it came. */
+export async function codeHostResolveDelivery(
+  msg: RdMsgHook,
+  host: CodeHostTurnFinalHost
+): Promise<CodeHostResolvedDelivery> {
+  for (const member of TURN_FINAL_MEMBERS) {
+    if (!member.resolveDelivery) continue
+    try {
+      const resolved = await member.resolveDelivery(msg, host)
+      if (resolved !== undefined) return resolved
+    } catch (err) {
+      host.log.warn(`hook: resolving ${msg.msgId} failed (${err instanceof Error ? err.message : String(err)})`)
+      return { refused: 'delivery_unresolved' }
+    }
+  }
+  return { msg }
+}
+
+/** Why a classified delivery is acknowledged and completed without a model turn, or undefined. */
+export function codeHostIgnoredDelivery(delivery: CodeHostDelivery | undefined): string | undefined {
+  if (!delivery) return undefined
+  for (const member of TURN_FINAL_MEMBERS) {
+    const reason = member.ignoredReason?.(delivery)
+    if (reason !== undefined) return reason
   }
   return undefined
 }

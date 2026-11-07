@@ -41,6 +41,8 @@ export interface CodeHostAckDeps {
 /** One provider's acknowledgement request. */
 export interface CodeHostAckAdapter {
   readonly provider: CodeHostProvider
+  /** Whether this target has anything to react to; absent ⇒ always. */
+  applies?(target: CodeHostReplyTarget): boolean
   /** Whether this instance offers the reaction at all, read once per REST root; absent ⇒ always. */
   permits?(apiBaseUrl: string, token: string, fetchImpl: typeof fetch, signal: AbortSignal): Promise<boolean>
   request(target: CodeHostReplyTarget, token: string, apiBaseUrl: string): { url: string; init: RequestInit }
@@ -113,6 +115,7 @@ const ACKS: { readonly [P in CodeHostProvider]: CodeHostAckAdapter } = {
  */
 export async function acknowledgeCodeHostTrigger(target: CodeHostReplyTarget, deps: CodeHostAckDeps): Promise<void> {
   const adapter = ACKS[replyTargetProvider(target)]
+  if (adapter.applies && !adapter.applies(target)) return
   const doFetch = deps.fetchImpl ?? fetch
   try {
     const token = await deps.token()

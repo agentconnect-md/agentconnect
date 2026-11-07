@@ -62,15 +62,16 @@ const KIND_SHAPE: {
 } = {
   opened: { eventType: 'git.pullrequest.created', filters: {}, minimal: false },
   revision: { eventType: 'git.pullrequest.updated', filters: { notificationType: 'PushNotification' }, minimal: true },
+  // Reviewers and state send the whole resource: the relay gates them on the pull request's author (§11.4).
   reviewers: {
     eventType: 'git.pullrequest.updated',
     filters: { notificationType: 'ReviewersUpdateNotification' },
-    minimal: true
+    minimal: false
   },
   state: {
     eventType: 'git.pullrequest.updated',
     filters: { notificationType: 'StatusUpdateNotification' },
-    minimal: true
+    minimal: false
   },
   merged: { eventType: 'git.pullrequest.merged', filters: { mergeResult: 'Succeeded' }, minimal: true },
   comment: { eventType: 'ms.vss-code.git-pullrequest-comment-event', filters: {}, minimal: false },

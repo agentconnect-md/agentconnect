@@ -93,6 +93,7 @@ import {
   DAEMON_AUTO_UPGRADE_FEATURE,
   GITCRED_GITHUB_V2_FEATURE,
   GITEA_V1_FEATURE,
+  AZURE_DEVOPS_HOOKS_V1_FEATURE,
   AZURE_DEVOPS_V1_FEATURE,
   GITLAB_EFFECT_V1_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
@@ -1339,6 +1340,7 @@ import {
 } from './github/hook-coords.js'
 import type { CodeHostReplyTarget } from './codehost/reply-target.js'
 import {
+  codeHostIgnoredDelivery,
   codeHostPullRequestContext,
   codeHostThreadWorktreeCleanup,
   turnFinalFor,
@@ -4225,7 +4227,16 @@ export class Daemon {
             repoId: target.repoId,
             plane: 'api',
             readOnly: false
-          })
+          }),
+        // §11.5: a hook turn's comment calls may ride the hook's own lease where the agent holds the repository at read.
+        hookLease: async (target) => {
+          const entry = await this.gitCreds.getAzureDevOpsPostLease(target.agentId, target.repoId, target.hookId)
+          return {
+            token: entry.token,
+            access: entry.access,
+            invalidate: () => this.gitCreds.invalidateAzureDevOpsPost(target.agentId, target.repoId, entry.token)
+          }
+        }
       })
     )
     // §16: the same hook-authorized effect lease, on a writer the model never sees or influences.
@@ -7020,6 +7031,11 @@ export class Daemon {
           .agentErase(agentId, serverAsk, cred.token)
           .catch((err) => this.log.warn(`credential proxy: could not drop a rejected token (${formatErr(err)})`))
     }
+  }
+
+  /** azure-devops-integration.md §6.1, §11.9: the provider and its hooks, advertised together exactly while the credential proxy carries them. */
+  private azureDevOpsFeatures(): string[] {
+    return this.credentialProxy && !this.k8s ? [AZURE_DEVOPS_V1_FEATURE, AZURE_DEVOPS_HOOKS_V1_FEATURE] : []
   }
 
   /** A proxy-only provider's lease (azure-devops-integration.md §6.1): named by the repository's numeric id, a read one for a read, and dropped on a 401 so the next asks the CP to refresh. */
@@ -9822,8 +9838,8 @@ export class Daemon {
       // gitea-integration.md §11: the complete Gitea slice — credentials, normalization, poster, broker,
       // admission. The CP withholds gitea specs and hook assignments until this is advertised.
       GITEA_V1_FEATURE,
-      // azure-devops-integration.md §6.1: only the credential proxy reaches Azure DevOps, so only while it runs; a pool member's pods do not reach it yet.
-      ...(this.credentialProxy && !this.k8s ? [AZURE_DEVOPS_V1_FEATURE] : []),
+      // azure-devops-integration.md §6.1, §11.9: only the credential proxy reaches Azure DevOps, so only while it runs; a pool member's pods do not reach it yet.
+      ...this.azureDevOpsFeatures(),
       // §16: this daemon renders and updates the run-projection note. The CP leaves the desired
       // generation pending rather than opening a second provider egress path without this bit.
       CODEHOST_NOTE_PROJECTION_V1_FEATURE,
@@ -17587,6 +17603,10 @@ export class Daemon {
       getGiteaPostToken: (agentId, repoId, hookId) => this.gitCreds.getGiteaPostToken(agentId, repoId, hookId),
       invalidateGiteaPost: (agentId, repoId, token) => this.gitCreds.invalidateGiteaPost(agentId, repoId, token),
       giteaHostFor: (agentId) => this.agents.get(agentId)?.giteaHost,
+      getAzureDevOpsPostLease: (agentId, repoId, hookId) =>
+        this.gitCreds.getAzureDevOpsPostLease(agentId, repoId, hookId),
+      invalidateAzureDevOpsPost: (agentId, repoId, token) =>
+        this.gitCreds.invalidateAzureDevOpsPost(agentId, repoId, token),
       log: { warn: (message) => this.log.warn(message) }
     }
   }
@@ -30553,8 +30573,10 @@ export class Daemon {
         continue
       }
       const cleanup = codeHostThreadWorktreeCleanup(hookContext)
-      const deleted = githubDeletedHookEvent(hookContext)
-      if (hookContext && (cleanup || deleted)) {
+      const ignored = githubDeletedHookEvent(hookContext)
+        ? 'deleted_event_ignored'
+        : codeHostIgnoredDelivery(hookContext)
+      if (hookContext && (cleanup || ignored)) {
         const key = sessionKey(
           msg.platform,
           sessionChannelOf(msg),
@@ -30565,7 +30587,7 @@ export class Daemon {
         const owner: HookCompletionOwner = { inboxId: row.id }
         this.liveInboxIds.add(row.id)
         if (cleanup) void this.githubReviews.completeGithubThreadWorktreeCleanup(hookContext, key, cleanup, owner)
-        else await this.emitHookCompletion(hookContext, 'success', { reason: 'deleted_event_ignored' }, owner)
+        else await this.emitHookCompletion(hookContext, 'success', { reason: ignored }, owner)
         replayedMaintenance += 1
         continue
       }
@@ -31361,6 +31383,8 @@ export class Daemon {
       apiKey: () => cpKey,
       ...(this.clusterIdentityToken ? { clusterIdentityToken: this.clusterIdentityToken } : {}),
       daemonId: () => this.cfg.daemonId,
+      // The relay dispatches Azure DevOps service hooks only to a daemon advertising both strings (§11.9).
+      capabilities: () => this.azureDevOpsFeatures(),
       clock: systemClock,
       connect: (relayUrl) =>
         ClientTransport.dial(relayUrl, {

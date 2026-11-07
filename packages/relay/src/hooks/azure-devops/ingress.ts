@@ -25,6 +25,7 @@ import {
   azureDevOpsRuleVerdict,
   azureDevOpsSessionKey,
   azureDevOpsSubscriptionKind,
+  azureDevOpsUpdateVerdict,
   azureDevOpsVerifiedKey,
   buildAzureDevOpsContext,
   buildTrustedAzureDevOpsMetadata,
@@ -171,18 +172,106 @@ export function registerAzureDevOpsIngress(app: FastifyInstance, deps: AzureDevO
         )
       }
 
-      // Merged and state carry only the pull request's id: every pull-request rule gets them, and the daemon classifies on its own read (§11.4).
+      // §11.4 live membership decision on one actor, fencing a whole fan-out; only the CP's own `false` is a refusal.
+      const authorize = async (
+        fanout: RcHookAssign[],
+        actorId: string | undefined
+      ): Promise<'allowed' | 'refused' | 'failed' | 'limited'> => {
+        const representative = fanout[0]
+        const azure = representative?.azureDevOps
+        if (!representative || !azure) return 'failed'
+        if (
+          !actorId ||
+          fanout.some(
+            (rule) => !rule.azureDevOps || rule.configRevision === undefined || rule.dispatchRevision === undefined
+          )
+        ) {
+          deps.log.info(`azure-devops ingress: authz metadata incomplete ${representative.hookId}:${deliveryKey}`)
+          return 'failed'
+        }
+        if (!deps.authzLimiter.allow(azure.repoId)) {
+          deps.log.info(`azure-devops ingress: authz rate-limited ${representative.hookId}:${deliveryKey}`)
+          return 'limited'
+        }
+        const request: RcCodeHostMembershipAuthz = {
+          hookId: representative.hookId,
+          provider: 'azure-devops',
+          repoExternalId: azure.repoId,
+          actorIdentityId: actorId,
+          configRevision: representative.configRevision!,
+          dispatchRevision: representative.dispatchRevision!,
+          ...(fanout.length > 1
+            ? {
+                siblingFences: fanout.slice(1).map((rule) => ({
+                  hookId: rule.hookId,
+                  configRevision: rule.configRevision!,
+                  dispatchRevision: rule.dispatchRevision!
+                }))
+              }
+            : {})
+        }
+        try {
+          const allowed = await deps.authorizeMembership(request)
+          if (!allowed) {
+            deps.log.info(
+              `azure-devops ingress: authz denied ${representative.hookId}:${deliveryKey} (${ctx.eventAction})`
+            )
+          }
+          return allowed ? 'allowed' : 'refused'
+        } catch (err) {
+          // An older CP, a timeout or a transient failure all fail closed.
+          deps.log.warn(`azure-devops ingress: authz failed ${representative.hookId}:${deliveryKey}: ${String(err)}`)
+          return 'failed'
+        }
+      }
+      // Authz crossed a remote boundary: the rule as it stands now, or undefined when it changed under the decision.
+      const currentRule = (
+        rule: RcHookAssign,
+        admits: (current: RcHookAssign) => boolean
+      ): RcHookAssign | undefined => {
+        const current = deps.table.getByHookId(rule.hookId)
+        const unchanged =
+          current !== undefined &&
+          current.kind === 'azure-devops' &&
+          current.azureDevOps !== undefined &&
+          current.azureDevOps.repoId === rule.azureDevOps!.repoId &&
+          current.configRevision === rule.configRevision &&
+          current.dispatchRevision === rule.dispatchRevision &&
+          current.agentId === rule.agentId &&
+          current.routing === undefined &&
+          azureDevOpsSubscriptionKind(current, subscriptionId) === ctx.deliveryKind &&
+          admits(current)
+        if (!unchanged) deps.log.info(`azure-devops ingress: authz rule changed ${rule.hookId}:${deliveryKey}`)
+        return unchanged ? current : undefined
+      }
+
+      // Merged and state carry only the pull request: every pull-request rule gets them, and the daemon classifies on its own read (§11.4).
       if (ctx.deliveryKind === 'merged' || ctx.deliveryKind === 'state') {
-        for (const rule of matching) {
-          if (!azureDevOpsRuleCoversPullRequests(rule)) continue
-          // A reopening may start a turn, so it spends the budget; cleanup alone never does.
-          const admitsReopened =
-            ctx.deliveryKind === 'state' &&
-            rule.routing === undefined &&
-            azureDevOpsRuleAdmitsReopened(rule) &&
-            deps.limiter.allow(rule.hookId)
+        const covered = matching.filter(azureDevOpsRuleCoversPullRequests)
+        const fireUpdate = (rule: RcHookAssign, admitsReopened: boolean): void => {
           const msg = messageFor(rule, ctx.deliveryKind === 'state' ? { admitsReopened } : {})
           if (msg) fire(rule, msg)
+        }
+        // A reopening may start a turn, so it is gated on the pull request's author and spends the budget; cleanup alone never is.
+        const reopenable =
+          ctx.deliveryKind === 'state'
+            ? covered.filter((rule) => rule.routing === undefined && azureDevOpsRuleAdmitsReopened(rule))
+            : []
+        for (const rule of covered) {
+          if (!reopenable.includes(rule)) fireUpdate(rule, false)
+          else if (azureDevOpsUpdateVerdict(rule, ctx) === 'trusted') fireUpdate(rule, deps.limiter.allow(rule.hookId))
+        }
+        const gated = reopenable.filter((rule) => azureDevOpsUpdateVerdict(rule, ctx) === 'needs-authz')
+        if (gated.length > 0) {
+          void authorize(gated, ctx.authorId)
+            .then((verdict) => {
+              for (const rule of gated) {
+                const current = verdict === 'allowed' ? currentRule(rule, azureDevOpsRuleAdmitsReopened) : undefined
+                // A refused or changed rule still gets its cleanup; it just cannot reopen into a turn.
+                fireUpdate(current ?? rule, current !== undefined && deps.limiter.allow(rule.hookId))
+              }
+            })
+            .catch((err) => deps.log.warn(`azure-devops ingress: state gate failed ${deliveryKey}: ${String(err)}`))
         }
         return reply.code(202).send({ deliveryKey })
       }
@@ -219,9 +308,22 @@ export function registerAzureDevOpsIngress(app: FastifyInstance, deps: AzureDevO
         fire(rule, notice ? noticeDelivery(msg, notice) : msg, notice)
       }
 
-      // A reviewer change names no actor: the daemon confirms the request on its read, and the pull request's author is gated there (§11.4).
+      // A reviewer change names no actor: it is gated on the pull request's author here, and the daemon confirms the request on its read (§11.4).
       if (ctx.deliveryKind === 'reviewers') {
-        for (const rule of unrouted) if (azureDevOpsRuleCoversPullRequests(rule)) dispatchRule(rule)
+        const covered = unrouted.filter(azureDevOpsRuleCoversPullRequests)
+        for (const rule of covered) if (azureDevOpsUpdateVerdict(rule, ctx) === 'trusted') dispatchRule(rule)
+        const gated = covered.filter((rule) => azureDevOpsUpdateVerdict(rule, ctx) === 'needs-authz')
+        if (gated.length > 0) {
+          void authorize(gated, ctx.authorId)
+            .then((verdict) => {
+              if (verdict !== 'allowed') return
+              for (const rule of gated) {
+                const current = currentRule(rule, azureDevOpsRuleCoversPullRequests)
+                if (current) dispatchRule(current)
+              }
+            })
+            .catch((err) => deps.log.warn(`azure-devops ingress: reviewers gate failed ${deliveryKey}: ${String(err)}`))
+        }
         return reply.code(202).send({ deliveryKey })
       }
 
@@ -254,80 +356,27 @@ export function registerAzureDevOpsIngress(app: FastifyInstance, deps: AzureDevO
       // §11.4: one live membership decision on the actor fences the whole fan-out.
       const authorizeAndDispatch = async (fanout: RcHookAssign[]): Promise<void> => {
         const representative = fanout[0]
-        const azure = representative?.azureDevOps
-        if (!representative || !azure) return
-        const actorId = ctx.actorId
-        if (
-          !actorId ||
-          fanout.some(
-            (rule) => !rule.azureDevOps || rule.configRevision === undefined || rule.dispatchRevision === undefined
-          )
-        ) {
-          deps.log.info(`azure-devops ingress: authz metadata incomplete ${representative.hookId}:${deliveryKey}`)
-          if (onDenied === 'request-review') for (const rule of fanout) reportReviewRequestRequired(rule)
-          return
-        }
-        if (!deps.authzLimiter.allow(azure.repoId)) {
-          deps.log.info(`azure-devops ingress: authz rate-limited ${representative.hookId}:${deliveryKey}`)
-          return
-        }
-        const request: RcCodeHostMembershipAuthz = {
-          hookId: representative.hookId,
-          provider: 'azure-devops',
-          repoExternalId: azure.repoId,
-          actorIdentityId: actorId,
-          configRevision: representative.configRevision!,
-          dispatchRevision: representative.dispatchRevision!,
-          ...(fanout.length > 1
-            ? {
-                siblingFences: fanout.slice(1).map((rule) => ({
-                  hookId: rule.hookId,
-                  configRevision: rule.configRevision!,
-                  dispatchRevision: rule.dispatchRevision!
-                }))
-              }
-            : {})
-        }
-        let allowed = false
-        // Only the CP's own `false` refuses the actor; an operational failure earns no notice.
-        let refused = false
-        try {
-          allowed = await deps.authorizeMembership(request)
-          refused = !allowed
-        } catch (err) {
-          // An older CP, a timeout or a transient failure all fail closed.
-          deps.log.warn(`azure-devops ingress: authz failed ${representative.hookId}:${deliveryKey}: ${String(err)}`)
-        }
-        if (!allowed) {
-          deps.log.info(
-            `azure-devops ingress: authz denied ${representative.hookId}:${deliveryKey} (${ctx.eventAction})`
-          )
+        if (!representative) return
+        const verdict = await authorize(fanout, ctx.actorId)
+        if (verdict !== 'allowed') {
           // A refused explicit summons gets one fixed-text notice on its thread; anything less deliberate stays silent.
-          if (refused && ctx.family === 'note' && fanout.some((rule) => azureDevOpsRuleIsSummoned(rule, ctx))) {
+          if (
+            verdict === 'refused' &&
+            ctx.family === 'note' &&
+            fanout.some((rule) => azureDevOpsRuleIsSummoned(rule, ctx))
+          ) {
             dispatchRule(representative, 'actor_not_trusted')
           }
-          if (onDenied === 'request-review') for (const rule of fanout) reportReviewRequestRequired(rule)
+          // Only a denied opened pull request leaves the durable actionable row; a spent budget leaves none.
+          if (onDenied === 'request-review' && verdict !== 'limited') {
+            for (const rule of fanout) reportReviewRequestRequired(rule)
+          }
           return
         }
-        // Authz crossed a remote boundary: re-read and re-judge every rule so a stale capture never dispatches.
+        // Re-read and re-judge every rule so a stale capture never dispatches.
         for (const rule of fanout) {
-          const current = deps.table.getByHookId(rule.hookId)
-          if (
-            !current ||
-            current.kind !== 'azure-devops' ||
-            !current.azureDevOps ||
-            current.azureDevOps.repoId !== rule.azureDevOps!.repoId ||
-            current.configRevision !== rule.configRevision ||
-            current.dispatchRevision !== rule.dispatchRevision ||
-            current.agentId !== rule.agentId ||
-            current.routing !== undefined ||
-            azureDevOpsSubscriptionKind(current, subscriptionId) !== ctx.deliveryKind ||
-            azureDevOpsRuleVerdict(current, ctx) !== 'needs-authz'
-          ) {
-            deps.log.info(`azure-devops ingress: authz rule changed ${rule.hookId}:${deliveryKey}`)
-            continue
-          }
-          dispatchRule(current)
+          const current = currentRule(rule, (candidate) => azureDevOpsRuleVerdict(candidate, ctx) === 'needs-authz')
+          if (current) dispatchRule(current)
         }
       }
       void authorizeAndDispatch(needsAuthz).catch((err) => {

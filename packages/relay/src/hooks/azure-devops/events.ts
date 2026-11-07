@@ -134,7 +134,9 @@ export interface AzureDevOpsMatchCtx {
   pullRequestId?: number
   threadId?: number
   commentId?: number
-  /** Opened only: the pull request comes from a fork, so the bot's own lane does not apply. */
+  /** Reviewers and state only: the pull request's author, whom the membership gate reads for an update that names no actor. */
+  authorId?: string
+  /** Opened, reviewers and state: the pull request comes from a fork, so the identity's own lane does not apply. */
   fromFork?: boolean
   headSha?: string
   isDraft?: boolean
@@ -236,6 +238,18 @@ export function checkAzureDevOpsDelivery(
 
   const pullRequestId = pullRequestOf(resource, rule)
   if (pullRequestId === undefined) return undefined
+  if (kind === 'reviewers' || kind === 'state') {
+    // §11.4: these name no actor, so the pull request's author is what the gate reads; the update stays unclassified.
+    const author = identityOf(resource.createdBy)
+    return {
+      ...base,
+      family: 'merge_request',
+      ...(author.id ? { authorId: author.id } : {}),
+      fromFork: resource.forkSource !== undefined && resource.forkSource !== null,
+      pullRequestId,
+      admitted: true
+    }
+  }
   if (kind !== 'opened') return { ...base, family: 'merge_request', pullRequestId, admitted: true }
   const actor = identityOf(resource.createdBy)
   const headSha = record(resource.lastMergeSourceCommit)?.commitId
@@ -312,6 +326,12 @@ export function isInternalAzureDevOpsPull(rule: RcHookAssign, ctx: AzureDevOpsMa
     ctx.actorId === rule.azureDevOps?.identityId &&
     ctx.fromFork === false
   )
+}
+
+/** §11.4: an update kind is gated on the pull request's author, except the identity's own same-repository pull request. */
+export function azureDevOpsUpdateVerdict(rule: RcHookAssign, ctx: AzureDevOpsMatchCtx): 'trusted' | 'needs-authz' {
+  const own = ctx.authorId !== undefined && ctx.authorId === rule.azureDevOps?.identityId && ctx.fromFork === false
+  return own ? 'trusted' : 'needs-authz'
 }
 
 export type AzureDevOpsRuleVerdict = 'no-match' | 'trusted' | 'needs-authz'
