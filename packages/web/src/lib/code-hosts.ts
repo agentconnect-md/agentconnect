@@ -57,7 +57,6 @@ export const CODE_HOST_PROJECTION: Record<CodeHostProvider, CodeHostProjection> 
     docsPath: 'connect-automate/triggers-automation/gitea',
     hooks: true
   },
-  // No hooks in the first version (azure-devops-integration.md §11).
   'azure-devops': {
     label: 'Azure DevOps',
     publicHost: 'dev.azure.com',
@@ -65,7 +64,7 @@ export const CODE_HOST_PROJECTION: Record<CodeHostProvider, CodeHostProjection> 
     repoNounShort: 'repo',
     changeNoun: 'pull_request',
     docsPath: 'connect-automate/triggers-automation/azure-devops',
-    hooks: false
+    hooks: true
   }
 }
 

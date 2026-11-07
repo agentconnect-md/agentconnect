@@ -5225,11 +5225,31 @@ export interface CreateGiteaHookInput {
   reportingMode?: HookReportingMode
 }
 
+/** Azure DevOps rows speak the same family vocabulary, narrowed to pull requests and pushes (azure-devops-integration.md §11.4). */
+export type AzureDevOpsHookFamily = 'merge_request' | 'push'
+export type AzureDevOpsCommentFamily = 'merge_request'
+
+// azure-devops kind: the repository must already be bound and authorized for the agent; no label filter exists.
+export interface CreateAzureDevOpsHookInput {
+  agentId: string
+  name: string
+  enabled?: boolean
+  repoId: string // the bound repository's surrogate numeric id
+  family: AzureDevOpsHookFamily
+  events: string[] // 'merge_request:opened' / 'merge_request:*' / 'push:*'
+  commentFamilies?: AzureDevOpsCommentFamily[]
+  mentionOnly?: boolean
+  reviewPolicy?: HookReviewPolicy
+  // 'status' publishes the pull request's status.
+  reportingMode?: HookReportingMode
+}
+
 // The family is immutable, so no update body carries it — changing a row's
 // family is a delete plus a create.
 export type UpdateGithubHookInput = Omit<CreateGithubHookInput, 'family'>
 export type UpdateGitlabHookInput = Omit<CreateGitlabHookInput, 'family'>
 export type UpdateGiteaHookInput = Omit<CreateGiteaHookInput, 'family'>
+export type UpdateAzureDevOpsHookInput = Omit<CreateAzureDevOpsHookInput, 'family'>
 
 // ── trusted users ── the per-repository vouch list a code-host hook's settings edit.
 // Reached through a hook (that is the row the console holds), stored per repository: every
@@ -5411,6 +5431,22 @@ export async function createGiteaHook(input: CreateGiteaHookInput): Promise<Crea
 // Update a gitea hook's subscription. Whole-definition PUT, like the other two.
 export async function updateGiteaHook(id: string, input: UpdateGiteaHookInput, orgId?: string): Promise<HookDto> {
   return apiPut<HookDto>(`${orgBase(orgId)}/hooks/${encodeURIComponent(id)}`, { kind: 'gitea', ...input })
+}
+
+// Azure DevOps subscription — no URL, no secret: the service hook subscriptions carry their own key. One session per pull request.
+export async function createAzureDevOpsHook(input: CreateAzureDevOpsHookInput): Promise<CreatedHookDto> {
+  const hook = await apiPost<CreatedHookDto>(`${orgBase()}/hooks`, { kind: 'azure-devops', ...input })
+  track('hook_created', { org_id: apiOrgId, agent_id: hook.agentId, hook_kind: hook.kind, hook_id: hook.id })
+  return hook
+}
+
+// Update an azure-devops hook's subscription. Whole-definition PUT, like the others.
+export async function updateAzureDevOpsHook(
+  id: string,
+  input: UpdateAzureDevOpsHookInput,
+  orgId?: string
+): Promise<HookDto> {
+  return apiPut<HookDto>(`${orgBase(orgId)}/hooks/${encodeURIComponent(id)}`, { kind: 'azure-devops', ...input })
 }
 
 export async function deleteHook(id: string): Promise<void> {
@@ -7525,7 +7561,17 @@ export interface AzureDevOpsRepositoryDto {
   bindingId: string | null
 }
 
-/** One bound repository: a catalog row and an identity, no webhook. */
+/** Why a repository's service hook subscriptions are not known to deliver (azure-devops-integration.md §11.2). */
+export type AzureDevOpsHookReason =
+  'webhook_unverified' | 'triggers_not_allowed' | 'relay_url_unconfigured' | 'subscriptions_failed'
+
+/** One service hook subscription the Control Plane manages: its delivery kind and Azure DevOps's last observed status. */
+export interface AzureDevOpsHookSubscriptionDto {
+  kind: string
+  status: string | null
+}
+
+/** One bound repository: a catalog row, an identity, and the subscriptions its triggers need. */
 export interface AzureDevOpsRepositoryBindingDto {
   id: string
   connectionId: string
@@ -7537,7 +7583,19 @@ export interface AzureDevOpsRepositoryBindingDto {
   defaultBranch: string | null
   state: 'ready' | 'runtime_degraded'
   stateReason: AzureDevOpsStateReason | null
+  /** Absent from a Control Plane without Azure DevOps triggers. */
+  hookReason?: AzureDevOpsHookReason | null
+  lastVerifiedDeliveryAt?: string | null
+  subscriptions?: AzureDevOpsHookSubscriptionDto[]
   createdAt: string
+}
+
+/** A key rotation's progress: the new key takes over once every subscription switched and a delivery verifies under it. */
+export interface AzureDevOpsHookKeyRotationDto {
+  rotated: boolean
+  switched: number
+  total: number
+  reason: string | null
 }
 
 export type AzureDevOpsProjectGroup = 'readers' | 'contributors'
@@ -7567,9 +7625,20 @@ export interface AzureDevOpsProjectsDto {
   projects: Array<{ id: string; name: string }>
 }
 
+/** Allow triggers on one project (§11.1): granted, refused for the caller's role, or failed. */
+export interface AzureDevOpsTriggerGrantDto {
+  projectId: string
+  projectName: string
+  outcome: 'granted' | 'refused' | 'failed'
+}
+
 export interface AzureDevOpsConnectResultDto {
   connection: AzureDevOpsConnectionDto
   memberships: AzureDevOpsMembershipDto[]
+  /** One entry per project with Allow triggers on; absent from a Control Plane without triggers. */
+  triggers?: AzureDevOpsTriggerGrantDto[]
+  /** What is left to do by hand, such as Allow triggers the caller's role could not grant. */
+  checklist?: string[]
 }
 
 /** The connection list doubles as the enabled-probe: 404 ⇒ a Control Plane without Azure DevOps. */
@@ -7621,6 +7690,14 @@ export function fetchAzureDevOpsRepositories(orgId?: string): Promise<AzureDevOp
 }
 
 /** Connect with Microsoft, or with a connection id Manage project access: Microsoft's sign-in URL to send the browser to. */
+/** Re-key a repository's service hook subscriptions; `suspectedLeak` drops the old key at once instead of after 36 hours. */
+export function rotateAzureDevOpsHookKey(id: string, suspectedLeak: boolean): Promise<AzureDevOpsHookKeyRotationDto> {
+  return apiPost<AzureDevOpsHookKeyRotationDto>(
+    `${orgBase()}/azure-devops/repositories/${encodeURIComponent(id)}/rotate-hook-key`,
+    { suspectedLeak }
+  )
+}
+
 export function startAzureDevOpsConnect(connectionId?: string, orgId?: string): Promise<{ authorizeUrl: string }> {
   return apiPost<{ authorizeUrl: string }>(
     `${orgBase(orgId)}/azure-devops/connect`,
@@ -7685,7 +7762,7 @@ export function applyAzureDevOpsConnectProjects(
   orgId: string,
   flowId: string,
   ticket: string,
-  projects: Array<{ projectId: string; group: AzureDevOpsProjectGroup }>
+  projects: Array<{ projectId: string; group: AzureDevOpsProjectGroup; allowTriggers?: boolean }>
 ): Promise<AzureDevOpsConnectResultDto> {
   return azureDevOpsFlowStep('POST', orgId, flowId, 'projects', ticket, { projects })
 }

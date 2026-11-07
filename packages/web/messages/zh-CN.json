@@ -1610,7 +1610,12 @@
         "expiredTitle": "这次登录已过期",
         "expiredBody": "请从 Azure DevOps 卡片重新开始连接。",
         "genericTitle": "无法连接 Azure DevOps"
-      }
+      },
+      "allowTriggers": "允许触发器",
+      "triggersHint": "允许触发器后，Agent 可以响应该项目中的拉取请求。",
+      "triggersMissedTitle": "还有项目未允许触发器",
+      "triggersRefused": "{project}：你的账号无法修改它的服务挂钩权限。",
+      "triggersFailed": "{project}：Azure DevOps 没有响应。请稍后再次管理项目访问。"
     }
   },
   "Home": {
@@ -2108,6 +2113,38 @@
         "connectionExists": "此组织已有 Azure DevOps 连接。",
         "organizationTaken": "该 Azure DevOps 组织已连接到此部署上的另一个组织。",
         "deploymentApplicationMissing": "此部署没有 Microsoft 应用。请改用自己的应用。"
+      },
+      "ownApplicationTriggers": "如需使用触发器，还要在每个项目的服务挂钩安全设置中授予该应用“查看订阅”和“编辑订阅”权限。",
+      "hookBadges": {
+        "webhookUnverified": "触发器待验证",
+        "triggersNotAllowed": "未允许触发器",
+        "relayUrlUnconfigured": "触发器不可用",
+        "subscriptionsFailed": "触发器出错"
+      },
+      "hookReasons": {
+        "webhookUnverified": "正在等待 Azure DevOps 发来第一个事件，以确认触发器可用。",
+        "triggersNotAllowed": "请在“管理项目访问”中为该仓库所在项目允许触发器。",
+        "triggersNotAllowedOwn": "请在 Azure DevOps 中为该仓库所在项目授予该应用“查看订阅”和“编辑订阅”权限。",
+        "relayUrlUnconfigured": "此部署没有配置公开的 webhook 地址，Azure DevOps 无法发送事件。",
+        "subscriptionsFailed": "Azure DevOps 拒绝了服务挂钩订阅，系统会自动重试。"
+      },
+      "subscriptions": "{count, plural, other {# 个服务挂钩}}",
+      "lastDelivery": "最近事件 {time}",
+      "noDeliveryYet": "尚无事件",
+      "subscriptionsPaused": "{count, plural, other {# 个被 Azure DevOps 暂停}}",
+      "rotateKey": "轮换密钥",
+      "rotateTitle": "轮换服务挂钩密钥",
+      "rotateBody": "替换用于验证 {repo} 事件的密钥。旧密钥会继续有效 36 小时，Azure DevOps 已排队的事件仍能送达。",
+      "suspectedLeak": "当前密钥可能已泄露：新密钥生效后立即停止接受旧密钥",
+      "rotate": "轮换",
+      "rotated": "全部 {total} 个订阅已改用新密钥。Azure DevOps 发来下一个事件后，新密钥生效。",
+      "rotatedPartly": "{total} 个订阅中有 {switched} 个在 Azure DevOps 停止响应前完成切换，其余会自动切换。",
+      "rotateRefusals": {
+        "noSubscriptions": "该仓库没有可轮换的服务挂钩订阅。",
+        "busy": "订阅正在更新，请稍后再试。",
+        "relayUrlUnconfigured": "此部署没有配置公开的 webhook 地址。",
+        "missing": "该仓库已不再连接。",
+        "failed": "Azure DevOps 拒绝了新密钥，请稍后再试。"
       }
     },
     "noConversations": "暂无会话，机器人首次进入{room}后，列表会显示在这里。",
@@ -2434,6 +2471,14 @@
           "helpApprove": "允许 bot 在同一次评审中记录一次批准。Gitea 会拒绝 bot 批准自己发起的拉取请求。",
           "helpStatusCheck": "为排队中、运行中和最终结果在拉取请求的头部发布一条提交状态。除非运维将其设为必需检查，否则它不会阻止合并。",
           "repositoryMissing": "此仓库仍在设置中。评审和提交状态通过组织的 Gitea bot 写入，请先完成仓库添加。"
+        },
+        "azureDevOps": {
+          "title": "PR 评审",
+          "statusCheckLabel": "PR 状态",
+          "helpInlineComments": "以评论线程发布评审，可在具体改动行或行范围上添加评论。",
+          "helpRequestChanges": "允许投“等待作者”票。共用同一连接的 Agent 共用一张票，以最近一次评审为准。",
+          "helpApprove": "允许投批准票。它是否计入分支策略由该策略决定。",
+          "helpStatusCheck": "为排队中、运行中和最终结果发布拉取请求状态。只有管理员为它添加状态策略后，它才会阻止完成拉取请求。"
         }
       },
       "deleteBot": {
@@ -2527,7 +2572,10 @@
         "ahpDescription": "通过标准 AHP v1 会话和聊天动作连接兼容的 Agent 客户端。",
         "ahpOff": "未启用",
         "ahpPilot": "试点"
-      }
+      },
+      "azureDevOpsLoadError": "无法加载 Azure DevOps 仓库 — {error}",
+      "azureDevOpsNotAuthorized": "{agent} 未获授权访问 {repo}。请在 agent 的“工作区”页授权该仓库，或先将其设为 agent 的工作区仓库。",
+      "azureDevOpsNoBoundRepository": "还没有正在使用的 Azure DevOps 仓库。请先在 {agent} 的“工作区”页授权一个仓库，再回到这里添加触发器。"
     },
     "api": {
       "title": "API",
@@ -3400,7 +3448,8 @@
         "newChannels": "新频道默认",
         "newChannelsAuto": "自动",
         "newChannelsMention": "@提及 · 按话题",
-        "newChannelsOff": "关闭"
+        "newChannelsOff": "关闭",
+        "pullRequestStatus": "PR 状态"
       },
       "tools": {
         "loading": "加载中…",

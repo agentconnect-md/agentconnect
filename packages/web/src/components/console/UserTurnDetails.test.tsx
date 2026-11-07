@@ -76,6 +76,23 @@ describe('UserTurnDetails', () => {
     expect(el.textContent).not.toContain('zfy')
   })
 
+  it('names an Azure DevOps pull request `{organization}/{project}/{repository}!{id}` and links its page (§11.8)', async () => {
+    const azure: UserTurnBody = {
+      codehost: {
+        provider: 'azure-devops',
+        event: 'merge_request:opened',
+        subject: { kind: 'pull_request', repo: 'example-org/Example Project/example-repo', number: 7 }
+      }
+    }
+    const el = await render(<UserTurnDetails body={azure} platform="hook" />)
+    await click(el.querySelector('button')!)
+    const link = el.querySelector('a.lnk')!
+    expect(link.textContent).toBe('example-org/Example Project/example-repo!7')
+    expect(link.getAttribute('href')).toBe(
+      'https://dev.azure.com/example-org/Example%20Project/_git/example-repo/pullrequest/7'
+    )
+  })
+
   it('captions a session message by its sender and folds its facts and the agent’s guidance', async () => {
     const sessionMessage: NonNullable<UserTurnBody['sessionMessage']> = {
       messageId: 'msg-1',

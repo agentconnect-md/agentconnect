@@ -167,9 +167,10 @@ describe('AzureDevOpsConnect', () => {
 
     await click('Connect')
     expect(mocks.apply).toHaveBeenCalledWith('org-a', FLOW, 'ticket-2', [
-      { projectId: PROJECT_A, group: 'contributors' }
+      { projectId: PROJECT_A, group: 'contributors', allowTriggers: true }
     ])
     expect(host.textContent).toContain('Azure DevOps is connected')
+    expect(host.querySelector('[data-azure-devops-trigger-outcomes]')).toBeNull()
     expect(host.querySelector('a')?.getAttribute('href')).toBe('/example/integrations')
     // Never kept anywhere a later page could read it.
     expect(JSON.stringify({ ...window.localStorage })).not.toContain('ticket')
@@ -210,8 +211,45 @@ describe('AzureDevOpsConnect', () => {
     const box = host.querySelector<HTMLInputElement>(`[data-azure-devops-project="${PROJECT_A}"] input`)!
     await act(async () => box.click())
     await click('Apply')
-    expect(mocks.apply).toHaveBeenCalledWith('org-a', FLOW, 'ticket-2', [{ projectId: PROJECT_A, group: 'readers' }])
+    expect(mocks.apply).toHaveBeenCalledWith('org-a', FLOW, 'ticket-2', [
+      { projectId: PROJECT_A, group: 'readers', allowTriggers: false }
+    ])
     expect(host.textContent).toContain('Project access updated')
+  })
+
+  it('allows triggers by default for Contributors, lets Readers opt in, and resets on a group change (§11.1)', async () => {
+    mocks.apply.mockResolvedValue({ connection: CONNECTION, memberships: [], triggers: [] })
+    await chooseProjects()
+    const allow = () => host.querySelector<HTMLInputElement>(`[data-azure-devops-allow-triggers="${PROJECT_A}"] input`)!
+    expect(allow().checked).toBe(true)
+    await click('Readers')
+    expect(allow().checked).toBe(false)
+    await act(async () => allow().click())
+    expect(allow().checked).toBe(true)
+    // An unpicked project offers no toggle.
+    expect(host.querySelector(`[data-azure-devops-allow-triggers="${PROJECT_B}"]`)).toBeNull()
+    await click('Connect')
+    expect(mocks.apply).toHaveBeenCalledWith('org-a', FLOW, 'ticket-2', [
+      { projectId: PROJECT_A, group: 'readers', allowTriggers: true }
+    ])
+  })
+
+  it('names the projects where triggers were not allowed, with what is left to do by hand', async () => {
+    mocks.apply.mockResolvedValue({
+      connection: CONNECTION,
+      memberships: [],
+      triggers: [
+        { projectId: PROJECT_A, projectName: 'Example Project', outcome: 'refused' },
+        { projectId: PROJECT_B, projectName: 'Other Project', outcome: 'granted' }
+      ],
+      checklist: CHECKLIST
+    })
+    await chooseProjects()
+    await click('Connect')
+    const outcomes = host.querySelector('[data-azure-devops-trigger-outcomes]')!
+    expect(outcomes.textContent).toContain('Example Project: your account cannot change its service hook permissions.')
+    expect(outcomes.textContent).not.toContain('Other Project')
+    expect([...outcomes.querySelectorAll('ol li')].map((item) => item.textContent)).toEqual(CHECKLIST)
   })
 
   it('sends missing consent to an Entra administrator with the admin-consent link', async () => {

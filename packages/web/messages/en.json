@@ -1610,7 +1610,12 @@
         "expiredTitle": "This sign-in has expired",
         "expiredBody": "Start connecting again from the Azure DevOps card.",
         "genericTitle": "Could not connect Azure DevOps"
-      }
+      },
+      "allowTriggers": "Allow triggers",
+      "triggersHint": "Allow triggers lets agents react to pull requests in that project.",
+      "triggersMissedTitle": "Triggers are not allowed on every project yet",
+      "triggersRefused": "{project}: your account cannot change its service hook permissions.",
+      "triggersFailed": "{project}: Azure DevOps did not answer. Manage project access again later."
     }
   },
   "Home": {
@@ -2108,6 +2113,38 @@
         "connectionExists": "This organization already has an Azure DevOps connection.",
         "organizationTaken": "That Azure DevOps organization is already connected to another organization on this deployment.",
         "deploymentApplicationMissing": "This deployment has no Microsoft application. Use your own application instead."
+      },
+      "ownApplicationTriggers": "For triggers, also give the application View and Edit subscriptions under each project’s service hooks security.",
+      "hookBadges": {
+        "webhookUnverified": "Triggers unverified",
+        "triggersNotAllowed": "Triggers not allowed",
+        "relayUrlUnconfigured": "Triggers unavailable",
+        "subscriptionsFailed": "Triggers failing"
+      },
+      "hookReasons": {
+        "webhookUnverified": "Waiting for the first event from Azure DevOps to confirm the triggers.",
+        "triggersNotAllowed": "Allow triggers on this repository’s project in Manage project access.",
+        "triggersNotAllowedOwn": "Give the application View and Edit subscriptions on this repository’s project in Azure DevOps.",
+        "relayUrlUnconfigured": "This deployment has no public webhook address, so Azure DevOps cannot deliver events.",
+        "subscriptionsFailed": "Azure DevOps refused the service hook subscriptions. They are retried automatically."
+      },
+      "subscriptions": "{count, plural, one {# service hook} other {# service hooks}}",
+      "lastDelivery": "last event {time}",
+      "noDeliveryYet": "no event yet",
+      "subscriptionsPaused": "{count, plural, one {# paused by Azure DevOps} other {# paused by Azure DevOps}}",
+      "rotateKey": "Rotate key",
+      "rotateTitle": "Rotate service hook key",
+      "rotateBody": "Replace the key that authenticates events from {repo}. The old key keeps working for 36 hours, so events Azure DevOps already queued still arrive.",
+      "suspectedLeak": "The current key may have leaked: stop accepting it as soon as the new key takes over",
+      "rotate": "Rotate",
+      "rotated": "All {total} subscriptions use the new key. It takes over with the next event from Azure DevOps.",
+      "rotatedPartly": "{switched} of {total} subscriptions switched before Azure DevOps stopped answering. The rest switch automatically.",
+      "rotateRefusals": {
+        "noSubscriptions": "This repository has no service hook subscriptions to rotate.",
+        "busy": "The subscriptions are being updated. Try again in a moment.",
+        "relayUrlUnconfigured": "This deployment has no public webhook address configured.",
+        "missing": "This repository is no longer connected.",
+        "failed": "Azure DevOps refused the new key. Try again later."
       }
     },
     "noConversations": "No conversations yet — the roster fills in once the bot reaches its first {room}.",
@@ -2434,6 +2471,14 @@
           "helpApprove": "Allow the bot to record an approval in the same review. Gitea refuses one on a pull request the bot opened itself.",
           "helpStatusCheck": "Post one commit status on the pull request's head for queued, running, and final results. It does not block merging unless an operator makes it a required check.",
           "repositoryMissing": "This repository is still being set up. Reviews and commit statuses are written through the organization's Gitea bot, so finish adding the repository first."
+        },
+        "azureDevOps": {
+          "title": "PR review",
+          "statusCheckLabel": "PR status",
+          "helpInlineComments": "Post the review as comment threads, with comments on specific changed lines or ranges.",
+          "helpRequestChanges": "Allow a “Waiting for author” vote. Agents that share the connection share one vote, so the latest review sets it.",
+          "helpApprove": "Allow an approving vote. Whether it counts toward a branch policy is up to that policy.",
+          "helpStatusCheck": "Post a pull request status for queued, running, and final results. It blocks completion only if an administrator adds a status policy for it."
         }
       },
       "deleteBot": {
@@ -2527,7 +2572,10 @@
         "ahpDescription": "Standard AHP v1 sessions and chat actions for compatible agent clients.",
         "ahpOff": "Disabled",
         "ahpPilot": "Pilot"
-      }
+      },
+      "azureDevOpsLoadError": "Couldn’t load your Azure DevOps repositories — {error}",
+      "azureDevOpsNotAuthorized": "{agent} is not authorized for {repo}. Authorize the repository on the agent’s Workspace tab, or make it the agent’s workspace repository, first.",
+      "azureDevOpsNoBoundRepository": "No Azure DevOps repository is in use yet. Authorize one on {agent}’s Workspace tab first, then add its trigger here."
     },
     "api": {
       "title": "API",
@@ -3400,7 +3448,8 @@
         "newChannels": "New channels start on",
         "newChannelsAuto": "Auto",
         "newChannelsMention": "@-mentions · Per thread",
-        "newChannelsOff": "Off"
+        "newChannelsOff": "Off",
+        "pullRequestStatus": "PR status"
       },
       "tools": {
         "loading": "Loading…",

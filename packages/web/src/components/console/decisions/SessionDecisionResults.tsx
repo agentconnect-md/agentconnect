@@ -116,8 +116,10 @@ export function codeHostTurnRouting(
 ): { scope: CodeHostRoutingKey; seq: number } | null {
   const routing = facts?.routing
   if (!routing || !isCodeHostRoutingScope(facts.provider, routing.family)) return null
+  // The guard above admits only a routable provider, so an Azure DevOps turn never reaches here.
+  const provider = facts.provider as CodeHostRoutingKey['provider']
   return {
-    scope: { provider: facts.provider, repoId: routing.repoId, family: routing.family as CodeHostRoutingFamily },
+    scope: { provider, repoId: routing.repoId, family: routing.family as CodeHostRoutingFamily },
     seq: routing.verdictSeq
   }
 }

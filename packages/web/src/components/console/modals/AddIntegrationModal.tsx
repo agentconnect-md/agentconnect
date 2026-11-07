@@ -12,8 +12,12 @@ import { useAgentGithubAppDialog } from '@/components/console/GithubAppDialog'
 import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
 import { GiteaReviewSettings } from '@/components/console/GiteaReviewSettings'
 import { GitlabReviewSettings } from '@/components/console/GitlabReviewSettings'
+import { AzureDevOpsReviewSettings } from '@/components/console/AzureDevOpsReviewSettings'
 import { IntegrationPlatformGroups, PLATFORM_TILE_WIDTH } from '@/components/console/IntegrationPlatformGroups'
 import {
+  AzureDevOpsNoRepositoriesNotice,
+  AzureDevOpsRepositoryField,
+  AzureDevOpsRepositoryOption,
   GithubConnectedBanner,
   GithubPrivateReposNotice,
   GiteaNoRepositoriesNotice,
@@ -118,6 +122,21 @@ import {
   type GtTriggerMode
 } from '@/lib/gitea-events'
 import { matchGiteaRepositories, type GiteaRepositoryChoice } from '@/lib/gitea-repositories'
+import {
+  AZ_DEFAULT_FAMILIES,
+  AZ_FAMILIES,
+  AZ_TRIGGER_LABEL,
+  azureDevOpsDefaultTriggerMode,
+  azureDevOpsFamCovered,
+  azureDevOpsFamilyCarriesReviews,
+  azureDevOpsFamilySubscription,
+  azureDevOpsMentionUsage,
+  azureDevOpsTriggerTooltip,
+  type AzFamily,
+  type AzTriggerMode
+} from '@/lib/azure-devops-events'
+import { matchAzureDevOpsRepositories, type AzureDevOpsRepositoryChoice } from '@/lib/azure-devops-repositories'
+import { useAzureDevOpsRepositories } from '@/lib/use-azure-devops-repositories'
 import { matchGitlabProjects, type GitlabProjectChoice } from '@/lib/gitlab-projects'
 import { useGiteaRepositories } from '@/lib/use-gitea-repositories'
 import { useGitlabProjects } from '@/lib/use-gitlab-projects'
@@ -180,8 +199,7 @@ const CODE_HOST_SUBSCRIPTION_HINT: Record<CodeHostProvider, string> = {
   github: 'Matching events run the agent in a session and reply on the same PR, issue or commit thread.',
   gitlab: 'Matching events run the agent in a session and reply on the same issue, merge request or push thread.',
   gitea: 'Matching events run the agent in a session and reply on the same issue, pull request or push thread.',
-  // Not offered: Azure DevOps has no hooks in v1 (azure-devops-integration.md §11).
-  'azure-devops': ''
+  'azure-devops': 'Matching events run the agent in a session and reply on the same pull request.'
 }
 
 const WEBHOOK_DOCS_PATH = 'connect-automate/triggers-automation/webhooks'
@@ -257,6 +275,15 @@ const GT_TRIGGER_TILES: Partial<Record<GtFamily, TriggerTile<GtTriggerMode>[]>> 
   ]
 }
 
+/** Azure DevOps's cadences — the same three, worded for a pull request (azure-devops-integration.md §11.4). */
+const AZ_TRIGGER_TILES: Partial<Record<AzFamily, TriggerTile<AzTriggerMode>[]>> = {
+  merge_request: [
+    { mode: 'first', label: AZ_TRIGGER_LABEL.first, desc: 'A new PR is opened' },
+    { mode: 'every', label: AZ_TRIGGER_LABEL.every, desc: 'Every new commit, reviewer request or comment' },
+    { mode: 'mention', label: AZ_TRIGGER_LABEL.mention, desc: 'Only when the agent is @-mentioned' }
+  ]
+}
+
 /**
  * "Listen for": one full-width card per subject family. Unchecked it is a slim
  * row — glyph, name, checkbox. Checked, that row becomes the card's tinted
@@ -287,8 +314,8 @@ function FamilyCards<F extends string, M extends string>({
   onToggle: (fam: F) => void
   modeOf: (fam: F) => M
   onPick: (fam: F, mode: M) => void
-  familyAttr: 'data-github-family' | 'data-gitlab-family' | 'data-gitea-family'
-  triggerAttr: 'data-github-trigger' | 'data-gitlab-trigger' | 'data-gitea-trigger'
+  familyAttr: 'data-github-family' | 'data-gitlab-family' | 'data-gitea-family' | 'data-azure-devops-family'
+  triggerAttr: 'data-github-trigger' | 'data-gitlab-trigger' | 'data-gitea-trigger' | 'data-azure-devops-trigger'
   /** Hover copy that goes BEYOND the tile's own subtitle, which the user can already read. */
   titleOf: (mode: M, fam: F) => string
   bodyExtra?: (fam: F) => ReactNode
@@ -490,6 +517,7 @@ export default function AddIntegrationModal({
     createGithubHook,
     createGiteaHook,
     createGitlabHook,
+    createAzureDevOpsHook,
     daemons,
     daemonsLoading,
     memberSets,
@@ -703,6 +731,18 @@ export default function AddIntegrationModal({
   const [gtLabels, setGtLabels] = useState<Partial<Record<GtFamily, string[]>>>({})
   const [gtReviewPolicy, setGtReviewPolicy] = useState<HookReviewPolicy>('full')
   const [gtReportingMode, setGtReportingMode] = useState<HookReportingMode>('status')
+
+  // Azure DevOps path: one hook per bound repository the agent is authorized for; a hook never binds or grants (§11.1).
+  const [azRepo, setAzRepo] = useState<string | null>(null)
+  const [azOpen, setAzOpen] = useState(false)
+  const [azQ, setAzQ] = useState('')
+  const az = useAzureDevOpsRepositories(platform === 'azure-devops')
+  const [azFams, setAzFams] = useState<Set<AzFamily>>(new Set(AZ_DEFAULT_FAMILIES))
+  const [azModes, setAzModes] = useState<Partial<Record<AzFamily, AzTriggerMode>>>({})
+  const azModeOf = (fam: AzFamily): AzTriggerMode => azModes[fam] ?? azureDevOpsDefaultTriggerMode(fam)
+  // Off until reviews and the pull-request status have their writers; until then the server refuses anything else.
+  const [azReviewPolicy, setAzReviewPolicy] = useState<HookReviewPolicy>('off')
+  const [azReportingMode, setAzReportingMode] = useState<HookReportingMode>('off')
 
   const [modePick, setModePick] = useState<'existing' | 'create' | null>(null)
   const [botPick, setBotPick] = useState<string | null>(null)
@@ -1336,6 +1376,77 @@ export default function AddIntegrationModal({
     }
   }
 
+  // Only a bound repository can carry a trigger: a workspace or a grant binds it.
+  const azChoices = az.choices.filter((choice) => choice.binding !== null && choice.repoId !== null)
+  const azPicked = azChoices.find((choice) => choice.repoId === azRepo)
+  const azMatches = matchAzureDevOpsRepositories(azChoices, azQ)
+  const pickAzRepository = (choice: AzureDevOpsRepositoryChoice) => {
+    setAzRepo(choice.repoId)
+    setAzOpen(false)
+    setErr(null)
+  }
+  const azWatchedFamilies = useMemo(() => {
+    const byRepository = new Map<string, Set<AzFamily>>()
+    for (const h of agentHooksData ?? []) {
+      if (h.kind !== 'azure-devops' || !h.repoId) continue
+      const taken = byRepository.get(h.repoId) ?? new Set<AzFamily>()
+      for (const { fam } of AZ_FAMILIES) {
+        if (h.family ? h.family === fam : azureDevOpsFamCovered(h.events, fam)) taken.add(fam)
+      }
+      byRepository.set(h.repoId, taken)
+    }
+    return byRepository
+  }, [agentHooksData])
+  const azPickedWatched = (azRepo && azWatchedFamilies.get(azRepo)) || new Set<AzFamily>()
+  const azAlreadyWatched = !!azRepo && AZ_FAMILIES.every(({ fam }) => azPickedWatched.has(fam))
+  const azSelectedFams = AZ_FAMILIES.map(({ fam }) => fam).filter((fam) => azFams.has(fam) && !azPickedWatched.has(fam))
+  const azRepoAuthorized =
+    !azRepo ||
+    (agent.workspace.mode === 'git' &&
+      agent.workspace.provider === 'azure-devops' &&
+      agent.workspace.repoId === azRepo) ||
+    authorizedRepos.some((r) => repoAuthProvider(r) === 'azure-devops' && r.repoId === azRepo)
+
+  const submitAzureDevOps = async () => {
+    if (busyRef.current || !azRepo || azSelectedFams.length === 0) return
+    if (azAlreadyWatched) {
+      setErr(
+        `This agent already watches ${azPicked?.repoPath ?? 'this repository'} — edit its events on the agent page instead.`
+      )
+      return
+    }
+    if (!azRepoAuthorized) {
+      setErr(
+        t('azureDevOpsNotAuthorized', { agent: agentLabel(agent), repo: azPicked?.repoPath ?? t('thisRepository') })
+      )
+      return
+    }
+    busyRef.current = true
+    setSaving(true)
+    setErr(null)
+    try {
+      for (const fam of azSelectedFams) {
+        const reviews = azureDevOpsFamilyCarriesReviews(fam)
+        await createAzureDevOpsHook({
+          agentId: agent.id,
+          name: azPicked?.repoPath ?? azRepo,
+          repoId: azRepo,
+          family: fam,
+          ...azureDevOpsFamilySubscription(fam, azModeOf(fam)),
+          reviewPolicy: reviews ? azReviewPolicy : 'off',
+          reportingMode: reviews ? azReportingMode : 'off'
+        })
+      }
+      onCompleted?.(`Created Azure DevOps subscriptions for ${agent.name}.`)
+      onClose()
+    } catch (e) {
+      failSubmit(e)
+      void mutateAgentHooks()
+      setSaving(false)
+      busyRef.current = false
+    }
+  }
+
   // One subscription = one hook row PER SELECTED FAMILY on this agent, each with
   // its OWN cadence, all named after the project. The creates run in order; a
   // failure part-way leaves the earlier families created, which the refreshed
@@ -1501,8 +1612,12 @@ export default function AddIntegrationModal({
       enabled: !!gtRepo && !gtAlreadyWatched && gtRepoAuthorized && gtSelectedFams.length > 0,
       hidden: false
     },
-    // No hooks in v1, so this pane is never offered and its footer submits nothing.
-    'azure-devops': { label: 'Connect', act: () => {}, enabled: false, hidden: true }
+    'azure-devops': {
+      label: 'Connect',
+      act: () => void submitAzureDevOps(),
+      enabled: !!azRepo && !azAlreadyWatched && azRepoAuthorized && azSelectedFams.length > 0,
+      hidden: false
+    }
   }
   const footer =
     platform === 'webhook'
@@ -2451,6 +2566,117 @@ export default function AddIntegrationModal({
                       )}
                     </div>
                   )}
+                />
+              </>
+            )}
+          </>
+        )}
+
+        {platform === 'azure-devops' && (
+          <>
+            {az.error ? (
+              <div className="mb-4 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
+                {t('azureDevOpsLoadError', { error: az.error })}
+              </div>
+            ) : az.loading ? (
+              <LoadingState size={20} padding={16} />
+            ) : !az.enabled || !az.connected ? (
+              <div className="mb-4">
+                <AzureDevOpsNoRepositoriesNotice
+                  connected={az.connected}
+                  enabled={az.enabled}
+                  integrationsHref={orgPath('/integrations')}
+                  onSync={az.reload}
+                  syncing={az.reloading}
+                />
+              </div>
+            ) : azChoices.length === 0 ? (
+              <div
+                data-azure-devops-no-bound=""
+                className="mb-4 flex items-start gap-2 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)"
+              >
+                <Icon name="folder-git-2" size={14} className="mt-[1px] flex-none" />
+                <span>{t('azureDevOpsNoBoundRepository', { agent: agentLabel(agent) })}</span>
+              </div>
+            ) : (
+              <>
+                <div className="mb-[18px]">
+                  <AzureDevOpsRepositoryField
+                    value={azPicked?.repoPath ?? ''}
+                    icon="book-bookmark"
+                    loading={false}
+                    open={azOpen}
+                    query={azQ}
+                    onToggle={() => {
+                      setAzQ('')
+                      setAzOpen((value) => !value)
+                    }}
+                    onClose={() => setAzOpen(false)}
+                    onQueryChange={setAzQ}
+                    error={
+                      azAlreadyWatched
+                        ? `This agent already watches ${azPicked?.repoPath ?? 'this repository'}.`
+                        : az.listError
+                          ? t('azureDevOpsLoadError', { error: az.listError })
+                          : undefined
+                    }
+                  >
+                    {azMatches.map((choice) => (
+                      <AzureDevOpsRepositoryOption
+                        key={choice.repositoryId}
+                        choice={choice}
+                        selected={azRepo === choice.repoId}
+                        onSelect={() => pickAzRepository(choice)}
+                      />
+                    ))}
+                    {azMatches.length === 0 && <div className="fnohit">{t('noRepositoriesMatch', { query: azQ })}</div>}
+                  </AzureDevOpsRepositoryField>
+                </div>
+
+                {!azRepoAuthorized && (
+                  <div className="mb-4 flex items-start gap-2 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
+                    <Icon name="shield-alert" size={14} className="mt-[1px] flex-none" />
+                    <span>
+                      {t('azureDevOpsNotAuthorized', {
+                        agent: agentLabel(agent),
+                        repo: azPicked?.repoPath ?? t('thisRepository')
+                      })}
+                    </span>
+                  </div>
+                )}
+
+                <FamilyCards
+                  families={AZ_FAMILIES}
+                  tilesOf={(fam) => AZ_TRIGGER_TILES[fam] ?? []}
+                  takenOf={(fam) => azPickedWatched.has(fam)}
+                  onOf={(fam) => azFams.has(fam)}
+                  onToggle={(fam) =>
+                    setAzFams((current) => {
+                      const next = new Set(current)
+                      if (next.has(fam)) next.delete(fam)
+                      else next.add(fam)
+                      return next
+                    })
+                  }
+                  modeOf={azModeOf}
+                  onPick={(fam, mode) => setAzModes((current) => ({ ...current, [fam]: mode }))}
+                  familyAttr="data-azure-devops-family"
+                  triggerAttr="data-azure-devops-trigger"
+                  titleOf={(mode, fam) =>
+                    mode === 'mention'
+                      ? azureDevOpsMentionUsage(agent.name)
+                      : azureDevOpsTriggerTooltip(mode, agent.name, fam)
+                  }
+                  bodyExtra={(fam) =>
+                    azureDevOpsFamilyCarriesReviews(fam) ? (
+                      <AzureDevOpsReviewSettings
+                        value={{ reviewPolicy: azReviewPolicy, reportingMode: azReportingMode }}
+                        onReviewPolicyChange={setAzReviewPolicy}
+                        onReportingModeChange={setAzReportingMode}
+                        layout="format"
+                      />
+                    ) : null
+                  }
                 />
               </>
             )}

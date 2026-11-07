@@ -14,6 +14,7 @@ import type {
   UserTurnBody
 } from '@agentconnect.md/protocol'
 import { shortSha } from '@/lib/user-turn-body'
+import { azureDevOpsPullRequestLabel, azureDevOpsPullRequestUrl } from '@/lib/azure-devops-repositories'
 import { MarkdownText } from './MessageText'
 import { platformTurnFacts } from './platforms/registry'
 import { FactRow, FactRows } from './turn-facts-rows'
@@ -25,6 +26,12 @@ export function CodehostTurnFacts({ facts }: { facts: CodehostFacts }) {
   const from = author?.login
     ? `${author.login}${author.association ? ` · ${author.association.toLowerCase()}` : ''}`
     : ''
+  // An Azure DevOps pull request is named `{organization}/{project}/{repository}!{id}` (azure-devops-integration.md §11.8).
+  const azurePull = facts.provider === 'azure-devops' && subject.number !== undefined && subject.kind !== 'push'
+  const number = subject.number === undefined ? '' : azurePull ? `!${subject.number}` : `#${subject.number}`
+  const subjectUrl =
+    subject.url ??
+    (azurePull && subject.repo ? (azureDevOpsPullRequestUrl(subject.repo, subject.number!) ?? undefined) : undefined)
   const revisionText =
     revision?.base && revision.head
       ? `${shortSha(revision.base)} → ${shortSha(revision.head)}`
@@ -35,13 +42,16 @@ export function CodehostTurnFacts({ facts }: { facts: CodehostFacts }) {
     <>
       <FactRows>
         <FactRow label={t('subject')}>
-          {subject.url ? (
-            <a className="lnk" href={subject.url} target="_blank" rel="noopener noreferrer">
-              {subject.repo ?? subject.url}
-              {subject.number !== undefined ? ` · #${subject.number}` : ''}
+          {subjectUrl ? (
+            <a className="lnk" href={subjectUrl} target="_blank" rel="noopener noreferrer">
+              {azurePull && subject.repo
+                ? azureDevOpsPullRequestLabel(subject.repo, subject.number!)
+                : `${subject.repo ?? subjectUrl}${number ? ` · ${number}` : ''}`}
             </a>
+          ) : azurePull && subject.repo ? (
+            azureDevOpsPullRequestLabel(subject.repo, subject.number!)
           ) : (
-            [subject.repo, subject.number !== undefined ? `#${subject.number}` : ''].filter(Boolean).join(' · ')
+            [subject.repo, number].filter(Boolean).join(' · ')
           )}
         </FactRow>
         <FactRow label={t('event')}>{facts.event}</FactRow>

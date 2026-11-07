@@ -9,6 +9,7 @@ import { CODE_HOST_PROJECTION } from '@/lib/code-hosts'
 import { giteaFamilyTile, giteaHookFamily } from '@/lib/gitea-events'
 import { githubFamilyTile, githubHookFamily } from '@/lib/github-events'
 import { gitlabFamilyTile, gitlabHookFamily } from '@/lib/gitlab-events'
+import { azureDevOpsFamilyTile, azureDevOpsHookFamily } from '@/lib/azure-devops-events'
 import { Button, Icon } from '@/components/ui'
 
 // The subject-family pill a code-host row is named by; total, so a new host never reads as an unnamed row.
@@ -25,8 +26,10 @@ const CODE_HOST_FAMILY_PILL: Record<CodeHostProvider, (hook: HookDto) => string 
     const fam = giteaHookFamily(h)
     return fam ? giteaFamilyTile(fam)?.pill : undefined
   },
-  // No hooks in v1 (azure-devops-integration.md §11), so no row has a family.
-  'azure-devops': () => undefined
+  'azure-devops': (h) => {
+    const fam = azureDevOpsHookFamily(h)
+    return fam ? azureDevOpsFamilyTile(fam)?.pill : undefined
+  }
 }
 
 // Confirm-delete a trigger. The CP drops the row and the relay pool drops its
