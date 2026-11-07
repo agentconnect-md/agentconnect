@@ -697,6 +697,10 @@ interface RelayPlatformIngressPlugin<TIngest, TVerified> {
   // HTTP answer depends on admission can answer 503 for `retry` from its route.
   handle(ingest, verified, host):
     Promise<{ syncResponse?: unknown; admission?: RelayAdmission }>
+  // A daemon's `rd/platform/request` for one of this platform's bots, for a
+  // credential that must not reach daemons; core has already checked the
+  // daemon is a member of the assignment (teams-integration.md §8.5).
+  daemonRequest?(assignment, payload): Promise<RdPlatformReply>
 }
 
 interface RelayBotIngress {

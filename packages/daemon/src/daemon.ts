@@ -167,6 +167,7 @@ import {
   type TransferNetwork,
   WORKSPACE_REPO_SCOPE_FEATURE,
   WORKSPACE_SESSION_READ_FEATURE,
+  MSTEAMS_RELAY_EGRESS_V1_FEATURE,
   RdSlackAction,
   WireFeishuCardActionEvent,
   WireGoogleChatCardAction,
@@ -970,6 +971,7 @@ import { CodeHostRefResolver } from './codehost/ref-resolver.js'
 import { gitCredReadTokens } from './codehost/repository.js'
 import { CpClient } from './cp/client.js'
 import { RelayManager } from './cp/relay-manager.js'
+import { PlatformRelayUnsent } from './platforms/platform-relay.js'
 import { CP_IDENTITY_TOKEN_PATH, readClusterIdentityToken } from './cp/cluster-identity.js'
 import { CpCollabRoutes, isSyntheticA2aChannel } from './cp/cp-collab-routes.js'
 import { ClientTransport, systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
@@ -3112,6 +3114,13 @@ export class Daemon {
       evaluationIntegrationIds: () => this.evaluationIntegrationIds,
       store: () => this.store,
       cpClient: () => this.cpClient,
+      // Late-bound: the relays start with the CP's roster, which may come after a connection opens.
+      platformRelay: () => ({
+        request: async (req) => {
+          if (!this.relays) throw new PlatformRelayUnsent('no relay roster yet')
+          return await this.relays.request(req)
+        }
+      }),
       channelSnapshots: () => this.channelSnapshots,
       boundIntegrationIds: () => Object.keys(this.botUserIds),
       bindings: () => ({
@@ -9705,6 +9714,8 @@ export class Daemon {
       'workspace-file-delete-v1',
       'workspace-dir-create-v1',
       WORKSPACE_SESSION_READ_FEATURE,
+      // Sends a deployment Teams app's calls through the relay; the CP connects a tenant to it only on a daemon listing this.
+      MSTEAMS_RELAY_EGRESS_V1_FEATURE,
       WORKSPACE_REPO_SCOPE_FEATURE,
       WORKSPACE_FILE_DOWNLOAD_FEATURE,
       // Snapshots workspace files onto, and fetches console uploads from, URLs the control plane signs; static.

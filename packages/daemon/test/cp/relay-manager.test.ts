@@ -7,6 +7,7 @@ import {
   type RelayDaemonFrame
 } from '@agentconnect.md/protocol'
 import { RelayManager } from '../../src/cp/relay-manager.js'
+import { PlatformRelayUnsent } from '../../src/platforms/platform-relay.js'
 import type { RelayClientDeps } from '../../src/cp/relay-client.js'
 import type { Logger } from '../../src/log.js'
 
@@ -103,6 +104,14 @@ describe('RelayManager.converge', () => {
     mgr.converge([entry('r1', 'wss://r1')])
     await mgr.stop()
     expect(mgr.size()).toBe(0)
+  })
+
+  it('reports a platform request no relay could take as unsent', async () => {
+    const { mgr } = manager()
+    mgr.converge([entry('r1', 'wss://r1')])
+    await expect(
+      mgr.request({ platformId: 'msteams', botId: '11111111-1111-4111-8111-111111111111', payload: {} })
+    ).rejects.toBeInstanceOf(PlatformRelayUnsent)
   })
 })
 

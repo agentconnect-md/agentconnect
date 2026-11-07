@@ -75,7 +75,7 @@ export function msTeamsRoutes(deps: HttpDeps, fetchImpl: typeof fetch = fetch) {
           tags: [Tag.Bots],
           summary: 'Replace a Teams bot client secret',
           description:
-            'Check a new Microsoft Entra client secret for this bot’s app with the same token request a new install runs, then store it in place of the current one and push it to every serving daemon. The app ID and tenant ID stay the bot’s identity; the secret is write-only and never reaches the relay.',
+            'Check a new Microsoft Entra client secret for this bot’s app with the same token request a new install runs, then store it in place of the current one and push it to every serving daemon. The app ID and tenant ID stay the bot’s identity; the secret is write-only and never reaches the relay. The deployment’s own Teams app is refused: its secret is managed in the Setup Server and reaches no daemon.',
           operationId: 'replaceMsTeamsBotSecret',
           params: IdParam,
           body: ReplaceMsTeamsSecretBody,
@@ -88,7 +88,7 @@ export function msTeamsRoutes(deps: HttpDeps, fetchImpl: typeof fetch = fetch) {
         if (!bot || bot.platform !== MSTEAMS_PLATFORM || !bot.externalAppId || !bot.externalTenantId) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'Teams bot not found.' })
         }
-        // A connected tenant's row takes its secret from the deployment app (§8.2).
+        // A connected tenant's row holds no secret; the deployment app's stays on the CP and relay (§8.5).
         if (bot.prebuilt) {
           return reply.code(409).send({
             error: 'Conflict',

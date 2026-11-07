@@ -3,6 +3,7 @@ import { FakeClock } from '../../../test/fakes/fake-clock.js'
 import { BotId, OrgId } from '../../domain/ids.js'
 import type { SessionAccessViewer } from '../../http/session-access-plugin.js'
 import type { BotRecord, ExternalScopeRecord } from '../../persistence/ports.js'
+import { MSTEAMS_DEPLOYMENT_SECRET_MARKER, type MsTeamsPlatformApp } from './deployment-app.js'
 import { MSTEAMS_CONNECTOR_ORIGIN, createMsTeamsSessionAccess } from './session-access.js'
 
 const APP = '22222222-2222-4222-8222-222222222222'
@@ -10,7 +11,12 @@ const TENANT = '11111111-1111-4111-8111-111111111111'
 const MEMBER = '33333333-3333-4333-8333-333333333333'
 const CHANNEL = '19:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA@thread.tacv2'
 
-function fixture(respond: (url: string) => Response = () => Response.json({ aadObjectId: MEMBER, tenantId: TENANT })) {
+const HOME = '44444444-4444-4444-8444-444444444444'
+
+function fixture(
+  respond: (url: string) => Response = () => Response.json({ aadObjectId: MEMBER, tenantId: TENANT }),
+  opts: { app?: MsTeamsPlatformApp; stored?: string } = {}
+) {
   const clock = new FakeClock(Date.UTC(2026, 0, 1))
   const bot = {
     id: BotId('bot-1'),
@@ -35,9 +41,12 @@ function fixture(respond: (url: string) => Response = () => Response.json({ aadO
       configured: true,
       identity,
       bots: { getUnscoped: async () => bot, listForOrg: async () => [bot] },
-      botSecrets: { get: async () => ({ botToken: 'synthetic-secret', appToken: null, signingSecret: null }) }
+      botSecrets: {
+        get: async () => ({ botToken: opts.stored ?? 'synthetic-secret', appToken: null, signingSecret: null })
+      }
     },
-    fetchImpl
+    fetchImpl,
+    opts.app
   )
   const viewer = {
     orgId: bot.orgId,
@@ -61,6 +70,18 @@ function fixture(respond: (url: string) => Response = () => Response.json({ aadO
 }
 
 describe('Microsoft Teams session access', () => {
+  it('checks a deployment app’s row with the app’s own credential from its home tenant, not the row’s marker', async () => {
+    const app = { appId: APP, tenantId: HOME, clientSecret: 'deployment-secret-example' }
+    const f = fixture(undefined, { app, stored: MSTEAMS_DEPLOYMENT_SECRET_MARKER })
+    await f.service.addViewerIdentities(f.viewer)
+    await expect(f.service.resolve([f.scope()], f.viewer)).resolves.toMatchObject({
+      allowedScopes: [{ id: 'scope-1', aclRevision: 1n }]
+    })
+    const [tokenCall] = f.fetchImpl.mock.calls
+    expect(String(tokenCall![0])).toBe(`https://login.microsoftonline.com/${HOME}/oauth2/v2.0/token`)
+    expect(String(tokenCall![1]?.body)).toContain('client_secret=deployment-secret-example')
+  })
+
   it('admits a linked member of the conversation, checked with the bot’s own token', async () => {
     const f = fixture()
     await f.service.addViewerIdentities(f.viewer)

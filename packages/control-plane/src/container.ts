@@ -382,7 +382,7 @@ import { msTeamsRoutes } from './platforms/msteams/routes.js'
 import { msTeamsConnectRoutes } from './platforms/msteams/connect-routes.js'
 import { msTeamsConnectKeys } from './platforms/msteams/connect.js'
 import { MsTeamsCredentialReconciler } from './platforms/msteams/credential-reconciler.js'
-import { msTeamsConnectAnchor, resolveMsTeamsPlatformApp } from './platforms/msteams/deployment-app.js'
+import { msTeamsConnectAnchor, msTeamsRelayApp, resolveMsTeamsPlatformApp } from './platforms/msteams/deployment-app.js'
 import { createTelegramCpProvider } from './platforms/telegram/provider.js'
 import { createDiscordCpProvider } from './platforms/discord/provider.js'
 import { createSlackCpProvider, createSlackToolingCredentials } from './platforms/slack/provider.js'
@@ -2350,10 +2350,13 @@ export function buildContainer(
     ...botSessionAccessDeps,
     configured: configuredSocialProviders.includes('discord')
   })
-  const msTeamsSessionAccess = createMsTeamsSessionAccess({
-    ...botSessionAccessDeps,
-    configured: configuredSocialProviders.includes('azuread')
-  })
+  // The deployment's Teams app (teams-integration.md §8): its secret stays on the CP and relay, so its rows' member checks use it from here.
+  const msTeamsPlatformApp = resolveMsTeamsPlatformApp(config)
+  const msTeamsSessionAccess = createMsTeamsSessionAccess(
+    { ...botSessionAccessDeps, configured: configuredSocialProviders.includes('azuread') },
+    fetch,
+    msTeamsPlatformApp
+  )
 
   // Built once and shared between the route deps (the live paths) and the
   // platform providers below — one closure per platform, not two.
@@ -2988,8 +2991,7 @@ export function buildContainer(
     log: http.log
   })
 
-  // The deployment's Teams app (teams-integration.md §8); a rotated secret reaches the connected tenants' rows on the next boot.
-  const msTeamsPlatformApp = resolveMsTeamsPlatformApp(config)
+  // Removes the deployment app's secret from any of its rows an older build stamped (teams-integration.md §8.5).
   const msTeamsCredentialReconciler = new MsTeamsCredentialReconciler({
     bots: repos.bot,
     secrets: repos.botSecret,
@@ -3380,7 +3382,9 @@ export function buildContainer(
     relayPublicBase,
     webAppUrl,
     // The relay answers a Teams tenant no organization connected with the deployment app's own card (teams-integration.md §8.4).
-    msTeamsConnectAnchor(msTeamsPlatformApp, webAppUrl)
+    msTeamsConnectAnchor(msTeamsPlatformApp, webAppUrl),
+    // The relay sends the app's rows' Bot Connector calls and mints their Graph tokens (§8.5).
+    msTeamsRelayApp(msTeamsPlatformApp, config.API_KEY_PEPPER)
   )
   const relayWsDeps: RelayWsServerDeps = {
     log: http.log,

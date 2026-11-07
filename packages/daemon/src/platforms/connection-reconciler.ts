@@ -67,6 +67,8 @@ import {
   msTeamsMemoryScope
 } from './msteams/connection.js'
 import { MsTeamsWriteBudgets } from './msteams/write-budget.js'
+import { msTeamsRelayPort } from './msteams/api.js'
+import type { PlatformRelay } from './platform-relay.js'
 import { storeConversationMemory } from './conversation-memory.js'
 import type { ObservedChat } from './observed-channels.js'
 import { ConnectionPool, type ConnectionKey } from './registry.js'
@@ -179,6 +181,8 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
   evaluationIntegrationIds(): ReadonlySet<string>
   store(): LocalStore
   cpClient(): CpClient | undefined
+  /** The daemon's relays, for a platform whose calls go through them with credentials the daemon never holds; absent ⇒ none. */
+  platformRelay?(): PlatformRelay | undefined
   /** The Daemon's cached per-integration channel snapshots, read and written in place. */
   channelSnapshots(): Map<string, { channels: IntegrationChannel[]; authoritative: boolean }>
   /** Every integration with a bot identity on record — the eviction pass's roll call. */
@@ -1176,9 +1180,11 @@ export class ConnectionReconciler {
       let conn = this.msTeamsPool.find(group.key)
       if (!conn) {
         if (!this.msTeamsPool.beginConnect(group.key)) continue
+        const relay = this.host.platformRelay?.()
         conn = new MsTeamsConnection({
           group,
           log: this.log,
+          ...(relay ? { relay: msTeamsRelayPort(relay) } : {}),
           budget: this.msTeamsBudgets.for(group.config.appId, group.config.tenantId),
           memory: storeConversationMemory(
             this.host.store(),

@@ -6,6 +6,7 @@ import {
   HOOK_DECISION_ROUTING_V1_FEATURE,
   HOOK_DECISION_ROUTING_V2_FEATURE,
   RD_DECISION_ROUTE_V1,
+  RD_PLATFORM_REQUEST_V1,
   GITEA_V1_FEATURE,
   RD_HOOK_NOTICE_V1,
   RD_HOOK_INSTRUCTIONS_V1,
@@ -524,5 +525,26 @@ describe('RelayClient — an inbound frame that fails to decode', () => {
       buildRelayDaemonFrame('rd/route/report/ack', { accepted: true }, { corr: t.lastReq('rd/route/report')!.id })
     )
     expect(await report).toEqual({ accepted: true })
+  })
+
+  it('serves platform requests only over a relay that advertises them, and sends each once', async () => {
+    const old = make()
+    await toReady(old.client, old.transports)
+    expect(old.client.supportsPlatformRequest()).toBe(false)
+
+    const { client, transports } = make()
+    const t = await toReady(client, transports, RELAY_ID, [RD_PLATFORM_REQUEST_V1])
+    expect(client.supportsPlatformRequest()).toBe(true)
+    const pending = client.sendPlatformRequest({
+      platformId: 'msteams',
+      botId: RELAY_ID,
+      payload: { op: 'graph-token' }
+    })
+    await flush()
+    const req = t.lastReq('rd/platform/request')!
+    expect(req.payload).toEqual({ platformId: 'msteams', botId: RELAY_ID, payload: { op: 'graph-token' } })
+    t.inject(buildRelayDaemonFrame('rd/platform/reply', { outcome: 'refused', reason: 'ticket' }, { corr: req.id }))
+    expect(await pending).toEqual({ outcome: 'refused', reason: 'ticket' })
+    expect(t.sent.filter((f) => f.type === 'rd/platform/request')).toHaveLength(1)
   })
 })

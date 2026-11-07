@@ -81,6 +81,18 @@ export const RcMsTeamsAnchor = z.object({
 })
 export type RcMsTeamsAnchor = z.infer<typeof RcMsTeamsAnchor>
 
+/** The deployment Teams app the relay sends its customer rows' Bot Connector calls and mints their Graph tokens with (teams-integration.md §8.5). */
+export const RcMsTeamsDeploymentApp = z.object({
+  appId: z.string().uuid(),
+  /** The app's home tenant, which issues every Bot Connector token. */
+  tenantId: z.string().uuid(),
+  /** Secret material, never logged. */
+  clientSecret: z.string().min(1),
+  /** The base64url key every relay signs and checks conversation tickets with; derived from the CP's pepper, never logged. */
+  ticketKey: z.string().min(43)
+})
+export type RcMsTeamsDeploymentApp = z.infer<typeof RcMsTeamsDeploymentApp>
+
 // C→R REP (corr = rc/auth id). Rejection is a `error` REP + close, not a reply.
 // The CP's deployment snapshot, sent on every authentication; the GitHub secret is applied once per relay process, the Google Chat anchor on every registration.
 export const RcDeploymentConfig = z.object({
@@ -88,6 +100,7 @@ export const RcDeploymentConfig = z.object({
   githubWebhookSecret: z.string().min(1).optional(),
   googleChatAnchor: RcGoogleChatAnchor.optional(),
   msTeamsAnchor: RcMsTeamsAnchor.optional(),
+  msTeamsApp: RcMsTeamsDeploymentApp.optional(),
   // Console links in provider-owned onboarding use the configured origin, without an organization path.
   webAppUrl: z
     .string()

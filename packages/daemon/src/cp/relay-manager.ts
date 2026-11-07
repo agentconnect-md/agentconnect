@@ -13,6 +13,8 @@ import type {
   RelayRosterEntry,
   RdAgentMsg,
   RdAgentMsgAck,
+  RdPlatformReply,
+  RdPlatformRequest,
   RdRoute,
   RdRouteAck,
   RdRouteReport,
@@ -21,9 +23,10 @@ import type {
   WebchatImageUpdate,
   WebchatPromptSuggestion
 } from '@agentconnect.md/protocol'
+import { PlatformRelayUnsent, type PlatformRelay } from '../platforms/platform-relay.js'
 import { RelayClient, type RelayClientDeps } from './relay-client.js'
 
-export class RelayManager {
+export class RelayManager implements PlatformRelay {
   private readonly clients = new Map<string, RelayClient>() // keyed by relayId
   private webchatImagesAdvertised = false
 
@@ -107,6 +110,16 @@ export class RelayManager {
       }
     }
     return last
+  }
+
+  /** A platform module's provider call over the first READY relay that serves it; any relay can, since each holds the same deployment snapshot. */
+  async request(req: RdPlatformRequest): Promise<RdPlatformReply> {
+    for (const client of this.clients.values()) {
+      if (!client.supportsPlatformRequest()) continue
+      // A request that left may have reached the provider, so it is never re-sent to a second relay.
+      return await client.sendPlatformRequest(req)
+    }
+    throw new PlatformRelayUnsent('no READY relay serves platform requests')
   }
 
   /**

@@ -7,6 +7,7 @@ import {
   verifyMsTeamsApp,
   type MsTeamsCreateCredentials
 } from './provider.js'
+import { MSTEAMS_DEPLOYMENT_SECRET_MARKER } from './deployment-app.js'
 import { buildCpPlatformRegistry } from '../registry.js'
 import { buildCreateIntegrationBody } from '../../http/dto/create-integration-body.js'
 import type { BotRecord, CreateBotInput, IntegrationRecord } from '../../persistence/ports.js'
@@ -152,15 +153,6 @@ describe('Teams installation', () => {
       messagesUrl: 'https://relay.example.test/msteams/messages'
     })
     expect(await project()).toEqual({ appId: APP_ID, tenantId: TENANT_ID, clientSecret: SECRET })
-    const HOME = '66666666-6666-4666-8666-666666666666'
-    expect(
-      await createMsTeamsCpProvider().projectIntegrationConfig(
-        {} as IntegrationRecord,
-        { ...bot, platformConfig: { tenantId: TENANT_ID, tokenTenantId: HOME } },
-        {} as IntegrationCoreEnvelope,
-        secrets
-      )
-    ).toEqual({ appId: APP_ID, tenantId: TENANT_ID, tokenTenantId: HOME, clientSecret: SECRET })
     expect(
       await createMsTeamsCpProvider().projectIntegrationConfig(
         {} as IntegrationRecord,
@@ -169,6 +161,44 @@ describe('Teams installation', () => {
         { ...secrets, botToken: '' }
       )
     ).toBeUndefined()
+  })
+
+  it('projects a deployment app’s row with no secret, only the relay as its egress and its bot row (§8.5)', async () => {
+    const HOME = '66666666-6666-4666-8666-666666666666'
+    const BOT_ROW = '77777777-7777-4777-8777-777777777777'
+    const app = { appId: APP_ID, tenantId: HOME, clientSecret: 'deployment-secret-example' }
+    const row = {
+      id: BOT_ROW,
+      externalAppId: APP_ID,
+      externalTenantId: TENANT_ID,
+      platformConfig: { tenantId: TENANT_ID, tokenTenantId: HOME }
+    } as unknown as BotRecord
+    const project = (provider: ReturnType<typeof createMsTeamsCpProvider>, botToken: string) =>
+      provider.projectIntegrationConfig({} as IntegrationRecord, row, {} as IntegrationCoreEnvelope, {
+        botToken,
+        appToken: null,
+        signingSecret: null
+      })
+    const relayed = { appId: APP_ID, tenantId: TENANT_ID, egress: 'relay', botId: BOT_ROW }
+    // A row an older build stamped with the secret still never ships it.
+    for (const stored of [app.clientSecret, MSTEAMS_DEPLOYMENT_SECRET_MARKER]) {
+      const config = await project(createMsTeamsCpProvider({ app }), stored)
+      expect(config).toEqual(relayed)
+      expect(IntegrationMsTeamsConfig.parse(config)).toEqual(relayed)
+      expect(JSON.stringify(config)).not.toContain(app.clientSecret)
+    }
+    // The marker is never handed out as a secret, even with the deployment app unset.
+    expect(await project(createMsTeamsCpProvider(), MSTEAMS_DEPLOYMENT_SECRET_MARKER)).toEqual(relayed)
+    // An organization's own bot keeps its secret.
+    const own = { ...row, externalAppId: '88888888-8888-4888-8888-888888888888' } as BotRecord
+    expect(
+      await createMsTeamsCpProvider({ app }).projectIntegrationConfig(
+        {} as IntegrationRecord,
+        own,
+        {} as IntegrationCoreEnvelope,
+        { botToken: SECRET, appToken: null, signingSecret: null }
+      )
+    ).toEqual({ appId: own.externalAppId, tenantId: TENANT_ID, clientSecret: SECRET })
   })
 
   it('exposes the credential block through the actual create schema, lower-casing both IDs', () => {

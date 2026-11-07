@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { z } from 'zod'
-import { MSTEAMS_PLATFORM } from '@agentconnect.md/protocol'
+import { MSTEAMS_PLATFORM, MSTEAMS_RELAY_EGRESS_V1_FEATURE } from '@agentconnect.md/protocol'
 import type { HttpDeps } from '../../http/deps.js'
 import type { ZodTypeProvider } from '../../http/plugins/zod.js'
 import { Tag } from '../../http/plugins/openapi.js'
@@ -13,7 +13,7 @@ import { integrationPlatformAvailability } from '../../http/daemon-platform-capa
 import { installNewBot } from '../../http/install-bot.js'
 import { relayHttpBase, relayIngress } from '../../http/relay-ingress.js'
 import { agentIconBackgroundColor } from '../../agents/agent-icon.js'
-import { AgentId, IntegrationId } from '../../domain/ids.js'
+import { AgentId, DaemonId, IntegrationId } from '../../domain/ids.js'
 import { BotExternalIdentityTaken } from '../../persistence/errors.js'
 import type { AgentRecord } from '../../persistence/ports.js'
 import {
@@ -39,8 +39,7 @@ import {
   verifyMsTeamsConnectState,
   type MsTeamsConnectKeys
 } from './connect.js'
-import type { MsTeamsPlatformApp } from './deployment-app.js'
-import { msTeamsSecrets } from './provider.js'
+import { msTeamsDeploymentSecrets, type MsTeamsPlatformApp } from './deployment-app.js'
 
 export interface MsTeamsConnectSeams {
   /** The deployment-owned app; absent ⇒ every route answers that there is none. */
@@ -141,6 +140,10 @@ async function connectTarget(deps: HttpDeps, req: FastifyRequest, agentId: strin
     })
     if (availability === 'not_found') return 'daemon not found'
     if (availability === 'unsupported') return `daemon does not support ${MSTEAMS_PLATFORM} integrations`
+    // An older daemon could only send with the app's secret, which no daemon receives (§8.5).
+    const daemon = await deps.registry.getAvailable(orgOf(req), DaemonId(servingDaemonId))
+    if (!daemon?.capabilities.features.includes(MSTEAMS_RELAY_EGRESS_V1_FEATURE))
+      return 'upgrade the agent’s daemon: this Teams app sends through the relay, which its version does not support'
   }
   return agent
 }
@@ -291,7 +294,8 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
                   externalAppId: live.app.appId,
                   platformConfig: { tenantId, tokenTenantId: live.app.tenantId, ...(store ? { source: 'store' } : {}) }
                 },
-                secrets: msTeamsSecrets(live.app.clientSecret),
+                // The row stores no secret; its daemon sends through the relay (§8.5).
+                secrets: msTeamsDeploymentSecrets(),
                 externalIdentity: {
                   externalAppId: live.app.appId,
                   externalTenantId: tenantId,
@@ -330,7 +334,7 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
               await deps.repos.botCredential.install(
                 orgId,
                 held.id,
-                msTeamsSecrets(live.app.clientSecret),
+                msTeamsDeploymentSecrets(),
                 new Date(deps.clock.now())
               )
               await deps.httpBot.syncBot(held.id)

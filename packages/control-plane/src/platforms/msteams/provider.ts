@@ -4,7 +4,13 @@ import { z } from 'zod'
 import { MSTEAMS_PLATFORM, msTeamsMessagesUrl, type IntegrationMsTeamsConfig } from '@agentconnect.md/protocol'
 import type { BotRecord, BotSecretMaterial } from '../../persistence/ports.js'
 import { isMsTeamsConversationId, msTeamsSessionRealm } from './session-access.js'
-import { MsTeamsCpEnvSchema, isMsTeamsCustomerRow, type MsTeamsPlatformApp } from './deployment-app.js'
+import {
+  MSTEAMS_DEPLOYMENT_SECRET_MARKER,
+  MsTeamsCpEnvSchema,
+  isMsTeamsCustomerRow,
+  usesMsTeamsDeploymentApp,
+  type MsTeamsPlatformApp
+} from './deployment-app.js'
 import type { CpConfigRefusal, CpInstallTransport, CpPlatformProvider, CpValidatedIdentity } from '../provider.js'
 
 /** The Bot Framework audience a bot's outbound token is issued for. */
@@ -130,26 +136,29 @@ export function msTeamsTokenTenant(bot: Pick<BotRecord, 'externalTenantId' | 'pl
   return typeof home === 'string' && home ? home : bot.externalTenantId
 }
 
-/** The secret row: the client secret in `botToken`, which reaches the serving daemon only. */
+/** An organization's own bot's secret row: its client secret in `botToken`, which reaches the serving daemon only. */
 export function msTeamsSecrets(clientSecret: string): BotSecretMaterial {
   return { botToken: clientSecret, appToken: null, signingSecret: null }
 }
 
-/** The daemon spec payload; undefined when the row lacks its identity or secret. */
+/** The daemon spec payload; undefined when the row lacks its identity or secret. A deployment app's row gets no secret, only the relay as its egress (§8.5). */
 export function msTeamsIntegrationConfig(
-  bot: Pick<BotRecord, 'externalAppId' | 'externalTenantId' | 'platformConfig'>,
+  bot: Pick<BotRecord, 'id' | 'externalAppId' | 'externalTenantId'>,
   secrets: Pick<BotSecretMaterial, 'botToken'>,
-  publicRelayUrl?: string
+  publicRelayUrl?: string,
+  app?: Pick<MsTeamsPlatformApp, 'appId'>
 ): IntegrationMsTeamsConfig | undefined {
-  if (!bot.externalAppId || !bot.externalTenantId || !secrets.botToken) return undefined
-  const tokenTenantId = msTeamsTokenTenant(bot)
-  return {
+  if (!bot.externalAppId || !bot.externalTenantId) return undefined
+  const identity = {
     appId: bot.externalAppId,
     tenantId: bot.externalTenantId,
-    ...(tokenTenantId && tokenTenantId !== bot.externalTenantId ? { tokenTenantId } : {}),
-    clientSecret: secrets.botToken,
     ...(publicRelayUrl ? { messagesUrl: msTeamsMessagesUrl(publicRelayUrl) } : {})
   }
+  // The marker is checked too, so a row is never handed it as a secret after the deployment app's settings change.
+  if (usesMsTeamsDeploymentApp(bot, app) || secrets.botToken === MSTEAMS_DEPLOYMENT_SECRET_MARKER)
+    return { ...identity, egress: 'relay', botId: bot.id }
+  if (!secrets.botToken) return undefined
+  return { ...identity, clientSecret: secrets.botToken }
 }
 
 /** The relay assignment: no secret, the app ID the inbound token's audience must equal, the bot's own tenant, and its `28:` mention identity. */
@@ -173,7 +182,7 @@ export const MSTEAMS_DEPLOYMENT_APP_MESSAGE =
 export interface MsTeamsCpProviderDeps {
   /** The deployment-owned app (§8.2), when Setup configured one. */
   app?: MsTeamsPlatformApp
-  /** The boot pass that re-stamps a rotated deployment secret on customer rows. */
+  /** The boot pass that removes the deployment secret from the app's rows (§8.5). */
   credentialReconciler?: { start(): void; stop(): void }
   /** Entra's token endpoint; tests pass a fake. Defaults to the global fetch. */
   fetch?: typeof fetch
@@ -225,7 +234,10 @@ export function createMsTeamsCpProvider(
     },
 
     secretShape: {
-      slots: { botToken: 'Microsoft Entra client secret (daemon egress only; never sent to the relay)' },
+      slots: {
+        botToken:
+          'An own bot’s Microsoft Entra client secret, sent to its serving daemon and never to the relay; a deployment app’s row holds a marker instead'
+      },
       httpAssignRequires: []
     },
 
@@ -235,7 +247,7 @@ export function createMsTeamsCpProvider(
       ? {
           backgroundLoops: [
             {
-              label: 'msteams-credential-restamp',
+              label: 'msteams-deployment-secret-purge',
               start: () => deps.credentialReconciler!.start(),
               stop: () => deps.credentialReconciler!.stop()
             }
@@ -247,7 +259,7 @@ export function createMsTeamsCpProvider(
     releasesFreedBot: (bot) => isMsTeamsCustomerRow(bot, deps.app),
 
     async projectIntegrationConfig(_integration, bot, _core, secrets) {
-      return msTeamsIntegrationConfig(bot, secrets, deps.publicRelayUrl)
+      return msTeamsIntegrationConfig(bot, secrets, deps.publicRelayUrl, deps.app)
     },
 
     async projectBotAssign(bot) {

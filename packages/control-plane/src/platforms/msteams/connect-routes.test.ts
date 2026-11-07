@@ -1,6 +1,7 @@
 /** Connecting a Microsoft 365 tenant to the deployment's Teams app (teams-integration.md §8.3), against fakes. */
 import Fastify, { type FastifyInstance } from 'fastify'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { MSTEAMS_RELAY_EGRESS_V1_FEATURE } from '@agentconnect.md/protocol'
 import type { HttpDeps } from '../../http/deps.js'
 import { installZod } from '../../http/plugins/zod.js'
 import type { BotRecord } from '../../persistence/ports.js'
@@ -8,13 +9,14 @@ import { AgentId, BotId, OrgId } from '../../domain/ids.js'
 import { FakeClock } from '../../../test/fakes/fake-clock.js'
 import { mintMsTeamsConnectState, msTeamsConnectKeys } from './connect.js'
 import { msTeamsConnectRoutes } from './connect-routes.js'
-import type { MsTeamsPlatformApp } from './deployment-app.js'
+import { MSTEAMS_DEPLOYMENT_SECRET_MARKER, type MsTeamsPlatformApp } from './deployment-app.js'
 
 const ORG = OrgId('11111111-1111-4111-8111-111111111111')
 const OTHER_ORG = OrgId('22222222-2222-4222-8222-222222222222')
 const AGENT = AgentId('77777777-7777-4777-8777-777777777777')
 const OTHER_AGENT = AgentId('66666666-6666-4666-8666-666666666666')
 const BOT = BotId('88888888-8888-4888-8888-888888888888')
+const DAEMON = '99999999-9999-4999-8999-999999999999'
 const APP: MsTeamsPlatformApp = {
   appId: '33333333-3333-4333-8333-333333333333',
   tenantId: '44444444-4444-4444-8444-444444444444',
@@ -42,6 +44,8 @@ async function harness(
     organization?: string | null
     installedIn?: string[]
     upgrade?: number
+    /** The agent's serving daemon and the features it registered; absent ⇒ the agent is unplaced. */
+    daemonFeatures?: string[]
   } = {}
 ) {
   const graph: { method: string; url: string; body?: unknown }[] = []
@@ -107,7 +111,15 @@ async function harness(
     config: { PUBLIC_RELAY_URL: 'https://relay.example.test' },
     clock,
     httpBot: { hasConnectedRelay: () => true, syncBot },
-    placementResolver: { servingDaemon: async () => null },
+    placementResolver: { servingDaemon: async () => (opts.daemonFeatures ? DAEMON : null) },
+    registry: {
+      getAvailable: async () => ({
+        id: DAEMON,
+        orgId: ORG,
+        visibility: 'org',
+        capabilities: { platforms: ['msteams'], features: opts.daemonFeatures ?? [] }
+      })
+    },
     repos: {
       agent: {
         get: async (_org: OrgId, id: AgentId) => ({
@@ -185,6 +197,15 @@ describe('the deployment Teams app routes', () => {
     expect(url.searchParams.get('redirect_uri')).toBe('https://console.example.test/msteams/connect')
   })
 
+  it('connects an agent only on a daemon that sends through the relay (§8.5)', async () => {
+    const start = (h: Awaited<ReturnType<typeof harness>>) =>
+      h.app.inject({ method: 'POST', url: '/integrations/msteams/connect', payload: { agentId: AGENT } })
+    const older = await start(await harness({ daemonFeatures: [] }))
+    expect(older.statusCode).toBe(409)
+    expect(older.json()).toMatchObject({ code: 'MSTEAMS_CONNECT_NO_AGENT' })
+    expect((await start(await harness({ daemonFeatures: [MSTEAMS_RELAY_EGRESS_V1_FEATURE] }))).statusCode).toBe(200)
+  })
+
   it('connects a new tenant: a prebuilt row with the home tenant as its token tenant, the catalog app, and the teams', async () => {
     const h = await harness()
     const res = await h.callback()
@@ -207,11 +228,13 @@ describe('the deployment Teams app routes', () => {
         platformConfig: { tenantId: CUSTOMER, tokenTenantId: APP.tenantId }
       })
     )
+    // The row stores a marker, never the deployment app's secret (§8.5).
     expect(h.put).toHaveBeenCalledWith(ORG, expect.anything(), {
-      botToken: APP.clientSecret,
+      botToken: MSTEAMS_DEPLOYMENT_SECRET_MARKER,
       appToken: null,
       signingSecret: null
     })
+    expect(JSON.stringify(h.put.mock.calls)).not.toContain(APP.clientSecret)
     expect(h.graph.map((call) => `${call.method} ${call.url.split('?')[0]}`)).toEqual([
       'GET https://graph.microsoft.com/v1.0/appCatalogs/teamsApps',
       'POST https://graph.microsoft.com/v1.0/appCatalogs/teamsApps',
@@ -303,12 +326,17 @@ describe('the deployment Teams app routes', () => {
     expect(inUse.graph).toEqual([])
   })
 
-  it('puts a freed row of this organization back on the agent with the current secret', async () => {
+  it('puts a freed row of this organization back on the agent, with the marker rather than a secret', async () => {
     const h = await harness({ held: {} })
     expect((await h.callback()).statusCode).toBe(200)
     expect(h.create).not.toHaveBeenCalled()
     expect(h.addBotMembership).toHaveBeenCalledWith(expect.objectContaining({ agentId: AGENT, botId: BOT }))
-    expect(h.credentialInstall).toHaveBeenCalled()
+    expect(h.credentialInstall).toHaveBeenCalledWith(
+      ORG,
+      BOT,
+      { botToken: MSTEAMS_DEPLOYMENT_SECRET_MARKER, appToken: null, signingSecret: null },
+      expect.any(Date)
+    )
     expect(h.syncBot).toHaveBeenCalledWith(BOT)
   })
 

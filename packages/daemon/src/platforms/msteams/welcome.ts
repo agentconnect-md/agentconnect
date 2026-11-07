@@ -2,6 +2,7 @@
 import { WireMsTeamsBotAdded, type RdMsgPlatformAction } from '@agentconnect.md/protocol'
 import type { BotAdded, RelayBotAdds, Welcome } from '../contract.js'
 import { adaptiveCard, plainText, type AdaptiveElement } from './card.js'
+import { msTeamsTeamTarget } from './connection.js'
 import type { MsTeamsRelayIngressHost } from './relay-ingress.js'
 
 /** The welcome card; a group or channel welcome mentions the person who added the bot, as the Teams Store asks. */
@@ -40,13 +41,19 @@ export function msTeamsBotAdds(host: MsTeamsRelayIngressHost): RelayBotAdds {
         ...(teamId && added.teamWide
           ? {
               places: async () =>
-                (await host.connection(msg.integrationId)?.teamInstallPlaces(added.serviceUrl, teamId)) ?? []
+                (await host
+                  .connection(msg.integrationId)
+                  ?.teamInstallPlaces(msTeamsTeamTarget(added.serviceUrl, teamId, added.teamTicket))) ?? []
             }
           : {}),
         post: async (welcome) => {
           const conn = host.connection(msg.integrationId)
           if (!conn) throw new Error('msteams: the integration has no live connection')
-          const target = { serviceUrl: added.serviceUrl, conversationId: added.conversationId }
+          const target = {
+            serviceUrl: added.serviceUrl,
+            conversationId: added.conversationId,
+            ...(added.ticket ? { ticket: added.ticket } : {})
+          }
           let addedBy = added.scope === 'personal' ? undefined : added.addedBy
           // A team install names its installer by ID only, so the mention's name comes from the roster; a failed lookup only drops the mention.
           if (addedBy && !addedBy.name) {
