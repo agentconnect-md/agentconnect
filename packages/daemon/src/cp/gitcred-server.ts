@@ -34,7 +34,7 @@ import { createRequire } from 'node:module'
 import { createServer, type Server, type Socket } from 'node:net'
 import { dirname, join } from 'node:path'
 import { GitCredentialCache, GitCredUnavailableError, type CredPlane } from './git-credential.js'
-import type { CodeHostProvider } from '@agentconnect.md/protocol'
+import type { CodeHostProvider, GitCredGrant } from '@agentconnect.md/protocol'
 import type { QualifiedCodeHostProvider } from '../codehost/credentials.js'
 import { IMPLICIT_CREDENTIAL_PROVIDER } from '../gitcred/managed-hosts.js'
 import { isWindowsNamedPipe, localIpcPath } from '../paths.js'
@@ -130,6 +130,8 @@ interface GitCredAnswer {
   username?: string
   password?: string
   repoFullName?: string
+  /** The grant's tier, for the credential proxy only; never sent to the helper. */
+  access?: GitCredGrant['access']
   error?: string
   denied?: 'repository' | 'agent'
 }
@@ -346,7 +348,8 @@ export class GitCredServer {
         denied: 'repository'
       })
     }
-    return reply(await this.answer(req, plane, repo, privateSkill, window))
+    const { access: _access, ...answer } = await this.answer(req, plane, repo, privateSkill, window)
+    return reply(answer)
   }
 
   /** What the agent capability, or a window that covers the repository, is served for one admitted ask: the provider from the spec, the workspace fold, then the credential. */
@@ -446,7 +449,13 @@ export class GitCredServer {
         ...(plane === 'glab' ? { requestedAccess: 'read' as const } : {})
       })
       this.audit('served', req.agentId, plane, repo ?? cred.repoFullName)
-      return { ok: true, username: cred.username, password: cred.token, repoFullName: cred.repoFullName }
+      return {
+        ok: true,
+        username: cred.username,
+        password: cred.token,
+        repoFullName: cred.repoFullName,
+        access: cred.access
+      }
     } catch (e) {
       const msg =
         e instanceof GitCredUnavailableError ? e.message : `git credentials unavailable: ${(e as Error).message}`
@@ -461,7 +470,7 @@ export class GitCredServer {
   async agentCredential(
     agentId: string,
     ask: { plane: CredPlane; provider?: string; repoFullName?: string }
-  ): Promise<{ username: string; token: string }> {
+  ): Promise<{ username: string; token: string; access: GitCredGrant['access'] }> {
     if (this.credentialedOf && !this.credentialedOf(agentId)) {
       throw new GitCredUnavailableError('this agent has no managed git credential', false, 'agent')
     }
@@ -476,9 +485,9 @@ export class GitCredServer {
       ...(ask.provider !== undefined ? { provider: ask.provider } : {})
     }
     const answer = await this.answer(request, ask.plane, repo, privateSkill, undefined)
-    if (!answer.ok || !answer.password)
+    if (!answer.ok || !answer.password || !answer.access)
       throw new GitCredUnavailableError(answer.error ?? 'refused', false, answer.denied)
-    return { username: answer.username ?? '', token: answer.password }
+    return { username: answer.username ?? '', token: answer.password, access: answer.access }
   }
 
   /** The agent's live secrets, named ones only when `names` is given; unknown names are simply absent and values are never logged. */

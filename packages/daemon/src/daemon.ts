@@ -6901,14 +6901,17 @@ export class Daemon {
   }
 
   /** The proxy's token for one request: GitHub's straight from the cache, as before; GitLab's and Gitea's through exactly the helper's ask. */
-  private async credentialProxyMint(agentId: string, ask: MintAsk): Promise<{ username: string; token: string }> {
+  private async credentialProxyMint(
+    agentId: string,
+    ask: MintAsk
+  ): Promise<{ username: string; token: string; access: 'read' | 'comment' | 'write' }> {
     if (ask.provider === 'github') {
       const cred = await this.gitCreds.get(agentId, 'helper', {
         plane: ask.plane === 'git' ? 'git' : 'gh',
         ...(ask.repo !== undefined ? { repo: ask.repo } : {}),
         ...(ask.readOnly ? { requestedAccess: 'read' as const } : {})
       })
-      return { username: cred.username, token: cred.token }
+      return { username: cred.username, token: cred.token, access: cred.access }
     }
     if (!this.gitCredServer) throw new Error('the git credential channel is not running')
     let repo = ask.repo

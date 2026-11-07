@@ -609,35 +609,43 @@ describe('werewolf day phase — natural sequential discussion driven by peer me
     const days = result.verdict.outcome.dayDiscussions as DayRecord[]
     const first = days[0]!
     expect(first.order.length).toBeGreaterThan(9)
-    // Speaker at index i must absorb i automatic wakes before its turn arrives,
-    // and MAX_AUTOMATIC_TURNS_PER_WINDOW is 8 — so index 8 (the ninth speaker)
-    // is the last one the budget can carry, and index 9 is refused.
-    expect(first.spoke).toHaveLength(9)
-    expect(first.spoke).toEqual(first.order.slice(0, 9))
+    // Speaker i needs i automatic wakes and MAX_AUTOMATIC_TURNS_PER_WINDOW is 8, so a wake reaches index 8 at most.
+    const reached = first.spoke.length
+    expect(reached).toBeGreaterThanOrEqual(9)
+    // Index 9 may still speak from its 8th admitted turn when index 8's post lands first: the turn-final refresh folds it in.
+    expect(first.spoke).toEqual(first.order.slice(0, reached))
     expect(first.outcome).toBe('stalled')
-    expect(first.stalledAfter).toBe(first.order[8])
-    expect(first.neverSpoke).toEqual(first.order.slice(9))
+    expect(first.stalledAfter).toBe(first.order[reached - 1])
+    expect(first.neverSpoke).toEqual(first.order.slice(reached))
     expect(first.loopGuardTripped.length).toBeGreaterThanOrEqual(1)
 
-    // The refusal is the loop guard, and its arithmetic is exact: every latched
-    // player absorbed exactly 8 automatic turns and was gated after that.
-    const wakes = result.verdict.outcome.peerWakes as Record<
-      string,
-      { admitted: number; gated: number; suppressed: number }
-    >
+    // The refusal is the loop guard, exact per circuit: a first gated wake follows 8 admitted ones since the referee's post.
     const latched = result.verdict.outcome.loopGuardLatched as string[]
     expect(latched.length).toBeGreaterThanOrEqual(1)
-    for (const alias of latched) {
-      expect(wakes[alias]!.admitted).toBe(8)
-      expect(wakes[alias]!.gated).toBeGreaterThan(0)
+    const sinceReferee = new Map<string, Map<string, number>>()
+    const admittedAtLatch = new Map<string, number>()
+    for (const event of worldEvents(result.paths.worldEvents)) {
+      const room = String(event.roomId)
+      if (event.type === 'referee.room_event') sinceReferee.get(room)?.clear()
+      if (event.type !== 'peer.wake') continue
+      const circuit = `${room}/${String(event.agentAlias)}`
+      const admitted = sinceReferee.get(room) ?? new Map<string, number>()
+      sinceReferee.set(room, admitted)
+      if (event.admitted === true) admitted.set(circuit, (admitted.get(circuit) ?? 0) + 1)
+      else if (event.reason === 'gated' && !admittedAtLatch.has(circuit))
+        admittedAtLatch.set(circuit, admitted.get(circuit) ?? 0)
     }
+    for (const alias of latched) expect(admittedAtLatch.get(`village-square/${alias}`), alias).toBe(8)
+    for (const [circuit, count] of admittedAtLatch) expect(count, circuit).toBe(8)
+    // A speaker past index 8 never got a ninth wake: the very next echo latched it.
+    for (const alias of first.spoke.slice(9)) expect(latched).toContain(alias)
     expect(result.verdict.metrics.peerWakesGated).toBeGreaterThan(0)
 
-    // The latch is DURABLE (only `!resume` clears it, and no one sends one), so
-    // the same players are still missing on the next day…
+    // The latch is DURABLE (only `!resume` clears it, and no one sends one), so latched players never speak again.
     expect(days.length).toBeGreaterThanOrEqual(2)
-    for (const day of days) {
-      expect(day.reachedVote).toBe(true)
+    for (const day of days) expect(day.reachedVote).toBe(true)
+    // Day 1's speakers can latch on its last speech's echo, so the check starts on day 2.
+    for (const day of days.slice(1)) {
       for (const alias of latched) expect(day.spoke).not.toContain(alias)
     }
     // …and they cannot even be reached by the referee's VOTE broadcast, so the

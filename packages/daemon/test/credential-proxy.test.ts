@@ -106,9 +106,14 @@ describe('routing a GitHub request', () => {
       kind: 'repository',
       repo: 'o/r',
       plane: 'git',
-      readOnly: false
+      readOnly: false,
+      push: false
     })
-    expect(githubRoute('github.com', 'POST', '/o/r/git-receive-pack')).toMatchObject({ repo: 'o/r', plane: 'git' })
+    expect(githubRoute('github.com', 'POST', '/o/r/git-receive-pack')).toMatchObject({
+      repo: 'o/r',
+      plane: 'git',
+      push: true
+    })
     expect(githubRoute('api.github.com', 'PATCH', '/repos/o/r/issues/1')).toMatchObject({ repo: 'o/r', plane: 'gh' })
     expect(githubRoute('codeload.github.com', 'GET', '/o/r/tar.gz/main')).toMatchObject({ readOnly: true })
   })
@@ -152,7 +157,7 @@ describe('a code-host name never resolves into denied space', () => {
   })
 })
 
-const MINTED = { username: 'x-access-token', token: 'ghs_minted' }
+const MINTED = { username: 'x-access-token', token: 'ghs_minted', access: 'write' as const }
 
 function proxyFor(
   overrides: {
@@ -443,11 +448,13 @@ describe('routing a GitLab or Gitea request', () => {
     expect(instanceRoute(gitlab, 'GET', '/gitlab/Group/sub/project.git/info/refs?service=git-upload-pack')).toEqual({
       kind: 'repository',
       plane: 'git',
-      repo: 'group/sub/project'
+      repo: 'group/sub/project',
+      push: false
     })
     expect(instanceRoute(gitlab, 'POST', '/gitlab/group/a/b/c/project/git-receive-pack')).toMatchObject({
       repo: 'group/a/b/c/project',
-      plane: 'git'
+      plane: 'git',
+      push: true
     })
     expect(instanceRoute(gitlab, 'POST', '/gitlab/project/git-upload-pack')).toMatchObject({ kind: 'deny' })
     expect(instanceRoute(gitlab, 'GET', '/gitlab/group/../x/info/refs')).toMatchObject({ kind: 'deny' })
@@ -489,7 +496,8 @@ describe('routing a GitLab or Gitea request', () => {
     expect(instanceRoute(gitea, 'GET', '/forge/owner/repo.git/info/refs?service=git-upload-pack')).toEqual({
       kind: 'repository',
       plane: 'git',
-      repo: 'owner/repo'
+      repo: 'owner/repo',
+      push: false
     })
     expect(instanceRoute(gitea, 'POST', '/forge/group/sub/repo/git-upload-pack')).toMatchObject({ kind: 'deny' })
     expect(instanceRoute(gitea, 'GET', '/forge/api/v1/repos/Owner/Repo/pulls')).toEqual({
@@ -502,6 +510,84 @@ describe('routing a GitLab or Gitea request', () => {
     const write = instanceRoute(gitea, 'PATCH', '/forge/api/v1/repos/owner/repo/issues/1')
     expect(write).toMatchObject({ kind: 'deny', status: 403 })
     expect((write as { reason: string }).reason).toContain('giteaPullRequest')
+  })
+})
+
+describe('a git push through the proxy', () => {
+  const at = (host: string, port: number) => ({ ...HTTPS, target: { host, port } })
+  // Each host's smart-HTTP base for one repository, and where the decision is made.
+  const hosts = [
+    { provider: 'github', base: 'https://github.com/o/r.git', info: at('github.com', 443) },
+    {
+      provider: 'gitlab',
+      base: 'https://gitlab.example.test:8443/gitlab/group/project.git',
+      info: at('gitlab.example.test', 8443)
+    },
+    { provider: 'gitea', base: 'https://gitea.example.test/forge/owner/repo.git', info: at('gitea.example.test', 443) }
+  ] as const
+  const setup = (access: 'read' | 'comment' | 'write') => {
+    const mint = vi.fn(async () => ({ username: 'x-access-token', token: 'tok_minted', access }))
+    return proxyFor({ mint, instances: { [AGENT]: [GITHUB_MANAGED_HOST, GITLAB, GITEA] } })
+  }
+  const git = (placeholder: string, url: string, method = 'GET') =>
+    new Request(url, {
+      method,
+      headers: { authorization: `Basic ${Buffer.from(`x-access-token:${placeholder}`).toString('base64')}` }
+    })
+
+  it('classifies receive-pack and its ref advertisement as a push, and upload-pack as a fetch', () => {
+    const gitea = proxyInstance(GITEA)!
+    const push = (method: string, target: string) => (instanceRoute(gitea, method, target) as { push?: boolean }).push
+    expect(push('POST', '/forge/owner/repo.git/git-receive-pack')).toBe(true)
+    expect(push('GET', '/forge/owner/repo.git/info/refs?service=git-receive-pack')).toBe(true)
+    expect(push('GET', '/forge/owner/repo.git/info/refs?service=git-upload-pack&service=git-receive-pack')).toBe(true)
+    expect(push('GET', '/forge/owner/repo.git/info/refs?service=git%2Dreceive-pack')).toBe(true)
+    expect(push('POST', '/forge/owner/repo.git/git-upload-pack')).toBe(false)
+    expect(push('GET', '/forge/owner/repo.git/info/refs?service=git-upload-pack')).toBe(false)
+    expect(push('GET', '/forge/owner/repo.git/info/refs')).toBe(false)
+    expect(githubRoute('github.com', 'GET', '/o/r/info/refs?service=git-receive-pack')).toMatchObject({ push: true })
+  })
+
+  describe.each(hosts)('on $provider', ({ provider, base, info }) => {
+    it.each(['read', 'comment'] as const)('refuses both receive-pack requests on a %s grant', async (access) => {
+      const { proxy, mint, placeholder } = setup(access)
+      for (const [method, url] of [
+        ['GET', `${base}/info/refs?service=git-receive-pack`],
+        ['POST', `${base}/git-receive-pack`]
+      ] as const) {
+        const decision = await proxy.decide(git(placeholder, url, method), info)
+        expect(decision).toMatchObject({ action: 'deny', status: 403 })
+        expect(decision).not.toHaveProperty('setHeaders')
+        expect((decision as { reason: string }).reason).toMatch(
+          new RegExp(`^this agent has ${access} access to .+; pushing needs write access$`)
+        )
+        expect(mint).toHaveBeenLastCalledWith(AGENT, expect.objectContaining({ provider, plane: 'git', push: true }))
+      }
+    })
+
+    it.each(['read', 'comment'] as const)('still fetches on a %s grant', async (access) => {
+      const { proxy, mint, placeholder } = setup(access)
+      for (const [method, url] of [
+        ['GET', `${base}/info/refs?service=git-upload-pack`],
+        ['POST', `${base}/git-upload-pack`]
+      ] as const) {
+        expect(await proxy.decide(git(placeholder, url, method), info)).toMatchObject({ action: 'allow' })
+        expect(mint).toHaveBeenLastCalledWith(AGENT, expect.not.objectContaining({ push: true }))
+      }
+    })
+
+    it('pushes on a write grant', async () => {
+      const { proxy, placeholder } = setup('write')
+      for (const [method, url] of [
+        ['GET', `${base}/info/refs?service=git-receive-pack`],
+        ['POST', `${base}/git-receive-pack`]
+      ] as const) {
+        expect(await proxy.decide(git(placeholder, url, method), info)).toEqual({
+          action: 'allow',
+          setHeaders: [['authorization', `Basic ${Buffer.from('x-access-token:tok_minted').toString('base64')}`]]
+        })
+      }
+    })
   })
 })
 
@@ -525,7 +611,7 @@ describe('a self-managed instance’s name', () => {
 
 describe('the decision on a self-managed instance', () => {
   const OTHER = '22222222-2222-4222-8222-222222222222'
-  const minted = { username: 'service-account', token: 'glpat_minted' }
+  const minted = { username: 'service-account', token: 'glpat_minted', access: 'write' as const }
   const setup = () =>
     proxyFor({
       mint: vi.fn(async () => minted),
@@ -685,7 +771,7 @@ describe('the proxy end to end on a self-managed GitLab', () => {
         provider: 'gitlab',
         baseUrl: `https://gitlab.example.test:${port}/gitlab`
       }
-      const mint = vi.fn(async () => ({ username: 'service-account', token: 'glpat_minted' }))
+      const mint = vi.fn(async () => ({ username: 'service-account', token: 'glpat_minted', access: 'write' as const }))
       const proxy = new CredentialProxy({
         key: loadPlaceholderKey(join(dir, 'proxy.key')),
         ca,

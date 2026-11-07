@@ -103,7 +103,12 @@ describe('GitCredServer routing (gitcred.sock)', () => {
     if (dir) rmSync(dir, { recursive: true, force: true })
   })
 
-  async function boot(workspace?: string, spec?: Partial<GitCredServerDeps>, refuse?: GitCredUnavailableError) {
+  async function boot(
+    workspace?: string,
+    spec?: Partial<GitCredServerDeps>,
+    refuse?: GitCredUnavailableError,
+    access: 'read' | 'comment' | 'write' = 'write'
+  ) {
     dir = mkdtempSync(join(tmpdir(), 'gitcred-routing-'))
     const sockPath = gitcredSocketPath(dir)
     const gets: GetCall[] = []
@@ -118,7 +123,7 @@ describe('GitCredServer routing (gitcred.sock)', () => {
           username: 'x-access-token',
           token: 'ghs_test',
           repoFullName: opts?.repo ?? 'acme/infra',
-          access: 'write' as const,
+          access,
           expiresAtMono: 0
         }
       },
@@ -239,7 +244,9 @@ describe('GitCredServer routing (gitcred.sock)', () => {
       provider: 'gitlab',
       repoFullName: 'example-group/example-second'
     })
-    expect(proxied).toEqual({ username: 'x-access-token', token: helper.password })
+    expect(proxied).toEqual({ username: 'x-access-token', token: helper.password, access: 'write' })
+    // The grant's tier is for the proxy alone; the helper's reply stays as it was.
+    expect(helper).not.toHaveProperty('access')
     expect(gets[1]).toEqual(gets[0])
     // The workspace by path folds onto its repo-less key, and the API read takes glab's read clamp.
     await server!.agentCredential('a1', {
@@ -254,6 +261,16 @@ describe('GitCredServer routing (gitcred.sock)', () => {
     await expect(server!.agentCredential('a1', { plane: 'git', provider: 'gitea' })).rejects.toThrow(
       'no managed gitea credential'
     )
+  })
+
+  it.each(['read', 'comment'] as const)('hands the credential proxy a %s grant’s tier', async (access) => {
+    await boot('example-owner/example-repo', { providerOf: () => 'gitea' }, undefined, access)
+    const proxied = await server!.agentCredential('a1', {
+      plane: 'git',
+      provider: 'gitea',
+      repoFullName: 'example-owner/example-repo'
+    })
+    expect(proxied).toMatchObject({ token: 'ghs_test', access })
   })
 
   it('routes a private GitHub skill source to GitHub even when the workspace credential is gitlab', async () => {

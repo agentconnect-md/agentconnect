@@ -607,7 +607,13 @@ placeholder or not.
 smart-HTTP path for git, and `/repos/{owner}/{repo}/…` for REST, and mints
 that repository's token at its tier. A read that names no repository, such as
 `/user`, uses the workspace's read-tier token; a write outside a repository is
-refused.
+refused. Because some hosts cannot narrow a token per repository, the proxy
+also enforces the git tier by service on every host: `git-receive-pack` and
+`info/refs?service=git-receive-pack` are refused with 403 unless the grant is
+`write` (`comment` counts as read), and nothing is forwarded. A session that
+does not use the proxy (proxy off, a VM, a pool pod, a remote executor) still
+holds the token itself, so there the tier is enforced only where the host
+narrows the token, until those transports use the proxy too.
 
 **Instances.** An agent's instances are the hosts its session Git
 configuration pins (gitlab-com-integration.md §24.4): GitHub, and the spec's
