@@ -285,7 +285,8 @@ function send(
             }
             resolve({
               status: out.statusCode ?? 0,
-              headers: out.headers,
+              // Two answers a second apart differ only in Date, so it stays out of comparisons.
+              headers: Object.fromEntries(Object.entries(out.headers).filter(([name]) => name !== 'date')),
               head: [`${out.statusCode} ${out.statusMessage}`, ...head],
               body: Buffer.concat(chunks).toString('utf8')
             })
