@@ -54,6 +54,8 @@ export function applyProxySpawn(request: SpawnRequest, listeners: SpawnListeners
       ...(codexCa ? [codexCa] : [])
     ])
   ].filter((file) => file !== listener.trustBundle)
+  // A hosted VM's seed names its executor's trust files, which only its shim can name.
+  const guest = withCodehost !== undefined && codehost?.guestTrust === true && !routed
   const files = [...(launch.files ?? []), ...(withCodehost ? (codehost?.files ?? []) : [])]
   return {
     ...launch,
@@ -77,8 +79,14 @@ export function applyProxySpawn(request: SpawnRequest, listeners: SpawnListeners
             no_proxy: noProxy,
             NODE_USE_ENV_PROXY: '1'
           }),
-      ...(authorities.length > 0
-        ? { [SESSION_TRUST_ENV]: JSON.stringify({ bundle: listener.trustBundle, files: authorities }) }
+      ...(authorities.length > 0 || guest
+        ? {
+            [SESSION_TRUST_ENV]: JSON.stringify({
+              bundle: listener.trustBundle,
+              files: authorities,
+              ...(guest ? { guest: true } : {})
+            })
+          }
         : {})
     },
     ...(files.length > 0 ? { files } : {})

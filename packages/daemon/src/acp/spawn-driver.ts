@@ -40,6 +40,8 @@ export interface SpawnFile {
 export interface CodehostSpawn {
   env: Record<string, string>
   files?: SpawnFile[]
+  /** A hosted VM's: the shim also keeps the trust files its executor's seed names, which this launch cannot. */
+  guestTrust?: boolean
 }
 
 /** What a VM or executor launch holds in place of its organization Provider key once its shim serves a `provider` listener: the variables that carry the placeholder instead. */

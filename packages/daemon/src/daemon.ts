@@ -8160,10 +8160,10 @@ export class Daemon {
     return this.credentialProxy !== undefined && (this.providerSlots.get(agentId)?.size ?? 0) > 0
   }
 
-  /** A placed session's tunnels: the pod's two, `codehost` on its executor's host or srt strategy and `provider` on host, for an agent the credential proxy serves them. */
+  /** A placed session's tunnels: the pod's two, `codehost` on its executor's host, srt or VM strategy and `provider` on host, for an agent the credential proxy serves them. */
   private tunnelsForPlaced(agentId: string, placed: PlacedSession | undefined): TunnelName[] {
     const helpers = this.tunnelsForAgent(agentId)
-    if (helpers.length === 0 || (placed?.strategy !== 'host' && placed?.strategy !== 'srt')) return helpers
+    if (helpers.length === 0 || !placed || !['host', 'srt', 'microsandbox'].includes(placed.strategy)) return helpers
     return [
       ...helpers,
       ...(this.credentialProxyCodeHosts(agentId) ? (['codehost'] as const) : []),
@@ -9011,16 +9011,16 @@ export class Daemon {
       (this.k8sPlane || remoteRoots) && needsSessionGit
         ? sessionGitConfig(agent.id, sessionGitIdentity, sandboxGitTarget, sessionGitScope, proxied)
         : undefined
-    // A VM or pool pod session switches to the proxy at spawn, only once its own shim reports a codehost listener; until then it keeps the helper path.
+    // A VM (here or placed on an executor) or pool pod session switches to the proxy at spawn, only once its own shim reports a codehost listener; until then it keeps the helper path.
+    const hostedVm = remoteSession?.strategy === 'microsandbox'
     const guestCodehost =
-      (micro || this.k8sPlane !== undefined) &&
-      !remoteSession &&
+      (remoteSession ? hostedVm : micro || this.k8sPlane !== undefined) &&
       this.credentialProxy !== undefined &&
       managedCredentials &&
       this.credentialProxyCodeHosts(agent.id)
     const guestGit = !guestCodehost
       ? undefined
-      : this.k8sPlane
+      : this.k8sPlane || hostedVm
         ? sessionGitConfig(agent.id, sessionGitIdentity, sandboxGitTarget, managedScope, true)
         : { env: this.microsandboxProxiedGit(agent, managedScope) ?? {} }
     // Held as its own value: the sandbox read grant must come from the path the DAEMON authored,
@@ -9154,7 +9154,9 @@ export class Daemon {
                     { root: dirname(guestGit.path), relPath: [basename(guestGit.path)], content: guestGit.content }
                   ]
                 }
-              : {})
+              : {}),
+            // Its executor seeded the VM's trust variables (microsandbox's CA and the guest bundle), so its shim names them.
+            ...(hostedVm ? { guestTrust: true } : {})
           }
         : undefined
     // A runtime on another filesystem reads its config files there, so they travel with its launch as the gitconfig does (§8): the pod's image root, or the one an executor reported.

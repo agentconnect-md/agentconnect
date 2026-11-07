@@ -355,6 +355,31 @@ describe("a placed session's Git", () => {
   })
 })
 
+// github-app-git-credentials.md, Listeners: a VM's launch switches only beside a shim that keeps its seeded trust files.
+describe("a placed VM session's codehost switch", () => {
+  const proxy = { port: 1, token: 't'.repeat(16), trustBundle: '/run/agentconnect/codehost-trust.pem' }
+
+  function codehostFor(listening: unknown): unknown {
+    const { executor } = plane([])
+    const internals = executor as unknown as {
+      tunnels: { listeningAt: (subject: string, tunnel: string) => unknown }
+      driver: { deps: { codehostFor: (subject: string) => unknown } }
+    }
+    internals.tunnels.listeningAt = (subject, tunnel) =>
+      subject === SUBJECT && tunnel === 'codehost' ? listening : undefined
+    return internals.driver.deps.codehostFor(SUBJECT)
+  }
+
+  it('is the listener its shim reported when that shim keeps the seeded trust', () => {
+    expect(codehostFor({ socketPath: '127.0.0.1:1', proxy, guestTrust: true })).toEqual(proxy)
+  })
+
+  it('is none for a shim that reported no listener, or one that would drop the seeded trust', () => {
+    expect(codehostFor(undefined)).toBeUndefined()
+    expect(codehostFor({ socketPath: '127.0.0.1:1', proxy })).toBeUndefined()
+  })
+})
+
 describe('the adapter a placed session starts', () => {
   // What this machine's own store would launch: its node and a tree only it has.
   const own = { command: '/opt/holder/node', args: ['/srv/holder/runtimes/adapter@1.0.0/bin.js', '--acp'], env: [] }

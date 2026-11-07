@@ -261,7 +261,8 @@ export class TunnelHost {
     return {
       socketPath: `127.0.0.1:${listener.port}`,
       proxy: { port: listener.port, token: listener.token, trustBundle },
-      ...(srtDomains?.length ? { srt: { domains: srtDomains } } : {})
+      ...(srtDomains?.length ? { srt: { domains: srtDomains } } : {}),
+      ...(tunnel === 'codehost' ? { guestTrust: true } : {})
     }
   }
 

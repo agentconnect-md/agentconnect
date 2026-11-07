@@ -552,13 +552,14 @@ through a tool or REST instead.
 in the daemon, for every execution strategy. Only how a request reaches the
 proxy differs:
 
-| Strategy                     | Transport                                                                                          |
-| ---------------------------- | -------------------------------------------------------------------------------------------------- |
-| `microsandbox`               | the `codehost` and `provider` tunnels, from one loopback listener in the VM's shim                 |
-| pool pod                     | the `codehost` tunnel, from a loopback listener in the pod's shim                                  |
-| `srt` and host               | a loopback or Unix-socket listener under the daemon root                                           |
-| host, placed on an executor  | the `codehost` and `provider` tunnels, from one loopback listener in the executor's shim           |
-| `srt`, placed on an executor | the `codehost` tunnel, from the Unix socket in the executor's shim that `srt` routes code hosts to |
+| Strategy                              | Transport                                                                                          |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `microsandbox`                        | the `codehost` and `provider` tunnels, from one loopback listener in the VM's shim                 |
+| pool pod                              | the `codehost` tunnel, from a loopback listener in the pod's shim                                  |
+| `srt` and host                        | a loopback or Unix-socket listener under the daemon root                                           |
+| host, placed on an executor           | the `codehost` and `provider` tunnels, from one loopback listener in the executor's shim           |
+| `srt`, placed on an executor          | the `codehost` tunnel, from the Unix socket in the executor's shim that `srt` routes code hosts to |
+| `microsandbox`, placed on an executor | the `codehost` tunnel, from a loopback listener in the VM's shim, through the executor's pipe      |
 
 **Client configuration.** Every strategy would get the same configuration.
 Only the proxy address differs:
@@ -641,7 +642,9 @@ at spawn and hands the shim the files they named before, which the shim merges
 in as it does a placed session's own. In a VM those include the files
 `microsandbox` names for its provider-key substitution (its own CA and the
 guest bundle it adds that CA to), so the session trusts both the substitution
-and the proxy.
+and the proxy. A VM placed on an executor gets those variables from its
+executor's seed rather than its launch, so its switch asks the shim to merge
+the files the seed names.
 
 **Token selection.** The proxy takes the repository from the request path: a
 smart-HTTP path for git, and `/repos/{owner}/{repo}/…` for REST, and mints
@@ -653,10 +656,9 @@ also enforces the git tier by service on every host: `git-receive-pack` and
 `write` (`comment` counts as read), and nothing is forwarded. A 401 from the
 upstream drops the cache entry that minted the token it carried, as the
 helper's `erase` does, so a revoked or rotated token is minted afresh on the
-next request; a 403 keeps it. A session that
-does not use the proxy (proxy off, a VM, a pool pod, a remote executor) still
-holds the token itself, so there the tier is enforced only where the host
-narrows the token, until those transports use the proxy too.
+next request; a 403 keeps it. Only a session with the proxy off holds the
+token itself, and there the tier is enforced only where the host narrows the
+token.
 
 **Instances.** An agent's instances are the hosts its session Git
 configuration pins (gitlab-com-integration.md §24.4): GitHub, and the spec's
@@ -756,12 +758,19 @@ the proxy's CA certificate:
   placeholder only when those names cover all of the agent's code hosts, and
   every session and the holder's Git there trust the shim's bundle, since
   everything `srt` routes ends at the proxy.
-- A session on an executor whose shim does not serve `codehost`, and a VM
-  session placed on one, stays on the credential helper path, so it holds no
-  code-host credential while the proxy carries its agent's code hosts. A
-  hosted VM's trust variables name the substitution authority its executor
-  seeded, which the holder cannot name, so switching it to the shim's bundle
-  waits for the shim to merge those files itself.
+- A VM session placed on an executor switches at spawn, as a local VM's does
+  (below): its holder asks the guest shim for `codehost` through the
+  executor's pipe, and its launch carries the placeholder variables and the
+  proxied gitconfig as the alternative. Its trust variables come from the
+  seed its executor started the shim with, naming the substitution authority
+  and the guest bundle, which the holder cannot name. So the switch names no
+  files and asks the shim to keep those its seed names instead: the shim
+  merges them into its listener bundle before exec. A shim whose `codehost`
+  reply does not say it keeps them is not switched.
+- A session on an executor whose shim does not serve `codehost`, or whose VM
+  shim does not say it keeps its seed's trust files, stays on the credential
+  helper path, so it holds no code-host credential while the proxy carries its
+  agent's code hosts.
 
 A session in a local `microsandbox` VM or a pool pod reaches its own daemon's
 proxy the same way, through the shim inside the VM or pod. The daemon asks

@@ -400,7 +400,11 @@ describe.skipIf(process.platform === 'win32')('the holder of an executor-placed 
     try {
       const placed = { agentId: agent.id, sessionKey: SESSION_KEY, strategy: 'srt' }
       expect(d.tunnelsForPlaced(agent.id, placed)).toEqual(['mcp', 'gitcred', 'codehost'])
-      expect(d.tunnelsForPlaced(agent.id, { ...placed, strategy: 'microsandbox' })).toEqual(['mcp', 'gitcred'])
+      expect(d.tunnelsForPlaced(agent.id, { ...placed, strategy: 'microsandbox' })).toEqual([
+        'mcp',
+        'gitcred',
+        'codehost'
+      ])
       const executorPrepare = vi.fn(async () => ({ status: 'refused', reason: 'facet_off' }))
       d.cpClient = { connected: () => true, executorPrepare }
       const prepare = (strategy: string) =>

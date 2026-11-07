@@ -180,6 +180,11 @@ export class ExecutorPlane implements ExecutionPlane {
       clock: this.clock,
       log: deps.log,
       metrics: clusterMetrics,
+      // Only a VM's launch asks for it, and only a shim that keeps its seeded trust files beside the proxy CA is switched.
+      codehostFor: (subject) => {
+        const listening = this.tunnels.listeningAt(subject, 'codehost')
+        return listening?.guestTrust ? listening.proxy : undefined
+      },
       // A host session's organization key is switched at spawn, once its slot exists: it is registered as the launch is built.
       providerFor: (subject) => this.providerListener(subject)
     })

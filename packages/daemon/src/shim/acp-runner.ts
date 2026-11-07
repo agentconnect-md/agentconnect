@@ -269,7 +269,7 @@ export class AcpRunner {
       if (bundle) spawnPayload = { ...payload, args: [...payload.args, '--bundle', bundle] }
     }
     const command = this.deps.resolveCommand?.(payload.command, env) ?? payload.command
-    return this.spawnChild(command, spawnPayload, env)
+    return this.spawnChild(command, spawnPayload, env, seedEnv(podEnv))
   }
 
   private fillHints(payload: AcpOpen, env: Record<string, string>): void {
@@ -280,9 +280,14 @@ export class AcpRunner {
     }
   }
 
-  private spawnChild(command: string, payload: AcpOpen, env: Record<string, string>): void {
-    // A placed session's own authority files are on this machine, so its proxy trust bundle is completed here.
-    applySessionTrust(env, (message) => this.deps.log?.warn(message))
+  private spawnChild(
+    command: string,
+    payload: AcpOpen,
+    env: Record<string, string>,
+    guestEnv: Record<string, string> = {}
+  ): void {
+    // A placed session's own authority files, and those its seed names, are on this machine, so its proxy trust bundle is completed here.
+    applySessionTrust(env, (message) => this.deps.log?.warn(message), guestEnv)
     if (this.deps.runtimeMark) env[SHIM_RUNTIME_MARK_ENV] = this.deps.runtimeMark
     const child = spawn(command, payload.args, {
       stdio: ['pipe', 'pipe', 'inherit'],
