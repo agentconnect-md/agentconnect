@@ -1,10 +1,11 @@
 # Azure DevOps Integration
 
-> Status: **In progress** — A1 (protocol), A2 (Control Plane), A3 (daemon) and A4's Console and Setup have landed; the documentation-site setup page follows (§13).
+> Status: **In progress** — A1 (protocol), A2 (Control Plane), A3 (daemon), A4's Console and Setup, and A5 (pull-request tools) have landed; the documentation-site setup page follows (§13).
 > Scope: **Azure DevOps Services** (`dev.azure.com`),
 > Git repositories in Azure Repos. The first version covers workspaces and
-> additional repositories only; pull-request hooks, reviews, pull-request
-> tools, and code-channel pull-request views are the second step (§11).
+> additional repositories, and the pull-request tools of §6.6 followed it;
+> pull-request hooks, reviews, and code-channel pull-request views are the
+> second step (§11).
 > Platform facts were read from Microsoft's documentation on 2026-11-06; each
 > item marked **probe** in §12 must be confirmed against a live organization
 > before the step that relies on it.
@@ -680,15 +681,15 @@ carried the placeholder. A `401` from Azure DevOps drops that lease, and the
 next request asks the Control Plane with `forceRefresh` once (§3.4).
 
 So an agent with `write` opens, updates, and completes pull requests through
-the Azure CLI or REST, and the first version adds no Azure DevOps tool:
+the tools of §6.6, or through the Azure CLI or REST:
 
 - `az repos pr create` posts to its repository;
 - `az repos pr update --id … --status completed` resolves the id through the
   lookup of §6.2, then writes to the repository it found. Such a pull
-  request carries no AgentConnect footer. Completing a pull request is bounded
-  by the organization's branch policies, such as required reviewers on the
-  default branch, as merging is by branch protection on GitHub. Tools for pull
-  requests and reviews come with the second step (§11).
+  request carries no AgentConnect footer; one the tools open does. Completing
+  a pull request is bounded by the organization's branch policies, such as
+  required reviewers on the default branch, as merging is by branch
+  protection on GitHub. Review tools come with the second step (§11).
 
 ### 6.4 Client Configuration
 
@@ -742,6 +743,47 @@ Azure DevOps limits each identity, not each token, so every agent of the
 organization and the Control Plane share one budget. The proxy forwards `429`
 and `Retry-After` untouched, so the client's own backoff applies. The Control
 Plane's picker and refresh honor `Retry-After` and `X-RateLimit-Remaining`.
+
+### 6.6 Pull-Request Tools
+
+An agent holding an Azure DevOps repository is offered three tools beside the
+GitHub, GitLab, and Gitea ones, on the same code-host effect seam:
+
+- `azureDevOpsPullRequest` opens, edits, completes, abandons (`close`), and
+  reactivates (`reopen`) a pull request, and adds or removes its labels;
+- `azureDevOpsComment` opens a comment thread on a pull request, rewrites the
+  first comment of a thread this session opened, and replies in a thread;
+- `readAzureDevOpsPullRequest` reads a pull request with its newest threads,
+  or one thread, at `read`.
+
+The daemon's broker for Azure DevOps runs each call under the repository's
+proxy lease at the agent's tier (§6.3), presented as a bearer token, never in
+the agent's environment. The token is the organization's, so the broker's
+allowlist is what scopes it: every call renders a template below
+`{organization}/{project GUID}/_apis/git/repositories/{repository GUID}/`,
+with the GUIDs from the agent's spec, and each template costs `read`,
+`comment`, or `write` as on the other hosts. A repository the model names
+resolves only among the agent's own.
+
+What the tools leave out, they leave out of their schemas, and the validator
+refuses such a field by name:
+
+- **Issues.** Azure Boards work items belong to a project, not a repository,
+  so there is no issue tool and comments go on pull requests only.
+- **Assignees and reviewers.** A pull request has no assignees, and a
+  reviewer is an identity id that only an organization-wide identity search
+  resolves from a name, which the broker does not make. `az repos pr
+reviewer add` remains available through the proxy where its lookup is.
+
+A pull request's description carries the agent's footer below a hidden marker,
+as on the other hosts; Azure DevOps hides the marker. A comment thread's id is
+the handle `update` and `reply` take. Completion is asynchronous: Azure DevOps
+answers the `PATCH` with the pull request still `active` and its merge
+`queued`. It also accepts a completion at a source commit the pull request no
+longer ends at and then never runs it, so the broker reads the pull request
+first, refuses one that is not `active`, refuses when `sha` is given and the
+source has moved, and completes at the commit it read. The merge methods map
+to `noFastForward`, `squash`, and `rebase`.
 
 ## 7. Protocol and Compatibility
 
@@ -928,9 +970,8 @@ version does not preclude them:
   waiting for author, −10 rejected) and comments in threads. A pull-request
   status on the iteration can carry the run state, written by the Control
   Plane as Gitea's commit status is.
-- **Pull-request tools.** An Azure DevOps pull-request tool beside the GitHub,
-  GitLab, and Gitea ones. It adds the footer, and in a hook turn the guidance
-  points the agent to it rather than to the CLI.
+- **Pull-request tools.** Landed ahead of the rest (§6.6). In a hook turn the
+  guidance points the agent to them rather than to the CLI.
 - **Code channels.** Pull-request links and views key on the surrogate
   identity plus the pull-request id.
 
@@ -1016,8 +1057,11 @@ known only through consent.
    request by id is answered only when it belongs to one of the agent's
    repositories (§6.2). A filtered list is the follow-up if agents need one.
 6. **Decided:** no Azure DevOps tool in the first version. An agent with
-   `write` opens and completes pull requests through the CLI or REST (§6.3);
-   the tools come with the second step (§11).
+   `write` opens and completes pull requests through the CLI or REST (§6.3).
+   The pull-request tools followed it (§6.6); verified 2026-11-07 against the
+   test repository: create with labels and draft, edit, a thread, its rewrite
+   and a reply, abandon, reactivate, and squash completion, with the footer
+   marker hidden.
 7. **Verified:** derivation can read the identity's own rights in one call.
    `POST _apis/security/permissionevaluationbatch` as the identity, Git
    Repositories namespace, token `repoV2/{project GUID}/{repository GUID}`,
@@ -1065,3 +1109,7 @@ live organization before A2.
 - **A4 — Console, Setup, and documentation.** _Landed, except the setup page
   on the documentation site._ The card and the connect page, the pickers, and
   the Microsoft section's redirect URI and wording.
+- **A5 — Pull-request tools.** The broker and the three tools of §6.6. Tests
+  pin the allowlist below one repository, the tier of each call, the
+  refusals of issues, assignees, reviewers and pipelines, the completion
+  checks, and the single re-mint after a rejected lease.

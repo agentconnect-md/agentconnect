@@ -9,8 +9,18 @@ const record = (value: unknown): Record<string, unknown> =>
 
 // Gitea's pull path is `/pulls/<n>`, GitHub's `/pull/<n>`; both label the object `owner/repo#<n>`.
 const PULL_PATH = /^\/(.+)\/pulls?\/([1-9]\d{0,9})\/?$/
+// Azure DevOps's is `/{organization}/{project}/_git/{repository}/pullrequest/<n>`, labelled `organization/project/repository!<n>`.
+const AZURE_DEVOPS_PULL_PATH = /^\/([^/]+)\/([^/]+)\/_git\/([^/]+)\/pullrequest\/([1-9]\d{0,9})\/?$/
 
-/** The change request a `create` of `gitlabMergeRequest`, `giteaPullRequest` or `githubPullRequest` made, from its broker's result. */
+function decoded(segment: string): string {
+  try {
+    return decodeURIComponent(segment)
+  } catch {
+    return segment
+  }
+}
+
+/** The change request a `create` of a host's pull or merge request tool made, from its broker's result. */
 export function createdObjectOf(result: unknown): Opened | undefined {
   const mergeRequest = record(record(result).mergeRequest)
   if (typeof mergeRequest.webUrl === 'string') {
@@ -21,6 +31,11 @@ export function createdObjectOf(result: unknown): Opened | undefined {
   const pull = record(record(result).pullRequest)
   if (typeof pull.htmlUrl === 'string') {
     const path = URL.canParse(pull.htmlUrl) ? new URL(pull.htmlUrl).pathname : ''
+    const azure = AZURE_DEVOPS_PULL_PATH.exec(path)
+    if (azure) {
+      const repository = azure.slice(1, 4).map(decoded).join('/')
+      return { kind: 'pull request', label: `${repository}!${azure[4]}`, url: pull.htmlUrl }
+    }
     const match = PULL_PATH.exec(path)
     if (match) return { kind: 'pull request', label: `${match[1]}#${match[2]}`, url: pull.htmlUrl }
   }

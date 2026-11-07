@@ -353,6 +353,7 @@ import { GitCredentialCache, type ProxyLeaseAsk } from './cp/git-credential.js'
 import { GitlabBroker } from './gitlab/broker.js'
 import { gitlabApiBaseUrl } from './gitlab/api-base.js'
 import { GiteaBroker } from './gitea/broker.js'
+import { AzureDevOpsBroker } from './azure-devops/broker.js'
 import { GithubBroker } from './github/broker.js'
 import { withOperationFooter } from './codehost/description-footer.js'
 import { githubAttributionFooter } from './github/poster.js'
@@ -4209,6 +4210,22 @@ export class Daemon {
         },
         invalidateLease: (target, token) =>
           this.gitCreds.invalidateGithubEffect(target.agentId, target.repoPath ?? target.repoId, token)
+      })
+    )
+    // azure-devops-integration.md §6.6: the repository's proxy lease at the agent's tier, scoped by the broker's allowlist.
+    this.codeHostBrokers.set(
+      'azure-devops',
+      new AzureDevOpsBroker({
+        routing: (target) =>
+          this.codeHostRepositories(target.agentId, 'azure-devops').find((row) => row.repoId === target.repoId)
+            ?.azureDevOps,
+        lease: (target) =>
+          this.proxyOnlyLease(target.agentId, {
+            provider: 'azure-devops',
+            repoId: target.repoId,
+            plane: 'api',
+            readOnly: false
+          })
       })
     )
     // §16: the same hook-authorized effect lease, on a writer the model never sees or influences.
