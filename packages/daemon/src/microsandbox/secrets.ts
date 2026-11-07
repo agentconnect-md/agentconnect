@@ -137,10 +137,10 @@ export function prepareAmbientCredentials(
   const id = ambientCredentialRuntime(runtimeId, runtime)
   const preparer = id === undefined ? undefined : CREDENTIAL_PREPARERS.get(id)
   if (!preparer) return undefined
-  return preparer.prepare(hostEnv, explicitEnv, placeholder, { ...sources, protectRetained: true })
+  return preparer.prepare(hostEnv, explicitEnv, placeholder, { ...sources, protectRetained: true, hostRuntime: true })
 }
 
-/** A runtime's sign-in file credentials with its key variable's beside them; the file's sharing choice stands. */
+/** A runtime's sign-in file credentials with its key variable's beside them; the file's sharing choice stands, and either side's trust variables are refused. */
 function mergeCredentials(
   files: MicrosandboxCredentials | undefined,
   variable: MicrosandboxCredentials | undefined
@@ -151,7 +151,8 @@ function mergeCredentials(
     secrets: [...files.secrets, ...variable.secrets],
     replacements: new Map([...files.replacements, ...variable.replacements]),
     sources: [...files.sources, ...variable.sources],
-    seedExclusions: [...files.seedExclusions, ...variable.seedExclusions]
+    seedExclusions: [...files.seedExclusions, ...variable.seedExclusions],
+    tlsTrustEnv: [...new Set([...(files.tlsTrustEnv ?? []), ...(variable.tlsTrustEnv ?? [])])]
   }
 }
 

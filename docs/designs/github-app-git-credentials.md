@@ -920,8 +920,11 @@ of Cline's `providers.json` other than its OAuth sign-ins. The preparers that
 protect these keys in a VM find them, with the proxy's placeholder in place of
 the VM's, at the hosts they already bind each key to there; a VM protects the
 same keys behind its own placeholders, Claude's and Codex's key variables
-apart from their sign-in files' keys, and a Codex key beside
-`OPENAI_BASE_URL` binds no host there, so the VM never substitutes it. Devin's
+apart from their sign-in files' keys. Codex's key variable binds where its
+`auth.json` key does, at its configured endpoint: the image's pinned Codex
+does not route by `OPENAI_BASE_URL`, and in a hosted VM that variable can come
+only from the holder's launch, which never authorizes another host for the
+executor's key. Devin's
 sign-in token travels inside its request bodies, Qoder's personal access token
 is exchanged in a request body for a token the runtime then holds, and Qoder's
 service account key is checked against a format no placeholder has, so none of

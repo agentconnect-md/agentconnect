@@ -529,7 +529,9 @@ Claude authorizes its configured `ANTHROPIC_BASE_URL` host, defaulting to
 runtime's routing. Unsupported endpoints keep the placeholder without receiving
 proxy injection; there is no plaintext fallback. Guest-side endpoint changes
 cannot authorize an additional host. This path covers registered `claude-acp`
-and `codex-acp` file logins, not keyring-only, helper-only or environment-only keys.
+and `codex-acp` file logins and their `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`
+variables, each bound at the same endpoint as its file login, not keyring-only
+or helper-only keys.
 
 Pure OAuth logins keep their existing shared credentials and native refresh.
 Claude can also keep a separate shared OAuth directory alongside its projected

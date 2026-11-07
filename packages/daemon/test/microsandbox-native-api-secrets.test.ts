@@ -262,16 +262,24 @@ describe.skipIf(process.platform === 'win32')("a runtime's own key variable in a
     expect(JSON.stringify(launch)).not.toContain(key)
   })
 
-  it("leaves Codex's key bound to no host beside OPENAI_BASE_URL, and refuses its own trust bundle", () => {
+  it("binds Codex's key at its configured endpoint whatever OPENAI_BASE_URL says, and refuses its own trust bundle", () => {
     const opts = fixture('codex-acp')
     const stateSourceEnv = { ...opts.stateSourceEnv, OPENAI_API_KEY: key }
-    const launch = prepareMicrosandboxLaunch({
+    const inert = prepareMicrosandboxLaunch({
       ...opts,
-      stateSourceEnv: { ...stateSourceEnv, OPENAI_BASE_URL: 'https://gateway.example.test/v1' }
+      stateSourceEnv: { ...stateSourceEnv, OPENAI_BASE_URL: 'https://unused.example.test/v1' }
     })
-    expect(launch.microsandbox.secrets!.map((secret) => [secret.env, secret.host])).toEqual([['OPENAI_API_KEY', []]])
-    expect(launch.env.OPENAI_API_KEY).toBe('msb-secret-OPENAI_API_KEY')
-    expect(JSON.stringify(launch)).not.toContain(key)
+    expect(inert.microsandbox.secrets!.map((secret) => [secret.env, secret.host])).toEqual([
+      ['OPENAI_API_KEY', ['api.openai.com']]
+    ])
+    expect(inert.env.OPENAI_API_KEY).toBe('msb-secret-OPENAI_API_KEY')
+    expect(JSON.stringify(inert)).not.toContain(key)
+    const configured = prepareMicrosandboxLaunch({
+      ...opts,
+      stateSourceEnv: { ...stateSourceEnv, OPENAI_BASE_URL: 'https://unused.example.test/v1' },
+      explicitEnv: { CODEX_CONFIG: JSON.stringify({ openai_base_url: 'https://gateway.example.test/v1' }) }
+    })
+    expect(configured.microsandbox.secrets![0]!.host).toEqual(['gateway.example.test'])
     expect(() =>
       prepareMicrosandboxLaunch({
         ...opts,

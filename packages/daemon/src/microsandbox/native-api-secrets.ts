@@ -18,7 +18,12 @@ import {
 import { projectRuntimeHomeSeedFile } from '../runtimes/runtime-home.js'
 import { runtimeStateLocations } from '../runtimes/probe.js'
 import { MAX_SEED_FILE_BYTES } from '../runtimes/runtime-seeded-credentials.js'
-import { microsandboxPlaceholder, replaceSecretValue, type SecretPlaceholder } from './secret-values.js'
+import {
+  microsandboxPlaceholder,
+  replaceSecretValue,
+  type SecretPlaceholder,
+  type SecretSources
+} from './secret-values.js'
 import type { MicrosandboxCredentials, MicrosandboxSecret } from './secrets.js'
 
 function readFile(path: string): string | undefined {
@@ -258,19 +263,24 @@ function codexConfig(hostEnv: NodeJS.ProcessEnv, explicitEnv: Record<string, str
   )
 }
 
-/** `OPENAI_API_KEY` in the launch env, at Codex's endpoint; an `OPENAI_BASE_URL` beside it leaves the key unbound. */
+/** `OPENAI_API_KEY` in the launch env, where its file key goes; beside `OPENAI_BASE_URL` the host's own Codex leaves it unbound. */
 export function prepareCodexEnvSecret(
   hostEnv: NodeJS.ProcessEnv,
   explicitEnv: Record<string, string>,
-  placeholder: SecretPlaceholder = microsandboxPlaceholder
+  placeholder: SecretPlaceholder = microsandboxPlaceholder,
+  sources: SecretSources = {}
 ): MicrosandboxCredentials | undefined {
   const name = RUNTIME_KEY_VARIABLES.codex.openai.key
+  const config = () => codexConfig(hostEnv, explicitEnv)
   const credential = variableCredential(
     name,
     hostEnv,
     explicitEnv,
     () =>
-      hostKeyEndpoint('codex', name, { ...hostEnv, ...explicitEnv }, () => codexConfig(hostEnv, explicitEnv))?.endpoint,
+      (sources.hostRuntime
+        ? hostKeyEndpoint('codex', name, { ...hostEnv, ...explicitEnv }, config)
+        : hostCodexEndpoint(config())
+      )?.endpoint,
     OPENAI,
     placeholder
   )
