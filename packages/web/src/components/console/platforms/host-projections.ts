@@ -4,7 +4,7 @@
 import { type CodeHostProvider } from '@agentconnect.md/protocol/code-host'
 import { larkFeishuBrand, type LarkFeishuTarget } from '@/components/LarkFeishuSwitcher'
 import type { BotDto } from '@/lib/api'
-import { CODE_HOST_PROJECTION, PICKABLE_CODE_HOST_PROVIDERS } from '@/lib/code-hosts'
+import { CODE_HOST_PROJECTION, TRIGGER_CODE_HOST_PROVIDERS } from '@/lib/code-hosts'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { platformLabel } from '@/lib/platform-labels'
 import { platformRegistry } from './registry'
@@ -63,10 +63,8 @@ export const BOT_PLATFORMS: readonly PlatformTile[] = platformTiles(platformRegi
  *  code host the deployment has not configured says so in its own pane. */
 export const PLATFORMS: readonly PlatformTile[] = [
   ...BOT_PLATFORMS,
-  // One tile per code host the console can actually open a pane for, named by the code-host
-  // projection rather than spelled again here. A provider the wire knows before its console surface
-  // exists is deliberately absent: a tile that opens nothing is worse than no tile.
-  ...PICKABLE_CODE_HOST_PROVIDERS.map((provider) => ({ key: provider, label: CODE_HOST_PROJECTION[provider].label })),
+  // One tile per code host with triggers the console can open a pane for; a tile that opens nothing is worse than none.
+  ...TRIGGER_CODE_HOST_PROVIDERS.map((provider) => ({ key: provider, label: CODE_HOST_PROJECTION[provider].label })),
   // The generic trigger closes the row: chat platforms and code hosts are the named products.
   { key: 'webhook', label: 'Webhook' },
   // The agent's chat APIs, one entry per protocol; not a trigger, but it lives in the same Workflow group.
@@ -92,7 +90,7 @@ const CODE_HOST_BLURB: Record<CodeHostProvider, string> = {
   github: 'React to issues & PRs',
   gitlab: 'React to issues & MRs',
   gitea: 'React to issues & PRs',
-  // Not offered until Azure DevOps has hooks (azure-devops-integration.md §11).
+  // Not offered while Azure DevOps has no hooks (azure-devops-integration.md §11).
   'azure-devops': 'React to issues & PRs'
 }
 
@@ -112,9 +110,8 @@ export const INTEGRATION_BLURB: Record<string, string> = {
   googlechat: 'Reply in spaces & DMs',
   dingtalk: 'Reply in groups & chats',
   msteams: 'Reply in channels & chats',
-  // One row per code host the picker offers, read from the table above — which stays total over the
-  // providers, so a host cannot reach the picker unblurbed.
-  ...Object.fromEntries(PICKABLE_CODE_HOST_PROVIDERS.map((provider) => [provider, CODE_HOST_BLURB[provider]])),
+  // One row per code host the picker offers, read from the total table above.
+  ...Object.fromEntries(TRIGGER_CODE_HOST_PROVIDERS.map((provider) => [provider, CODE_HOST_BLURB[provider]])),
   webhook: 'Trigger by posting a URL',
   api: 'Chat over an API'
 }

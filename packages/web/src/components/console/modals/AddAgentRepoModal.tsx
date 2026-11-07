@@ -26,6 +26,9 @@ import { agentLabel, type Agent } from '@/lib/data'
 import { useOrgs } from '@/lib/org-context'
 import { useRepositoryDecision } from '@/lib/repository-selector'
 import {
+  AzureDevOpsNoRepositoriesNotice,
+  AzureDevOpsRepositoryField,
+  AzureDevOpsRepositoryOption,
   GiteaNoRepositoriesNotice,
   GiteaRepositoryField,
   GiteaRepositoryOption,
@@ -36,8 +39,10 @@ import {
   INSTALLATION_MATERIALIZE_OPTIONS,
   RepositoryMaterializeField
 } from '@/components/console/WorkspaceFormFields'
+import { matchAzureDevOpsRepositories } from '@/lib/azure-devops-repositories'
 import { matchGiteaRepositories, type GiteaRepositoryChoice } from '@/lib/gitea-repositories'
 import { matchGitlabProjects, type GitlabProjectChoice } from '@/lib/gitlab-projects'
+import { useAzureDevOpsRepositories } from '@/lib/use-azure-devops-repositories'
 import { useGiteaRepositories } from '@/lib/use-gitea-repositories'
 import { useGitlabProjects } from '@/lib/use-gitlab-projects'
 import {
@@ -102,6 +107,9 @@ const GITEA_TIERS: { v: RepoAccess; label: string; icon: string; desc: string }[
     desc: 'Push, open pull requests & request reviews'
   }
 ]
+
+// Azure DevOps keeps the two tiers the proxy enforces; there are no hooks, so nothing for a comment tier to mean.
+const AZURE_DEVOPS_TIERS: readonly RepoAccess[] = ['read', 'write']
 
 /** Installations an owner may still grant: live, unsuspended, and not already held by the agent. */
 export function grantableInstallations(
@@ -216,6 +224,11 @@ export default function AddAgentRepoModal({
   const [gtPick, setGtPick] = useState('')
   const [gtPickOpen, setGtPickOpen] = useState(false)
   const gt = useGiteaRepositories(provider === 'gitea')
+  // Azure DevOps arm: what the connection's identity can see, keyed by GUID; inert until its tile is picked.
+  const [azQ, setAzQ] = useState('')
+  const [azPick, setAzPick] = useState('')
+  const [azPickOpen, setAzPickOpen] = useState(false)
+  const az = useAzureDevOpsRepositories(provider === 'azure-devops')
 
   // Escape closes THIS layer only: capture-phase + stopPropagation beats the
   // ModalProvider's bubble-phase window listener when we're nested in a dialog.
@@ -324,6 +337,28 @@ export default function AddAgentRepoModal({
     workspaceRepository === repoId ? 'workspace' : authorizedRepositories.has(repoId) ? 'authorized' : null
   const gtNoRepositories = gt.empty || !gt.enabled || !gt.connected
 
+  // Azure DevOps identity is the surrogate numeric id once bound; an unbound row is held by nothing yet.
+  const authorizedAzureRepositories = useMemo(
+    () =>
+      new Set(
+        authorized.filter((r) => repoAuthProvider(r) === 'azure-devops' && r.repoId).map((r) => r.repoId as string)
+      ),
+    [authorized]
+  )
+  const workspaceAzureRepository =
+    agent.workspace.mode === 'git' && agent.workspace.provider === 'azure-devops' ? agent.workspace.repoId : undefined
+  const azMatches = matchAzureDevOpsRepositories(az.choices, azQ)
+  const azPicked = az.choices.find((c) => c.repositoryId === azPick)
+  const azTakenBy = (repoId: string | null): 'workspace' | 'authorized' | null =>
+    repoId === null
+      ? null
+      : workspaceAzureRepository === repoId
+        ? 'workspace'
+        : authorizedAzureRepositories.has(repoId)
+          ? 'authorized'
+          : null
+  const azNoRepositories = az.empty || !az.enabled || !az.connected
+
   // A repository that is not added yet is bound by the grant itself (gitea-integration.md §6).
   const selectRepository = (choice: GiteaRepositoryChoice) => {
     setGtPick(choice.repoId)
@@ -424,8 +459,13 @@ export default function AddAgentRepoModal({
         ready: !!gtPick && gtTakenBy(gtPick) === null,
         input: { provider: 'gitea', repoId: gtPick, access, materialize }
       },
-      // Not pickable until the Console step (azure-devops-integration.md §13, A4).
-      'azure-devops': { ready: false, input: null }
+      'azure-devops': {
+        // Bound by the grant itself, through the organization's one connection (azure-devops-integration.md §5).
+        ready: !!azPicked && !!az.connectionId && azTakenBy(azPicked.repoId) === null,
+        input: az.connectionId
+          ? { provider: 'azure-devops', connectionId: az.connectionId, repositoryId: azPick, access, materialize }
+          : null
+      }
     }
   const installationPicked = provider === 'github' && pickedInstallation !== undefined
   const canSubmit = installationPicked ? canAuthorizeInstallation : grantSubmit[provider].ready
@@ -991,8 +1031,113 @@ export default function AddAgentRepoModal({
           <RepositoryMaterializeField value={materialize} decisionBlock={decisionBlock} onChange={setMaterialize} />
         </>
       ),
-    // Unreachable: Azure DevOps is not among the pickable hosts yet.
-    'azure-devops': () => null
+    'azure-devops': () =>
+      az.error ? (
+        <div className="mb-4 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
+          {t('azureDevOpsLoadError', { error: az.error })}
+        </div>
+      ) : az.loading ? (
+        <div className="mb-4">
+          <LoadingState size={20} padding={16} />
+        </div>
+      ) : azNoRepositories ? (
+        <div className="mb-4">
+          <AzureDevOpsNoRepositoriesNotice
+            connected={az.connected}
+            enabled={az.enabled}
+            integrationsHref={orgPath('/integrations')}
+            onSync={az.reload}
+            syncing={az.reloading}
+          />
+        </div>
+      ) : (
+        <>
+          <div className="mb-[18px]">
+            <AzureDevOpsRepositoryField
+              value={azPicked?.repoPath ?? ''}
+              icon="book-bookmark"
+              loading={false}
+              open={azPickOpen}
+              query={azQ}
+              onToggle={() => {
+                setAzQ('')
+                setAzPickOpen((value) => !value)
+              }}
+              onClose={() => setAzPickOpen(false)}
+              onQueryChange={setAzQ}
+              error={az.listError ? t('azureDevOpsLoadError', { error: az.listError }) : undefined}
+              onRetry={az.reload}
+            >
+              {azMatches.map((choice) => {
+                const taken = azTakenBy(choice.repoId)
+                if (taken !== null) {
+                  return (
+                    <div key={choice.repositoryId} className="fnohit">
+                      {choice.repoPath}
+                      {taken === 'workspace' ? t('workspaceRepository') : t('alreadyAuthorized')}
+                    </div>
+                  )
+                }
+                return (
+                  <AzureDevOpsRepositoryOption
+                    key={choice.repositoryId}
+                    choice={choice}
+                    selected={azPick === choice.repositoryId}
+                    onSelect={() => {
+                      setAzPick(choice.repositoryId)
+                      setAzPickOpen(false)
+                      setErr(null)
+                    }}
+                  />
+                )
+              })}
+              {azMatches.length === 0 && <div className="fnohit">{t('noRepositoriesMatch', { query: azQ })}</div>}
+            </AzureDevOpsRepositoryField>
+          </div>
+
+          <div className="fldlbl mb-2">{t('access')}</div>
+          <div className="mb-4 flex flex-col gap-[9px]">
+            {AZURE_DEVOPS_TIERS.map((tier) => {
+              const on = access === tier
+              return (
+                <div
+                  key={tier}
+                  className={`flex cursor-pointer items-center gap-[11px] rounded-[9px] border px-[13px] py-[11px] ${
+                    on
+                      ? 'border-(--border-strong) bg-(--surface-hover)'
+                      : 'border-(--border-subtle) bg-(--surface-card)'
+                  }`}
+                  onClick={() => setAccess(tier)}
+                >
+                  <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] border border-(--border-default) bg-(--surface-card)">
+                    <Icon
+                      name={tier === 'read' ? 'eye' : 'git-branch'}
+                      size={16}
+                      color={on ? 'var(--brand)' : 'var(--text-tertiary)'}
+                    />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="font-sans text-[13px] font-semibold leading-normal">
+                      {tier === 'read' ? t('readOnly') : t('readWrite')}
+                    </div>
+                    <div className="mt-[2px] font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
+                      {tier === 'read' ? t('readOnlyDescription') : t('azureDevOpsWriteDescription')}
+                    </div>
+                  </div>
+                  <span
+                    className={`flex h-4 w-4 flex-none items-center justify-center rounded-full border-[1.5px] ${
+                      on ? 'border-(--brand)' : 'border-(--border-strong)'
+                    }`}
+                  >
+                    {on && <span className="h-2 w-2 rounded-full bg-(--brand)" />}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+          <RepositoryMaterializeField value={materialize} decisionBlock={decisionBlock} onChange={setMaterialize} />
+        </>
+      )
   }
 
   return (
@@ -1030,7 +1175,7 @@ export default function AddAgentRepoModal({
           {!fixedRepo && (
             <div className="fld mb-[18px]">
               <span className="fldlbl">{t('codeHost')}</span>
-              <div className="grid grid-cols-1 gap-[10px] desktop:grid-cols-3">
+              <div className="grid grid-cols-1 gap-[10px] desktop:grid-cols-2">
                 {hostTiles.map((host) => (
                   <button
                     key={host.v}

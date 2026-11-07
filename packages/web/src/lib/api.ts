@@ -7490,6 +7490,215 @@ export function deleteGiteaRepository(id: string): Promise<GiteaRepositoryRemova
   return apiDelete<GiteaRepositoryRemovalDto>(`${orgBase()}/gitea/repositories/${encodeURIComponent(id)}`)
 }
 
+// ── azure devops connection, connect flow and repositories (azure-devops-integration.md §3, §5, §8) ──
+// No route here ever returns a secret or token; a 404 on the list means a Control Plane without Azure DevOps.
+
+export type AzureDevOpsStateReason = 'secret_rejected' | 'access_revoked' | 'repository_unavailable'
+
+/** One Azure DevOps connection: identity facts only. */
+export interface AzureDevOpsConnectionDto {
+  id: string
+  organization: string
+  organizationInstanceId: string
+  tenantId: string
+  identityId: string
+  identityName: string | null
+  credentialSource: 'deployment' | 'own'
+  /** The own application's client ID; null for the deployment application. */
+  clientId: string | null
+  state: 'connected' | 'degraded'
+  stateReason: AzureDevOpsStateReason | null
+  credentialEpoch: string
+  boundRepositories: number
+  connectedBy: string | null
+  lastVerifiedAt: string | null
+  createdAt: string
+}
+
+/** One repository the connection's identity can see, keyed by GUID; `bindingId` is set once it is bound here. */
+export interface AzureDevOpsRepositoryDto {
+  repositoryId: string
+  projectId: string
+  path: string // {organization}/{project}/{repository}, display only
+  cloneUrl: string
+  defaultBranch: string | null
+  repoId: string | null
+  bindingId: string | null
+}
+
+/** One bound repository: a catalog row and an identity, no webhook. */
+export interface AzureDevOpsRepositoryBindingDto {
+  id: string
+  connectionId: string
+  repoId: string
+  repositoryId: string
+  projectId: string
+  repoPath: string
+  cloneUrl: string
+  defaultBranch: string | null
+  state: 'ready' | 'runtime_degraded'
+  stateReason: AzureDevOpsStateReason | null
+  createdAt: string
+}
+
+export type AzureDevOpsProjectGroup = 'readers' | 'contributors'
+
+export interface AzureDevOpsMembershipDto {
+  projectId: string
+  projectName: string
+  group: AzureDevOpsProjectGroup
+  outcome: 'added' | 'already_member' | 'refused' | 'failed' | 'group_missing' | 'not_attempted'
+}
+
+/** A finished sign-in: the flow's id and its sealed ticket, which the page keeps in memory for the flow alone. */
+export interface AzureDevOpsConnectFlowDto {
+  flowId: string
+  ticket: string
+  tenantId: string
+  /** Set for Manage project access, with the connection's organization. */
+  connectionId: string | null
+  organization: string | null
+  expiresAt: string
+}
+
+export interface AzureDevOpsProjectsDto {
+  /** The ticket with the organization recorded; the next step sends this one. */
+  ticket: string
+  organization: string
+  projects: Array<{ id: string; name: string }>
+}
+
+export interface AzureDevOpsConnectResultDto {
+  connection: AzureDevOpsConnectionDto
+  memberships: AzureDevOpsMembershipDto[]
+}
+
+/** The connection list doubles as the enabled-probe: 404 ⇒ a Control Plane without Azure DevOps. */
+export async function fetchAzureDevOpsConnections(
+  orgId?: string
+): Promise<{ enabled: boolean; connections: AzureDevOpsConnectionDto[]; deploymentApplication: boolean }> {
+  try {
+    const body = await apiGet<{ connections: AzureDevOpsConnectionDto[]; deploymentApplication: boolean }>(
+      `${orgBase(orgId)}/azure-devops/connections`
+    )
+    return { enabled: true, connections: body.connections, deploymentApplication: body.deploymentApplication }
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404)
+      return { enabled: false, connections: [], deploymentApplication: false }
+    throw e
+  }
+}
+
+/** Use your own application instead (§3.2): the secret is verified, sealed and never returned. */
+export function connectAzureDevOps(input: {
+  organization: string
+  tenantId: string
+  clientId: string
+  clientSecret: string
+}): Promise<AzureDevOpsConnectionDto> {
+  return apiPost<AzureDevOpsConnectionDto>(`${orgBase()}/azure-devops/connections`, input)
+}
+
+export function replaceAzureDevOpsSecret(id: string, clientSecret: string): Promise<AzureDevOpsConnectionDto> {
+  return apiPost<AzureDevOpsConnectionDto>(`${orgBase()}/azure-devops/connections/${encodeURIComponent(id)}/secret`, {
+    clientSecret
+  })
+}
+
+export function disconnectAzureDevOps(id: string): Promise<void> {
+  return apiDelete<void>(`${orgBase()}/azure-devops/connections/${encodeURIComponent(id)}`)
+}
+
+export function fetchAzureDevOpsConnectionRepositories(connectionId: string): Promise<AzureDevOpsRepositoryDto[]> {
+  return apiGet<{ repositories: AzureDevOpsRepositoryDto[] }>(
+    `${orgBase()}/azure-devops/connections/${encodeURIComponent(connectionId)}/repositories`
+  ).then((body) => body.repositories)
+}
+
+export function fetchAzureDevOpsRepositories(orgId?: string): Promise<AzureDevOpsRepositoryBindingDto[]> {
+  return apiGet<{ bindings: AzureDevOpsRepositoryBindingDto[] }>(`${orgBase(orgId)}/azure-devops/repositories`).then(
+    (body) => body.bindings
+  )
+}
+
+/** Connect with Microsoft, or with a connection id Manage project access: Microsoft's sign-in URL to send the browser to. */
+export function startAzureDevOpsConnect(connectionId?: string, orgId?: string): Promise<{ authorizeUrl: string }> {
+  return apiPost<{ authorizeUrl: string }>(
+    `${orgBase(orgId)}/azure-devops/connect`,
+    connectionId ? { connectionId } : {}
+  )
+}
+
+/** The connect page posts what Microsoft returned, a code or an error, with the state. */
+export function finishAzureDevOpsSignIn(
+  orgId: string,
+  input: { state: string; code?: string; error?: string; error_description?: string }
+): Promise<AzureDevOpsConnectFlowDto> {
+  return apiPost<AzureDevOpsConnectFlowDto>(`${orgBase(orgId)}/azure-devops/connect/callback`, input)
+}
+
+// The flow ticket rides in a header on every later step, never in a path or query.
+async function azureDevOpsFlowStep<T>(
+  method: 'GET' | 'POST',
+  orgId: string,
+  flowId: string,
+  step: string,
+  ticket: string,
+  body?: unknown
+): Promise<T> {
+  const path = `${orgBase(orgId)}/azure-devops/connect/${encodeURIComponent(flowId)}/${step}`
+  const res = await authenticatedFetch(
+    path,
+    { method, cache: 'no-store', ...(method === 'POST' ? { body: JSON.stringify(body ?? {}) } : {}) },
+    {
+      'x-azure-devops-flow-ticket': ticket,
+      ...(method === 'POST' ? { 'content-type': 'application/json' } : {})
+    }
+  )
+  if (!res.ok) throw await apiErrorFromResponse(method, path, res)
+  return (await res.json()) as T
+}
+
+export function listAzureDevOpsConnectOrganizations(
+  orgId: string,
+  flowId: string,
+  ticket: string
+): Promise<Array<{ id: string; name: string }>> {
+  return azureDevOpsFlowStep<{ organizations: Array<{ id: string; name: string }> }>(
+    'GET',
+    orgId,
+    flowId,
+    'organizations',
+    ticket
+  ).then((body) => body.organizations)
+}
+
+export function chooseAzureDevOpsConnectOrganization(
+  orgId: string,
+  flowId: string,
+  ticket: string,
+  organization: string
+): Promise<AzureDevOpsProjectsDto> {
+  return azureDevOpsFlowStep('POST', orgId, flowId, 'organization', ticket, { organization })
+}
+
+export function applyAzureDevOpsConnectProjects(
+  orgId: string,
+  flowId: string,
+  ticket: string,
+  projects: Array<{ projectId: string; group: AzureDevOpsProjectGroup }>
+): Promise<AzureDevOpsConnectResultDto> {
+  return azureDevOpsFlowStep('POST', orgId, flowId, 'projects', ticket, { projects })
+}
+
+export function verifyAzureDevOpsConnect(
+  orgId: string,
+  flowId: string,
+  ticket: string
+): Promise<AzureDevOpsConnectResultDto> {
+  return azureDevOpsFlowStep('POST', orgId, flowId, 'verify', ticket)
+}
+
 // ── agent repository authorizations (agent-multi-repo-authorization.md) ──────
 // Explicit non-workspace repo grants on an agent — the detail page's
 // Repositories card. The workspace repo is implicit and never listed here; the
@@ -7549,6 +7758,13 @@ export async function createAgentRepo(
     | { repoFullName: string; access: RepoAccess; materialize?: RepoMaterialize }
     | { provider: 'gitlab'; projectId: string; access: RepoAccess; materialize?: RepoMaterialize }
     | { provider: 'gitea'; repoId: string; access: RepoAccess; materialize?: RepoMaterialize }
+    | {
+        provider: 'azure-devops'
+        connectionId: string
+        repositoryId: string
+        access: RepoAccess
+        materialize?: RepoMaterialize
+      }
 ): Promise<AgentRepoAuthDto> {
   const path = `${orgBase()}/agents/${encodeURIComponent(agentId)}/repos`
   const res = await authenticatedFetch(

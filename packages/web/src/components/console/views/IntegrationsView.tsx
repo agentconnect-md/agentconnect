@@ -56,6 +56,7 @@ import { useOwnerChangeGuard } from '@/components/console/OwnerChangeGuard'
 import DeleteBotModal from '@/components/console/modals/DeleteBotModal'
 import GithubCard from '@/components/console/GithubCard'
 import GiteaCard from '@/components/console/GiteaCard'
+import AzureDevOpsCard from '@/components/console/AzureDevOpsCard'
 import GitlabCard from '@/components/console/GitlabCard'
 import { Scrim } from '@/components/console/Scrim'
 
@@ -245,6 +246,9 @@ export default function IntegrationsView() {
         </div>
         <div className="mt-4">
           <GiteaCard canWrite={canWrite} />
+        </div>
+        <div className="mt-4">
+          <AzureDevOpsCard canWrite={canWrite} />
         </div>
       </Section>
 

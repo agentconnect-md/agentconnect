@@ -3,12 +3,13 @@ import { createPortal } from 'react-dom'
 import type { KeyboardEvent, ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import { type CodeHostProvider } from '@agentconnect.md/protocol/code-host'
-import { GiteaMark, GithubMark, GitlabMark } from '@/components/marks'
+import { AzureDevOpsMark, GiteaMark, GithubMark, GitlabMark } from '@/components/marks'
 import { CodeHostMark } from '@/components/console/CodeHostMark'
 import { Button, Icon, Toggle } from '@/components/ui'
 import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 import { CODE_HOST_PROJECTION, PICKABLE_CODE_HOST_PROVIDERS } from '@/lib/code-hosts'
 import { featureFlagEnabled } from '@/lib/feature-flags'
+import type { AzureDevOpsRepositoryChoice } from '@/lib/azure-devops-repositories'
 import { GITEA_REPOSITORY_STATE, giteaChoiceSelectable, type GiteaRepositoryChoice } from '@/lib/gitea-repositories'
 import { GITLAB_PROJECT_STATE, gitlabChoiceSelectable, type GitlabProjectChoice } from '@/lib/gitlab-projects'
 import { githubAppPageUrl, type RepoAccess, type RepoGrantStaleReason, type RepoMaterialize } from '@/lib/api'
@@ -826,6 +827,117 @@ export function GiteaNoRepositoriesNotice({
         <GiteaMark fillPct={100} />
       </span>
       {!enabled ? <span>{t('giteaDisabled')}</span> : <span>{t('giteaNoAdminRepository')}</span>}
+    </div>
+  )
+}
+
+export function AzureDevOpsRepositoryField(props: RepositoryPickerProps) {
+  const t = useTranslations('Integrations.dialog.workspaceFields')
+  return (
+    <RepositoryPickerField
+      {...props}
+      label={props.label ?? t('azureDevOpsRepository')}
+      mark={<AzureDevOpsMark fillPct={100} />}
+      emptyLabel={t('pickRepository')}
+      loadingLabel={t('loadingRepositories')}
+      searchPlaceholder={t('searchAzureDevOpsRepositories')}
+    />
+  )
+}
+
+/** One repository the connection's identity can see; an unbound one is bound by the save that follows (azure-devops-integration.md §5). */
+export function AzureDevOpsRepositoryOption({
+  choice,
+  selected = false,
+  onSelect
+}: {
+  choice: AzureDevOpsRepositoryChoice
+  selected?: boolean
+  onSelect: () => void
+}) {
+  const t = useTranslations('Integrations.dialog.workspaceFields')
+  const branch = choice.defaultBranch ? t('defaultBranch', { branch: choice.defaultBranch }) : t('noDefaultBranch')
+  const degraded = choice.binding?.state === 'runtime_degraded'
+  return (
+    <button
+      type="button"
+      className="fopt min-h-[46px] items-center gap-3 px-2 py-2"
+      title={choice.repoPath}
+      data-azure-devops-choice={choice.repositoryId}
+      onClick={onSelect}
+    >
+      <span className="flex h-4 w-4 flex-none items-center justify-center">
+        <AzureDevOpsMark fillPct={100} />
+      </span>
+      <span className="flex min-w-0 flex-1 flex-col items-start gap-[2px] overflow-hidden">
+        <span className="block w-full min-w-0 truncate font-mono text-[12.5px] font-semibold leading-normal text-(--text-primary)">
+          {choice.repoPath}
+        </span>
+        <span className="block w-full min-w-0 truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+          {choice.binding ? branch : t('addedOnSave', { branch })}
+        </span>
+      </span>
+      {degraded && (
+        <span className="badge flex-none bg-(--status-paused-soft) text-(--amber-500)">{t('azureDevOpsDegraded')}</span>
+      )}
+      {selected && <Icon name="check" size={17} color="var(--brand)" />}
+    </button>
+  )
+}
+
+/** Nothing to pick: no Azure DevOps on this deployment, no connection yet, or an identity that sees no repository. */
+export function AzureDevOpsNoRepositoriesNotice({
+  connected,
+  enabled = true,
+  integrationsHref,
+  onSync,
+  syncing = false
+}: {
+  connected: boolean
+  enabled?: boolean
+  integrationsHref: string
+  onSync?: () => void
+  syncing?: boolean
+}) {
+  const t = useTranslations('Integrations.dialog.workspaceFields')
+  if (enabled && !connected) {
+    return (
+      <div className="rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px] desktop:col-span-2">
+        <div className="font-sans text-[13.5px] font-semibold leading-normal text-(--text-primary)">
+          {t('connectAzureDevOpsTitle')}
+        </div>
+        <div className="mt-[3px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
+          {t('connectAzureDevOpsDescription')}
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <a className="lnk font-medium" href={integrationsHref}>
+            {t('openIntegrations')}
+          </a>
+          {onSync && (
+            <button
+              type="button"
+              className="lnk inline-flex items-center gap-[6px]"
+              onClick={onSync}
+              disabled={syncing}
+            >
+              <Icon
+                name={syncing ? 'loader' : 'refresh-cw'}
+                size={13}
+                className={syncing ? 'animate-spin' : undefined}
+              />
+              {t('connectedSync')}
+            </button>
+          )}
+        </div>
+      </div>
+    )
+  }
+  return (
+    <div className="flex items-start gap-2 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary) desktop:col-span-2">
+      <span className="mt-[1px] flex h-[14px] w-[14px] flex-none items-center justify-center">
+        <AzureDevOpsMark fillPct={100} />
+      </span>
+      {!enabled ? <span>{t('azureDevOpsDisabled')}</span> : <span>{t('azureDevOpsNoRepository')}</span>}
     </div>
   )
 }

@@ -25,6 +25,8 @@ export interface CodeHostProjection {
   readonly changeNoun: 'pull_request' | 'merge_request'
   /** The provider's setup page, relative to the docs root. */
   readonly docsPath: string
+  /** Whether the host has inbound triggers (hooks), so trigger pickers offer it. */
+  readonly hooks: boolean
 }
 
 export const CODE_HOST_PROJECTION: Record<CodeHostProvider, CodeHostProjection> = {
@@ -34,7 +36,8 @@ export const CODE_HOST_PROJECTION: Record<CodeHostProvider, CodeHostProjection> 
     repoNoun: 'repository',
     repoNounShort: 'repo',
     changeNoun: 'pull_request',
-    docsPath: 'connect-automate/triggers-automation/github'
+    docsPath: 'connect-automate/triggers-automation/github',
+    hooks: true
   },
   gitlab: {
     label: 'GitLab',
@@ -42,7 +45,8 @@ export const CODE_HOST_PROJECTION: Record<CodeHostProvider, CodeHostProjection> 
     repoNoun: 'project',
     repoNounShort: 'project',
     changeNoun: 'merge_request',
-    docsPath: 'connect-automate/triggers-automation/gitlab'
+    docsPath: 'connect-automate/triggers-automation/gitlab',
+    hooks: true
   },
   gitea: {
     label: 'Gitea',
@@ -50,31 +54,38 @@ export const CODE_HOST_PROJECTION: Record<CodeHostProvider, CodeHostProjection> 
     repoNoun: 'repository',
     repoNounShort: 'repo',
     changeNoun: 'pull_request',
-    docsPath: 'connect-automate/triggers-automation/gitea'
+    docsPath: 'connect-automate/triggers-automation/gitea',
+    hooks: true
   },
-  // A4 adds the setup page this names.
+  // No hooks in the first version (azure-devops-integration.md §11).
   'azure-devops': {
     label: 'Azure DevOps',
     publicHost: 'dev.azure.com',
     repoNoun: 'repository',
     repoNounShort: 'repo',
     changeNoun: 'pull_request',
-    docsPath: 'connect-automate/triggers-automation/azure-devops'
+    docsPath: 'connect-automate/triggers-automation/azure-devops',
+    hooks: false
   }
 }
 
-/** Whether the console has the whole surface a picker tile promises; Azure DevOps flips with its Console step (azure-devops-integration.md §13, A4). */
+/** Whether the console has the whole surface a picker tile promises. */
 const CODE_HOST_CONSOLE_READY: Record<CodeHostProvider, boolean> = {
   github: true,
   gitlab: true,
   gitea: true,
-  'azure-devops': false
+  'azure-devops': true
 }
 
 /** The hosts the console OFFERS. Every `Record<CodeHostProvider, …>` above stays total regardless:
  *  a row, a label and a mark are needed wherever an existing hook or grant names the host. */
 export const PICKABLE_CODE_HOST_PROVIDERS: readonly CodeHostProvider[] = CODE_HOST_PROVIDERS.filter(
   (provider) => CODE_HOST_CONSOLE_READY[provider]
+)
+
+/** The hosts a trigger picker offers: pickable and with hooks of their own. */
+export const TRIGGER_CODE_HOST_PROVIDERS: readonly CodeHostProvider[] = PICKABLE_CODE_HOST_PROVIDERS.filter(
+  (provider) => CODE_HOST_PROJECTION[provider].hooks
 )
 
 /** Project every provider onto one value — a total table without a second list of which hosts exist. */
