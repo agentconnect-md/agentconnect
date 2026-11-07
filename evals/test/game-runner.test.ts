@@ -303,6 +303,80 @@ describe('collaboration game runner — same-room counting with scripted hosts',
     }
   }, 120_000)
 
+  it('holds live ingress back until the current wave has been admitted', async () => {
+    // A peer echo fired while a wave is still being admitted must not enter the daemon ahead of it.
+    const { CollaborationGameRunner } = await import('../../packages/daemon/src/evaluation/index.js')
+    const { compileTopology } = await import('../games/topology.js')
+    const { ArenaWorld } = await import('../games/world.js')
+    const { CountingGame } = await import('../games/counting.js')
+    const { countingManifest, scaffoldSubject, scriptedCountingHostFactory } = await import('../games/engine.js')
+    type World = import('../../packages/daemon/src/evaluation/index.js').CollaborationGameWorld
+    type LiveInject = Parameters<NonNullable<World['attachLiveIngress']>>[0]
+    const topology = compileTopology(countingManifest({ seed: 5, agents: ['agent-a', 'agent-b'] }))
+    const game = new CountingGame({ world: new ArenaWorld(topology), roomAlias: 'counting-room', target: 2 })
+    const integrationId = topology.rooms.find((room) => room.alias === 'counting-room')!.memberIntegrationIds[0]!
+    const order: string[] = []
+    let inject: LiveInject | undefined
+    let probe: Promise<unknown> | undefined
+    const world: World = {
+      environment: game.environment,
+      isTerminal: () => game.isTerminal(),
+      nextDeliveries: () => {
+        // An unrouted live post races the first wave; its admission must settle after the wave's.
+        probe ??= inject!({
+          integrationId,
+          payload: {
+            channel: 'CUNROUTED01',
+            messageId: '1.000001',
+            text: 'echo',
+            sender: { id: 'W-PEER', isBot: false }
+          }
+        }).then(async (handle) => {
+          await handle.admission
+          order.push('live-admitted')
+        })
+        return game.nextDeliveries()
+      },
+      drainOutboundEffects: () => game.drainOutboundEffects(),
+      applyEffects: (effects) => game.applyEffects(effects),
+      attachLiveIngress: (next) => {
+        inject = next
+        game.attachLiveIngress(next)
+      },
+      drainLiveHandles: () => game.drainLiveHandles(),
+      noteWave: (record) => {
+        if (record.step === 0) order.push('wave-admitted')
+        game.noteWave(record)
+      },
+      terminate: (reason) => game.terminate(reason),
+      verdict: () => game.verdict(),
+      worldEventRecords: () => game.worldEventRecords(),
+      topologyArtifact: () => game.topologyArtifact()
+    }
+    const subject = scaffoldSubject(topology)
+    try {
+      const runner = new CollaborationGameRunner({
+        root: subject.root,
+        world,
+        artifactDir: join(scratch(), 'live-gate'),
+        game: 'same-room-counting',
+        seed: 5,
+        mode: 'deterministic',
+        subjectKind: 'scripted',
+        hostFactory: scriptedCountingHostFactory() as never,
+        capabilityProfile: { memory: 'off' },
+        limits: { maxSteps: 12, timeoutMs: 60_000 },
+        agents: topology.agents.map((agent) => ({ agentId: agent.agentId, name: agent.alias }))
+      })
+      const result = await runner.run()
+      await probe
+      expect(result.error).toBeUndefined()
+      expect(order).toEqual(['wave-admitted', 'live-admitted'])
+    } finally {
+      subject.cleanup()
+    }
+  }, 120_000)
+
   it('is environment-deterministic (§8.1): same seed, same world, same reproducible outcome', async () => {
     const first = await runSameRoomCounting({
       seed: 7,

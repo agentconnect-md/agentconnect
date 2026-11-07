@@ -204,27 +204,39 @@ export class CollaborationGameRunner {
     let steps = 0
     try {
       await beforeDeadline(deadlineMs, 'daemon startup', () => harness.start())
-      // Live ingress: peer fan-out enters the daemon as soon as an effect is
-      // delivered, not at the wave barrier (see CollaborationGameWorld).
-      world.attachLiveIngress?.((event) => harness.inject(event))
+      // Live peer ingress enters mid-wave, but only once the current wave is admitted, so no echo is charged ahead of it.
+      let waveAdmitted: Promise<void> = Promise.resolve()
+      world.attachLiveIngress?.(async (event) => {
+        await waveAdmitted
+        return harness.inject(event)
+      })
       // ── the §8 wave loop ──
       while (!world.isTerminal()) {
         if (steps >= maxSteps) {
           world.terminate('step_limit')
           break
         }
-        const wave = world.nextDeliveries()
-        if (wave.platformEvents.length === 0 && wave.refereeEvents.length === 0) {
-          world.terminate('stalled')
-          break
+        let releaseWave = () => {}
+        waveAdmitted = new Promise((resolve) => (releaseWave = resolve))
+        let wave: GameWave
+        let all: DeliveryHandle[]
+        let admissions: DeliveryAdmission[]
+        try {
+          wave = world.nextDeliveries()
+          if (wave.platformEvents.length === 0 && wave.refereeEvents.length === 0) {
+            world.terminate('stalled')
+            break
+          }
+          // All events pass admission before any completion is awaited.
+          const handles = await harness.injectConcurrent(wave.platformEvents)
+          const refereeHandles = await Promise.all(wave.refereeEvents.map((event) => harness.deliverReferee(event)))
+          all = [...handles, ...refereeHandles]
+          admissions = await beforeDeadline(deadlineMs, `wave ${steps} admission`, () =>
+            Promise.all(all.map((handle) => handle.admission))
+          )
+        } finally {
+          releaseWave()
         }
-        // All events pass admission before any completion is awaited.
-        const handles = await harness.injectConcurrent(wave.platformEvents)
-        const refereeHandles = await Promise.all(wave.refereeEvents.map((event) => harness.deliverReferee(event)))
-        const all = [...handles, ...refereeHandles]
-        const admissions = await beforeDeadline(deadlineMs, `wave ${steps} admission`, () =>
-          Promise.all(all.map((handle) => handle.admission))
-        )
         world.noteWave({
           step: steps,
           platformEvents: wave.platformEvents,
