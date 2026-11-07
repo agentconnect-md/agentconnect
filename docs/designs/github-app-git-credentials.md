@@ -428,8 +428,8 @@ with a revision a daemon already applied without it.
 
 > **Status:** Phase 1 is implemented. Phase 2 is being built (#3382): the
 > proxy and its host and `srt` transports run behind the daemon's
-> `features.credentialProxy`; the rest is proposed. Phase 2 would replace Trust
-> Model item 3.
+> `features.credentialProxy`, for GitHub, GitLab and Gitea; the rest is
+> proposed. Phase 2 would replace Trust Model item 3.
 
 Agents write to GitHub with whatever their `gh` wrapper mints: a
 capability-clamped installation token at the repository's tier. The daemon
@@ -589,19 +589,52 @@ reaches the proxy is therefore a matter of usability, never of exposure:
 
 **Trust.** The proxy terminates TLS only for the code-host domains, with a
 daemon CA. `SSL_CERT_FILE` replaces the system roots, so it names a bundle of
-the system roots plus that CA. Python's `requests` reads its own bundle and
+the system roots, the operator's authorities (the files `NODE_EXTRA_CA_CERTS`,
+`SSL_CERT_FILE`, `SSL_CERT_DIR` and `GIT_SSL_CAINFO` name for the daemon,
+gitlab-com-integration.md §24.5) and that CA. The proxy verifies the code host
+upstream with the same roots and operator authorities, since a self-managed
+instance is often signed by a private CA. Python's `requests` reads its own bundle and
 needs `REQUESTS_CA_BUNDLE` as well, and git reads `GIT_SSL_CAINFO`. Node adds
 the bundle through `NODE_EXTRA_CA_CERTS`. A sandbox may read only the
 directory holding the certificate and the bundle; the CA key and the
 placeholder key stay outside it. `srt` intercepts only the environments of an
-agent whose workspace credentials are GitHub's, and every session there gets
-the trust variables, a placeholder or not.
+agent with a managed code-host credential, routes only that agent's instance
+hosts to the proxy, and every session there gets the trust variables, a
+placeholder or not.
 
 **Token selection.** The proxy takes the repository from the request path: a
 smart-HTTP path for git, and `/repos/{owner}/{repo}/…` for REST, and mints
 that repository's token at its tier. A read that names no repository, such as
 `/user`, uses the workspace's read-tier token; a write outside a repository is
 refused.
+
+**Instances.** An agent's instances are the hosts its session Git
+configuration pins (gitlab-com-integration.md §24.4): GitHub, and the spec's
+GitLab and Gitea instances when the workspace or an authorized repository is
+on them. Each instance is matched by its host and non-default port, and its
+path prefix is stripped on a segment boundary before routing. The proxy
+terminates TLS only for the instances of an agent it runs, and over an agent's
+own socket only for that agent's.
+
+- GitLab: git at `<namespace…>/<project>(.git)/info/refs`,
+  `git-upload-pack` or `git-receive-pack`, with nested namespaces; the API at
+  `/api/v4/projects/<id or encoded path>/…`. A numeric id must be the
+  workspace's or an authorized project's.
+- Gitea: git at `<owner>/<repo>(.git)/…`; the API at
+  `/api/v1/repos/<owner>/<repo>/…`.
+- A dot segment, an empty segment or any other path that does not name one
+  repository unambiguously is refused. A path outside the prefix, or a web
+  page, is forwarded without a credential.
+- The token comes through the credential helper's own ask (provider, path,
+  numeric identity), so it carries the agent's tier on that repository. git
+  gets Basic with the grant's user name; the API gets the header and scheme
+  the client used (`PRIVATE-TOKEN` or `Bearer` on GitLab, `token`, `Bearer` or
+  Basic on Gitea).
+- The API is read-only on both hosts, as `glab` already was: a GitLab API read
+  takes the read credential the `glab` wrapper requests, a write is refused
+  with an error naming the host's effect tools, and a read naming no
+  repository uses the workspace's credential. `glab` receives the placeholder
+  as `GITLAB_TOKEN`.
 
 **The placeholder.** The environment's credential is sealed by the daemon: it
 names the agent and the hosts it may be presented to, under an HMAC with a
@@ -616,8 +649,11 @@ in the daemon's run directory, which honors only that agent's placeholder: one
 that leaks into another agent's environment buys nothing there. On the host,
 the proxy listens on loopback and requires the proxy credential carried in the
 `HTTPS_PROXY` URL, so it is no open proxy to other local processes; a host
-session has no boundary from another agent's to begin with. A code-host name never resolves to loopback, private,
-link-local or unspecified space upstream.
+session has no boundary from another agent's to begin with. A SaaS
+code-host name (GitHub's, `gitlab.com`, `gitea.com`) never resolves to
+loopback, private, link-local or unspecified space upstream. A self-managed
+instance may live at a private address, so its name is refused only loopback,
+link-local (cloud metadata) and unspecified space.
 
 **GraphQL is read-only.** A GraphQL request names no repository in its URL,
 and GitHub applies a token's permissions to every repository the token lists,
@@ -657,9 +693,9 @@ The list is not a security control: authority comes from the tier. A write
 the list misses produces the wrong product behavior, never excess access.
 
 **What it would retire.** The `gh` wrapper and its argv target resolution
-(`gh-target.ts`), and the agent-facing helper channel with its per-agent
-capability. The daemon's own Git operations keep using gitcred unchanged.
-`glab` would follow on the same proxy.
+(`gh-target.ts`), the `glab` wrapper's token fetch (`glab-target.ts`), and the
+agent-facing helper channel with its per-agent capability. The daemon's own
+Git operations keep using gitcred unchanged.
 
 **What it would not cover.** Runtime sign-ins and provider credentials keep
 their own handling (session-executors.md §8), including the VM's

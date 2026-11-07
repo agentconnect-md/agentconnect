@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { request as httpRequest } from 'node:http'
 import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https'
 import type { AddressInfo, LookupFunction } from 'node:net'
@@ -9,16 +9,29 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { generateCa } from '@anthropic-ai/sandbox-runtime'
 import { createMitmCA } from '@anthropic-ai/sandbox-runtime/dist/sandbox/mitm-ca.js'
 import { mintLeafCert } from '@anthropic-ai/sandbox-runtime/dist/sandbox/mitm-leaf.js'
-import { loadProxyCa, proxyTrustEnv } from '../src/credential-proxy/ca.js'
+import { loadProxyCa, operatorAuthorities, proxyTrustEnv, upstreamAuthorities } from '../src/credential-proxy/ca.js'
 import { graphqlOperationTypes } from '../src/credential-proxy/graphql-operation.js'
 import { githubRoute, graphqlRepository } from '../src/credential-proxy/github-route.js'
+import {
+  hostKey,
+  instanceHost,
+  instanceHostnames,
+  instanceRoute,
+  proxyInstance
+} from '../src/credential-proxy/instance-route.js'
 import {
   loadPlaceholderKey,
   looksLikePlaceholder,
   openPlaceholder,
   sealPlaceholder
 } from '../src/credential-proxy/placeholder.js'
-import { CredentialProxy, deniedAddress, presentedCredential } from '../src/credential-proxy/proxy.js'
+import {
+  CredentialProxy,
+  deniedAddress,
+  deniedSelfManagedAddress,
+  presentedCredential
+} from '../src/credential-proxy/proxy.js'
+import { GITHUB_MANAGED_HOST, type ManagedCredentialHost } from '../src/gitcred/managed-hosts.js'
 
 const AGENT = '11111111-1111-4111-8111-111111111111'
 const dirs: string[] = []
@@ -139,15 +152,27 @@ describe('a code-host name never resolves into denied space', () => {
   })
 })
 
-function proxyFor(overrides: { mint?: ReturnType<typeof vi.fn>; known?: boolean; workspace?: string } = {}) {
+const MINTED = { username: 'x-access-token', token: 'ghs_minted' }
+
+function proxyFor(
+  overrides: {
+    mint?: ReturnType<typeof vi.fn>
+    known?: boolean
+    workspace?: string
+    instances?: Record<string, ManagedCredentialHost[]>
+  } = {}
+) {
   const dir = scratch()
   const key = loadPlaceholderKey(join(dir, 'proxy.key'))
-  const mint = overrides.mint ?? vi.fn(async () => 'ghs_minted')
+  const mint = overrides.mint ?? vi.fn(async () => MINTED)
+  const instances = overrides.instances ?? { [AGENT]: [GITHUB_MANAGED_HOST] }
   const proxy = new CredentialProxy({
     key,
     ca: loadProxyCa(join(dir, 'ca')),
     mint: mint as never,
     workspaceRepo: () => overrides.workspace,
+    instancesOf: (agentId) => instances[agentId] ?? [],
+    runningAgents: () => Object.keys(instances),
     knownAgent: () => overrides.known ?? true,
     log: { info: () => {}, warn: () => {} }
   })
@@ -190,7 +215,7 @@ describe('the decision for one request', () => {
       headers: { authorization: basic }
     })
     const decision = await proxy.decide(git, { ...HTTPS, requestTarget: '/o/r.git/git-upload-pack' })
-    expect(mint).toHaveBeenCalledWith(AGENT, 'o/r', 'git', false)
+    expect(mint).toHaveBeenCalledWith(AGENT, { provider: 'github', repo: 'o/r', plane: 'git', readOnly: false })
     expect(decision).toEqual({
       action: 'allow',
       setHeaders: [['authorization', `Basic ${Buffer.from('x-access-token:ghs_minted').toString('base64')}`]]
@@ -219,9 +244,9 @@ describe('the decision for one request', () => {
       }),
       HTTPS
     )
-    expect(mint).toHaveBeenLastCalledWith(AGENT, 'o/r', 'gh', true)
+    expect(mint).toHaveBeenLastCalledWith(AGENT, { provider: 'github', repo: 'o/r', plane: 'api', readOnly: true })
     await proxy.decide(graphql({ query: '{ viewer { login } }' }), HTTPS)
-    expect(mint).toHaveBeenLastCalledWith(AGENT, 'o/ws', 'gh', true)
+    expect(mint).toHaveBeenLastCalledWith(AGENT, { provider: 'github', repo: 'o/ws', plane: 'api', readOnly: true })
     const mutation = await proxy.decide(
       graphql({ query: 'mutation { mergePullRequest(input:{}) { clientMutationId } }' }),
       HTTPS
@@ -232,7 +257,9 @@ describe('the decision for one request', () => {
   })
 
   it('refuses a placeholder of another agent over an agent’s own route', async () => {
-    const { proxy, mint, placeholder } = proxyFor()
+    const { proxy, mint, placeholder } = proxyFor({
+      instances: { [AGENT]: [GITHUB_MANAGED_HOST], 'someone-else': [GITHUB_MANAGED_HOST] }
+    })
     const request = () =>
       new Request('https://api.github.com/repos/o/r', { headers: { authorization: `token ${placeholder}` } })
     expect(await proxy.decide(request(), HTTPS, 'someone-else')).toMatchObject({
@@ -303,8 +330,10 @@ describe('the proxy end to end', () => {
       const proxy = new CredentialProxy({
         key: loadPlaceholderKey(join(dir, 'proxy.key')),
         ca,
-        mint: async () => 'ghs_minted',
+        mint: async () => MINTED,
         workspaceRepo: () => undefined,
+        instancesOf: () => [GITHUB_MANAGED_HOST],
+        runningAgents: () => [AGENT],
         knownAgent: () => true,
         log: { info: () => {}, warn: () => {} },
         upstream: { lookupFor: () => toLoopback, trustedCa: upstreamCaPem }
@@ -372,6 +401,349 @@ function getThrough(dial: Dial, port: number, placeholder: string, caPem: string
         tls.write(
           `GET /repos/o/r HTTP/1.1\r\nHost: api.github.com:${port}\r\nAuthorization: token ${placeholder}\r\nConnection: close\r\n\r\n`
         )
+      })
+      let raw = ''
+      tls.on('data', (chunk: Buffer) => (raw += chunk.toString('utf8')))
+      tls.on('end', () => resolve(Number(raw.split(' ')[1])))
+      tls.on('error', reject)
+    })
+    req.on('error', reject)
+    req.end()
+  })
+}
+
+const GITLAB: ManagedCredentialHost = { provider: 'gitlab', baseUrl: 'https://gitlab.example.test:8443/gitlab' }
+const GITEA: ManagedCredentialHost = { provider: 'gitea', baseUrl: 'https://gitea.example.test/forge' }
+
+describe('a self-managed instance as the proxy matches it', () => {
+  it('keeps the port that is not HTTPS’s own and the path prefix, and matches GitHub on any port', () => {
+    expect(proxyInstance(GITLAB)).toEqual({
+      provider: 'gitlab',
+      hosts: ['gitlab.example.test:8443'],
+      pathPrefix: 'gitlab'
+    })
+    expect(proxyInstance({ provider: 'gitea', baseUrl: 'https://gitea.example.test:443' })?.hosts).toEqual([
+      'gitea.example.test'
+    ])
+    expect(proxyInstance({ provider: 'gitlab', baseUrl: 'http://gitlab.example.test' })).toBeUndefined()
+    const gitlab = proxyInstance(GITLAB)!
+    expect(instanceHost(gitlab, 'gitlab.example.test', 8443)).toBe('gitlab.example.test:8443')
+    expect(instanceHost(gitlab, 'gitlab.example.test', 443)).toBeUndefined()
+    expect(instanceHostnames(gitlab)).toEqual(['gitlab.example.test'])
+    expect(instanceHost(proxyInstance(GITHUB_MANAGED_HOST)!, 'api.github.com', 8443)).toBe('api.github.com')
+    expect(hostKey('gitea.example.test', 443)).toBe('gitea.example.test')
+  })
+})
+
+describe('routing a GitLab or Gitea request', () => {
+  const gitlab = proxyInstance(GITLAB)!
+  const gitea = proxyInstance(GITEA)!
+
+  it('reads a GitLab project of any depth from a git path under the prefix', () => {
+    expect(instanceRoute(gitlab, 'GET', '/gitlab/Group/sub/project.git/info/refs?service=git-upload-pack')).toEqual({
+      kind: 'repository',
+      plane: 'git',
+      repo: 'group/sub/project'
+    })
+    expect(instanceRoute(gitlab, 'POST', '/gitlab/group/a/b/c/project/git-receive-pack')).toMatchObject({
+      repo: 'group/a/b/c/project',
+      plane: 'git'
+    })
+    expect(instanceRoute(gitlab, 'POST', '/gitlab/project/git-upload-pack')).toMatchObject({ kind: 'deny' })
+    expect(instanceRoute(gitlab, 'GET', '/gitlab/group/../x/info/refs')).toMatchObject({ kind: 'deny' })
+    expect(instanceRoute(gitlab, 'GET', '/gitlab/group/-/x/info/refs')).toMatchObject({ kind: 'deny' })
+    // Outside the prefix, or a web page, needs no credential.
+    expect(instanceRoute(gitlab, 'GET', '/other/group/project.git/info/refs')).toEqual({ kind: 'anonymous' })
+    expect(instanceRoute(gitlab, 'GET', '/gitlabx/group/project.git/info/refs')).toEqual({ kind: 'anonymous' })
+    expect(instanceRoute(gitlab, 'GET', '/gitlab/group/project/-/merge_requests')).toEqual({ kind: 'anonymous' })
+  })
+
+  it('reads GitLab API projects by id or encoded path, and refuses every API write naming the tools', () => {
+    expect(instanceRoute(gitlab, 'GET', '/gitlab/api/v4/projects/group%2Fsub%2Fproject/merge_requests')).toEqual({
+      kind: 'repository',
+      plane: 'api',
+      repo: 'group/sub/project'
+    })
+    expect(instanceRoute(gitlab, 'GET', '/gitlab/api/v4/projects/42/issues')).toEqual({
+      kind: 'repository',
+      plane: 'api',
+      repoId: '42'
+    })
+    expect(instanceRoute(gitlab, 'GET', '/gitlab/api/v4/user')).toEqual({ kind: 'workspace' })
+    expect(instanceRoute(gitlab, 'GET', '/gitlab/api/v4/projects')).toEqual({ kind: 'workspace' })
+    expect(instanceRoute(gitlab, 'GET', '/gitlab/api/v4/projects/group%2F..%2Fx')).toMatchObject({ kind: 'deny' })
+    expect(instanceRoute(gitlab, 'GET', '/gitlab/api/v4/projects/project')).toMatchObject({ kind: 'deny' })
+    expect(instanceRoute(gitlab, 'GET', '/gitlab/api/v3/user')).toMatchObject({ kind: 'deny', status: 400 })
+    for (const target of [
+      '/gitlab/api/v4/projects/42/merge_requests',
+      '/gitlab/api/v4/user/keys',
+      '/gitlab/api/graphql'
+    ]) {
+      const route = instanceRoute(gitlab, 'POST', target)
+      expect(route).toMatchObject({ kind: 'deny' })
+      if (target.includes('/v4/')) expect((route as { reason: string }).reason).toContain('gitlabMergeRequest')
+    }
+  })
+
+  it('reads a Gitea repository as owner and name only, and refuses an API write naming the tools', () => {
+    expect(instanceRoute(gitea, 'GET', '/forge/owner/repo.git/info/refs?service=git-upload-pack')).toEqual({
+      kind: 'repository',
+      plane: 'git',
+      repo: 'owner/repo'
+    })
+    expect(instanceRoute(gitea, 'POST', '/forge/group/sub/repo/git-upload-pack')).toMatchObject({ kind: 'deny' })
+    expect(instanceRoute(gitea, 'GET', '/forge/api/v1/repos/Owner/Repo/pulls')).toEqual({
+      kind: 'repository',
+      plane: 'api',
+      repo: 'owner/repo'
+    })
+    expect(instanceRoute(gitea, 'GET', '/forge/api/v1/user')).toEqual({ kind: 'workspace' })
+    expect(instanceRoute(gitea, 'GET', '/forge/api/v1/repos/owner/..')).toMatchObject({ kind: 'deny' })
+    const write = instanceRoute(gitea, 'PATCH', '/forge/api/v1/repos/owner/repo/issues/1')
+    expect(write).toMatchObject({ kind: 'deny', status: 403 })
+    expect((write as { reason: string }).reason).toContain('giteaPullRequest')
+  })
+})
+
+describe('a self-managed instance’s name', () => {
+  it.each([
+    ['127.0.0.1', true],
+    ['::ffff:127.0.0.1', true],
+    ['169.254.169.254', true],
+    ['0.0.0.0', true],
+    ['::1', true],
+    ['fe80::1', true],
+    ['10.1.2.3', false],
+    ['172.20.0.1', false],
+    ['192.168.1.1', false],
+    ['fd00::1', false],
+    ['203.0.113.7', false]
+  ])('may resolve to %s: %s denied', (address, denied) => {
+    expect(deniedSelfManagedAddress(address)).toBe(denied)
+  })
+})
+
+describe('the decision on a self-managed instance', () => {
+  const OTHER = '22222222-2222-4222-8222-222222222222'
+  const minted = { username: 'service-account', token: 'glpat_minted' }
+  const setup = () =>
+    proxyFor({
+      mint: vi.fn(async () => minted),
+      instances: { [AGENT]: [GITHUB_MANAGED_HOST, GITLAB, GITEA], [OTHER]: [GITHUB_MANAGED_HOST] }
+    })
+  const at = (port: number) => ({ ...HTTPS, target: { host: 'gitlab.example.test', port } })
+
+  it('seals the agent’s own hosts into its placeholder', () => {
+    const { proxy, key, placeholder } = setup()
+    expect(openPlaceholder(key, placeholder)?.hosts).toEqual([
+      'github.com',
+      'api.github.com',
+      'uploads.github.com',
+      'codeload.github.com',
+      'gitlab.example.test:8443',
+      'gitea.example.test'
+    ])
+    expect(proxy.domainsFor(AGENT)).toContain('gitlab.example.test')
+    expect(proxy.domainsFor(OTHER)).not.toContain('gitlab.example.test')
+  })
+
+  it('writes git’s credential as Basic with the grant’s user, and the API’s as the client sent it', async () => {
+    const { proxy, mint, placeholder } = setup()
+    const basic = `Basic ${Buffer.from(`x-access-token:${placeholder}`).toString('base64')}`
+    const git = new Request('https://gitlab.example.test:8443/gitlab/group/sub/project.git/info/refs', {
+      headers: { authorization: basic }
+    })
+    expect(await proxy.decide(git, at(8443))).toEqual({
+      action: 'allow',
+      setHeaders: [['authorization', `Basic ${Buffer.from('service-account:glpat_minted').toString('base64')}`]]
+    })
+    expect(mint).toHaveBeenLastCalledWith(AGENT, {
+      provider: 'gitlab',
+      repo: 'group/sub/project',
+      plane: 'git',
+      readOnly: false
+    })
+    const glab = new Request('https://gitlab.example.test:8443/gitlab/api/v4/projects/42', {
+      headers: { 'private-token': placeholder }
+    })
+    expect(await proxy.decide(glab, at(8443))).toEqual({
+      action: 'allow',
+      setHeaders: [['private-token', 'glpat_minted']]
+    })
+    expect(mint).toHaveBeenLastCalledWith(AGENT, { provider: 'gitlab', repoId: '42', plane: 'api', readOnly: true })
+    const bearer = new Request('https://gitlab.example.test:8443/gitlab/api/v4/user', {
+      headers: { authorization: `Bearer ${placeholder}` }
+    })
+    expect(await proxy.decide(bearer, at(8443))).toEqual({
+      action: 'allow',
+      setHeaders: [['authorization', 'Bearer glpat_minted']]
+    })
+    expect(mint).toHaveBeenLastCalledWith(AGENT, { provider: 'gitlab', plane: 'api', readOnly: true })
+    const gitea = new Request('https://gitea.example.test/forge/api/v1/repos/owner/repo', {
+      headers: { authorization: `token ${placeholder}` }
+    })
+    expect(await proxy.decide(gitea, HTTPS)).toEqual({
+      action: 'allow',
+      setHeaders: [['authorization', 'token glpat_minted']]
+    })
+    expect(mint).toHaveBeenLastCalledWith(AGENT, {
+      provider: 'gitea',
+      repo: 'owner/repo',
+      plane: 'api',
+      readOnly: true
+    })
+  })
+
+  it('refuses an API write, another port, another agent’s instance, and plain HTTP; strips the placeholder outside the prefix', async () => {
+    const { proxy, mint, key, placeholder } = setup()
+    const write = new Request('https://gitlab.example.test:8443/gitlab/api/v4/projects/42/merge_requests', {
+      method: 'POST',
+      headers: { 'private-token': placeholder }
+    })
+    expect(await proxy.decide(write, at(8443))).toMatchObject({ action: 'deny', status: 403 })
+    const elsewhere = new Request('https://gitlab.example.test/gitlab/api/v4/user', {
+      headers: { 'private-token': placeholder }
+    })
+    expect(await proxy.decide(elsewhere, at(443))).toMatchObject({ action: 'deny', status: 403 })
+    const theirs = sealPlaceholder(key, { agentId: OTHER, hosts: ['gitlab.example.test:8443'] })
+    const borrowed = new Request('https://gitlab.example.test:8443/gitlab/api/v4/user', {
+      headers: { 'private-token': theirs }
+    })
+    expect(await proxy.decide(borrowed, at(8443))).toMatchObject({ action: 'deny', status: 403 })
+    const plain = new Request('http://gitlab.example.test/gitlab/api/v4/user', {
+      headers: { 'private-token': placeholder }
+    })
+    expect(
+      await proxy.decide(plain, { scheme: 'http', target: { host: 'gitlab.example.test', port: 80 } })
+    ).toMatchObject({ action: 'deny' })
+    const outside = new Request('https://gitlab.example.test:8443/other/api/v4/user', {
+      headers: { authorization: `Bearer ${placeholder}`, 'private-token': placeholder }
+    })
+    expect(await proxy.decide(outside, at(8443))).toEqual({
+      action: 'allow',
+      removeHeaders: ['authorization', 'private-token']
+    })
+    expect(mint).not.toHaveBeenCalled()
+  })
+})
+
+describe('the authorities a code host is verified with', () => {
+  it('adds the operator’s bundle to the system roots, upstream and in the runtime’s bundle', () => {
+    const dir = scratch()
+    const operator = generateCa({ cn: 'example operator CA' }).certPem.trim()
+    const bundle = join(dir, 'operator.pem')
+    writeFileSync(bundle, `${operator}\n`)
+    expect(operatorAuthorities({ SSL_CERT_FILE: bundle })).toEqual([operator])
+    expect(operatorAuthorities({ SSL_CERT_FILE: join(dir, 'missing.pem') })).toEqual([])
+    const upstream = upstreamAuthorities({ GIT_SSL_CAINFO: bundle })
+    expect(upstream).toContain(operator)
+    expect(upstream.length).toBeGreaterThan(1)
+    vi.stubEnv('SSL_CERT_FILE', bundle)
+    try {
+      const ca = loadProxyCa(join(dir, 'ca'))
+      const trust = readFileSync(ca.bundlePath, 'utf8')
+      expect(trust).toContain(operator)
+      expect(trust).toContain(ca.certPem.trim())
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+})
+
+describe('the proxy end to end on a self-managed GitLab', () => {
+  // The Unix socket is srt's route, which Windows never runs.
+  it.skipIf(process.platform === 'win32')(
+    'exchanges git’s and glab’s placeholder for the project’s credential at a prefixed instance on its own port',
+    async () => {
+      const generated = generateCa({ cn: 'example private CA' })
+      const leaf = mintLeafCert(
+        createMitmCA({ caCertPem: generated.certPem, caKeyPem: generated.keyPem }),
+        'gitlab.example.test'
+      )
+      const seen: { url?: string; authorization?: string; privateToken?: string }[] = []
+      const upstream = createHttpsServer({ key: leaf.keyPem, cert: leaf.certPem }, (req, res) => {
+        seen.push({
+          ...(req.url ? { url: req.url } : {}),
+          ...(req.headers.authorization ? { authorization: req.headers.authorization } : {}),
+          ...(typeof req.headers['private-token'] === 'string' ? { privateToken: req.headers['private-token'] } : {})
+        })
+        res.end('ok')
+      })
+      await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve))
+      const port = (upstream.address() as AddressInfo).port
+      const dir = mkdtempSync('/tmp/acpx-')
+      dirs.push(dir)
+      const toLoopback: LookupFunction = (_host, options, callback) => {
+        if (options.all)
+          (callback as (e: null, a: { address: string; family: number }[]) => void)(null, [
+            { address: '127.0.0.1', family: 4 }
+          ])
+        else callback(null, '127.0.0.1', 4)
+      }
+      const ca = loadProxyCa(join(dir, 'ca'))
+      const instance: ManagedCredentialHost = {
+        provider: 'gitlab',
+        baseUrl: `https://gitlab.example.test:${port}/gitlab`
+      }
+      const mint = vi.fn(async () => ({ username: 'service-account', token: 'glpat_minted' }))
+      const proxy = new CredentialProxy({
+        key: loadPlaceholderKey(join(dir, 'proxy.key')),
+        ca,
+        mint,
+        workspaceRepo: () => undefined,
+        instancesOf: () => [instance],
+        runningAgents: () => [AGENT],
+        knownAgent: () => true,
+        log: { info: () => {}, warn: () => {} },
+        // The operator's private authority, as a self-managed instance is often signed.
+        upstream: { lookupFor: () => toLoopback, trustedCa: [generated.certPem] }
+      })
+      await proxy.start(join(dir, 'run'))
+      try {
+        const socketPath = proxy.socketFor(AGENT)
+        const placeholder = proxy.placeholderFor(AGENT)
+        const host = `gitlab.example.test:${port}`
+        const basic = `Basic ${Buffer.from(`x-access-token:${placeholder}`).toString('base64')}`
+        const git = await exchange({ socketPath }, host, ca.certPem, [
+          'GET /gitlab/group/sub/project.git/info/refs?service=git-upload-pack HTTP/1.1',
+          `Authorization: ${basic}`
+        ])
+        const api = await exchange({ socketPath }, host, ca.certPem, [
+          'GET /gitlab/api/v4/projects/group%2Fsub%2Fproject/merge_requests HTTP/1.1',
+          `PRIVATE-TOKEN: ${placeholder}`
+        ])
+        const write = await exchange({ socketPath }, host, ca.certPem, [
+          'POST /gitlab/api/v4/projects/group%2Fsub%2Fproject/merge_requests HTTP/1.1',
+          `PRIVATE-TOKEN: ${placeholder}`,
+          'Content-Length: 0'
+        ])
+        expect([git, api, write]).toEqual([200, 200, 403])
+        expect(seen).toEqual([
+          {
+            url: '/gitlab/group/sub/project.git/info/refs?service=git-upload-pack',
+            authorization: `Basic ${Buffer.from('service-account:glpat_minted').toString('base64')}`
+          },
+          { url: '/gitlab/api/v4/projects/group%2Fsub%2Fproject/merge_requests', privateToken: 'glpat_minted' }
+        ])
+        expect(mint).toHaveBeenCalledTimes(2)
+      } finally {
+        await proxy.stop()
+        await new Promise<void>((resolve) => upstream.close(() => resolve()))
+      }
+    }
+  )
+})
+
+/** One request through the proxy's CONNECT to `host`, its status line's code. */
+function exchange(dial: Dial, host: string, caPem: string, lines: string[]): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({ ...dial, method: 'CONNECT', path: host })
+    req.on('connect', (res, socket) => {
+      if (res.statusCode !== 200) return resolve(res.statusCode ?? 0)
+      const servername = host.replace(/:\d+$/, '')
+      const tls = tlsConnect({ socket, servername, ca: caPem }, () => {
+        const [first, ...headers] = lines
+        tls.write(`${[first, `Host: ${host}`, ...headers, 'Connection: close'].join('\r\n')}\r\n\r\n`)
       })
       let raw = ''
       tls.on('data', (chunk: Buffer) => (raw += chunk.toString('utf8')))

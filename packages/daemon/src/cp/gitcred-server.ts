@@ -124,6 +124,16 @@ export interface GitCredServerDeps {
   liveSecretsOf?: (agentId: string) => readonly LiveSecretEntry[]
 }
 
+/** One reply on the helper channel for a `get` or `erase`. */
+interface GitCredAnswer {
+  ok: boolean
+  username?: string
+  password?: string
+  repoFullName?: string
+  error?: string
+  denied?: 'repository' | 'agent'
+}
+
 /** The first line a tunnel proxy sends on a gitcred connection; it carries the server's per-boot key so no pod can forge one. */
 const TUNNEL_GREETING_OP = 'via'
 
@@ -318,7 +328,7 @@ export class GitCredServer {
       return reply({ ok: false, error: 'local credential capability required' })
     }
     const plane: CredPlane = req.plane === 'gh' ? 'gh' : req.plane === 'glab' ? 'glab' : 'git'
-    let repo = typeof req.repoFullName === 'string' && req.repoFullName.includes('/') ? req.repoFullName : undefined
+    const repo = typeof req.repoFullName === 'string' && req.repoFullName.includes('/') ? req.repoFullName : undefined
     // An omitted provider and an explicit `github` are the same GitHub ask; both meet the private-skill gate.
     const githubAsk = req.provider === undefined || req.provider === IMPLICIT_CREDENTIAL_PROVIDER
     const privateSkill = repo !== undefined && githubAsk && this.privateGithubSkillRepoOf?.(req.agentId, repo) === true
@@ -336,6 +346,18 @@ export class GitCredServer {
         denied: 'repository'
       })
     }
+    return reply(await this.answer(req, plane, repo, privateSkill, window))
+  }
+
+  /** What the agent capability, or a window that covers the repository, is served for one admitted ask: the provider from the spec, the workspace fold, then the credential. */
+  private async answer(
+    req: GitCredIpcRequest,
+    plane: CredPlane,
+    asked: string | undefined,
+    privateSkill: boolean,
+    window: AdmittedSkillWindow | undefined
+  ): Promise<GitCredAnswer> {
+    let repo = asked
     // The SPEC decides the provider; a helper whose host hint disagrees is
     // asking for another host's credential and gets a clean denial (§13.2).
     // A named repository the spec lists as an additional authorization on another host (§8.3) is the
@@ -381,27 +403,27 @@ export class GitCredServer {
         ...qualifier
       })
       this.audit('erased', req.agentId, plane, repo)
-      return reply({ ok: true })
+      return { ok: true }
     }
     if (req.op !== 'get') {
-      return reply({ ok: false, error: 'unsupported op' })
+      return { ok: false, error: 'unsupported op' }
     }
     // §8 credential window: the agent capability, which the pod runtime also holds, never mints a private skill token.
     if (!window && privateSkill && repo !== undefined && this.githubAdditionalRepoOf?.(req.agentId, repo) !== true) {
       this.audit('denied', req.agentId, plane, repo, true, 'private skill outside a skill credential window')
-      return reply({
+      return {
         ok: false,
         error: `${repo} is a private skill source; its token is issued only inside the daemon's skill reconcile`,
         denied: 'repository'
-      })
+      }
     }
     if (req.provider !== undefined && req.provider !== provider) {
       this.audit('denied', req.agentId, plane, repo)
-      return reply({ ok: false, error: `this workspace has no managed ${req.provider} credential` })
+      return { ok: false, error: `this workspace has no managed ${req.provider} credential` }
     }
     if (plane === 'glab' && provider !== 'gitlab') {
       this.audit('denied', req.agentId, plane, repo)
-      return reply({ ok: false, error: 'glab credentials require a managed GitLab workspace' })
+      return { ok: false, error: 'glab credentials require a managed GitLab workspace' }
     }
     try {
       // §17.1: every qualified ask names the rename-stable numeric identity so the consumer can
@@ -424,15 +446,39 @@ export class GitCredServer {
         ...(plane === 'glab' ? { requestedAccess: 'read' as const } : {})
       })
       this.audit('served', req.agentId, plane, repo ?? cred.repoFullName)
-      return reply({ ok: true, username: cred.username, password: cred.token, repoFullName: cred.repoFullName })
+      return { ok: true, username: cred.username, password: cred.token, repoFullName: cred.repoFullName }
     } catch (e) {
       const msg =
         e instanceof GitCredUnavailableError ? e.message : `git credentials unavailable: ${(e as Error).message}`
       this.audit('denied', req.agentId, plane, repo)
       // `denied` tells the helper and the gh wrapper this was a refusal, not an unreachable daemon.
       const denied = e instanceof GitCredUnavailableError ? e.denied : undefined
-      return reply({ ok: false, error: msg, ...(denied ? { denied } : {}) })
+      return { ok: false, error: msg, ...(denied ? { denied } : {}) }
     }
+  }
+
+  /** The credential the helper would be served for this ask under the agent's own capability, for the daemon's credential proxy; throws on a refusal. */
+  async agentCredential(
+    agentId: string,
+    ask: { plane: CredPlane; provider?: string; repoFullName?: string }
+  ): Promise<{ username: string; token: string }> {
+    if (this.credentialedOf && !this.credentialedOf(agentId)) {
+      throw new GitCredUnavailableError('this agent has no managed git credential', false, 'agent')
+    }
+    const repo = ask.repoFullName?.includes('/') ? ask.repoFullName : undefined
+    const githubAsk = ask.provider === undefined || ask.provider === IMPLICIT_CREDENTIAL_PROVIDER
+    const privateSkill = repo !== undefined && githubAsk && this.privateGithubSkillRepoOf?.(agentId, repo) === true
+    const request: GitCredIpcRequest = {
+      op: 'get',
+      agentId,
+      plane: ask.plane,
+      ...(repo !== undefined ? { repoFullName: repo } : {}),
+      ...(ask.provider !== undefined ? { provider: ask.provider } : {})
+    }
+    const answer = await this.answer(request, ask.plane, repo, privateSkill, undefined)
+    if (!answer.ok || !answer.password)
+      throw new GitCredUnavailableError(answer.error ?? 'refused', false, answer.denied)
+    return { username: answer.username ?? '', token: answer.password }
   }
 
   /** The agent's live secrets, named ones only when `names` is given; unknown names are simply absent and values are never logged. */

@@ -1164,6 +1164,10 @@ Credential injection must cover all three existing paths:
 Each path resets inherited helpers for `https://gitlab.com` before installing
 the daemon helper, preventing fallback to a developer's personal credentials.
 
+Where the daemon's credential proxy runs (github-app-git-credentials.md,
+Phase 2), a host or `srt` session's helper hands git a placeholder instead,
+and the proxy exchanges it for this credential per request.
+
 The managed feature allows only the exact `https://gitlab.com` origin. An
 operator-supplied `workspaceGitAllowedOrigins` remains authoritative; the
 feature readiness check must explain when that explicit policy excludes
@@ -1190,6 +1194,10 @@ user-supplied GitLab token wins over the managed wrapper and is outside the
 managed credential guarantee, matching the existing `GH_TOKEN` pass-through,
 which is silent today; a warning would be new behavior and should land on both
 providers together.
+
+Where the credential proxy runs, `glab` receives a placeholder as
+`GITLAB_TOKEN` and the proxy serves each API read this same read credential
+(github-app-git-credentials.md, Phase 2).
 
 ## 14. Output Ownership
 

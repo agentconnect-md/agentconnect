@@ -11,8 +11,18 @@ import type { DirectLookup } from '@anthropic-ai/sandbox-runtime/dist/sandbox/pa
 import type { RequestDecision, RequestInfo } from '@anthropic-ai/sandbox-runtime/dist/sandbox/request-filter.js'
 import type { ProxyCa } from './ca.js'
 import { graphqlOperationTypes } from './graphql-operation.js'
-import { GITHUB_PROXY_HOSTS, githubRoute, graphqlRepository } from './github-route.js'
+import { githubRoute, graphqlRepository } from './github-route.js'
+import {
+  hostKey,
+  instanceHost,
+  instanceHostnames,
+  instanceRoute,
+  proxyInstance,
+  SAAS_HOSTS,
+  type ProxyInstance
+} from './instance-route.js'
 import { looksLikePlaceholder, openPlaceholder, sealPlaceholder } from './placeholder.js'
+import { stripHostPathPrefix, type ManagedCredentialHost } from '../gitcred/managed-hosts.js'
 
 /** A GraphQL body larger than this is refused rather than buffered. */
 const MAX_GRAPHQL_BODY_BYTES = 1 << 20
@@ -21,22 +31,51 @@ const MAX_GRAPHQL_BODY_BYTES = 1 << 20
 const GRAPHQL_WRITE_REFUSAL =
   'GraphQL writes are not available with this agent’s credential. Use the githubPullRequest, githubIssue or githubComment tool, or the REST API (`gh api -X POST …`).'
 
+/** What one request needs minted: a repository on an instance (none names the workspace), for git or an API read. */
+export interface MintAsk {
+  provider: string
+  repo?: string
+  /** A GitLab project the API names by numeric id. */
+  repoId?: string
+  plane: 'git' | 'api'
+  readOnly: boolean
+}
+
 export interface CredentialProxyDeps {
   key: Buffer
   ca: ProxyCa
-  /** A token for `repo` at the agent's tier (`readOnly` asks for read), from the daemon's credential cache. */
-  mint: (agentId: string, repo: string, plane: 'git' | 'gh', readOnly: boolean) => Promise<string>
+  /** The credential for the ask at the agent's tier (`readOnly` asks for read), from the daemon's credential cache. */
+  mint: (agentId: string, ask: MintAsk) => Promise<{ username: string; token: string }>
   /** The agent's GitHub workspace repository, `owner/repo`, for a read that names none. */
   workspaceRepo: (agentId: string) => string | undefined
+  /** The code-host instances an agent's managed credential reaches, from its spec. */
+  instancesOf: (agentId: string) => readonly ManagedCredentialHost[]
+  /** Every agent this daemon runs, whose instances the shared loopback listener serves. */
+  runningAgents: () => Iterable<string>
   knownAgent: (agentId: string) => boolean
   log: { info: (message: string) => void; warn: (message: string) => void }
-  /** Test seam: how upstream names resolve, and an extra authority the upstream leg trusts. */
-  upstream?: { lookupFor?: DirectLookup; trustedCa?: string }
+  /** How upstream names resolve (a test seam), and the authorities the upstream leg trusts. */
+  upstream?: { lookupFor?: DirectLookup; trustedCa?: string | string[] }
 }
 
-/** Loopback, private, link-local (cloud metadata) and unspecified space, where a code-host name must never resolve. */
+function ipv4Of(address: string): string {
+  return address.startsWith('::ffff:') ? address.slice(7) : address
+}
+
+/** Loopback, link-local (cloud metadata) and unspecified space, where even a self-managed instance's name must never resolve. */
+export function deniedSelfManagedAddress(address: string): boolean {
+  const v4 = ipv4Of(address)
+  if (isIP(v4) === 4) {
+    const [a = 0, b = 0] = v4.split('.').map(Number)
+    return a === 0 || a === 127 || (a === 169 && b === 254)
+  }
+  const v6 = address.toLowerCase()
+  return v6 === '::' || v6 === '::1' || /^fe[89ab]/.test(v6)
+}
+
+/** Loopback, private, link-local (cloud metadata) and unspecified space, where a SaaS code-host name must never resolve. */
 export function deniedAddress(address: string): boolean {
-  const v4 = address.startsWith('::ffff:') ? address.slice(7) : address
+  const v4 = ipv4Of(address)
   if (isIP(v4) === 4) {
     const [a = 0, b = 0] = v4.split('.').map(Number)
     return (
@@ -53,16 +92,17 @@ export function deniedAddress(address: string): boolean {
   return v6 === '::' || v6 === '::1' || /^f[cd]/.test(v6) || /^fe[89ab]/.test(v6)
 }
 
-/** Resolve a code-host name and drop denied addresses, refusing when none is left; any other name resolves as usual. */
-function guardedLookup(): DirectLookup {
+/** Resolve a code-host name and drop the addresses `denied` names, refusing when none is left; any other name resolves as usual. */
+function guardedLookup(deniedFor: (hostname: string) => ((address: string) => boolean) | undefined): DirectLookup {
   const lookup: LookupFunction = (hostname, options, callback) => {
-    if (!GITHUB_PROXY_HOSTS.includes(hostname.toLowerCase())) {
+    const denied = deniedFor(hostname.toLowerCase())
+    if (!denied) {
       dnsLookup(hostname, options, callback)
       return
     }
     dnsLookup(hostname, { ...options, all: true }, (err, addresses) => {
       if (err) return callback(err, '', 0)
-      const allowed = addresses.filter((entry) => !deniedAddress(entry.address))
+      const allowed = addresses.filter((entry) => !denied(entry.address))
       if (allowed.length === 0) return callback(new Error(`${hostname} resolves only to denied addresses`), '', 0)
       if (options.all) return (callback as (e: null, a: typeof allowed) => void)(null, allowed)
       return callback(null, allowed[0]!.address, allowed[0]!.family)
@@ -97,9 +137,27 @@ function deny(status: number, reason: string): RequestDecision {
   return { action: 'deny', status, reason, mark: 'credential-proxy' }
 }
 
-function authorization(scheme: Presented['scheme'], token: string): string {
-  if (scheme === 'basic') return `Basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`
-  return `${scheme === 'bearer' ? 'Bearer' : 'token'} ${token}`
+/** The minted credential in the form the client presented the placeholder: Basic with the grant's user name, else the same scheme. */
+function authorization(scheme: Presented['scheme'], minted: { username: string; token: string }): string {
+  const user = minted.username || 'x-access-token'
+  if (scheme === 'basic') return `Basic ${Buffer.from(`${user}:${minted.token}`).toString('base64')}`
+  return `${scheme === 'bearer' ? 'Bearer' : 'token'} ${minted.token}`
+}
+
+/** Where a request carries our placeholder: the Authorization header, and GitLab's `PRIVATE-TOKEN`. */
+interface Carried {
+  authorization?: Presented
+  privateToken?: string
+}
+
+function carriedPlaceholders(request: Request): Carried | undefined {
+  const presented = presentedCredential(request.headers.get('authorization'))
+  const privateToken = request.headers.get('private-token')?.trim()
+  const carried: Carried = {
+    ...(presented && looksLikePlaceholder(presented.value) ? { authorization: presented } : {}),
+    ...(privateToken && looksLikePlaceholder(privateToken) ? { privateToken } : {})
+  }
+  return carried.authorization || carried.privateToken ? carried : undefined
 }
 
 export class CredentialProxy {
@@ -167,9 +225,15 @@ export class CredentialProxy {
     rmSync(route.path, { force: true })
   }
 
-  /** The placeholder an agent's environment carries in place of a code-host token. */
+  /** The placeholder an agent's environment carries in place of a code-host token, sealed for its own instances' hosts. */
   placeholderFor(agentId: string): string {
-    return sealPlaceholder(this.deps.key, { agentId, hosts: [...GITHUB_PROXY_HOSTS] })
+    const hosts = [...new Set(this.instances(agentId).flatMap((instance) => instance.hosts))]
+    return sealPlaceholder(this.deps.key, { agentId, hosts })
+  }
+
+  /** The host names srt routes to this agent's socket: its instances', never another agent's. */
+  domainsFor(agentId: string): string[] {
+    return [...new Set(this.instances(agentId).flatMap(instanceHostnames))]
   }
 
   /** The proxy URL a runtime on this host reaches the loopback listener by, its proxy credential included. */
@@ -178,74 +242,168 @@ export class CredentialProxy {
     return `http://srt:${this.proxyToken}@127.0.0.1:${this.loopbackPort}`
   }
 
+  /** The instances an agent's credential reaches, as the proxy matches them. */
+  private instances(agentId: string): ProxyInstance[] {
+    return this.deps.instancesOf(agentId).flatMap((host) => proxyInstance(host) ?? [])
+  }
+
+  /** The instances a listener serves: its own agent's on a socket, every running agent's on loopback. */
+  private served(boundAgent?: string): ProxyInstance[] {
+    return boundAgent !== undefined
+      ? this.instances(boundAgent)
+      : [...this.deps.runningAgents()].flatMap((id) => this.instances(id))
+  }
+
+  /** Which address space a code-host name may not resolve into: all private space for a SaaS host, only loopback, link-local and unspecified for a self-managed one. */
+  private deniedFor(hostname: string): ((address: string) => boolean) | undefined {
+    if (SAAS_HOSTS.includes(hostname)) return deniedAddress
+    return this.served().some((instance) => instanceHostnames(instance).includes(hostname))
+      ? deniedSelfManagedAddress
+      : undefined
+  }
+
   private server(proxyAuthToken?: string, boundAgent?: string): Server {
+    const trustedCa = this.deps.upstream?.trustedCa
     return createHttpProxyServer({
-      // Every host is reachable; only the code-host domains are terminated and judged.
+      // Every host is reachable; only the code-host instances are terminated and judged.
       filter: () => true,
       mitmCA: this.mitmCa!,
-      shouldTerminateTLS: (host) => GITHUB_PROXY_HOSTS.includes(host),
+      shouldTerminateTLS: (host, port) =>
+        this.served(boundAgent).some((instance) => instanceHost(instance, host.toLowerCase(), port) !== undefined),
       filterRequest: (request, info) => this.decide(request, info, boundAgent),
       onFilterRequestDenied: ({ method, url, reason }) =>
         this.deps.log.info(`credential proxy refused ${method} ${url.split('?')[0]}: ${reason}`),
       requireHostMatch: true,
       ambiguousRequestTarget: 'refuse',
-      lookupFor: this.deps.upstream?.lookupFor ?? guardedLookup(),
-      ...(this.deps.upstream?.trustedCa ? { tlsTerminateUpstreamCA: this.deps.upstream.trustedCa } : {}),
+      lookupFor: this.deps.upstream?.lookupFor ?? guardedLookup((hostname) => this.deniedFor(hostname)),
+      ...(trustedCa && trustedCa.length > 0 ? { tlsTerminateUpstreamCA: trustedCa } : {}),
       ...(proxyAuthToken ? { proxyAuthToken } : {})
     })
   }
 
   /** One request's decision: pass anything that is not ours untouched, and exchange our placeholder for the repository's token; over an agent's own socket, only that agent's. */
   async decide(request: Request, info?: RequestInfo, boundAgent?: string): Promise<RequestDecision> {
-    const host = (info?.target?.host ?? new URL(request.url).hostname).toLowerCase()
-    if (!GITHUB_PROXY_HOSTS.includes(host)) return { action: 'allow' }
-    const presented = presentedCredential(request.headers.get('authorization'))
-    if (!presented || !looksLikePlaceholder(presented.value)) return { action: 'allow' }
+    const url = new URL(request.url)
+    const hostname = (info?.target?.host ?? url.hostname).toLowerCase().replace(/^\[(.*)\]$/, '$1')
+    const port = info?.target?.port ?? (url.port ? Number(url.port) : url.protocol === 'http:' ? 80 : 443)
+    // Judged by name on any port, so a placeholder sent in cleartext to a code host is refused below rather than forwarded.
+    if (!this.served(boundAgent).some((instance) => instanceHostnames(instance).includes(hostname)))
+      return { action: 'allow' }
+    const carried = carriedPlaceholders(request)
+    if (!carried) return { action: 'allow' }
     if (info?.scheme !== 'https') return deny(403, 'the agent credential is only accepted over HTTPS')
-    const claims = openPlaceholder(this.deps.key, presented.value)
+    const claims = openPlaceholder(this.deps.key, carried.authorization?.value ?? carried.privateToken!)
     if (!claims) return deny(403, 'the agent credential was not issued by this daemon')
-    if (!claims.hosts.includes(host)) return deny(403, `the agent credential is not valid for ${host}`)
     if (!this.deps.knownAgent(claims.agentId)) return deny(403, 'the agent credential belongs to no running agent')
     if (boundAgent !== undefined && claims.agentId !== boundAgent)
       return deny(403, 'the agent credential belongs to another agent')
     // Routed by the bytes that go upstream; an ambiguous spelling was refused before this runs.
-    const url = new URL(request.url)
-    const route = githubRoute(host, request.method, info.requestTarget ?? `${url.pathname}${url.search}`)
-    let repo: string | undefined
-    let plane: 'git' | 'gh' = 'gh'
-    let readOnly = true
+    const target = info.requestTarget ?? `${url.pathname}${url.search}`
+    const instance = this.instanceFor(claims.agentId, claims.hosts, hostname, port, target)
+    if (!instance) return deny(403, `the agent credential is not valid for ${hostKey(hostname, port)}`)
+    const ask =
+      instance.provider === 'github'
+        ? await this.githubAsk(request, claims.agentId, hostname, target)
+        : this.instanceAsk(instance, request.method, target)
+    if (ask === 'anonymous')
+      return {
+        action: 'allow',
+        removeHeaders: [
+          ...(carried.authorization ? ['authorization'] : []),
+          ...(carried.privateToken ? ['private-token'] : [])
+        ]
+      }
+    if ('action' in ask) return ask
+    const what = ask.repo ?? (ask.repoId !== undefined ? `project ${ask.repoId}` : 'the workspace repository')
+    try {
+      const minted = await this.deps.mint(claims.agentId, ask)
+      const setHeaders: [string, string][] = []
+      if (carried.authorization) setHeaders.push(['authorization', authorization(carried.authorization.scheme, minted)])
+      if (carried.privateToken) setHeaders.push(['private-token', minted.token])
+      return { action: 'allow', setHeaders }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      this.deps.log.warn(`credential proxy: no token for ${claims.agentId} on ${what}: ${message}`)
+      return deny(403, `this agent is not authorized for ${what}`)
+    }
+  }
+
+  /** The agent's instance a request reaches, among those its placeholder was sealed for: the longest path prefix that applies. */
+  private instanceFor(
+    agentId: string,
+    sealed: readonly string[],
+    hostname: string,
+    port: number,
+    target: string
+  ): ProxyInstance | undefined {
+    const path = target.split('?')[0] ?? ''
+    const candidates = this.instances(agentId).filter((instance) => {
+      const host = instanceHost(instance, hostname, port)
+      return host !== undefined && sealed.includes(host)
+    })
+    const applying = candidates
+      .filter((instance) => stripHostPathPrefix(path, instance.pathPrefix) !== undefined)
+      .sort((a, b) => b.pathPrefix.length - a.pathPrefix.length)
+    return applying[0] ?? candidates[0]
+  }
+
+  private instanceAsk(
+    instance: ProxyInstance,
+    method: string,
+    target: string
+  ): MintAsk | RequestDecision | 'anonymous' {
+    const route = instanceRoute(instance, method, target)
     switch (route.kind) {
       case 'deny':
         return deny(route.status, route.reason)
       case 'anonymous':
-        return { action: 'allow', removeHeaders: ['authorization'] }
+        return 'anonymous'
       case 'workspace':
-        repo = this.deps.workspaceRepo(claims.agentId)
+        return { provider: instance.provider, plane: 'api', readOnly: true }
+      case 'repository':
+        return {
+          provider: instance.provider,
+          ...('repo' in route ? { repo: route.repo } : { repoId: route.repoId }),
+          plane: route.plane,
+          readOnly: route.plane === 'api'
+        }
+    }
+  }
+
+  private async githubAsk(
+    request: Request,
+    agentId: string,
+    host: string,
+    target: string
+  ): Promise<MintAsk | RequestDecision | 'anonymous'> {
+    const route = githubRoute(host, request.method, target)
+    switch (route.kind) {
+      case 'deny':
+        return deny(route.status, route.reason)
+      case 'anonymous':
+        return 'anonymous'
+      case 'workspace': {
+        const repo = this.deps.workspaceRepo(agentId)
         if (!repo) return deny(403, 'this agent has no GitHub workspace repository to read with')
-        break
+        return { provider: 'github', repo, plane: 'api', readOnly: true }
+      }
       case 'graphql': {
         const body = await this.graphqlBody(request)
         if (typeof body === 'string') return deny(400, body)
         const types = typeof body.query === 'string' ? graphqlOperationTypes(body.query) : undefined
         if (!types || types.length === 0) return deny(400, 'the GraphQL document could not be read')
         if (types.some((type) => type !== 'query')) return deny(403, GRAPHQL_WRITE_REFUSAL)
-        repo = graphqlRepository(body.variables) ?? this.deps.workspaceRepo(claims.agentId)
+        const repo = graphqlRepository(body.variables) ?? this.deps.workspaceRepo(agentId)
         if (!repo) return deny(403, 'the GraphQL request names no repository this agent can read')
-        break
+        return { provider: 'github', repo, plane: 'api', readOnly: true }
       }
       case 'repository':
-        repo = route.repo
-        plane = route.plane
-        readOnly = route.readOnly
-        break
-    }
-    try {
-      const token = await this.deps.mint(claims.agentId, repo, plane, readOnly)
-      return { action: 'allow', setHeaders: [['authorization', authorization(presented.scheme, token)]] }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      this.deps.log.warn(`credential proxy: no token for ${claims.agentId} on ${repo}: ${message}`)
-      return deny(403, `this agent is not authorized for ${repo}`)
+        return {
+          provider: 'github',
+          repo: route.repo,
+          plane: route.plane === 'git' ? 'git' : 'api',
+          readOnly: route.readOnly
+        }
     }
   }
 

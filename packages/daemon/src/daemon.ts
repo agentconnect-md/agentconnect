@@ -382,12 +382,13 @@ import {
   sessionGitConfig,
   liveSecretsChannelEnv,
   sessionGitEnv,
-  CODE_HOST_CREDENTIAL_ENV
+  sessionCredentialHosts,
+  CODE_HOST_CREDENTIAL_ENV,
+  type ManagedCredentialHost
 } from './workspace/git-injection.js'
-import { CredentialProxy } from './credential-proxy/proxy.js'
-import { loadProxyCa, proxyTrustEnv, type ProxyCa } from './credential-proxy/ca.js'
+import { CredentialProxy, type MintAsk } from './credential-proxy/proxy.js'
+import { loadProxyCa, proxyTrustEnv, upstreamAuthorities, type ProxyCa } from './credential-proxy/ca.js'
 import { loadPlaceholderKey } from './credential-proxy/placeholder.js'
-import { GITHUB_PROXY_HOSTS } from './credential-proxy/github-route.js'
 import { configureWorkspaceGitOrigins, permitsNoHttpsOrigin } from './workspace/git-origin-policy.js'
 import { buildMcpServers, buildSandboxMcpServers, type McpStdioServer } from './mcp/inject.js'
 import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-servers.js'
@@ -3882,7 +3883,7 @@ export class Daemon {
         this.credentialProxyIntercepts(environment.id.split('/')[0] ?? '')
           ? {
               socketPath: this.credentialProxy.proxy.socketFor(environment.id.split('/')[0] ?? ''),
-              domains: [...GITHUB_PROXY_HOSTS],
+              domains: this.credentialProxy.proxy.domainsFor(environment.id.split('/')[0] ?? ''),
               trustEnv: proxyTrustEnv(this.credentialProxy.ca)
             }
           : undefined,
@@ -6876,34 +6877,74 @@ export class Daemon {
       const proxy = new CredentialProxy({
         key: loadPlaceholderKey(join(dir, 'placeholder.key')),
         ca,
-        mint: async (agentId, repo, plane, readOnly) =>
-          (
-            await this.gitCreds.get(agentId, 'helper', {
-              plane,
-              repo,
-              ...(readOnly ? { requestedAccess: 'read' as const } : {})
-            })
-          ).token,
+        mint: (agentId, ask) => this.credentialProxyMint(agentId, ask),
         workspaceRepo: (agentId) => {
           const workspace = this.agents.get(agentId)?.workspace
           if (!workspace || credentialProviderOf(workspace.gitCredential) !== 'github') return undefined
           return workspace.gitRepo ? (gitRepoLabel(workspace.gitRepo) ?? undefined) : undefined
         },
+        instancesOf: (agentId) => this.credentialProxyHosts(agentId),
+        runningAgents: () => this.agents.keys(),
         knownAgent: (agentId) => this.agents.has(agentId),
-        log: this.log
+        log: this.log,
+        // A self-managed instance is often behind the operator's own authority, which the system roots alone would refuse.
+        upstream: { trustedCa: upstreamAuthorities() }
       })
       await proxy.start(join(root, 'run'))
       this.credentialProxy = { proxy, ca }
-      this.log.info('credential proxy: host and srt sessions on GitHub hold a placeholder')
+      this.log.info('credential proxy: host and srt sessions on a managed code host hold a placeholder')
     } catch (err) {
       this.log.warn(`credential proxy: not started, sessions keep their direct credentials (${formatErr(err)})`)
     }
   }
 
-  /** Whether the proxy intercepts this agent's srt environments: an agent whose workspace credentials are GitHub's. */
+  /** The proxy's token for one request: GitHub's straight from the cache, as before; GitLab's and Gitea's through exactly the helper's ask. */
+  private async credentialProxyMint(agentId: string, ask: MintAsk): Promise<{ username: string; token: string }> {
+    if (ask.provider === 'github') {
+      const cred = await this.gitCreds.get(agentId, 'helper', {
+        plane: ask.plane === 'git' ? 'git' : 'gh',
+        ...(ask.repo !== undefined ? { repo: ask.repo } : {}),
+        ...(ask.readOnly ? { requestedAccess: 'read' as const } : {})
+      })
+      return { username: cred.username, token: cred.token }
+    }
+    if (!this.gitCredServer) throw new Error('the git credential channel is not running')
+    let repo = ask.repo
+    // GitLab's API may name a project by its numeric id: the workspace's, or an authorized one's path.
+    if (ask.repoId !== undefined) {
+      const workspace = this.managedWorkspaceRepo(agentId)
+      const additional = (this.agents.get(agentId)?.workspace.additionalRepos ?? []).find(
+        (row) => row.provider === ask.provider && row.repoId === ask.repoId
+      )
+      if (workspace?.provider === ask.provider && workspace.repoId === ask.repoId) repo = undefined
+      else if (additional) repo = additional.repoFullName
+      else throw new Error(`project ${ask.repoId} is not authorized for this agent`)
+    }
+    // GitLab's API reads take the read-only CLI's plane; Gitea serves one token on every plane.
+    const plane = ask.plane === 'api' && ask.provider === 'gitlab' ? 'glab' : 'git'
+    return this.gitCredServer.agentCredential(agentId, {
+      plane,
+      provider: ask.provider,
+      ...(repo !== undefined ? { repoFullName: repo } : {})
+    })
+  }
+
+  /** The code-host instances the proxy serves an agent on: the hosts its session config pins, resolved from its spec as a spawn resolves them. */
+  private credentialProxyHosts(agentId: string): ManagedCredentialHost[] {
+    const agent = this.agents.get(agentId)
+    const provider = agent ? credentialProviderOf(agent.workspace.gitCredential) : undefined
+    if (!agent || provider === undefined) return []
+    return sessionCredentialHosts(
+      managedCredentialScope(provider, agent.gitlabHost, this.workspaces.gitlabRepoBearing(agent), {
+        host: agent.giteaHost,
+        repoBearing: this.workspaces.repoBearing(agent, 'gitea')
+      })
+    )
+  }
+
+  /** Whether the proxy intercepts this agent's srt environments: an agent with a managed code-host credential. */
   private credentialProxyIntercepts(agentId: string): boolean {
-    const workspace = this.agents.get(agentId)?.workspace
-    return workspace !== undefined && credentialProviderOf(workspace.gitCredential) === 'github'
+    return this.credentialProxy !== undefined && this.credentialProxy.proxy.domainsFor(agentId).length > 0
   }
 
   /** What a proxied session's environment carries: the placeholder for gh and git, the trust bundle, and on the host the proxy itself. */
@@ -6912,12 +6953,16 @@ export class Daemon {
     agentId: string,
     onHost: boolean,
     env: Record<string, string>,
-    runtimeEnv: Record<string, string>
+    runtimeEnv: Record<string, string>,
+    glab: boolean
   ): Record<string, string> {
     const placeholder = proxy.proxy.placeholderFor(agentId)
     const out: Record<string, string> = { ...proxyTrustEnv(proxy.ca), [CODE_HOST_CREDENTIAL_ENV]: placeholder }
-    // A GH_TOKEN the agent was configured with is its own, and wins as it always has.
-    if (env.GH_TOKEN === undefined && runtimeEnv.GH_TOKEN === undefined) out.GH_TOKEN = placeholder
+    // A GH_TOKEN or GITLAB_TOKEN the agent was configured with is its own, and wins as it always has.
+    const github = this.credentialProxyHosts(agentId).some((host) => host.provider === 'github')
+    if (github && env.GH_TOKEN === undefined && runtimeEnv.GH_TOKEN === undefined) out.GH_TOKEN = placeholder
+    // The glab wrapper passes a set GITLAB_TOKEN straight to glab, which the proxy then exchanges.
+    if (glab && env.GITLAB_TOKEN === undefined && runtimeEnv.GITLAB_TOKEN === undefined) out.GITLAB_TOKEN = placeholder
     const url = onHost ? proxy.proxy.loopbackUrl() : undefined
     if (url) {
       const noProxy = ['localhost', '127.0.0.1', '::1', env.NO_PROXY ?? process.env.NO_PROXY]
@@ -8650,10 +8695,10 @@ export class Daemon {
         : undefined
     // Held as its own value: the sandbox read grant must come from the path the DAEMON authored,
     // never read back out of the merged child env, where runtimeOverrides.env could name any file.
-    // A host or srt session on GitHub holds a placeholder the credential proxy exchanges; a host behind its own outbound proxy keeps direct credentials.
+    // A host or srt session with a managed code-host credential holds a placeholder the credential proxy exchanges; a host behind its own outbound proxy keeps direct credentials.
     const proxied =
       this.credentialProxy !== undefined &&
-      githubAppCredentials &&
+      managedCredentials &&
       !this.k8sPlane &&
       !micro &&
       !remoteSession &&
@@ -8733,9 +8778,16 @@ export class Daemon {
     if (proxied && this.credentialProxy)
       Object.assign(
         env,
-        this.credentialProxyEnv(this.credentialProxy, agent.id, srtShim === undefined, env, runtimeEnv)
+        this.credentialProxyEnv(
+          this.credentialProxy,
+          agent.id,
+          srtShim === undefined,
+          env,
+          runtimeEnv,
+          gitlabCredentials && shimDirs.has(this.glabBinDir ?? '')
+        )
       )
-    // Every session in an srt environment the proxy intercepts trusts its CA, a placeholder or not, or its GitHub requests would fail verification.
+    // Every session in an srt environment the proxy intercepts trusts its CA, a placeholder or not, or its code-host requests would fail verification.
     else if (srtShim && this.credentialProxy && this.credentialProxyIntercepts(agent.id))
       Object.assign(env, proxyTrustEnv(this.credentialProxy.ca))
     const target = opts.modelCredential?.target ?? modelProviderTarget(agent, runtime)

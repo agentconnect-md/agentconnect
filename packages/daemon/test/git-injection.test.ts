@@ -16,6 +16,8 @@ import {
   parseGitVersion,
   syncWorkspaceRef,
   sandboxGitCredentialTarget,
+  managedCredentialScope,
+  sessionCredentialHosts,
   sessionGitConfig,
   sessionGitEnv,
   workspaceGitEnvBase,
@@ -1032,6 +1034,42 @@ describe('git in a proxied session', () => {
     }).toString()
     expect(answer).toContain('username=x-access-token')
     expect(answer).toContain('password=acph1_example.tag')
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('hands it the placeholder on every pinned instance, a prefixed GitLab and Gitea beside GitHub included', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'acp-proxied-git-'))
+    const target = sandboxGitCredentialTarget(dir, dir)
+    const scope = managedCredentialScope('github', 'https://gitlab.example.test:8443/gitlab', true, {
+      host: 'https://gitea.example.test',
+      repoBearing: true
+    })
+    expect(sessionCredentialHosts(scope)).toEqual([
+      { provider: 'github', baseUrl: 'https://github.com' },
+      { provider: 'gitlab', baseUrl: 'https://gitlab.example.test:8443/gitlab' },
+      { provider: 'gitea', baseUrl: 'https://gitea.example.test' }
+    ])
+    const proxied = sessionGitConfig('agent-proxied', undefined, target, scope, true)
+    expect(proxied.content).not.toContain(target.helper)
+    const config = join(dir, 'session.gitconfig')
+    writeFileSync(config, proxied.content)
+    for (const [host, path] of [
+      ['gitlab.example.test:8443', 'gitlab/group/sub/project.git'],
+      ['gitea.example.test', 'owner/repo.git']
+    ]) {
+      const answer = execFileSync('git', ['credential', 'fill'], {
+        input: `protocol=https\nhost=${host}\npath=${path}\n\n`,
+        env: {
+          PATH: process.env.PATH ?? '',
+          HOME: dir,
+          GIT_CONFIG_GLOBAL: config,
+          GIT_CONFIG_NOSYSTEM: '1',
+          GIT_TERMINAL_PROMPT: '0',
+          [CODE_HOST_CREDENTIAL_ENV]: 'acph1_example.tag'
+        }
+      }).toString()
+      expect(answer).toContain('password=acph1_example.tag')
+    }
     rmSync(dir, { recursive: true, force: true })
   })
 })
