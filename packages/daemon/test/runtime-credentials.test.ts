@@ -563,6 +563,34 @@ describe('Linux shared runtime login', () => {
     ).toThrow(/would reopen protected path/)
   })
 
+  it('replaces a private Codex auth copy that holds only a credential-proxy placeholder with the shared link', () => {
+    const { daemonRoot, hostHome, scopeDir, cwd } = fixture()
+    const hostCodex = join(hostHome, '.codex')
+    const privateCodex = join(scopeDir, 'home', '.codex')
+    mkdirSync(hostCodex)
+    mkdirSync(privateCodex, { recursive: true })
+    const hostText = '{"auth_mode":"apikey","OPENAI_API_KEY":"synthetic-key"}'
+    writeFileSync(join(hostCodex, 'auth.json'), hostText)
+    writeFileSync(
+      join(privateCodex, 'auth.json'),
+      '{"auth_mode":"apikey","OPENAI_API_KEY":"acph1_fixture-placeholder"}'
+    )
+    prepareRuntimeLaunch({
+      runtimeId: 'codex-acp',
+      scopeDir,
+      cwd,
+      daemonRoot,
+      agentsRoot: join(daemonRoot, 'agents'),
+      runInSandbox: true,
+      sandboxMechanism: 'bwrap',
+      credentialPlatform: 'linux',
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    })
+    const privateAuth = join(privateCodex, 'auth.json')
+    expect(lstatSync(privateAuth).isSymbolicLink()).toBe(true)
+    expect(readFileSync(privateAuth, 'utf8')).toBe(hostText)
+  })
+
   it('links private Codex homes to the newest shared auth file and preserves the link across refresh', () => {
     const { daemonRoot, hostHome, scopeDir, cwd } = fixture()
     const hostCodex = join(hostHome, '.codex')

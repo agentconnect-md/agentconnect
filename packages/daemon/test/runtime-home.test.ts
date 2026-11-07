@@ -12,7 +12,7 @@ import {
   writeFileSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import {
@@ -158,6 +158,67 @@ describe('private runtime HOME', () => {
     writeFileSync(hostConfig, JSON.stringify({ primaryApiKey: 'another-synthetic-key' }))
     prepareRuntimeHome('claude-acp', scopeDir, { HOME: hostHome })
     expect(JSON.parse(readFileSync(privateConfig, 'utf8')).primaryApiKey).toBe('synthetic-key')
+  })
+
+  it("puts the host's DeepSeek key back where a private credential file holds a placeholder, and keeps the rest", () => {
+    const { hostHome, scopeDir } = fixture()
+    const dsh = join(hostHome, '.dsh')
+    mkdirSync(dsh)
+    writeFileSync(join(dsh, '.credentials.yaml'), 'DEEPSEEK_API_KEY: synthetic-deepseek-key\n')
+    writeFileSync(join(dsh, '.env'), 'DEEPSEEK_API_KEY=synthetic-deepseek-key\n')
+    const home = prepareRuntimeHome('dsh-acp', scopeDir, { HOME: hostHome })
+    const yaml = join(home, '.dsh', '.credentials.yaml')
+    const env = join(home, '.dsh', '.env')
+    const projectedYaml = 'DEEPSEEK_API_KEY: acph1_fixture-placeholder\nprivate_note: kept\n'
+    const projectedEnv = 'DEEPSEEK_API_KEY=acph1_fixture-placeholder\nPRIVATE_SETTING=kept\n'
+    writeFileSync(yaml, projectedYaml)
+    writeFileSync(env, projectedEnv)
+    // A protecting launch excludes them, so their placeholders stay.
+    prepareRuntimeHome('dsh-acp', scopeDir, { HOME: hostHome }, undefined, ['.dsh/.credentials.yaml', '.dsh/.env'])
+    expect(readFileSync(yaml, 'utf8')).toBe(projectedYaml)
+    expect(readFileSync(env, 'utf8')).toBe(projectedEnv)
+    prepareRuntimeHome('dsh-acp', scopeDir, { HOME: hostHome })
+    expect(readFileSync(yaml, 'utf8')).toBe('DEEPSEEK_API_KEY: synthetic-deepseek-key\nprivate_note: kept\n')
+    expect(readFileSync(env, 'utf8')).toBe('DEEPSEEK_API_KEY=synthetic-deepseek-key\nPRIVATE_SETTING=kept\n')
+  })
+
+  it('puts the host keys back where a private OpenCode config holds placeholders, and keeps the rest', () => {
+    const { hostHome, scopeDir } = fixture()
+    const hostConfig = join(hostHome, '.config', 'opencode', 'opencode.json')
+    mkdirSync(dirname(hostConfig), { recursive: true })
+    writeFileSync(
+      hostConfig,
+      JSON.stringify({ provider: { anthropic: { options: { apiKey: 'synthetic-opencode-key' } } } })
+    )
+    const home = prepareRuntimeHome('opencode', scopeDir, { HOME: hostHome })
+    const privateConfig = join(home, '.config', 'opencode', 'opencode.json')
+    const projected = {
+      provider: { anthropic: { options: { apiKey: 'acph1_fixture-placeholder', timeout: 5 } } },
+      theme: 'private'
+    }
+    writeFileSync(privateConfig, JSON.stringify(projected))
+    prepareRuntimeHome('opencode', scopeDir, { HOME: hostHome }, undefined, ['.config/opencode/opencode.json'])
+    expect(JSON.parse(readFileSync(privateConfig, 'utf8'))).toEqual(projected)
+    prepareRuntimeHome('opencode', scopeDir, { HOME: hostHome })
+    expect(JSON.parse(readFileSync(privateConfig, 'utf8'))).toEqual({
+      provider: { anthropic: { options: { apiKey: 'synthetic-opencode-key', timeout: 5 } } },
+      theme: 'private'
+    })
+  })
+
+  it("gives a credential-proxy placeholder in retained private config way to the host's saved key", () => {
+    const { hostHome, scopeDir } = fixture()
+    const hostConfig = join(hostHome, '.claude.json')
+    writeFileSync(hostConfig, JSON.stringify({ additionalModelOptionsCache: ['initial'] }))
+    const home = prepareRuntimeHome('claude-acp', scopeDir, { HOME: hostHome })
+    const privateConfig = join(home, '.claude', '.claude.json')
+    writeFileSync(privateConfig, JSON.stringify({ localSetting: true, primaryApiKey: 'acph1_fixture-placeholder' }))
+    writeFileSync(hostConfig, JSON.stringify({ primaryApiKey: 'synthetic-key' }))
+    prepareRuntimeHome('claude-acp', scopeDir, { HOME: hostHome })
+    expect(JSON.parse(readFileSync(privateConfig, 'utf8'))).toEqual({
+      localSetting: true,
+      primaryApiKey: 'synthetic-key'
+    })
   })
 
   it.each([
