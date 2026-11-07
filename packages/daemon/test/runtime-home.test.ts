@@ -160,6 +160,21 @@ describe('private runtime HOME', () => {
     expect(JSON.parse(readFileSync(privateConfig, 'utf8')).primaryApiKey).toBe('synthetic-key')
   })
 
+  it("gives a credential-proxy placeholder in retained private config way to the host's saved key", () => {
+    const { hostHome, scopeDir } = fixture()
+    const hostConfig = join(hostHome, '.claude.json')
+    writeFileSync(hostConfig, JSON.stringify({ additionalModelOptionsCache: ['initial'] }))
+    const home = prepareRuntimeHome('claude-acp', scopeDir, { HOME: hostHome })
+    const privateConfig = join(home, '.claude', '.claude.json')
+    writeFileSync(privateConfig, JSON.stringify({ localSetting: true, primaryApiKey: 'acph1_fixture-placeholder' }))
+    writeFileSync(hostConfig, JSON.stringify({ primaryApiKey: 'synthetic-key' }))
+    prepareRuntimeHome('claude-acp', scopeDir, { HOME: hostHome })
+    expect(JSON.parse(readFileSync(privateConfig, 'utf8'))).toEqual({
+      localSetting: true,
+      primaryApiKey: 'synthetic-key'
+    })
+  })
+
   it.each([
     {
       runtime: 'grok-build',

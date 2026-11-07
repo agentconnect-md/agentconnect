@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, lstatSync, mkdirSync, realpathSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, realpathSync, unlinkSync } from 'node:fs'
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { sandboxBoundary, writeSandboxSettings, type SandboxMechanism } from '../acp/sandbox.js'
 import { prepareSandboxTempDir, SANDBOX_TEMP_DIR_ENV } from '../acp/sandbox-temp.js'
@@ -7,7 +7,12 @@ import type { RuntimeDef, SandboxMount } from '../config/config-schema.js'
 import { GITCRED_SOCKET_ENV } from '../gitcred/env.js'
 import { shimPaths } from '../shim/sandbox-paths.js'
 import { prepareMicrosandboxLaunch } from '../microsandbox/launch.js'
-import { isRecognizedCredentialEnv, type MicrosandboxSecret } from '../microsandbox/secrets.js'
+import {
+  isRecognizedCredentialEnv,
+  type MicrosandboxCredentials,
+  type MicrosandboxSecret
+} from '../microsandbox/secrets.js'
+import { replaceEnvironmentSecrets } from '../microsandbox/secret-values.js'
 import { compactReadRoots, protectedSandboxRoots } from '../runtimes/read-roots.js'
 import { prepareSharedRuntimeCredentials, sharedCredentialProfile } from '../runtimes/runtime-credentials.js'
 import { applyOpenCodeHostKeys, openCodeHostKeys } from '../runtimes/opencode-host-keys.js'
@@ -86,6 +91,20 @@ export function runtimeGitMetadataRoots(
   return compactReadRoots(
     gitDirs.map((gitDir) => realpathSync(gitDir)).filter((gitDir) => gitDir !== agentRoot && inside(agentRoot, gitDir))
   )
+}
+
+/** Drop a private-HOME link an earlier shared sign-in left where a protected file is now projected; a link is never followed. */
+function unlinkSharedCredentialLinks(home: string, destinations: readonly string[]): void {
+  const root = realpathSync(home)
+  for (const destination of destinations) {
+    const path = resolve(root, destination)
+    if (!inside(root, path) || !existsSync(dirname(path)) || !inside(root, realpathSync(dirname(path)))) continue
+    try {
+      if (lstatSync(path).isSymbolicLink()) unlinkSync(path)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+  }
 }
 
 /** Ambient desktop/session IPC must not reconnect a sandboxed runtime to host
@@ -284,6 +303,8 @@ export function prepareRuntimeLaunch(opts: {
   srtShim?: { runtimeRoot: string }
   /** A session whose clones are off this disk (a pool pod, an executor): their `.git`, found where they are as `sessionGitDirsIn` finds this disk's. */
   sessionGitDirs?: string[]
+  /** An srt launch's host provider keys, each behind its credential-proxy placeholder in the env and private HOME. */
+  ambientCredentials?: MicrosandboxCredentials
 }): PreparedRuntimeLaunch {
   if (opts.executor) return prepareExecutorLaunch(opts, opts.executor, opts.allowModelToolUnixSockets === true)
   if (opts.runInSandbox && opts.microsandbox) {
@@ -383,8 +404,11 @@ export function prepareRuntimeLaunch(opts: {
       .filter((trusted) => denyReadRoots.some((denied) => inside(denied, trusted)))
   )
 
+  // The host's API keys an srt launch protects replace the sign-in files they live in, which are then projected rather than shared.
+  const ambient =
+    opts.runInSandbox && opts.srtShim && opts.inheritRuntimeCredentials !== false ? opts.ambientCredentials : undefined
   const credentials =
-    opts.inheritRuntimeCredentials === false
+    opts.inheritRuntimeCredentials === false || ambient?.shareNativeCredentials === false
       ? undefined
       : prepareSharedRuntimeCredentials({
           runtimeId: opts.runtimeId,
@@ -397,9 +421,13 @@ export function prepareRuntimeLaunch(opts: {
     opts.scopeDir,
     stateSourceEnv,
     sessionHome,
-    credentials?.seedExclusions,
+    [...(credentials?.seedExclusions ?? []), ...(ambient?.seedExclusions ?? [])],
     opts.inheritRuntimeCredentials
   )
+  if (ambient) {
+    unlinkSharedCredentialLinks(runtimeHome, ambient.seedExclusions)
+    ambient.preparePrivateHome(runtimeHome)
+  }
   credentials?.preparePrivateHome(runtimeHome)
   const packageCacheEnv = opts.hostPackageCache ? hostPackageCacheEnv(opts.runtime?.command, stateSourceEnv) : {}
   const env = {
@@ -408,8 +436,13 @@ export function prepareRuntimeLaunch(opts: {
     ...credentials?.env
   }
   // OpenCode keeps sign-ins in its own database, which a private HOME does not copy; its API keys arrive as variables instead.
-  if (opts.inheritRuntimeCredentials !== false && opts.k8s !== true && opts.runtimeId === 'opencode')
+  if (opts.inheritRuntimeCredentials !== false && opts.k8s !== true && opts.runtimeId === 'opencode' && !ambient)
     applyOpenCodeHostKeys(env, openCodeHostKeys(stateSourceEnv))
+  if (ambient) {
+    replaceEnvironmentSecrets(env, ambient.replacements)
+    for (const secret of ambient.secrets) env[secret.env] = secret.placeholder
+    ambient.prepareEnv?.(env)
+  }
 
   // The shim is the boundary, with its own temp root and the tunnels that reach this daemon's sockets.
   const shimRoot = opts.runInSandbox ? opts.srtShim?.runtimeRoot : undefined

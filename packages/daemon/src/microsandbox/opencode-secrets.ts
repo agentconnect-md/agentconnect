@@ -7,7 +7,7 @@ import { runtimeStateLocations } from '../runtimes/probe.js'
 import { projectRuntimeHomeSeedFile } from '../runtimes/runtime-home.js'
 import { MAX_SEED_FILE_BYTES } from '../runtimes/runtime-seeded-credentials.js'
 import type { MicrosandboxCredentials, MicrosandboxSecret } from './secrets.js'
-import { replaceSecretValue } from './secret-values.js'
+import { microsandboxPlaceholder, replaceSecretValue, type SecretPlaceholder } from './secret-values.js'
 
 // A provider without a configured base URL reaches its SDK's default origin.
 const DEFAULT_ORIGINS: Record<string, string> = {
@@ -73,7 +73,8 @@ function providerEndpoints(configs: readonly Record<string, unknown>[], provider
 
 export function prepareOpenCodeSecrets(
   hostEnv: NodeJS.ProcessEnv,
-  explicitEnv: Record<string, string>
+  explicitEnv: Record<string, string>,
+  placeholder: SecretPlaceholder = microsandboxPlaceholder
 ): MicrosandboxCredentials | undefined {
   const keys = openCodeHostKeys(hostEnv)
   if (!keys.length) return undefined
@@ -88,21 +89,36 @@ export function prepareOpenCodeSecrets(
     ...configFiles.map(({ source }) => readDocument(source)),
     objectFromJson(env.OPENCODE_CONFIG_CONTENT, 'OPENCODE_CONFIG_CONTENT')
   ]
-  const secrets = new Map<string, MicrosandboxSecret>()
+  // Providers signed in with one key share its binding, which reaches all their hosts under the first one's variable.
+  const groups = new Map<string, { providers: string[]; env: string; hosts: Set<string> }>()
   for (const { provider, env: name, key } of keys) {
-    const hosts = [
-      ...new Set(providerEndpoints(configs, provider).map((endpoint) => allowedHost(endpoint, env)))
-    ].filter((host) => host !== undefined)
-    secrets.set(provider, { env: name, placeholder: `msb-secret-${name}`, host: hosts.sort(), readValue: () => key })
+    const hosts = providerEndpoints(configs, provider)
+      .map((endpoint) => allowedHost(endpoint, env))
+      .filter((host) => host !== undefined)
+    const group = groups.get(key) ?? { providers: [], env: name, hosts: new Set<string>() }
+    group.providers.push(provider)
+    for (const host of hosts) group.hosts.add(host)
+    groups.set(key, group)
   }
   const sharedKeys = new Map<string, MicrosandboxSecret>()
-  for (const [provider, secret] of secrets) {
-    const shared = sharedKeys.get(secret.readValue())
-    if (shared) {
-      shared.host = [...new Set([shared.host, secret.host].flat())].sort()
-      secrets.set(provider, shared)
-    } else sharedKeys.set(secret.readValue(), secret)
+  for (const [key, group] of groups) {
+    const hosts = [...group.hosts].sort()
+    const provider = group.providers[0]!
+    const origin = DEFAULT_ORIGINS[provider]
+    const secret: MicrosandboxSecret = {
+      env: group.env,
+      placeholder: placeholder({
+        env: group.env,
+        provider,
+        hosts,
+        ...(origin ? { defaultHost: new URL(origin).hostname } : {})
+      }),
+      host: hosts,
+      readValue: () => key
+    }
+    sharedKeys.set(key, secret)
   }
+  const secrets = new Map(keys.map(({ provider, key }) => [provider, sharedKeys.get(key)!]))
   const bindings = [...sharedKeys.values()].filter((secret) => secret.host.length > 0)
   const bound = [...secrets].filter(([, secret]) => bindings.includes(secret))
   const replacements = new Map([...sharedKeys.values()].map((secret) => [secret.readValue(), secret.placeholder]))

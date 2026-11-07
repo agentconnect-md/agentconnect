@@ -809,10 +809,37 @@ An endpoint configured over plain `http:` keeps the real key in the
 environment, since a placeholder is exchanged only over TLS; the daemon logs
 that once.
 
+The keys the daemon's own machine supplies use it in `srt` sessions too: an API
+key in the daemon's environment or the runtime definition's (Claude's
+`ANTHROPIC_API_KEY`, Codex's `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`), the API key
+field of a sign-in file (Claude's `primaryApiKey`, Codex's `auth.json` in API
+key mode, the DeepSeek harness's credential files), and the API keys
+`opencode auth export` lists. The preparers that protect these keys in a VM find
+them, with the proxy's placeholder in place of the VM's. Each key is a slot
+`host:<runtime>:<variable>` at the host the runtime sends it to: the provider's
+default, which is `saas`, or the base URL the launch configures. The session's
+variable and its private HOME copy of the file hold the slot's placeholder, and
+the file is projected rather than shared. Resolving the slot reads the key again
+where the machine keeps it, and is refused once the key is gone or the runtime
+sends it to another host. Subscription sign-ins are shared as before. A runtime
+keeps its keys as before, and the daemon logs that once, when one of them
+reaches no single HTTPS host the proxy recognizes (a cleartext or ported base
+URL, Codex with `OPENAI_BASE_URL` set, a DeepSeek endpoint other than its own),
+when its sign-in file cannot be read safely, or when a sign-in file would need
+projecting on a platform other than Linux. With the proxy off again, Claude's
+saved key and Codex's shared `auth.json` replace a placeholder left in a private
+HOME.
+
 Not covered yet:
 
-- Executor-placed, VM and Kubernetes pod sessions, which keep the real key.
-- Keys a host exports from its own sign-in, and keys the key server issues.
+- Host-strategy sessions, by design: a process on the host can read the
+  machine's own files.
+- Executor-placed, VM and Kubernetes pod sessions, which keep their current
+  handling: organization keys stay real there, and a VM keeps its own
+  placeholders for host keys.
+- Keys the key server issues.
+- The other runtimes' sign-in files, and a provider variable the session's
+  runtime does not read, which reach an `srt` session as they are.
 - A host that runs behind its own outbound proxy, which keeps direct credentials.
 
 - **Kind.** A provider placeholder is the same `acph1_` placeholder under the

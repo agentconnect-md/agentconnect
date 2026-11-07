@@ -21,6 +21,7 @@ import { extractOmpCredentials } from './omp-credentials.js'
 import { MAX_SEED_FILE_BYTES } from './runtime-seeded-credentials.js'
 import { withDescentSync } from '../shim/safe-descent.js'
 import { readRegularFileSync, RegularFileError } from '../fs/regular-file.js'
+import { looksLikePlaceholder } from '../credential-proxy/placeholder.js'
 
 const LEGACY_RUNTIME_STATE: Record<string, string[]> = {
   'claude-acp': ['.claude'],
@@ -179,7 +180,9 @@ function copySeedFile(
           existing &&
           typeof existing === 'object' &&
           !Array.isArray(existing) &&
-          !Object.hasOwn(existing, 'primaryApiKey') &&
+          // A credential-proxy placeholder an srt launch projected gives way to the host's key once that launch stops protecting it.
+          (!Object.hasOwn(existing, 'primaryApiKey') ||
+            looksLikePlaceholder(String((existing as Record<string, unknown>).primaryApiKey))) &&
           typeof projected.primaryApiKey === 'string' &&
           projected.primaryApiKey.trim()
         ) {
