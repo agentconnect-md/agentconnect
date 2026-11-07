@@ -231,6 +231,19 @@ describe('the decision for one request', () => {
     expect(await proxy.decide(graphql([{ query: '{ a }' }]), HTTPS)).toMatchObject({ action: 'deny', status: 400 })
   })
 
+  it('refuses a placeholder of another agent over an agent’s own route', async () => {
+    const { proxy, mint, placeholder } = proxyFor()
+    const request = () =>
+      new Request('https://api.github.com/repos/o/r', { headers: { authorization: `token ${placeholder}` } })
+    expect(await proxy.decide(request(), HTTPS, 'someone-else')).toMatchObject({
+      action: 'deny',
+      status: 403,
+      reason: 'the agent credential belongs to another agent'
+    })
+    expect(mint).not.toHaveBeenCalled()
+    expect(await proxy.decide(request(), HTTPS, AGENT)).toMatchObject({ action: 'allow' })
+  })
+
   it('refuses when the agent is not authorized for the repository', async () => {
     const mint = vi.fn(async () => {
       throw new Error('SCOPE_DENIED')
@@ -276,7 +289,9 @@ describe('the proxy end to end', () => {
   it.skipIf(process.platform === 'win32')(
     'terminates a CONNECT to the code host and forwards the minted token, over loopback and the Unix socket',
     async () => {
-      const dir = scratch()
+      // Short, so each agent's socket fits AF_UNIX on a host whose temp directory is long.
+      const dir = mkdtempSync('/tmp/acpx-')
+      dirs.push(dir)
       const toLoopback: LookupFunction = (_host, options, callback) => {
         if (options.all)
           (callback as (e: null, a: { address: string; family: number }[]) => void)(null, [
@@ -294,9 +309,11 @@ describe('the proxy end to end', () => {
         log: { info: () => {}, warn: () => {} },
         upstream: { lookupFor: () => toLoopback, trustedCa: upstreamCaPem }
       })
-      const socketPath = join(dir, 'run', 'p.sock')
-      await proxy.start(socketPath)
+      await proxy.start(join(dir, 'run'))
       try {
+        const socketPath = proxy.socketFor(AGENT)
+        expect(proxy.socketFor(AGENT)).toBe(socketPath)
+        await new Promise((resolve) => setTimeout(resolve, 50))
         const placeholder = proxy.placeholderFor(AGENT)
         const url = new URL(proxy.loopbackUrl()!)
         const proxyAuth = `Basic ${Buffer.from(`${url.username}:${url.password}`).toString('base64')}`
@@ -310,6 +327,12 @@ describe('the proxy end to end', () => {
         expect(viaLoopback).toBe(200)
         expect(viaSocket).toBe(200)
         expect(seen).toEqual(['token ghs_minted', 'token ghs_minted'])
+        // Another agent's socket honors only its own agent's placeholder.
+        const other = proxy.socketFor('22222222-2222-4222-8222-222222222222')
+        expect(other).not.toBe(socketPath)
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        expect(await getThrough({ socketPath: other }, upstreamPort, placeholder, ca.certPem)).toBe(403)
+        expect(seen).toHaveLength(2)
         expect(proxyTrustEnv(ca).SSL_CERT_FILE).toBe(ca.bundlePath)
         // The loopback listener is no open proxy: a CONNECT without its credential is refused.
         expect(await connectStatus({ host: url.hostname, port: Number(url.port) }, upstreamPort)).toBe(407)
