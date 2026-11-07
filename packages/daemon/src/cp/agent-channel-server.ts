@@ -334,11 +334,13 @@ export class AgentChannelServer {
     // An omitted provider and an explicit `github` are the same GitHub ask; both meet the private-skill gate.
     const githubAsk = req.provider === undefined || req.provider === IMPLICIT_CREDENTIAL_PROVIDER
     const privateSkill = repo !== undefined && githubAsk && this.privateGithubSkillRepoOf?.(req.agentId, repo) === true
-    // azure-devops-integration.md §6.1: whatever the capability may otherwise do, only the daemon's own Git is served a proxy-only provider's credential here.
-    if (isAgentPrincipal(principal) && principal.holder !== 'daemon') {
+    // azure-devops-integration.md §6.1: a proxy-only provider's credential is served only to the daemon's own Git on this host, never through a tunnel from inside a boundary.
+    if (isAgentPrincipal(principal) && (principal.holder !== 'daemon' || via !== undefined)) {
       const { provider } = this.servedAs(req, repo, privateSkill, undefined)
       if (isProxyOnlyProvider(provider)) {
-        this.audit('denied', req.agentId, plane, repo, true, `${principal.holder} capability, proxy-only provider`)
+        const from =
+          via === undefined ? `${principal.holder} capability` : `${principal.holder} capability through a tunnel`
+        this.audit('denied', req.agentId, plane, repo, true, `${from}, proxy-only provider`)
         return reply({ ok: false, error: proxyOnlyRefusal(provider), denied: 'agent' })
       }
     }

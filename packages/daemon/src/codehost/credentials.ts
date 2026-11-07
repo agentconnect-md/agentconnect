@@ -27,6 +27,7 @@ import {
 } from '../gitcred/managed-hosts.js'
 import type { CredentialRepoPathParser } from '../gitcred/repo-path.js'
 import type { ManagedCredentialScope } from '../workspace/git-injection.js'
+import type { Config } from '../config/config-schema.js'
 import { githubCredentials } from '../github/credentials.js'
 import { gitlabCredentials } from '../gitlab/credentials.js'
 import { giteaCredentials } from '../gitea/credentials.js'
@@ -106,6 +107,18 @@ export interface CodeHostCredentialModule {
   secondaryCredentialScope(spec: CodeHostSpecHosts): ManagedCredentialScope
   /** True when the credential is presented only by the credential proxy and the daemon's own Git, never the agent-facing helper (azure-devops-integration.md §6.1). */
   readonly proxyOnly?: boolean
+  /** The provider's own CLI, which a proxied session points at its placeholder; absent ⇒ none beside git. */
+  readonly cli?: CodeHostCli
+}
+
+/** A provider's own CLI as a proxied session on this machine runs it (azure-devops-integration.md §6.4). */
+export interface CodeHostCli {
+  /** The command an OS sandbox's read allowlist carves back where it is installed. */
+  readonly command: string
+  /** Where the operator installed the CLI's extensions: the daemon config's directory, else the CLI's default under the daemon user's home. */
+  extensionDir(config: Pick<Config, 'azureDevOps'>): string
+  /** The variables the CLI reads: the placeholder it presents, a fresh state directory of the session's own, and the extensions when they exist. */
+  env(session: { placeholder: string; stateDir: string; extensionDir?: string }): Record<string, string>
 }
 
 /** Who will present a credential: the credential proxy, the daemon's own Git, or the agent-facing helper. */
@@ -122,6 +135,21 @@ export function proxyOnlyConsumer(
   consumer: GitCredConsumer
 ): { consumer?: GitCredConsumer } {
   return isProxyOnlyProvider(provider) ? { consumer } : {}
+}
+
+/** The proxy-only providers an agent's repositories are on: its workspace credential's and its additional repositories'. */
+export function proxyOnlyProvidersOf(workspace: {
+  gitCredential?: string | undefined
+  additionalRepos?: readonly { provider?: string | undefined }[] | undefined
+}): CodeHostProvider[] {
+  const providers = new Set<CodeHostProvider>()
+  for (const provider of [
+    credentialProviderOf(workspace.gitCredential),
+    ...(workspace.additionalRepos ?? []).map((row) => codeHostCredentials(row.provider ?? 'github')?.provider)
+  ]) {
+    if (provider !== undefined && isProxyOnlyProvider(provider)) providers.add(provider)
+  }
+  return [...providers]
 }
 
 /** Adding a code host is adding one entry; the record over the provider union makes a missing one a compile error. */

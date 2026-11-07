@@ -93,6 +93,7 @@ import {
   DAEMON_AUTO_UPGRADE_FEATURE,
   GITCRED_GITHUB_V2_FEATURE,
   GITEA_V1_FEATURE,
+  AZURE_DEVOPS_V1_FEATURE,
   GITLAB_EFFECT_V1_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   KNOWLEDGE_RECORD_FEATURE,
@@ -226,6 +227,7 @@ import {
   credentialProviderOf,
   isProxyOnlyProvider,
   proxyOnlyConsumer,
+  proxyOnlyProvidersOf,
   workspaceRepositoryPath,
   type ManagedWorkspaceRepo
 } from './codehost/credentials.js'
@@ -299,7 +301,7 @@ import {
   sessionHostKey,
   type HostKey
 } from './acp/host-key.js'
-import { prepareRuntimeLaunch, shimEnvironment } from './launch/prepare.js'
+import { prepareRuntimeLaunch, privateRuntimeHomeFor, shimEnvironment } from './launch/prepare.js'
 import {
   SessionManager,
   transcriptCoords,
@@ -393,10 +395,14 @@ import {
   liveSecretsChannelEnv,
   sessionGitEnv,
   sessionCredentialHosts,
+  proxiedDaemonGitEnv,
   CODE_HOST_CREDENTIAL_ENV,
-  type ManagedCredentialHost
+  type ManagedCredentialHost,
+  type ManagedCredentialScope
 } from './workspace/git-injection.js'
 import { CredentialProxy, type MintAsk, type MintedCredential } from './credential-proxy/proxy.js'
+import { codeHostCliEnv, codeHostCliReads, reclaimCliStateDirs } from './credential-proxy/cli-env.js'
+import { proxyOnlyHostRefusal } from './credential-proxy/proxy-only.js'
 import { loadProxyCa, proxyTrustEnv, upstreamAuthorities, type ProxyCa } from './credential-proxy/ca.js'
 import {
   CODEX_CA_ENV,
@@ -4448,6 +4454,8 @@ export class Daemon {
       if (reclaimedTempDirs.length > 0) {
         this.log.info(`sandbox: reclaimed ${reclaimedTempDirs.length} stale temp director(ies) for agent "${agent.id}"`)
       }
+      // A host outside a confined session keeps its CLI state under the agent's HOME, made afresh at each start (azure-devops-integration.md §6.4).
+      reclaimCliStateDirs(privateRuntimeHomeFor(agent.dir, undefined))
       // No host is running at boot, so no materialized config-file secret should
       // exist. A clean shutdown removed them in stopHost; sweep what a
       // non-graceful exit (crash/SIGKILL) left behind.
@@ -6875,6 +6883,16 @@ export class Daemon {
     const cli = githubAppCredentials ? 'gh' : gitlabCredentials ? 'glab' : undefined
     const resolved = cli ? resolveCommandPath(cli, process.env) : undefined
     if (resolved) executableCommands.push(resolved)
+    // Each provider CLI a credential module declares, and the operator's extensions it loads (azure-devops-integration.md §6.4).
+    const providerClis = codeHostCliReads(
+      this.credentialProxyHosts(agent.id).map((host) => host.provider),
+      this.cfg
+    )
+    for (const command of providerClis.commands) {
+      const found = resolveCommandPath(command, process.env)
+      if (found) executableCommands.push(found)
+    }
+    paths.push(...providerClis.paths)
     return trustedRuntimeReadRoots({
       runtime,
       hostEnv: process.env,
@@ -7028,6 +7046,23 @@ export class Daemon {
       })
     }
     return repositories
+  }
+
+  /** azure-devops-integration.md §6.1: a host of an agent with a proxy-only provider's repositories starts only where the credential proxy carries it, never without its credential. */
+  private assertProxyOnlyReach(agent: LoadedAgent, hostKey: HostKey, strategy: string, credentialless: boolean): void {
+    const providers = credentialless ? [] : proxyOnlyProvidersOf(agent.workspace)
+    const refusal = proxyOnlyHostRefusal(providers, {
+      proxyRunning: this.credentialProxy !== undefined,
+      managedCredential: credentialProviderOf(agent.workspace.gitCredential) !== undefined,
+      cluster: this.k8s,
+      placedOnExecutor: this.placedSession(hostKeySessionKey(hostKey)) !== undefined,
+      strategy,
+      served: () => {
+        const hosts = this.credentialProxyHosts(agent.id)
+        return providers.every((provider) => hosts.some((host) => host.provider === provider))
+      }
+    })
+    if (refusal) throw new Error(refusal)
   }
 
   /** The code-host instances the proxy serves an agent on: the hosts its session config pins, resolved from its spec as a spawn resolves them, each as its provider's routes serve it. */
@@ -7618,14 +7653,38 @@ export class Daemon {
     const owned: Record<string, string> = { HOME: sessionHomeIn(session.environment.workspaceRoot) }
     shimEnvironment(owned, session.runtimeRoot)
     // The daemon's own clone and fetch cross the credential proxy where SRT intercepts, so they trust its CA too, over any env they send.
-    if (this.credentialProxy && !session.environment.hosted && this.credentialProxyIntercepts(agentId))
-      Object.assign(owned, proxyTrustEnv(this.credentialProxy.ca))
+    const proxied = this.credentialProxy && !session.environment.hosted && this.credentialProxyIntercepts(agentId)
+    if (proxied) Object.assign(owned, proxyTrustEnv(this.credentialProxy!.ca))
+    // A proxy-only host is reached through that route with the placeholder: its token never enters the boundary (azure-devops-integration.md §6.1).
+    const bases = proxied ? this.proxyOnlyBases(agentId) : []
+    const placeholder = bases.length > 0 ? this.credentialProxy!.proxy.placeholderFor(agentId) : undefined
     return localShimGitRunner({
       run: (work) => this.localSrtExecutor!.withEnvironment(session.environment, work),
       cwd: cwd!,
       owned,
+      ...(placeholder ? { mapEnv: (env: Record<string, string>) => proxiedDaemonGitEnv(env, bases, placeholder) } : {}),
       ...(abort ? { abort } : {})
     })
+  }
+
+  /** The origins the proxy serves an agent on beyond its scope's own hosts, which its session config pins the placeholder for too. */
+  private proxyNamesBeside(agentId: string, scope: ManagedCredentialScope): string[] {
+    const pinned = new Set(sessionCredentialHosts(scope).map((host) => new URL(host.baseUrl).host))
+    const origins = this.credentialProxyHosts(agentId)
+      .map((host) => new URL(host.baseUrl))
+      .filter((url) => !pinned.has(url.host))
+      .map((url) => url.origin)
+    return [...new Set(origins)]
+  }
+
+  /** The base URLs of the proxy-only providers an agent's repositories are on, as its daemon Git pins their helpers. */
+  private proxyOnlyBases(agentId: string): string[] {
+    const agent = this.agents.get(agentId)
+    const provider = agent ? credentialProviderOf(agent.workspace.gitCredential) : undefined
+    if (!agent || provider === undefined) return []
+    return sessionCredentialHosts(this.workspaces.credentialScopeOf(agent, provider))
+      .filter((host) => isProxyOnlyProvider(host.provider))
+      .map((host) => host.baseUrl)
   }
 
   private srtWorkspaceFs(agentId: string, sessionKey?: string): SrtWorkspaceFs {
@@ -9019,6 +9078,10 @@ export class Daemon {
     let configFileState: { childEnv?: Record<string, string | undefined>; materialized: boolean } | undefined = {
       materialized: false
     }
+    // A dream or research host carries no code-host credential, so nothing it does needs the proxy.
+    const credentialless =
+      opts.excludeAgentToolCredentials === true || isResearchSessionKey(hostKeySessionKey(opts.hostKey))
+    this.assertProxyOnlyReach(agent, opts.hostKey, opts.strategy, credentialless)
     if (this.opts.hostFactory) {
       return { host: this.opts.hostFactory(agent, onUpdate), configFileState }
     }
@@ -9079,12 +9142,10 @@ export class Daemon {
       ...(runInSandbox ? cfg.sandbox.env : {}),
       ...Object.fromEntries(runtime.env.map((entry) => [entry.name, entry.value]))
     }
-    // On --k8s the runtime runs in the agent's pod, so the session gitconfig has to be COMPUTED in
-    // pod coordinates and WRITTEN there: the file travels with the launch (SpawnRequest.files) and
-    // is re-materialized on every spawn, because a resumed Sandbox is a new pod with an empty tmpfs.
-    // The daemon-local write (sessionGitEnv) would land the file on this daemon's disk instead.
-    // A git-repo workspace with no managed credential still gets the file, for its policy alone.
-    const sessionGitScope = managedCredentials ? managedScope : null
+    // On --k8s the session gitconfig is computed in pod coordinates and travels with every launch, a resumed pod's tmpfs being empty; a policy-only workspace still gets it, and a name the proxy serves the same repositories under takes the placeholder too.
+    const sessionGitScope = managedCredentials
+      ? { ...managedScope, proxyNames: this.proxyNamesBeside(agent.id, managedScope) }
+      : null
     const sessionGitIdentity = managedCredentials ? this.commitIdentityOf(agent) : undefined
     const needsSessionGit = managedCredentials || agent.workspace.mode === 'git-repo'
     // A session on an executor reads the same file in that machine's environment, at the roots its `prepare` named (§5).
@@ -9225,7 +9286,18 @@ export class Daemon {
             ...env
           })
         : undefined
-    if (proxied && this.credentialProxy)
+    if (proxied && this.credentialProxy) {
+      // Each provider CLI's variables beside git's placeholder, here alone, since they name this machine's paths (azure-devops-integration.md §6.4).
+      const cli = localProxyRoute
+        ? codeHostCliEnv({
+            providers: this.credentialProxyHosts(agent.id).map((host) => host.provider),
+            placeholder: this.credentialProxy.proxy.placeholderFor(agent.id),
+            home: privateRuntimeHomeFor(agent.dir, opts.hostKey),
+            hostKey: opts.hostKey,
+            config: cfg,
+            own: (name) => env[name] !== undefined || runtimeEnv[name] !== undefined
+          })
+        : {}
       Object.assign(
         env,
         this.credentialProxyEnv(
@@ -9235,8 +9307,10 @@ export class Daemon {
           env,
           runtimeEnv,
           gitlabCredentials
-        )
+        ),
+        cli
       )
+    }
     // A host session holding only a provider placeholder reaches the proxy the same way.
     else if (providerPlaceholder && localProxyRoute && this.credentialProxy)
       Object.assign(
@@ -9723,6 +9797,8 @@ export class Daemon {
       // gitea-integration.md §11: the complete Gitea slice — credentials, normalization, poster, broker,
       // admission. The CP withholds gitea specs and hook assignments until this is advertised.
       GITEA_V1_FEATURE,
+      // azure-devops-integration.md §6.1: only the credential proxy reaches Azure DevOps, so only while it runs; a pool member's pods do not reach it yet.
+      ...(this.credentialProxy && !this.k8s ? [AZURE_DEVOPS_V1_FEATURE] : []),
       // §16: this daemon renders and updates the run-projection note. The CP leaves the desired
       // generation pending rather than opening a second provider egress path without this bit.
       CODEHOST_NOTE_PROJECTION_V1_FEATURE,
@@ -26195,6 +26271,13 @@ export class Daemon {
         throw new Error(`host start superseded for ${label}`)
       }
       const boundKey = bound && hostKeySessionKey(key)
+      // Refused before any preparation runs Git that the proxy would not carry (azure-devops-integration.md §6.1).
+      this.assertProxyOnlyReach(
+        agent,
+        key,
+        this.sessionStrategy(agent, hostKeySessionKey(key)),
+        isResearchSessionKey(boundKey || undefined)
+      )
       // Organization research reads no checkout: on a local launch it starts in an empty directory of its own (assistant-mode.md §5.15).
       const researchDir = isResearchSessionKey(boundKey || undefined) ? await this.researchCwd(agent, key) : undefined
       // The cold gate, before every fresh spawn: a failed child had write authority, so its replacement re-verifies the skill receipts; a review in its own pod needs only that, its cwd already prepared.

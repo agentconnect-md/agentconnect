@@ -1,4 +1,6 @@
 // Azure DevOps's entry in the credential seam (azure-devops-integration.md §4–§6): one fixed host, `organization/project/repository` paths, a surrogate numeric id, and a credential only the proxy and the daemon's own Git present.
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { AZURE_DEVOPS_HOST, normalizeGitCloneUrl } from '@agentconnect.md/protocol'
 import { AZURE_DEVOPS_MANAGED_HOST } from '../gitcred/managed-hosts.js'
 import { AZURE_DEVOPS_ORGANIZATION, azureDevOpsName, azureDevOpsRepoFromPath } from '../gitcred/repo-path.js'
@@ -59,5 +61,16 @@ export const azureDevOpsCredentials: CodeHostCredentialModule = {
   },
   secondaryCredentialScope: () => AZURE_DEVOPS_SCOPE,
   // §6.1: the token is organization-wide, so only the proxy and the daemon's own Git may present it.
-  proxyOnly: true
+  proxyOnly: true,
+  // §6.4: the CLI sends the placeholder as a Basic password, and an empty configuration directory keeps it off any cached sign-in.
+  cli: {
+    command: 'az',
+    extensionDir: (config) => config.azureDevOps?.cliExtensionDir ?? join(homedir(), '.azure', 'cliextensions'),
+    env: ({ placeholder, stateDir, extensionDir }) => ({
+      AZURE_DEVOPS_EXT_PAT: placeholder,
+      AZURE_CONFIG_DIR: stateDir,
+      ...(extensionDir !== undefined ? { AZURE_EXTENSION_DIR: extensionDir } : {}),
+      AZURE_CORE_COLLECT_TELEMETRY: 'false'
+    })
+  }
 }

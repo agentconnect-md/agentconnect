@@ -57,11 +57,15 @@ describe('the helper channel', () => {
     return { sockPath, gets, daemon, runtime }
   }
 
-  function ask(sockPath: string, msg: Record<string, unknown>): Promise<Record<string, unknown>> {
+  /** One ask on the helper socket; `greeting` first makes it a tunnel's from inside a boundary. */
+  function ask(sockPath: string, msg: Record<string, unknown>, greeting?: Buffer): Promise<Record<string, unknown>> {
     return new Promise((resolve, reject) => {
       const sock = createConnection(sockPath)
       let buf = ''
-      sock.on('connect', () => sock.write(`${JSON.stringify({ op: 'get', agentId: AGENT, ...msg })}\n`))
+      sock.on('connect', () => {
+        if (greeting) sock.write(greeting)
+        sock.write(`${JSON.stringify({ op: 'get', agentId: AGENT, ...msg })}\n`)
+      })
       sock.on('data', (chunk) => {
         buf += chunk.toString('utf8')
         const nl = buf.indexOf('\n')
@@ -112,6 +116,30 @@ describe('the helper channel', () => {
       },
       { agentId: AGENT, opts: { plane: 'git', provider: 'azure-devops', externalRepoId: '42', consumer: 'proxy' } }
     ])
+  })
+
+  it('refuses the daemon’s own capability through a tunnel from inside a boundary, and still serves it another provider there', async () => {
+    const { sockPath, gets, daemon } = await boot()
+    const greeting = server!.tunnelGreeting(`${AGENT}/session-000000000000000000000000`)
+    const refusal = { ok: false, error: proxyOnlyRefusal('azure-devops'), denied: 'agent' }
+    expect(await ask(sockPath, { capability: daemon }, greeting)).toEqual(refusal)
+    expect(
+      await ask(
+        sockPath,
+        { capability: daemon, provider: 'azure-devops', repoFullName: SECOND.toLowerCase() },
+        greeting
+      )
+    ).toEqual(refusal)
+    expect(gets).toEqual([])
+    // GitLab's credential reaches the daemon's Git in a pod or a VM as before.
+    expect(
+      await ask(
+        sockPath,
+        { capability: daemon, provider: 'gitlab', repoFullName: 'example-group/example-project' },
+        greeting
+      )
+    ).toMatchObject({ ok: true })
+    expect(gets).toHaveLength(1)
   })
 
   it('names no consumer for a provider that is not proxy-only', async () => {

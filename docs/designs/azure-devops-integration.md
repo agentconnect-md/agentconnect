@@ -1,6 +1,6 @@
 # Azure DevOps Integration
 
-> Status: **In progress** — A1 (protocol) and A2 (Control Plane) have landed; A3 and A4 follow (§13).
+> Status: **In progress** — A1 (protocol), A2 (Control Plane) and A3 (daemon) have landed; A4 follows (§13).
 > Scope: **Azure DevOps Services** (`dev.azure.com`),
 > Git repositories in Azure Repos. The first version covers workspaces and
 > additional repositories only; pull-request hooks, reviews, pull-request
@@ -458,19 +458,40 @@ ask that names neither, without asking the Control Plane, since a grant it
 already holds would otherwise answer it. A request for any other provider names
 no consumer, as before.
 
-A daemon therefore advertises `azure-devops-v1` only while its credential proxy
-is enabled, and placement requires it. A session on a strategy the proxy does
-not reach yet is refused with `azure_devops_requires_proxy` rather than started
-without credentials.
+The real token is therefore presented only by the proxy and by the daemon's own
+Git on the daemon's host, outside every agent boundary. Where the daemon runs
+Git inside an agent's boundary, that Git must not hold the token either:
 
-Two consequences follow from where the proxy stands today:
+- The gitcred server serves a proxy-only credential to no connection a shim's
+  tunnel carries, whatever capability it presents, so daemon Git inside a
+  confined `srt` session, a VM, a pool pod or an executor's environment is
+  never handed the token.
+- In a confined `srt` session the daemon's Git runs in the session's shim and
+  reaches Azure DevOps over `srt`'s route to the proxy: its helper for the
+  organization's host answers the session's placeholder instead of asking the
+  gitcred server, and the proxy presents the token.
+- In a VM, in a pool pod and on another daemon's executor, the daemon's Git has
+  no such route to the proxy yet, so those sessions are refused (below).
 
-- The proxy reaches `srt` and host sessions. Sessions in a VM, in a pool pod,
-  or placed on a remote executor are not covered yet. Until the pool-pod
-  tunnel lands, the Cloud pool cannot place an agent with an Azure DevOps
-  workspace or additional repository.
-- The proxy always runs (github-app-git-credentials.md, Phase 2), so no switch
-  gates Azure DevOps beyond the sessions the proxy reaches.
+The proxy reaches every strategy's sessions (github-app-git-credentials.md,
+Phase 2), but an Azure DevOps agent's host starts only on the daemon's host and
+in `srt` on that daemon. Its start is refused with
+`azure_devops_requires_proxy: …`, naming the reason, before any preparation
+runs Git, when:
+
+- the daemon's credential proxy did not start;
+- the agent holds no managed code-host credential, or the proxy serves none of
+  its Azure DevOps repositories;
+- the daemon is a pool member, the strategy is a VM, or the session was placed
+  on another daemon's executor, whose own Git does not reach the proxy yet.
+
+The refusal fails the turn as any other start failure does, and the agent is
+never started without credentials. A dream or a research host, which carries
+no code-host credential, is not refused.
+
+A daemon advertises `azure-devops-v1` only while its credential proxy runs and
+it is not a pool member, and placement requires it, so the Cloud pool cannot
+place an agent with an Azure DevOps workspace or additional repository yet.
 
 ### 6.2 Instance and Routes
 
@@ -479,12 +500,12 @@ routing contributes two proxy instances: `dev.azure.com` with the path prefix
 `{organization}`, and `{organization}.visualstudio.com` at the root, optionally
 under `DefaultCollection`. Both are SaaS names, so neither may resolve into
 private space. The placeholder is sealed for both and `srt` routes both to the
-proxy. The session helper is pinned for `dev.azure.com` whenever the workspace
-or an additional repository is on Azure DevOps, as a GitLab or Gitea
-repository pins its instance. A request's organization is the first path
-segment on `dev.azure.com`, or the host's own name; it must be the organization
-of one of the agent's repositories, compared case-insensitively, and any other
-is refused.
+proxy. The session helper is pinned for `dev.azure.com`, and for each
+organization's own host, whenever the workspace or an additional repository is
+on Azure DevOps, as a GitLab or Gitea repository pins its instance. A request's
+organization is the first path segment on `dev.azure.com`, or the host's own
+name; it must be the organization of one of the agent's repositories, compared
+case-insensitively, and any other is refused.
 
 Requests are routed by method and path. Names are compared after
 percent-decoding and case-insensitively, and a project segment may be a name or
@@ -616,21 +637,39 @@ the Azure CLI or REST, and the first version adds no Azure DevOps tool:
 
 git uses the session credential helper and the proxy like every other provider;
 the helper is pinned for `dev.azure.com`, where every canonical remote points,
-and the proxy presents the token as the Basic password with the identity id as
-the user (§3.4). The proxy routes `{organization}.visualstudio.com` too, for the
-CLI and REST. The Azure CLI receives:
+and for each `{organization}.visualstudio.com` the proxy serves, and the proxy
+presents the token as the Basic password with the identity id as the user
+(§3.4). The proxy routes `{organization}.visualstudio.com` for the CLI and REST
+as well. Git LFS is refused: its endpoints under `info/lfs` are none of git's
+own services of §6.2, so the proxy answers them with its 403, and a checkout
+keeps LFS pointer files.
+
+The Azure CLI receives these variables from the credential module's `cli`
+member, where a module declares its CLI, rather than from a provider branch in
+the daemon:
 
 - `AZURE_DEVOPS_EXT_PAT`, set to the placeholder; the CLI sends it as a Basic
   password, which the proxy already reads;
-- `AZURE_CONFIG_DIR`, set to an empty per-session directory, because the CLI
-  prefers a cached sign-in over `AZURE_DEVOPS_EXT_PAT`;
-- `AZURE_EXTENSION_DIR`, set to the host's installed extension directory and
-  readable from the sandbox. Without it, an empty configuration directory hides
-  the installed `azure-devops` extension, and the CLI installs it again from
-  Microsoft's download hosts on every session's first command;
+- `AZURE_CONFIG_DIR`, set to an empty directory of the host's own, emptied again
+  at each start, because the CLI prefers a cached sign-in over
+  `AZURE_DEVOPS_EXT_PAT`. It lies under the host's private HOME: a confined
+  session's goes with the session's directory, and another host's is under the
+  agent directory, where the daemon reclaims it at boot;
+- `AZURE_EXTENSION_DIR`, set to the host's installed extension directory, when
+  that directory exists, and readable from `srt`. It is the daemon
+  configuration's `azureDevOps.cliExtensionDir`, else
+  `~/.azure/cliextensions` of the daemon's user. Without it, an empty
+  configuration directory hides the installed `azure-devops` extension, and
+  the CLI installs it again from Microsoft's download hosts on every session's
+  first command;
 - `AZURE_CORE_COLLECT_TELEMETRY=false`; and
 - the proxy and trust variables of the credential proxy design, including
-  `REQUESTS_CA_BUNDLE`.
+  `REQUESTS_CA_BUNDLE`, which names the merged trust bundle on every strategy
+  that starts an Azure DevOps agent.
+
+A variable the agent's own environment sets is left to it, as an agent's own
+token always has been. The `az` command itself is readable from `srt` where it
+is installed.
 
 With these, the commands that name a repository reach only `dev.azure.com`,
 and the CLI writes no credential into the session directory.
@@ -728,8 +767,9 @@ connection-write, and secret routes manage a credential and are
   organization needs the caller to prove they administer it there (§3.2
   step 4), so a plain member cannot take over the rights it holds.
 - Tokens exist in the Control Plane's cache, in leases over the authenticated
-  daemon WebSocket, and in the daemon's memory. They never appear in an
-  environment, argv, a remote URL, `.git/config`, or a diagnostic.
+  daemon WebSocket, and in the daemon's memory, and only the proxy and the
+  daemon's own Git outside every agent boundary present them (§6.1). They never
+  appear in an environment, argv, a remote URL, `.git/config`, or a diagnostic.
 - An administrator's delegated token lives only for the connect flow,
   encrypted, and is never stored.
 - On a multi-tenant deployment, the deployment secret mints Azure DevOps tokens
@@ -750,7 +790,8 @@ connection-write, and secret routes manage a credential and are
 
 ## 10. Non-Goals
 
-- Azure DevOps Server (on-premises), TFVC repositories, and SSH remotes.
+- Azure DevOps Server (on-premises), TFVC repositories, SSH remotes, and Git
+  LFS, which the proxy refuses (§6.4).
 - Personal access tokens. They belong to a user, expire, and are increasingly
   restricted by organization policy, and the token would still be
   organization-wide.
@@ -890,21 +931,24 @@ live organization before A2.
   identity table and claims, with bindings and grants keyed by connection; the
   picker; derivation and grant arms; gitcred leases served only to the proxy
   plane; and the REST routes.
-- **A3 — Daemon.** The credential module with its `proxyOnly` capability, the
-  proxy instances and route descriptor of §6.2 in the descriptor registry
-  GitLab and Gitea moved into, the proxy's leases and gates of §6.3, the client
-  configuration of §6.4, the feature advertisement tied to the proxy, the
-  gitcred `consumer` field of §6.1 on every Azure DevOps request, and the
-  strategy refusal. The first half is in place: everything but the client
-  configuration, the feature advertisement and the strategy refusal, which
-  follow; until the advertisement lands, no Azure DevOps agent is placed on a
-  daemon. Tests pin each refusal of §6.2: the lists, the pull-request lists
-  that name no repository, and a repository outside the agent's
-  authorizations, answered alike whether or not it exists. They also pin the
-  pull-request lookup by id: it answers for the agent's own repository, and
-  answers another repository's pull request exactly as it answers a missing
-  id. They also pin §6.3: a write below `write` is refused, and a pull-request
-  write at `write` is forwarded.
+- **A3 — Daemon.** _Landed._ The credential module with its `proxyOnly`
+  capability, the proxy instances and route descriptor of §6.2 in the
+  descriptor registry GitLab and Gitea moved into, the proxy's leases and gates
+  of §6.3, the client configuration of §6.4, the feature advertisement tied to
+  the proxy, the gitcred `consumer` field of §6.1 on every Azure DevOps
+  request, the tunnel refusal and the placeholder for daemon Git inside a
+  boundary, and the strategy refusal. Tests pin each refusal of §6.2: the
+  lists, the pull-request lists that name no repository, and a repository
+  outside the agent's authorizations, answered alike whether or not it exists.
+  They also pin the pull-request lookup by id: it answers for the agent's own
+  repository, and answers another repository's pull request exactly as it
+  answers a missing id. They also pin §6.3: a write below `write` is refused,
+  and a pull-request write at `write` is forwarded. A real daemon with its
+  proxy runs `git ls-remote` against a fake Azure DevOps through the proxy,
+  is refused a push at `read`, an unauthorized repository and the runtime's
+  own ask, and advertises `azure-devops-v1` only while the proxy runs. Daemon
+  Git for VM, pool-pod and executor sessions through the proxy is future work;
+  until it lands those sessions are refused (§6.1).
 - **A4 — Console, Setup, and documentation.** The card, the pickers, the
   Microsoft section's redirect URI and wording, and the setup page on the
   documentation site.

@@ -433,6 +433,8 @@ export interface ManagedCredentialScope {
   giteaRepoBearing?: boolean
   /** Whether an Azure DevOps repository rides beside the workspace; its host is fixed, so there is no host field. */
   azureDevOpsRepoBearing?: boolean
+  /** Further base URLs the session pins its placeholder for, where the proxy serves the same repositories under another name (an Azure DevOps organization's own host). */
+  proxyNames?: readonly string[]
 }
 
 /** Anonymous and github-app operations both pin github.com; only a gitlab or gitea consumer moves the axis. */
@@ -510,7 +512,7 @@ export function sessionCredentialHosts(scope: ManagedCredentialScope): ManagedCr
 }
 
 function sessionCredentialBases(scope: ManagedCredentialScope): string[] {
-  return sessionCredentialHosts(scope).map((host) => host.baseUrl)
+  return [...new Set([...sessionCredentialHosts(scope).map((host) => host.baseUrl), ...(scope.proxyNames ?? [])])]
 }
 
 /**
@@ -697,6 +699,19 @@ function quotedHelper(agentId: string, target: GitCredentialTarget = targetOf(ag
 /** A checkout's pinned helper, for the runtime's git: the environment's placeholder, or nothing. */
 export function checkoutHelper(): string {
   return PLACEHOLDER_HELPER_COMMAND
+}
+
+/** Daemon Git inside an agent's boundary, behind the credential proxy: each of `bases`' helpers answers `placeholder`, never a real token (azure-devops-integration.md §6.1). */
+export function proxiedDaemonGitEnv(
+  env: Record<string, string>,
+  bases: readonly string[],
+  placeholder: string
+): Record<string, string> {
+  const helpers = new Set(bases.map((base) => `credential.${base}.helper`))
+  const pairs = gitConfigPairsOf(env).map(([key, value]): [string, string] =>
+    helpers.has(key) && value !== '' ? [key, PLACEHOLDER_HELPER_COMMAND] : [key, value]
+  )
+  return { ...env, ...(pairs.length > 0 ? gitConfigEnv(pairs) : {}), [CODE_HOST_CREDENTIAL_ENV]: placeholder }
 }
 
 /** The three host-scoped config pairs both channels share. The host defaults to

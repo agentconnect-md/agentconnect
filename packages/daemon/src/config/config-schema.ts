@@ -291,6 +291,11 @@ export const ConfigSchema = z.object({
         .default('7d')
     })
     .default({ retention: '90d', workspaceRetention: '7d' }),
+  // The Azure CLI extension directory a proxied session loads `azure-devops` from (azure-devops-integration.md §6.4); absent ⇒ the daemon user's ~/.azure/cliextensions.
+  azureDevOps: z
+    .object({ cliExtensionDir: z.string().min(1).optional() })
+    .strict()
+    .optional(),
   // The Google Chat write budget (google-chat-integration.md §10.8): 3,000 writes a minute per project over the pool; both knobs override.
   googleChat: z
     .object({

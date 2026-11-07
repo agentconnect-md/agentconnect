@@ -31,6 +31,7 @@ import {
   workspaceGitLocalEnv,
   workspaceGitRemoteTarget,
   writeRepoHelperConfig,
+  proxiedDaemonGitEnv,
   CODE_HOST_CREDENTIAL_ENV
 } from '../src/workspace/git-injection.js'
 import { INSTALLATION_GIT_CREDENTIAL_WRAPPER } from '../src/shim/git-credential-wrapper.js'
@@ -1200,4 +1201,81 @@ describe('an Azure DevOps repository beside the workspace', () => {
       { provider: 'github', baseUrl: 'https://github.com' }
     ])
   })
+
+  it('pins the placeholder on the organization’s own host too, which the proxy serves the same repositories under', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'acp-azure-names-'))
+    try {
+      const target = sandboxGitCredentialTarget(dir, dir)
+      const scope = {
+        ...managedCredentialScope('azure-devops'),
+        proxyNames: ['https://example-org.visualstudio.com', 'https://dev.azure.com']
+      }
+      const { content } = sessionGitConfig('agent-azure', undefined, target, scope)
+      expect(content.split('[credential "https://dev.azure.com"]')).toHaveLength(2)
+      expect(content).toContain('[credential "https://example-org.visualstudio.com"]')
+      const config = join(dir, 'session.gitconfig')
+      writeFileSync(config, content)
+      const answer = execFileSync('git', ['credential', 'fill'], {
+        input: 'protocol=https\nhost=example-org.visualstudio.com\npath=Example Project/_git/Example Repo\n\n',
+        env: {
+          PATH: process.env.PATH ?? '',
+          HOME: dir,
+          GIT_CONFIG_GLOBAL: config,
+          GIT_CONFIG_NOSYSTEM: '1',
+          GIT_TERMINAL_PROMPT: '0',
+          [CODE_HOST_CREDENTIAL_ENV]: 'acph1_example.tag'
+        }
+      }).toString()
+      expect(answer).toContain('password=acph1_example.tag')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // POSIX only: the stand-in helper is a shell script.
+  it.skipIf(process.platform === 'win32')(
+    'hands the daemon’s own Git inside a boundary the placeholder for Azure DevOps, and the real helper only elsewhere',
+    () => {
+      // The daemon target's helper, standing in for the real one: whatever it answers is the real token.
+      const helper = join(tmpRun, 'helper.sh')
+      writeFileSync(
+        helper,
+        '#!/bin/sh\ntest "$2" = get || exit 0\necho username=x-access-token\necho password=REAL-TOKEN\n'
+      )
+      chmodSync(helper, 0o755)
+      const home = mkdtempSync(join(tmpdir(), 'acp-proxied-daemon-git-'))
+      const fill = (env: Record<string, string>, host: string) =>
+        execFileSync('git', ['credential', 'fill'], {
+          input: `protocol=https\nhost=${host}\npath=example-org/Example Project/_git/Example Repo\n\n`,
+          env: {
+            PATH: process.env.PATH ?? '',
+            HOME: home,
+            GIT_CONFIG_GLOBAL: join(home, 'empty.gitconfig'),
+            GIT_CONFIG_NOSYSTEM: '1',
+            ...env
+          }
+        }).toString()
+      try {
+        const azure = cloneGitEnv('agent-azure', undefined, managedCredentialScope('azure-devops'))
+        // On the host, outside every boundary, the daemon's Git presents the real token as before.
+        expect(fill(azure, 'dev.azure.com')).toContain('password=REAL-TOKEN')
+        const proxied = proxiedDaemonGitEnv(azure, ['https://dev.azure.com'], 'acph1_example.tag')
+        expect(proxied[CODE_HOST_CREDENTIAL_ENV]).toBe('acph1_example.tag')
+        expect(fill(proxied, 'dev.azure.com')).toContain('password=acph1_example.tag')
+        expect(fill(proxied, 'dev.azure.com')).not.toContain('REAL-TOKEN')
+        // Only the helper changes: the reset before it and every other pair stay as they were.
+        expect(configPairs(proxied).map(([key]) => key)).toEqual(configPairs(azure).map(([key]) => key))
+        expect(configPairs(proxied).filter(([key]) => key === 'credential.https://dev.azure.com.helper')).toEqual([
+          ['credential.https://dev.azure.com.helper', ''],
+          ['credential.https://dev.azure.com.helper', checkoutHelper()]
+        ])
+        // A host that is not proxy-only keeps its real helper.
+        const github = proxiedDaemonGitEnv(cloneGitEnv('agent-azure'), ['https://dev.azure.com'], 'acph1_example.tag')
+        expect(fill(github, 'github.com')).toContain('password=REAL-TOKEN')
+      } finally {
+        rmSync(helper, { force: true })
+        rmSync(home, { recursive: true, force: true })
+      }
+    }
+  )
 })
