@@ -26,7 +26,7 @@ describe('client credentials token (§3.1)', () => {
   it('posts the Azure DevOps scope at the tenant authority and keeps the issued lifetime', async () => {
     const fake = new FakeAzureDevOps({ expiresInSec: 4242 })
     const token = await requestAccessToken(fake.api, credentials)
-    expect(token).toEqual({ accessToken: 'example-token-1', expiresInSec: 4242 })
+    expect(token).toEqual({ accessToken: expect.stringMatching(/^example-token-1\./), expiresInSec: 4242 })
     expect(fake.requests[0]!.url).toBe(`https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/token`)
   })
 

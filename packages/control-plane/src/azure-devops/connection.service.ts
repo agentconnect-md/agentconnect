@@ -185,6 +185,40 @@ export class AzureDevOpsConnectionService {
     )
   }
 
+  /** Manage project access ends here: steps 5 and 6 for an existing `deployment` connection, same identity required, its state recovered. */
+  async reverifyDeploymentConnection(orgId: string, connectionId: string): Promise<AzureDevOpsConnectionRecord> {
+    const existing = await this.deps.connections.get(orgId, connectionId)
+    if (!existing) throw missing()
+    const app = this.deps.deploymentApplication
+    if (existing.credentialSource !== 'deployment' || !app) {
+      throw new AzureDevOpsConnectDenied(
+        'this connection does not use the deployment’s Microsoft application',
+        409,
+        'connection_not_deployment'
+      )
+    }
+    const { identity } = await this.verify({
+      organization: existing.organization,
+      tenantId: existing.tenantId,
+      clientId: app.clientId,
+      clientSecret: app.clientSecret
+    })
+    if (
+      !sameGuid(identity.identityId, existing.identityId) ||
+      !sameGuid(identity.organizationInstanceId, existing.organizationInstanceId)
+    ) {
+      throw new AzureDevOpsConnectDenied(
+        'the organization now answers with a different identity — disconnect and connect again',
+        409,
+        'identity_mismatch'
+      )
+    }
+    if (existing.state === 'connected') return existing
+    this.deps.tokens.purge(existing.id)
+    await this.recover(existing, CONNECTION_REASONS)
+    return (await this.deps.connections.get(orgId, connectionId)) ?? existing
+  }
+
   private async connect(
     orgId: string,
     source: AzureDevOpsCredentialSource,

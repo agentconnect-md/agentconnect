@@ -136,20 +136,40 @@ The Console's Azure DevOps card leads with **Connect with Microsoft**:
    `/azure-devops/connect` page as the redirect URI. A personal Microsoft
    account is refused.
 2. **Exchange.** The page posts the code and state back
-   (`POST /orgs/:orgId/azure-devops/connect/callback`). The Control Plane
-   redeems the code with the deployment secret and takes the customer tenant
-   from the ID token's `tid`. It keeps the administrator's delegated token only
-   for the rest of this flow, encrypted, as the Teams connect does, and never
-   stores it.
+   (`POST /orgs/:orgId/azure-devops/connect/callback`), or the error Microsoft
+   returned instead. The Control Plane redeems the code with the deployment
+   secret, asking for the Azure DevOps scope alone, since one token serves one
+   resource, and takes the customer tenant from the ID token's `tid`. Missing
+   consent (`consent_required`, `access_denied`, `AADSTS65001`, `AADSTS90094`)
+   is refused with the message of §3.1, and with the tenant's admin-consent
+   URL when the tenant is known. The administrator's delegated token lives
+   only in an encrypted flow ticket, as in the Teams connect: AES-GCM under a
+   key derived from the deployment's pepper, bound to the organization, the
+   caller, and a flow id, and expiring thirty minutes after the sign-in or
+   before the token does. The Console holds the ticket and sends it back as a
+   request header on each later step, never in a path; the Control Plane
+   stores no copy. Two Control Plane replicas therefore serve one flow alike.
 3. **Organization.** The Control Plane lists the Azure DevOps organizations the
-   administrator belongs to in that tenant, and the administrator picks one.
-4. **Entitlement.** With the administrator's delegated token, the Control Plane
+   administrator belongs to in that tenant (the profile and accounts APIs), and
+   the administrator picks one. The Control Plane reads its `instanceId` with
+   the delegated token, refuses an organization another AgentConnect
+   organization holds before writing anything there, and answers its projects.
+4. **Entitlement.** The Control Plane takes a client credentials token at the
+   customer tenant and reads the service principal's object id from its `oid`
+   claim, which works before the service principal is in the organization.
+   With that token it reads `connectionData`: a 200 means the service principal
+   is already a member, so no entitlement is requested, which also makes the
+   step safe to repeat; `TF401444` or `TF400813` means it is not. Then, with the
+   administrator's delegated token, the Control Plane
    adds the application's service principal to the organization with the Basic
    access level (`POST vsaex…/_apis/serviceprincipalentitlements`). It then
    adds the service principal to the project groups the administrator picks,
    one Graph membership each
    (`PUT vssps…/_apis/graph/memberships/{principal}/{group}`): Readers where
-   agents only read, Contributors where any agent writes. The entitlement
+   agents only read, Contributors where any agent writes, never both. A group
+   is found in the project's scope by its principal name (`[Project]\Readers`,
+   `[Project]\Contributors`), not by its display name, which is localized. A
+   membership that already exists counts as made. The entitlement
    call's own `projectEntitlements` is not used: for a service principal it
    reports success and grants nothing. The entitlement call answers 200 even
    when it refuses, so the Control Plane reads `isSuccess` and the result's
@@ -166,8 +186,19 @@ The Console's Azure DevOps card leads with **Connect with Microsoft**:
    the role, and a checklist for doing it by hand. The checklist names the
    application by its client ID as well as its name: a customer tenant keeps
    the display name the application had when it was first consented to, so a
-   later rename does not reach the Azure DevOps member picker there. The flow
-   resumes at step 5 once the service principal is in the organization.
+   later rename does not reach the Azure DevOps member picker there.
+
+   The memberships are still attempted after that refusal. With no subject
+   descriptor yet, the first one adds the service principal to the
+   organization through its group
+   (`POST vssps…/_apis/graph/serviceprincipals?groupDescriptors=…`), which
+   leaves it at the organization's default access level; the refusal reports
+   which memberships were made and keeps the ticket. Once the checklist is
+   done, `POST /orgs/:orgId/azure-devops/connect/:flow/verify` resumes: it
+   re-reads `connectionData` as the application, makes the memberships the
+   caller may, and runs steps 5 and 6. A membership the caller may not make
+   does not stop it there, since a Project Collection Administrator may have
+   made it by hand; the repository list of step 5 decides.
 
 5. **Verification.** As the application, the Control Plane takes a client
    credentials token at the customer tenant and reads
@@ -195,9 +226,14 @@ per agent, can follow without a migration (§10).
 step 4 and can change later. The Control Plane keeps no administrator token, so
 it cannot change the organization's groups by itself. The card therefore offers
 **Manage project access**, which runs steps 1 to 4 again for the connection's
-organization. The administrator signs in, picks projects and their groups, and
-the Control Plane applies the change with the new delegated token and discards
-it. A change made directly in Azure DevOps works as well; the picker and the
+organization. The administrator signs in at the connection's tenant authority,
+so a guest of that tenant signs in there too, picks projects and their groups,
+and the Control Plane applies the change with the new delegated token and
+discards it. It then re-verifies the connection with the same identity and
+organization required, and a degraded connection recovers. The flow adds
+memberships; it removes none, so taking a project away or lowering
+Contributors to Readers is done in Azure DevOps. A change made directly in
+Azure DevOps works as well; the picker and the
 permission evaluation of §5 read the identity's rights as they are.
 
 **Use your own application instead** stays one click away, and is the only
@@ -550,9 +586,12 @@ REST at the organization scope:
   sign-in of §3.2;
 - `GET /azure-devops/connect/:flow/organizations`, then
   `POST /azure-devops/connect/:flow/organization` and
-  `POST /azure-devops/connect/:flow/projects`, for steps 3 and 4. A
-  `connectionId` on `POST /azure-devops/connect` starts **Manage project
-  access** for that connection, skipping step 3;
+  `POST /azure-devops/connect/:flow/projects`, for steps 3 and 4, and
+  `POST /azure-devops/connect/:flow/verify` to resume after the manual
+  checklist. Each carries the flow ticket in the
+  `x-azure-devops-flow-ticket` header. A `connectionId` on
+  `POST /azure-devops/connect` starts **Manage project access** for that
+  connection, whose organization is fixed;
 - `POST /azure-devops/connections` for an own application (one per
   organization, `connection_exists` otherwise),
   `GET /azure-devops/connections`, and `DELETE /azure-devops/connections/:id`,
@@ -731,7 +770,7 @@ live organization before A2.
 
 - **A0 — Push gate.** The proxy refuses `git-receive-pack` under a grant below
   `write` (§6.3). This is #3767; it is not scheduled again here.
-- **A1 — Protocol.** _Landed._ The provider value with refusing hook entries,
+- **A1 — Protocol.** _Landed (#3781)._ The provider value with refusing hook entries,
   `azure-devops-v1`, the credential arm, the clone-URL forms, and the reserved
   secondary-root directory.
 - **A2 — Control Plane.** The connect flow on the deployment application and

@@ -63,6 +63,8 @@ import { AzureDevOpsTokenCache } from './azure-devops/token-cache.js'
 import { AzureDevOpsConnectionService } from './azure-devops/connection.service.js'
 import { AzureDevOpsBindingService } from './azure-devops/binding.service.js'
 import { AzureDevOpsGitcredService } from './azure-devops/gitcred.service.js'
+import { AzureDevOpsConnectFlowService } from './azure-devops/connect-flow.service.js'
+import { azureDevOpsConnectKeys } from './azure-devops/connect.js'
 import { GiteaStatusCoordinator, GiteaStatusReporter } from './gitea/status-projection.js'
 import { GiteaMembershipAuthzService } from './gitea/membership-authz.service.js'
 import { unionGiteaWebhookEvents } from './gitea/webhook-events.js'
@@ -1853,6 +1855,22 @@ export function buildContainer(
       bindings: repos.azureDevOpsRepositoryBinding,
       service: azureDevOpsConnectionService,
       api: azureDevOpsApi
+    }),
+    connect: new AzureDevOpsConnectFlowService({
+      api: azureDevOpsApi,
+      keys: azureDevOpsConnectKeys(config.API_KEY_PEPPER),
+      clock,
+      connections: azureDevOpsConnectionService,
+      connectionRepo: repos.azureDevOpsConnection,
+      ...(azureDevOpsDeploymentApp
+        ? {
+            deploymentApplication: {
+              clientId: azureDevOpsDeploymentApp.appId,
+              clientSecret: azureDevOpsDeploymentApp.clientSecret
+            }
+          }
+        : {}),
+      ...(webAppUrl ? { webAppUrl } : {})
     })
   }
   // The §6 convergence sweep, the half of a contended pass's obligation that survives a restart.

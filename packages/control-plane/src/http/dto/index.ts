@@ -2492,6 +2492,60 @@ export type AzureDevOpsRepositoryBindingDtoT = z.infer<typeof AzureDevOpsReposit
 
 export const AzureDevOpsRepositoryBindingListDto = z.object({ bindings: z.array(AzureDevOpsRepositoryBindingDto) })
 
+/** Connect with Microsoft (§3.2 step 1); a connection id starts Manage project access for that connection. */
+export const StartAzureDevOpsConnectBody = z.strictObject({
+  connectionId: z.uuid().optional().describe('An existing connection made with Microsoft: Manage project access.')
+})
+export const AzureDevOpsAuthorizeDto = z.object({
+  authorizeUrl: z.url().describe('Microsoft’s sign-in page to send the browser to.')
+})
+export const AzureDevOpsConnectCallbackBody = z.strictObject({
+  state: z.string().min(1).max(2048).describe('The state Microsoft returned to the connect page.'),
+  code: z.string().min(1).max(4096).optional().describe('The authorization code, when Microsoft returned one.'),
+  error: z.string().max(256).optional().describe('The error Microsoft returned instead of a code.'),
+  error_description: z.string().max(4096).optional().describe('Microsoft’s description of that error.')
+})
+export const AzureDevOpsConnectFlowDto = z.object({
+  flowId: z.string().describe('Names the flow in the paths of the later steps.'),
+  ticket: z
+    .string()
+    .describe(
+      'An opaque, encrypted, short-lived ticket sent back as the `x-azure-devops-flow-ticket` header; the Control Plane keeps no copy.'
+    ),
+  tenantId: z.string(),
+  connectionId: z.string().nullable().describe('Set for Manage project access.'),
+  organization: z.string().nullable().describe('Set for Manage project access: the connection’s organization.'),
+  expiresAt: z.string()
+})
+/** The flow ticket rides in a header, never the path, so it stays out of request logs. */
+export const AzureDevOpsFlowHeaders = z.object({ 'x-azure-devops-flow-ticket': z.string().min(1).max(16_384) })
+export const AzureDevOpsFlowParams = z.object({ flow: z.uuid() })
+export const AzureDevOpsMemberOrganizationsDto = z.object({
+  organizations: z.array(z.object({ id: z.string(), name: z.string() }))
+})
+export const ChooseAzureDevOpsOrganizationBody = z.strictObject({ organization: AzureDevOpsOrganizationName })
+export const AzureDevOpsProjectsDto = z.object({
+  ticket: z.string().describe('The ticket with the organization recorded; send it with the next step.'),
+  organization: z.string(),
+  projects: z.array(z.object({ id: z.string(), name: z.string() }))
+})
+export const ApplyAzureDevOpsProjectsBody = z.strictObject({
+  projects: z
+    .array(z.strictObject({ projectId: z.guid(), group: z.enum(['readers', 'contributors']) }))
+    .min(1)
+    .max(100)
+})
+export const AzureDevOpsMembershipDto = z.object({
+  projectId: z.string(),
+  projectName: z.string(),
+  group: z.enum(['readers', 'contributors']),
+  outcome: z.enum(['added', 'already_member', 'refused', 'failed', 'group_missing', 'not_attempted'])
+})
+export const AzureDevOpsConnectResultDto = z.object({
+  connection: AzureDevOpsConnectionDto,
+  memberships: z.array(AzureDevOpsMembershipDto)
+})
+
 export const GithubAppDto = z.object({
   enabled: z.boolean(),
   /** github.com/apps/<slug>; null when the feature is disabled. */

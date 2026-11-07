@@ -353,7 +353,13 @@ describe('openapi plane', () => {
           'POST /api/v1/orgs/:orgId/capability-requests/:id/forward',
           'POST /api/v1/orgs/:orgId/azure-devops/connections',
           'POST /api/v1/orgs/:orgId/azure-devops/connections/:id/secret',
-          'DELETE /api/v1/orgs/:orgId/azure-devops/connections/:id'
+          'DELETE /api/v1/orgs/:orgId/azure-devops/connections/:id',
+          'POST /api/v1/orgs/:orgId/azure-devops/connect',
+          'POST /api/v1/orgs/:orgId/azure-devops/connect/callback',
+          'GET /api/v1/orgs/:orgId/azure-devops/connect/:flow/organizations',
+          'POST /api/v1/orgs/:orgId/azure-devops/connect/:flow/organization',
+          'POST /api/v1/orgs/:orgId/azure-devops/connect/:flow/projects',
+          'POST /api/v1/orgs/:orgId/azure-devops/connect/:flow/verify'
         ].sort()
       )
       const doc = (await app.inject({ method: 'GET', url: '/api/v1/openapi.json' })).json() as Record<string, any>

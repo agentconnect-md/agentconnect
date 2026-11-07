@@ -35,7 +35,7 @@ const ERROR_NAMES = {
 /** The machine-readable code a removal refused for a remaining reference answers with. */
 const REPOSITORY_IN_USE = 'repository_in_use'
 
-function connectionToDto(r: AzureDevOpsConnectionRecord, boundRepositories: number): AzureDevOpsConnectionDtoT {
+export function connectionToDto(r: AzureDevOpsConnectionRecord, boundRepositories: number): AzureDevOpsConnectionDtoT {
   return {
     id: r.id,
     organization: r.organization,
