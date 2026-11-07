@@ -44,10 +44,6 @@ function fakeBrowser(dir: string): { path: string; calls: () => string[][] } {
   return { path, calls }
 }
 
-async function until(check: () => boolean): Promise<void> {
-  for (let i = 0; i < 50 && !check(); i++) await new Promise((resolve) => setTimeout(resolve, 20))
-}
-
 function masterProfile(dir: string): string {
   const master = join(dir, 'master')
   mkdirSync(join(master, 'Default'), { recursive: true })
@@ -134,14 +130,15 @@ describe('launchBrowser', () => {
     expect(result.handedOff).toBe(false)
     expect(result.reports).toHaveLength(1)
     expect(existsSync(join(profile, BASELINE_FILE))).toBe(true)
-    await until(() => browser.calls().length > 0)
-    expect(browser.calls()[0]).toEqual([
-      `--user-data-dir=${profile}`,
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--hide-crash-restore-bubble',
-      'https://x.example'
-    ])
+    await expect
+      .poll(() => browser.calls()[0])
+      .toEqual([
+        `--user-data-dir=${profile}`,
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--hide-crash-restore-bubble',
+        'https://x.example'
+      ])
     expect(existsSync(`${profile}.launch-lock`)).toBe(false)
   })
 
@@ -157,8 +154,7 @@ describe('launchBrowser', () => {
 
     expect(result).toEqual({ handedOff: true, reports: [] })
     expect(existsSync(join(profile, BASELINE_FILE))).toBe(false)
-    await until(() => browser.calls().length > 0)
-    expect(browser.calls()[0]?.[0]).toBe(`--user-data-dir=${profile}`)
+    await expect.poll(() => browser.calls()[0]?.[0]).toBe(`--user-data-dir=${profile}`)
   })
 
   it.skipIf(!posix)(
@@ -186,8 +182,7 @@ describe('launchBrowser', () => {
       const pid = (first.handedOff ? second : first).pid!
       expect(profileOwner(profile)).toBe(pid)
       process.kill(pid)
-      await until(() => readFileSync(calls, 'utf8').trim().split('\n').length === 2)
-      expect(readFileSync(calls, 'utf8').trim().split('\n')).toHaveLength(2)
+      await expect.poll(() => readFileSync(calls, 'utf8').trim().split('\n')).toHaveLength(2)
     }
   )
 })
