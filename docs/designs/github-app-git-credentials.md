@@ -611,10 +611,12 @@ issued to an agent this daemon no longer runs is refused with 403. A
 credential that is not a placeholder, such as a token the agent was given
 itself, passes untouched.
 
-**Listeners.** `srt` reaches the proxy over a Unix socket in the daemon's run
-directory. On the host, the proxy listens on loopback and requires the proxy
-credential carried in the `HTTPS_PROXY` URL, so it is no open proxy to other
-local processes. A code-host name never resolves to loopback, private,
+**Listeners.** `srt` reaches the proxy over a Unix socket of the agent's own
+in the daemon's run directory, which honors only that agent's placeholder: one
+that leaks into another agent's environment buys nothing there. On the host,
+the proxy listens on loopback and requires the proxy credential carried in the
+`HTTPS_PROXY` URL, so it is no open proxy to other local processes; a host
+session has no boundary from another agent's to begin with. A code-host name never resolves to loopback, private,
 link-local or unspecified space upstream.
 
 **GraphQL is read-only.** A GraphQL request names no repository in its URL,

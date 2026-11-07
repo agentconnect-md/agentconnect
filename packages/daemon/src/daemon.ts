@@ -1688,7 +1688,7 @@ export class Daemon {
   private fileTransfer?: { maxBytes: number }
   private gitCredServer?: GitCredServer
   /** The code-host credential proxy, when `features.credentialProxy` is on and it started (github-app-git-credentials.md, Phase 2). */
-  private credentialProxy?: { proxy: CredentialProxy; ca: ProxyCa; socketPath: string }
+  private credentialProxy?: { proxy: CredentialProxy; ca: ProxyCa }
   /** Leases over cluster pods, in memory: an open page's keep-alive, and this daemon's own on a pod it saw a watcher armed in. */
   private readonly sandboxHolds = new SandboxHolds({ now: () => Date.now() })
   /** Merge-when-ready's in-memory armed set (github/auto-merge). Built with the credential server,
@@ -3881,7 +3881,7 @@ export class Daemon {
         !environment.hosted &&
         this.credentialProxyIntercepts(environment.id.split('/')[0] ?? '')
           ? {
-              socketPath: this.credentialProxy.socketPath,
+              socketPath: this.credentialProxy.proxy.socketFor(environment.id.split('/')[0] ?? ''),
               domains: [...GITHUB_PROXY_HOSTS],
               trustEnv: proxyTrustEnv(this.credentialProxy.ca)
             }
@@ -6614,6 +6614,7 @@ export class Daemon {
       // Use the one generation-safe teardown path: it evicts the host synchronously,
       // publishes hostStopping, and fences every older startup/retry generation.
       await this.stopHost(id)
+      this.credentialProxy?.proxy.release(id)
       await this.modelSessions.releaseForAgent(id)
       await this.webchatMcpRevocations.revokeRemoteWebchatGrantsForAgent(id, 'agent_detached')
       // Preserve lifecycle/move gates that predated this reconcile. A plain file/CP
@@ -6891,9 +6892,8 @@ export class Daemon {
         knownAgent: (agentId) => this.agents.has(agentId),
         log: this.log
       })
-      const socketPath = join(root, 'run', 'codehost-proxy.sock')
-      await proxy.start(socketPath)
-      this.credentialProxy = { proxy, ca, socketPath }
+      await proxy.start(join(root, 'run'))
+      this.credentialProxy = { proxy, ca }
       this.log.info('credential proxy: host and srt sessions on GitHub hold a placeholder')
     } catch (err) {
       this.log.warn(`credential proxy: not started, sessions keep their direct credentials (${formatErr(err)})`)

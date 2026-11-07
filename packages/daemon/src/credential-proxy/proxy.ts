@@ -1,10 +1,10 @@
 // The daemon's code-host credential proxy (github-app-git-credentials.md, Phase 2): the environment holds a sealed placeholder, and each request is authenticated here with a token minted at its repository's tier.
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { chmodSync, mkdirSync, rmSync } from 'node:fs'
 import type { Server } from 'node:http'
 import { lookup as dnsLookup } from 'node:dns'
 import { isIP, type AddressInfo, type LookupFunction } from 'node:net'
-import { dirname } from 'node:path'
+import { join } from 'node:path'
 import { createHttpProxyServer } from '@anthropic-ai/sandbox-runtime/dist/sandbox/http-proxy.js'
 import { createMitmCA, disposeMitmCASync, type MitmCA } from '@anthropic-ai/sandbox-runtime/dist/sandbox/mitm-ca.js'
 import type { DirectLookup } from '@anthropic-ai/sandbox-runtime/dist/sandbox/parent-proxy.js'
@@ -103,43 +103,68 @@ function authorization(scheme: Presented['scheme'], token: string): string {
 }
 
 export class CredentialProxy {
-  private servers: Server[] = []
+  private loopback: Server | undefined
+  /** srt's routes, one socket per agent, so a placeholder is honored only over its own agent's. */
+  private readonly agentSockets = new Map<string, { path: string; server: Server }>()
+  private socketDir: string | undefined
   private mitmCa: MitmCA | undefined
   private readonly proxyToken = randomBytes(24).toString('base64url')
   private loopbackPort: number | undefined
 
   constructor(private readonly deps: CredentialProxyDeps) {}
 
-  /** Listen on `socketPath` (srt routes the code-host domains here) and on an authenticated loopback port. */
-  async start(socketPath: string): Promise<void> {
+  /** Listen on an authenticated loopback port, and keep the per-agent srt sockets under `runDir`. */
+  async start(runDir: string): Promise<void> {
     this.mitmCa = createMitmCA({
       caCertPem: this.deps.ca.certPem,
       caKeyPem: this.deps.ca.keyPem,
       caCertPath: this.deps.ca.certPath,
       caKeyPath: this.deps.ca.keyPath
     })
-    mkdirSync(dirname(socketPath), { recursive: true, mode: 0o700 })
-    rmSync(socketPath, { force: true })
-    const socketServer = this.server()
-    await new Promise<void>((resolve, reject) => {
-      socketServer.once('error', reject)
-      socketServer.listen(socketPath, () => resolve())
-    })
-    chmodSync(socketPath, 0o600)
+    this.socketDir = join(runDir, 'codehost')
+    rmSync(this.socketDir, { recursive: true, force: true })
+    mkdirSync(this.socketDir, { recursive: true, mode: 0o700 })
     const loopback = this.server(this.proxyToken)
     await new Promise<void>((resolve, reject) => {
       loopback.once('error', reject)
       loopback.listen(0, '127.0.0.1', () => resolve())
     })
     this.loopbackPort = (loopback.address() as AddressInfo).port
-    this.servers = [socketServer, loopback]
+    this.loopback = loopback
   }
 
   async stop(): Promise<void> {
-    await Promise.all(this.servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))))
-    this.servers = []
+    const servers = [...(this.loopback ? [this.loopback] : []), ...[...this.agentSockets.values()].map((s) => s.server)]
+    await Promise.all(servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))))
+    this.loopback = undefined
+    this.agentSockets.clear()
     if (this.mitmCa) disposeMitmCASync(this.mitmCa)
     this.mitmCa = undefined
+  }
+
+  /** The socket srt routes this agent's code-host domains to, listening from the first ask; only this agent's placeholder is honored there. */
+  socketFor(agentId: string): string {
+    const existing = this.agentSockets.get(agentId)
+    if (existing) return existing.path
+    if (!this.socketDir) throw new Error('the credential proxy is not running')
+    // A digest, not the id: the path must fit AF_UNIX beside a long daemon root.
+    const path = join(this.socketDir, `${createHash('sha256').update(agentId).digest('hex').slice(0, 16)}.sock`)
+    rmSync(path, { force: true })
+    const server = this.server(undefined, agentId)
+    server.on('error', (err) => this.deps.log.warn(`credential proxy: socket for ${agentId} failed: ${err.message}`))
+    // A Unix path binds inside listen() itself, so the socket exists before srt is handed it; only `listening` waits a tick.
+    server.listen(path, () => chmodSync(path, 0o600))
+    this.agentSockets.set(agentId, { path, server })
+    return path
+  }
+
+  /** Retire an agent's route with the agent: its listener closes and its socket goes. */
+  release(agentId: string): void {
+    const route = this.agentSockets.get(agentId)
+    if (!route) return
+    this.agentSockets.delete(agentId)
+    route.server.close()
+    rmSync(route.path, { force: true })
   }
 
   /** The placeholder an agent's environment carries in place of a code-host token. */
@@ -153,13 +178,13 @@ export class CredentialProxy {
     return `http://srt:${this.proxyToken}@127.0.0.1:${this.loopbackPort}`
   }
 
-  private server(proxyAuthToken?: string): Server {
+  private server(proxyAuthToken?: string, boundAgent?: string): Server {
     return createHttpProxyServer({
       // Every host is reachable; only the code-host domains are terminated and judged.
       filter: () => true,
       mitmCA: this.mitmCa!,
       shouldTerminateTLS: (host) => GITHUB_PROXY_HOSTS.includes(host),
-      filterRequest: (request, info) => this.decide(request, info),
+      filterRequest: (request, info) => this.decide(request, info, boundAgent),
       onFilterRequestDenied: ({ method, url, reason }) =>
         this.deps.log.info(`credential proxy refused ${method} ${url.split('?')[0]}: ${reason}`),
       requireHostMatch: true,
@@ -170,8 +195,8 @@ export class CredentialProxy {
     })
   }
 
-  /** One request's decision: pass anything that is not ours untouched, and exchange our placeholder for the repository's token. */
-  async decide(request: Request, info?: RequestInfo): Promise<RequestDecision> {
+  /** One request's decision: pass anything that is not ours untouched, and exchange our placeholder for the repository's token; over an agent's own socket, only that agent's. */
+  async decide(request: Request, info?: RequestInfo, boundAgent?: string): Promise<RequestDecision> {
     const host = (info?.target?.host ?? new URL(request.url).hostname).toLowerCase()
     if (!GITHUB_PROXY_HOSTS.includes(host)) return { action: 'allow' }
     const presented = presentedCredential(request.headers.get('authorization'))
@@ -181,6 +206,8 @@ export class CredentialProxy {
     if (!claims) return deny(403, 'the agent credential was not issued by this daemon')
     if (!claims.hosts.includes(host)) return deny(403, `the agent credential is not valid for ${host}`)
     if (!this.deps.knownAgent(claims.agentId)) return deny(403, 'the agent credential belongs to no running agent')
+    if (boundAgent !== undefined && claims.agentId !== boundAgent)
+      return deny(403, 'the agent credential belongs to another agent')
     // Routed by the bytes that go upstream; an ambiguous spelling was refused before this runs.
     const url = new URL(request.url)
     const route = githubRoute(host, request.method, info.requestTarget ?? `${url.pathname}${url.search}`)
