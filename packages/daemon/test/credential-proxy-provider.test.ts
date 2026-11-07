@@ -148,6 +148,53 @@ describe('a provider placeholder', () => {
     expect(await proxy.decide(unrelated, HTTPS)).toEqual({ action: 'allow' })
   })
 
+  it('resolves afresh when a slot is replaced at another endpoint, never sending the old endpoint’s key there', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'acp-provider-'))
+    dirs.push(dir)
+    let slot: ProviderSlot = {
+      id: 'org:custom',
+      provider: 'anthropic',
+      host: 'old.example.test',
+      port: 443,
+      saas: false
+    }
+    const resolve = vi.fn(async () =>
+      slot.host === 'old.example.test'
+        ? { key: 'old-real', headers: { 'x-workspace': 'old' } }
+        : { key: 'new-real', headers: { 'x-workspace': 'new' } }
+    )
+    const proxy = new CredentialProxy({
+      key: loadPlaceholderKey(join(dir, 'proxy.key')),
+      ca: loadProxyCa(join(dir, 'ca')),
+      mint: async () => ({ username: 'x-access-token', token: 'ghs_minted', access: 'write' as const }),
+      workspaceRepo: () => undefined,
+      instancesOf: () => [],
+      runningAgents: () => [AGENT],
+      knownAgent: () => true,
+      providerSlotsOf: () => [slot],
+      resolveProviderSlot: resolve,
+      log: quiet
+    })
+    const before = proxy.providerPlaceholderFor(AGENT, 'org:custom')!
+    const toOld = new Request('https://old.example.test/v1/messages', { headers: { 'x-api-key': before } })
+    expect(await proxy.decide(toOld, HTTPS)).toMatchObject({
+      setHeaders: [
+        ['x-api-key', 'old-real'],
+        ['x-workspace', 'old']
+      ]
+    })
+    slot = { ...slot, host: 'new.example.test' }
+    const after = proxy.providerPlaceholderFor(AGENT, 'org:custom')!
+    const toNew = new Request('https://new.example.test/v1/messages', { headers: { 'x-api-key': after } })
+    expect(await proxy.decide(toNew, HTTPS)).toMatchObject({
+      setHeaders: [
+        ['x-api-key', 'new-real'],
+        ['x-workspace', 'new']
+      ]
+    })
+    expect(resolve).toHaveBeenCalledTimes(2)
+  })
+
   it('reads the headers a provider client sends its key in, and the slot’s prefix', () => {
     const headers = new Headers({ authorization: 'Bearer acph1_a.b', 'api-key': 'acph1_c.d', 'x-api-key': 'sk-own' })
     expect(providerKeyPlaceholders(headers)).toEqual([
