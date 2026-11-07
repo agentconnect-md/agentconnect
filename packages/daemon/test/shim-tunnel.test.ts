@@ -659,8 +659,9 @@ async function tunnelPair(
           failAcks -= 1
           throw new Error('shim channel renewed')
         }
+        // Counted before the host applies it, since the host sends what the ack makes room for synchronously.
+        if (frame.op === 'ack') acked = Math.max(acked, frame.received!)
         const reply = await host.handle(options.legacy && frame.op === 'listen' ? strip(payload) : payload)
-        if (frame.op === 'ack') acked = frame.received!
         return options.legacy ? strip(reply) : reply
       },
       onEvent: (listener) => listeners.push(listener),
@@ -704,28 +705,33 @@ describe('shim-side tunnel flow control', () => {
     expect(await host.handle({ op: 'listen', tunnel: 'gitcred', acks: true })).toEqual(
       expect.objectContaining({ acks: true })
     )
-    const bytes = randomBytes(3 * MAX_IN_FLIGHT_FRAMES * MAX_TUNNEL_CHUNK_BYTES)
-    inPodClient(path).socket.write(bytes)
+    inPodClient(path)
+    await vi.waitFor(() => expect(streamId).not.toBe(''))
+    const socket = (host as unknown as { streams: Map<string, { socket: Socket }> }).streams.get(streamId)!.socket
 
-    await vi.waitFor(() => expect(chunks.length).toBeGreaterThanOrEqual(MAX_IN_FLIGHT_FRAMES))
-    await new Promise((resolve) => setTimeout(resolve, 150))
-    // One socket read may straddle the window by a frame, never more.
-    expect(chunks.length).toBeLessThanOrEqual(MAX_IN_FLIGHT_FRAMES + 1)
+    // One read far past the window, as a Linux socket delivers: the window's worth goes out and the rest is held.
+    const frames = 3 * MAX_IN_FLIGHT_FRAMES
+    const bytes = randomBytes(frames * MAX_TUNNEL_CHUNK_BYTES)
+    socket.emit('data', bytes)
+    expect(chunks).toHaveLength(MAX_IN_FLIGHT_FRAMES)
+    expect(socket.isPaused()).toBe(true)
 
-    const paused = chunks.length
     await host.handle({ op: 'ack', streamId, received: ACK_EVERY_FRAMES })
-    await vi.waitFor(() => expect(chunks.length).toBeGreaterThan(paused))
-    await new Promise((resolve) => setTimeout(resolve, 150))
-    expect(chunks.length).toBeLessThanOrEqual(ACK_EVERY_FRAMES + MAX_IN_FLIGHT_FRAMES + 1)
+    expect(chunks).toHaveLength(MAX_IN_FLIGHT_FRAMES + ACK_EVERY_FRAMES)
+    expect(socket.isPaused()).toBe(true)
 
     // A repeated or overstated ack is harmless: acks are cumulative and capped at what was sent.
     await host.handle({ op: 'ack', streamId, received: ACK_EVERY_FRAMES })
-    const sent = (): number => chunks.reduce((length, chunk) => length + Buffer.from(chunk, 'base64').length, 0)
-    for (let i = 0; i < 1_000 && sent() < bytes.length; i += 1) {
+    expect(chunks).toHaveLength(MAX_IN_FLIGHT_FRAMES + ACK_EVERY_FRAMES)
+    while (chunks.length < frames) {
+      const before = chunks.length
       await host.handle({ op: 'ack', streamId, received: Number.MAX_SAFE_INTEGER })
-      await new Promise((resolve) => setTimeout(resolve, 5))
+      expect(chunks.length - before).toBeLessThanOrEqual(MAX_IN_FLIGHT_FRAMES)
+      expect(chunks.length).toBeGreaterThan(before)
     }
-    await vi.waitFor(() => expect(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk, 'base64')))).toEqual(bytes))
+    expect(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk, 'base64')))).toEqual(bytes)
+    await host.handle({ op: 'ack', streamId, received: frames })
+    expect(socket.isPaused()).toBe(false)
   })
 
   it('keeps a shim-side stream unpaused for a daemon that never acknowledges', async () => {
@@ -747,7 +753,7 @@ describe('shim-side tunnel flow control', () => {
     const pair = await tunnelPair(hashingServer(bytes.length))
     expect(await transfer(pair.podPath, bytes)).toBe(digest(bytes))
     expect(pair.requests.filter((frame) => frame.op === 'ack').length).toBeGreaterThan(0)
-    expect(pair.maxOutstanding()).toBeLessThanOrEqual(MAX_IN_FLIGHT_FRAMES + 1)
+    expect(pair.maxOutstanding()).toBeLessThanOrEqual(MAX_IN_FLIGHT_FRAMES)
   })
 
   it.each(['shim', 'holder'] as const)(
@@ -804,7 +810,8 @@ describe('shim-side tunnel flow control', () => {
   it('ends a stream whose acknowledgement is lost twice, rather than leave it paused', async () => {
     const pair = await tunnelPair(hashingServer(Number.MAX_SAFE_INTEGER), { failAcks: 2 })
     const client = inPodClient(pair.podPath)
-    client.socket.write(randomBytes(4 * MAX_IN_FLIGHT_FRAMES * MAX_TUNNEL_CHUNK_BYTES))
+    // Far more than the window, so the client is still writing into a paused stream when it ends.
+    client.socket.write(randomBytes(64 * MAX_IN_FLIGHT_FRAMES * MAX_TUNNEL_CHUNK_BYTES))
     await vi.waitFor(() => expect(client.ended()).toBe(true), waitBudget(10_000))
     expect(pair.requests).toContainEqual(
       expect.objectContaining({ op: 'close', error: expect.stringContaining('acknowledgement could not be delivered') })
