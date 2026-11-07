@@ -40,11 +40,11 @@ import type { GitPullSummary, GitRunner } from './git-runner.js'
 import { simpleGit, type SimpleGit } from 'simple-git'
 import { normalizeGitCloneUrl, type CodeHostProvider, type GitCommitIdentity } from '@agentconnect.md/protocol'
 import {
-  GITCRED_AGENT_ENV,
-  GITCRED_CAPABILITY_ENV,
-  GITCRED_SOCKET_ENV,
-  type GitCredHolder
-} from '../cp/gitcred-server.js'
+  AGENT_CHANNEL_AGENT_ENV,
+  AGENT_CHANNEL_CAPABILITY_ENV,
+  AGENT_CHANNEL_SOCKET_ENV,
+  type AgentChannelHolder
+} from '../cp/agent-channel-server.js'
 import {
   codeHostCredentials,
   managedHostTable,
@@ -54,7 +54,7 @@ import {
 import {
   encodeManagedHostTable,
   gitlabManagedHost,
-  GITCRED_HOSTS_ENV,
+  AGENT_CHANNEL_HOSTS_ENV,
   GITHUB_MANAGED_HOST,
   parseManagedBaseUrl,
   stripHostPathPrefix,
@@ -107,11 +107,11 @@ export function gitFor(cwd?: string, abort?: AbortSignal, env?: Record<string, s
 // case-insensitively — mirror that) + repo-context overrides that must never
 // leak into a clone/pull child. VISUAL rides along with the editor family.
 const HOST_ENV_STRIP = new Set([
-  GITCRED_CAPABILITY_ENV,
-  GITCRED_AGENT_ENV,
-  GITCRED_SOCKET_ENV,
+  AGENT_CHANNEL_CAPABILITY_ENV,
+  AGENT_CHANNEL_AGENT_ENV,
+  AGENT_CHANNEL_SOCKET_ENV,
   // The managed-host table is WRITTEN at injection time; an inherited value is never a hint.
-  GITCRED_HOSTS_ENV,
+  AGENT_CHANNEL_HOSTS_ENV,
   'EDITOR',
   'VISUAL',
   'PAGER',
@@ -569,7 +569,7 @@ export interface GitCredRepository {
 let targetFor: ((agentId: string, cwd?: string) => GitCredentialTarget) | undefined
 let daemonTarget: GitCredentialTarget | undefined
 let preWarm: ((agentId: string, reason: 'clone' | 'pull', repository?: GitCredRepository) => Promise<void>) | undefined
-let capabilityFor: ((agentId: string, holder: GitCredHolder) => string) | undefined
+let capabilityFor: ((agentId: string, holder: AgentChannelHolder) => string) | undefined
 let openSkillWindow: ((agentId: string, repo: string) => SkillCredentialWindowHandle | undefined) | undefined
 
 /** A daemon-opened skill credential window: its capability replaces the agent's for one acquisition. */
@@ -590,7 +590,7 @@ export function initGitInjection(opts: {
   /** Warm the daemon credential cache BEFORE a timed git op (never inside its budget): the named repository's own credential, else the workspace's. */
   preWarm: (agentId: string, reason: 'clone' | 'pull', repository?: GitCredRepository) => Promise<void>
   /** Runtime-only local socket capability for one holder: daemon-run git, or the agent's runtime. Never written to a config file. */
-  capabilityFor: (agentId: string, holder: GitCredHolder) => string
+  capabilityFor: (agentId: string, holder: AgentChannelHolder) => string
   /** Opens a daemon-subject skill credential window (source-cache.md §8); absent or undefined ⇒ the agent capability is presented. */
   openSkillCredentialWindow?: (agentId: string, repo: string) => SkillCredentialWindowHandle | undefined
 }): void {
@@ -626,7 +626,7 @@ export function sandboxGitCredentialTarget(runtimeRoot?: string, helperRoot?: st
     kind: 'sandbox',
     helper: paths.gitCredentialHelper,
     configDir: paths.gitConfigDir,
-    socketPath: paths.tunnels.gitcred
+    socketPath: paths.tunnels.agent
   }
 }
 
@@ -640,28 +640,28 @@ export function gitCredentialEnv(
   agentId: string,
   target: GitCredentialTarget,
   scope: ManagedCredentialScope,
-  holder: GitCredHolder
+  holder: AgentChannelHolder
 ): Record<string, string> {
   if (!capabilityFor) throw new Error('git credential injection is not initialized')
   return {
-    [GITCRED_CAPABILITY_ENV]: capabilityFor(agentId, holder),
-    [GITCRED_AGENT_ENV]: agentId,
+    [AGENT_CHANNEL_CAPABILITY_ENV]: capabilityFor(agentId, holder),
+    [AGENT_CHANNEL_AGENT_ENV]: agentId,
     // §24.4: which hosts are ours is injected, never sniffed by the helper from two literals.
-    [GITCRED_HOSTS_ENV]: encodeManagedHostTable(scopeHostTable(scope)),
-    ...(target.socketPath ? { [GITCRED_SOCKET_ENV]: target.socketPath } : {})
+    [AGENT_CHANNEL_HOSTS_ENV]: encodeManagedHostTable(scopeHostTable(scope)),
+    ...(target.socketPath ? { [AGENT_CHANNEL_SOCKET_ENV]: target.socketPath } : {})
   }
 }
 
-/** The credential channel alone, for every agent's runtime under its runtime capability: its live secrets ride it, and `get` stays refused without a managed credential (capability-requests.md §4.9.2). */
+/** The agent channel alone, for every agent's runtime under its runtime capability: its live secrets ride it, and `get` stays refused without a managed credential (capability-requests.md §4.9.2). */
 export function liveSecretsChannelEnv(
   agentId: string,
   target: GitCredentialTarget = targetOf(agentId)
 ): Record<string, string> {
   if (!capabilityFor) throw new Error('git credential injection is not initialized')
   return {
-    [GITCRED_CAPABILITY_ENV]: capabilityFor(agentId, 'runtime'),
-    [GITCRED_AGENT_ENV]: agentId,
-    ...(target.socketPath ? { [GITCRED_SOCKET_ENV]: target.socketPath } : {})
+    [AGENT_CHANNEL_CAPABILITY_ENV]: capabilityFor(agentId, 'runtime'),
+    [AGENT_CHANNEL_AGENT_ENV]: agentId,
+    ...(target.socketPath ? { [AGENT_CHANNEL_SOCKET_ENV]: target.socketPath } : {})
   }
 }
 

@@ -52,7 +52,7 @@ class FrameQueue {
 
 /** A VM as the shim starter sees it: only the guest agent's exec and TCP streams are faked, and the shim they start and reach is the real one. */
 export function fakeVm(
-  guestSockets: Record<'gitcred' | 'mcp', string>,
+  guestSockets: Record<'agent' | 'mcp', string>,
   options: {
     serve?: (capability: string, payload: unknown) => Promise<unknown>
     /** Tunnel names this shim predates, whose `listen` its schema refuses. */
@@ -73,7 +73,7 @@ export function fakeVm(
     const tunnels = new TunnelHost({
       emit: (streamId, event) => client.emit(streamId, event),
       socketPathFor: (tunnel) =>
-        tunnel === 'gitcred' || tunnel === 'mcp' ? guestSockets[tunnel] : `${guestSockets.gitcred}.${tunnel}`
+        tunnel === 'agent' || tunnel === 'mcp' ? guestSockets[tunnel] : `${guestSockets.agent}.${tunnel}`
     })
     const client = new ShimClient({
       endpoint: 'accepted-daemon-channel',

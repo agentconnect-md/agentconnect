@@ -132,7 +132,7 @@ function shim(
       allowFileProtocol: true,
       shimEnv: { PATH: process.env.PATH },
       credentialHelper: '/nonexistent/helper',
-      credentialSocket: '/nonexistent/gitcred.sock',
+      credentialSocket: '/nonexistent/agent.sock',
       log: { warn: (message) => options.logs?.push(message) }
     },
     ...(options.writeBack === false

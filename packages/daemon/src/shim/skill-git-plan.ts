@@ -1,6 +1,10 @@
 import { mkdir } from 'node:fs/promises'
-import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV, GITCRED_SOCKET_ENV } from '../gitcred/env.js'
-import { GITCRED_HOSTS_ENV, GITHUB_MANAGED_HOST, encodeManagedHostTable } from '../gitcred/managed-hosts.js'
+import {
+  AGENT_CHANNEL_AGENT_ENV,
+  AGENT_CHANNEL_CAPABILITY_ENV,
+  AGENT_CHANNEL_SOCKET_ENV
+} from '../agent-channel/env.js'
+import { AGENT_CHANNEL_HOSTS_ENV, GITHUB_MANAGED_HOST, encodeManagedHostTable } from '../gitcred/managed-hosts.js'
 import { resolveSkillSelections } from '../skills/skill-cli-selection.js'
 import type { SkillSourceSnapshotLimits } from '../skills/skill-source-snapshot.js'
 import {
@@ -24,9 +28,9 @@ export const SKILL_GIT_PLAN_SOURCE_TIMEOUT_MS = 4 * 60_000
 export const SKILL_GIT_PLAN_DEADLINE_MS = 8 * 60_000
 
 export interface SkillGitPlanDeps {
-  /** The in-pod gitcred helper Git runs for a credentialed Source. */
+  /** The in-pod git credential helper Git runs for a credentialed Source. */
   credentialHelper: string
-  /** The gitcred tunnel socket that helper dials. */
+  /** The agent tunnel socket that helper dials. */
   credentialSocket: string
   git?: SkillGitRunner
   shimEnv?: Record<string, string | undefined>
@@ -89,10 +93,10 @@ export function skillGitCredentialFor(
     host: host.baseUrl,
     helper: `!sh ${shellQuoted(deps.credentialHelper)} ${shellQuoted(agentId)}`,
     env: {
-      [GITCRED_CAPABILITY_ENV]: window.capability,
-      [GITCRED_AGENT_ENV]: agentId,
-      [GITCRED_SOCKET_ENV]: deps.credentialSocket,
-      [GITCRED_HOSTS_ENV]: encodeManagedHostTable([host])
+      [AGENT_CHANNEL_CAPABILITY_ENV]: window.capability,
+      [AGENT_CHANNEL_AGENT_ENV]: agentId,
+      [AGENT_CHANNEL_SOCKET_ENV]: deps.credentialSocket,
+      [AGENT_CHANNEL_HOSTS_ENV]: encodeManagedHostTable([host])
     }
   }
 }

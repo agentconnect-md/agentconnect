@@ -2,7 +2,7 @@
 import type { TunnelName } from '../shim/tunnel.js'
 
 export interface DaemonTunnelSockets {
-  gitcred: string
+  agent: string
   mcp: string
   /** The agent's own credential-proxy tunnel socket, or undefined when the proxy serves that agent none. */
   codehost: (agentId: string) => string | undefined
@@ -17,8 +17,8 @@ export function daemonTunnelSocketPath(
   sockets: DaemonTunnelSockets
 ): string | undefined {
   switch (tunnel) {
-    case 'gitcred':
-      return sockets.gitcred
+    case 'agent':
+      return sockets.agent
     case 'mcp':
       return sockets.mcp
     case 'codehost':

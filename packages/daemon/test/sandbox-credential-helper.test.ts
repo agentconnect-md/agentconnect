@@ -13,7 +13,7 @@ import { INSTALLATION_GIT_CREDENTIAL_WRAPPER } from '../src/shim/git-credential-
  *
  * The parts were all testable in isolation and all passed while the feature did not exist, so this
  * asserts the join that matters in production: git reads a helper line naming the image's path, runs
- * that executable, and a token comes back over the gitcred wire protocol. Everything here is the
+ * that executable, and a token comes back over the agent channel wire protocol. Everything here is the
  * pod's side — the daemon's socket is stood in for by a server on a temp path, which is exactly what
  * the shim's tunnel presents to a pod.
  *
@@ -42,11 +42,11 @@ function scratchDir(): string {
   return dir
 }
 
-/** The daemon's gitcred.sock as the pod sees it: whatever the shim tunnels to. */
-async function gitcredServer(
+/** The daemon's agent.sock as the pod sees it: whatever the shim tunnels to. */
+async function agentChannelServer(
   reply: (request: Record<string, unknown>) => unknown
 ): Promise<{ path: string; seen: Array<Record<string, unknown>> }> {
-  const path = join(scratchDir(), 'gitcred.sock')
+  const path = join(scratchDir(), 'agent.sock')
   const seen: Array<Record<string, unknown>> = []
   const server = createServer((socket) => {
     let buffered = ''
@@ -118,7 +118,7 @@ function gitCredentialFill(options: {
           GIT_CONFIG_GLOBAL: '/dev/null',
           GIT_CONFIG_NOSYSTEM: '1',
           GIT_TERMINAL_PROMPT: '0',
-          AC_GITCRED_SOCKET: options.socketPath,
+          AC_AGENT_CHANNEL_SOCKET: options.socketPath,
           ...options.env
         }
       },
@@ -132,8 +132,8 @@ function gitCredentialFill(options: {
 }
 
 describe('the credential helper the runtime image ships', () => {
-  it('answers real git with a token fetched over the gitcred socket', async () => {
-    const server = await gitcredServer(() => ({ ok: true, username: 'x-access-token', password: 'ghs_tunnelled' }))
+  it('answers real git with a token fetched over the agent channel socket', async () => {
+    const server = await agentChannelServer(() => ({ ok: true, username: 'x-access-token', password: 'ghs_tunnelled' }))
     const result = await gitCredentialFill({
       helper: helperWrapper(),
       socketPath: server.path,
@@ -154,13 +154,13 @@ describe('the credential helper the runtime image ships', () => {
   it('prefers the env identity over the id baked into the helper line', async () => {
     // A `.git/config` helper line outlives the agent that wrote it — deleted and recreated under the
     // same name leaves the DEAD id on disk — so the pair minted at spawn has to outrank it.
-    const server = await gitcredServer(() => ({ ok: true, username: 'x-access-token', password: 'ghs_env' }))
+    const server = await agentChannelServer(() => ({ ok: true, username: 'x-access-token', password: 'ghs_env' }))
     const result = await gitCredentialFill({
       helper: helperWrapper(),
       socketPath: server.path,
       agentId: 'stale-agent',
       request: 'protocol=https\nhost=github.com\n\n',
-      env: { AC_GITCRED_AGENT: 'live-agent', AC_GITCRED_CAPABILITY: 'cap-live' }
+      env: { AC_AGENT_CHANNEL_AGENT: 'live-agent', AC_AGENT_CHANNEL_CAPABILITY: 'cap-live' }
     })
 
     expect(result.stdout).toContain('password=ghs_env')
@@ -170,7 +170,7 @@ describe('the credential helper the runtime image ships', () => {
   it('fails loudly when the daemon denies the repo, instead of answering git with nothing', async () => {
     // An empty answer reads to git as "this helper has no opinion", and the operation then fails
     // against GitHub with a 403 that says nothing about authorization having been refused here.
-    const server = await gitcredServer(() => ({ ok: false, error: 'repository not authorized for this agent' }))
+    const server = await agentChannelServer(() => ({ ok: false, error: 'repository not authorized for this agent' }))
     const result = await gitCredentialFill({
       helper: helperWrapper(),
       socketPath: server.path,
@@ -188,7 +188,7 @@ describe('the credential helper the runtime image ships', () => {
 
   it('reports a refusal as the reason alone, without blaming the daemon connection', async () => {
     // The appended "daemon must be running" line is what made a missing grant read as an agent-wide outage.
-    const server = await gitcredServer(() => ({
+    const server = await agentChannelServer(() => ({
       ok: false,
       error: 'acme/secret is not authorized for this agent',
       denied: 'repository'
@@ -221,7 +221,7 @@ describe('the credential helper the runtime image ships', () => {
   }, 60_000)
 
   it('stays silent for a host that is not github.com, so nothing is asked for it', async () => {
-    const server = await gitcredServer(() => ({ ok: true, username: 'x-access-token', password: 'ghs_leak' }))
+    const server = await agentChannelServer(() => ({ ok: true, username: 'x-access-token', password: 'ghs_leak' }))
     // Configured unscoped on purpose: the helper must decline by the host git names, not by relying
     // on the config scope to have kept it away.
     const result = await gitCredentialFill({

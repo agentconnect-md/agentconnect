@@ -1,6 +1,6 @@
 /**
  * Per-repo credential ROUTING (multi-repo authorization, #457): the helper's
- * path → repo parsing and the gitcred.sock server's key routing (plane split + workspace folding).
+ * path → repo parsing and the agent.sock server's key routing (plane split + workspace folding).
  */
 import { randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -10,12 +10,12 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { effectiveAgentId, repoFromPath } from '../../src/cli/git-credential.js'
 import {
-  GITCRED_AGENT_ENV,
-  GitCredServer,
-  gitcredSocketPath,
+  AGENT_CHANNEL_AGENT_ENV,
+  AgentChannelServer,
+  agentChannelSocketPath,
   RUNTIME_NO_MINT_ERROR,
-  type GitCredServerDeps
-} from '../../src/cp/gitcred-server.js'
+  type AgentChannelServerDeps
+} from '../../src/cp/agent-channel-server.js'
 import { GitCredUnavailableError, type GitCredentialCache } from '../../src/cp/git-credential.js'
 import { MAX_SKILL_WINDOW_TTL_MS, SkillCredentialWindows } from '../../src/cp/skill-credential-window.js'
 import { TunnelBinder, type TunnelSession } from '../../src/remote/tunnel-binder.js'
@@ -39,24 +39,24 @@ describe('repoFromPath (git credential path → owner/repo)', () => {
 
 describe('effectiveAgentId (helper identity resolution)', () => {
   afterEach(() => {
-    delete process.env[GITCRED_AGENT_ENV]
+    delete process.env[AGENT_CHANNEL_AGENT_ENV]
   })
 
   it('prefers the env identity minted with the capability over the config-embedded argv id', () => {
     // A `.git/config` helper line outlives the agent that wrote it — a recreated
     // agent adopting the checkout must present ITS id, not the dead one on disk.
-    process.env[GITCRED_AGENT_ENV] = 'live-agent'
+    process.env[AGENT_CHANNEL_AGENT_ENV] = 'live-agent'
     expect(effectiveAgentId('stale-agent')).toBe('live-agent')
   })
 
   it('falls back to the argv id when the env pair is absent or empty', () => {
     expect(effectiveAgentId('argv-agent')).toBe('argv-agent')
-    process.env[GITCRED_AGENT_ENV] = ''
+    process.env[AGENT_CHANNEL_AGENT_ENV] = ''
     expect(effectiveAgentId('argv-agent')).toBe('argv-agent')
   })
 })
 
-describe('GitCredServer routing (gitcred.sock)', () => {
+describe('AgentChannelServer routing (agent.sock)', () => {
   interface GetOpts {
     plane?: string
     repo?: string
@@ -75,7 +75,7 @@ describe('GitCredServer routing (gitcred.sock)', () => {
   }
 
   let dir: string | undefined
-  let server: GitCredServer | undefined
+  let server: AgentChannelServer | undefined
   afterEach(() => {
     server?.stop()
     if (dir) rmSync(dir, { recursive: true, force: true })
@@ -83,12 +83,12 @@ describe('GitCredServer routing (gitcred.sock)', () => {
 
   async function boot(
     workspace?: string,
-    spec?: Partial<GitCredServerDeps>,
+    spec?: Partial<AgentChannelServerDeps>,
     refuse?: GitCredUnavailableError,
     access: 'read' | 'comment' | 'write' = 'write'
   ) {
-    dir = mkdtempSync(join(tmpdir(), 'gitcred-routing-'))
-    const sockPath = gitcredSocketPath(dir)
+    dir = mkdtempSync(join(tmpdir(), 'agent-channel-routing-'))
+    const sockPath = agentChannelSocketPath(dir)
     const gets: GetCall[] = []
     const erases: EraseCall[] = []
     const logs: string[] = []
@@ -109,7 +109,7 @@ describe('GitCredServer routing (gitcred.sock)', () => {
         erases.push({ agentId, ...(password !== undefined ? { password } : {}), ...(opts ? { opts } : {}) })
       }
     }
-    server = new GitCredServer(fakeCache as unknown as GitCredentialCache, sockPath, {
+    server = new AgentChannelServer(fakeCache as unknown as GitCredentialCache, sockPath, {
       log: { info: (message) => logs.push(message), warn: (message) => warnings.push(message) },
       ...(workspace ? { workspaceRepoOf: () => workspace } : {}),
       ...spec
@@ -516,7 +516,7 @@ describe('GitCredServer routing (gitcred.sock)', () => {
     const OTHER_SKILL = 'acme/other-skills'
     let now = 1_000
     const skillRepos = new Set([SKILL, OTHER_SKILL])
-    const bootGithub = (extra?: Partial<GitCredServerDeps>) => {
+    const bootGithub = (extra?: Partial<AgentChannelServerDeps>) => {
       now = 1_000
       return boot('acme/infra', {
         providerOf: () => 'github',
@@ -748,12 +748,12 @@ describe('GitCredServer routing (gitcred.sock)', () => {
     it('binds a window to the tunnel it was handed through, end to end over two pods of one agent', async () => {
       const { sockPath, gets } = await bootGithub()
       const binder = new TunnelBinder({
-        tunnelsFor: () => ['gitcred'],
+        tunnelsFor: () => ['agent'],
         tunnelSocketPath: () => sockPath,
         tunnelGreeting: (subject) => server!.tunnelGreeting(subject),
         log: { info: () => {}, warn: () => {} }
       })
-      // A pod announces a connection, sends one gitcred request, and reads the reply its tunnel delivers.
+      // A pod announces a connection, sends one agent channel request, and reads the reply its tunnel delivers.
       const pod = (subject: string) => {
         let listener: ((event: ShimEvent) => void) | undefined
         const replies = new Map<string, (line: Record<string, unknown>) => void>()
@@ -764,7 +764,7 @@ describe('GitCredServer routing (gitcred.sock)', () => {
             const frame = payload as { op: string; streamId?: string; chunk?: string }
             if (frame.op === 'data')
               replies.get(frame.streamId!)?.(JSON.parse(Buffer.from(frame.chunk!, 'base64').toString()))
-            return { socketPath: '/pod/gitcred.sock' }
+            return { socketPath: '/pod/agent.sock' }
           },
           onEvent: (fn) => (listener = fn),
           offEvent: () => {},
@@ -778,7 +778,7 @@ describe('GitCredServer routing (gitcred.sock)', () => {
             new Promise<Record<string, unknown>>((resolve) => {
               const streamId = randomUUID()
               replies.set(streamId, resolve)
-              listener!({ type: 'shim/event', streamId, event: { kind: 'connect', tunnel: 'gitcred' } })
+              listener!({ type: 'shim/event', streamId, event: { kind: 'connect', tunnel: 'agent' } })
               const line = JSON.stringify({ op: 'get', agentId: 'a1', capability, repoFullName: SKILL }) + '\n'
               listener!({
                 type: 'shim/event',

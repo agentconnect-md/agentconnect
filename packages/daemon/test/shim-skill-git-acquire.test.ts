@@ -142,7 +142,7 @@ describe('plan and environment checks (no Git spawned)', () => {
     expect(calls).toEqual([])
   })
 
-  it('forwards only the gitcred helper variables from the credential env', async () => {
+  it('forwards only the agent channel variables from the credential env', async () => {
     const root = tempRoot('ac-skill-git-cred-')
     const staging = privateStaging(root)
     const envs: Array<Record<string, string>> = []
@@ -154,8 +154,8 @@ describe('plan and environment checks (no Git spawned)', () => {
         host: 'https://github.com',
         helper: '!sh /h',
         env: {
-          AC_GITCRED_CAPABILITY: 'cap',
-          AC_GITCRED_SOCKET: '/run/gitcred.sock',
+          AC_AGENT_CHANNEL_CAPABILITY: 'cap',
+          AC_AGENT_CHANNEL_SOCKET: '/run/agent.sock',
           PATH: '/evil',
           LD_PRELOAD: '/evil.so',
           GIT_CONFIG_COUNT: '9',
@@ -169,7 +169,11 @@ describe('plan and environment checks (no Git spawned)', () => {
     })
     expect(envs.length).toBeGreaterThan(0)
     for (const env of envs) {
-      expect(env).toMatchObject({ AC_GITCRED_CAPABILITY: 'cap', AC_GITCRED_SOCKET: '/run/gitcred.sock', PATH: '/bin' })
+      expect(env).toMatchObject({
+        AC_AGENT_CHANNEL_CAPABILITY: 'cap',
+        AC_AGENT_CHANNEL_SOCKET: '/run/agent.sock',
+        PATH: '/bin'
+      })
       expect(env.LD_PRELOAD).toBeUndefined()
       expect(env.GIT_SSH_COMMAND).toBeUndefined()
       expect(Number(env.GIT_CONFIG_COUNT)).not.toBe(9)
@@ -191,7 +195,11 @@ describe('plan and environment checks (no Git spawned)', () => {
           GIT_DIR: '/agent/.git',
           GIT_SSH_COMMAND: 'evil'
         },
-        credential: { host: 'https://github.com', helper: '!sh /helper a1', env: { AC_GITCRED_CAPABILITY: 'cap' } },
+        credential: {
+          host: 'https://github.com',
+          helper: '!sh /helper a1',
+          env: { AC_AGENT_CHANNEL_CAPABILITY: 'cap' }
+        },
         allowFileProtocol: false
       },
       { lazyFetch: false }
@@ -205,7 +213,7 @@ describe('plan and environment checks (no Git spawned)', () => {
       GIT_NO_LAZY_FETCH: '1',
       GIT_TERMINAL_PROMPT: '0',
       GIT_CEILING_DIRECTORIES: '/staging',
-      AC_GITCRED_CAPABILITY: 'cap'
+      AC_AGENT_CHANNEL_CAPABILITY: 'cap'
     })
     expect(env.GIT_DIR).toBeUndefined()
     expect(env.GIT_SSH_COMMAND).toBeUndefined()

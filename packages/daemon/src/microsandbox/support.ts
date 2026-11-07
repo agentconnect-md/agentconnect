@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { SandboxMount } from '../config/config-schema.js'
-import { gitcredShimPath } from '../cp/gitcred-server.js'
+import { gitcredShimPath } from '../cp/agent-channel-server.js'
 
 const GIT_CREDENTIAL_HELPER = '#!/bin/sh\nexec /opt/agentconnect/bin/git-credential "$@"\n'
 

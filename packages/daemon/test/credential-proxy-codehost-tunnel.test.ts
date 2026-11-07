@@ -122,7 +122,7 @@ async function placedSession(options: { maxCodehostStreams?: number } = {}) {
     },
     socketPathFor: (name) =>
       daemonTunnelSocketPath(name, AGENT, {
-        gitcred: join(dir, 'none.sock'),
+        agent: join(dir, 'none.sock'),
         mcp: join(dir, 'none.sock'),
         codehost: (agentId) => proxy.tunnelSocketFor(agentId),
         provider: () => undefined

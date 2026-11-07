@@ -76,7 +76,7 @@ export const ShimCapabilitySchema = z.enum([
   'exec',
   /** Read a bounded file back out (BFF workspace reads). */
   'read',
-  /** Proxy an in-pod unix socket back to a daemon-side server (gitcred, gh, MCP). */
+  /** Proxy an in-pod unix socket back to a daemon-side server (agent channel, gh, MCP). */
   'tunnel',
   /** Run the ACP runtime and relay its stdio as a stream (its own channel: ACP is already
    *  a complete protocol, and reinterpreting it here would add a second place to break). */

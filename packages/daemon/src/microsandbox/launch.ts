@@ -4,7 +4,7 @@ import { hostKeyDirName, hostKeySessionKey, type HostKey } from '../acp/host-key
 import { sandboxBoundary } from '../acp/sandbox.js'
 import { applyCodexPermissionProfile } from '../acp/codex-permission-profiles.js'
 import type { RuntimeDef, SandboxMount } from '../config/config-schema.js'
-import { GITCRED_SOCKET_ENV } from '../gitcred/env.js'
+import { AGENT_CHANNEL_SOCKET_ENV } from '../agent-channel/env.js'
 import { privateRuntimeHomeFor, runtimeGitMetadataRoots, type PreparedRuntimeLaunch } from '../launch/prepare.js'
 import { nativeRuntimeMemorySpecFor } from '../memory/runtime/capabilities.js'
 import {
@@ -212,7 +212,7 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
     throw new Error('microsandbox private XDG runtime path must be a real directory')
   }
   mkdirSync(env.XDG_RUNTIME_DIR, { recursive: true, mode: 0o700 })
-  env[GITCRED_SOCKET_ENV] = SANDBOX_TUNNEL_PATHS.gitcred
+  env[AGENT_CHANNEL_SOCKET_ENV] = SANDBOX_TUNNEL_PATHS.agent
   const mounts = [...automatic, ...configured]
   const protectedSourcesForLaunch = protectedCredentials?.sources.map((path) => canonicalPath(path, hostEnv)) ?? []
   if (mounts.some(({ source }) => protectedSourcesForLaunch.some((path) => contains(source, path)))) {

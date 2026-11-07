@@ -30,7 +30,7 @@ export interface ManagedCredentialHost {
 }
 
 /** The env name the table travels on, minted beside the capability and agent identity. */
-export const GITCRED_HOSTS_ENV = 'AC_GITCRED_HOSTS'
+export const AGENT_CHANNEL_HOSTS_ENV = 'AC_AGENT_CHANNEL_HOSTS'
 
 export const GITHUB_MANAGED_HOST: ManagedCredentialHost = {
   provider: IMPLICIT_CREDENTIAL_PROVIDER,

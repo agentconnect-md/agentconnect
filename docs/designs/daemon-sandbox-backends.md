@@ -1272,8 +1272,8 @@ agent runs in an agent-scoped shim (below).
   shim's HOME is the session's `home`, as the launch composition names it.
 - **A runtime root fixed by the id**, `<daemonRoot>/hs/<12 hex of its hash>`, which
   `startHostShim` takes as `runtimeRootName`. The launch composition therefore names
-  the shim's temp root (`<runtimeRoot>/t`) and its `gitcred` tunnel
-  (`AC_GITCRED_SOCKET`) before the shim starts, and the MCP spec names its `mcp`
+  the shim's temp root (`<runtimeRoot>/t`) and its `agent` tunnel
+  (`AC_AGENT_CHANNEL_SOCKET`) before the shim starts, and the MCP spec names its `mcp`
   tunnel. A start waits out the previous shim's removal of that root and clears one an
   earlier daemon life left.
 - **The descriptor is the composition's roots.** `prepareRuntimeLaunch` computes the
@@ -1293,7 +1293,7 @@ agent runs in an agent-scoped shim (below).
   resolver puts an `srt` agent on the srt plane, which sends a path inside a confined
   session's directory to that session's shim and everything else to this disk: its Git
   (`localShimGitRunner`, `execution/local-git.ts`, shared with the local VM) with the
-  session's HOME, the shim's temp root and its `gitcred` tunnel over the caller's env,
+  session's HOME, the shim's temp root and its `agent` tunnel over the caller's env,
   its files (`SrtWorkspaceFs`) and the console's reads. The session directory itself
   stays on this disk, since the shim runs in it. A filter, hook or helper the
   session's repository configures therefore runs inside the boundary, which is why the

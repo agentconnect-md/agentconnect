@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { gitcredSocketPath } from '../src/cp/gitcred-server.js'
+import { agentChannelSocketPath } from '../src/cp/agent-channel-server.js'
 import { isWindowsNamedPipe, mcpSocketPath } from '../src/paths.js'
 
 describe('local IPC paths', () => {
@@ -10,11 +10,11 @@ describe('local IPC paths', () => {
     expect(isWindowsNamedPipe(first)).toBe(true)
     expect(mcpSocketPath('C:\\agents\\one', 'win32')).toBe(first)
     expect(mcpSocketPath('C:\\agents\\two', 'win32')).not.toBe(first)
-    expect(gitcredSocketPath('C:\\agents\\one', 'win32')).not.toBe(first)
+    expect(agentChannelSocketPath('C:\\agents\\one', 'win32')).not.toBe(first)
   })
 
   it('keeps filesystem sockets on POSIX', () => {
     expect(mcpSocketPath('/srv/agentconnect', 'linux')).toBe('/srv/agentconnect/run/mcp.sock')
-    expect(gitcredSocketPath('/srv/agentconnect', 'darwin')).toBe('/srv/agentconnect/run/gitcred.sock')
+    expect(agentChannelSocketPath('/srv/agentconnect', 'darwin')).toBe('/srv/agentconnect/run/agent.sock')
   })
 })

@@ -7,7 +7,7 @@ const log = { info: () => {}, warn: () => {}, debug: () => {} }
 
 /** A bound channel of a given incarnation, and the proxy teardown it observed. */
 function fakeSession(generation: number) {
-  const request = vi.fn(async () => ({ socketPath: '/pod/gitcred.sock' }))
+  const request = vi.fn(async () => ({ socketPath: '/pod/agent.sock' }))
   const offEvent = vi.fn()
   const session = {
     agentId: 'agent-a',
@@ -23,7 +23,7 @@ function fakeSession(generation: number) {
 }
 
 function binder() {
-  return new TunnelBinder({ tunnelsFor: () => ['gitcred'], tunnelSocketPath: () => '/daemon/gitcred.sock', log })
+  return new TunnelBinder({ tunnelsFor: () => ['agent'], tunnelSocketPath: () => '/daemon/agent.sock', log })
 }
 
 describe('tunnel binder', () => {
@@ -31,19 +31,19 @@ describe('tunnel binder', () => {
     const { session, request } = fakeSession(1)
     await binder().ensure('agent-a', session)
 
-    expect(request).toHaveBeenCalledWith('tunnel', { op: 'listen', tunnel: 'gitcred', acks: true })
+    expect(request).toHaveBeenCalledWith('tunnel', { op: 'listen', tunnel: 'agent', acks: true })
   })
 
   it('opens a session pod’s tunnels by its agent’s policy, so a watcher armed there can fetch its token', async () => {
-    const tunnelsFor = vi.fn(() => ['gitcred' as const])
+    const tunnelsFor = vi.fn(() => ['agent' as const])
     const { session, request } = fakeSession(1)
-    await new TunnelBinder({ tunnelsFor, tunnelSocketPath: () => '/daemon/gitcred.sock', log }).ensure(
+    await new TunnelBinder({ tunnelsFor, tunnelSocketPath: () => '/daemon/agent.sock', log }).ensure(
       'agent-a/session-0123',
       session
     )
 
     expect(tunnelsFor).toHaveBeenCalledWith('agent-a', 'agent-a/session-0123')
-    expect(request).toHaveBeenCalledWith('tunnel', { op: 'listen', tunnel: 'gitcred', acks: true })
+    expect(request).toHaveBeenCalledWith('tunnel', { op: 'listen', tunnel: 'agent', acks: true })
   })
 
   it('keeps one proxy per agent across preparations of the same launch', async () => {
@@ -64,12 +64,12 @@ describe('tunnel binder', () => {
     await subject.ensure('agent-a', second.session)
 
     expect(first.offEvent).toHaveBeenCalled()
-    expect(second.request).toHaveBeenCalledWith('tunnel', { op: 'listen', tunnel: 'gitcred', acks: true })
+    expect(second.request).toHaveBeenCalledWith('tunnel', { op: 'listen', tunnel: 'agent', acks: true })
   })
 
   it('opens nothing when the daemon serves no socket for the tunnel', async () => {
     const { session, request } = fakeSession(1)
-    await new TunnelBinder({ tunnelsFor: () => ['gitcred'], log }).ensure('agent-a', session)
+    await new TunnelBinder({ tunnelsFor: () => ['agent'], log }).ensure('agent-a', session)
 
     expect(request).not.toHaveBeenCalled()
   })
@@ -77,12 +77,12 @@ describe('tunnel binder', () => {
   it('records on the binding whether the pod serves a tunnel', async () => {
     const subject = binder()
     const { session } = fakeSession(1)
-    expect(subject.serves('agent-a', 'gitcred')).toBe(false)
+    expect(subject.serves('agent-a', 'agent')).toBe(false)
     await subject.ensure('agent-a', session)
-    expect(subject.serves('agent-a', 'gitcred')).toBe(true)
+    expect(subject.serves('agent-a', 'agent')).toBe(true)
     expect(subject.serves('agent-a', 'mcp')).toBe(false)
     subject.release('agent-a', 'gone')
-    expect(subject.serves('agent-a', 'gitcred')).toBe(false)
+    expect(subject.serves('agent-a', 'agent')).toBe(false)
   })
 
   it('stops the agent proxy when the launch is no longer served here', async () => {
@@ -133,7 +133,7 @@ describe('tunnel binder', () => {
 
 describe('the daemon socket each tunnel reaches', () => {
   const sockets = {
-    gitcred: '/daemon/gitcred.sock',
+    agent: '/daemon/agent.sock',
     mcp: '/daemon/mcp.sock',
     codehost: (agentId: string) => `/daemon/codehost/${agentId}.sock`,
     provider: (agentId: string) => `/daemon/provider/${agentId}.sock`
@@ -142,7 +142,7 @@ describe('the daemon socket each tunnel reaches', () => {
   it('names every tunnel explicitly, each its own socket', () => {
     const paths = TunnelNameSchema.options.map((tunnel) => daemonTunnelSocketPath(tunnel, 'agent-a', sockets))
     expect(paths).toEqual([
-      '/daemon/gitcred.sock',
+      '/daemon/agent.sock',
       '/daemon/mcp.sock',
       '/daemon/codehost/agent-a.sock',
       '/daemon/provider/agent-a.sock'

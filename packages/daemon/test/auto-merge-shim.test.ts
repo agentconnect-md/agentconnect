@@ -4,7 +4,7 @@
 import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
 import { AUTO_MERGE_DISARM_GRACE_MS, createAutoMergeHandler } from '../src/shim/auto-merge-handler.js'
-import { GITCRED_CAPABILITY_ENV } from '../src/gitcred/env.js'
+import { AGENT_CHANNEL_CAPABILITY_ENV } from '../src/agent-channel/env.js'
 
 /** A child process double: stdout/stderr streams plus an `exit` the test can fire. */
 function fakeChild() {
@@ -59,7 +59,7 @@ describe('in-sandbox automerge handler', () => {
     expect(spawned[0]!.args).toEqual(['agent-1', 'acme/repo', '7'])
     // The credential capability is a secret: env, never argv, where any process listing would show it.
     expect(spawned[0]!.args.join(' ')).not.toContain('cap_secret')
-    expect(spawned[0]!.env[GITCRED_CAPABILITY_ENV]).toBe('cap_secret')
+    expect(spawned[0]!.env[AGENT_CHANNEL_CAPABILITY_ENV]).toBe('cap_secret')
 
     // Idempotent: arming an armed watcher keeps the process it already has.
     expect(await handler(ARM)).toEqual({ armed: true })

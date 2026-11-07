@@ -13,7 +13,7 @@ import {
 import { extract as extractTar, list as listTar, type ReadEntry } from 'tar'
 import { authorizeWorkspaceGitUrl } from '../workspace/git-origin-policy.js'
 import { daemonLocalGitEnv, openDaemonSkillCredentialWindow, workspaceGitEnvBase } from '../workspace/git-injection.js'
-import { GITCRED_CAPABILITY_ENV } from '../gitcred/env.js'
+import { AGENT_CHANNEL_CAPABILITY_ENV } from '../agent-channel/env.js'
 import { TLS_TRUST_ENV } from '../config/tls-trust-env.js'
 import { MAX_SKILL_FILE_BYTES } from './skill-limits.js'
 import { discardResponse, fetchWithRedirectPolicy, readBoundedBody, retryAfterMs } from '../codehost/rest-read.js'
@@ -188,7 +188,7 @@ export function buildSkillGitAcquisitionEnv(opts: {
     ...workspaceGitEnvBase(opts.cloneUrl),
     // Acquisition runs on THIS daemon even for a cluster agent, so the helper names the daemon's own shim and socket.
     ...(credentialed ? daemonLocalGitEnv(opts.agentId, opts.cloneUrl) : {}),
-    ...(credentialed && opts.windowCapability ? { [GITCRED_CAPABILITY_ENV]: opts.windowCapability } : {})
+    ...(credentialed && opts.windowCapability ? { [AGENT_CHANNEL_CAPABILITY_ENV]: opts.windowCapability } : {})
   }
   const env: Record<string, string> = {
     PATH: process.env.PATH ?? '',
@@ -201,7 +201,7 @@ export function buildSkillGitAcquisitionEnv(opts: {
     const upper = key.toUpperCase()
     if (
       upper.startsWith('GIT_') ||
-      upper.startsWith('AC_GITCRED_') ||
+      upper.startsWith('AC_AGENT_CHANNEL_') ||
       TLS_TRUST_ENV.includes(upper as (typeof TLS_TRUST_ENV)[number]) ||
       upper === 'LANG' ||
       upper === 'LC_ALL'
@@ -897,7 +897,7 @@ async function verifyGithubRepositoryIdentity(
   // A private repository is admitted: identity and name fence it, not visibility (shared-skills.md §3).
 }
 
-/** The exact `owner/repo` a bounded GitHub skill entry acquires from; gitcred matches window asks against it. */
+/** The exact `owner/repo` a bounded GitHub skill entry acquires from; the agent channel matches window asks against it. */
 export function gitSkillRepositoryPath(entry: Pick<AgentSkillEntry, 'source' | 'ref' | 'subDir'>): string | undefined {
   try {
     // Only the source string decides the repository; the numeric id is verified at acquisition.

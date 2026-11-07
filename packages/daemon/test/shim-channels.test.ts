@@ -213,16 +213,16 @@ describe('shim channel', () => {
 
 describe('tunnels', () => {
   it('names a closed set of sockets rather than allowing any path', () => {
-    // One name per daemon server, each mapped to its fixed socket: `gh` shares gitcred.sock, and codehost and provider reach only the agent's own credential-proxy sockets.
-    expect(Object.keys(SANDBOX_TUNNEL_PATHS).sort()).toEqual(['codehost', 'gitcred', 'mcp', 'provider'])
+    // One name per daemon server, each mapped to its fixed socket: `gh` shares agent.sock, and codehost and provider reach only the agent's own credential-proxy sockets.
+    expect(Object.keys(SANDBOX_TUNNEL_PATHS).sort()).toEqual(['agent', 'codehost', 'mcp', 'provider'])
     expect(TunnelNameSchema.options.slice().sort()).toEqual(Object.keys(SANDBOX_TUNNEL_PATHS).sort())
     const sockets = {
-      gitcred: '/d/gitcred.sock',
+      agent: '/d/agent.sock',
       mcp: '/d/mcp.sock',
       codehost: (agentId: string) => `/d/proxy-${agentId}.sock`,
       provider: (agentId: string) => `/d/provider-${agentId}.sock`
     }
-    expect(daemonTunnelSocketPath('gitcred', 'a', sockets)).toBe('/d/gitcred.sock')
+    expect(daemonTunnelSocketPath('agent', 'a', sockets)).toBe('/d/agent.sock')
     expect(daemonTunnelSocketPath('mcp', 'a', sockets)).toBe('/d/mcp.sock')
     expect(daemonTunnelSocketPath('codehost', 'a', sockets)).toBe('/d/proxy-a.sock')
     expect(daemonTunnelSocketPath('provider', 'a', sockets)).toBe('/d/provider-a.sock')
@@ -233,10 +233,10 @@ describe('tunnels', () => {
 
   it('validates stream framing', () => {
     const streamId = '11111111-1111-4111-8111-111111111111'
-    expect(TunnelPayloadSchema.safeParse({ op: 'listen', tunnel: 'gitcred' }).success).toBe(true)
+    expect(TunnelPayloadSchema.safeParse({ op: 'listen', tunnel: 'agent' }).success).toBe(true)
     // The path is NOT a field: both sides know the map, so a daemon-supplied path would carry no
     // information while widening what the shim can be told to create.
-    expect(TunnelPayloadSchema.safeParse({ op: 'listen', tunnel: 'gitcred', socketPath: '/s' }).success).toBe(true)
+    expect(TunnelPayloadSchema.safeParse({ op: 'listen', tunnel: 'agent', socketPath: '/s' }).success).toBe(true)
     expect(TunnelPayloadSchema.safeParse({ op: 'data', streamId, chunk: 'aGk=' }).success).toBe(true)
     expect(TunnelPayloadSchema.safeParse({ op: 'close', streamId }).success).toBe(true)
     expect(TunnelPayloadSchema.safeParse({ op: 'data', streamId: 'not-a-uuid', chunk: '' }).success).toBe(false)

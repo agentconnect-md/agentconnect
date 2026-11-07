@@ -1,11 +1,11 @@
-import { GITCRED_SOCKET_ENV } from '../gitcred/env.js'
+import { AGENT_CHANNEL_SOCKET_ENV } from '../agent-channel/env.js'
 import type { ShimRequester } from '../shim/channels.js'
 import { ShimGitRunner, type GitExecPayload } from '../shim/git-exec.js'
 import { GitTransportError, type GitRunner } from '../workspace/git-runner.js'
 
 // A caller's replacement env names this host's HOME and PATH; the environment's own come from its launch.
 const environmentOwned = (name: string) =>
-  name === 'HOME' || name === 'PATH' || name.startsWith('XDG_') || name === GITCRED_SOCKET_ENV
+  name === 'HOME' || name === 'PATH' || name.startsWith('XDG_') || name === AGENT_CHANNEL_SOCKET_ENV
 
 /** Git in a local environment over its shim's exec channel, as on the pool; only a request the shim received can have run Git. */
 export function localShimGitRunner(options: {

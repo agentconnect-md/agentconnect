@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { parseArgs } from 'node:util'
 import { loadConfig } from './config/load-config.js'
-import { gitcredSocketPath } from './cp/gitcred-server.js'
+import { agentChannelSocketPath } from './cp/agent-channel-server.js'
 import { makeLogger } from './log.js'
 import { installMicrosandbox } from './microsandbox/install.js'
 import { mcpSocketPath, resolveRoot } from './paths.js'
@@ -15,7 +15,7 @@ if (config.sandbox.microsandbox !== false && existsSync(join(root, 'microsandbox
   const manager = await installMicrosandbox({
     root,
     config: config.sandbox.microsandbox,
-    sockets: { mcp: mcpSocketPath(root), gitcred: gitcredSocketPath(root) },
+    sockets: { mcp: mcpSocketPath(root), agent: agentChannelSocketPath(root) },
     log: makeLogger(config.logging.level)
   })
   await manager.prepareImage()

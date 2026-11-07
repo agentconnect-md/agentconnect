@@ -546,7 +546,7 @@ no new rule.
 
 ## 9. Git Access
 
-The credential helper's managed-host table (`AC_GITCRED_HOSTS`) gains a
+The credential helper's managed-host table (`AC_AGENT_CHANNEL_HOSTS`) gains a
 `gitea` entry carrying the full normalized base including any path prefix,
 and the helper parses `owner/repo` (two segments, no subgroups) after
 stripping the prefix on a segment boundary. `useHttpPath` keeps one

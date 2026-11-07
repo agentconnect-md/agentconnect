@@ -6,11 +6,11 @@
  * under a daemon root. All this adds is which socket to dial.
  */
 import { resolveRoot } from '../paths.js'
-import { gitcredSocketFrom } from '../cp/gitcred-server.js'
+import { agentChannelSocketFrom } from '../cp/agent-channel-server.js'
 import { runGitCredential as runHelper } from '../gitcred/helper.js'
 
 export { effectiveAgentId, repoFromPath } from '../gitcred/helper.js'
 
 export async function runGitCredential(action: string, agentId: string): Promise<void> {
-  await runHelper(action, agentId, gitcredSocketFrom(process.env, resolveRoot()))
+  await runHelper(action, agentId, agentChannelSocketFrom(process.env, resolveRoot()))
 }

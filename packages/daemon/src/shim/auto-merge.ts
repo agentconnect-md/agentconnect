@@ -11,8 +11,8 @@
 // repository, and the token it fetches per tick is clamped CP-side.
 import { AUTO_MERGE_POLL_MS } from '../github/auto-merge/core.js'
 import { AutoMergeLoop } from '../github/auto-merge/loop.js'
-import { GITCRED_SOCKET_ENV } from '../gitcred/env.js'
-import { fetchGhToken } from '../gitcred/gh-token-ipc.js'
+import { AGENT_CHANNEL_SOCKET_ENV } from '../agent-channel/env.js'
+import { fetchGhToken } from '../agent-channel/ipc.js'
 import { SANDBOX_TUNNEL_PATHS } from './sandbox-paths.js'
 
 /** Poll cadence override, so an operator can tighten it without a new image. */
@@ -27,7 +27,7 @@ async function main(): Promise<number> {
     return 2
   }
   // The tunnel's path unless something names another; a pod has no daemon root to derive one from.
-  const socketPath = process.env[GITCRED_SOCKET_ENV]?.trim() || SANDBOX_TUNNEL_PATHS.gitcred
+  const socketPath = process.env[AGENT_CHANNEL_SOCKET_ENV]?.trim() || SANDBOX_TUNNEL_PATHS.agent
   const pollMs = Number(process.env[AUTO_MERGE_POLL_ENV]) || AUTO_MERGE_POLL_MS
 
   // One line of NDJSON per tick on stdout — the shim reads it back as this watcher's status, so

@@ -138,7 +138,7 @@ async function placedSrtSession(domains: string[] | null = ['gitlab.example.test
     },
     socketPathFor: (name) =>
       daemonTunnelSocketPath(name, AGENT, {
-        gitcred: join(dir, 'none.sock'),
+        agent: join(dir, 'none.sock'),
         mcp: join(dir, 'none.sock'),
         codehost: (agentId) => proxy.tunnelSocketFor(agentId),
         provider: () => undefined
@@ -398,10 +398,10 @@ describe.skipIf(process.platform === 'win32')('the holder of an executor-placed 
     const realPlane = d.executorPlane
     try {
       const placed = { agentId: agent.id, sessionKey: SESSION_KEY, strategy: 'srt' }
-      expect(d.tunnelsForPlaced(agent.id, placed)).toEqual(['mcp', 'gitcred', 'codehost'])
+      expect(d.tunnelsForPlaced(agent.id, placed)).toEqual(['mcp', 'agent', 'codehost'])
       expect(d.tunnelsForPlaced(agent.id, { ...placed, strategy: 'microsandbox' })).toEqual([
         'mcp',
-        'gitcred',
+        'agent',
         'codehost'
       ])
       const executorPrepare = vi.fn(async () => ({ status: 'refused', reason: 'facet_off' }))

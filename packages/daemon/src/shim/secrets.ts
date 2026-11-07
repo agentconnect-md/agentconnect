@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 // The in-sandbox `agentconnect-secrets` (capability-requests.md §4.9.2): `/opt/agentconnect/pathbin/agentconnect-secrets` runs this.
 // Its own entry because the image copies one file per bundle.
-import { GITCRED_SOCKET_ENV } from '../gitcred/env.js'
-import { runSecretsHelper } from '../gitcred/secrets-client.js'
+import { AGENT_CHANNEL_SOCKET_ENV } from '../agent-channel/env.js'
+import { runSecretsHelper } from '../agent-channel/secrets-client.js'
 import { SANDBOX_TUNNEL_PATHS } from './sandbox-paths.js'
 
 runSecretsHelper(process.argv.slice(2), {
   // The tunnel's path unless something names another; a pod has no daemon root to derive one from.
-  socketPath: process.env[GITCRED_SOCKET_ENV]?.trim() || SANDBOX_TUNNEL_PATHS.gitcred,
+  socketPath: process.env[AGENT_CHANNEL_SOCKET_ENV]?.trim() || SANDBOX_TUNNEL_PATHS.agent,
   env: process.env,
   stdout: (text) => process.stdout.write(text),
   stderr: (text) => process.stderr.write(text)

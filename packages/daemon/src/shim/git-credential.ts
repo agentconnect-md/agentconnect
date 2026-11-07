@@ -13,7 +13,7 @@
  * repository. What arrives here is the request git wrote on stdin and the capability the daemon
  * minted for this launch.
  */
-import { GITCRED_SOCKET_ENV } from '../gitcred/env.js'
+import { AGENT_CHANNEL_SOCKET_ENV } from '../agent-channel/env.js'
 import { runGitCredential } from '../gitcred/helper.js'
 import { SANDBOX_TUNNEL_PATHS } from './sandbox-paths.js'
 
@@ -26,7 +26,7 @@ async function main(): Promise<number> {
     return 2
   }
   // The tunnel's path unless something names another; a pod has no daemon root to derive one from.
-  const socketPath = process.env[GITCRED_SOCKET_ENV]?.trim() || SANDBOX_TUNNEL_PATHS.gitcred
+  const socketPath = process.env[AGENT_CHANNEL_SOCKET_ENV]?.trim() || SANDBOX_TUNNEL_PATHS.agent
   await runGitCredential(action, agentId ?? '', socketPath)
   // The helper reports a missing credential by setting exitCode, and that has to reach git: a zero
   // exit with no output reads as "this helper has no opinion" rather than as a failure.

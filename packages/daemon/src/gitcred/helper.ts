@@ -2,7 +2,7 @@
  * The git credential helper itself (docs/designs/github-app-git-credentials.md §Local Helper
  * Channel), independent of where it runs.
  *
- * Speaks git's credential-helper protocol on stdin/stdout and proxies to a gitcred socket with the
+ * Speaks git's credential-helper protocol on stdin/stdout and proxies to an agent channel socket with the
  * runtime-only agent capability; the token exists only on the reply pipe. Actions:
  *   get   → username=x-access-token / password=<token>   (host must be github.com)
  *   erase → forward to the daemon (invalidate the cached token git just had rejected)
@@ -30,10 +30,10 @@
  * leaves beside it, because the in-sandbox bundle is asserted to import nothing else.
  */
 import { createConnection } from 'node:net'
-import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV } from './env.js'
+import { AGENT_CHANNEL_AGENT_ENV, AGENT_CHANNEL_CAPABILITY_ENV } from '../agent-channel/env.js'
 import {
   decodeManagedHostTable,
-  GITCRED_HOSTS_ENV,
+  AGENT_CHANNEL_HOSTS_ENV,
   IMPLICIT_CREDENTIAL_PROVIDER,
   matchManagedHost
 } from './managed-hosts.js'
@@ -59,7 +59,7 @@ interface HelperInput {
  * git and always matches the capability sent beside it.
  */
 export function effectiveAgentId(argvAgentId: string): string {
-  return process.env[GITCRED_AGENT_ENV] || argvAgentId
+  return process.env[AGENT_CHANNEL_AGENT_ENV] || argvAgentId
 }
 
 export async function runGitCredential(action: string, agentId: string, socketPath: string): Promise<void> {
@@ -68,7 +68,7 @@ export async function runGitCredential(action: string, agentId: string, socketPa
   agentId = effectiveAgentId(agentId)
 
   const input = parseStdin(await readStdin())
-  const match = matchManagedHost(decodeManagedHostTable(process.env[GITCRED_HOSTS_ENV]), input)
+  const match = matchManagedHost(decodeManagedHostTable(process.env[AGENT_CHANNEL_HOSTS_ENV]), input)
   // Each host spells its own path (§13.2): GitLab keeps full subgroup depth, GitHub stays owner/repo.
   const parseRepoPath = match === undefined ? undefined : credentialRepoPathParser(match.entry.provider)
   // A provider the injected table names but this build has no grammar for is not ours either.
@@ -84,7 +84,7 @@ export async function runGitCredential(action: string, agentId: string, socketPa
     await ipc(socketPath, {
       op: 'erase',
       agentId,
-      capability: process.env[GITCRED_CAPABILITY_ENV],
+      capability: process.env[AGENT_CHANNEL_CAPABILITY_ENV],
       password: input.password,
       repoFullName: repo,
       ...qualifier
@@ -96,7 +96,7 @@ export async function runGitCredential(action: string, agentId: string, socketPa
   const res = await ipc(socketPath, {
     op: 'get',
     agentId,
-    capability: process.env[GITCRED_CAPABILITY_ENV],
+    capability: process.env[AGENT_CHANNEL_CAPABILITY_ENV],
     repoFullName: repo,
     ...qualifier
   })

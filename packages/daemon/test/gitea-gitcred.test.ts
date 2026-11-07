@@ -25,13 +25,13 @@ import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import {
   encodeManagedHostTable,
   giteaManagedHost,
-  GITCRED_HOSTS_ENV,
+  AGENT_CHANNEL_HOSTS_ENV,
   managedHostTableFor,
   matchManagedHost
 } from '../src/gitcred/managed-hosts.js'
 import { runGitCredential } from '../src/gitcred/helper.js'
 import { credentialRepoPathParser } from '../src/gitcred/repo-path.js'
-import { GITCRED_CAPABILITY_ENV } from '../src/gitcred/env.js'
+import { AGENT_CHANNEL_CAPABILITY_ENV } from '../src/agent-channel/env.js'
 import { GitCredentialCache, GitCredUnavailableError, type GitCredentialCacheDeps } from '../src/cp/git-credential.js'
 import { giteaCredentials } from '../src/gitea/credentials.js'
 import { codeHostCredentials, credentialProviderOf, managedHostTable } from '../src/codehost/credentials.js'
@@ -103,14 +103,14 @@ describe('the credential helper on a prefixed instance (§9)', () => {
   })
   afterAll(() => rmSync(runDir, { recursive: true, force: true }))
 
-  /** A one-shot gitcred socket that records the request and answers a fixed grant — on Windows a named
+  /** A one-shot agent channel socket that records the request and answers a fixed grant — on Windows a named
    *  pipe, the shape the daemon serves there, since `listen` reads a filesystem path as a pipe name and never answers. */
   async function socket(reply: Record<string, unknown>): Promise<{
     path: string
     requests: Record<string, unknown>[]
     close: () => void
   }> {
-    const path = localIpcPath(mkdtempSync(join(tmpdir(), 'ac-gitea-sock-')), 'gitcred')
+    const path = localIpcPath(mkdtempSync(join(tmpdir(), 'ac-gitea-sock-')), 'agent')
     if (!isWindowsNamedPipe(path)) mkdirSync(dirname(path), { recursive: true })
     const requests: Record<string, unknown>[] = []
     const server = createServer((conn) => {
@@ -150,11 +150,11 @@ describe('the credential helper on a prefixed instance (§9)', () => {
       err.push(String(chunk))
       return true
     })
-    const previous = process.env[GITCRED_HOSTS_ENV]
-    const previousCapability = process.env[GITCRED_CAPABILITY_ENV]
-    if (table === undefined) delete process.env[GITCRED_HOSTS_ENV]
-    else process.env[GITCRED_HOSTS_ENV] = table
-    process.env[GITCRED_CAPABILITY_ENV] = 'cap-test'
+    const previous = process.env[AGENT_CHANNEL_HOSTS_ENV]
+    const previousCapability = process.env[AGENT_CHANNEL_CAPABILITY_ENV]
+    if (table === undefined) delete process.env[AGENT_CHANNEL_HOSTS_ENV]
+    else process.env[AGENT_CHANNEL_HOSTS_ENV] = table
+    process.env[AGENT_CHANNEL_CAPABILITY_ENV] = 'cap-test'
     let exitCode = 0
     try {
       await runGitCredential('get', AGENT, socketPath)
@@ -163,10 +163,10 @@ describe('the credential helper on a prefixed instance (§9)', () => {
       Object.defineProperty(process, 'stdin', stdinDescriptor)
       stdout.mockRestore()
       stderr.mockRestore()
-      if (previous === undefined) delete process.env[GITCRED_HOSTS_ENV]
-      else process.env[GITCRED_HOSTS_ENV] = previous
-      if (previousCapability === undefined) delete process.env[GITCRED_CAPABILITY_ENV]
-      else process.env[GITCRED_CAPABILITY_ENV] = previousCapability
+      if (previous === undefined) delete process.env[AGENT_CHANNEL_HOSTS_ENV]
+      else process.env[AGENT_CHANNEL_HOSTS_ENV] = previous
+      if (previousCapability === undefined) delete process.env[AGENT_CHANNEL_CAPABILITY_ENV]
+      else process.env[AGENT_CHANNEL_CAPABILITY_ENV] = previousCapability
       process.exitCode = 0
     }
     return { stdout: out.join(''), stderr: err.join(''), exitCode }
@@ -238,11 +238,11 @@ describe('the credential helper on a prefixed instance (§9)', () => {
     expect(config.content).toContain(`[credential "${INSTANCE}"]\n\thelper = \n\thelper = "!f()`)
     expect(config.content).toContain('useHttpPath = true')
     expect(config.content).not.toContain('github.com')
-    expect(config.env[GITCRED_HOSTS_ENV]).toBe(table)
+    expect(config.env[AGENT_CHANNEL_HOSTS_ENV]).toBe(table)
     // A github workspace on the same deployment still carries the instance in its table.
     expect(
       gitCredentialEnv(AGENT, target, managedCredentialScope('github', undefined, false, { host: INSTANCE }), 'daemon')[
-        GITCRED_HOSTS_ENV
+        AGENT_CHANNEL_HOSTS_ENV
       ]
     ).toBe(table)
   })

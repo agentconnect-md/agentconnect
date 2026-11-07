@@ -59,7 +59,7 @@ import type { WorkspaceManager, PrepareSessionWorkspaceRequest } from '../worksp
 import { unauthorizedWorkspaceGitOrigin } from '../workspace/git-origin-policy.js'
 import type { KeyServerClient } from '../key-server/client.js'
 import type { GitCredentialCache } from './git-credential.js'
-import type { GitCredServer } from './gitcred-server.js'
+import type { AgentChannelServer } from './agent-channel-server.js'
 import type { CpAgentRegistry } from './cp-agent-registry.js'
 import type { CpIntegrationRegistry } from './cp-integration-registry.js'
 import type { CpCronRegistry } from './cp-cron.js'
@@ -144,7 +144,7 @@ export interface ConfigApplyRuntimeHost {
   /** Whether this agent's sessions run in this machine's microsandbox strategy (session-executors.md §5). */
   usesMicrosandbox(agent: Agent): boolean
   gitCreds(): GitCredentialCache | undefined
-  gitCredServer(): GitCredServer | undefined
+  agentChannelServer(): AgentChannelServer | undefined
   quiesceAgentWorkspaceAuthority(agentId: string): Promise<void>
   /** End the agent's coordinators and their tasks where this machine's own store holds them, at a move's source cutover. */
   retireCoordinatorsForMove(agentId: string): Promise<void>
@@ -434,7 +434,7 @@ export function applyAgentUpsert(host: ConfigApplyHost, { agentId, spec }: Agent
     if (host.cpDroppedAgents().delete(agentId) && !host.agentDestructivePending(agentId)) {
       host.drainingAgents().delete(agentId)
     }
-    // A replicated spec change may re-enable gitcred for a previously denied agent.
+    // A replicated spec change may re-enable git credentials for a previously denied agent.
     host.gitCreds()?.clearDenied(agentId)
     await host.flushReconcile()
     return { ok: true }
@@ -564,7 +564,7 @@ export function applyAgentDetach(host: ConfigApplyHost, detach: AgentDetach): Pr
       }
     }
     host.gitCreds()?.remove(agentId)
-    host.gitCredServer()?.revoke(agentId)
+    host.agentChannelServer()?.revoke(agentId)
     // Before the roster drops the agent: the release that follows takes its pods out of the idle
     // sweep's sight, so a pod not stopped HERE is one nothing on this member will stop again.
     // Only for an agent this daemon actually served — on the destination's staging detach there is

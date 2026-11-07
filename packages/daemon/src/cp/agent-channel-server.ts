@@ -1,33 +1,6 @@
-/**
- * gitcred.sock — the local credential channel for daemon-run git, the in-pod auto-merge watcher and live secrets
- * (docs/designs/github-app-git-credentials.md §Local Helper Channel;
- * agent-multi-repo-authorization.md §Daemon for per-repo routing, #457).
- *
- * A tiny newline-delimited-JSON server over a unix socket (0700 dir + 0600
- * socket, stale-socket cleanup — the `mcp/control-server.ts` pattern). Hidden
- * helper subcommands connect per invocation with a runtime-only, per-agent
- * capability — the daemon's own or the agent runtime's (`GitCredHolder`):
- *   { op: 'get',   agentId, capability, repoFullName?, plane? }  → { ok, username, password } | { ok:false, error }
- *   { op: 'erase', agentId, capability, password?, repoFullName?, plane? } → { ok: true }
- *   { op: 'secret', agentId, capability, names? } → { ok, secrets: [{ name, value, description? }] }   (live secrets, capability-requests.md §4.9.2)
- *
- * `repoFullName` ("owner/repo") routes to that repo's token; absent — or equal, on the workspace's own host,
- * to the agent's workspace repo, which is NORMALIZED onto the repo-less key so
- * the helper path and the pre-warm/spawn paths share one cache entry — ⇒ the
- * workspace token. `plane: 'gh'` picks the widened GH_TOKEN capability set.
- *
- * The capability prevents a shell process from selecting an agent id and
- * directly querying the socket. It is defense in depth, not a host-security
- * boundary: a same-user process that can inspect or modify the managed runtime
- * can still recover it. Repo authorization remains the CP's decision. Tokens
- * transit the socket and helper stdout only; nothing lands on disk.
- *
- * Alongside the socket the daemon (re)writes SECRET-FREE files per boot:
- * the shim `run/git-credential-helper.sh` (pins the current node + CLI path so
- * `.git/config` survives daemon upgrades), the `run/secrets-bin` wrapper (see
- * cp/secrets-shim.ts) and per-agent gitconfig includes for the session-env channel
- * (see workspace/git-injection.ts).
- */
+// agent.sock, the agent channel: live secrets for the runtime, git credentials for the daemon's own git and the in-pod auto-merge watcher (github-app-git-credentials.md §Local Helper Channel).
+// Newline-delimited JSON, one request per connection: `get`/`erase` (git credentials; `repoFullName` routes, the workspace repo folds onto the repo-less key) and `secret` (live secrets, capability-requests.md §4.9.2).
+// The per-agent capability (`AgentChannelHolder`) is defense in depth against a shell choosing an agent id, not a host-security boundary; tokens never land on disk.
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -46,28 +19,30 @@ import {
   type SkillCredentialWindow
 } from './skill-credential-window.js'
 
-// Declared in `gitcred/env.ts` and re-exported here, where every daemon-side caller already looks
-// for them: the helper that also runs inside a sandbox cannot import this module (it would pull the
-// credential cache into an image whose bundle may import only node builtins).
-export { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV, GITCRED_SOCKET_ENV } from '../gitcred/env.js'
-import { GITCRED_SOCKET_ENV } from '../gitcred/env.js'
+// Declared in the `agent-channel/env.ts` leaf, which in-sandbox helpers import without this module's credential cache, and re-exported for daemon-side callers.
+export {
+  AGENT_CHANNEL_AGENT_ENV,
+  AGENT_CHANNEL_CAPABILITY_ENV,
+  AGENT_CHANNEL_SOCKET_ENV
+} from '../agent-channel/env.js'
+import { AGENT_CHANNEL_SOCKET_ENV } from '../agent-channel/env.js'
 import { shQuote } from './secrets-shim.js'
 
 /** The socket a helper should dial: an explicit override, else this daemon's own. */
-export function gitcredSocketFrom(env: NodeJS.ProcessEnv, root: string): string {
-  const override = env[GITCRED_SOCKET_ENV]?.trim()
-  return override && override.length > 0 ? override : gitcredSocketPath(root)
+export function agentChannelSocketFrom(env: NodeJS.ProcessEnv, root: string): string {
+  const override = env[AGENT_CHANNEL_SOCKET_ENV]?.trim()
+  return override && override.length > 0 ? override : agentChannelSocketPath(root)
 }
 
-export function gitcredSocketPath(root: string, platform = process.platform): string {
-  return localIpcPath(root, 'gitcred', platform)
+export function agentChannelSocketPath(root: string, platform = process.platform): string {
+  return localIpcPath(root, 'agent', platform)
 }
 
 export function gitcredShimPath(root: string): string {
   return join(root, 'run', 'git-credential-helper.sh')
 }
 
-interface GitCredIpcRequest {
+interface AgentChannelRequest {
   op: 'get' | 'erase' | 'secret'
   agentId: string
   /** Ephemeral daemon-local capability bound to agentId. Never persisted. */
@@ -91,7 +66,7 @@ export interface LiveSecretEntry {
   description?: string
 }
 
-export interface GitCredServerDeps {
+export interface AgentChannelServerDeps {
   log: { info: (m: string) => void; warn: (m: string) => void }
   /** The agent's workspace "owner/repo" label (lowercase-insensitive compare) —
    *  lets a helper request that names the workspace repo share the repo-less
@@ -124,7 +99,7 @@ export interface GitCredServerDeps {
   liveSecretsOf?: (agentId: string) => readonly LiveSecretEntry[]
 }
 
-/** One reply on the helper channel for a `get` or `erase`. */
+/** One reply on the agent channel for a `get` or `erase`. */
 interface GitCredAnswer {
   ok: boolean
   username?: string
@@ -137,17 +112,17 @@ interface GitCredAnswer {
 }
 
 /** Who a per-agent capability was issued to: the daemon's own git and helpers, or the agent's runtime. */
-export type GitCredHolder = 'daemon' | 'runtime'
+export type AgentChannelHolder = 'daemon' | 'runtime'
 
 /** What a capability's holder may ask for: `mint` covers `get` and `erase`, `secrets` the live secrets. */
-export interface GitCredPermissions {
+export interface AgentChannelPermissions {
   readonly mint: boolean
   readonly secrets: boolean
 }
 
-const FULL_PERMISSIONS: GitCredPermissions = { mint: true, secrets: true }
+const FULL_PERMISSIONS: AgentChannelPermissions = { mint: true, secrets: true }
 // A runtime holds a placeholder for its code hosts, so its capability keeps only the secrets.
-const SECRETS_ONLY_PERMISSIONS: GitCredPermissions = { mint: false, secrets: true }
+const SECRETS_ONLY_PERMISSIONS: AgentChannelPermissions = { mint: false, secrets: true }
 
 /** Why a capability without `mint` is refused a `get` or an `erase`. */
 export const RUNTIME_NO_MINT_ERROR =
@@ -155,35 +130,35 @@ export const RUNTIME_NO_MINT_ERROR =
 
 /** An agent capability as an admission sees it: its holder and that holder's permissions. */
 interface AgentPrincipal {
-  holder: GitCredHolder
-  permissions: GitCredPermissions
+  holder: AgentChannelHolder
+  permissions: AgentChannelPermissions
 }
 
 const isAgentPrincipal = (p: AgentPrincipal | AdmittedSkillWindow): p is AgentPrincipal => 'holder' in p
 
-/** The first line a tunnel proxy sends on a gitcred connection; it carries the server's per-boot key so no pod can forge one. */
+/** The first line a tunnel proxy sends on an agent channel connection; it carries the server's per-boot key so no pod can forge one. */
 const TUNNEL_GREETING_OP = 'via'
 
-export class GitCredServer {
+export class AgentChannelServer {
   private server?: Server
   private readonly tunnelKey = randomBytes(32).toString('base64url')
-  private readonly capabilities = new Map<string, Readonly<Record<GitCredHolder, string>>>()
-  private readonly log: GitCredServerDeps['log']
+  private readonly capabilities = new Map<string, Readonly<Record<AgentChannelHolder, string>>>()
+  private readonly log: AgentChannelServerDeps['log']
   private readonly workspaceRepoOf?: (agentId: string) => string | undefined
-  private readonly providerOf?: GitCredServerDeps['providerOf']
-  private readonly workspaceRepoIdOf?: GitCredServerDeps['workspaceRepoIdOf']
-  private readonly qualifiedRepoOf?: GitCredServerDeps['qualifiedRepoOf']
-  private readonly githubAdditionalRepoOf?: GitCredServerDeps['githubAdditionalRepoOf']
-  private readonly privateGithubSkillRepoOf?: GitCredServerDeps['privateGithubSkillRepoOf']
-  private readonly privateGitlabSkillProjectOf?: GitCredServerDeps['privateGitlabSkillProjectOf']
-  private readonly credentialedOf?: GitCredServerDeps['credentialedOf']
-  private readonly liveSecretsOf?: GitCredServerDeps['liveSecretsOf']
+  private readonly providerOf?: AgentChannelServerDeps['providerOf']
+  private readonly workspaceRepoIdOf?: AgentChannelServerDeps['workspaceRepoIdOf']
+  private readonly qualifiedRepoOf?: AgentChannelServerDeps['qualifiedRepoOf']
+  private readonly githubAdditionalRepoOf?: AgentChannelServerDeps['githubAdditionalRepoOf']
+  private readonly privateGithubSkillRepoOf?: AgentChannelServerDeps['privateGithubSkillRepoOf']
+  private readonly privateGitlabSkillProjectOf?: AgentChannelServerDeps['privateGitlabSkillProjectOf']
+  private readonly credentialedOf?: AgentChannelServerDeps['credentialedOf']
+  private readonly liveSecretsOf?: AgentChannelServerDeps['liveSecretsOf']
   readonly skillWindows: SkillCredentialWindows
 
   constructor(
     private readonly cache: GitCredentialCache,
     private readonly path: string,
-    deps: GitCredServerDeps
+    deps: AgentChannelServerDeps
   ) {
     this.log = deps.log
     if (deps.workspaceRepoOf) this.workspaceRepoOf = deps.workspaceRepoOf
@@ -218,7 +193,7 @@ export class GitCredServer {
       server.once('error', onStartupError)
       server.listen(this.path, () => {
         server.off('error', onStartupError)
-        server.on('error', (e) => this.log.warn(`gitcred: socket error: ${e.message}`))
+        server.on('error', (e) => this.log.warn(`agent-channel: socket error: ${e.message}`))
         resolve()
       })
     })
@@ -229,7 +204,7 @@ export class GitCredServer {
         /* best-effort */
       }
     }
-    this.log.info(`gitcred: helper socket at ${this.path}`)
+    this.log.info(`agent-channel: helper socket at ${this.path}`)
   }
 
   stop(): void {
@@ -240,7 +215,7 @@ export class GitCredServer {
   }
 
   /** Runtime-only bearer one holder's helper processes present for one agent; both holders' are minted, and revoked, together. */
-  capabilityFor(agentId: string, holder: GitCredHolder): string {
+  capabilityFor(agentId: string, holder: AgentChannelHolder): string {
     let issued = this.capabilities.get(agentId)
     if (!issued) {
       issued = { daemon: randomBytes(32).toString('base64url'), runtime: randomBytes(32).toString('base64url') }
@@ -336,9 +311,9 @@ export class GitCredServer {
       sock.write(JSON.stringify(msg) + '\n')
       sock.end()
     }
-    let req: GitCredIpcRequest
+    let req: AgentChannelRequest
     try {
-      req = JSON.parse(line) as GitCredIpcRequest
+      req = JSON.parse(line) as AgentChannelRequest
     } catch {
       return reply({ ok: false, error: 'malformed request' })
     }
@@ -390,7 +365,7 @@ export class GitCredServer {
 
   /** What the agent capability, or a window that covers the repository, is served for one admitted ask: the provider from the spec, the workspace fold, then the credential. */
   private async answer(
-    req: GitCredIpcRequest,
+    req: AgentChannelRequest,
     plane: CredPlane,
     asked: string | undefined,
     privateSkill: boolean,
@@ -534,7 +509,7 @@ export class GitCredServer {
     const repo = ask.repoFullName?.includes('/') ? ask.repoFullName : undefined
     const githubAsk = ask.provider === undefined || ask.provider === IMPLICIT_CREDENTIAL_PROVIDER
     const privateSkill = repo !== undefined && githubAsk && this.privateGithubSkillRepoOf?.(agentId, repo) === true
-    const request: GitCredIpcRequest = {
+    const request: AgentChannelRequest = {
       op,
       agentId,
       plane: ask.plane,
@@ -547,18 +522,18 @@ export class GitCredServer {
 
   /** The agent's live secrets, named ones only when `names` is given; unknown names are simply absent and values are never logged. */
   private serveLiveSecrets(
-    req: GitCredIpcRequest,
+    req: AgentChannelRequest,
     principal: AgentPrincipal | AdmittedSkillWindow,
     reply: (msg: unknown) => void
   ): void {
     // A skill window opens its private repositories and nothing else.
     if (!isAgentPrincipal(principal)) {
-      this.log.warn(`gitcred: live secrets refused agent=${JSON.stringify(req.agentId)} reason="skill window"`)
+      this.log.warn(`agent-channel: live secrets refused agent=${JSON.stringify(req.agentId)} reason="skill window"`)
       return reply({ ok: false, error: 'a skill credential window carries no live secrets' })
     }
     if (!principal.permissions.secrets) {
       this.log.warn(
-        `gitcred: live secrets refused agent=${JSON.stringify(req.agentId)} reason="${principal.holder} capability"`
+        `agent-channel: live secrets refused agent=${JSON.stringify(req.agentId)} reason="${principal.holder} capability"`
       )
       return reply({ ok: false, error: 'this capability carries no live secrets' })
     }
@@ -569,14 +544,14 @@ export class GitCredServer {
       .filter((s) => wanted === undefined || wanted.has(s.name))
       .map((s) => ({ name: s.name, value: s.value, ...(s.description ? { description: s.description } : {}) }))
     this.log.info(
-      `gitcred: live secrets served agent=${JSON.stringify(req.agentId)} names=${JSON.stringify(secrets.map((s) => s.name))}`
+      `agent-channel: live secrets served agent=${JSON.stringify(req.agentId)} names=${JSON.stringify(secrets.map((s) => s.name))}`
     )
     return reply({ ok: true, secrets })
   }
 
   /** One GitLab skill project's read credential inside a window that covers it; the op split mirrors the general path. */
   private async serveGitlabSkillWindow(
-    req: GitCredIpcRequest,
+    req: AgentChannelRequest,
     reply: (msg: unknown) => void,
     window: AdmittedSkillWindow,
     repo: string
@@ -616,7 +591,7 @@ export class GitCredServer {
   }
 
   /** A holder's permissions: the daemon's are full, the runtime's never mint. */
-  private permissionsOf(holder: GitCredHolder): GitCredPermissions {
+  private permissionsOf(holder: AgentChannelHolder): AgentChannelPermissions {
     return holder === 'runtime' ? SECRETS_ONLY_PERMISSIONS : FULL_PERMISSIONS
   }
 
@@ -648,7 +623,7 @@ export class GitCredServer {
     reason?: string
   ): void {
     const message =
-      `gitcred: local credential outcome=${outcome} agent=${JSON.stringify(agentId)} ` +
+      `agent-channel: local credential outcome=${outcome} agent=${JSON.stringify(agentId)} ` +
       `repo=${JSON.stringify(typeof repo === 'string' ? repo : 'workspace')} plane=${plane}` +
       (reason ? ` reason=${JSON.stringify(reason)}` : '')
     if (warn) this.log.warn(message)

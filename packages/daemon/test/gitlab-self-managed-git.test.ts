@@ -19,7 +19,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS } from '@agentconnect.md/protocol'
 import { createRequire } from 'node:module'
-import { gitcredSocketPath } from '../src/cp/gitcred-server.js'
+import { agentChannelSocketPath } from '../src/cp/agent-channel-server.js'
 import {
   cloneGitEnv,
   gitFor,
@@ -138,8 +138,8 @@ function serveInstance(tls: { key: string; cert: string }, projectRoot: string):
   })
 }
 
-/** The gitcred socket, answering the binding's service-account credential and recording every ask. */
-function serveGitcred(path: string): { server: Server; requests: Record<string, unknown>[] } {
+/** The agent channel socket, answering the binding's service-account credential and recording every ask. */
+function serveAgentChannel(path: string): { server: Server; requests: Record<string, unknown>[] } {
   const requests: Record<string, unknown>[] = []
   const server = createServer((conn) => {
     let buf = ''
@@ -178,7 +178,7 @@ function git(cwd: string, args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, ...COMMIT_IDENTITY } })
 }
 
-// The instance, the gitcred socket and the test all live in ONE process, so every command that has
+// The instance, the agent channel socket and the test all live in ONE process, so every command that has
 // to reach one of them must be ASYNC: a synchronous spawn blocks the loop those servers accept on,
 // and git then fails with a connection timeout against a server that was never asleep.
 const run = promisify(execFile)
@@ -190,7 +190,7 @@ describe.skipIf(tls === undefined)('a prefixed, non-default-port instance, end t
   let root: string
   let projectRoot: string
   let server: Server & { port: number }
-  let gitcred: { server: Server; requests: Record<string, unknown>[] }
+  let channel: { server: Server; requests: Record<string, unknown>[] }
   let instance: string
   let cloneUrl: string
   let previousCaInfo: string | undefined
@@ -218,7 +218,7 @@ describe.skipIf(tls === undefined)('a prefixed, non-default-port instance, end t
     process.env.GIT_SSL_CAINFO = tls!.certPath
     // The operator's allowlist stays authoritative — the managed feature never widens it.
     configureWorkspaceGitOrigins([`https://127.0.0.1:${server.port}`])
-    gitcred = serveGitcred(gitcredSocketPath(root))
+    channel = serveAgentChannel(agentChannelSocketPath(root))
     mkdirSync(join(root, 'run'), { recursive: true, mode: 0o700 })
     const helperShim = writeEntryShim(join(root, 'run', 'git-credential'), helperEntry)
     initGitInjection({
@@ -228,7 +228,7 @@ describe.skipIf(tls === undefined)('a prefixed, non-default-port instance, end t
         kind: 'daemon',
         helper: helperShim,
         configDir: join(root, 'run', 'gitcred'),
-        socketPath: gitcredSocketPath(root)
+        socketPath: agentChannelSocketPath(root)
       }),
       preWarm: async () => undefined,
       capabilityFor: () => 'cap-test'
@@ -237,7 +237,7 @@ describe.skipIf(tls === undefined)('a prefixed, non-default-port instance, end t
 
   afterAll(() => {
     server?.close()
-    gitcred?.server.close()
+    channel?.server.close()
     if (previousCaInfo === undefined) delete process.env.GIT_SSL_CAINFO
     else process.env.GIT_SSL_CAINFO = previousCaInfo
     configureWorkspaceGitOrigins([...DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS])
@@ -267,8 +267,8 @@ describe.skipIf(tls === undefined)('a prefixed, non-default-port instance, end t
 
     // Every credential the helper served was asked for as a gitlab project path measured from the
     // instance root: the `gitlab/` prefix git sent under useHttpPath never reaches the project id.
-    expect(gitcred.requests.length).toBeGreaterThan(0)
-    for (const request of gitcred.requests) {
+    expect(channel.requests.length).toBeGreaterThan(0)
+    for (const request of channel.requests) {
       expect(request).toMatchObject({ agentId: AGENT, provider: 'gitlab', repoFullName: PROJECT })
     }
   }, 120_000)

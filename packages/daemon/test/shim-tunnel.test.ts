@@ -101,10 +101,10 @@ function fakeApi() {
   }
 }
 
-/** The daemon's own server behind the tunnel — gitcred.sock's stand-in. */
+/** The daemon's own server behind the tunnel — agent.sock's stand-in. */
 function daemonSideServer(onData: (chunk: Buffer, socket: Socket) => void): string {
   const dir = scratchDir()
-  const path = join(dir, 'gitcred.sock')
+  const path = join(dir, 'agent.sock')
   const server = createServer((socket) => {
     socket.on('data', (chunk: Buffer) => onData(chunk, socket))
     socket.on('error', () => undefined)
@@ -143,7 +143,7 @@ async function clusterWithTunnel(
 ): Promise<Cluster> {
   const warnings: string[] = []
   const shimClock = new FakeClock()
-  const podSocketPath = join(scratchDir(), 'pod-gitcred.sock')
+  const podSocketPath = join(scratchDir(), 'pod-agent.sock')
   const shimServer = new ShimServer()
   const shimPort = await shimServer.start(0, '127.0.0.1')
   shimServers.push(shimServer)
@@ -156,8 +156,8 @@ async function clusterWithTunnel(
     shimPort,
     readyTimeoutMs: 15_000,
     api: fakeApi() as never,
-    tunnelsFor: () => options.tunnels ?? ['gitcred'],
-    tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? options.daemonSocketPath : undefined),
+    tunnelsFor: () => options.tunnels ?? ['agent'],
+    tunnelSocketPath: (tunnel) => (tunnel === 'agent' ? options.daemonSocketPath : undefined),
     ...(options.credentialTtlMs === undefined ? {} : { credentialTtlMs: options.credentialTtlMs }),
     log: { info: () => {}, warn: (message) => warnings.push(message), debug: () => {} }
   })
@@ -237,7 +237,7 @@ function proxyUnderTest(
         const named = (payload as { tunnel?: string }).tunnel
         if (named === 'codehost' || named === 'provider')
           return { socketPath: '127.0.0.1:1', proxy: { port: 1, token: 'x'.repeat(32), trustBundle: '/rt/trust.pem' } }
-        return { socketPath: '/run/agentconnect/gitcred.sock' }
+        return { socketPath: '/run/agentconnect/agent.sock' }
       },
       onEvent: (listener) => listeners.push(listener),
       offEvent: () => undefined,
@@ -381,10 +381,10 @@ describe('the shim tunnel', () => {
     // could duplicate bytes inside a request/response protocol, so the stream ends instead and the
     // in-pod client sees EOF. Left open, git would instead wait out the five-minute idle timer.
     const proxy = proxyUnderTest({ stall: (payload) => (payload as { op?: string }).op === 'data' })
-    await proxy.instance.ensure('gitcred')
+    await proxy.instance.ensure('agent')
 
     const streamId = randomUUID()
-    proxy.announce({ kind: 'connect', tunnel: 'gitcred' }, streamId)
+    proxy.announce({ kind: 'connect', tunnel: 'agent' }, streamId)
     expect(proxy.instance.streamCount()).toBe(1)
 
     // A reply from the daemon's server, whose delivery frame never settles.
@@ -405,9 +405,9 @@ describe('the shim tunnel', () => {
     // An 8 MiB reply used to become ~256 concurrent shim requests; the window bounds what one stream has outstanding.
     const isData = (payload: unknown): boolean => (payload as { op?: string }).op === 'data'
     const proxy = proxyUnderTest({ hold: isData })
-    await proxy.instance.ensure('gitcred')
+    await proxy.instance.ensure('agent')
     const streamId = randomUUID()
-    proxy.announce({ kind: 'connect', tunnel: 'gitcred' }, streamId)
+    proxy.announce({ kind: 'connect', tunnel: 'agent' }, streamId)
     const socket = proxy.socketFor(streamId)!
 
     socket.emit('data', Buffer.alloc(MAX_IN_FLIGHT_FRAMES * MAX_TUNNEL_CHUNK_BYTES))
@@ -422,9 +422,9 @@ describe('the shim tunnel', () => {
   it('still ends a paused stream whose frame is not delivered, sending nothing again', async () => {
     const isData = (payload: unknown): boolean => (payload as { op?: string }).op === 'data'
     const proxy = proxyUnderTest({ hold: isData })
-    await proxy.instance.ensure('gitcred')
+    await proxy.instance.ensure('agent')
     const streamId = randomUUID()
-    proxy.announce({ kind: 'connect', tunnel: 'gitcred' }, streamId)
+    proxy.announce({ kind: 'connect', tunnel: 'agent' }, streamId)
     proxy.socketFor(streamId)!.emit('data', Buffer.alloc(MAX_IN_FLIGHT_FRAMES * MAX_TUNNEL_CHUNK_BYTES))
 
     proxy.held.shift()!.fail(new Error('socket replaced'))
@@ -468,7 +468,7 @@ describe('the shim tunnel', () => {
     const { podSocketPath, warnings } = await clusterWithTunnel({ daemonSocketPath: undefined })
     const helper = inPodClient(podSocketPath)
     await vi.waitFor(() => expect(helper.ended()).toBe(true), waitBudget(10_000))
-    expect(warnings.join('\n')).toMatch(/no gitcred socket/)
+    expect(warnings.join('\n')).toMatch(/no agent socket/)
   })
 
   it('refuses a connect the daemon never authorized, whoever minted the stream id', async () => {
@@ -482,20 +482,20 @@ describe('the shim tunnel', () => {
     expect(proxy.dialled).toEqual([])
     expect(proxy.sent).toEqual([expect.objectContaining({ op: 'close', streamId: foreign })])
 
-    await proxy.instance.ensure('gitcred')
+    await proxy.instance.ensure('agent')
     const streamId = randomUUID()
-    proxy.announce({ kind: 'connect', tunnel: 'gitcred' }, streamId)
-    expect(proxy.dialled).toEqual(['/daemon/gitcred.sock'])
+    proxy.announce({ kind: 'connect', tunnel: 'agent' }, streamId)
+    expect(proxy.dialled).toEqual(['/daemon/agent.sock'])
     expect(proxy.instance.streamCount()).toBe(1)
 
     // The same id again: refused, and the stream that owns it survives.
-    proxy.announce({ kind: 'connect', tunnel: 'gitcred' }, streamId)
-    expect(proxy.dialled).toEqual(['/daemon/gitcred.sock'])
+    proxy.announce({ kind: 'connect', tunnel: 'agent' }, streamId)
+    expect(proxy.dialled).toEqual(['/daemon/agent.sock'])
     expect(proxy.instance.streamCount()).toBe(1)
     expect(proxy.sent.at(-1)).toEqual(expect.objectContaining({ op: 'close', streamId }))
   })
 
-  it('keeps an mcp stream through an idle window that ends a gitcred one', async () => {
+  it('keeps an mcp stream through an idle window that ends an agent one', async () => {
     // The two tunnels have opposite shapes, so one deadline cannot fit both. A credential stream is
     // one request and its reply, and silence past a few minutes means no answer is coming. The
     // harness's MCP bridge holds ONE connection for the life of an ACP session and is idle between
@@ -503,11 +503,11 @@ describe('the shim tunnel', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     try {
       const proxy = proxyUnderTest()
-      await proxy.instance.ensure('gitcred')
+      await proxy.instance.ensure('agent')
       await proxy.instance.ensure('mcp')
       const credential = randomUUID()
       const bridge = randomUUID()
-      proxy.announce({ kind: 'connect', tunnel: 'gitcred' }, credential)
+      proxy.announce({ kind: 'connect', tunnel: 'agent' }, credential)
       proxy.announce({ kind: 'connect', tunnel: 'mcp' }, bridge)
       expect(proxy.instance.streamCount()).toBe(2)
 
@@ -524,7 +524,7 @@ describe('the shim tunnel', () => {
   it('caps codehost streams on their own budget, so they cannot take the helper tunnels’ slots', async () => {
     const proxy = proxyUnderTest()
     await proxy.instance.ensure('codehost')
-    await proxy.instance.ensure('gitcred')
+    await proxy.instance.ensure('agent')
     expect(proxy.sent[0]).toEqual({
       op: 'listen',
       tunnel: 'codehost',
@@ -544,7 +544,7 @@ describe('the shim tunnel', () => {
     expect(proxy.sent.at(-1)).toEqual(expect.objectContaining({ op: 'close', streamId: refused }))
 
     // A full codehost budget leaves the helpers theirs.
-    proxy.announce({ kind: 'connect', tunnel: 'gitcred' }, randomUUID())
+    proxy.announce({ kind: 'connect', tunnel: 'agent' }, randomUUID())
     expect(proxy.instance.streamCount('helpers')).toBe(1)
   })
 
@@ -552,7 +552,7 @@ describe('the shim tunnel', () => {
     const proxy = proxyUnderTest()
     await proxy.instance.ensure('codehost')
     await proxy.instance.ensure('provider')
-    await proxy.instance.ensure('gitcred')
+    await proxy.instance.ensure('agent')
     expect(MAX_PROVIDER_STREAMS).toBeGreaterThan(MAX_CODEHOST_STREAMS)
     for (let i = 0; i < MAX_PROVIDER_STREAMS; i += 1)
       proxy.announce({ kind: 'connect', tunnel: 'provider' }, randomUUID())
@@ -564,7 +564,7 @@ describe('the shim tunnel', () => {
     expect(proxy.sent.at(-1)).toEqual(expect.objectContaining({ op: 'close', streamId: refused }))
     // A full provider budget leaves codehost and the helpers theirs.
     proxy.announce({ kind: 'connect', tunnel: 'codehost' }, randomUUID())
-    proxy.announce({ kind: 'connect', tunnel: 'gitcred' }, randomUUID())
+    proxy.announce({ kind: 'connect', tunnel: 'agent' }, randomUUID())
     expect(proxy.instance.streamCount('codehost')).toBe(1)
     expect(proxy.instance.streamCount('helpers')).toBe(1)
   })
@@ -626,7 +626,7 @@ describe('the shim tunnel', () => {
     expect(bare.serves('codehost')).toBe(false)
   })
 
-  it('ends an idle codehost stream, as it does a gitcred one', async () => {
+  it('ends an idle codehost stream, as it does an agent one', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     try {
       const proxy = proxyUnderTest()
@@ -739,7 +739,7 @@ async function tunnelPair(
     log: { info: () => {}, warn: () => {} }
   })
   proxies.push(proxy)
-  await proxy.ensure('gitcred')
+  await proxy.ensure('agent')
   return { podPath, requests, maxOutstanding: () => maxOutstanding, proxy }
 }
 
@@ -767,7 +767,7 @@ describe('shim-side tunnel flow control', () => {
       socketPathFor: () => path
     })
     hosts.push(host)
-    expect(await host.handle({ op: 'listen', tunnel: 'gitcred', acks: true })).toEqual(
+    expect(await host.handle({ op: 'listen', tunnel: 'agent', acks: true })).toEqual(
       expect.objectContaining({ acks: true })
     )
     inPodClient(path)
@@ -807,7 +807,7 @@ describe('shim-side tunnel flow control', () => {
       socketPathFor: () => path
     })
     hosts.push(host)
-    await host.handle({ op: 'listen', tunnel: 'gitcred' })
+    await host.handle({ op: 'listen', tunnel: 'agent' })
     const bytes = randomBytes(3 * MAX_IN_FLIGHT_FRAMES * MAX_TUNNEL_CHUNK_BYTES)
     inPodClient(path).socket.write(bytes)
     await vi.waitFor(() => expect(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk, 'base64')))).toEqual(bytes))
@@ -842,7 +842,7 @@ describe('shim-side tunnel flow control', () => {
           const frame = payload as { op?: string; received?: number }
           sent.push(frame)
           if (frame.op === 'ack' && failAcks-- > 0) throw new Error('shim channel renewed')
-          return frame.op === 'listen' ? { socketPath: '/run/agentconnect/gitcred.sock', acks: true } : null
+          return frame.op === 'listen' ? { socketPath: '/run/agentconnect/agent.sock', acks: true } : null
         },
         onEvent: (listener) => listeners.push(listener),
         offEvent: () => undefined,
@@ -854,12 +854,12 @@ describe('shim-side tunnel flow control', () => {
       log: { info: () => {}, warn: () => {} }
     })
     proxies.push(proxy)
-    await proxy.ensure('gitcred')
+    await proxy.ensure('agent')
     const streamId = randomUUID()
     const announce = (event: ShimEvent['event']): void => {
       for (const listener of listeners) listener({ type: 'shim/event', streamId, event })
     }
-    announce({ kind: 'connect', tunnel: 'gitcred' })
+    announce({ kind: 'connect', tunnel: 'agent' })
     // Exactly one ack's worth: the shim, paused at its window, sends nothing more until this one lands.
     for (let i = 0; i < ACK_EVERY_FRAMES; i += 1) announce({ kind: 'chunk', data: Buffer.from('x').toString('base64') })
 

@@ -1,8 +1,8 @@
 import { z } from 'zod'
 import { SANDBOX_TUNNEL_PATHS as SANDBOX_TUNNEL_PATH_SOURCE } from './sandbox-paths.js'
 
-/** The daemon-side servers a sandbox may reach, a closed set so a compromised runtime reaches only these: gitcred and mcp as in-pod sockets, codehost and provider through one loopback proxy. */
-export const TunnelNameSchema = z.enum(['gitcred', 'mcp', 'codehost', 'provider'])
+/** The daemon-side servers a sandbox may reach, a closed set so a compromised runtime reaches only these: agent and mcp as in-pod sockets, codehost and provider through one loopback proxy. */
+export const TunnelNameSchema = z.enum(['agent', 'mcp', 'codehost', 'provider'])
 export type TunnelName = z.infer<typeof TunnelNameSchema>
 
 /** The tunnels a shim serves through its loopback proxy listener, each with its own routes and stream budget. */
@@ -18,7 +18,7 @@ export function isProxyTunnel(tunnel: TunnelName): tunnel is ProxyTunnelName {
 export const MAX_TUNNEL_CHUNK_BYTES = 32 * 1024
 /** The most authorities one `codehost` or `provider` listen forwards. */
 export const MAX_CODEHOST_ROUTES = 64
-/** Concurrent `codehost` streams per sandbox, apart from the helper tunnels' own budget so a busy clone cannot starve `mcp` or `gitcred`. */
+/** Concurrent `codehost` streams per sandbox, apart from the helper tunnels' own budget so a busy clone cannot starve `mcp` or `agent`. */
 export const MAX_CODEHOST_STREAMS = 16
 /** Concurrent `provider` streams per sandbox, its own budget: each session holds a few long-lived model connections (subagents, pooled keep-alives), so it is wider than a clone burst's. */
 export const MAX_PROVIDER_STREAMS = 64
@@ -111,7 +111,7 @@ export type TunnelListening = z.infer<typeof TunnelListeningSchema>
  * Which in-pod path each tunnel is served at. Fixed by the runtime image, not by the daemon's own
  * root, because the daemon's paths mean nothing inside the sandbox.
  *
- * Declared in `sandbox-paths.ts` — the credential helper needs the gitcred path and must not pull
+ * Declared in `sandbox-paths.ts` — the credential helper needs the agent tunnel path and must not pull
  * this module's zod schemas into its own bundle — and re-exported here, typed against the enum
  * above so a name without a path (or a path without a name) fails to compile.
  */

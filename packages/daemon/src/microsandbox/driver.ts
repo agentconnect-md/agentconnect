@@ -95,7 +95,7 @@ export interface MicrosandboxManagerOptions {
   // Overridden by tests; the real lookup reads this host's /proc.
   lockHolder?: (volume: string) => Promise<LockHolder | undefined>
   log?: Logger
-  sockets: { mcp: string; gitcred: string }
+  sockets: { mcp: string; agent: string }
   // Overridden by tests; the real one stages this daemon's shim into the VM and starts it.
   startShim?: typeof startGuestShim
 }

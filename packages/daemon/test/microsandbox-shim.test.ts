@@ -33,9 +33,9 @@ async function fixture(
 ) {
   const root = await mkdtemp(join(tmpdir(), 'ms-shim-'))
   const guest = options.guestDir ?? join(root, 'guest')
-  const sockets = { mcp: join(root, 'mcp.sock'), gitcred: join(root, 'gitcred.sock') }
-  const servers: Server[] = [await daemonSocket(sockets.mcp, 'mcp'), await daemonSocket(sockets.gitcred, 'gitcred')]
-  const guestSockets = { mcp: join(guest, 'mcp.sock'), gitcred: join(guest, 'gitcred.sock') }
+  const sockets = { mcp: join(root, 'mcp.sock'), agent: join(root, 'agent.sock') }
+  const servers: Server[] = [await daemonSocket(sockets.mcp, 'mcp'), await daemonSocket(sockets.agent, 'agent')]
+  const guestSockets = { mcp: join(guest, 'mcp.sock'), agent: join(guest, 'agent.sock') }
   const vm = fakeVm(guestSockets)
   const runtimeStderr = vi.fn()
   const debug = vi.fn()
@@ -57,7 +57,7 @@ async function fixture(
         return ++generation
       }
     },
-    tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' || tunnel === 'mcp' ? sockets[tunnel] : undefined),
+    tunnelSocketPath: (tunnel) => (tunnel === 'agent' || tunnel === 'mcp' ? sockets[tunnel] : undefined),
     log,
     ...(options.channelTimeoutMs ? { channelTimeoutMs: options.channelTimeoutMs } : {}),
     ...(options.clock ? { clock: options.clock } : {})
@@ -91,7 +91,7 @@ describe('a VM shim, as the manager starts it', () => {
 
   // A hosted session's shim (session-executors.md §6): its holder is on another machine, and nothing here binds it.
   it('stages a bundle larger than one agentd frame and starts a hosted shim with its own seed environment', async () => {
-    const vm = fakeVm({ mcp: '/nonexistent/mcp.sock', gitcred: '/nonexistent/gitcred.sock' })
+    const vm = fakeVm({ mcp: '/nonexistent/mcp.sock', agent: '/nonexistent/agent.sock' })
     closers.push(() => vm.close())
     const artifacts = { 'index.js': Buffer.alloc(4 * 1024 * 1024, 'x').toString('base64') }
     const guest = await startGuestShim({
@@ -161,7 +161,7 @@ describe('a local VM bound in process (session-executors.md §11 step 4)', () =>
   it('serves both helper endpoints in the guest, each reaching only its own daemon socket', async () => {
     const { bind, guestSockets } = await fixture()
     await bind()
-    expect(await exchange(guestSockets.gitcred, 'get')).toBe('gitcred:get')
+    expect(await exchange(guestSockets.agent, 'get')).toBe('agent:get')
     expect(await exchange(guestSockets.mcp, 'tools/list')).toBe('mcp:tools/list')
   })
 
@@ -171,7 +171,7 @@ describe('a local VM bound in process (session-executors.md §11 step 4)', () =>
     const session = await bind()
     expect(session.isAttached()).toBe(true)
     // The binder's rule for every executor: a missing tunnel degrades one feature rather than refusing the agent.
-    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/has no (gitcred|mcp) tunnel/))
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/has no (agent|mcp) tunnel/))
   })
 
   it('runs a runtime through the shim in the workspace, carries a write larger than one frame, and ends it on stop', async () => {

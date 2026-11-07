@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Daemon } from '../src/daemon.js'
-import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV } from '../src/cp/gitcred-server.js'
+import { AGENT_CHANNEL_AGENT_ENV, AGENT_CHANNEL_CAPABILITY_ENV } from '../src/cp/agent-channel-server.js'
 import { agentHostKey } from '../src/acp/host-key.js'
 import { FakeClock } from './cp/fake-clock.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
@@ -310,7 +310,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     }
   })
 
-  it('hands a scratch workspace with App credentials the same gitcred capability a clone gets', async () => {
+  it('hands a scratch workspace with App credentials the same agent channel capability a clone gets', async () => {
     const root = scaffold()
     const daemon = new Daemon({
       slackAppFactory: fakeSlackAppFactory(),
@@ -337,8 +337,8 @@ describe('Daemon (no Slack, injected ACP host)', () => {
         strategy: 'srt',
         cwd
       }).host
-      expect((scratch as any).opts.env[GITCRED_CAPABILITY_ENV]).toEqual(expect.any(String))
-      expect((scratch as any).opts.env[GITCRED_AGENT_ENV]).toBe('bot-a')
+      expect((scratch as any).opts.env[AGENT_CHANNEL_CAPABILITY_ENV]).toEqual(expect.any(String))
+      expect((scratch as any).opts.env[AGENT_CHANNEL_AGENT_ENV]).toBe('bot-a')
       // Without App credentials a scratch workspace carries no git identity; its capability serves live secrets only (capability-requests.md §4.9.2).
       agent.workspace = { mode: 'from-scratch', path: cwd, gitBranch: 'main', pullOnNewSession: true, skills: [] }
       const plain = (daemon as any).buildAcpHost(agent, (daemon as any).cfg, {
@@ -346,7 +346,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
         strategy: 'srt',
         cwd
       }).host
-      expect((plain as any).opts.env[GITCRED_CAPABILITY_ENV]).toEqual(expect.any(String))
+      expect((plain as any).opts.env[AGENT_CHANNEL_CAPABILITY_ENV]).toEqual(expect.any(String))
       expect((plain as any).opts.env.GIT_CONFIG_KEY_0).toBeUndefined()
     } finally {
       await daemon.stop().catch(() => undefined)
@@ -434,8 +434,8 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       }).host
       const dreamEnv = (dreamHost as any).opts.env
       expect(dreamEnv.API_KEY).toBeUndefined()
-      expect(dreamEnv[GITCRED_AGENT_ENV]).toBeUndefined()
-      expect(dreamEnv[GITCRED_CAPABILITY_ENV]).toBeUndefined()
+      expect(dreamEnv[AGENT_CHANNEL_AGENT_ENV]).toBeUndefined()
+      expect(dreamEnv[AGENT_CHANNEL_CAPABILITY_ENV]).toBeUndefined()
       // The policy rides the per-agent gitconfig, which the whole process tree inherits; the
       // indexed channel is gone, because a child that keeps COUNT without the pairs breaks git.
       expect(dreamEnv.GIT_CONFIG_COUNT).toBeUndefined()

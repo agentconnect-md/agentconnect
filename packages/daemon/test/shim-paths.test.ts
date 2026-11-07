@@ -27,7 +27,7 @@ describe('shimPaths', () => {
       skillStagingDir: '/run/agentconnect/skills-staging',
       bundleStagingDir: '/run/agentconnect/bundle-staging',
       tunnels: {
-        gitcred: '/run/agentconnect/gitcred.sock',
+        agent: '/run/agentconnect/agent.sock',
         mcp: '/run/agentconnect/mcp.sock',
         codehost: '/run/agentconnect/codehost.sock',
         provider: '/run/agentconnect/provider.sock'
@@ -49,7 +49,7 @@ describe('shimPaths', () => {
     expect(all.every((path) => path.startsWith('/tmp/rt/') || path.startsWith('/srv/helpers/'))).toBe(true)
     expect(all.some((path) => path.includes('/run/agentconnect') || path.includes('/opt/agentconnect'))).toBe(false)
     expect(paths.tunnels).toEqual({
-      gitcred: '/tmp/rt/gitcred.sock',
+      agent: '/tmp/rt/agent.sock',
       mcp: '/tmp/rt/mcp.sock',
       codehost: '/tmp/rt/codehost.sock',
       provider: '/tmp/rt/provider.sock'
@@ -65,7 +65,7 @@ describe('shimPaths', () => {
 
   it('moves only the runtime half when just that root is named', () => {
     const paths = shimPaths('/tmp/rt')
-    expect(paths.tunnels.gitcred).toBe('/tmp/rt/gitcred.sock')
+    expect(paths.tunnels.agent).toBe('/tmp/rt/agent.sock')
     expect(paths.gitCredentialHelper).toBe(DEFAULT_SHIM_PATHS.gitCredentialHelper)
   })
 })

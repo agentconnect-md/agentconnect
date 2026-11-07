@@ -58,7 +58,7 @@ export function mcpSocketPath(root: string, platform = process.platform): string
 }
 
 /** Stable per-daemon IPC endpoint: a named pipe on Windows, a filesystem UDS elsewhere. */
-export function localIpcPath(root: string, channel: 'mcp' | 'gitcred', platform = process.platform): string {
+export function localIpcPath(root: string, channel: 'mcp' | 'agent', platform = process.platform): string {
   if (platform !== 'win32') return posix.join(root, 'run', `${channel}.sock`)
   const instance = createHash('sha256').update(resolveRoot(root).toLowerCase()).digest('hex').slice(0, 16)
   return `\\\\.\\pipe\\agentconnect-${instance}-${channel}`

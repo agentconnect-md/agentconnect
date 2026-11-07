@@ -16,7 +16,7 @@ const MSB_PACKAGE = { name: 'microsandbox', range: MICROSANDBOX_VERSION, bin: 'm
 export interface MicrosandboxInstallOptions {
   root: string
   config: MicrosandboxConfig | undefined
-  sockets: { mcp: string; gitcred: string }
+  sockets: { mcp: string; agent: string }
   log: Logger
 }
 

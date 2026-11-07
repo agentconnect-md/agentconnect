@@ -49,7 +49,7 @@ import {
 } from './skill-git-plan.js'
 import { stageSkillWriteBacks, type SkillWriteBackStaging } from './skill-git-writeback.js'
 import { DEFAULT_SHIM_PATHS } from './sandbox-paths.js'
-import { GITCRED_SOCKET_ENV } from '../gitcred/env.js'
+import { AGENT_CHANNEL_SOCKET_ENV } from '../agent-channel/env.js'
 
 interface Operation {
   handle: string
@@ -645,7 +645,7 @@ export class ClusterSkillHandler {
       ...(input.credentialWindow ? { window: input.credentialWindow } : {}),
       deps: {
         credentialHelper: DEFAULT_SHIM_PATHS.gitCredentialHelper,
-        credentialSocket: process.env[GITCRED_SOCKET_ENV]?.trim() || DEFAULT_SHIM_PATHS.tunnels.gitcred,
+        credentialSocket: process.env[AGENT_CHANNEL_SOCKET_ENV]?.trim() || DEFAULT_SHIM_PATHS.tunnels.agent,
         ...this.deps.git
       },
       abort

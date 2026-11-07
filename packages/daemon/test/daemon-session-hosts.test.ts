@@ -336,7 +336,7 @@ it.skipIf(process.platform === 'win32')(
   async () => {
     const root = scaffold({ workspace: { mode: 'from-scratch', path: 'workspace' } }, 'shared')
     const daemon = new Daemon({ root, sandboxMechanism: 'bwrap', probeRuntimes: async () => [] })
-    const vm = fakeVm({ mcp: join(root, 'guest', 'mcp.sock'), gitcred: join(root, 'guest', 'gitcred.sock') })
+    const vm = fakeVm({ mcp: join(root, 'guest', 'mcp.sock'), agent: join(root, 'guest', 'agent.sock') })
     const fake = fakeVmManager({ vm })
     try {
       await daemon.start()

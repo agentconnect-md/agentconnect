@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { MAX_AUTO_MERGE_DETAIL } from '@agentconnect.md/protocol'
 import { z } from 'zod'
-import { GITCRED_CAPABILITY_ENV, GITCRED_SOCKET_ENV } from '../gitcred/env.js'
+import { AGENT_CHANNEL_CAPABILITY_ENV, AGENT_CHANNEL_SOCKET_ENV } from '../agent-channel/env.js'
 import { DEFAULT_SHIM_PATHS, type ShimPaths } from './sandbox-paths.js'
 
 /**
@@ -26,7 +26,7 @@ export const AutoMergePayloadSchema = z.object({
   agentId: z.string().min(1),
   repoFullName: z.string().min(3).optional(), // required for every op but `list`
   prNumber: z.number().int().positive().optional(),
-  /** The agent's runtime-only gitcred capability, so the child can fetch its own gh token per
+  /** The agent's runtime-only agent channel capability, so the child can fetch its own gh token per
    *  tick. Required to arm; never logged, and passed to the child through env, not argv. */
   capability: z.string().min(1).optional()
 })
@@ -55,7 +55,7 @@ export interface AutoMergeHandlerDeps {
   /** Seams for tests; production spawns the image's own entry with the shim's interpreter. */
   spawnChild?: (args: string[], env: NodeJS.ProcessEnv) => ChildProcess
   entryPath?: string
-  /** The shim's own layout: the watcher entry and the gitcred socket its child dials. */
+  /** The shim's own layout: the watcher entry and the agent channel socket its child dials. */
   paths?: ShimPaths
 }
 
@@ -127,8 +127,8 @@ export function createAutoMergeHandler(
 
     const child = spawnChild([p.agentId, p.repoFullName, String(p.prNumber)], {
       ...process.env,
-      [GITCRED_CAPABILITY_ENV]: p.capability,
-      [GITCRED_SOCKET_ENV]: process.env[GITCRED_SOCKET_ENV] ?? paths.tunnels.gitcred
+      [AGENT_CHANNEL_CAPABILITY_ENV]: p.capability,
+      [AGENT_CHANNEL_SOCKET_ENV]: process.env[AGENT_CHANNEL_SOCKET_ENV] ?? paths.tunnels.agent
     })
     const created: Entry = { child, status: { armed: true }, buffer: '' }
     entries.set(id, created)

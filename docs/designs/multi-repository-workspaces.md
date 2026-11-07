@@ -266,7 +266,7 @@ exact same-repository review checkout for the first time), then secondary roots
 and cross-repository review on the pod, then `gh` in the pod: the runtime image
 now carries the real `gh` and a wrapper rendered from the daemon's own generator
 with the image's paths, which the shim prepends to the runtime's PATH. The token
-still comes from the daemon — over the same tunnelled `gitcred` socket the
+still comes from the daemon — over the same tunnelled agent channel socket the
 in-pod Git helper uses, with the same per-repository authorization. The
 console's own workspace browsing stays a separate item, and still answers with
 no root for a secondary repository on a cluster agent.
