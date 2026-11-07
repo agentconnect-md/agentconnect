@@ -522,6 +522,13 @@ Credential delivery uses the negotiated `provider-credentials-v1` capability:
   authenticated CP connection, with the evaluation organization's frame scope.
   CP reads the agent in that organization and verifies the requesting daemon's
   current placement or duty before reading credentials and again before replying.
+  Both checks also require that the agent uses the requested provider: its
+  `modelProvider` (`auto` admits both `anthropic` and `openai`, because the daemon
+  resolves it against the runtime and model), or a Decision provider. Every agent
+  may read the Decision providers, because a Decision Try evaluates a member's
+  unsaved draft under any placed agent the member can see. Any other provider,
+  even one configured for the organization, is refused with `SCOPE_DENIED`
+  before the key is read.
 - `provider-credentials/reply { credentials }` contains the key, endpoint, and
   headers; `credentials: null` means confirmed absence only. Permission failures,
   unavailable storage, decryption failures, and unsupported CP versions are errors.
