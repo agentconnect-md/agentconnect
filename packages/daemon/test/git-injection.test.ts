@@ -889,7 +889,9 @@ describe.skipIf(process.platform === 'win32')('pointers for an agent whose git r
     expect(pod.path).toBe(`${SANDBOX_GIT_CONFIG_DIR}/agent-1.gitconfig`)
     expect(pod.env.GIT_CONFIG_GLOBAL).toBe(pod.path)
     expect(pod.env[GITCRED_SOCKET_ENV]).toBe(SANDBOX_TUNNEL_PATHS.gitcred)
-    expect(pod.content).toContain(`!sh '${SANDBOX_GIT_CREDENTIAL_HELPER}' agent-1`)
+    // The runtime's git presents the placeholder, never the helper.
+    expect(pod.content).toContain(CODE_HOST_CREDENTIAL_ENV)
+    expect(pod.content).not.toContain(SANDBOX_GIT_CREDENTIAL_HELPER)
     expect(pod.content).not.toContain(homedir())
   })
 
@@ -926,7 +928,7 @@ describe.skipIf(process.platform === 'win32')('pointers for an agent whose git r
     expect(out).toContain('password=installed-agent+get')
   })
 
-  it('writes the repo-local helper in the coordinates of the git that will read it', async () => {
+  it('pins a repo-local helper that names no helper path, so it reads the same in any filesystem', async () => {
     const argv: string[][] = []
     const runner = {
       withEnv: () => runner,
@@ -935,12 +937,10 @@ describe.skipIf(process.platform === 'win32')('pointers for an agent whose git r
         return ''
       }
     } as unknown as GitRunner
-    await writeRepoHelperConfig(runner, 'pod-agent')
-    // `.git/config` outlives a launch, so this is the pointer a later agent-run git in the pod
-    // finds on disk — it has to name the image's helper too, not just the spawn env.
+    await writeRepoHelperConfig(runner)
     const pinned = argv.find((args) => args[1] === '--add')?.[3]
-    expect(pinned).toBe(checkoutHelper('pod-agent', sandboxGitCredentialTarget()))
-    expect(pinned).toContain(`else sh '${SANDBOX_GIT_CREDENTIAL_HELPER}' pod-agent "$@"; fi`)
+    expect(pinned).toBe(checkoutHelper())
+    expect(pinned).not.toContain(SANDBOX_GIT_CREDENTIAL_HELPER)
   })
 })
 
@@ -1021,32 +1021,33 @@ describe('parseGitVersion', () => {
   })
 })
 
-describe('git in a proxied session', () => {
-  it('hands git the placeholder from the environment, in a file of its own', () => {
+describe("git in a session's runtime", () => {
+  it('hands git the placeholder from the environment, and nothing without one', () => {
     const dir = mkdtempSync(join(tmpdir(), 'acp-proxied-git-'))
     const target = sandboxGitCredentialTarget(dir, dir)
-    const direct = sessionGitConfig('agent-proxied', undefined, target)
-    const proxied = sessionGitConfig('agent-proxied', undefined, target, undefined, true)
-    expect(proxied.path).not.toBe(direct.path)
-    expect(proxied.content).not.toContain(target.helper)
+    const session = sessionGitConfig('agent-proxied', undefined, target)
+    expect(session.content).not.toContain(target.helper)
     // Basic up front, as the proxy's loopback listener requires; git's default waits for a challenge and aborts.
-    expect(proxied.content).toContain('[http]\n\tproxyAuthMethod = basic')
-    expect(direct.content).not.toContain('proxyAuthMethod')
+    expect(session.content).toContain('[http]\n\tproxyAuthMethod = basic')
+    expect(sessionGitConfig('agent-proxied', undefined, target, null).content).not.toContain('proxyAuthMethod')
     const config = join(dir, 'session.gitconfig')
-    writeFileSync(config, proxied.content)
+    writeFileSync(config, session.content)
+    const env = {
+      PATH: process.env.PATH ?? '',
+      HOME: dir,
+      GIT_CONFIG_GLOBAL: config,
+      GIT_CONFIG_NOSYSTEM: '1',
+      GIT_TERMINAL_PROMPT: '0'
+    }
+    const input = 'protocol=https\nhost=github.com\npath=o/r.git\n\n'
     const answer = execFileSync('git', ['credential', 'fill'], {
-      input: 'protocol=https\nhost=github.com\npath=o/r.git\n\n',
-      env: {
-        PATH: process.env.PATH ?? '',
-        HOME: dir,
-        GIT_CONFIG_GLOBAL: config,
-        GIT_CONFIG_NOSYSTEM: '1',
-        GIT_TERMINAL_PROMPT: '0',
-        [CODE_HOST_CREDENTIAL_ENV]: 'acph1_example.tag'
-      }
+      input,
+      env: { ...env, [CODE_HOST_CREDENTIAL_ENV]: 'acph1_example.tag' }
     }).toString()
     expect(answer).toContain('username=x-access-token')
     expect(answer).toContain('password=acph1_example.tag')
+    // A session the proxy cannot reach holds no credential at all.
+    expect(() => execFileSync('git', ['credential', 'fill'], { input, env, stdio: 'pipe' })).toThrow()
     rmSync(dir, { recursive: true, force: true })
   })
 
@@ -1062,7 +1063,7 @@ describe('git in a proxied session', () => {
       { provider: 'gitlab', baseUrl: 'https://gitlab.example.test:8443/gitlab' },
       { provider: 'gitea', baseUrl: 'https://gitea.example.test' }
     ])
-    const proxied = sessionGitConfig('agent-proxied', undefined, target, scope, true)
+    const proxied = sessionGitConfig('agent-proxied', undefined, target, scope)
     expect(proxied.content).not.toContain(target.helper)
     const config = join(dir, 'session.gitconfig')
     writeFileSync(config, proxied.content)
@@ -1092,15 +1093,10 @@ describe('git in a proxied session', () => {
     try {
       const local = workspaceGitLocalEnv()
       execFileSync('git', ['init', '-q', root], { env: local })
-      const target = daemonGitCredentialTarget({ shimPath: join(root, 'missing-helper'), runDir: root })
-      execFileSync(
-        'git',
-        ['config', '--add', 'credential.https://github.com.helper', checkoutHelper('agent-pin', target)],
-        {
-          cwd: root,
-          env: local
-        }
-      )
+      execFileSync('git', ['config', '--add', 'credential.https://github.com.helper', checkoutHelper()], {
+        cwd: root,
+        env: local
+      })
       const answer = execFileSync('git', ['credential', 'fill'], {
         cwd: root,
         input: 'protocol=https\nhost=github.com\npath=o/r.git\n\n',
@@ -1123,7 +1119,7 @@ describe('git in a proxied session', () => {
 
   // POSIX only: the stand-in helper is a shell script, and the daemon target's include path is a Windows path there.
   it.skipIf(process.platform === 'win32')(
-    "pins a checkout helper that answers a proxied session's placeholder and an unproxied one's real helper",
+    "pins a checkout helper that answers the session's placeholder and never the real helper",
     async () => {
       const root = mkdtempSync(join(tmpdir(), 'acp-proxied-checkout-'))
       // The daemon target's helper, standing in for the real one: whatever it answers is the real token.
@@ -1157,7 +1153,7 @@ describe('git in a proxied session', () => {
             (overrides) => gitFor(workspace, undefined, overrides),
             local
           )
-          await writeRepoHelperConfig(runner, 'agent-checkout', scope)
+          await writeRepoHelperConfig(runner, scope)
           const fill = (session: Record<string, string>) =>
             execFileSync('git', ['credential', 'fill'], {
               cwd: workspace,
@@ -1165,7 +1161,7 @@ describe('git in a proxied session', () => {
               env: { PATH: process.env.PATH ?? '', HOME: root, GIT_CONFIG_NOSYSTEM: '1', ...session }
             }).toString()
           const placeholder = { [CODE_HOST_CREDENTIAL_ENV]: 'acph1_example.tag' }
-          const proxied = sessionGitEnv('agent-checkout', undefined, scope, true)
+          const proxied = sessionGitEnv('agent-checkout', undefined, scope)
           // The checkout's own pin answers, so the session carries no command-scope override.
           expect(proxied.GIT_CONFIG_COUNT).toBeUndefined()
           expect(fill({ ...proxied, ...placeholder })).toContain('password=acph1_example.tag')
@@ -1176,10 +1172,8 @@ describe('git in a proxied session', () => {
           // Pairs a session env already carries do not displace the pin.
           const prior = { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'safe.directory', GIT_CONFIG_VALUE_0: '*' }
           expect(fill({ ...proxied, ...placeholder, ...prior })).toContain('password=acph1_example.tag')
-          // Without a placeholder in the environment the same pin runs the real helper.
-          const direct = sessionGitEnv('agent-checkout', undefined, scope)
-          expect(fill(direct)).toContain('password=REAL-TOKEN-agent-checkout')
-          expect(fill(proxied)).toContain('password=REAL-TOKEN-agent-checkout')
+          // Without a placeholder in the environment neither the pin nor the session config answers.
+          expect(() => fill({ ...proxied, GIT_TERMINAL_PROMPT: '0' })).toThrow()
         }
       } finally {
         rmSync(helper, { force: true })

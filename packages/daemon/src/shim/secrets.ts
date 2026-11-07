@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // The in-sandbox `agentconnect-secrets` (capability-requests.md §4.9.2): `/opt/agentconnect/pathbin/agentconnect-secrets` runs this.
-// Its own entry for the reason gh-token is one: the image copies one file per bundle.
+// Its own entry because the image copies one file per bundle.
 import { GITCRED_SOCKET_ENV } from '../gitcred/env.js'
 import { runSecretsHelper } from '../gitcred/secrets-client.js'
 import { SANDBOX_TUNNEL_PATHS } from './sandbox-paths.js'

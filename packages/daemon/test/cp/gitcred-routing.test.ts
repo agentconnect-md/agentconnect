@@ -1,7 +1,6 @@
 /**
  * Per-repo credential ROUTING (multi-repo authorization, #457): the helper's
- * path → repo parsing, the gh wrapper's repo-argument normalization, and the
- * gitcred.sock server's key routing (plane split + workspace folding).
+ * path → repo parsing and the gitcred.sock server's key routing (plane split + workspace folding).
  */
 import { randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -10,7 +9,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { effectiveAgentId, repoFromPath } from '../../src/cli/git-credential.js'
-import { normalizeRepoArg } from '../../src/cp/gh-target.js'
 import {
   GITCRED_AGENT_ENV,
   GitCredServer,
@@ -55,27 +53,6 @@ describe('effectiveAgentId (helper identity resolution)', () => {
     expect(effectiveAgentId('argv-agent')).toBe('argv-agent')
     process.env[GITCRED_AGENT_ENV] = ''
     expect(effectiveAgentId('argv-agent')).toBe('argv-agent')
-  })
-})
-
-describe('normalizeRepoArg (gh wrapper repo argument)', () => {
-  it('accepts OWNER/REPO, HOST/OWNER/REPO and github URLs', () => {
-    expect(normalizeRepoArg('acme/infra')).toEqual({ repo: 'acme/infra' })
-    expect(normalizeRepoArg('acme/infra.git')).toEqual({ repo: 'acme/infra' })
-    expect(normalizeRepoArg('github.com/acme/infra')).toEqual({ repo: 'acme/infra' })
-    expect(normalizeRepoArg('https://github.com/acme/infra.git')).toEqual({ repo: 'acme/infra' })
-    expect(normalizeRepoArg('git@github.com:acme/infra.git')).toEqual({ repo: 'acme/infra' })
-  })
-
-  it('defers on non-github hosts (the wrapper runs the real gh untouched)', () => {
-    expect(normalizeRepoArg('gitlab.com/acme/infra')).toEqual({ defer: true })
-    expect(normalizeRepoArg('https://gitlab.com/acme/infra')).toEqual({ defer: true })
-  })
-
-  it('falls back to the workspace token on absent/unparseable input', () => {
-    expect(normalizeRepoArg(undefined)).toEqual({})
-    expect(normalizeRepoArg('')).toEqual({})
-    expect(normalizeRepoArg('not a repo')).toEqual({})
   })
 })
 
@@ -474,31 +451,14 @@ describe('GitCredServer routing (gitcred.sock)', () => {
     expect(erases).toEqual([{ agentId: 'a1', password: 'ghs_dead', opts: { plane: 'git', repo: 'other/tools' } }])
   })
 
-  it('issues the daemon and the runtime distinct capabilities that both serve get and erase', async () => {
-    const { sockPath, gets, erases, capability, runtimeCapability } = await boot()
+  it('issues the daemon and the runtime distinct capabilities, and only the daemon mints', async () => {
+    const { sockPath, gets, erases, warnings, capability, runtimeCapability } = await boot(undefined, {
+      liveSecretsOf: () => [{ name: 'EXAMPLE_TOKEN', value: 'example-value' }]
+    })
     expect(runtimeCapability).not.toBe(capability)
     // Stable per holder until the agent is revoked.
     expect(server!.capabilityFor('a1', 'daemon')).toBe(capability)
     expect(server!.capabilityFor('a1', 'runtime')).toBe(runtimeCapability)
-    for (const presented of [capability, runtimeCapability]) {
-      await expect(roundtrip(sockPath, { op: 'get', agentId: 'a1', capability: presented })).resolves.toMatchObject({
-        ok: true,
-        password: 'ghs_test'
-      })
-      await expect(
-        roundtrip(sockPath, { op: 'erase', agentId: 'a1', capability: presented, password: 'ghs_dead' })
-      ).resolves.toEqual({ ok: true })
-    }
-    expect(gets).toHaveLength(2)
-    expect(erases).toHaveLength(2)
-  })
-
-  it("refuses a proxied agent's runtime capability get and erase, and still serves it secrets", async () => {
-    let proxied = true
-    const { sockPath, gets, erases, warnings, capability, runtimeCapability } = await boot(undefined, {
-      runtimeMayMint: (agentId) => !(proxied && agentId === 'a1'),
-      liveSecretsOf: () => [{ name: 'EXAMPLE_TOKEN', value: 'example-value' }]
-    })
     const refused = { ok: false, error: RUNTIME_NO_MINT_ERROR, denied: 'agent' }
     for (const plane of ['git', 'gh', 'glab']) {
       await expect(
@@ -515,8 +475,7 @@ describe('GitCredServer routing (gitcred.sock)', () => {
       ok: true,
       secrets: [{ name: 'EXAMPLE_TOKEN', value: 'example-value' }]
     })
-
-    // The daemon's own capability still mints for the same agent.
+    // The daemon's own capability mints for the same agent.
     await expect(roundtrip(sockPath, { op: 'get', agentId: 'a1', capability })).resolves.toMatchObject({
       ok: true,
       password: 'ghs_test'
@@ -524,24 +483,8 @@ describe('GitCredServer routing (gitcred.sock)', () => {
     await expect(
       roundtrip(sockPath, { op: 'erase', agentId: 'a1', capability, password: 'ghs_dead' })
     ).resolves.toEqual({ ok: true })
-
-    // Decided on each request: once the proxy no longer carries the agent, the same capability mints again.
-    proxied = false
-    await expect(
-      roundtrip(sockPath, { op: 'get', agentId: 'a1', capability: runtimeCapability })
-    ).resolves.toMatchObject({ ok: true, password: 'ghs_test' })
-    expect(gets).toHaveLength(2)
-  })
-
-  it("leaves an unproxied agent's runtime capability minting beside a proxied one's", async () => {
-    const { sockPath, gets } = await boot(undefined, { runtimeMayMint: (agentId) => agentId !== 'a2' })
-    await expect(
-      roundtrip(sockPath, { op: 'get', agentId: 'a1', capability: server!.capabilityFor('a1', 'runtime') })
-    ).resolves.toMatchObject({ ok: true, password: 'ghs_test' })
-    await expect(
-      roundtrip(sockPath, { op: 'get', agentId: 'a2', capability: server!.capabilityFor('a2', 'runtime') })
-    ).resolves.toMatchObject({ ok: false, error: RUNTIME_NO_MINT_ERROR })
-    expect(gets.map((call) => call.agentId)).toEqual(['a1'])
+    expect(gets).toHaveLength(1)
+    expect(erases).toHaveLength(1)
   })
 
   it('rejects missing, cross-agent, and revoked capabilities of either holder before cache access', async () => {
@@ -590,7 +533,7 @@ describe('GitCredServer routing (gitcred.sock)', () => {
       const { sockPath, gets, warnings, logs, capability, runtimeCapability } = await bootGithub()
       const refused = await ask(sockPath, capability)
       expect(refused).toMatchObject({ ok: false, denied: 'repository' })
-      expect(await ask(sockPath, runtimeCapability)).toMatchObject({ ok: false, denied: 'repository' })
+      expect(await ask(sockPath, runtimeCapability)).toMatchObject({ ok: false, error: RUNTIME_NO_MINT_ERROR })
       expect(gets).toHaveLength(0)
       expect(warnings.join('\n')).toContain('outcome=denied')
       expect(warnings.join('\n')).toContain('private skill outside a skill credential window')
