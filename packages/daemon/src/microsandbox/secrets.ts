@@ -9,14 +9,31 @@ import { prepareSharedRuntimeCredentials, type SharedRuntimeCredentialAccess } f
 import { prepareRuntimeHome, projectRuntimeHomeSeedFile } from '../runtimes/runtime-home.js'
 import { MAX_SEED_FILE_BYTES, parseDshCredentialDocument } from '../runtimes/runtime-seeded-credentials.js'
 import { prepareOpenCodeSecrets } from './opencode-secrets.js'
-import { prepareClaudeApiSecret, prepareCodexApiSecret } from './native-api-secrets.js'
+import {
+  prepareClaudeApiSecret,
+  prepareClaudeEnvSecret,
+  prepareCodexApiSecret,
+  prepareCodexEnvSecret
+} from './native-api-secrets.js'
 import { preparePiSecrets } from './pi-secrets.js'
 import { prepareGrokSecrets } from './grok-secrets.js'
 import { prepareQwenSecrets } from './qwen-secrets.js'
 import { prepareOmpSecrets } from './omp-secrets.js'
 import { prepareAmpSecrets } from './amp-secrets.js'
 import { prepareKimiSecrets } from './kimi-secrets.js'
-import { replaceEnvironmentSecrets } from './secret-values.js'
+import {
+  microsandboxPlaceholder,
+  replaceEnvironmentSecrets,
+  type SecretPlaceholder,
+  type SecretSources
+} from './secret-values.js'
+export {
+  microsandboxPlaceholder,
+  type SecretBinding,
+  type SecretPlaceholder,
+  type SecretSources
+} from './secret-values.js'
+import { sharedCredentialProfile } from '../runtimes/runtime-credential-sources.js'
 
 export interface MicrosandboxSecret {
   env: string
@@ -38,20 +55,43 @@ export interface MicrosandboxCredentials {
   prepareEnv?: (env: Record<string, string>) => void
 }
 
+type PrepareCredentials = (
+  hostEnv: NodeJS.ProcessEnv,
+  explicitEnv: Record<string, string>,
+  placeholder?: SecretPlaceholder,
+  sources?: SecretSources
+) => MicrosandboxCredentials | undefined
+
 interface CredentialPreparer {
-  prepare: (hostEnv: NodeJS.ProcessEnv, explicitEnv: Record<string, string>) => MicrosandboxCredentials | undefined
+  prepare: PrepareCredentials
   /** The launch variables it recognizes: the runtime's own for the key it protects, and those it binds a key to. */
   env: RegExp
+  /** Set where an srt launch protects the host's keys through the credential proxy: the runtime's own key variable, which a VM passes through. */
+  ambient?: { envKey?: PrepareCredentials }
 }
 
 const hashed = (prefix: string): RegExp => new RegExp(`^${prefix}_[0-9A-F]{16}$`)
 
 const CREDENTIAL_PREPARERS = new Map<string, CredentialPreparer>([
-  ['dsh-acp', { prepare: prepareDeepSeekSecret, env: /^DEEPSEEK_API_KEY$/ }],
-  ['opencode', { prepare: prepareOpenCodeSecrets, env: hashed('OPENCODE_API') }],
+  ['dsh-acp', { prepare: prepareDeepSeekSecret, env: /^DEEPSEEK_API_KEY$/, ambient: {} }],
+  ['opencode', { prepare: prepareOpenCodeSecrets, env: hashed('OPENCODE_API'), ambient: {} }],
   ['pi-acp', { prepare: preparePiSecrets, env: hashed('PI_API') }],
-  ['claude-acp', { prepare: prepareClaudeApiSecret, env: /^(?:ANTHROPIC_API_KEY|AC_CLAUDE_API_KEY)$/ }],
-  ['codex-acp', { prepare: prepareCodexApiSecret, env: /^(?:OPENAI_API_KEY|AC_CODEX_API_KEY)$/ }],
+  [
+    'claude-acp',
+    {
+      prepare: prepareClaudeApiSecret,
+      env: /^(?:ANTHROPIC_API_KEY|AC_CLAUDE_API_KEY)$/,
+      ambient: { envKey: prepareClaudeEnvSecret }
+    }
+  ],
+  [
+    'codex-acp',
+    {
+      prepare: prepareCodexApiSecret,
+      env: /^(?:OPENAI_API_KEY|AC_CODEX_API_KEY)$/,
+      ambient: { envKey: prepareCodexEnvSecret }
+    }
+  ],
   ['grok-build', { prepare: prepareGrokSecrets, env: hashed('AC_GROK_API') }],
   ['qwen-code', { prepare: prepareQwenSecrets, env: hashed('AC_QWEN_API') }],
   ['omp', { prepare: prepareOmpSecrets, env: hashed('AC_OMP_API') }],
@@ -61,6 +101,52 @@ const CREDENTIAL_PREPARERS = new Map<string, CredentialPreparer>([
 
 function preparerFor(runtimeId: string, runtime: RuntimeDef | undefined): CredentialPreparer | undefined {
   return CREDENTIAL_PREPARERS.get(isDeepSeekRuntime(runtimeId, runtime) ? 'dsh-acp' : runtimeId)
+}
+
+/** The runtime whose preparer an srt launch protects the host's keys with, known by its id or the adapter it launches. */
+export function ambientCredentialRuntime(runtimeId: string, runtime: RuntimeDef | undefined): string | undefined {
+  const profile = sharedCredentialProfile(runtimeId, runtime)
+  const id = isDeepSeekRuntime(runtimeId, runtime)
+    ? 'dsh-acp'
+    : profile === 'claude'
+      ? 'claude-acp'
+      : profile === 'codex'
+        ? 'codex-acp'
+        : runtimeId
+  return CREDENTIAL_PREPARERS.get(id)?.ambient ? id : undefined
+}
+
+/** The host's keys an srt launch of this runtime would hand it, each behind the factory's placeholder; undefined when it has none or no such preparer. */
+export function prepareAmbientCredentials(
+  runtimeId: string,
+  runtime: RuntimeDef | undefined,
+  hostEnv: NodeJS.ProcessEnv,
+  explicitEnv: Record<string, string>,
+  placeholder: SecretPlaceholder,
+  sources: SecretSources = {}
+): MicrosandboxCredentials | undefined {
+  const id = ambientCredentialRuntime(runtimeId, runtime)
+  const preparer = id === undefined ? undefined : CREDENTIAL_PREPARERS.get(id)
+  if (!preparer?.ambient) return undefined
+  return mergeCredentials(
+    preparer.prepare(hostEnv, explicitEnv, placeholder, sources),
+    preparer.ambient.envKey?.(hostEnv, explicitEnv, placeholder, sources)
+  )
+}
+
+/** A runtime's sign-in file credentials with its key variable's beside them; the file's sharing choice stands. */
+function mergeCredentials(
+  files: MicrosandboxCredentials | undefined,
+  variable: MicrosandboxCredentials | undefined
+): MicrosandboxCredentials | undefined {
+  if (!files || !variable) return files ?? variable
+  return {
+    ...files,
+    secrets: [...files.secrets, ...variable.secrets],
+    replacements: new Map([...files.replacements, ...variable.replacements]),
+    sources: [...files.sources, ...variable.sources],
+    seedExclusions: [...files.seedExclusions, ...variable.seedExclusions]
+  }
 }
 
 export function prepareMicrosandboxCredentials(
@@ -159,7 +245,11 @@ export function microsandboxCredentialStep(
   }
 }
 
-function prepareDeepSeekSecret(hostEnv: NodeJS.ProcessEnv, explicitEnv: Record<string, string> = {}) {
+function prepareDeepSeekSecret(
+  hostEnv: NodeJS.ProcessEnv,
+  explicitEnv: Record<string, string> = {},
+  placeholder: SecretPlaceholder = microsandboxPlaceholder
+) {
   const env = 'DEEPSEEK_API_KEY'
   const files = runtimeStateLocations('dsh-acp', hostEnv).flatMap((location) =>
     (location.credentialFiles ?? []).map((file) => ({
@@ -187,17 +277,12 @@ function prepareDeepSeekSecret(hostEnv: NodeJS.ProcessEnv, explicitEnv: Record<s
   }
   const value = key?.trim()
   if (!value) return undefined
-  const secret = {
-    env,
-    placeholder: 'msb-secret-DEEPSEEK_API_KEY',
-    host: 'api.deepseek.com',
-    readValue: () => value
-  } satisfies MicrosandboxSecret
+  const host = 'api.deepseek.com'
   try {
     const endpoint = new URL(baseUrl ?? 'https://api.deepseek.com')
     if (
       endpoint.protocol !== 'https:' ||
-      endpoint.hostname !== secret.host ||
+      endpoint.hostname !== host ||
       endpoint.port ||
       endpoint.username ||
       endpoint.password
@@ -206,6 +291,12 @@ function prepareDeepSeekSecret(hostEnv: NodeJS.ProcessEnv, explicitEnv: Record<s
   } catch {
     throw new Error('DeepSeek launch refused: credential protection requires https://api.deepseek.com')
   }
+  const secret = {
+    env,
+    placeholder: placeholder({ env, provider: 'deepseek', hosts: [host], defaultHost: host }),
+    host,
+    readValue: () => value
+  } satisfies MicrosandboxSecret
   return {
     secrets: [secret],
     replacements: new Map([[value, secret.placeholder]]),

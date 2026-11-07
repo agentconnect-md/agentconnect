@@ -20,7 +20,7 @@ import { CLAUDE_PROFILE_ENV, isClaudeRuntimeDef } from '../runtime-defs/claude-r
 import { runtimeExecutableHints } from '../runtime-defs/executable-hints.js'
 import { resolveCommandPath } from '../runtimes/probe.js'
 import { resolveTrustedExecutable, trustedRuntimeReadRoots } from '../runtimes/read-roots.js'
-import { isRecognizedCredentialEnv } from '../microsandbox/secrets.js'
+import { isRecognizedCredentialEnv, type MicrosandboxCredentials } from '../microsandbox/secrets.js'
 
 export interface ComposedRuntimeLaunch {
   runtime: RuntimeDef
@@ -184,6 +184,8 @@ export function composeRuntimeLaunch(opts: {
   sessionGitDirs?: string[]
   /** A confined session launched through the SRT-wrapped shim rooted here (see prepareRuntimeLaunch). */
   srtShim?: { runtimeRoot: string }
+  /** An srt launch's host provider keys behind credential-proxy placeholders (see prepareRuntimeLaunch). */
+  ambientCredentials?: MicrosandboxCredentials
 }): ComposedRuntimeLaunch {
   const policyId = runtimeMemoryPolicyId(opts.runtime, opts.runtimeId)
   const capabilities = runtimeMemoryCapabilities(opts.runtime, opts.runtimeId)
@@ -209,6 +211,7 @@ export function composeRuntimeLaunch(opts: {
     ...(opts.executor ? { executor: opts.executor } : {}),
     ...(opts.sessionGitDirs ? { sessionGitDirs: opts.sessionGitDirs } : {}),
     ...(opts.srtShim ? { srtShim: opts.srtShim } : {}),
+    ...(opts.ambientCredentials ? { ambientCredentials: opts.ambientCredentials } : {}),
     runtimeId: opts.runtimeId,
     runtime: opts.runtime,
     scopeDir: opts.scopeDir,

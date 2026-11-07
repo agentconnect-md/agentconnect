@@ -18,6 +18,7 @@ import {
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import type { RuntimeDef } from '../config/config-schema.js'
 import { readRegularFileSync } from '../fs/regular-file.js'
+import { looksLikePlaceholder } from '../credential-proxy/placeholder.js'
 import {
   resolveClaudeCredentialSources,
   resolveCodexCredentialSources,
@@ -187,6 +188,15 @@ function refreshTimestamp(path: string): number | undefined {
   }
 }
 
+function proxyProjectedCodexAuth(path: string): boolean {
+  try {
+    const key = (JSON.parse(credentialBytes(path).toString('utf8')) as { OPENAI_API_KEY?: unknown }).OPENAI_API_KEY
+    return typeof key === 'string' && looksLikePlaceholder(key)
+  } catch {
+    return false
+  }
+}
+
 function prepareCodexCredentials(env: NodeJS.ProcessEnv): SharedRuntimeCredentialAccess {
   const source = resolveCodexCredentialSources(env)
   const codexHome = ensureOwnedDirectory(source.configDir, 'host CODEX_HOME')
@@ -230,7 +240,9 @@ function prepareCodexCredentials(env: NodeJS.ProcessEnv): SharedRuntimeCredentia
         }
         if (!info.isFile()) throw new Error(`private Codex auth path is not a regular file: ${privateAuth}`)
 
-        if (!existsSync(hostAuth)) {
+        // A copy an srt launch projected for the credential proxy holds only its placeholder, never a login.
+        if (proxyProjectedCodexAuth(privateAuth)) unlinkSync(privateAuth)
+        else if (!existsSync(hostAuth)) {
           renameSync(privateAuth, hostAuth)
           secureCredentialFile(hostAuth)
           writablePaths.push(hostAuth)
