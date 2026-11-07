@@ -189,6 +189,38 @@ describe.skipIf(process.platform === 'win32')("a pool pod's static install keys 
     }
   })
 
+  it("seats a token-only pair's slot at the gateway the runtime environment names, never at the provider's default", async () => {
+    const bindings = (url: string) => ({
+      AC_RUNTIME_ENV_BINDINGS: JSON.stringify({ claude: { ANTHROPIC_BASE_URL: 'AC_RUNTIME_SECRET_FEDCBA9876543210' } }),
+      AC_RUNTIME_SECRET_FEDCBA9876543210: url,
+      ANTHROPIC_MODEL_TOKEN: ANTHROPIC_KEY
+    })
+    const https = await started(bindings('https://gateway.example.test/anthropic'))
+    try {
+      const host = build(https.d, 'claude')
+      expect(host.opts.env.ANTHROPIC_BASE_URL).toBe('https://gateway.example.test/anthropic')
+      expect(host.opts.provider.env.ANTHROPIC_API_KEY.startsWith(PLACEHOLDER_PREFIX)).toBe(true)
+      expect(https.d.providerSlots.get('bot-a').get('install:model:anthropic')).toMatchObject({
+        host: 'gateway.example.test',
+        pathPrefix: 'anthropic',
+        saas: false
+      })
+      expect(https.d.tunnelListenOptions('bot-a', 'provider').routes).toEqual(['gateway.example.test:443'])
+    } finally {
+      await https.daemon.stop()
+    }
+    // A cleartext gateway cannot exchange a placeholder, so the pod keeps the real key.
+    const cleartext = await started(bindings('http://gateway.example.test:8080/anthropic'))
+    try {
+      const host = build(cleartext.d, 'claude')
+      expect(host.opts.env.ANTHROPIC_API_KEY).toBe(ANTHROPIC_KEY)
+      expect(host.opts.provider).toBeUndefined()
+      expect(cleartext.d.providerSlots.get('bot-a')).toBeUndefined()
+    } finally {
+      await cleartext.daemon.stop()
+    }
+  })
+
   it('keeps a key another launch variable also carries, so no pod holds it beside its placeholder', async () => {
     const { daemon, d } = await started({
       AC_RUNTIME_ENV_BINDINGS: JSON.stringify({

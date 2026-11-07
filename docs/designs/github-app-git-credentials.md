@@ -934,10 +934,13 @@ renders too) and the provider key variables `daemonPool.runtimeEnvironment`
 maps (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`,
 `COPILOT_PROVIDER_API_KEY`). The pool member reads them from its own
 environment, so the pod needs none. A pair is a slot `install:model:<provider>`
-at its base URL, or the provider's default; a mapped variable is a slot
-`install:<runtime>:<variable>` at the endpoint the launch's runtime sends it
-to: its base URL variable, Codex's configured base, the base URL an OpenCode or
-Kilo configuration names for that provider, else the provider's default. The
+and a mapped variable a slot `install:<runtime>:<variable>`, each at the
+endpoint the launch's runtime sends that key to, read from the launch's final
+environment: its base URL variable, Codex's gateway auth request or configured
+base, the base URL an OpenCode or Kilo configuration names for that provider,
+else the provider's default. Every variable holding the key must agree on that
+one origin, so a token-only pair beside a gateway URL the launch names is
+slotted at the gateway. The
 launch carries the real key and, beside it, the variables that carry the
 placeholder instead (Codex's auth request among them); the driver asks the
 pod's shim for `provider` after the bind and applies them only when it reports

@@ -403,12 +403,10 @@ import { endpointSlot, sameSlotOrigin, type ProviderSlot } from './credential-pr
 import { sealHostProviderKeys } from './credential-proxy/host-keys.js'
 import {
   carries,
+  keyDestinations,
   launchOverlay,
-  pairEndpoint,
   POD_KEY_VARIABLES,
   PROVIDER_DEFAULT_ENDPOINTS,
-  runtimeKeyEndpoint,
-  type KeyEndpoint,
   type PodModelConfigure
 } from './credential-proxy/pod-keys.js'
 import type { MicrosandboxCredentials } from './microsandbox/secrets.js'
@@ -7088,13 +7086,30 @@ export class Daemon {
     for (;;) {
       pending = new Map()
       proxied = { ...staged }
-      const seal = (id: string, endpoint: KeyEndpoint, value: string, read: () => Promise<string>) => {
+      // A slot sits where the runtime sends the key, read from the launch's final env: every variable holding it must agree on one HTTPS origin.
+      const seal = (id: string, value: string, read: () => Promise<string>, provider?: string) => {
         if (excluded.has(id)) return undefined
-        const url = URL.canParse(endpoint.endpoint) ? new URL(endpoint.endpoint) : undefined
-        const slot =
-          url && endpointSlot(id, endpoint.provider, url, PROVIDER_DEFAULT_ENDPOINTS[endpoint.provider] ?? null)
-        if (!slot) {
-          kept.set(id, 'its endpoint is not HTTPS')
+        const destinations = keyDestinations(target, value, real)
+        const slots = destinations.map(
+          (endpoint) =>
+            endpoint &&
+            (provider === undefined || endpoint.provider === provider) &&
+            URL.canParse(endpoint.endpoint) &&
+            endpointSlot(
+              id,
+              endpoint.provider,
+              new URL(endpoint.endpoint),
+              PROVIDER_DEFAULT_ENDPOINTS[endpoint.provider] ?? null
+            )
+        )
+        const slot = slots[0]
+        if (!slot || slots.some((other) => !other || !sameSlotOrigin(other, slot))) {
+          kept.set(
+            id,
+            destinations.length > 0 && destinations.every((endpoint) => endpoint?.endpoint.startsWith('http:'))
+              ? 'its endpoint is not HTTPS'
+              : 'its runtime is not known to send it to one HTTPS endpoint'
+          )
           return undefined
         }
         const placeholder = proxy.sealProviderSlot(agentId, slot)
@@ -7104,13 +7119,7 @@ export class Daemon {
       for (const [name, value] of Object.entries(runtimeValues)) {
         // Only a key the launch still holds as the install mapped it; a static pair may have replaced it.
         if (!POD_KEY_VARIABLES.includes(name) || staged[name] !== value || real[name] !== value) continue
-        const id = `install:${runtimeId}:${name}`
-        const endpoint = runtimeKeyEndpoint(target, name, real)
-        if (!endpoint) {
-          kept.set(id, 'its runtime is not known to send it to one endpoint')
-          continue
-        }
-        const placeholder = seal(id, endpoint, value, async () => {
+        const placeholder = seal(`install:${runtimeId}:${name}`, value, async () => {
           const current = this.runtimeEnvironment[runtimeId]?.[name]
           if (!current) throw new Error(`the install no longer maps ${name} for ${runtimeId}`)
           return current
@@ -7119,13 +7128,17 @@ export class Daemon {
       }
       configure(proxied, (providerTarget) => {
         const configured = this.modelSessions.staticCredential(providerTarget)
-        const endpoint = configured?.key ? pairEndpoint(providerTarget.provider, configured.baseUrl) : undefined
-        if (!configured || !endpoint) return configured
-        const placeholder = seal(`install:model:${providerTarget.provider}`, endpoint, configured.key, async () => {
-          const current = this.modelSessions.staticCredential(providerTarget)?.key
-          if (!current) throw new Error(`the install no longer configures a ${providerTarget.provider} key`)
-          return current
-        })
+        if (!configured?.key) return configured
+        const placeholder = seal(
+          `install:model:${providerTarget.provider}`,
+          configured.key,
+          async () => {
+            const current = this.modelSessions.staticCredential(providerTarget)?.key
+            if (!current) throw new Error(`the install no longer configures a ${providerTarget.provider} key`)
+            return current
+          },
+          providerTarget.provider
+        )
         return placeholder ? { ...configured, key: placeholder } : configured
       })
       overlay = launchOverlay(real, proxied)

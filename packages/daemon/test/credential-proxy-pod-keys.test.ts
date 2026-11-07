@@ -1,20 +1,24 @@
 import { describe, expect, it } from 'vitest'
-import { carries, launchOverlay, pairEndpoint, runtimeKeyEndpoint } from '../src/credential-proxy/pod-keys.js'
+import { carries, keyDestinations, launchOverlay, runtimeKeyEndpoint } from '../src/credential-proxy/pod-keys.js'
 
 // Where a pool pod's runtime sends an install key, read from its launch env as the runtime reads it.
 
 describe('the endpoint a pod launch sends an install key to', () => {
-  it("sends a pair's key to its base URL, else to its provider's own endpoint", () => {
-    expect(pairEndpoint('anthropic', undefined)).toEqual({
-      provider: 'anthropic',
-      endpoint: 'https://api.anthropic.com'
-    })
-    expect(pairEndpoint('openai', 'https://gateway.example.test/v1')).toEqual({
-      provider: 'openai',
-      endpoint: 'https://gateway.example.test/v1'
-    })
-    expect(pairEndpoint('deepseek', undefined)?.endpoint).toBe('https://api.deepseek.com')
-    expect(pairEndpoint('typesafe', undefined)).toBeUndefined()
+  it('finds a key value where the launch holds it, at the endpoint each holding variable is sent to', () => {
+    const claude = { provider: 'anthropic', runtime: 'claude' } as const
+    // A token-only pair beside a gateway the launch names: the key goes to the gateway, not the provider's default.
+    expect(
+      keyDestinations(claude, 'example-key', {
+        ANTHROPIC_API_KEY: 'example-key',
+        ANTHROPIC_BASE_URL: 'https://gateway.example.test/anthropic'
+      })
+    ).toEqual([{ provider: 'anthropic', endpoint: 'https://gateway.example.test/anthropic' }])
+    expect(keyDestinations(claude, 'example-key', { ANTHROPIC_API_KEY: 'example-key' })).toEqual([
+      { provider: 'anthropic', endpoint: 'https://api.anthropic.com' }
+    ])
+    // A value no provider key variable holds has no destination; one a runtime does not send has an unknown one.
+    expect(keyDestinations(claude, 'example-key', { EXAMPLE_TOKEN: 'example-key' })).toEqual([])
+    expect(keyDestinations(claude, 'example-key', { OPENAI_API_KEY: 'example-key' })).toEqual([undefined])
   })
 
   it("reads each runtime's own endpoint variable for the key it sends", () => {
@@ -49,6 +53,22 @@ describe('the endpoint a pod launch sends an install key to', () => {
       OPENAI_BASE_URL: 'https://other.example.test/v1'
     }
     expect(runtimeKeyEndpoint(codex, 'OPENAI_API_KEY', env)?.endpoint).toBe('https://gateway.example.test/v1')
+    // A gateway auth request is where codex-acp sends the key, and it must agree with the configured base.
+    const gateway = (baseUrl: string) =>
+      JSON.stringify({ methodId: 'gateway', _meta: { gateway: { baseUrl, headers: {} } } })
+    expect(
+      runtimeKeyEndpoint(codex, 'OPENAI_API_KEY', { DEFAULT_AUTH_REQUEST: gateway('https://gateway.example.test/v1') })
+        ?.endpoint
+    ).toBe('https://gateway.example.test/v1')
+    expect(
+      runtimeKeyEndpoint(codex, 'OPENAI_API_KEY', {
+        ...env,
+        DEFAULT_AUTH_REQUEST: gateway('https://other.example.test')
+      })
+    ).toBeUndefined()
+    expect(
+      runtimeKeyEndpoint(codex, 'OPENAI_API_KEY', { DEFAULT_AUTH_REQUEST: JSON.stringify({ methodId: 'chat-gpt' }) })
+    ).toBeUndefined()
     const otherProvider = { CODEX_CONFIG: JSON.stringify({ model_provider: 'example' }) }
     expect(runtimeKeyEndpoint(codex, 'OPENAI_API_KEY', otherProvider)).toBeUndefined()
   })

@@ -36,22 +36,23 @@ const OPENCODE_KEY_PROVIDER: Readonly<Record<string, string>> = {
   DEEPSEEK_API_KEY: 'deepseek'
 }
 
-/** A static model pair's endpoint: its base URL, else its provider's own; undefined for a provider with none. */
-export function pairEndpoint(provider: string, baseUrl: string | undefined): KeyEndpoint | undefined {
-  const endpoint = baseUrl || PROVIDER_DEFAULT_ENDPOINTS[provider]
+/** The endpoint a variable names, else its provider's own; undefined for a provider with none. */
+function base(provider: string, value: string | undefined): KeyEndpoint | undefined {
+  const endpoint = value?.trim() || PROVIDER_DEFAULT_ENDPOINTS[provider]
   return endpoint ? { provider, endpoint } : undefined
 }
 
-function base(provider: string, value: string | undefined): KeyEndpoint | undefined {
-  return pairEndpoint(provider, value?.trim() || undefined)
-}
-
-/** Codex's endpoint as the pod shim composes its auth request: the configured base, then OPENAI_BASE_URL, then the default. */
+/** Codex's endpoint: a gateway auth request's base, which must agree with the configured one; else the base the pod shim composes one for (configured, OPENAI_BASE_URL, default). */
 function codexEndpoint(env: Record<string, string>): KeyEndpoint | undefined {
   const config = objectFromJson(env.CODEX_CONFIG, 'CODEX_CONFIG')
   if (typeof config.model_provider === 'string' && config.model_provider !== 'openai') return undefined
-  const aimed = typeof config.openai_base_url === 'string' ? config.openai_base_url : undefined
-  return base('openai', aimed?.trim() || env.OPENAI_BASE_URL)
+  const aimed =
+    (typeof config.openai_base_url === 'string' ? config.openai_base_url.trim() : '') || env.OPENAI_BASE_URL?.trim()
+  if (!env.DEFAULT_AUTH_REQUEST) return base('openai', aimed)
+  const request = objectFromJson(env.DEFAULT_AUTH_REQUEST, 'DEFAULT_AUTH_REQUEST')
+  const gateway = record(record(request._meta, 'DEFAULT_AUTH_REQUEST._meta').gateway, 'gateway').baseUrl
+  if (request.methodId !== 'gateway' || typeof gateway !== 'string') return undefined
+  return aimed && aimed !== gateway ? undefined : { provider: 'openai', endpoint: gateway }
 }
 
 /** An OpenCode-shaped runtime's built-in provider for the variable, at the base URL its config names; undefined when another provider entry reads the variable too. */
@@ -105,6 +106,15 @@ export function runtimeKeyEndpoint(
     // An unreadable config document names no endpoint the proxy can trust.
     return undefined
   }
+}
+
+/** Where the launch's runtime sends a key value: one entry per provider key variable holding it, undefined where that is not known. */
+export function keyDestinations(
+  target: ModelProviderTarget | undefined,
+  value: string,
+  env: Record<string, string>
+): Array<KeyEndpoint | undefined> {
+  return POD_KEY_VARIABLES.filter((name) => env[name] === value).map((name) => runtimeKeyEndpoint(target, name, env))
 }
 
 /** The variables `proxied` sets differently from `real`: what a launch holding `real` swaps in to carry placeholders instead. */
