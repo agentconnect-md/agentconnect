@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { request as httpRequest } from 'node:http'
 import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https'
@@ -53,7 +54,7 @@ describe('the placeholder', () => {
     expect(loadPlaceholderKey(join(dir, 'k', 'proxy.key')).equals(key)).toBe(true)
     const sealed = sealPlaceholder(key, { agentId: AGENT, hosts: ['api.github.com'] })
     expect(looksLikePlaceholder(sealed)).toBe(true)
-    expect(openPlaceholder(key, sealed)).toEqual({ agentId: AGENT, hosts: ['api.github.com'] })
+    expect(openPlaceholder(key, sealed)).toEqual({ agentId: AGENT, hosts: ['api.github.com'], kind: 'codehost' })
     expect(openPlaceholder(Buffer.alloc(32, 7), sealed)).toBeUndefined()
     const [prefixAndBody, tag] = sealed.split('.')
     const forged = Buffer.from(JSON.stringify({ a: 'other', h: ['api.github.com'] })).toString('base64url')
@@ -61,7 +62,24 @@ describe('the placeholder', () => {
     expect(openPlaceholder(key, `${prefixAndBody}.${tag}x`)).toBeUndefined()
     expect(openPlaceholder(key, 'ghp_example')).toBeUndefined()
   })
+
+  it('reads one sealed before kinds existed as a code host’s, and refuses an unknown kind or a provider one without its slot', () => {
+    const key = loadPlaceholderKey(join(scratch(), 'proxy.key'))
+    expect(openPlaceholder(key, legacySealed(key, { a: AGENT, h: ['github.com'] }))).toEqual({
+      agentId: AGENT,
+      hosts: ['github.com'],
+      kind: 'codehost'
+    })
+    expect(openPlaceholder(key, legacySealed(key, { a: AGENT, h: [], k: 'other' }))).toBeUndefined()
+    expect(openPlaceholder(key, legacySealed(key, { a: AGENT, h: [], k: 'provider' }))).toBeUndefined()
+  })
 })
+
+/** A placeholder sealed by hand, as a daemon before the kind claim sealed one. */
+function legacySealed(key: Buffer, claims: Record<string, unknown>): string {
+  const body = Buffer.from(JSON.stringify(claims)).toString('base64url')
+  return `acph1_${body}.${createHmac('sha256', key).update(`acph1_${body}`).digest('base64url')}`
+}
 
 describe('the proxy CA', () => {
   it('keeps every key out of the trust directory a sandbox may read', () => {
@@ -232,6 +250,19 @@ describe('the decision for one request', () => {
       action: 'allow',
       setHeaders: [['authorization', 'Bearer ghs_minted']]
     })
+  })
+
+  it('still exchanges a placeholder sealed before kinds existed', async () => {
+    const { proxy, mint, key } = proxyFor()
+    const legacy = legacySealed(key, { a: AGENT, h: ['api.github.com'] })
+    const rest = new Request('https://api.github.com/repos/o/r/pulls', {
+      headers: { authorization: `token ${legacy}` }
+    })
+    expect(await proxy.decide(rest, HTTPS)).toEqual({
+      action: 'allow',
+      setHeaders: [['authorization', 'token ghs_minted']]
+    })
+    expect(mint).toHaveBeenCalledTimes(1)
   })
 
   it('lets a GraphQL query read the repository its variables name, and refuses a mutation', async () => {
