@@ -30304,9 +30304,9 @@ export class Daemon {
     label: string,
     safetyReviewLane?: string
   ): Promise<AnchorTriggerResult> {
-    // A cron firing into a conversation is "equivalent to a user posting the trigger
-    // in-channel", so it joins the same session a user's message would — resolved before
-    // the key below, which the gate and every later step read.
+    // A fire joins the session a person's message here would, so it keys under the same scope ingress gives that message.
+    if (target?.integrationId !== undefined)
+      msg.transportScope ??= this.transportScopeForIntegrationIds([target.integrationId])
     await this.keySession(agentId, target?.integrationId, msg)
     const key = sessionKey(msg.platform, sessionChannelOf(msg), sessionThreadOf(msg), agentId, msg.transportScope)
     // Gate BEFORE the anchor side effect. Cron scheduling remains registered while an
