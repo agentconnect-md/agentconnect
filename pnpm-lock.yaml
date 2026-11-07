@@ -12,6 +12,7 @@ overrides:
 pnpmfileChecksum: sha256-yhrtow4uYXdBwgBbzJFJ4wA8s3O9UECr9QpwYpWeDfE=
 
 patchedDependencies:
+  '@anthropic-ai/sandbox-runtime@0.0.81': 7bbcc7e666536d629c477e2974d7e2dfe9724e1478e1e96d3b644aecff8d7abb
   '@microsoft/agent-host-protocol@1.0.0': 03e3eb825265dfc355f8037f1d4c9c99a97c3b41033364a67a57bce54fc9d510
 
 importers:
@@ -353,7 +354,7 @@ importers:
         version: link:../protocol
       '@anthropic-ai/sandbox-runtime':
         specifier: 0.0.81
-        version: 0.0.81
+        version: 0.0.81(patch_hash=7bbcc7e666536d629c477e2974d7e2dfe9724e1478e1e96d3b644aecff8d7abb)
       '@jsquash/webp':
         specifier: 1.5.0
         version: 1.5.0
@@ -9596,7 +9597,7 @@ snapshots:
       '@anthropic-ai/claude-agent-sdk-win32-x64': 0.3.283
     optional: true
 
-  '@anthropic-ai/sandbox-runtime@0.0.81':
+  '@anthropic-ai/sandbox-runtime@0.0.81(patch_hash=7bbcc7e666536d629c477e2974d7e2dfe9724e1478e1e96d3b644aecff8d7abb)':
     dependencies:
       '@pondwader/socks5-server': 1.0.10
       commander: 12.1.0

@@ -7,7 +7,13 @@ import { isIP, type AddressInfo, type LookupFunction } from 'node:net'
 import { join } from 'node:path'
 import { createHttpProxyServer } from '@anthropic-ai/sandbox-runtime/dist/sandbox/http-proxy.js'
 import { createMitmCA, disposeMitmCASync, type MitmCA } from '@anthropic-ai/sandbox-runtime/dist/sandbox/mitm-ca.js'
-import type { DirectLookup } from '@anthropic-ai/sandbox-runtime/dist/sandbox/parent-proxy.js'
+import {
+  canonicalizeHost,
+  resolveParentProxy,
+  shouldBypassParentProxy,
+  type DirectLookup,
+  type ResolvedParentProxy
+} from '@anthropic-ai/sandbox-runtime/dist/sandbox/parent-proxy.js'
 import type { RequestDecision, RequestInfo } from '@anthropic-ai/sandbox-runtime/dist/sandbox/request-filter.js'
 import type { ProxyCa } from './ca.js'
 import { graphqlOperationTypes } from './graphql-operation.js'
@@ -61,6 +67,8 @@ export interface MintedCredential {
   username: string
   token: string
   access: 'read' | 'comment' | 'write'
+  /** Drops exactly the cache entry that minted this token, when it still holds it. */
+  invalidate?: () => void
 }
 
 export interface CredentialProxyDeps {
@@ -220,6 +228,9 @@ export class CredentialProxy {
   /** Resolved provider keys by agent and slot, each kept until its TTL or the upstream's 401. */
   private readonly providerKeys = new Map<string, ProviderKeyEntry>()
 
+  /** The daemon's own outbound proxy (HTTPS_PROXY, NO_PROXY) every upstream leg goes through; it resolves the names it carries, so on that route only a literal address is guarded here. */
+  private readonly parentProxy: ResolvedParentProxy | undefined = resolveParentProxy()
+
   constructor(private readonly deps: CredentialProxyDeps) {}
 
   /** Listen on an authenticated loopback port, and keep the per-agent srt sockets under `runDir`. */
@@ -359,6 +370,19 @@ export class CredentialProxy {
     ]
   }
 
+  /** A host session's NO_PROXY: loopback, and the inherited entries but those that would send one of the agent's intercepted hosts around this proxy. */
+  sessionNoProxy(agentId: string, inherited: string | undefined): string {
+    const domains = this.domainsFor(agentId)
+    const kept = (inherited ?? '')
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter((entry) => {
+        const rules = entry ? resolveParentProxy({ https: 'http://parent.invalid', noProxy: entry }) : undefined
+        return rules !== undefined && !domains.some((domain) => shouldBypassParentProxy(rules, domain))
+      })
+    return ['localhost', '127.0.0.1', '::1', ...kept].join(',')
+  }
+
   /** The proxy URL a runtime on this host reaches the loopback listener by, its proxy credential included. */
   loopbackUrl(): string | undefined {
     if (this.loopbackPort === undefined) return undefined
@@ -399,6 +423,12 @@ export class CredentialProxy {
       : undefined
   }
 
+  /** A code host or provider named by an address in its denied space, which no name lookup on either route would catch. */
+  private deniedLiteral(host: string): boolean {
+    const name = (canonicalizeHost(host) ?? host).replace(/^\[(.*)\]$/, '$1')
+    return isIP(name) !== 0 && (this.deniedFor(name)?.(name) ?? false)
+  }
+
   private server(
     proxyAuthToken?: string,
     boundAgent?: string,
@@ -408,7 +438,8 @@ export class CredentialProxy {
     const trustedCa = this.deps.upstream?.trustedCa
     return createHttpProxyServer({
       // Every host is reachable unless the listener narrows it; only the code-host instances and provider slots are terminated and judged.
-      filter: (port, host) => reachable(port, host.toLowerCase().replace(/^\[(.*)\]$/, '$1')),
+      filter: (port, host) =>
+        reachable(port, host.toLowerCase().replace(/^\[(.*)\]$/, '$1')) && !this.deniedLiteral(host),
       mitmCA: this.mitmCa!,
       shouldTerminateTLS: (host, port) =>
         (scope !== 'provider' &&
@@ -421,6 +452,7 @@ export class CredentialProxy {
       requireHostMatch: true,
       ambiguousRequestTarget: 'refuse',
       lookupFor: this.deps.upstream?.lookupFor ?? guardedLookup((hostname) => this.deniedFor(hostname)),
+      ...(this.parentProxy ? { parentProxy: this.parentProxy } : {}),
       ...(trustedCa && trustedCa.length > 0 ? { tlsTerminateUpstreamCA: trustedCa } : {}),
       ...(proxyAuthToken ? { proxyAuthToken } : {})
     })
@@ -489,7 +521,16 @@ export class CredentialProxy {
       const setHeaders: [string, string][] = []
       if (carried.authorization) setHeaders.push(['authorization', authorization(carried.authorization.scheme, minted)])
       if (carried.privateToken) setHeaders.push(['private-token', minted.token])
-      return { action: 'allow', setHeaders }
+      const { invalidate } = minted
+      if (!invalidate) return { action: 'allow', setHeaders }
+      // A token the upstream rejects as revoked or rotated is minted afresh next time; a 403 is a tier refusal and keeps it.
+      return {
+        action: 'allow',
+        setHeaders,
+        onResponse: (status) => {
+          if (status === 401) invalidate()
+        }
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       this.deps.log.warn(`credential proxy: no token for ${claims.agentId} on ${what}: ${message}`)

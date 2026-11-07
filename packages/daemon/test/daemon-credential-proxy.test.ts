@@ -62,7 +62,14 @@ afterAll(() => {
     if (value === undefined) delete process.env[name]
     else process.env[name] = value
   }
-  for (const dir of dirs) rmSync(dir, { recursive: true, force: true })
+  for (const dir of dirs) {
+    try {
+      rmSync(dir, { recursive: true, force: true })
+    } catch (err) {
+      // On Windows a child the daemon started can still hold the directory open; a leftover temp dir is not a test failure.
+      if (process.platform !== 'win32') throw err
+    }
+  }
 })
 
 /** Short, so the daemon's sockets fit AF_UNIX on a host whose temp directory is long. */
@@ -264,6 +271,33 @@ describe('a host session with the credential proxy on', () => {
   )
 })
 
+describe('a host session on a daemon behind its own outbound proxy', () => {
+  it('is proxied, its NO_PROXY keeping the daemon’s entries but the code host’s, and the proxy’s upstream goes via the parent', async () => {
+    const names = ['HTTPS_PROXY', 'https_proxy', 'NO_PROXY', 'no_proxy'] as const
+    const before = Object.fromEntries(names.map((name) => [name, process.env[name]]))
+    // Cleared before set: on Windows the environment is case-insensitive, so no_proxy and NO_PROXY are one variable.
+    delete process.env.no_proxy
+    process.env.HTTPS_PROXY = 'http://parent.example.test:3128'
+    process.env.NO_PROXY = '.corp.example.test,gitlab.example.test'
+    try {
+      const { d } = await startDaemon(true)
+      expect(d.credentialProxy.proxy.parentProxy?.httpsUrl?.host).toBe('parent.example.test:3128')
+      await admit(d, GITLAB_AGENT, gitlabSpec('https://gitlab.example.test:8443/gitlab'))
+      const { own } = sessionEnv(d, GITLAB_AGENT)
+      expect(own.AC_CODEHOST_CREDENTIAL).toMatch(/^acph1_/)
+      expect(own.HTTPS_PROXY).toBe(d.credentialProxy.proxy.loopbackUrl())
+      expect(own.NO_PROXY!.split(',')).toEqual(['localhost', '127.0.0.1', '::1', '.corp.example.test'])
+      expect(own.no_proxy).toBe(own.NO_PROXY)
+      expect(JSON.stringify(own)).not.toMatch(/glpat/)
+    } finally {
+      for (const name of names) {
+        if (before[name] === undefined) delete process.env[name]
+        else process.env[name] = before[name]
+      }
+    }
+  })
+})
+
 describe('a host session with the credential proxy off', () => {
   it('keeps the helper path and no proxy', async () => {
     const { d, root } = await startDaemon(false)
@@ -353,6 +387,37 @@ async function nodeRequest(
   const { stdout } = await run(process.execPath, ['-e', script, url, authorization], { env })
   return JSON.parse(stdout) as { status: number; body: string }
 }
+
+describe("the proxy's mint and its invalidate", () => {
+  it.each([
+    { provider: 'github', agentId: GITHUB_AGENT, spec: githubSpec },
+    { provider: 'gitlab', agentId: GITLAB_AGENT, spec: () => gitlabSpec('https://gitlab.example.test/gitlab') }
+  ])('drops exactly the $provider cache entry it minted, so the next request mints afresh', async (c) => {
+    const { d } = await startDaemon(true)
+    await admit(d, c.agentId, c.spec())
+    const asked = fakeControlPlane(d, 'write', 'https://gitlab.example.test/gitlab')
+    // Each control-plane mint is a token of its own, as a rotation would be.
+    const request = d.cpClient.requestGitCred
+    d.cpClient.requestGitCred = async (payload: GitCredRequest) => ({
+      ...(await request(payload)),
+      token: `token-${asked.length + 1}`
+    })
+    const ask = { provider: c.provider, plane: 'git', readOnly: false }
+    const first = await d.credentialProxyMint(c.agentId, ask)
+    expect((await d.credentialProxyMint(c.agentId, ask)).token).toBe(first.token)
+    expect(asked).toHaveLength(1)
+    first.invalidate()
+    await new Promise((resolve) => setImmediate(resolve))
+    const second = await d.credentialProxyMint(c.agentId, ask)
+    expect(asked).toHaveLength(2)
+    expect(second.token).not.toBe(first.token)
+    // A late 401 for the old token leaves the fresh one in place.
+    first.invalidate()
+    await new Promise((resolve) => setImmediate(resolve))
+    expect((await d.credentialProxyMint(c.agentId, ask)).token).toBe(second.token)
+    expect(asked).toHaveLength(2)
+  })
+})
 
 describe('a proxied host session end to end', () => {
   // POSIX only: the proxy's upstream leg and the placeholder helper are exercised as a POSIX session runs them.

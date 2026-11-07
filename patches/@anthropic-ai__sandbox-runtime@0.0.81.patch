@@ -1,0 +1,76 @@
+diff --git a/dist/sandbox/http-proxy.js b/dist/sandbox/http-proxy.js
+index 7ad12c3c8529987ba0a045103b8b30be09df0c99..65968d2480846c7ddd82f5ae7a0e5602430568ef 100644
+--- a/dist/sandbox/http-proxy.js
++++ b/dist/sandbox/http-proxy.js
+@@ -388,6 +388,7 @@ export function createHttpProxyServer(options) {
+                         port,
+                         upstreamCA: options.tlsTerminateUpstreamCA,
+                         lookup,
++                        parentProxy: options.parentProxy,
+                         stripResponseHeaders: options.stripResponseHeaders,
+                         requireHostMatch: options.requireHostMatch,
+                         maxHeaderSize: options.maxHeaderSize,
+diff --git a/dist/sandbox/tls-terminate-proxy.js b/dist/sandbox/tls-terminate-proxy.js
+index 8aef52e85787ca2f0228748de5a5e13ae5e9db1d..6ed928b3143d7126adad68b589d3ec98758fe595 100644
+--- a/dist/sandbox/tls-terminate-proxy.js
++++ b/dist/sandbox/tls-terminate-proxy.js
+@@ -10,14 +10,14 @@
+  */
+ import { Agent as HttpsAgent, request as httpsRequest } from 'node:https';
+ import { createServer as createHttpServer } from 'node:http';
+-import { checkServerIdentity, TLSSocket } from 'node:tls';
++import { checkServerIdentity, connect as tlsConnect, TLSSocket } from 'node:tls';
+ import { Duplex } from 'node:stream';
+ import { logForDebugging } from '../utils/debug.js';
+ import { adjustByteBudget, endRequestAfterResponse, gateSocketOnBufferedBody, keepFlushedHeaderBatches, markEndsGracefully, runsOnBun, writeHeadsAsLatin1, } from './emitted-connection.js';
+ import { decideAndRespond, readRequestTarget, refuseUnparsedRequest, requestTargetAsSpelled, respondRefusedTarget, applyHeaderEdits, notifyResponse, removeHeadersFolded, hostHeaderValues, hostMismatch, respondDenied, respondUpstreamError, } from './request-filter.js';
+ import { prepareBodySubstitution, } from './body-substitution.js';
+ import { secureContextFor } from './mitm-leaf.js';
+-import { directRequestOptions, formatAuthority, onUpstreamError, relayResponseHead, stripHopByHop, } from './parent-proxy.js';
++import { connectViaParentProxy, directRequestOptions, formatAuthority, onUpstreamError, relayResponseHead, selectParentProxyUrl, shouldBypassParentProxy, stripHopByHop, } from './parent-proxy.js';
+ import { sha256Hex } from './aws-sigv4.js';
+ /**
+  * Upper bound on the request body the proxy will buffer to recompute a
+@@ -669,12 +669,33 @@ function createUpstreamLeg(target) {
+         checkServerIdentity: (_host, cert) => checkServerIdentity(target.hostname, cert),
+         ...(target.upstreamCA ? { ca: target.upstreamCA } : {}),
+     });
++    // A parent proxy carries the leg unless NO_PROXY names the host: its CONNECT tunnel is the agent's transport, and TLS over it verifies as above.
++    const parentUrl = target.parentProxy && !shouldBypassParentProxy(target.parentProxy, target.hostname)
++        ? selectParentProxyUrl(target.parentProxy, { isHttps: true })
++        : undefined;
++    if (parentUrl) {
++        agent.createConnection = (options, oncreate) => {
++            connectViaParentProxy(parentUrl, target.hostname, target.port).then(socket => {
++                let secure;
++                try {
++                    secure = tlsConnect({ ...options, socket });
++                }
++                catch (err) {
++                    socket.destroy();
++                    oncreate(err);
++                    return;
++                }
++                oncreate(null, secure);
++            }, err => oncreate(err));
++            return undefined;
++        };
++    }
+     let vetted;
+     return {
+         agent,
+         address() {
+             if (!vetted) {
+-                const probe = directRequestOptions(target.hostname, target.port, target.lookup, true);
++                const probe = directRequestOptions(target.hostname, target.port, parentUrl ? undefined : target.lookup, true);
+                 vetted = probe;
+                 probe.catch(() => {
+                     if (vetted === probe)
+@@ -984,7 +1005,6 @@ async function forwardUpstream(filterRequest, mutateHeaders, getBodySubstitution
+         body.destroy();
+         return;
+     }
+-    // TODO(terminating-tls): honour parentProxy for the upstream leg.
+     const upstream = httpsRequest({
+         ...direct,
+         agent: leg.agent,

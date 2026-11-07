@@ -508,20 +508,39 @@ export class GitCredServer {
     if (this.credentialedOf && !this.credentialedOf(agentId)) {
       throw new GitCredUnavailableError('this agent has no managed git credential', false, 'agent')
     }
+    const answer = await this.agentAnswer('get', agentId, ask)
+    if (!answer.ok || !answer.password || !answer.access)
+      throw new GitCredUnavailableError(answer.error ?? 'refused', false, answer.denied)
+    return { username: answer.username ?? '', token: answer.password, access: answer.access }
+  }
+
+  /** The helper's `erase` for a token the credential proxy minted with {@link agentCredential} and the upstream rejected. */
+  async agentErase(
+    agentId: string,
+    ask: { plane: CredPlane; provider?: string; repoFullName?: string },
+    token: string
+  ): Promise<void> {
+    await this.agentAnswer('erase', agentId, ask, token)
+  }
+
+  private agentAnswer(
+    op: 'get' | 'erase',
+    agentId: string,
+    ask: { plane: CredPlane; provider?: string; repoFullName?: string },
+    password?: string
+  ): Promise<GitCredAnswer> {
     const repo = ask.repoFullName?.includes('/') ? ask.repoFullName : undefined
     const githubAsk = ask.provider === undefined || ask.provider === IMPLICIT_CREDENTIAL_PROVIDER
     const privateSkill = repo !== undefined && githubAsk && this.privateGithubSkillRepoOf?.(agentId, repo) === true
     const request: GitCredIpcRequest = {
-      op: 'get',
+      op,
       agentId,
       plane: ask.plane,
       ...(repo !== undefined ? { repoFullName: repo } : {}),
-      ...(ask.provider !== undefined ? { provider: ask.provider } : {})
+      ...(ask.provider !== undefined ? { provider: ask.provider } : {}),
+      ...(password !== undefined ? { password } : {})
     }
-    const answer = await this.answer(request, ask.plane, repo, privateSkill, undefined)
-    if (!answer.ok || !answer.password || !answer.access)
-      throw new GitCredUnavailableError(answer.error ?? 'refused', false, answer.denied)
-    return { username: answer.username ?? '', token: answer.password, access: answer.access }
+    return this.answer(request, ask.plane, repo, privateSkill, undefined)
   }
 
   /** The agent's live secrets, named ones only when `names` is given; unknown names are simply absent and values are never logged. */

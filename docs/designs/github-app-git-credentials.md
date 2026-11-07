@@ -629,9 +629,12 @@ that repository's token at its tier. A read that names no repository, such as
 refused. Because some hosts cannot narrow a token per repository, the proxy
 also enforces the git tier by service on every host: `git-receive-pack` and
 `info/refs?service=git-receive-pack` are refused with 403 unless the grant is
-`write` (`comment` counts as read), and nothing is forwarded. Only a session
-with the proxy off holds the token itself, and there the tier is enforced only
-where the host narrows the token.
+`write` (`comment` counts as read), and nothing is forwarded. A 401 from the
+upstream drops the cache entry that minted the token it carried, as the
+helper's `erase` does, so a revoked or rotated token is minted afresh on the
+next request; a 403 keeps it. Only a session with the proxy off holds the
+token itself, and there the tier is enforced only where the host narrows the
+token.
 
 **Instances.** An agent's instances are the hosts its session Git
 configuration pins (gitlab-com-integration.md §24.4): GitHub, and the spec's
@@ -675,6 +678,18 @@ that leaks into another agent's environment buys nothing there. On the host,
 the proxy listens on loopback and requires the proxy credential carried in the
 `HTTPS_PROXY` URL, so it is no open proxy to other local processes; a host
 session has no boundary from another agent's to begin with.
+
+A daemon that reaches the network through its own outbound proxy
+(`HTTPS_PROXY`, `NO_PROXY`) sends every listener's upstream leg through it:
+terminated code-host and provider requests, the CONNECTs it does not
+intercept, and the `srt` sockets alike, with proxy authentication from the
+URL and TLS still verified against the daemon's upstream authorities, while
+a `NO_PROXY` host is dialed directly. A host session is proxied there too:
+its `HTTPS_PROXY` names the loopback listener, and its `NO_PROXY` keeps the
+daemon's entries except one that would route an intercepted host around the
+proxy. The outbound proxy resolves the names it carries, so on that route the
+daemon's address guard sees only an intercepted host named by an IP literal,
+which it refuses in denied space on either route; names are left to that proxy.
 
 A host session a daemon-group member placed on another member's executor
 (session-executors.md §7) reaches its holder's proxy over the `codehost` shim
@@ -895,7 +910,6 @@ Not covered yet:
 - Keys the key server issues.
 - The other runtimes' sign-in files, and a provider variable the session's
   runtime does not read, which reach an `srt` session as they are.
-- A host that runs behind its own outbound proxy, which keeps direct credentials.
 
 - **Kind.** A provider placeholder is the same `acph1_` placeholder under the
   same sealing key, with a kind claim `k: provider` and a slot claim `p`. A

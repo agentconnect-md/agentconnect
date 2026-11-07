@@ -35,4 +35,6 @@ overrides:
   'promptfoo@0.125.1>@opentelemetry/api': 1.9.1
 
 patchedDependencies:
+  # Its TLS-terminated upstream leg ignores parentProxy (an upstream TODO); remove when upstream honors it.
+  '@anthropic-ai/sandbox-runtime@0.0.81': patches/@anthropic-ai__sandbox-runtime@0.0.81.patch
   '@microsoft/agent-host-protocol@1.0.0': patches/@microsoft__agent-host-protocol@1.0.0.patch
