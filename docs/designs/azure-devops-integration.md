@@ -368,14 +368,22 @@ the user. The Azure CLI receives:
 - `AZURE_DEVOPS_EXT_PAT`, set to the placeholder; the CLI sends it as a Basic
   password, which the proxy already reads;
 - `AZURE_CONFIG_DIR`, set to an empty per-session directory, because the CLI
-  prefers a cached sign-in over `AZURE_DEVOPS_EXT_PAT`; and
+  prefers a cached sign-in over `AZURE_DEVOPS_EXT_PAT`;
+- `AZURE_EXTENSION_DIR`, set to the host's installed extension directory and
+  readable from the sandbox. Without it, an empty configuration directory hides
+  the installed `azure-devops` extension, and the CLI installs it again from
+  Microsoft's download hosts on every session's first command;
+- `AZURE_CORE_COLLECT_TELEMETRY=false`; and
 - the proxy and trust variables of the credential proxy design, including
   `REQUESTS_CA_BUNDLE`.
 
+With these, the repository, pull-request, and project commands reach only
+`dev.azure.com`, and the CLI writes no credential into the session directory.
 The CLI only accepts `dev.azure.com` and `*.visualstudio.com` as organization
 hosts, which the proxy preserves, since it terminates TLS for those names
 rather than rewriting them. Its organization and project detection reads the
-four-segment canonical remote of §5. AgentConnect does not install the CLI.
+four-segment canonical remote of §5. AgentConnect does not install the CLI or
+its extension.
 
 ### 6.5 Rate Limits
 
@@ -519,11 +527,15 @@ home tenant.
    Reader identity clones; its push is refused at the `git-receive-pack`
    advertisement with 403 `TF401027` (GenericContribute). A Contributor
    pushes. Still to run through the proxy in A3.
-4. **Probe, half verified:** the REST API accepts the token as a Basic password
-   with an empty user, which is how the Azure CLI presents
-   `AZURE_DEVOPS_EXT_PAT`. Open: the CLI itself with the placeholder and an
-   empty `AZURE_CONFIG_DIR`, and which hosts it contacts besides
-   `dev.azure.com`.
+4. **Verified without the proxy:** Azure CLI 2.92 with `azure-devops` 1.0.10
+   took an Entra token in `AZURE_DEVOPS_EXT_PAT` under an empty
+   `AZURE_CONFIG_DIR`. The repository list, pull-request list, and project
+   list commands, and organization and project detection from the
+   four-segment remote, all succeeded. These reached only `dev.azure.com`,
+   and no session file held the token. An empty configuration directory
+   without `AZURE_EXTENSION_DIR` reinstalled the extension from `aka.ms`, Azure
+   blob storage, and `github.com` (§6.4). Still to run with the placeholder
+   through the proxy in A3.
 5. Whether the repository list (names only) belongs in §6.2's allowlist, or
    only repositories the agent holds.
 6. Whether the first version needs a pull-request tool. Without one, an agent
