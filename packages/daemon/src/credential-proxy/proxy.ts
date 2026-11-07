@@ -61,6 +61,8 @@ export interface MintedCredential {
   username: string
   token: string
   access: 'read' | 'comment' | 'write'
+  /** Drops exactly the cache entry that minted this token, when it still holds it. */
+  invalidate?: () => void
 }
 
 export interface CredentialProxyDeps {
@@ -485,7 +487,16 @@ export class CredentialProxy {
       const setHeaders: [string, string][] = []
       if (carried.authorization) setHeaders.push(['authorization', authorization(carried.authorization.scheme, minted)])
       if (carried.privateToken) setHeaders.push(['private-token', minted.token])
-      return { action: 'allow', setHeaders }
+      const { invalidate } = minted
+      if (!invalidate) return { action: 'allow', setHeaders }
+      // A token the upstream rejects as revoked or rotated is minted afresh next time; a 403 is a tier refusal and keeps it.
+      return {
+        action: 'allow',
+        setHeaders,
+        onResponse: (status) => {
+          if (status === 401) invalidate()
+        }
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       this.deps.log.warn(`credential proxy: no token for ${claims.agentId} on ${what}: ${message}`)

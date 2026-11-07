@@ -354,6 +354,37 @@ async function nodeRequest(
   return JSON.parse(stdout) as { status: number; body: string }
 }
 
+describe("the proxy's mint and its invalidate", () => {
+  it.each([
+    { provider: 'github', agentId: GITHUB_AGENT, spec: githubSpec },
+    { provider: 'gitlab', agentId: GITLAB_AGENT, spec: () => gitlabSpec('https://gitlab.example.test/gitlab') }
+  ])('drops exactly the $provider cache entry it minted, so the next request mints afresh', async (c) => {
+    const { d } = await startDaemon(true)
+    await admit(d, c.agentId, c.spec())
+    const asked = fakeControlPlane(d, 'write', 'https://gitlab.example.test/gitlab')
+    // Each control-plane mint is a token of its own, as a rotation would be.
+    const request = d.cpClient.requestGitCred
+    d.cpClient.requestGitCred = async (payload: GitCredRequest) => ({
+      ...(await request(payload)),
+      token: `token-${asked.length + 1}`
+    })
+    const ask = { provider: c.provider, plane: 'git', readOnly: false }
+    const first = await d.credentialProxyMint(c.agentId, ask)
+    expect((await d.credentialProxyMint(c.agentId, ask)).token).toBe(first.token)
+    expect(asked).toHaveLength(1)
+    first.invalidate()
+    await new Promise((resolve) => setImmediate(resolve))
+    const second = await d.credentialProxyMint(c.agentId, ask)
+    expect(asked).toHaveLength(2)
+    expect(second.token).not.toBe(first.token)
+    // A late 401 for the old token leaves the fresh one in place.
+    first.invalidate()
+    await new Promise((resolve) => setImmediate(resolve))
+    expect((await d.credentialProxyMint(c.agentId, ask)).token).toBe(second.token)
+    expect(asked).toHaveLength(2)
+  })
+})
+
 describe('a proxied host session end to end', () => {
   // POSIX only: the proxy's upstream leg and the placeholder helper are exercised as a POSIX session runs them.
   it.skipIf(process.platform === 'win32')(

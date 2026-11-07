@@ -307,6 +307,22 @@ describe('the decision for one request', () => {
     expect(await proxy.decide(request(), HTTPS, AGENT)).toMatchObject({ action: 'allow' })
   })
 
+  it('drops the minted token on the upstream’s 401 and keeps it on a 403', async () => {
+    const invalidate = vi.fn()
+    const { proxy, placeholder } = proxyFor({ mint: vi.fn(async () => ({ ...MINTED, invalidate })) })
+    const request = new Request('https://api.github.com/repos/o/r', {
+      headers: { authorization: `token ${placeholder}` }
+    })
+    const decision = await proxy.decide(request, HTTPS)
+    expect(decision).toMatchObject({ action: 'allow', setHeaders: [['authorization', 'token ghs_minted']] })
+    const onResponse = (decision as { onResponse: (status: number, headers: object) => void }).onResponse
+    onResponse(403, {})
+    onResponse(200, {})
+    expect(invalidate).not.toHaveBeenCalled()
+    onResponse(401, {})
+    expect(invalidate).toHaveBeenCalledTimes(1)
+  })
+
   it('refuses when the agent is not authorized for the repository', async () => {
     const mint = vi.fn(async () => {
       throw new Error('SCOPE_DENIED')
@@ -410,6 +426,87 @@ describe('the proxy end to end', () => {
       }
     }
   )
+})
+
+describe('a code-host token the upstream rejects', () => {
+  let upstream: HttpsServer
+  let upstreamPort = 0
+  let upstreamCaPem = ''
+  const seen: (string | undefined)[] = []
+  const statuses = [401, 200, 403, 200]
+
+  beforeAll(async () => {
+    const generated = generateCa({ cn: 'example upstream CA' })
+    upstreamCaPem = generated.certPem
+    const leaf = mintLeafCert(
+      createMitmCA({ caCertPem: generated.certPem, caKeyPem: generated.keyPem }),
+      'api.github.com'
+    )
+    upstream = createHttpsServer({ key: leaf.keyPem, cert: leaf.certPem }, (req, res) => {
+      seen.push(req.headers.authorization)
+      res.statusCode = statuses[seen.length - 1] ?? 200
+      res.end()
+    })
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve))
+    upstreamPort = (upstream.address() as AddressInfo).port
+  })
+  afterAll(async () => {
+    await new Promise<void>((resolve) => upstream.close(() => resolve()))
+  })
+
+  it('is minted afresh after a 401, and kept after a 403', async () => {
+    const dir = scratch()
+    const toLoopback: LookupFunction = (_host, options, callback) => {
+      if (options.all)
+        (callback as (e: null, a: { address: string; family: number }[]) => void)(null, [
+          { address: '127.0.0.1', family: 4 }
+        ])
+      else callback(null, '127.0.0.1', 4)
+    }
+    // A cache in miniature: a token is served until its own invalidate drops it.
+    let minted = 0
+    let cached: string | undefined
+    const mint = vi.fn(async () => {
+      cached ??= `ghs_minted${++minted}`
+      const token = cached
+      return {
+        ...MINTED,
+        token,
+        invalidate: () => {
+          if (cached === token) cached = undefined
+        }
+      }
+    })
+    const ca = loadProxyCa(join(dir, 'ca'))
+    const proxy = new CredentialProxy({
+      key: loadPlaceholderKey(join(dir, 'proxy.key')),
+      ca,
+      mint,
+      workspaceRepo: () => undefined,
+      instancesOf: () => [GITHUB_MANAGED_HOST],
+      runningAgents: () => [AGENT],
+      knownAgent: () => true,
+      log: { info: () => {}, warn: () => {} },
+      upstream: { lookupFor: () => toLoopback, trustedCa: upstreamCaPem }
+    })
+    await proxy.start(join(dir, 'run'))
+    try {
+      const url = new URL(proxy.loopbackUrl()!)
+      const dial = {
+        host: url.hostname,
+        port: Number(url.port),
+        proxyAuth: `Basic ${Buffer.from(`${url.username}:${url.password}`).toString('base64')}`
+      }
+      const placeholder = proxy.placeholderFor(AGENT)
+      const got: number[] = []
+      for (let i = 0; i < statuses.length; i++) got.push(await getThrough(dial, upstreamPort, placeholder, ca.certPem))
+      expect(got).toEqual(statuses)
+      expect(seen).toEqual(['token ghs_minted1', 'token ghs_minted2', 'token ghs_minted2', 'token ghs_minted2'])
+      expect(minted).toBe(2)
+    } finally {
+      await proxy.stop()
+    }
+  })
 })
 
 type Dial = { host: string; port: number; proxyAuth?: string } | { socketPath: string }
