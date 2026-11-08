@@ -1,12 +1,12 @@
-// Per-daemon key management: metadata listing, owner-authorized issuance, and revocation.
+// Per-daemon key management: metadata listing, authorized issuance, and revocation.
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import type { ApiKeyView } from '../../ports.js'
 import { DaemonId } from '../../domain/ids.js'
-import { denyNonOwner, denyViewerWrite, ctxOf, orgOf } from '../rbac.js'
-import { canView, canEdit } from '../../authorization/policy.js'
+import { denyViewerWrite, ctxOf, orgOf } from '../rbac.js'
+import { canView, canEdit, canIssueDaemonKey } from '../../authorization/policy.js'
 import { ApiKeyListDto, MintedKeyDto, ApiKeyDto, IdParam, ErrorDto, type ApiKeyDtoT } from '../dto/index.js'
 import { daemonStartCommand, daemonWsUrl } from '../onboarding.js'
 import { Tag } from '../plugins/openapi.js'
@@ -29,7 +29,7 @@ export function keyRoutes(deps: HttpDeps) {
   return async function keyRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
 
-    // Keys inherit daemon visibility; issuing an identity credential additionally requires an organization owner.
+    // Key metadata inherits daemon visibility; issuing an identity credential has its own policy.
     const getOrgDaemon = async (req: FastifyRequest, id: string) => {
       const view = await deps.registry.get(orgOf(req), DaemonId(id))
       if (!view) return null
@@ -67,7 +67,7 @@ export function keyRoutes(deps: HttpDeps) {
           tags: [Tag.DaemonKeys],
           summary: 'Issue a daemon key',
           description:
-            'Organization owners may mint an additional API key for an existing daemon (overlap rotation or "Regenerate"), returning the one-time plaintext and a ready-to-run start command.',
+            'An organization owner or the daemon creator with current edit access may mint an additional API key for reconnecting or overlap rotation, returning the one-time plaintext and a ready-to-run start command.',
           operationId: 'issueDaemonKey',
           params: IdParam,
           response: { 201: MintedKeyDto, 403: ErrorDto, 404: ErrorDto }
@@ -79,7 +79,13 @@ export function keyRoutes(deps: HttpDeps) {
         if (!view) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'daemon not found' })
         }
-        if (denyNonOwner(req, reply)) return
+        if (!canIssueDaemonKey(view, ctxOf(req))) {
+          return reply.code(403).send({
+            error: 'Forbidden',
+            statusCode: 403,
+            message: 'only an organization owner or the daemon creator with edit access can issue keys'
+          })
+        }
         const minted = await deps.apiKeys.mintForDaemon(orgOf(req), DaemonId(req.params.id), {
           createdByUserId: req.orgCtx!.userId
         })

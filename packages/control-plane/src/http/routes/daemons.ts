@@ -25,7 +25,7 @@ import type { DaemonView, DaemonLiveness, DaemonRegistry } from '../../ports.js'
 import { isSyntheticEmail } from '../../persistence/ports.js'
 import { DaemonId } from '../../domain/ids.js'
 import { orgOf, denyViewerWrite, denyNonOwner, ctxOf } from '../rbac.js'
-import { canView, canEdit, canManageSharing, type ViewCtx } from '../../authorization/policy.js'
+import { canView, canEdit, canManageSharing, canIssueDaemonKey, type ViewCtx } from '../../authorization/policy.js'
 import { resolveShareSet } from '../sharing.js'
 import {
   DaemonFleetListDto,
@@ -207,6 +207,7 @@ function toDto(
     sharedWith: view.sharedWith,
     canEdit: orgOwned && canEdit(view, ctx),
     canManageSharing: orgOwned && canManageSharing(view, ctx),
+    canIssueKey: orgOwned && canIssueDaemonKey(view, ctx),
     // Install-wide infrastructure is visible but mutable only through its deployment owner.
     canManageLifecycle: orgOwned && canEdit(view, ctx)
   }

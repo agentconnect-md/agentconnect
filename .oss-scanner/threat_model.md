@@ -69,6 +69,7 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
    membership, key org binding, OAuth scope confinement) -> `authorization/policy.ts` (`can()`,
    `visibilityWhere`) -> handler. Routes marked `interactiveOnly` (key minting/revocation, org
    lifecycle, daemon provisioning, OAuth consent) refuse every non-interactive principal with 403.
+   Existing-daemon key issuance additionally requires an organization owner or the recorded creator with current edit permission.
 5. **Daemon and relay WebSockets to the CP** (`control-plane/src/ws/`, `daemon-api-key-auth.md`,
    `daemon-cp-ws-protocol.md`): opaque bearer keys stored as `HMAC-SHA256(secret, API_KEY_PEPPER)`,
    bound to one daemon and one org; a daemon key cannot act as a user and vice versa. Every org-scoped

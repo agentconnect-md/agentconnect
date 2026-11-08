@@ -1360,6 +1360,8 @@ export interface DaemonViewDto {
   canManageSharing: boolean
   /** Whether the caller may command restart/upgrade on this daemon (org owner only). */
   canManageLifecycle: boolean
+  /** Whether the caller may obtain a replacement daemon credential. */
+  canIssueKey: boolean
   /** The auto-upgrade switch; absent on an older CP ⇒ off. */
   autoUpgrade?: boolean
   /** The daemon advertised auto-upgrade support; absent on an older CP ⇒ unsupported. */
@@ -2536,6 +2538,7 @@ export function daemonFromDto(
     lifecycleOp,
     lifecycleStatus: lifecycleStatus(lifecycleOp) ?? null,
     canManageLifecycle: d.canManageLifecycle ?? false,
+    canIssueKey: d.canIssueKey,
     autoUpgrade: d.autoUpgrade ?? false,
     autoUpgradeSupported: d.autoUpgradeSupported ?? false,
     lastAutoUpgrade: d.lastAutoUpgrade ?? null,

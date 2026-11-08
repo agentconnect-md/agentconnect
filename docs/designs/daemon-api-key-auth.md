@@ -164,18 +164,21 @@ string is defensive compatibility behavior, not an active lifecycle.
 ## 5. Rotation, listing, and revocation
 
 Daemon-key metadata inherits the parent daemon's visibility. Issuing another
-key requires an organization owner: a key can impersonate the daemon on any
-machine, so editing or having created the daemon does not authorize issuance.
-Revocation retains the parent daemon's edit permission. Non-viewer members
-can still provision a new daemon with its first key, but must ask an owner
-to issue a replacement. These routes, like `POST /daemons/token` and
+key requires an organization owner or the recorded creator with current edit
+permission. Editing a shared daemon alone never grants its identity; creation
+attribution does not bypass current membership, visibility, or the viewer role.
+The creator can recover an offline machine without its old key. A daemon with
+no recorded creator requires an organization owner. The Console uses the
+server-projected `canIssueKey` for Reconnect, including on mobile.
+Revocation retains the parent daemon's edit permission, and non-viewer members
+can still provision a new daemon with its first key. These routes, like `POST /daemons/token` and
 `POST /agents?connect=true`, take an interactive sign-in only (§6):
 
-| Endpoint                          | Behavior                                                                    |
-| --------------------------------- | --------------------------------------------------------------------------- |
-| `GET /daemons/:id/keys`           | Lists key metadata without plaintext or hashes.                             |
-| `POST /daemons/:id/keys`          | Mints an additional key for the same daemon and returns the plaintext once. |
-| `DELETE /daemons/:id/keys/:keyId` | Revokes a key owned by that daemon.                                         |
+| Endpoint                          | Behavior                                                                                    |
+| --------------------------------- | ------------------------------------------------------------------------------------------- |
+| `GET /daemons/:id/keys`           | Lists key metadata without plaintext or hashes.                                             |
+| `POST /daemons/:id/keys`          | An organization owner or an editable creator mints another key; plaintext is returned once. |
+| `DELETE /daemons/:id/keys/:keyId` | Revokes a key owned by that daemon.                                                         |
 
 Multiple active keys per daemon are allowed for overlap rotation:
 

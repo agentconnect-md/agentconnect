@@ -266,7 +266,7 @@ export default function DaemonDetailView() {
         {/* action bar — status-aware: online ⇒ restart/upgrade, offline ⇒ reconnect;
             hidden while a lifecycle op is in flight (the pending badge above shows it). */}
         <div className="flex gap-2 bg-(--surface-card) px-4 pb-4">
-          {offline && !pending && activeOrg?.role === 'owner' && (
+          {offline && !pending && daemon.canIssueKey && (
             <button
               onClick={() => openModal('reconnectDaemon', daemon)}
               className="flex h-11 flex-1 cursor-pointer items-center justify-center gap-2 rounded-md border border-(--border-default) bg-(--surface-card) font-sans text-[14px] font-semibold leading-normal text-(--text-primary)"
@@ -727,7 +727,7 @@ export default function DaemonDetailView() {
                 )}
                 {offline && !pending && daemon.canEdit && (
                   <>
-                    {activeOrg?.role === 'owner' && (
+                    {daemon.canIssueKey && (
                       <button
                         className="dmi"
                         onClick={() => {

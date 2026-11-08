@@ -529,7 +529,7 @@ function ClusterFleetCard({ members, hosted }: { members: DaemonRow[]; hosted: n
 }
 
 function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
-  const { orgPath, activeOrg } = useOrgs()
+  const { orgPath } = useOrgs()
   const router = useRouter()
   const t = useTranslations('Daemons')
   const { renameDaemon } = useConsoleData()
@@ -742,7 +742,7 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
               )}
               {offline && !pending && m.canEdit && (
                 <>
-                  {activeOrg?.role === 'owner' && (
+                  {m.canIssueKey && (
                     <button
                       className="dmi"
                       onClick={() => {

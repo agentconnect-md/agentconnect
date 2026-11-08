@@ -13,7 +13,7 @@ import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
-import type { OrgMemberRole } from '../../src/persistence/ports.js'
+import { SYNTHETIC_EMAIL_SUFFIX, type OrgMemberRole } from '../../src/persistence/ports.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const users = () => new PgUserRepo(prisma)
@@ -655,7 +655,7 @@ describe('Selected audience invariants across resource kinds', () => {
 })
 
 describe('derived visibility — daemon keys inherit the daemon visibility', () => {
-  it('only an organization owner can issue another key, even when a collaborator created or can edit the daemon', async () => {
+  it('admits the owner and an editable creator, but not other editors or viewers', async () => {
     const creator = await makeUser('key-creator', 'collaborator')
     const editor = await makeUser('key-editor', 'collaborator')
     const viewer = await makeUser('key-viewer', 'viewer')
@@ -667,20 +667,72 @@ describe('derived visibility — daemon keys inherit the daemon visibility', () 
     const originalKeys = await prisma.apiKey.findMany({ where: { daemonId } })
     expect(originalKeys).toHaveLength(1)
 
-    for (const user of [creator, editor, viewer]) {
+    for (const user of [editor, viewer]) {
       const app = appAs(user).app
       expect((await app.inject({ method: 'GET', url: path })).statusCode).toBe(200)
       expect((await app.inject({ method: 'POST', url: path })).statusCode).toBe(403)
+      expect((await app.inject({ method: 'GET', url: `${ORG}/daemons/${daemonId}` })).json().canIssueKey).toBe(false)
     }
     expect(await prisma.apiKey.findMany({ where: { daemonId } })).toEqual(originalKeys)
 
-    const ownerApp = appAs(DEFAULT_OWNER_ID).app
-    const issued = await ownerApp.inject({ method: 'POST', url: path })
-    expect(issued.statusCode).toBe(201)
-    const { apiKeyId } = issued.json() as { apiKeyId: string }
-    expect(await prisma.apiKey.count({ where: { daemonId, revokedAt: null } })).toBe(2)
-    expect((await ownerApp.inject({ method: 'DELETE', url: `${path}/${apiKeyId}` })).statusCode).toBe(200)
-    expect(await prisma.apiKey.count({ where: { daemonId, revokedAt: null } })).toBe(1)
+    await prisma.user.update({ where: { id: creator }, data: { email: `creator${SYNTHETIC_EMAIL_SUFFIX}` } })
+    for (const user of [creator, DEFAULT_OWNER_ID]) {
+      const app = appAs(user).app
+      const issued = await app.inject({ method: 'POST', url: path })
+      expect(issued.statusCode).toBe(201)
+      const { apiKeyId } = issued.json() as { apiKeyId: string }
+      expect(await prisma.apiKey.findUnique({ where: { id: apiKeyId }, select: { createdByUserId: true } })).toEqual({
+        createdByUserId: user
+      })
+      expect((await app.inject({ method: 'GET', url: `${ORG}/daemons/${daemonId}` })).json()).toMatchObject({
+        createdBy: null,
+        canIssueKey: true
+      })
+      const fleet = (await app.inject({ method: 'GET', url: `${ORG}/daemons` })).json() as Array<{
+        daemonId: string
+        canIssueKey: boolean
+      }>
+      expect(fleet.find((daemon) => daemon.daemonId === daemonId)?.canIssueKey).toBe(true)
+      expect(await prisma.apiKey.count({ where: { daemonId, revokedAt: null } })).toBe(2)
+      expect((await app.inject({ method: 'DELETE', url: `${path}/${apiKeyId}` })).statusCode).toBe(200)
+      expect(await prisma.apiKey.count({ where: { daemonId, revokedAt: null } })).toBe(1)
+    }
+  })
+
+  it('denies creator recovery after sharing access, writing role, or membership is removed', async () => {
+    const creator = await makeUser('key-recovery-creator', 'collaborator')
+    const daemonId = randomUUID()
+    await seedDaemon(prisma, daemonId, { createdByUserId: creator })
+    const app = appAs(creator).app
+    const owner = appAs(DEFAULT_OWNER_ID).app
+    const path = `${ORG}/daemons/${daemonId}`
+    expect((await app.inject({ method: 'POST', url: `${path}/keys` })).statusCode).toBe(201)
+
+    const share = (sharedWith: string[]) =>
+      owner.inject({ method: 'PUT', url: `${path}/sharing`, payload: { visibility: 'restricted', sharedWith } })
+    expect((await share([DEFAULT_OWNER_ID])).statusCode).toBe(200)
+    expect((await app.inject({ method: 'POST', url: `${path}/keys` })).statusCode).toBe(404)
+    expect((await share([creator])).statusCode).toBe(200)
+    await prisma.membership.update({
+      where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: creator } },
+      data: { role: 'viewer' }
+    })
+    expect((await app.inject({ method: 'GET', url: path })).json().canIssueKey).toBe(false)
+    expect((await app.inject({ method: 'POST', url: `${path}/keys` })).statusCode).toBe(403)
+    expect((await owner.inject({ method: 'DELETE', url: `${ORG}/members/${creator}` })).statusCode).toBe(204)
+    expect((await app.inject({ method: 'POST', url: `${path}/keys` })).statusCode).toBe(404)
+    expect(await prisma.apiKey.count({ where: { daemonId } })).toBe(1)
+  })
+
+  it('requires an organization owner when no daemon creator is recorded', async () => {
+    const editor = await makeUser('key-no-creator-editor', 'collaborator')
+    const daemonId = randomUUID()
+    await seedDaemon(prisma, daemonId)
+    const path = `${ORG}/daemons/${daemonId}`
+    const app = appAs(editor).app
+    expect((await app.inject({ method: 'GET', url: path })).json().canIssueKey).toBe(false)
+    expect((await app.inject({ method: 'POST', url: `${path}/keys` })).statusCode).toBe(403)
+    expect((await appAs(DEFAULT_OWNER_ID).app.inject({ method: 'POST', url: `${path}/keys` })).statusCode).toBe(201)
   })
 
   it('a restricted daemon’s keys are hidden from unshared members, but not from organization owners', async () => {

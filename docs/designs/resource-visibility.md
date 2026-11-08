@@ -6,7 +6,7 @@
 > Resource and session decisions converge through
 > [`authorization-policy.md`](authorization-policy.md). A Selected member list
 > records explicit sharing; organization owners also have access through their
-> role, while immutable creation attribution grants none. Normal member removal
+> role; creation attribution never overrides visibility. Normal member removal
 > prunes all seven visibility carriers atomically
 > and repairs only audiences that would otherwise become empty.
 > Section 14 (platform conversation gating) extends the same model to platform
@@ -240,8 +240,10 @@ deliver the viewer context and would leave restrictions ineffective.
 - Filter the agent sublist on a daemon detail page by agent visibility.
 - **Daemon-key route family:** `GET/POST /daemons/:id/keys` and DELETE apply
   `canView` while resolving the daemon. Issuance additionally requires an
-  organization owner because it grants the daemon's identity; revocation
-  requires `canEdit`. Creation attribution never authorizes issuance.
+  organization owner or a matching immutable `createdByUserId` with current
+  `canEdit`, because it grants the daemon's identity. Creation alone cannot
+  bypass membership, visibility, or the viewer role. Revocation requires
+  `canEdit`. Fleet and detail DTOs project the same issuance policy as `canIssueKey`.
 
 ### 5.3 Cron: repository access
 
