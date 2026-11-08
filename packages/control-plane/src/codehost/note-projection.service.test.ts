@@ -146,7 +146,8 @@ function harness(
     completeWrite: vi.fn(async () => true),
     failWrite: vi.fn(async () => true),
     advancePending: vi.fn(async () => null),
-    get: vi.fn(async () => stored)
+    get: vi.fn(async () => stored),
+    getByNaturalKey: vi.fn(async () => stored)
   } satisfies Record<keyof CodeHostRunProjectionRepo, unknown> as unknown as CodeHostRunProjectionRepo & {
     upsert: ReturnType<typeof vi.fn>
     setDesired: ReturnType<typeof vi.fn>

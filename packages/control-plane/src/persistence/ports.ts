@@ -3995,6 +3995,14 @@ export interface CodeHostRunProjectionRepo {
     fallbackNextAttemptAt: Date
   ): Promise<CodeHostRunProjectionRecord | null>
   get(projectionId: string): Promise<CodeHostRunProjectionRecord | null>
+  /** The row for one natural key, without locking it; null when none exists. */
+  getByNaturalKey(
+    hookId: HookId,
+    projectId: bigint,
+    mergeRequestIid: number,
+    headSha: string,
+    projectionEpoch: bigint
+  ): Promise<CodeHostRunProjectionRecord | null>
 }
 
 /** The Control-Plane-written projection's writer members (gitea-integration.md §10.4); the daemon-written GitLab note never claims. */

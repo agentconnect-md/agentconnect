@@ -179,16 +179,17 @@ describe('azureDevOpsStatusSpec (§11.7)', () => {
 })
 
 describe('AzureDevOpsStatusCoordinator', () => {
-  function coordinator(row = projection()) {
+  function coordinator(row = projection(), turnStartedAt: Date | null = new Date(NOW)) {
     const projections = {
       upsert: vi.fn(async (_input: UpsertCodeHostRunProjectionInput) => row),
       setDesired: vi.fn(async () => true),
-      supersede: vi.fn(async () => 0)
+      supersede: vi.fn(async () => 0),
+      getByNaturalKey: vi.fn(async (): Promise<CodeHostRunProjectionRecord | null> => row)
     }
     const kick = vi.fn()
     const service = new AzureDevOpsStatusCoordinator({
       projections,
-      runs: { getRun: vi.fn(async () => ({ projectionEpoch: 1n, startedAt: new Date(NOW) })) } as never,
+      runs: { getRun: vi.fn(async () => ({ projectionEpoch: 1n, startedAt: new Date(NOW), turnStartedAt })) } as never,
       agents: { getUnscoped: vi.fn(async () => agent) },
       bindings: { listForRepo: vi.fn(async () => [binding]) },
       connections: { get: vi.fn(async () => connection) },
@@ -215,6 +216,30 @@ describe('AzureDevOpsStatusCoordinator', () => {
     await service.afterStart(edge({ sessionId: 'session-1' }))
     expect(projections.upsert).toHaveBeenLastCalledWith(expect.objectContaining({ desiredState: 'running' }))
     await service.afterReport(edge({ state: 'completed' }))
+    expect(projections.setDesired).toHaveBeenLastCalledWith(
+      expect.any(String),
+      1n,
+      'completed',
+      new Date(NOW),
+      undefined
+    )
+  })
+
+  it('restates nothing for a turnless success on a head another delivery holds, or holds nothing on', async () => {
+    const ignored = coordinator(projection({ currentDeliveryKey: 'review-delivery' }), null)
+    await ignored.service.afterReport(edge({ state: 'completed', reason: 'review_request_not_for_identity' }))
+    ignored.projections.getByNaturalKey.mockResolvedValueOnce(null)
+    await ignored.service.afterReport(edge({ state: 'completed', reason: 'worktree_cleanup_no_session' }))
+    expect(ignored.projections.upsert).not.toHaveBeenCalled()
+    // A refusal is no success: it settles whatever the delivery queued.
+    await ignored.service.afterReport(edge({ state: 'failed', reason: 'delivery_unresolved' }))
+    expect(ignored.projections.upsert).toHaveBeenCalledWith(expect.objectContaining({ desiredState: 'failed' }))
+  })
+
+  it('settles its own queued status when the turn ran past a failed start barrier', async () => {
+    const { service, projections } = coordinator(projection({ currentDeliveryKey: 'delivery-1' }), null)
+    await service.afterReport(edge({ state: 'completed', sessionId: 'session-1' }))
+    expect(projections.upsert).toHaveBeenCalledWith(expect.objectContaining({ desiredState: 'completed' }))
     expect(projections.setDesired).toHaveBeenLastCalledWith(
       expect.any(String),
       1n,

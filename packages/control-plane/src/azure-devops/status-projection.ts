@@ -138,7 +138,7 @@ async function hookedBinding(
 }
 
 export interface AzureDevOpsStatusCoordinatorDeps {
-  projections: Pick<CodeHostRunProjectionRepo, 'upsert' | 'setDesired' | 'supersede'>
+  projections: Pick<CodeHostRunProjectionRepo, 'upsert' | 'setDesired' | 'supersede' | 'getByNaturalKey'>
   /** The ACCEPTED run behind an edge — the only authority for its projection epoch. */
   runs: Pick<HookRepo, 'getRun'>
   agents: Pick<AgentRepo, 'getUnscoped'>
@@ -184,6 +184,18 @@ export class AzureDevOpsStatusCoordinator {
     if (!binding) return
     const connection = await this.deps.connections.get(edge.orgId, binding.connectionId)
     if (!connection) return
+
+    // A success that crossed no start barrier settles only a status its own delivery opened; an ignored update or a cleanup never restates the head's.
+    if (edge.state === 'completed' && !run.turnStartedAt) {
+      const held = await this.deps.projections.getByNaturalKey(
+        HookId(edge.hookId),
+        subject.projectId,
+        subject.mergeRequestIid,
+        subject.headSha,
+        run.projectionEpoch
+      )
+      if (held?.currentDeliveryKey !== edge.deliveryKey) return
+    }
 
     const acceptedAt = run.startedAt
     const terminal = edge.state !== 'queued' && edge.state !== 'running'
