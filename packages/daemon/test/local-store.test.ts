@@ -1539,7 +1539,7 @@ describe('LocalStore session/transcript read-back (session/list, session/history
       lastDeliveredTs: null,
       updatedAt: 1,
       triggeredBy: 'U-FIRST',
-      initiatedBy: 'Alex (slack)'
+      initiator: JSON.stringify({ name: 'Alex', commitAuthors: [] })
     })
     // A later turn cannot replace the opener or its public attribution.
     await s.upsertSession({
@@ -1547,10 +1547,10 @@ describe('LocalStore session/transcript read-back (session/list, session/history
       state: 'prompting',
       updatedAt: 2,
       triggeredBy: 'U-SECOND',
-      initiatedBy: 'Dana (slack)'
+      initiator: JSON.stringify({ name: 'Dana', commitAuthors: [] })
     })
     expect((await s.getSession(key))?.triggeredBy).toBe('U-FIRST')
-    expect((await s.getSession(key))?.initiatedBy).toBe('Alex (slack)')
+    expect(JSON.parse((await s.getSession(key))!.initiator!)).toEqual({ name: 'Alex', commitAuthors: [] })
     expect((await s.listSessions('bot-a'))[0]?.triggeredBy).toBe('U-FIRST')
     await s.close()
   })

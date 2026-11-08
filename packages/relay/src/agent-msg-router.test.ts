@@ -369,7 +369,17 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
         originSessionId: 'acp-parent-1',
         needsReply: true,
         originCodeHostReplyTarget: null,
-        initiatedBy: 'Alex (slack)'
+        initiator: {
+          name: 'Alex',
+          commitAuthors: [
+            {
+              provider: 'github' as const,
+              host: 'github.com',
+              name: 'alex',
+              email: '123+alex@users.noreply.github.com'
+            }
+          ]
+        }
       })
     )
     expect(ack.delivered).toBe(true)
@@ -378,7 +388,12 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     expect(forwards[0]!.needsReply).toBe(true)
     expect(forwards[0]!.originSessionId).toBe('acp-parent-1')
     expect(forwards[0]!.originCodeHostReplyTarget).toBeNull()
-    expect(forwards[0]!.initiatedBy).toBe('Alex (slack)')
+    expect(forwards[0]!.initiator).toEqual({
+      name: 'Alex',
+      commitAuthors: [
+        { provider: 'github' as const, host: 'github.com', name: 'alex', email: '123+alex@users.noreply.github.com' }
+      ]
+    })
   })
 
   it.each(['originCodeHostReplyTarget', 'codeHostReplyTarget'] as const)(

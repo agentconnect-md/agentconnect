@@ -210,7 +210,7 @@ export const canonicalColumns = [
   'trustedAgentBot',
   'triggerKind',
   'triggeredBy',
-  'initiatedBy',
+  'initiator',
   'trippedAt',
   'turnId',
   'updatedAt',

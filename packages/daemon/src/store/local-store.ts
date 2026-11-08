@@ -301,8 +301,8 @@ export interface SessionRecord {
   muted?: number | null
   // First message sender's platform ID, first-wins; display names are resolved separately.
   triggeredBy?: string | null
-  /** Public initiator label pinned when this logical session is created, inherited by delegated work. */
-  initiatedBy?: string | null
+  /** JSON initiator snapshot pinned when this logical session is created, inherited by delegated work. */
+  initiator?: string | null
   // Human-facing session title: the ingress title (or the first-message fallback) the
   // session is born with, then whatever the runtime pushes (ACP `session_info_update`).
   title?: string | null
@@ -2148,7 +2148,7 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
     await addColumn(db, store.postgres, 'assistant_subsession_thread', 'reportThread', 'TEXT')
   },
   // v77 pins the initiator independently of the session's routing identity.
-  async (db, store) => await addColumn(db, store.postgres, 'sessions', 'initiatedBy', 'TEXT')
+  async (db, store) => await addColumn(db, store.postgres, 'sessions', 'initiator', 'TEXT')
 ]
 
 /** Tasks gain when they closed, the message they were opened for, what they opened and a getting-to-know task's marker; an ended watch task counts as closed when it last changed. */
@@ -3053,7 +3053,7 @@ export class LocalStore {
       CREATE TABLE IF NOT EXISTS sessions (
         key TEXT PRIMARY KEY, agentId TEXT, platform TEXT, channel TEXT, thread TEXT,
         transportScope TEXT, originCodeHostReplyTarget TEXT, acpSessionId TEXT, sessionId TEXT, state TEXT, lastDeliveredTs TEXT, updatedAt INTEGER,
-        usage TEXT, muted INTEGER, triggeredBy TEXT, initiatedBy TEXT, title TEXT, threadUrl TEXT, modelOverride TEXT,
+        usage TEXT, muted INTEGER, triggeredBy TEXT, initiator TEXT, title TEXT, threadUrl TEXT, modelOverride TEXT,
         observedRuntime TEXT, observedModel TEXT, observedModelSet INTEGER NOT NULL DEFAULT 0, decisionModel TEXT,
         effortOverride TEXT, permissionModeOverride TEXT, fastModeOverride INTEGER,
         outputModeOverride TEXT, statusBarTs TEXT, memoryProvider TEXT, workspaceIsolation TEXT,
@@ -4691,13 +4691,13 @@ export class LocalStore {
     await this.db
       .prepare(
         `INSERT INTO sessions
-           (key, sessionId, agentId, platform, channel, thread, transportScope, acpSessionId, state, lastDeliveredTs, updatedAt, muted, triggeredBy, initiatedBy, threadUrl, memoryProvider, workspaceIsolation, originSessionId, needsParentReply,
+           (key, sessionId, agentId, platform, channel, thread, transportScope, acpSessionId, state, lastDeliveredTs, updatedAt, muted, triggeredBy, initiator, threadUrl, memoryProvider, workspaceIsolation, originSessionId, needsParentReply,
             externalProvider, externalRealmKey, externalResourceKind, externalResourceKey, externalIntegrationId,
             externalOriginJson, sourceBindingKind, platformStanding)
          VALUES
            (@key, COALESCE((SELECT sessionId FROM session_outward_ids WHERE key = @key), @sessionId), @agentId, @platform, @channel, @thread, @transportScope, @acpSessionId, @state, @lastDeliveredTs, @updatedAt,
             CASE WHEN EXISTS (SELECT 1 FROM session_mutes WHERE key = @key) THEN 1 ELSE NULL END,
-            @triggeredBy, @initiatedBy, @threadUrl, @memoryProvider, @workspaceIsolation, @originSessionId, @needsParentReply,
+            @triggeredBy, @initiator, @threadUrl, @memoryProvider, @workspaceIsolation, @originSessionId, @needsParentReply,
             @externalProvider, @externalRealmKey, @externalResourceKind, @externalResourceKey, @externalIntegrationId,
             @externalOriginJson, @sourceBindingKind, @platformStanding)
          ON CONFLICT(key) DO UPDATE SET
@@ -4717,7 +4717,7 @@ export class LocalStore {
              ELSE sessions.muted
            END,
            triggeredBy=COALESCE(sessions.triggeredBy, excluded.triggeredBy),
-           initiatedBy=COALESCE(sessions.initiatedBy, excluded.initiatedBy),
+           initiator=COALESCE(sessions.initiator, excluded.initiator),
            threadUrl=COALESCE(sessions.threadUrl, excluded.threadUrl),
            memoryProvider=excluded.memoryProvider,
            workspaceIsolation=COALESCE(excluded.workspaceIsolation, sessions.workspaceIsolation),
@@ -4757,7 +4757,7 @@ export class LocalStore {
         lastDeliveredTs: rec.lastDeliveredTs,
         updatedAt: rec.updatedAt,
         triggeredBy: rec.triggeredBy ?? null,
-        initiatedBy: rec.initiatedBy ?? null,
+        initiator: rec.initiator ?? null,
         threadUrl: rec.threadUrl ?? null,
         memoryProvider: rec.memoryProvider ?? null,
         workspaceIsolation: rec.workspaceIsolation ?? null,

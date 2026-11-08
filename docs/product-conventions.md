@@ -2396,12 +2396,21 @@ usage in the history presentation.
 ## Pull-request initiator attribution
 
 Pull requests and merge requests opened through the code-host tools carry an
-`Initiated by` line naming the person and source platform. This attribution is
+`Initiated by **Alex**` line naming the person. This attribution is
 shown even when the optional agent/runtime/model footer is off. Names are plain
 text; a display name does not imply a linked code-host account or send a mention.
 Raw account IDs and sign-in addresses are not published as names.
 
-A task records its initiator when it starts and carries that attribution through
+When the initiator has a verified linked GitHub or GitLab account, the agent's
+standing instructions supply the matching host's `Co-authored-by` trailer for
+new commits. GitHub uses the linked account's noreply address; GitLab uses its
+configured commit address or public address. The configured agent author and
+committer remain in place. This is agent guidance, not a commit hook or a
+requirement to link an account before opening a PR. Missing identities and lookup
+failures retain the name attribution. Gitea and Azure DevOps application or bot
+credentials do not identify the human who initiated a task.
+
+A task records its initiator and linked commit identities when it starts and carries that attribution through
 delegation, including delegation to another daemon. A long conversation delegates
 for the person whose request it is handling; its first participant does not own
 everyone else's tasks. Scheduled runs and webhooks name the automation instead.

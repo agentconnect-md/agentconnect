@@ -1369,7 +1369,7 @@ describe('messageAgent: cross-daemon routing (P2, source side)', () => {
         transportScope: 'github:123',
         acpSessionId: 'acp-parent-1',
         sessionId: 'sid-parent-1',
-        initiatedBy: 'Webhook',
+        initiator: JSON.stringify({ name: 'Webhook', commitAuthors: [] }),
         state: 'prompting',
         lastDeliveredTs: null,
         updatedAt: Date.now()
@@ -1389,7 +1389,7 @@ describe('messageAgent: cross-daemon routing (P2, source side)', () => {
       expect(sent[0]).toMatchObject({
         originSessionId: 'sid-parent-1',
         needsReply: true,
-        initiatedBy: 'Webhook',
+        initiator: { name: 'Webhook', commitAuthors: [] },
         originCodeHostReplyTarget: publicTurn ? target : null
       })
       d.activeGateEntries.delete(callerKey)

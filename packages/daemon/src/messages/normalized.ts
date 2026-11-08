@@ -3,6 +3,7 @@ import {
   type NormalizedPlatformMessage,
   type PlatformAttachment,
   type SessionImageAttachment,
+  type TaskInitiator,
   type UserTurnBody
 } from '@agentconnect.md/protocol'
 import type { ChannelIntake } from '../decisions/evidence.js'
@@ -93,8 +94,8 @@ export interface NormalizedMessage extends Omit<
    *  differs from the message author. GitHub hook messages, for example, are
    *  authored by the event actor while still being triggered by `hook:<id>`. */
   sessionTriggerId?: string
-  /** Daemon-authored public initiator label inherited across task delegation; never a tool argument. */
-  initiatedBy?: string
+  /** Daemon-authored initiator snapshot inherited across task delegation; never a tool argument. */
+  initiator?: TaskInitiator
   attachments?: Attachment[]
   /** Trusted activation cause when known. In particular, `mention` means the router
    *  matched a raw platform token against this integration's own bound bot identity. */

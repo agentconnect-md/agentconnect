@@ -196,7 +196,10 @@ describe('a GitHub workspace and the description footer', () => {
     vi.spyOn(inner.workspaces, 'managedCredentialProvider').mockReturnValue('github')
     vi.spyOn(inner.workspaces, 'specHostsOf').mockReturnValue({})
     inner.store = {
-      getSession: vi.fn(async () => ({ sessionId: 'acp-session-1', initiatedBy: 'Alex (slack)' })),
+      getSession: vi.fn(async () => ({
+        sessionId: 'acp-session-1',
+        initiator: JSON.stringify({ name: 'Alex', commitAuthors: [] })
+      })),
       assistantSubsessions: { get: async () => undefined }
     }
     inner.githubReviews = {
@@ -232,18 +235,51 @@ describe('a GitHub workspace and the description footer', () => {
     const daemon = new Daemon({ sandboxMechanism: null } as never)
     const inner = daemon as any
     const task = vi.fn(async (): Promise<unknown> => undefined)
-    const session = { key: 'parent', agentId: AGENT_ID, initiatedBy: 'Alex (slack)' }
+    const session = { key: 'parent', agentId: AGENT_ID, initiator: JSON.stringify({ name: 'Alex', commitAuthors: [] }) }
     inner.store = {
       getSession: async () => session,
       getDisplayNames: async () => new Map([['U-DANA', 'Dana']]),
       assistantSubsessions: { get: task }
     }
     inner.activeGateEntries.set('parent', {
+      agentId: AGENT_ID,
       msg: { source: 'user', platform: 'slack', sender: { id: 'U-DANA', isBot: false } }
     })
-    expect(await inner.initiatedByForSession('parent')).toBe('Dana (slack)')
+    expect(await inner.initiatorForSession('parent')).toEqual({ name: 'Dana', commitAuthors: [] })
     task.mockResolvedValue({ childSessionKey: 'parent' })
-    expect(await inner.initiatedByForSession('parent')).toBe('Alex (slack)')
+    expect(await inner.initiatorForSession('parent')).toEqual({ name: 'Alex', commitAuthors: [] })
+  })
+
+  it('snapshots linked commit identities using the trusted sender and keeps missing links optional', async () => {
+    const inner = new Daemon({ sandboxMechanism: null } as never) as any
+    const authors = [
+      { provider: 'github', host: 'github.com', name: 'alex', email: '123+alex@users.noreply.github.com' }
+    ]
+    const readAccess = vi.fn(async () => ({ asker: 'linked', visibleSessionIds: [], commitAuthors: authors }))
+    inner.cpClient = { supportsServerFeature: () => true, readAccess }
+    inner.cpCollab = { orgForAgent: () => 'org-1' }
+    inner.store = { getDisplayNames: async () => new Map() }
+    const message = { source: 'user', platform: 'slack', sender: { id: 'U1', name: 'Alex', isBot: false } }
+    expect(await inner.initiatorForMessage(AGENT_ID, message, 'integration-1')).toEqual({
+      name: 'Alex',
+      commitAuthors: authors
+    })
+    expect(readAccess).toHaveBeenCalledWith(
+      {
+        agentId: AGENT_ID,
+        asker: { integrationId: 'integration-1', memberId: 'U1' },
+        sessionIds: [],
+        includeCommitAuthors: true
+      },
+      'org-1'
+    )
+    await inner.initiatorForMessage(AGENT_ID, message, 'integration-1')
+    expect(readAccess).toHaveBeenCalledTimes(1)
+    readAccess.mockRejectedValue(new Error('identity service unavailable'))
+    expect(await inner.initiatorForMessage(AGENT_ID, { ...message, initiator: undefined }, 'integration-1')).toEqual({
+      name: 'Alex',
+      commitAuthors: []
+    })
   })
 
   it('addresses a GitHub workspace by its path, since the spec carries no numeric id for it', () => {
@@ -261,14 +297,14 @@ describe('a GitHub workspace and the description footer', () => {
     const description = (github.execute.mock.calls[0] as unknown[])[1] as { description: string }
     expect(description.description).toMatch(/^Body\n\n<!-- agentconnect:attribution -->/)
     expect(description.description).toContain('Example Agent')
-    expect(description.description).toContain('Initiated by **Alex (slack)**')
+    expect(description.description).toContain('Initiated by **Alex**')
   })
 
   it('identifies the initiator even when the optional agent footer is off', async () => {
     const { github, create } = githubDaemon(false)
     await create()
     const operation = (github.execute.mock.calls[0] as unknown[])[1] as { description: string }
-    expect(operation.description).toContain('Initiated by **Alex (slack)**')
+    expect(operation.description).toContain('Initiated by **Alex**')
     expect(operation.description).not.toContain('Example Agent')
   })
   it('preserves the published initiator when another session rewrites the PR and ignores a copied replacement', async () => {

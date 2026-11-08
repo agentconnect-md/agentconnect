@@ -1,3 +1,4 @@
+import { sessionInitiator } from '../codehost/initiator.js'
 import { agentWithRuntime } from '../decisions/model-selection.js'
 import { isAppendCoordinate, isCoordinatorCoordinate } from './append-coordinate.js'
 import {
@@ -74,7 +75,7 @@ import {
 import { boardDigest, boardDue, type RenderedBoard } from '../assistant/work-board.js'
 import { renderLocalNow } from './local-time.js'
 import { knownTimeZone, TIME_ZONE_LOOKUP_WAIT_MS, within } from '../messages/time-zone.js'
-import type { DecisionRuntimeTarget, RuntimeCommand } from '@agentconnect.md/protocol'
+import type { DecisionRuntimeTarget, RuntimeCommand, TaskInitiator } from '@agentconnect.md/protocol'
 import { deriveTitle } from './derive-title.js'
 import { chatSettingsAllowed } from '../agents/chat-actions.js'
 import { backgroundConversationText, intakeEvidenceText } from '../decisions/evidence.js'
@@ -225,7 +226,12 @@ export class SessionManager {
     private deps: {
       store: LocalStore
       /** Snapshot the human or automation behind a newly opened session. */
-      initiatorFor?: (msg: NormalizedMessage, originSessionId?: string) => Promise<string>
+      initiatorFor?: (
+        agentId: string,
+        msg: NormalizedMessage,
+        integrationId?: string,
+        originSessionId?: string
+      ) => Promise<TaskInitiator>
       /** Mint a slot's outward id (§1.1) and hand back the synchronous binder the runtime's raw
        *  `session/new` response calls — see the opener's `prepareOutwardBinding`. */
       prepareOutwardBinding?: (agentId: string, key: string) => Promise<(acpSessionId: string) => void>
@@ -746,6 +752,13 @@ export class SessionManager {
       ...(threadedTask ? { threadedTask } : {})
     })
 
+    const savedInitiator = sessionInitiator(rec)
+    const initiator =
+      savedInitiator && (isSubsessionCoordinate(thread) || threadedTask || webchatTask)
+        ? savedInitiator
+        : (msg.initiator ??
+          (await this.deps.initiatorFor?.(agentId, msg, integrationId, originSessionId)) ??
+          savedInitiator)
     let standing: Promise<StandingContext> | undefined
     const standingContext = (): Promise<StandingContext> =>
       (standing ??= (async () =>
@@ -776,6 +789,7 @@ export class SessionManager {
           ...(memoryGuidance ? { memoryGuidance } : {}),
           usesMeta,
           taskInstructions: toolContext?.instructions,
+          initiator,
           // The platform's session-stable block (Linear's issue coordinates and working convention):
           // standing, so it never lands as a leading user block or a transcript row.
           ...(platformStanding ? { platformStanding } : {})
@@ -801,11 +815,7 @@ export class SessionManager {
         thread,
         transportScope: transportScope ?? null,
         triggeredBy: msg.sessionTriggerId ?? msg.sender.id,
-        initiatedBy:
-          rec?.initiatedBy ??
-          (isNewLogicalSession
-            ? (msg.initiatedBy ?? (await this.deps.initiatorFor?.(msg, originSessionId)))
-            : undefined),
+        initiator: rec?.initiator ?? (isNewLogicalSession && initiator ? JSON.stringify(initiator) : undefined),
         ...(msg.threadUrl ? { threadUrl: msg.threadUrl } : {}),
         memoryProvider: currentMemoryProvider,
         workspaceIsolation,

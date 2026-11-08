@@ -97,14 +97,41 @@ describe('SessionManager', () => {
       hostFor: async () => fakeHost(),
       agentById: () => agent,
       memory,
-      initiatorFor: async () => 'Dana (slack)'
+      initiatorFor: async () => ({ name: 'Dana', commitAuthors: [] })
     })
     const key = sessionKey('slack', 'C1', '100.1', 'bot-a')
-    await sm.handle('bot-a', msg({ text: 'delegated', source: 'agent', initiatedBy: 'Alex (slack)' }))
-    expect((await store.getSession(key))?.initiatedBy).toBe('Alex (slack)')
+    await sm.handle(
+      'bot-a',
+      msg({
+        text: 'delegated',
+        source: 'agent',
+        initiator: {
+          name: 'Alex',
+          commitAuthors: [
+            {
+              provider: 'github' as const,
+              host: 'github.com',
+              name: 'alex',
+              email: '123+alex@users.noreply.github.com'
+            }
+          ]
+        }
+      })
+    )
+    expect(JSON.parse((await store.getSession(key))!.initiator!)).toEqual({
+      name: 'Alex',
+      commitAuthors: [
+        { provider: 'github' as const, host: 'github.com', name: 'alex', email: '123+alex@users.noreply.github.com' }
+      ]
+    })
     await store.upsertSession({ ...(await store.getSession(key))!, acpSessionId: null })
     await sm.handle('bot-a', msg({ text: 'continue', sender: { id: 'U2', isBot: false } }))
-    expect((await store.getSession(key))?.initiatedBy).toBe('Alex (slack)')
+    expect(JSON.parse((await store.getSession(key))!.initiator!)).toEqual({
+      name: 'Alex',
+      commitAuthors: [
+        { provider: 'github' as const, host: 'github.com', name: 'alex', email: '123+alex@users.noreply.github.com' }
+      ]
+    })
     await store.close()
   })
 

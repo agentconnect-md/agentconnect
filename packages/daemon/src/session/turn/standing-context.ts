@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import type { TaskInitiator } from '@agentconnect.md/protocol'
 import { join } from 'node:path'
 import { MEMORY_FORMAT_GUIDANCE } from '../../memory/frontmatter.js'
 import { MAX_INDEX_INJECT_BYTES } from '../../memory/store.js'
@@ -63,6 +64,7 @@ export const MAX_ON_DEMAND_NAMES = 100
 /** Everything the standing context is derived from. Every field is already resolved by
  * the caller — this input carries no lookups, no host, and no live message object. */
 export type StandingContextInput = {
+  initiator?: TaskInitiator
   agentName: string
   agentId: string
   agentDescription?: string
@@ -467,6 +469,16 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
   const memoryGuidance = input.memoryGuidance?.trim() ?? ''
   const agentMeta = buildAgentMeta(input)
   const workspaceRootsAppend = buildWorkspaceRootsAppend(input.workspaceRoots, input.onDemandClones)
+  const commitAttribution = input.initiator?.commitAuthors.length
+    ? [
+        '# Commit attribution',
+        'For new commits, append the following Co-authored-by trailer for the repository provider and remote host. ' +
+          'Use only the identity listed for that provider and host; keep the configured agent author and committer.',
+        ...input.initiator.commitAuthors.map(
+          (author) => `- ${author.provider} at ${author.host}: Co-authored-by: ${author.name} <${author.email}>`
+        )
+      ].join('\n')
+    : ''
   // Session-stable like the roots, so it is re-asserted on resume in the same seat.
   const platformAppend = input.platformStanding?.trim() ?? ''
   const taskReportingAppend = input.pageTask
@@ -490,6 +502,7 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
         : [
             meta,
             workspaceRootsAppend,
+            commitAttribution,
             platformAppend,
             collabAppend,
             taskReportingAppend,

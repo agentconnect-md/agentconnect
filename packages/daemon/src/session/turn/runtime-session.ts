@@ -17,7 +17,7 @@ export interface RuntimeSessionIdentity {
   thread: string
   transportScope: string | null
   triggeredBy: string
-  initiatedBy?: string
+  initiator?: string
   threadUrl?: string
   memoryProvider: SessionRecord['memoryProvider']
   workspaceIsolation: 'shared' | 'session'
@@ -247,7 +247,7 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
       updatedAt: Date.now(),
       // Routing identity and public attribution are separate, first-wins records.
       triggeredBy: identity.triggeredBy,
-      initiatedBy: rec?.initiatedBy ?? identity.initiatedBy,
+      initiator: rec?.initiator ?? identity.initiator,
       ...(identity.threadUrl ? { threadUrl: identity.threadUrl } : {}),
       memoryProvider: identity.memoryProvider,
       workspaceIsolation: identity.workspaceIsolation,
