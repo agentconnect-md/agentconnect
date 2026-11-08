@@ -201,6 +201,16 @@ function requireAck(action: string, ack: Ack): void {
   if (!ack.ok) throw new AgentMoveFailed(`${action} rejected${ack.reason ? `: ${ack.reason}` : ''}`)
 }
 
+function requireExternalMemoryDefinition(agent: AgentRecord, bundle: MoveBundle): void {
+  const memory = agent.memory
+  if (
+    memory?.provider === 'external' &&
+    !bundle.memoryConnections.some((def) => def.connectionId === memory.connectionId)
+  ) {
+    throw new AgentMoveFailed('external memory connection could not be staged on the target daemon')
+  }
+}
+
 function sameWorkspaceCredential(
   left: AgentWorkspaceCredential | undefined,
   right: AgentWorkspaceCredential | undefined
@@ -578,6 +588,7 @@ export class AgentMoveService {
     const sourceDaemonIds = (await (this.deps.placement ?? PLACEMENT_ONLY).servingDaemons(agent)) as DaemonId[]
     // Validate the source definition before cutover; activation and compensation both read fresh owned snapshots.
     const sourceBundle = await this.snapshot(agent)
+    requireExternalMemoryDefinition(agent, sourceBundle)
 
     const stagedSources = new Map<DaemonId, string>()
     for (const sourceDaemonId of sourceDaemonIds) {
@@ -1041,6 +1052,7 @@ export class AgentMoveService {
       return this.failClosedOwnership(agentId, targetDaemonId, orgId)
     }
     const bundle = await this.snapshot(agent)
+    requireExternalMemoryDefinition(agent, bundle)
     return {
       agent,
       bundle,
@@ -1182,13 +1194,6 @@ export class AgentMoveService {
     const current = await this.deps.agents.getUnscoped(agent.id)
     if (!current || !(await (this.deps.placement ?? PLACEMENT_ONLY).mayAct(current, daemonId))) {
       return this.failClosedOwnership(agent.id, daemonId, agent.orgId)
-    }
-    const memory = agent.memory
-    if (
-      memory?.provider === 'external' &&
-      !bundle.memoryConnections.some((def) => def.connectionId === memory.connectionId)
-    ) {
-      throw new AgentMoveFailed('external memory connection could not be staged on the target daemon')
     }
     try {
       for (const spec of bundle.mcpServers) await this.deps.control.mcpServerUpsert(daemonId, spec)

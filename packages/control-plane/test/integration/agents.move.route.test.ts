@@ -301,6 +301,29 @@ describe('PUT /agents/:id/daemon', () => {
           }
         }
       })
+      if (transport === 'streamable-http') {
+        for (const unavailable of ['relay', 'grant']) {
+          const missing =
+            unavailable === 'relay'
+              ? vi.spyOn(running.deps.relayRoster, 'entries').mockResolvedValue([])
+              : vi.spyOn(running.deps.repos.externalMemoryGrant, 'activeForConnection').mockResolvedValue([])
+          try {
+            const refused = await running.app.inject({
+              method: 'PUT',
+              url: `${ORG}/agents/${agentId}/daemon`,
+              payload: { daemonId: TARGET }
+            })
+            expect(refused.statusCode).toBe(503)
+            await vi.waitFor(() => expect(control.calls.at(-1)).toBe(`memory-remove:${TARGET}:${connection.id}`))
+            expect(control.detaches).toHaveLength(0)
+            expect(control.memoryUpserts).toHaveLength(0)
+            expect((await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).daemonId).toBe(SOURCE)
+          } finally {
+            missing.mockRestore()
+          }
+          control.calls.length = 0
+        }
+      }
       const release = running.deps.agentMutations.tryBeginMove(agentId)!
       try {
         const busy = await running.app.inject({
@@ -408,6 +431,21 @@ describe('PUT /agents/:id/daemon', () => {
       expect(control.memoryUpserts.at(-1)?.spec).toMatchObject(
         transport === 'stdio' ? { secretLease: { values: { apiKey: 'secret' } } } : { transport: 'streamable-http' }
       )
+      if (transport === 'streamable-http') {
+        const unavailable = vi.spyOn(running.deps.relayRoster, 'entries').mockResolvedValue([])
+        control.calls.length = 0
+        try {
+          const refusedRepair = await running.app.inject({
+            method: 'PUT',
+            url: `${ORG}/agents/${agentId}/daemon`,
+            payload: { daemonId: TARGET }
+          })
+          expect(refusedRepair.statusCode).toBe(503)
+          expect(control.calls).toEqual([])
+        } finally {
+          unavailable.mockRestore()
+        }
+      }
 
       // A workspace edit keeps the daemon's registry, including a connection update that ACKs during detach.
       const current = (await running.deps.repos.agent.getUnscoped(AgentId(agentId)))!
