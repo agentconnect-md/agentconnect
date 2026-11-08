@@ -669,7 +669,9 @@ function ThreadComposer({
     }
     const file = selected[0]!
     if (selected.length !== 1 || !file.type.startsWith('image/')) {
-      setAttachError('This conversation supports one inline image; multiple attachments require file uploads.')
+      setAttachError(
+        'This conversation accepts one image attachment. Documents and multiple attachments aren’t supported here.'
+      )
       return
     }
     setPreparing(true)

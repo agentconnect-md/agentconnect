@@ -24,6 +24,8 @@ import { GET_TOOL_GUIDE_TOOL } from './ops/tool-guide.js'
 import { MessageAttachment } from './ops/message-attachments.js'
 import { z } from 'zod'
 
+const { $schema: _schema, '~standard': _standard, ...messageAttachmentSchema } = z.toJSONSchema(MessageAttachment)
+
 // What the description says of tasks, by what the session may do with them (auto-session-mode.md §5.1).
 const SEND_MESSAGE_TASKS: Record<TaskReach, string> = {
   delegate:
@@ -125,7 +127,7 @@ function buildSendMessageTool(platforms: string[], reach: TaskReach = 'delegate'
           maxItems: 4,
           description:
             'Files to publish together. Use workspace + path, upload + uploadId, or platform + platform/fileId and optional source integrationId. See getToolGuide.',
-          items: z.toJSONSchema(MessageAttachment) as JsonValue
+          items: messageAttachmentSchema as JsonValue
         },
         platform: {
           type: 'string',

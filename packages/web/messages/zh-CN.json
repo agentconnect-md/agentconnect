@@ -1081,7 +1081,7 @@
       },
       "addFiles": "添加文件",
       "addImages": "添加图片",
-      "continuationImagesOnly": "从控制台只能向这个聊天帖子发送图片。",
+      "continuationImagesOnly": "此对话一次只能附加一张图片，暂不支持文档或多个附件。",
       "viewOriginal": "查看原图",
       "downloadOriginal": "下载",
       "originalUploading": "正在上传原图…",

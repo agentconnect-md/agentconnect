@@ -393,7 +393,9 @@ export default function HomeView() {
     const transfer = uploadPreviewsCapable(agentCapabilitySource(agent, daemons, memberSets)?.caps?.features)
     if (!transfer) {
       if (selected.length === 1 && selected[0]!.type.startsWith('image/')) return void onImageFile(selected[0])
-      setImageError('Multiple attachments need the deployment’s object store. You can attach one image here.')
+      setImageError(
+        'This conversation accepts one image attachment. Documents and multiple attachments aren’t supported here.'
+      )
       return
     }
     if (image) {

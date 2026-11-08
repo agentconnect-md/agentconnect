@@ -2699,7 +2699,7 @@ export default function SessionDetailView() {
     setAttachMenuOpen(false)
     if (!filesEnabled || !composerTransfer) {
       if (selected.length === 1 && selected[0]!.type.startsWith('image/')) return void onImageFile(selected[0])
-      setImageError('This conversation supports one inline image; multiple attachments require file uploads.')
+      setImageError(t('continuationImagesOnly'))
       return
     }
     if (pgImage) {
