@@ -526,12 +526,17 @@ The snapshot also carries verified linked commit identities resolved through
 `agent/read-access` for the initiating organization member. GitHub social or
 repository identity supplies the account's numeric ID and login for its noreply
 address. A GitLab OAuth connection must belong to that console member, and its
-authenticated user must match the recorded provider ID; only its commit or public
-email is used. Ambiguous links and lookup failures supply no commit identity.
-Standing instructions give the agent a `Co-authored-by` trailer per remote host
+authenticated user must match the recorded provider ID; only its explicitly
+public email is used. Ambiguous links and lookup failures supply no commit identity.
+Tasks with fixed initiators receive a `Co-authored-by` trailer per remote host in their standing instructions
 for new commits, preserving the bot author and committer. Gitea and Azure DevOps
 bot/application connections supply no personal identity. There is no mandatory
 linking flow or commit hook.
+
+Ordinary conversations have no session-wide coauthor block. Their current
+requester is resolved lazily when delegating or opening a PR; ordinary follow-up
+turns make no attribution lookup. Attribution reads use one two-second attempt,
+leaving normal read-access requests on their existing retry policy.
 
 - A rewrite replaces only the text above the marker and re-appends the footer,
   so an agent that edits its description keeps it.

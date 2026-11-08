@@ -24,8 +24,8 @@ function gitlab() {
     currentUser: vi.fn(async () => ({
       id: 42,
       username: 'alex-lab',
-      commit_email: 'alex@users.noreply.example.test',
-      public_email: ''
+      commit_email: 'private@example.test',
+      public_email: 'alex@users.noreply.example.test'
     }))
   }
 }
@@ -80,7 +80,12 @@ describe('linked commit authors', () => {
       public_email: ''
     })
     expect(await resolveCommitAuthors(VIEWER, { gitlab: source })).toEqual([])
-    source.currentUser.mockResolvedValue({ id: 42, username: 'alex-lab', commit_email: '', public_email: '' })
+    source.currentUser.mockResolvedValue({
+      id: 42,
+      username: 'alex-lab',
+      commit_email: 'private@example.test',
+      public_email: ''
+    })
     expect(await resolveCommitAuthors(VIEWER, { gitlab: source })).toEqual([])
   })
 

@@ -302,7 +302,6 @@ async function gitlabTokenCall(params: Record<string, string>, client: GitlabApi
 export interface GitlabCurrentUser {
   id: number
   username: string
-  commit_email?: string | null
   public_email?: string | null
 }
 

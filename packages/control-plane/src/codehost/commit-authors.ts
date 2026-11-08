@@ -49,7 +49,7 @@ async function gitlabAuthor(orgId: string, userId: string, deps: CommitAuthorsDe
   const connection = linked[0]!
   const user = await source.currentUser(orgId, connection.id)
   if (String(user.id) !== String(connection.gitlabUserId)) return undefined
-  const email = user.commit_email || user.public_email
+  const email = user.public_email
   if (!email) return undefined
   return { provider: 'gitlab', host: source.host, name: user.username, email }
 }

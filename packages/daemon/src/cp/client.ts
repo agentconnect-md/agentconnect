@@ -1242,7 +1242,9 @@ export class CpClient {
   /** Which of an agent's sessions the console user behind an asker could see, for the read rule (assistant-mode.md §5.5). */
   async readAccess(payload: AgentReadAccess, orgId?: string): Promise<AgentReadAccessOk> {
     this.requireReady('agent/read-access')
-    const rep = await this.request('agent/read-access', payload, orgId)
+    const rep = await (payload.includeCommitAuthors
+      ? this.budgetedRequest('agent/read-access', payload, 2_000, orgId)
+      : this.request('agent/read-access', payload, orgId))
     if (rep.type !== 'agent/read-access/ok') {
       throw new WireError('INTERNAL', `expected agent/read-access/ok, got ${rep.type}`, false)
     }

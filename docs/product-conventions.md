@@ -2401,14 +2401,18 @@ shown even when the optional agent/runtime/model footer is off. Names are plain
 text; a display name does not imply a linked code-host account or send a mention.
 Raw account IDs and sign-in addresses are not published as names.
 
-When the initiator has a verified linked GitHub or GitLab account, the agent's
+When a task's initiator has a verified linked GitHub or GitLab account, the agent's
 standing instructions supply the matching host's `Co-authored-by` trailer for
-new commits. GitHub uses the linked account's noreply address; GitLab uses its
-configured commit address or public address. The configured agent author and
+new commits. GitHub uses the linked account's noreply address; GitLab uses only
+its explicitly public address. The configured agent author and
 committer remain in place. This is agent guidance, not a commit hook or a
 requirement to link an account before opening a PR. Missing identities and lookup
 failures retain the name attribution. Gitea and Azure DevOps application or bot
 credentials do not identify the human who initiated a task.
+
+Ordinary conversations receive no session-wide coauthor instruction, since their
+participants can change. Identity lookup is lazy at delegation or PR creation
+and at most once when a logical session opens; it has a single two-second attempt.
 
 A task records its initiator and linked commit identities when it starts and carries that attribution through
 delegation, including delegation to another daemon. A long conversation delegates

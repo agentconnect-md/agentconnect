@@ -754,11 +754,10 @@ export class SessionManager {
 
     const savedInitiator = sessionInitiator(rec)
     const initiator =
-      savedInitiator && (isSubsessionCoordinate(thread) || threadedTask || webchatTask)
-        ? savedInitiator
-        : (msg.initiator ??
-          (await this.deps.initiatorFor?.(agentId, msg, integrationId, originSessionId)) ??
-          savedInitiator)
+      savedInitiator ??
+      (isNewLogicalSession
+        ? (msg.initiator ?? (await this.deps.initiatorFor?.(agentId, msg, integrationId, originSessionId)))
+        : undefined)
     let standing: Promise<StandingContext> | undefined
     const standingContext = (): Promise<StandingContext> =>
       (standing ??= (async () =>
@@ -789,7 +788,7 @@ export class SessionManager {
           ...(memoryGuidance ? { memoryGuidance } : {}),
           usesMeta,
           taskInstructions: toolContext?.instructions,
-          initiator,
+          initiator: isSubsessionCoordinate(thread) || threadedTask || webchatTask ? initiator : undefined,
           // The platform's session-stable block (Linear's issue coordinates and working convention):
           // standing, so it never lands as a leading user block or a transcript row.
           ...(platformStanding ? { platformStanding } : {})
