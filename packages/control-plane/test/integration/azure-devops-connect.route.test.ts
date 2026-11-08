@@ -624,6 +624,28 @@ describe('Allow triggers (§11.1)', () => {
     expect([...h.fake.admin.memberships].map((key) => key.split('|')[1])).not.toContain(readers(PROJECT_ID))
   })
 
+  it('removes nothing when the page could not show the access already held', async () => {
+    const h = harness()
+    const first = await h.toProjects()
+    const made = await h.post(
+      `/azure-devops/connect/${first.flowId}/projects`,
+      { projects: [{ projectId: PROJECT_ID, group: 'contributors' }] },
+      first.ticket
+    )
+    expect(made.statusCode).toBe(200)
+    h.fake.failMembershipReadOnce = true
+    const managed = await h.toProjects(made.json().connection.id)
+    expect(managed.projects.every((project: { access?: unknown }) => project.access === undefined)).toBe(true)
+    const res = await h.post(
+      `/azure-devops/connect/${managed.flowId}/projects`,
+      { projects: [{ projectId: SECOND_PROJECT_ID, group: 'readers' }] },
+      managed.ticket
+    )
+    expect(res.statusCode).toBe(200)
+    expect([...h.fake.admin.memberships].map((key) => key.split('|')[1])).toContain(contributors(PROJECT_ID))
+    expect(h.fake.serviceHookGrants).toContain(PROJECT_ID)
+  })
+
   it('lists a removal it may not make in the checklist', async () => {
     const h = harness()
     const first = await h.toProjects()

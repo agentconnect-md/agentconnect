@@ -115,6 +115,8 @@ export class FakeAzureDevOps {
   readonly identities = new Map<string, { descriptor: string; memberOf: string[] }>()
   /** Git Repositories lists by token; a token absent here has no list of its own. */
   readonly acls = new Map<string, FakeAccessControlList>()
+  /** The next read of the application's memberships answers 503. */
+  failMembershipReadOnce = false
   /** Tokens whose list the connection may not read: they answer 403. */
   readonly aclForbidden = new Set<string>()
   readonly admin: FakeAdministration = {
@@ -311,6 +313,10 @@ export class FakeAzureDevOps {
       })
     }
     if (path.startsWith(`${org}/graph/memberships/`) && method === 'GET') {
+      if (this.failMembershipReadOnce) {
+        this.failMembershipReadOnce = false
+        return this.json(503, { message: 'unavailable' })
+      }
       const subject = path.slice(`${org}/graph/memberships/`.length)
       const value = [...admin.memberships]
         .filter((key) => key.startsWith(`${subject}|`))

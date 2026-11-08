@@ -383,7 +383,8 @@ export class AzureDevOpsConnectFlowService {
     }
     const next: AzureDevOpsFlowTicket = { ...ticket, organization: chosen, organizationInstanceId: instanceId }
     delete next.projects
-    // The page opens on what the application already holds, so Apply can also take access away.
+    delete next.shownAccess
+    // The page opens on what the application already holds; the ticket keeps it, the only access Apply may take away.
     const current = await this.currentAccess(next, chosen)
     const listed = projects.map((project): AzureDevOpsListedProject => {
       const groups = current?.groups.get(project.id.toLowerCase())
@@ -392,6 +393,11 @@ export class AzureDevOpsConnectFlowService {
         ? { ...project, access: { group, allowTriggers: current!.triggers.has(project.id.toLowerCase()) } }
         : project
     })
+    if (current) {
+      next.shownAccess = Object.fromEntries(
+        listed.flatMap((project) => (project.access ? [[project.id.toLowerCase(), project.access]] : []))
+      )
+    }
     return { ticket: sealAzureDevOpsFlowTicket(this.deps.keys, next), organization: chosen, projects: listed }
   }
 
@@ -425,13 +431,15 @@ export class AzureDevOpsConnectFlowService {
     }
   }
 
-  /** Take away what the page no longer asks for: a group left or changed, and Allow triggers turned off; what is refused joins the checklist. */
+  /** Take away what the page showed and no longer asks for: a group left or changed, and Allow triggers turned off; what is refused joins the checklist. */
   private async removeUndesired(
     ticket: AzureDevOpsFlowTicket,
     organization: string,
     sp: ServicePrincipal,
     subject: string
   ): Promise<{ checklist: string[]; revoked: boolean }> {
+    const shown = ticket.shownAccess
+    if (!shown) return { checklist: [], revoked: false }
     const current = await this.currentAccess(ticket, organization, { sp, subject })
     if (!current) return { checklist: [], revoked: false }
     const desired = new Map((ticket.projects ?? []).map((choice) => [choice.projectId.toLowerCase(), choice]))
@@ -447,7 +455,8 @@ export class AzureDevOpsConnectFlowService {
     for (const [projectId, groups] of current.groups) {
       const want = desired.get(projectId)
       for (const [group, descriptor] of groups) {
-        if (want?.group === group) continue
+        // Only the group the page showed; one granted since, or never displayed, stays.
+        if (shown[projectId]?.group !== group || want?.group === group) continue
         const outcome = await removeGroupMembership(
           this.deps.api,
           ticket.accessToken,
@@ -460,7 +469,7 @@ export class AzureDevOpsConnectFlowService {
       }
     }
     for (const projectId of current.triggers) {
-      if (desired.get(projectId)?.allowTriggers) continue
+      if (!shown[projectId]?.allowTriggers || desired.get(projectId)?.allowTriggers) continue
       const outcome = await revokeServiceHookSubscriptions(this.deps.api, ticket.accessToken, organization, {
         projectId,
         tenantId: ticket.tenantId,

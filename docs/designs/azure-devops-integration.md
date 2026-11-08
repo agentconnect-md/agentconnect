@@ -273,8 +273,10 @@ triggers. Apply makes Azure DevOps match the page: a project left unchecked
 loses its group (`DELETE …/graph/memberships/{subject}/{group}`), a lowered
 group loses the higher one once the new one is made, and Allow triggers turned
 off deletes the entry (`DELETE _apis/accesscontrolentries/{namespace}?token=…&descriptors=…`).
-A removal the caller may not make is listed in the checklist; a state that
-cannot be read opens the page empty and removes nothing. The Console labels
+A removal the caller may not make is listed in the checklist. The flow ticket
+keeps the access the page showed, and Apply removes only from that: access
+granted since, or a state that could not be read when the page opened, is
+never taken away. The Console labels
 the groups **Read** and **Write**. A change made directly in Azure DevOps
 works as well; the picker and the permission evaluation of §5 read the
 identity's rights as they are.
