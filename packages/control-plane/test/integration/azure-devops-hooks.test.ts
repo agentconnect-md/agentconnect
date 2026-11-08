@@ -232,10 +232,9 @@ describe('subscriptions and the compiled rule (§11.2, §11.3)', () => {
   it('creates one subscription per kind with the relay address and the key as the Basic password, and compiles a rule naming every one for hooks-v1 relays only', async () => {
     const h = await harness()
     const hook = await hooked(h)
-    // opened, revision and comment for the trigger; merged and state for cleanup.
+    // opened, revision and comment for the trigger; state for cleanup, never "merge attempted".
     expect([...h.fake.subscriptions.values()].map((sub) => sub.eventType).sort()).toEqual([
       'git.pullrequest.created',
-      'git.pullrequest.merged',
       'git.pullrequest.updated',
       'git.pullrequest.updated',
       'ms.vss-code.git-pullrequest-comment-event'
@@ -295,11 +294,11 @@ describe('subscriptions and the compiled rule (§11.2, §11.3)', () => {
     const keys = (await h.keys())!
     const [opened] = h.fake.subscriptionsOf('git.pullrequest.created')
     const [comment] = h.fake.subscriptionsOf('ms.vss-code.git-pullrequest-comment-event')
-    const [merged] = h.fake.subscriptionsOf('git.pullrequest.merged', undefined)
+    const [state] = h.fake.subscriptionsOf('git.pullrequest.updated', 'StatusUpdateNotification')
     opened!.consumerInputs.url = 'https://elsewhere.example.test/hook'
     opened!.consumerInputs.httpHeaders = 'X-Example: 1'
     comment!.status = 'disabledBySystem'
-    h.fake.subscriptions.delete(merged!.id)
+    h.fake.subscriptions.delete(state!.id)
     await h.hooks.convergeRepository(DEFAULT_ORG_ID, h.repoId)
     const rewritten = h.fake.subscriptions.get(opened!.id)!
     expect(rewritten.consumerInputs).toEqual({
@@ -310,8 +309,8 @@ describe('subscriptions and the compiled rule (§11.2, §11.3)', () => {
       detailedMessagesToSend: 'none'
     })
     expect(h.fake.subscriptions.get(comment!.id)!.status).toBe('enabled')
-    expect(h.fake.subscriptionsOf('git.pullrequest.merged', undefined)).toHaveLength(1)
-    expect(h.fake.subscriptions.size).toBe(5)
+    expect(h.fake.subscriptionsOf('git.pullrequest.updated', 'StatusUpdateNotification')).toHaveLength(1)
+    expect(h.fake.subscriptions.size).toBe(4)
     // A masked password is never sent back.
     for (const req of h.fake.requests.filter((r) => r.method === 'PUT')) expect(req.body).not.toContain('********')
 
@@ -330,8 +329,8 @@ describe('subscriptions and the compiled rule (§11.2, §11.3)', () => {
     })
     expect(updated.statusCode).toBe(200)
     await h.settle()
-    expect((await h.recorded()).map((r) => r.kind).sort()).toEqual(['merged', 'state'])
-    expect(h.fake.subscriptions.size).toBe(2)
+    expect((await h.recorded()).map((r) => r.kind).sort()).toEqual(['state'])
+    expect(h.fake.subscriptions.size).toBe(1)
 
     // The last trigger going away takes every subscription and the keys; the binding stays.
     expect((await h.a.app.inject({ method: 'DELETE', url: `${ORG}/hooks/${hook.id}` })).statusCode).toBe(204)
@@ -372,14 +371,14 @@ describe('subscriptions and the compiled rule (§11.2, §11.3)', () => {
     h.fake.subscriptions.clear()
     expect((await h.hookRepo.listHooked(100)).map((b) => b.id)).toContain(h.binding.id)
     await h.hooks.sweep()
-    expect(await h.recorded()).toHaveLength(5)
-    expect(h.fake.subscriptions.size).toBe(5)
+    expect(await h.recorded()).toHaveLength(4)
+    expect(h.fake.subscriptions.size).toBe(4)
   })
 
   it('deletes the subscriptions of a removed binding', async () => {
     const h = await harness()
     await hooked(h)
-    expect(h.fake.subscriptions.size).toBe(5)
+    expect(h.fake.subscriptions.size).toBe(4)
     // The workspace references the binding; once the agent is gone nothing does.
     await prisma.agent.delete({ where: { id: h.agentId } })
     const removed = await h.a.app.inject({ method: 'DELETE', url: `${ORG}/azure-devops/repositories/${h.binding.id}` })
@@ -396,8 +395,8 @@ describe('the rotation barrier (§11.2)', () => {
     const ids = [...h.fake.subscriptions.keys()]
     h.fake.failPutOnce.add(ids[2]!)
     const rotated = await h.hooks.rotate(DEFAULT_ORG_ID, h.binding.id)
-    expect(rotated).toMatchObject({ rotated: true, total: 5 })
-    expect(rotated.switched).toBeLessThan(5)
+    expect(rotated).toMatchObject({ rotated: true, total: 4 })
+    expect(rotated.switched).toBeLessThan(4)
     const mid = (await h.keys())!
     expect(mid.current).toBe(before.current)
     expect(mid.next).toMatch(/^[0-9a-f]{64}$/)
@@ -441,7 +440,7 @@ describe('the rotation barrier (§11.2)', () => {
       .at(-1)!
     expect(rule.azureDevOps).toMatchObject({ signingKey: mid.next, previousSigningKey: before.current })
     expect(rule.azureDevOps!.nextSigningKey).toBeUndefined()
-    expect(rule.azureDevOps!.subscriptions).toHaveLength(6)
+    expect(rule.azureDevOps!.subscriptions).toHaveLength(5)
   })
 
   it('drops the old key at promotion when the rotation is for a suspected leak', async () => {
@@ -449,7 +448,7 @@ describe('the rotation barrier (§11.2)', () => {
     await hooked(h)
     const before = (await h.keys())!
     const rotated = await h.hooks.rotate(DEFAULT_ORG_ID, h.binding.id, { suspectedLeak: true })
-    expect(rotated).toEqual({ rotated: true, switched: 5, total: 5, reason: null })
+    expect(rotated).toEqual({ rotated: true, switched: 4, total: 4, reason: null })
     await h.hooks.observeDelivery({ repoId: h.repoId, at: new Date(clock.now()), verifiedWith: 'next' })
     const after = (await h.keys())!
     expect(after.current).not.toBe(before.current)
@@ -465,7 +464,7 @@ describe('the rotation barrier (§11.2)', () => {
       payload: {}
     })
     expect(res.statusCode).toBe(200)
-    expect(res.json()).toEqual({ rotated: true, switched: 5, total: 5, reason: null })
+    expect(res.json()).toEqual({ rotated: true, switched: 4, total: 4, reason: null })
   })
 })
 

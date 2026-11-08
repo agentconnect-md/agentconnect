@@ -69,10 +69,8 @@ export function azureDevOpsDeliveryKinds(
       kinds.add('comment')
       pullRequests = true
     }
-    if (pullRequests) {
-      kinds.add('merged')
-      kinds.add('state')
-    }
+    // Completion and abandonment arrive as state updates; "merge attempted" fires on every merge check, opening included.
+    if (pullRequests) kinds.add('state')
   }
   return kinds
 }

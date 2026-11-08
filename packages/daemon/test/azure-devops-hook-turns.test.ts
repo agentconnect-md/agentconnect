@@ -348,12 +348,25 @@ describe('the turn-start read (§11.4)', () => {
     })
   })
 
-  it('reads nothing for a merge, a push, or a delivery of another host', async () => {
+  it('takes a "merge attempted" delivery as a merge only once the read finds the pull request completed', async () => {
+    const merged = fire({ event: 'merge_request:merged' }, { deliveryKind: 'merged' })
+    const active = await resolveAzureDevOpsDelivery(merged, host().turnFinalHost, fakeAzure().fetchImpl)
+    expect(active && 'msg' in active && active.msg.event).toBe('merge_request:state_changed')
+    const done = await resolveAzureDevOpsDelivery(
+      merged,
+      host().turnFinalHost,
+      fakeAzure({ pull: pullBody({ status: 'completed' }) }).fetchImpl
+    )
+    expect(done && 'msg' in done && done.msg.event).toBe('merge_request:merged')
+    const failing = (async () => new Response('', { status: 500 })) as unknown as typeof fetch
+    expect(await resolveAzureDevOpsDelivery(merged, host().turnFinalHost, failing)).toEqual({
+      refused: AZURE_DEVOPS_READ_FAILED
+    })
+  })
+
+  it('reads nothing for a push or a delivery of another host', async () => {
     const { fetchImpl, calls } = fakeAzure()
     const h = host()
-    expect(
-      await resolveAzureDevOpsDelivery(fire({}, { deliveryKind: 'merged' }), h.turnFinalHost, fetchImpl)
-    ).toBeUndefined()
     const push = fire({ event: 'push' }, { deliveryKind: 'push', target: { kind: 'push', ref: 'refs/heads/main' } })
     expect(await resolveAzureDevOpsDelivery(push, h.turnFinalHost, fetchImpl)).toBeUndefined()
     const { azureDevOps: _drop, ...webhook } = fire()
