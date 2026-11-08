@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { WEBCHAT_FILES_MAX, MessageAttachmentSource } from '@agentconnect.md/protocol'
+import { MESSAGE_ATTACHMENTS_MAX, MessageAttachmentSource } from '@agentconnect.md/protocol'
 import type { MessageFile, SessionContext } from './context.js'
 import { ambiguousIntegrations, resolveGatewayForPlatform, type GatewayDeps } from './gateway.js'
 import type { ShareFileDeps } from './share-file.js'
@@ -8,7 +8,7 @@ import { sharedFileKind } from './share-file-types.js'
 // Each source keeps its existing identifier; names are never attachment selectors.
 export const MessageAttachment = MessageAttachmentSource
 export type MessageAttachment = z.infer<typeof MessageAttachment>
-export const messageAttachmentsField = z.array(MessageAttachment).min(1).max(WEBCHAT_FILES_MAX).optional()
+export const messageAttachmentsField = z.array(MessageAttachment).min(1).max(MESSAGE_ATTACHMENTS_MAX).optional()
 
 export interface MessageAttachmentDeps
   extends GatewayDeps, Pick<ShareFileDeps, 'readWorkspaceFile' | 'chargeShareBudget'> {

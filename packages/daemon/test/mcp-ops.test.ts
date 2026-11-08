@@ -366,9 +366,17 @@ describe('executeTool: sendMessage (channel post)', () => {
     ]
     const file = { bytes: Buffer.from('report'), name: 'report.pdf', mimeType: 'application/pdf' }
 
-    it('publishes mixed sources from a headless task and returns the provider root, even for a room session', async () => {
+    it('publishes ten mixed sources from a headless task and returns the provider root, even for a room session', async () => {
+      const attachments = [
+        ...sources,
+        ...Array.from({ length: 7 }, (_, i) => ({ source: 'workspace', path: `outputs/report-${i}.pdf` }))
+      ]
       const gw = fakeGateway({
-        uploadFiles: vi.fn(async () => ({ ok: true as const, messageId: '123.456', fileIds: ['F1', 'F2', 'F3'] })),
+        uploadFiles: vi.fn(async () => ({
+          ok: true as const,
+          messageId: '123.456',
+          fileIds: attachments.map((_, i) => `F${i + 1}`)
+        })),
         roomThread: async () => 'C_OTHER',
         getFileInfo: async () => ({ ...file, sourceUrl: 'https://files.slack.com/file', channels: ['C_CURRENT'] })
       })
@@ -379,15 +387,22 @@ describe('executeTool: sendMessage (channel post)', () => {
         readWorkspaceFile: async () => ({ ok: true, ...file, sha256: 'digest' }),
         readUploadedFile: async () => file
       })
+      const args = {
+        action: 'postMessage',
+        platform: 'slack',
+        channel: 'C_OTHER',
+        message: 'Report ready',
+        attachments
+      }
       const result = await executeTool(
         { ...ctx, platform: 'cron', channel: 'job', thread: 'job', integrationId: undefined },
         'sendMessage',
-        { action: 'postMessage', platform: 'slack', channel: 'C_OTHER', message: 'Report ready', attachments: sources },
+        args,
         d
       )
       expect(gw.uploadFiles).toHaveBeenCalledWith(
         'C_OTHER',
-        expect.arrayContaining([expect.objectContaining({ name: 'report.pdf' })]),
+        attachments.map(() => expect.objectContaining({ name: 'report.pdf' })),
         'Report ready',
         undefined,
         authorIdentity
@@ -396,9 +411,13 @@ describe('executeTool: sendMessage (channel post)', () => {
       expect(result).toMatchObject({
         post: { thread: null },
         threadTarget: { channel: 'C_OTHER', thread: '123.456' },
-        attachments: sources.map((source, i) => ({ source, fileId: `F${i + 1}` }))
+        attachments: attachments.map((source, i) => ({ source, fileId: `F${i + 1}` }))
       })
-      expect(recordOutbound.mock.calls[0]?.[6]).toMatchObject(sources.map((source) => ({ source })))
+      expect(recordOutbound.mock.calls[0]?.[6]).toMatchObject(attachments.map((source) => ({ source })))
+      await expect(
+        executeTool(ctx, 'sendMessage', { ...args, attachments: [...attachments, sources[0]] }, d)
+      ).rejects.toThrow()
+      expect(gw.uploadFiles).toHaveBeenCalledTimes(1)
     })
 
     it('validates every file before publishing and refuses unsupported batches', async () => {

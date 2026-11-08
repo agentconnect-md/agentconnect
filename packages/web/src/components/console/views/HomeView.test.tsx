@@ -407,7 +407,8 @@ describe('HomeView attach', () => {
       await render()
       const files = [
         new File(['image'], 'shot.png', { type: 'image/png' }),
-        new File(['report'], 'report.pdf', { type: 'application/pdf' })
+        new File(['report'], 'report.pdf', { type: 'application/pdf' }),
+        ...Array.from({ length: 8 }, (_, i) => new File(['text'], `note-${i}.txt`, { type: 'text/plain' }))
       ]
       const input = host.querySelector<HTMLInputElement>('input[type="file"]')!
       expect(input.multiple).toBe(true)
@@ -425,7 +426,7 @@ describe('HomeView attach', () => {
         await new Promise((resolve) => setTimeout(resolve, 0))
       })
       const send = host.querySelector<HTMLButtonElement>('button.sendbtn')!
-      expect(host.querySelectorAll('[data-composer-file]')).toHaveLength(2)
+      expect(host.querySelectorAll('[data-composer-file]')).toHaveLength(10)
       expect(send.disabled).toBe(true)
       await act(async () => {
         host.querySelector<HTMLButtonElement>('button[aria-label="Retry shot.png"]')!.click()
@@ -434,12 +435,20 @@ describe('HomeView attach', () => {
       expect(send.disabled).toBe(false)
       expect(host.querySelector('img')?.alt).toBe('shot.png')
       await act(async () => {
+        const event = new Event('drop', { bubbles: true, cancelable: true })
+        Object.defineProperty(event, 'dataTransfer', { value: { files: [files[1]], items: [] } })
+        host.querySelector('textarea')!.dispatchEvent(event)
+      })
+      expect(host.textContent).toContain('At most 10 files')
+      expect(host.querySelectorAll('[data-composer-file]')).toHaveLength(10)
+      await act(async () => {
         send.click()
       })
       const sent = mocks.pgSend.mock.calls[0]?.[7]
       expect(sent).toEqual([
         expect.objectContaining({ name: 'shot.png', preview: expect.objectContaining({ data: 'QUJD' }) }),
-        expect.objectContaining({ name: 'report.pdf' })
+        expect.objectContaining({ name: 'report.pdf' }),
+        ...files.slice(2).map((file) => expect.objectContaining({ name: file.name }))
       ])
     }
   )

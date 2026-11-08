@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { MCP_APP_CONTEXT_MAX_CHARS, NativeMcpUi } from '../mcp-app.js'
-import { TaskLinkFacts } from '../user-turn-body.js'
+import { MESSAGE_ATTACHMENTS_MAX, TaskLinkFacts } from '../user-turn-body.js'
 
 // The MCP Apps constants live in the `./mcp-app` leaf so the console can value-import them; the barrel still re-exports them.
 export * from '../mcp-app.js'
@@ -219,7 +219,7 @@ export const WebchatPost = z
     ]),
     text: z.string(),
     at: z.number().int(), // canonical epoch-ms timestamp, minted once at origin
-    attachments: z.array(WebchatImageAttachment).max(4).optional(),
+    attachments: z.array(WebchatImageAttachment).max(MESSAGE_ATTACHMENTS_MAX).optional(),
     // A shared image the agent published; peers keep it as transcript only, never as model input.
     image: SharedImage.optional(),
     // A coordinator's link to a task, which the console draws as a card opening the task's thread.

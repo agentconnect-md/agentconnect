@@ -3,12 +3,16 @@ import {
   SharedImageDownload,
   SharedImageOriginal,
   WebchatImageAttachment,
-  WEBCHAT_IMAGE_MAX_BYTES,
   webchatImagesWithinBudget
 } from './webchat.js'
-import { UploadedFileReference } from '../user-turn-body.js'
+import { MESSAGE_ATTACHMENTS_MAX, UploadedFileReference } from '../user-turn-body.js'
 
-export { UploadedFileReference, MessageAttachmentSource, PublishedAttachment } from '../user-turn-body.js'
+export {
+  MESSAGE_ATTACHMENTS_MAX,
+  UploadedFileReference,
+  MessageAttachmentSource,
+  PublishedAttachment
+} from '../user-turn-body.js'
 
 // File transfer through the deployment's bucket (source-cache-file-transfer.md): the CP signs, bytes never ride a WS.
 
@@ -17,7 +21,7 @@ export const FILE_TRANSFER_FEATURE = 'file-transfer-v2'
 export const WEBCHAT_UPLOADS_FEATURE = 'webchat-upload-previews-v1'
 
 /** At most this many uploaded files ride one webchat turn. */
-export const WEBCHAT_FILES_MAX = 4
+export const WEBCHAT_FILES_MAX = MESSAGE_ATTACHMENTS_MAX
 
 /** The console downloads text at or under this size through the CP's slice proxy; larger text and any binary use a transfer. */
 export const WORKSPACE_TRANSFER_TEXT_THRESHOLD_BYTES = 1024 * 1024
@@ -123,15 +127,11 @@ export type TransferGetOk = z.infer<typeof TransferGetOk>
 
 /** A file the browser uploaded through a `TransferUploadGrant`; metadata only, the bytes are in the bucket. */
 export const WebchatFileAttachment = UploadedFileReference.extend({
-  // Four previews together fit the existing single-image transport budget.
-  preview: WebchatImageAttachment.refine(
-    (image) => image.data.length <= Math.ceil(WEBCHAT_IMAGE_MAX_BYTES / WEBCHAT_FILES_MAX / 3) * 4,
-    'uploaded image preview exceeds its share of the message budget'
-  ).optional()
+  preview: WebchatImageAttachment.optional()
 })
 export type WebchatFileAttachment = z.infer<typeof WebchatFileAttachment>
 
-// Inline images and uploaded files share one count and one bounded preview budget.
+// Count original files independently of the combined inline-image and preview byte budget.
 export function chatAttachmentsWithinBudget(input: {
   images?: { data: string }[]
   files?: WebchatFileAttachment[]

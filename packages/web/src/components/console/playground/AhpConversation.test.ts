@@ -184,7 +184,7 @@ describe('AHP conversation engine', () => {
     const entry = open()
     await entry.connect()
     attachments[0]!.emit({ extensions: { 'agentconnect.md': { webchat: true, files: true, filePreviews: true } } })
-    const files = [0, 1, 2, 3].map(() => ({
+    const files = Array.from({ length: 10 }, () => ({
       uploadId: crypto.randomUUID(),
       name: 'same.png',
       mimeType: 'image/png',
@@ -194,7 +194,7 @@ describe('AHP conversation engine', () => {
     }))
     entry.enqueue({ ...turn('图片'.repeat(3000)), files })
     await vi.waitFor(() => expect(attachments[0]!.actions).toHaveLength(1))
-    expect(prepare).toHaveBeenCalledTimes(4)
+    expect(prepare).toHaveBeenCalledTimes(10)
     expect(prepare.mock.calls.every((call) => call[1] < 10000)).toBe(true)
     expect(attachments[0]!.actions[0]).toMatchObject({
       message: {

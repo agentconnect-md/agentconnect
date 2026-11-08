@@ -42,10 +42,22 @@ describe('shared chat attachments', () => {
   it('bounds mixed selections and their combined preview bytes', () => {
     const image = { name: 'image.webp', mimeType: 'image/webp', data: Buffer.alloc(160 * 1024).toString('base64') }
     expect(() =>
-      decodeChatAttachments('turn', { images: [image], files: Array.from({ length: 4 }, () => file) })
+      decodeChatAttachments('turn', { images: [image], files: Array.from({ length: 10 }, () => file) })
     ).toThrow()
     expect(() =>
       decodeChatAttachments('turn', { images: [image], files: [{ ...file, preview: { ...image, data: 'aGVsbG8=' } }] })
+    ).toThrow()
+    const preview = { ...image, data: Buffer.alloc(80 * 1024).toString('base64') }
+    expect(
+      decodeChatAttachments('turn', {
+        files: [
+          { ...file, preview },
+          { ...file, preview }
+        ]
+      })
+    ).toHaveLength(2)
+    expect(() =>
+      decodeChatAttachments('turn', { files: Array.from({ length: 3 }, () => ({ ...file, preview })) })
     ).toThrow()
   })
   it('keeps the existing upload shape and normalizes metadata without signing or fetching bytes', () => {
@@ -78,7 +90,9 @@ describe('shared chat attachments', () => {
   })
 
   it('bounds both image and uploaded-file counts before dispatch', () => {
-    expect(() => decodeChatAttachments('turn', { files: Array.from({ length: 5 }, () => file) })).toThrow()
+    const files = Array.from({ length: 10 }, () => file)
+    expect(decodeChatAttachments('turn', { files })).toHaveLength(10)
+    expect(() => decodeChatAttachments('turn', { files: [...files, file] })).toThrow()
     const image = { name: 'a.png', mimeType: 'image/png', data: 'aGVsbG8=' }
     expect(() => decodeChatAttachments('turn', { images: [image, image] })).toThrow()
   })

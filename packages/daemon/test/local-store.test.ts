@@ -3950,8 +3950,8 @@ describe('transcriptPromptText', () => {
       size: 10,
       sha256: 'A'.repeat(43) + '='
     }
-    const other = { ...file, uploadId: randomUUID() }
-    const body = JSON.stringify({ uploads: [file, other] })
+    const uploads = [file, ...Array.from({ length: 9 }, () => ({ ...file, uploadId: randomUUID() }))]
+    const body = JSON.stringify({ uploads })
     await s.appendTranscript({
       channel: 'C',
       thread: 'T',
@@ -3962,10 +3962,12 @@ describe('transcriptPromptText', () => {
       body,
       admission: { agentId: 'bot-a', sessionKey: 'k:C:T:bot-a' }
     })
-    expect(await s.transcriptUploadById(readScope('C', 'T', 'bot-a'), other.uploadId)).toEqual(other)
+    for (const upload of uploads) {
+      expect(await s.transcriptUploadById(readScope('C', 'T', 'bot-a'), upload.uploadId)).toEqual(upload)
+      expect(transcriptPromptText({ kind: 'text', text: 'Look', body })).toContain(`uploadId=${upload.uploadId}`)
+    }
     expect(await s.transcriptUploadById(readScope('C', 'OTHER', 'bot-a'), file.uploadId)).toBeUndefined()
     expect(await s.transcriptUploadById(readScope('C', 'T', 'bot-b'), file.uploadId)).toBeUndefined()
-    expect(transcriptPromptText({ kind: 'text', text: 'Look', body })).toContain(`uploadId=${file.uploadId}`)
     await s.close()
   })
 

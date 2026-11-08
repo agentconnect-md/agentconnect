@@ -305,6 +305,41 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
     ).toBe(false)
   })
 
+  it('carries ten uploaded previews through ingress and post fan-out within the byte budget', () => {
+    const preview = {
+      name: 'screenshot.webp',
+      mimeType: 'image/webp',
+      data: Buffer.alloc(WEBCHAT_IMAGE_MAX_BYTES / 10).toString('base64')
+    }
+    const files = Array.from({ length: 10 }, () => ({
+      uploadId: crypto.randomUUID(),
+      name: 'screenshot.png',
+      mimeType: 'image/png',
+      size: 100000,
+      sha256: 'A'.repeat(43) + '=',
+      preview
+    }))
+    const turn = (uploads: typeof files) =>
+      envelope('rd/msg', { ...turnMsg, payload: { op: 'turn', text: '', files: uploads } })
+    expect(decodeRelayDaemonFrame(turn(files)).ok).toBe(true)
+    expect(decodeRelayDaemonFrame(turn([...files, files[0]!])).ok).toBe(false)
+    const post = (previews: (typeof preview)[]) =>
+      envelope('rd/webchat-post', {
+        conversationId: CONV_ID,
+        agentId: AGENT_ID,
+        post: {
+          postId: TURN_ID,
+          conversationId: CONV_ID,
+          author: { kind: 'agent', agentId: AGENT_ID },
+          text: '',
+          at: 1,
+          attachments: previews
+        }
+      })
+    expect(decodeRelayDaemonFrame(post(files.map((file) => file.preview))).ok).toBe(true)
+    expect(decodeRelayDaemonFrame(post([...files.map((file) => file.preview), preview])).ok).toBe(false)
+  })
+
   it('carries a webchat thread on the turn, the post and both stream frames, and only as a root postId', () => {
     const thread = '44444444-4444-4444-8444-444444444444'
     const turn = decodeRelayDaemonFrame(
