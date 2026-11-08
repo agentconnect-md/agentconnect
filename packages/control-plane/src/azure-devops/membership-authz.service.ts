@@ -9,7 +9,7 @@ import type {
   HookRecord,
   HookRepo
 } from '../persistence/ports.js'
-import type { AzureDevOpsApiClient } from './api.js'
+import { AzureDevOpsApiError, type AzureDevOpsApiClient } from './api.js'
 import type { AzureDevOpsConnectionService } from './connection.service.js'
 import { hookBindingOf } from './hook.service.js'
 import {
@@ -35,9 +35,11 @@ export interface AzureDevOpsMembershipAuthzDeps {
   timeoutMs?: number
 }
 
+const GIT_NAMESPACE_ROOT = 'repoV2'
+
 /** The tokens read for one repository, nearest first: repository, project, then the namespace root. */
 export function gitTokenChain(projectId: string, repositoryId: string): string[] {
-  return [`repoV2/${projectId}/${repositoryId}`, `repoV2/${projectId}`, 'repoV2']
+  return [`repoV2/${projectId}/${repositoryId}`, `repoV2/${projectId}`, GIT_NAMESPACE_ROOT]
 }
 
 /** The lists that apply, nearest first, up to the first that does not inherit or leaves inheritance out; a level with no list inherits. */
@@ -152,7 +154,15 @@ export class AzureDevOpsMembershipAuthzService {
     if (cached && now - cached.at < ACL_CACHE_MS) return cached.lists
     const chain: AzureDevOpsAccessControlList[] = []
     for (const securityToken of gitTokenChain(binding.projectId, binding.repositoryId)) {
-      const list = await readGitAccessControlList(this.deps.api, token, organization, securityToken)
+      const list = await readGitAccessControlList(this.deps.api, token, organization, securityToken).catch(
+        (err: unknown) => {
+          // A project-scoped connection may not read the organization-wide list; that level then adds nothing (§11.4).
+          if (securityToken === GIT_NAMESPACE_ROOT && err instanceof AzureDevOpsApiError && err.code === 'FORBIDDEN')
+            return null
+          throw err
+        }
+      )
+      if (!list) break
       chain.push(list)
       // Nothing beyond a boundary counts, so it is not read.
       if (list.exists && list.inheritPermissions !== true) break

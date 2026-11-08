@@ -288,7 +288,7 @@ describe('subscriptions and the compiled rule (§11.2, §11.3)', () => {
     ).toBe(true)
   })
 
-  it('reads back: rewrites drift whole with the real key, recreates a deleted one, re-enables a disabled one, and follows the union down to nothing', async () => {
+  it('reads back: rewrites drift whole with the real key, recreates a deleted one, re-enables a disabled or probation one, and follows the union down to nothing', async () => {
     const h = await harness()
     const hook = await hooked(h)
     const keys = (await h.keys())!
@@ -297,7 +297,9 @@ describe('subscriptions and the compiled rule (§11.2, §11.3)', () => {
     const [state] = h.fake.subscriptionsOf('git.pullrequest.updated', 'StatusUpdateNotification')
     opened!.consumerInputs.url = 'https://elsewhere.example.test/hook'
     opened!.consumerInputs.httpHeaders = 'X-Example: 1'
+    const [revision] = h.fake.subscriptionsOf('git.pullrequest.updated', 'PushNotification')
     comment!.status = 'disabledBySystem'
+    revision!.status = 'onProbation'
     h.fake.subscriptions.delete(state!.id)
     await h.hooks.convergeRepository(DEFAULT_ORG_ID, h.repoId)
     const rewritten = h.fake.subscriptions.get(opened!.id)!
@@ -309,6 +311,7 @@ describe('subscriptions and the compiled rule (§11.2, §11.3)', () => {
       detailedMessagesToSend: 'none'
     })
     expect(h.fake.subscriptions.get(comment!.id)!.status).toBe('enabled')
+    expect(h.fake.subscriptions.get(revision!.id)!.status).toBe('enabled')
     expect(h.fake.subscriptionsOf('git.pullrequest.updated', 'StatusUpdateNotification')).toHaveLength(1)
     expect(h.fake.subscriptions.size).toBe(4)
     // A masked password is never sent back.
@@ -506,6 +509,33 @@ describe('the membership arm (§11.4)', () => {
     expect(await authz.allowed({ ...req, configRevision: '999' })).toBe(false)
     expect(await authz.allowed({ ...req, actorIdentityId: IDENTITY_ID })).toBe(false)
     expect(await authz.allowed({ ...req, actorIdentityId: '00000000-0000-4000-8000-0000000000a8' })).toBe(false)
+  })
+
+  it('reads past an organization-wide list the connection may not read', async () => {
+    const h = await harness()
+    const hook = await hooked(h)
+    h.fake.identities.set(ACTOR_ID, { descriptor: ACTOR, memberOf: [CONTRIBUTORS] })
+    h.fake.acls.set(`repoV2/${PROJECT_ID}/${REPOSITORY_ID}`, { inheritPermissions: true, aces: {} })
+    h.fake.acls.set(`repoV2/${PROJECT_ID}`, {
+      inheritPermissions: true,
+      aces: { [CONTRIBUTORS]: { allow: 4, deny: 0 } }
+    })
+    h.fake.aclForbidden.add('repoV2')
+    const { authz, req } = await gate(h, hook.id)
+    expect(await authz.allowed(req)).toBe(true)
+  })
+
+  it('fails closed when the repository or project list is refused', async () => {
+    const h = await harness()
+    const hook = await hooked(h)
+    h.fake.identities.set(ACTOR_ID, { descriptor: ACTOR, memberOf: [CONTRIBUTORS] })
+    h.fake.acls.set(`repoV2/${PROJECT_ID}`, {
+      inheritPermissions: true,
+      aces: { [CONTRIBUTORS]: { allow: 4, deny: 0 } }
+    })
+    h.fake.aclForbidden.add(`repoV2/${PROJECT_ID}/${REPOSITORY_ID}`)
+    const { authz, req } = await gate(h, hook.id)
+    expect(await authz.allowed(req)).toBe(false)
   })
 
   it('takes no ancestor allow beyond a repository that does not inherit', async () => {

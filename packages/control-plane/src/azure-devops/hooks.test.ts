@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   subscriptionBody,
-  subscriptionDisabled,
+  subscriptionDropping,
   subscriptionDrifted,
   disabledForGrant,
   type AzureDevOpsAccessControlList,
@@ -127,11 +127,11 @@ describe('subscription bodies (§11.2)', () => {
     for (const candidate of drifted) expect(subscriptionDrifted(candidate, 'revision', TARGET)).toBe(true)
   })
 
-  it('tells disabled statuses apart, and the one disabled for the grant', () => {
-    expect(['disabledByUser', 'disabledBySystem', 'disabledByInactiveIdentity'].every(subscriptionDisabled)).toBe(true)
-    expect(subscriptionDisabled('enabled') || subscriptionDisabled('onProbation') || subscriptionDisabled(null)).toBe(
-      false
-    )
+  it('tells the statuses that drop events apart, and the one disabled for the grant', () => {
+    expect(
+      ['disabledByUser', 'disabledBySystem', 'disabledByInactiveIdentity', 'onProbation'].every(subscriptionDropping)
+    ).toBe(true)
+    expect(subscriptionDropping('enabled') || subscriptionDropping(null)).toBe(false)
     expect(disabledForGrant('disabledByInactiveIdentity')).toBe(true)
     expect(disabledForGrant('disabledBySystem')).toBe(false)
   })

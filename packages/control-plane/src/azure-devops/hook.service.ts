@@ -23,7 +23,7 @@ import {
   readSubscription,
   replaceSubscription,
   subscriptionBody,
-  subscriptionDisabled,
+  subscriptionDropping,
   subscriptionDrifted,
   type AzureDevOpsSubscriptionTarget
 } from './hooks-api.js'
@@ -323,9 +323,9 @@ export class AzureDevOpsHookService {
         }
         present.add(record.kind)
         const target = this.target(binding, url, write.password)
-        const disabled = subscriptionDisabled(stored.status)
+        const dropping = subscriptionDropping(stored.status)
         // Drift is rewritten whole, the real key included, before the status is touched (§11.2).
-        if (subscriptionDrifted(stored, record.kind, target) || disabled || keyBehind(record, keys)) {
+        if (subscriptionDrifted(stored, record.kind, target) || dropping || keyBehind(record, keys)) {
           await replaceSubscription(
             api,
             token,
@@ -334,7 +334,7 @@ export class AzureDevOpsHookService {
             subscriptionBody(record.kind, target)
           )
           await this.deps.hooks.updateSubscription(record.id, { status: 'enabled', keyGeneration: write.generation })
-          if (disabled) unverified = true
+          if (dropping) unverified = true
         } else if (stored.status !== record.status) {
           await this.deps.hooks.updateSubscription(record.id, { status: stored.status })
         }
