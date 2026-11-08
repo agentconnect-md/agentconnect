@@ -585,12 +585,19 @@ describe('Allow triggers (§11.1)', () => {
     })
     expect(res.json().checklist).toBeUndefined()
 
+    // Manage project access opens on what the application holds, and Apply makes Azure DevOps match the page.
     const managed = await h.toProjects(res.json().connection.id)
+    expect(managed.projects).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: PROJECT_ID, access: { group: 'contributors', allowTriggers: true } }),
+        expect.objectContaining({ id: SECOND_PROJECT_ID, access: { group: 'readers', allowTriggers: false } })
+      ])
+    )
     const again = await h.post(
       `/azure-devops/connect/${managed.flowId}/projects`,
       {
         projects: [
-          { projectId: PROJECT_ID, group: 'contributors', allowTriggers: false },
+          { projectId: PROJECT_ID, group: 'readers', allowTriggers: false },
           { projectId: SECOND_PROJECT_ID, group: 'readers', allowTriggers: true }
         ]
       },
@@ -600,7 +607,42 @@ describe('Allow triggers (§11.1)', () => {
     expect(again.json().triggers).toEqual([
       { projectId: SECOND_PROJECT_ID, projectName: 'Second Project', outcome: 'granted' }
     ])
-    expect(h.fake.serviceHookGrants).toEqual(new Set([PROJECT_ID, SECOND_PROJECT_ID]))
+    expect(again.json().checklist).toBeUndefined()
+    expect(h.fake.serviceHookGrants).toEqual(new Set([SECOND_PROJECT_ID]))
+    const held = [...h.fake.admin.memberships].map((key) => key.split('|')[1])
+    expect(held).toEqual(expect.arrayContaining([readers(PROJECT_ID), readers(SECOND_PROJECT_ID)]))
+    expect(held).not.toContain(contributors(PROJECT_ID))
+
+    // A project left unchecked loses its group.
+    const last = await h.toProjects(res.json().connection.id)
+    const dropped = await h.post(
+      `/azure-devops/connect/${last.flowId}/projects`,
+      { projects: [{ projectId: SECOND_PROJECT_ID, group: 'readers', allowTriggers: true }] },
+      last.ticket
+    )
+    expect(dropped.statusCode).toBe(200)
+    expect([...h.fake.admin.memberships].map((key) => key.split('|')[1])).not.toContain(readers(PROJECT_ID))
+  })
+
+  it('lists a removal it may not make in the checklist', async () => {
+    const h = harness()
+    const first = await h.toProjects()
+    const made = await h.post(
+      `/azure-devops/connect/${first.flowId}/projects`,
+      { projects: [{ projectId: PROJECT_ID, group: 'contributors' }] },
+      first.ticket
+    )
+    expect(made.statusCode).toBe(200)
+    h.fake.aceWriteAllowed = false
+    const managed = await h.toProjects(made.json().connection.id)
+    const res = await h.post(
+      `/azure-devops/connect/${managed.flowId}/projects`,
+      { projects: [{ projectId: PROJECT_ID, group: 'contributors', allowTriggers: false }] },
+      managed.ticket
+    )
+    expect(res.statusCode).toBe(200)
+    expect(res.json().checklist).toEqual(['Turn off Allow triggers on Example Project.'])
+    expect(h.fake.serviceHookGrants).toEqual(new Set([PROJECT_ID]))
   })
 
   it('reports a refused entry with a checklist naming the client ID, without failing the step', async () => {

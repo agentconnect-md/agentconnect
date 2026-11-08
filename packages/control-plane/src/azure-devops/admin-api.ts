@@ -26,7 +26,7 @@ async function adminRequest(
   token: string,
   url: string,
   init: {
-    method?: 'GET' | 'POST' | 'PUT' | 'PATCH'
+    method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
     body?: unknown
     contentType?: string
     okStatuses?: readonly number[]
@@ -49,7 +49,7 @@ async function adminRequest(
   const continuationToken = res.headers.get('x-ms-continuationtoken')
   if ((res.ok && res.status !== 203) || init.okStatuses?.includes(res.status)) {
     const json: unknown = await res.json().catch(() => null)
-    if (res.ok && json === null && res.status !== 204) {
+    if (res.ok && json === null && res.status !== 204 && init.method !== 'DELETE') {
       throw new AzureDevOpsApiError('Azure DevOps answered without a body', res.status, 'UNAUTHORIZED', true)
     }
     return { status: res.status, json, continuationToken }
@@ -372,7 +372,7 @@ export async function allowServiceHookSubscriptions(
   organization: string,
   input: { projectId: string; tenantId: string; servicePrincipalObjectId: string }
 ): Promise<AzureDevOpsTriggerGrantOutcome> {
-  const descriptor = `Microsoft.VisualStudio.Services.Claims.AadServicePrincipal;${input.tenantId}\\${input.servicePrincipalObjectId}`
+  const descriptor = servicePrincipalClaim(input.tenantId, input.servicePrincipalObjectId)
   try {
     await adminRequest(
       api,
@@ -417,4 +417,127 @@ export async function addServicePrincipalThroughGroup(
     if (e instanceof AzureDevOpsApiError) return null
     throw e
   }
+}
+
+export type AzureDevOpsProjectGroup = 'readers' | 'contributors'
+
+/** The Readers and Contributors groups that directly hold the subject, by project id. */
+export async function readProjectGroups(
+  api: AzureDevOpsApiClient,
+  token: string,
+  organization: string,
+  subjectDescriptor: string
+): Promise<Map<string, Map<AzureDevOpsProjectGroup, string>>> {
+  const answer = await adminRequest(
+    api,
+    token,
+    `${GRAPH_BASE}/${org(organization)}/_apis/graph/memberships/${encodeURIComponent(subjectDescriptor)}?direction=up&api-version=${PREVIEW_VERSION}`
+  )
+  const containers = ((answer.json as { value?: unknown } | null)?.value ?? []) as Array<{
+    containerDescriptor?: unknown
+  }>
+  const byProject = new Map<string, Map<AzureDevOpsProjectGroup, string>>()
+  for (const { containerDescriptor } of containers) {
+    if (typeof containerDescriptor !== 'string' || !containerDescriptor.startsWith('vssgp.')) continue
+    const group = (
+      await adminRequest(
+        api,
+        token,
+        `${GRAPH_BASE}/${org(organization)}/_apis/graph/groups/${encodeURIComponent(containerDescriptor)}?api-version=${PREVIEW_VERSION}`
+      )
+    ).json as { principalName?: unknown; domain?: unknown } | null
+    const name = typeof group?.principalName === 'string' ? group.principalName.toLowerCase() : ''
+    const kind = name.endsWith('\\contributors') ? 'contributors' : name.endsWith('\\readers') ? 'readers' : null
+    const projectId =
+      typeof group?.domain === 'string' ? /TeamProject\/([0-9a-f-]{36})$/i.exec(group.domain)?.[1] : undefined
+    if (!kind || !projectId) continue
+    const groups = byProject.get(projectId.toLowerCase()) ?? new Map<AzureDevOpsProjectGroup, string>()
+    groups.set(kind, containerDescriptor)
+    byProject.set(projectId.toLowerCase(), groups)
+  }
+  return byProject
+}
+
+const servicePrincipalClaim = (tenantId: string, objectId: string) =>
+  `Microsoft.VisualStudio.Services.Claims.AadServicePrincipal;${tenantId}\\${objectId}`
+
+/** The project ids where the service principal holds View and Edit subscriptions (§11.1), in one recursive read. */
+export async function readServiceHookGrants(
+  api: AzureDevOpsApiClient,
+  token: string,
+  organization: string,
+  input: { tenantId: string; servicePrincipalObjectId: string }
+): Promise<Set<string>> {
+  const descriptor = servicePrincipalClaim(input.tenantId, input.servicePrincipalObjectId)
+  const answer = await adminRequest(
+    api,
+    token,
+    `${api.devOpsBaseUrl}/${org(organization)}/_apis/accesscontrollists/${SERVICE_HOOKS_NAMESPACE}?token=PublisherSecurity&recurse=true&descriptors=${encodeURIComponent(descriptor)}&includeExtendedInfo=false&api-version=${API_VERSION}`
+  )
+  const lists = ((answer.json as { value?: unknown } | null)?.value ?? []) as Array<{
+    token?: unknown
+    acesDictionary?: Record<string, { allow?: unknown; deny?: unknown }>
+  }>
+  const granted = new Set<string>()
+  const both = VIEW_SUBSCRIPTIONS | EDIT_SUBSCRIPTIONS
+  for (const list of lists) {
+    const projectId =
+      typeof list.token === 'string' ? /^PublisherSecurity\/([0-9a-f-]{36})$/i.exec(list.token)?.[1] : undefined
+    if (!projectId) continue
+    const allowed = Object.values(list.acesDictionary ?? {}).some(
+      (ace) => (Number(ace.allow) & both) === both && (Number(ace.deny) & both) === 0
+    )
+    if (allowed) granted.add(projectId.toLowerCase())
+  }
+  return granted
+}
+
+export type AzureDevOpsRemovalOutcome = 'removed' | 'refused' | 'failed'
+
+/** Take the subject out of one group; one that is no longer a member counts as removed. */
+export async function removeGroupMembership(
+  api: AzureDevOpsApiClient,
+  token: string,
+  organization: string,
+  subjectDescriptor: string,
+  groupDescriptor: string
+): Promise<AzureDevOpsRemovalOutcome> {
+  try {
+    await adminRequest(
+      api,
+      token,
+      `${GRAPH_BASE}/${org(organization)}/_apis/graph/memberships/${encodeURIComponent(subjectDescriptor)}/${encodeURIComponent(groupDescriptor)}?api-version=${PREVIEW_VERSION}`,
+      { method: 'DELETE', okStatuses: [404] }
+    )
+    return 'removed'
+  } catch (e) {
+    return removalOutcome(e)
+  }
+}
+
+/** Withdraw the service principal's View and Edit subscriptions on a project (§11.1). */
+export async function revokeServiceHookSubscriptions(
+  api: AzureDevOpsApiClient,
+  token: string,
+  organization: string,
+  input: { projectId: string; tenantId: string; servicePrincipalObjectId: string }
+): Promise<AzureDevOpsRemovalOutcome> {
+  const descriptor = servicePrincipalClaim(input.tenantId, input.servicePrincipalObjectId)
+  try {
+    await adminRequest(
+      api,
+      token,
+      `${api.devOpsBaseUrl}/${org(organization)}/_apis/accesscontrolentries/${SERVICE_HOOKS_NAMESPACE}?token=${encodeURIComponent(serviceHooksToken(input.projectId))}&descriptors=${encodeURIComponent(descriptor)}&api-version=${API_VERSION}`,
+      { method: 'DELETE' }
+    )
+    return 'removed'
+  } catch (e) {
+    return removalOutcome(e)
+  }
+}
+
+function removalOutcome(e: unknown): AzureDevOpsRemovalOutcome {
+  if (!(e instanceof AzureDevOpsApiError)) throw e
+  if (e.code === 'RATE_LIMITED') throw e
+  return e.code === 'FORBIDDEN' || e.code === 'UNAUTHORIZED' || e.code === 'ACCESS_REVOKED' ? 'refused' : 'failed'
 }

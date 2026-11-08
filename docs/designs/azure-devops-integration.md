@@ -261,11 +261,23 @@ and the Control Plane applies the change with the new delegated token and
 discards it; a service principal found below Basic is raised to Basic, so a
 Project Collection Administrator fixes a Stakeholder identity in one pass. It
 then re-verifies the connection with the same identity and
-organization required, and a degraded connection recovers. The flow adds
-memberships; it removes none, so taking a project away or lowering
-Contributors to Readers is done in Azure DevOps. A change made directly in
-Azure DevOps works as well; the picker and the
-permission evaluation of §5 read the identity's rights as they are.
+organization required, and a degraded connection recovers.
+
+The project list opens on what the identity already holds, read with the
+administrator's token: its direct groups from
+`GET vssps…/_apis/graph/memberships/{subject}?direction=up`, each group's
+project from its `domain`, and Allow triggers from one
+`GET _apis/accesscontrollists/{ServiceHooks}?token=PublisherSecurity&recurse=true&descriptors={identity}`
+(**verified**). A newly checked project starts at Contributors with Allow
+triggers. Apply makes Azure DevOps match the page: a project left unchecked
+loses its group (`DELETE …/graph/memberships/{subject}/{group}`), a lowered
+group loses the higher one once the new one is made, and Allow triggers turned
+off deletes the entry (`DELETE _apis/accesscontrolentries/{namespace}?token=…&descriptors=…`).
+A removal the caller may not make is listed in the checklist; a state that
+cannot be read opens the page empty and removes nothing. The Console labels
+the groups **Read** and **Write**. A change made directly in Azure DevOps
+works as well; the picker and the permission evaluation of §5 read the
+identity's rights as they are.
 
 **Use your own application instead** stays one click away, and is the only
 path when the deployment has no Microsoft application. The administrator enters
@@ -984,7 +996,7 @@ service principal's identity descriptor, allow 3 (**verified**: the entry
 took effect, and deleting it refused the next create). Manage project access
 shows **Allow triggers** per project beside its group; it is on for a project
 picked with Contributors and can be turned on for one picked with Readers.
-Turning it off is done in Azure DevOps, as removing a group is (§3.2). A hook
+Turning it off there deletes the entry (§3.2). A hook
 on a repository whose project lacks the grant is refused at save with "allow
 triggers on this project in Manage project access", and a grant that later
 disappears degrades the hook's binding (§11.2).
