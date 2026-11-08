@@ -371,6 +371,13 @@ export class GiteaBroker implements CodeHostEffectBroker {
     const { owner, repo } = giteaRepoSegments(target.repoPath ?? '')
     const at: RepoParams = { owner, repo }
     switch (op.kind) {
+      case 'readMergeRequestDescription': {
+        return {
+          uses: ['pull.get'],
+          run: async (call) =>
+            record(await call({ endpoint: 'pull.get', params: { ...at, index: String(op.iid) } })).body ?? ''
+        }
+      }
       case 'createComment': {
         const scope = { sessionKey: target.sessionKey, repo: target.repoId }
         return {

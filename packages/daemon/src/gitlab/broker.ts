@@ -379,6 +379,12 @@ export class GitlabBroker {
   private program(target: GitlabBrokerTarget, op: GitlabBrokerOperation): BrokerProgram {
     const project = requireDecimal(target.projectId, 'project id')
     switch (op.kind) {
+      case 'readMergeRequestDescription':
+        return single({
+          endpoint: 'mergeRequest.get',
+          params: { project, iid: String(op.iid) },
+          shape: (parsed) => record(parsed).description ?? ''
+        })
       case 'createComment':
         return single(
           {

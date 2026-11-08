@@ -299,10 +299,10 @@ export interface SessionRecord {
   // must not auto-dispatch this session's thread to the agent; only an explicit
   // @mention clears it. SQLite boolean (0/1); NULL on legacy rows.
   muted?: number | null
-  // Platform id of the sender whose message created the session (first-wins;
-  // NULL on legacy rows / non-platform sessions). Display-name resolution is a
-  // separate `display_names` lookup keyed by this id.
+  // First message sender's platform ID, first-wins; display names are resolved separately.
   triggeredBy?: string | null
+  /** JSON initiator snapshot pinned when this logical session is created, inherited by delegated work. */
+  initiator?: string | null
   // Human-facing session title: the ingress title (or the first-message fallback) the
   // session is born with, then whatever the runtime pushes (ACP `session_info_update`).
   title?: string | null
@@ -1383,7 +1383,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 76
+export const SCHEMA_VERSION = 77
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -2146,7 +2146,9 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
     await addColumn(db, store.postgres, 'session_message_sent', 'replyChannel', 'TEXT')
     await addColumn(db, store.postgres, 'session_message_sent', 'replyThread', 'TEXT')
     await addColumn(db, store.postgres, 'assistant_subsession_thread', 'reportThread', 'TEXT')
-  }
+  },
+  // v77 pins the initiator independently of the session's routing identity.
+  async (db, store) => await addColumn(db, store.postgres, 'sessions', 'initiator', 'TEXT')
 ]
 
 /** Tasks gain when they closed, the message they were opened for, what they opened and a getting-to-know task's marker; an ended watch task counts as closed when it last changed. */
@@ -3051,7 +3053,7 @@ export class LocalStore {
       CREATE TABLE IF NOT EXISTS sessions (
         key TEXT PRIMARY KEY, agentId TEXT, platform TEXT, channel TEXT, thread TEXT,
         transportScope TEXT, originCodeHostReplyTarget TEXT, acpSessionId TEXT, sessionId TEXT, state TEXT, lastDeliveredTs TEXT, updatedAt INTEGER,
-        usage TEXT, muted INTEGER, triggeredBy TEXT, title TEXT, threadUrl TEXT, modelOverride TEXT,
+        usage TEXT, muted INTEGER, triggeredBy TEXT, initiator TEXT, title TEXT, threadUrl TEXT, modelOverride TEXT,
         observedRuntime TEXT, observedModel TEXT, observedModelSet INTEGER NOT NULL DEFAULT 0, decisionModel TEXT,
         effortOverride TEXT, permissionModeOverride TEXT, fastModeOverride INTEGER,
         outputModeOverride TEXT, statusBarTs TEXT, memoryProvider TEXT, workspaceIsolation TEXT,
@@ -4684,23 +4686,18 @@ export class LocalStore {
   }
 
   async upsertSession(rec: SessionRecord): Promise<void> {
-    // Bind only the mutable session columns explicitly. `rec` may be a row read back
-    // via `SELECT *` (e.g. from getSession/listSessions), which now also carries the
-    // `usage` and `muted` columns — passing the whole object would trip node:sqlite's
-    // unknown-named-parameter check. `usage` is intentionally not touched; `muted`
-    // is only promoted from the durable tombstone and never cleared by a state upsert.
-    // `triggeredBy` is first-wins: the sender that created the session keeps the
-    // credit across later upserts.
+    // Bind mutable columns explicitly; read-back rows cannot overwrite usage or clear durable mutes.
+    // The routing opener and public initiator are first-wins across later turns.
     await this.db
       .prepare(
         `INSERT INTO sessions
-           (key, sessionId, agentId, platform, channel, thread, transportScope, acpSessionId, state, lastDeliveredTs, updatedAt, muted, triggeredBy, threadUrl, memoryProvider, workspaceIsolation, originSessionId, needsParentReply,
+           (key, sessionId, agentId, platform, channel, thread, transportScope, acpSessionId, state, lastDeliveredTs, updatedAt, muted, triggeredBy, initiator, threadUrl, memoryProvider, workspaceIsolation, originSessionId, needsParentReply,
             externalProvider, externalRealmKey, externalResourceKind, externalResourceKey, externalIntegrationId,
             externalOriginJson, sourceBindingKind, platformStanding)
          VALUES
            (@key, COALESCE((SELECT sessionId FROM session_outward_ids WHERE key = @key), @sessionId), @agentId, @platform, @channel, @thread, @transportScope, @acpSessionId, @state, @lastDeliveredTs, @updatedAt,
             CASE WHEN EXISTS (SELECT 1 FROM session_mutes WHERE key = @key) THEN 1 ELSE NULL END,
-            @triggeredBy, @threadUrl, @memoryProvider, @workspaceIsolation, @originSessionId, @needsParentReply,
+            @triggeredBy, @initiator, @threadUrl, @memoryProvider, @workspaceIsolation, @originSessionId, @needsParentReply,
             @externalProvider, @externalRealmKey, @externalResourceKind, @externalResourceKey, @externalIntegrationId,
             @externalOriginJson, @sourceBindingKind, @platformStanding)
          ON CONFLICT(key) DO UPDATE SET
@@ -4720,6 +4717,7 @@ export class LocalStore {
              ELSE sessions.muted
            END,
            triggeredBy=COALESCE(sessions.triggeredBy, excluded.triggeredBy),
+           initiator=COALESCE(sessions.initiator, excluded.initiator),
            threadUrl=COALESCE(sessions.threadUrl, excluded.threadUrl),
            memoryProvider=excluded.memoryProvider,
            workspaceIsolation=COALESCE(excluded.workspaceIsolation, sessions.workspaceIsolation),
@@ -4759,6 +4757,7 @@ export class LocalStore {
         lastDeliveredTs: rec.lastDeliveredTs,
         updatedAt: rec.updatedAt,
         triggeredBy: rec.triggeredBy ?? null,
+        initiator: rec.initiator ?? null,
         threadUrl: rec.threadUrl ?? null,
         memoryProvider: rec.memoryProvider ?? null,
         workspaceIsolation: rec.workspaceIsolation ?? null,

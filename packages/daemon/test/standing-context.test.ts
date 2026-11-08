@@ -28,6 +28,34 @@ const ROOTS = [
   }
 ]
 
+it('provides host-scoped coauthor trailers on creation and resume, without inventing an identity when unlinked', () => {
+  const standing = buildStandingContext({
+    ...BASE,
+    initiator: {
+      name: 'Alex',
+      commitAuthors: [
+        { provider: 'github' as const, host: 'github.com', name: 'alex', email: '123+alex@users.noreply.github.com' },
+        {
+          provider: 'gitlab' as const,
+          host: 'gitlab.example.test',
+          name: 'alex-lab',
+          email: 'alex@users.noreply.example.test'
+        }
+      ]
+    }
+  })
+  for (const context of [standing.sessionContext, standing.resumeSystemContext]) {
+    expect(context).toContain('github at github.com: Co-authored-by: alex <123+alex@users.noreply.github.com>')
+    expect(context).toContain(
+      'gitlab at gitlab.example.test: Co-authored-by: alex-lab <alex@users.noreply.example.test>'
+    )
+    expect(context).toContain('Use only the identity listed for that provider and host')
+  }
+  expect(
+    buildStandingContext({ ...BASE, initiator: { name: 'Alex', commitAuthors: [] } }).sessionContext
+  ).not.toContain('Co-authored-by')
+})
+
 describe('buildWorkspaceRootsAppend', () => {
   it('names each additional directory with its repository and branch', () => {
     expect(buildWorkspaceRootsAppend(ROOTS)).toBe(

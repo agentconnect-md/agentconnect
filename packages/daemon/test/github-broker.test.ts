@@ -144,6 +144,13 @@ describe('GithubBroker', () => {
     })
   })
 
+  it('reads the full published description so initiator attribution beyond the model read budget survives edits', async () => {
+    const body = 'x'.repeat(5000) + '\n<!-- agentconnect:attribution -->kept'
+    const { fetchImpl, calls } = fakeFetch([{ ...PULL, body }])
+    expect(await broker(fetchImpl).execute(TARGET, { kind: 'readMergeRequestDescription', iid: 42 })).toBe(body)
+    expect(calls[0]!.method).toBe('GET')
+  })
+
   it('edits fields with REST and moves draft state through GraphQL by the node id', async () => {
     const { fetchImpl, calls } = fakeFetch([
       PULL,

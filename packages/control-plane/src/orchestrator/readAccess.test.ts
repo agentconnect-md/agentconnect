@@ -67,6 +67,26 @@ const ask = (asker: AgentReadAccess['asker'], sessionIds = ['visible-1', 'hidden
 })
 
 describe('resolveReadAccess', () => {
+  it('looks up commit authors only for an identified organization member and keeps lookup failures optional', async () => {
+    const { deps: d } = deps()
+    const authors = [
+      { provider: 'github' as const, host: 'github.com', name: 'alex', email: '123+alex@users.noreply.github.com' }
+    ]
+    d.commitAuthorsFor = vi.fn(async () => authors)
+    const request = { ...ask({ integrationId: SLACK, memberId: 'U_P' }, []), includeCommitAuthors: true }
+    expect(await resolveReadAccess(request, d, ORG)).toMatchObject({
+      asker: 'linked',
+      consoleUserId: 'user-p',
+      commitAuthors: authors
+    })
+    expect(d.commitAuthorsFor).toHaveBeenCalledWith({ orgId: ORG, userId: 'user-p', role: 'collaborator' })
+    vi.mocked(d.commitAuthorsFor).mockClear()
+    await resolveReadAccess({ ...request, asker: { consoleUserId: 'unknown' } }, d, ORG)
+    await resolveReadAccess({ ...request, includeCommitAuthors: false }, d, ORG)
+    expect(d.commitAuthorsFor).not.toHaveBeenCalled()
+    vi.mocked(d.commitAuthorsFor).mockRejectedValue(new Error('provider unavailable'))
+    expect(await resolveReadAccess(request, d, ORG)).toMatchObject({ asker: 'linked', commitAuthors: [] })
+  })
   it("answers for a console user of the agent's organization with the console's own visibility", async () => {
     const { deps: d, sessionsVisible } = deps()
     expect(await resolveReadAccess(ask({ consoleUserId: 'user-r' }), d, ORG)).toEqual({

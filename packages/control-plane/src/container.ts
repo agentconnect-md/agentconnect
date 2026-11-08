@@ -39,7 +39,8 @@ import {
 import { type AppConfig, resolveWebAppUrl } from './config/env.js'
 import { resolveGithubAppConfig } from './github/config.js'
 import { resolveGitlabAppConfig } from './gitlab/config.js'
-import { GitlabApiClient, type FetchLike as GitlabFetchLike } from './gitlab/api.js'
+import { GitlabApiClient, gitlabCurrentUser, type FetchLike as GitlabFetchLike } from './gitlab/api.js'
+import { resolveCommitAuthors } from './codehost/commit-authors.js'
 import { GitlabOauthService } from './gitlab/oauth.service.js'
 import { DELETION_PENDING_REASON, GitlabAccountService } from './gitlab/account.service.js'
 import { GitlabProvisioner } from './gitlab/provisioner.js'
@@ -3349,6 +3350,27 @@ export function buildContainer(
           users: repos.user,
           platforms,
           ...(logtoIdentity ? { identity: logtoIdentity } : {}),
+          commitAuthorsFor: (viewer) =>
+            resolveCommitAuthors(viewer, {
+              ...(logtoIdentity
+                ? {
+                    githubAccount: async (userId) => {
+                      const sub = await repos.user.getOidcSubject(userId)
+                      return sub ? logtoIdentity.socialAccountFor(sub) : null
+                    }
+                  }
+                : {}),
+              ...(gitlabOauthService && gitlabApi && gitlabAppCfg
+                ? {
+                    gitlab: {
+                      host: new URL(gitlabAppCfg.baseUrl).host,
+                      connections: repos.gitlabConnection,
+                      currentUser: async (orgId, connectionId) =>
+                        gitlabCurrentUser(await gitlabOauthService.withAccessToken(orgId, connectionId), gitlabApi)
+                    }
+                  }
+                : {})
+            }),
           sessionsVisible: sessionsVisibleTo(httpDeps, () => http.log)
         },
         expectedOrgId

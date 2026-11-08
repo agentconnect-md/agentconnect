@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   DESCRIPTION_FOOTER_MARKER,
+  descriptionInitiator,
+  initiatorFooter,
   withDescriptionFooter,
   withOperationFooter
 } from '../src/codehost/description-footer.js'
@@ -8,6 +10,14 @@ import {
 const FOOTER = '\n\n<sub>Example agent · runtime · model</sub>'
 
 describe('the description footer', () => {
+  it('escapes a human label without turning it into a mention and keeps its original value for edits', () => {
+    const initiator = '@alex [team](https://example.test) <admin>'
+    const description = withDescriptionFooter('Body', initiatorFooter(initiator))
+    expect(description).toContain('Initiated by **&#64;alex \\[team\\](https://example.test) \\<admin\\>**')
+    expect(descriptionInitiator(description)).toBe(initiator)
+    expect(descriptionInitiator(initiatorFooter('Copied'))).toBeUndefined()
+  })
+
   it('follows the text under a hidden marker', () => {
     expect(withDescriptionFooter('Body', FOOTER)).toBe(`Body\n\n${DESCRIPTION_FOOTER_MARKER}${FOOTER}`)
     expect(withDescriptionFooter(undefined, FOOTER)).toBe(`${DESCRIPTION_FOOTER_MARKER}${FOOTER}`)

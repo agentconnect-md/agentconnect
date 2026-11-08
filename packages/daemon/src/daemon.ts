@@ -1,3 +1,4 @@
+import { initiatorName, sessionInitiator } from './codehost/initiator.js'
 import { dispatchAhpAppRequest, type AhpAppsScope } from './ahp/apps.js'
 import { AhpProtocolError } from './ahp/connection.js'
 import { initialAhpChat } from './ahp/initial-state.js'
@@ -188,6 +189,7 @@ import {
   MAX_WORKSPACE_DOWNLOAD_BYTES,
   isDelegatedTaskCoordinate,
   WebchatPromptSuggestion,
+  type TaskInitiator,
   type TaskLinkFacts,
   type UserTurnBody
 } from '@agentconnect.md/protocol'
@@ -356,7 +358,7 @@ import { gitlabApiBaseUrl } from './gitlab/api-base.js'
 import { GiteaBroker } from './gitea/broker.js'
 import { AzureDevOpsBroker } from './azure-devops/broker.js'
 import { GithubBroker } from './github/broker.js'
-import { withOperationFooter } from './codehost/description-footer.js'
+import { descriptionInitiator, withOperationFooter } from './codehost/description-footer.js'
 import { githubAttributionFooter } from './github/poster.js'
 import { giteaApiBaseUrl } from './gitea/api-base.js'
 import type { CodeHostEffectBroker, CodeHostEffectTarget } from './codehost/broker.js'
@@ -5687,6 +5689,8 @@ export class Daemon {
     )
 
     this.sessions = new SessionManager({
+      initiatorFor: (agentId, msg, integrationId, originSessionId) =>
+        this.initiatorForMessage(agentId, msg, integrationId, originSessionId),
       prepareOutwardBinding: (agentId, key) => this.prepareOutwardBinding(agentId, key),
       // THIS daemon's plane. Omitting it hands the manager a local-mode one, and
       // `additionalWorkspaceDirectories` would then `realpathSync` a `--k8s` workspace's pod-side
@@ -17283,6 +17287,7 @@ export class Daemon {
       source: 'agent',
       platform,
       channel: sessionChannel,
+      initiator: msg.initiator,
       ...(thread !== undefined ? { thread } : {}),
       ...(childCoordinate !== undefined ? { sessionThread: childCoordinate } : {}),
       sender: { id: msg.trustedFromAgentId, isBot: true },
@@ -17383,11 +17388,83 @@ export class Daemon {
     if (!target) throw new Error(`this session has no ${req.provider} repository of its own; name one with repository`)
     const broker = this.codeHostBrokers.get(target.provider)
     if (!broker) throw new Error(`code-host effects are unavailable for ${target.provider} on this daemon`)
-    const operation = withOperationFooter(req.operation, await this.descriptionFooter(req, key, target.provider))
-    const result = await broker.execute({ ...target, agentId: req.agentId, sessionKey: key }, operation)
+    const effectTarget = { ...target, agentId: req.agentId, sessionKey: key }
+    let initiatedBy: string | undefined
+    if (req.operation.kind === 'createMergeRequest') {
+      initiatedBy = (await this.initiatorForSession(key))?.name ?? 'Unknown'
+    } else if (req.operation.kind === 'updateMergeRequest' && req.operation.description !== undefined) {
+      const current = await broker.execute(effectTarget, {
+        kind: 'readMergeRequestDescription',
+        iid: req.operation.iid
+      })
+      initiatedBy = typeof current === 'string' ? descriptionInitiator(current) : undefined
+    }
+    const operation = withOperationFooter(
+      req.operation,
+      await this.descriptionFooter(req, key, target.provider),
+      initiatedBy
+    )
+    const result = await broker.execute(effectTarget, operation)
     if (req.operation.kind === 'createMergeRequest')
       await this.noteTaskOpened(req.agentId, key, createdObjectOf(result))
     return result
+  }
+
+  /** A task keeps its opener, while a long conversation delegates for the person whose turn is running now. */
+  private async initiatorForSession(key: string): Promise<TaskInitiator | undefined> {
+    const session = await this.store.getSession(key)
+    const saved = sessionInitiator(session)
+    if (session && saved && (isSubsessionKey(key) || (await this.store.assistantSubsessions.get(session.agentId, key))))
+      return saved
+    const live = this.activeGateEntries.get(key)
+    if (live?.msg.initiator) return live.msg.initiator
+    if (live && live.msg.source !== 'agent')
+      return await this.initiatorForMessage(live.agentId, live.msg, live.integrationId)
+    if (saved) return saved
+    const name = session?.triggeredBy
+      ? (await this.store.getDisplayNames([session.triggeredBy])).get(session.triggeredBy)
+      : undefined
+    return name && name !== session?.triggeredBy ? { name: initiatorName(name), commitAuthors: [] } : undefined
+  }
+
+  /** Snapshot the trusted sender and their linked commit identities; missing links never prevent work. */
+  private async initiatorForMessage(
+    agentId: string,
+    msg: NormalizedMessage,
+    integrationId?: string,
+    originSessionId?: string
+  ): Promise<TaskInitiator> {
+    if (msg.initiator) return msg.initiator
+    if (msg.source === 'agent' && originSessionId) {
+      const origin = await this.store.getSessionByOutwardId(originSessionId)
+      const inherited = origin ? await this.initiatorForSession(origin.key) : undefined
+      if (inherited) return inherited
+    }
+    if (msg.source === 'user' && !msg.sender.isBot) {
+      const name = (await this.store.getDisplayNames([msg.sender.id])).get(msg.sender.id) ?? msg.sender.name
+      const cp = this.cpClient
+      const asker =
+        msg.platform === 'webchat'
+          ? { consoleUserId: msg.sender.id }
+          : integrationId
+            ? { integrationId, memberId: msg.sender.id }
+            : undefined
+      const linked =
+        asker && cp?.supportsServerFeature?.(READ_ACCESS_V1_FEATURE) === true
+          ? await cp
+              .readAccess(
+                { agentId, asker, sessionIds: [], includeCommitAuthors: true },
+                this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)
+              )
+              .catch(() => undefined)
+          : undefined
+      return (msg.initiator = {
+        name: initiatorName(name && name !== msg.sender.id ? name : 'Unknown user'),
+        commitAuthors: linked?.commitAuthors ?? []
+      })
+    }
+    const name = msg.source === 'cron' ? 'Scheduled task' : msg.source === 'hook' ? 'Webhook' : 'Automatic task'
+    return { name, commitAuthors: [] }
   }
 
   /** The attribution footer a change request's or an issue's description carries when the agent's footer is on; empty otherwise. */
@@ -19022,6 +19099,7 @@ export class Daemon {
       draining: () => this.draining,
       serialQueue: () => this.serialQueue,
       activeGateEntries: () => this.activeGateEntries,
+      initiatorForSession: (key) => this.initiatorForSession(key),
       noteSubsessionOpened: (childKey, parentKey) => this.noteSubsessionOpener(childKey, parentKey),
       noteSubsessionRound: (childKey, parentKey) => this.holdSlackForTask(childKey, parentKey),
       activeTurnThread: (key) => this.activeTurnShare.get(key)?.thread,

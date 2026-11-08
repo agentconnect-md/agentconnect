@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { TaskInitiator } from '../initiator.js'
 import { GOOGLE_CHAT_MARKUP } from '../consts.js'
 import { RdAhpOpen, RdAhpOpened, RdAhpAuthorize, RdAhpAuthorized, RdAhpMessage, RdAhpClose } from '../ahp.js'
 import { CodeHostReplyTarget } from '../code-host.js'
@@ -1239,6 +1240,8 @@ export const RdAgentMsg = z.object({
   originSessionId: z.string().min(1).optional(),
   // A null snapshot preserves a Console-only origin even when a later hook has a public target.
   originCodeHostReplyTarget: CodeHostReplyTarget.nullable().optional(),
+  // Public attribution inherited from the sending task, never an authorization identity.
+  initiator: TaskInitiator.optional(),
   originCoords: z
     .object({
       platform: Platform, // S1a open reader (route.ts policy)
@@ -1354,6 +1357,8 @@ export const RdAgentMsgFwd = z.object({
   originSessionId: z.string().min(1).optional(),
   // A null snapshot preserves a Console-only origin even when a later hook has a public target.
   originCodeHostReplyTarget: CodeHostReplyTarget.nullable().optional(),
+  // Public attribution inherited from the sending task, never an authorization identity.
+  initiator: TaskInitiator.optional(),
   originCoords: z
     .object({
       platform: Platform, // S1a open reader (route.ts policy)

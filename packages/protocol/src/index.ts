@@ -7,6 +7,8 @@
  * `isFrameType` guard.
  */
 
+export { CommitAuthor, TaskInitiator } from './initiator.js'
+
 // ── cross-package wire + lifecycle constants ──
 export {
   AGENT_CONFIG_REVISION_FEATURE,

@@ -2393,6 +2393,36 @@ generic evaluation events, or logs. The Memory page links the execution session;
 source-session selection remains input metadata and must not displace that run's own
 usage in the history presentation.
 
+## Pull-request initiator attribution
+
+Pull requests and merge requests opened through the code-host tools carry an
+`Initiated by **Alex**` line naming the person. This attribution is
+shown even when the optional agent/runtime/model footer is off. Names are plain
+text; a display name does not imply a linked code-host account or send a mention.
+Raw account IDs and sign-in addresses are not published as names.
+
+When a task's initiator has a verified linked GitHub or GitLab account, the agent's
+standing instructions supply the matching host's `Co-authored-by` trailer for
+new commits. GitHub uses the linked account's noreply address; GitLab uses only
+its explicitly public address. The configured agent author and
+committer remain in place. This is agent guidance, not a commit hook or a
+requirement to link an account before opening a PR. Missing identities and lookup
+failures retain the name attribution. Gitea and Azure DevOps application or bot
+credentials do not identify the human who initiated a task.
+
+Ordinary conversations receive no session-wide coauthor instruction, since their
+participants can change. Identity lookup is lazy at delegation or PR creation
+and at most once when a logical session opens; it has a single two-second attempt.
+
+A task records its initiator and linked commit identities when it starts and carries that attribution through
+delegation, including delegation to another daemon. A long conversation delegates
+for the person whose request it is handling; its first participant does not own
+everyone else's tasks. Scheduled runs and webhooks name the automation instead.
+
+An edit to a PR description retains the initiator already published on that PR,
+including when another person or agent makes the edit. An older PR without
+initiator attribution is not assigned to the person editing it.
+
 ## GitHub informational review checks
 
 An accepted review starts as `queued` until the daemon reports active preparation. When the daemon

@@ -240,6 +240,12 @@ export class AzureDevOpsBroker implements CodeHostEffectBroker {
     const at = { ...routing }
     const scope = { sessionKey: target.sessionKey, repo: target.repoId }
     switch (op.kind) {
+      case 'readMergeRequestDescription':
+        return {
+          uses: ['pull.get'],
+          run: async (call) =>
+            record(await call({ endpoint: 'pull.get', params: { ...at, id: String(op.iid) } })).description ?? ''
+        }
       case 'createComment': {
         pullRequestOnly(op.subject)
         const params = { ...at, id: String(op.iid) }
