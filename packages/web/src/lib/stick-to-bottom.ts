@@ -45,12 +45,15 @@ export function nearBottom(el: HTMLElement, slack = STICK_SLACK): boolean {
  */
 export function useStickToBottom(resetKey: string | null): {
   pin: () => void
+  release: (forMs?: number) => void
   awayFromBottom: boolean
 } {
   // Refs, not closure state: the re-arm callback below is handed to render code
   // and has to reach the SAME latch the effect's listeners own.
   const stick = useRef(false)
   const pinRef = useRef<(() => void) | null>(null)
+  // Until this moment a scroll does not re-arm the follow: a programmatic scroll away from the end is under way.
+  const holdUntil = useRef(0)
   // Drives the jump-to-bottom button. A ref mirrors it so the listeners can skip
   // redundant setState churn on every scroll/growth tick and only re-render on a
   // real transition.
@@ -115,6 +118,7 @@ export function useStickToBottom(resetKey: string | null): {
       // `syncAway` reads false and hides it.
       syncAway()
       if (echo) return
+      if (Date.now() < holdUntil.current) return
       stick.current = nearBottom(scroller)
     }
     const observer = new ResizeObserver(() => {
@@ -173,5 +177,11 @@ export function useStickToBottom(resetKey: string | null): {
     setAwayFromBottom(false)
   }, [])
 
-  return { pin, awayFromBottom }
+  // Lets go of the end for a scroll the page starts (a turn-map jump), so neither growth nor its own first frames pull it back.
+  const release = useCallback((forMs = 1500) => {
+    stick.current = false
+    holdUntil.current = Date.now() + forMs
+  }, [])
+
+  return { pin, release, awayFromBottom }
 }

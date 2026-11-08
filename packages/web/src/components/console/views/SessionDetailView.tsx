@@ -2141,7 +2141,11 @@ export default function SessionDetailView() {
   // Everything above only APPENDS rows; nothing ever moved the viewport, so a
   // live session's newest output landed below the fold. Follow it — but only for
   // a reader who is already at the bottom (see lib/stick-to-bottom).
-  const { pin: stickToBottom, awayFromBottom } = useStickToBottom(conversationKey ?? sid ?? null)
+  const {
+    pin: stickToBottom,
+    release: releaseFollow,
+    awayFromBottom
+  } = useStickToBottom(conversationKey ?? sid ?? null)
   // What this browser last read here, for the NEW line; it advances only while the reader looks at the end.
   const seen = useSeenMarker(MOCK_MODE ? null : (conversationKey ?? sid ?? null), !awayFromBottom)
   // The transcript scroller's scrollbar width, which the composer below it insets by to stay in line with the column.
@@ -3498,7 +3502,7 @@ export default function SessionDetailView() {
       <div className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col desktop:before:pointer-events-none desktop:before:absolute desktop:before:top-[17px] desktop:before:right-0 desktop:before:-left-[30px] desktop:before:h-px desktop:before:bg-(--border-subtle) desktop:max-wide:before:-right-[30px]">
         {/* Only a transcript on screen is read: the file viewer hides it, so nothing is recorded meanwhile. */}
         {!viewerOpen ? <SeenRecorder newestMs={newestTurnMs} markSeen={seen.markSeen} /> : null}
-        {!viewerOpen ? <TranscriptMap turns={mapTurns} /> : null}
+        {!viewerOpen ? <TranscriptMap turns={mapTurns} onJump={() => releaseFollow()} /> : null}
         {/* HEADER CHROME — title + action bar (+ any notices). Centred to line up with the 880px
         transcript below. `flex-none`; no `sticky`, no bottom `margin` — the meta row's border-b is
         the flush divider with the transcript, with no blank gap under the line. */}
