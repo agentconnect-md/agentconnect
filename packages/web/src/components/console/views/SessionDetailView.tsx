@@ -105,6 +105,7 @@ import { useSessionTranscript } from '@/lib/use-session-transcript'
 import { socialLoginProviders } from '@/lib/social-login-providers'
 import { isAuthConfigured } from '@/lib/auth'
 import { clipboardFiles, prepareWebchatImage } from '@/lib/webchat-image'
+import { copyLink } from '@/lib/copy-link'
 import { ComposerFileChips, stageComposerFiles } from '@/components/console/ComposerFiles'
 import { transferCapable, uploadPreviewsCapable, sessionFileDownload } from '@/lib/shared-file'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
@@ -2869,15 +2870,12 @@ export default function SessionDetailView() {
         })}`
       )
     : null
-  const onCopyLink = () => {
-    try {
-      const canonicalId = session.realSessionId ?? session.id
-      const link =
-        window.location.origin + orgPath(`/sessions/${encodeURIComponent(canonicalId)}${flatView ? '?view=flat' : ''}`)
-      void navigator.clipboard?.writeText(link)?.catch?.(() => {})
-    } catch {
-      /* noop */
-    }
+  const onCopyLink = async () => {
+    const canonicalId = session.realSessionId ?? session.id
+    const link =
+      window.location.origin + orgPath(`/sessions/${encodeURIComponent(canonicalId)}${flatView ? '?view=flat' : ''}`)
+    setCopied(false)
+    if (!(await copyLink(link, tShare('copyLink')))) return
     setCopied(true)
     setTimeout(() => setCopied(false), 1600)
   }

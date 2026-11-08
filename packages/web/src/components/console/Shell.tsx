@@ -23,6 +23,7 @@ import { getMyAccess, type OrgDto } from '@/lib/api'
 import { CONSOLE_SWR_CONFIG } from '@/lib/console-swr'
 import { agentLabel, poolLabel } from '@/lib/data'
 import { detailCrumb, type CrumbSlot } from '@/lib/crumb'
+import { copyLink } from '@/lib/copy-link'
 import { PlaygroundProvider } from './PlaygroundProvider'
 import { ModalProvider, useModal } from './ModalProvider'
 import { PendingActionsProvider } from './PendingActions'
@@ -667,17 +668,13 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
     else router.push(parentListHref)
   }
 
-  // Session detail is the one push screen with a shareable deep link. Copy the
-  // org-scoped URL, matching the desktop "Copy link" button, and flash the icon
-  // to a check for ~1.6s.
+  // Copy the org-scoped session URL and flash the icon only after the clipboard write succeeds.
   const isSessionDetail = seg[0] === 'sessions' && seg.length === 2
-  const copyLink = () => {
-    try {
-      const suffix = isFlatSessionView(searchParams) ? '?view=flat' : ''
-      void navigator.clipboard?.writeText?.(window.location.origin + orgPath(`${barePath}${suffix}`))?.catch?.(() => {})
-    } catch {
-      /* noop */
-    }
+  const onCopyLink = async () => {
+    const suffix = isFlatSessionView(searchParams) ? '?view=flat' : ''
+    const link = window.location.origin + orgPath(`${barePath}${suffix}`)
+    setLinkCopied(false)
+    if (!(await copyLink(link, t('actions.copyLink')))) return
     setLinkCopied(true)
     setTimeout(() => setLinkCopied(false), 1600)
   }
@@ -1008,7 +1005,7 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                       <button
                         className="mappbtn"
                         aria-label={linkCopied ? t('actions.linkCopied') : t('actions.copyLink')}
-                        onClick={copyLink}
+                        onClick={onCopyLink}
                       >
                         <Icon
                           name={linkCopied ? 'check' : 'link'}
