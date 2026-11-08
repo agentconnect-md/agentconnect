@@ -1350,11 +1350,12 @@ each write and names the newest one whose source commit is the projected
 head, or none. An update kind's accepted delivery names no head, so its
 status opens at `running`, on the head the daemon's read recorded through
 `hook/start`; the Control Plane advertises `azure-devops-hooks-v1` as the
-daemon's sign that it routes that arm. A delivery that completes without a
-model turn, an ignored reviewer or status change or a cleanup, writes no
-status: the vote a review casts is itself a reviewer change, and its
-completion would otherwise restate the head's status as completed, over a
-failed run's (**verified**). A write whose answer was lost is
+daemon's sign that it routes that arm. A success whose run never crossed the
+start barrier settles only a status its own delivery opened, so an ignored
+reviewer or status change or a cleanup writes none: the vote a review casts is
+itself a reviewer change, and its completion would otherwise restate the
+head's status as completed, over a failed run's (**verified**). A turn that ran
+past a failed barrier still settles the status its delivery queued. A write whose answer was lost is
 reconciled against the listed statuses: a newer entry by the identity with
 the same context, state and description proves it, and absence past the
 grace window lets it be written again.

@@ -607,6 +607,19 @@ export class PgCodeHostRunProjectionRepo implements CodeHostRunProjectionWriterR
     return row ? toRecord(row) : null
   }
 
+  async getByNaturalKey(
+    hookId: HookId,
+    projectId: bigint,
+    mergeRequestIid: number,
+    headSha: string,
+    projectionEpoch: bigint
+  ): Promise<CodeHostRunProjectionRecord | null> {
+    const row = await this.db.codeHostRunProjection.findFirst({
+      where: { hookId, projectId, mergeRequestIid, headSha, projectionEpoch }
+    })
+    return row ? toRecord(row) : null
+  }
+
   async claimDue(
     provider: string,
     leaseOwner: string,

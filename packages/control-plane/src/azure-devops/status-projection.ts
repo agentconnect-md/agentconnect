@@ -138,7 +138,7 @@ async function hookedBinding(
 }
 
 export interface AzureDevOpsStatusCoordinatorDeps {
-  projections: Pick<CodeHostRunProjectionRepo, 'upsert' | 'setDesired' | 'supersede'>
+  projections: Pick<CodeHostRunProjectionRepo, 'upsert' | 'setDesired' | 'supersede' | 'getByNaturalKey'>
   /** The ACCEPTED run behind an edge — the only authority for its projection epoch. */
   runs: Pick<HookRepo, 'getRun'>
   agents: Pick<AgentRepo, 'getUnscoped'>
@@ -178,14 +178,24 @@ export class AzureDevOpsStatusCoordinator {
     if (!snapshot || snapshot.reportingMode !== 'status') return
     const run = await this.deps.runs.getRun(HookId(edge.hookId), edge.deliveryKey)
     if (!run || run.projectionEpoch === null) return
-    // A delivery that completed without a model turn (an ignored update, a cleanup) is no run: it must not restate the head's status.
-    if (edge.state === 'completed' && !run.turnStartedAt) return
     const agent = await this.deps.agents.getUnscoped(AgentId(edge.agentId))
     if (!agent || agent.orgId !== edge.orgId) return
     const binding = await hookedBinding(this.deps.bindings, edge.orgId, subject.projectId)
     if (!binding) return
     const connection = await this.deps.connections.get(edge.orgId, binding.connectionId)
     if (!connection) return
+
+    // A success that crossed no start barrier settles only a status its own delivery opened; an ignored update or a cleanup never restates the head's.
+    if (edge.state === 'completed' && !run.turnStartedAt) {
+      const held = await this.deps.projections.getByNaturalKey(
+        HookId(edge.hookId),
+        subject.projectId,
+        subject.mergeRequestIid,
+        subject.headSha,
+        run.projectionEpoch
+      )
+      if (held?.currentDeliveryKey !== edge.deliveryKey) return
+    }
 
     const acceptedAt = run.startedAt
     const terminal = edge.state !== 'queued' && edge.state !== 'running'

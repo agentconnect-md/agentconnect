@@ -183,7 +183,8 @@ describe('AzureDevOpsStatusCoordinator', () => {
     const projections = {
       upsert: vi.fn(async (_input: UpsertCodeHostRunProjectionInput) => row),
       setDesired: vi.fn(async () => true),
-      supersede: vi.fn(async () => 0)
+      supersede: vi.fn(async () => 0),
+      getByNaturalKey: vi.fn(async (): Promise<CodeHostRunProjectionRecord | null> => row)
     }
     const kick = vi.fn()
     const service = new AzureDevOpsStatusCoordinator({
@@ -224,12 +225,28 @@ describe('AzureDevOpsStatusCoordinator', () => {
     )
   })
 
-  it('restates nothing for a delivery that completed without a turn, and still settles one refused before its turn', async () => {
-    const ignored = coordinator(projection(), null)
+  it('restates nothing for a turnless success on a head another delivery holds, or holds nothing on', async () => {
+    const ignored = coordinator(projection({ currentDeliveryKey: 'review-delivery' }), null)
     await ignored.service.afterReport(edge({ state: 'completed', reason: 'review_request_not_for_identity' }))
+    ignored.projections.getByNaturalKey.mockResolvedValueOnce(null)
+    await ignored.service.afterReport(edge({ state: 'completed', reason: 'worktree_cleanup_no_session' }))
     expect(ignored.projections.upsert).not.toHaveBeenCalled()
+    // A refusal is no success: it settles whatever the delivery queued.
     await ignored.service.afterReport(edge({ state: 'failed', reason: 'delivery_unresolved' }))
     expect(ignored.projections.upsert).toHaveBeenCalledWith(expect.objectContaining({ desiredState: 'failed' }))
+  })
+
+  it('settles its own queued status when the turn ran past a failed start barrier', async () => {
+    const { service, projections } = coordinator(projection({ currentDeliveryKey: 'delivery-1' }), null)
+    await service.afterReport(edge({ state: 'completed', sessionId: 'session-1' }))
+    expect(projections.upsert).toHaveBeenCalledWith(expect.objectContaining({ desiredState: 'completed' }))
+    expect(projections.setDesired).toHaveBeenLastCalledWith(
+      expect.any(String),
+      1n,
+      'completed',
+      new Date(NOW),
+      undefined
+    )
   })
 
   it('opens nothing for an update kind that names no head yet, or a hook that does not report a status', async () => {
