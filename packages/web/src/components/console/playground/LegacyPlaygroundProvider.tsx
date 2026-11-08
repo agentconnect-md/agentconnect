@@ -1536,9 +1536,9 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         )
           .then((url) => {
             const ws = new WebSocket(url)
-            ws.onopen = () => resolve(ws)
             ws.onerror = () => reject(new Error('webchat connection failed'))
             ws.onclose = () => {
+              reject(new Error('webchat connection closed before ready'))
               if (conn.reconnectTimer) window.clearTimeout(conn.reconnectTimer)
               conn.reconnectTimer = undefined
               dropSelf()
@@ -1680,6 +1680,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                   })
                 }
                 conn.probeIds = m.participants?.length ? m.participants.map((p) => p.agentId) : [agentId]
+                resolve(ws)
                 resendUnackedSteers(ws)
                 if (resumeStream && busyRef.current[id]) {
                   sendResume(ws)
