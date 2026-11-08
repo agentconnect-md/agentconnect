@@ -689,6 +689,31 @@ describe('Allow triggers (§11.1)', () => {
     expect(h.fake.rootAces.size).toBe(0)
   })
 
+  it('finishes taking all projects back on retry after a removal cut short', async () => {
+    const h = harness()
+    const PROJECT_ROOT = '52d39943-cb85-4d7f-8fa8-c6baac873819'
+    const GIT_ROOT = '2e9eb7ed-3c0a-47d4-87c1-0ffdd275fd87'
+    const first = await h.toProjects()
+    const made = await h.post(
+      `/azure-devops/connect/${first.flowId}/projects`,
+      { projects: [], allProjects: { group: 'contributors', allowTriggers: true } },
+      first.ticket
+    )
+    expect(made.statusCode).toBe(200)
+    const managed = await h.toProjects(made.json().connection.id)
+    h.fake.failRootDeleteOnce = GIT_ROOT
+    const body = { projects: [{ projectId: PROJECT_ID, group: 'readers' }] }
+    const cut = await h.post(`/azure-devops/connect/${managed.flowId}/projects`, body, managed.ticket)
+    expect(cut.statusCode).toBe(200)
+    expect(cut.json().checklist).toContain('Remove its access to all projects.')
+    // Triggers went first; project read stays until the end, so what is left is still readable.
+    expect(Object.fromEntries(h.fake.rootAces)).toEqual({ [PROJECT_ROOT]: 1, [GIT_ROOT]: 16502 })
+    const retried = await h.post(`/azure-devops/connect/${managed.flowId}/projects`, body, managed.ticket)
+    expect(retried.statusCode).toBe(200)
+    expect(retried.json().checklist).toBeUndefined()
+    expect(h.fake.rootAces.size).toBe(0)
+  })
+
   it('asks for a Project Collection Administrator when all projects is refused', async () => {
     const h = harness()
     h.fake.aceWriteAllowed = false

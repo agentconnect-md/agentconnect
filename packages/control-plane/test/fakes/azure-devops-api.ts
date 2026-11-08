@@ -118,6 +118,8 @@ export class FakeAzureDevOps {
   readonly acls = new Map<string, FakeAccessControlList>()
   /** The application's entries at the organization roots, by namespace: the All projects grant. */
   readonly rootAces = new Map<string, number>()
+  /** A root namespace whose next entry delete answers 503, once. */
+  failRootDeleteOnce: string | null = null
   /** The next read of the application's memberships answers 503. */
   failMembershipReadOnce = false
   /** Tokens whose list the connection may not read: they answer 403. */
@@ -395,6 +397,10 @@ export class FakeAzureDevOps {
       if (token === root && security[1] === 'entries' && (method === 'POST' || method === 'DELETE')) {
         if (!this.aceWriteAllowed) return this.json(403, { message: 'TF400813: insufficient permissions' })
         if (method === 'DELETE') {
+          if (this.failRootDeleteOnce === namespace) {
+            this.failRootDeleteOnce = null
+            return this.json(503, { message: 'unavailable' })
+          }
           this.rootAces.delete(namespace)
           return this.json(200, true)
         }

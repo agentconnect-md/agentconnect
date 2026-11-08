@@ -636,9 +636,10 @@ export async function removeOrgWideAccess(
   input: ServicePrincipalRef & { access: boolean; triggers: boolean }
 ): Promise<AzureDevOpsRemovalOutcome> {
   const descriptor = servicePrincipalClaim(input.tenantId, input.servicePrincipalObjectId)
+  // Project read goes last: it is what makes the others readable, so a removal cut short stays visible.
   const roots = [
-    ...(input.access ? [ORG_ROOTS.project, ORG_ROOTS.git] : []),
-    ...(input.triggers ? [ORG_ROOTS.hooks] : [])
+    ...(input.triggers ? [ORG_ROOTS.hooks] : []),
+    ...(input.access ? [ORG_ROOTS.git, ORG_ROOTS.project] : [])
   ]
   try {
     for (const root of roots) {

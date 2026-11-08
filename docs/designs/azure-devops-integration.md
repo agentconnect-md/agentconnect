@@ -300,9 +300,11 @@ the write bits. Only a Project Collection Administrator may write these; a
 refusal joins the checklist, and a granted row is proof of administration for
 a new connection as a membership is. The row opens on the entries the
 identity holds, read the same way, and is removed by the same `shown…` rule as
-a project: unchecking it deletes the Project and Git entries, and turning off
-its Allow triggers deletes the ServiceHooks entry. While it is on, the
-per-project rows are hidden and their access left as it is.
+a project: unchecking it deletes the Git and Project entries, and turning off
+its Allow triggers deletes the ServiceHooks entry. The deletes follow the
+ticket rather than a fresh read and run with the Project entry last, since it
+is what makes the others readable: a removal cut short is finished by a retry.
+While it is on, the per-project rows are hidden and their access left as it is.
 
 **Use your own application instead** stays one click away, and is the only
 path when the deployment has no Microsoft application. The administrator enters

@@ -458,10 +458,11 @@ export class AzureDevOpsConnectFlowService {
     sp: ServicePrincipal,
     subject: string
   ): Promise<{ checklist: string[]; revoked: boolean }> {
+    const orgWide = await this.removeOrgWide(ticket, organization, sp)
     const shown = ticket.shownAccess
-    if (!shown) return { checklist: [], revoked: false }
+    if (!shown) return orgWide
     const current = await this.currentAccess(ticket, organization, { sp, subject })
-    if (!current) return { checklist: [], revoked: false }
+    if (!current) return orgWide
     const desired = new Map((ticket.projects ?? []).map((choice) => [choice.projectId.toLowerCase(), choice]))
     const names = new Map<string, string>()
     try {
@@ -498,23 +499,31 @@ export class AzureDevOpsConnectFlowService {
       if (outcome === 'removed') revoked = true
       else checklist.push(`Turn off Allow triggers on ${names.get(projectId) ?? projectId}.`)
     }
-    // All projects: only what the page showed, and only what is still there.
+    return { checklist: [...orgWide.checklist, ...checklist], revoked: revoked || orgWide.revoked }
+  }
+
+  /** All projects as the page showed it: the entries go by the ticket, not a fresh read, so a removal cut short finishes on retry. */
+  private async removeOrgWide(
+    ticket: AzureDevOpsFlowTicket,
+    organization: string,
+    sp: ServicePrincipal
+  ): Promise<{ checklist: string[]; revoked: boolean }> {
     const shownAll = ticket.shownAllProjects
-    if (shownAll && current.orgWide) {
-      const access = !ticket.allProjects
-      const triggers = shownAll.allowTriggers && current.orgWide.allowTriggers && !ticket.allProjects?.allowTriggers
-      if (access || triggers) {
-        const outcome = await removeOrgWideAccess(this.deps.api, ticket.accessToken, organization, {
-          tenantId: ticket.tenantId,
-          servicePrincipalObjectId: sp.objectId,
-          access,
-          triggers
-        })
-        if (outcome === 'removed') revoked ||= triggers
-        else checklist.push(access ? 'Remove its access to all projects.' : 'Turn off Allow triggers for all projects.')
-      }
+    if (!shownAll) return { checklist: [], revoked: false }
+    const access = !ticket.allProjects
+    const triggers = shownAll.allowTriggers && !ticket.allProjects?.allowTriggers
+    if (!access && !triggers) return { checklist: [], revoked: false }
+    const outcome = await removeOrgWideAccess(this.deps.api, ticket.accessToken, organization, {
+      tenantId: ticket.tenantId,
+      servicePrincipalObjectId: sp.objectId,
+      access,
+      triggers
+    })
+    if (outcome === 'removed') return { checklist: [], revoked: triggers }
+    return {
+      checklist: [access ? 'Remove its access to all projects.' : 'Turn off Allow triggers for all projects.'],
+      revoked: false
     }
-    return { checklist, revoked }
   }
 
   /** A guest signs in at their home tenant; the organization's own tenant, from an unauthenticated read, must be the one signed in at. */
