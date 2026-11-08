@@ -59,7 +59,7 @@ import { GiteaProvisioner } from './gitea/provisioner.js'
 import { GiteaBindingService } from './gitea/binding.service.js'
 import { GiteaConvergeSweeper } from './gitea/converge-sweeper.js'
 import { GiteaGitcredService } from './gitea/gitcred.service.js'
-import { AzureDevOpsApiClient, type FetchLike as AzureDevOpsFetchLike } from './azure-devops/api.js'
+import { AzureDevOpsApiClient, readMicrosoftUser, type FetchLike as AzureDevOpsFetchLike } from './azure-devops/api.js'
 import { AzureDevOpsTokenCache } from './azure-devops/token-cache.js'
 import { AzureDevOpsConnectionService, azureDevOpsSecretFingerprint } from './azure-devops/connection.service.js'
 import { AzureDevOpsBindingService } from './azure-devops/binding.service.js'
@@ -3354,7 +3354,7 @@ export function buildContainer(
             resolveCommitAuthors(viewer, {
               ...(logtoIdentity
                 ? {
-                    githubAccount: async (userId) => {
+                    socialAccount: async (userId) => {
                       const sub = await repos.user.getOidcSubject(userId)
                       return sub ? logtoIdentity.socialAccountFor(sub) : null
                     }
@@ -3369,7 +3369,19 @@ export function buildContainer(
                         gitlabCurrentUser(await gitlabOauthService.withAccessToken(orgId, connectionId), gitlabApi)
                     }
                   }
-                : {})
+                : {}),
+              azureDevOps: {
+                connections: repos.azureDevOpsConnection,
+                userFor: (connection, objectId, email) =>
+                  azureDevOpsConnectionService.withApi(connection, (token) =>
+                    readMicrosoftUser(azureDevOpsApi, token, {
+                      organization: connection.organization,
+                      tenantId: connection.tenantId,
+                      objectId,
+                      email
+                    })
+                  )
+              }
             }),
           sessionsVisible: sessionsVisibleTo(httpDeps, () => http.log)
         },

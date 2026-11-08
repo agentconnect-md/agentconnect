@@ -1,7 +1,9 @@
 // The Entra and Azure DevOps edge (azure-devops-integration.md §3.4, §3.5, §5, §6.5, §12) against the anonymized fake.
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   AzureDevOpsApiError,
+  AzureDevOpsApiClient,
+  readMicrosoftUser,
   evaluateRepositoryPermissions,
   listRepositories,
   readConnectionData,
@@ -21,6 +23,63 @@ import {
 } from '../../test/fakes/azure-devops-api.js'
 
 const credentials = { tenantId: TENANT_ID, clientId: CLIENT_ID, clientSecret: 'example-secret' }
+
+describe('Microsoft initiator identity', () => {
+  const input = {
+    organization: ORGANIZATION,
+    tenantId: TENANT_ID,
+    objectId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1',
+    email: 'alex@example.test'
+  }
+  const identity = {
+    providerDisplayName: 'Alex Example',
+    isActive: true,
+    isContainer: false,
+    properties: {
+      SchemaClassName: { $value: 'User' },
+      Domain: { $value: TENANT_ID },
+      Mail: { $value: input.email },
+      'http://schemas.microsoft.com/identity/claims/objectidentifier': { $value: input.objectId }
+    }
+  }
+  it('reads candidates by email and confirms the exact tenant and Entra object ID', async () => {
+    const fetch = vi.fn(async () => Response.json({ value: [identity] }))
+    expect(await readMicrosoftUser(new AzureDevOpsApiClient({ fetch }), 'example-token', input)).toEqual({
+      name: identity.providerDisplayName,
+      email: input.email
+    })
+    const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit]
+    const target = new URL(url)
+    expect(target.origin + target.pathname).toBe(`https://vssps.dev.azure.com/${ORGANIZATION}/_apis/identities`)
+    expect(target.searchParams.get('searchFilter')).toBe('MailAddress')
+    expect(target.searchParams.get('filterValue')).toBe(input.email)
+    expect(init.method).toBe('GET')
+  })
+
+  it('requires one active human matching the tenant, object ID, and email, rather than a same-name candidate', async () => {
+    const withProperty = (key: keyof typeof identity.properties, value: string) => ({
+      ...identity,
+      properties: { ...identity.properties, [key]: { $value: value } }
+    })
+    for (const value of [
+      [],
+      [withProperty('Domain', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1')],
+      [
+        withProperty(
+          'http://schemas.microsoft.com/identity/claims/objectidentifier',
+          'cccccccc-cccc-4ccc-8ccc-ccccccccccc1'
+        )
+      ],
+      [withProperty('Mail', 'someone-else@example.test')],
+      [{ ...identity, isActive: false }],
+      [{ ...identity, isContainer: true }],
+      [identity, identity]
+    ]) {
+      const api = new AzureDevOpsApiClient({ fetch: async () => Response.json({ value }) })
+      expect(await readMicrosoftUser(api, 'example-token', input)).toBeNull()
+    }
+  })
+})
 
 describe('client credentials token (§3.1)', () => {
   it('posts the Azure DevOps scope at the tenant authority and keeps the issued lifetime', async () => {
