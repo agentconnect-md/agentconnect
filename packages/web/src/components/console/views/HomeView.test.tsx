@@ -23,7 +23,8 @@ const mocks = vi.hoisted(() => ({
   push: vi.fn(),
   openCoordinator: vi.fn(async (): Promise<{ conversationId: string; sessionId?: string }> => ({
     conversationId: 'conv-co'
-  }))
+  })),
+  upload: vi.fn()
 }))
 
 vi.mock('@/lib/api', async (importOriginal) => ({
@@ -115,9 +116,13 @@ vi.mock('@/components/marks', () => ({
 }))
 // prepareWebchatImage needs createImageBitmap/canvas (not in happy-dom); the
 // pipeline itself is covered by webchat-image.test.ts.
-vi.mock('@/lib/webchat-image', () => ({
-  clipboardImageFile: () => undefined,
+vi.mock('@/lib/webchat-image', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/webchat-image')>()),
   prepareWebchatImage: vi.fn(async () => ({ name: 'shot.webp', mimeType: 'image/webp', data: 'QUJD' }))
+}))
+vi.mock('@/lib/webchat-file', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/webchat-file')>()),
+  uploadWebchatFile: mocks.upload
 }))
 vi.mock('@/lib/profile', () => ({ useProfile: () => ({ user: { name: 'Riley Kim', initials: 'RK' }, me: null }) }))
 vi.mock('@/components/ui', () => ({ Icon: () => <span /> }))
@@ -383,6 +388,62 @@ describe('HomeView run-selectors (catalog-aware)', () => {
 })
 
 describe('HomeView attach', () => {
+  it.each(['picker', 'drop', 'paste'])(
+    'keeps a mixed %s selection until each upload succeeds or is removed',
+    async (method) => {
+      mocks.agents = [agent()]
+      mocks.daemons = [daemon({ caps: { features: ['file-transfer-v2', 'webchat-upload-previews-v1'] } })]
+      window.__AC_ENV = { ...window.__AC_ENV, FILE_TRANSFER_MAX_BYTES: '1048576' }
+      mocks.upload
+        .mockReset()
+        .mockRejectedValueOnce(new Error('Upload interrupted'))
+        .mockImplementation(async (_agent: string, file: File) => ({
+          uploadId: crypto.randomUUID(),
+          name: file.name,
+          mimeType: file.type,
+          size: file.size,
+          sha256: 'A'.repeat(43) + '='
+        }))
+      await render()
+      const files = [
+        new File(['image'], 'shot.png', { type: 'image/png' }),
+        new File(['report'], 'report.pdf', { type: 'application/pdf' })
+      ]
+      const input = host.querySelector<HTMLInputElement>('input[type="file"]')!
+      expect(input.multiple).toBe(true)
+      await act(async () => {
+        if (method === 'picker') {
+          Object.defineProperty(input, 'files', { value: files })
+          input.dispatchEvent(new Event('change', { bubbles: true }))
+        } else {
+          const event = new Event(method, { bubbles: true, cancelable: true })
+          Object.defineProperty(event, method === 'drop' ? 'dataTransfer' : 'clipboardData', {
+            value: { files, items: [] }
+          })
+          host.querySelector('textarea')!.dispatchEvent(event)
+        }
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      })
+      const send = host.querySelector<HTMLButtonElement>('button.sendbtn')!
+      expect(host.querySelectorAll('[data-composer-file]')).toHaveLength(2)
+      expect(send.disabled).toBe(true)
+      await act(async () => {
+        host.querySelector<HTMLButtonElement>('button[aria-label="Retry shot.png"]')!.click()
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      })
+      expect(send.disabled).toBe(false)
+      expect(host.querySelector('img')?.alt).toBe('shot.png')
+      await act(async () => {
+        send.click()
+      })
+      const sent = mocks.pgSend.mock.calls[0]?.[7]
+      expect(sent).toEqual([
+        expect.objectContaining({ name: 'shot.png', preview: expect.objectContaining({ data: 'QUJD' }) }),
+        expect.objectContaining({ name: 'report.pdf' })
+      ])
+    }
+  )
+
   it('sends an attached image with the first turn (image-only send allowed)', async () => {
     mocks.agents = [agent()]
     mocks.daemons = [daemon()]

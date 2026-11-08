@@ -86,7 +86,7 @@ function actionGuides(ctx: SessionContext, reach: TaskReach): Record<SendMessage
           'falls back to another session: an unknown id, another agent’s id, a task, or a ' +
           'conversation the people asking you may not read returns `wake.delivered: false` with `wake.reason: ' +
           '"session_not_found"`.',
-        'Not accepted: `thread`, `attachment`, `toUser`.',
+        'Not accepted: `thread`, `attachment`, `attachments`, `toUser`.',
         'The result is {ok, wake: {delivered, targetSession, reason?}, post?, childSessionId?, reply?, nextAction?}. ' +
           '`ok` alone is not delivery: read `wake.delivered` and `wake.reason`. When the result says ' +
           '`nextAction: finish-turn-and-wait`, end your turn; the reply arrives in a later turn. `viewSessionStatus` ' +
@@ -200,7 +200,7 @@ function actionGuides(ctx: SessionContext, reach: TaskReach): Record<SendMessage
         'have another agent work or answer, use callAgent (with needsReply for its result); to work in a channel ' +
         'yourself, use callAgent with your own id and `channel`.',
       required: ['action', 'message', 'toUser or channel'],
-      optional: ['toUser', 'channel', 'thread', 'platform', 'integrationId', 'attachment'],
+      optional: ['toUser', 'channel', 'thread', 'platform', 'integrationId', 'attachments', 'attachment'],
       rules: [
         'Direct message: one human member id in `toUser`, without `channel`.',
         'Mention people in a channel: `toUser` (one id or an array of unique ids) plus `channel` posts one message at ' +
@@ -213,8 +213,13 @@ function actionGuides(ctx: SessionContext, reach: TaskReach): Record<SendMessage
         'Update an existing thread: `channel` plus `thread` (the thread root id, e.g. `threadTs` from ' +
           'getChannelHistory) posts inside it; agents already in that thread see it. `thread` is only for a bare ' +
           '`channel` post and never for the thread you are answering — that is your ordinary reply.',
-        '`attachment` (with `toUser` or `channel`) forwards an image this conversation received, by its name in the ' +
-          '`[attached: …]` marker, with `message` as the caption. Images only; for a file you produced use shareFile.',
+        '`attachments` accepts up to four files: {source:"workspace",path:"outputs/report.pdf"}, ' +
+          '{source:"upload",uploadId:"<received uploadId>"}, or {source:"platform",platform:"slack",integrationId:"<source bot>",fileId:"<file.id>"}. ' +
+          'Paths belong to your current workspace; uploadIds must have been received in this session. Source integrationId selects the reading bot, independently of the destination bot. Names are not identifiers.',
+        'Slack publishes a batch with one caption at the channel root or in the named thread. Other integrations may only accept one file. ' +
+          '`message` is required and limited to 1000 characters with files. Use the returned threadTarget for follow-up posts; do not retry an uncertain upload.',
+        'Legacy `attachment` forwards a retained received image by name. Do not combine it with `attachments`. ' +
+          'Use shareFile for a workspace file in the current conversation, or postMessage with attachments for an explicit destination.',
         '`platform` defaults to the current conversation’s platform (a DM defaults to a platform that can open ' +
           'one); `integrationId` picks a bot when several apply. `channel` may be an id or an unambiguous name.',
         'A post reaches only where the people asking you could post themselves; on Slack the person asking confirms ' +
@@ -248,6 +253,19 @@ function actionGuides(ctx: SessionContext, reach: TaskReach): Record<SendMessage
             channel: '<channel-id>',
             thread: '<thread-root-id>',
             message: 'The hotfix is deployed to production.'
+          }
+        },
+        {
+          use: 'Publish a generated report and a received upload together',
+          arguments: {
+            action: 'postMessage',
+            platform: 'slack',
+            channel: '<channel-id>',
+            message: 'The report and original screenshot are ready.',
+            attachments: [
+              { source: 'workspace', path: 'outputs/report.pdf' },
+              { source: 'upload', uploadId: '00000000-0000-4000-8000-000000000001' }
+            ]
           }
         },
         {

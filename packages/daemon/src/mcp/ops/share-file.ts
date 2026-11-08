@@ -274,7 +274,7 @@ export async function shareFile(
         identity
       )
   if (!outcome.ok) {
-    charge.release()
+    if (outcome.reason !== 'indeterminate') charge.release()
     if (outcome.reason === 'indeterminate') {
       throw new Error(
         'shareFile: the upload timed out and MAY still have been delivered — do NOT retry; say the file may have gone through instead.'

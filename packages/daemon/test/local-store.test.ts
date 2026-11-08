@@ -3941,6 +3941,34 @@ describe('deleteSession reclaims its own rows (message-intake.md §8 rule 1)', (
 
 // message-intake.md §5 step 2: the row keeps `!queue …` as typed, the prompt is the stripped text.
 describe('transcriptPromptText', () => {
+  it('resolves same-name uploads by id only within the receiving session and retains ids in replay', async () => {
+    const s = await store()
+    const file = {
+      uploadId: randomUUID(),
+      name: 'same.png',
+      mimeType: 'image/png',
+      size: 10,
+      sha256: 'A'.repeat(43) + '='
+    }
+    const other = { ...file, uploadId: randomUUID() }
+    const body = JSON.stringify({ uploads: [file, other] })
+    await s.appendTranscript({
+      channel: 'C',
+      thread: 'T',
+      sender: 'U1',
+      ts: '1',
+      kind: 'text',
+      text: 'Look',
+      body,
+      admission: { agentId: 'bot-a', sessionKey: 'k:C:T:bot-a' }
+    })
+    expect(await s.transcriptUploadById(readScope('C', 'T', 'bot-a'), other.uploadId)).toEqual(other)
+    expect(await s.transcriptUploadById(readScope('C', 'OTHER', 'bot-a'), file.uploadId)).toBeUndefined()
+    expect(await s.transcriptUploadById(readScope('C', 'T', 'bot-b'), file.uploadId)).toBeUndefined()
+    expect(transcriptPromptText({ kind: 'text', text: 'Look', body })).toContain(`uploadId=${file.uploadId}`)
+    await s.close()
+  })
+
   it('strips an admitted !queue prefix from the row a step-1 write recorded', () => {
     expect(transcriptPromptText({ kind: 'text', text: '!queue ship it' })).toBe('ship it')
     expect(transcriptPromptText({ kind: 'text', text: 'ship it' })).toBe('ship it')

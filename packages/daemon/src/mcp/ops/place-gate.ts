@@ -213,6 +213,27 @@ export async function assertPlaceRead(
   return verdict.privateSource
 }
 
+// One accessible share authorizes a file read; possessing its provider ID alone does not.
+export async function assertFileRead(
+  ctx: SessionContext,
+  source: { platform: string; integrationId: string; channels: string[] },
+  deps: PlaceAccessDeps
+): Promise<void> {
+  for (const channel of source.channels) {
+    if (source.platform === ctx.platform && channel === ctx.channel && source.integrationId !== ctx.integrationId)
+      continue
+    const described = await describeConversation(
+      ctx,
+      { platform: source.platform, channel },
+      source.integrationId,
+      deps
+    )
+    const verdict = await judgePlaceRead(ctx, 'getChannelHistory', described, source.integrationId, deps)
+    if (!verdict.refused) return
+  }
+  throw new Error('sendMessage: I cannot read that attachment from this conversation. Nothing was sent.')
+}
+
 /** send-message-guide.md §9.2: whether a calling turn's people may join an existing session, judged as a read of its conversation. */
 export async function judgeSessionParticipation(input: {
   /** The caller's current conversation, which the read rule always lets read itself. */

@@ -43,6 +43,8 @@ import {
   QuotedMessageSchema,
   SessionImageAttachment as SessionImageAttachmentSchema,
   SharedImage as SharedImageSchema,
+  UserTurnBody,
+  type UploadedFileReference,
   type SharedImage,
   type CronReport,
   type DecisionRuntimeTarget,
@@ -606,8 +608,13 @@ export function transcriptPromptText(entry: Pick<TranscriptEntry, 'kind' | 'text
   if (entry.kind !== 'text' || !entry.body) return queuePromptText(entry.text)
   try {
     const parsed: unknown = JSON.parse(entry.body)
+    const body = UserTurnBody.safeParse(parsed)
     const prompt = (parsed as { prompt?: unknown } | null)?.prompt
-    if (typeof prompt === 'string') return prompt
+    const text = typeof prompt === 'string' ? prompt : queuePromptText(entry.text)
+    const uploads = body.success
+      ? body.data.uploads?.map((file) => `Uploaded file: ${file.name}; uploadId=${file.uploadId}`)
+      : undefined
+    return uploads?.length ? `${text}\n${uploads.join('\n')}` : text
   } catch {
     // fall through — the row's text stands
   }
@@ -8669,6 +8676,38 @@ export class LocalStore {
       const parsed = SessionImageAttachmentSchema.array().safeParse(raw)
       const match = parsed.success ? parsed.data.find((attachment) => attachment.name === name) : undefined
       if (match) return match
+    }
+    return undefined
+  }
+
+  // Native upload IDs are resolved only inside the caller's admitted transcript rows.
+  async transcriptUploadById(
+    scope: TranscriptSessionScope,
+    uploadId: string
+  ): Promise<UploadedFileReference | undefined> {
+    const rows = (await this.db
+      .prepare(
+        `SELECT body FROM transcript WHERE orgId = ? AND channel = ? AND kind = 'text'
+        AND body LIKE ? AND ${SESSION_ROW_SCOPE_SQL} AND ${AGENT_DELIVERY_SCOPE_SQL}
+        ORDER BY seq DESC`
+      )
+      .all(
+        this.orgForRead(scope.agentId, scope.orgId),
+        scope.transcriptChannel,
+        `%${uploadId}%`,
+        scope.coordinate,
+        scope.sessionKey,
+        scope.agentId,
+        scope.agentId
+      )) as { body: string }[]
+    for (const row of rows) {
+      try {
+        const parsed = UserTurnBody.safeParse(JSON.parse(row.body))
+        const upload = parsed.success ? parsed.data.uploads?.find((file) => file.uploadId === uploadId) : undefined
+        if (upload) return upload
+      } catch {
+        // A legacy non-JSON body has no upload metadata.
+      }
     }
     return undefined
   }

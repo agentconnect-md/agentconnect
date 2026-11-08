@@ -30,8 +30,8 @@ import { buildTurns, type Turn } from '@/components/console/session-turns'
 import { BotTurnView, UserTurnView } from '@/components/console/TurnViews'
 import type { TaskLink } from '@/components/console/task-link'
 import { fetchSessionDetail, type SessionThreadSummaryDto } from '@/lib/api'
-import { ComposerFileChips, stageComposerFile } from '@/components/console/ComposerFiles'
-import { prepareWebchatImage } from '@/lib/webchat-image'
+import { ComposerFileChips, stageComposerFiles } from '@/components/console/ComposerFiles'
+import { clipboardFiles, prepareWebchatImage } from '@/lib/webchat-image'
 import { RunningCommandsDock } from '@/components/console/RunningCommandsDock'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
 import { agentToneColor } from '@/lib/agent-tone'
@@ -121,6 +121,10 @@ export function ThreadPanel({
   const {
     getLiveSteps,
     getPgInput,
+    getPgFiles,
+    getPgImage,
+    setPgFiles,
+    setPgImage,
     getPgTurnThread,
     isPgBusy,
     markSessionTarget,
@@ -263,18 +267,37 @@ export function ThreadPanel({
   // The composer's draft: the owner's is this thread's own, another member's the holding task's.
   const draftId = ownThread ? `${ownThread.sessionId}#${ownThread.rootId}` : id
   const send = (): void => {
+    const staged = getPgFiles(draftId)
+    if (staged.some((file) => file.status !== 'ready')) return
+    const image = getPgImage(draftId)
+    const files = staged.flatMap((file) => (file.attachment ? [file.attachment] : []))
+    const clear = () => {
+      setPgInput(draftId, '')
+      setPgImage(draftId)
+      setPgFiles(draftId, () => [])
+    }
     if (ownThread) {
       // A continued coordinator's socket mints for its session, and its page draws the thread the message goes in.
       if (ownThread.continues) markSessionTarget(ownThread.sessionId, ownThread.continues, true)
-      if (pgSendThread(ownThread.sessionId, agentId, getPgInput(draftId), ownThread.rootId, ownThread.conversationId))
-        setPgInput(draftId, '')
+      if (
+        pgSendThread(
+          ownThread.sessionId,
+          agentId,
+          getPgInput(draftId),
+          ownThread.rootId,
+          ownThread.conversationId,
+          image,
+          files
+        )
+      )
+        clear()
       return
     }
     if (!canReply || !holderId) return
     markSessionTarget(holderId)
     // Read from the record, the message is written in this thread of the task, which may hold several.
     if (record && inThread) {
-      if (pgSendThread(holderId, agentId, getPgInput(holderId), record.rootId)) setPgInput(holderId, '')
+      if (pgSendThread(holderId, agentId, getPgInput(holderId), record.rootId, undefined, image, files)) clear()
       return
     }
     pgSend(holderId, agentId)
@@ -509,8 +532,10 @@ export function ThreadPanel({
             : mirrored
               ? { hint: t('threadHintMirrored', { platform: platName(platform) }) }
               : {})}
-          // A thread send carries text alone, so only a reply onto the task's own session offers attachments.
-          {...(MOCK_MODE || ownThread || (record && fromRecord) ? {} : { attach: { agentId, transfer: fileTransfer } })}
+          // Webchat threads accept uploads; platform continuations retain their existing attachment restrictions.
+          {...(MOCK_MODE || (platform !== 'webchat' && (ownThread || (record && fromRecord)))
+            ? {}
+            : { attach: { agentId, transfer: fileTransfer } })}
           sendLabel={t('send')}
           onSend={send}
           autoFocus={focusComposer}
@@ -609,7 +634,7 @@ function ThreadComposer({
   const image = getPgImage(sessionId)
   const files = getPgFiles(sessionId)
   const hasAttachment = !!image || files.length > 0
-  const uploading = files.some((file) => file.status === 'uploading')
+  const uploading = files.some((file) => file.status !== 'ready')
   const boxRef = useRef<HTMLTextAreaElement | null>(null)
   // After the dock's own reveal, which focuses an overlay panel as it opens.
   useEffect(() => {
@@ -619,13 +644,17 @@ function ThreadComposer({
   }, [autoFocus, canReply])
   // No reply box where this reader may not continue the task; its background commands still show.
   if (!canReply && !checking) return dock ? <div className="flex-none px-3 pb-3 empty:hidden">{dock}</div> : null
-  // An image goes inline, as the conversation's composer sends it; any other file is uploaded and referenced.
-  const pick = async (file: File | undefined) => {
+  // Uploaded originals and their previews travel together; older conversations keep inline image input.
+  const pick = async (selected: File[]) => {
     if (inputRef.current) inputRef.current.value = ''
-    if (!attach || !file) return
+    if (!attach || !selected.length || preparing) return
     setAttachError(null)
-    if (!file.type.startsWith('image/')) {
-      stageComposerFile(
+    if (attach.transfer) {
+      if (image) {
+        setAttachError('Remove the inline image before adding uploaded files.')
+        return
+      }
+      stageComposerFiles(
         {
           sessionId,
           agentId: attach.agentId,
@@ -634,7 +663,14 @@ function ThreadComposer({
           setPgFiles,
           onError: setAttachError
         },
-        file
+        selected
+      )
+      return
+    }
+    const file = selected[0]!
+    if (selected.length !== 1 || !file.type.startsWith('image/')) {
+      setAttachError(
+        'This conversation accepts one image attachment. Documents and multiple attachments aren’t supported here.'
       )
       return
     }
@@ -688,6 +724,20 @@ function ThreadComposer({
           disabled={!canReply}
           onChange={(e) => setDraft(e.target.value)}
           onFocus={onFocus}
+          onPaste={(event) => {
+            const selected = clipboardFiles(event.clipboardData)
+            if (!attach || !selected.length) return
+            event.preventDefault()
+            void pick(selected)
+          }}
+          onDragOver={(event) => {
+            if (attach && event.dataTransfer.types.includes('Files')) event.preventDefault()
+          }}
+          onDrop={(event) => {
+            if (!attach || !event.dataTransfer.files.length) return
+            event.preventDefault()
+            void pick(Array.from(event.dataTransfer.files))
+          }}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault()
@@ -708,7 +758,13 @@ function ThreadComposer({
         <div className="flex items-center gap-2 border-t border-(--border-subtle) py-[7px] pr-[9px] pl-[10px]">
           {attach ? (
             <>
-              <input ref={inputRef} type="file" hidden onChange={(e) => void pick(e.target.files?.[0])} />
+              <input
+                ref={inputRef}
+                type="file"
+                multiple
+                hidden
+                onChange={(e) => void pick(Array.from(e.target.files ?? []))}
+              />
               <button
                 type="button"
                 data-task-thread-attach=""

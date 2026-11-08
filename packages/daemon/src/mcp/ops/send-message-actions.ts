@@ -19,6 +19,7 @@ import {
 } from './messaging.js'
 import { DELEGATE_TASK_GUIDE_TEXT } from './task-guide.js'
 import { mayOpenTasksAt, type TaskReach } from '../../session/subsession-coordinate.js'
+import { messageAttachmentsField } from './message-attachments.js'
 import { taskReachOf } from './task-reach.js'
 
 /** The operations `sendMessage` performs, one required `action` each (send-message-guide.md §3.1). */
@@ -42,7 +43,7 @@ const ACTION_KEYS: Record<SendMessageAction, { requires: readonly string[]; acce
   replyToSession: { requires: ['messageId'], accepts: ['messageId'] },
   postMessage: {
     requires: ['toUser|channel'],
-    accepts: ['toUser', 'channel', 'thread', 'platform', 'integrationId', 'attachment']
+    accepts: ['toUser', 'channel', 'thread', 'platform', 'integrationId', 'attachment', 'attachments']
   }
 }
 
@@ -84,16 +85,22 @@ export const SEND_MESSAGE_ACTION_SCHEMAS: Record<SendMessageAction, ZodType> = {
     messageId: requiredString('messageId'),
     message: messageField
   }),
-  postMessage: z.strictObject({
-    action: action('postMessage'),
-    toUser: USER_TARGETS.optional(),
-    channel: channelField,
-    thread: threadField,
-    platform: platformField,
-    integrationId: integrationIdField,
-    attachment: attachmentField,
-    message: messageField
-  })
+  postMessage: z
+    .strictObject({
+      action: action('postMessage'),
+      toUser: USER_TARGETS.optional(),
+      channel: channelField,
+      thread: threadField,
+      platform: platformField,
+      integrationId: integrationIdField,
+      attachment: attachmentField,
+      attachments: messageAttachmentsField,
+      message: messageField
+    })
+    .refine(
+      (args) => args.attachment === undefined || args.attachments === undefined,
+      'use attachments or the legacy attachment argument, not both'
+    )
 }
 
 const OVERVIEW = '{"tool":"sendMessage"}'

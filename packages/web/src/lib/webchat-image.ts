@@ -17,6 +17,15 @@ export function clipboardImageFile(data: Pick<DataTransfer, 'items' | 'files'>):
   return Array.from(data.files).find((file) => file.type.startsWith('image/'))
 }
 
+// Browsers expose pasted files through either collection; never combine them and duplicate entries.
+export function clipboardFiles(data: Pick<DataTransfer, 'items' | 'files'>): File[] {
+  const items = Array.from(data.items).flatMap((item) => {
+    const file = item.kind === 'file' ? item.getAsFile() : null
+    return file ? [file] : []
+  })
+  return items.length ? items : Array.from(data.files)
+}
+
 function canvasBlob(canvas: HTMLCanvasElement, quality: number): Promise<Blob> {
   return new Promise((resolve, reject) => {
     canvas.toBlob(

@@ -193,7 +193,42 @@ task. The `delegateTask` description and guide say so (§3.2, §3.4).
 | `delegateTask`   | Hand off long work to a delegated task of your current session             | `title`               | `messageId`, a coordinator session's only; the coordinator's alone where the Auto switch is on (§2.1)                          |
 | `messageTask`    | Send more work or an answer to a task your current session delegated       | `taskId`              | `messageId`, as for `delegateTask`                                                                                             |
 | `replyToSession` | Answer a message another session sent you                                  | `messageId`           | None                                                                                                                           |
-| `postMessage`    | Post to a person, channel, or another existing thread                      | `toUser` or `channel` | `thread`, `attachment`, `platform`, `integrationId`, subject to existing branch rules                                          |
+| `postMessage`    | Post to a person, channel, or another existing thread                      | `toUser` or `channel` | `thread`, `attachments`, legacy `attachment`, `platform`, `integrationId`, subject to existing branch rules                    |
+
+`postMessage.attachments` is an array of one to four source-qualified files. For example:
+
+```json
+{
+  "action": "postMessage",
+  "platform": "slack",
+  "channel": "C_EXAMPLE",
+  "message": "The report and screenshots are ready.",
+  "attachments": [
+    { "source": "workspace", "path": "outputs/report.pdf" },
+    { "source": "upload", "uploadId": "00000000-0000-4000-8000-000000000001" },
+    { "source": "platform", "platform": "slack", "integrationId": "source-bot", "fileId": "F_EXAMPLE" }
+  ]
+}
+```
+
+The workspace is the caller's, including a headless cron or sandbox. An `uploadId` must
+have been received in this session and still exist in the object store; the daemon uses
+the stored name, MIME type, size, and checksum. A provider `fileId` resolves through the
+selected source bot and the caller's read authority. The optional source `integrationId`
+is required if several integrations could resolve that source. It never chooses the
+destination bot. Same-name files remain distinct because selection uses these identifiers.
+
+All files are resolved and size-checked before publication; the turn budget is shared with
+`shareFile`. Slack completes the group once, with `message` as a caption of at most 1000
+characters. Add `thread` to publish inside an existing thread. Platforms without a batch
+upload capability refuse multi-file sends before publication. The receipt contains source
+metadata and returned file IDs, plus `threadTarget` when a real provider root is available.
+`post.thread` remains null for a root post. Bookkeeping failures after publication produce
+a success notice. An uncertain publication retains its budget and must not be retried.
+
+The legacy singular `attachment` still forwards a retained image by name, but cannot be
+combined with `attachments`. No model-supplied URLs, base64 content, or new identifier
+registry are accepted. `shareFile` remains the tool for the current conversation.
 
 Every action also requires `message`. `callAgent` does not promise a fresh session:
 existing routing may reuse the target's conversational context. Without `channel`,

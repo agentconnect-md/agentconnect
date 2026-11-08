@@ -238,7 +238,7 @@ export class AhpConversation {
               timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
               worktree: this.worktree,
               runtimeConfig: this.runtime,
-              files: turn.files
+              files: turn.files?.map((file) => ({ ...file, ...(file.preview ? { preview: { ...file.preview } } : {}) }))
             }
           }
         }
@@ -247,7 +247,7 @@ export class AhpConversation {
         const peer = this.peers.get(agentId)
         if (!peer) throw new Error('A participant is not connected. Reconnect before sending again.')
         const extension = peer.snapshot.extensions?.['agentconnect.md'] as
-          { webchat?: boolean; files?: boolean } | undefined
+          { webchat?: boolean; files?: boolean; filePreviews?: boolean } | undefined
         if (
           extension?.webchat !== true &&
           (this.worktree !== undefined || Object.keys(this.runtime ?? {}).length || this.roster.length > 1)
@@ -255,8 +255,20 @@ export class AhpConversation {
           throw new Error('This conversation does not support the selected participants or settings yet.')
         if (turn.files?.length && extension?.files !== true)
           throw new Error('File attachments are not available in this conversation yet.')
+        if (turn.files?.some((file) => file.preview) && extension?.filePreviews !== true)
+          throw new Error('Image uploads are not available in this conversation yet.')
         return { peer, action: extension?.webchat === true ? contextual : action }
       })
+      const uploadedPreviews =
+        contextual.message._meta['agentconnect.md'].files?.flatMap((file) => (file.preview ? [file.preview] : [])) ?? []
+      if (uploadedPreviews.length) {
+        const originals = uploadedPreviews.map((preview) => ({ ...preview }))
+        for (const preview of uploadedPreviews) preview.data = ''
+        const remaining = Math.min(...deliveries.map(({ peer, action }) => peer.remainingActionBytes(action)))
+        const share = Math.min(40 * 1024, ahpImageBudget(Math.floor(remaining / uploadedPreviews.length)))
+        for (const [index, preview] of uploadedPreviews.entries())
+          Object.assign(preview, await fitAhpImage(originals[index]!, share))
+      }
       if (turn.image && message.attachments?.[0]?.type === 'embeddedResource') {
         const attachment = message.attachments[0]
         attachment.data = ''

@@ -34,10 +34,10 @@ import {
 } from '@/components/console/dashboard-rows'
 import { Icon } from '@/components/ui'
 import { AgentIconView, LoadingState, LogoMark, Spinner } from '@/components/marks'
-import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
+import { clipboardFiles, prepareWebchatImage } from '@/lib/webchat-image'
 import type { ComposerFile } from '@/lib/webchat-file'
-import { transferCapable } from '@/lib/shared-file'
-import { ComposerFileChips, stageComposerFile } from '@/components/console/ComposerFiles'
+import { uploadPreviewsCapable } from '@/lib/shared-file'
+import { ComposerFileChips, stageComposerFiles } from '@/components/console/ComposerFiles'
 import { useProfile } from '@/lib/profile'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import {
@@ -242,7 +242,7 @@ export default function HomeView() {
   const imageInputRef = useRef<HTMLInputElement>(null)
   // Non-image files upload before the session exists: the presigned PUT needs only the agent.
   const [files, setFiles] = useState<ComposerFile[]>([])
-  const filesUploading = files.some((f) => f.status === 'uploading')
+  const filesUploading = files.some((f) => f.status !== 'ready')
   const readyFiles = files.flatMap((f) => (f.status === 'ready' && f.attachment ? [f.attachment] : []))
   // Which selector menu is open (only one at a time), and the run-runtime overrides.
   const [menu, setMenu] = useState<'agent' | 'model' | 'add' | 'attach' | null>(null)
@@ -387,20 +387,32 @@ export default function HomeView() {
     }
   }
 
-  const onAttachFile = (file: File | undefined): void => {
-    if (!file || !agent) return
-    if (file.type.startsWith('image/')) return void onImageFile(file)
+  const onAttachFiles = (selected: File[]): void => {
+    if (imageInputRef.current) imageInputRef.current.value = ''
+    if (!selected.length || !agent) return
+    const transfer = uploadPreviewsCapable(agentCapabilitySource(agent, daemons, memberSets)?.caps?.features)
+    if (!transfer) {
+      if (selected.length === 1 && selected[0]!.type.startsWith('image/')) return void onImageFile(selected[0])
+      setImageError(
+        'This conversation accepts one image attachment. Documents and multiple attachments aren’t supported here.'
+      )
+      return
+    }
+    if (image) {
+      setImageError('Remove the inline image before adding uploaded files.')
+      return
+    }
     setMenu(null)
-    stageComposerFile(
+    stageComposerFiles(
       {
         sessionId: '',
         agentId: agent.id,
-        transfer: transferCapable(agentCapabilitySource(agent, daemons, memberSets)?.caps.features),
+        transfer,
         getPgFiles: () => files,
         setPgFiles: (_id, update) => setFiles(update),
         onError: setImageError
       },
-      file
+      selected
     )
     if (imageInputRef.current) imageInputRef.current.value = ''
   }
@@ -594,7 +606,13 @@ export default function HomeView() {
           if (event.key === 'Escape') setMenu(null)
         }}
       >
-        <input ref={imageInputRef} type="file" hidden onChange={(event) => onAttachFile(event.target.files?.[0])} />
+        <input
+          ref={imageInputRef}
+          type="file"
+          multiple
+          hidden
+          onChange={(event) => onAttachFiles(Array.from(event.target.files ?? []))}
+        />
         <ComposerFileChips files={files} onRemove={(key) => setFiles((cur) => cur.filter((f) => f.key !== key))} />
         {image && (
           <div className="relative mx-[15px] mt-3 w-fit">
@@ -632,10 +650,18 @@ export default function HomeView() {
               mention.sync(el.value, el.selectionStart ?? el.value.length)
             }}
             onPaste={(event) => {
-              const file = clipboardImageFile(event.clipboardData)
-              if (!file) return
+              const selected = clipboardFiles(event.clipboardData)
+              if (!selected.length) return
               event.preventDefault()
-              void onImageFile(file)
+              onAttachFiles(selected)
+            }}
+            onDragOver={(event) => {
+              if (event.dataTransfer.types.includes('Files')) event.preventDefault()
+            }}
+            onDrop={(event) => {
+              if (!event.dataTransfer.files.length) return
+              event.preventDefault()
+              onAttachFiles(Array.from(event.dataTransfer.files))
             }}
             onKeyDown={(e) => {
               if (mention.handleKeyDown(e)) return

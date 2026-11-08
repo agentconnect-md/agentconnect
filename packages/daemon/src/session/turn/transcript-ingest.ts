@@ -6,6 +6,7 @@ import {
   fitTranscriptImage,
   hydrateTranscriptImages,
   transcriptImageAttachments,
+  transcriptUploads,
   type TranscriptImageFit
 } from '../attachment-block.js'
 
@@ -98,6 +99,8 @@ export async function ingestInboundTranscript(input: TranscriptIngestInput): Pro
   })
   const mention = attachmentMention(msg.attachments)
   const transcriptAttachments = transcriptImageAttachments(msg.attachments)
+  const uploads = transcriptUploads(msg.attachments)
+  const body = uploads.length ? { ...msg.turnBody, uploads } : msg.turnBody
   const transcriptText = mention ? `${msg.text}\n${mention}`.trim() : msg.text
   // Webchat and a console post into a continued hook session only: neither is chat ingress, so neither collides with a step-1 row (message-intake.md §5 step 1).
   const ts =
@@ -134,7 +137,7 @@ export async function ingestInboundTranscript(input: TranscriptIngestInput): Pro
     kind: 'text',
     text: transcriptText,
     // The model prompt and platform facts behind the row, when the turn assembled them.
-    ...(msg.turnBody ? { body: JSON.stringify(msg.turnBody) } : {}),
+    ...(body ? { body: JSON.stringify(body) } : {}),
     ...(transcriptAttachments.length ? { attachments: transcriptAttachments } : {})
   })
   return { ts, attachments: msg.attachments }

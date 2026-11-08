@@ -34,7 +34,7 @@ import {
   HookInstructions,
   OptionalHookConfigSnapshot
 } from './hook.js'
-import { WEBCHAT_FILES_MAX, WebchatFileAttachment } from './file-transfer.js'
+import { WEBCHAT_FILES_MAX, WebchatFileAttachment, chatAttachmentsWithinBudget } from './file-transfer.js'
 import { CronTarget } from './cron.js'
 import { Platform } from './route.js'
 import { WebchatRemoteMcpEntitlement } from './remote-mcp.js'
@@ -219,53 +219,58 @@ export const WebchatTimeZone = z
   .regex(/^[A-Za-z0-9_+\-/]+$/)
 
 export const RelayWebchatOp = z.discriminatedUnion('op', [
-  z.object({
-    op: z.literal('turn'),
-    text: z.string(),
-    // The author's mutable display handle — the transcript author line and the name a
-    // session worktree's branch is cut under.
-    user: z.string().optional(),
-    // The author's STABLE CP principal, which is what the daemon records as the
-    // transcript sender so a display-name change never re-identifies past rows.
-    // Absent on frames from an older relay; the daemon then falls back to `user`.
-    userId: z.string().optional(),
-    // The author's public avatar URL from the verified CP verdict; a Slack mirror posts under it.
-    userPicture: z.string().url().max(2_048).optional(),
-    // The author's linked chat identities (`<platform>:<tenant>:<memberId>`) from the verified CP verdict, so a continuation can address the author on its own platform.
-    userIdentities: z.array(z.string().min(1).max(512)).max(8).optional(),
-    // New browsers allocate this before sending so a pre-ack reconnect can name
-    // the exact turn. Optional for older clients; the daemon allocates a fallback.
-    turnId: z.string().uuid().optional(),
-    // Structured mentions from the composer (agent ids ⊆ the conversation roster).
-    // The daemon maps them onto `mentionedBots` so a mentioned agent activates
-    // with `trigger:'mention'`. Targeting is separate: the relay already picked
-    // THIS frame's target (RdMsgWebchat.agentId); mentions are prompt context.
-    mentions: z.array(z.string().uuid()).max(16).optional(),
-    // Canonical post identity, minted ONCE by the relay when it accepts the turn
-    // and shared by every per-target copy — see WebchatPost. Absent on frames
-    // from an older relay; the daemon then mints locally (single-agent shape).
-    post: z.object({ postId: z.string().uuid(), at: z.number().int() }).optional(),
-    // The thread this turn replies in, a root's `postId` or a continued coordinator's platform root; absent ⇒ a root. An older daemon ignores it.
-    thread: TurnThreadId.optional(),
-    attachments: z.array(WebchatImageAttachment).max(1).optional(),
-    // Files the browser already PUT to the Source Cache bucket; the daemon hands the agent presigned GETs.
-    files: z.array(WebchatFileAttachment).max(WEBCHAT_FILES_MAX).optional(),
-    // A fresh Playground has no daemon session to receive standalone `set_*`
-    // operations yet. Carry only the settings the user changed with its first turn.
-    runtime: WebchatRuntimeConfig.optional(),
-    // Per-conversation workspace override. The daemon honors it only while
-    // creating the logical session; later turns cannot move an existing session.
-    worktree: z.boolean().optional(),
-    // Steer-or-refuse (#1847): the browser sent this while a turn was running and keeps its
-    // own queue, so the daemon steers it into that turn or refuses `busy` — never parks it.
-    steer: z.boolean().optional(),
-    // The chat API the turn came through; the daemon evaluates that API's Decision gate before admitting it.
-    origin: AgentApiProtocolName.optional(),
-    // The author's browser time zone, so an assistant-mode agent reasons in their local time; an older daemon ignores it.
-    timeZone: WebchatTimeZone.optional(),
-    // Stamped by the relay from the verified verdict; absent from an older relay or Control Plane.
-    callerRole: ChatCallerRole.optional()
-  }),
+  z
+    .object({
+      op: z.literal('turn'),
+      text: z.string(),
+      // The author's mutable display handle — the transcript author line and the name a
+      // session worktree's branch is cut under.
+      user: z.string().optional(),
+      // The author's STABLE CP principal, which is what the daemon records as the
+      // transcript sender so a display-name change never re-identifies past rows.
+      // Absent on frames from an older relay; the daemon then falls back to `user`.
+      userId: z.string().optional(),
+      // The author's public avatar URL from the verified CP verdict; a Slack mirror posts under it.
+      userPicture: z.string().url().max(2_048).optional(),
+      // The author's linked chat identities (`<platform>:<tenant>:<memberId>`) from the verified CP verdict, so a continuation can address the author on its own platform.
+      userIdentities: z.array(z.string().min(1).max(512)).max(8).optional(),
+      // New browsers allocate this before sending so a pre-ack reconnect can name
+      // the exact turn. Optional for older clients; the daemon allocates a fallback.
+      turnId: z.string().uuid().optional(),
+      // Structured mentions from the composer (agent ids ⊆ the conversation roster).
+      // The daemon maps them onto `mentionedBots` so a mentioned agent activates
+      // with `trigger:'mention'`. Targeting is separate: the relay already picked
+      // THIS frame's target (RdMsgWebchat.agentId); mentions are prompt context.
+      mentions: z.array(z.string().uuid()).max(16).optional(),
+      // Canonical post identity, minted ONCE by the relay when it accepts the turn
+      // and shared by every per-target copy — see WebchatPost. Absent on frames
+      // from an older relay; the daemon then mints locally (single-agent shape).
+      post: z.object({ postId: z.string().uuid(), at: z.number().int() }).optional(),
+      // The thread this turn replies in, a root's `postId` or a continued coordinator's platform root; absent ⇒ a root. An older daemon ignores it.
+      thread: TurnThreadId.optional(),
+      attachments: z.array(WebchatImageAttachment).max(1).optional(),
+      // Files the browser already PUT to the Source Cache bucket; the daemon hands the agent presigned GETs.
+      files: z.array(WebchatFileAttachment).max(WEBCHAT_FILES_MAX).optional(),
+      // A fresh Playground has no daemon session to receive standalone `set_*`
+      // operations yet. Carry only the settings the user changed with its first turn.
+      runtime: WebchatRuntimeConfig.optional(),
+      // Per-conversation workspace override. The daemon honors it only while
+      // creating the logical session; later turns cannot move an existing session.
+      worktree: z.boolean().optional(),
+      // Steer-or-refuse (#1847): the browser sent this while a turn was running and keeps its
+      // own queue, so the daemon steers it into that turn or refuses `busy` — never parks it.
+      steer: z.boolean().optional(),
+      // The chat API the turn came through; the daemon evaluates that API's Decision gate before admitting it.
+      origin: AgentApiProtocolName.optional(),
+      // The author's browser time zone, so an assistant-mode agent reasons in their local time; an older daemon ignores it.
+      timeZone: WebchatTimeZone.optional(),
+      // Stamped by the relay from the verified verdict; absent from an older relay or Control Plane.
+      callerRole: ChatCallerRole.optional()
+    })
+    .refine(
+      (turn) => chatAttachmentsWithinBudget({ images: turn.attachments, files: turn.files }),
+      'attachments exceed the message budget'
+    ),
   // A conversation post another participant produced (a user turn targeted
   // elsewhere, or a peer agent's reply), fanned out by the relay so THIS frame's
   // agent sees the full conversation. The daemon always records it (deduplicated

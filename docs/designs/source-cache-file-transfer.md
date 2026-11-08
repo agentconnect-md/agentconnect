@@ -9,11 +9,17 @@ chart. A deployment offers it once its Control Plane has a transfer bucket
 
 ## 1. What it adds
 
-1. **Webchat uploads any file, of any size.** A non-image file the user attaches in the
+1. **Webchat uploads any file, within deployment limits.** A file the user attaches in the
    console is PUT by the browser straight into the bucket: in one PUT, or as an S3
    multipart upload when it is larger than one part (§2.1). The agent's prompt names the
    file and carries a presigned GET, which the agent downloads into its own workspace
-   when it needs the bytes. Images keep their inline path.
+   when it needs the bytes. Image originals use the same upload flow and carry a bounded
+   preview for vision and transcript replay. Up to four mixed files can be selected,
+   pasted, or dropped together; failed uploads stay staged until retried or removed.
+   `webchat-upload-previews-v1` advertises this behavior on the daemon and relay. Historical
+   inline images and image-only input without object storage keep their existing path.
+   The transcript stores upload identifiers and integrity metadata, never signed URLs.
+   Forwarding by `uploadId` reads the original directly without creating a workspace copy.
 2. **Large and binary workspace files download through the bucket.** The owning daemon
    snapshots the file where it lives (a sandbox pod, or its own disk) and PUTs it on a
    URL the Control Plane signs; the browser then fetches a presigned GET. A revision

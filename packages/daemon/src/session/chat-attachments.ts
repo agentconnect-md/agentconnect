@@ -1,26 +1,17 @@
 import { z } from 'zod'
 import {
   SessionImageAttachment,
-  TransferFileName,
   TransferGetReq,
-  TransferMimeType,
-  TransferSha256,
+  WebchatFileAttachment,
   WEBCHAT_FILES_MAX,
+  chatAttachmentsWithinBudget,
   type TransferGetOk,
   type TransferNetwork
 } from '@agentconnect.md/protocol'
 import type { Attachment } from '../messages/normalized.js'
 
 // Share the existing file-transfer field constraints; neither a URL nor a workspace path is accepted.
-export const ChatUploadReference = z
-  .object({
-    uploadId: z.string().uuid(),
-    name: TransferFileName,
-    mimeType: TransferMimeType,
-    size: z.number().int().positive(),
-    sha256: TransferSha256
-  })
-  .strict()
+export const ChatUploadReference = WebchatFileAttachment.strict()
 export type ChatUploadReference = z.infer<typeof ChatUploadReference>
 
 export const ChatAttachmentsInput = z
@@ -29,6 +20,7 @@ export const ChatAttachmentsInput = z
     files: z.array(ChatUploadReference).max(WEBCHAT_FILES_MAX).optional()
   })
   .strict()
+  .refine(chatAttachmentsWithinBudget, 'attachments exceed the message budget')
 
 // Normalize validated references only; signed URLs are resolved at execution and never enter durable ingress.
 export function decodeChatAttachments(turnId: string, input: unknown): Attachment[] {
@@ -49,6 +41,9 @@ export function decodeChatAttachments(turnId: string, input: unknown): Attachmen
       name: file.name,
       mimeType: file.mimeType,
       size: file.size,
+      ...(file.preview
+        ? { transcriptThumbnail: { data: Buffer.from(file.preview.data, 'base64'), mimeType: file.preview.mimeType } }
+        : {}),
       transfer: { uploadId: file.uploadId, sha256: file.sha256 }
     }))
   ]

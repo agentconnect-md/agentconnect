@@ -21,6 +21,10 @@ import { GETTING_TO_KNOW_TOOL } from './ops/getting-to-know.js'
 import { SEND_MESSAGE_ACTIONS } from './ops/send-message-actions.js'
 import type { TaskReach } from '../session/subsession-coordinate.js'
 import { GET_TOOL_GUIDE_TOOL } from './ops/tool-guide.js'
+import { MessageAttachment } from './ops/message-attachments.js'
+import { z } from 'zod'
+
+const { $schema: _schema, '~standard': _standard, ...messageAttachmentSchema } = z.toJSONSchema(MessageAttachment)
 
 // What the description says of tasks, by what the session may do with them (auto-session-mode.md §5.1).
 const SEND_MESSAGE_TASKS: Record<TaskReach, string> = {
@@ -44,11 +48,12 @@ function buildSendMessageTool(platforms: string[], reach: TaskReach = 'delegate'
   return {
     name: 'sendMessage',
     description:
-      'Send outside your current conversation. Required action: callAgent asks a peer to work or answer you ' +
-      '(sessionId continues an existing peer session); calling yourself needs channel and starts visible work ' +
-      `there. ${SEND_MESSAGE_TASKS[reach]}replyToSession answers a message another session sent you, by its ` +
-      'messageId; replies are not broadcast. postMessage reaches a person, channel, or another thread; it starts no ' +
-      'work and gets no reply. For your current conversation, write your ordinary reply. To get a peer’s result, ' +
+      'Send elsewhere. Required action: callAgent asks a peer to work or answer you ' +
+      '(sessionId continues an existing peer session); a self-call needs channel. ' +
+      `${SEND_MESSAGE_TASKS[reach]}replyToSession answers a message another session sent you, by its ` +
+      'messageId; replies are not broadcast. postMessage publishes text or attachments to a person, channel, or ' +
+      'another thread; it starts no work and gets no reply. For your current conversation, write your ordinary reply. ' +
+      'Use shareFile for files there. To get a peer’s result, ' +
       'use toAgent: {agentId: "...", needsReply: true}. Call getToolGuide {"tool":"sendMessage"} for arguments and ' +
       'examples. Calls without action fail without sending anything.',
     inputSchema: obj(
@@ -116,6 +121,14 @@ function buildSendMessageTool(platforms: string[], reach: TaskReach = 'delegate'
           description: 'replyToSession only: the id of the message you answer, shown with that message.'
         },
         attachment: { type: 'string', minLength: 1, description: 'Received image name from an [attached: …] marker.' },
+        attachments: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 4,
+          description:
+            'Files to publish together. Use workspace + path, upload + uploadId, or platform + platform/fileId and optional source integrationId. See getToolGuide.',
+          items: messageAttachmentSchema as JsonValue
+        },
         platform: {
           type: 'string',
           ...(platforms.length > 0 ? { enum: platforms } : {}),
@@ -142,20 +155,14 @@ function buildSendMessageTool(platforms: string[], reach: TaskReach = 'delegate'
  * bookmarks, lists, canvases, …) are the opposite: platform-shaped, so they carry no
  * `platform` selector and are injected only into a session ON a declaring platform.
  */
-/**
- * `shareFile` — post a workspace file into the CURRENT conversation
- * (docs/designs/agent-authored-attachments.md §3). The one visible send that is NOT
- * `sendMessage`'s job: every `sendMessage` post lands at a channel ROOT, while this places
- * a file in the thread the agent is already answering. No coordinates by construction —
- * the daemon posts from the trusted active-turn context.
- */
+// shareFile posts into the conversation captured by the trusted active turn, without destination arguments.
 function buildShareFileTool(): ToolDescriptor {
   return {
     name: 'shareFile',
     description:
-      'Post a FILE from your workspace into THIS conversation — the thread you are answering right now. This is ' +
-      'the only way to hand someone a file you produced or downloaded: your ordinary reply is text-only, and ' +
-      '`sendMessage` posts to channel roots, never here. `path` is relative to your workspace root; put files there ' +
+      'Post a FILE from your workspace into THIS conversation — the thread you are answering right now. ' +
+      'Your ordinary reply is text-only. To publish files to another destination, use sendMessage with ' +
+      'action postMessage and attachments. `path` is relative to your workspace root; put files there ' +
       'first (generated files: save under `outputs/` — images under `outputs/images/` — with a unique name, copying ' +
       'any result that lives outside the workspace). Any file type: PNG, JPEG, WEBP and GIF post as images (decided ' +
       'from the file bytes, not the name; the console also shows a self-contained static SVG inline, and offers a ' +

@@ -77,6 +77,7 @@ import {
 import { createWebchatDeltaBuffer, type WebchatDeltaBuffer } from '@/lib/webchat-delta-buffer'
 import { createWebchatStallWatch, type WebchatStallWatch } from '@/lib/webchat-stall-watch'
 import { filesMarker, type ComposerFile } from '@/lib/webchat-file'
+import { WEBCHAT_UPLOADS_FEATURE } from '@/lib/shared-file'
 import type { PlaygroundData, QueuedTurn, WebchatRuntimeConfig } from './contract'
 export type { QueuedTurn } from './contract'
 
@@ -148,6 +149,7 @@ const Ctx = createContext<PlaygroundData | null>(null)
 /** One live webchat socket per playground session. */
 interface Conn {
   ws?: WebSocket
+  features?: readonly string[]
   ready: Promise<WebSocket>
   conversationId?: string
   closing?: boolean
@@ -1620,6 +1622,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
               }
               if (m.type === 'ready') {
                 const features = Array.isArray(m.features) ? m.features : []
+                conn.features = features
                 setRelayFeaturesBy((cur) =>
                   cur[id]?.join('\n') === features.join('\n') ? cur : { ...cur, [id]: features }
                 )
@@ -2110,6 +2113,9 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         turnId: requestedTurnId,
         text: shown,
         ...(image ? { image } : {}),
+        ...(files?.some((file) => file.preview)
+          ? { images: files.flatMap((file) => (file.preview ? [{ ...file.preview, name: file.name }] : [])) }
+          : {}),
         ...(shownIn ? { thread: shownIn } : {})
       })
       setBusy(id, true)
@@ -2174,6 +2180,36 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       // so nudge the session lists shortly after the send lands.
       const isNewConversation = !conversationId && !conversationIds.current.get(id)
       const putOnWire = (ws: WebSocket): void => {
+        if (
+          files?.some((file) => file.preview) &&
+          !conns.current.get(id)?.features?.includes(WEBCHAT_UPLOADS_FEATURE)
+        ) {
+          const draftId = shownIn ? `${id}#${shownIn}` : id
+          setPgInput(draftId, [text, pgDrafts.current[draftId]].filter(Boolean).join('\n\n'))
+          if (image) setPgImage(draftId, image)
+          setPgFiles(draftId, (staged) => [
+            ...staged,
+            ...files.map((attachment) => ({
+              key: attachment.uploadId,
+              name: attachment.name,
+              size: attachment.size,
+              status: 'ready' as const,
+              attachment,
+              preview: attachment.preview
+            }))
+          ])
+          mutateSteps(id, (steps) => steps.filter((step) => step.turnId !== requestedTurnId))
+          pushStep(id, {
+            kind: 'done',
+            turnId: requestedTurnId,
+            text: 'Image uploads need an updated chat relay. Your draft has been kept; nothing was sent.'
+          })
+          pendingTurnFrames.current.delete(id)
+          pendingTurnIds.current.delete(id)
+          dropLanes(id)
+          setBusy(id, false)
+          return
+        }
         const frame = JSON.stringify({
           text,
           turnId: requestedTurnId,
@@ -2242,7 +2278,18 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       }
       putThrough(connect(id, agentForId, conversationId), true)
     },
-    [pgSessions, connect, pushStep, setBusy, refreshSessions]
+    [
+      pgSessions,
+      connect,
+      pushStep,
+      setBusy,
+      refreshSessions,
+      setPgInput,
+      setPgFiles,
+      setPgImage,
+      mutateSteps,
+      dropLanes
+    ]
   )
 
   /** Send a message INTO the running turn (#1847). The step lands at once as a steer; no lane
@@ -2406,7 +2453,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       const image = imageArg ?? pgImageBy[id]
       const staged = pgFilesBy[id] ?? NO_FILES
       // A file still uploading holds the send: the turn may only name bytes the store already has.
-      if (!filesArg && staged.some((f) => f.status === 'uploading')) return false
+      if (!filesArg && staged.some((f) => f.status !== 'ready')) return false
       const files = filesArg ?? staged.flatMap((f) => (f.status === 'ready' && f.attachment ? [f.attachment] : []))
       if (!text && !image && !files.length) return false
       setPgInput(id, '')
@@ -2438,10 +2485,18 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
 
   /** A message in one thread; the thread panel owns its own draft, so the conversation's composer is untouched. */
   const pgSendThread = useCallback(
-    (id: string, agentForId: string, text: string, thread: string, conversationId?: string) => {
+    (
+      id: string,
+      agentForId: string,
+      text: string,
+      thread: string,
+      conversationId?: string,
+      image?: SessionImage,
+      files?: WebchatFileAttachment[]
+    ) => {
       const trimmed = text.trim()
-      if (!trimmed || !thread) return false
-      return submitTurn(id, agentForId, trimmed, undefined, conversationId, undefined, undefined, undefined, thread)
+      if ((!trimmed && !image && !files?.length) || !thread) return false
+      return submitTurn(id, agentForId, trimmed, image, conversationId, undefined, undefined, files, thread)
     },
     [submitTurn]
   )

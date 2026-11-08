@@ -1081,7 +1081,7 @@
       },
       "addFiles": "Add files",
       "addImages": "Add images",
-      "continuationImagesOnly": "Only images can be sent to this chat thread from the console.",
+      "continuationImagesOnly": "This conversation accepts one image attachment. Documents and multiple attachments aren’t supported here.",
       "viewOriginal": "View original",
       "downloadOriginal": "Download",
       "originalUploading": "Uploading original…",
