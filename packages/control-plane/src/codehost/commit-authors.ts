@@ -30,11 +30,11 @@ export async function resolveCommitAuthors(
   viewer: { orgId: string; userId: string },
   deps: CommitAuthorsDeps
 ): Promise<CommitAuthor[]> {
-  const account = await deps.socialAccount?.(viewer.userId).catch(() => null)
+  const account = Promise.resolve(deps.socialAccount?.(viewer.userId)).catch(() => null)
   const results = await Promise.allSettled([
-    githubAuthor(account),
+    account.then(githubAuthor),
     gitlabAuthor(viewer.orgId, viewer.userId, deps),
-    azureDevOpsAuthor(viewer.orgId, account, deps)
+    account.then((linked) => azureDevOpsAuthor(viewer.orgId, linked, deps))
   ])
   return results.flatMap((result) => {
     if (result.status !== 'fulfilled') return []
