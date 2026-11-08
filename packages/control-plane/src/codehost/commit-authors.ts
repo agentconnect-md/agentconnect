@@ -1,14 +1,27 @@
 import { CommitAuthor } from '@agentconnect.md/protocol'
 import type { SocialAccount } from '../github/logto-identity.js'
 import type { GitlabCurrentUser } from '../gitlab/api.js'
-import type { GitlabConnectionRepo } from '../persistence/ports.js'
+import { isGuid, type AzureDevOpsUserIdentity } from '../azure-devops/api.js'
+import type {
+  AzureDevOpsConnectionRecord,
+  AzureDevOpsConnectionRepo,
+  GitlabConnectionRepo
+} from '../persistence/ports.js'
 
 export interface CommitAuthorsDeps {
-  githubAccount?(userId: string): Promise<SocialAccount | null>
+  socialAccount?(userId: string): Promise<SocialAccount | null>
   gitlab?: {
     host: string
     connections: Pick<GitlabConnectionRepo, 'listForOrg'>
     currentUser(orgId: string, connectionId: string): Promise<GitlabCurrentUser>
+  }
+  azureDevOps?: {
+    connections: Pick<AzureDevOpsConnectionRepo, 'listForOrg'>
+    userFor(
+      connection: AzureDevOpsConnectionRecord,
+      objectId: string,
+      email: string
+    ): Promise<AzureDevOpsUserIdentity | null>
   }
 }
 
@@ -17,9 +30,11 @@ export async function resolveCommitAuthors(
   viewer: { orgId: string; userId: string },
   deps: CommitAuthorsDeps
 ): Promise<CommitAuthor[]> {
+  const account = await deps.socialAccount?.(viewer.userId).catch(() => null)
   const results = await Promise.allSettled([
-    githubAuthor(viewer.userId, deps),
-    gitlabAuthor(viewer.orgId, viewer.userId, deps)
+    githubAuthor(account),
+    gitlabAuthor(viewer.orgId, viewer.userId, deps),
+    azureDevOpsAuthor(viewer.orgId, account, deps)
   ])
   return results.flatMap((result) => {
     if (result.status !== 'fulfilled') return []
@@ -28,8 +43,7 @@ export async function resolveCommitAuthors(
   })
 }
 
-async function githubAuthor(userId: string, deps: CommitAuthorsDeps): Promise<CommitAuthor | undefined> {
-  const account = await deps.githubAccount?.(userId)
+function githubAuthor(account: SocialAccount | null | undefined): CommitAuthor | undefined {
   const social = account?.identities.find((identity) => identity.target === 'github')
   const id = social?.userId ?? account?.githubRepoIdentity?.githubUserId
   const login = social
@@ -52,4 +66,23 @@ async function gitlabAuthor(orgId: string, userId: string, deps: CommitAuthorsDe
   const email = user.public_email
   if (!email) return undefined
   return { provider: 'gitlab', host: source.host, name: user.username, email }
+}
+
+async function azureDevOpsAuthor(
+  orgId: string,
+  account: SocialAccount | null | undefined,
+  deps: CommitAuthorsDeps
+): Promise<CommitAuthor | undefined> {
+  const source = deps.azureDevOps
+  const linked = account?.identities.filter((identity) => identity.target === 'azuread') ?? []
+  const microsoft = linked.length === 1 ? linked[0] : undefined
+  if (!source || !microsoft || !isGuid(microsoft.userId)) return undefined
+  const email = CommitAuthor.shape.email.safeParse(microsoft.email?.trim())
+  if (!email.success) return undefined
+  const connections = (await source.connections.listForOrg(orgId)).filter(
+    (connection) => connection.state === 'connected'
+  )
+  if (connections.length !== 1) return undefined
+  const user = await source.userFor(connections[0]!, microsoft.userId, email.data)
+  return user ? { provider: 'azure-devops', host: 'dev.azure.com', ...user } : undefined
 }

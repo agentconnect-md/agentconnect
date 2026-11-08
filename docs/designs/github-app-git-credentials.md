@@ -528,9 +528,13 @@ repository identity supplies the account's numeric ID and login for its noreply
 address. A GitLab OAuth connection must belong to that console member, and its
 authenticated user must match the recorded provider ID; only its explicitly
 public email is used. Ambiguous links and lookup failures supply no commit identity.
+Azure DevOps uses the console user's linked Microsoft identity. Its email searches
+the connected organization's identities; an active human account must match both
+the connection's tenant and the linked Entra object ID, with the same email.
+The application credential only reads that identity and never supplies its author.
 Tasks with fixed initiators receive a `Co-authored-by` trailer per remote host in their standing instructions
-for new commits, preserving the bot author and committer. Gitea and Azure DevOps
-bot/application connections supply no personal identity. There is no mandatory
+for new commits, preserving the bot author and committer. Gitea bot connections
+supply no personal identity. There is no mandatory
 linking flow or commit hook.
 
 Ordinary conversations have no session-wide coauthor block. Their current

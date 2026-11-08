@@ -305,6 +305,54 @@ export async function readConnectionData(
   }
 }
 
+export interface AzureDevOpsUserIdentity {
+  name: string
+  email: string
+}
+
+/** Resolve a linked Microsoft person within this tenant; the email searches candidates, while the Entra ID proves the match. */
+export async function readMicrosoftUser(
+  client: AzureDevOpsApiClient,
+  token: string,
+  input: { organization: string; tenantId: string; objectId: string; email: string }
+): Promise<AzureDevOpsUserIdentity | null> {
+  type Identity = {
+    providerDisplayName?: unknown
+    isActive?: unknown
+    isContainer?: unknown
+    properties?: Record<string, { $value?: unknown }>
+  }
+  const query = new URLSearchParams({
+    searchFilter: 'MailAddress',
+    filterValue: input.email,
+    queryMembership: 'None',
+    'api-version': API_VERSION
+  })
+  const result = await azureDevOpsCall<{ value?: Identity[] }>(
+    client,
+    token,
+    input.organization,
+    `https://vssps.dev.azure.com/${encodeURIComponent(input.organization)}/_apis/identities?${query}`
+  )
+  const same = (value: unknown, expected: string) =>
+    typeof value === 'string' && value.trim().toLowerCase() === expected.trim().toLowerCase()
+  const matches = (Array.isArray(result?.value) ? result.value : []).filter(
+    (identity) =>
+      identity?.isActive === true &&
+      identity.isContainer !== true &&
+      same(identity.properties?.SchemaClassName?.$value, 'User') &&
+      same(identity.properties?.Domain?.$value, input.tenantId) &&
+      same(
+        identity.properties?.['http://schemas.microsoft.com/identity/claims/objectidentifier']?.$value,
+        input.objectId
+      ) &&
+      same(identity.properties?.Mail?.$value, input.email)
+  )
+  if (matches.length !== 1) return null
+  const name = matches[0]!.providerDisplayName
+  return typeof name === 'string' && name.trim() ? { name: name.trim(), email: input.email } : null
+}
+
 /** One repository as the identity sees it (§5), keyed by GUID. */
 export interface AzureDevOpsRepository {
   id: string
