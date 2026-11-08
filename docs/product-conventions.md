@@ -31,7 +31,7 @@ Every Agent, Daemon, scheduled task, MCP provider, skill source, and Decision se
 **Selected** has at least one current organization member who can see it. The
 selected-member list records explicit sharing. Organization Owners can also view,
 edit, and re-share every resource in their organization; creation attribution
-grants no access. Sharing controls must state the Owner exception on desktop and
+alone grants no access. Sharing controls must state the Owner exception on desktop and
 mobile, and read-only access summaries include Owners alongside selected members.
 Removing an Owner from the selection does not revoke their role-based access.
 
@@ -51,6 +51,15 @@ organization owner only where the audience would otherwise become empty.
 This convention governs human Console access only. The independently configured
 agent-to-agent inbound and outbound policies may intentionally use **Selected**
 with an empty peer list to deny peer discovery or calls.
+
+## Reconnecting a daemon
+
+An organization Owner or the daemon's creator who still has edit permission may
+obtain a replacement connection credential, even when the original machine is
+offline or its credential is lost. Other editors cannot do so. Reconnect uses
+the same server-projected permission on desktop and mobile. Creation attribution
+never overrides current membership, sharing, or the read-only Viewer role.
+When no creator is recorded, an organization Owner handles recovery.
 
 ## What people can do in chat
 

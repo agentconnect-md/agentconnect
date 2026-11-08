@@ -742,16 +742,18 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
               )}
               {offline && !pending && m.canEdit && (
                 <>
-                  <button
-                    className="dmi"
-                    onClick={() => {
-                      setMenuOpen(false)
-                      openModal('reconnectDaemon', m)
-                    }}
-                  >
-                    <Icon name="refresh-cw" size={15} />
-                    {t('reconnect')}
-                  </button>
+                  {m.canIssueKey && (
+                    <button
+                      className="dmi"
+                      onClick={() => {
+                        setMenuOpen(false)
+                        openModal('reconnectDaemon', m)
+                      }}
+                    >
+                      <Icon name="refresh-cw" size={15} />
+                      {t('reconnect')}
+                    </button>
+                  )}
                   <div className="dmsep" />
                   <button
                     className="dmi danger"

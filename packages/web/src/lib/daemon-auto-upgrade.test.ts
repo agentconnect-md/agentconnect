@@ -30,6 +30,7 @@ const fleetRow = {
   sharedWith: [],
   canEdit: true,
   canManageSharing: true,
+  canIssueKey: false,
   canManageLifecycle: true
 } as DaemonFleetDto
 

@@ -1,13 +1,4 @@
-/**
- * `http/routes/keys.ts` — per-daemon API-key management (C2, authenticated console ops).
- *
- *   GET    /daemons/:id/keys              → list a daemon's keys (never the secret/hash)
- *   POST   /daemons/:id/keys              → mint an additional key (rotate / "Regenerate")
- *   DELETE /daemons/:id/keys/:keyId       → revoke a key (kill switch)
- *
- * Minting returns the one-time plaintext + a ready-to-run start command. A missing key on
- * revoke maps to 404 via the Prisma-P2025 branch in the error handler.
- */
+// Per-daemon key management: metadata listing, authorized issuance, and revocation.
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
@@ -15,7 +6,7 @@ import type { HttpDeps } from '../deps.js'
 import type { ApiKeyView } from '../../ports.js'
 import { DaemonId } from '../../domain/ids.js'
 import { denyViewerWrite, ctxOf, orgOf } from '../rbac.js'
-import { canView, canEdit } from '../../authorization/policy.js'
+import { canView, canEdit, canIssueDaemonKey } from '../../authorization/policy.js'
 import { ApiKeyListDto, MintedKeyDto, ApiKeyDto, IdParam, ErrorDto, type ApiKeyDtoT } from '../dto/index.js'
 import { daemonStartCommand, daemonWsUrl } from '../onboarding.js'
 import { Tag } from '../plugins/openapi.js'
@@ -38,11 +29,7 @@ export function keyRoutes(deps: HttpDeps) {
   return async function keyRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
 
-    // Keys are a DERIVED resource — they inherit the parent daemon's visibility.
-    // Resolve the daemon and require it be in the caller's org AND visible to them;
-    // a cross-org OR restricted-away daemon both read as absent (404). Minting /
-    // revoking a daemon's enrollment credential is a credential write, so the
-    // handlers additionally gate on canEdit.
+    // Key metadata inherits daemon visibility; issuing an identity credential has its own policy.
     const getOrgDaemon = async (req: FastifyRequest, id: string) => {
       const view = await deps.registry.get(orgOf(req), DaemonId(id))
       if (!view) return null
@@ -71,8 +58,7 @@ export function keyRoutes(deps: HttpDeps) {
       }
     )
 
-    // Mint an additional key for an existing daemon (overlap rotation, or "Regenerate"
-    // for an offline/pending daemon). Returns the one-time plaintext + start command.
+    // Mint an additional key for overlap rotation or reconnecting an existing daemon.
     r.post(
       '/daemons/:id/keys',
       {
@@ -81,7 +67,7 @@ export function keyRoutes(deps: HttpDeps) {
           tags: [Tag.DaemonKeys],
           summary: 'Issue a daemon key',
           description:
-            'Mints an additional API key for an existing daemon (overlap rotation or "Regenerate"), returning the one-time plaintext and a ready-to-run start command.',
+            'An organization owner or the daemon creator with current edit access may mint an additional API key for reconnecting or overlap rotation, returning the one-time plaintext and a ready-to-run start command.',
           operationId: 'issueDaemonKey',
           params: IdParam,
           response: { 201: MintedKeyDto, 403: ErrorDto, 404: ErrorDto }
@@ -93,10 +79,16 @@ export function keyRoutes(deps: HttpDeps) {
         if (!view) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'daemon not found' })
         }
-        if (!canEdit(view, ctxOf(req))) {
-          return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this daemon' })
+        if (!canIssueDaemonKey(view, ctxOf(req))) {
+          return reply.code(403).send({
+            error: 'Forbidden',
+            statusCode: 403,
+            message: 'only an organization owner or the daemon creator with edit access can issue keys'
+          })
         }
-        const minted = await deps.apiKeys.mintForDaemon(orgOf(req), DaemonId(req.params.id))
+        const minted = await deps.apiKeys.mintForDaemon(orgOf(req), DaemonId(req.params.id), {
+          createdByUserId: req.orgCtx!.userId
+        })
         const command = daemonStartCommand(daemonWsUrl(deps.config), minted.token, deps.config.DAEMON_DIST_TAG)
         return reply.code(201).send({
           apiKeyId: minted.apiKeyId,

@@ -2473,6 +2473,8 @@ export interface DaemonRow {
   lifecycleOp: DaemonLifecycleOp | null
   /** Whether the caller may command restart/upgrade on this daemon (org owner only). */
   canManageLifecycle: boolean
+  /** Whether the caller may obtain a replacement daemon credential. */
+  canIssueKey: boolean
   /** The daemon installs new releases itself and restarts when idle. */
   autoUpgrade: boolean
   /** The daemon advertised auto-upgrade: supervised by the service or CLI, and not a pool member. */
