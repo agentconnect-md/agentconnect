@@ -7689,15 +7689,15 @@ export function fetchAzureDevOpsRepositories(orgId?: string): Promise<AzureDevOp
   )
 }
 
-/** Connect with Microsoft, or with a connection id Manage project access: Microsoft's sign-in URL to send the browser to. */
-/** Re-key a repository's service hook subscriptions; `suspectedLeak` drops the old key at once instead of after 36 hours. */
-export function rotateAzureDevOpsHookKey(id: string, suspectedLeak: boolean): Promise<AzureDevOpsHookKeyRotationDto> {
+/** Re-key a repository's service hook subscriptions; the old key stays accepted for 36 hours after the new one takes over. */
+export function rotateAzureDevOpsHookKey(id: string): Promise<AzureDevOpsHookKeyRotationDto> {
   return apiPost<AzureDevOpsHookKeyRotationDto>(
     `${orgBase()}/azure-devops/repositories/${encodeURIComponent(id)}/rotate-hook-key`,
-    { suspectedLeak }
+    {}
   )
 }
 
+/** Connect with Microsoft, or with a connection id Manage project access: Microsoft's sign-in URL to send the browser to. */
 export function startAzureDevOpsConnect(connectionId?: string, orgId?: string): Promise<{ authorizeUrl: string }> {
   return apiPost<{ authorizeUrl: string }>(
     `${orgBase(orgId)}/azure-devops/connect`,

@@ -5277,7 +5277,6 @@ export interface AzureDevOpsHookKeys {
   current: string
   generation: bigint
   next: string | null
-  nextSuspectedLeak: boolean
   previous: string | null
   previousExpiresAt: Date | null
 }
@@ -5298,8 +5297,8 @@ export interface AzureDevOpsHookRepo {
   keys(orgId: string, bindingId: string): Promise<AzureDevOpsHookKeys | null>
   /** Seal a first current key; an existing one is kept. */
   ensureKeys(orgId: string, bindingId: string, current: string): Promise<AzureDevOpsHookKeys>
-  /** Seal the next key unless a rotation is already under way; the suspected-leak flag only ever turns on. */
-  beginRotation(orgId: string, bindingId: string, next: string, suspectedLeak: boolean): Promise<AzureDevOpsHookKeys>
+  /** Seal the next key unless a rotation is already under way. */
+  beginRotation(orgId: string, bindingId: string, next: string): Promise<AzureDevOpsHookKeys>
   /** The barrier (§11.2): promote next to current only when every recorded subscription carries it; null when it did not. */
   promoteIfSwitched(orgId: string, bindingId: string, previousExpiresAt: Date): Promise<AzureDevOpsHookKeys | null>
   /** Forget a previous key whose window closed. */

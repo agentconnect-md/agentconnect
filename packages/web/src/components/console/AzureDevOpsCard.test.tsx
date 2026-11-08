@@ -275,19 +275,25 @@ describe('AzureDevOpsCard triggers (§11.2)', () => {
     mocks.fetchRepositories.mockResolvedValue([{ ...BINDING, hookReason: null, subscriptions: [] }])
     await render()
     const row = host.querySelector('[data-azure-devops-repository="binding-1"]')!
-    expect(row.querySelector('[data-azure-devops-subscriptions]')).toBeNull()
+    expect(row.querySelector('[data-azure-devops-last-event]')).toBeNull()
     expect(row.querySelector('[data-azure-devops-hook-reason]')).toBeNull()
     expect(row.querySelector('button')).toBeNull()
   })
 
-  it('shows the subscriptions, the last event and the ones Azure DevOps paused', async () => {
+  it('shows a working trigger by its last event alone, and a problem by its badge alone', async () => {
     mocks.fetchConnections.mockResolvedValue(listed([CONNECTION]))
     mocks.fetchRepositories.mockResolvedValue([HOOKED])
     await render()
-    const line = host.querySelector('[data-azure-devops-subscriptions]')!
-    expect(line.textContent).toContain('3 service hooks')
+    const line = host.querySelector('[data-azure-devops-last-event]')!
     expect(line.textContent).toContain('last event')
-    expect(line.textContent).toContain('1 paused by Azure DevOps')
+    expect(host.textContent).not.toContain('service hook')
+    expect(host.textContent).not.toContain('paused')
+
+    document.body.innerHTML = ''
+    mocks.fetchRepositories.mockResolvedValue([{ ...HOOKED, hookReason: 'triggers_not_allowed' as const }])
+    await render()
+    expect(host.querySelector('[data-azure-devops-hook-reason]')?.textContent).toBe('Triggers not allowed')
+    expect(host.querySelector('[data-azure-devops-last-event]')).toBeNull()
   })
 
   it('tells who allows triggers: Manage project access, or Azure DevOps for an own application', async () => {
@@ -313,7 +319,7 @@ describe('AzureDevOpsCard triggers (§11.2)', () => {
     expect(host.querySelector('[data-azure-devops-own-triggers]')?.textContent).toContain('View and Edit subscriptions')
   })
 
-  it('rotates the key, with the suspected-leak choice, and reports the switch', async () => {
+  it('rotates the key and reports the switch', async () => {
     mocks.fetchConnections.mockResolvedValue(listed([CONNECTION]))
     mocks.fetchRepositories.mockResolvedValue([HOOKED])
     mocks.rotate.mockResolvedValueOnce({ rotated: true, switched: 3, total: 3, reason: null })
@@ -323,14 +329,11 @@ describe('AzureDevOpsCard triggers (§11.2)', () => {
       rotate.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     const modal = host.querySelector('[data-azure-devops-rotate="binding-1"]')!
-    const leak = modal.querySelector('input[type="checkbox"]') as HTMLInputElement
-    await act(async () => {
-      leak.click()
-    })
+    expect(modal.querySelector('input[type="checkbox"]')).toBeNull()
     await click('Rotate', modal)
-    expect(mocks.rotate).toHaveBeenCalledWith('binding-1', true)
+    expect(mocks.rotate).toHaveBeenCalledWith('binding-1')
     expect(host.querySelector('[data-azure-devops-rotate]')).toBeNull()
-    expect(host.textContent).toContain('All 3 subscriptions use the new key.')
+    expect(host.textContent).toContain('Key rotated.')
   })
 
   it('words a refused rotation', async () => {
@@ -343,7 +346,7 @@ describe('AzureDevOpsCard triggers (§11.2)', () => {
       rotate.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     await click('Rotate', host.querySelector('.modal')!)
-    expect(mocks.rotate).toHaveBeenCalledWith('binding-1', false)
+    expect(mocks.rotate).toHaveBeenCalledWith('binding-1')
     expect(host.querySelector('[role="alert"]')?.textContent).toBe(
       'The subscriptions are being updated. Try again in a moment.'
     )

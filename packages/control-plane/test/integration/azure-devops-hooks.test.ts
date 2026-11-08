@@ -446,18 +446,6 @@ describe('the rotation barrier (§11.2)', () => {
     expect(rule.azureDevOps!.subscriptions).toHaveLength(5)
   })
 
-  it('drops the old key at promotion when the rotation is for a suspected leak', async () => {
-    const h = await harness()
-    await hooked(h)
-    const before = (await h.keys())!
-    const rotated = await h.hooks.rotate(DEFAULT_ORG_ID, h.binding.id, { suspectedLeak: true })
-    expect(rotated).toEqual({ rotated: true, switched: 4, total: 4, reason: null })
-    await h.hooks.observeDelivery({ repoId: h.repoId, at: new Date(clock.now()), verifiedWith: 'next' })
-    const after = (await h.keys())!
-    expect(after.current).not.toBe(before.current)
-    expect(after).toMatchObject({ next: null, previous: null, previousExpiresAt: null })
-  })
-
   it('answers the rotation route with the switched count', async () => {
     const h = await harness()
     await hooked(h)
