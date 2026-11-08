@@ -6,6 +6,7 @@ import { NextIntlClientProvider } from 'next-intl'
 import { afterEach, beforeEach, expect, it } from 'vitest'
 import messages from '../../../messages/en.json'
 import { mapTicks, NewDivider, TranscriptMap, type MapTurn } from './TranscriptNav'
+import { lastSpokenSentence } from './TurnViews'
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 let container: HTMLDivElement
@@ -61,7 +62,7 @@ it('draws every tick short and the turn in view long, and jumps to a turn from i
   expect(ticks().map((tick) => tick.getAttribute('aria-label'))).toEqual(turns.map((turn) => turn.tip))
   // One tick marks the turn in view; it alone is the long one.
   expect(ticks().filter((tick) => tick.getAttribute('aria-current') === 'true')).toHaveLength(1)
-  expect(ticks().filter((tick) => tick.className.includes('w-[22px]'))).toHaveLength(1)
+  expect(ticks().filter((tick) => tick.className.includes('w-[18px]'))).toHaveLength(1)
   expect(ticks().filter((tick) => tick.className.includes('w-3'))).toHaveLength(turns.length - 1)
   const scroller = container.querySelector<HTMLElement>('[data-transcript-scroll]')!
   const target = container.querySelector<HTMLElement>('[data-turn-anchor="u2"]')!
@@ -82,4 +83,14 @@ it('draws no map for a transcript too short to need one, and names the NEW line'
   )
   expect(container.querySelector('[data-transcript-map]')).toBeNull()
   expect(container.querySelector('[data-new-divider]')?.textContent).toBe('New')
+})
+
+it('names an agent turn by the last sentence it said, in Latin or CJK punctuation, without markdown', () => {
+  const step = (text: string, lane = 'msg') => ({ text, lane }) as never
+  expect(lastSpokenSentence([step('Ran the tests. **All 12 passed.** Want me to merge?')])).toBe('Want me to merge?')
+  expect(lastSpokenSentence([step('明天以晴为主。数据来自 Open-Meteo。要查别的城市，告诉我城市名就行。')])).toBe(
+    '要查别的城市，告诉我城市名就行。'
+  )
+  expect(lastSpokenSentence([step('See [the PR](https://example.test/pr/1)\n\n```\ncode\n```')])).toBe('See the PR')
+  expect(lastSpokenSentence([])).toBe('')
 })

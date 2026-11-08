@@ -33,6 +33,7 @@ import { ReplyInThreadButton, ThreadRootPress } from '@/components/console/Threa
 import { type TaskLink } from '@/components/console/task-link'
 import { CopyTurnButton, StepExtras, McpAppRow, turnWork, WorkStepList } from '@/components/console/WorkPanel'
 import { type Turn } from '@/components/console/session-turns'
+import type { FmtStep } from '@/components/console/transcript-steps'
 import { ElicitationCard, MessageImages, PlanBlock } from '@/components/console/TranscriptCards'
 
 /** Whether a user turn prints a sender line (it is not you), which the avatar's alignment follows. */
@@ -181,6 +182,33 @@ export function UserTurnView({
 }
 
 /** An agent's turn: its mark, a header that folds its work, then what it said in order, its plan, notices and approvals. */
+/** What a turn said last, as one plain sentence: the last sentence of its spoken answer, markers stripped; '' when it said nothing. */
+export function lastSpokenSentence(steps: readonly FmtStep[]): string {
+  const said = steps
+    .filter(
+      (s) =>
+        !WORK_LANES.has(s.lane) &&
+        s.lane !== NOTICE_LANE &&
+        s.lane !== PLAN_LANE &&
+        s.lane !== ELICIT_LANE &&
+        s.lane !== APP_LANE &&
+        s.lane !== CAPABILITY_LANE
+    )
+    .map((s) => s.text)
+    .filter(Boolean)
+    .join('\n')
+  const plain = said
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/[`*_~#>|]/g, '')
+  // Sentences end at a stop (Latin or CJK) or a line break; the last one with any words is what the turn left you with.
+  const sentences = plain
+    .split(/(?<=[.!?。！？])\s+|(?<=[。！？])|\n+/)
+    .map((part) => part.replace(/\s+/g, ' ').trim())
+    .filter((part) => /[\p{L}\p{N}]/u.test(part))
+  return sentences.at(-1) ?? ''
+}
+
 export function BotTurnView({
   turn,
   agentById,
