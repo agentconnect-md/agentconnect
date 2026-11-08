@@ -178,6 +178,8 @@ export class AzureDevOpsStatusCoordinator {
     if (!snapshot || snapshot.reportingMode !== 'status') return
     const run = await this.deps.runs.getRun(HookId(edge.hookId), edge.deliveryKey)
     if (!run || run.projectionEpoch === null) return
+    // A delivery that completed without a model turn (an ignored update, a cleanup) is no run: it must not restate the head's status.
+    if (edge.state === 'completed' && !run.turnStartedAt) return
     const agent = await this.deps.agents.getUnscoped(AgentId(edge.agentId))
     if (!agent || agent.orgId !== edge.orgId) return
     const binding = await hookedBinding(this.deps.bindings, edge.orgId, subject.projectId)

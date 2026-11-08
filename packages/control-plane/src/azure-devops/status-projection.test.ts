@@ -179,7 +179,7 @@ describe('azureDevOpsStatusSpec (§11.7)', () => {
 })
 
 describe('AzureDevOpsStatusCoordinator', () => {
-  function coordinator(row = projection()) {
+  function coordinator(row = projection(), turnStartedAt: Date | null = new Date(NOW)) {
     const projections = {
       upsert: vi.fn(async (_input: UpsertCodeHostRunProjectionInput) => row),
       setDesired: vi.fn(async () => true),
@@ -188,7 +188,7 @@ describe('AzureDevOpsStatusCoordinator', () => {
     const kick = vi.fn()
     const service = new AzureDevOpsStatusCoordinator({
       projections,
-      runs: { getRun: vi.fn(async () => ({ projectionEpoch: 1n, startedAt: new Date(NOW) })) } as never,
+      runs: { getRun: vi.fn(async () => ({ projectionEpoch: 1n, startedAt: new Date(NOW), turnStartedAt })) } as never,
       agents: { getUnscoped: vi.fn(async () => agent) },
       bindings: { listForRepo: vi.fn(async () => [binding]) },
       connections: { get: vi.fn(async () => connection) },
@@ -222,6 +222,14 @@ describe('AzureDevOpsStatusCoordinator', () => {
       new Date(NOW),
       undefined
     )
+  })
+
+  it('restates nothing for a delivery that completed without a turn, and still settles one refused before its turn', async () => {
+    const ignored = coordinator(projection(), null)
+    await ignored.service.afterReport(edge({ state: 'completed', reason: 'review_request_not_for_identity' }))
+    expect(ignored.projections.upsert).not.toHaveBeenCalled()
+    await ignored.service.afterReport(edge({ state: 'failed', reason: 'delivery_unresolved' }))
+    expect(ignored.projections.upsert).toHaveBeenCalledWith(expect.objectContaining({ desiredState: 'failed' }))
   })
 
   it('opens nothing for an update kind that names no head yet, or a hook that does not report a status', async () => {
