@@ -158,13 +158,12 @@ describe('the kinds a repository needs (§11.2)', () => {
       ],
       7n
     )
-    // A pull-request watcher also takes merged and state, for cleanup.
-    expect([...kinds].sort()).toEqual(['merged', 'opened', 'push', 'reviewers', 'state'])
+    // A pull-request watcher also takes state, for cleanup; never "merge attempted", which fires on opening too.
+    expect([...kinds].sort()).toEqual(['opened', 'push', 'reviewers', 'state'])
   })
 
   it('takes every update kind for a wildcard, the comment kind for the comment family, and nothing for no hook', () => {
     expect([...azureDevOpsDeliveryKinds([hook({ events: ['merge_request:*'] })], 7n)].sort()).toEqual([
-      'merged',
       'opened',
       'reviewers',
       'revision',
@@ -172,7 +171,6 @@ describe('the kinds a repository needs (§11.2)', () => {
     ])
     expect([...azureDevOpsDeliveryKinds([hook({ commentFamilies: ['merge_request'] })], 7n)].sort()).toEqual([
       'comment',
-      'merged',
       'state'
     ])
     expect(azureDevOpsDeliveryKinds([hook({ events: ['push:*'], kind: 'gitea' })], 7n).size).toBe(0)

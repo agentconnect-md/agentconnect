@@ -1005,7 +1005,6 @@ subscription per delivery kind its enabled hooks need, never one per hook:
 | revision      | `git.pullrequest.updated`                   | … plus `notificationType: PushNotification`            | `minimal`        |
 | reviewers     | `git.pullrequest.updated`                   | … plus `notificationType: ReviewersUpdateNotification` | all              |
 | state         | `git.pullrequest.updated`                   | … plus `notificationType: StatusUpdateNotification`    | all              |
-| merged        | `git.pullrequest.merged`                    | … plus `mergeResult: Succeeded`                        | `minimal`        |
 | comment       | `ms.vss-code.git-pullrequest-comment-event` | `projectId`, `repository`                              | all              |
 | push          | `git.push`                                  | `projectId`, `repository`                              | `minimal`        |
 
@@ -1031,9 +1030,13 @@ request's author, which a minimal resource does not name (§11.4). A
 subscription still sending a minimal resource for those two kinds is drift, and
 the convergence rewrites it.
 
-A hook that watches pull requests also gets the merged and state kinds, even
-when it subscribes to neither event: they carry the cleanup that retires a
-pull request's checkout (§11.4).
+A hook that watches pull requests also gets the state kind, even when it
+subscribes to no state event: it carries the cleanup that retires a pull
+request's checkout (§11.4). `git.pullrequest.merged` is "merge attempted" and
+fires on every merge check, opening a pull request included (**verified**), so
+it is never subscribed: completion arrives as a state update. A delivery of that
+kind from an older subscription is cleanup only when the daemon's read finds
+the pull request `completed`.
 
 The binding records each subscription id with its kind. The Control Plane's
 `convergeManagedRepository` makes the set match the union of the enabled
@@ -1136,7 +1139,7 @@ belong to the binding, so the frame needs no subscription id.
 | `merge_request:synchronize`      | revision: a new iteration                                                             |
 | `merge_request:review_requested` | reviewers: the connection identity among the reviewers, with no vote and not declined |
 | `merge_request:reopened`         | state: `active` again after `abandoned`                                               |
-| maintenance cleanup family       | merged; state: `abandoned` or `completed`                                             |
+| maintenance cleanup family       | state: `abandoned` or `completed`                                                     |
 | pull-request comment             | comment: a `text` comment on a thread, conversation or diff                           |
 | `push:*`                         | push                                                                                  |
 
@@ -1147,7 +1150,7 @@ label change, so the label filter is not offered either. A pull request opened
 as a draft is admitted as Gitea §8 admits one; toggling draft fires none of
 the update kinds subscribed here and is inert.
 
-For the three update kinds and merged, the relay forwards the pull-request id
+For the three update kinds, the relay forwards the pull-request id
 and no classification. The daemon reads the pull request and its iterations at
 turn start under the hook-reply lease of §11.5, and classifies on that read,
 not on the body. A reviewer change is a review request only while the pull

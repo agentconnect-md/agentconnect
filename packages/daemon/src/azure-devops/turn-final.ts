@@ -150,6 +150,9 @@ function classify(
       ? AZURE_DEVOPS_REVIEW_REQUESTED_EVENT
       : AZURE_DEVOPS_REVIEWERS_UPDATED_EVENT
   }
+  // "Merge attempted" fires on every merge check, opening included: only a completed pull request is a merge.
+  if (azure.deliveryKind === 'merged')
+    return status === 'completed' ? AZURE_DEVOPS_MERGED_EVENT : AZURE_DEVOPS_STATE_CHANGED_EVENT
   if (azure.deliveryKind !== 'state') return event
   if (status === 'completed') return AZURE_DEVOPS_MERGED_EVENT
   if (status === 'abandoned') return AZURE_DEVOPS_CLOSED_EVENT
@@ -164,11 +167,14 @@ export async function resolveAzureDevOpsDelivery(
   fetchImpl?: typeof fetch
 ): Promise<CodeHostResolvedDelivery | undefined> {
   const azure = msg.azureDevOps
-  // A merge is cleanup on the wire; a push has no pull request to read.
-  if (!azure || azure.target.kind !== 'pull' || azure.deliveryKind === 'merged') return undefined
-  // The update kinds need the read: three to classify, and a revision for the head its lane and supersession key on.
+  // A push has no pull request to read.
+  if (!azure || azure.target.kind !== 'pull') return undefined
+  // The update kinds need the read: four to classify, and a revision for the head its lane and supersession key on.
   const needsRead =
-    azure.deliveryKind === 'reviewers' || azure.deliveryKind === 'state' || azure.deliveryKind === 'revision'
+    azure.deliveryKind === 'reviewers' ||
+    azure.deliveryKind === 'state' ||
+    azure.deliveryKind === 'merged' ||
+    azure.deliveryKind === 'revision'
   let read: AzureDevOpsPullRead
   try {
     read = await readUnderLease(msg, azure, azure.target.pullRequestId, host, fetchImpl)
