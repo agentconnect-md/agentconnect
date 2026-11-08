@@ -239,8 +239,9 @@ deliver the viewer context and would leave restrictions ineffective.
   `canView(view, ctxOf(req))`.
 - Filter the agent sublist on a daemon detail page by agent visibility.
 - **Daemon-key route family:** `GET/POST /daemons/:id/keys` and DELETE apply
-  `canView` while resolving the daemon and require `canEdit` for issuance and
-  revocation, because credential minting is stricter than metadata read access.
+  `canView` while resolving the daemon. Issuance additionally requires an
+  organization owner because it grants the daemon's identity; revocation
+  requires `canEdit`. Creation attribution never authorizes issuance.
 
 ### 5.3 Cron: repository access
 

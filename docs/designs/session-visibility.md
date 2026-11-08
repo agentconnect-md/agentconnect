@@ -625,7 +625,10 @@ Invariants preserved:
   member to the one organization member who linked that identity, or takes a
   console user directly, and answers which of the agent's named sessions that
   user could see, through the same resolver and `canViewSession` the console's
-  own reads use (`http/read-access.ts`). The daemon fails the read closed when
+  own reads use (`http/read-access.ts`). The requesting daemon must serve that
+  agent through direct placement or a live duty, checked before the lookup and
+  again before returning its result. This scope check does not authenticate the
+  daemon-supplied asker. The daemon fails the read closed when
   the CP cannot answer. For a DM or webchat source the read rule is stricter
   than this predicate: only sessions the user owns count (`ownsSession` on the
   recorded `ownerIdentity`), so an `org` DM shown to every member is read only

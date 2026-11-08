@@ -529,7 +529,7 @@ function ClusterFleetCard({ members, hosted }: { members: DaemonRow[]; hosted: n
 }
 
 function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
-  const { orgPath } = useOrgs()
+  const { orgPath, activeOrg } = useOrgs()
   const router = useRouter()
   const t = useTranslations('Daemons')
   const { renameDaemon } = useConsoleData()
@@ -742,16 +742,18 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
               )}
               {offline && !pending && m.canEdit && (
                 <>
-                  <button
-                    className="dmi"
-                    onClick={() => {
-                      setMenuOpen(false)
-                      openModal('reconnectDaemon', m)
-                    }}
-                  >
-                    <Icon name="refresh-cw" size={15} />
-                    {t('reconnect')}
-                  </button>
+                  {activeOrg?.role === 'owner' && (
+                    <button
+                      className="dmi"
+                      onClick={() => {
+                        setMenuOpen(false)
+                        openModal('reconnectDaemon', m)
+                      }}
+                    >
+                      <Icon name="refresh-cw" size={15} />
+                      {t('reconnect')}
+                    </button>
+                  )}
                   <div className="dmsep" />
                   <button
                     className="dmi danger"

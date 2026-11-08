@@ -655,6 +655,34 @@ describe('Selected audience invariants across resource kinds', () => {
 })
 
 describe('derived visibility — daemon keys inherit the daemon visibility', () => {
+  it('only an organization owner can issue another key, even when a collaborator created or can edit the daemon', async () => {
+    const creator = await makeUser('key-creator', 'collaborator')
+    const editor = await makeUser('key-editor', 'collaborator')
+    const viewer = await makeUser('key-viewer', 'viewer')
+    const creatorApp = appAs(creator).app
+    const provisioned = await creatorApp.inject({ method: 'POST', url: `${ORG}/daemons/token` })
+    expect(provisioned.statusCode).toBe(201)
+    const { daemonId } = provisioned.json() as { daemonId: string }
+    const path = `${ORG}/daemons/${daemonId}/keys`
+    const originalKeys = await prisma.apiKey.findMany({ where: { daemonId } })
+    expect(originalKeys).toHaveLength(1)
+
+    for (const user of [creator, editor, viewer]) {
+      const app = appAs(user).app
+      expect((await app.inject({ method: 'GET', url: path })).statusCode).toBe(200)
+      expect((await app.inject({ method: 'POST', url: path })).statusCode).toBe(403)
+    }
+    expect(await prisma.apiKey.findMany({ where: { daemonId } })).toEqual(originalKeys)
+
+    const ownerApp = appAs(DEFAULT_OWNER_ID).app
+    const issued = await ownerApp.inject({ method: 'POST', url: path })
+    expect(issued.statusCode).toBe(201)
+    const { apiKeyId } = issued.json() as { apiKeyId: string }
+    expect(await prisma.apiKey.count({ where: { daemonId, revokedAt: null } })).toBe(2)
+    expect((await ownerApp.inject({ method: 'DELETE', url: `${path}/${apiKeyId}` })).statusCode).toBe(200)
+    expect(await prisma.apiKey.count({ where: { daemonId, revokedAt: null } })).toBe(1)
+  })
+
   it('a restricted daemon’s keys are hidden from unshared members, but not from organization owners', async () => {
     const other = await makeUser('k-other', 'collaborator')
     const resourceOwner = await makeUser('k-resource-owner', 'owner')

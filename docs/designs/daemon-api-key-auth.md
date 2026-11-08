@@ -163,8 +163,12 @@ string is defensive compatibility behavior, not an active lifecycle.
 
 ## 5. Rotation, listing, and revocation
 
-Daemon-key management inherits the visibility and edit permissions of the
-parent daemon. These routes, like `POST /daemons/token` and
+Daemon-key metadata inherits the parent daemon's visibility. Issuing another
+key requires an organization owner: a key can impersonate the daemon on any
+machine, so editing or having created the daemon does not authorize issuance.
+Revocation retains the parent daemon's edit permission. Non-viewer members
+can still provision a new daemon with its first key, but must ask an owner
+to issue a replacement. These routes, like `POST /daemons/token` and
 `POST /agents?connect=true`, take an interactive sign-in only (§6):
 
 | Endpoint                          | Behavior                                                                    |
