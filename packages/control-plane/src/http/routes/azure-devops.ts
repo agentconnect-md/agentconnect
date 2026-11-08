@@ -18,7 +18,6 @@ import {
   ErrorDto,
   IdParam,
   ReplaceAzureDevOpsSecretBody,
-  RotateAzureDevOpsHookKeyBody,
   AzureDevOpsHookKeyRotationDto,
   type AzureDevOpsConnectionDtoT,
   type AzureDevOpsRepositoryBindingDtoT
@@ -352,10 +351,9 @@ export function azureDevOpsRoutes(deps: HttpDeps) {
           tags: [Tag.AzureDevOps],
           summary: 'Rotate an Azure DevOps repository’s service hook key',
           description:
-            'Seals a next key, sends it to the relays beside the current one, then replaces each recorded service hook subscription with the next key, recording each acknowledgement so a rotation cut short resumes without re-keying any subscription twice. The key is promoted once every subscription has switched and a delivery verifies under it; the old key is then accepted for 36 hours of Azure DevOps retries, or dropped at once with `suspectedLeak`. Answers how many subscriptions have switched so far.',
+            'Seals a next key, sends it to the relays beside the current one, then replaces each recorded service hook subscription with the next key, recording each acknowledgement so a rotation cut short resumes without re-keying any subscription twice. The key is promoted once every subscription has switched and a delivery verifies under it; the old key is then accepted for 36 hours of Azure DevOps retries. Answers how many subscriptions have switched so far.',
           operationId: 'rotateAzureDevOpsHookKey',
           params: IdParam,
-          body: RotateAzureDevOpsHookKeyBody,
           response: { 200: AzureDevOpsHookKeyRotationDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
         }
       },
@@ -371,7 +369,7 @@ export function azureDevOpsRoutes(deps: HttpDeps) {
         }
         const target = await deps.repos.azureDevOpsRepositoryBinding.get(orgId, req.params.id)
         if (!target) return notFound(reply, 'azure devops repository')
-        return azure.hooks.rotate(orgId, target.id, { suspectedLeak: req.body.suspectedLeak })
+        return azure.hooks.rotate(orgId, target.id)
       }
     )
 

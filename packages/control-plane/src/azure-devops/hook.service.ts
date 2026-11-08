@@ -402,11 +402,7 @@ export class AzureDevOpsHookService {
   }
 
   /** §11.2 rotation: seal the next key, let the relays accept it, then PUT each recorded subscription, recording each acknowledgement. */
-  async rotate(
-    orgId: string,
-    bindingId: string,
-    opts: { suspectedLeak?: boolean } = {}
-  ): Promise<AzureDevOpsRotationOutcome> {
+  async rotate(orgId: string, bindingId: string): Promise<AzureDevOpsRotationOutcome> {
     const binding = await this.deps.bindings.get(orgId, bindingId)
     if (!binding) return { rotated: false, switched: 0, total: 0, reason: 'binding_missing' }
     const owner = randomBytes(9).toString('base64url')
@@ -426,7 +422,7 @@ export class AzureDevOpsHookService {
       if (!url) return { rotated: false, switched: 0, total, reason: 'relay_url_unconfigured' }
       const connection = await this.deps.connections.get(orgId, binding.connectionId)
       if (!connection) return { rotated: false, switched: 0, total, reason: 'connection_missing' }
-      const keys = await this.deps.hooks.beginRotation(orgId, binding.id, hex32(), opts.suspectedLeak === true)
+      const keys = await this.deps.hooks.beginRotation(orgId, binding.id, hex32())
       started = true
       // Step 1: both keys reach the relays before any subscription is switched.
       await this.changed(orgId, binding.repoId)

@@ -2500,13 +2500,6 @@ export type AzureDevOpsRepositoryBindingDtoT = z.infer<typeof AzureDevOpsReposit
 
 export const AzureDevOpsRepositoryBindingListDto = z.object({ bindings: z.array(AzureDevOpsRepositoryBindingDto) })
 
-export const RotateAzureDevOpsHookKeyBody = z.strictObject({
-  suspectedLeak: z
-    .boolean()
-    .default(false)
-    .describe('The current key may have leaked: drop it at promotion instead of accepting it for 36 hours more.')
-})
-
 /** A rotation's progress (§11.2): promotion follows the first delivery verified under the next key once every subscription switched. */
 export const AzureDevOpsHookKeyRotationDto = z.object({
   rotated: z.boolean(),

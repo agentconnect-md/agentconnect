@@ -76,10 +76,6 @@ const HOOK_REASON = {
   }
 } as const satisfies Record<AzureDevOpsHookReason, { badge: string; reason: string; reasonOwn?: string; tone: string }>
 
-/** Azure DevOps's own statuses: `enabled`, `onProbation`, and the `disabledBy…` family. */
-const subscriptionPaused = (status: string | null): boolean =>
-  status !== null && (status === 'onProbation' || status.startsWith('disabled'))
-
 /** A rotation refusal's message key. */
 function rotateRefusalKey(reason: string | null) {
   if (reason === 'no_subscriptions') return 'rotateRefusals.noSubscriptions'
@@ -105,7 +101,6 @@ export default function AzureDevOpsCard({ canWrite }: { canWrite: boolean }) {
   const [notice, setNotice] = useState<string | null>(null)
   const [disconnecting, setDisconnecting] = useState(false)
   const [rotating, setRotating] = useState<AzureDevOpsRepositoryBindingDto | null>(null)
-  const [suspectedLeak, setSuspectedLeak] = useState(false)
 
   useEffect(() => {
     if (!activeOrg) return
@@ -189,22 +184,20 @@ export default function AzureDevOpsCard({ canWrite }: { canWrite: boolean }) {
     })
 
   const rotationText = (outcome: AzureDevOpsHookKeyRotationDto): string => {
-    const counts = { switched: outcome.switched, total: outcome.total }
-    if (outcome.rotated) return outcome.reason ? t('rotatedPartly', counts) : t('rotated', counts)
+    if (outcome.rotated) return outcome.reason ? t('rotatedPartly') : t('rotated')
     return t(rotateRefusalKey(outcome.reason))
   }
 
-  const rotate = (target: AzureDevOpsRepositoryBindingDto, leak: boolean) =>
+  const rotate = (target: AzureDevOpsRepositoryBindingDto) =>
     run('rotate', async () => {
       try {
-        const outcome = await rotateAzureDevOpsHookKey(target.id, leak)
+        const outcome = await rotateAzureDevOpsHookKey(target.id)
         if (outcome.rotated) setNotice(rotationText(outcome))
         else setErr(rotationText(outcome))
         const rows = await fetchAzureDevOpsRepositories().catch(() => null)
         if (rows) setBindings(rows)
       } finally {
         setRotating(null)
-        setSuspectedLeak(false)
       }
     })
 
@@ -481,10 +474,7 @@ export default function AzureDevOpsCard({ canWrite }: { canWrite: boolean }) {
             canWrite={canWrite}
             busy={busy !== null}
             stateReason={binding.state === 'runtime_degraded' ? reasonText(binding.stateReason, own) : null}
-            onRotate={() => {
-              setSuspectedLeak(false)
-              setRotating(binding)
-            }}
+            onRotate={() => setRotating(binding)}
           />
         ))}
 
@@ -500,19 +490,10 @@ export default function AzureDevOpsCard({ canWrite }: { canWrite: boolean }) {
                 <Icon name="x" size={16} />
               </button>
             </div>
-            <div className="modalbody flex flex-col gap-3">
+            <div className="modalbody">
               <p className="m-0 font-sans text-[13.5px] font-normal leading-[1.6] text-(--text-secondary)">
                 {t('rotateBody', { repo: rotating.repoPath })}
               </p>
-              <label className="flex cursor-pointer items-start gap-2 font-sans text-[13px] font-normal leading-[1.5] text-(--text-primary)">
-                <input
-                  type="checkbox"
-                  className="mt-[3px]"
-                  checked={suspectedLeak}
-                  onChange={(event) => setSuspectedLeak(event.target.checked)}
-                />
-                <span>{t('suspectedLeak')}</span>
-              </label>
             </div>
             <div className="modalfoot">
               <div className="flex-1" />
@@ -520,7 +501,7 @@ export default function AzureDevOpsCard({ canWrite }: { canWrite: boolean }) {
                 {t('cancel')}
               </Button>
               <Button
-                onClick={() => void rotate(rotating, suspectedLeak)}
+                onClick={() => void rotate(rotating)}
                 className={busy === 'rotate' ? 'pointer-events-none opacity-50' : undefined}
               >
                 <Icon name="refresh-cw" size={15} />
@@ -602,7 +583,6 @@ function RepositoryRow({
   const format = useFormatter()
   const subscriptions = binding.subscriptions ?? []
   const hook = binding.hookReason ? HOOK_REASON[binding.hookReason] : null
-  const paused = subscriptions.filter((subscription) => subscriptionPaused(subscription.status))
   const lastDelivery = binding.lastVerifiedDeliveryAt
     ? t('lastDelivery', { time: format.relativeTime(new Date(binding.lastVerifiedDeliveryAt), { now: Date.now() }) })
     : t('noDeliveryYet')
@@ -641,22 +621,14 @@ function RepositoryRow({
             {t('reasonOwn' in hook && own ? hook.reasonOwn : hook.reason)}
           </div>
         )}
-        {/* Silent until a trigger needs the repository: no subscriptions is a resting state. */}
-        {subscriptions.length > 0 && (
+        {/* One status per repository: a problem is its badge alone; a working trigger shows its last event. */}
+        {!hook && subscriptions.length > 0 && (
           <div
-            data-azure-devops-subscriptions={subscriptions.length}
-            className="mt-[3px] flex min-w-0 flex-wrap items-center gap-x-[6px] font-sans text-[11.5px] font-normal leading-[1.45] text-(--text-tertiary)"
+            data-azure-devops-last-event
+            className="mt-[3px] flex min-w-0 items-center gap-x-[6px] font-sans text-[11.5px] font-normal leading-[1.45] text-(--text-tertiary)"
           >
             <Icon name="webhook" size={12} className="flex-none" />
-            <span>{t('subscriptions', { count: subscriptions.length })}</span>
-            <span aria-hidden>·</span>
             <span>{lastDelivery}</span>
-            {paused.length > 0 && (
-              <>
-                <span aria-hidden>·</span>
-                <span className="text-(--amber-500)">{t('subscriptionsPaused', { count: paused.length })}</span>
-              </>
-            )}
           </div>
         )}
       </div>

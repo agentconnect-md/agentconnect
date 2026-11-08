@@ -1074,10 +1074,7 @@ barrier, unlike Gitea §7's single successor webhook:
 4. the old key stays accepted as `previousSigningKey` for 36 hours after
    promotion, the length of Azure DevOps's retry schedule, so a notification
    queued before its subscription switched is not refused and does not put
-   that subscription on probation. A rotation run because the current key
-   may have leaked skips this step and drops the old key at promotion, as
-   Gitea §7 does: a notification queued before the switch is then refused,
-   and its subscription is re-enabled by §11.2's convergence.
+   that subscription on probation. Every rotation keeps this window.
 
 A subscription created during a rotation gets the next key and counts as
 switched.

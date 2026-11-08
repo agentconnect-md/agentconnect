@@ -551,7 +551,6 @@ export class PgAzureDevOpsHookRepo implements AzureDevOpsHookRepo {
       current: await this.cipher.open(row.signingKey, scope),
       generation: row.keyGeneration,
       next: row.nextSigningKey === null ? null : await this.cipher.open(row.nextSigningKey, scope),
-      nextSuspectedLeak: row.nextSuspectedLeak,
       previous: row.previousSigningKey === null ? null : await this.cipher.open(row.previousSigningKey, scope),
       previousExpiresAt: row.previousExpiresAt
     }
@@ -575,12 +574,7 @@ export class PgAzureDevOpsHookRepo implements AzureDevOpsHookRepo {
     return (await this.keys(orgId, bindingId))!
   }
 
-  async beginRotation(
-    orgId: string,
-    bindingId: string,
-    next: string,
-    suspectedLeak: boolean
-  ): Promise<AzureDevOpsHookKeys> {
+  async beginRotation(orgId: string, bindingId: string, next: string): Promise<AzureDevOpsHookKeys> {
     const sealed = await this.cipher.seal(next, orgScope(OrgId(orgId)))
     await this.prisma.$transaction(async (tx) => {
       const rows = await tx.$queryRaw<Array<{ nextSigningKey: string | null }>>`
@@ -591,13 +585,8 @@ export class PgAzureDevOpsHookRepo implements AzureDevOpsHookRepo {
       const row = rows[0]
       if (!row) throw new Error('azure devops hook keys missing')
       // A rotation under way keeps its sealed key: no subscription is re-keyed twice under different secrets.
-      await tx.azureDevOpsHookSecret.update({
-        where: { bindingId },
-        data: {
-          ...(row.nextSigningKey === null ? { nextSigningKey: sealed } : {}),
-          ...(suspectedLeak ? { nextSuspectedLeak: true } : {})
-        }
-      })
+      if (row.nextSigningKey === null)
+        await tx.azureDevOpsHookSecret.update({ where: { bindingId }, data: { nextSigningKey: sealed } })
     })
     return (await this.keys(orgId, bindingId))!
   }
@@ -628,10 +617,9 @@ export class PgAzureDevOpsHookRepo implements AzureDevOpsHookRepo {
           signingKey: row.nextSigningKey,
           keyGeneration: nextGeneration,
           nextSigningKey: null,
-          nextSuspectedLeak: false,
-          // A suspected leak drops the old key at promotion; otherwise it verifies queued retries until it expires.
-          previousSigningKey: row.nextSuspectedLeak ? null : row.signingKey,
-          previousExpiresAt: row.nextSuspectedLeak ? null : previousExpiresAt
+          // The old key verifies queued retries until it expires.
+          previousSigningKey: row.signingKey,
+          previousExpiresAt
         }
       })
       return true

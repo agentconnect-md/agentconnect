@@ -3859,7 +3859,6 @@ model AzureDevOpsHookSecret {
   signingKey         String // stored SecretCipher representation of the hex key
   keyGeneration      BigInt    @default(1) // the current key's generation; the next key is this plus one
   nextSigningKey     String?
-  nextSuspectedLeak  Boolean   @default(false) // a rotation for a possibly leaked key drops the old one at promotion
   previousSigningKey String?
   previousExpiresAt  DateTime? @db.Timestamptz(6)
 
