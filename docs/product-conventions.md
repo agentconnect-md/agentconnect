@@ -186,6 +186,8 @@ A runtime-reported terminal failure is a failed turn even when its prompt respon
 the daemon retries once after five seconds within the same admitted task. A review keeps
 its original review authority throughout that retry. A second failure, a failure after
 work began, or a failure requiring user action is reported without another automatic attempt.
+When a runtime reports an HTTP error without a response body, the failure notice
+retains the status code instead of showing only that the body was empty.
 
 ## Moving an agent from an unavailable daemon
 

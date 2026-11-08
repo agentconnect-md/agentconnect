@@ -637,7 +637,12 @@ list alone. A DM surfaces from its first delivery and is named after the one
 person in it: the DM space carries no display name, and app authentication may
 list a space's human memberships (`spaces.members.list`, which excludes only
 Chat apps), so the read port answers the DM's name from that single membership
-and leaves the row on its id when the read fails or finds more than one person. Output mode adds no chrome: every mode but `none` streams the same
+and leaves the row on its id when the read fails or finds more than one person.
+`listChannelMembers` reads every page of human memberships, deduplicated by user
+resource name, under one read deadline. App authentication does not expose Chat
+apps in this roster. A failed page fails the read instead of returning an empty
+or partial roster. The separate DM identity check still requires exactly one human member.
+Output mode adds no chrome: every mode but `none` streams the same
 way, because Google Chat has no status bar, typing indicator, or reaction to
 spend a richer mode on.
 
@@ -1285,7 +1290,8 @@ tokens with it, one cached per process and renewed early, never with a `sub`.
 the daemon makes today: create a message (text, cards, fallback text, a thread
 of the same Space, a private viewer, the `client-` message ID and request ID),
 patch its text or cards, delete it, read it back, read a Space, list a DM's
-human members, find a DM with a person, and list Spaces. The relay builds the
+human members, page through a Space's human members, find a DM with a person,
+and list Spaces. The relay builds the
 path, query and body itself, under the fixed Chat API root; the schema refuses
 any name outside Google's alphabet and any `.` or `..` segment, and the relay
 also checks that the final path is the one it built. Core checks that the

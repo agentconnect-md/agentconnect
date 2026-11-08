@@ -567,9 +567,50 @@ describe('start() and the app identity', () => {
     expect(members?.url.searchParams.get('filter')).toBe('member.type = "HUMAN"')
     expect(calls.filter((c) => c.url.pathname === `/v1/${SPACE}/members`)).toHaveLength(0)
     expect(await conn.downloadFile('anything')).toBeNull()
-    expect(await conn.listMembers(SPACE)).toEqual([])
     expect(await conn.getUserProfile('users/1')).toEqual({ id: 'users/1' })
   })
+
+  it('lists all human members across pages through the own app transport', async () => {
+    const person = { member: { name: 'users/1', displayName: 'Example Person', type: 'HUMAN' } }
+    const { conn, calls } = harness((call) => {
+      expect(call.url.pathname).toBe(`/v1/${SPACE}/members`)
+      expect(call.url.searchParams.get('filter')).toBe('member.type = "HUMAN"')
+      if (call.url.searchParams.has('pageToken')) {
+        expect(call.url.searchParams.get('pageToken')).toBe('next/page')
+        return reply(200, { memberships: [person, { member: { name: 'users/2', type: 'HUMAN' } }] })
+      }
+      return reply(200, {
+        memberships: [person, { member: { name: APP_USER, type: 'BOT' } }, { member: { type: 'HUMAN' } }],
+        nextPageToken: 'next/page'
+      })
+    })
+    expect(await conn.listMembers(SPACE)).toEqual([
+      { id: 'users/1', name: 'Example Person', isBot: false },
+      { id: 'users/2', isBot: false }
+    ])
+    expect(calls.filter((call) => call.url.pathname === `/v1/${SPACE}/members`)).toHaveLength(2)
+  })
+
+  it.each(['permission', 'timeout', 'body timeout', 'repeated page'])(
+    'fails an incomplete membership read after a %s error',
+    async (failure) => {
+      let reads = 0
+      const { conn } = harness(() => {
+        if (reads++ === 0 || failure === 'repeated page')
+          return reply(200, { memberships: [{ member: { name: 'users/1', type: 'HUMAN' } }], nextPageToken: 'next' })
+        if (failure === 'timeout') throw new DOMException('read timed out', 'TimeoutError')
+        if (failure === 'body timeout')
+          return Object.assign(reply(200, {}), {
+            json: async () => {
+              throw new DOMException('body timed out', 'TimeoutError')
+            }
+          })
+        return reply(403, { error: { message: 'not permitted' } })
+      })
+      await expect(conn.listMembers(SPACE)).rejects.toBeInstanceOf(GoogleChatApiError)
+      expect(reads).toBe(2)
+    }
+  )
 
   it('leaves a DM row unnamed when its membership read fails or names more than one person', async () => {
     const refused = harness((call) =>

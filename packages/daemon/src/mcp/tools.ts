@@ -296,7 +296,7 @@ function buildReadTools(platforms: string[], currentPlatform?: string): ToolDesc
         'platform member accounts (including unrelated bots), not AgentConnect agents — use `listAgents` for ' +
         '"the agents in this channel". Pass `platform` to target another connected platform and `integrationId` to ' +
         'choose a specific bot; omit `channel` to use the current conversation (same platform only). Note: Telegram ' +
-        'only exposes administrators for large groups.',
+        'only exposes administrators for large groups; Google Chat app authentication lists human members only.',
       inputSchema: obj({
         platform,
         integrationId,

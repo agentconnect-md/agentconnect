@@ -1,9 +1,10 @@
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { request as httpRequest } from 'node:http'
+import { createServer as createHttpServer, request as httpRequest, type IncomingMessage } from 'node:http'
 import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https'
 import { createServer, type AddressInfo, type LookupFunction, type Server, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { text as readText } from 'node:stream/consumers'
 import { connect as tlsConnect } from 'node:tls'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { generateCa } from '@anthropic-ai/sandbox-runtime'
@@ -133,7 +134,7 @@ async function placedSession(options: { maxCodehostStreams?: number } = {}) {
   cleanups.push(() => tunnel.stop('test over'))
   await tunnel.ensure('codehost')
   const listening = tunnel.listeningAt('codehost')!.proxy!
-  return { proxy, ca, mint, tunnel, listening, dir }
+  return { proxy, ca, mint, tunnel, listening, dir, host }
 }
 
 type Dial = { host: string; port: number; proxyAuth?: string } | { socketPath: string }
@@ -160,6 +161,32 @@ function connectThrough(dial: Dial, authority: string, then?: (socket: Socket) =
     req.on('response', (res) => resolve(res.statusCode ?? 0))
     req.on('error', reject)
     req.end()
+  })
+}
+
+function httpThrough(
+  dial: Dial,
+  target: string,
+  body = '',
+  headers: Record<string, string> = {}
+): Promise<IncomingMessage> {
+  return new Promise((resolve, reject) => {
+    const socket = 'socketPath' in dial ? { socketPath: dial.socketPath } : { host: dial.host, port: dial.port }
+    const req = httpRequest(
+      {
+        ...socket,
+        method: 'POST',
+        path: target,
+        headers: {
+          host: URL.parse(target)?.host ?? 'example.test',
+          ...('proxyAuth' in dial && dial.proxyAuth ? { 'proxy-authorization': dial.proxyAuth } : {}),
+          ...headers
+        }
+      },
+      resolve
+    )
+    req.on('error', reject)
+    req.end(body)
   })
 }
 
@@ -280,6 +307,98 @@ describe.skipIf(process.platform === 'win32')('an executor-placed session’s co
     expect(status).toBe(200)
     await vi.waitFor(() => expect(reply).toBe('ping'))
     expect(tunnel.streamCount()).toBe(0)
+  })
+
+  it('forwards an HTTP POST and its streaming response without forwarding proxy headers', async () => {
+    const { listening, tunnel } = await placedSession()
+    let finish!: () => void
+    let requestBody = ''
+    let receivedHeaders: IncomingMessage['headers'] = {}
+    let receivedUrl: string | undefined
+    const server = createHttpServer((req, res) => {
+      receivedHeaders = req.headers
+      receivedUrl = req.url
+      req.setEncoding('utf8')
+      req.on('data', (part: string) => (requestBody += part))
+      req.on('end', () => {
+        res.writeHead(200, {
+          'content-type': 'text/event-stream',
+          connection: 'x-response-hop',
+          'x-response-hop': 'drop'
+        })
+        res.write('data: first\n\n')
+        finish = () => res.end('data: last\n\n')
+      })
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    cleanups.push(() => {
+      server.closeAllConnections()
+      return new Promise<void>((resolve) => server.close(() => resolve()))
+    })
+    const target = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1/messages?stream=true`
+    const response = await httpThrough(shimDial(listening), target, 'synthetic prompt', {
+      authorization: 'Bearer example-key',
+      connection: 'x-request-hop',
+      'x-request-hop': 'drop'
+    })
+    expect(response.statusCode).toBe(200)
+    expect(response.headers['x-response-hop']).toBeUndefined()
+    const chunks = response[Symbol.asyncIterator]()
+    expect(String((await chunks.next()).value)).toBe('data: first\n\n')
+    expect(response.complete).toBe(false)
+    finish()
+    let rest = ''
+    for await (const chunk of chunks) rest += String(chunk)
+    expect(rest).toBe('data: last\n\n')
+    expect(requestBody).toBe('synthetic prompt')
+    expect(receivedUrl).toBe('/v1/messages?stream=true')
+    expect(receivedHeaders.authorization).toBe('Bearer example-key')
+    expect(receivedHeaders['proxy-authorization']).toBeUndefined()
+    expect(receivedHeaders['x-request-hop']).toBeUndefined()
+    expect(tunnel.streamCount()).toBe(0)
+  })
+
+  it('authenticates HTTP requests and refuses malformed targets or a credential route in cleartext', async () => {
+    const { listening, tunnel } = await placedSession()
+    const cases: [Dial, string, Record<string, string>, number][] = [
+      [{ host: '127.0.0.1', port: listening.port }, 'http://example.test/', {}, 407],
+      [shimDial(listening), '/relative', {}, 400],
+      [shimDial(listening), 'https://example.test/', {}, 400],
+      [shimDial(listening), 'http://user:password@example.test/', {}, 400],
+      [shimDial(listening), 'http://example.test/', { host: 'another.example.test' }, 400],
+      [shimDial(listening), 'http://api.github.com:443/', {}, 403]
+    ]
+    for (const [dial, target, headers, status] of cases) {
+      const response = await httpThrough(dial, target, '', headers)
+      expect(response.statusCode).toBe(status)
+      await readText(response)
+    }
+    expect(tunnel.streamCount()).toBe(0)
+  })
+
+  it.each(['client', 'shim'])('closes the HTTP upstream when the %s closes', async (closer) => {
+    const { listening, host } = await placedSession()
+    let closed = false
+    const server = createHttpServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      res.write('data: first\n\n')
+      res.on('close', () => {
+        closed = true
+      })
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    cleanups.push(() => {
+      server.closeAllConnections()
+      return new Promise<void>((resolve) => server.close(() => resolve()))
+    })
+    const response = await httpThrough(
+      shimDial(listening),
+      `http://127.0.0.1:${(server.address() as AddressInfo).port}/stream`
+    )
+    response.on('error', () => {})
+    if (closer === 'client') response.destroy()
+    else host.close()
+    await vi.waitFor(() => expect(closed).toBe(true))
   })
 
   it('caps the shim’s concurrent codehost connections', async () => {

@@ -142,6 +142,39 @@ describe('a relay-egress Google Chat connection', () => {
     ])
   })
 
+  it('pages through members using the relay alone, including a genuinely empty result', async () => {
+    const fetched: string[] = []
+    const { port, sent } = relay((call) => {
+      expect(call.op).toBe('list-members')
+      if (call.op !== 'list-members') throw new Error('unexpected operation')
+      if (call.space === 'spaces/EMPTY') return answers(200, { memberships: [] })
+      return answers(200, {
+        memberships: [{ member: { name: call.pageToken ? 'users/2' : 'users/1', type: 'HUMAN' } }],
+        ...(call.pageToken ? {} : { nextPageToken: 'next' })
+      })
+    })
+    const conn = connection(port, fetched)
+    expect(await conn.listMembers(SPACE)).toEqual([
+      { id: 'users/1', isBot: false },
+      { id: 'users/2', isBot: false }
+    ])
+    expect(await conn.listMembers('spaces/EMPTY')).toEqual([])
+    expect(sent).toEqual([
+      { op: 'list-members', space: SPACE },
+      { op: 'list-members', space: SPACE, pageToken: 'next' },
+      { op: 'list-members', space: 'spaces/EMPTY' }
+    ])
+    expect(fetched).toEqual([])
+  })
+
+  it('does not fall back to direct reads when a relay refuses the membership operation', async () => {
+    const fetched: string[] = []
+    const { port, sent } = relay(() => ({ outcome: 'refused', reason: 'invalid' }))
+    await expect(connection(port, fetched).listMembers(SPACE)).rejects.toBeInstanceOf(GoogleChatApiError)
+    expect(sent).toHaveLength(1)
+    expect(fetched).toEqual([])
+  })
+
   it('fails closed without a relay: nothing is sent, and no token is asked for', async () => {
     const fetched: string[] = []
     const conn = connection(undefined, fetched)

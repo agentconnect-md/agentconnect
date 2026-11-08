@@ -759,6 +759,10 @@ the proxy's CA certificate:
 - A CONNECT to one of the routes enters the tunnel as a fresh CONNECT with
   no client header; any other host is connected directly, as the session
   would without a proxy, since `HTTPS_PROXY` cannot be scoped to some hosts.
+- Ordinary HTTP proxy requests to other authorities are authenticated and
+  forwarded directly, with request and response streaming and no proxy credentials
+  forwarded upstream. A credential-tunnel authority requires CONNECT; an HTTP
+  request never downgrades that route to a direct connection.
 - On the holder, the tunnel ends at a Unix socket of the agent's own that
   honors only that agent's placeholder and refuses a CONNECT to anything but
   its routes, whatever the executor's shim forwards.
