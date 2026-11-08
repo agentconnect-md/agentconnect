@@ -2616,6 +2616,7 @@ export function buildContainer(
     placementResolver,
     visibilityPush,
     relayControl,
+    relayRoster,
     httpBot,
     collabRoutes,
     agentMutations,

@@ -10,7 +10,8 @@ import type { HookService } from '../../src/hooks/hook.service.js'
 import type { HttpBotOrchestrator } from '../../src/orchestrator/httpBot.js'
 import type { CollabRoutesService } from '../../src/orchestrator/collabRoutes.service.js'
 import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
-import { OrgId } from '../../src/domain/ids.js'
+import { buildAgentMoves } from '../../src/http/agent-moves.js'
+import { AgentId, DaemonId, OrgId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { joinPool, poolSetId } from '../fakes/member-set.js'
 
@@ -32,6 +33,8 @@ afterEach(async () => {
 })
 
 class MoveControlSpy {
+  constructor(private readonly agentId?: string) {}
+
   failMemoryUpsertAfterApply = false
   failSourceDetach = false
   readonly calls: string[] = []
@@ -41,6 +44,15 @@ class MoveControlSpy {
   readonly detaches: { daemonId: string; value: AgentDetach }[] = []
   readonly activateCalls: { daemonId: string; value: AgentActivate }[] = []
   readonly mcpUpserts: { daemonId: string; spec: McpServerSpec }[] = []
+  readonly memoryUpserts: { daemonId: string; spec: MemoryConnectionSpec }[] = []
+  readonly credentialPlacements: { recipient: string; owner: string | null }[] = []
+  private readonly memoryRevisions = new Map<string, number>()
+
+  private async recordCredentialPlacement(recipient: string): Promise<void> {
+    if (!this.agentId) return
+    const agent = await prisma.agent.findUniqueOrThrow({ where: { id: this.agentId } })
+    this.credentialPlacements.push({ recipient, owner: agent.daemonId })
+  }
 
   async agentDetach(daemonId: string, value: AgentDetach): Promise<Ack> {
     this.calls.push(`detach:${daemonId}`)
@@ -55,13 +67,19 @@ class MoveControlSpy {
     return { ok: true }
   }
   async memoryConnectionUpsert(daemonId: string, spec: MemoryConnectionSpec): Promise<void> {
+    await this.recordCredentialPlacement(daemonId)
     this.calls.push(`memory-upsert:${daemonId}:${spec.connectionId}`)
-    if (this.failMemoryUpsertAfterApply) throw new Error('simulated lost memory upsert ACK')
+    this.memoryUpserts.push({ daemonId, spec })
+    const key = `${daemonId}:${spec.connectionId}`
+    if (spec.revision < (this.memoryRevisions.get(key) ?? 0)) throw new Error('stale memory connection definition')
+    this.memoryRevisions.set(key, spec.revision)
+    if (daemonId === TARGET && this.failMemoryUpsertAfterApply) throw new Error(`lost ACK: ${JSON.stringify(spec)}`)
   }
   async memoryConnectionRemove(daemonId: string, connectionId: string): Promise<void> {
     this.calls.push(`memory-remove:${daemonId}:${connectionId}`)
   }
   async mcpServerUpsert(daemonId: string, spec: McpServerSpec): Promise<void> {
+    await this.recordCredentialPlacement(daemonId)
     this.calls.push(`mcp-upsert:${daemonId}:${spec.name}`)
     this.mcpUpserts.push({ daemonId, spec })
   }
@@ -244,85 +262,184 @@ describe('PUT /agents/:id/daemon', () => {
     expect(control.calls.at(-1)).toBe(`activate:${TARGET}`)
   })
 
-  it('stages an external-memory registry before activation and removes the unused source copy', async () => {
-    await seedMoveDaemons()
-    const agentId = randomUUID()
-    await seedAgent(prisma, agentId, { daemonId: SOURCE })
-    const control = new MoveControlSpy()
-    running = buildHttpApp(prisma, { RELAY_STALE_MS: 60_000 }, live, control as unknown as ControlSender)
-    await running.deps.repos.relay.upsertByName('move-relay', 'wss://relay.example/rd', new Date())
-    const installation = await running.deps.repos.memoryPluginInstallation.create({
-      orgId: OrgId(DEFAULT_ORG_ID),
-      pluginId: 'ai.example.move-memory',
-      transport: 'streamable-http',
-      endpoint: 'https://plugin.example/mcp',
-      pinnedProfileMajor: 1,
-      secretHeaders: [{ name: 'apiKey', header: 'Authorization', required: true }]
-    })
-    const connection = await running.deps.repos.externalMemoryConnection.create({
-      orgId: OrgId(DEFAULT_ORG_ID),
-      installationId: installation.id,
-      config: { projectId: 'move' }
-    })
-    await running.deps.repos.externalMemoryConnectionSecret.put(OrgId(DEFAULT_ORG_ID), connection.id, {
-      apiKey: 'secret'
-    })
-    await running.deps.repos.externalMemoryGrant.mintFor(OrgId(DEFAULT_ORG_ID), connection.id)
-    await prisma.agent.update({
-      where: { id: agentId },
-      data: {
-        runtimeOverrides: {
-          memory: {
-            provider: 'external',
-            connectionId: connection.id,
-            recall: { mode: 'auto', topK: 5, maxBytes: 8 * 1024, timeoutMs: 1_000 },
-            capture: { mode: 'manual' }
+  it.each(['streamable-http', 'stdio'] as const)(
+    'delivers %s memory credentials only to the committed owner and repairs a retry',
+    async (transport) => {
+      await seedMoveDaemons()
+      const agentId = randomUUID()
+      await seedAgent(prisma, agentId, { daemonId: SOURCE })
+      const control = new MoveControlSpy(agentId)
+      running = buildHttpApp(prisma, { RELAY_STALE_MS: 60_000 }, live, control as unknown as ControlSender)
+      await running.deps.repos.relay.upsertByName('move-relay', 'wss://relay.example/rd', new Date())
+      const installation = await running.deps.repos.memoryPluginInstallation.create({
+        orgId: OrgId(DEFAULT_ORG_ID),
+        pluginId: 'ai.example.move-memory',
+        transport,
+        ...(transport === 'stdio' ? { commandRef: 'example-memory' } : { endpoint: 'https://plugin.example/mcp' }),
+        pinnedProfileMajor: 1,
+        secretHeaders: [{ name: 'apiKey', header: 'Authorization', required: true }]
+      })
+      const connection = await running.deps.repos.externalMemoryConnection.create({
+        orgId: OrgId(DEFAULT_ORG_ID),
+        installationId: installation.id,
+        config: { projectId: 'move' }
+      })
+      await running.deps.repos.externalMemoryConnectionSecret.put(OrgId(DEFAULT_ORG_ID), connection.id, {
+        apiKey: 'secret'
+      })
+      await running.deps.repos.externalMemoryGrant.mintFor(OrgId(DEFAULT_ORG_ID), connection.id)
+      await prisma.agent.update({
+        where: { id: agentId },
+        data: {
+          runtimeOverrides: {
+            memory: {
+              provider: 'external',
+              connectionId: connection.id,
+              recall: { mode: 'auto', topK: 5, maxBytes: 8 * 1024, timeoutMs: 1_000 },
+              capture: { mode: 'manual' }
+            }
           }
         }
+      })
+      const release = running.deps.agentMutations.tryBeginMove(agentId)!
+      try {
+        const busy = await running.app.inject({
+          method: 'PUT',
+          url: `${ORG}/agents/${agentId}/daemon`,
+          payload: { daemonId: TARGET }
+        })
+        expect(busy.statusCode).toBe(409)
+        expect(control.memoryUpserts).toHaveLength(0)
+        await vi.waitFor(() =>
+          expect(control.calls.filter((call) => call.startsWith('memory-remove:'))).toHaveLength(1)
+        )
+      } finally {
+        release()
       }
-    })
-    // A request may time out after the target applied the private definition.
-    // Treat that as potentially staged and revoke the unused target copy.
-    control.failMemoryUpsertAfterApply = true
-    const failed = await running.app.inject({
-      method: 'PUT',
-      url: `${ORG}/agents/${agentId}/daemon`,
-      payload: { daemonId: TARGET }
-    })
-    expect(failed.statusCode).toBe(503)
-    expect(control.calls).toEqual([
-      `memory-upsert:${TARGET}:${connection.id}`,
-      `memory-remove:${TARGET}:${connection.id}`
-    ])
-    expect((await prisma.agent.findUnique({ where: { id: agentId } }))?.daemonId).toBe(SOURCE)
 
-    control.failMemoryUpsertAfterApply = false
-    control.calls.length = 0
-    const res = await running.app.inject({
-      method: 'PUT',
-      url: `${ORG}/agents/${agentId}/daemon`,
-      payload: { daemonId: TARGET }
-    })
-    expect(res.statusCode, res.body).toBe(200)
-    expect(control.calls).toEqual([
-      `memory-upsert:${TARGET}:${connection.id}`,
-      `detach:${SOURCE}`,
-      `detach:${TARGET}`,
-      `activate:${TARGET}`,
-      `memory-upsert:${TARGET}:${connection.id}`,
-      `memory-remove:${SOURCE}:${connection.id}`
-    ])
-    expect(control.activations[0]?.spec.memory).toMatchObject({
-      provider: 'external',
-      connectionId: connection.id
-    })
-  })
+      control.failSourceDetach = true
+      const refused = await running.app.inject({
+        method: 'PUT',
+        url: `${ORG}/agents/${agentId}/daemon`,
+        payload: { daemonId: TARGET }
+      })
+      expect(refused.statusCode).toBe(503)
+      expect(control.memoryUpserts).toHaveLength(0)
+      await vi.waitFor(() => expect(control.calls.filter((call) => call.startsWith('memory-remove:'))).toHaveLength(2))
+      expect((await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).daemonId).toBe(SOURCE)
+      control.failSourceDetach = false
 
-  it('stages an org MCP provider on a target that never held its def, and cleans up either way', async () => {
+      const move = vi.spyOn(running.deps.repos.agent, 'movePlacement').mockResolvedValueOnce(null)
+      const conflict = await running.app.inject({
+        method: 'PUT',
+        url: `${ORG}/agents/${agentId}/daemon`,
+        payload: { daemonId: TARGET }
+      })
+      move.mockRestore()
+      expect(conflict.statusCode).toBe(409)
+      expect(control.memoryUpserts.map((entry) => entry.daemonId)).toEqual([SOURCE])
+      await vi.waitFor(() => expect(control.calls.filter((call) => call.startsWith('memory-remove:'))).toHaveLength(3))
+
+      // A lost registry ACK happens after commit; detach the target before restoring source ownership.
+      const warnings = vi.spyOn(running.app.log, 'warn')
+      control.calls.length = 0
+      control.failMemoryUpsertAfterApply = true
+      const failed = await running.app.inject({
+        method: 'PUT',
+        url: `${ORG}/agents/${agentId}/daemon`,
+        payload: { daemonId: TARGET }
+      })
+      expect(failed.statusCode).toBe(503)
+      await vi.waitFor(() =>
+        expect(control.calls).toEqual([
+          `detach:${SOURCE}`,
+          `detach:${TARGET}`,
+          `memory-upsert:${TARGET}:${connection.id}`,
+          `detach:${TARGET}`,
+          `detach:${SOURCE}`,
+          `memory-upsert:${SOURCE}:${connection.id}`,
+          `activate:${SOURCE}`,
+          `memory-remove:${TARGET}:${connection.id}`
+        ])
+      )
+      expect(failed.body).not.toContain('lost ACK:')
+      expect(JSON.stringify(warnings.mock.calls)).not.toContain('lost ACK:')
+      expect((await prisma.agent.findUnique({ where: { id: agentId } }))?.daemonId).toBe(SOURCE)
+
+      control.failMemoryUpsertAfterApply = false
+      control.calls.length = 0
+      const res = await running.app.inject({
+        method: 'PUT',
+        url: `${ORG}/agents/${agentId}/daemon`,
+        payload: { daemonId: TARGET }
+      })
+      expect(res.statusCode, res.body).toBe(200)
+      expect(control.calls).toEqual([
+        `detach:${SOURCE}`,
+        `detach:${TARGET}`,
+        `memory-upsert:${TARGET}:${connection.id}`,
+        `activate:${TARGET}`,
+        `memory-remove:${SOURCE}:${connection.id}`
+      ])
+      expect(control.activations.at(-1)?.spec.memory).toMatchObject({
+        provider: 'external',
+        connectionId: connection.id
+      })
+      control.calls.length = 0
+      const repaired = await running.app.inject({
+        method: 'PUT',
+        url: `${ORG}/agents/${agentId}/daemon`,
+        payload: { daemonId: TARGET }
+      })
+      expect(repaired.statusCode, repaired.body).toBe(200)
+      expect(control.calls).toEqual([
+        `detach:${TARGET}`,
+        `memory-upsert:${TARGET}:${connection.id}`,
+        `activate:${TARGET}`
+      ])
+      control.calls.length = 0
+      await buildAgentMoves(running.deps, running.app.log).recoverStaged(
+        AgentId(agentId),
+        DaemonId(TARGET),
+        randomUUID()
+      )
+      expect(control.calls).toEqual([`memory-upsert:${TARGET}:${connection.id}`, `activate:${TARGET}`])
+      expect(control.credentialPlacements.every(({ recipient, owner }) => recipient === owner)).toBe(true)
+      expect(control.memoryUpserts.at(-1)?.spec).toMatchObject(
+        transport === 'stdio' ? { secretLease: { values: { apiKey: 'secret' } } } : { transport: 'streamable-http' }
+      )
+
+      // A workspace edit keeps the daemon's registry, including a connection update that ACKs during detach.
+      const current = (await running.deps.repos.agent.getUnscoped(AgentId(agentId)))!
+      const detach = control.agentDetach.bind(control)
+      vi.spyOn(control, 'agentDetach').mockImplementationOnce(async (daemonId, value) => {
+        const update = await running!.app.inject({
+          method: 'PATCH',
+          url: `${ORG}/external-memory-connections/${connection.id}`,
+          payload: { config: { projectId: 'updated-during-detach' } }
+        })
+        expect(update.statusCode, update.body).toBe(200)
+        return detach(daemonId, value)
+      })
+      control.calls.length = 0
+      const edited = await buildAgentMoves(running.deps, running.app.log).setWorkspace(current, {
+        mode: 'git',
+        gitRepo: 'https://repo.example.test/example.git'
+      })
+      expect(edited.workspace.mode).toBe('git')
+      expect(control.calls).toEqual([
+        `memory-upsert:${TARGET}:${connection.id}`,
+        `detach:${TARGET}`,
+        `activate:${TARGET}`
+      ])
+    }
+  )
+
+  it('delivers an org MCP grant only after the move commits, including on a first-time target', async () => {
     await seedMoveDaemons()
     const agentId = randomUUID()
     await seedAgent(prisma, agentId, { daemonId: SOURCE })
-    const control = new MoveControlSpy()
+    const control = new MoveControlSpy(agentId)
     running = buildHttpApp(prisma, { RELAY_STALE_MS: 60_000 }, live, control as unknown as ControlSender)
     await running.deps.repos.relay.upsertByName('move-relay', 'wss://relay.example/rd', new Date())
     const provider = await running.deps.repos.mcpProvider.create({
@@ -339,7 +456,7 @@ describe('PUT /agents/:id/daemon', () => {
     // the def — the state that used to make the move unreachable (#1192).
     expect((await prisma.daemon.findUnique({ where: { id: TARGET } }))?.mcpServers).toEqual([])
 
-    // An aborted move leaves the target holding nothing it has no use for.
+    // A precommit failure must never disclose the grant, even if a removal would follow.
     control.failSourceDetach = true
     const failed = await running.app.inject({
       method: 'PUT',
@@ -347,14 +464,9 @@ describe('PUT /agents/:id/daemon', () => {
       payload: { daemonId: TARGET }
     })
     expect(failed.statusCode).toBe(503)
+    expect(control.mcpUpserts).toHaveLength(0)
     // The revoke rides the handler's `finally`, which outlives the sent response.
-    await vi.waitFor(() =>
-      expect(control.calls).toEqual([
-        `mcp-upsert:${TARGET}:${provider.name}`,
-        `detach:${SOURCE}`,
-        `mcp-remove:${TARGET}:${provider.name}`
-      ])
-    )
+    await vi.waitFor(() => expect(control.calls).toEqual([`detach:${SOURCE}`, `mcp-remove:${TARGET}:${provider.name}`]))
     expect((await prisma.agent.findUnique({ where: { id: agentId } }))?.daemonId).toBe(SOURCE)
 
     control.failSourceDetach = false
@@ -365,14 +477,11 @@ describe('PUT /agents/:id/daemon', () => {
       payload: { daemonId: TARGET }
     })
     expect(res.statusCode, res.body).toBe(200)
-    // Staged BEFORE activation, and the source loses a grant-bearing def it no
-    // longer serves any agent for — while the target, now authoritative, keeps
-    // the def the same post-response usage re-read looks at.
-    await new Promise((resolve) => setTimeout(resolve, 50))
+    // The committed target receives its registry before activation; the unused source copy is removed.
     expect(control.calls).toEqual([
-      `mcp-upsert:${TARGET}:${provider.name}`,
       `detach:${SOURCE}`,
       `detach:${TARGET}`,
+      `mcp-upsert:${TARGET}:${provider.name}`,
       `activate:${TARGET}`,
       `mcp-remove:${SOURCE}:${provider.name}`
     ])
@@ -383,6 +492,32 @@ describe('PUT /agents/:id/daemon', () => {
       headers: [{ name: 'Authorization', value: `Bearer ${grant.key}` }]
     })
     expect(control.activations.at(-1)?.spec.mcpServers).toEqual([provider.name])
+    expect(control.credentialPlacements).toEqual([{ recipient: TARGET, owner: TARGET }])
+
+    // A grant rotated while activation is in flight must be installed by the stability replay.
+    let rotatedKey: string | undefined
+    const activate = control.agentActivate.bind(control)
+    vi.spyOn(control, 'agentActivate').mockImplementationOnce(async (daemonId, value) => {
+      rotatedKey = (await running!.deps.repos.mcpGrant.mintFor(OrgId(DEFAULT_ORG_ID), provider.id)).key
+      return activate(daemonId, value)
+    })
+    control.calls.length = 0
+    const repaired = await running.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/daemon`,
+      payload: { daemonId: TARGET }
+    })
+    expect(repaired.statusCode, repaired.body).toBe(200)
+    expect(control.calls).toEqual([
+      `detach:${TARGET}`,
+      `mcp-upsert:${TARGET}:${provider.name}`,
+      `activate:${TARGET}`,
+      `detach:${TARGET}`,
+      `mcp-upsert:${TARGET}:${provider.name}`,
+      `activate:${TARGET}`
+    ])
+    expect(control.mcpUpserts.at(-1)?.spec.headers).toEqual([{ name: 'Authorization', value: `Bearer ${rotatedKey}` }])
+    expect(control.credentialPlacements.every(({ recipient, owner }) => recipient === owner)).toBe(true)
   })
 
   it('rejects an unready, unsupported, incompatible, or full target before detaching source', async () => {
@@ -733,13 +868,35 @@ describe('PUT /agents/:id/daemon — the pool as a placement target', () => {
     await seedMoveDaemons()
     await seedPoolMember()
     const agentId = randomUUID()
-    // The pool keeps memory in the Control Plane; a daemon-home agent is refused the move (agents.memory-home tests).
-    await seedAgent(prisma, agentId, {
-      daemonId: SOURCE,
-      runtimeOverrides: { memory: { provider: 'managed', home: 'control-plane' } }
-    })
+    await seedAgent(prisma, agentId, { daemonId: SOURCE })
     const control = new MoveControlSpy()
-    running = buildHttpApp(prisma, undefined, poolLive, control as unknown as ControlSender)
+    running = buildHttpApp(prisma, { RELAY_STALE_MS: 60_000 }, poolLive, control as unknown as ControlSender)
+    await running.deps.repos.relay.upsertByName('move-relay', 'wss://relay.example/rd', new Date())
+    const provider = await running.deps.repos.mcpProvider.create({
+      orgId: OrgId(DEFAULT_ORG_ID),
+      name: 'docs',
+      url: 'https://docs.example.test/mcp'
+    })
+    await running.deps.repos.mcpGrant.mintFor(OrgId(DEFAULT_ORG_ID), provider.id)
+    const installation = await running.deps.repos.memoryPluginInstallation.create({
+      orgId: OrgId(DEFAULT_ORG_ID),
+      pluginId: 'ai.example.pool-memory',
+      transport: 'stdio',
+      commandRef: 'example-memory',
+      pinnedProfileMajor: 1,
+      secretHeaders: []
+    })
+    const connection = await running.deps.repos.externalMemoryConnection.create({
+      orgId: OrgId(DEFAULT_ORG_ID),
+      installationId: installation.id,
+      config: {}
+    })
+    await prisma.agent.update({
+      where: { id: agentId },
+      data: {
+        runtimeOverrides: { mcpServers: [provider.name], memory: { provider: 'external', connectionId: connection.id } }
+      }
+    })
 
     const res = await running.app.inject({
       method: 'PUT',
@@ -758,6 +915,9 @@ describe('PUT /agents/:id/daemon — the pool as a placement target', () => {
     // picks one. The only member traffic is the token-less stale-fence release (#1093).
     expect(control.calls.filter((c) => c.startsWith('detach:'))).toContain(`detach:${SOURCE}`)
     expect(control.activateCalls.map((a) => [a.daemonId, a.value.moveId])).toEqual([[MEMBER, undefined]])
+    expect(control.activateCalls[0]?.value.unstageOnly).toBe(true)
+    expect(control.mcpUpserts).toHaveLength(0)
+    expect(control.memoryUpserts).toHaveLength(0)
   })
 
   it('moves back off the pool onto a machine, quiescing the member that holds it', async () => {

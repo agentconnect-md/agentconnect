@@ -122,6 +122,7 @@ import { DUTY_LEASE_DEFAULTS } from '../../src/orchestrator/dutyLease.js'
 import { ControlSender } from '../../src/orchestrator/outbound.js'
 import { AgentDelivery } from '../../src/orchestrator/agentDelivery.js'
 import { PlacementResolver } from '../../src/orchestrator/placementResolver.js'
+import { RelayRoster } from '../../src/orchestrator/relayRoster.js'
 import { RelayControlSender } from '../../src/orchestrator/relayControl.js'
 import { HttpBotOrchestrator } from '../../src/orchestrator/httpBot.js'
 import { CollabRoutesService } from '../../src/orchestrator/collabRoutes.service.js'
@@ -658,6 +659,7 @@ export function buildHttpApp(
     agentDelivery,
     placementResolver,
     relayControl,
+    relayRoster: new RelayRoster(new PgRelayRepo(prisma), sender, clock, configOverrides?.RELAY_STALE_MS ?? 0),
     httpBot: new HttpBotOrchestrator(
       botRepo,
       botSecretStore,
