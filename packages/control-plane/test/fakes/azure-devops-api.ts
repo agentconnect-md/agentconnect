@@ -115,6 +115,8 @@ export class FakeAzureDevOps {
   readonly identities = new Map<string, { descriptor: string; memberOf: string[] }>()
   /** Git Repositories lists by token; a token absent here has no list of its own. */
   readonly acls = new Map<string, FakeAccessControlList>()
+  /** The next read of the application's memberships answers 503. */
+  failMembershipReadOnce = false
   /** Tokens whose list the connection may not read: they answer 403. */
   readonly aclForbidden = new Set<string>()
   readonly admin: FakeAdministration = {
@@ -310,6 +312,32 @@ export class FakeAzureDevOps {
         ]
       })
     }
+    if (path.startsWith(`${org}/graph/memberships/`) && method === 'GET') {
+      if (this.failMembershipReadOnce) {
+        this.failMembershipReadOnce = false
+        return this.json(503, { message: 'unavailable' })
+      }
+      const subject = path.slice(`${org}/graph/memberships/`.length)
+      const value = [...admin.memberships]
+        .filter((key) => key.startsWith(`${subject}|`))
+        .map((key) => ({ memberDescriptor: subject, containerDescriptor: key.slice(subject.length + 1) }))
+      return this.json(200, { count: value.length, value })
+    }
+    if (path.startsWith(`${org}/graph/groups/`) && method === 'GET') {
+      const [, kind, projectId] = path.slice(`${org}/graph/groups/`.length).split('.')
+      const project = admin.projects.find((p) => p.id === projectId)
+      if (!project || (kind !== 'readers' && kind !== 'contributors')) return this.json(404, { message: 'not found' })
+      return this.json(200, {
+        principalName: `[${project.name}]\\${kind === 'readers' ? 'Readers' : 'Contributors'}`,
+        domain: `vstfs:///Classification/TeamProject/${project.id}`
+      })
+    }
+    if (path.startsWith(`${org}/graph/memberships/`) && method === 'DELETE') {
+      if (!admin.membershipsAllowed) return this.json(403, { message: 'TF50309: insufficient permissions' })
+      const [subject, group] = path.slice(`${org}/graph/memberships/`.length).split('/')
+      admin.memberships.delete(`${subject}|${group}`)
+      return new Response(null, { status: 200 })
+    }
     if (path.startsWith(`${org}/graph/memberships/`) && method === 'PUT') {
       if (!admin.membershipsAllowed) return this.json(403, { message: 'TF50309: insufficient permissions' })
       const [subject, group] = path.slice(`${org}/graph/memberships/`.length).split('/')
@@ -335,6 +363,21 @@ export class FakeAzureDevOps {
   /** dev.azure.com as the signed-in administrator. */
   private adminDevOps(url: string, method = 'GET', init?: RequestInit): Response {
     const path = new URL(url).pathname
+    const query = new URL(url).searchParams
+    if (path === `/${ORGANIZATION}/_apis/accesscontrollists/${SERVICE_HOOKS_NAMESPACE}` && method === 'GET') {
+      const descriptor = query.get('descriptors') ?? ''
+      return this.json(200, {
+        value: [...this.serviceHookGrants].map((projectId) => ({
+          token: `PublisherSecurity/${projectId}`,
+          acesDictionary: { [descriptor]: { descriptor, allow: 3, deny: 0 } }
+        }))
+      })
+    }
+    if (path === `/${ORGANIZATION}/_apis/accesscontrolentries/${SERVICE_HOOKS_NAMESPACE}` && method === 'DELETE') {
+      if (!this.aceWriteAllowed) return this.json(403, { message: 'TF400813: insufficient permissions' })
+      this.serviceHookGrants.delete((query.get('token') ?? '').replace(/^PublisherSecurity\//, ''))
+      return this.json(200, true)
+    }
     if (path === `/${ORGANIZATION}/_apis/accesscontrolentries/${SERVICE_HOOKS_NAMESPACE}` && method === 'POST') {
       if (!this.aceWriteAllowed) return this.json(403, { message: 'TF400813: insufficient permissions' })
       const body = JSON.parse(String(init?.body ?? '{}')) as {

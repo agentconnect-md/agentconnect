@@ -142,7 +142,6 @@ async function chooseProjects() {
   await click('Continue')
   const box = host.querySelector<HTMLInputElement>(`[data-azure-devops-project="${PROJECT_A}"] input`)!
   await act(async () => box.click())
-  await click('Contributors')
 }
 
 const refusal = () => host.querySelector('[data-azure-devops-refusal]')
@@ -197,32 +196,42 @@ describe('AzureDevOpsConnect', () => {
     expect(host.textContent).toContain('example-labs')
   })
 
-  it('skips the organization picker for Manage project access', async () => {
+  it('skips the organization picker for Manage project access, and opens on the access already held', async () => {
     mocks.finish.mockResolvedValue(started({ connectionId: CONNECTION_ID, organization: 'example-org' }))
     mocks.choose.mockResolvedValue({
       ticket: 'ticket-2',
       organization: 'example-org',
-      projects: [{ id: PROJECT_A, name: 'Example Project' }]
+      projects: [
+        { id: PROJECT_A, name: 'Example Project', access: { group: 'readers', allowTriggers: true } },
+        { id: PROJECT_B, name: 'Other Project' }
+      ]
     })
     mocks.apply.mockResolvedValue({ connection: CONNECTION, memberships: [] })
     await land(`code=c&state=${MANAGE_STATE}`)
     expect(mocks.organizations).not.toHaveBeenCalled()
     expect(mocks.choose).toHaveBeenCalledWith('org-a', FLOW, 'ticket-1', 'example-org')
-    const box = host.querySelector<HTMLInputElement>(`[data-azure-devops-project="${PROJECT_A}"] input`)!
-    await act(async () => box.click())
+    const box = (id: string) => host.querySelector<HTMLInputElement>(`[data-azure-devops-project="${id}"] input`)!
+    expect(box(PROJECT_A).checked).toBe(true)
+    expect(box(PROJECT_B).checked).toBe(false)
+    expect(host.querySelector(`[data-azure-devops-project="${PROJECT_A}"] [aria-pressed="true"]`)?.textContent).toBe(
+      'Read'
+    )
+    // A newly checked project starts at Write with triggers allowed.
+    await act(async () => box(PROJECT_B).click())
     await click('Apply')
     expect(mocks.apply).toHaveBeenCalledWith('org-a', FLOW, 'ticket-2', [
-      { projectId: PROJECT_A, group: 'readers', allowTriggers: false }
+      { projectId: PROJECT_A, group: 'readers', allowTriggers: true },
+      { projectId: PROJECT_B, group: 'contributors', allowTriggers: true }
     ])
     expect(host.textContent).toContain('Project access updated')
   })
 
-  it('allows triggers by default for Contributors, lets Readers opt in, and resets on a group change (§11.1)', async () => {
+  it('allows triggers by default for Write, lets Read opt in, and resets on a group change (§11.1)', async () => {
     mocks.apply.mockResolvedValue({ connection: CONNECTION, memberships: [], triggers: [] })
     await chooseProjects()
     const allow = () => host.querySelector<HTMLInputElement>(`[data-azure-devops-allow-triggers="${PROJECT_A}"] input`)!
     expect(allow().checked).toBe(true)
-    await click('Readers')
+    await click('Read')
     expect(allow().checked).toBe(false)
     await act(async () => allow().click())
     expect(allow().checked).toBe(true)

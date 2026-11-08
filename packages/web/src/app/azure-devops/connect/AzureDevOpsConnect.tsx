@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
 import { Spinner, Wordmark } from '@/components/marks'
+import { TooltipLayer } from '@/components/console/Tooltip'
 import {
   ApiError,
   applyAzureDevOpsConnectProjects,
@@ -62,7 +63,7 @@ interface Refusal {
   ticket?: string
 }
 
-type Project = { id: string; name: string }
+type Project = { id: string; name: string; access?: { group: AzureDevOpsProjectGroup; allowTriggers: boolean } }
 
 type Step =
   | { kind: 'loading' }
@@ -148,8 +149,10 @@ export default function AzureDevOpsConnect() {
     if (!current) return
     const chosen = await chooseAzureDevOpsConnectOrganization(org, current.flowId, current.ticket, organization)
     flow.current = { ...current, ticket: chosen.ticket }
-    setGroups(new Map())
-    setTriggerPicks(new Map())
+    // Opens on what the application already holds; Apply makes Azure DevOps match the page.
+    const held = chosen.projects.filter((project) => project.access)
+    setGroups(new Map(held.map((project) => [project.id, project.access!.group])))
+    setTriggerPicks(new Map(held.map((project) => [project.id, project.access!.allowTriggers])))
     setStep({ kind: 'projects', organization: chosen.organization, projects: chosen.projects })
   }
 
@@ -255,13 +258,20 @@ export default function AzureDevOpsConnect() {
       window.location.assign((await startAzureDevOpsConnect(connectionId ?? undefined, orgId)).authorizeUrl)
     })
 
-  const toggleProject = (projectId: string) =>
+  // A newly checked project starts at Write with triggers allowed.
+  const toggleProject = (projectId: string) => {
     setGroups((current) => {
       const next = new Map(current)
       if (next.has(projectId)) next.delete(projectId)
-      else next.set(projectId, 'readers')
+      else next.set(projectId, 'contributors')
       return next
     })
+    setTriggerPicks((current) => {
+      const next = new Map(current)
+      next.delete(projectId)
+      return next
+    })
+  }
 
   // A group change resets the project's Allow triggers to that group's default.
   const setGroup = (projectId: string, group: AzureDevOpsProjectGroup) => {
@@ -333,7 +343,16 @@ export default function AzureDevOpsConnect() {
         ) : step.kind === 'projects' ? (
           <>
             <div>
-              <h1 className="text-[18px] font-semibold leading-normal text-(--text-primary)">{t('projectsTitle')}</h1>
+              <h1 className="flex items-center gap-2 text-[18px] font-semibold leading-normal text-(--text-primary)">
+                {t('projectsTitle')}
+                <span
+                  className="flex text-(--text-tertiary)"
+                  title={t('projectsHint')}
+                  data-azure-devops-projects-hint=""
+                >
+                  <Icon name="info" size={14} />
+                </span>
+              </h1>
               <p className="mt-2 text-[13px] leading-[1.55] text-(--text-secondary)">
                 {t('projectsDescription', { organization: step.organization })}
               </p>
@@ -379,7 +398,7 @@ export default function AzureDevOpsConnect() {
                                 }
                                 onClick={() => setGroup(project.id, value)}
                               >
-                                {value === 'readers' ? t('readers') : t('contributors')}
+                                {value === 'readers' ? t('read') : t('write')}
                               </button>
                             ))}
                           </span>
@@ -402,9 +421,6 @@ export default function AzureDevOpsConnect() {
                 })}
               </div>
             )}
-            <p className="text-[12px] leading-[1.5] text-(--text-tertiary)">
-              {t('groupHint')} {t('triggersHint')}
-            </p>
             <div className="flex flex-wrap gap-[10px]">
               <Button onClick={() => void apply()} disabled={busy || groups.size === 0}>
                 {busy ? t('applying') : managed ? t('apply') : t('connect')}
@@ -445,6 +461,7 @@ export default function AzureDevOpsConnect() {
           />
         )}
       </div>
+      <TooltipLayer />
     </div>
   )
 }

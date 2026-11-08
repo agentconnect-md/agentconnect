@@ -2543,7 +2543,18 @@ export const ChooseAzureDevOpsOrganizationBody = z.strictObject({ organization: 
 export const AzureDevOpsProjectsDto = z.object({
   ticket: z.string().describe('The ticket with the organization recorded; send it with the next step.'),
   organization: z.string(),
-  projects: z.array(z.object({ id: z.string(), name: z.string() }))
+  projects: z.array(
+    z.object({
+      id: z.string(),
+      name: z.string(),
+      access: z
+        .object({ group: z.enum(['readers', 'contributors']), allowTriggers: z.boolean() })
+        .optional()
+        .describe(
+          'What the application already holds in the project; absent when it holds nothing or it cannot be read.'
+        )
+    })
+  )
 })
 export const ApplyAzureDevOpsProjectsBody = z.strictObject({
   projects: z

@@ -262,6 +262,8 @@ export interface AzureDevOpsFlowTicket {
   organization?: string
   organizationInstanceId?: string
   projects?: AzureDevOpsProjectChoice[]
+  /** The access the project list showed, by project id; absent when it could not be read, so Apply removes nothing. */
+  shownAccess?: Record<string, { group: 'readers' | 'contributors'; allowTriggers: boolean }>
   expiresAt: number
 }
 
@@ -283,6 +285,9 @@ const Ticket = z.object({
         allowTriggers: z.boolean().optional()
       })
     )
+    .optional(),
+  shownAccess: z
+    .record(z.string(), z.object({ group: z.enum(['readers', 'contributors']), allowTriggers: z.boolean() }))
     .optional(),
   expiresAt: z.number()
 })

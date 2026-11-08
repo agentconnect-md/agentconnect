@@ -7622,7 +7622,8 @@ export interface AzureDevOpsProjectsDto {
   /** The ticket with the organization recorded; the next step sends this one. */
   ticket: string
   organization: string
-  projects: Array<{ id: string; name: string }>
+  /** `access` is what the application already holds in the project. */
+  projects: Array<{ id: string; name: string; access?: { group: AzureDevOpsProjectGroup; allowTriggers: boolean } }>
 }
 
 /** Allow triggers on one project (§11.1): granted, refused for the caller's role, or failed. */
