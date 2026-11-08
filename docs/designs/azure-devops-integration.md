@@ -281,6 +281,29 @@ the groups **Read** and **Write**. A change made directly in Azure DevOps
 works as well; the picker and the permission evaluation of §5 read the
 identity's rights as they are.
 
+**All projects.** Project groups exist per project, so a project created
+later is not reached until someone picks it. A row above the projects grants
+every project, present and future, at the namespace roots every project
+inherits from, with three entries for the identity (**verified** on a project
+created after the grant, in which it holds no group):
+
+| Entry            | Namespace and token               | Allow                                   |
+| ---------------- | --------------------------------- | --------------------------------------- |
+| See the projects | Project `52d39943-…`, `$PROJECT`  | GENERIC_READ (1)                        |
+| Read or Write    | Git Repositories, `repoV2`        | read (2), or Contributors' bits (16502) |
+| Allow triggers   | ServiceHooks, `PublisherSecurity` | View and Edit subscriptions (3)         |
+
+The first is required: without it a project and its repositories stay
+invisible to the identity even though the Git permission evaluates as granted.
+The Git entry is written with `merge: false`, so lowering Write to Read drops
+the write bits. Only a Project Collection Administrator may write these; a
+refusal joins the checklist, and a granted row is proof of administration for
+a new connection as a membership is. The row opens on the entries the
+identity holds, read the same way, and is removed by the same `shown…` rule as
+a project: unchecking it deletes the Project and Git entries, and turning off
+its Allow triggers deletes the ServiceHooks entry. While it is on, the
+per-project rows are hidden and their access left as it is.
+
 **Use your own application instead** stays one click away, and is the only
 path when the deployment has no Microsoft application. The administrator enters
 the organization, the tenant ID, the client ID, and a client secret of an

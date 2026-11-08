@@ -1569,6 +1569,8 @@
       "cancel": "Cancel",
       "projectsTitle": "Choose projects",
       "projectsHint": "Read lets agents clone. Write also lets them push. Allow triggers lets pull requests start agents. Unchecking removes the access.",
+      "allProjects": "All projects",
+      "allProjectsHint": "Includes projects created later. Needs a Project Collection Administrator.",
       "projectsDescription": "Projects in {organization} that agents can use.",
       "noProjects": "This organization has no projects you can see.",
       "groupFor": "Access for {project}",

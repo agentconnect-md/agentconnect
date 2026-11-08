@@ -248,7 +248,7 @@ export function azureDevOpsConnectRoutes(deps: HttpDeps) {
       },
       async (req, reply) =>
         step(req, reply, req.params.flow, async (flow, ticket) =>
-          result(orgOf(req), await flow.applyProjects(ticket, req.body.projects))
+          result(orgOf(req), await flow.applyProjects(ticket, req.body.projects, req.body.allProjects))
         )
     )
 
