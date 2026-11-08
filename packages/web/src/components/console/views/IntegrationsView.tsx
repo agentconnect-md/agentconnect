@@ -245,10 +245,10 @@ export default function IntegrationsView() {
           <GitlabCard canWrite={canWrite} />
         </div>
         <div className="mt-4">
-          <GiteaCard canWrite={canWrite} />
+          <AzureDevOpsCard canWrite={canWrite} />
         </div>
         <div className="mt-4">
-          <AzureDevOpsCard canWrite={canWrite} />
+          <GiteaCard canWrite={canWrite} />
         </div>
       </Section>
 

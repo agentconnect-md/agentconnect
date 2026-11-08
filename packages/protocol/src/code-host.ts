@@ -2,7 +2,7 @@
 import { z } from 'zod'
 
 /** Code hosts (gitlab-com-integration.md §8.1) are not chat platforms; everything keys on `(provider, externalId)`, never a display path. */
-export const CODE_HOST_PROVIDERS = ['github', 'gitlab', 'gitea', 'azure-devops'] as const
+export const CODE_HOST_PROVIDERS = ['github', 'gitlab', 'azure-devops', 'gitea'] as const
 export type CodeHostProvider = (typeof CODE_HOST_PROVIDERS)[number]
 
 export function isCodeHostProvider(value: unknown): value is CodeHostProvider {
