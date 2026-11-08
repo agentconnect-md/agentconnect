@@ -45,12 +45,17 @@ export function nearBottom(el: HTMLElement, slack = STICK_SLACK): boolean {
  */
 export function useStickToBottom(resetKey: string | null): {
   pin: () => void
+  release: (forMs?: number) => void
   awayFromBottom: boolean
 } {
   // Refs, not closure state: the re-arm callback below is handed to render code
   // and has to reach the SAME latch the effect's listeners own.
   const stick = useRef(false)
   const pinRef = useRef<(() => void) | null>(null)
+  // Until this moment a scroll does not re-arm the follow: a programmatic scroll away from the end is under way.
+  const holdUntil = useRef(0)
+  // Re-reads where the pane rests once that scroll ends, so a jump that lands at the end follows again.
+  const reconcileRef = useRef<(() => void) | null>(null)
   // Drives the jump-to-bottom button. A ref mirrors it so the listeners can skip
   // redundant setState churn on every scroll/growth tick and only re-render on a
   // real transition.
@@ -115,7 +120,19 @@ export function useStickToBottom(resetKey: string | null): {
       // `syncAway` reads false and hides it.
       syncAway()
       if (echo) return
+      if (Date.now() < holdUntil.current) return
       stick.current = nearBottom(scroller)
+    }
+    const reconcile = () => {
+      if (!scroller) return
+      holdUntil.current = 0
+      stick.current = nearBottom(scroller)
+      syncAway()
+    }
+    reconcileRef.current = reconcile
+    // A held scroll that comes to rest ends the hold early, wherever it landed.
+    const onScrollEnd = () => {
+      if (holdUntil.current) reconcile()
     }
     const observer = new ResizeObserver(() => {
       if (stick.current) pin()
@@ -132,6 +149,7 @@ export function useStickToBottom(resetKey: string | null): {
       if (found !== scroller) {
         if (scroller) {
           scroller.removeEventListener('scroll', onScroll)
+          scroller.removeEventListener('scrollend', onScrollEnd)
           observer.unobserve(scroller)
         }
         scroller = found
@@ -139,6 +157,7 @@ export function useStickToBottom(resetKey: string | null): {
         // The scroller itself too: a composer growing below it shortens the viewport, which must keep the newest row in view.
         if (scroller) {
           scroller.addEventListener('scroll', onScroll, { passive: true })
+          scroller.addEventListener('scrollend', onScrollEnd)
           observer.observe(scroller)
         }
       }
@@ -157,7 +176,11 @@ export function useStickToBottom(resetKey: string | null): {
     const swaps = new MutationObserver(attach)
     swaps.observe(page, { childList: true })
     return () => {
-      if (scroller) scroller.removeEventListener('scroll', onScroll)
+      if (scroller) {
+        scroller.removeEventListener('scroll', onScroll)
+        scroller.removeEventListener('scrollend', onScrollEnd)
+      }
+      reconcileRef.current = null
       observer.disconnect()
       swaps.disconnect()
       pinRef.current = null
@@ -173,5 +196,16 @@ export function useStickToBottom(resetKey: string | null): {
     setAwayFromBottom(false)
   }, [])
 
-  return { pin, awayFromBottom }
+  // Lets go of the end for a scroll the page starts (a turn-map jump), so neither growth nor its own first frames pull it back.
+  const release = useCallback((forMs = 1500) => {
+    stick.current = false
+    const until = Date.now() + forMs
+    holdUntil.current = until
+    // A jump that never moves, or whose end event is lost, still settles when the hold runs out.
+    window.setTimeout(() => {
+      if (holdUntil.current === until) reconcileRef.current?.()
+    }, forMs)
+  }, [])
+
+  return { pin, release, awayFromBottom }
 }
