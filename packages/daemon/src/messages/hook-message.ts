@@ -1047,6 +1047,38 @@ function giteaTurnFacts(
   }
 }
 
+function azureDevOpsTurnFacts(
+  c: HookContext,
+  azure: AzureDevOpsHookMetadata | undefined,
+  reviewPolicy: ReviewPolicy,
+  common: CommonTurnFacts
+): CodehostTurnFacts | undefined {
+  if (!azure) return undefined
+  const target = azure.target
+  const pull = target.kind === 'pull'
+  const review = azureDevOpsOpensReviewGeneration(common.event, azure, reviewPolicy)
+    ? 'generation'
+    : pull
+      ? 'conversation'
+      : undefined
+  const url = azureDevOpsThreadUrl(azure) ?? c.htmlUrl
+  return {
+    provider: 'azure-devops',
+    ...common,
+    subject: {
+      kind: pull ? 'pull_request' : 'push',
+      repo: azure.repoPath,
+      ...(pull ? { number: target.pullRequestId } : {}),
+      ...(c.title ? { title: c.title } : {}),
+      ...(url ? { url } : {})
+    },
+    ...(pull && target.headSha ? { revision: { head: target.headSha } } : {}),
+    ...(pull && target.isDraft !== undefined ? { draft: target.isDraft } : {}),
+    ...(target.kind === 'push' ? { ref: target.ref } : {}),
+    ...(review ? { review } : {})
+  }
+}
+
 /** `PR #42` / `issue #42` / `#42`, else the repository — the numbered-thread label a host falls back to. */
 function numberedSubjectLabel(c: HookContext, kind: string | undefined, number: number | undefined): string {
   if (number === undefined) return c.repo ?? 'this repository'
@@ -1243,8 +1275,7 @@ const HOOK_NORMALIZERS: { readonly [P in CodeHostProvider]: HookNormalizer<P> } 
     sessionThread: (azure) => (azure ? azureDevOpsSessionThread(azure) : undefined),
     sessionTitle: azureDevOpsSessionTitle,
     standingContext: (_c, azure) => (azure?.target.kind === 'pull' ? azureDevOpsStandingContext() : undefined),
-    // The console's turn facts name no Azure DevOps provider yet, so the turn keeps its prompt as its text.
-    turnFacts: () => undefined,
+    turnFacts: azureDevOpsTurnFacts,
     subjectLabel: (_c, azure) =>
       azure?.target.kind === 'pull'
         ? `PR !${azure.target.pullRequestId}`

@@ -740,9 +740,8 @@ export default function AddIntegrationModal({
   const [azFams, setAzFams] = useState<Set<AzFamily>>(new Set(AZ_DEFAULT_FAMILIES))
   const [azModes, setAzModes] = useState<Partial<Record<AzFamily, AzTriggerMode>>>({})
   const azModeOf = (fam: AzFamily): AzTriggerMode => azModes[fam] ?? azureDevOpsDefaultTriggerMode(fam)
-  // Off until reviews and the pull-request status have their writers; until then the server refuses anything else.
-  const [azReviewPolicy, setAzReviewPolicy] = useState<HookReviewPolicy>('off')
-  const [azReportingMode, setAzReportingMode] = useState<HookReportingMode>('off')
+  const [azReviewPolicy, setAzReviewPolicy] = useState<HookReviewPolicy>('full')
+  const [azReportingMode, setAzReportingMode] = useState<HookReportingMode>('status')
 
   const [modePick, setModePick] = useState<'existing' | 'create' | null>(null)
   const [botPick, setBotPick] = useState<string | null>(null)
