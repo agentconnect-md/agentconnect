@@ -1,11 +1,4 @@
-/**
- * The one `AgentMoveService` wiring, shared by every route that moves runtime authority.
- *
- * It was assembled inline in `routes/agents.ts`, which was fine while agent placement was the only
- * caller. Group enrolment is the second (daemon-groups.md §3): enrolling a machine that still has
- * pinned agents IS the move convention, run once per agent, so it needs the same graph — and a
- * second hand-built copy of an eighteen-dependency bundle is a copy that drifts.
- */
+// The route's move service shares credential projectors with reconnect and duty activation.
 import type { FastifyBaseLogger } from 'fastify'
 import { AgentMoveService } from '../orchestrator/agentMove.js'
 import type { HttpDeps } from './deps.js'
@@ -22,6 +15,14 @@ export function buildAgentMoves(deps: HttpDeps, log: FastifyBaseLogger): AgentMo
     specs: deps.agentSpecs,
     chatAuthority: deps.repos.session,
     crons: deps.repos.cron,
+    mcp: { providers: deps.repos.mcpProvider, grants: deps.repos.mcpGrant, relayRoster: deps.relayRoster },
+    memory: {
+      connections: deps.repos.externalMemoryConnection,
+      installations: deps.repos.memoryPluginInstallation,
+      secrets: deps.repos.externalMemoryConnectionSecret,
+      grants: deps.repos.externalMemoryGrant,
+      relayRoster: deps.relayRoster
+    },
     control: deps.control,
     hooks: deps.hooks,
     httpBot: deps.httpBot,

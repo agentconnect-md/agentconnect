@@ -298,6 +298,11 @@ than the upstream URL and API key:
   includes a proxy definition when any agent on that daemon enables the provider
   name. Live mutations use `mcpserver/upsert` or `mcpserver/remove`, with the
   register snapshot as the convergence backstop.
+- **Moves**: a target receives registry definitions after placement commits and
+  serving authority is checked, before `agent/activate`. The activation stability
+  check includes grants so a rotation during activation triggers a replay.
+  Precommit failures deliver no target grants. Pool candidates receive definitions
+  only when authorized as duty holders, through `duty/fetch`.
 - **Daemon application**:
   [`CpMcpDefs`](../../packages/daemon/src/mcp/cp-mcp-defs.ts) keeps CP
   definitions in memory keyed by `(orgId, name)`, layers only the owning

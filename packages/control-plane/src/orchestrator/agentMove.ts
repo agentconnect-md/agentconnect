@@ -121,9 +121,7 @@ export interface AgentMoveDeps {
   /** Whether each integration's platform has session access sync on, for its chat authority. */
   chatAuthority: ChatAuthoritySource
   crons: CronRepo
-  /** The `duty/fetch` bundle's MCP and external-memory projections — the same
-   *  optional seams `PlacementOrchDeps` carries, so the bundle and the reconnect
-   *  snapshot are one projector. Absent (tests / no orch) ⇒ neither kind ships. */
+  /** Shared MCP and memory projectors for owned activation, duty/fetch, and reconnect. */
   mcp?: McpDefinitionDeps
   memory?: MemoryDefinitionDeps
   control: ControlSender
@@ -150,7 +148,7 @@ export interface AgentMoveDeps {
   recomputeDuties?: (orgId: string) => Promise<void> | void
 }
 
-interface MoveBundle {
+interface MoveBundle extends Pick<DutyAgentBundle, 'mcpServers' | 'memoryConnections'> {
   integrations: Array<{ spec: IntegrationSpec; botId: string; http: boolean }>
   crons: CronUpsert[]
   httpBotIds: string[]
@@ -201,6 +199,16 @@ const MAX_STABILITY_ATTEMPTS = 3
 
 function requireAck(action: string, ack: Ack): void {
   if (!ack.ok) throw new AgentMoveFailed(`${action} rejected${ack.reason ? `: ${ack.reason}` : ''}`)
+}
+
+function requireExternalMemoryDefinition(agent: AgentRecord, bundle: MoveBundle): void {
+  const memory = agent.memory
+  if (
+    memory?.provider === 'external' &&
+    !bundle.memoryConnections.some((def) => def.connectionId === memory.connectionId)
+  ) {
+    throw new AgentMoveFailed('external memory connection could not be staged on the target daemon')
+  }
 }
 
 function sameWorkspaceCredential(
@@ -346,15 +354,9 @@ export class AgentMoveService {
       }
 
       const candidate = await this.snapshotOwned(agentId, daemonId, current.orgId)
-      const resumed = await this.deps.control.agentActivate(
-        daemonId,
-        {
-          ...this.activationDefinition(candidate.agent, candidate.bundle),
-          moveId,
-          reconcileWorkspace: true
-        },
-        candidate.agent.orgId
-      )
+      const resumed = await this.activate(daemonId, candidate.agent, candidate.bundle, moveId, {
+        reconcileWorkspace: true
+      })
 
       let stable: ActivationSnapshot
       if (resumed.ok) {
@@ -549,6 +551,7 @@ export class AgentMoveService {
 
     let activated: Ack
     try {
+      // Workspace edits retain the live registries, which can advance independently while detach waits.
       activated = await this.deps.control.agentActivate(
         daemonId,
         {
@@ -583,10 +586,9 @@ export class AgentMoveService {
     // served by whoever holds its duty, so moving it onto a machine has to quiesce that member or
     // the machine it lands on and the member it left both run it.
     const sourceDaemonIds = (await (this.deps.placement ?? PLACEMENT_ONLY).servingDaemons(agent)) as DaemonId[]
-    // Retained only as compensation input if the source is detached but the
-    // placement CAS never commits. The target always receives a fresh post-CAS
-    // snapshot, never this pre-detach copy.
+    // Validate the source definition before cutover; activation and compensation both read fresh owned snapshots.
     const sourceBundle = await this.snapshot(agent)
+    requireExternalMemoryDefinition(agent, sourceBundle)
 
     const stagedSources = new Map<DaemonId, string>()
     for (const sourceDaemonId of sourceDaemonIds) {
@@ -611,12 +613,7 @@ export class AgentMoveService {
         const released = await this.deps.assignments.releaseForAgent(agent.id, sourceDaemonId, new Date())
         for (const key of released) this.deps.sessionOwners.releaseSession(key)
       } catch (err) {
-        await this.bestEffortBootstrap(
-          'source restore after affinity release failure',
-          sourceDaemonId,
-          agent,
-          sourceBundle
-        )
+        await this.bestEffortBootstrap('source restore after affinity release failure', sourceDaemonId, agent)
         throw new AgentMoveFailed('failed to release source session affinities', err)
       }
     }
@@ -625,11 +622,11 @@ export class AgentMoveService {
     try {
       moved = await this.deps.agents.movePlacement(agent.id, source, target, editor, opts)
     } catch (err) {
-      await this.restoreSourceIfStillOwner(agent, source, sourceBundle)
+      await this.restoreSourceIfStillOwner(agent, source)
       throw new AgentMoveFailed('failed to persist agent placement', err)
     }
     if (!moved) {
-      await this.restoreSourceIfStillOwner(agent, source, sourceBundle)
+      await this.restoreSourceIfStillOwner(agent, source)
       throw new AgentMoveConflict('agent placement changed concurrently; refresh and retry')
     }
     await this.releaseStrandedTasks(moved)
@@ -648,13 +645,11 @@ export class AgentMoveService {
     const targetDaemonId = target.daemonId
     let stable: ActivationSnapshot
     try {
-      // Re-read the full wire definition only AFTER the placement CAS. The
-      // stability loop re-reads after each ACK and re-stages/re-activates if an
-      // out-of-band writer changed any spec, integration, secret, or cron.
+      // Post-CAS snapshots replay on spec, integration, credential, or cron changes across the activation ACK.
       stable = await this.activateUntilStable(moved.id, targetDaemonId, 'target', moved.orgId)
     } catch (err) {
       if (err instanceof AgentMoveFailClosed) throw err
-      const rolledBack = await this.rollback(agent, moved, source, targetDaemonId, editor, sourceBundle)
+      const rolledBack = await this.rollback(moved, source, targetDaemonId, editor)
       if (!rolledBack) {
         throw new AgentMoveFailed(
           'target bootstrap failed and target detach was not confirmed; placement remains on target for manual recovery',
@@ -899,27 +894,30 @@ export class AgentMoveService {
     }
   }
 
-  /**
-   * The complete installable definition of one agent — secrets, org environment,
-   * skills, integration specs, crons, and the two definition kinds the spec only
-   * NAMES (its proxied MCP servers and its external-memory connection) — with no
-   * move token, staging fence, or placement assertion attached.
-   *
-   * Used only by `duty/fetch`. The MCP and memory defs come from the SAME
-   * projector the reconnect roster uses, scoped to this one agent's references,
-   * so a holder's install and its next snapshot cannot disagree and the reply
-   * carries nothing beyond what the duty it already holds covers. A move keeps
-   * its narrower `activationDefinition` — placement moves converge these two
-   * kinds through their own live pushes and the target's register.
-   */
+  /** The complete installable definition for an agent whose duty/fetch caller has already authorized its holder. */
   async bundleFor(agent: AgentRecord): Promise<DutyAgentBundle> {
+    const snapshot = await this.snapshot(agent)
+    return {
+      ...this.activationDefinition(agent, snapshot),
+      mcpServers: snapshot.mcpServers,
+      memoryConnections: snapshot.memoryConnections
+    }
+  }
+
+  private async registryDefinitions(
+    agent: AgentRecord
+  ): Promise<Pick<DutyAgentBundle, 'mcpServers' | 'memoryConnections'>> {
     const log = { warn: (obj: object, msg: string) => this.deps.log?.warn(obj, msg) }
-    const [snapshot, mcpServers, memoryConnections] = await Promise.all([
-      this.snapshot(agent),
-      mcpDefsForAgents([agent], this.deps.mcp, log, { agentId: agent.id }),
-      memoryDefsForAgents([agent], this.deps.memory, log, { agentId: agent.id })
-    ])
-    return { ...this.activationDefinition(agent, snapshot), mcpServers, memoryConnections }
+    try {
+      const [mcpServers, memoryConnections] = await Promise.all([
+        mcpDefsForAgents([agent], this.deps.mcp, log, { agentId: agent.id }),
+        memoryDefsForAgents([agent], this.deps.memory, log, { agentId: agent.id })
+      ])
+      return { mcpServers, memoryConnections }
+    } catch {
+      // Projection and transport errors can retain credential-bearing payloads; never attach their cause.
+      throw new AgentMoveFailed('agent registry definitions could not be resolved')
+    }
   }
 
   /** Read every placement-dependent wire definition. */
@@ -937,7 +935,8 @@ export class AgentMoveService {
       hookRoutings,
       apiGates,
       computers,
-      gitCommitIdentity
+      gitCommitIdentity,
+      registries
     ] = await Promise.all([
       this.deps.integrations.listForAgent(agent.id),
       this.deps.crons.listForAgent(agent.id),
@@ -951,7 +950,8 @@ export class AgentMoveService {
       this.deps.specs.hookRoutingsOf(agent),
       this.deps.specs.apiGatesOf(agent),
       this.deps.specs.computersOf(agent),
-      this.deps.specs.gitCommitIdentityOf(agent)
+      this.deps.specs.gitCommitIdentityOf(agent),
+      this.registryDefinitions(agent)
     ])
     const specs = await Promise.all(
       integrations.map(async (integration) => {
@@ -1010,7 +1010,8 @@ export class AgentMoveService {
       ...(hookRoutings !== undefined ? { hookRoutings } : {}),
       apiGates,
       computers,
-      ...(gitCommitIdentity ? { gitCommitIdentity } : {})
+      ...(gitCommitIdentity ? { gitCommitIdentity } : {}),
+      ...registries
     }
   }
 
@@ -1051,18 +1052,19 @@ export class AgentMoveService {
       return this.failClosedOwnership(agentId, targetDaemonId, orgId)
     }
     const bundle = await this.snapshot(agent)
+    requireExternalMemoryDefinition(agent, bundle)
     return {
       agent,
       bundle,
-      fingerprint: JSON.stringify(this.activationDefinition(agent, bundle))
+      fingerprint: JSON.stringify({
+        ...this.activationDefinition(agent, bundle),
+        mcpServers: bundle.mcpServers,
+        memoryConnections: bundle.memoryConnections
+      })
     }
   }
 
-  /**
-   * Activate only a post-CAS snapshot, then prove that the full wire definition
-   * stayed stable across the ACK. A changed snapshot is re-staged and replayed
-   * with the same move token; persistent churn fails into the normal rollback.
-   */
+  /** Replay an owned snapshot under a fresh fence until its full definition stays stable across the activation ACK. */
   private async activateUntilStable(
     agentId: AgentId,
     targetDaemonId: DaemonId,
@@ -1123,12 +1125,10 @@ export class AgentMoveService {
   }
 
   private async rollback(
-    sourceAgent: AgentRecord,
     moved: AgentRecord,
     source: PlacementTarget,
     targetDaemonId: DaemonId,
-    editor: string | undefined,
-    bundle: MoveBundle
+    editor: string | undefined
   ): Promise<boolean> {
     // Never reactivate the source unless target quiescence is positively ACKed:
     // an unavailable target may still be running the partial copy, and restoring
@@ -1157,20 +1157,16 @@ export class AgentMoveService {
     // Only a machine source has a bootstrap to restore. A pool source is restored by the ledger:
     // the placement is back, so the next sweep re-grants the group and install-on-grant replays.
     if (restored && source.kind === 'daemon') {
-      await this.bestEffortBootstrap('source bootstrap rollback', source.daemonId, sourceAgent, bundle)
+      await this.bestEffortBootstrap('source bootstrap rollback', source.daemonId, restored)
     }
     return restored !== null
   }
 
-  private async restoreSourceIfStillOwner(
-    agent: AgentRecord,
-    source: PlacementTarget,
-    bundle: MoveBundle
-  ): Promise<void> {
+  private async restoreSourceIfStillOwner(agent: AgentRecord, source: PlacementTarget): Promise<void> {
     if (source.kind !== 'daemon') return
     const current = await this.deps.agents.getUnscoped(agent.id).catch(() => null)
     if (!current || !samePlacement(placementTargetOf(current), source)) return
-    await this.bestEffortBootstrap('source bootstrap after CAS failure', source.daemonId, agent, bundle)
+    await this.bestEffortBootstrap('source bootstrap after CAS failure', source.daemonId, current)
   }
 
   /** Stage first, then install one authoritative bundle under the daemon gate. */
@@ -1181,35 +1177,42 @@ export class AgentMoveService {
     label: string,
     workspace: Pick<AgentActivate, 'prepareWorkspace' | 'reconcileWorkspace'> = {}
   ): Promise<void> {
-    // Live CRUD EVTs are intentionally not part of move bootstrap: they are
-    // unacknowledged and could expose a partially-applied or stale same-ID
-    // definition. Activate persists, exact-prunes, reconciles, and warms this
-    // complete snapshot synchronously while the staging tombstone remains armed.
+    // Registry definitions precede the full activation while the staging fence remains armed.
     const moveId = randomUUID()
     requireAck(`${label} staging detach`, await this.detach(daemonId, agent.id, agent.orgId, { moveId }))
     await this.deps.recomputeDuties?.(agent.orgId)
-    requireAck(
-      `${label} activate`,
-      await this.deps.control.agentActivate(
-        daemonId,
-        {
-          ...this.activationDefinition(agent, bundle),
-          moveId,
-          ...workspace
-        },
-        agent.orgId
-      )
+    requireAck(`${label} activate`, await this.activate(daemonId, agent, bundle, moveId, workspace))
+  }
+
+  private async activate(
+    daemonId: DaemonId,
+    agent: AgentRecord,
+    bundle: MoveBundle,
+    moveId: string,
+    workspace: Pick<AgentActivate, 'prepareWorkspace' | 'reconcileWorkspace'> = {}
+  ): Promise<Ack> {
+    const current = await this.deps.agents.getUnscoped(agent.id)
+    if (!current || !(await (this.deps.placement ?? PLACEMENT_ONLY).mayAct(current, daemonId))) {
+      return this.failClosedOwnership(agent.id, daemonId, agent.orgId)
+    }
+    try {
+      for (const spec of bundle.mcpServers) await this.deps.control.mcpServerUpsert(daemonId, spec)
+      for (const spec of bundle.memoryConnections) await this.deps.control.memoryConnectionUpsert(daemonId, spec)
+    } catch {
+      // A failed send may contain the raw secret or grant in its exception; report only the operation.
+      throw new AgentMoveFailed('agent registry definitions could not be installed on the target daemon')
+    }
+    return this.deps.control.agentActivate(
+      daemonId,
+      { ...this.activationDefinition(agent, bundle), moveId, ...workspace },
+      agent.orgId
     )
   }
 
-  private async bestEffortBootstrap(
-    action: string,
-    daemonId: DaemonId,
-    agent: AgentRecord,
-    bundle: MoveBundle
-  ): Promise<void> {
+  private async bestEffortBootstrap(action: string, daemonId: DaemonId, agent: AgentRecord): Promise<void> {
     try {
-      await this.bootstrap(daemonId, agent, bundle, action)
+      const current = await this.snapshotOwned(agent.id, daemonId, agent.orgId)
+      await this.bootstrap(daemonId, current.agent, current.bundle, action)
     } catch (err) {
       this.deps.log?.warn({ action, err, agentId: agent.id }, 'agent move: source restore failed')
     }

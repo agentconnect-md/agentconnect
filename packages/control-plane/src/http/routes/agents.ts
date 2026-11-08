@@ -3588,43 +3588,7 @@ export function agentRoutes(deps: HttpDeps) {
           }
         }
 
-        // A move takes NO external-memory mutation scope: its connection work is
-        // staging pushes (no connection row writes), and it can outlive any
-        // transactional lock while a daemon cuts over. A connection mutation that
-        // lands mid-move can leave the target holding a stale spec only until
-        // the post-commit re-push below / the usage-checked removal in the
-        // finally / the daemon reconnect snapshot converge it — and a connection
-        // DELETE stays impossible throughout because this agent's committed
-        // binding keeps its "no agent bound" scan refusing (409).
-        let targetStaged = false
         try {
-          // Registry-before-agent for the MCP defs too: the target refuses `agent/activate` for a
-          // name it holds no def for, and a registry def reaches it only by CP push. An EVT with
-          // no ACK — if it did not land, that activation refusal is the failure.
-          await pushMcpDefs(registryProviders, [target.daemonId])
-          // The connection registry is a separate private wire. Stage it before
-          // agent/activate so target admission cannot observe a dangling binding.
-          // This also repairs a target that committed the move but lost the reply.
-          // Mark the cleanup obligation before the request: an ACK timeout can
-          // mean the daemon applied the grant-bearing definition but its reply
-          // was lost, so a failed request is not proof that nothing was staged.
-          targetStaged = existing.memory?.provider === 'external'
-          if (!(await pushExternalMemoryToDaemon(existing, target.daemonId))) {
-            if (existing.memory?.provider === 'external') {
-              await removeExternalMemoryFromDaemonIfUnused(
-                existing.orgId,
-                target.daemonId,
-                existing.memory.connectionId
-              )
-              targetStaged = false
-            }
-            return reply.code(503).send({
-              error: 'Service Unavailable',
-              statusCode: 503,
-              message: 'external memory connection could not be staged on the target daemon'
-            })
-          }
-
           // Retry/repair: the prior response may have been lost, or a failed move
           // may have left DB placement on a partially bootstrapped target. Reapply
           // the full bundle + activate; all operations are idempotent.
@@ -3667,11 +3631,6 @@ export function agentRoutes(deps: HttpDeps) {
           const moved = force
             ? await agentMoves.forceReassign(existing, moveTarget, req.principal?.userId)
             : await agentMoves.move(existing, moveTarget, req.principal?.userId, moveOpts)
-          // The pre-activation probe fact can arrive before the placement CAS and
-          // is correctly rejected by the daemon-ownership check. Re-send the
-          // idempotent definition after commit so the daemon re-emits its current
-          // body-free fact under the now-authoritative target placement.
-          await pushExternalMemoryToDaemon(moved, target.daemonId)
           if (existing.daemonId && existing.memory?.provider === 'external') {
             await removeExternalMemoryFromDaemonIfUnused(
               existing.orgId,
@@ -3700,11 +3659,8 @@ export function agentRoutes(deps: HttpDeps) {
           if (refusedMove) return conflict(refusedMove)
           throw err
         } finally {
-          // Re-read usage instead of trusting a local "committed" flag: a move
-          // may commit placement and then lose its reply. If the target is now
-          // authoritative the usage check retains the entry; otherwise it
-          // removes a definition whose ACK may merely have been lost.
-          if (targetStaged && existing.memory?.provider === 'external') {
+          // Keep definitions still in use; a postcommit activation failure may have delivered them before rollback.
+          if (existing.memory?.provider === 'external') {
             await removeExternalMemoryFromDaemonIfUnused(existing.orgId, target.daemonId, existing.memory.connectionId)
           }
           // Same usage re-read for the staged MCP defs: an authoritative target keeps them.

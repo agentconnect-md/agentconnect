@@ -129,6 +129,7 @@ import type { RelayControlSender } from '../orchestrator/relayControl.js'
 import type { HttpBotOrchestrator } from '../orchestrator/httpBot.js'
 import type { CollabRoutesService } from '../orchestrator/collabRoutes.service.js'
 import type { AgentMutationGate } from '../orchestrator/agentMutationGate.js'
+import type { RelayRosterView } from '../orchestrator/agentDefinitions.js'
 import type { SessionEventSink } from '../events/sink.js'
 import type { UsageWriter } from '../usage/writer.js'
 import type { HumanAuthConfig } from './plugins/auth.js'
@@ -434,6 +435,8 @@ export interface HttpDeps {
   /** CP→relay control fan-out — pushes `rc/daemon-revoke` to connected relays when a
    *  daemon key is revoked / a daemon is removed (shared-bot-relay.md §9). */
   relayControl: RelayControlSender
+  /** Current live relay endpoints for credential-bearing definition projections. */
+  relayRoster: RelayRosterView
   /** HTTP-bot assignment + attributed-route compilation (shared-bot-relay.md §4.2/§10).
    *  Install / uninstall / toggle / channel-owner changes call it to (re)assign a
    *  HTTP bot's ingest to the relay pool and push its routes + send-only daemon specs. */
