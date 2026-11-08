@@ -125,3 +125,30 @@ it('names an agent turn by the last sentence it said, in Latin or CJK punctuatio
   expect(lastSpokenSentence([step('See [the PR](https://example.test/pr/1)\n\n```\ncode\n```')])).toBe('See the PR')
   expect(lastSpokenSentence([])).toBe('')
 })
+
+it('marks the turn at the top of the pane, where a jump lands it, and the last turn once the pane is at its end', () => {
+  draw(<TranscriptMap turns={turns} />)
+  const scroller = container.querySelector<HTMLElement>('[data-transcript-scroll]')!
+  const tops: Record<string, number> = { u1: 16, a1: 120, u2: 600, a2: 1200 }
+  for (const el of container.querySelectorAll<HTMLElement>('[data-turn-anchor]'))
+    el.getBoundingClientRect = () => ({ top: tops[el.dataset.turnAnchor!] }) as DOMRect
+  scroller.getBoundingClientRect = () => ({ top: 0 }) as DOMRect
+  const metrics = { scrollTop: 0, scrollHeight: 2000, clientHeight: 400 }
+  for (const key of Object.keys(metrics) as (keyof typeof metrics)[])
+    Object.defineProperty(scroller, key, { configurable: true, get: () => metrics[key] })
+  const marked = () =>
+    container.querySelector('[data-transcript-map] button[aria-current="true"]')?.getAttribute('aria-label')
+  const scrollNow = () =>
+    act(async () => {
+      scroller.dispatchEvent(new Event('scroll'))
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(null)))
+    })
+  return (async () => {
+    await scrollNow()
+    // The short first turn sits at the top; the next one is in view too, but it is not where the pane starts.
+    expect(marked()).toBe('Sam: ship it')
+    metrics.scrollTop = 1600
+    await scrollNow()
+    expect(marked()).toBe('Ops bot · 2:16 PM')
+  })()
+})

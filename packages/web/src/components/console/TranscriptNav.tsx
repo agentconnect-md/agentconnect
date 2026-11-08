@@ -57,17 +57,19 @@ export function TranscriptMap({ turns, onJump }: { turns: readonly MapTurn[]; on
     const scroller = ref.current?.parentElement?.querySelector<HTMLElement>('[data-transcript-scroll]')
     if (!scroller) return
     let frame = 0
-    // The turn in view is the last one whose top is above 45% of the pane.
+    // The turn in view is the one at the pane's top, where a jump lands it; at the end it is the last turn, which may never reach the top.
     const measure = () => {
       frame = 0
       if (jumping.current) return
-      const top = scroller.getBoundingClientRect().top
-      const line = top + scroller.clientHeight * 0.45
-      let current: string | null = null
-      for (const el of scroller.querySelectorAll<HTMLElement>('[data-turn-anchor]')) {
+      const anchors = [...scroller.querySelectorAll<HTMLElement>('[data-turn-anchor]')]
+      const atEnd = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 4
+      const line = scroller.getBoundingClientRect().top + 24
+      let current: string | null = anchors[0]?.dataset.turnAnchor ?? null
+      for (const el of anchors) {
         if (el.getBoundingClientRect().top <= line) current = el.dataset.turnAnchor ?? null
         else break
       }
+      if (atEnd && anchors.length) current = anchors[anchors.length - 1]!.dataset.turnAnchor ?? null
       setActive(current)
     }
     const onScroll = () => {
