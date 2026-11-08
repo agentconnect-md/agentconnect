@@ -1,3 +1,4 @@
+import { MESSAGE_ATTACHMENTS_MAX } from '@agentconnect.md/protocol'
 import type { Integration } from '../agents/agent-schema.js'
 import { obj, type JsonValue, type ToolDescriptor } from '../tool-schema/descriptor.js'
 import {
@@ -124,7 +125,7 @@ function buildSendMessageTool(platforms: string[], reach: TaskReach = 'delegate'
         attachments: {
           type: 'array',
           minItems: 1,
-          maxItems: 4,
+          maxItems: MESSAGE_ATTACHMENTS_MAX,
           description:
             'Files to publish together. Use workspace + path, upload + uploadId, or platform + platform/fileId and optional source integrationId. See getToolGuide.',
           items: messageAttachmentSchema as JsonValue

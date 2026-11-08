@@ -1,6 +1,8 @@
 // ⚠️ NO RELATIVE IMPORTS — a bundler compiles this from source; web's protocol-imports.leaf.test.ts enforces it.
 import { z } from 'zod'
 
+export const MESSAGE_ATTACHMENTS_MAX = 10
+
 // Durable upload metadata; signed URLs and image previews stay outside this record.
 export const UploadedFileReference = z.object({
   uploadId: z.string().uuid(),
@@ -119,16 +121,11 @@ export const TaskLinkFacts = z.object({
 })
 export type TaskLinkFacts = z.infer<typeof TaskLinkFacts>
 
-/**
- * What lies behind one user-turn `text` row, transported as a JSON STRING in `SessionMessage.body`.
- * `prompt` is the text the model actually received when it differs from the row's `text` (replay
- * reads it); the platform facts are what the console renders behind the bubble. Absent on rows
- * from before it existed and on turns whose prompt IS the text.
- */
+// JSON in SessionMessage.body: the model's prompt when it differs from text, plus facts the console renders.
 export const UserTurnBody = z.object({
   prompt: z.string().optional(),
-  uploads: z.array(UploadedFileReference).max(4).optional(),
-  publishedAttachments: z.array(PublishedAttachment).max(4).optional(),
+  uploads: z.array(UploadedFileReference).max(MESSAGE_ATTACHMENTS_MAX).optional(),
+  publishedAttachments: z.array(PublishedAttachment).max(MESSAGE_ATTACHMENTS_MAX).optional(),
   linear: LinearTurnFacts.optional(),
   codehost: CodehostTurnFacts.optional(),
   sessionMessage: SessionMessageTurnFacts.optional(),

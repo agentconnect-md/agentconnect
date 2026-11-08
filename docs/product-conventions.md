@@ -719,7 +719,7 @@ wakes another agent or feeds its content to another agent's model.
 
 ### Publishing files to an explicit destination
 
-`sendMessage` with `action: "postMessage"` accepts up to four `attachments`. Each item
+`sendMessage` with `action: "postMessage"` accepts up to ten `attachments`. Each item
 selects its existing source: `workspace` plus a relative `path`, `upload` plus a received
 `uploadId`, or `platform` plus `platform`, `fileId`, and an optional source `integrationId`.
 The source integration is independent of the destination; ambiguous source bots require
@@ -727,6 +727,7 @@ an explicit selection. Names are labels, never identifiers. The daemon checks so
 access and destination write access, resolves the whole group, and applies the same file
 and turn byte limits as `shareFile` before publication. A targetless cron can generate
 files and explicitly publish the result this way without a new cron display setting.
+Larger groups are refused before publication; callers split them into separate sends.
 
 An upload lookup is scoped to the receiving session, agent, and organization. Its native
 identifier and integrity metadata remain in the daemon transcript; signed URLs are never
@@ -751,11 +752,12 @@ success notice after publication. An indeterminate upload may have landed: it ke
 turn budget and explicitly forbids retrying.
 
 Webchat accepts mixed multi-select, paste, and drop in its home, session, and thread
-composers. Up to four images or documents share one selection limit. Each has its own
+composers. Up to ten images or documents share one selection limit. Each has its own
 preview, upload status, remove, and retry controls; failed items hold the send. On current
 daemons with object storage, image originals use the same `uploadId` flow as documents,
-with bounded previews for the model and transcript. Viewing and forwarding require no
-workspace copy. Historical inline images and image-only input without object storage
+with bounded previews for the model and transcript. The combined preview byte budget is
+independent of the file count; compressing previews leaves the originals intact. Viewing
+and forwarding require no workspace copy. Historical inline images and image-only input without object storage
 remain supported. Originals keep the upload bucket's temporary lifecycle; a retained
 preview does not promise permanent original bytes.
 

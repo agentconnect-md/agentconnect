@@ -213,7 +213,7 @@ function actionGuides(ctx: SessionContext, reach: TaskReach): Record<SendMessage
         'Update an existing thread: `channel` plus `thread` (the thread root id, e.g. `threadTs` from ' +
           'getChannelHistory) posts inside it; agents already in that thread see it. `thread` is only for a bare ' +
           '`channel` post and never for the thread you are answering — that is your ordinary reply.',
-        '`attachments` accepts up to four files: {source:"workspace",path:"outputs/report.pdf"}, ' +
+        '`attachments` accepts up to ten files: {source:"workspace",path:"outputs/report.pdf"}, ' +
           '{source:"upload",uploadId:"<received uploadId>"}, or {source:"platform",platform:"slack",integrationId:"<source bot>",fileId:"<file.id>"}. ' +
           'Paths belong to your current workspace; uploadIds must have been received in this session. Source integrationId selects the reading bot, independently of the destination bot. Names are not identifiers.',
         'Slack publishes a batch with one caption at the channel root or in the named thread. Other integrations may only accept one file. ' +
