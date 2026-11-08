@@ -1126,7 +1126,7 @@ describe('reconnect after an unacked turn', () => {
 
   // The relay mints the canonical post identity per received frame, so a re-sent multi-agent turn
   // partially admitted the first time would duplicate the user message on the rest of the roster.
-  it('never re-sends a multi-agent turn — those lanes resume as before', async () => {
+  it.each(['composer', 'relay'])('never re-sends a multi-agent turn with its roster from %s', async (source) => {
     ReconnectSocket.instances = []
     Reflect.set(globalThis, 'WebSocket', ReconnectSocket)
     const api = await import('@/lib/api')
@@ -1136,13 +1136,13 @@ describe('reconnect after an unacked turn', () => {
       { agentId: 'agent-2', name: 'two' }
     ]
     await act(async () => {
-      pgSend('s1', 'agent-1', 'hello both', 'c1', roster)
+      pgSend('s1', 'agent-1', 'hello both', 'c1', source === 'composer' ? roster : undefined)
     })
     const first = ReconnectSocket.instances[0]!
     await act(async () => {
       first.readyState = 1
       first.onopen?.()
-      first.onmessage?.({ data: JSON.stringify({ type: 'ready' }) })
+      first.onmessage?.({ data: JSON.stringify({ type: 'ready', participants: roster }) })
     })
     const turn = frames(first)[0] as { turnId: string }
     const second = await dropAndReconnect(first)
@@ -2488,6 +2488,7 @@ describe('a dial that dies before the turn reaches the socket', () => {
       })
       await settle()
       expect(DyingSocket.instances).toHaveLength(2)
+      expect(isPgBusy('s1')).toBe(true)
       const live = DyingSocket.instances[1]!
       await act(async () => {
         live.readyState = 1
@@ -2775,6 +2776,12 @@ describe('a continuation lane retargeted to another member session', () => {
     act(() => markSessionTarget('s-architect', 's-review'))
     await act(async () => {
       pgSend('s-architect', 'agent-review', 'second')
+    })
+    await act(async () => {
+      const second = TargetSocket.instances[1]!
+      second.readyState = 1
+      second.onopen?.()
+      second.onmessage?.({ data: JSON.stringify({ type: 'ready' }) })
     })
 
     // A lane still keyed to the previous socket's roster would wait on an agent this socket never reaches.

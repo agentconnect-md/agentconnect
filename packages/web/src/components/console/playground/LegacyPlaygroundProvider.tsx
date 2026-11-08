@@ -2120,59 +2120,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         ...(shownIn ? { thread: shownIn } : {})
       })
       setBusy(id, true)
-      // Targeting (webchat-multi-agents.md §4.2): conversation membership is a
-      // STANDING mention — an unmentioned message goes to the WHOLE roster
-      // (each agent may silently decline); explicit @mentions narrow the turn
-      // to the named participants. The relay validates against its verified
-      // roster, and also applies the same all-participants default itself, so a
-      // resumed conversation with no client-side roster still reaches everyone.
-      const session = pgSessions[id]
-      // An ADOPTED webchat session has no pgSessions entry — its roster comes
-      // from the fetched session detail (knownParticipants). Without it the
-      // send degrades to the relay's all-participants default: mentions can't
-      // narrow, and no lanes are pre-created (leaving delivery to the
-      // early-frame admission path).
-      //
-      // The staged-ref fallback (resolveRoster) covers the FIRST send of a
-      // fresh multi-agent conversation: openPlayground stages the session and
-      // HomeView sends in the same tick, so `pgSessions[id]` is still the
-      // pre-stage snapshot. Reading only state here silently dropped
-      // mentions/targets (and lane pre-creation) from every first message —
-      // the standing mention never reached the wire, so the parallel-answer
-      // race could still silence an agent on exactly the message most users
-      // test with.
-      const roster = resolveRoster(session?.participants, knownParticipants, rosterAgentIds.current.get(id), (a) =>
-        rosterNames.current.get(id)?.get(a)
-      )
-      if (!session && knownParticipants && knownParticipants.length > 1 && !rosterNames.current.has(id)) {
-        rosterNames.current.set(id, new Map(knownParticipants.map((p) => [p.agentId, p.name])))
-      }
-      const typed = typedMentionIds(roster, text)
-      const commandTarget =
-        commandPick &&
-        roster.some((p) => p.agentId === commandPick.agentId) &&
-        leadingCommandToken(text) === commandPick.name &&
-        !typed.includes(commandPick.agentId)
-          ? [commandPick.agentId]
-          : []
-      const mentions = [...typed, ...commandTarget]
-      const targets =
-        roster.length > 1
-          ? mentions.length
-            ? mentions
-            : roster.map((p) => p.agentId)
-          : (rosterAgentIds.current.get(id) ?? [agentForId])
-      // Membership is a standing mention — a bare multi-agent send materializes it as
-      // the whole roster in structured `mentions` (see wireMentions), the same wire
-      // shape an explicit @-everyone message produces. Delivery is unchanged: targets
-      // already covered the roster.
-      const sentMentions = wireMentions(roster, mentions)
       pendingTurnIds.current.set(id, requestedTurnId)
       finishedTurnLanes.current.delete(id)
-      for (const target of targets) {
-        streamCursors.current.set(laneKey(id, target), createWebchatCursor<WebchatOutput, WebchatDone>(requestedTurnId))
-      }
-      syncBusyLanes(id)
       if (conversationId) conversationIds.current.set(id, conversationId)
       reconnectAttempts.current.delete(id)
       // First send of a fresh conversation mints a real session on the daemon. The SSE
@@ -2211,6 +2160,38 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           setBusy(id, false)
           return
         }
+        // Resolve targets after the handshake, which may be the first source of the conversation's roster.
+        const session = pgSessions[id]
+        const roster = resolveRoster(session?.participants, knownParticipants, rosterAgentIds.current.get(id), (a) =>
+          rosterNames.current.get(id)?.get(a)
+        )
+        if (!session && knownParticipants && knownParticipants.length > 1 && !rosterNames.current.has(id)) {
+          rosterNames.current.set(id, new Map(knownParticipants.map((p) => [p.agentId, p.name])))
+        }
+        const typed = typedMentionIds(roster, text)
+        const commandTarget =
+          commandPick &&
+          roster.some((p) => p.agentId === commandPick.agentId) &&
+          leadingCommandToken(text) === commandPick.name &&
+          !typed.includes(commandPick.agentId)
+            ? [commandPick.agentId]
+            : []
+        const mentions = [...typed, ...commandTarget]
+        const targets =
+          roster.length > 1
+            ? mentions.length
+              ? mentions
+              : roster.map((p) => p.agentId)
+            : (rosterAgentIds.current.get(id) ?? [agentForId])
+        // A bare message mentions every member; explicit mentions narrow its targets.
+        const sentMentions = wireMentions(roster, mentions)
+        for (const target of targets) {
+          streamCursors.current.set(
+            laneKey(id, target),
+            createWebchatCursor<WebchatOutput, WebchatDone>(requestedTurnId)
+          )
+        }
+        syncBusyLanes(id)
         const frame = JSON.stringify({
           text,
           turnId: requestedTurnId,
@@ -2274,6 +2255,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           .catch((err) => {
             if (!mayRebuild || onWire || err instanceof ApiError) return reportUnsent(err)
             abandon(conn)
+            setBusy(id, true)
             putThrough(connect(id, agentForId, conversationId), false)
           })
       }
