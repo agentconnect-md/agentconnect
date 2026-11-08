@@ -114,6 +114,8 @@ describe('the wire call', () => {
     expect(parse({ op: 'get-space', space: 'spaces/' })).toBe(false)
     expect(parse({ op: 'get-space', space: 'projects/x' })).toBe(false)
     expect(parse({ op: 'find-direct-message', user: 'users/..' })).toBe(false)
+    expect(parse({ op: 'list-members', space: SPACE, pageToken: '' })).toBe(false)
+    expect(parse({ op: 'list-members', space: 'spaces/..' })).toBe(false)
     expect(parse({ op: 'delete-space', space: SPACE })).toBe(false)
     expect(parse({ ...create(), thread: `${SPACE}/threads/..` })).toBe(false)
   })
@@ -175,6 +177,11 @@ describe('GoogleChatRelayEgress', () => {
     resultOf(await e.call(ROW, { op: 'list-dm-humans', space: DM }))
     expect(g.sent.at(-1)?.url.searchParams.get('filter')).toBe('member.type = "HUMAN"')
     expect(g.sent.at(-1)?.url.searchParams.get('pageSize')).toBe('2')
+    resultOf(await e.call(ROW, { op: 'list-members', space: SPACE, pageToken: 'next/page' }))
+    expect(g.sent.at(-1)?.url.pathname).toBe(`/v1/${SPACE}/members`)
+    expect(g.sent.at(-1)?.url.searchParams.get('filter')).toBe('member.type = "HUMAN"')
+    expect(g.sent.at(-1)?.url.searchParams.get('pageToken')).toBe('next/page')
+    expect(g.sent.at(-1)?.url.searchParams.get('pageSize')).toBe('100')
   })
 
   it('refuses a thread of another Space before any Google call', async () => {
@@ -210,7 +217,8 @@ describe('GoogleChatRelayEgress', () => {
         { op: 'delete-message', message },
         { op: 'get-message', message },
         { op: 'get-space', space: OTHER_SPACE },
-        { op: 'list-dm-humans', space: OTHER_SPACE }
+        { op: 'list-dm-humans', space: OTHER_SPACE },
+        { op: 'list-members', space: OTHER_SPACE, pageToken: 'next/page' }
       ] as WireGoogleChatCall[])
         expect(await e.call(ROW, call)).toEqual({ outcome: 'refused', reason: 'tenant_refused' })
       expect(writes(g.sent)).toEqual([])

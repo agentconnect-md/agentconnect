@@ -916,6 +916,7 @@ describe('turnFailureReason (actionable message from a failed ACP request)', () 
     expect(turnFailureReason(new Error('API Error: Request was aborted.'))).toBe('Request was aborted.')
     // A wrapper around nothing keeps a status line; a bare label is not a wrapper.
     expect(turnFailureReason(new Error('API Error: 500 '))).toBe('API error 500')
+    expect(turnFailureReason(new Error('API Error: 405 status code (no body)'))).toBe('API error 405')
     expect(turnFailureReason(new Error('API Error'))).toBe('API Error')
   })
 

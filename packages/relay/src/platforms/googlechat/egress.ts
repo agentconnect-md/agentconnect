@@ -383,6 +383,7 @@ function targetSpace(call: WireGoogleChatCall): string | undefined {
     case 'create-message':
     case 'get-space':
     case 'list-dm-humans':
+    case 'list-members':
       return call.space
     case 'patch-text':
     case 'patch-cards':

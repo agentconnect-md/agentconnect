@@ -494,9 +494,32 @@ export class GoogleChatConnection implements PlatformConnection {
     return space.name
   }
 
-  /** No member enumeration in this version: a Space's roster is not something a turn reads. */
-  async listMembers(_channel: string): Promise<PlatformMemberRef[]> {
-    return []
+  /** App authentication lists human memberships only; every page shares the read deadline. */
+  async listMembers(channel: string): Promise<PlatformMemberRef[]> {
+    const signal = AbortSignal.timeout(GOOGLE_CHAT_READ_DEADLINE_MS)
+    const members = new Map<string, PlatformMemberRef>()
+    const pages = new Set<string>()
+    let pageToken: string | undefined
+    do {
+      const page = await this.request<{ memberships?: MembershipResource[]; nextPageToken?: string }>(
+        { op: 'list-members', space: channel, ...(pageToken ? { pageToken } : {}) },
+        { retry: 'none', signal }
+      )
+      for (const { member } of page.memberships ?? []) {
+        if (member?.type !== 'HUMAN' || !member.name) continue
+        members.set(member.name, {
+          id: member.name,
+          ...(member.displayName ? { name: member.displayName } : {}),
+          isBot: false
+        })
+      }
+      pageToken = page.nextPageToken || undefined
+      if (pageToken) {
+        if (pages.has(pageToken)) throw new GoogleChatApiError('Google Chat repeated a membership page', 'invalid')
+        pages.add(pageToken)
+      }
+    } while (pageToken)
+    return [...members.values()]
   }
 
   /** The named Spaces the app is a member of, as the observed conversation rows (§5); DMs surface from traffic. */

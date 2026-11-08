@@ -880,6 +880,11 @@ export const WireGoogleChatCall = z.discriminatedUnion('op', [
   z.object({ op: z.literal('get-message'), message: GoogleChatMessageName }),
   z.object({ op: z.literal('get-space'), space: GoogleChatSpaceName }),
   z.object({ op: z.literal('list-dm-humans'), space: GoogleChatSpaceName }),
+  z.object({
+    op: z.literal('list-members'),
+    space: GoogleChatSpaceName,
+    pageToken: z.string().min(1).max(4096).optional()
+  }),
   z.object({ op: z.literal('find-direct-message'), user: GoogleChatUserName }),
   z.object({ op: z.literal('list-spaces'), pageToken: z.string().min(1).max(4096).optional() })
 ])
@@ -949,6 +954,16 @@ export function googleChatCallRequest(call: WireGoogleChatCall): GoogleChatHttpR
         method: 'GET',
         path: `${encodeGoogleChatName(call.space)}/members`,
         query: { pageSize: '2', filter: 'member.type = "HUMAN"' }
+      }
+    case 'list-members':
+      return {
+        method: 'GET',
+        path: `${encodeGoogleChatName(call.space)}/members`,
+        query: {
+          pageSize: '100',
+          filter: 'member.type = "HUMAN"',
+          ...(call.pageToken ? { pageToken: call.pageToken } : {})
+        }
       }
     case 'find-direct-message':
       return { method: 'GET', path: 'spaces:findDirectMessage', query: { name: call.user } }

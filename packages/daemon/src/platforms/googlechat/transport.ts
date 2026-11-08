@@ -123,8 +123,9 @@ async function readJson(res: Response): Promise<Record<string, unknown> | undefi
     return typeof body === 'object' && body !== null && !Array.isArray(body)
       ? (body as Record<string, unknown>)
       : undefined
-  } catch {
-    return undefined
+  } catch (err) {
+    if (err instanceof SyntaxError) return undefined
+    throw err
   }
 }
 
