@@ -1569,6 +1569,8 @@
       "cancel": "取消",
       "projectsTitle": "选择项目",
       "projectsHint": "读：Agent 可以克隆。写：还可以推送。允许触发器：拉取请求可以启动 Agent。取消勾选会移除对应权限。",
+      "allProjects": "所有项目",
+      "allProjectsHint": "包括以后新建的项目。需要 Project Collection Administrator。",
       "projectsDescription": "{organization} 中 Agent 可以使用的项目。",
       "noProjects": "这个组织里没有你能看到的项目。",
       "groupFor": "{project} 的权限",

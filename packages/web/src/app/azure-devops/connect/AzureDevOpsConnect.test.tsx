@@ -165,9 +165,13 @@ describe('AzureDevOpsConnect', () => {
     expect(mocks.choose).toHaveBeenCalledWith('org-a', FLOW, 'ticket-1', 'example-org')
 
     await click('Connect')
-    expect(mocks.apply).toHaveBeenCalledWith('org-a', FLOW, 'ticket-2', [
-      { projectId: PROJECT_A, group: 'contributors', allowTriggers: true }
-    ])
+    expect(mocks.apply).toHaveBeenCalledWith(
+      'org-a',
+      FLOW,
+      'ticket-2',
+      [{ projectId: PROJECT_A, group: 'contributors', allowTriggers: true }],
+      null
+    )
     expect(host.textContent).toContain('Azure DevOps is connected')
     expect(host.querySelector('[data-azure-devops-trigger-outcomes]')).toBeNull()
     expect(host.querySelector('a')?.getAttribute('href')).toBe('/example/integrations')
@@ -219,11 +223,41 @@ describe('AzureDevOpsConnect', () => {
     // A newly checked project starts at Write with triggers allowed.
     await act(async () => box(PROJECT_B).click())
     await click('Apply')
-    expect(mocks.apply).toHaveBeenCalledWith('org-a', FLOW, 'ticket-2', [
-      { projectId: PROJECT_A, group: 'readers', allowTriggers: true },
-      { projectId: PROJECT_B, group: 'contributors', allowTriggers: true }
-    ])
+    expect(mocks.apply).toHaveBeenCalledWith(
+      'org-a',
+      FLOW,
+      'ticket-2',
+      [
+        { projectId: PROJECT_A, group: 'readers', allowTriggers: true },
+        { projectId: PROJECT_B, group: 'contributors', allowTriggers: true }
+      ],
+      null
+    )
     expect(host.textContent).toContain('Project access updated')
+  })
+
+  it('grants all projects from one row, prefilled when held, and hides the project list while it is on', async () => {
+    mocks.finish.mockResolvedValue(started({ connectionId: CONNECTION_ID, organization: 'example-org' }))
+    mocks.choose.mockResolvedValue({
+      ticket: 'ticket-2',
+      organization: 'example-org',
+      projects: [{ id: PROJECT_A, name: 'Example Project', access: { group: 'readers', allowTriggers: false } }],
+      allProjects: { group: 'readers', allowTriggers: false }
+    })
+    mocks.apply.mockResolvedValue({ connection: CONNECTION, memberships: [] })
+    await land(`code=c&state=${MANAGE_STATE}`)
+    const all = () => host.querySelector<HTMLInputElement>('[data-azure-devops-all-projects] input[type="checkbox"]')!
+    expect(all().checked).toBe(true)
+    expect(host.querySelector(`[data-azure-devops-project="${PROJECT_A}"]`)).toBeNull()
+    await click('Write')
+    await click('Apply')
+    expect(mocks.apply).toHaveBeenCalledWith(
+      'org-a',
+      FLOW,
+      'ticket-2',
+      [{ projectId: PROJECT_A, group: 'readers', allowTriggers: false }],
+      { group: 'contributors', allowTriggers: true }
+    )
   })
 
   it('allows triggers by default for Write, lets Read opt in, and resets on a group change (§11.1)', async () => {
@@ -238,9 +272,13 @@ describe('AzureDevOpsConnect', () => {
     // An unpicked project offers no toggle.
     expect(host.querySelector(`[data-azure-devops-allow-triggers="${PROJECT_B}"]`)).toBeNull()
     await click('Connect')
-    expect(mocks.apply).toHaveBeenCalledWith('org-a', FLOW, 'ticket-2', [
-      { projectId: PROJECT_A, group: 'readers', allowTriggers: true }
-    ])
+    expect(mocks.apply).toHaveBeenCalledWith(
+      'org-a',
+      FLOW,
+      'ticket-2',
+      [{ projectId: PROJECT_A, group: 'readers', allowTriggers: true }],
+      null
+    )
   })
 
   it('names the projects where triggers were not allowed, with what is left to do by hand', async () => {

@@ -2554,25 +2554,36 @@ export const AzureDevOpsProjectsDto = z.object({
           'What the application already holds in the project; absent when it holds nothing or it cannot be read.'
         )
     })
-  )
+  ),
+  allProjects: z
+    .object({ group: z.enum(['readers', 'contributors']), allowTriggers: z.boolean() })
+    .optional()
+    .describe('Access to every project, including ones created later, when the application holds it.')
 })
-export const ApplyAzureDevOpsProjectsBody = z.strictObject({
-  projects: z
-    .array(
-      z.strictObject({
-        projectId: z.guid(),
-        group: z.enum(['readers', 'contributors']),
-        allowTriggers: z
-          .boolean()
-          .optional()
-          .describe(
-            'Allow triggers (§11.1): give the application View and Edit subscriptions on the project. Absent ⇒ on for Contributors, off for Readers.'
-          )
-      })
-    )
-    .min(1)
-    .max(100)
-})
+export const ApplyAzureDevOpsProjectsBody = z
+  .strictObject({
+    projects: z
+      .array(
+        z.strictObject({
+          projectId: z.guid(),
+          group: z.enum(['readers', 'contributors']),
+          allowTriggers: z
+            .boolean()
+            .optional()
+            .describe(
+              'Allow triggers (§11.1): give the application View and Edit subscriptions on the project. Absent ⇒ on for Contributors, off for Readers.'
+            )
+        })
+      )
+      .max(100),
+    allProjects: z
+      .strictObject({ group: z.enum(['readers', 'contributors']), allowTriggers: z.boolean() })
+      .optional()
+      .describe('Every project, including ones created later, granted at the organization roots.')
+  })
+  .refine((body) => body.projects.length > 0 || body.allProjects !== undefined, {
+    message: 'choose at least one project, or all projects'
+  })
 export const AzureDevOpsMembershipDto = z.object({
   projectId: z.string(),
   projectName: z.string(),

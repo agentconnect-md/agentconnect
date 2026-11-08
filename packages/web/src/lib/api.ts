@@ -7624,6 +7624,8 @@ export interface AzureDevOpsProjectsDto {
   organization: string
   /** `access` is what the application already holds in the project. */
   projects: Array<{ id: string; name: string; access?: { group: AzureDevOpsProjectGroup; allowTriggers: boolean } }>
+  /** Access to every project, including ones created later, when the application holds it. */
+  allProjects?: { group: AzureDevOpsProjectGroup; allowTriggers: boolean }
 }
 
 /** Allow triggers on one project (§11.1): granted, refused for the caller's role, or failed. */
@@ -7763,9 +7765,13 @@ export function applyAzureDevOpsConnectProjects(
   orgId: string,
   flowId: string,
   ticket: string,
-  projects: Array<{ projectId: string; group: AzureDevOpsProjectGroup; allowTriggers?: boolean }>
+  projects: Array<{ projectId: string; group: AzureDevOpsProjectGroup; allowTriggers?: boolean }>,
+  allProjects?: { group: AzureDevOpsProjectGroup; allowTriggers: boolean } | null
 ): Promise<AzureDevOpsConnectResultDto> {
-  return azureDevOpsFlowStep('POST', orgId, flowId, 'projects', ticket, { projects })
+  return azureDevOpsFlowStep('POST', orgId, flowId, 'projects', ticket, {
+    projects,
+    ...(allProjects ? { allProjects } : {})
+  })
 }
 
 export function verifyAzureDevOpsConnect(

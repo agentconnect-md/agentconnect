@@ -106,7 +106,12 @@ function harness(opts: { deploymentApplication?: boolean } = {}) {
     const { flowId, ticket } = callback.json() as { flowId: string; ticket: string }
     const chosen = await post(`/azure-devops/connect/${flowId}/organization`, { organization: ORGANIZATION }, ticket)
     expect(chosen.statusCode).toBe(200)
-    return { flowId, ticket: chosen.json().ticket as string, projects: chosen.json().projects }
+    return {
+      flowId,
+      ticket: chosen.json().ticket as string,
+      projects: chosen.json().projects,
+      allProjects: chosen.json().allProjects
+    }
   }
   const calls = (method: string, prefix: string) =>
     fake.requests.filter((r) => r.method === method && r.url.startsWith(prefix))
@@ -644,6 +649,93 @@ describe('Allow triggers (§11.1)', () => {
     expect(res.statusCode).toBe(200)
     expect([...h.fake.admin.memberships].map((key) => key.split('|')[1])).toContain(contributors(PROJECT_ID))
     expect(h.fake.serviceHookGrants).toContain(PROJECT_ID)
+  })
+
+  it('grants all projects at the organization roots, opens on it, and takes it back', async () => {
+    const h = harness()
+    const PROJECT_ROOT = '52d39943-cb85-4d7f-8fa8-c6baac873819'
+    const GIT_ROOT = '2e9eb7ed-3c0a-47d4-87c1-0ffdd275fd87'
+    const HOOKS_ROOT = 'cb594ebe-87dd-4fc9-ac2c-6a10a4c92046'
+    const first = await h.toProjects()
+    const made = await h.post(
+      `/azure-devops/connect/${first.flowId}/projects`,
+      { projects: [], allProjects: { group: 'contributors', allowTriggers: true } },
+      first.ticket
+    )
+    expect(made.statusCode).toBe(200)
+    expect(made.json().checklist).toBeUndefined()
+    expect(Object.fromEntries(h.fake.rootAces)).toEqual({ [PROJECT_ROOT]: 1, [GIT_ROOT]: 16502, [HOOKS_ROOT]: 3 })
+
+    // Lowered to Read without triggers: the Git entry is replaced and the hooks entry deleted.
+    const managed = await h.toProjects(made.json().connection.id)
+    expect(managed.allProjects).toEqual({ group: 'contributors', allowTriggers: true })
+    const lowered = await h.post(
+      `/azure-devops/connect/${managed.flowId}/projects`,
+      { projects: [], allProjects: { group: 'readers', allowTriggers: false } },
+      managed.ticket
+    )
+    expect(lowered.statusCode).toBe(200)
+    expect(Object.fromEntries(h.fake.rootAces)).toEqual({ [PROJECT_ROOT]: 1, [GIT_ROOT]: 2 })
+
+    // Unchecked: the roots are cleared, and the project picked instead is granted on its own.
+    const last = await h.toProjects(made.json().connection.id)
+    expect(last.allProjects).toEqual({ group: 'readers', allowTriggers: false })
+    const dropped = await h.post(
+      `/azure-devops/connect/${last.flowId}/projects`,
+      { projects: [{ projectId: PROJECT_ID, group: 'readers' }] },
+      last.ticket
+    )
+    expect(dropped.statusCode).toBe(200)
+    expect(h.fake.rootAces.size).toBe(0)
+  })
+
+  it('finishes taking all projects back on retry after a removal cut short', async () => {
+    const h = harness()
+    const PROJECT_ROOT = '52d39943-cb85-4d7f-8fa8-c6baac873819'
+    const GIT_ROOT = '2e9eb7ed-3c0a-47d4-87c1-0ffdd275fd87'
+    const first = await h.toProjects()
+    const made = await h.post(
+      `/azure-devops/connect/${first.flowId}/projects`,
+      { projects: [], allProjects: { group: 'contributors', allowTriggers: true } },
+      first.ticket
+    )
+    expect(made.statusCode).toBe(200)
+    const managed = await h.toProjects(made.json().connection.id)
+    h.fake.failRootDeleteOnce = GIT_ROOT
+    const body = { projects: [{ projectId: PROJECT_ID, group: 'readers' }] }
+    const cut = await h.post(`/azure-devops/connect/${managed.flowId}/projects`, body, managed.ticket)
+    expect(cut.statusCode).toBe(200)
+    expect(cut.json().checklist).toContain('Remove its access to all projects.')
+    // Triggers went first; project read stays until the end, so what is left is still readable.
+    expect(Object.fromEntries(h.fake.rootAces)).toEqual({ [PROJECT_ROOT]: 1, [GIT_ROOT]: 16502 })
+    const retried = await h.post(`/azure-devops/connect/${managed.flowId}/projects`, body, managed.ticket)
+    expect(retried.statusCode).toBe(200)
+    expect(retried.json().checklist).toBeUndefined()
+    expect(h.fake.rootAces.size).toBe(0)
+  })
+
+  it('asks for a Project Collection Administrator when all projects is refused', async () => {
+    const h = harness()
+    h.fake.aceWriteAllowed = false
+    const first = await h.toProjects()
+    const res = await h.post(
+      `/azure-devops/connect/${first.flowId}/projects`,
+      {
+        projects: [{ projectId: PROJECT_ID, group: 'readers' }],
+        allProjects: { group: 'readers', allowTriggers: false }
+      },
+      first.ticket
+    )
+    expect(res.statusCode).toBe(200)
+    expect(res.json().checklist).toContain('Access to all projects needs a Project Collection Administrator.')
+    expect(h.fake.rootAces.size).toBe(0)
+  })
+
+  it('refuses an Apply that names neither a project nor all projects', async () => {
+    const h = harness()
+    const first = await h.toProjects()
+    const res = await h.post(`/azure-devops/connect/${first.flowId}/projects`, { projects: [] }, first.ticket)
+    expect(res.statusCode).toBe(400)
   })
 
   it('lists a removal it may not make in the checklist', async () => {

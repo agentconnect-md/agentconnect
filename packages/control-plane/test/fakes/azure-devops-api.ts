@@ -97,6 +97,7 @@ export interface FakeAccessControlList {
 }
 
 const SERVICE_HOOKS_NAMESPACE = 'cb594ebe-87dd-4fc9-ac2c-6a10a4c92046'
+const PROJECT_NAMESPACE = '52d39943-cb85-4d7f-8fa8-c6baac873819'
 const GIT_NAMESPACE = '2e9eb7ed-3c0a-47d4-87c1-0ffdd275fd87'
 
 export class FakeAzureDevOps {
@@ -115,6 +116,10 @@ export class FakeAzureDevOps {
   readonly identities = new Map<string, { descriptor: string; memberOf: string[] }>()
   /** Git Repositories lists by token; a token absent here has no list of its own. */
   readonly acls = new Map<string, FakeAccessControlList>()
+  /** The application's entries at the organization roots, by namespace: the All projects grant. */
+  readonly rootAces = new Map<string, number>()
+  /** A root namespace whose next entry delete answers 503, once. */
+  failRootDeleteOnce: string | null = null
   /** The next read of the application's memberships answers 503. */
   failMembershipReadOnce = false
   /** Tokens whose list the connection may not read: they answer 403. */
@@ -364,6 +369,46 @@ export class FakeAzureDevOps {
   private adminDevOps(url: string, method = 'GET', init?: RequestInit): Response {
     const path = new URL(url).pathname
     const query = new URL(url).searchParams
+    const roots: Record<string, string> = {
+      [PROJECT_NAMESPACE]: '$PROJECT',
+      [GIT_NAMESPACE]: 'repoV2',
+      [SERVICE_HOOKS_NAMESPACE]: 'PublisherSecurity'
+    }
+    const security = /\/_apis\/accesscontrol(lists|entries)\/([0-9a-f-]+)$/.exec(path)
+    const root = security ? roots[security[2]!] : undefined
+    if (security && root) {
+      const namespace = security[2]!
+      const body =
+        method === 'POST'
+          ? (JSON.parse(String(init?.body ?? '{}')) as {
+              token: string
+              merge: boolean
+              accessControlEntries: Array<{ descriptor: string; allow: number }>
+            })
+          : undefined
+      const token = body?.token ?? query.get('token')
+      if (token === root && security[1] === 'lists' && method === 'GET' && query.get('recurse') !== 'true') {
+        const descriptor = query.get('descriptors') ?? ''
+        const allow = this.rootAces.get(namespace) ?? 0
+        return this.json(200, {
+          value: [{ token: root, acesDictionary: { [descriptor]: { descriptor, allow, deny: 0 } } }]
+        })
+      }
+      if (token === root && security[1] === 'entries' && (method === 'POST' || method === 'DELETE')) {
+        if (!this.aceWriteAllowed) return this.json(403, { message: 'TF400813: insufficient permissions' })
+        if (method === 'DELETE') {
+          if (this.failRootDeleteOnce === namespace) {
+            this.failRootDeleteOnce = null
+            return this.json(503, { message: 'unavailable' })
+          }
+          this.rootAces.delete(namespace)
+          return this.json(200, true)
+        }
+        const allow = body!.accessControlEntries[0]!.allow
+        this.rootAces.set(namespace, body!.merge ? (this.rootAces.get(namespace) ?? 0) | allow : allow)
+        return this.json(200, { count: 1, value: body!.accessControlEntries })
+      }
+    }
     if (path === `/${ORGANIZATION}/_apis/accesscontrollists/${SERVICE_HOOKS_NAMESPACE}` && method === 'GET') {
       const descriptor = query.get('descriptors') ?? ''
       return this.json(200, {
