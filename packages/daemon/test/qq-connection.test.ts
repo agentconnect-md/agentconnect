@@ -168,7 +168,10 @@ describe('QQ gateway lifecycle', () => {
         download: async () => null,
         supports: () => true
       })
-      expect(unavailable).toEqual([{ type: 'text', text: expect.stringContaining('QQ image unavailable') }])
+      expect(unavailable).toEqual([
+        { type: 'text', text: expect.stringContaining('QQ image unavailable') },
+        { type: 'text', text: 'Attached file: test.png; fileId=image-message:0' }
+      ])
       expect(await conn.getChannelInfo('group:group')).toMatchObject({ isIm: false, name: 'QQ group · group' })
       expect(await conn.getChannelInfo('dm:user')).toMatchObject({ isIm: true, name: 'QQ user · user' })
       expect(await conn.getUserProfile('qq:user:100:user')).toEqual({

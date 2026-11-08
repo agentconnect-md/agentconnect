@@ -879,7 +879,7 @@ describe('the sent-message bookkeeping an approved draft shares with sendMessage
     })
     expect(settled).toEqual({ postedThread: '900', seeded: true })
     expect(createThread).toHaveBeenCalledWith('C42', '900', 'hello there')
-    expect(recordOutbound).toHaveBeenCalledWith(origin, 'C42', '900', 'hello there', '900', 'int-dc')
+    expect(recordOutbound).toHaveBeenCalledWith(origin, 'C42', '900', 'hello there', '900', 'int-dc', undefined)
     expect(spawnChannelRootSession).toHaveBeenCalledWith(
       expect.objectContaining({
         thread: '900',
@@ -913,7 +913,8 @@ describe('the sent-message bookkeeping an approved draft shares with sendMessage
       '1700000000.000100',
       'the answer',
       '1700000000.000300',
-      INT
+      INT,
+      undefined
     )
     expect(spawnChannelRootSession).not.toHaveBeenCalled()
   })
