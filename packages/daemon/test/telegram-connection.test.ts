@@ -294,6 +294,17 @@ describe('TelegramConnection gateway', () => {
     expect(id).toBe('778')
   })
 
+  it('postMessage sends the plain fallback when the HTML would render past the message cap', async () => {
+    const { conn, api } = makeConn()
+    const html = `<b>${'x'.repeat(4097)}</b>`
+    await conn.postMessage('-100', html, undefined, { parseMode: 'HTML', plainFallback: 'short' })
+    expect(api.sendMessage).toHaveBeenCalledOnce()
+    expect(api.sendMessage).toHaveBeenCalledWith('-100', 'short', {})
+
+    await conn.updateMessage('-100', '5', html, { parseMode: 'HTML', plainFallback: 'short' })
+    expect(api.editMessageText).toHaveBeenCalledWith('-100', 5, 'short')
+  })
+
   it('postMessage does not mask other send errors with the fallback', async () => {
     const sendMessage = vi.fn(async () => {
       throw Object.assign(new Error('403'), { description: 'Forbidden: bot was kicked' })

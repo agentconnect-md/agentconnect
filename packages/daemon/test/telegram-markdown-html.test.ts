@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { markdownToTelegramHtml } from '../src/telegram/markdown-html.js'
-import { splitIntoSections } from '../src/messages/split-sections.js'
-import { TELEGRAM_MESSAGE_LIMIT } from '../src/telegram/render.js'
+import { markdownToTelegramHtml, telegramHtmlLength } from '../src/telegram/markdown-html.js'
+import { splitTelegramMarkdown, TELEGRAM_MESSAGE_LIMIT } from '../src/telegram/render.js'
 
 // Telegram's HTML parse_mode accepts only these tags; the rendered length is the text with tags and entities resolved.
 const ALLOWED = /^<\/?(b|i|u|s|code|pre|a|blockquote|tg-spoiler)(\s[^>]*)?>$/
@@ -87,7 +86,7 @@ describe('markdownToTelegramHtml', () => {
     const code = Array.from({ length: 300 }, (_, i) => `const line${i} = a < b && c > ${i}`).join('\n')
     const md = `Intro\n\n\`\`\`ts\n${code}\n\`\`\`\n\nOutro`
     expect(md.length).toBeGreaterThan(TELEGRAM_MESSAGE_LIMIT)
-    const sections = splitIntoSections(md, TELEGRAM_MESSAGE_LIMIT)
+    const sections = splitTelegramMarkdown(md, TELEGRAM_MESSAGE_LIMIT)
     expect(sections.length).toBeGreaterThan(1)
     for (const section of sections) {
       const html = markdownToTelegramHtml(section)
@@ -96,12 +95,35 @@ describe('markdownToTelegramHtml', () => {
     }
   })
 
+  it('keeps a fenced block that spans messages as code in every section', () => {
+    const code = Array.from({ length: 300 }, () => 'print("**literal**")').join('\n')
+    const sections = splitTelegramMarkdown(`\`\`\`python\n${code}\n\`\`\``, TELEGRAM_MESSAGE_LIMIT)
+    expect(sections.length).toBeGreaterThan(1)
+    for (const section of sections) {
+      expect(section.length).toBeLessThanOrEqual(TELEGRAM_MESSAGE_LIMIT)
+      const html = markdownToTelegramHtml(section)
+      expect(html).toMatch(/^<pre><code class="language-python">[^<]*<\/code><\/pre>$/)
+      expect(html).toContain('**literal**')
+      expect(html).not.toContain('<b>')
+    }
+  })
+
+  it('renders a thematic break no longer than its source', () => {
+    const md = `${'x'.repeat(4088)}\n\n***`
+    expect(splitTelegramMarkdown(md, TELEGRAM_MESSAGE_LIMIT)).toEqual([md])
+    expect(telegramHtmlLength(markdownToTelegramHtml(md))).toBeLessThanOrEqual(md.length)
+  })
+
+  it('counts the HTML length Telegram sees: tags dropped, entities as one character', () => {
+    expect(telegramHtmlLength('<b>a &amp; b</b> <a href="https://x">&lt;c&gt;</a>')).toBe(9)
+  })
+
   it('splits a ~6000-char reply into sections that each convert well-formed within the limit', () => {
     const para = (i: number) =>
       `## Sekce ${i}\n\n**Tučně** a *kurzíva* s [odkazem](https://ex.com/${i}) a \`kódem\` & <znaky>.\n\n- bod a\n- bod b\n  - vnořený\n`
     const md = Array.from({ length: 52 }, (_, i) => para(i)).join('\n')
     expect(md.length).toBeGreaterThan(5500)
-    const sections = splitIntoSections(md, TELEGRAM_MESSAGE_LIMIT)
+    const sections = splitTelegramMarkdown(md, TELEGRAM_MESSAGE_LIMIT)
     expect(sections.length).toBeGreaterThan(1)
     for (const section of sections) {
       const html = markdownToTelegramHtml(section)

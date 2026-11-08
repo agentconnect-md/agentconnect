@@ -12,7 +12,8 @@ import {
   telegramChatMigration,
   type TelegramMessage
 } from './normalize.js'
-import { TELEGRAM_CALLBACK_ANSWER_LIMIT } from './render.js'
+import { TELEGRAM_CALLBACK_ANSWER_LIMIT, TELEGRAM_MESSAGE_LIMIT } from './render.js'
+import { telegramHtmlLength } from './markdown-html.js'
 import type { PlatformConnection, PlatformReactionIntent } from '../platforms/contract.js'
 
 /** Core names the intent; Telegram's alphabet is a fixed set of literal emoji. */
@@ -36,6 +37,14 @@ function classifyTelegramUploadError(err: unknown): UploadFailReason {
 
 function errorText(err: unknown): string {
   return `${(err as { description?: string }).description ?? ''} ${(err as Error).message ?? ''}`.trim()
+}
+
+/** The formatted modes the agent's reply can be sent in. */
+export type TelegramParseMode = 'HTML' | 'MarkdownV2'
+
+/** Whether formatted text would render past Telegram's message cap, so its plain fallback must go instead. */
+function rendersTooLong(text: string, parseMode?: TelegramParseMode): boolean {
+  return parseMode === 'HTML' && telegramHtmlLength(text) > TELEGRAM_MESSAGE_LIMIT
 }
 
 /** Telegram's 400 for a formatted text it cannot parse (`Bad Request: can't parse entities: …`). */
@@ -450,7 +459,7 @@ export class TelegramConnection implements PlatformConnection {
     // `parseMode` + `plainFallback`: a formatted body Telegram cannot parse is resent as the plain fallback.
     opts?: {
       replyTo?: number
-      parseMode?: string
+      parseMode?: TelegramParseMode
       plainFallback?: string
       username?: string
       icon_url?: string
@@ -465,6 +474,11 @@ export class TelegramConnection implements PlatformConnection {
     }
     return this.queue.enqueue(async () => {
       let res: { message_id: number }
+      if (opts?.plainFallback !== undefined && rendersTooLong(text, opts.parseMode)) {
+        this.deps.log?.warn('telegram: formatted reply renders past the message cap, sending it as plain text')
+        res = await this.bot.api.sendMessage(channel, opts.plainFallback, place)
+        return res?.message_id != null ? String(res.message_id) : undefined
+      }
       try {
         res = await this.bot.api.sendMessage(channel, text, {
           ...place,
@@ -704,10 +718,15 @@ export class TelegramConnection implements PlatformConnection {
     channel: string,
     messageId: string,
     text: string,
-    opts: { parseMode?: string; plainFallback?: string } = {}
+    opts: { parseMode?: TelegramParseMode; plainFallback?: string } = {}
   ): Promise<void> {
     await this.queue.enqueue(async () => {
       try {
+        if (opts.plainFallback !== undefined && rendersTooLong(text, opts.parseMode)) {
+          this.deps.log?.warn('telegram: formatted edit renders past the message cap, editing as plain text')
+          await this.bot.api.editMessageText(channel, Number(messageId), opts.plainFallback)
+          return
+        }
         try {
           await this.bot.api.editMessageText(channel, Number(messageId), text, {
             ...(opts.parseMode ? { parse_mode: opts.parseMode } : {})

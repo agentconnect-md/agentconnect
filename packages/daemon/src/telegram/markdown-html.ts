@@ -81,7 +81,7 @@ function block(node: RootContent, ctx: Ctx): string {
     case 'heading':
       return `<b>${inline(node.children, ctx)}</b>`
     case 'thematicBreak':
-      return '──────────'
+      return '———'
     case 'code': {
       const body = escapeHtml(node.value)
       const lang = node.lang && LANGUAGE.test(node.lang) ? node.lang : undefined
@@ -119,10 +119,15 @@ function collectDefinitions(node: Nodes, into: Map<string, string>): void {
   if ('children' in node) for (const child of node.children) collectDefinitions(child, into)
 }
 
-/** Convert one Markdown section to Telegram HTML; its rendered text stays within the source's length in practice. */
+/** Convert one Markdown section to Telegram HTML; its rendered text is usually no longer than the source, and the connection guards the rest. */
 export function markdownToTelegramHtml(markdown: string): string {
   const tree = fromMarkdown(markdown)
   const definitions = new Map<string, string>()
   collectDefinitions(tree, definitions)
   return blocks(tree.children, { source: markdown, definitions, quoted: false, listDepth: 0 })
+}
+
+/** The length Telegram counts for an HTML message: the text left once tags and entities are parsed, in UTF-16 units. */
+export function telegramHtmlLength(html: string): number {
+  return html.replace(/<[^>]*>/g, '').replace(/&(?:lt|gt|quot|amp);/g, '_').length
 }

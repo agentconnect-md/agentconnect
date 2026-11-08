@@ -1,5 +1,5 @@
 import type { SessionUpdate } from '@agentclientprotocol/sdk/unstable'
-import { splitIntoSections } from '../messages/split-sections.js'
+import { splitMarkdown, utf16Units } from '../messages/split-markdown-bytes.js'
 import { flattenUnsafeLinks, referenceBufferStart } from '../messages/agent-links.js'
 import type { WorkspaceFileLinkResolver } from '../messages/workspace-file-links.js'
 import { AgentMessageRun, WorkBoundary } from '../messages/message-boundary.js'
@@ -81,6 +81,13 @@ const MAX_TOOL_OUTPUT = 2800
 function clampTo(s: string, max: number): string {
   const t = s.trim()
   return t.length > max ? `${t.slice(0, max - 1)}…` : t
+}
+
+/** Split a Markdown reply into messages of at most `limit` UTF-16 units; a code fence cut between two is closed and reopened, so each converts on its own. */
+export function splitTelegramMarkdown(text: string, limit: number): string[] {
+  if (!text.trim()) return []
+  // A reply that fits stays byte-identical, so its recorded transcript row is the agent's exact text.
+  return text.length <= limit ? [text] : splitMarkdown(text, limit, utf16Units)
 }
 
 /** Escape the three characters Telegram's HTML parse_mode is sensitive to. */
@@ -245,7 +252,7 @@ export class TelegramConverger {
   /** minimal: a Telegram message caps at 4096 chars; head-clamp the live view when longer
    *  (the full segment still reaches the transcript via the paired `recordOnly` posts). */
   private liveDisplay(text: string): string {
-    const sections = splitIntoSections(text, TELEGRAM_MESSAGE_LIMIT)
+    const sections = splitTelegramMarkdown(text, TELEGRAM_MESSAGE_LIMIT)
     return sections.length <= 1 ? text : `${sections[0]}\n\n…full reply in the web session`
   }
 
@@ -263,7 +270,7 @@ export class TelegramConverger {
     if (!text.trim()) return []
     return [
       { kind: 'live-reply', text: this.liveDisplay(text) },
-      ...splitIntoSections(text, TELEGRAM_MESSAGE_LIMIT).map(
+      ...splitTelegramMarkdown(text, TELEGRAM_MESSAGE_LIMIT).map(
         (t) => ({ kind: 'post', text: t, recordOnly: true }) as TelegramAction
       )
     ]
@@ -312,7 +319,7 @@ export class TelegramConverger {
     // none: record the reply into the transcript WITHOUT sending it — `recordOnly` runs before
     // the connection check, so it lands even though replyConn is unset for this mode.
     const recordOnly = this.mode === 'none'
-    const sections = splitIntoSections(text, this.bodyLimit)
+    const sections = splitTelegramMarkdown(text, this.bodyLimit)
     const hintOn = final && this.hintEnabled
     if (!recordOnly) this.postedBody = true
     return sections.map(
