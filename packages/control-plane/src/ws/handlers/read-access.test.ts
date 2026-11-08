@@ -94,7 +94,7 @@ describe('handleReadAccess', () => {
     const deps = baseDeps({ readAccess })
     vi.mocked(deps.agent.get)
       .mockResolvedValueOnce(agent)
-      .mockResolvedValueOnce({ ...agent, daemonId: 'daemon-other' })
+      .mockResolvedValueOnce({ ...agent, daemonId: DaemonId('daemon-other') })
     await handleReadAccess(frame, conn, deps)
     expect(readAccess).toHaveBeenCalledOnce()
     expect(conn.replyTo).not.toHaveBeenCalled()
