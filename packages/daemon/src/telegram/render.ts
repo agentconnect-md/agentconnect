@@ -1,5 +1,5 @@
 import type { SessionUpdate } from '@agentclientprotocol/sdk/unstable'
-import { splitIntoSections } from '../messages/split-sections.js'
+import { splitMarkdown, utf16Units } from '../messages/split-markdown-bytes.js'
 import { flattenUnsafeLinks, referenceBufferStart } from '../messages/agent-links.js'
 import type { WorkspaceFileLinkResolver } from '../messages/workspace-file-links.js'
 import { AgentMessageRun, WorkBoundary } from '../messages/message-boundary.js'
@@ -12,12 +12,9 @@ import { extractToolOutput } from '../session/tool-output.js'
  * slack/render.ts's SlackAction + OutputConverger. The daemon's applyAction
  * resolves these against a live TelegramConnection.
  *
- * FORMATTING: the agent's own reply (`post`) is sent as PLAIN text (no parse_mode)
- * — robust against arbitrary markdown, no 400s from malformed MarkdownV2. Daemon
- * "chrome" (progress / reasoning / plan / tool-output / status) uses parse_mode
- * HTML, which only requires escaping `& < >` (see escapeHtml) — far safer than
- * MarkdownV2. Slack emoji shortcodes are replaced with real Unicode emoji, which
- * Telegram renders natively.
+ * FORMATTING: every message uses parse_mode HTML. The agent's reply (`post` / `live-reply`) stays Markdown
+ * here and the applier converts each section (markdown-html.ts), resending the plain source if Telegram rejects it.
+ * Daemon chrome (progress / reasoning / plan / tool-output / status) is built as HTML here, escaped via escapeHtml.
  *
  * Kinds mirror SlackAction so the daemon's dispatch stays parallel:
  *  - `post`        the agent's reply (recorded into the transcript).
@@ -42,7 +39,7 @@ export type TelegramAction =
   // the recorded transcript text (it is chrome, not the agent's words).
   | { kind: 'post'; text: string; recordOnly?: boolean; hint?: string }
   // `live-reply` is minimal mode's single, in-place agent reply (post-once/edit-thereafter,
-  // like `progress`) — display only, NOT recorded. Plain text, like `post`.
+  // like `progress`) — display only, NOT recorded. Markdown, like `post`.
   | { kind: 'live-reply'; text: string }
   // Append the continue-the-topic line to the body message ALREADY sent this turn (an
   // in-place edit). Emitted at turn end when the last reply body was flushed earlier — by
@@ -68,8 +65,7 @@ export const TELEGRAM_CALLBACK_ANSWER_LIMIT = 200
  * Telegram has no threads outside forum topics, so session continuity in a group runs
  * off the reply chain: a reply to a recorded bot message resolves back to the session
  * that message was posted in (LocalStore.threadForPlatformMessage). The line makes that
- * invisible rule visible. Plain text, because the agent's reply is sent without a
- * parse_mode (see the header note) — the leading ↩️ carries the "small print" weight.
+ * invisible rule visible. Plain text; the applier escapes it when the body is sent as HTML.
  */
 export const TELEGRAM_CONTINUE_HINT = '↩️ To continue this topic, please reply to this message.'
 
@@ -85,6 +81,13 @@ const MAX_TOOL_OUTPUT = 2800
 function clampTo(s: string, max: number): string {
   const t = s.trim()
   return t.length > max ? `${t.slice(0, max - 1)}…` : t
+}
+
+/** Split a Markdown reply into messages of at most `limit` UTF-16 units; a code fence cut between two is closed and reopened, so each converts on its own. */
+export function splitTelegramMarkdown(text: string, limit: number): string[] {
+  if (!text.trim()) return []
+  // A reply that fits stays byte-identical, so its recorded transcript row is the agent's exact text.
+  return text.length <= limit ? [text] : splitMarkdown(text, limit, utf16Units)
 }
 
 /** Escape the three characters Telegram's HTML parse_mode is sensitive to. */
@@ -249,7 +252,7 @@ export class TelegramConverger {
   /** minimal: a Telegram message caps at 4096 chars; head-clamp the live view when longer
    *  (the full segment still reaches the transcript via the paired `recordOnly` posts). */
   private liveDisplay(text: string): string {
-    const sections = splitIntoSections(text, TELEGRAM_MESSAGE_LIMIT)
+    const sections = splitTelegramMarkdown(text, TELEGRAM_MESSAGE_LIMIT)
     return sections.length <= 1 ? text : `${sections[0]}\n\n…full reply in the web session`
   }
 
@@ -267,7 +270,7 @@ export class TelegramConverger {
     if (!text.trim()) return []
     return [
       { kind: 'live-reply', text: this.liveDisplay(text) },
-      ...splitIntoSections(text, TELEGRAM_MESSAGE_LIMIT).map(
+      ...splitTelegramMarkdown(text, TELEGRAM_MESSAGE_LIMIT).map(
         (t) => ({ kind: 'post', text: t, recordOnly: true }) as TelegramAction
       )
     ]
@@ -316,7 +319,7 @@ export class TelegramConverger {
     // none: record the reply into the transcript WITHOUT sending it — `recordOnly` runs before
     // the connection check, so it lands even though replyConn is unset for this mode.
     const recordOnly = this.mode === 'none'
-    const sections = splitIntoSections(text, this.bodyLimit)
+    const sections = splitTelegramMarkdown(text, this.bodyLimit)
     const hintOn = final && this.hintEnabled
     if (!recordOnly) this.postedBody = true
     return sections.map(

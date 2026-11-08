@@ -850,28 +850,54 @@ describe('continue-the-topic hint delivery', () => {
     const daemon = await boot()
     const { conn, p, apply } = pending(daemon)
 
-    await apply({ kind: 'post', text: 'answer', hint: '↩️ hint' })
+    await apply({ kind: 'post', text: '**answer** <x>', hint: '↩️ hint' })
 
-    expect(conn.postMessage.mock.calls[0]![1]).toBe('answer\n\n↩️ hint')
+    // Sent as Telegram HTML with the escaped hint; the Markdown source is the fallback.
+    expect(conn.postMessage.mock.calls[0]![1]).toBe('<b>answer</b> &lt;x&gt;\n\n↩️ hint')
+    expect(conn.postMessage.mock.calls[0]![3]).toMatchObject({
+      parseMode: 'HTML',
+      plainFallback: '**answer** <x>\n\n↩️ hint'
+    })
     // The recorded row keeps the agent's words AND the real message id — the reply chain
     // resolves through it (LocalStore.threadForPlatformMessage).
     const rows = await (daemon as any).store.threadTranscript('-100', 'tg:100')
-    expect(rows.at(-1)).toMatchObject({ text: 'answer', ts: 'out-9' })
+    expect(rows.at(-1)).toMatchObject({ text: '**answer** <x>', ts: 'out-9' })
     expect(await (daemon as any).store.threadForPlatformMessage('-100', 'out-9')).toBe('tg:100')
-    expect(p.turnState).toMatchObject({ lastBody: { id: 'out-9', text: 'answer\n\n↩️ hint' } })
+    expect(p.turnState).toMatchObject({ lastBody: { id: 'out-9', text: '**answer** <x>\n\n↩️ hint' } })
   })
 
   it('edits the hint onto the body already sent when the turn ends empty', async () => {
     const daemon = await boot()
     const { conn, apply } = pending(daemon)
 
-    await apply({ kind: 'post', text: 'earlier answer' })
+    await apply({ kind: 'post', text: 'earlier *answer*' })
     await apply({ kind: 'continue-hint', hint: '↩️ hint' })
 
-    expect(conn.updateMessage).toHaveBeenCalledWith('-100', 'out-9', 'earlier answer\n\n↩️ hint')
+    expect(conn.updateMessage).toHaveBeenCalledWith('-100', 'out-9', 'earlier <i>answer</i>\n\n↩️ hint', {
+      parseMode: 'HTML',
+      plainFallback: 'earlier *answer*\n\n↩️ hint'
+    })
     // Idempotent: a second hint action never doubles the line.
     await apply({ kind: 'continue-hint', hint: '↩️ hint' })
     expect(conn.updateMessage).toHaveBeenCalledOnce()
+  })
+
+  it('sends and edits the minimal-mode live reply as HTML', async () => {
+    const daemon = await boot()
+    const { conn, p, apply } = pending(daemon)
+
+    await apply({ kind: 'live-reply', text: '**draft**' })
+    expect(conn.postMessage).toHaveBeenCalledWith('-100', '<b>draft</b>', 'tg:100', {
+      replyTo: 100,
+      parseMode: 'HTML',
+      plainFallback: '**draft**'
+    })
+    ;(p.chrome as { liveReplyTs?: string }).liveReplyTs = 'out-9'
+    await apply({ kind: 'live-reply', text: '**draft** done' })
+    expect(conn.updateMessage).toHaveBeenCalledWith('-100', 'out-9', '<b>draft</b> done', {
+      parseMode: 'HTML',
+      plainFallback: '**draft** done'
+    })
   })
 
   it('skips the edit when no body was sent, or when the suffix would breach the cap', async () => {
