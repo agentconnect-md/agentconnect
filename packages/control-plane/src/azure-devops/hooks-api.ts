@@ -213,9 +213,10 @@ export function subscriptionDrifted(
   return false
 }
 
-/** A status Azure DevOps stops delivering under; `onProbation` is retried on its own and left alone. */
-export function subscriptionDisabled(status: string | null): boolean {
-  return status !== null && status.toLowerCase().startsWith('disabled')
+/** A status under which Azure DevOps drops new events: any disable, and probation (§11.2). */
+export function subscriptionDropping(status: string | null): boolean {
+  const lower = status?.toLowerCase() ?? ''
+  return lower.startsWith('disabled') || lower === 'onprobation'
 }
 
 /** Disabled because its owner lost the permission: the missing grant of §11.1. */

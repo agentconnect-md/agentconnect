@@ -115,6 +115,8 @@ export class FakeAzureDevOps {
   readonly identities = new Map<string, { descriptor: string; memberOf: string[] }>()
   /** Git Repositories lists by token; a token absent here has no list of its own. */
   readonly acls = new Map<string, FakeAccessControlList>()
+  /** Tokens whose list the connection may not read: they answer 403. */
+  readonly aclForbidden = new Set<string>()
   readonly admin: FakeAdministration = {
     signInTenant: TENANT_ID,
     consentRequired: false,
@@ -457,6 +459,8 @@ export class FakeAzureDevOps {
     }
     if (path === `/${ORGANIZATION}/_apis/accesscontrollists/${GIT_NAMESPACE}` && method === 'GET') {
       const token = new URL(url).searchParams.get('token') ?? ''
+      if (this.aclForbidden.has(token))
+        return this.json(403, { message: `Access Denied: needs permission on ${token}` })
       const list = this.acls.get(token)
       if (!list) return this.json(200, { count: 0, value: [] })
       const acesDictionary = Object.fromEntries(

@@ -1087,9 +1087,11 @@ failure that is not transient, drops new events while it lasts, and disables
 it (`disabledBySystem`) after about 36 hours of failed retries. It also
 disables a subscription whose owner lost the permission
 (`disabledByInactiveIdentity`), and one with no successful delivery in six
-months. The convergence reads `status` on each pass: a disabled subscription is
-re-enabled with the same `PUT`, and the binding shows `webhook_unverified`
-until a delivery verifies. A disable by `disabledByInactiveIdentity` is
+months. The convergence reads `status` on each pass: a disabled subscription,
+or one on probation, is re-enabled with the same `PUT`, and the binding shows
+`webhook_unverified` until a delivery verifies. Probation is not left to
+Azure DevOps's own retries, whose backoff kept a repaired subscription dropping
+new events for over an hour (**verified**). A disable by `disabledByInactiveIdentity` is
 reported as the missing grant of §11.1 and is not re-enabled until the grant
 returns.
 
@@ -1196,15 +1198,19 @@ groups grant (**verified**). The Azure DevOps arm therefore evaluates it:
    `inheritPermissions` is false: a repository or project that does not
    inherit takes nothing from above it, so an ancestor's allow beyond that
    boundary counts for nothing. A list whose `inheritPermissions` the answer
-   leaves out is taken as a boundary too;
+   leaves out is taken as a boundary too. A connection whose identity is a
+   project member, not an organization administrator, is refused the
+   `repoV2` list with 403 (**verified**); that level is then not read and adds
+   nothing. Any other refusal fails closed;
 3. admit the actor when an entry for the actor or one of its groups allows
    GenericContribute (bit 4) on the lists read, and no entry for any of them
    denies it.
 
 The rule is stricter than Azure DevOps's own, which lets a more specific
 allow override an inherited deny, so it can refuse a person Azure DevOps would
-let push; it never admits one Azure DevOps would not. Branch-level entries are
-not read. The repository's lists are cached for a minute per binding.
+let push. It never admits one Azure DevOps would not, except through a deny set
+for all repositories at organization level that the connection cannot read.
+Branch-level entries are not read. The repository's lists are cached for a minute per binding.
 
 The update kinds name no actor, so a review request and a reopening are gated
 on the pull request's author, `createdBy.id` of the whole resource: anyone
