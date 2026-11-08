@@ -1,7 +1,7 @@
 import type { WebchatFileAttachment } from '@agentconnect.md/protocol'
 import { reserveFileUpload, signFileUploadParts, type SignedRequestDto } from '@/lib/api'
 
-// A non-image chat upload (source-cache-file-transfer.md): hashed here, PUT straight to the object store, named in the turn.
+// Chat uploads are hashed here, PUT straight to the object store, and named in the turn.
 
 /** The part a browser hashes in memory at once; a file above it goes in parts when the deployment allows. */
 const BROWSER_PART_BYTES = 64 * 1024 * 1024
@@ -20,6 +20,8 @@ export interface ComposerFile {
   size: number
   status: 'uploading' | 'ready' | 'failed'
   attachment?: WebchatFileAttachment
+  preview?: WebchatFileAttachment['preview']
+  retry?: () => void
   error?: string
 }
 

@@ -356,13 +356,126 @@ describe('executeTool: sendMessage (channel post)', () => {
     expect(gw.postMessage).toHaveBeenCalledWith('C_OTHER', 'yo', undefined, authorIdentity)
   })
 
-  // Forwarding a file the conversation RECEIVED. This is the only way an image crosses
-  // platforms: the bytes are resolved daemon-side from what already arrived, never produced
-  // by the model, and a file share is its own message kind rather than a decorated post.
+  // Explicit sources resolve inside the daemon before any file is published.
+  describe('explicit attachment sources', () => {
+    const uploadId = '3f1c2a4e-9b7d-4e21-8c3a-0d5e6f7a8b9c'
+    const sources = [
+      { source: 'workspace', path: 'outputs/report.pdf' },
+      { source: 'upload', uploadId },
+      { source: 'platform', platform: 'slack', integrationId: 'int-1', fileId: 'F_RECEIVED' }
+    ]
+    const file = { bytes: Buffer.from('report'), name: 'report.pdf', mimeType: 'application/pdf' }
+
+    it('publishes mixed sources from a headless task and returns the provider root, even for a room session', async () => {
+      const gw = fakeGateway({
+        uploadFiles: vi.fn(async () => ({ ok: true as const, messageId: '123.456', fileIds: ['F1', 'F2', 'F3'] })),
+        roomThread: async () => 'C_OTHER',
+        getFileInfo: async () => ({ ...file, sourceUrl: 'https://files.slack.com/file', channels: ['C_CURRENT'] })
+      })
+      const recordOutbound = vi.fn()
+      const d = makeDeps({
+        gatewayFor: () => gw,
+        recordOutbound,
+        readWorkspaceFile: async () => ({ ok: true, ...file, sha256: 'digest' }),
+        readUploadedFile: async () => file
+      })
+      const result = await executeTool(
+        { ...ctx, platform: 'cron', channel: 'job', thread: 'job', integrationId: undefined },
+        'sendMessage',
+        { action: 'postMessage', platform: 'slack', channel: 'C_OTHER', message: 'Report ready', attachments: sources },
+        d
+      )
+      expect(gw.uploadFiles).toHaveBeenCalledWith(
+        'C_OTHER',
+        expect.arrayContaining([expect.objectContaining({ name: 'report.pdf' })]),
+        'Report ready',
+        undefined,
+        authorIdentity
+      )
+      expect(gw.postMessage).not.toHaveBeenCalled()
+      expect(result).toMatchObject({
+        post: { thread: null },
+        threadTarget: { channel: 'C_OTHER', thread: '123.456' },
+        attachments: sources.map((source, i) => ({ source, fileId: `F${i + 1}` }))
+      })
+      expect(recordOutbound.mock.calls[0]?.[6]).toMatchObject(sources.map((source) => ({ source })))
+    })
+
+    it('validates every file before publishing and refuses unsupported batches', async () => {
+      const uploadFiles = vi.fn(async () => ({ ok: true as const }))
+      const d = makeDeps({
+        gatewayFor: () => fakeGateway({ uploadFiles }),
+        readWorkspaceFile: async () => ({ ok: true, ...file, sha256: 'digest' }),
+        readUploadedFile: async () => undefined
+      })
+      const args = { action: 'postMessage', channel: 'C_OTHER', message: 'Files', attachments: sources.slice(0, 2) }
+      await expect(executeTool(ctx, 'sendMessage', args, d)).rejects.toThrow(/unavailable in this session/)
+      expect(uploadFiles).not.toHaveBeenCalled()
+      await expect(
+        executeTool(ctx, 'sendMessage', args, { ...d, gatewayFor: () => fakeGateway({ uploadFile: vi.fn() }) })
+      ).rejects.toThrow(/cannot publish multiple files/)
+      await expect(executeTool(ctx, 'sendMessage', { ...args, attachment: 'old.png' }, d)).rejects.toThrow(/not both/)
+    })
+
+    it('refuses an inaccessible provider file before downloading or publishing its bytes', async () => {
+      const gw = fakeGateway({
+        uploadFiles: vi.fn(),
+        getFileInfo: async () => ({ ...file, sourceUrl: 'https://files.slack.com/file', channels: ['C_PRIVATE'] })
+      })
+      const d = makeDeps({
+        gatewayFor: () => gw,
+        placeSnapshot: (_integration, channel) => ({ isPrivate: channel === 'C_PRIVATE' }),
+        readLookups: () => ({
+          ...ASKER_WHO_MAY_WRITE.readLookups!('bot-a'),
+          member: async (_integration, channel) => channel !== 'C_PRIVATE'
+        })
+      })
+      await expect(
+        executeTool(
+          ctx,
+          'sendMessage',
+          {
+            action: 'postMessage',
+            channel: 'C_OTHER',
+            message: 'File',
+            attachments: [sources[2]]
+          },
+          d
+        )
+      ).rejects.toThrow(/cannot read that attachment/)
+      expect(gw.downloadFile).not.toHaveBeenCalled()
+      expect(gw.uploadFiles).not.toHaveBeenCalled()
+    })
+
+    it('retains the budget on unknown delivery and reports bookkeeping failure as a published result', async () => {
+      const release = vi.fn()
+      const uploadFiles = vi
+        .fn<MessageGateway['uploadFiles'] & object>()
+        .mockResolvedValue({ ok: false, reason: 'indeterminate' })
+      const d = makeDeps({
+        gatewayFor: () => fakeGateway({ uploadFiles }),
+        readUploadedFile: async () => file,
+        chargeShareBudget: () => ({ ok: true, release }),
+        recordOutbound: async () => {
+          throw new Error('store unavailable')
+        }
+      })
+      const args = { action: 'postMessage', channel: 'C_OTHER', message: 'Files', attachments: [sources[1]] }
+      await expect(executeTool(ctx, 'sendMessage', args, d)).rejects.toThrow(/MAY have been delivered. Do NOT retry/)
+      expect(release).not.toHaveBeenCalled()
+      uploadFiles.mockResolvedValue({ ok: true, messageId: '123.456' })
+      await expect(executeTool(ctx, 'sendMessage', args, d)).resolves.toMatchObject({
+        ok: true,
+        notice: expect.stringContaining('Do not resend'),
+        threadTarget: { thread: '123.456' }
+      })
+    })
+  })
+
   describe('attachment forward', () => {
     const bytes = Buffer.from('PNGBYTES')
     const resolved = { bytes, name: 'shot.png', mimeType: 'image/png' }
-    // Slack's share answers with the file and no ts; the other three answer with a message.
+    // A provider may publish successfully without returning its message ID.
     const anchorless = () => fakeGateway({ uploadFile: vi.fn(async () => ({ ok: true as const })) })
     const anchoring = () => fakeGateway({ uploadFile: vi.fn(async () => ({ ok: true as const, messageId: 'ts-999' })) })
     const resolves = () => ({
@@ -386,7 +499,14 @@ describe('executeTool: sendMessage (channel post)', () => {
       // No anchor came back, so the send records under a synthetic id and seeds no
       // channel-root session — the path a gateway returning no id already took.
       expect(res).toMatchObject({ ok: true, post: { channel: 'C_OTHER', ts: 'local-1000' } })
-      expect(recorded).toEqual([{ channel: 'C_OTHER', thread: undefined, text: 'from telegram', ts: 'local-1000' }])
+      expect(recorded).toEqual([
+        {
+          channel: 'C_OTHER',
+          thread: undefined,
+          text: 'from telegram\n[attached: shot.png (image/png)]',
+          ts: 'local-1000'
+        }
+      ])
     })
 
     it('anchors the forward like any other post when the platform answers with a message id', async () => {
@@ -404,7 +524,9 @@ describe('executeTool: sendMessage (channel post)', () => {
       )) as Record<string, unknown>
 
       expect(res).toMatchObject({ ok: true, post: { channel: 'C_OTHER', ts: 'ts-999' } })
-      expect(recorded).toEqual([{ channel: 'C_OTHER', thread: 'ts-999', text: 'look', ts: 'ts-999' }])
+      expect(recorded).toEqual([
+        { channel: 'C_OTHER', thread: 'ts-999', text: 'look\n[attached: shot.png (image/png)]', ts: 'ts-999' }
+      ])
     })
 
     it('surfaces a partial send as a notice rather than as success or failure', async () => {
@@ -439,7 +561,7 @@ describe('executeTool: sendMessage (channel post)', () => {
           { action: 'postMessage', channel: 'C_OTHER', attachment: 'shot.png', message: 'hi' },
           d
         )
-      ).rejects.toThrow(/rejected the file "shot.png" \(forbidden\)/)
+      ).rejects.toThrow(/file publication was refused \(forbidden\)/)
       expect(recorded).toEqual([])
     })
 

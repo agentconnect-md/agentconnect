@@ -104,9 +104,9 @@ import { NewDivider, SeenRecorder, TranscriptMap, type MapTurn } from '@/compone
 import { useSessionTranscript } from '@/lib/use-session-transcript'
 import { socialLoginProviders } from '@/lib/social-login-providers'
 import { isAuthConfigured } from '@/lib/auth'
-import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
-import { ComposerFileChips, stageComposerFile } from '@/components/console/ComposerFiles'
-import { transferCapable, sessionFileDownload } from '@/lib/shared-file'
+import { clipboardFiles, prepareWebchatImage } from '@/lib/webchat-image'
+import { ComposerFileChips, stageComposerFiles } from '@/components/console/ComposerFiles'
+import { transferCapable, uploadPreviewsCapable, sessionFileDownload } from '@/lib/shared-file'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
 import { MentionMenu, type MentionOption } from '@/components/console/MentionMenu'
@@ -281,7 +281,7 @@ function ComposerTextarea({
   sessionId,
   placeholder,
   onSend,
-  onImageFile,
+  onAttachFiles,
   mentionCandidates,
   onPickMention,
   onMentionJoiningChange,
@@ -296,7 +296,7 @@ function ComposerTextarea({
   sessionId: string
   placeholder: string
   onSend: () => void
-  onImageFile?: (file: File) => void
+  onAttachFiles?: (files: File[]) => void
   /** The viewer's earlier prompts in the loaded window, oldest first — Up/Down on an empty draft recalls them. */
   history: readonly ComposerHistoryEntry[]
   /** Transcript paging, so Up at the oldest loaded prompt pages earlier history in. */
@@ -420,11 +420,19 @@ function ComposerTextarea({
             command.sync(el.value, caret)
           }}
           onPaste={(event) => {
-            if (!onImageFile) return
-            const image = clipboardImageFile(event.clipboardData)
-            if (!image) return
+            if (!onAttachFiles) return
+            const selected = clipboardFiles(event.clipboardData)
+            if (!selected.length) return
             event.preventDefault()
-            onImageFile(image)
+            onAttachFiles(selected)
+          }}
+          onDragOver={(event) => {
+            if (onAttachFiles && event.dataTransfer.types.includes('Files')) event.preventDefault()
+          }}
+          onDrop={(event) => {
+            if (!onAttachFiles || !event.dataTransfer.files.length) return
+            event.preventDefault()
+            onAttachFiles(Array.from(event.dataTransfer.files))
           }}
           onKeyDown={(e) => {
             // History first: a recalled `/cmd` or `@name` must not hand Up/Down to a picker mid-walk.
@@ -2547,7 +2555,7 @@ export default function SessionDetailView() {
   const pgBusy = sessionBusy
   const pgImage = getPgImage(session.id)
   const pgFiles = getPgFiles(session.id)
-  const filesUploading = pgFiles.some((f) => f.status === 'uploading')
+  const filesUploading = pgFiles.some((f) => f.status !== 'ready')
   // A continued chat thread takes images (mirrored there); files go where nothing mirrors, or on a task's own page.
   const continuationAttachments = composerDetail?.continuationAttachments ?? null
   const attachmentsEnabled = !isContinuable || taskOwnPage || continuationAttachments !== null
@@ -2680,21 +2688,25 @@ export default function SessionDetailView() {
     if (sent) stickToBottom()
     return sent
   }
-  // Non-image files upload straight to the object store when the composing agent's daemon presigns transfers.
+  // Originals upload straight to the object store when the composing agent's daemon supports transfers.
   const composerAgent = agents.find((a) => a.id === composerAgentId)
   const composerTransfer =
     composerAgent !== undefined &&
-    transferCapable(agentCapabilitySource(composerAgent, daemons, memberSets)?.caps.features)
-  const onAttachFile = (file: File | undefined): void => {
-    if (!attachmentsEnabled || !file) return
-    if (file.type.startsWith('image/')) return void onImageFile(file)
+    uploadPreviewsCapable(agentCapabilitySource(composerAgent, daemons, memberSets)?.caps.features)
+  const onAttachFiles = (selected: File[]): void => {
+    if (imageInputRef.current) imageInputRef.current.value = ''
+    if (!attachmentsEnabled || !selected.length) return
     setAttachMenuOpen(false)
-    if (!filesEnabled) {
-      setImageError(t('continuationImagesOnly'))
-      if (imageInputRef.current) imageInputRef.current.value = ''
+    if (!filesEnabled || !composerTransfer) {
+      if (selected.length === 1 && selected[0]!.type.startsWith('image/')) return void onImageFile(selected[0])
+      setImageError('This conversation supports one inline image; multiple attachments require file uploads.')
       return
     }
-    stageComposerFile(
+    if (pgImage) {
+      setImageError('Remove the inline image before adding uploaded files.')
+      return
+    }
+    stageComposerFiles(
       {
         sessionId: session.id,
         agentId: composerAgentId,
@@ -2703,7 +2715,7 @@ export default function SessionDetailView() {
         setPgFiles,
         onError: setImageError
       },
-      file
+      selected
     )
     if (imageInputRef.current) imageInputRef.current.value = ''
   }
@@ -4378,9 +4390,10 @@ export default function SessionDetailView() {
                   <input
                     ref={imageInputRef}
                     type="file"
+                    multiple
                     hidden
                     accept={filesEnabled ? undefined : 'image/*'}
-                    onChange={(event) => onAttachFile(event.target.files?.[0])}
+                    onChange={(event) => onAttachFiles(Array.from(event.target.files ?? []))}
                   />
                 )}
                 {attachmentsEnabled && (
@@ -4416,7 +4429,7 @@ export default function SessionDetailView() {
                       : `Message ${pickRecipient ? composerAgentName : session.agentName}…`
                   }
                   onSend={() => onPgSend()}
-                  onImageFile={attachmentsEnabled ? (file) => void onImageFile(file) : undefined}
+                  onAttachFiles={attachmentsEnabled ? onAttachFiles : undefined}
                   mentionCandidates={mentionCandidates}
                   onPickMention={onPickMention}
                   onMentionJoiningChange={setMentionJoining}

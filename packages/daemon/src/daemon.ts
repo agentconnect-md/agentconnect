@@ -162,6 +162,7 @@ import {
   WORKSPACE_GIT_WRITE_FEATURE,
   WORKSPACE_FILE_DOWNLOAD_FEATURE,
   FILE_TRANSFER_FEATURE,
+  WEBCHAT_UPLOADS_FEATURE,
   WORKSPACE_UPLOAD_BEGIN_FEATURE,
   WEBCHAT_IMAGES_FEATURE,
   type SharedImageResolveOk,
@@ -1394,6 +1395,7 @@ import {
 import { UUID_RE, type WebchatSink } from './webchat/types.js'
 import type { ChatTurnContext, ChatSink } from './session/chat-turn.js'
 import { resolveChatUploadUrl } from './session/chat-attachments.js'
+import { readBoundedBody } from './codehost/rest-read.js'
 import { webchatAuthorOf, WebchatTransport, type WebchatHost } from './webchat/transport.js'
 import { WEBCHAT_SETTINGS_REFUSAL, webchatRoleChangesSettings } from './webchat/caller-role.js'
 import { WebchatMcpRevocations, type WebchatMcpRevocationHost } from './webchat/mcp-revocations.js'
@@ -3425,7 +3427,9 @@ export class Daemon {
       warn: (message) => this.log.warn(message),
       available: (auth) =>
         this.servesAgent(auth.agentId) && this.orgForAgent(auth.agentId) === auth.orgId && !this.draining,
-      initializeMetadata: { 'agentconnect.md': { webchat: true, files: true, steering: true, mcpApps: true } },
+      initializeMetadata: {
+        'agentconnect.md': { webchat: true, files: true, filePreviews: true, steering: true, mcpApps: true }
+      },
       now: () => this.clock.now(),
       provider: (id) => ahpAgentInfo(id, this.agents.get(id)?.name ?? id, this.agents.get(id)?.runtimeOverrides?.model),
       reserveSequence: (org, agent, size) => this.store.reserveAhpSequenceBlock(org, agent, size),
@@ -5507,6 +5511,43 @@ export class Daemon {
           ? { bytes: Buffer.from(found.data, 'base64'), name: found.name, mimeType: found.mimeType }
           : undefined
       },
+      maxOutboundFileBytes: cfg.limits.maxOutboundFileBytes ?? cfg.limits.maxAttachmentBytes,
+      readUploadedFile: async (ctx, uploadId) => {
+        const file = await this.store.transcriptUploadById(
+          {
+            transcriptChannel: transcriptChannelKey(ctx.channel, ctx.transportScope),
+            coordinate: ctx.thread,
+            sessionKey: sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope),
+            agentId: ctx.agentId
+          },
+          uploadId
+        )
+        if (!file || !this.cpClient) return undefined
+        const cap = cfg.limits.maxOutboundFileBytes ?? cfg.limits.maxAttachmentBytes
+        if (file.size > cap) throw new Error('sendMessage: the upload exceeds the file size limit. Nothing was sent.')
+        const signed = await this.cpClient.transferGet(
+          {
+            agentId: ctx.agentId,
+            uploadId,
+            size: file.size,
+            sha256: file.sha256,
+            network: this.transferNetwork()
+          },
+          this.orgForAgent(ctx.agentId)
+        )
+        if (!signed.url) return undefined
+        try {
+          const response = await fetch(signed.url, { redirect: 'error', signal: AbortSignal.timeout(30_000) })
+          if (!response.ok) {
+            await response.body?.cancel()
+            return undefined
+          }
+          const bytes = await readBoundedBody(response, cap, 'uploaded attachment')
+          return bytes.length === file.size ? { bytes, name: file.name, mimeType: file.mimeType } : undefined
+        } catch {
+          return undefined
+        }
+      },
       // shareFile (agent-authored-attachments.md): the trusted target, the fenced read, the
       // synchronous budget, and the provenance row. All coordinates come from the active
       // turn — the model supplies only a workspace-relative path and a caption.
@@ -5662,8 +5703,8 @@ export class Daemon {
           ...(image?.success ? { attachments: [image.data] } : {})
         })
       },
-      recordOutbound: (ctx, channel, thread, text, ts, integrationId) =>
-        this.recordOutboundPost(ctx, channel, thread, text, ts, integrationId),
+      recordOutbound: (ctx, channel, thread, text, ts, integrationId, attachments) =>
+        this.recordOutboundPost(ctx, channel, thread, text, ts, integrationId, attachments),
       // A builder round's history reads name their senders' keys and feed the directory's seen people (assistant-mode.md §5.17).
       directoryReads: (ctx, read) => this.noteDirectoryReads(ctx, read),
       // Research reads only internal public channels its bot is in, each bounded per round (assistant-mode.md §5.15).
@@ -9762,6 +9803,7 @@ export class Daemon {
       WORKSPACE_FILE_DOWNLOAD_FEATURE,
       // Snapshots workspace files onto, and fetches console uploads from, URLs the control plane signs; static.
       FILE_TRANSFER_FEATURE,
+      WEBCHAT_UPLOADS_FEATURE,
       // Runs a workspace upload behind a short `workspace/upload/begin` and reports it with `transfer/settle`; static.
       WORKSPACE_UPLOAD_BEGIN_FEATURE,
       // Answers `image/original/resolve` and publishes shared-image originals (webchat-generated-images.md).
@@ -11971,7 +12013,8 @@ export class Daemon {
     thread: string | undefined,
     text: string,
     ts: string,
-    integrationId: string
+    integrationId: string,
+    attachments?: import('@agentconnect.md/protocol').PublishedAttachment[]
   ): Promise<void> {
     await this.store.appendTranscript({
       channel: transcriptChannelKey(channel, this.transportScopeForIntegrationIds([integrationId])),
@@ -11983,7 +12026,8 @@ export class Daemon {
       ts,
       sender: origin.agentId,
       kind: 'text',
-      text
+      text,
+      ...(attachments?.length ? { body: JSON.stringify({ publishedAttachments: attachments }) } : {})
     })
   }
 

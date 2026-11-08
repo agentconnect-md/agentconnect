@@ -180,4 +180,29 @@ describe('AHP conversation engine', () => {
     await vi.waitFor(() => expect(refused).toHaveBeenCalledWith(turn('Draft')))
     expect(attachments.flatMap((peer) => peer.actions)).toEqual([])
   })
+  it('fits multiple uploaded previews without changing their IDs or queued originals', async () => {
+    const entry = open()
+    await entry.connect()
+    attachments[0]!.emit({ extensions: { 'agentconnect.md': { webchat: true, files: true, filePreviews: true } } })
+    const files = [0, 1, 2, 3].map(() => ({
+      uploadId: crypto.randomUUID(),
+      name: 'same.png',
+      mimeType: 'image/png',
+      size: 100000,
+      sha256: 'A'.repeat(43) + '=',
+      preview: { name: 'same.webp', mimeType: 'image/webp' as const, data: 'YWFh'.repeat(13000) }
+    }))
+    entry.enqueue({ ...turn('图片'.repeat(3000)), files })
+    await vi.waitFor(() => expect(attachments[0]!.actions).toHaveLength(1))
+    expect(prepare).toHaveBeenCalledTimes(4)
+    expect(prepare.mock.calls.every((call) => call[1] < 10000)).toBe(true)
+    expect(attachments[0]!.actions[0]).toMatchObject({
+      message: {
+        _meta: {
+          'agentconnect.md': { files: files.map((file) => ({ uploadId: file.uploadId, preview: { data: 'YQ==' } })) }
+        }
+      }
+    })
+    expect(files.every((file) => file.preview.data.length === 52000)).toBe(true)
+  })
 })

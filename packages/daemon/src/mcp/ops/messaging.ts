@@ -1,12 +1,15 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
-import type { MessageGateway, SendIdentity, SessionContext } from './context.js'
+import type { PublishedAttachment } from '@agentconnect.md/protocol'
+import type { MessageFile, MessageGateway, SendIdentity, SessionContext } from './context.js'
 import { resolveGatewayForPlatform, type GatewayDeps } from './gateway.js'
 import type { TaskReachDeps } from './task-reach.js'
 import type { InterceptedPost, PostInterception } from '../../assistant/drafts.js'
 import { optionalString, parseArgs, requiredString } from './args.js'
 import { assertChannelReachable } from './channel-reach.js'
 import { JoinRefused } from './join-ask.js'
+import { messageAttachmentsField, resolveMessageAttachment, type MessageAttachmentDeps } from './message-attachments.js'
+import { SHARE_CAPTION_MAX } from './share-file.js'
 import {
   offersThreadUpdates,
   rootPostNeedsThreadMaterialization,
@@ -110,6 +113,7 @@ export const SEND_MESSAGE_BRANCHES = {
     platform: platformField,
     integrationId: integrationIdField,
     attachment: attachmentField,
+    attachments: messageAttachmentsField,
     message: messageField
   }),
   channel: targetBranch('action `postMessage` with `channel`', 'postMessage', {
@@ -118,6 +122,7 @@ export const SEND_MESSAGE_BRANCHES = {
     platform: platformField,
     integrationId: integrationIdField,
     attachment: attachmentField,
+    attachments: messageAttachmentsField,
     message: messageField
   }),
   messageId: targetBranch('action `replyToSession`', 'replyToSession', {
@@ -330,7 +335,7 @@ export interface ReplyToSessionResult {
 
 /** The deps of the unified outbound send: peer wake, session reply, the visible post, and
  *  the daemon-side session bookkeeping a root post triggers. */
-export interface MessagingDeps extends GatewayDeps, TaskReachDeps {
+export interface MessagingDeps extends GatewayDeps, TaskReachDeps, MessageAttachmentDeps {
   /**
    * The exact platform-native `@mention` addressing `agentId` in one conversation
    * (send-message-routing-rework.md §8.5), or undefined when it has none there.
@@ -445,7 +450,8 @@ export interface MessagingDeps extends GatewayDeps, TaskReachDeps {
     thread: string | undefined,
     text: string,
     ts: string,
-    integrationId: string
+    integrationId: string,
+    attachments?: PublishedAttachment[]
   ) => Promise<void>
   /** Monotonic-ish clock for synthesizing a message id when the platform doesn't return one. */
   now: () => number
@@ -473,6 +479,7 @@ export interface ConfirmedPost {
   /** The existing thread an update joined; absent for a root post. */
   updateThread?: string
   body: string
+  attachments?: PublishedAttachment[]
   /** The platform's own id for the post; absent when it returned none. */
   providerPostId?: string
   ts: string
@@ -524,7 +531,15 @@ export async function settlePost(
           ? materializedThread
           : canonicalPostThread
   // Recorded in the thread the post belongs to, the same canonical key a reply to it resolves to.
-  await deps.recordOutbound(origin, channel, postedThread ?? canonicalPostThread, body, ts, post.integrationId)
+  await deps.recordOutbound(
+    origin,
+    channel,
+    postedThread ?? canonicalPostThread,
+    body,
+    ts,
+    post.integrationId,
+    post.attachments
+  )
   if (providerPostId !== undefined && mustMaterializeThread && postedThread === undefined) {
     throw new Error(
       `sendMessage: posted root message ${ts}, but its required thread could not be created; no session was started`
@@ -626,6 +641,14 @@ export async function deliverSendMessage(
   const channel = parseArgs(channelField, args.channel)
   const namedPlatform = parseArgs(platformField, args.platform)
   const attachmentName = parseArgs(attachmentField, args.attachment)
+  const attachmentSources = parseArgs(messageAttachmentsField, args.attachments)
+  if (attachmentName !== undefined && attachmentSources !== undefined)
+    throw new Error('sendMessage: use attachments or the legacy attachment argument, not both. Nothing was sent.')
+  if ((attachmentName !== undefined || attachmentSources) && message.length > SHARE_CAPTION_MAX)
+    throw new Error(
+      `sendMessage: file captions are limited to ${SHARE_CAPTION_MAX} characters. Put details in the thread. Nothing was sent.`
+    )
+  let publishedAttachments: PublishedAttachment[] | undefined
   if (toAgent === undefined && toUsers === undefined && channel === undefined) {
     throw new Error(
       `sendMessage: action \`postMessage\` requires \`toUser\` or \`channel\`. ${sendMessageGuidePointer('postMessage')}`
@@ -788,29 +811,35 @@ export async function deliverSendMessage(
         )
       }
     }
-    // Resolved before anything is posted: a bad name or a fileless target fails the whole send.
+    // Resolve the whole batch before publishing any part of the message.
+    const files: MessageFile[] = []
+    if (attachmentSources) {
+      if (!gw.uploadFile && !gw.uploadFiles)
+        throw new Error('sendMessage: this integration cannot post files. Nothing was sent.')
+      if (attachmentSources.length > 1 && !gw.uploadFiles)
+        throw new Error('sendMessage: this integration cannot publish multiple files together. Nothing was sent.')
+      for (const [index, source] of attachmentSources.entries()) {
+        const resolved = await resolveMessageAttachment(ctx, source, deps)
+        files.push(resolved.file)
+        attachmentSources[index] = resolved.source
+      }
+    }
     let attachment: { bytes: Buffer; name: string; mimeType: string } | undefined
     if (attachmentName !== undefined) {
       if (!gw.uploadFile) {
         throw new Error(`sendMessage: the selected ${platformLabel(wantPlatform)} integration cannot post files`)
       }
       attachment = await deps.resolveAttachment?.(ctx, attachmentName)
-      // Not necessarily a wrong name: the `[attached: …]` marker lists EVERY file on a
-      // message, while only the one retained image is forwardable. Saying "no such name"
-      // would send the agent back to retry a name it read correctly.
+      // A listed attachment can lack a retained image; retrying its name cannot recover the bytes.
       if (!attachment) {
-        // Wording matters here: an earlier phrasing listed the unforwardable kinds and an agent
-        // read the list backwards, asking the user to RE-SEND the picture as a document. State
-        // what can be forwarded, then close the loop on the retries that cannot work.
         throw new Error(
-          `sendMessage: "${attachmentName}" cannot be forwarded. Only ONE shared image per message is ` +
-            'retained, and only PNG, JPEG or WEBP. Do NOT ask anyone to re-send it in another format ' +
-            '— a document or a second image on the same message can never be forwarded, and re-sending ' +
-            'will not change that. Check the spelling once against the `[attached: …]` marker; if it ' +
-            'matches, describe the image in your reply instead.'
+          `sendMessage: "${attachmentName}" cannot be forwarded by name because its retained image is unavailable. ` +
+            'Use attachments with its received uploadId or platform fileId when available. ' +
+            'Do NOT ask anyone to re-send it in another format; otherwise describe it in your reply.'
         )
       }
     }
+    if (attachment) files.push(attachment)
     let body = message
     // A gateway-mention platform carries the mentioned users beside the text, never inside it.
     let mentionUsers: string[] | undefined
@@ -825,7 +854,7 @@ export async function deliverSendMessage(
       // dm form: the one user id IS the destination and the body is unchanged; the
       // channel-root form @-mentions every named user inside the one visible post.
       if (channel !== undefined && mentionStyle === 'gateway') {
-        if (attachment)
+        if (files.length)
           throw new Error(`sendMessage: ${platformLabel(wantPlatform)} cannot mention people on a file post`)
         mentionUsers = toUsers
       } else if (channel !== undefined) {
@@ -849,6 +878,10 @@ export async function deliverSendMessage(
       })
       if (address) body = `${address} ${message}`
     }
+    if (files.length && body.length > SHARE_CAPTION_MAX)
+      throw new Error(
+        `sendMessage: the caption including mentions exceeds ${SHARE_CAPTION_MAX} characters. Nothing was sent.`
+      )
     const postChannel = directMessage ? await openDirectMessage(gw, requestedChannel, wantPlatform) : requestedChannel
     if (directMessage && deps.judgePost) {
       verdict = await deps.judgePost({
@@ -906,7 +939,7 @@ export async function deliverSendMessage(
             'Nothing was sent; send it without toUser.'
         )
       }
-      if (attachment) {
+      if (files.length) {
         throw new Error(
           'sendMessage: a post to that conversation needs approval, and a file cannot be sent for approval. ' +
             'Nothing was sent; send the text alone.'
@@ -923,35 +956,58 @@ export async function deliverSendMessage(
       })
       if (intercepted.handled) return intercepted.result
     }
-    // A file share IS the message — the caption is `body`, not a second post. It anchors like
-    // any other post where the platform answers with a message id; Slack's does not, and that
-    // arm degrades on the path a gateway returning no id already takes. A failed share is
-    // raised rather than reported as sent — except `indeterminate`, the queue abandoning a
-    // still-running upload, which must say "may have landed" or a retry double-posts.
-    if (attachment) {
-      const shared = await gw.uploadFile?.(
-        postChannel,
-        attachment,
-        body,
-        updateThread !== undefined ? { thread: updateThread } : undefined,
-        identity
+    // Reserve the whole batch; an uncertain publication keeps its budget to prevent duplicate sends.
+    if (files.length) {
+      const charge = deps.chargeShareBudget?.(
+        ctx,
+        files.reduce((sum, file) => sum + file.bytes.length, 0)
       )
-      if (!shared || !shared.ok) {
-        const reason = shared && !shared.ok ? shared.reason : 'platform_error'
-        if (reason === 'indeterminate') {
-          throw new Error(
-            `sendMessage: the ${platformLabel(wantPlatform)} file share for "${attachment.name}" timed out and ` +
-              'MAY still have been delivered — do NOT retry; say the send may have gone through instead.'
-          )
+      if (charge && !charge.ok)
+        throw new Error('sendMessage: this turn’s file upload budget is exhausted. Nothing was sent.')
+      let shared
+      try {
+        shared = gw.uploadFiles
+          ? await gw.uploadFiles(
+              postChannel,
+              files,
+              body,
+              updateThread ? { thread: updateThread } : undefined,
+              identity
+            )
+          : await gw.uploadFile!(
+              postChannel,
+              files[0]!,
+              body,
+              updateThread ? { thread: updateThread } : undefined,
+              identity
+            )
+      } catch (error) {
+        if (error instanceof JoinRefused) {
+          if (charge?.ok) charge.release()
+          throw error
         }
-        const detail = shared && !shared.ok && shared.detail ? `: ${shared.detail}` : ''
         throw new Error(
-          `sendMessage: ${platformLabel(wantPlatform)} rejected the file "${attachment.name}" ` +
-            `(${reason.replace('_', ' ')}${detail}) — nothing was sent.`
+          'sendMessage: file publication could not be confirmed and MAY have been delivered. Do NOT retry.'
+        )
+      }
+      if (!shared.ok) {
+        if (shared.reason === 'indeterminate')
+          throw new Error('sendMessage: file publication timed out and MAY have been delivered. Do NOT retry.')
+        if (charge?.ok) charge.release()
+        throw new Error(
+          `sendMessage: file publication was refused (${shared.reason}${shared.detail ? `: ${shared.detail}` : ''}) — nothing was sent.`
         )
       }
       providerPostId = shared.messageId
+      publishedAttachments = attachmentSources?.map((source, index) => ({
+        source,
+        name: files[index]!.name,
+        mimeType: files[index]!.mimeType,
+        ...(shared.fileIds?.[index] ? { fileId: shared.fileIds[index] } : {})
+      }))
       if (shared.warning) notices.push(`This send partly failed: ${shared.warning}.`)
+      if (!providerPostId)
+        notices.push('Files were published, but their message id is unavailable. Do not retry the upload.')
     } else {
       providerPostId = mentionUsers
         ? await postMentioning(gw, postChannel, body, mentionUsers, identity, wantPlatform)
@@ -963,12 +1019,19 @@ export async function deliverSendMessage(
       integrationId: targetId,
       channel: postChannel,
       ...(updateThread !== undefined ? { updateThread } : {}),
-      body,
+      body: files.length
+        ? `${body}\n[attached: ${files.map((file) => `${file.name} (${file.mimeType})`).join(', ')}]`
+        : body,
+      ...(publishedAttachments ? { attachments: publishedAttachments } : {}),
       ...(providerPostId !== undefined ? { providerPostId } : {}),
       ts,
       directMessage,
       // A peer wake owns the thread it anchors to, so only a post without one seeds the author's session.
       seed: toAgent === undefined
+    }).catch((error: unknown) => {
+      if (!files.length) throw error
+      notices.push('The message was published, but its conversation record could not be completed. Do not resend it.')
+      return { seeded: false, postedThread: undefined }
     })
     postedThread = settled.postedThread
     post = {
@@ -982,17 +1045,19 @@ export async function deliverSendMessage(
       // A root post that forked a conversation the agent is already in (a source's or its own) names the call that would have answered.
       const relation =
         postedThread !== undefined && updateThread === undefined
-          ? await deps.rootPostRelation?.({
-              callerAgentId: ctx.agentId,
-              platform: ctx.platform,
-              ...(ctx.transportScope !== undefined ? { callerTransportScope: ctx.transportScope } : {}),
-              callerChannel: ctx.channel,
-              callerThread: ctx.thread,
-              targetPlatform: wantPlatform,
-              targetChannel: postChannel,
-              targetThread: postedThread,
-              ...(targetId ? { targetIntegrationId: targetId } : {})
-            })
+          ? await deps
+              .rootPostRelation?.({
+                callerAgentId: ctx.agentId,
+                platform: ctx.platform,
+                ...(ctx.transportScope !== undefined ? { callerTransportScope: ctx.transportScope } : {}),
+                callerChannel: ctx.channel,
+                callerThread: ctx.thread,
+                targetPlatform: wantPlatform,
+                targetChannel: postChannel,
+                targetThread: postedThread,
+                ...(targetId ? { targetIntegrationId: targetId } : {})
+              })
+              .catch(() => undefined)
           : undefined
       if (relation?.kind === 'source') {
         notices.push(
@@ -1055,6 +1120,17 @@ export async function deliverSendMessage(
     ok: true,
     ...(wake !== undefined ? { wake } : {}),
     ...(post !== undefined ? { post } : {}),
+    ...(publishedAttachments ? { attachments: publishedAttachments } : {}),
+    ...(post && (post.thread || providerPostId) && offersThreadUpdates(post.platform)
+      ? {
+          threadTarget: {
+            platform: post.platform,
+            integrationId: post.integrationId,
+            channel: post.channel,
+            thread: post.thread ?? providerPostId
+          }
+        }
+      : {}),
     ...(childSessionId !== undefined ? (subsession ? { taskId: childSessionId } : { childSessionId }) : {}),
     ...(childSessionId !== undefined && (needsReply || subsession)
       ? {

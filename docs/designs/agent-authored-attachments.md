@@ -297,18 +297,10 @@ shim boundary, and generalizes to none of the other three platforms.
 
 ## 7. Considered and rejected / deferred
 
-- **`attachFile` on `sendMessage`** (a produced file to a _different_ conversation) —
-  deferred, by this document's own rule: §2 argues the current-conversation case, and no
-  concrete request exists for the other cell (§9.3). The shared resolver makes it a
-  one-field addition later. If added: exclusivity with `attachment` must be an **explicit
-  refusal** (the strict branch schemas only reject _unrecognized_ keys, so two recognized
-  fields would otherwise resolve by silent precedence), and three shipped tool-description
-  sentences must be edited in the same change — "you can neither attach a file you were
-  not sent nor produce one", "the ONLY way to put an image on another platform" (scope to
-  _received_), and `sendMessage`'s "write your ordinary turn reply instead" pointer, which
-  must name `shareFile` or agents will keep being steered to channel-root posts. The last
-  of these three edits is phase-1 work regardless, since `shareFile` obsoletes the
-  sentence on its own.
+- **A singular `attachFile` on `sendMessage`** — superseded by the source-qualified
+  `attachments` array in [send-message-guide.md](send-message-guide.md). Workspace paths,
+  received upload IDs, and provider file IDs share one API, including mixed batches.
+  The old `attachment` spelling remains compatible but cannot be combined with the array.
 - **Markdown-driven uploads** — the renderer spots `![](out/chart.png)` in the reply and
   uploads it. Ergonomic and wrong: publishing becomes implicit (quoting a path uploads
   it), a mid-stream failure has no sane place to land, and a regex over prose becomes a

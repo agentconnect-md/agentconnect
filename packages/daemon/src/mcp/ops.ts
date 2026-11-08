@@ -144,6 +144,7 @@ import {
 import { viewSessionStatus, VIEW_SESSION_STATUS_ARGS, type SessionOpsDeps } from './ops/session.js'
 import {
   assertPlaceRead,
+  assertFileRead,
   isPlatformPost,
   judgePlaceWrite,
   type PlaceAccessDeps,
@@ -524,6 +525,7 @@ function writeDeps(ctx: SessionContext, name: string, args: Record<string, unkno
   const draft = deps.draftPost
   return {
     ...judged,
+    authorizeFileRead: (source) => assertFileRead(ctx, source, deps),
     judgePost: (target) => judgePlaceWrite(ctx, name, { kind: 'conversation', ...target }, deps, true),
     ...(draft ? { interceptPost: (post: InterceptedPost) => draft(ctx, post) } : {})
   }

@@ -654,8 +654,8 @@ target's daemon after the post is made.
 ### Sharing a produced file into the current conversation
 
 `shareFile` posts a file from the agent's workspace into the conversation the agent is
-answering — the one visible send that is not `sendMessage`'s job, since every `sendMessage`
-post lands at a channel root. The model supplies only a workspace-relative path and an
+answering. `sendMessage` with `action: "postMessage"` and `attachments` instead publishes to
+an explicit destination. For `shareFile`, the model supplies only a workspace-relative path and an
 optional plain-text caption; every coordinate comes from the trusted active turn, so the
 file lands in the thread that asked, threaded the way that platform threads (Slack
 `thread_ts`, Telegram reply placement, Discord thread channel, Feishu topic root — which is
@@ -717,35 +717,47 @@ download link — and is told not to repeat the file as Markdown. Peers in a mul
 conversation see the caption and card or chip as transcript only; a shared file never
 wakes another agent or feeds its content to another agent's model.
 
-### Forwarding a received file
+### Publishing files to an explicit destination
 
-A `toUser` or bare-`channel` send may carry `attachment`, naming a file **this
-conversation received** exactly as the agent's `[attached: …]` marker spells it. This is
-the only way a shared image reaches another platform: an agent can describe what it saw,
-but it cannot produce the bytes, and no send accepts model-supplied file content.
+`sendMessage` with `action: "postMessage"` accepts up to four `attachments`. Each item
+selects its existing source: `workspace` plus a relative `path`, `upload` plus a received
+`uploadId`, or `platform` plus `platform`, `fileId`, and an optional source `integrationId`.
+The source integration is independent of the destination; ambiguous source bots require
+an explicit selection. Names are labels, never identifiers. The daemon checks source read
+access and destination write access, resolves the whole group, and applies the same file
+and turn byte limits as `shareFile` before publication. A targetless cron can generate
+files and explicitly publish the result this way without a new cron display setting.
 
-The daemon resolves the name against its own transcript for the caller's conversation, so
-an agent can forward only what was delivered to it, and the bytes never pass through the
-model. It forwards the bounded copy already retained for console replay rather than
-re-fetching the original, so a forwarded image can be smaller than the one that arrived.
+An upload lookup is scoped to the receiving session, agent, and organization. Its native
+identifier and integrity metadata remain in the daemon transcript; signed URLs are never
+persisted. Workspace paths belong to the calling session, including headless tasks and
+sandboxes. Destination records retain source provenance and never present the source path
+as a downloadable destination-workspace file.
 
-**Only that retained copy is forwardable — one image per message.** The `[attached: …]`
-marker lists every file on a message, but a document, a second image on the same message,
-and an image too large to retain have no bytes to forward. Naming one is refused as _not
-forwardable_ rather than as an unknown name, because the agent read the name correctly and
-would otherwise retry it.
+The singular `attachment` remains compatible for forwarding a retained image by name.
+It uses the bounded transcript copy. Supplying both spellings is an error; new calls use
+the source identifiers to distinguish same-name files.
 
 A file share is its own message on the receiving platform, not a decorated text post: the
-send's `message` becomes the file's caption, and each platform sends it the way that
-platform shows a file — an image previews inline where the platform can do that, and a
-caption too long for the platform's limit becomes its own message instead of being
-truncated.
+send's required `message` becomes the caption, limited to 1000 characters. Slack publishes
+the whole group with one caption at the channel root or in an existing thread. Platforms
+without a batch upload capability refuse multiple files before publishing any of them.
 
 Such a send anchors like any other channel-root post, and so seeds a session, wherever the
-platform answers with the message it created. Slack is the exception: its file share
-returns the file and no message id, so a Slack forward anchors nothing and seeds no
-session. Nothing else depends on which case applies — the send degrades to the same
-behaviour as a post whose id never came back.
+platform answers with the message it created. Slack reads the share timestamp back from
+the uploaded file. `threadTarget` uses that provider root for follow-up posts; `post.thread`
+stays null for a root post. Missing timestamps or failed local bookkeeping produce a
+success notice after publication. An indeterminate upload may have landed: it keeps its
+turn budget and explicitly forbids retrying.
+
+Webchat accepts mixed multi-select, paste, and drop in its home, session, and thread
+composers. Up to four images or documents share one selection limit. Each has its own
+preview, upload status, remove, and retry controls; failed items hold the send. On current
+daemons with object storage, image originals use the same `uploadId` flow as documents,
+with bounded previews for the model and transcript. Viewing and forwarding require no
+workspace copy. Historical inline images and image-only input without object storage
+remain supported. Originals keep the upload bucket's temporary lifecycle; a retained
+preview does not promise permanent original bytes.
 
 An unresolvable name, a target platform that cannot host files, or a share that posted
 nothing fails the whole send rather than reporting an image as sent.

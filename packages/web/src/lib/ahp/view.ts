@@ -21,7 +21,8 @@ import type {
   SessionUsage
 } from '@/lib/data'
 import { fmtCost, fmtCountCompact } from '@/lib/api'
-import type { McpAppCard, McpAppOutcome } from '@agentconnect.md/protocol'
+import type { McpAppCard, McpAppOutcome, WebchatFileAttachment } from '@agentconnect.md/protocol'
+import { filesMarker } from '@/lib/webchat-file'
 
 const text = (value: StringOrMarkdown | undefined): string =>
   typeof value === 'string' ? value : (value?.markdown ?? '')
@@ -106,13 +107,18 @@ export function ahpSteps(chat: ChatState, agentId: string, session?: SessionStat
   const turns = [...chat.turns, ...(chat.activeTurn ? [chat.activeTurn] : [])]
   for (const turn of turns) {
     const base = { turnId: turn.id, agentId, observedAtMs: Date.parse(turn.startedAt ?? '') || undefined }
+    const files =
+      (turn.message._meta?.['agentconnect.md'] as { files?: WebchatFileAttachment[] } | undefined)?.files ?? []
+    const marker = filesMarker(files)
+    const previews = files.flatMap((file) => (file.preview ? [{ ...file.preview, name: file.name }] : []))
     const image = turn.message.attachments?.find(
       (item) => item.type === 'embeddedResource' && ['image/png', 'image/jpeg', 'image/webp'].includes(item.contentType)
     )
     steps.push({
       ...base,
       kind: 'msg',
-      text: turn.message.text,
+      text: marker ? `${turn.message.text}\n${marker}`.trim() : turn.message.text,
+      ...(previews.length ? { images: previews } : {}),
       turnComplete: 'state' in turn,
       ...(image?.type === 'embeddedResource'
         ? {

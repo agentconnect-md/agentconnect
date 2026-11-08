@@ -160,7 +160,7 @@ describe('uploaded-file attachments', () => {
     expect(download).not.toHaveBeenCalled()
     expect(block).toMatchObject({ type: 'text' })
     const text = (block as { text: string }).text
-    expect(text).toContain("[uploaded file: it's.pdf (application/pdf, 12 bytes)]")
+    expect(text).toContain("[uploaded file: it's.pdf (application/pdf, 12 bytes); uploadId=u]")
     expect(text).toContain(`curl -fsSL -o 'uploads/it'\\''s.pdf' 'https://store.example.test/k?X-Amz-Signature=s'`)
     expect(text).toContain('2026-10-09T00:00:00.000Z')
   })

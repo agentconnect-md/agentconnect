@@ -361,7 +361,7 @@ describe('RelayBrowserConnection', () => {
       type: 'ready',
       conversationId: CHAT,
       agentId: AGENT,
-      features: ['webchat-images-v1', 'webchat-threads-v1', 'continuation-threads-v1'],
+      features: ['webchat-images-v1', 'webchat-threads-v1', 'continuation-threads-v1', 'webchat-upload-previews-v1'],
       participants: [{ agentId: AGENT, primary: true }]
     })
   })

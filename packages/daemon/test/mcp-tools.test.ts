@@ -340,6 +340,7 @@ describe('toolsForIntegrations', () => {
       'title',
       'messageId',
       'attachment',
+      'attachments',
       'platform',
       'integrationId'
     ])

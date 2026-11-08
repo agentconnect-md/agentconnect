@@ -24,6 +24,10 @@ function decodedBase64Bytes(value: string): number {
   return (value.length / 4) * 3 - padding
 }
 
+export function webchatImagesWithinBudget(images: readonly { data: string }[]): boolean {
+  return images.reduce((bytes, image) => bytes + decodedBase64Bytes(image.data), 0) <= WEBCHAT_IMAGE_MAX_BYTES
+}
+
 export const WebchatImageAttachment = z.object({
   name: z
     .string()
@@ -190,38 +194,40 @@ export type WebchatAck = z.infer<typeof WebchatAck>
 // ONCE at the origin (the relay for a user turn, the owning daemon for an agent
 // reply) and carried on every frame that transports the post, so all copies agree
 // on ordering and the shared transcript dedupes across co-hosted participants.
-export const WebchatPost = z.object({
-  postId: z.string().uuid(),
-  conversationId: z.string().uuid(),
-  author: z.discriminatedUnion('kind', [
-    // `userId` is the stable CP principal and is what a recipient records as the
-    // transcript sender; `user` is the mutable display handle for the author line.
-    z.object({ kind: z.literal('user'), user: z.string().optional(), userId: z.string().optional() }),
-    z.object({
-      kind: z.literal('agent'),
-      agentId: z.string().uuid(),
-      // The authoring TURN's depth in the agent-call chain (send-message-routing-
-      // rework.md §4.1), stamped by the origin daemon at the commit boundary. A
-      // receiving participant's daemon charges ONE +1 transition on it — against the
-      // same MAX_AGENT_CALL_HOPS budget an internal agent call spends — before the
-      // post may continue the conversation as an activation (webchat-multi-agents.md
-      // §5.2a, the #549 parity). Absent (a pre-parity daemon), the post stays
-      // transcript-only: a missing depth must never coerce to zero.
-      hopCount: z.number().int().min(0).optional(),
-      // The participants the human narrowed this exchange to (§5.2a); a peer outside it wakes only when the post @-names it.
-      addressedAgentIds: z.array(z.string().uuid()).max(16).optional()
-    })
-  ]),
-  text: z.string(),
-  at: z.number().int(), // canonical epoch-ms timestamp, minted once at origin
-  attachments: z.array(WebchatImageAttachment).max(1).optional(),
-  // A shared image the agent published; peers keep it as transcript only, never as model input.
-  image: SharedImage.optional(),
-  // A coordinator's link to a task, which the console draws as a card opening the task's thread.
-  taskLink: TaskLinkFacts.optional(),
-  // The root `postId` of the thread this post is a reply in; absent ⇒ a root.
-  thread: WebchatThreadId.optional()
-})
+export const WebchatPost = z
+  .object({
+    postId: z.string().uuid(),
+    conversationId: z.string().uuid(),
+    author: z.discriminatedUnion('kind', [
+      // `userId` is the stable CP principal and is what a recipient records as the
+      // transcript sender; `user` is the mutable display handle for the author line.
+      z.object({ kind: z.literal('user'), user: z.string().optional(), userId: z.string().optional() }),
+      z.object({
+        kind: z.literal('agent'),
+        agentId: z.string().uuid(),
+        // The authoring TURN's depth in the agent-call chain (send-message-routing-
+        // rework.md §4.1), stamped by the origin daemon at the commit boundary. A
+        // receiving participant's daemon charges ONE +1 transition on it — against the
+        // same MAX_AGENT_CALL_HOPS budget an internal agent call spends — before the
+        // post may continue the conversation as an activation (webchat-multi-agents.md
+        // §5.2a, the #549 parity). Absent (a pre-parity daemon), the post stays
+        // transcript-only: a missing depth must never coerce to zero.
+        hopCount: z.number().int().min(0).optional(),
+        // The participants the human narrowed this exchange to (§5.2a); a peer outside it wakes only when the post @-names it.
+        addressedAgentIds: z.array(z.string().uuid()).max(16).optional()
+      })
+    ]),
+    text: z.string(),
+    at: z.number().int(), // canonical epoch-ms timestamp, minted once at origin
+    attachments: z.array(WebchatImageAttachment).max(4).optional(),
+    // A shared image the agent published; peers keep it as transcript only, never as model input.
+    image: SharedImage.optional(),
+    // A coordinator's link to a task, which the console draws as a card opening the task's thread.
+    taskLink: TaskLinkFacts.optional(),
+    // The root `postId` of the thread this post is a reply in; absent ⇒ a root.
+    thread: WebchatThreadId.optional()
+  })
+  .refine((post) => webchatImagesWithinBudget(post.attachments ?? []), 'image previews exceed the message budget')
 export type WebchatPost = z.infer<typeof WebchatPost>
 
 // One structured chunk of the agent's reply stream. Ordered per-connection (TCP);

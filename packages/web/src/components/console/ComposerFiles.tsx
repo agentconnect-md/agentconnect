@@ -5,8 +5,9 @@ import { Icon } from '@/components/ui'
 import { formatFileSize } from '@/components/console/FileBrowser'
 import { deploymentFileTransfer, WEBCHAT_FILES_MAX } from '@/lib/shared-file'
 import { uploadWebchatFile, type ComposerFile, type MarkedFile } from '@/lib/webchat-file'
+import { prepareWebchatImage, WEBCHAT_IMAGE_MAX_BYTES } from '@/lib/webchat-image'
 
-/** Why a non-image file cannot be attached, or null when it can be. */
+// Why a file cannot be uploaded, or null when it can be.
 export function composerFileRefusal(transfer: boolean, staged: number, size = 0): string | null {
   if (!transfer) return 'Only images can be attached here: file uploads need the deployment’s object store.'
   if (staged >= WEBCHAT_FILES_MAX) return `At most ${WEBCHAT_FILES_MAX} files can be attached to one message.`
@@ -16,8 +17,8 @@ export function composerFileRefusal(transfer: boolean, staged: number, size = 0)
   return null
 }
 
-/** Start uploading one non-image file into a session's composer; the staged entry tracks it until the send. */
-export function stageComposerFile(
+// Stage the whole selection before uploading; each entry owns its preview, error and retry.
+export function stageComposerFiles(
   opts: {
     sessionId: string
     agentId: string
@@ -26,25 +27,51 @@ export function stageComposerFile(
     setPgFiles: (id: string, update: (files: ComposerFile[]) => ComposerFile[]) => void
     onError: (message: string | null) => void
   },
-  file: File
+  selected: readonly File[]
 ): void {
   const { sessionId, agentId, transfer, getPgFiles, setPgFiles, onError } = opts
-  const refusal = composerFileRefusal(transfer, getPgFiles(sessionId).length, file.size)
+  if (!selected.length) return
+  const refusal = composerFileRefusal(transfer, getPgFiles(sessionId).length + selected.length - 1)
   onError(refusal)
   if (refusal) return
-  const key = `${Date.now()}:${Math.random().toString(36).slice(2)}`
-  setPgFiles(sessionId, (files) => [...files, { key, name: file.name, size: file.size, status: 'uploading' }])
-  // A removed entry stays removed: the settled upload updates only an entry still staged under its key.
-  const settle = (patch: Partial<ComposerFile>) =>
-    setPgFiles(sessionId, (files) => files.map((f) => (f.key === key ? { ...f, ...patch } : f)))
-  uploadWebchatFile(agentId, file, { partBytes: deploymentFileTransfer()?.partBytes }).then(
-    (attachment) => settle({ status: 'ready', attachment }),
-    (error: unknown) =>
-      settle({ status: 'failed', error: error instanceof Error ? error.message : 'Couldn’t upload that file.' })
-  )
+  const jobs = selected.map((file) => {
+    const key = crypto.randomUUID()
+    let running = false
+    const settle = (patch: Partial<ComposerFile>) =>
+      setPgFiles(sessionId, (files) => files.map((f) => (f.key === key ? { ...f, ...patch } : f)))
+    const upload = async () => {
+      if (running) return
+      running = true
+      settle({ status: 'uploading', error: undefined })
+      try {
+        const error = composerFileRefusal(transfer, 0, file.size)
+        if (error) throw new Error(error)
+        // A file without a browser-readable preview still uploads its original.
+        const preview = file.type.startsWith('image/')
+          ? await prepareWebchatImage(file, WEBCHAT_IMAGE_MAX_BYTES / WEBCHAT_FILES_MAX).catch(() => undefined)
+          : undefined
+        settle({ preview })
+        const attachment = await uploadWebchatFile(agentId, file, { partBytes: deploymentFileTransfer()?.partBytes })
+        settle({ status: 'ready', attachment: { ...attachment, ...(preview ? { preview } : {}) } })
+      } catch (error) {
+        settle({ status: 'failed', error: error instanceof Error ? error.message : 'Couldn’t upload that file.' })
+      } finally {
+        running = false
+      }
+    }
+    return {
+      entry: { key, name: file.name, size: file.size, status: 'uploading' as const, retry: () => void upload() },
+      upload
+    }
+  })
+  setPgFiles(sessionId, (files) => [...files, ...jobs.map((job) => job.entry)])
+  // Hash and upload one original at a time to keep browser memory bounded.
+  void (async () => {
+    for (const job of jobs) await job.upload()
+  })()
 }
 
-/** The staged files as removable chips: name, size, and whether the upload landed. */
+// Staged files stay visible until sent or explicitly removed, including failed uploads.
 export function ComposerFileChips({ files, onRemove }: { files: ComposerFile[]; onRemove: (key: string) => void }) {
   if (!files.length) return null
   return (
@@ -60,6 +87,13 @@ export function ComposerFileChips({ files, onRemove }: { files: ComposerFile[]; 
               : 'flex max-w-full min-w-0 items-center gap-[6px] rounded-md border border-(--border-subtle) bg-(--surface-sunken) py-1 pr-1 pl-2 font-sans text-[12px] font-normal leading-normal text-(--text-primary)'
           }
         >
+          {file.preview ? (
+            <img
+              src={`data:${file.preview.mimeType};base64,${file.preview.data}`}
+              alt={file.name}
+              className="h-12 w-12 flex-none rounded object-cover"
+            />
+          ) : null}
           {file.status === 'uploading' ? (
             <Spinner size={12} />
           ) : (
@@ -71,6 +105,22 @@ export function ComposerFileChips({ files, onRemove }: { files: ComposerFile[]; 
           )}
           <span className="min-w-0 truncate">{file.name}</span>
           <span className="flex-none text-(--text-tertiary)">{formatFileSize(file.size)}</span>
+          {file.status === 'failed' ? (
+            <span className="min-w-0 truncate" role="alert">
+              {file.error}
+            </span>
+          ) : null}
+          {file.status === 'failed' && file.retry ? (
+            <button
+              type="button"
+              className="iconbtn h-5 w-5 flex-none"
+              aria-label={`Retry ${file.name}`}
+              title={file.error}
+              onClick={file.retry}
+            >
+              <Icon name="rotate-cw" size={12} />
+            </button>
+          ) : null}
           <button
             type="button"
             className="iconbtn h-5 w-5 flex-none"

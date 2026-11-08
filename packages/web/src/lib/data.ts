@@ -1305,6 +1305,7 @@ export interface SessionStep {
   code?: string
   files?: SessionFile[]
   image?: SessionImage
+  images?: SessionImage[]
   /** A shared image the agent published (webchat-generated-images.md); `postId` is its canonical post. */
   sharedImage?: SharedImageState
   /** Client-side timestamp for live playground/webchat steps. Persisted transcripts

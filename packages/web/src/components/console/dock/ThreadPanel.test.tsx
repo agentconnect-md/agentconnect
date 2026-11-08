@@ -8,6 +8,8 @@ import { SWRConfig } from 'swr'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionMessageDto } from '@/lib/api'
 import type { Agent, SessionStep } from '@/lib/data'
+import type { ComposerFile } from '@/lib/webchat-file'
+import type { PlaygroundData } from '@/components/console/playground/contract'
 
 const taskRow = vi.hoisted(() => ({
   sessionId: 'ses_task',
@@ -24,6 +26,8 @@ const taskRow = vi.hoisted(() => ({
 const wire = vi.hoisted(() => ({
   canContinue: true as boolean | null,
   drafts: {} as Record<string, string>,
+  files: {} as Record<string, ComposerFile[]>,
+  sentFiles: [] as unknown[],
   live: [] as SessionStep[],
   calls: [] as string[],
   extra: [] as SessionMessageDto[],
@@ -116,8 +120,10 @@ vi.mock('@/components/console/PlaygroundProvider', () => {
     isPgBusy: () => wire.busy,
     getPgImage: () => undefined,
     setPgImage: () => {},
-    getPgFiles: () => [],
-    setPgFiles: () => {},
+    getPgFiles: (id: string) => wire.files[id] ?? [],
+    setPgFiles: (id: string, update: (files: ComposerFile[]) => ComposerFile[]) => {
+      wire.files[id] = update(wire.files[id] ?? [])
+    },
     pgCancel: (id: string, agentId: string) => wire.calls.push(`cancel:${id}:${agentId}`),
     reconcileLiveSteps: () => {},
     markSessionTarget: (id: string, target?: string, threads?: boolean) =>
@@ -132,8 +138,11 @@ vi.mock('@/components/console/PlaygroundProvider', () => {
       wire.calls.push(`send:${id}:${agentId}:${wire.drafts[id] ?? ''}`)
       return true
     },
-    pgSendThread: (id: string, agentId: string, text: string, thread: string, conversationId?: string) => {
+    pgSendThread: (
+      ...[id, agentId, text, thread, conversationId, , files]: Parameters<PlaygroundData['pgSendThread']>
+    ) => {
       wire.calls.push(`thread:${id}:${agentId}:${text}:${thread}${conversationId ? `:${conversationId}` : ''}`)
+      wire.sentFiles.push(files)
       return true
     },
     setPgInput: (id: string, text: string) => {
@@ -183,6 +192,8 @@ let withTask = true
 beforeEach(() => {
   wire.canContinue = true
   wire.drafts = {}
+  wire.files = {}
+  wire.sentFiles = []
   wire.live = []
   wire.calls = []
   wire.extra = []
@@ -948,6 +959,36 @@ describe('ThreadPanel for the conversation’s owner (webchat-threads.md §6.3)'
   const step = (over: Partial<SessionStep> & Pick<SessionStep, 'kind' | 'text'>): SessionStep => ({
     turnId: 't1',
     ...over
+  })
+
+  it('sends a mixed attachment-only reply in its thread and clears only that draft', async () => {
+    wire.record = recordPage()
+    withTask = false
+    props = { record: ref, writer, platform: 'webchat', fileTransfer: true }
+    const files = ['image/png', 'application/pdf'].map((mimeType, index) => ({
+      uploadId: crypto.randomUUID(),
+      name: index ? 'report.pdf' : 'shot.png',
+      mimeType,
+      size: 20,
+      sha256: 'A'.repeat(43) + '='
+    }))
+    wire.drafts.ses_coordinator = 'Root draft'
+    wire.files['ses_coordinator#post-root'] = files.map((attachment) => ({
+      key: attachment.uploadId,
+      name: attachment.name,
+      size: attachment.size,
+      status: 'ready',
+      attachment
+    }))
+    await render()
+    expect(container.querySelector('input[type="file"]')?.hasAttribute('multiple')).toBe(true)
+    act(() =>
+      container.querySelector('textarea')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    )
+    expect(wire.calls).toContain('thread:ses_coordinator:agent_1::post-root:conv-1')
+    expect(wire.sentFiles).toEqual([files])
+    expect(wire.files['ses_coordinator#post-root']).toEqual([])
+    expect(wire.drafts.ses_coordinator).toBe('Root draft')
   })
 
   it('writes in an unowned thread on the conversation’s socket and shows only that thread’s live steps', async () => {

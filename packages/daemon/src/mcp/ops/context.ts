@@ -69,9 +69,23 @@ export type UploadFailReason =
   'missing_scope' | 'too_large' | 'not_found' | 'forbidden' | 'indeterminate' | 'platform_error' | 'unsupported_type'
 
 export type UploadOutcome =
-  | { ok: true; messageId?: string; warning?: string }
+  | { ok: true; messageId?: string; warning?: string; fileIds?: string[] }
   /** `detail` is the provider's own error code; `notJoined` marks a refusal because the bot is not in that conversation. */
   | { ok: false; reason: UploadFailReason; detail?: string; notJoined?: true }
+
+export interface MessageFile {
+  bytes: Buffer
+  name: string
+  mimeType: string
+}
+
+export interface PlatformFileInfo {
+  name: string
+  mimeType: string
+  sourceUrl: string
+  size?: number
+  channels: string[]
+}
 
 // A turn-bound file sender; its destination and reply anchor are captured by the platform.
 // Named for the images it first carried; a platform that cannot host a document answers `unsupported_type`.
@@ -196,6 +210,15 @@ export interface MessageGateway {
     anchor?: UploadAnchor,
     identity?: SendIdentity
   ): Promise<UploadOutcome>
+  // Native batch publication keeps one caption and one target for the entire group.
+  uploadFiles?(
+    channel: string,
+    files: MessageFile[],
+    comment?: string,
+    anchor?: UploadAnchor,
+    identity?: SendIdentity
+  ): Promise<UploadOutcome>
+  getFileInfo?(fileId: string): Promise<PlatformFileInfo | undefined>
 }
 
 /**
