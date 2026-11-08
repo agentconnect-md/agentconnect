@@ -482,9 +482,10 @@ The console's transcript marks what is new and lets a reader move through it:
   A first visit has no line.
 - **Jump to latest** appears above the composer while the reader is scrolled up,
   and returns them to the end, which the transcript then follows again.
-- On desktop, a **turn map** at the right edge has one short tick per turn, named
-  in its tip by who spoke. The turn in view gets the one long tick; clicking a tick
-  jumps to its turn. A long conversation's map is
+- On desktop, a **turn map** at the right edge has one short tick per turn, closely
+  spaced. Its tip names who spoke and what they said: a person's words, or an agent's
+  last sentence. The turn in view gets a slightly longer, darker tick, centred on the
+  column; clicking a tick jumps to its turn. A long conversation's map is
   sampled to forty ticks, always keeping the newest.
 
 ## Slack message attribution footer

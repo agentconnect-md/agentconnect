@@ -212,7 +212,7 @@ import {
 } from '@/lib/session-runtime-controls'
 import type { FmtStep } from '@/components/console/transcript-steps'
 import { buildTurns, type SessionParticipant, type Turn } from '@/components/console/session-turns'
-import { BotTurnView, UserTurnView } from '@/components/console/TurnViews'
+import { BotTurnView, UserTurnView, lastSpokenSentence } from '@/components/console/TurnViews'
 type ComposerMenuKey = 'permission' | 'model' | 'effort' | 'addAgent'
 
 // Session composer chips (mirrors HomeView); effort and approval live in the model picker.
@@ -3396,12 +3396,17 @@ export default function SessionDetailView() {
     return at !== undefined && (max === null || at > max) ? at : max
   }, null)
   const newDividerAt = newDividerIndex(turnStartsMs, seen.marker)
-  // The turn map's ticks, each named in its tip by who spoke.
-  const mapTurns: MapTurn[] = turns.map((turn) =>
-    turn.kind === 'user'
-      ? { key: turn.key, tip: `${turn.sp.name}: ${turn.text.replace(/\s+/g, ' ').slice(0, 60)}` }
-      : { key: turn.key, tip: [turn.agentName, turn.time].filter(Boolean).join(' · ') }
-  )
+  // The turn map's ticks, each named in its tip by who spoke and what they said: a person's words, an agent's last sentence.
+  const tipLine = (text: string) => (text.length > 80 ? `${text.slice(0, 79)}…` : text)
+  const mapTurns: MapTurn[] = turns.map((turn) => {
+    if (turn.kind === 'user')
+      return { key: turn.key, tip: `${turn.sp.name}: ${tipLine(turn.text.replace(/\s+/g, ' ').trim())}` }
+    const said = lastSpokenSentence(turn.steps)
+    return {
+      key: turn.key,
+      tip: said ? `${turn.agentName}: ${tipLine(said)}` : [turn.agentName, turn.time].filter(Boolean).join(' · ')
+    }
+  })
   const approvalTurns: ApprovalTurnAnchor[] = turns.flatMap((turn, i) =>
     turn.kind === 'bot'
       ? [

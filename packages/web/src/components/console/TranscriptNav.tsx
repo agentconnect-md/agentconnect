@@ -100,7 +100,7 @@ export function TranscriptMap({ turns }: { turns: readonly MapTurn[] }) {
       ref={ref}
       data-transcript-map=""
       aria-label={t('map')}
-      className="absolute top-1/2 right-[10px] z-[4] hidden -translate-y-1/2 flex-col items-end gap-[7px] px-1 py-2 desktop:flex"
+      className="absolute top-1/2 right-[10px] z-[4] hidden -translate-y-1/2 flex-col items-center gap-1 px-1 py-2 desktop:flex"
     >
       {ticks.map((tick) => {
         const on = tick.key === markedKey
@@ -112,9 +112,9 @@ export function TranscriptMap({ turns }: { turns: readonly MapTurn[] }) {
             aria-label={tick.tip}
             aria-current={on ? 'true' : undefined}
             onClick={() => go(tick.key)}
-            // Every tick the same short mark; only the turn in view is long.
+            // Every tick the same short mark; the turn in view is a little longer, centred on the column as Orca draws it.
             className={`h-[3px] cursor-pointer rounded-[2px] border-0 p-0 transition-colors ${
-              on ? 'w-[22px] bg-(--text-primary)' : 'w-3 bg-(--border-strong) hover:bg-(--text-tertiary)'
+              on ? 'w-[18px] bg-(--text-primary)' : 'w-3 bg-(--border-strong) hover:bg-(--text-tertiary)'
             }`}
           />
         )
