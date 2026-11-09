@@ -149,6 +149,11 @@ const oneLine = (text: string): string => text.replace(/\s+/g, ' ').trim().repla
 /** A task's summary is due again once this many of its turns ran since it was written (auto-session-mode.md §6.7). */
 export const TASK_SUMMARY_STALE_TURNS = 5
 
+const FIRST_SUMMARY_REMINDER =
+  `<system-reminder>\nBefore your final response in this first turn, call updateTask with a summary whose first ` +
+  `sentence states the current status, followed by the scope and next step. Do this even if the task finishes ` +
+  `in this turn.\n</system-reminder>`
+
 const NO_SUMMARY_REMINDER =
   `<system-reminder>\nThis task has no summary yet. Call updateTask with a summary whose first sentence states its ` +
   `status (in progress, waiting on someone, done or blocked), then its scope and its next step, so the sessions that ` +
@@ -160,7 +165,7 @@ const staleSummaryReminder = (turns: number) =>
   `names what it is doing now: if the work has moved on to something the title no longer names, give it a new ` +
   `title with the summary.\n</system-reminder>`
 
-/** Count this turn of a task; a reminder when it has no summary after its first turn, or its summary is stale (auto-session-mode.md §6.7). */
+// Count this turn and remind the task when its summary is missing or stale (auto-session-mode.md §6.7).
 export async function taskSummaryReminder(
   index: Pick<AssistantSubsessionIndex, 'get' | 'countTurn'>,
   agentId: string,
@@ -170,6 +175,6 @@ export async function taskSummaryReminder(
   if (!row || row.mode === 'watch') return undefined
   const before = row.turnsSinceSummary ?? 0
   await index.countTurn(agentId, key)
-  if (row.summary === undefined) return before > 0 ? NO_SUMMARY_REMINDER : undefined
+  if (row.summary === undefined) return before > 0 ? NO_SUMMARY_REMINDER : FIRST_SUMMARY_REMINDER
   return before >= TASK_SUMMARY_STALE_TURNS ? staleSummaryReminder(before) : undefined
 }

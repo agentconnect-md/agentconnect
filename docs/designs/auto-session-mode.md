@@ -445,8 +445,9 @@ place new messages.
   may quote only that sentence, then the scope (what the task is about, the coordinator's main
   signal), and the next step and open questions.
 - **When**: the prompt asks for an update in any turn where the scope or status changes. As a
-  backstop the daemon adds a reminder to the next turn when a task has no summary or its summary is
-  5 turns old. No extra model call writes summaries.
+  backstop the daemon adds a reminder before the first turn's message to call `updateTask` before
+  replying, even if the task finishes in that turn. Later turns keep the reminder when a task has
+  no summary or its summary is 5 turns old. No extra model call writes summaries.
 - **Before the first summary**: `listTasks` shows the title and background the coordinator gave
   (`delegateTask`'s `message`).
 - **Title**: it names what the task is doing now. The task changes it with the summary when the work

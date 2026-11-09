@@ -165,9 +165,10 @@ describe('a threaded task (auto-session-mode.md §6)', () => {
       { channel: 'C1', thread: '5.1', text: 'answer 1' },
       { channel: 'C1', thread: '1.1', text: 'answer 2' }
     ])
-    // §6.7: a turn after the first with no summary yet is reminded to write one.
-    expect(turns[0]!.text).not.toContain('This task has no summary yet')
+    // §6.7: the first turn requests a summary before replying; later turns remind if it is still missing.
+    expect(turns[0]!.text).toContain('Before your final response in this first turn, call updateTask')
     expect(turns[1]!.text).toContain('This task has no summary yet')
+    expect(turns[1]!.text).not.toContain('Before your final response in this first turn')
     expect(await index.get('bot-a', taskKey)).toMatchObject({ state: 'done', round: 3, turnsSinceSummary: 2 })
     await daemon.stop()
   })

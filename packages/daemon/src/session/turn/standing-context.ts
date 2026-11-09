@@ -387,9 +387,8 @@ export const TASK_SUMMARY_REQUEST =
   `Keep a summary of this task with \`updateTask\`, at most ${TASK_SUMMARY_MAX_CHARS} characters in three parts: its scope (what this ` +
   `task is about), its status (in progress, waiting on someone, done or blocked), and its next step and open ` +
   `questions. The session that started this task reads it in listTasks to see how the work stands and what to send ` +
-  `you next. Write the first one as soon as you know the scope. You must call \`updateTask\` before your final ` +
-  `response in the first turn, even if the task finishes in that turn. On later turns, update it when the scope ` +
-  `or status changes. \`title\` renames the task, and changes only together with a summary.`
+  `you next. Write the first one as soon as you know the scope, and update it in any turn where the scope or status ` +
+  `changes. \`title\` renames the task, and changes only together with a summary.`
 
 // send-message-guide.md §8.3: a task messages its owning session any time, and the daemon reports each round's end.
 // auto-session-mode.md §10: a person who may continue the owning session can write to the task from its console page.
