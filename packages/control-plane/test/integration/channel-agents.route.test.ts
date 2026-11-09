@@ -508,6 +508,7 @@ describe('channel/agents over a live control socket', () => {
     runningWs = app
     const address = await app.listen()
     const token = await app.mintToken(WS_DAEMON)
+    await prisma.daemon.update({ where: { id: WS_DAEMON }, data: { approvalStatus: 'approved' } })
     const ws = new WebSocket(`${address.replace(/^http/, 'ws')}/daemon/ws`, SUBPROTOCOL)
     await new Promise<void>((resolve, reject) => {
       ws.once('open', () => resolve())

@@ -17,6 +17,7 @@ import type {
 import type { AgentId, DaemonId, OrgId } from '../../domain/ids.js'
 import { withTx } from '../prisma.js'
 import { lockDaemonMembership } from './member-set.repo.js'
+import { approvedDaemonSql } from './daemon-admission.repo.js'
 
 // Serializes the writers that CREATE or REWRITE rows for an org (applyReconcile
 // and claimAgentHome) — row locks cannot fence rows that do not exist yet.
@@ -305,6 +306,17 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
     return withTx(this.prisma, async (tx) => {
       await lockOrgDutyScope(tx, orgId)
       const rows = await lockOrgDutyRows(tx, orgId)
+      const holders = [...new Set(rows.filter((r) => liveHold(r, opts.now)).map((r) => r.holder!))].sort()
+      if (holders.length) {
+        const admission = await tx.$queryRaw<{ approved: boolean }[]>(Prisma.sql`
+          SELECT ${approvedDaemonSql(Prisma.sql`d.id`)} AS approved
+          FROM "daemon" d WHERE d.id IN (${Prisma.join(holders.map((id) => Prisma.sql`${id}::uuid`))})
+          ORDER BY d.id FOR SHARE
+        `)
+        // Preserve the old lease horizon until self-fencing; neither regrant nor prematurely free revoked work.
+        if (admission.some((d) => !d.approved))
+          return { unchanged: rows.map((r) => r.id), writes: [], creates: [], deletes: [], superseded: [] }
+      }
       const members = await loadMembers(
         tx,
         rows.map((r) => r.id)
@@ -378,7 +390,7 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
     // The eligibility gate — the whole grant policy, and the only one. There is no incumbency test
     // left: what a member may claim follows from the agents' placement, not from where their state
     // happens to already be.
-    const eligibilityGate = Prisma.sql`AND ${noIneligibleAgent(Prisma.sql`"duty_group".id`, Prisma.sql`${holder}::uuid`)}`
+    const eligibilityGate = Prisma.sql`AND ${approvedDaemonSql(Prisma.sql`${holder}::uuid`)} AND ${noIneligibleAgent(Prisma.sql`"duty_group".id`, Prisma.sql`${holder}::uuid`)}`
     // The capability gate: placement says this member MAY hold the group, this says it CAN serve
     // it. Fail-closed by design — a group needing a platform no live member advertises simply
     // stays vacant, and the pool gauges report it under its own series rather than as scale-up
@@ -484,7 +496,7 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
       // the supersession.
       const rows = await tx.$queryRaw<{ id: string }[]>(Prisma.sql`
         UPDATE "duty_group" SET "expiresAt" = ${expiresAt}, "updatedAt" = ${now}
-        WHERE "holder" = ${holder}::uuid
+        WHERE "holder" = ${holder}::uuid AND ${approvedDaemonSql(Prisma.sql`${holder}::uuid`)}
         RETURNING id
       `)
       return rows.map((r) => r.id).sort()
@@ -726,7 +738,7 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
       // transaction, against the live row, because this path can MINT a group and a check made
       // before the lock would let a member reach through it for an agent it may not hold.
       const [eligible] = await tx.$queryRaw<{ ok: boolean }[]>(Prisma.sql`
-        SELECT ${eligibleAgent(Prisma.sql`a`, Prisma.sql`${holder}::uuid`)} AS ok
+        SELECT (${approvedDaemonSql(Prisma.sql`${holder}::uuid`)} AND ${eligibleAgent(Prisma.sql`a`, Prisma.sql`${holder}::uuid`)}) AS ok
         FROM "agent" a WHERE a.id = ${agentId}::uuid
       `)
       if (eligible?.ok !== true) return { granted: false, holder: null }

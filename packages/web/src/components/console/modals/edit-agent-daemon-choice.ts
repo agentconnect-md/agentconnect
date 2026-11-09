@@ -1,11 +1,13 @@
 import { groupSetIdOf, POOL_PLACEMENT, type DaemonRow, type MemberSetRow } from '@/lib/data'
 
-type DaemonChoiceRow = Pick<DaemonRow, 'pool' | 'daemonId' | 'status' | 'memberSetId'> & {
+type DaemonChoiceRow = Pick<DaemonRow, 'pool' | 'daemonId' | 'status' | 'memberSetId' | 'approval'> & {
   caps: Pick<DaemonRow['caps'], 'features'>
 }
 
 const moveReady = (daemon: DaemonChoiceRow): boolean =>
-  daemon.status === 'online' && daemon.caps.features.includes('agent-move-v1')
+  (!daemon.approval || daemon.approval.status === 'approved') &&
+  daemon.status === 'online' &&
+  daemon.caps.features.includes('agent-move-v1')
 
 export interface EditAgentDaemonChoices<T extends DaemonChoiceRow> {
   poolChoice: T | undefined

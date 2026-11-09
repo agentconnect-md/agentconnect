@@ -112,6 +112,7 @@ export interface WsConfig {
 }
 
 export interface DaemonWsDeps {
+  admission: import('../persistence/ports.js').DaemonAdmissionRepo
   ahpSessions?: AhpSessionService
   /** Structured server log sink for failures handled at the daemon WS edge. */
   log: {

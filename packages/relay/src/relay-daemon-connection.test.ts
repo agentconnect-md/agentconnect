@@ -15,7 +15,11 @@ import {
 } from '@agentconnect.md/protocol'
 import { FakeClock, type ServerTransport } from '@agentconnect.md/connection'
 import { GOOGLE_TOKEN_ENDPOINT, GoogleChatRelayEgress } from './platforms/googlechat/egress.js'
-import { RelayDaemonConnection, type RelayDaemonConnDeps } from './relay-daemon-connection.js'
+import {
+  DAEMON_ADMISSION_LEASE_MS,
+  RelayDaemonConnection,
+  type RelayDaemonConnDeps
+} from './relay-daemon-connection.js'
 import type { Logger } from './log.js'
 
 const RELAY_ID = '11111111-1111-4111-8111-111111111111'
@@ -105,6 +109,36 @@ function build(
 }
 
 describe('RelayDaemonConnection (rd/* accept FSM)', () => {
+  it('closes an established link when revalidation finds revoked approval', async () => {
+    const h = build()
+    h.transport.feed('rd/hello', { apiKey: 'test-key', daemonId: DAEMON_ID })
+    await vi.waitFor(() => expect(h.conn.state).toBe('READY'))
+    h.verify.mockResolvedValue({ ok: false, reason: 'not authorized' })
+    h.clock.advance(DAEMON_ADMISSION_LEASE_MS / 2)
+    await vi.waitFor(() => expect(h.conn.state).toBe('CLOSED'))
+    expect(h.onClosed).toHaveBeenCalledWith(DAEMON_ID, h.conn)
+    await expect(h.conn.forwardAgentMsg({} as never)).rejects.toThrow('not ready')
+  })
+
+  it('expires a lease while CP verification is unavailable and cannot revive from a late result', async () => {
+    const h = build()
+    h.transport.feed('rd/hello', { apiKey: 'test-key', daemonId: DAEMON_ID })
+    await vi.waitFor(() => expect(h.conn.state).toBe('READY'))
+    let release!: (result: RcVerifyResult) => void
+    h.verify.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = resolve
+        })
+    )
+    h.clock.advance(DAEMON_ADMISSION_LEASE_MS / 2)
+    h.clock.advance(DAEMON_ADMISSION_LEASE_MS / 2)
+    expect(h.conn.state).toBe('CLOSED')
+    release({ ok: true, daemonId: DAEMON_ID })
+    await Promise.resolve()
+    expect(h.conn.state).toBe('CLOSED')
+    expect(h.onReady).toHaveBeenCalledTimes(1)
+  })
   it('rd/hello with a valid key + matching daemonId → rd/hello/ok{relayId} + onReady', async () => {
     const { conn, transport, verify, onReady } = build()
     transport.feed('rd/hello', { apiKey: 'the-key', daemonId: DAEMON_ID })

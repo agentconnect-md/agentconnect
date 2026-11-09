@@ -252,7 +252,9 @@ describe('member sets — the enrolment transitions (real Postgres)', () => {
     try {
       const other = await prisma.org.create({ data: { slug: `mset-${randomUUID().slice(0, 8)}` } })
       const theirs = randomUUID()
-      await prisma.daemon.create({ data: { id: theirs, orgId: other.id, maxAgents: 8, status: 'ready' } })
+      await prisma.daemon.create({
+        data: { approvalStatus: 'approved', id: theirs, orgId: other.id, maxAgents: 8, status: 'ready' }
+      })
       const setId = await withSet(app)
 
       expect(

@@ -20,6 +20,7 @@ import { useModal } from '@/components/console/ModalProvider'
 import { RestrictedLock } from '@/components/console/VisibilityField'
 import { DaemonUpgradeBadge } from '@/components/console/DaemonUpgradeBadge'
 import { DaemonLifecycleBadge } from '@/components/console/DaemonLifecycleBadge'
+import { DaemonApprovalBadge, DaemonApprovalAction } from '@/components/console/DaemonApproval'
 import { KubernetesMark, LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
@@ -52,7 +53,14 @@ export default function DaemonsView() {
   // AgentConnect Cloud, and a self-hosted one is looking at its own cluster.
   const managed = featureFlagEnabled('managed')
   const poolMembers = useMemo(() => (showPool ? daemons.filter((d) => d.pool) : []), [daemons, showPool])
-  const ownDaemons = useMemo(() => daemons.filter((d) => !d.pool), [daemons])
+  const ownDaemons = useMemo(
+    () =>
+      daemons
+        .filter((d) => !d.pool)
+        .sort((a, b) => Number(b.approval?.status === 'pending') - Number(a.approval?.status === 'pending')),
+    [daemons]
+  )
+  const pending = ownDaemons.filter((d) => d.approval?.status === 'pending').length
   // Pool agents carry the POOL sentinel, never a member id: the Pod holding the duty is
   // ephemeral, so `agentFromDto` maps a set placement to `daemon: POOL_PLACEMENT`. Counting
   // member ids reported an empty pool however many agents were placed on it.
@@ -130,6 +138,11 @@ export default function DaemonsView() {
                     <SectionHeader
                       label={t('sections.daemons')}
                       count={ownDaemons.length}
+                      action={
+                        pending > 0 ? (
+                          <span className="text-[12px] text-(--brand)">{t('approval.count', { count: pending })}</span>
+                        ) : undefined
+                      }
                       first={poolMembers.length === 0}
                     />
                   )}
@@ -645,6 +658,7 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
               {m.name}
             </span>
             <RestrictedLock show={m.visibility === 'restricted'} title={t('restrictedHint')} />
+            <DaemonApprovalBadge daemon={m} />
           </div>
           {/* Mobile appends the host, desktop the agent count; the upgrade hint hides mid-op, where the status says so. */}
           <div className="flex min-w-0 flex-wrap items-center gap-x-[7px] gap-y-[3px]">
@@ -695,6 +709,7 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
         ))}
       </div>
       {/* Hidden outright when the caller may do none of it — the CP refuses every item here without edit rights. */}
+      <DaemonApprovalAction daemon={m} />
       <div className={hasActions ? 'relative hidden flex-none desktop:block' : 'hidden'}>
         <button
           className="iconbtn h-7 w-7"
@@ -716,6 +731,7 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
               className="fixed inset-0 z-[45]"
             />
             <div className="dmenu" onClick={(e) => e.stopPropagation()}>
+              <DaemonApprovalAction daemon={m} menu />
               {m.canEdit && (
                 <button
                   className="dmi"

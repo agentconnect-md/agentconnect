@@ -1315,6 +1315,8 @@ export interface DaemonCapabilityDto {
 
 /** `GET /daemons/:id` — both halves, catalog included. */
 export interface DaemonViewDto {
+  approval?: DaemonRow['approval']
+  canManageApproval?: boolean
   daemonId: string
   host: string | null
   name: string | null
@@ -2539,6 +2541,9 @@ export function daemonFromDto(
     lifecycleStatus: lifecycleStatus(lifecycleOp) ?? null,
     canManageLifecycle: d.canManageLifecycle ?? false,
     canIssueKey: d.canIssueKey,
+    approval: d.approval,
+    canManageApproval: d.canManageApproval ?? false,
+    sessionEpoch: d.sessionEpoch,
     autoUpgrade: d.autoUpgrade ?? false,
     autoUpgradeSupported: d.autoUpgradeSupported ?? false,
     lastAutoUpgrade: d.lastAutoUpgrade ?? null,
@@ -4806,6 +4811,14 @@ export async function updateAgentCallPolicy(agentId: string, body: AgentCallPoli
 // the data context, so views still see one object.
 export async function fetchDaemons(orgId?: string): Promise<DaemonRow[]> {
   return (await apiGet<DaemonFleetDto[]>(`${orgBase(orgId)}/daemons`)).map(daemonFromDto)
+}
+
+export async function changeDaemonApproval(daemon: DaemonRow, status: 'approved' | 'revoked'): Promise<void> {
+  await apiPost(`${orgBase()}/daemons/${encodeURIComponent(daemon.daemonId)}/approval`, {
+    status,
+    revision: daemon.approval?.revision,
+    sessionEpoch: daemon.sessionEpoch
+  })
 }
 
 /** Fleet-wide capability, keyed by daemon id — merged onto the liveness rows. */

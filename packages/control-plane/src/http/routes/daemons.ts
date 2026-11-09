@@ -202,12 +202,14 @@ function toDto(
     workspaceRetention: SESSION_RETENTION_RE.test(view.workspaceRetention) ? view.workspaceRetention : '7d',
     memberSetId: view.memberSetId,
     // Identity, not membership — the predicate `assertDaemonNotInSet` enforces, so this is what a pin will accept.
-    pinnable: orgOwned,
+    pinnable: orgOwned && view.approval.status === 'approved',
     visibility: view.visibility,
     sharedWith: view.sharedWith,
     canEdit: orgOwned && canEdit(view, ctx),
     canManageSharing: orgOwned && canManageSharing(view, ctx),
     canIssueKey: orgOwned && canIssueDaemonKey(view, ctx),
+    approval: { ...view.approval, changedAt: view.approval.changedAt?.toISOString() ?? null },
+    canManageApproval: orgOwned && ctx.role === 'owner',
     // Install-wide infrastructure is visible but mutable only through its deployment owner.
     canManageLifecycle: orgOwned && canEdit(view, ctx)
   }
@@ -272,6 +274,52 @@ export function daemonRoutes(deps: HttpDeps) {
 
   return async function daemonRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
+
+    r.post(
+      '/daemons/:id/approval',
+      {
+        config: { interactiveOnly: true },
+        schema: {
+          tags: [Tag.Daemons],
+          summary: 'Change daemon approval',
+          description:
+            'Organization owners approve or revoke a daemon. Approval requires reviewing its current connected identity.',
+          operationId: 'changeDaemonApproval',
+          params: IdParam,
+          body: z.object({
+            status: z.enum(['approved', 'revoked']),
+            revision: z.number().int().nonnegative(),
+            sessionEpoch: z.number().int().nonnegative()
+          }),
+          response: { 200: DaemonViewDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyNonOwner(req, reply)) return
+        const orgId = orgOf(req)
+        const did = DaemonId(req.params.id)
+        const view = await deps.registry.get(orgId, did)
+        if (!view) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'daemon not found' })
+        const live = deps.liveness.get(did)
+        if (
+          req.body.status === 'approved' &&
+          (!live?.reachable || live.state !== 'READY' || live.sessionEpoch !== req.body.sessionEpoch)
+        ) {
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: 'Connect the daemon and review its current connection.'
+          })
+        }
+        await deps.repos.daemonAdmission.change(
+          { orgId, daemonId: did, actorUserId: ctxOf(req).userId, ...req.body },
+          new Date(deps.clock.now())
+        )
+        deps.liveness.reconnectForAuthorization?.(did)
+        deps.relayControl.daemonRevoke(did)
+        return dto((await deps.registry.get(orgId, did))!, ctxOf(req))
+      }
+    )
 
     r.get(
       '/daemons',

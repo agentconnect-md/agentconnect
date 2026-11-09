@@ -51,7 +51,12 @@ function makeRepo(over: Partial<ApiKeyRepo> = {}): ApiKeyRepo {
 }
 
 function makeEpoch(bump: () => Promise<{ sessionEpoch: bigint }>): EpochService {
-  return { bumpSessionEpoch: bump } as unknown as EpochService
+  return {
+    bumpSessionEpoch: async () => ({
+      ...(await bump()),
+      daemon: { approval: { status: 'approved', revision: 1, source: 'owner', changedAt: null, changedBy: null } }
+    })
+  } as unknown as EpochService
 }
 
 /** The pool, as the ledger's one org-less set. `auth/ok` announces it, and it is the whole

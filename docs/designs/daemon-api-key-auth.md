@@ -134,7 +134,7 @@ daemon adopts the returned identity.
 Provisioning creates the parent daemon row before its first key so the foreign
 key is valid:
 
-1. Create a UUID daemon in `provisioned` state with `sessionEpoch = 0`.
+1. Create a UUID daemon in `provisioned` state with `sessionEpoch = 0` and approval `pending`.
 2. Mint a `daemon` key bound to that daemon and organization.
 3. Persist only the key hash and metadata with `expiresAt = null`.
 4. Return `{ daemonId, apiKey, displayTail, command }`, where `apiKey` appears
@@ -158,6 +158,45 @@ until one of these events:
 
 The Control Plane does not emit a `key-reaped` state. Any UI handling of that
 string is defensive compatibility behavior, not an active lifecycle.
+
+### Organization approval
+
+Authentication identifies a logical daemon; approval determines whether it may
+receive organization work. `pending`, `approved`, and `revoked` are independent
+of connection and lifecycle status. Only a current organization Owner, using an
+interactive sign-in, can change approval through `POST /daemons/:id/approval`.
+Approval reviews the live connection's epoch and the approval revision. The
+transaction rechecks the Owner's membership and retires other active keys for
+that daemon, retaining the credential of the reviewed connection. Revocation
+does not require the daemon to be online. Every change records its actor, source,
+time and revision in the audit log.
+
+A pending or revoked daemon may enroll, send health/runtime facts, and complete
+maintenance or recovery. Organization execution, placement, duty grants, requester
+identity assertions, credentials and content routing require approval. This
+includes private Console agents owned by the machine's creator. Independent
+local CLI agents stay local. Direct platform connections stay on the daemon.
+
+The connection checks durable approval revision, session epoch and its actual
+authenticating key before dispatching requests or sending protected replies and
+pushes. Placement and duty claims enforce the same approval boundary. A revoked
+holder's existing duty horizon is preserved until self-fencing, without renewal;
+composition reconciliation waits for that horizon before rewriting its
+organization's duty groups. Relay connections reverify with the CP halfway
+through a 120-second admission lease and fail closed at expiry. A missed revoke
+push therefore cannot keep a relay connection authorized indefinitely.
+
+Approval trusts the daemon and its authorized recovery path: an Owner or a
+creator with current edit access may replace a lost credential without another
+approval. Replacement credentials never clear revocation. Approval does not
+make a malicious trusted host safe, or recall data, provider tokens or shared
+MCP/memory bearer grants it has already copied.
+
+The schema migration approves the existing cohort once, including offline
+daemons, records `legacy_migration` without a fictional human approver, and
+preserves all existing keys. The table default then becomes `pending`; process
+startup never approves rows. Managed pool trust comes from the server-verified
+Kubernetes identity and Pod binding and is recorded as `system`.
 
 ---
 
@@ -190,11 +229,12 @@ Multiple active keys per daemon are allowed for overlap rotation:
 Minting or revoking a key does not directly change `sessionEpoch`; the next
 successful authentication advances it through the normal handshake path.
 
-Revocation prevents the next authentication attempt immediately. The revoke
-route also tells relays to drop the revoked daemon's relay reach. An
-already-established direct daemon-to-Control-Plane WebSocket is not currently
-closed by the revoke route, so urgent live-session termination also requires
-the applicable drain or connection-control operation.
+Key revocation prevents the next authentication attempt immediately. The revoke
+route also tells relays to drop the daemon's relay reach. An established direct
+Control Plane connection rechecks its authenticating key on subsequent traffic
+and closes when the key is invalid. Relays also bound missed revocation pushes
+with their admission lease. This does not recall previously issued credentials
+or force independent local execution to stop.
 
 Audit events record the actor, daemon id, key row id, display tail, and reason.
 They never include the plaintext key or stored hash.

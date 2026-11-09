@@ -68,7 +68,7 @@ function registerPayload() {
   }
 }
 async function connectReady(h: ReturnType<typeof buildWsHarness>) {
-  const token = await h.mintToken(DAEMON)
+  const token = await h.mintToken(DAEMON, { approved: true })
   const { stub } = h.connect()
   stub.inject('auth', authPayload(token), { id: AUTH_ID })
   await stub.expectFrame('auth/ok')

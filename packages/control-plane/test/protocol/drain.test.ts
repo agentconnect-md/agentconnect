@@ -71,10 +71,26 @@ interface Built {
 
 async function seed(): Promise<void> {
   await prisma.daemon.create({
-    data: { id: DAEMON_A, orgId: DEFAULT_ORG_ID, sessionEpoch: 5n, routingEpoch: 2n, maxAgents: 4, status: 'ready' }
+    data: {
+      id: DAEMON_A,
+      orgId: DEFAULT_ORG_ID,
+      sessionEpoch: 5n,
+      routingEpoch: 2n,
+      maxAgents: 4,
+      status: 'ready',
+      approvalStatus: 'approved'
+    }
   })
   await prisma.daemon.create({
-    data: { id: DAEMON_B, orgId: DEFAULT_ORG_ID, sessionEpoch: 3n, routingEpoch: 1n, maxAgents: 4, status: 'ready' }
+    data: {
+      id: DAEMON_B,
+      orgId: DEFAULT_ORG_ID,
+      sessionEpoch: 3n,
+      routingEpoch: 1n,
+      maxAgents: 4,
+      status: 'ready',
+      approvalStatus: 'approved'
+    }
   })
   await prisma.agent.create({
     data: {
@@ -127,6 +143,7 @@ function build(): Built {
   const clock = new FakeClock(1_700_000_000_000)
   const connReg = new ConnectionRegistry()
   const deps: DaemonWsDeps = {
+    admission: { connection: async () => 'approved' } as unknown as DaemonWsDeps['admission'],
     log: { error: vi.fn() },
     auth: {} as DaemonWsDeps['auth'],
     memberSets: {} as DaemonWsDeps['memberSets'],

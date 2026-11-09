@@ -47,7 +47,15 @@ const MOVE_ID = '44444444-4444-4444-8444-444444444444'
  */
 async function seedReconcileState(): Promise<void> {
   await prisma.daemon.create({
-    data: { id: DAEMON, orgId: DEFAULT_ORG_ID, sessionEpoch: 1n, routingEpoch: 7n, maxAgents: 4, status: 'ready' }
+    data: {
+      id: DAEMON,
+      orgId: DEFAULT_ORG_ID,
+      sessionEpoch: 1n,
+      routingEpoch: 7n,
+      maxAgents: 4,
+      status: 'ready',
+      approvalStatus: 'approved'
+    }
   })
   await prisma.agent.create({
     data: {

@@ -48,7 +48,9 @@ async function otherOrg(): Promise<{ orgId: string; setId: string; daemonId: str
   const org = await prisma.org.create({ data: { slug: `org-set-${randomUUID().slice(0, 8)}` } })
   const setId = (await sets().createForOrg(org.id, 'their-group')).id
   const daemonId = randomUUID()
-  await prisma.daemon.create({ data: { id: daemonId, orgId: org.id, maxAgents: 8, status: 'ready' } })
+  await prisma.daemon.create({
+    data: { approvalStatus: 'approved', id: daemonId, orgId: org.id, maxAgents: 8, status: 'ready' }
+  })
   await sets().enroll(setId, DaemonId(daemonId))
   return { orgId: org.id, setId, daemonId }
 }
@@ -59,7 +61,13 @@ describe('an org set member’s eligibility (real Postgres)', () => {
 
   beforeEach(async () => {
     await prisma.daemon.createMany({
-      data: [MEMBER_G, MEMBER_H, PINNED].map((id) => ({ id, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' }))
+      data: [MEMBER_G, MEMBER_H, PINNED].map((id) => ({
+        approvalStatus: 'approved',
+        id,
+        orgId: DEFAULT_ORG_ID,
+        maxAgents: 8,
+        status: 'ready'
+      }))
     })
     setG = (await sets().createForOrg(DEFAULT_ORG_ID, 'group-g')).id
     setH = (await sets().createForOrg(DEFAULT_ORG_ID, 'group-h')).id
@@ -148,7 +156,13 @@ describe('an org set member’s eligibility (real Postgres)', () => {
 describe('a set member is not a placement target (real Postgres)', () => {
   it('pins to a member of an org group, and refuses only a pool Pod', async () => {
     await prisma.daemon.createMany({
-      data: [MEMBER_G, PINNED].map((id) => ({ id, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' }))
+      data: [MEMBER_G, PINNED].map((id) => ({
+        approvalStatus: 'approved',
+        id,
+        orgId: DEFAULT_ORG_ID,
+        maxAgents: 8,
+        status: 'ready'
+      }))
     })
     const setG = (await sets().createForOrg(DEFAULT_ORG_ID, 'group-g')).id
     await sets().enroll(setG, DaemonId(MEMBER_G))
@@ -171,7 +185,9 @@ describe('a set member is not a placement target (real Postgres)', () => {
     // The install-wide pool is the exception, and identity is why: the reconciler retires Pods
     // without notice, so a pin to one names something that stops existing.
     const poolDaemon = DaemonId(randomUUID())
-    await prisma.daemon.create({ data: { id: poolDaemon, orgId: null, maxAgents: 8, status: 'ready' } })
+    await prisma.daemon.create({
+      data: { approvalStatus: 'approved', id: poolDaemon, orgId: null, maxAgents: 8, status: 'ready' }
+    })
     await sets().enroll(await poolSetId(prisma), poolDaemon)
     const agentId = AgentId(randomUUID())
     await agents().create({ id: agentId, orgId: ORG_X, name: 'movable', runtime: 'claude', daemonId: DaemonId(PINNED) })
@@ -211,7 +227,9 @@ describe('org set lifecycle (real Postgres)', () => {
 
   it('refuses to delete a set that still has members or placed agents', async () => {
     const repo = sets()
-    await prisma.daemon.create({ data: { id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' } })
+    await prisma.daemon.create({
+      data: { approvalStatus: 'approved', id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' }
+    })
     const setId = (await repo.createForOrg(DEFAULT_ORG_ID, 'group-g')).id
 
     await repo.enroll(setId, DaemonId(MEMBER_G))
@@ -225,7 +243,9 @@ describe('org set lifecycle (real Postgres)', () => {
 
   it('announces the set whole, so `auth/ok` can name it', async () => {
     const repo = sets()
-    await prisma.daemon.create({ data: { id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' } })
+    await prisma.daemon.create({
+      data: { approvalStatus: 'approved', id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' }
+    })
     const setId = (await repo.createForOrg(DEFAULT_ORG_ID, 'group-g')).id
     await repo.enroll(setId, DaemonId(MEMBER_G))
 
@@ -240,7 +260,9 @@ describe('org set lifecycle (real Postgres)', () => {
 
   it('answers no shared-store members for an org set — its machines may keep private stores', async () => {
     const repo = sets()
-    await prisma.daemon.create({ data: { id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' } })
+    await prisma.daemon.create({
+      data: { approvalStatus: 'approved', id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' }
+    })
     const setId = (await repo.createForOrg(DEFAULT_ORG_ID, 'group-g')).id
     await repo.enroll(setId, DaemonId(MEMBER_G))
 
@@ -258,7 +280,13 @@ describe('org set lifecycle (real Postgres)', () => {
         { id: MEMBER_G, capabilities: capabilities(STORE) },
         { id: MEMBER_H, capabilities: capabilities(STORE) },
         { id: PINNED, capabilities: capabilities(OTHER_STORE) }
-      ].map((d) => ({ ...d, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' as const }))
+      ].map((d) => ({
+        approvalStatus: 'approved',
+        ...d,
+        orgId: DEFAULT_ORG_ID,
+        maxAgents: 8,
+        status: 'ready' as const
+      }))
     })
     const setId = (await repo.createForOrg(DEFAULT_ORG_ID, 'group-g')).id
     for (const id of [MEMBER_G, MEMBER_H, PINNED]) await repo.enroll(setId, DaemonId(id))
@@ -277,7 +305,9 @@ describe('the membership fences (real Postgres)', () => {
     // This pair used to be the thing the fence existed to prevent. It is legal now: a `daemon`
     // placement names exactly one machine whether or not that machine is in a group, so a member
     // with an agent pinned to it is a state the ledger can serve, not one it has to rule out.
-    await prisma.daemon.create({ data: { id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' } })
+    await prisma.daemon.create({
+      data: { approvalStatus: 'approved', id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' }
+    })
     const setId = (await sets().createForOrg(DEFAULT_ORG_ID, 'group-g')).id
     const agentId = AgentId(randomUUID())
 
@@ -306,7 +336,9 @@ describe('the membership fences (real Postgres)', () => {
   it('refuses a pin to a pool Pod by identity, so an enrolment has nothing to race', async () => {
     // The guard reads identity, not membership: an org-less row is refused before it enrols, so a pin cannot race the enrolment.
     const pod = DaemonId(randomUUID())
-    await prisma.daemon.create({ data: { id: pod, orgId: null, maxAgents: 8, status: 'ready' } })
+    await prisma.daemon.create({
+      data: { approvalStatus: 'approved', id: pod, orgId: null, maxAgents: 8, status: 'ready' }
+    })
     const pin = () =>
       agents().create({ id: AgentId(randomUUID()), orgId: ORG_X, name: 'pool-racer', runtime: 'claude', daemonId: pod })
 
@@ -319,7 +351,9 @@ describe('the membership fences (real Postgres)', () => {
   it('never answers success for the loser of two concurrent enrolments into different sets', async () => {
     // The insert is idempotent, so without a membership re-read under the lock the loser would
     // no-op and still return 200 naming a set the daemon never joined.
-    await prisma.daemon.create({ data: { id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' } })
+    await prisma.daemon.create({
+      data: { approvalStatus: 'approved', id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' }
+    })
     const a = (await sets().createForOrg(DEFAULT_ORG_ID, 'group-a')).id
     const b = (await sets().createForOrg(DEFAULT_ORG_ID, 'group-b')).id
 
@@ -336,7 +370,9 @@ describe('the membership fences (real Postgres)', () => {
   })
 
   it('is idempotent for the set the daemon is already in', async () => {
-    await prisma.daemon.create({ data: { id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' } })
+    await prisma.daemon.create({
+      data: { approvalStatus: 'approved', id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' }
+    })
     const setId = (await sets().createForOrg(DEFAULT_ORG_ID, 'group-g')).id
     await sets().enrollOperator(setId, DaemonId(MEMBER_G))
     await sets().enrollOperator(setId, DaemonId(MEMBER_G))
@@ -344,7 +380,9 @@ describe('the membership fences (real Postgres)', () => {
   })
 
   it('refuses withdrawal for a lease claimed concurrently, never committing over a live holder', async () => {
-    await prisma.daemon.create({ data: { id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' } })
+    await prisma.daemon.create({
+      data: { approvalStatus: 'approved', id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' }
+    })
     const setId = (await sets().createForOrg(DEFAULT_ORG_ID, 'group-g')).id
     await sets().enroll(setId, DaemonId(MEMBER_G))
     const agentId = await setAgent(DEFAULT_ORG_ID, setId, 'contended')
@@ -383,7 +421,9 @@ describe('the membership fences (real Postgres)', () => {
     // Renewal carries no expiry predicate — it revives every row this holder still names — so it
     // is a lease-CREATING write as far as withdrawal is concerned. Both take the daemon fence, and
     // the commit vacates what is left, so a beat landing either side cannot resurrect the holding.
-    await prisma.daemon.create({ data: { id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' } })
+    await prisma.daemon.create({
+      data: { approvalStatus: 'approved', id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' }
+    })
     const setId = (await sets().createForOrg(DEFAULT_ORG_ID, 'group-g')).id
     await sets().enroll(setId, DaemonId(MEMBER_G))
     const agentId = await setAgent(DEFAULT_ORG_ID, setId, 'lapsing')
@@ -404,7 +444,9 @@ describe('the membership fences (real Postgres)', () => {
   })
 
   it('refuses withdrawal while a live lease is held, and takes it once the lease lapses', async () => {
-    await prisma.daemon.create({ data: { id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' } })
+    await prisma.daemon.create({
+      data: { approvalStatus: 'approved', id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' }
+    })
     const setId = (await sets().createForOrg(DEFAULT_ORG_ID, 'group-g')).id
     await sets().enroll(setId, DaemonId(MEMBER_G))
     const agentId = await setAgent(DEFAULT_ORG_ID, setId, 'held')
@@ -423,7 +465,9 @@ describe('enrolling a daemon that still has agents pinned to it (real Postgres)'
     // membership term for a `daemon` placement — it is `agent."daemonId" = holder` — so this
     // machine remains the ONLY daemon that may hold these agents. Joining changes how it holds
     // them (a lease it alone can take) rather than who serves them, so nothing moves.
-    await prisma.daemon.create({ data: { id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' } })
+    await prisma.daemon.create({
+      data: { approvalStatus: 'approved', id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' }
+    })
     const setId = (await sets().createForOrg(DEFAULT_ORG_ID, 'group-g')).id
     const a1 = AgentId(randomUUID())
     const a2 = AgentId(randomUUID())
@@ -455,8 +499,8 @@ describe('enrolling a daemon that still has agents pinned to it (real Postgres)'
     // placement narrows to one machine, so a sibling member is never an eligible holder.
     await prisma.daemon.createMany({
       data: [
-        { id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' },
-        { id: MEMBER_H, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' }
+        { approvalStatus: 'approved', id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' },
+        { approvalStatus: 'approved', id: MEMBER_H, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' }
       ]
     })
     const setId = (await sets().createForOrg(DEFAULT_ORG_ID, 'group-g')).id
@@ -475,7 +519,9 @@ describe('enrolling a daemon that still has agents pinned to it (real Postgres)'
   })
 
   it('is idempotent for a daemon already in the set, and refuses one in another', async () => {
-    await prisma.daemon.create({ data: { id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' } })
+    await prisma.daemon.create({
+      data: { approvalStatus: 'approved', id: MEMBER_G, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' }
+    })
     const g = (await sets().createForOrg(DEFAULT_ORG_ID, 'group-g')).id
     const h = (await sets().createForOrg(DEFAULT_ORG_ID, 'group-h')).id
     await sets().enrollOperator(g, DaemonId(MEMBER_G))

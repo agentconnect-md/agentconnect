@@ -155,7 +155,9 @@ async function openRelay(
 async function mintDaemon(): Promise<string> {
   const codec = new ApiKeyCodec({ API_KEY_PEPPER })
   const minted = codec.mint()
-  await prisma.daemon.create({ data: { id: DAEMON, orgId: DEFAULT_ORG_ID, status: 'provisioned' } })
+  await prisma.daemon.create({
+    data: { id: DAEMON, orgId: DEFAULT_ORG_ID, status: 'provisioned', approvalStatus: 'approved' }
+  })
   await prisma.apiKey.create({
     data: {
       principalType: 'daemon',
@@ -1174,7 +1176,9 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
           repositorySelection: 'all'
         }
       })
-      await prisma.daemon.create({ data: { id: DAEMON, orgId: DEFAULT_ORG_ID, status: 'provisioned' } })
+      await prisma.daemon.create({
+        data: { id: DAEMON, orgId: DEFAULT_ORG_ID, status: 'provisioned', approvalStatus: 'approved' }
+      })
       await seedAgent(prisma, AGENT, { daemonId: DAEMON })
       await prisma.hookDef.create({
         data: {
@@ -1285,7 +1289,9 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
             repositorySelection: 'all'
           }
         })
-        await prisma.daemon.create({ data: { id: DAEMON, orgId: DEFAULT_ORG_ID, status: 'provisioned' } })
+        await prisma.daemon.create({
+          data: { id: DAEMON, orgId: DEFAULT_ORG_ID, status: 'provisioned', approvalStatus: 'approved' }
+        })
         await seedAgent(prisma, AGENT, { daemonId: DAEMON })
         await prisma.followUpWatch.create({
           data: {

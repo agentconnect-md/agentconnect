@@ -29,6 +29,7 @@ import ReconnectIntegrationModal from './modals/ReconnectIntegrationModal'
 import DeleteDaemonModal from './modals/DeleteDaemonModal'
 import DaemonLifecycleModal from './modals/DaemonLifecycleModal'
 import EditDaemonModal from './modals/EditDaemonModal'
+import DaemonApprovalModal from './modals/DaemonApprovalModal'
 import DeleteAgentModal from './modals/DeleteAgentModal'
 import EditAgentModal, { type EditAgentSection } from './modals/EditAgentModal'
 import EditDescriptionModal from './modals/EditDescriptionModal'
@@ -54,6 +55,8 @@ export type ModalKind =
   | 'upgradeDaemon'
   | 'restartDaemon'
   | 'editDaemon'
+  | 'approveDaemon'
+  | 'revokeDaemon'
   | 'deleteAgent'
   | 'editAgent'
   | 'editAgentDesc'
@@ -235,6 +238,13 @@ export function ModalProvider({ children }: { children: ReactNode }) {
             )}
             {open.kind === 'editDaemon' && open.target && (
               <EditDaemonModal daemon={open.target as DaemonRow} onClose={close} />
+            )}
+            {(open.kind === 'approveDaemon' || open.kind === 'revokeDaemon') && open.target && (
+              <DaemonApprovalModal
+                daemon={open.target as DaemonRow}
+                revoke={open.kind === 'revokeDaemon'}
+                onClose={close}
+              />
             )}
             {open.kind === 'deleteAgent' && open.target && (
               <DeleteAgentModal agent={open.target as Agent} onClose={close} />

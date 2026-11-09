@@ -1,19 +1,4 @@
-/**
- * `RelayDaemonConnection` — the per-socket FSM for a daemon dialing the relay over
- * the `rd/*` wire (shared-bot-relay.md §7.2 / §9). The accept-side mirror of the
- * daemon's `RelayClient`.
- *
- * States: AUTHENTICATING (only `rd/hello`) → READY. On hello the relay holds no
- * database, so it DELEGATES the daemon's API key to the CP via `rc/verify` and
- * caches the verdict for the connection's lifetime; on success it echoes its own
- * `relayId` so the daemon can confirm it reached the roster entry it dialed.
- *
- * Once READY the relay bridges browser webchat over this socket (§7.2, PR 3): it
- * SENDS `rd/msg` (a browser op, awaiting the `rd/ack` verdict) and RECEIVES `rd/chat`
- * (the agent's reply stream), which it routes back to the browser by `chatId`.
- *
- * The presented API key is secret material — NEVER logged.
- */
+// Daemon-facing relay connection with CP-verified admission leases; credentials must never be logged.
 import {
   buildRelayDaemonFrame,
   API_AHP_V1_FEATURE,
@@ -47,7 +32,14 @@ import {
   type RcVerifyResult,
   type ErrorCode
 } from '@agentconnect.md/protocol'
-import { ReqRep, WireError, type Clock, type RequestOpts, type ServerTransport } from '@agentconnect.md/connection'
+import {
+  ReqRep,
+  WireError,
+  type Clock,
+  type TimerHandle,
+  type RequestOpts,
+  type ServerTransport
+} from '@agentconnect.md/connection'
 import type { Logger } from './log.js'
 
 type State = 'AUTHENTICATING' | 'READY' | 'CLOSED'
@@ -56,6 +48,7 @@ type State = 'AUTHENTICATING' | 'READY' | 'CLOSED'
 const CLOSE_AUTH_FAILED = 4401 // definitively-invalid credential → daemon stops dialing THIS relay
 const CLOSE_TRY_LATER = 1013 // relay not ready / transient verify error → daemon backs off + retries
 const ACK_TIMEOUT_MS = 5000
+export const DAEMON_ADMISSION_LEASE_MS = 120_000
 
 export interface RelayDaemonConnDeps {
   /** Delegate a credential check to the CP (`RelayCpClient.verify`). Throws when the
@@ -102,6 +95,9 @@ export class RelayDaemonConnection {
   state: State = 'AUTHENTICATING'
   daemonId = ''
   private helloInFlight = false
+  private authorizedUntil = 0
+  private refreshTimer?: TimerHandle
+  private expiryTimer?: TimerHandle
   /** Which verified credential authenticated this socket. `daemon-token` is a TokenReviewed
    *  install-wide pool identity — duty-governed, so it can rendezvous a webchat trigger.
    *  `daemon-key` is an org-scoped standalone daemon that would answer `no_agent` instead. */
@@ -152,7 +148,7 @@ export class RelayDaemonConnection {
         frame,
         (e) => {
           bytes = Buffer.byteLength(e)
-          this.transport.send(e)
+          this.write(e)
         },
         opts
       )
@@ -176,7 +172,7 @@ export class RelayDaemonConnection {
   async forwardAgentMsg(payload: RdAgentMsgFwd): Promise<RdAgentMsgAck> {
     if (this.state !== 'READY') throw new WireError('INTERNAL', `rd link not ready (${this.state})`, true)
     const frame = buildRelayDaemonFrame('rd/agentmsg/fwd', payload)
-    const rep = await this.correlator.request(frame, (e) => this.transport.send(e))
+    const rep = await this.correlator.request(frame, (e) => this.write(e))
     if (rep.type !== 'rd/agentmsg/ack') {
       throw new WireError('INTERNAL', `expected rd/agentmsg/ack, got ${rep.type}`, false)
     }
@@ -212,10 +208,11 @@ export class RelayDaemonConnection {
     if ((this.deps.bufferedAmount?.() ?? 0) + Buffer.byteLength(text) > 1024 * 1024) {
       throw new WireError('OVERLOADED', 'AHP carrier overloaded', true)
     }
-    this.transport.send(text)
+    this.write(text)
   }
 
   private async onText(text: string): Promise<void> {
+    if (this.state === 'CLOSED' || (this.state === 'READY' && !this.admitted())) return
     const decoded = decodeRelayDaemonFrame(text)
     if (!decoded.ok) {
       const code = this.decodeErrorCode(decoded.msg)
@@ -305,7 +302,7 @@ export class RelayDaemonConnection {
       }
     } catch (err) {
       this.deps.log.warn(`relay: rd connection handler error: ${(err as Error).message}`)
-      if (this.state !== 'CLOSED') this.close(1011, 'SERVER_INTERNAL')
+      this.close(1011, 'SERVER_INTERNAL')
     }
   }
 
@@ -364,6 +361,7 @@ export class RelayDaemonConnection {
       this.close(CLOSE_AUTH_FAILED, 'auth failed')
       return
     }
+    const verifiedAt = this.deps.clock.now()
     let result: RcVerifyResult
     try {
       // CP verifies the untrusted echoed id against the reviewed pool member Pod UID.
@@ -397,6 +395,8 @@ export class RelayDaemonConnection {
     this.credentialKind = presented.kind
     this.capabilities = new Set(hello.capabilities ?? [])
     this.state = 'READY'
+    this.renewAdmission(presented, verifiedAt)
+    if (!this.admitted()) return
     this.reply(frame, 'rd/hello/ok', {
       relayId,
       capabilities: [
@@ -410,8 +410,49 @@ export class RelayDaemonConnection {
     this.deps.onReady(this.daemonId, this)
   }
 
+  // A missed revoke push cannot leave a connection authorized indefinitely, even when another CP owns it.
+  private renewAdmission(
+    presented: { kind: 'daemon-key' | 'daemon-token'; credential: string },
+    verifiedAt: number
+  ): void {
+    if (this.refreshTimer !== undefined) this.deps.clock.clearTimeout(this.refreshTimer)
+    if (this.expiryTimer !== undefined) this.deps.clock.clearTimeout(this.expiryTimer)
+    this.authorizedUntil = verifiedAt + DAEMON_ADMISSION_LEASE_MS
+    const remaining = Math.max(0, this.authorizedUntil - this.deps.clock.now())
+    this.expiryTimer = this.deps.clock.setTimeout(
+      () => this.close(CLOSE_TRY_LATER, 'daemon admission expired'),
+      remaining
+    )
+    this.refreshTimer = this.deps.clock.setTimeout(() => {
+      const started = this.deps.clock.now()
+      void this.deps
+        .verify(presented.kind, presented.credential, this.daemonId)
+        .then((result) => {
+          if (!this.admitted()) return
+          if (!result.ok || result.daemonId !== this.daemonId) {
+            this.close(CLOSE_TRY_LATER, 'daemon authorization changed')
+            return
+          }
+          this.renewAdmission(presented, started)
+        })
+        .catch(() => {})
+    }, remaining / 2)
+  }
+
+  private admitted(): boolean {
+    if (this.state !== 'READY') return false
+    if (this.deps.clock.now() < this.authorizedUntil) return true
+    this.close(CLOSE_TRY_LATER, 'daemon admission expired')
+    return false
+  }
+
+  private write(text: string): void {
+    if (!this.admitted()) throw new WireError('INTERNAL', 'daemon admission unavailable', true)
+    this.transport.send(text)
+  }
+
   private reply(req: RelayDaemonFrame, type: 'rd/hello/ok', payload: RdHelloOk): void {
-    this.transport.send(JSON.stringify(buildRelayDaemonFrame(type, payload, { corr: req.id })))
+    this.write(JSON.stringify(buildRelayDaemonFrame(type, payload, { corr: req.id })))
   }
 
   // A handler failure may follow the provider call, so it answers an error the daemon reads as ambiguous, never `unavailable`; a failed reply is only logged.
@@ -438,14 +479,14 @@ export class RelayDaemonConnection {
     type: T,
     payload: T extends 'rd/route/ack' ? RdRouteAck : T extends 'rd/platform/reply' ? RdPlatformReply : RdRouteReportAck
   ): void {
-    if (this.state === 'CLOSED') return
-    this.transport.send(JSON.stringify(buildRelayDaemonFrame(type, payload as never, { corr: req.id })))
+    if (!this.admitted()) return
+    this.write(JSON.stringify(buildRelayDaemonFrame(type, payload as never, { corr: req.id })))
   }
 
   /** Ack an inbound `rd/agentmsg` (corr = the source's REQ id) with the typed verdict. */
   private replyAgentAck(req: RelayDaemonFrame, ack: RdAgentMsgAck): void {
-    if (this.state === 'CLOSED') return
-    this.transport.send(JSON.stringify(buildRelayDaemonFrame('rd/agentmsg/ack', ack, { corr: req.id })))
+    if (!this.admitted()) return
+    this.write(JSON.stringify(buildRelayDaemonFrame('rd/agentmsg/ack', ack, { corr: req.id })))
   }
 
   private sendError(corr: string, code: ErrorCode, message: string, retryable = false): void {
@@ -483,6 +524,8 @@ export class RelayDaemonConnection {
   }
 
   private fireClosed(): void {
+    if (this.refreshTimer !== undefined) this.deps.clock.clearTimeout(this.refreshTimer)
+    if (this.expiryTimer !== undefined) this.deps.clock.clearTimeout(this.expiryTimer)
     const listeners = [...this.closeListeners]
     this.closeListeners.clear()
     const attachments = [...this.ahpListeners]

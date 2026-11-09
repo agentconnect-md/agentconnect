@@ -3041,6 +3041,7 @@
         "uploadFailed": "upload failed"
       },
       "daemonSelect": {
+        "approvalRequired": "An Owner must approve this daemon first.",
         "runsOn": "Runs on",
         "noDaemonsConnected": "No daemons connected",
         "groupMeta": "{count, plural, one {# daemon} other {# daemons}}",
@@ -4311,6 +4312,32 @@
     }
   },
   "Daemons": {
+    "approval": {
+      "pending": "Pending approval",
+      "revoked": "Revoked",
+      "review": "Review",
+      "approve": "Approve",
+      "approveAgain": "Approve again",
+      "revoke": "Revoke approval",
+      "cancel": "Cancel",
+      "saving": "Saving…",
+      "waitingForYou": "Waiting for your approval",
+      "count": "{count} waiting for approval",
+      "waiting": "Waiting for an Owner to approve",
+      "revokedTitle": "Approval revoked",
+      "waitingDescription": "This daemon cannot run organization agents until approved.",
+      "changedBy": "Revoked by {name} · {date}",
+      "approveTitle": "Approve {name}",
+      "revokeTitle": "Revoke approval for {name}",
+      "approveDescription": "Allow this daemon to run organization agents and access their data and credentials.",
+      "revokeDescription": "Stop authorizing organization work on this daemon. Previously received data and credentials remain on the machine.",
+      "createdBy": "Created by",
+      "host": "Host",
+      "status": "Status",
+      "online": "Online",
+      "offline": "Offline",
+      "connectFirst": "Connect this daemon before approving it."
+    },
     "deleteModal": {
       "title": "Delete daemon",
       "body": "{daemon} will be removed from the control plane. Its daemon process keeps running until you stop it, but it can no longer host agents or hold connections. This can't be undone.",

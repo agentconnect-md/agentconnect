@@ -348,6 +348,14 @@ export const DaemonViewDto = z.object({
   canManageSharing: z.boolean(), // visible + non-viewer; gates the sharing control
   // The same policy as key issuance; gates Reconnect without deriving authority from display-only creator data.
   canIssueKey: z.boolean(),
+  approval: z.object({
+    status: z.enum(['pending', 'approved', 'revoked']),
+    revision: z.number().int(),
+    source: z.string().nullable(),
+    changedAt: z.string().nullable(),
+    changedBy: z.string().nullable()
+  }),
+  canManageApproval: z.boolean(),
   /** Whether the CALLER may command restart/upgrade on this daemon (org OWNER only, §7).
    *  Gates the console's lifecycle controls so non-owners never see an action they'd 403 on. */
   canManageLifecycle: z.boolean()

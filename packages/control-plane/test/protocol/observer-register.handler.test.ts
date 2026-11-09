@@ -114,7 +114,7 @@ describe('observer registration (protocol level, real Postgres)', () => {
   it('refuses the flag on an org-scoped connection, which is a daemon key and not a job identity', async () => {
     const h = buildWsHarness(prisma)
     const { stub } = h.connect()
-    const key = await h.mintToken(MEMBER)
+    const key = await h.mintToken(MEMBER, { approved: true })
     stub.inject('auth', { apiKey: key, daemonId: MEMBER, agentVersion: '1.4.0' }, { id: AUTH_ID })
     await stub.expectFrame('auth/ok')
 

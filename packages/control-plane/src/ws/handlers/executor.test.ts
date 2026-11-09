@@ -108,6 +108,7 @@ function fakeDeps(over: {
   const deps = {
     log: { error: log },
     clock: { now: () => NOW },
+    admission: { allowed: async (ids: readonly string[]) => [...ids] },
     agent: {
       get: async () => ({
         id: AGENT,

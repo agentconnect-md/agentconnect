@@ -30,6 +30,7 @@ import { VisibilityValue } from '@/components/console/VisibilityField'
 import { DaemonLifecycleBadge, daemonLifecycleLabel } from '@/components/console/DaemonLifecycleBadge'
 import { DaemonUpgradeBadge } from '@/components/console/DaemonUpgradeBadge'
 import { DaemonAutoUpgradeSetting } from '@/components/console/DaemonAutoUpgradeSetting'
+import { DaemonApprovalBadge, DaemonApprovalNotice, DaemonApprovalAction } from '@/components/console/DaemonApproval'
 import { NotFound } from '@/components/console/NotFound'
 import {
   FleetAgentsCard,
@@ -224,8 +225,17 @@ export default function DaemonDetailView() {
     ]
     return (
       <div className="pb-6">
+        <div className="px-4 pt-3">
+          <DaemonApprovalNotice daemon={daemon} />
+        </div>
+        {daemon.approval?.status === 'approved' && (
+          <div className="px-4">
+            <DaemonApprovalAction daemon={daemon} menu />
+          </div>
+        )}
         {/* meta strip */}
         <div className="flex flex-wrap items-center gap-x-[14px] gap-y-2 bg-(--surface-card) px-4 py-3">
+          <DaemonApprovalBadge daemon={daemon} />
           <span
             className="inline-flex items-center gap-[5px] rounded-full px-[10px] py-[3px] font-sans text-[12px] font-semibold leading-normal"
             style={{ background: s.bg, color: s.text }}
@@ -622,6 +632,7 @@ export default function DaemonDetailView() {
               <span className="dot h-[6px] w-[6px]" style={{ background: s.dot }} />
               {s.label}
             </span>
+            <DaemonApprovalBadge daemon={daemon} />
             {pending ? (
               <DaemonLifecycleBadge op={op} size="md" />
             ) : (
@@ -670,6 +681,7 @@ export default function DaemonDetailView() {
             <>
               <div onClick={() => setMenuOpen(false)} className="fixed inset-0 z-45" />
               <div className="dmenu right-0" onClick={(e) => e.stopPropagation()}>
+                <DaemonApprovalAction daemon={daemon} menu />
                 {daemon.canEdit && (
                   <button
                     className="dmi"
@@ -758,6 +770,7 @@ export default function DaemonDetailView() {
         </div>
       </div>
 
+      <DaemonApprovalNotice daemon={daemon} />
       {groupErr && (
         <div className="mb-[18px] flex items-start gap-2 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[10px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--status-error)">
           <Icon name="triangle-alert" size={15} />

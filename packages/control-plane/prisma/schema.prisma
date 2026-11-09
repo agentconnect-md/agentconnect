@@ -458,6 +458,12 @@ model WaitlistEntry {
 // §3.3 Daemon — fleet registry & fencing root (C4)
 // ───────────────────────────────────────────────────────────────────────────
 
+enum DaemonApprovalStatus {
+  pending
+  approved
+  revoked
+}
+
 enum DaemonStatus {
   provisioned
   authenticating
@@ -494,6 +500,11 @@ model Daemon {
   maxAgents     Int     @default(0)
 
   createdByUserId String? // WebUI user who provisioned the daemon (immutable audit; null for CLI/self-registered). Surfaced in the console "Created" row.
+  approvalStatus    DaemonApprovalStatus @default(pending)
+  approvalRevision  Int                  @default(0)
+  approvalSource    String?
+  approvalChangedAt DateTime?            @db.Timestamptz(6)
+  approvalChangedBy String?
 
   // ── last-modification audit (human edits only) ──
   // Stamped together on user-initiated writes (provision, rename). Deliberately
@@ -3308,6 +3319,7 @@ enum LinearInstallStatus {
 // ───────────────────────────────────────────────────────────────────────────
 
 enum AuditKind {
+  daemon_approval
   daemon_auth
   daemon_register
   daemon_unreachable

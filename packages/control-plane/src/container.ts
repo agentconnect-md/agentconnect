@@ -109,6 +109,7 @@ import { GithubUserAuthzService } from './github/user-authz.js'
 import { RepositoryGrantReattestor, strictRepoAccessLookups } from './github/repository-grant-reattestor.js'
 import { type Clock, systemClock } from './domain/clock.js'
 import { K8sHttp } from '@agentconnect.md/k8s-client'
+import { PgDaemonAdmissionRepo } from './persistence/repositories/daemon-admission.repo.js'
 import { ClusterDaemonIdentityService, ClusterWorkloadIdentityService, loadClusterAccess } from './cluster/index.js'
 
 import {
@@ -560,6 +561,7 @@ export function buildContainer(
 
   // ── C6 repositories (the ONLY @prisma/client importers) ───────────────────
   const repos = {
+    daemonAdmission: new PgDaemonAdmissionRepo(prisma),
     daemon: new PgDaemonRepo(prisma),
     daemonLifecycleOp: new PgDaemonLifecycleOpRepo(prisma),
     apiKey: new PgApiKeyRepo(prisma),
@@ -804,6 +806,7 @@ export function buildContainer(
       ...(config.RELAY_TOKEN ? { RELAY_TOKEN: config.RELAY_TOKEN } : {}),
       HEARTBEAT_SEC: config.HEARTBEAT_SEC
     },
+    repos.daemonAdmission,
     clusterIdentity
   )
   const relayStaleMs = config.RELAY_STALE_SEC * 1000
@@ -931,6 +934,7 @@ export function buildContainer(
   // The ONE answer to "which daemons serve this agent" — what its placement names, plus every
   // current duty holder (orchestrator/placementResolver.ts).
   const placementResolver = new PlacementResolver({
+    approved: (ids) => repos.daemonAdmission.allowed(ids),
     duties: repos.dutyGroup,
     // The set's members ready to take a trigger. Only the rendezvous fallback reads this: a set
     // agent whose lease lapsed has no holder, and any member can claim it on receipt.
@@ -2528,6 +2532,7 @@ export function buildContainer(
     // per-host decisions through the bundle (gitea-integration.md §13.5).
     codeHosts: codeHostProviders,
     repos: {
+      daemonAdmission: repos.daemonAdmission,
       agent: repos.agent,
       assignment: repos.assignment,
       memberSet: repos.memberSet,
@@ -3283,6 +3288,7 @@ export function buildContainer(
       )
   })
   const wsDeps: DaemonWsServerDeps = {
+    admission: repos.daemonAdmission,
     ahpSessions: new AhpSessionService({
       authorization: ahpAuthorization,
       bindings: repos.ahpSessionBinding,

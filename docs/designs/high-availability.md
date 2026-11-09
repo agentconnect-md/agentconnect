@@ -61,6 +61,10 @@ does not mean that every authority has a CP-controlled expiry:
   `T_reassign > T_fence`; see [the duty lease contract](k8s-daemon-pool.md#5-the-duty-ledger-and-lease-service-d6-d7).
 - Secret leases, where used, have their own TTL. Cached relay grants without a
   TTL do not expire merely because the CP connection or ownership lease ends.
+- Daemon-to-relay connections have a 120-second admission lease, refreshed through
+  the CP halfway through that interval. Without successful verification they close
+  at expiry, including during a CP outage. Key or approval revocation can close
+  them earlier; copied bearer grants are outside this connection lease.
 - Standalone daemons outside a member set have no duty self-fence. Their local
   execution may continue, but CP-dependent operations can still fail.
 
