@@ -103,9 +103,16 @@ checks. Vault consent cannot grant access to a Computer. Filling does not add a
 new restriction for self-hosted, per-agent, manual or ephemeral Computers.
 
 The grant UI explains that sign-in state can remain in the browser and be used
-by later Computer users. Per-agent allocation alone is not proof of exclusive
-human ownership. This release does not log out automatically or alter browser
-profile sharing/forking policies.
+by later Computer users. Linux already supports per-agent desktops and browser
+profile fork-merge: with `shareBrowserLogins` enabled, a new login may propagate
+to another desktop when its browser starts. Item grants govern credential fills,
+not this existing reuse of authenticated sessions. Neither a per-agent desktop
+nor per-agent allocation proves exclusive human ownership. This release does not
+log out automatically or alter browser profile sharing/forking policies.
+
+A fill targets a specific desktop within a Computer. Bind it to the trusted
+session's desktop assignment and the existing per-desktop lease, not just the
+Computer ID. Independent desktop browsers may be running concurrently.
 
 ## 4. Item types and fields
 
@@ -292,7 +299,7 @@ universal compatibility guarantee. Include custom controls, select fields,
 address fields and multi-page logins in the supported-form matrix.
 
 Hold no input lease while a person completes a card. Once values are available,
-acquire/check the normal lease, revalidate the target and fill under existing
+acquire/check the target desktop's lease, revalidate the target and fill under existing
 human-first arbitration. Do not route field values through the model-facing
 `computer_type` tool. The extension's internal fill command is not an additional
 model-visible secret-injection API.
