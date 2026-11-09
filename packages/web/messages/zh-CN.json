@@ -3041,6 +3041,7 @@
         "uploadFailed": "上传失败"
       },
       "daemonSelect": {
+        "approvalRequired": "请先由组织 Owner 批准此 daemon。",
         "runsOn": "运行位置",
         "noDaemonsConnected": "未连接任何 Daemon",
         "groupMeta": "{count, plural, other {# 个 Daemon}}",
@@ -4311,6 +4312,32 @@
     }
   },
   "Daemons": {
+    "approval": {
+      "pending": "待批准",
+      "revoked": "已撤销",
+      "review": "审核",
+      "approve": "批准",
+      "approveAgain": "重新批准",
+      "revoke": "撤销批准",
+      "cancel": "取消",
+      "saving": "保存中…",
+      "waitingForYou": "等待你批准",
+      "count": "{count} 台待批准",
+      "waiting": "等待组织 Owner 批准",
+      "revokedTitle": "已撤销批准",
+      "waitingDescription": "批准后，此 daemon 才能运行组织中的 agent。",
+      "changedBy": "由 {name} 撤销 · {date}",
+      "approveTitle": "批准 {name}",
+      "revokeTitle": "撤销对 {name} 的批准",
+      "approveDescription": "允许此 daemon 运行组织中的 agent，并访问它们的数据和凭据。",
+      "revokeDescription": "停止授权此 daemon 执行组织任务。此前接收的数据和凭据仍保留在机器上。",
+      "createdBy": "创建者",
+      "host": "主机",
+      "status": "状态",
+      "online": "在线",
+      "offline": "离线",
+      "connectFirst": "请先连接此 daemon，再批准。"
+    },
     "deleteModal": {
       "title": "删除 daemon",
       "body": "{daemon} 将从控制平面移除。其 daemon 进程会继续运行，直到你在主机上停止它，但它将无法再托管 Agent 或保持连接。此操作无法撤销。",

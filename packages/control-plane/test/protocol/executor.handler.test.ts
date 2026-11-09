@@ -80,7 +80,7 @@ async function member(
   daemonId: string,
   opts: { setId?: string; executor?: ExecutorFacts; features?: string[]; capabilities?: Record<string, unknown> } = {}
 ): Promise<InMemoryDaemonStub> {
-  const token = await h.mintToken(daemonId)
+  const token = await h.mintToken(daemonId, { approved: true })
   // Before auth: `auth/ok` announces the set, and a membership that changes mid-handshake closes the socket.
   if (opts.setId) await prisma.memberSetMember.create({ data: { setId: opts.setId, daemonId } })
   const { stub } = h.connect()
@@ -537,7 +537,7 @@ describe('executor/prepare — checked against the ledger, then relayed (real Po
     const setId = await memberSet()
     const holder = await member(h, HOLDER, { setId })
     // Enrolled, and never connected to this Control Plane.
-    await h.mintToken(EXECUTOR)
+    await h.mintToken(EXECUTOR, { approved: true })
     await prisma.memberSetMember.create({ data: { setId, daemonId: EXECUTOR } })
     await placedAgent(setId)
 
@@ -700,7 +700,7 @@ describe('executor/release — deletion with an owner (real Postgres)', () => {
     const h = buildWsHarness(prisma)
     const setId = await memberSet()
     const holder = await member(h, HOLDER, { setId })
-    await h.mintToken(EXECUTOR)
+    await h.mintToken(EXECUTOR, { approved: true })
     await prisma.memberSetMember.create({ data: { setId, daemonId: EXECUTOR } })
     await placedAgent(setId)
     const lastSeenAt = new Date('2026-09-20T12:00:00.000Z')

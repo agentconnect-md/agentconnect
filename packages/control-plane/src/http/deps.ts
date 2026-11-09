@@ -213,6 +213,7 @@ export interface HttpDeps {
   /** Shared process clock: delegated MCP execution uses the same timer seam as its reaper. */
   clock: Clock
   repos: {
+    daemonAdmission: import('../persistence/ports.js').DaemonAdmissionRepo
     agent: AgentRepo
     assignment: AssignmentRepo
     /** CP-commanded daemon restart/upgrade tracking (cli-daemon-split.md §7) — the

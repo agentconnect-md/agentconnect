@@ -2454,6 +2454,15 @@ export interface DaemonAutoUpgradeResult {
 }
 
 export interface DaemonRow {
+  approval?: {
+    status: 'pending' | 'approved' | 'revoked'
+    revision: number
+    source: string | null
+    changedAt: string | null
+    changedBy: string | null
+  }
+  canManageApproval?: boolean
+  sessionEpoch?: number
   /** Stable CP id — the rename target and the AddDaemon "connected?" match key. */
   daemonId: string
   /** Display label: human-assigned name, else hostname, else a short id. */

@@ -69,6 +69,29 @@ the same server-projected permission on desktop and mobile. Creation attribution
 never overrides current membership, sharing, or the read-only Viewer role.
 When no creator is recorded, an organization Owner handles recovery.
 
+## Approving a daemon
+
+New self-hosted daemons need an organization Owner's approval, including machines
+created by an Owner. Approval is separate from online/offline status. Before
+approval, the machine can connect, report health and installed runtimes, and use
+the authorized maintenance and reconnect flows. It cannot run organization agents,
+including a creator's private Console agents, or receive their data or credentials.
+Independent local CLI use is unaffected.
+
+Owners review **Created by**, **Host**, and **Status** from Infra before approving.
+Pending daemons show **Pending approval** and an Owner-only **Review** action.
+Approval, revocation and reapproval use the same permissions on desktop and mobile;
+ordinary editing permissions do not change. There is no global rollout banner or
+claim that Owners have been notified.
+
+Existing daemon records, including offline machines, are approved once by the
+schema migration. Their valid keys keep working. New records default to pending.
+Reconnect and replacement credentials preserve the current approval state; a
+revoked daemon needs an Owner's approval again. Revocation stops new organization
+authorizations and withdraws managed access within its authority lifetimes; it
+cannot recall data or credentials already received by the machine. Verified
+managed pool identities do not require an Owner to approve each replacement Pod.
+
 ## What people can do in chat
 
 People choose how they use the product, and no choice may make it harder to use than it

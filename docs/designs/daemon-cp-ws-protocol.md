@@ -87,6 +87,22 @@ sequenceDiagram
 - **READY** is the only state in which the CP issues ordinary orchestration control. Before READY, `auth`/`register` are valid, plus operation-scoped `daemon/bootstrap/result` and `daemon/lifecycle/progress` while `REGISTERING`; anything else → `error PROTOCOL_STATE`.
 - **DRAINING** is entered on `daemon/drain` (§6) — daemon stops accepting new `route/assign`, finishes in-flight, then closes.
 
+READY does not imply organization approval. Pending or revoked daemons may use
+only enrollment, machine facts and maintenance frames, subject to the lifecycle
+rules above: `auth/ok`, `register`, `register/ok`, `heartbeat`,
+`capabilities/update`, `config/push`, `facts/runtime-profile`,
+`facts/daemon-runtimes`, `daemon/bootstrap/result`, `daemon/lifecycle/progress`,
+`daemon/lifecycle/begin`, `daemon/lifecycle/begin/ok`, `daemon/restart`,
+`daemon/restart/ack`, `daemon/upgrade`, and `daemon/upgrade/ack`. Registration
+returns an empty organization-managed roster until approval.
+
+Other inbound requests receive `SCOPE_DENIED`; protected outbound traffic is
+withheld. Correlated replies are checked against the original request type
+before settling it, and a generic `ack` inherits its request's approval gate.
+Every check also validates the approval revision, session epoch and authenticating
+key; stale authority closes the connection with a transient reconnect code.
+See [Organization approval](daemon-api-key-auth.md#organization-approval).
+
 ### 2.2 Heartbeat & watchdog
 
 - WS-level `ping`/`pong` (library keepalive) **plus** app-level `heartbeat` EVT carrying a load snapshot.

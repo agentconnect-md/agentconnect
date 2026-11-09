@@ -25,6 +25,7 @@ export async function seedDaemon(
   id: string,
   opts: {
     sessionEpoch?: bigint
+    approvalStatus?: 'pending' | 'approved' | 'revoked'
     maxAgents?: number
     capabilities?: {
       platforms: string[]
@@ -45,6 +46,7 @@ export async function seedDaemon(
       sessionEpoch: opts.sessionEpoch ?? 1n,
       maxAgents: opts.maxAgents ?? 4,
       status: 'ready',
+      approvalStatus: opts.approvalStatus ?? 'approved',
       // A `ready` fixture represents a registered stock daemon. Tests that need a
       // narrower adapter set pass `capabilities` explicitly.
       capabilities: opts.capabilities ?? DEFAULT_DAEMON_CAPABILITIES,

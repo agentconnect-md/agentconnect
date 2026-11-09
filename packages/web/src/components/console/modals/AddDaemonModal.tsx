@@ -14,6 +14,8 @@ import {
   WORKSPACE_RETENTION_DEFAULT
 } from '@/components/console/SessionRetentionField'
 import { useTranslations } from 'next-intl'
+import { useRouter } from 'next/navigation'
+import { useOrgs } from '@/lib/org-context'
 
 /** What the CP already gave the provisioned row — skip the /sharing write when the
  *  operator leaves it alone. */
@@ -104,6 +106,9 @@ export default function AddDaemonModal({
   registerDismiss: (handler: () => void) => () => void
 }) {
   const t = useTranslations('Daemons.dialog')
+  const ta = useTranslations('Daemons.approval')
+  const router = useRouter()
+  const { orgPath } = useOrgs()
   const {
     provisionDaemon,
     daemons,
@@ -149,6 +154,7 @@ export default function AddDaemonModal({
   // (it authenticated + registered over the WS).
   const row = connect != null ? daemons.find((d) => d.daemonId === connect.daemonId) : undefined
   const connected = row?.status === 'online'
+  const approved = !row?.approval || row.approval.status === 'approved'
   useEffect(() => {
     if (!connect || connected) return
     const id = setInterval(refresh, 3000)
@@ -201,8 +207,11 @@ export default function AddDaemonModal({
       // operator already left. (`cancel` fences on `saving`, so this only catches a
       // dismissal that raced the flag; the guard makes the ordering irrelevant.)
       if (dismissed.current) return
-      if (onDone) onDone(connect.daemonId)
-      else onClose()
+      if (onDone && approved) onDone(connect.daemonId)
+      else {
+        onClose()
+        if (!approved) router.push(orgPath(`/daemons/${connect.daemonId}`))
+      }
     } catch (e) {
       if (dismissed.current) return
       setSaveErr(e instanceof Error ? e.message : String(e))
@@ -263,6 +272,9 @@ export default function AddDaemonModal({
             </>
           )}
         </div>
+        {connected && !approved && (
+          <p className="mt-3 text-[13px] text-(--text-secondary)">{ta('waitingDescription')}</p>
+        )}
         {/* Both are optional overrides on the row the daemon claims: leave the name
             blank to keep the one it reports (the placeholder, once it has connected),
             and the visibility on Everyone to keep the org-wide default. Written on
@@ -306,7 +318,7 @@ export default function AddDaemonModal({
             onClick={() => void finish()}
             className={saving ? 'cursor-default opacity-60' : undefined}
           >
-            {saving ? t('saving') : onDone ? t('continue') : t('done')}
+            {saving ? t('saving') : onDone && approved ? t('continue') : t('done')}
           </Button>
         ) : (
           // Can't finish until the daemon connects — offer a Cancel that cleans up

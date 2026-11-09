@@ -57,11 +57,13 @@ describe('handshake gate — slots cover the CP work of auth and register only',
 
     const held = handshakes.tryAcquire()!
     stub.inject('register', registerPayload())
-    expect(handshakes.waiting).toBe(1)
-    expect(stub.lastSent('register/ok')).toBeUndefined()
-    expect(stub.closed).toBeUndefined()
-
-    held()
+    try {
+      await expect.poll(() => handshakes.waiting).toBe(1)
+      expect(stub.lastSent('register/ok')).toBeUndefined()
+      expect(stub.closed).toBeUndefined()
+    } finally {
+      held()
+    }
     await stub.expectFrame('register/ok')
     await stub.settled()
     expect(handshakes.size).toBe(0)
@@ -70,7 +72,7 @@ describe('handshake gate — slots cover the CP work of auth and register only',
   it('frees the register slot at READY, before the register tail runs', async () => {
     const handshakes = new HandshakeGate(1)
     const h = buildWsHarness(prisma, { handshakes })
-    const token = await h.mintToken(DAEMON)
+    const token = await h.mintToken(DAEMON, { approved: true })
     const slotsHeldDuringTail: number[] = []
     h.deps.recoverStagedAgent = async () => {
       slotsHeldDuringTail.push(handshakes.size)

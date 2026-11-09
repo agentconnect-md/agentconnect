@@ -10,6 +10,7 @@
  * real socket.
  */
 import { onTestFinished } from 'vitest'
+import { PgDaemonAdmissionRepo } from '../../src/persistence/repositories/daemon-admission.repo.js'
 import type { PrismaClient } from '../../src/generated/prisma/client.js'
 import type { CollabRoutesSnapshot, RelayRosterEntry } from '@agentconnect.md/protocol'
 import {
@@ -116,7 +117,7 @@ export interface WsHarness {
   placement: PlacementResolver
   codec: ApiKeyCodec
   /** Provision a daemon row + mint an API key for `daemonId`; returns the plaintext `apiKey`. */
-  mintToken(daemonId: string): Promise<string>
+  mintToken(daemonId: string, opts?: { approved: true }): Promise<string>
   /** Provision an org-less (install-wide, frame-mode) daemon row + a fake cluster
    *  ServiceAccount token for it; auth with `{ serviceAccountToken }`. */
   mintPoolMember(daemonId: string): Promise<string>
@@ -182,6 +183,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     createMsTeamsCpProvider(opts.msTeamsApp ? { app: opts.msTeamsApp } : {})
   ])
   const repos = {
+    daemonAdmission: new PgDaemonAdmissionRepo(prisma),
     daemon: new PgDaemonRepo(prisma),
     daemonLifecycleOp: new PgDaemonLifecycleOpRepo(prisma),
     apiKey: new PgApiKeyRepo(prisma),
@@ -239,6 +241,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
   const relays = opts.relays ?? []
   const dutyGroupRepo = new PgDutyGroupRepo(prisma)
   const placementResolver = new PlacementResolver({
+    approved: (ids) => repos.daemonAdmission.allowed(ids),
     duties: dutyGroupRepo,
     liveMembers: async (setId) => {
       const members = new Set(await memberSets.memberIdsOf(setId))
@@ -368,6 +371,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
   )
 
   const deps: DaemonWsDeps = {
+    admission: repos.daemonAdmission,
     log: { error: () => undefined },
     auth,
     memberSets,
@@ -434,13 +438,25 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     placement: placementResolver,
     codec,
     mintPoolMember: async (daemonId: string) => {
-      await prisma.daemon.create({ data: { id: daemonId, orgId: null, maxAgents: 8, status: 'ready' } })
+      await prisma.daemon.create({
+        data: {
+          id: daemonId,
+          orgId: null,
+          maxAgents: 8,
+          status: 'ready',
+          approvalStatus: 'approved',
+          approvalSource: 'system',
+          clusterIdentity: 'test-service-account',
+          clusterPodUid: daemonId
+        }
+      })
       const token = `fake-sa-token-${daemonId}`
       poolTokens.set(token, daemonId)
       return token
     },
-    mintToken: async (daemonId: string) => {
+    mintToken: async (daemonId: string, opts?: { approved: true }) => {
       if (!(await repos.daemon.getUnscoped(DaemonId(daemonId)))) await repos.daemon.provision(DaemonId(daemonId), org)
+      if (opts?.approved) await prisma.daemon.update({ where: { id: daemonId }, data: { approvalStatus: 'approved' } })
       const minted = codec.mint()
       await repos.apiKey.create({
         principalType: 'daemon',

@@ -31,6 +31,7 @@ import {
   PgSessionUsageRepo
 } from '../../src/persistence/index.js'
 import { PgMemberSetRepo } from '../../src/persistence/repositories/member-set.repo.js'
+import { PgDaemonAdmissionRepo } from '../../src/persistence/repositories/daemon-admission.repo.js'
 import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
 import { EpochService } from '../../src/orchestrator/epoch.js'
 import { DUTY_LEASE_DEFAULTS } from '../../src/orchestrator/dutyLease.js'
@@ -156,6 +157,7 @@ export function buildDaemonApp(prisma: PrismaClient, opts: { wsConfig?: Partial<
     if (listening) return
     listening = true
     createDaemonWsServer(app, {
+      admission: new PgDaemonAdmissionRepo(prisma),
       log: { error: (o, m) => app.log.error(o, m) },
       auth,
       memberSets,

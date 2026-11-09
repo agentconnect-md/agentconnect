@@ -124,7 +124,7 @@ function harness(withRosters = true) {
 }
 
 async function ready(h: WsHarness, daemonId: string) {
-  const token = await h.mintToken(daemonId)
+  const token = await h.mintToken(daemonId, { approved: true })
   const stub = new InMemoryDaemonStub()
   h.connect(stub)
   stub.inject('auth', { apiKey: token, daemonId, agentVersion: '1.4.0' })

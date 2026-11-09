@@ -192,6 +192,7 @@ export type LaunchStatus = 'launching' | 'running' | 'stopped' | 'crashed'
 export type LeaseStatus = 'active' | 'expired' | 'revoked'
 export type AcpSupport = 'full' | 'partial' | 'none'
 export type AuditKind =
+  | 'daemon_approval'
   | 'daemon_auth'
   | 'daemon_register'
   | 'daemon_unreachable'
@@ -241,7 +242,35 @@ export interface RegisterReqInput {
   bootId?: RegisterReq['bootId']
 }
 
+export interface DaemonApproval {
+  status: 'pending' | 'approved' | 'revoked'
+  revision: number
+  source: string | null
+  changedAt: Date | null
+  changedBy: string | null
+}
+
+export interface DaemonAdmissionRepo {
+  allowed(daemonIds: readonly string[]): Promise<string[]>
+  connection(
+    input: { daemonId: string; orgId: string | null; sessionEpoch: number; apiKeyId: string | null; revision: number },
+    now: Date
+  ): Promise<'approved' | 'pending' | 'revoked' | 'stale'>
+  change(
+    input: {
+      orgId: OrgId
+      daemonId: DaemonId
+      actorUserId?: string
+      status: 'approved' | 'revoked'
+      revision: number
+      sessionEpoch: number
+    },
+    now: Date
+  ): Promise<DaemonApproval>
+}
+
 export interface DaemonRecord {
+  approval: DaemonApproval
   id: DaemonId
   /** Null only for an install-wide pool member. */
   orgId: OrgId | null

@@ -35,6 +35,27 @@ import type { HandshakeGate, ReleaseSlot } from './handshake-gate.js'
 import { clearAwaitingApprovals } from './approval-waits.js'
 import { FencingState, checkFencing } from '../orchestrator/fencing.js'
 import { ProtocolError } from '../domain/errors.js'
+import type { DaemonApproval } from '../persistence/ports.js'
+
+// Unapproved connections can enroll and report machine health, but cannot exercise organization authority.
+const ENROLLMENT_FRAMES = new Set([
+  'auth/ok',
+  'register',
+  'register/ok',
+  'heartbeat',
+  'capabilities/update',
+  'config/push',
+  'facts/runtime-profile',
+  'facts/daemon-runtimes',
+  'daemon/bootstrap/result',
+  'daemon/lifecycle/progress',
+  'daemon/lifecycle/begin',
+  'daemon/lifecycle/begin/ok',
+  'daemon/restart',
+  'daemon/restart/ack',
+  'daemon/upgrade',
+  'daemon/upgrade/ack'
+])
 
 export class DaemonConnection implements ConnChannel {
   private lifecycle: LifecycleState = 'CONNECTING'
@@ -59,6 +80,10 @@ export class DaemonConnection implements ConnChannel {
   setId: string | null = null
   /** Current fencing epoch for this daemon (set on auth/ok). */
   sessionEpoch = 0
+  apiKeyId: string | null = null
+  approval: DaemonApproval = { status: 'pending', revision: 0, source: null, changedAt: null, changedBy: null }
+  private outgoing: Promise<void> = Promise.resolve()
+  private inboundAdmission: Promise<void> = Promise.resolve()
   /** Set when the daemon's register advertises FRAME_FRAGMENTS_FEATURE: a frame past MAX_FRAME_BYTES then goes out in fragments. */
   private fragmentFrames = false
   /** Per-agent fencing baseline (current launch + next-expected inbound seq). */
@@ -113,6 +138,20 @@ export class DaemonConnection implements ConnChannel {
       return
     }
     const frame = decoded.frame
+    if (!frame.corr && !this.isLegalInState(frame.type)) {
+      this.sendError(frame.id, 'PROTOCOL_STATE', `${frame.type} illegal in ${this.state}`, false)
+      return
+    }
+    if (
+      frame.type !== 'auth' &&
+      !(await (frame.corr
+        ? this.admit(this.correlator.requested(frame.corr)?.type ?? frame.type)
+        : this.admitInOrder(frame.type)))
+    ) {
+      this.sendError(frame.id, 'SCOPE_DENIED', 'daemon approval required', false)
+      if (frame.corr) this.correlator.reject(frame.corr, new ProtocolError('SCOPE_DENIED', 'daemon approval required'))
+      return
+    }
 
     // A correlated REP/error settles a CP-issued REQ — never re-dispatched. It is fenced on the
     // org of the REQ it answers first: a reply naming another org fails that REQ and applies nothing.
@@ -129,7 +168,8 @@ export class DaemonConnection implements ConnChannel {
           return
         }
       }
-      if (this.correlator.settle(frame)) return
+      this.correlator.settle(frame)
+      return
     }
 
     // §2.1 legal-frame gate.
@@ -175,6 +215,7 @@ export class DaemonConnection implements ConnChannel {
     } catch {
       if (this.state !== 'CLOSED') this.close(1011, 'SERVER_INTERNAL')
     } finally {
+      await this.flush()
       release?.()
     }
   }
@@ -291,7 +332,7 @@ export class DaemonConnection implements ConnChannel {
       ...(ext ? { ext } : {}),
       ...(scopedOrgId ? { orgId: scopedOrgId } : {})
     })
-    const rep = await this.correlator.request(frame, (e) => this.write(e, type), opts)
+    const rep = await this.correlator.request(frame, (e) => this.write(e, type, frame.id), opts)
     return rep.payload as TReply
   }
 
@@ -352,14 +393,66 @@ export class DaemonConnection implements ConnChannel {
       corr: req.id,
       ...(req.orgId ? { orgId: req.orgId } : {})
     })
-    this.write(encode(frame), type)
+    this.write(encode(frame), type, undefined, type === 'ack' ? req.type : type)
   }
 
   enableFrameFragments(): void {
     this.fragmentFrames = true
   }
 
-  private write(text: string, type: string): void {
+  // Preserve request order without blocking correlated replies behind a handler waiting for them.
+  private admitInOrder(type: string): Promise<boolean> {
+    const admitted = this.inboundAdmission.then(() => this.admit(type))
+    this.inboundAdmission = admitted.then(
+      () => {},
+      () => {}
+    )
+    return admitted
+  }
+
+  // Revision and credential checks also fence late replies and pushes after approval or key changes.
+  async admit(type: string): Promise<boolean> {
+    if (this.state === 'CLOSED') return false
+    const status = await this.deps.admission.connection(
+      {
+        daemonId: this.daemonId,
+        orgId: this.orgId,
+        sessionEpoch: this.sessionEpoch,
+        apiKeyId: this.apiKeyId,
+        revision: this.approval.revision
+      },
+      new Date(this.deps.clock.now())
+    )
+    if (status === 'stale') {
+      this.close(1012, 'daemon authorization changed; reconnect')
+      return false
+    }
+    return status === 'approved' || ENROLLMENT_FRAMES.has(type)
+  }
+
+  flush(): Promise<void> {
+    return this.outgoing
+  }
+
+  private write(text: string, type: string, requestId?: string, admissionType = type): void {
+    this.outgoing = this.outgoing
+      .then(async () => {
+        if (!(await this.admit(admissionType))) {
+          if (requestId)
+            this.correlator.reject(
+              requestId,
+              new ProtocolError('SCOPE_DENIED', 'daemon approval required', { retryable: false })
+            )
+          return
+        }
+        if (this.state !== 'CLOSED') this.writeAdmitted(text, type)
+      })
+      .catch(() => {
+        if (this.state !== 'CLOSED') this.close(1011, 'SERVER_INTERNAL')
+      })
+  }
+
+  private writeAdmitted(text: string, type: string): void {
     const parts = this.fragmentFrames ? fragmentFrame(text, 'frame/fragment') : null
     if (parts) {
       for (const part of parts) this.transport.send(part)
@@ -383,6 +476,7 @@ export class DaemonConnection implements ConnChannel {
     retryable: boolean,
     details?: Record<string, unknown>
   ): void {
+    if (this.state === 'CLOSED') return
     const frame = buildEnvelope('error', { code, message, retryable, ...(details ? { details } : {}) }, { corr })
     this.transport.send(encode(frame))
   }
@@ -390,6 +484,7 @@ export class DaemonConnection implements ConnChannel {
   close(code: number, reason: string): void {
     this.state = 'CLOSED'
     this.closing.abort()
+    this.correlator.rejectAll(new ConnectionClosed())
     this.transport.close(code, reason)
   }
 

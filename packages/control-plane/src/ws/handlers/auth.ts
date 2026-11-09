@@ -30,6 +30,8 @@ export const handleAuth: Handler = async (frame, conn, deps) => {
   conn.orgId = verdict.orgId
   conn.setId = verdict.setId
   conn.sessionEpoch = verdict.okFrame.sessionEpoch
+  conn.apiKeyId = verdict.apiKeyId
+  conn.approval = verdict.approval
   conn.state = 'REGISTERING'
 
   // A re-auth supersedes any existing connection for this daemon (its epoch is
@@ -81,6 +83,7 @@ export const handleAuth: Handler = async (frame, conn, deps) => {
     conn.close(1012, 'member set changed during the handshake — reconnect to re-register')
     return
   }
+  if (!(await conn.admit('auth/ok'))) return
 
   let okFrame = verdict.okFrame
   if (req.bootstrapProtocolVersion === 1) {

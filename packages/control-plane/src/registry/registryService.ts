@@ -97,6 +97,7 @@ function toProfileView(p: RuntimeProfileRecord): DaemonRuntimeProfile {
 
 function toView(d: DaemonRecord, profiles: RuntimeProfileRecord[]): DaemonView {
   return {
+    approval: d.approval,
     daemonId: d.id,
     orgId: d.orgId,
     host: d.host,

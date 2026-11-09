@@ -62,6 +62,7 @@ import { EscapeLayer } from './Scrim'
 import { localeList } from '@/i18n/config'
 import { NAV_GROUPS, NAV_LABEL_KEYS, SECTIONS, navVisible } from './nav'
 import { HELP_LINK_DEFAULTS, helpDocsBase } from '@/lib/help-links'
+import { DaemonApprovalCount } from './DaemonApproval'
 
 // A section's own page owns the list app bar (menu button, no back) on mobile; anything
 // nested under it is a "push" screen (back-button app bar). `/conversations/:key` is the
@@ -749,6 +750,7 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                         {/* No inline color — `.navitem.on svg` tints the active glyph brand. */}
                         <Icon name={item.icon} size={18} />
                         <span>{navLabel(item.href, item.label)}</span>
+                        {item.href === '/daemons' && <DaemonApprovalCount />}
                       </Link>
                     )
                   })}
@@ -1275,6 +1277,7 @@ function MobileDrawer({
               >
                 <Icon name={item.icon} size={20} />
                 <span>{navLabel(item.href, item.label)}</span>
+                {item.href === '/daemons' && <DaemonApprovalCount />}
               </Link>
             ))}
           </Fragment>

@@ -181,7 +181,7 @@ export function memberSetRoutes(deps: HttpDeps) {
           tags: [Tag.MemberSets],
           summary: 'Enroll a daemon in a member set',
           description:
-            'Add one of the organization’s daemons to the set. Agents pinned to that machine stay pinned to it and keep running: a `daemon` placement is eligible for exactly that machine, so joining changes how it holds them (a duty lease) rather than who serves them. Refused (409) only if it is already in another set. Organization owners only, since a member serves every agent placed on the set and receives its credentials.',
+            'Add an approved organization daemon to the set. Pinned agents stay on that machine. Refused (409) if approval is missing or the daemon is already in another set. Organization owners only, since a member serves the set’s agents and receives their credentials.',
           operationId: 'enrollDaemonInMemberSet',
           params: MemberSetMemberParams,
           response: { 200: MemberSetDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
@@ -216,7 +216,7 @@ export function memberSetRoutes(deps: HttpDeps) {
         // Duty is what it holds them by now, so the org's groups are re-derived before the machine
         // comes back and claims — otherwise its first beat as a member finds nothing to take.
         deps.recomputeDuties?.(orgId)
-        deps.liveness.reconnectForMemberSet?.(daemonId)
+        deps.liveness.reconnectForAuthorization?.(daemonId)
         return toDto(set)
       }
     )
@@ -256,7 +256,7 @@ export function memberSetRoutes(deps: HttpDeps) {
           }
           throw err
         }
-        deps.liveness.reconnectForMemberSet?.(daemonId)
+        deps.liveness.reconnectForAuthorization?.(daemonId)
         return toDto(set)
       }
     )

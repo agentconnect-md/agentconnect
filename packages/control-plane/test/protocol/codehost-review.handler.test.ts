@@ -39,7 +39,7 @@ async function ready(h: ReturnType<typeof buildWsHarness>): Promise<InMemoryDaem
   await seedDaemon(prisma, DAEMON)
   await seedAgent(prisma, AGENT, { daemonId: DAEMON })
   await prisma.agent.update({ where: { id: AGENT }, data: { status: 'active' } })
-  const token = await h.mintToken(DAEMON)
+  const token = await h.mintToken(DAEMON, { approved: true })
   const { stub } = h.connect()
   stub.inject('auth', { apiKey: token, daemonId: DAEMON, agentVersion: '1.4.0' })
   await stub.expectFrame('auth/ok')

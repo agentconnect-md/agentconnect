@@ -8,6 +8,7 @@
  * stub (no `OIDC_ISSUER`). Tests drive it with `app.inject` — DB-backed, NO socket.
  */
 import { PgDecisionRepo } from '../../src/persistence/repositories/decision.repo.js'
+import { PgDaemonAdmissionRepo } from '../../src/persistence/repositories/daemon-admission.repo.js'
 import { PgGithubAppRepo } from '../../src/persistence/repositories/github-app.repo.js'
 import { PgBotDecisionRoutingRepo } from '../../src/persistence/repositories/bot-decision-routing.repo.js'
 import type { FastifyInstance } from 'fastify'
@@ -407,6 +408,7 @@ export function buildHttpApp(
   // Same graph as prod: every replicate site resolves its targets here, so the
   // duty ledger is a real repo and a holder actually receives the pushes.
   const placementResolver = new PlacementResolver({
+    approved: (ids) => new PgDaemonAdmissionRepo(prisma).allowed(ids),
     duties: dutyGroupRepo,
     liveMembers: async (setId) => {
       const members = new Set(await memberSets.memberIdsOf(setId))
@@ -574,6 +576,7 @@ export function buildHttpApp(
     }),
     clock,
     repos: {
+      daemonAdmission: new PgDaemonAdmissionRepo(prisma),
       agent: agentRepo,
       assignment: new PgAssignmentRepo(prisma),
       memberSet: memberSets,

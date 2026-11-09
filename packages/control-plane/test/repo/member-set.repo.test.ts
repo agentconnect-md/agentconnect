@@ -39,7 +39,7 @@ describe('member_set_member — the tenancy invariant on membership (real Postgr
     await prisma.daemon.createMany({
       data: [
         { id: POOL_MEMBER, orgId: null, maxAgents: 8, status: 'ready' },
-        { id: LOCAL_DAEMON, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' }
+        { id: LOCAL_DAEMON, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready', approvalStatus: 'approved' }
       ]
     })
   })
@@ -105,7 +105,9 @@ describe('agent placement — the set an agent may reference (real Postgres)', (
   it('refuses a move onto another org’s set, and takes the org-less one', async () => {
     const repo = new PgAgentRepo(prisma)
     const { setId } = await otherOrgSet()
-    await prisma.daemon.create({ data: { id: LOCAL_DAEMON, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' } })
+    await prisma.daemon.create({
+      data: { id: LOCAL_DAEMON, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready', approvalStatus: 'approved' }
+    })
     await repo.create({
       id: AgentId(AGENT),
       orgId: ORG,
@@ -153,7 +155,7 @@ describe('the fold is behaviour-preserving: a pool agent’s claimants (real Pos
     await prisma.daemon.createMany({
       data: [
         { id: POOL_MEMBER, orgId: null, maxAgents: 8, status: 'ready' },
-        { id: LOCAL_DAEMON, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' }
+        { id: LOCAL_DAEMON, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready', approvalStatus: 'approved' }
       ]
     })
     const setId = await joinPool(prisma, POOL_MEMBER)

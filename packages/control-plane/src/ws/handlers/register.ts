@@ -119,7 +119,10 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
 
   // Inject the current relay roster so the daemon converges to the relays it should
   // dial (shared-bot-relay.md §5). Hot changes ride the `relay/roster` EVT.
-  const [relays, gitCommitIdentity] = await Promise.all([deps.relayRoster(), deps.github?.getGitCommitIdentity()])
+  const approved = conn.approval.status === 'approved'
+  const [relays, gitCommitIdentity] = approved
+    ? await Promise.all([deps.relayRoster(), deps.github?.getGitCommitIdentity()])
+    : [[], undefined]
 
   // register/ok grows with the daemon's agents and the org's conversations, so it is the first frame that may need fragments.
   if (req.capabilities.features.includes(FRAME_FRAGMENTS_FEATURE)) conn.enableFrameFragments()
@@ -237,7 +240,13 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       DAEMON_LIFECYCLE_BEGIN_FEATURE
     ]
   })
+  await conn.flush()
+  if (conn.closedSignal.aborted) return
   deps.connReg.markReady(conn.daemonId, conn)
+  if (!approved) {
+    await deps.registry.settleLifecycleOpOnReady(did)
+    return
+  }
   deps.pullRequestFeedback?.kick()
   deps.followUpWatch?.kick()
   deps.capabilityRequests?.daemonReady(

@@ -17,6 +17,17 @@ export async function poolSetId(prisma: PrismaClient): Promise<string> {
 /** Enroll org-less daemon rows in the pool, the way `upsertOnAuth` does on a real connection. */
 export async function joinPool(prisma: PrismaClient, ...daemonIds: string[]): Promise<string> {
   const setId = await poolSetId(prisma)
+  // These fixtures model TokenReviewed pool members, including their durable Pod identity.
+  for (const id of daemonIds)
+    await prisma.daemon.updateMany({
+      where: { id, orgId: null },
+      data: {
+        approvalStatus: 'approved',
+        approvalSource: 'system',
+        clusterIdentity: `cluster/${id}`,
+        clusterPodUid: id
+      }
+    })
   await prisma.memberSetMember.createMany({ data: daemonIds.map((daemonId) => ({ setId, daemonId })) })
   return setId
 }

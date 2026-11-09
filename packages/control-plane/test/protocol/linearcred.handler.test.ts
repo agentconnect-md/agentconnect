@@ -125,7 +125,7 @@ const ROTATED = () => ({
 })
 
 async function ready(h: ReturnType<typeof buildWsHarness>, daemonId: string, stub = new InMemoryDaemonStub()) {
-  const token = await h.mintToken(daemonId)
+  const token = await h.mintToken(daemonId, { approved: true })
   h.connect(stub)
   stub.inject('auth', { apiKey: token, daemonId, agentVersion: '1.4.0' })
   await stub.expectFrame('auth/ok')

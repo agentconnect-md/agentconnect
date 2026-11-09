@@ -75,7 +75,7 @@ export const handleExecutorCandidates: Handler = async (frame, conn, deps) => {
   const current = asked ? await deps.session.executorForKey(agentId, parseSessionKey(asked)) : null
 
   const candidates: ExecutorCandidate[] = []
-  for (const daemonId of await deps.memberSets.memberIdsOf(gate.setId)) {
+  for (const daemonId of await deps.admission.allowed(await deps.memberSets.memberIdsOf(gate.setId))) {
     // The asker is always its own candidate and knows its own load; the list is the OTHER members.
     if (daemonId === conn.daemonId) continue
     const facts = sharingFacts(deps.connReg.get(daemonId))
@@ -211,6 +211,7 @@ export const handleExecutorPrepare: Handler = async (frame, conn, deps) => {
   if (!executor?.reachable || (executor.state !== 'READY' && executor.state !== 'DRAINING')) {
     return reply(await offline(deps, orgId, executorId))
   }
+  if (!(await deps.admission.allowed([executorId])).length) return refuse('not_member')
   if (executor.state === 'DRAINING') return refuse('draining')
   if (!sharingFacts(executor)) return refuse('facet_off')
 

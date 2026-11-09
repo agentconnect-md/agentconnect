@@ -19,7 +19,9 @@ const OTHER = 'd2222222-2222-4222-8222-222222222222'
 /** A second POOL member: the org-less row plus its membership, exactly what `upsertOnAuth` writes
  *  when a Pod authenticates. Eligibility is a membership lookup, so a survivor has to be one. */
 async function seedPoolPeer(daemonId: string): Promise<void> {
-  await prisma.daemon.create({ data: { id: daemonId, orgId: null, maxAgents: 8, status: 'ready' } })
+  await prisma.daemon.create({
+    data: { approvalStatus: 'approved', id: daemonId, orgId: null, maxAgents: 8, status: 'ready' }
+  })
   await joinPool(prisma, daemonId)
 }
 const GROUP = '00000000-0000-4000-8000-000000000001'
@@ -50,7 +52,7 @@ async function seedGroup(opts: { holder?: string; term?: bigint; expiresAt?: Dat
 async function ready(h: ReturnType<typeof buildWsHarness>, opts: { orgScoped?: boolean; generation?: string } = {}) {
   const { conn, stub } = h.connect()
   if (opts.orgScoped) {
-    const token = await h.mintToken(DAEMON)
+    const token = await h.mintToken(DAEMON, { approved: true })
     stub.inject('auth', { apiKey: token, daemonId: DAEMON, agentVersion: '1.4.0' }, { id: AUTH_ID })
   } else {
     const saToken = await h.mintPoolMember(DAEMON)
@@ -197,6 +199,7 @@ describe('duty lease exchange (protocol level, real Postgres)', () => {
     // A replacement pod of the newer generation, live (seen within the lease horizon).
     await prisma.daemon.create({
       data: {
+        approvalStatus: 'approved',
         id: OTHER,
         orgId: null,
         maxAgents: 8,
@@ -416,7 +419,9 @@ describe('the reconnect roster follows the duty holder', () => {
   it('a duty-held agent is IN the roster and is never a prune candidate', async () => {
     const h = buildWsHarness(prisma)
     // Placed on ANOTHER daemon — exactly the row that used to read as "moved away".
-    await prisma.daemon.create({ data: { id: OTHER, orgId: DEFAULT_ORG_ID, maxAgents: 4, status: 'ready' } })
+    await prisma.daemon.create({
+      data: { approvalStatus: 'approved', id: OTHER, orgId: DEFAULT_ORG_ID, maxAgents: 4, status: 'ready' }
+    })
     await prisma.agent.create({
       data: { id: AGENT, orgId: DEFAULT_ORG_ID, name: 'held', runtime: 'claude', daemonId: OTHER }
     })
@@ -430,7 +435,9 @@ describe('the reconnect roster follows the duty holder', () => {
 
   it('an EXPIRED lease is not a holding — the replica goes back to being a prune candidate', async () => {
     const h = buildWsHarness(prisma)
-    await prisma.daemon.create({ data: { id: OTHER, orgId: DEFAULT_ORG_ID, maxAgents: 4, status: 'ready' } })
+    await prisma.daemon.create({
+      data: { approvalStatus: 'approved', id: OTHER, orgId: DEFAULT_ORG_ID, maxAgents: 4, status: 'ready' }
+    })
     await prisma.agent.create({
       data: { id: AGENT, orgId: DEFAULT_ORG_ID, name: 'lapsed', runtime: 'claude', daemonId: OTHER }
     })
@@ -478,7 +485,9 @@ describe('the reconnect roster follows the duty holder', () => {
 
   it('the snapshot carries the MCP defs and memory connection its DUTY-HELD agent references', async () => {
     const h = buildWsHarness(prisma, { relays: RELAY })
-    await prisma.daemon.create({ data: { id: OTHER, orgId: DEFAULT_ORG_ID, maxAgents: 4, status: 'ready' } })
+    await prisma.daemon.create({
+      data: { approvalStatus: 'approved', id: OTHER, orgId: DEFAULT_ORG_ID, maxAgents: 4, status: 'ready' }
+    })
     const providerId = await seedProvider('docs', 'oct_docs')
     const connectionId = await seedStdioConnection()
     await prisma.agent.create({
@@ -508,7 +517,9 @@ describe('the reconnect roster follows the duty holder', () => {
 
   it('a member holding NO duty covering the agent receives neither definition', async () => {
     const h = buildWsHarness(prisma, { relays: RELAY })
-    await prisma.daemon.create({ data: { id: OTHER, orgId: DEFAULT_ORG_ID, maxAgents: 4, status: 'ready' } })
+    await prisma.daemon.create({
+      data: { approvalStatus: 'approved', id: OTHER, orgId: DEFAULT_ORG_ID, maxAgents: 4, status: 'ready' }
+    })
     await seedProvider('docs', 'oct_docs')
     const connectionId = await seedStdioConnection()
     await prisma.agent.create({
@@ -533,7 +544,9 @@ describe('the reconnect roster follows the duty holder', () => {
 
   it('an EXPIRED lease takes the definitions away with the agent', async () => {
     const h = buildWsHarness(prisma, { relays: RELAY })
-    await prisma.daemon.create({ data: { id: OTHER, orgId: DEFAULT_ORG_ID, maxAgents: 4, status: 'ready' } })
+    await prisma.daemon.create({
+      data: { approvalStatus: 'approved', id: OTHER, orgId: DEFAULT_ORG_ID, maxAgents: 4, status: 'ready' }
+    })
     await seedProvider('docs', 'oct_docs')
     const connectionId = await seedStdioConnection()
     await prisma.agent.create({
@@ -584,6 +597,7 @@ describe('a dependent removal to a holder that never registered the resource', (
     const { stub, sender } = await readyWithNoRegisteredResources(h)
 
     await sender.integrationRemove(DAEMON, { integrationId: INTEGRATION }, DEFAULT_ORG_ID)
+    await vi.waitFor(() => expect(stub.sent.some((f) => f.type === 'integration/remove')).toBe(true), SETTLE)
     const sent = stub.sent.find((f) => f.type === 'integration/remove')
     expect(sent?.orgId).toBe(DEFAULT_ORG_ID)
 
