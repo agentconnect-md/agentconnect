@@ -291,6 +291,15 @@ describe('ThreadPanel', () => {
     expect(back).toHaveBeenCalledTimes(1)
   })
 
+  it('shares the task’s own session from its header, as the session page does', async () => {
+    await render()
+    const share = container.querySelector<HTMLButtonElement>('[data-task-thread-share]')!
+    expect(share.getAttribute('aria-label')).toBe('Share “Find what blocks api 1.5”')
+    act(() => share.click())
+    const dialog = container.querySelector('[role="dialog"]')
+    expect(dialog?.textContent).toContain('Copy link')
+  })
+
   it('draws the task’s own approval in its thread, at the turn that asked', async () => {
     wire.permissionRequests = [
       {
@@ -690,6 +699,7 @@ describe('ThreadPanel on a thread’s record (webchat-threads.md §6.2)', () => 
     expect(panel.querySelector('h3')?.textContent).toBe('Thread')
     expect(panel.querySelector('[data-state-icon]')).toBeNull()
     expect(panel.querySelector('[data-task-thread-expand]')).toBeNull()
+    expect(panel.querySelector('[data-task-thread-share]')).toBeNull()
     expect(panel.querySelector('textarea')).toBeNull()
     expect(panel.textContent).not.toContain('You can read this task')
   })

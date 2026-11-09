@@ -378,11 +378,15 @@ As implemented (PR 10):
   thread a "Show earlier messages" control that pages back with `cursor`.
 - **409 `DAEMON_FEATURE_MISSING`** from the thread read falls back to the task's session when the
   panel knows the task; an unowned thread then shows a load failure.
-- **`ThreadFooter`** (`ThreadFooter.tsx`, formerly `TaskThreadCard`) draws a `ThreadFooterView`: the
-  holding task's card (state and title), then the replies line with up to five repliers, the count,
-  the last reply's time, the preview and "working…" while `running`. `footerOfSummary` builds it from
-  a `SessionThreadSummaryDto`. A held thread rests between turns, as a threaded task does. An
-  unreadable footer names "a task you can't open", shows no preview and opens nothing.
+- **`ThreadFooter`** (`ThreadFooter.tsx`, formerly `TaskThreadCard`) draws a `ThreadFooterView`, held
+  or not, as the replies line (up to five repliers, the count, the last reply's time and "working…"
+  while `running`; the preview is a hover card over it), then the holding task's card: its state,
+  its title and, beneath in a lighter face, the task's own summary where it wrote one. Hovering the
+  card shows a toolbar with Reply (opens the thread at its composer) and Share (copies the
+  `?thread=` address). `footerOfSummary` builds it from a `SessionThreadSummaryDto`, and
+  `RootThreadFooter` adds the summary from the conversation's task list. A held thread rests between
+  turns, as a threaded task does. An unreadable footer names "a task you can't open", shows no
+  preview and opens nothing.
   `TaskThreadFooter` builds the same footer from a task's row, which is how today's link and
   `openedForMessageId` cards are drawn, so they look as before.
 - **Bindings** (`lib/api.ts`): `fetchSessionMessages(id, {view: 'roots'})` returns `threads`, and
