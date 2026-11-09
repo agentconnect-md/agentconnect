@@ -333,9 +333,27 @@ rules; its credentials do not prove the administrator's personal repository acce
 
 The linked Entra object ID must match one active human identity in the
 connection's tenant. Email locates candidates but never establishes identity.
-A guest whose linked identity names a different home-tenant object is refused
-unless it already matches the resource-tenant identity; an email-only match
-cannot authorize repository access.
+A guest can have different home-tenant and resource-tenant object IDs. When the
+linked object does not match directly, Logto uses the existing Microsoft login
+cache to acquire a target-tenant `User.Read` token silently. Microsoft must return
+the same home account, the requested tenant, and a local object ID matching Graph
+`/me`. Only that verified object ID is used for the Azure identity and entitlement
+checks; email alone never authorizes a match. The linked console identity stays
+unchanged, and repository permissions still come from the connection's application.
+
+This requires the tenant-identity Management API and native Azure AD token storage
+in Logto. Setup enables token storage on the Microsoft connector; Logto must have
+its secret-vault encryption key configured before reconciliation. The MSAL cache
+is encrypted in that vault and never reaches CP, the browser, or a user profile.
+The Management API returns only tenant and object IDs to an authenticated M2M
+client, and fences its result against unlinking or replacement of the vault entry.
+Existing guests without a stored login cache need one normal Microsoft sign-in
+after the upgrade. Direct identity matches need no cache. No Azure DevOps delegated
+scope or additional personal authorization flow is introduced. Target-tenant
+consent or conditional-access policy can still prevent silent resolution; the
+request is refused and asks for sign-in refresh or administrator assistance.
+Unavailable identity proof and provider outages do not persist an access-loss
+verdict for an existing grant.
 
 The application reads the person's repository and project ACLs with their
 descriptor and `includeExtendedInfo=true`. Azure's `effectiveAllow` and

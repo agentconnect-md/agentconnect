@@ -23,6 +23,11 @@ interface UserAuthzDeps {
   api: AzureDevOpsApiClient
   service: Pick<AzureDevOpsConnectionService, 'withApi'>
   microsoftIdentityFor(userId: string): Promise<MicrosoftIdentity | null>
+  microsoftTenantIdentityFor(
+    userId: string,
+    linked: MicrosoftIdentity,
+    tenantId: string
+  ): Promise<MicrosoftIdentity | null>
 }
 
 interface RepositoryRef {
@@ -109,11 +114,48 @@ export class AzureDevOpsUserAuthzService {
         'MICROSOFT_IDENTITY_REQUIRED'
       )
     if (!userId) throw missingIdentity()
-    let linked: MicrosoftIdentity | null
     try {
-      linked = await this.deps.microsoftIdentityFor(userId)
+      const linked = await this.deps.microsoftIdentityFor(userId)
+      if (!linked) throw missingIdentity()
+      return await this.deps.service.withApi(connection, async (token) => {
+        const lookup = (person: MicrosoftIdentity) =>
+          readMicrosoftIdentity(this.deps.api, token, {
+            organization: connection.organization,
+            tenantId: connection.tenantId,
+            ...person
+          })
+        const direct = await lookup(linked)
+        const tenantIdentity = direct
+          ? linked
+          : await this.deps.microsoftTenantIdentityFor(userId, linked, connection.tenantId)
+        const identity = direct ?? (tenantIdentity ? await lookup(tenantIdentity) : null)
+        if (!identity || !tenantIdentity) {
+          throw new AzureDevOpsConnectDenied(
+            'your linked Microsoft account could not be verified in this Azure DevOps organization',
+            403,
+            'AZURE_DEVOPS_USER_NO_ACCESS'
+          )
+        }
+        const level = await readUserAccessLevel(
+          this.deps.api,
+          token,
+          connection.organization,
+          connection.tenantId,
+          tenantIdentity,
+          identity
+        )
+        const projects = new Map<string, Promise<ProjectAccess>>()
+        return use((repo) => this.readRepository(token, connection, repo, identity, level, projects))
+      })
     } catch (error) {
       if (!(error instanceof LogtoApiError)) throw error
+      if (error.code === 'MICROSOFT_IDENTITY_REFRESH_REQUIRED') {
+        throw new AzureDevOpsConnectDenied(
+          'sign in with your linked Microsoft account again to verify access in this Azure DevOps tenant; tenant policy may require administrator assistance',
+          403,
+          error.code
+        )
+      }
       throw new AzureDevOpsApiError(
         'could not verify your linked Microsoft account — try again',
         502,
@@ -121,31 +163,6 @@ export class AzureDevOpsUserAuthzService {
         true
       )
     }
-    if (!linked) throw missingIdentity()
-    return this.deps.service.withApi(connection, async (token) => {
-      const identity = await readMicrosoftIdentity(this.deps.api, token, {
-        organization: connection.organization,
-        tenantId: connection.tenantId,
-        ...linked
-      })
-      if (!identity) {
-        throw new AzureDevOpsConnectDenied(
-          'your linked Microsoft account could not be verified in this Azure DevOps organization',
-          403,
-          'AZURE_DEVOPS_USER_NO_ACCESS'
-        )
-      }
-      const level = await readUserAccessLevel(
-        this.deps.api,
-        token,
-        connection.organization,
-        connection.tenantId,
-        linked,
-        identity
-      )
-      const projects = new Map<string, Promise<ProjectAccess>>()
-      return use((repo) => this.readRepository(token, connection, repo, identity, level, projects))
-    })
   }
 
   private async readRepository(

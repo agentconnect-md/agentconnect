@@ -1911,6 +1911,10 @@ export function buildContainer(
       microsoftIdentityFor: async (userId) => {
         const sub = await repos.user.getOidcSubject(userId)
         return sub && logtoIdentity ? logtoIdentity.microsoftIdentityFor(sub, 0) : null
+      },
+      microsoftTenantIdentityFor: async (userId, linked, tenantId) => {
+        const sub = await repos.user.getOidcSubject(userId)
+        return sub && logtoIdentity ? logtoIdentity.microsoftTenantIdentityFor(sub, linked, tenantId) : null
       }
     }),
     hooks: azureDevOpsHooks,

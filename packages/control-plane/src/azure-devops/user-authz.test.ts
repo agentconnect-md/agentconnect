@@ -11,7 +11,7 @@ import {
   exampleRepository
 } from '../../test/fakes/azure-devops-api.js'
 import type { AzureDevOpsConnectionRecord } from '../persistence/ports.js'
-import { LogtoApiError } from '../github/logto-identity.js'
+import { LogtoApiError, type MicrosoftIdentity } from '../github/logto-identity.js'
 import { AzureDevOpsUserAuthzService } from './user-authz.js'
 import { readEffectivePermissionBits } from './user-access-api.js'
 import { GIT_REPOSITORIES_NAMESPACE } from './api.js'
@@ -33,15 +33,24 @@ const tokens = {
 function harness() {
   const fake = new FakeAzureDevOps()
   const identity = vi.fn(async () => LINKED_MICROSOFT)
-  const authz = new AzureDevOpsUserAuthzService({ api: fake.api, service: tokens, microsoftIdentityFor: identity })
-  return { fake, authz, identity }
+  const tenantIdentity = vi.fn<
+    (_userId: string, _linked: MicrosoftIdentity, _tenantId: string) => Promise<MicrosoftIdentity | null>
+  >(async () => null)
+  const authz = new AzureDevOpsUserAuthzService({
+    api: fake.api,
+    service: tokens,
+    microsoftIdentityFor: identity,
+    microsoftTenantIdentityFor: tenantIdentity
+  })
+  return { fake, authz, identity, tenantIdentity }
 }
 
 describe('Azure repository authority from the existing Microsoft identity', () => {
   it('uses the caller’s identity and effective group/inherited grants, even without a direct ACE', async () => {
-    const { fake, authz, identity } = harness()
+    const { fake, authz, identity, tenantIdentity } = harness()
     expect(await authz.assertAccess('acting-user', located, 'write')).toEqual({ read: true, write: true })
     expect(identity).toHaveBeenCalledWith('acting-user')
+    expect(tenantIdentity).not.toHaveBeenCalled()
     const permissions = fake.requests.filter((request) => request.url.includes('/accesscontrollists/'))
     expect(permissions).toHaveLength(2)
     for (const request of permissions) {
@@ -82,6 +91,37 @@ describe('Azure repository authority from the existing Microsoft identity', () =
     fake.user.objectId = LINKED_MICROSOFT.objectId
     fake.user.tenantId = '00000000-0000-4000-8000-0000000000ee'
     await expect(authz.assertAccess('user', located, 'read')).rejects.toMatchObject({ status: 403 })
+  })
+
+  it('resolves a different guest object, checks its entitlement, and rechecks its ACL after revocation', async () => {
+    const { fake, authz, tenantIdentity } = harness()
+    fake.user.metaType = 'guest'
+    fake.user.objectId = '00000000-0000-4000-8000-0000000000ee'
+    await expect(authz.assertAccess('user', located, 'write')).rejects.toMatchObject({ status: 403 })
+    tenantIdentity.mockResolvedValue({ ...LINKED_MICROSOFT, objectId: fake.user.objectId })
+    expect(await authz.assertAccess('user', located, 'write')).toEqual({ read: true, write: true })
+    expect(tenantIdentity).toHaveBeenLastCalledWith('user', LINKED_MICROSOFT, TENANT_ID)
+    fake.effectivePermissions.set(gitToken, { effectiveAllow: 6, effectiveDeny: 4 })
+    await expect(authz.assertAccess('user', located, 'write')).rejects.toMatchObject({ status: 403 })
+    expect(await authz.assertAccess('user', located, 'read')).toEqual({ read: true, write: false })
+    fake.user.tenantId = '00000000-0000-4000-8000-0000000000ef'
+    await expect(authz.assertAccess('user', located, 'read')).rejects.toMatchObject({ status: 403 })
+  })
+
+  it('does not suspend grants for unavailable tenant resolution or a required sign-in refresh', async () => {
+    const { fake, authz, tenantIdentity } = harness()
+    fake.user.objectId = '00000000-0000-4000-8000-0000000000ee'
+    tenantIdentity.mockRejectedValue(new LogtoApiError('provider unavailable', 502, true))
+    await expect(authz.attestAccess('user', located, 'read')).rejects.toMatchObject({
+      code: 'UNAVAILABLE',
+      retryable: true
+    })
+    tenantIdentity.mockRejectedValue(
+      new LogtoApiError('refresh login', 422, false, 'MICROSOFT_IDENTITY_REFRESH_REQUIRED')
+    )
+    await expect(authz.attestAccess('user', located, 'read')).rejects.toMatchObject({
+      code: 'MICROSOFT_IDENTITY_REFRESH_REQUIRED'
+    })
   })
 
   it('refuses missing actors, inactive users and unavailable identity verification', async () => {
