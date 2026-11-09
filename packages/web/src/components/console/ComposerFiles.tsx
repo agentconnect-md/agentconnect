@@ -183,7 +183,7 @@ function Card({ card, removeLabel, onRemove }: { card: AttachmentCard; removeLab
     <div
       data-attachment={src ? 'image' : 'file'}
       {...(card.status ? { 'data-composer-file': card.status } : {})}
-      title={card.error ?? (card.mimeType ? `${card.name} (${card.mimeType})` : card.name)}
+      title={card.error ?? card.name}
       className={`${CARD} ${tone} ${src ? '' : 'flex flex-col justify-between p-3'}`}
     >
       {src ? (
