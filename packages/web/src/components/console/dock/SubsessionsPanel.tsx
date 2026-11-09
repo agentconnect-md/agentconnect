@@ -349,7 +349,7 @@ function SubsessionLine({
         type="button"
         data-task-open-thread=""
         title={name}
-        className="min-w-0 cursor-pointer truncate border-0 bg-transparent p-0 text-left font-[inherit] text-inherit hover:underline"
+        className="min-w-0 cursor-pointer truncate border-0 bg-transparent p-0 text-left font-[inherit] text-inherit after:absolute after:-inset-x-2 after:-inset-y-[6px] after:z-10"
         onClick={onOpen}
       >
         {name}
@@ -357,7 +357,7 @@ function SubsessionLine({
     ) : row.sessionId ? (
       <Link
         title={name}
-        className="min-w-0 truncate text-inherit no-underline hover:underline"
+        className="min-w-0 cursor-pointer truncate text-inherit no-underline after:absolute after:-inset-x-2 after:-inset-y-[6px] after:z-10"
         href={orgPath(`/sessions/${encodeURIComponent(row.sessionId)}`)}
       >
         {name}
