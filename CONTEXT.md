@@ -67,3 +67,48 @@ _Avoid_: backup, cache
 use, performed with the requesting agent's own access. A successful resolution is also the proof
 that the agent may read that Source's cached content.
 _Avoid_: ref lookup, access check (as separate concepts)
+
+## Computer form filling
+
+**Vault** — the product's encrypted store of website sign-ins and personal details, which agents
+may be granted to fill into forms on a Computer. Its secret values are excluded from model-facing
+fill data; a website may still expose them on screen. Every Vault is either a Personal Vault or
+the Organization Vault.
+_Avoid_: password manager, credential store, keychain. HashiCorp Vault, the CP's optional
+encryption backend, is called the **secret cipher**, never "Vault", in product language.
+
+**Personal Vault** — the Vault one member keeps in one organization. Only that member can see or
+change it; organization owners cannot.
+
+**Organization Vault** — the one Vault an organization keeps for shared sign-ins and details,
+managed by its owners.
+
+**Vault item** — one entry in a Vault: either a Login or a Personal info.
+_Avoid_: entry, record, secret (a Vault item holds both secret and non-secret fields)
+
+**Login** — a Vault item that signs in to particular websites: the sites it belongs to, a username,
+and the secret values that site asks for.
+_Avoid_: credential, account, password (when meaning the whole item)
+
+**Personal info** — a Vault item holding a person's name, contact details and addresses, usable on
+any website's form rather than bound to particular sites.
+_Avoid_: Identity (already means a linked chat-platform account), profile (browser and user profiles)
+
+**Secret field** — a Vault item field whose value is excluded from model-facing fill data,
+messages and logs. A web page may still display it once filled, exposing it through subsequent
+screenshots; only a masked input hides it on screen.
+_Avoid_: hidden field, sensitive field
+
+**Item grant** — the agents a Vault item may be filled by: selected agents, or, for an Organization
+Vault item, all agents. An item granted to no agent is never filled by one, whoever asks.
+_Avoid_: share, permission, access (as separate concepts)
+
+**Fill requester** — the person a fill is done for: the sender of the turn's triggering message,
+or the session's owner when a turn has no sender. A Personal Vault item fills on its own only for
+its owner; anyone else needs the owner's consent.
+_Avoid_: caller, user (ambiguous between the requester and the item's owner)
+
+**Fill card** — the card that collects a form's ordinary and secret field values from a person,
+so they reach the Computer without passing through the agent's model. Values are used for one
+fill unless the person chooses to save them to a Vault they may manage.
+_Avoid_: Secret card, password prompt, elicitation (this card's values do not return to the model)
