@@ -115,3 +115,39 @@ export function threadToAutoOpen(
   }
   return fresh[fresh.length - 1]
 }
+
+/** A turn as `splitThreadWork` reads it: a person's or an agent's, the agent's with its steps. */
+interface SplittableTurn {
+  kind: 'user' | 'bot'
+  key: string
+  agentId?: string
+  steps?: readonly { thread?: string }[]
+}
+
+/** Moves the coordinator's thread-stamped steps off the main timeline into per-root turns; a turn left empty is dropped. */
+export function splitThreadWork<T extends SplittableTurn>(
+  turns: readonly T[],
+  coordinatorId: string | undefined
+): { main: T[]; byThread: ReadonlyMap<string, T[]> } {
+  const main: T[] = []
+  const byThread = new Map<string, T[]>()
+  for (const turn of turns) {
+    if (turn.kind !== 'bot' || !coordinatorId || turn.agentId !== coordinatorId || !turn.steps) {
+      main.push(turn)
+      continue
+    }
+    const roots = [...new Set(turn.steps.flatMap((step) => (step.thread ? [step.thread] : [])))]
+    if (roots.length === 0) {
+      main.push(turn)
+      continue
+    }
+    for (const root of roots)
+      byThread.set(root, [
+        ...(byThread.get(root) ?? []),
+        { ...turn, key: `${turn.key}:in:${root}`, steps: turn.steps.filter((step) => step.thread === root) }
+      ])
+    const rest = turn.steps.filter((step) => !step.thread)
+    if (rest.length > 0) main.push({ ...turn, steps: rest })
+  }
+  return { main, byThread }
+}
