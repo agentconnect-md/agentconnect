@@ -678,9 +678,11 @@ architecture invariant:
   skills also surface on the Tools & Skills page alongside imported sources.
   Beside each file's diff the review shows that file's revision: the change,
   its reason or destinations, the model's note, and "Not applied" for an entry
-  the daemon rejected. The latest adopted dream's history row lists the same
-  reasons per file. They explain, never gate: nothing about adoption waits on
-  them, and a failed read leaves the review as it was.
+  the daemon rejected. When the latest adopted dream named any, its history
+  row offers a "Notable changes · N" button listing them per file; most dreams
+  name none and show no button, so its presence is the cue. They explain, never
+  gate: nothing about adoption waits on them, and a failed read shows no button
+  and leaves the review as it was, without waking the sandbox.
   Both branches of the mobile/desktop split follow the existing
   memory-settings pattern.
 

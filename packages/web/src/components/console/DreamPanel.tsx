@@ -11,8 +11,8 @@
 //   3. Review — the staged store a completed dream produced, diffed against
 //      what is live now, plus Adopt / Discard. A dream is STAGED by design, so
 //      the trigger without this review surface would be a dead end.
-//   4. Reasons — why a dream corrected, dropped or moved each file it named, beside
-//      the diff and on the latest adopted dream. An explanation only, never a gate.
+//   4. Notable changes — why a dream corrected, dropped or moved each file it named, beside
+//      the diff and, when there are any, on the latest adopted dream. Never a gate.
 //
 // Everything proxies live to the owning daemon, so an offline agent is an
 // expected state (503 → a friendly notice), not an error.
@@ -141,6 +141,8 @@ export function DreamPanel({
   const [actionNotice, setActionNotice] = useState<string | null>(null)
   const [reviewing, setReviewing] = useState<string | null>(null)
   const [explaining, setExplaining] = useState<string | null>(null)
+  // Only the latest adopted dream keeps its revisions; the button shows only when it has some.
+  const [notable, setNotable] = useState<{ dreamId: string; revisions: DreamRevisionDto[] } | null>(null)
   const [confirmStart, setConfirmStart] = useState(false)
   const [confirmAdopt, setConfirmAdopt] = useState<{ dreamId: string; reviewToken?: string } | null>(null)
   // The snapshot fence tripped: the live store moved under this dream. Adopting anyway is a
@@ -192,6 +194,22 @@ export function DreamPanel({
     setReviewing(null)
     void refresh()
   }, [refresh])
+
+  const latestAdopted = (dreams ?? []).find((dream) => dream.status === 'adopted')?.dreamId
+  useEffect(() => {
+    setNotable(null)
+    if (!latestAdopted) return
+    let alive = true
+    // Silent: an unreadable or asleep home just leaves the button off, never wakes the sandbox.
+    void listDreamRevisions(agentId, latestAdopted)
+      .then((page) => {
+        if (alive && page.revisions.length) setNotable({ dreamId: latestAdopted, revisions: page.revisions })
+      })
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [agentId, latestAdopted])
 
   // Poll fast while something is in flight, slowly otherwise — a settled list is
   // NOT static now that dreams can start on a schedule or from another client.
@@ -390,13 +408,13 @@ export function DreamPanel({
                   {reviewing === dream.dreamId ? t('hide') : t('review')}
                 </Button>
               ) : null}
-              {dream.status === 'adopted' ? (
+              {notable?.dreamId === dream.dreamId ? (
                 <Button
                   variant="secondary"
                   size="xs"
                   onClick={() => setExplaining(explaining === dream.dreamId ? null : dream.dreamId)}
                 >
-                  {explaining === dream.dreamId ? t('hide') : t('reasons')}
+                  {explaining === dream.dreamId ? t('hide') : t('notableChanges', { count: notable.revisions.length })}
                 </Button>
               ) : null}
               {dream.status === 'completed' && canEdit ? (
@@ -415,9 +433,9 @@ export function DreamPanel({
                 </Button>
               ) : null}
             </span>
-            {dream.status === 'adopted' && explaining === dream.dreamId ? (
+            {notable?.dreamId === dream.dreamId && explaining === dream.dreamId ? (
               <div className="basis-full">
-                <DreamRevisions agentId={agentId} dreamId={dream.dreamId} />
+                <DreamRevisions revisions={notable.revisions} />
               </div>
             ) : null}
           </li>
@@ -795,55 +813,17 @@ function RevisionReason({ revision }: { revision: DreamRevisionDto }) {
   )
 }
 
-/** The reasons an adopted dream gave for each file it named, read live from its owning daemon. */
-function DreamRevisions({ agentId, dreamId }: { agentId: string; dreamId: string }) {
-  const t = useTranslations('Agents.detail.dreams')
-  const [page, setPage] = useState<{ exists: boolean; revisions: DreamRevisionDto[] } | null>(null)
-  const { attempt, error, asleepNotice, reset, refused } = useStagedRead(agentId, page !== null)
-
-  useEffect(() => {
-    let alive = true
-    setPage(null)
-    reset()
-    void listDreamRevisions(agentId, dreamId)
-      .then((next) => {
-        if (alive) setPage(next)
-      })
-      .catch((e: unknown) => {
-        if (alive) refused(e, 'Could not load the reasons.')
-      })
-    return () => {
-      alive = false
-    }
-    // `attempt` is the wake's re-issue of this read.
-  }, [agentId, dreamId, attempt, reset, refused])
-
+/** The notable changes the latest adopted dream named, one per file, read once by the panel. */
+function DreamRevisions({ revisions }: { revisions: DreamRevisionDto[] }) {
   return (
-    <div className="mt-2 flex flex-col gap-2 rounded-(--radius-md) border border-(--border-subtle) bg-(--surface-sunken) p-3">
-      {asleepNotice ??
-        (error ? <div className="font-sans text-[12px] leading-normal text-(--status-error)">{error}</div> : null)}
-      {page === null && !error && !asleepNotice ? (
-        <div className="flex items-center gap-2 font-sans text-[12px] text-(--text-tertiary)">
-          <Spinner /> {t('loading')}
-        </div>
-      ) : null}
-      {page && !page.exists ? (
-        <div className="font-sans text-[12px] leading-normal text-(--text-tertiary)">{t('reasonsGone')}</div>
-      ) : null}
-      {page?.exists && page.revisions.length === 0 ? (
-        <div className="font-sans text-[12px] leading-normal text-(--text-tertiary)">{t('noReasons')}</div>
-      ) : null}
-      {page?.revisions.length ? (
-        <ul className="m-0 flex list-none flex-col gap-2 p-0">
-          {page.revisions.map((revision) => (
-            <li key={revision.path} className="flex flex-col gap-1">
-              <span className="font-mono text-[11.5px] leading-normal text-(--text-primary)">{revision.path}</span>
-              <RevisionReason revision={revision} />
-            </li>
-          ))}
-        </ul>
-      ) : null}
-    </div>
+    <ul className="m-0 mt-2 flex list-none flex-col gap-2 rounded-(--radius-md) border border-(--border-subtle) bg-(--surface-sunken) p-3">
+      {revisions.map((revision) => (
+        <li key={revision.path} className="flex flex-col gap-1">
+          <span className="font-mono text-[11.5px] leading-normal text-(--text-primary)">{revision.path}</span>
+          <RevisionReason revision={revision} />
+        </li>
+      ))}
+    </ul>
   )
 }
 

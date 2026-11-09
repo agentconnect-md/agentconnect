@@ -699,8 +699,8 @@ describe('DreamPanel', () => {
     expect(button(host, 'Adopt')?.disabled).toBe(false)
   })
 
-  it('lists an adopted dream’s per-file reasons, marking the ones it did not apply', async () => {
-    api.listDreams.mockResolvedValue([dream({ status: 'adopted' })])
+  it('lists the latest adopted dream’s notable changes, marking the ones it did not apply', async () => {
+    api.listDreams.mockResolvedValue([dream({ status: 'adopted' }), dream({ dreamId: 'drm-0', status: 'adopted' })])
     api.listDreamRevisions.mockResolvedValue({
       exists: true,
       revisions: [
@@ -717,7 +717,11 @@ describe('DreamPanel', () => {
     })
     const host = await render()
     host.querySelector('details')?.setAttribute('open', '')
-    await act(async () => button(host, 'Reasons')?.click())
+    // Only the latest adopted dream is asked; the older one keeps no revisions.
+    expect(api.listDreamRevisions).toHaveBeenCalledTimes(1)
+    expect(api.listDreamRevisions).toHaveBeenCalledWith(AGENT, 'drm-1')
+    expect(button(host, 'Notable changes · 2')).toBeTruthy()
+    await act(async () => button(host, 'Notable changes · 2')?.click())
     expect(host.textContent).toContain('deploys.md')
     expect(host.textContent).toContain('Moved into ops.md')
     expect(host.textContent).toContain('Merged into ops.')
@@ -729,11 +733,17 @@ describe('DreamPanel', () => {
     expect(api.discardDream).not.toHaveBeenCalled()
   })
 
-  it('says an older adopted dream’s reasons are no longer kept', async () => {
+  it('shows no notable-changes button when the dream named none or they cannot be read', async () => {
     api.listDreams.mockResolvedValue([dream({ status: 'adopted' })])
-    api.listDreamRevisions.mockResolvedValue({ exists: false, revisions: [] })
-    const host = await render()
-    await act(async () => button(host, 'Reasons')?.click())
-    expect(host.textContent).toContain('Reasons are kept only for the latest adopted dream.')
+    api.listDreamRevisions.mockResolvedValue({ exists: true, revisions: [] })
+    let host = await render()
+    expect(host.textContent).not.toContain('Notable changes')
+    expect(host.textContent).toContain('Adopted')
+
+    await act(async () => root?.unmount())
+    api.listDreamRevisions.mockRejectedValue(new FakeApiError(409))
+    host = await render()
+    expect(host.textContent).not.toContain('Notable changes')
+    expect(api.wakeAgent).not.toHaveBeenCalled()
   })
 })
