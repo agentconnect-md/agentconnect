@@ -495,6 +495,26 @@ describe('SessionReader', () => {
     await s.close()
   })
 
+  it('drops an inlined image from a marker whose file names contain brackets', async () => {
+    const s = await store()
+    seedHistorySession(s)
+    await s.appendTranscript({
+      channel: 'C1',
+      thread: 'T1',
+      ts: '1',
+      sender: 'U1',
+      ...(await delivered(s, AGENT, 'C1', 'T1')),
+      kind: 'text',
+      text: 'see\n[attached: [a][b].png (image/png), [Tag].S01.torrent (application/x-bittorrent)]',
+      attachments: [{ name: '[a][b].png', mimeType: 'image/png', data: 'aW1hZ2U=' }]
+    })
+
+    expect((await createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })).messages).toEqual([
+      expect.objectContaining({ text: 'see\n[attached: [Tag].S01.torrent (application/x-bittorrent)]' })
+    ])
+    await s.close()
+  })
+
   it('returns every stored image a CP admits and only the first to one that names no bound', async () => {
     // Pasted Slack images share one name, so each stored image strips one whole marker entry.
     const s = await store()
