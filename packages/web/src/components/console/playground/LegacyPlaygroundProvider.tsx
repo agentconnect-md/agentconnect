@@ -1507,6 +1507,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       }
 
       const scheduleReconnect = (): void => {
+        // The pre-send retry in pgSend owns a dial that has not put its turn on the wire yet.
+        if (pendingDials.current.has(id)) return
         const reconnectId = conn.conversationId ?? resumeId ?? conversationIds.current.get(id)
         // An unacked steer keeps reconnecting too: its verdict is the only way to learn whether the
         // runtime took it, and its identity must survive until then.

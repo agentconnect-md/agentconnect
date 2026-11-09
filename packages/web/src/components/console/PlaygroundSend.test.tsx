@@ -2533,6 +2533,35 @@ describe('a dial that dies before the turn reaches the socket', () => {
     expect(DyingSocket.instances.every((s) => s.send.mock.calls.length === 0)).toBe(true)
   })
 
+  it('reports one warning when every dial of a continued conversation fails', async () => {
+    await act(async () => {
+      pgSend('s1', 'agent-1', 'hello', 'c1')
+    })
+    for (const [attempt, delay] of [500, 1000, 2000, 4000, 4000, 4000].entries()) {
+      await act(async () => {
+        const socket = DyingSocket.instances[attempt]!
+        socket.onerror?.({})
+        socket.onclose?.()
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(delay)
+      })
+    }
+    await act(async () => {
+      const socket = DyingSocket.instances[6]!
+      socket.onerror?.({})
+      socket.onclose?.()
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000)
+    })
+    expect(DyingSocket.instances).toHaveLength(7)
+    expect(isPgBusy('s1')).toBe(false)
+    const warnings = getLiveSteps('s1').filter((s) => s.kind === 'done')
+    expect(warnings).toHaveLength(1)
+    expect(String(warnings[0]?.text)).toContain('couldn’t connect to the chat server')
+  })
+
   it('recovers after several failures without duplicating the prompt', async () => {
     await act(async () => {
       pgSend('s1', 'agent-1', 'hello')
