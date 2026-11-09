@@ -366,6 +366,7 @@
       "replyInThread": "Reply in thread",
       "inThread": "In thread: {root}",
       "inThreadBare": "In thread",
+      "repliedToThread": "Replied to a thread:",
       "answeredInThread": "Answered in the thread",
       "messageActions": "Message actions",
       "openOnPlatform": "Open in {platform}",

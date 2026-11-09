@@ -59,6 +59,8 @@ export type Turn =
       seq?: number
       /** The platform's id of a recorded message (a webchat post id, a Slack ts), which a coordinator's task names. */
       messageId?: string
+      /** A root-level message the coordinator handed into a task's thread: that thread's root. */
+      handedTo?: string
     }
   // `wake`: opened by a background-task wake no reply has merged into yet; the run that follows clears it.
   | {
@@ -238,6 +240,8 @@ export function buildTurns(input: BuildTurnsInput): { turns: Turn[]; speakers: M
   if (rows) {
     // The roots view's thread message the coordinator received: no bubble here, a label on the turn that answers it.
     let answeringThread: string | undefined
+    // A handed message's own post id leads to the thread it joined, where the coordinator's work on it is drawn.
+    const handedRoot = new Map(rows.flatMap((m) => (m.handedTo && m.postId ? [[m.postId, m.handedTo] as const] : [])))
     // Agent output carries `sender === agentId`, everything else is a person or schedule; an agent's run is one turn.
     for (const m of rows) {
       if (liveCards.size > 0 && (m.kind || '').toLowerCase() === 'elicit') {
@@ -284,7 +288,9 @@ export function buildTurns(input: BuildTurnsInput): { turns: Turn[]; speakers: M
           ...msgStep(m, toolSessionId, rowPlatform),
           ...(answeredIn ? { answeredIn } : {}),
           // Only its work (not its prose) moves into the thread's panel: prose there is read from the thread itself.
-          ...(threadsView && m.thread && (m.kind || 'text').toLowerCase() !== 'text' ? { thread: m.thread } : {})
+          ...(threadsView && m.thread && (m.kind || 'text').toLowerCase() !== 'text'
+            ? { thread: handedRoot.get(m.thread) ?? m.thread }
+            : {})
         }
         last.steps.push(step)
         if (last.wake) last.wake = false
@@ -359,7 +365,8 @@ export function buildTurns(input: BuildTurnsInput): { turns: Turn[]; speakers: M
           platform: rowPlatform,
           body: parseUserTurnBody(m.body),
           // Seqs are per daemon store, so only the owner's own rows can match its gate's verdicts.
-          ...(ownsDecisionSeq(m) ? { seq: m.seq } : {})
+          ...(ownsDecisionSeq(m) ? { seq: m.seq } : {}),
+          ...(threadsView && m.handedTo ? { handedTo: m.handedTo } : {})
         })
       }
     }

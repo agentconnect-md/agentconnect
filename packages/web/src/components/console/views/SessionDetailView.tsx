@@ -2918,6 +2918,26 @@ export default function SessionDetailView() {
       </div>
     )
   }
+  // A message the coordinator handed into a task's thread says so above its bubble, as Slack's "replied to a thread", and opens it.
+  const handedLead = (turn: Turn) => {
+    if (turn.kind !== 'user' || !turn.handedTo) return null
+    const rootId = turn.handedTo
+    const summary = threadSummaries.get(rootId)
+    const name = summary?.task?.title ?? summary?.rootExcerpt ?? rootTextOf.get(rootId)
+    return (
+      <button
+        type="button"
+        data-turn-handed-to={rootId}
+        onClick={() => openRootThread(rootId)}
+        className="flex max-w-full min-w-0 cursor-pointer items-center gap-[4px] border-0 bg-transparent p-0 pr-1 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)"
+      >
+        <span className="flex-none">{tt('repliedToThread')}</span>
+        <span className="min-w-0 truncate font-medium text-(--brand) hover:underline">
+          {name ? firstWords(name) : tt('inThreadBare')}
+        </span>
+      </button>
+    )
+  }
   const threadLine =
     'flex w-fit max-w-full min-w-0 cursor-pointer items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary) hover:text-(--text-secondary) hover:underline'
   // A coordinator turn answering a thread message names the thread, and opens it.
@@ -3966,6 +3986,7 @@ export default function SessionDetailView() {
                               turn={turn}
                               platformMark={usesIntegrationAvatar ? sessionIntegration : undefined}
                               footer={rootFooter(turn)}
+                              lead={handedLead(turn)}
                               onReply={(() => {
                                 const root = replyRootOf(turn)
                                 return root ? () => replyInThread(root) : undefined

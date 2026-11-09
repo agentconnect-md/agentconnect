@@ -107,7 +107,8 @@ export function UserTurnView({
   platformMark,
   footer,
   onReply,
-  pressToReply = false
+  pressToReply = false,
+  lead
 }: {
   turn: UserTurn
   /** The integration whose mark stands in for a sender with no picture. */
@@ -118,6 +119,8 @@ export function UserTurnView({
   onReply?: (() => void) | undefined
   /** A long press replies too, as a phone reader has no hover. */
   pressToReply?: boolean
+  /** Above the bubble: the thread a handed message joined, which it opens. */
+  lead?: ReactNode
 }) {
   const { orgPath } = useOrgs()
   return (
@@ -138,6 +141,7 @@ export function UserTurnView({
             )}
           </span>
         )}
+        {lead}
         {turn.steer && (
           // A glyph and one word; the full meaning sits in the tooltip.
           <span
