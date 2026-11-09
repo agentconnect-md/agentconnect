@@ -193,8 +193,7 @@ export function ThreadFooter({
         {
           'data-task-card-open': '',
           ...(open ? { 'aria-expanded': selected === true } : {}),
-          ...(open || to ? { 'aria-label': open ? openLabel : t('openPage', { title }) } : {}),
-          ...(open ? { title: openLabel } : {})
+          ...(open || to ? { 'aria-label': open ? openLabel : t('openPage', { title }) } : {})
         }
       )
     : null
@@ -287,7 +286,8 @@ export function ThreadFooter({
           <span
             data-thread-count=""
             className="whitespace-nowrap"
-            {...(replies > 0 && lastReplyAt
+            // The hover card names the latest reply; a native tooltip on top of it would only cover it.
+            {...(replies > 0 && lastReplyAt && !preview
               ? {
                   title: t('repliesTitle', {
                     replies: repliesLabel,

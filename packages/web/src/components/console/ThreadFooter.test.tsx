@@ -199,8 +199,10 @@ describe('ThreadFooter', () => {
       ['Dana Reyes', 'DR'],
       ['deploy-bot', 'D']
     ])
-    const count = footer.querySelector<HTMLElement>('[title="2 replies, last reply 2m ago"]')!
+    const count = footer.querySelector<HTMLElement>('[data-thread-count]')!
     expect(count.textContent).toBe('2 replies · 2m')
+    // The preview is the line's hover card, so no native tooltip covers it.
+    expect(count.hasAttribute('title')).toBe(false)
     expect(footer.querySelector('[data-thread-preview]')?.textContent).toBe(
       'Dana Reyes: Still slow after the cache fix'
     )
