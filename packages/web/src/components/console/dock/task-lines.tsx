@@ -87,14 +87,14 @@ export function LineRow({
       {...attrs}
       className="group/line mx-[-8px] flex flex-none flex-col rounded-[8px] px-2 py-[6px] hover:bg-(--surface-hover)"
     >
-      <div className="flex min-h-6 min-w-0 items-center gap-[10px]">
+      <div className="relative flex min-h-6 min-w-0 items-center gap-[10px]">
         <StateIcon state={state} label={stateLabel} />
         {details ? (
           <button
             type="button"
             aria-expanded={open}
             onClick={() => setOpen((v) => !v)}
-            className={`${titleClass} cursor-pointer gap-[5px] border-0 bg-transparent p-0 text-left`}
+            className={`${titleClass} cursor-pointer gap-[5px] border-0 bg-transparent p-0 text-left after:absolute after:-inset-x-2 after:-inset-y-[6px] after:z-10`}
           >
             {title}
             <Icon
@@ -126,7 +126,7 @@ export function LineRow({
               disabled={stop.disabled}
               onClick={stop.onClick}
               // Over the time and shown on hover or focus for a mouse; always shown, beside it, on a touch screen.
-              className="my-[-1px] inline-flex h-[26px] w-[26px] cursor-pointer items-center justify-center rounded-[7px] border-0 bg-(--surface-active) p-0 text-(--text-secondary) hover:bg-(--border-default) hover:text-(--text-primary) pointer-fine:focus-visible:opacity-100 disabled:cursor-not-allowed pointer-fine:absolute pointer-fine:right-0 pointer-fine:opacity-0 pointer-fine:group-hover/line:opacity-100"
+              className="relative z-20 my-[-1px] inline-flex h-[26px] w-[26px] cursor-pointer items-center justify-center rounded-[7px] border-0 bg-(--surface-active) p-0 text-(--text-secondary) hover:bg-(--border-default) hover:text-(--text-primary) pointer-fine:focus-visible:opacity-100 disabled:cursor-not-allowed pointer-fine:absolute pointer-fine:right-0 pointer-fine:opacity-0 pointer-fine:group-hover/line:opacity-100"
             >
               <Icon name="square" size={12} />
             </button>
