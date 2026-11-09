@@ -59,6 +59,8 @@ export type Turn =
       seq?: number
       /** The platform's id of a recorded message (a webchat post id, a Slack ts), which a coordinator's task names. */
       messageId?: string
+      /** A root-level message the coordinator handed into a task's thread: that thread's root. */
+      handedTo?: string
     }
   // `wake`: opened by a background-task wake no reply has merged into yet; the run that follows clears it.
   | {
@@ -74,6 +76,12 @@ export type Turn =
       /** A coordinator turn that answered a message in a thread: that thread's root (webchat-threads.md §6.1). */
       inThread?: string
     }
+
+/** When a turn happened, for its time line: a person's message's own time, else its agent's first timed step. */
+export function turnTimeMs(turn: Turn): number | undefined {
+  if (turn.kind === 'user') return turn.timeMs
+  return turn.steps.find((step) => step.timeMs !== undefined)?.timeMs
+}
 
 export type SessionParticipant = {
   id: string
@@ -238,6 +246,8 @@ export function buildTurns(input: BuildTurnsInput): { turns: Turn[]; speakers: M
   if (rows) {
     // The roots view's thread message the coordinator received: no bubble here, a label on the turn that answers it.
     let answeringThread: string | undefined
+    // A handed message's own post id leads to the thread it joined, where the coordinator's work on it is drawn.
+    const handedRoot = new Map(rows.flatMap((m) => (m.handedTo && m.postId ? [[m.postId, m.handedTo] as const] : [])))
     // Agent output carries `sender === agentId`, everything else is a person or schedule; an agent's run is one turn.
     for (const m of rows) {
       if (liveCards.size > 0 && (m.kind || '').toLowerCase() === 'elicit') {
@@ -280,7 +290,14 @@ export function buildTurns(input: BuildTurnsInput): { turns: Turn[]; speakers: M
         }
         answeringThread = undefined
         const answeredIn = threadsView && threadShape ? replyToMessageThread(m, threadShape) : undefined
-        const step = { ...msgStep(m, toolSessionId, rowPlatform), ...(answeredIn ? { answeredIn } : {}) }
+        const step = {
+          ...msgStep(m, toolSessionId, rowPlatform),
+          ...(answeredIn ? { answeredIn } : {}),
+          // Only its work (not its prose) moves into the thread's panel: prose there is read from the thread itself.
+          ...(threadsView && m.thread && (m.kind || 'text').toLowerCase() !== 'text'
+            ? { thread: handedRoot.get(m.thread) ?? m.thread }
+            : {})
+        }
         last.steps.push(step)
         if (last.wake) last.wake = false
         if (!last.time && step.time) last.time = step.time
@@ -354,7 +371,8 @@ export function buildTurns(input: BuildTurnsInput): { turns: Turn[]; speakers: M
           platform: rowPlatform,
           body: parseUserTurnBody(m.body),
           // Seqs are per daemon store, so only the owner's own rows can match its gate's verdicts.
-          ...(ownsDecisionSeq(m) ? { seq: m.seq } : {})
+          ...(ownsDecisionSeq(m) ? { seq: m.seq } : {}),
+          ...(threadsView && m.handedTo ? { handedTo: m.handedTo } : {})
         })
       }
     }
@@ -408,7 +426,7 @@ export function buildTurns(input: BuildTurnsInput): { turns: Turn[]; speakers: M
           time: stp.time ?? (firstMsg ? session.time : ''),
           ...(stp.observedAtMs !== undefined ? { timeMs: stp.observedAtMs } : {}),
           text: stp.text,
-          ...(stp.image ? { images: [stp.image] } : {}),
+          ...(stp.images?.length ? { images: stp.images } : stp.image ? { images: [stp.image] } : {}),
           isCron: !!cron,
           cronId: cron?.id ?? null,
           ...(stp.steer ? { steer: true, ...(stp.steered ? { steered: true } : {}) } : {}),
@@ -504,7 +522,7 @@ export function buildTurns(input: BuildTurnsInput): { turns: Turn[]; speakers: M
           time: stp.time ?? '',
           ...(stp.observedAtMs !== undefined ? { timeMs: stp.observedAtMs } : {}),
           text: stp.text,
-          ...(stp.image ? { images: [stp.image] } : {}),
+          ...(stp.images?.length ? { images: stp.images } : stp.image ? { images: [stp.image] } : {}),
           isCron: !!cron,
           cronId: cron?.id ?? null,
           ...(stp.steer ? { steer: true, ...(stp.steered ? { steered: true } : {}) } : {}),

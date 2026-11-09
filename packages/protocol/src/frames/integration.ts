@@ -155,11 +155,9 @@ export const IntegrationLinearConfig = z.object({
 })
 export type IntegrationLinearConfig = z.infer<typeof IntegrationLinearConfig>
 
-// The Google Chat payload (google-chat-integration.md §3): relay-terminated ingress, so the daemon gets egress material only.
-export const IntegrationGoogleChatConfig = z.object({
+const GoogleChatConfigBase = z.object({
   projectId: z.string().min(1), // Google Cloud project ID of the Chat app
   projectNumber: z.string().regex(/^[1-9]\d{0,19}$/), // numeric project number, the app's identity
-  serviceAccountKey: z.string().min(1), // service-account key JSON for chat.bot calls (plaintext — never log)
   // A claimed customer row's tenant keys (§10.3): the daemon lists and writes only inside them; empty for the anchor, which serves none.
   tenantIds: z.array(z.string().min(1)).optional(),
   // A single-tenant row's own keys, recorded from its traffic: Spaces are fenced by its customer, DMs are its own organization's.
@@ -170,21 +168,42 @@ export const IntegrationGoogleChatConfig = z.object({
     .url({ protocol: /^https?$/ })
     .optional()
 })
+
+// The Google Chat payload (google-chat-integration.md §3): an organization's own app sends with its own key; the deployment app's customer rows send through the relay (§10.10).
+export const IntegrationGoogleChatConfig = z.union([
+  GoogleChatConfigBase.extend({
+    serviceAccountKey: z.string().min(1) // service-account key JSON for chat.bot calls (plaintext — never log)
+  }),
+  GoogleChatConfigBase.extend({
+    // The deployment app's key never leaves the deployment, so every Chat API call goes through the relay.
+    egress: z.literal('relay'),
+    botId: z.string().uuid(), // the bot row the relay authorizes the call against
+    tenantIds: z.array(z.string().min(1)).min(1)
+  })
+])
 export type IntegrationGoogleChatConfig = z.infer<typeof IntegrationGoogleChatConfig>
 
-// The Microsoft Teams payload (teams-integration.md §2): relay-terminated ingress, so the daemon gets egress material only.
-export const IntegrationMsTeamsConfig = z.object({
+const MsTeamsConfigBase = z.object({
   appId: z.string().min(1), // Entra application (client) ID, the bot's ID
   tenantId: z.string().min(1), // Entra tenant ID the bot serves: the relay's fence and the session realm
-  // The tenant whose token endpoint issues the bot's tokens when it differs, the deployment app's home tenant (teams-integration.md §8.2).
-  tokenTenantId: z.string().min(1).optional(),
-  clientSecret: z.string().min(1), // Entra client secret (plaintext — never log)
   // The relay's public messaging endpoint the bot registration names; absent until the relay's origin is known.
   messagesUrl: z
     .string()
     .url({ protocol: /^https?$/ })
     .optional()
 })
+
+// The Microsoft Teams payload (teams-integration.md §2): an organization's own bot sends with its own secret; the deployment app's rows send through the relay (§8.5).
+export const IntegrationMsTeamsConfig = z.union([
+  MsTeamsConfigBase.extend({
+    clientSecret: z.string().min(1) // Entra client secret (plaintext — never log)
+  }),
+  MsTeamsConfigBase.extend({
+    // The deployment app's secret never leaves the deployment, so every Bot Connector call and Graph token goes through the relay.
+    egress: z.literal('relay'),
+    botId: z.string().uuid() // the bot row the relay authorizes the call against
+  })
+])
 export type IntegrationMsTeamsConfig = z.infer<typeof IntegrationMsTeamsConfig>
 
 /** Which session an activation joins (channel-session-mode.md §4): one per thread, the conversation's one session, or the coordinator's pick (auto-session-mode.md), which only a daemon advertising `SESSION_MODE_AUTO_V1_FEATURE` receives. */
@@ -280,7 +299,9 @@ export const IntegrationSpec = z.object({
   agentId: z.string().uuid(),
   platform: Platform,
   core: IntegrationCoreEnvelope,
-  config: z.unknown().optional()
+  config: z.unknown().optional(),
+  // Daemon features a holder must advertise; the CP removes the integration from a daemon without one instead of sending it.
+  requires: z.array(z.string().min(1).max(64)).max(16).optional()
 })
 export type IntegrationSpec = z.infer<typeof IntegrationSpec>
 

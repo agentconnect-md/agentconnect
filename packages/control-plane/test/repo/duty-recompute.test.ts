@@ -69,8 +69,22 @@ function sweep(clock = new FakeClock(1_700_000_000_000)) {
 async function seedDaemons(): Promise<void> {
   await prisma.daemon.createMany({
     data: [
-      { id: M1, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready', capabilities: DEFAULT_DAEMON_CAPABILITIES },
-      { id: M2, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready', capabilities: DEFAULT_DAEMON_CAPABILITIES }
+      {
+        approvalStatus: 'approved',
+        id: M1,
+        orgId: DEFAULT_ORG_ID,
+        maxAgents: 8,
+        status: 'ready',
+        capabilities: DEFAULT_DAEMON_CAPABILITIES
+      },
+      {
+        approvalStatus: 'approved',
+        id: M2,
+        orgId: DEFAULT_ORG_ID,
+        maxAgents: 8,
+        status: 'ready',
+        capabilities: DEFAULT_DAEMON_CAPABILITIES
+      }
     ]
   })
 }
@@ -92,8 +106,22 @@ async function seedPoolAgent(id: string, name: string): Promise<void> {
 async function seedMembers(): Promise<void> {
   await prisma.daemon.createMany({
     data: [
-      { id: POOL_A, orgId: null, maxAgents: 8, status: 'ready', capabilities: DEFAULT_DAEMON_CAPABILITIES },
-      { id: POOL_B, orgId: null, maxAgents: 8, status: 'ready', capabilities: DEFAULT_DAEMON_CAPABILITIES }
+      {
+        approvalStatus: 'approved',
+        id: POOL_A,
+        orgId: null,
+        maxAgents: 8,
+        status: 'ready',
+        capabilities: DEFAULT_DAEMON_CAPABILITIES
+      },
+      {
+        approvalStatus: 'approved',
+        id: POOL_B,
+        orgId: null,
+        maxAgents: 8,
+        status: 'ready',
+        capabilities: DEFAULT_DAEMON_CAPABILITIES
+      }
     ]
   })
   await joinPool(prisma, POOL_A, POOL_B)

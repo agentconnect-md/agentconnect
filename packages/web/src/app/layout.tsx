@@ -13,7 +13,8 @@ export async function generateMetadata(): Promise<Metadata> {
   const t = await getTranslations('Common.metadata')
   return {
     ...pageTitleMetadata(),
-    description: t('description')
+    description: t('description'),
+    robots: { index: false, follow: false }
   }
 }
 

@@ -14,7 +14,7 @@
  * that authorizes — not merely records — every attempted effect.
  */
 import type { PlaceExternalReason } from '@agentconnect.md/protocol'
-import type { SendIdentity } from '../mcp/ops.js'
+import type { SendIdentity, UploadAnchor, UploadOutcome } from '../mcp/ops/context.js'
 import type {
   PlatformChannelHistoryMessage,
   PlatformChannelHistoryOptions,
@@ -538,6 +538,11 @@ export class VirtualSlackConnection implements PlatformConnection {
     return null
   }
 
+  // The Arena models room messages, so it has no provider-hosted file to resolve.
+  async getFileInfo(_fileId: string): Promise<undefined> {
+    return undefined
+  }
+
   /**
    * The agent-callable ACTIONS refuse, deterministically, for the reason the turn stream
    * refuses: the Arena models a room of messages and nothing else, and a half-modelled
@@ -646,17 +651,25 @@ export class VirtualSlackConnection implements PlatformConnection {
     this.unmodelled('canvases')
   }
 
-  /** The Arena world hosts no files, so a forward is recorded for the ONE part of it a
-   *  participant can see: the caption, as an ordinary reply. It reports delivery but no
-   *  `messageId`, because the real Slack share answers with the file and no message ts — a
-   *  virtual anchor would make the Arena the only place a forward can seed a session. */
   async uploadFile(
     channel: string,
-    _file: { bytes: Buffer; name: string; mimeType?: string },
+    file: { bytes: Buffer; name: string; mimeType?: string },
     comment?: string,
-    anchor?: { thread?: string; replyTo?: number },
+    anchor?: UploadAnchor,
     options?: VirtualPostOptions
-  ): Promise<{ ok: true; messageId?: string; warning?: string }> {
+  ): Promise<UploadOutcome> {
+    return this.uploadFiles(channel, [file], comment, anchor, options)
+  }
+
+  // Record the one visible caption and return its thread anchor, without inventing hosted files.
+  async uploadFiles(
+    channel: string,
+    files: { bytes: Buffer; name: string; mimeType?: string }[],
+    comment?: string,
+    anchor?: UploadAnchor,
+    options?: VirtualPostOptions
+  ): Promise<UploadOutcome> {
+    if (!files.length) return { ok: false, reason: 'platform_error' }
     const result = await this.world.recordOutbound({
       kind: 'reply',
       platform: 'slack',
@@ -667,7 +680,7 @@ export class VirtualSlackConnection implements PlatformConnection {
       text: comment ?? ''
     })
     if (result.status !== 'delivered') throw new VirtualDeliveryRejected(result)
-    return { ok: true }
+    return { ok: true, messageId: result.messageId }
   }
 }
 

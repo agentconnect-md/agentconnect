@@ -333,6 +333,7 @@
       "finishedAt": "Finished {time}"
     },
     "taskThread": {
+      "cardActions": "Thread actions",
       "replies": "{count, plural, one {# reply} other {# replies}}",
       "reply": "Reply",
       "repliesTitle": "{replies}, last reply {time}",
@@ -350,16 +351,16 @@
       "close": "Close",
       "backTitle": "Back to all tasks",
       "coordinatorTitle": "Back to the coordinator",
-      "shrink": "Back into the side panel",
       "closeTask": "Close the task",
       "startedBy": "Started by the coordinator",
-      "pageHint": "The coordinator reads this task’s summary, not each reply.",
       "thread": "Thread",
       "openThread": "Open the thread",
       "hiddenTask": "A task you can’t open",
+      "startingTask": "Starting the task…",
       "footerWorking": "working…",
       "showEarlier": "Show earlier messages",
       "unreadable": "Only people who can open the task that holds this thread can read it.",
+      "starting": "The task is starting; its thread opens in a moment.",
       "missing": "This thread isn’t in this conversation.",
       "threadPlaceholder": "Reply in the thread",
       "threadHintTask": "The task holding this thread answers here",
@@ -367,11 +368,13 @@
       "replyInThread": "Reply in thread",
       "inThread": "In thread: {root}",
       "inThreadBare": "In thread",
+      "repliedToThread": "Replied to a thread:",
       "answeredInThread": "Answered in the thread",
       "messageActions": "Message actions",
       "openOnPlatform": "Open in {platform}",
       "threadHintMirrored": "Posted in the {platform} thread under your name; the task holding it answers there",
-      "threadHintMirroredCoordinator": "Posted in the {platform} thread under your name; the coordinator answers there"
+      "threadHintMirroredCoordinator": "Posted in the {platform} thread under your name; the coordinator answers there",
+      "repliesDivider": "Replies"
     },
     "githubApp": {
       "title": "GitHub App",
@@ -956,9 +959,7 @@
         "closePanels": "Close panels",
         "loading": "Loading",
         "loadingDots": "Loading…",
-        "nothingToShow": "Nothing to show",
-        "expandPanel": "Expand the panel",
-        "collapsePanel": "Collapse the panel"
+        "nothingToShow": "Nothing to show"
       },
       "gitPanel": {
         "staged": "Staged",
@@ -1081,7 +1082,7 @@
       },
       "addFiles": "Add files",
       "addImages": "Add images",
-      "continuationImagesOnly": "Only images can be sent to this chat thread from the console.",
+      "continuationImagesOnly": "This conversation accepts one image attachment. Documents and multiple attachments aren’t supported here.",
       "viewOriginal": "View original",
       "downloadOriginal": "Download",
       "originalUploading": "Uploading original…",
@@ -1095,6 +1096,8 @@
       "fitToScreen": "Fit to screen",
       "actualSize": "Actual size",
       "closeViewer": "Close",
+      "dropToAttach": "Drop files to attach",
+      "removeFile": "Remove {name}",
       "computer": "Computer",
       "computerPick": "Computer",
       "computerNone": "This agent has no computer you can watch.",
@@ -1568,18 +1571,20 @@
       "continue": "Continue",
       "cancel": "Cancel",
       "projectsTitle": "Choose projects",
-      "projectsDescription": "Agents can use repositories in the projects you pick in {organization}.",
+      "projectsHint": "Read lets agents clone. Write also lets them push. Allow triggers lets pull requests start agents. Unchecking removes the access.",
+      "allProjects": "All projects",
+      "allProjectsHint": "Includes projects created later. Needs a Project Collection Administrator.",
+      "projectsDescription": "Projects in {organization} that agents can use.",
       "noProjects": "This organization has no projects you can see.",
-      "groupFor": "Group for {project}",
-      "readers": "Readers",
-      "contributors": "Contributors",
-      "groupHint": "Pick only the projects agents need. Readers lets agents read; Contributors also lets them push.",
+      "groupFor": "Access for {project}",
+      "read": "Read",
+      "write": "Write",
       "applying": "Applying…",
       "apply": "Apply",
       "connect": "Connect",
       "managedTitle": "Project access updated",
       "doneTitle": "Azure DevOps is connected",
-      "doneBody": "Agents can now use the repositories the application can see in {organization}.",
+      "doneBody": "Agents can now use the chosen projects in {organization}.",
       "backToIntegrations": "Back to Integrations",
       "checkAgain": "Check again",
       "signInAgain": "Sign in again",
@@ -1610,7 +1615,11 @@
         "expiredTitle": "This sign-in has expired",
         "expiredBody": "Start connecting again from the Azure DevOps card.",
         "genericTitle": "Could not connect Azure DevOps"
-      }
+      },
+      "allowTriggers": "Allow triggers",
+      "triggersMissedTitle": "Triggers are not allowed on every project yet",
+      "triggersRefused": "{project}: your account cannot change its service hook permissions.",
+      "triggersFailed": "{project}: Azure DevOps did not answer. Manage project access again later."
     }
   },
   "Home": {
@@ -2108,6 +2117,35 @@
         "connectionExists": "This organization already has an Azure DevOps connection.",
         "organizationTaken": "That Azure DevOps organization is already connected to another organization on this deployment.",
         "deploymentApplicationMissing": "This deployment has no Microsoft application. Use your own application instead."
+      },
+      "ownApplicationTriggers": "For triggers, also give the application View and Edit subscriptions under each project’s service hooks security.",
+      "hookBadges": {
+        "webhookUnverified": "Triggers unverified",
+        "triggersNotAllowed": "Triggers not allowed",
+        "relayUrlUnconfigured": "Triggers unavailable",
+        "subscriptionsFailed": "Triggers failing"
+      },
+      "hookReasons": {
+        "webhookUnverified": "Waiting for the first event from Azure DevOps to confirm the triggers.",
+        "triggersNotAllowed": "Allow triggers on this repository’s project in Manage project access.",
+        "triggersNotAllowedOwn": "Give the application View and Edit subscriptions on this repository’s project in Azure DevOps.",
+        "relayUrlUnconfigured": "This deployment has no public webhook address, so Azure DevOps cannot deliver events.",
+        "subscriptionsFailed": "Azure DevOps refused the service hook subscriptions. They are retried automatically."
+      },
+      "lastDelivery": "last event {time}",
+      "noDeliveryYet": "no event yet",
+      "rotateKey": "Rotate key",
+      "rotateTitle": "Rotate service hook key",
+      "rotateBody": "Replace the key that authenticates events from {repo}. The old key keeps working for 36 hours, so events Azure DevOps already queued still arrive.",
+      "rotate": "Rotate",
+      "rotated": "Key rotated. The new key takes over with the next event from Azure DevOps.",
+      "rotatedPartly": "Azure DevOps stopped answering partway through. The rest switch to the new key automatically.",
+      "rotateRefusals": {
+        "noSubscriptions": "This repository has no service hook subscriptions to rotate.",
+        "busy": "The subscriptions are being updated. Try again in a moment.",
+        "relayUrlUnconfigured": "This deployment has no public webhook address configured.",
+        "missing": "This repository is no longer connected.",
+        "failed": "Azure DevOps refused the new key. Try again later."
       }
     },
     "noConversations": "No conversations yet — the roster fills in once the bot reaches its first {room}.",
@@ -2434,6 +2472,14 @@
           "helpApprove": "Allow the bot to record an approval in the same review. Gitea refuses one on a pull request the bot opened itself.",
           "helpStatusCheck": "Post one commit status on the pull request's head for queued, running, and final results. It does not block merging unless an operator makes it a required check.",
           "repositoryMissing": "This repository is still being set up. Reviews and commit statuses are written through the organization's Gitea bot, so finish adding the repository first."
+        },
+        "azureDevOps": {
+          "title": "PR review",
+          "statusCheckLabel": "PR status",
+          "helpInlineComments": "Post the review as comment threads, with comments on specific changed lines or ranges.",
+          "helpRequestChanges": "Allow a “Waiting for author” vote. Agents that share the connection share one vote, so the latest review sets it.",
+          "helpApprove": "Allow an approving vote. Whether it counts toward a branch policy is up to that policy.",
+          "helpStatusCheck": "Post a pull request status for queued, running, and final results. It blocks completion only if an administrator adds a status policy for it."
         }
       },
       "deleteBot": {
@@ -2527,7 +2573,10 @@
         "ahpDescription": "Standard AHP v1 sessions and chat actions for compatible agent clients.",
         "ahpOff": "Disabled",
         "ahpPilot": "Pilot"
-      }
+      },
+      "azureDevOpsLoadError": "Couldn’t load your Azure DevOps repositories — {error}",
+      "azureDevOpsNotAuthorized": "{agent} is not authorized for {repo}. Authorize the repository on the agent’s Workspace tab, or make it the agent’s workspace repository, first.",
+      "azureDevOpsNoBoundRepository": "No Azure DevOps repository is in use yet. Authorize one on {agent}’s Workspace tab first, then add its trigger here."
     },
     "api": {
       "title": "API",
@@ -2993,6 +3042,7 @@
         "uploadFailed": "upload failed"
       },
       "daemonSelect": {
+        "approvalRequired": "An Owner must approve this daemon first.",
         "runsOn": "Runs on",
         "noDaemonsConnected": "No daemons connected",
         "groupMeta": "{count, plural, one {# daemon} other {# daemons}}",
@@ -3400,7 +3450,8 @@
         "newChannels": "New channels start on",
         "newChannelsAuto": "Auto",
         "newChannelsMention": "@-mentions · Per thread",
-        "newChannelsOff": "Off"
+        "newChannelsOff": "Off",
+        "pullRequestStatus": "PR status"
       },
       "tools": {
         "loading": "Loading…",
@@ -4262,6 +4313,32 @@
     }
   },
   "Daemons": {
+    "approval": {
+      "pending": "Pending approval",
+      "revoked": "Revoked",
+      "review": "Review",
+      "approve": "Approve",
+      "approveAgain": "Approve again",
+      "revoke": "Revoke approval",
+      "cancel": "Cancel",
+      "saving": "Saving…",
+      "waitingForYou": "Waiting for your approval",
+      "count": "{count} waiting for approval",
+      "waiting": "Waiting for an Owner to approve",
+      "revokedTitle": "Approval revoked",
+      "waitingDescription": "This daemon cannot run organization agents until approved.",
+      "changedBy": "Revoked by {name} · {date}",
+      "approveTitle": "Approve {name}",
+      "revokeTitle": "Revoke approval for {name}",
+      "approveDescription": "Allow this daemon to run organization agents and access their data and credentials.",
+      "revokeDescription": "Stop authorizing organization work on this daemon. Previously received data and credentials remain on the machine.",
+      "createdBy": "Created by",
+      "host": "Host",
+      "status": "Status",
+      "online": "Online",
+      "offline": "Offline",
+      "connectFirst": "Connect this daemon before approving it."
+    },
     "deleteModal": {
       "title": "Delete daemon",
       "body": "{daemon} will be removed from the control plane. Its daemon process keeps running until you stop it, but it can no longer host agents or hold connections. This can't be undone.",

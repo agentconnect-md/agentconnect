@@ -1,3 +1,4 @@
+import { initiatorName, sessionInitiator } from './codehost/initiator.js'
 import { dispatchAhpAppRequest, type AhpAppsScope } from './ahp/apps.js'
 import { AhpProtocolError } from './ahp/connection.js'
 import { initialAhpChat } from './ahp/initial-state.js'
@@ -93,6 +94,7 @@ import {
   DAEMON_AUTO_UPGRADE_FEATURE,
   GITCRED_GITHUB_V2_FEATURE,
   GITEA_V1_FEATURE,
+  AZURE_DEVOPS_HOOKS_V1_FEATURE,
   AZURE_DEVOPS_V1_FEATURE,
   GITLAB_EFFECT_V1_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
@@ -160,6 +162,7 @@ import {
   WORKSPACE_GIT_WRITE_FEATURE,
   WORKSPACE_FILE_DOWNLOAD_FEATURE,
   FILE_TRANSFER_FEATURE,
+  WEBCHAT_UPLOADS_FEATURE,
   WORKSPACE_UPLOAD_BEGIN_FEATURE,
   WEBCHAT_IMAGES_FEATURE,
   type SharedImageResolveOk,
@@ -187,6 +190,7 @@ import {
   MAX_WORKSPACE_DOWNLOAD_BYTES,
   isDelegatedTaskCoordinate,
   WebchatPromptSuggestion,
+  type TaskInitiator,
   type TaskLinkFacts,
   type UserTurnBody
 } from '@agentconnect.md/protocol'
@@ -353,8 +357,9 @@ import { GitCredentialCache, type ProxyLeaseAsk } from './cp/git-credential.js'
 import { GitlabBroker } from './gitlab/broker.js'
 import { gitlabApiBaseUrl } from './gitlab/api-base.js'
 import { GiteaBroker } from './gitea/broker.js'
+import { AzureDevOpsBroker } from './azure-devops/broker.js'
 import { GithubBroker } from './github/broker.js'
-import { withOperationFooter } from './codehost/description-footer.js'
+import { descriptionInitiator, withOperationFooter } from './codehost/description-footer.js'
 import { githubAttributionFooter } from './github/poster.js'
 import { giteaApiBaseUrl } from './gitea/api-base.js'
 import type { CodeHostEffectBroker, CodeHostEffectTarget } from './codehost/broker.js'
@@ -754,6 +759,11 @@ import {
 import { GitlabReviewAdapter, type GitlabReviewAdapterDeps, type GitlabReviewTurn } from './gitlab/review-adapter.js'
 import { GiteaReviewAdapter, type GiteaReviewAdapterDeps, type GiteaReviewTurn } from './gitea/review-adapter.js'
 import {
+  AzureDevOpsReviewAdapter,
+  type AzureDevOpsReviewAdapterDeps,
+  type AzureDevOpsReviewTurn
+} from './azure-devops/review-adapter.js'
+import {
   collectHookQueueCandidates,
   combineCoordinationWaits,
   planQueuedRevisionRemovals,
@@ -970,6 +980,7 @@ import { CodeHostRefResolver } from './codehost/ref-resolver.js'
 import { gitCredReadTokens } from './codehost/repository.js'
 import { CpClient } from './cp/client.js'
 import { RelayManager } from './cp/relay-manager.js'
+import { PlatformRelayUnsent } from './platforms/platform-relay.js'
 import { CP_IDENTITY_TOKEN_PATH, readClusterIdentityToken } from './cp/cluster-identity.js'
 import { CpCollabRoutes, isSyntheticA2aChannel } from './cp/cp-collab-routes.js'
 import { ClientTransport, systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
@@ -1337,6 +1348,7 @@ import {
 } from './github/hook-coords.js'
 import type { CodeHostReplyTarget } from './codehost/reply-target.js'
 import {
+  codeHostIgnoredDelivery,
   codeHostPullRequestContext,
   codeHostThreadWorktreeCleanup,
   turnFinalFor,
@@ -1383,6 +1395,7 @@ import {
 import { UUID_RE, type WebchatSink } from './webchat/types.js'
 import type { ChatTurnContext, ChatSink } from './session/chat-turn.js'
 import { resolveChatUploadUrl } from './session/chat-attachments.js'
+import { readBoundedBody } from './codehost/rest-read.js'
 import { webchatAuthorOf, WebchatTransport, type WebchatHost } from './webchat/transport.js'
 import { WEBCHAT_SETTINGS_REFUSAL, webchatRoleChangesSettings } from './webchat/caller-role.js'
 import { WebchatMcpRevocations, type WebchatMcpRevocationHost } from './webchat/mcp-revocations.js'
@@ -2450,6 +2463,7 @@ export class Daemon {
   private readonly gitlabReviews: GitlabReviewAdapter
   /** gitea-integration.md §10.3: the Gitea formal-review adapter on the same seam. */
   private readonly giteaReviews: GiteaReviewAdapter
+  private readonly azureDevOpsReviews: AzureDevOpsReviewAdapter
   private readonly codeReviews = new CodeHostReviewRouter()
   // ── lifecycle (§2.5/§5.3/§7.2/§7.3) ──
   private clock: Clock
@@ -2863,9 +2877,11 @@ export class Daemon {
     })
     this.gitlabReviews = new GitlabReviewAdapter(this.gitlabReviewDeps())
     this.giteaReviews = new GiteaReviewAdapter(this.giteaReviewDeps())
+    this.azureDevOpsReviews = new AzureDevOpsReviewAdapter(this.azureDevOpsReviewDeps())
     this.codeReviews.register(this.githubReviews.reviewAdapter)
     this.codeReviews.register(this.gitlabReviews)
     this.codeReviews.register(this.giteaReviews)
+    this.codeReviews.register(this.azureDevOpsReviews)
     this.curatedRuntimeAdmission = new CuratedRuntimeAdmission({
       now: () => this.clock.now(),
       ttlMs: PROBE_TTL_MS
@@ -3112,6 +3128,13 @@ export class Daemon {
       evaluationIntegrationIds: () => this.evaluationIntegrationIds,
       store: () => this.store,
       cpClient: () => this.cpClient,
+      // Late-bound: the relays start with the CP's roster, which may come after a connection opens.
+      platformRelay: () => ({
+        request: async (req) => {
+          if (!this.relays) throw new PlatformRelayUnsent('no relay roster yet')
+          return await this.relays.request(req)
+        }
+      }),
       channelSnapshots: () => this.channelSnapshots,
       boundIntegrationIds: () => Object.keys(this.botUserIds),
       bindings: () => ({
@@ -3404,7 +3427,9 @@ export class Daemon {
       warn: (message) => this.log.warn(message),
       available: (auth) =>
         this.servesAgent(auth.agentId) && this.orgForAgent(auth.agentId) === auth.orgId && !this.draining,
-      initializeMetadata: { 'agentconnect.md': { webchat: true, files: true, steering: true, mcpApps: true } },
+      initializeMetadata: {
+        'agentconnect.md': { webchat: true, files: true, filePreviews: true, steering: true, mcpApps: true }
+      },
       now: () => this.clock.now(),
       provider: (id) => ahpAgentInfo(id, this.agents.get(id)?.name ?? id, this.agents.get(id)?.runtimeOverrides?.model),
       reserveSequence: (org, agent, size) => this.store.reserveAhpSequenceBlock(org, agent, size),
@@ -4201,6 +4226,31 @@ export class Daemon {
         },
         invalidateLease: (target, token) =>
           this.gitCreds.invalidateGithubEffect(target.agentId, target.repoPath ?? target.repoId, token)
+      })
+    )
+    // azure-devops-integration.md §6.6: the repository's proxy lease at the agent's tier, scoped by the broker's allowlist.
+    this.codeHostBrokers.set(
+      'azure-devops',
+      new AzureDevOpsBroker({
+        routing: (target) =>
+          this.codeHostRepositories(target.agentId, 'azure-devops').find((row) => row.repoId === target.repoId)
+            ?.azureDevOps,
+        lease: (target) =>
+          this.proxyOnlyLease(target.agentId, {
+            provider: 'azure-devops',
+            repoId: target.repoId,
+            plane: 'api',
+            readOnly: false
+          }),
+        // §11.5: a hook turn's comment calls may ride the hook's own lease where the agent holds the repository at read.
+        hookLease: async (target) => {
+          const entry = await this.gitCreds.getAzureDevOpsPostLease(target.agentId, target.repoId, target.hookId)
+          return {
+            token: entry.token,
+            access: entry.access,
+            invalidate: () => this.gitCreds.invalidateAzureDevOpsPost(target.agentId, target.repoId, entry.token)
+          }
+        }
       })
     )
     // §16: the same hook-authorized effect lease, on a writer the model never sees or influences.
@@ -5461,6 +5511,43 @@ export class Daemon {
           ? { bytes: Buffer.from(found.data, 'base64'), name: found.name, mimeType: found.mimeType }
           : undefined
       },
+      maxOutboundFileBytes: cfg.limits.maxOutboundFileBytes ?? cfg.limits.maxAttachmentBytes,
+      readUploadedFile: async (ctx, uploadId) => {
+        const file = await this.store.transcriptUploadById(
+          {
+            transcriptChannel: transcriptChannelKey(ctx.channel, ctx.transportScope),
+            coordinate: ctx.thread,
+            sessionKey: sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope),
+            agentId: ctx.agentId
+          },
+          uploadId
+        )
+        if (!file || !this.cpClient) return undefined
+        const cap = cfg.limits.maxOutboundFileBytes ?? cfg.limits.maxAttachmentBytes
+        if (file.size > cap) throw new Error('sendMessage: the upload exceeds the file size limit. Nothing was sent.')
+        const signed = await this.cpClient.transferGet(
+          {
+            agentId: ctx.agentId,
+            uploadId,
+            size: file.size,
+            sha256: file.sha256,
+            network: this.transferNetwork()
+          },
+          this.orgForAgent(ctx.agentId)
+        )
+        if (!signed.url) return undefined
+        try {
+          const response = await fetch(signed.url, { redirect: 'error', signal: AbortSignal.timeout(30_000) })
+          if (!response.ok) {
+            await response.body?.cancel()
+            return undefined
+          }
+          const bytes = await readBoundedBody(response, cap, 'uploaded attachment')
+          return bytes.length === file.size ? { bytes, name: file.name, mimeType: file.mimeType } : undefined
+        } catch {
+          return undefined
+        }
+      },
       // shareFile (agent-authored-attachments.md): the trusted target, the fenced read, the
       // synchronous budget, and the provenance row. All coordinates come from the active
       // turn — the model supplies only a workspace-relative path and a caption.
@@ -5616,8 +5703,8 @@ export class Daemon {
           ...(image?.success ? { attachments: [image.data] } : {})
         })
       },
-      recordOutbound: (ctx, channel, thread, text, ts, integrationId) =>
-        this.recordOutboundPost(ctx, channel, thread, text, ts, integrationId),
+      recordOutbound: (ctx, channel, thread, text, ts, integrationId, attachments) =>
+        this.recordOutboundPost(ctx, channel, thread, text, ts, integrationId, attachments),
       // A builder round's history reads name their senders' keys and feed the directory's seen people (assistant-mode.md §5.17).
       directoryReads: (ctx, read) => this.noteDirectoryReads(ctx, read),
       // Research reads only internal public channels its bot is in, each bounded per round (assistant-mode.md §5.15).
@@ -5643,6 +5730,8 @@ export class Daemon {
     )
 
     this.sessions = new SessionManager({
+      initiatorFor: (agentId, msg, integrationId, originSessionId) =>
+        this.initiatorForMessage(agentId, msg, integrationId, originSessionId),
       prepareOutwardBinding: (agentId, key) => this.prepareOutwardBinding(agentId, key),
       // THIS daemon's plane. Omitting it hands the manager a local-mode one, and
       // `additionalWorkspaceDirectories` would then `realpathSync` a `--k8s` workspace's pod-side
@@ -6995,6 +7084,11 @@ export class Daemon {
           .agentErase(agentId, serverAsk, cred.token)
           .catch((err) => this.log.warn(`credential proxy: could not drop a rejected token (${formatErr(err)})`))
     }
+  }
+
+  /** azure-devops-integration.md §6.1, §11.9: the provider and its hooks, advertised together exactly while the credential proxy carries them. */
+  private azureDevOpsFeatures(): string[] {
+    return this.credentialProxy && !this.k8s ? [AZURE_DEVOPS_V1_FEATURE, AZURE_DEVOPS_HOOKS_V1_FEATURE] : []
   }
 
   /** A proxy-only provider's lease (azure-devops-integration.md §6.1): named by the repository's numeric id, a read one for a read, and dropped on a 401 so the next asks the CP to refresh. */
@@ -9709,6 +9803,7 @@ export class Daemon {
       WORKSPACE_FILE_DOWNLOAD_FEATURE,
       // Snapshots workspace files onto, and fetches console uploads from, URLs the control plane signs; static.
       FILE_TRANSFER_FEATURE,
+      WEBCHAT_UPLOADS_FEATURE,
       // Runs a workspace upload behind a short `workspace/upload/begin` and reports it with `transfer/settle`; static.
       WORKSPACE_UPLOAD_BEGIN_FEATURE,
       // Answers `image/original/resolve` and publishes shared-image originals (webchat-generated-images.md).
@@ -9797,8 +9892,8 @@ export class Daemon {
       // gitea-integration.md §11: the complete Gitea slice — credentials, normalization, poster, broker,
       // admission. The CP withholds gitea specs and hook assignments until this is advertised.
       GITEA_V1_FEATURE,
-      // azure-devops-integration.md §6.1: only the credential proxy reaches Azure DevOps, so only while it runs; a pool member's pods do not reach it yet.
-      ...(this.credentialProxy && !this.k8s ? [AZURE_DEVOPS_V1_FEATURE] : []),
+      // azure-devops-integration.md §6.1, §11.9: only the credential proxy reaches Azure DevOps, so only while it runs; a pool member's pods do not reach it yet.
+      ...this.azureDevOpsFeatures(),
       // §16: this daemon renders and updates the run-projection note. The CP leaves the desired
       // generation pending rather than opening a second provider egress path without this bit.
       CODEHOST_NOTE_PROJECTION_V1_FEATURE,
@@ -9824,7 +9919,9 @@ export class Daemon {
       // multi-repository-workspaces.md decisions 15–19: this daemon selects a session's `decision` repositories before it starts; the CP refuses `decision` for a daemon without it. Static.
       REPO_SELECTOR_V1_FEATURE,
       // computer-use.md §15.5: this daemon reads the `quota_exceeded` refusal of computer-pool/acquire. Static.
-      COMPUTER_POOL_QUOTA_FEATURE
+      COMPUTER_POOL_QUOTA_FEATURE,
+      // What each platform module declares for itself (§7.4).
+      ...this.platformModules.registrationFeatures()
     ]
   }
 
@@ -11916,7 +12013,8 @@ export class Daemon {
     thread: string | undefined,
     text: string,
     ts: string,
-    integrationId: string
+    integrationId: string,
+    attachments?: import('@agentconnect.md/protocol').PublishedAttachment[]
   ): Promise<void> {
     await this.store.appendTranscript({
       channel: transcriptChannelKey(channel, this.transportScopeForIntegrationIds([integrationId])),
@@ -11928,7 +12026,8 @@ export class Daemon {
       ts,
       sender: origin.agentId,
       kind: 'text',
-      text
+      text,
+      ...(attachments?.length ? { body: JSON.stringify({ publishedAttachments: attachments }) } : {})
     })
   }
 
@@ -17232,6 +17331,7 @@ export class Daemon {
       source: 'agent',
       platform,
       channel: sessionChannel,
+      initiator: msg.initiator,
       ...(thread !== undefined ? { thread } : {}),
       ...(childCoordinate !== undefined ? { sessionThread: childCoordinate } : {}),
       sender: { id: msg.trustedFromAgentId, isBot: true },
@@ -17332,11 +17432,83 @@ export class Daemon {
     if (!target) throw new Error(`this session has no ${req.provider} repository of its own; name one with repository`)
     const broker = this.codeHostBrokers.get(target.provider)
     if (!broker) throw new Error(`code-host effects are unavailable for ${target.provider} on this daemon`)
-    const operation = withOperationFooter(req.operation, await this.descriptionFooter(req, key, target.provider))
-    const result = await broker.execute({ ...target, agentId: req.agentId, sessionKey: key }, operation)
+    const effectTarget = { ...target, agentId: req.agentId, sessionKey: key }
+    let initiatedBy: string | undefined
+    if (req.operation.kind === 'createMergeRequest') {
+      initiatedBy = (await this.initiatorForSession(key))?.name ?? 'Unknown'
+    } else if (req.operation.kind === 'updateMergeRequest' && req.operation.description !== undefined) {
+      const current = await broker.execute(effectTarget, {
+        kind: 'readMergeRequestDescription',
+        iid: req.operation.iid
+      })
+      initiatedBy = typeof current === 'string' ? descriptionInitiator(current) : undefined
+    }
+    const operation = withOperationFooter(
+      req.operation,
+      await this.descriptionFooter(req, key, target.provider),
+      initiatedBy
+    )
+    const result = await broker.execute(effectTarget, operation)
     if (req.operation.kind === 'createMergeRequest')
       await this.noteTaskOpened(req.agentId, key, createdObjectOf(result))
     return result
+  }
+
+  /** A task keeps its opener, while a long conversation delegates for the person whose turn is running now. */
+  private async initiatorForSession(key: string): Promise<TaskInitiator | undefined> {
+    const session = await this.store.getSession(key)
+    const saved = sessionInitiator(session)
+    if (session && saved && (isSubsessionKey(key) || (await this.store.assistantSubsessions.get(session.agentId, key))))
+      return saved
+    const live = this.activeGateEntries.get(key)
+    if (live?.msg.initiator) return live.msg.initiator
+    if (live && live.msg.source !== 'agent')
+      return await this.initiatorForMessage(live.agentId, live.msg, live.integrationId)
+    if (saved) return saved
+    const name = session?.triggeredBy
+      ? (await this.store.getDisplayNames([session.triggeredBy])).get(session.triggeredBy)
+      : undefined
+    return name && name !== session?.triggeredBy ? { name: initiatorName(name), commitAuthors: [] } : undefined
+  }
+
+  /** Snapshot the trusted sender and their linked commit identities; missing links never prevent work. */
+  private async initiatorForMessage(
+    agentId: string,
+    msg: NormalizedMessage,
+    integrationId?: string,
+    originSessionId?: string
+  ): Promise<TaskInitiator> {
+    if (msg.initiator) return msg.initiator
+    if (msg.source === 'agent' && originSessionId) {
+      const origin = await this.store.getSessionByOutwardId(originSessionId)
+      const inherited = origin ? await this.initiatorForSession(origin.key) : undefined
+      if (inherited) return inherited
+    }
+    if (msg.source === 'user' && !msg.sender.isBot) {
+      const name = (await this.store.getDisplayNames([msg.sender.id])).get(msg.sender.id) ?? msg.sender.name
+      const cp = this.cpClient
+      const asker =
+        msg.platform === 'webchat'
+          ? { consoleUserId: msg.sender.id }
+          : integrationId
+            ? { integrationId, memberId: msg.sender.id }
+            : undefined
+      const linked =
+        asker && cp?.supportsServerFeature?.(READ_ACCESS_V1_FEATURE) === true
+          ? await cp
+              .readAccess(
+                { agentId, asker, sessionIds: [], includeCommitAuthors: true },
+                this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)
+              )
+              .catch(() => undefined)
+          : undefined
+      return (msg.initiator = {
+        name: initiatorName(name && name !== msg.sender.id ? name : 'Unknown user'),
+        commitAuthors: linked?.commitAuthors ?? []
+      })
+    }
+    const name = msg.source === 'cron' ? 'Scheduled task' : msg.source === 'hook' ? 'Webhook' : 'Automatic task'
+    return { name, commitAuthors: [] }
   }
 
   /** The attribution footer a change request's or an issue's description carries when the agent's footer is on; empty otherwise. */
@@ -17549,6 +17721,20 @@ export class Daemon {
     }
   }
 
+  /** azure-devops-integration.md §11.6: the same seam over the `azure_devops_hook_reply` lease, whose user name is the identity. */
+  private azureDevOpsReviewDeps(): AzureDevOpsReviewAdapterDeps {
+    const lease = (turn: AzureDevOpsReviewTurn) =>
+      this.gitCreds.getAzureDevOpsPostLease(turn.agentId, turn.repoId, turn.hookId)
+    return {
+      ...this.codeHostReviewDeps<AzureDevOpsReviewTurn>('azure-devops'),
+      apiBaseUrl: (turn) => turn.apiRoot,
+      markerKey: this.reviewMarkerKey('azure-devops-review-marker-key'),
+      token: async (turn) => (await lease(turn)).token,
+      identity: async (turn) => (await lease(turn)).username,
+      invalidateToken: (turn, token) => this.gitCreds.invalidateAzureDevOpsPost(turn.agentId, turn.repoId, token)
+    }
+  }
+
   private codeHostTurnFinalHost(): CodeHostTurnFinalHost {
     return {
       getPostToken: (agentId, repo, hookId) => this.gitCreds.getPostToken(agentId, repo, hookId),
@@ -17560,6 +17746,10 @@ export class Daemon {
       getGiteaPostToken: (agentId, repoId, hookId) => this.gitCreds.getGiteaPostToken(agentId, repoId, hookId),
       invalidateGiteaPost: (agentId, repoId, token) => this.gitCreds.invalidateGiteaPost(agentId, repoId, token),
       giteaHostFor: (agentId) => this.agents.get(agentId)?.giteaHost,
+      getAzureDevOpsPostLease: (agentId, repoId, hookId) =>
+        this.gitCreds.getAzureDevOpsPostLease(agentId, repoId, hookId),
+      invalidateAzureDevOpsPost: (agentId, repoId, token) =>
+        this.gitCreds.invalidateAzureDevOpsPost(agentId, repoId, token),
       log: { warn: (message) => this.log.warn(message) }
     }
   }
@@ -18953,6 +19143,7 @@ export class Daemon {
       draining: () => this.draining,
       serialQueue: () => this.serialQueue,
       activeGateEntries: () => this.activeGateEntries,
+      initiatorForSession: (key) => this.initiatorForSession(key),
       noteSubsessionOpened: (childKey, parentKey) => this.noteSubsessionOpener(childKey, parentKey),
       noteSubsessionRound: (childKey, parentKey) => this.holdSlackForTask(childKey, parentKey),
       activeTurnThread: (key) => this.activeTurnShare.get(key)?.thread,
@@ -22251,6 +22442,7 @@ export class Daemon {
     githubReplyBatch?: ActiveGithubReplyBatchMeta
     gitlabReview?: GitlabReviewTurn
     giteaReview?: GiteaReviewTurn
+    azureDevOpsReview?: AzureDevOpsReviewTurn
   }> {
     const { entry, key, plan } = run
     const { agentId, callMeta } = entry
@@ -22322,6 +22514,8 @@ export class Daemon {
       barrier === 'failed' ? undefined : this.gitlabReviews.openTurn(key, hookContext, sessionId, reviewTurn)
     const giteaReview =
       barrier === 'failed' ? undefined : this.giteaReviews.openTurn(key, hookContext, sessionId, reviewTurn)
+    const azureDevOpsReview =
+      barrier === 'failed' ? undefined : this.azureDevOpsReviews.openTurn(key, hookContext, sessionId, reviewTurn)
     // A replayed delivery may still owe the control plane frames a previous incarnation
     // recorded; the ones needing no provider evidence are handed back before the turn runs.
     if (gitlabReview) {
@@ -22334,12 +22528,18 @@ export class Daemon {
         .recoverTurn(giteaReview)
         .catch((err) => this.log.warn(`gitea review: turn recovery deferred (${formatErr(err)})`))
     }
+    if (azureDevOpsReview) {
+      await this.azureDevOpsReviews
+        .recoverTurn(azureDevOpsReview)
+        .catch((err) => this.log.warn(`azure-devops review: turn recovery deferred (${formatErr(err)})`))
+    }
     const activeGithubReplyBatch = plan.githubReplyBatchActive ? { entry, sessionId, called: false } : undefined
     if (activeGithubReplyBatch) this.activeGithubReplyBatchMeta.set(key, activeGithubReplyBatch)
     return {
       ...(activeGithub ? { github: activeGithub } : {}),
       ...(gitlabReview ? { gitlabReview } : {}),
       ...(giteaReview ? { giteaReview } : {}),
+      ...(azureDevOpsReview ? { azureDevOpsReview } : {}),
       ...(activeGithubReplyBatch ? { githubReplyBatch: activeGithubReplyBatch } : {})
     }
   }
@@ -22347,7 +22547,8 @@ export class Daemon {
   /** The CP feature whose holder routes each provider-neutral arm of `hook/start`; an older CP cannot route the member. */
   private static readonly HOOK_START_BARRIER_FEATURE: Partial<Record<CodeHostProvider, string>> = {
     gitlab: CODEHOST_NOTE_PROJECTION_V1_FEATURE,
-    gitea: GITEA_V1_FEATURE
+    gitea: GITEA_V1_FEATURE,
+    'azure-devops': AZURE_DEVOPS_HOOKS_V1_FEATURE
   }
 
   /** Cross the hook/start barrier (§17.2): started = head recorded, legacy = CP without the barrier, failed = an advertised barrier refused. */
@@ -23433,6 +23634,7 @@ export class Daemon {
       githubReplyBatch?: ActiveGithubReplyBatchMeta
       gitlabReview?: GitlabReviewTurn
       giteaReview?: GiteaReviewTurn
+      azureDevOpsReview?: AzureDevOpsReviewTurn
     }
   ): Promise<void> {
     const { entry, key, plan } = run
@@ -23479,6 +23681,7 @@ export class Daemon {
     if (activeGithub && this.activeGithubTurnMeta.get(key) === activeGithub) this.activeGithubTurnMeta.delete(key)
     if (activeTurn.gitlabReview) this.gitlabReviews.closeTurn(key, activeTurn.gitlabReview)
     if (activeTurn.giteaReview) this.giteaReviews.closeTurn(key, activeTurn.giteaReview)
+    if (activeTurn.azureDevOpsReview) this.azureDevOpsReviews.closeTurn(key, activeTurn.azureDevOpsReview)
     if (activeGithubReplyBatch && this.activeGithubReplyBatchMeta.get(key) === activeGithubReplyBatch) {
       this.activeGithubReplyBatchMeta.delete(key)
     }
@@ -30526,8 +30729,10 @@ export class Daemon {
         continue
       }
       const cleanup = codeHostThreadWorktreeCleanup(hookContext)
-      const deleted = githubDeletedHookEvent(hookContext)
-      if (hookContext && (cleanup || deleted)) {
+      const ignored = githubDeletedHookEvent(hookContext)
+        ? 'deleted_event_ignored'
+        : codeHostIgnoredDelivery(hookContext)
+      if (hookContext && (cleanup || ignored)) {
         const key = sessionKey(
           msg.platform,
           sessionChannelOf(msg),
@@ -30538,7 +30743,7 @@ export class Daemon {
         const owner: HookCompletionOwner = { inboxId: row.id }
         this.liveInboxIds.add(row.id)
         if (cleanup) void this.githubReviews.completeGithubThreadWorktreeCleanup(hookContext, key, cleanup, owner)
-        else await this.emitHookCompletion(hookContext, 'success', { reason: 'deleted_event_ignored' }, owner)
+        else await this.emitHookCompletion(hookContext, 'success', { reason: ignored }, owner)
         replayedMaintenance += 1
         continue
       }
@@ -31334,6 +31539,8 @@ export class Daemon {
       apiKey: () => cpKey,
       ...(this.clusterIdentityToken ? { clusterIdentityToken: this.clusterIdentityToken } : {}),
       daemonId: () => this.cfg.daemonId,
+      // The relay dispatches Azure DevOps service hooks only to a daemon advertising both strings (§11.9).
+      capabilities: () => this.azureDevOpsFeatures(),
       clock: systemClock,
       connect: (relayUrl) =>
         ClientTransport.dial(relayUrl, {

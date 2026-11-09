@@ -6,7 +6,8 @@
  * domain record NEVER carries the hash or any secret material.
  */
 import type { ApiKey, ApiKeyPermission as DbApiKeyPermission, Prisma } from '../../generated/prisma/client.js'
-import type { PrismaLike } from '../prisma.js'
+import { withAmbientTx, type PrismaLike } from '../prisma.js'
+import { lockDaemonMembership } from './member-set.repo.js'
 import type {
   ApiKeyRepo,
   ApiKeyRecord,
@@ -58,27 +59,30 @@ export class PgApiKeyRepo implements ApiKeyRepo {
   constructor(private readonly db: PrismaLike) {}
 
   async create(input: CreateApiKeyInput): Promise<ApiKeyRecord> {
-    const row = await this.db.apiKey.create({
-      data: {
-        principalType: input.principalType,
-        orgId: input.orgId, // null for relay keys (org-less infra credential)
-        daemonId: input.daemonId ?? null,
-        computerId: input.computerId ?? null,
-        userId: input.userId ?? null,
-        hash: input.hash,
-        displayTail: input.displayTail,
-        name: input.name ?? null,
-        scopes: input.scopes ?? [],
-        permission: toDbPermission(input.permission ?? 'full'),
-        allAgents: input.allAgents ?? false,
-        agents: { create: [...new Set(input.agentIds ?? [])].map((agentId) => ({ agentId })) },
-        createdByUserId: input.createdByUserId ?? null,
-        oauthGrantId: input.oauthGrantId ?? null,
-        expiresAt: input.expiresAt ?? null
-      },
-      include: WITH_AGENTS
+    return withAmbientTx(this.db, async (tx) => {
+      if (input.daemonId) await lockDaemonMembership(tx, input.daemonId)
+      const row = await tx.apiKey.create({
+        data: {
+          principalType: input.principalType,
+          orgId: input.orgId, // null for relay keys (org-less infra credential)
+          daemonId: input.daemonId ?? null,
+          computerId: input.computerId ?? null,
+          userId: input.userId ?? null,
+          hash: input.hash,
+          displayTail: input.displayTail,
+          name: input.name ?? null,
+          scopes: input.scopes ?? [],
+          permission: toDbPermission(input.permission ?? 'full'),
+          allAgents: input.allAgents ?? false,
+          agents: { create: [...new Set(input.agentIds ?? [])].map((agentId) => ({ agentId })) },
+          createdByUserId: input.createdByUserId ?? null,
+          oauthGrantId: input.oauthGrantId ?? null,
+          expiresAt: input.expiresAt ?? null
+        },
+        include: WITH_AGENTS
+      })
+      return toRecord(row)
     })
-    return toRecord(row)
   }
 
   async findByHash(hash: string): Promise<ApiKeyRecord | null> {

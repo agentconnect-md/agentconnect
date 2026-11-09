@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url'
 import { toolContextFingerprint } from '../src/session/turn/tool-context.js'
 import { obj, type ToolDescriptor } from '../src/tool-schema/descriptor.js'
 import { coordinatorCoordinate } from '../src/session/append-coordinate.js'
+import { subsessionCoordinate } from '../src/session/subsession-coordinate.js'
 
 /** One session's transcript read scope. In a `createNew` conversation the coordinate IS the
  *  physical thread, so a scope built this way reads exactly what `(channel, thread)` used to. */
@@ -90,6 +91,74 @@ const msg = (over: Partial<NormalizedMessage> & { ts?: string; channel?: string 
 }
 
 describe('SessionManager', () => {
+  it('pins task commit attribution across runtime recreation and another sender', async () => {
+    const store = await newStore()
+    const initiator = {
+      name: 'Alex',
+      commitAuthors: [
+        { provider: 'github' as const, host: 'github.com', name: 'alex', email: '123+alex@users.noreply.github.com' }
+      ]
+    }
+    const initiatorFor = vi.fn(async () => ({ name: 'Dana', commitAuthors: [] }))
+    const sm = new SessionManager({
+      store,
+      hostFor: async () => fakeHost(),
+      agentById: () => agent,
+      memory,
+      initiatorFor
+    })
+    const thread = subsessionCoordinate('task-1')
+    const key = sessionKey('slack', 'C1', thread, 'bot-a')
+    const first = await sm.handle('bot-a', msg({ thread, text: 'delegated', source: 'agent', initiator }))
+    expect(JSON.parse((await store.getSession(key))!.initiator!)).toEqual(initiator)
+    await store.upsertSession({ ...(await store.getSession(key))!, acpSessionId: null })
+    const second = await sm.handle(
+      'bot-a',
+      msg({ thread, ts: '100.2', text: 'continue', sender: { id: 'U2', isBot: false } })
+    )
+    expect(JSON.parse((await store.getSession(key))!.initiator!)).toEqual(initiator)
+    for (const turn of [first, second]) {
+      expect(
+        turn.blocks.some(
+          (block) =>
+            block.type === 'text' && block.text.includes('Co-authored-by: alex <123+alex@users.noreply.github.com>')
+        )
+      ).toBe(true)
+    }
+    expect(initiatorFor).not.toHaveBeenCalled()
+    await store.close()
+  })
+
+  it('does not carry a participant coauthor in ordinary conversations or look up identities on follow-up turns', async () => {
+    const store = await newStore()
+    const initiatorFor = vi.fn(async () => ({
+      name: 'Alex',
+      commitAuthors: [
+        { provider: 'github' as const, host: 'github.com', name: 'alex', email: '123+alex@users.noreply.github.com' }
+      ]
+    }))
+    const sm = new SessionManager({
+      store,
+      hostFor: async () => fakeHost(),
+      agentById: () => agent,
+      memory,
+      initiatorFor
+    })
+    const first = await sm.handle('bot-a', msg({ text: 'first' }))
+    const second = await sm.handle(
+      'bot-a',
+      msg({ ts: '100.2', text: 'another requester', sender: { id: 'U2', isBot: false } })
+    )
+    const key = sessionKey('slack', 'C1', '100.1', 'bot-a')
+    await store.upsertSession({ ...(await store.getSession(key))!, acpSessionId: null })
+    const resumed = await sm.handle('bot-a', msg({ ts: '100.3', text: 'resumed', sender: { id: 'U2', isBot: false } }))
+    expect(initiatorFor).toHaveBeenCalledOnce()
+    for (const turn of [first, second, resumed]) {
+      expect(turn.blocks.some((block) => block.type === 'text' && block.text.includes('Co-authored-by'))).toBe(false)
+    }
+    await store.close()
+  })
+
   it.each(['claude-acp', 'inline'])(
     'refreshes changed tools and research rules once, preserving warm prompts (%s)',
     async (runtime) => {

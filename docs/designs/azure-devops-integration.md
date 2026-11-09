@@ -1,10 +1,11 @@
 # Azure DevOps Integration
 
-> Status: **In progress** — A1 (protocol), A2 (Control Plane), A3 (daemon) and A4's Console and Setup have landed; the documentation-site setup page follows (§13).
+> Status: **In progress** — A1 (protocol), A2 (Control Plane), A3 (daemon), A4's Console and Setup, and A5 (pull-request tools) have landed; the second step, hooks and reviews (§11), is designed and follows as B1–B5 (§13), and the documentation-site setup page comes last.
 > Scope: **Azure DevOps Services** (`dev.azure.com`),
 > Git repositories in Azure Repos. The first version covers workspaces and
-> additional repositories only; pull-request hooks, reviews, pull-request
-> tools, and code-channel pull-request views are the second step (§11).
+> additional repositories, and the pull-request tools of §6.6 followed it;
+> pull-request and push hooks, reviews, the run projection, and code-channel
+> pull-request views are the second step (§11).
 > Platform facts were read from Microsoft's documentation on 2026-11-06; each
 > item marked **probe** in §12 must be confirmed against a live organization
 > before the step that relies on it.
@@ -54,28 +55,29 @@ Two facts shape the design:
    and wire field carries (§4).
 5. **No webhooks in the first version.** A binding is a catalog row and an
    identity; it needs no administration rights on the Azure DevOps side and
-   no provisioning saga.
+   no provisioning saga. The second step adds service hook subscriptions,
+   which need one extra grant per project (§11.1).
 6. **The Azure CLI works unmodified.** `az repos` and the other `azure-devops`
    extension commands reach the proxy with a placeholder. They read, and with a
    `write` grant they also open, update, and complete pull requests.
 
 ## 2. What Differs From Gitea
 
-| Capability            | Gitea                                 | Azure DevOps                                                                |
-| --------------------- | ------------------------------------- | --------------------------------------------------------------------------- |
-| Instance axis         | one instance per deployment, base URL | fixed host; one Azure DevOps organization per connection                    |
-| Identity              | a bot user's personal access token    | the deployment application's service principal in the customer tenant       |
-| Connecting            | paste the token                       | an administrator's Microsoft sign-in                                        |
-| Token lifetime        | no expiry; manual replacement         | about an hour; the Control Plane refreshes it                               |
-| Secret replacement    | replace token                         | Setup rotates the deployment secret; an own application replaces its own    |
-| Repository identity   | numeric id, `owner/repo`              | GUID inside a project GUID; `organization/project/repository`; surrogate id |
-| Rights on the repo    | `admin` on every bound repository     | read on every bound repository; Contribute where any agent writes           |
-| Where a tier is held  | a label on one token                  | the proxy; the token is organization-wide                                   |
-| Agent token delivery  | helper or proxy                       | proxy only                                                                  |
-| Provider CLI          | none                                  | the Azure CLI `azure-devops` extension through the proxy, writes by tier    |
-| API reads naming none | the workspace's credential            | `connectionData` and resource-area lookups only; everything else refused    |
-| Webhooks              | managed per repository                | none in the first version (§11)                                             |
-| Rate limiting         | instance-defined                      | per identity, shared by every agent of the organization (§6.5)              |
+| Capability            | Gitea                                 | Azure DevOps                                                                  |
+| --------------------- | ------------------------------------- | ----------------------------------------------------------------------------- |
+| Instance axis         | one instance per deployment, base URL | fixed host; one Azure DevOps organization per connection                      |
+| Identity              | a bot user's personal access token    | the deployment application's service principal in the customer tenant         |
+| Connecting            | paste the token                       | an administrator's Microsoft sign-in                                          |
+| Token lifetime        | no expiry; manual replacement         | about an hour; the Control Plane refreshes it                                 |
+| Secret replacement    | replace token                         | Setup rotates the deployment secret; an own application replaces its own      |
+| Repository identity   | numeric id, `owner/repo`              | GUID inside a project GUID; `organization/project/repository`; surrogate id   |
+| Rights on the repo    | `admin` on every bound repository     | read on every bound repository; Contribute where any agent writes             |
+| Where a tier is held  | a label on one token                  | the proxy; the token is organization-wide                                     |
+| Agent token delivery  | helper or proxy                       | proxy only                                                                    |
+| Provider CLI          | none                                  | the Azure CLI `azure-devops` extension through the proxy, writes by tier      |
+| API reads naming none | the workspace's credential            | the Azure CLI's discovery reads only; everything else refused                 |
+| Webhooks              | managed per repository, HMAC-signed   | second step: subscriptions per repository and kind, Basic-authenticated (§11) |
+| Rate limiting         | instance-defined                      | per identity, shared by every agent of the organization (§6.5)                |
 
 ## 3. Identity
 
@@ -259,11 +261,50 @@ and the Control Plane applies the change with the new delegated token and
 discards it; a service principal found below Basic is raised to Basic, so a
 Project Collection Administrator fixes a Stakeholder identity in one pass. It
 then re-verifies the connection with the same identity and
-organization required, and a degraded connection recovers. The flow adds
-memberships; it removes none, so taking a project away or lowering
-Contributors to Readers is done in Azure DevOps. A change made directly in
-Azure DevOps works as well; the picker and the
-permission evaluation of §5 read the identity's rights as they are.
+organization required, and a degraded connection recovers.
+
+The project list opens on what the identity already holds, read with the
+administrator's token: its direct groups from
+`GET vssps…/_apis/graph/memberships/{subject}?direction=up`, each group's
+project from its `domain`, and Allow triggers from one
+`GET _apis/accesscontrollists/{ServiceHooks}?token=PublisherSecurity&recurse=true&descriptors={identity}`
+(**verified**). A newly checked project starts at Contributors with Allow
+triggers. Apply makes Azure DevOps match the page: a project left unchecked
+loses its group (`DELETE …/graph/memberships/{subject}/{group}`), a lowered
+group loses the higher one once the new one is made, and Allow triggers turned
+off deletes the entry (`DELETE _apis/accesscontrolentries/{namespace}?token=…&descriptors=…`).
+A removal the caller may not make is listed in the checklist. The flow ticket
+keeps the access the page showed, and Apply removes only from that: access
+granted since, or a state that could not be read when the page opened, is
+never taken away. The Console labels
+the groups **Read** and **Write**. A change made directly in Azure DevOps
+works as well; the picker and the permission evaluation of §5 read the
+identity's rights as they are.
+
+**All projects.** Project groups exist per project, so a project created
+later is not reached until someone picks it. A row above the projects grants
+every project, present and future, at the namespace roots every project
+inherits from, with three entries for the identity (**verified** on a project
+created after the grant, in which it holds no group):
+
+| Entry            | Namespace and token               | Allow                                   |
+| ---------------- | --------------------------------- | --------------------------------------- |
+| See the projects | Project `52d39943-…`, `$PROJECT`  | GENERIC_READ (1)                        |
+| Read or Write    | Git Repositories, `repoV2`        | read (2), or Contributors' bits (16502) |
+| Allow triggers   | ServiceHooks, `PublisherSecurity` | View and Edit subscriptions (3)         |
+
+The first is required: without it a project and its repositories stay
+invisible to the identity even though the Git permission evaluates as granted.
+The Git entry is written with `merge: false`, so lowering Write to Read drops
+the write bits. Only a Project Collection Administrator may write these; a
+refusal joins the checklist, and a granted row is proof of administration for
+a new connection as a membership is. The row opens on the entries the
+identity holds, read the same way, and is removed by the same `shown…` rule as
+a project: unchecking it deletes the Git and Project entries, and turning off
+its Allow triggers deletes the ServiceHooks entry. The deletes follow the
+ticket rather than a fresh read and run with the Project entry last, since it
+is what makes the others readable: a removal cut short is finished by a retry.
+While it is on, the per-project rows are hidden and their access left as it is.
 
 **Use your own application instead** stays one click away, and is the only
 path when the deployment has no Microsoft application. The administrator enters
@@ -276,11 +317,49 @@ refused.
 
 ### 3.3 People
 
-Nobody signs in again to use Azure DevOps. Agents act as the application, and
-the console sign-in stays whatever the deployment offers. Who may make a
-repository an agent's workspace or additional repository follows the agent's
-edit rights, as on Gitea: a person's own Azure DevOps permissions are not
-consulted in the first version (§10).
+Agents act as the application. A person selecting a managed repository needs
+both the agent's edit rights and the corresponding access in Azure DevOps.
+The check uses the Microsoft account already linked in Profile and the
+connection's application token; there is no additional personal authorization
+flow or retained personal Azure DevOps token.
+
+This is a prerequisite even for a self-hosted deployment: console sign-in must
+be configured through Logto with Microsoft account linking (`azuread`) enabled.
+The loopback no-auth stack, a deployment without that connector, and a person
+without its linked identity cannot select or grant a managed Azure repository.
+Agent edit rights alone never replace this check. Connecting or maintaining the
+organization's application remains available under the existing management
+rules; its credentials do not prove the administrator's personal repository access.
+
+The linked Entra object ID must match one active human identity in the
+connection's tenant. Email locates candidates but never establishes identity.
+A guest whose linked identity names a different home-tenant object is refused
+unless it already matches the resource-tenant identity; an email-only match
+cannot authorize repository access.
+
+The application reads the person's repository and project ACLs with their
+descriptor and `includeExtendedInfo=true`. Azure's `effectiveAllow` and
+`effectiveDeny` resolve group membership and inheritance; the service does not
+reconstruct permission inheritance or require access to organization-root ACLs.
+The target repository needs Read and the target project needs View project-level
+information for these queries. Basic user-entitlement search, without extended
+selection, supplies account status and license information; full user-detail
+administration rights are unnecessary.
+
+Repository access requires project visibility, effective Git Read, and an
+eligible access level. Write additionally requires effective Contribute.
+Basic and recognized subscription tiers are accepted; Stakeholder reaches
+repositories only in a project Azure reports as public. Disabled, removed and
+expired entitlements grant nothing. An assigned `msdn/eligible` category alone
+does not prove a recognized subscription. Pending invitations still require an
+active identity, a supported license, and effective permissions.
+
+The repository picker applies this check. Workspace creation/replacement and
+additional-grant creation/increases fetch fresh evidence before granting
+authority; a picker result is never reused to authorize a save. An unreadable
+or ambiguous identity grants nothing, and a provider outage remains retryable.
+Existing workspace and grant authority is not continuously re-attested by this
+admission check.
 
 ### 3.4 Tokens
 
@@ -336,8 +415,10 @@ customer decides what the identity can reach:
 - the service principal holds the Basic access level, which consumes a paid
   licence in that organization;
 - its project groups give it read on every repository an agent will use, and
-  Contribute and Create branch where any agent writes; and
-- it needs no administrator role in the first version.
+  Contribute and Create branch where any agent writes;
+- it needs no administrator role; and
+- for hooks, it holds View and Edit subscriptions on each project where an
+  agent has one (§11.1).
 
 Everything the identity can read is reachable by the token, so the Console
 recommends granting it only the projects agents need. The proxy (§6) is what
@@ -376,8 +457,13 @@ repository names may contain spaces; paths are compared after percent-decoding.
 ## 5. Repositories
 
 The picker reads `GET https://dev.azure.com/{organization}/_apis/git/repositories`
-across the whole organization, which returns what the identity can see, drops
-disabled repositories and those in maintenance, and keys rows by GUID.
+across the whole organization, drops disabled repositories and those in
+maintenance, filters to repositories the caller can read (§3.3), and keys rows
+by GUID. Its merge only enriches authorized rows with binding metadata; a bound
+row cannot restore a repository the human access check excluded. The management
+catalog remains a database-only list of existing bindings and their health, so
+administrators can diagnose degraded connections without personal repository
+access or a working Azure API. That metadata never authorizes a new grant.
 
 Binding is implicit on first use, as in Gitea §6, minus the webhook steps: the
 write that names a repository (a workspace, or an additional-repository grant)
@@ -389,8 +475,8 @@ when the repository left the identity's list: deleted, disabled, in
 maintenance, or no longer granted). The picker's read moves a binding to
 `repository_unavailable` and back; a lease is refused while it lasts. Removing
 a binding that a workspace or grant still references is refused with 409
-naming the reference; otherwise removal is immediate, since there is no
-webhook to clean up.
+naming the reference; otherwise removal is immediate, and in the second step
+it also deletes the binding's subscriptions (§11.2).
 
 A binding belongs to one connection, and the workspace and grant rows name
 that connection beside the numeric id; a composite foreign key from those rows
@@ -406,10 +492,11 @@ refused with "grant the application access to this repository". Project and
 repository names match case-insensitively, and a project GUID stands for the
 project name. A `write` request on a repository where the identity lacks
 Contribute is refused the same way, read through one permission evaluation
-(§12, item 7); a request that names no tier takes `write` where the identity
-holds Contribute and `read` otherwise. Every other Azure DevOps address stays
-anonymous, as any unmanaged host does, and a `write` request for one is
-refused.
+(§12, item 7). The acting person must independently have the requested access
+(§3.3); a request that names no tier takes `write` only where both the person
+and application hold Contribute, and `read` otherwise. Every other Azure DevOps
+address stays anonymous, as any unmanaged host does, and a `write` request for
+one is refused.
 
 Clone addresses are normalized to `https://dev.azure.com/{organization}/{project}/_git/{repository}`.
 The normalizer accepts:
@@ -542,7 +629,10 @@ rather than the one the request was routed by.
   the agent's authorized Azure DevOps repositories by name, or by GUID below a
   project; without a project it is the repository in the project of the same
   name, and a GUID without a project is refused, as Azure DevOps refuses it
-  (`TF200016`).
+  (`TF200016`). A `GET` or `HEAD` of `{repository}/vsts/info`, which the Azure
+  CLI reads to resolve a Git remote into its organization, project and
+  repository, is forwarded as a REST read under that repository's read lease;
+  any other path below the repository is refused.
 - **REST naming a repository**: `[{project}/]_apis/git/repositories/{id-or-name}/…`.
   The repository is resolved by GUID, with or without a project, or by project
   and name; Azure DevOps itself refuses a name without a project. The project
@@ -559,12 +649,12 @@ rather than the one the request was routed by.
   so a held repository's path never reaches another repository's pull request.
   Any other pull request, including one of another held repository, gets the
   `TF401180` answer for a missing id.
-- **REST naming no repository**: only `_apis/connectionData` and
-  `_apis/ResourceAreas[/{area}]`, one level deep, at the organization's root,
-  which the Azure CLI reads before any command. Each is forwarded as a read
+- **REST naming no repository**: only what the Azure CLI reads before any
+  command, at the organization's root: `_apis/connectionData`,
+  `_apis/ResourceAreas[/{area}]`, one level deep, and an `OPTIONS` of `_apis`
+  itself, which lists the API's resource locations. Each is forwarded as a read
   under a read lease of one of the agent's repositories in that organization:
-  the token is the same for all of them, and neither answer is about a
-  repository.
+  the token is the same for all of them, and no answer is about a repository.
 - **One pull request by id**: `GET [{project}/]_apis/git/pullrequests/{id}`
   names no repository, but the Azure CLI resolves `--id` through it before
   every repository-scoped call, including `az repos pr update` and
@@ -677,15 +767,15 @@ carried the placeholder. A `401` from Azure DevOps drops that lease, and the
 next request asks the Control Plane with `forceRefresh` once (§3.4).
 
 So an agent with `write` opens, updates, and completes pull requests through
-the Azure CLI or REST, and the first version adds no Azure DevOps tool:
+the tools of §6.6, or through the Azure CLI or REST:
 
 - `az repos pr create` posts to its repository;
 - `az repos pr update --id … --status completed` resolves the id through the
   lookup of §6.2, then writes to the repository it found. Such a pull
-  request carries no AgentConnect footer. Completing a pull request is bounded
-  by the organization's branch policies, such as required reviewers on the
-  default branch, as merging is by branch protection on GitHub. Tools for pull
-  requests and reviews come with the second step (§11).
+  request carries no AgentConnect footer; one the tools open does. Completing
+  a pull request is bounded by the organization's branch policies, such as
+  required reviewers on the default branch, as merging is by branch
+  protection on GitHub. Review tools come with the second step (§11).
 
 ### 6.4 Client Configuration
 
@@ -739,6 +829,47 @@ Azure DevOps limits each identity, not each token, so every agent of the
 organization and the Control Plane share one budget. The proxy forwards `429`
 and `Retry-After` untouched, so the client's own backoff applies. The Control
 Plane's picker and refresh honor `Retry-After` and `X-RateLimit-Remaining`.
+
+### 6.6 Pull-Request Tools
+
+An agent holding an Azure DevOps repository is offered three tools beside the
+GitHub, GitLab, and Gitea ones, on the same code-host effect seam:
+
+- `azureDevOpsPullRequest` opens, edits, completes, abandons (`close`), and
+  reactivates (`reopen`) a pull request, and adds or removes its labels;
+- `azureDevOpsComment` opens a comment thread on a pull request, rewrites the
+  first comment of a thread this session opened, and replies in a thread;
+- `readAzureDevOpsPullRequest` reads a pull request with its newest threads,
+  or one thread, at `read`.
+
+The daemon's broker for Azure DevOps runs each call under the repository's
+proxy lease at the agent's tier (§6.3), presented as a bearer token, never in
+the agent's environment. The token is the organization's, so the broker's
+allowlist is what scopes it: every call renders a template below
+`{organization}/{project GUID}/_apis/git/repositories/{repository GUID}/`,
+with the GUIDs from the agent's spec, and each template costs `read`,
+`comment`, or `write` as on the other hosts. A repository the model names
+resolves only among the agent's own.
+
+What the tools leave out, they leave out of their schemas, and the validator
+refuses such a field by name:
+
+- **Issues.** Azure Boards work items belong to a project, not a repository,
+  so there is no issue tool and comments go on pull requests only.
+- **Assignees and reviewers.** A pull request has no assignees, and a
+  reviewer is an identity id that only an organization-wide identity search
+  resolves from a name, which the broker does not make. `az repos pr
+reviewer add` remains available through the proxy where its lookup is.
+
+A pull request's description carries the agent's footer below a hidden marker,
+as on the other hosts; Azure DevOps hides the marker. A comment thread's id is
+the handle `update` and `reply` take. Completion is asynchronous: Azure DevOps
+answers the `PATCH` with the pull request still `active` and its merge
+`queued`. It also accepts a completion at a source commit the pull request no
+longer ends at and then never runs it, so the broker reads the pull request
+first, refuses one that is not `active`, refuses when `sha` is given and the
+source has moved, and completes at the commit it read. The merge methods map
+to `noFastForward`, `squash`, and `rebase`.
 
 ## 7. Protocol and Compatibility
 
@@ -886,19 +1017,20 @@ connection-write, and secret routes manage a credential and are
 - Workload identity federation in place of a client secret. It needs an issuer
   Entra can reach, and it can follow without changing anything downstream of
   §3.4.
-- Checking a person's own Azure DevOps permissions before they bind a
-  repository. That needs a delegated Azure DevOps token per person and a
-  linked Microsoft identity, and it can follow the first version.
 - More than one Azure DevOps organization per AgentConnect organization.
+- Periodic re-attestation of existing Azure repository grants. The admission
+  checks in §3.3 cover new authority and increases; ongoing revocation of older
+  grants is a separate follow-up.
 - Pipelines, Boards, Wiki, and Artifacts, and publishing a Marketplace
   extension.
-- Azure DevOps tools for pull requests and reviews, which come with the second
-  step (§11).
+- Work-item triggers and tools. Azure Boards items belong to a project, not a
+  repository (§6.6, §11.4).
 - Several connections per AgentConnect organization, each agent choosing one.
   This is how an agent gets an identity of its own: the customer registers an
   application whose service principal reaches only that agent's repositories,
-  so Azure DevOps itself bounds it. The model already keys everything by
-  connection (§3.2). Only the Console's choice is missing.
+  so Azure DevOps itself bounds it, and it is also how an agent gets a review
+  vote of its own (§11.6). The model already keys everything by connection
+  (§3.2). Only the Console's choice is missing.
 - Finer control in the proxy than §6.2 describes, such as filtering a list down
   to the agent's repositories instead of refusing it.
 - A second, read-only identity per organization beneath the proxy.
@@ -911,25 +1043,426 @@ connection-write, and secret routes manage a credential and are
     the first version relies on the proxy. A customer whose review requires
     a provider-side bound can have it added as an option.
 
-## 11. Second Step: Hooks, Reviews, and Tools
+## 11. Second Step: Hooks and Reviews
 
-This step is out of scope here. Its constraints are recorded so the first
-version does not preclude them:
+Pull-request triggers, the push trigger, formal reviews, the run projection,
+and code-channel pull-request views. The pull-request tools landed ahead of
+them (§6.6). Everything here follows the Gitea design's §7, §8 and §10 unless
+it says otherwise, and every platform fact marked **verified** was observed
+against a test organization on 2026-11-07 (§12, item 10).
 
-- **Ingress.** Service-hook subscriptions do not sign their payload. The relay
-  would verify a per-subscription secret carried as Basic credentials, ask for
-  minimal resource details, and fetch the resource back under the binding's
-  lease. Managing subscriptions needs the ServiceHooks edit permission on the
-  project, which widens §3.6.
-- **Reviews.** A reviewer votes (10 approved, 5 approved with suggestions, −5
-  waiting for author, −10 rejected) and comments in threads. A pull-request
-  status on the iteration can carry the run state, written by the Control
-  Plane as Gitea's commit status is.
-- **Pull-request tools.** An Azure DevOps pull-request tool beside the GitHub,
-  GitLab, and Gitea ones. It adds the footer, and in a hook turn the guidance
-  points the agent to it rather than to the CLI.
-- **Code channels.** Pull-request links and views key on the surrogate
-  identity plus the pull-request id.
+### 11.1 What the Organization Grants for Hooks
+
+A service hook subscription is managed under the ServiceHooks security
+namespace (`cb594ebe-87dd-4fc9-ac2c-6a10a4c92046`, `ViewSubscriptions` = 1,
+`EditSubscriptions` = 2), on the token `PublisherSecurity/{project GUID}`.
+Contributors and Readers hold neither; a service principal in Contributors is
+refused with `AccessCheckException` naming `Edit Subscription` (**verified**).
+`EditSubscriptions` also deletes.
+
+The identity therefore gets both bits, on each project where an agent has a
+hook, from the administrator's delegated token during §3.2's step 4: one
+`POST _apis/accesscontrolentries/{namespace}` with `merge: true` and the
+service principal's identity descriptor, allow 3 (**verified**: the entry
+took effect, and deleting it refused the next create). Manage project access
+shows **Allow triggers** per project beside its group; it is on for a project
+picked with Contributors and can be turned on for one picked with Readers.
+Turning it off there deletes the entry (§3.2). A hook
+on a repository whose project lacks the grant is refused at save with "allow
+triggers on this project in Manage project access", and a grant that later
+disappears degrades the hook's binding (§11.2).
+
+The bits reach every subscription in the project, including the customer's
+own. The Control Plane touches only the subscriptions whose ids it recorded,
+and the proxy refuses `_apis/hooks/…` to agents as it refuses everything
+outside §6.2, so an agent never holds this authority.
+
+### 11.2 Subscriptions
+
+A subscription carries one event type, so a hooked repository gets one
+subscription per delivery kind its enabled hooks need, never one per hook:
+
+| Delivery kind | `eventType`                                 | Publisher filters                                      | Resource details |
+| ------------- | ------------------------------------------- | ------------------------------------------------------ | ---------------- |
+| opened        | `git.pullrequest.created`                   | `projectId`, `repository`                              | all              |
+| revision      | `git.pullrequest.updated`                   | … plus `notificationType: PushNotification`            | `minimal`        |
+| reviewers     | `git.pullrequest.updated`                   | … plus `notificationType: ReviewersUpdateNotification` | all              |
+| state         | `git.pullrequest.updated`                   | … plus `notificationType: StatusUpdateNotification`    | all              |
+| comment       | `ms.vss-code.git-pullrequest-comment-event` | `projectId`, `repository`                              | all              |
+| push          | `git.push`                                  | `projectId`, `repository`                              | `minimal`        |
+
+Each subscription is `publisherId: tfs`, `consumerId: webHooks`,
+`consumerActionId: httpRequest`, with `resourceVersion: 1.0` pinned so the
+body does not change under it. Its consumer inputs are the relay's
+`/webhooks/azure-devops` URL, `basicAuthUsername: agentconnect`, the
+binding's signing secret as `basicAuthPassword`, and `messagesToSend` and
+`detailedMessagesToSend` both `none`, which keeps message text with names in it
+out of the body. "All" resource details is the input left out; an empty string
+is refused (**verified**).
+
+The kind of an update is not in its body, and a body's resource is the pull
+request as it stood when the notification was sent, not when the event
+happened: a vote and a push that preceded a completion both arrived showing
+`completed` (**verified**). One subscription per update kind is therefore how
+the relay knows what happened. A revision, a merge and a push need only an
+identifier (`minimal` sends the pull request's `url` and `pullRequestId`,
+**verified**). Opened and comment deliveries carry the whole resource, because
+the relay matches mentions and vetoes the identity's own traffic on what they
+say. Reviewers and state carry it too, because the relay gates them on the pull
+request's author, which a minimal resource does not name (§11.4). A
+subscription still sending a minimal resource for those two kinds is drift, and
+the convergence rewrites it.
+
+A hook that watches pull requests also gets the state kind, even when it
+subscribes to no state event: it carries the cleanup that retires a pull
+request's checkout (§11.4). `git.pullrequest.merged` is "merge attempted" and
+fires on every merge check, opening a pull request included (**verified**), so
+it is never subscribed: completion arrives as a state update. A delivery of that
+kind from an older subscription is cleanup only when the daemon's read finds
+the pull request `completed`.
+
+The binding records each subscription id with its kind. The Control Plane's
+`convergeManagedRepository` makes the set match the union of the enabled
+hooks' families: it creates what is missing, deletes what no hook needs, and
+reads each recorded subscription back. A subscription removed in Azure DevOps
+is recreated. One whose `eventType`, publisher inputs, or consumer inputs
+other than the masked password no longer match its recorded kind, which the
+grant of §11.1 lets anyone with it edit, is rewritten whole with `PUT`, the
+current secret included, before its status is touched. A repository whose
+last hook goes away loses all of its subscriptions; the binding stays for its
+workspaces and grants.
+
+**Secrets.** The signing secret is 32 random bytes per binding, hex, sealed
+like the other code hosts' webhook secrets. A subscription read answers it as
+`********` (**verified**), and the notification history masks the
+`Authorization` header and the password but shows `httpHeaders` in clear
+(**verified**), so the secret travels only as the Basic password, never as a
+custom header. A rotation replaces each subscription's consumer inputs with
+`PUT _apis/hooks/subscriptions/{id}` carrying the new secret in full; the
+masked value a read returns is never sent back, since what Azure DevOps does
+with it is not established.
+
+One key serves several subscriptions, so a rotation is a fan-out with a
+barrier, unlike Gitea §7's single successor webhook:
+
+1. seal the next key and compile it into the rule as `nextSigningKey`, so the
+   relay accepts both;
+2. `PUT` each recorded subscription with the next key, recording per
+   subscription, durably, that its update was acknowledged; a rotation cut
+   short resumes from those records and never re-keys a subscription twice
+   under different secrets;
+3. once every recorded subscription is recorded as switched — the barrier —
+   the next delivery verified under the next key promotes it. A delivery
+   verified under the next key before the barrier promotes nothing; and
+4. the old key stays accepted as `previousSigningKey` for 36 hours after
+   promotion, the length of Azure DevOps's retry schedule, so a notification
+   queued before its subscription switched is not refused and does not put
+   that subscription on probation. Every rotation keeps this window.
+
+A subscription created during a rotation gets the next key and counts as
+switched.
+
+**Subscription state.** Azure DevOps puts a subscription on probation after a
+failure that is not transient, drops new events while it lasts, and disables
+it (`disabledBySystem`) after about 36 hours of failed retries. It also
+disables a subscription whose owner lost the permission
+(`disabledByInactiveIdentity`), and one with no successful delivery in six
+months. The convergence reads `status` on each pass: a disabled subscription,
+or one on probation, is re-enabled with the same `PUT`, and the binding shows
+`webhook_unverified` until a delivery verifies. Probation is not left to
+Azure DevOps's own retries, whose backoff kept a repaired subscription dropping
+new events for over an hour (**verified**). A disable by `disabledByInactiveIdentity` is
+reported as the missing grant of §11.1 and is not re-enabled until the grant
+returns.
+
+### 11.3 Verification and Routing at the Relay
+
+A delivery is a JSON envelope: `subscriptionId`, `notificationId`, `id` (the
+event id), `eventType`, `publisherId`, `resource`, `resourceVersion`,
+`resourceContainers` (`collection`, `account` and `project` ids), and
+`createdDate` (**verified**). Azure DevOps signs nothing and sends no
+timestamp. The relay:
+
+1. enforces HTTPS and the 1 MiB raw-body limit, and parses only enough to read
+   `subscriptionId`;
+2. looks the subscription id up in the compiled rules, whose `azureDevOps`
+   member is keyed by subscription id and carries the repository's surrogate
+   id, its organization `instanceId`, project and repository GUIDs, the
+   delivery kind, the connection's identity id as the veto set, and the
+   signing keys;
+3. compares the `Authorization: Basic` credentials, timing-safe, against every
+   key the rule carries (current, next, and previous during its 36 hours),
+   user name included; and only then
+4. decodes the body, and refuses one whose `eventType`, collection id or
+   project id disagrees with the rule, or whose resource names another
+   repository or pull request than the rule's repository.
+
+A subscription id no rule knows, or a delivery that fails verification, gets
+the uniform `404`. Azure DevOps puts such a subscription on probation and then
+disables it, which retires an orphan on its own. A verified delivery is always
+answered `2xx`, whether or not a daemon takes it, so a working subscription is
+never put on probation by the product's own routing.
+
+Basic credentials over TLS authenticate the sender as an HMAC does, but there
+is no replay window. The event id is the delivery key: the `(hookId,
+deliveryKey)` uniqueness and the session inbox absorb repeats, and an Azure
+DevOps retry is the same notification of the same event.
+
+The relay reports a verified delivery to the Control Plane as
+`rc/codehost-delivery` with the frame's existing fields: the surrogate id the
+rule holds as `repoExternalId`, and which key verified it. Keys and promotion
+belong to the binding, so the frame needs no subscription id.
+
+### 11.4 Event Mapping and Routing
+
+| Product family                   | Azure DevOps source                                                                   |
+| -------------------------------- | ------------------------------------------------------------------------------------- |
+| `merge_request:opened`           | opened: `git.pullrequest.created`                                                     |
+| `merge_request:synchronize`      | revision: a new iteration                                                             |
+| `merge_request:review_requested` | reviewers: the connection identity among the reviewers, with no vote and not declined |
+| `merge_request:reopened`         | state: `active` again after `abandoned`                                               |
+| maintenance cleanup family       | state: `abandoned` or `completed`                                                     |
+| pull-request comment             | comment: a `text` comment on a thread, conversation or diff                           |
+| `push:*`                         | push                                                                                  |
+
+Azure Boards work items are not repository issues, and Azure Repos has no
+releases, so the `issues:*`, issue-comment and `release:*` families do not
+exist for Azure DevOps and the Console does not offer them. No event reports a
+label change, so the label filter is not offered either. A pull request opened
+as a draft is admitted as Gitea §8 admits one; toggling draft fires none of
+the update kinds subscribed here and is inert.
+
+For the three update kinds, the relay forwards the pull-request id
+and no classification. The daemon reads the pull request and its iterations at
+turn start under the hook-reply lease of §11.5, and classifies on that read,
+not on the body. A reviewer change is a review request only while the pull
+request is `active` and the lease's identity is among its reviewers with no
+vote and not declined. A status change is a reopening when the pull request is
+`active` and the rule admits reopened, and cleanup when it is `abandoned` or
+`completed`. Any other reviewer or status change completes without a turn. An
+update kind whose read fails is refused, since it cannot be classified; any
+other delivery keeps its turn and its prompt says the read failed. The head
+fence is the newest iteration's `sourceRefCommit`, which is the pull request's
+`lastMergeSourceCommit`. The daemon reads nothing for a merge or a push.
+
+A comment delivery's resource is the comment alone: `id`, `parentCommentId`,
+`author`, `content`, `commentType`, and `_links` (**verified**). The pull
+request id and the thread id are read from `_links.threads.href`, which must
+have the form `…/_apis/git/repositories/{repository GUID}/pullRequests/{n}/threads/{t}`
+with the rule's repository GUID; any other shape is refused. A `system`
+comment is never a trigger. Whether the thread is on a diff is read by the
+daemon from the thread's `threadContext` when the turn starts.
+
+**Summon forms.** A mention-gated rule is summoned by `@<agent-name>` as plain
+text, or by mentioning the connection identity as the repository-wide
+broadcast, which Azure DevOps stores in a comment's content as
+`@<{identity id}>` (**probe**, §12 item 11).
+
+**Loop prevention.** A delivery whose actor is the connection's identity id is
+rejected: `createdBy.id` for opened, `author.id` for a comment, `pushedBy.id`
+for a push. The bot's own same-repository pull-request revisions still enter
+review, as in GitLab §12.1, which Gitea inherits.
+
+**Collaborator gate.** Opened, comment, review-requested and reopened
+deliveries are authorized live through `rc/codehost-membership-authz`. Azure
+DevOps answers a permission question only for the caller
+(`permissionevaluationbatch`), and the webhook helper's raw access-control list
+query for another identity answers only that identity's explicit entries,
+without what its groups grant (**verified**). The Azure DevOps arm therefore evaluates it:
+
+1. read the actor's identity with `queryMembership=ExpandedUp`, which lists
+   every group it belongs to, directly or not (**verified**);
+2. read the Git repositories namespace's access-control lists on
+   `repoV2/{project GUID}/{repository GUID}`, `repoV2/{project GUID}` and
+   `repoV2`, in that order, stopping after the first list whose
+   `inheritPermissions` is false: a repository or project that does not
+   inherit takes nothing from above it, so an ancestor's allow beyond that
+   boundary counts for nothing. A list whose `inheritPermissions` the answer
+   leaves out is taken as a boundary too. A connection whose identity is a
+   project member, not an organization administrator, is refused the
+   `repoV2` list with 403 (**verified**); that level is then not read and adds
+   nothing. Any other refusal fails closed;
+3. admit the actor when an entry for the actor or one of its groups allows
+   GenericContribute (bit 4) on the lists read, and no entry for any of them
+   denies it.
+
+The rule is stricter than Azure DevOps's own, which lets a more specific
+allow override an inherited deny, so it can refuse a person Azure DevOps would
+let push. It never admits one Azure DevOps would not, except through a deny set
+for all repositories at organization level that the connection cannot read.
+Branch-level entries are not read. The repository's lists are cached for a minute per binding.
+
+The update kinds name no actor, so a review request and a reopening are gated
+on the pull request's author, `createdBy.id` of the whole resource: anyone
+holding the pull-request contribute permission, which Readers have, can add a
+reviewer, and the review then reads code the author wrote. The relay gates
+without classifying. A refused reviewer change goes nowhere. A refused state
+change still reaches the daemon for its cleanup, but cannot reopen into a turn.
+The identity's own pull request from the same repository is not gated, as its
+opened delivery is not. A revision and a push need no gate, since pushing to
+the repository already takes Contribute. An external pull request from a fork
+starts only through the explicit paths of GitLab §12.2.
+
+**Session keys.**
+
+```text
+pull request: azure-devops:<surrogate id>:pull:<pull request id>
+push:         azure-devops:<surrogate id>:push:<ref>
+```
+
+`transportScope = azure-devops:<surrogate id>`. Turn admission is the
+provider-neutral hook-admission seam with an Azure DevOps implementation of its
+members.
+
+### 11.5 Output
+
+**Final reply.** A comment trigger is answered in its own thread, as a reply
+to the triggering comment; any other trigger opens a thread on the pull
+request. Comments coalesce per thread, so a batch is answered in the thread
+its first comment fired in. It is written by the daemon's
+final poster under a lease of purpose `azure_devops_hook_reply`, which the
+Control Plane serves to `consumer: 'daemon'` only and at `comment` for a
+repository with an enabled hook, whatever the agent's own tier. The standing
+context block is `# Azure DevOps`.
+
+**Acknowledgement.** A comment trigger gets a like on the triggering comment
+(`POST …/threads/{t}/comments/{c}/likes`, **verified**). A new comment is
+one whose `lastContentUpdatedDate` equals its `publishedDate`; the relay drops
+any other comment delivery, so neither an edit nor a like starts a turn. Other
+triggers get none, since a pull request has no reaction of its own. A failed
+like never fails the turn.
+
+**Controlled effects.** The tools of §6.6. In a hook turn the guidance names
+them before the Azure CLI, and the hook's lease raises a repository held at
+`read` to `comment` for them, as in Gitea §10.2. A write still needs the
+agent's own `write`.
+
+### 11.6 Formal Reviews
+
+`submitCodeReview` keeps its schema and is routed to an Azure DevOps adapter
+on the code-host review router. A review is a vote plus threads, and none of
+it is staged: there is no pending review to absorb another attempt's comments,
+so the publication lease guards ordering and ambiguity only. Under the seam's
+publication lease and operation, the adapter:
+
+1. re-reads the pull request and refuses a moved head (the newest iteration's
+   source commit);
+2. creates one thread per inline comment with `threadContext` (`filePath`, and
+   `rightFileStart`/`rightFileEnd` for `RIGHT`, `leftFileStart`/`leftFileEnd`
+   for `LEFT`, so a range is a range) and `pullRequestThreadContext` naming the
+   iteration and the file's `changeTrackingId` from that iteration's changes
+   (**verified** for a single line);
+3. creates the summary thread; and
+4. casts the vote, `PUT …/reviewers/{identity id}`: `APPROVE` → 10,
+   `REQUEST_CHANGES` → −5 (waiting for the author), `COMMENT` leaves the vote
+   alone, so it never clears an earlier verdict.
+
+Every comment the attempt writes carries the hidden signed attempt-and-ordinal
+marker. After a timeout or an ambiguous answer the adapter lists the threads,
+counts the marked comments that exist, writes only the missing ones, and then
+the vote, which is idempotent. Nothing an attempt writes is ever deleted. The
+identity may vote on a pull request it opened (**verified**); whether that
+vote counts is the branch policy's "allow requestors to approve their own
+changes", which the adapter does not read or work around. A policy that resets
+votes on a new push is the customer's, and a re-review follows the re-request
+paths of GitLab §16.1, which Gitea §10.4 inherits.
+
+A vote is one state per reviewer identity, and the identity is the
+connection's, shared by every agent. Two agents reviewing one pull request
+therefore overwrite each other's vote, last writer wins, and a `COMMENT`
+review leaves another agent's verdict standing. Each agent's verdict stays
+durable in its own summary thread and its own status context (§11.7), unlike
+Gitea, where two agents leave two reviews. An agent that needs a vote of its
+own needs an identity of its own: the several-connections path of §10.
+
+**As implemented (B4).** The adapter publishes under the `azure_devops_hook_reply`
+lease, whose user name is the identity's id: votes and threads need only the
+pull-request contribute permission that lease's `comment` tier stands for.
+The publication lease keys its publisher by a number, so both ends derive one
+from the identity's GUID (its first 60 bits), and the Control Plane resolves
+it from the repository's hooked binding. On the operation ledger an inline
+thread is a `draft_create` record carrying its ordinal, the summary thread the
+`bulk_publish` record, and the vote the `approval` record. The pieces:
+
+- An unknown answer is read back before the record settles. A thread is
+  sought by its marker for a bounded window; one that never appears is
+  absence, settled with its code, and written once more under a new record, so
+  a request that lands after the window leaves a duplicate thread, never a
+  deleted one. A vote is read back from the reviewer entry. Only when the
+  threads cannot be listed at all does the record stay ambiguous, and the pull
+  request locks. The lock's one exit is the locked attempt's summary thread,
+  which a later attempt finds from the lock's coordinates.
+- A recovered attempt settles each started record the same way, by marker or
+  read-back, and then writes what is missing.
+- A range is anchored as a range. A refused range is retried on its end line,
+  naming its first line; a refused line is listed under the summary instead.
+- A thread refused outright ends the attempt: `not_submitted` when nothing
+  was written, `review_state_not_recorded` otherwise. A refused vote is
+  `approval_not_recorded` for APPROVE, `review_state_not_recorded` for
+  REQUEST_CHANGES.
+- The prompt names `submitCodeReview` exactly when a delivery opens a review
+  generation, as Gitea's does: opened, a new revision, and a review request
+  of the identity, on the head the turn-start read fenced.
+
+### 11.7 Run Projection
+
+The Control Plane writes a pull-request status with the connection's token:
+`POST …/pullRequests/{id}/statuses` with `context` `{ genre: 'agentconnect',
+name: <agent-slug> }`, the head's `iterationId`, `targetUrl` the Console
+session, and a bounded `description`. States map `queued|running → pending`,
+`completed → succeeded`, `failed|interrupted → error`, and
+`skipped|superseded → succeeded` with the reason in the description;
+`notApplicable` is never written, because under a required status policy it
+removes the requirement. Each write adds an entry, and Azure DevOps shows the
+newest per context (**verified**: two writes, two entries), so the writer posts
+one per state change rather than updating, under the GitHub Check writer's
+generation and ordering rules. It carries no conversation content, so the
+writer stays in the Control Plane, as Gitea's commit status does.
+
+An administrator who adds a status check policy for `agentconnect/<agent-slug>`,
+optionally limited to the connection's identity, makes it a gate; the product
+does not.
+
+**As implemented (B4).** A hook reports with `reportingMode: status`; `check`
+is refused, since the run note has no Azure DevOps meaning. The context name
+is the agent's name. The writer reads the pull request's iterations before
+each write and names the newest one whose source commit is the projected
+head, or none. An update kind's accepted delivery names no head, so its
+status opens at `running`, on the head the daemon's read recorded through
+`hook/start`; the Control Plane advertises `azure-devops-hooks-v1` as the
+daemon's sign that it routes that arm. A success whose run never crossed the
+start barrier settles only a status its own delivery opened, so an ignored
+reviewer or status change or a cleanup writes none: the vote a review casts is
+itself a reviewer change, and its completion would otherwise restate the
+head's status as completed, over a failed run's (**verified**). A turn that ran
+past a failed barrier still settles the status its delivery queued. A write whose answer was lost is
+reconciled against the listed statuses: a newer entry by the identity with
+the same context, state and description proves it, and absence past the
+grace window lets it be written again.
+
+### 11.8 Code Channels
+
+A pull-request link and view key on the surrogate id and the pull-request id,
+labelled `{organization}/{project}/{repository}!{id}` with the web address
+`https://dev.azure.com/{organization}/{project}/_git/{repository}/pullrequest/{id}`,
+as the tools' opened-object record already does (§6.6).
+
+### 11.9 Protocol
+
+- The hook kind `azure-devops` joins the database enum, the hook body, and the
+  Console's hook tables, replacing the refusing entries of §7.
+- Feature string `azure-devops-hooks-v1` on the relay and the daemon gates the
+  compiled rule's `azureDevOps` member, the relay's dispatch target, and the
+  review adapter, fail-closed by omission. The daemon advertises it with
+  `azure-devops-v1`, to the Control Plane and in every relay hello, exactly
+  while its credential proxy runs.
+- Hook and relay frames gain an `azureDevOps` optional member beside `github`,
+  `gitlab` and `gitea`, with its arm in the decode-time view of Gitea §13.
+- The gitcred purpose enum gains `azure_devops_hook_reply`; the
+  membership-authorization request carries the actor's identity id.
+- The binding gains its signing key, next key, and previous key with its
+  expiry, and recorded subscriptions with their kinds, last observed status,
+  and the key each was last switched to.
 
 ## 12. Open Questions and Probes
 
@@ -1013,8 +1546,11 @@ known only through consent.
    request by id is answered only when it belongs to one of the agent's
    repositories (§6.2). A filtered list is the follow-up if agents need one.
 6. **Decided:** no Azure DevOps tool in the first version. An agent with
-   `write` opens and completes pull requests through the CLI or REST (§6.3);
-   the tools come with the second step (§11).
+   `write` opens and completes pull requests through the CLI or REST (§6.3).
+   The pull-request tools followed it (§6.6); verified 2026-11-07 against the
+   test repository: create with labels and draft, edit, a thread, its rewrite
+   and a reply, abandon, reactivate, and squash completion, with the footer
+   marker hidden.
 7. **Verified:** derivation can read the identity's own rights in one call.
    `POST _apis/security/permissionevaluationbatch` as the identity, Git
    Repositories namespace, token `repoV2/{project GUID}/{repository GUID}`,
@@ -1025,6 +1561,42 @@ known only through consent.
    and the repository segment, carries the organization as user-info, and
    keeps the four-segment form when the repository has its project's name.
 9. **Decided:** no second, read-only identity in the first version (§10).
+10. **Verified 2026-11-07, for §11**, as the application's service principal
+    in Contributors of one project:
+    - a subscription create is refused (`AccessCheckException`, `Edit
+Subscription` on `PublisherSecurity/{project GUID}`); after an
+      administrator's access-control entry allowing bits 1 and 2 it succeeds,
+      and after the entry is deleted it is refused again;
+    - a read answers the password as `********`; the notification history
+      masks the `Authorization` header and the password, and shows custom
+      headers in clear;
+    - an empty `resourceDetailsToSend` is refused; leaving it out sends the
+      whole resource, `minimal` sends a pull request's `url` and
+      `pullRequestId`, and `none` sends `resource: null`;
+    - the envelope carries `subscriptionId`, `notificationId`, the event `id`,
+      and the resource containers; an update's resource is the pull request
+      when the notification is sent, and its kind is not in the body;
+    - a comment delivery's resource is the comment, with the pull request and
+      thread only in `_links`;
+    - the identity votes on its own pull request, posts pull-request statuses
+      (each write a new entry), opens a single-line inline thread anchored to
+      an iteration, likes a comment, and resolves a thread;
+    - multi-line inline threads as §11.6 writes them: a right-side range on
+      added lines and a left-side range on removed lines, each with the file's
+      `changeTrackingId` from the iteration's changes and the current
+      iteration as both comparing iterations, are accepted and read back
+      unchanged, on the first iteration and after a second push; the
+      left-side range shows on the removed base lines;
+    - an access-control list query for a member answers no effective
+      permission from that member's groups, while `queryMembership=ExpandedUp`
+      lists the groups and the repository's list chain names which of them
+      may contribute.
+11. **Probe, before the step that relies on it:**
+    - whether a Project Administrator below Project Collection Administrator
+      may write §11.1's access-control entry (B2);
+    - the content form of a mention of the identity (B1);
+    - whether a subscription `PUT` without the real password keeps the stored
+      one (B2 never relies on it).
 
 ## 13. Implementation Plan
 
@@ -1062,3 +1634,34 @@ live organization before A2.
 - **A4 — Console, Setup, and documentation.** _Landed, except the setup page
   on the documentation site._ The card and the connect page, the pickers, and
   the Microsoft section's redirect URI and wording.
+- **A5 — Pull-request tools.** _Landed (#3812)._ The broker and the three tools
+  of §6.6. Tests pin the allowlist below one repository, the tier of each
+  call, the refusals of issues, assignees, reviewers and pipelines, the
+  completion checks, and the single re-mint after a rejected lease.
+
+The second step (§11):
+
+- **B1 — Protocol and relay ingress.** The hook kind, `azure-devops-hooks-v1`,
+  the frames' `azureDevOps` member and its decode-time arm, the compiled rule
+  keyed by subscription id, and `/webhooks/azure-devops` with §11.3's
+  verification and §11.4's mapping, summons, and loop veto. Tests pin the
+  uniform `404`, both keys during a rotation, a body that disagrees with its
+  rule, and the link shapes a comment must have.
+- **B2 — Control Plane.** §11.1's access-control entry in the connect flow and
+  Manage project access, with **Allow triggers**; the hook write and its
+  refusal without the grant; the binding's secrets and subscriptions;
+  `convergeManagedRepository` with create, delete, read-back with drift
+  rewrite, re-enable, and the rotation barrier; the membership-authorization
+  arm with its inheritance boundaries; and the `azure_devops_hook_reply`
+  purpose. Tests pin that no delivery promotes a key before every
+  subscription switched, and that a project without inheritance takes no
+  ancestor allow.
+- **B3 — Daemon hook turns.** Normalization and the hook-admission members, the
+  turn-start read of the pull request, its iterations and threads, the final
+  poster and the like, the standing context, and the tool guidance.
+- **B4 — Reviews and run projection.** _Implemented; see "As implemented"
+  in §11.6 and §11.7._ The review adapter of §11.6 and the
+  status writer of §11.7. Tests pin the shared vote: a second agent's verdict
+  replaces the first, and a `COMMENT` review leaves the vote alone.
+- **B5 — Console.** The hook kind's families, Allow triggers, the binding's
+  subscription state, and code-channel views (§11.8).

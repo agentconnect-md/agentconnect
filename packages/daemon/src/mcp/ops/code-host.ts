@@ -185,6 +185,10 @@ export interface HostWords {
   threads: boolean
   /** How this host's merge lands, when that differs from merging at once. */
   mergeNote?: string
+  /** False where the host's issues live outside the repository: no issue tool, and comments on change requests only. */
+  issues?: false
+  /** Change-request fields the host does not take, left out of the schema and refused as stray. */
+  omits?: readonly ('assignees' | 'reviewers')[]
 }
 
 function optionalNames(key: string) {
@@ -252,7 +256,7 @@ const CHANGE_PROPS = {
 /** The change-request tool: open, edit, merge, close, or reopen one pull or merge request. */
 export function changeRequestTool(words: HostWords): CodeHostEffectTool {
   const noun = words.changeRequest
-  const args = z.object({
+  const full = z.object({
     action: requiredEnum('action', CHANGE_REQUEST_ACTIONS),
     iid: optionalPositiveInt('iid'),
     sourceBranch: optionalString('sourceBranch'),
@@ -268,12 +272,25 @@ export function changeRequestTool(words: HostWords): CodeHostEffectTool {
     sha: optionalString('sha')
   })
   const name = `${words.prefix}${pascal(noun)}`
-  const editable = ['title', 'description', 'targetBranch', 'draft', ...CHANGES, 'reviewers']
+  const omitted = new Set<string>(words.omits ?? [])
+  if (omitted.has('assignees')) ['addAssignees', 'removeAssignees'].forEach((key) => omitted.add(key))
+  // An omitted field leaves the validator too, which then refuses it by name instead of dropping it.
+  const mask: Partial<Record<'assignees' | 'addAssignees' | 'removeAssignees' | 'reviewers', true>> =
+    Object.fromEntries([...omitted].map((key) => [key, true]))
+  const args = (omitted.size > 0 ? full.omit(mask).strict() : full) as typeof full
+  const takes = (keys: string[]) => keys.filter((key) => !omitted.has(key))
+  const editable = takes(['title', 'description', 'targetBranch', 'draft', ...CHANGES, 'reviewers'])
+  const advertised = <T extends Record<string, unknown>>(props: T) =>
+    Object.fromEntries(Object.entries(props).filter(([key]) => !omitted.has(key)))
+  const guidance =
+    words.issues === false
+      ? `On ${words.host}, open, edit and merge ${noun}s and comment on them with \`${name}\` and \`${words.prefix}Comment\`.`
+      : `On ${words.host}, open, edit and merge ${noun}s, file issues, and comment with \`${name}\`, \`${words.prefix}Issue\` and \`${words.prefix}Comment\`.`
   return codeHostEffectTool({
     provider: words.provider,
     readOnly: false,
     args,
-    guidance: `On ${words.host}, open, edit and merge ${noun}s, file issues, and comment with \`${name}\`, \`${words.prefix}Issue\` and \`${words.prefix}Comment\`.`,
+    guidance,
     operation: (parsed): CodeHostBrokerOperation => {
       const { action, ...fields } = parsed
       const all = parsed as Record<string, unknown>
@@ -282,7 +299,16 @@ export function changeRequestTool(words: HostWords): CodeHostEffectTool {
           checkFields(
             action,
             all,
-            ['sourceBranch', 'targetBranch', 'title', 'description', 'draft', 'labels', 'assignees', 'reviewers'],
+            takes([
+              'sourceBranch',
+              'targetBranch',
+              'title',
+              'description',
+              'draft',
+              'labels',
+              'assignees',
+              'reviewers'
+            ]),
             ['sourceBranch', 'targetBranch', 'title']
           )
           return {
@@ -337,13 +363,15 @@ export function changeRequestTool(words: HostWords): CodeHostEffectTool {
               ? 'create/update: draft state, carried by the title (an update also needs `title`).'
               : 'create/update: open as a draft, or convert to (true) or from (false) one.'
           },
-          ...PEOPLE,
-          ...CHANGE_PROPS,
-          reviewers: {
-            type: 'array',
-            items: { type: 'string' },
-            description: 'create/update: usernames to request a review from.'
-          },
+          ...advertised({
+            ...PEOPLE,
+            ...CHANGE_PROPS,
+            reviewers: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'create/update: usernames to request a review from.'
+            }
+          }),
           mergeMethod: {
             type: 'string',
             enum: [...words.mergeMethods],
@@ -412,7 +440,8 @@ export function issueTool(words: HostWords): CodeHostEffectTool {
 
 /** The comment tool: post or rewrite a comment, and reply in a discussion where the host threads. */
 export function commentTool(words: HostWords): CodeHostEffectTool {
-  const subjects = ['issue', words.changeSubject] as const
+  const subjects: readonly [string, ...string[]] =
+    words.issues === false ? [words.changeSubject] : ['issue', words.changeSubject]
   const actions = words.threads ? (['create', 'update', 'reply'] as const) : (['create', 'update'] as const)
   // Only a threading host's schema carries discussionId, so the validator matches the advertised fields.
   const args = z.object({
@@ -424,6 +453,7 @@ export function commentTool(words: HostWords): CodeHostEffectTool {
     ...(words.threads ? { discussionId: optionalString('discussionId') } : {})
   })
   const name = `${words.prefix}Comment`
+  const on = words.issues === false ? words.changeRequest : `issue or ${words.changeRequest}`
   return codeHostEffectTool({
     provider: words.provider,
     readOnly: false,
@@ -447,14 +477,14 @@ export function commentTool(words: HostWords): CodeHostEffectTool {
     descriptor: {
       name,
       description:
-        `Comment on a ${words.host} issue or ${words.changeRequest} in this session’s ${words.repo}` +
+        `Comment on a ${words.host} ${on} in this session’s ${words.repo}` +
         (words.threads ? ', or reply in a discussion thread. ' : '. ') +
         '`update` rewrites only a comment this session posted with this tool. Requires comment authority.',
       inputSchema: obj(
         {
           action: { type: 'string', enum: [...actions] },
           subject: { type: 'string', enum: [...subjects] },
-          iid: { type: 'integer', minimum: 1, description: `The issue or ${words.changeRequest} number.` },
+          iid: { type: 'integer', minimum: 1, description: `The ${on} number.` },
           body: { type: 'string', minLength: 1, description: 'The complete Markdown body.' },
           commentId: {
             type: 'string',

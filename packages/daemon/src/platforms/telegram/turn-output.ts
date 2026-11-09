@@ -15,7 +15,16 @@
  * is visible here rather than smuggled in through a wide type.
  */
 import type { TelegramConnection } from '../../telegram/connection.js'
-import { TELEGRAM_MESSAGE_LIMIT, type TelegramAction } from '../../telegram/render.js'
+import { markdownToTelegramHtml } from '../../telegram/markdown-html.js'
+import { escapeHtml, TELEGRAM_MESSAGE_LIMIT, type TelegramAction } from '../../telegram/render.js'
+
+/** The agent's Markdown as Telegram HTML, with the plain source as the fallback when Telegram rejects it. */
+function formatted(
+  plain: string,
+  html: string | undefined
+): { text: string; opts: { parseMode?: 'HTML'; plainFallback?: string } } {
+  return html?.trim() ? { text: html, opts: { parseMode: 'HTML', plainFallback: plain } } : { text: plain, opts: {} }
+}
 
 /**
  * Telegram's opaque per-turn state (§7.3). Core stores it and never reads it.
@@ -30,7 +39,7 @@ export interface TelegramTurnState {
   replyTo?: number
   /** The turn's newest body message, so a turn-end `continue-hint` can annotate
    *  the message users are actually told to reply to. */
-  lastBody?: { id: string; text: string }
+  lastBody?: { id: string; text: string; html?: string }
 }
 
 /** The core turn, as Telegram's applier sees it — the fields it renders with and
@@ -103,9 +112,15 @@ export async function applyTelegramAction<TTurn extends TelegramTurn>(
       // The continue-the-topic hint is chrome: sent with the reply (so it lands on the very
       // message users are told to reply to) but kept out of the recorded text below.
       const sent = action.hint ? `${action.text}\n\n${action.hint}` : action.text
-      const id = await conn.postMessage(turn.plan.channel, sent, turn.plan.thread, { replyTo: state.replyTo })
+      const body = markdownToTelegramHtml(action.text)
+      const html = body.trim() ? (action.hint ? `${body}\n\n${escapeHtml(action.hint)}` : body) : undefined
+      const out = formatted(sent, html)
+      const id = await conn.postMessage(turn.plan.channel, out.text, turn.plan.thread, {
+        replyTo: state.replyTo,
+        ...out.opts
+      })
       // Remember the newest body message so a turn-end `continue-hint` can annotate it.
-      if (id) state.lastBody = { id, text: sent }
+      if (id) state.lastBody = { id, text: sent, ...(html ? { html } : {}) }
       await host.appendTranscript({
         channel: turn.plan.transcriptChannel,
         thread: turn.plan.statusThread,
@@ -126,20 +141,24 @@ export async function applyTelegramAction<TTurn extends TelegramTurn>(
       if (!last || last.text.endsWith(action.hint)) return
       const sent = `${last.text}\n\n${action.hint}`
       if (sent.length > TELEGRAM_MESSAGE_LIMIT) return
-      state.lastBody = { id: last.id, text: sent }
-      await conn.updateMessage(turn.plan.channel, last.id, sent)
+      const html = last.html ? `${last.html}\n\n${escapeHtml(action.hint)}` : undefined
+      state.lastBody = { id: last.id, text: sent, ...(html ? { html } : {}) }
+      const out = formatted(sent, html)
+      await conn.updateMessage(turn.plan.channel, last.id, out.text, out.opts)
       return
     }
     case 'live-reply': {
-      // minimal mode's single agent reply: send once (plain text) then edit in place as the
-      // turn streams. Skip an update when unchanged; not recorded (the `recordOnly` posts do).
+      // minimal mode's single reply, sent once then edited in place; unchanged text is skipped and nothing is recorded.
       if (turn.chrome.liveReplyText === action.text) return
       turn.chrome.liveReplyText = action.text
-      if (turn.chrome.liveReplyTs) await conn.updateMessage(turn.plan.channel, turn.chrome.liveReplyTs, action.text)
+      const out = formatted(action.text, markdownToTelegramHtml(action.text))
+      if (turn.chrome.liveReplyTs)
+        await conn.updateMessage(turn.plan.channel, turn.chrome.liveReplyTs, out.text, out.opts)
       else if (!turn.chrome.liveReplyAttempted) {
         turn.chrome.liveReplyAttempted = true
-        turn.chrome.liveReplyTs = await conn.postMessage(turn.plan.channel, action.text, turn.plan.thread, {
-          replyTo: state.replyTo
+        turn.chrome.liveReplyTs = await conn.postMessage(turn.plan.channel, out.text, turn.plan.thread, {
+          replyTo: state.replyTo,
+          ...out.opts
         })
       }
       return

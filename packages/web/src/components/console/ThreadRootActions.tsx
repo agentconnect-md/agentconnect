@@ -8,7 +8,7 @@ import { Icon } from '@/components/ui'
 
 const LONG_PRESS_MS = 500
 
-/** The hover action beside a root's Copy; a phone reaches the same action by a long press instead. */
+/** A root's hover action; a phone reaches the same action by a long press instead. */
 export function ReplyInThreadButton({ onReply }: { onReply: () => void }) {
   const t = useTranslations('Common.taskThread')
   return (

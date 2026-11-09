@@ -38,7 +38,7 @@ async function ready(h: ReturnType<typeof buildWsHarness>, mode: 'frame' | 'conn
   } else {
     await seedDaemon(prisma, DAEMON)
     await seedAgent(prisma, AGENT, { daemonId: DAEMON })
-    const token = await h.mintToken(DAEMON)
+    const token = await h.mintToken(DAEMON, { approved: true })
     stub.inject('auth', { apiKey: token, daemonId: DAEMON, agentVersion: '1.4.0' }, { id: AUTH_ID })
   }
   await stub.expectFrame('auth/ok')
@@ -189,8 +189,9 @@ describe('frame-scoped organization on the daemon WS edge', () => {
     expect(req.orgId).toBe(DEFAULT_ORG_ID)
     stub.inject('session/list/page', { sessions: [] }, { corr: req.id })
     await expect(pending).rejects.toMatchObject({ code: 'SCOPE_DENIED' })
+    stub.sent.length = 0
     const again = conn.request('session/list', { agentId: AGENT })
-    const req2 = stub.sent.filter((f) => f.type === 'session/list').at(-1)!
+    const req2 = await stub.expectFrame('session/list')
     stub.inject('session/list/page', { sessions: [] }, { corr: req2.id, orgId: DEFAULT_ORG_ID })
     await expect(again).resolves.toEqual({ sessions: [] })
   })

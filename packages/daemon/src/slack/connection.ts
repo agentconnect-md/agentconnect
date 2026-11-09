@@ -43,7 +43,7 @@ import { markNotJoined } from '../platforms/not-joined.js'
 import { slackMessageUrl } from '../platforms/slack/permalink.js'
 import { SLACK_CODE_CHANNEL_CONTEXT, SLACK_CONVERSATION_CONTEXT } from '../platforms/slack/standing-context.js'
 import { CodeTasksViews, SLACK_TASKS_VIEW_KEY, type CodeTasksSnapshot } from '../platforms/slack/code-tasks.js'
-import type { UploadAnchor, UploadFailReason, UploadOutcome } from '../mcp/ops/context.js'
+import type { PlatformFileInfo, UploadAnchor, UploadFailReason, UploadOutcome } from '../mcp/ops/context.js'
 import {
   STATUS_ACTION,
   ELICIT_ACTION_PREFIX,
@@ -656,8 +656,15 @@ export type AppLike = {
           // A canvas is a file: its title, link, and private body URL all come from here,
           // because Slack publishes no full canvas read of its own.
           title?: string
+          name?: string
+          mimetype?: string
+          size?: number
+          channels?: string[]
+          groups?: string[]
+          ims?: string[]
           permalink?: string
           url_private?: string
+          url_private_download?: string
         }
       }>
     }
@@ -2617,19 +2624,7 @@ export class SlackConnection implements PlatformConnection {
     }
   }
 
-  /**
-   * Put a file INTO a conversation — Slack's three-step external upload (`files:write`).
-   *
-   * `chat.postMessage` cannot carry bytes at all: it can only reference an image by public
-   * URL or by the id of a file already hosted in Slack. So the completion call IS the
-   * message here — `comment` rides as `initial_comment`, and the agent's conversational
-   * identity as username/icon, exactly as {@link postChatMessage} applies it to a text post.
-   *
-   * `ok: false` means the share FAILED and nothing is in the conversation, with a typed
-   * reason — `indeterminate` alone means the queue abandoned a still-running upload that may
-   * yet land. Success carries no `messageId`: Slack answers with the file and no ts, so a
-   * shared file is the one post kind that cannot anchor a session seed or a paired wake.
-   */
+  // The completion publishes the caption and file; read its message timestamp back for follow-up threading.
   async uploadFile(
     channel: string,
     file: { bytes: Buffer; name: string; mimeType?: string },
@@ -2637,107 +2632,110 @@ export class SlackConnection implements PlatformConnection {
     anchor?: UploadAnchor,
     options?: SlackPostOptions
   ): Promise<UploadOutcome> {
+    return await this.uploadFiles(channel, [file], comment, anchor, options)
+  }
+
+  // Reserve and upload every file before completing one share for the entire group.
+  async uploadFiles(
+    channel: string,
+    files: { bytes: Buffer; name: string; mimeType?: string }[],
+    comment?: string,
+    anchor?: UploadAnchor,
+    options?: SlackPostOptions
+  ): Promise<UploadOutcome> {
+    if (files.length === 0) return { ok: false, reason: 'platform_error' }
     const threadTs = anchor?.thread
     const task: Promise<UploadOutcome> = this.queue.enqueue(async () => {
       try {
-        // `uploadV2` IS the three-step external upload — reserve a URL, POST the bytes, share
-        // the file — and we call it instead of driving those steps ourselves because the
-        // middle one is not a Slack API request and its exact wire shape is undocumented.
-        // Two live failures came out of reimplementing it (a multipart part Slack answers
-        // with HTTP 500 unless it is named `body`, and at least one more), so the transport
-        // now belongs to the SDK that Slack maintains, along with the agent/proxy/timeout
-        // configuration the rest of this client already got from `WebClient`.
-        //
-        // The cost is the file share's identity decoration: `completeUploadExternal` accepts
-        // `username`/`icon_url` per the docs but not per the SDK's types, and `uploadV2`
-        // builds its completion arguments from an explicit key list that omits both. So a
-        // shared file posts under the app's identity while the agent's text reply posts under
-        // the agent's. That decoration was never verified against live Slack anyway — it was
-        // already being dropped on any rejection — so this gives up nothing that worked.
-        //
-        // Sharing is what makes the file a message; without `channel_id` it stays a private
-        // upload nobody can see. `thread_ts` must be the PARENT's ts, never a reply's.
-        // A CAPTION IS MRKDWN HERE, unlike every other send in this file. `postMessage`
-        // renders through a Block Kit `markdown` block, but the completion step documents
-        // `blocks` as IGNORED whenever `initial_comment` is set — and it has no separate
-        // `text` argument, so blocks-only would buy CommonMark at the price of the
-        // notification preview for every forwarded file. Keeping the comment is the better
-        // half of that trade; the cost is that `**bold**` and `[label](url)` read literally.
-        // The identity path first: `completeUploadExternal` documents `username`/`icon_url`
-        // for the share message, which is the ONLY way a file post can carry the agent's own
-        // name and avatar — no manifest field sets an app icon, and `uploadV2` drops both
-        // arguments when it builds its completion from an explicit key list.
-        const shared = await this.shareWithIdentity(channel, file, comment, threadTs, options)
-        if (shared !== undefined) return { ok: true, ...(await this.shareMessageTs(shared, channel)) }
-        // Only a refused BYTE POST lands here, and that step runs before anything reaches the
-        // conversation — which is what makes retrying through the SDK's own transport safe
-        // rather than a double post. It costs the identity; the delivery outranks it.
-        this.deps.log?.debug(`slack: uploadFile falling back to the SDK transport for ${file.name}`)
+        // Complete the group with agent identity; uploadV2 omits username/icon_url from its completion.
+        const shared = await this.shareWithIdentity(channel, files, comment, threadTs, options)
+        if (shared !== undefined)
+          return { ok: true, fileIds: shared, ...(await this.shareMessageTs(shared[0], channel)) }
+        // Only a byte-upload refusal permits SDK fallback: no completion has published anything yet.
+        this.deps.log?.debug('slack: file upload falling back to the SDK transport')
         const done = (await this.app.client.files.uploadV2({
-          file: file.bytes,
-          filename: file.name,
+          ...(files.length === 1
+            ? { file: files[0]!.bytes, filename: files[0]!.name }
+            : { file_uploads: files.map((file) => ({ file: file.bytes, filename: file.name })) }),
           channel_id: channel,
           ...(threadTs && threadTs !== channel ? { thread_ts: threadTs } : {}),
           ...(comment ? { initial_comment: comment } : {})
         })) as SlackUploadV2Result
         // `uploadV2` answers with one completion response per file, each carrying the FILE.
-        const fileId = done?.files?.[0]?.files?.[0]?.id
-        return { ok: true, ...(await this.shareMessageTs(fileId, channel)) }
+        const fileIds =
+          done?.files?.flatMap((group) => group.files?.flatMap((file) => (file.id ? [file.id] : [])) ?? []) ?? []
+        return { ok: true, fileIds, ...(await this.shareMessageTs(fileIds[0], channel)) }
       } catch (err) {
         this.rememberMissingScopes(err)
-        this.deps.log?.debug(`slack: uploadFile ${file.name} → ch=${channel} failed: ${(err as Error).message}`)
+        this.deps.log?.debug(`slack: file upload to ${channel} failed: ${(err as Error).message}`)
         // A possibly-partial completion, or a failure with no provider code, may have landed: never "nothing was sent".
-        const mayHaveLanded = (err as { shareMayHaveLanded?: unknown } | null)?.shareMayHaveLanded === true
+        const mayHaveLanded =
+          (err as { shareMayHaveLanded?: unknown } | null)?.shareMayHaveLanded === true ||
+          COMPLETION_MAY_HAVE_LANDED.has(slackApiErrorCode(err) ?? '')
         const notJoined = slackApiErrorCode(err) === 'not_in_channel' ? { notJoined: true as const } : {}
         return !mayHaveLanded && slackApiErrorCode(err) !== undefined
           ? { ok: false, reason: classifySlackUploadError(err), ...slackErrorDetail(err), ...notJoined }
           : { ok: false, reason: 'indeterminate', ...slackErrorDetail(err) }
       }
     })
-    // The queue abandons a task at 30 s but the task KEEPS RUNNING — the share may still
-    // land, so this must not read as "nothing was sent" (a retry would double-post).
+    // The queue can time out while the share keeps running; retrying it could publish twice.
     return task.catch((err) => ({
       ok: false,
       reason: isSendQueueTimeout(err) ? 'indeterminate' : 'platform_error'
     }))
   }
 
-  /**
-   * Steps 1-3 with the agent's identity on the share. Returns the file id once the share is
-   * PUBLISHED, or `undefined` when the byte POST was refused — the one failure that provably
-   * happened before anything reached the conversation, which is what lets the caller retry
-   * through the SDK. Every later failure throws, because it may have landed.
-   */
+  // Undefined means no completion was attempted; later failures may have published and must never retry.
   private async shareWithIdentity(
     channel: string,
-    file: { bytes: Buffer; name: string },
+    files: { bytes: Buffer; name: string }[],
     comment: string | undefined,
     threadTs: string | undefined,
     options?: SlackPostOptions
-  ): Promise<string | undefined> {
-    const reserved = await this.app.client.files.getUploadURLExternal({
-      filename: file.name,
-      length: file.bytes.byteLength
-    })
-    const uploadUrl = reserved.upload_url
-    const fileId = reserved.file_id
-    if (!uploadUrl || !fileId) return undefined
-    if (!(await this.putUploadBytes(uploadUrl, file))) return undefined
-    // Sharing is what makes the file a message; without `channel_id` it stays a private
-    // upload nobody can see. `thread_ts` must be the PARENT's ts, never a reply's.
-    // A CAPTION IS MRKDWN HERE, unlike every other send in this file: this method documents
-    // `blocks` as IGNORED whenever `initial_comment` is set and has no separate `text`
-    // argument, so blocks-only would buy CommonMark at the price of the notification preview.
+  ): Promise<string[] | undefined> {
+    const uploaded: { id: string; title: string }[] = []
+    for (const file of files) {
+      const reserved = await this.app.client.files.getUploadURLExternal({
+        filename: file.name,
+        length: file.bytes.byteLength
+      })
+      if (!reserved.upload_url || !reserved.file_id) return undefined
+      if (!(await this.putUploadBytes(reserved.upload_url, file))) return undefined
+      uploaded.push({ id: reserved.file_id, title: file.name })
+    }
+    // One completion publishes all files with a mrkdwn caption, optionally under an existing root.
     await this.completeUpload(
       {
-        files: [{ id: fileId, title: file.name }],
+        files: uploaded,
         channel_id: channel,
         ...(threadTs && threadTs !== channel ? { thread_ts: threadTs } : {}),
         ...(comment ? { initial_comment: comment } : {})
       },
       options
     )
-    return fileId
+    return uploaded.map((file) => file.id)
+  }
+
+  // The caller checks access to a listed conversation before downloading these bytes.
+  async getFileInfo(fileId: string): Promise<PlatformFileInfo | undefined> {
+    const file = (await this.app.client.files.info({ file: fileId })).file
+    const sourceUrl = file?.url_private_download ?? file?.url_private
+    if (!file || !sourceUrl) return undefined
+    return {
+      name: file.name ?? file.title ?? fileId,
+      mimeType: file.mimetype ?? 'application/octet-stream',
+      sourceUrl,
+      ...(file.size !== undefined ? { size: file.size } : {}),
+      channels: [
+        ...new Set([
+          ...(file.channels ?? []),
+          ...(file.groups ?? []),
+          ...(file.ims ?? []),
+          ...Object.keys(file.shares?.public ?? {}),
+          ...Object.keys(file.shares?.private ?? {})
+        ])
+      ]
+    }
   }
 
   /**

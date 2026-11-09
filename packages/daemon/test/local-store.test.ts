@@ -1525,7 +1525,7 @@ describe('LocalStore session/transcript read-back (session/list, session/history
     await s.close()
   })
 
-  it('triggeredBy is first-wins across upserts and survives state-only rewrites', async () => {
+  it('trigger and initiator are first-wins across upserts and survive state-only rewrites', async () => {
     const s = await store()
     const key = sessionKey('slack', 'C1', 'T1', 'bot-a')
     await s.upsertSession({
@@ -1538,12 +1538,19 @@ describe('LocalStore session/transcript read-back (session/list, session/history
       state: 'idle',
       lastDeliveredTs: null,
       updatedAt: 1,
-      triggeredBy: 'U-FIRST'
+      triggeredBy: 'U-FIRST',
+      initiator: JSON.stringify({ name: 'Alex', commitAuthors: [] })
     })
-    // A later turn's upsert (different sender, or a read-back row without the
-    // field) must not steal / clear the original credit.
-    await s.upsertSession({ ...(await s.getSession(key))!, state: 'prompting', updatedAt: 2, triggeredBy: 'U-SECOND' })
+    // A later turn cannot replace the opener or its public attribution.
+    await s.upsertSession({
+      ...(await s.getSession(key))!,
+      state: 'prompting',
+      updatedAt: 2,
+      triggeredBy: 'U-SECOND',
+      initiator: JSON.stringify({ name: 'Dana', commitAuthors: [] })
+    })
     expect((await s.getSession(key))?.triggeredBy).toBe('U-FIRST')
+    expect(JSON.parse((await s.getSession(key))!.initiator!)).toEqual({ name: 'Alex', commitAuthors: [] })
     expect((await s.listSessions('bot-a'))[0]?.triggeredBy).toBe('U-FIRST')
     await s.close()
   })
@@ -3934,6 +3941,36 @@ describe('deleteSession reclaims its own rows (message-intake.md §8 rule 1)', (
 
 // message-intake.md §5 step 2: the row keeps `!queue …` as typed, the prompt is the stripped text.
 describe('transcriptPromptText', () => {
+  it('resolves same-name uploads by id only within the receiving session and retains ids in replay', async () => {
+    const s = await store()
+    const file = {
+      uploadId: randomUUID(),
+      name: 'same.png',
+      mimeType: 'image/png',
+      size: 10,
+      sha256: 'A'.repeat(43) + '='
+    }
+    const uploads = [file, ...Array.from({ length: 9 }, () => ({ ...file, uploadId: randomUUID() }))]
+    const body = JSON.stringify({ uploads })
+    await s.appendTranscript({
+      channel: 'C',
+      thread: 'T',
+      sender: 'U1',
+      ts: '1',
+      kind: 'text',
+      text: 'Look',
+      body,
+      admission: { agentId: 'bot-a', sessionKey: 'k:C:T:bot-a' }
+    })
+    for (const upload of uploads) {
+      expect(await s.transcriptUploadById(readScope('C', 'T', 'bot-a'), upload.uploadId)).toEqual(upload)
+      expect(transcriptPromptText({ kind: 'text', text: 'Look', body })).toContain(`uploadId=${upload.uploadId}`)
+    }
+    expect(await s.transcriptUploadById(readScope('C', 'OTHER', 'bot-a'), file.uploadId)).toBeUndefined()
+    expect(await s.transcriptUploadById(readScope('C', 'T', 'bot-b'), file.uploadId)).toBeUndefined()
+    await s.close()
+  })
+
   it('strips an admitted !queue prefix from the row a step-1 write recorded', () => {
     expect(transcriptPromptText({ kind: 'text', text: '!queue ship it' })).toBe('ship it')
     expect(transcriptPromptText({ kind: 'text', text: 'ship it' })).toBe('ship it')
@@ -4226,6 +4263,35 @@ describe('thread reads (webchat-threads.md §8)', () => {
     expect(await s.threadsChangedBetween(scope, before, await s.currentTranscriptRevision(), 20)).toEqual([
       { thread: R2, revision: now }
     ])
+    await s.close()
+  })
+
+  it('reads a root handed into a thread as one of its replies, while the row keeps its own thread', async () => {
+    const s = await store()
+    await seed(s)
+    const handed = randomUUID()
+    await s.appendTranscript(row('12', handed, { postId: handed, admission: coordinator }))
+    const before = await s.currentTranscriptRevision()
+    expect(await s.markTranscriptHanded({ transcriptChannel: 'CV', agentId: 'bot-a' }, handed, R1)).toBe(true)
+    expect(await s.markTranscriptHanded({ transcriptChannel: 'CV', agentId: 'bot-a' }, handed, R1)).toBe(false)
+    const marked = (await s.transcriptPage('CV', handed, null, 50, 'bot-a')).rows
+    expect(marked.map((r) => [r.ts, r.thread, r.handedTo])).toEqual([['12', handed, R1]])
+    expect((await s.threadPageForAgent(scope, R1, null, 50)).rows.map((r) => r.ts).reverse()).toEqual([
+      '1',
+      '4',
+      '5',
+      '6',
+      '7',
+      '9',
+      '12'
+    ])
+    expect((await s.threadTailForAgent(scope, R1, before, 50)).rows.map((r) => r.ts)).toEqual(['12'])
+    expect(await s.threadsChangedBetween(scope, before, await s.currentTranscriptRevision(), 20)).toEqual([
+      { thread: R1, revision: await s.currentTranscriptRevision() }
+    ])
+    const stats = await s.threadReplyStats(scope, [R1, handed], 2)
+    expect(stats.get(R1)).toMatchObject({ replies: 5, latest: { sender: 'U1', text: 'm12' } })
+    expect(stats.has(handed)).toBe(false)
     await s.close()
   })
 

@@ -2444,6 +2444,8 @@
   .mdtxt ol {
     margin: 0;
     padding-left: 20px;
+    /* A pre-wrap ancestor would draw the newlines between items as blank lines. */
+    white-space: normal;
   }
   /* The global reset strips list-style; without a marker a list item reads as a stray indent. */
   .mdtxt ul {

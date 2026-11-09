@@ -1,9 +1,15 @@
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { chmodSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { createServer as createHttpServer, type IncomingMessage } from 'node:http'
+import {
+  createServer as createHttpServer,
+  request as httpRequest,
+  type IncomingMessage,
+  type ServerResponse
+} from 'node:http'
 import { connect as dialTcp, createServer, type AddressInfo, type Server, type Socket } from 'node:net'
 import { dirname, join } from 'node:path'
 import { getCACertificates } from 'node:tls'
+import { stripHopByHop } from '@anthropic-ai/sandbox-runtime/dist/sandbox/parent-proxy.js'
 import type { ShimEvent } from './protocol.js'
 import {
   isProxyTunnel,
@@ -310,11 +316,7 @@ export class TunnelHost {
   }
 
   private async startProxy(): Promise<ProxyListener> {
-    const server = createHttpServer((_request, response) => {
-      // Only CONNECT is proxied: a session's HTTPS clients tunnel, and nothing here forwards plain HTTP.
-      response.writeHead(405, { connection: 'close', 'content-length': '0' })
-      response.end()
-    })
+    const server = createHttpServer((request, response) => this.proxyHttp(listener, request, response))
     const listener: ProxyListener = {
       server,
       port: 0,
@@ -334,6 +336,47 @@ export class TunnelHost {
     server.on('error', (err) => this.deps.log?.warn(`shim: proxy listener error: ${err.message}`))
     listener.port = (server.address() as AddressInfo).port
     return listener
+  }
+
+  // Ordinary HTTP targets retain their direct route; credential-tunnel authorities require CONNECT.
+  private proxyHttp(listener: ProxyListener, request: IncomingMessage, response: ServerResponse): void {
+    const refuse = (status: number) => {
+      response.writeHead(status, {
+        connection: 'close',
+        'content-length': '0',
+        ...(status === 407 ? { 'proxy-authenticate': 'Basic realm="agentconnect"' } : {})
+      })
+      response.end()
+    }
+    if (this.closed) return refuse(503)
+    if (!proxyAuthorized(request.headers['proxy-authorization'], listener.token)) return refuse(407)
+    const target = URL.parse(request.url ?? '')
+    if (!target || target.protocol !== 'http:' || target.username || target.password || target.hash) return refuse(400)
+    const authority = connectAuthority(`${target.hostname}:${target.port || 80}`)
+    const named = connectAuthority(request.headers.host) ?? connectAuthority(`${request.headers.host}:80`)
+    if (!authority || named?.key !== authority.key) return refuse(400)
+    if (listener.routes.codehost.has(authority.key) || listener.routes.provider.has(authority.key)) return refuse(403)
+
+    const socket = request.socket
+    if (!this.direct.has(socket)) {
+      this.direct.add(socket)
+      socket.once('close', () => this.direct.delete(socket))
+    }
+    const upstream = httpRequest(
+      target,
+      { method: request.method, headers: stripHopByHop(request.headers), agent: false },
+      (reply) => {
+        response.writeHead(reply.statusCode ?? 502, stripHopByHop(reply.headers))
+        reply.on('error', () => response.destroy())
+        reply.pipe(response)
+      }
+    )
+    upstream.on('error', () => (response.headersSent ? response.destroy() : refuse(502)))
+    request.on('error', () => upstream.destroy())
+    request.on('aborted', () => upstream.destroy())
+    response.on('error', () => response.destroy())
+    response.on('close', () => upstream.destroy())
+    request.pipe(upstream)
   }
 
   /** A code-host or provider CONNECT goes into its tunnel as the daemon's proxy expects it; any other host is reached directly, as the session would without a proxy. */

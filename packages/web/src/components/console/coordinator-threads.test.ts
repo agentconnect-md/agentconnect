@@ -6,6 +6,7 @@ import {
   liveReplyThreads,
   namesThread,
   replyToMessageThread,
+  splitThreadWork,
   threadAutoOpen,
   threadShapeOf,
   threadToAutoOpen
@@ -117,5 +118,36 @@ describe('threadToAutoOpen', () => {
     expect(threadToAutoOpen(state, [{ rootId: ROOT, replies: 0 }], [])).toBeUndefined()
     expect(threadToAutoOpen(state, [{ rootId: ROOT, replies: 1 }], [OTHER])).toBe(OTHER)
     expect(threadToAutoOpen(state, [{ rootId: ROOT, replies: 1 }], [OTHER])).toBeUndefined()
+  })
+})
+
+describe('splitThreadWork', () => {
+  type T = { kind: 'user' | 'bot'; key: string; agentId?: string; steps?: { text: string; thread?: string }[] }
+  const bot = (key: string, agentId: string, threads: (string | undefined)[]): T => ({
+    kind: 'bot',
+    key,
+    agentId,
+    steps: threads.map((thread, i) => ({ text: `${key}.${i}`, ...(thread ? { thread } : {}) }))
+  })
+  const person: T = { kind: 'user', key: 'u1' }
+
+  it('moves the coordinator’s steps in a thread to that thread and leaves the rest on the main timeline', () => {
+    const turns = [person, bot('b1', 'coord', [ROOT, undefined, OTHER, ROOT]), bot('b2', 'coord', [ROOT])]
+    const { main, byThread } = splitThreadWork(turns, 'coord')
+    expect(main.map((turn) => [turn.key, turn.steps?.map((step) => step.text)])).toEqual([
+      ['u1', undefined],
+      ['b1', ['b1.1']]
+    ])
+    expect(byThread.get(ROOT)?.map((turn) => [turn.key, turn.steps?.map((step) => step.text)])).toEqual([
+      [`b1:in:${ROOT}`, ['b1.0', 'b1.3']],
+      [`b2:in:${ROOT}`, ['b2.0']]
+    ])
+    expect(byThread.get(OTHER)?.map((turn) => turn.key)).toEqual([`b1:in:${OTHER}`])
+  })
+
+  it('keeps another agent’s turns and an unknown coordinator’s on the main timeline', () => {
+    const turns = [bot('b1', 'task-agent', [ROOT])]
+    expect(splitThreadWork(turns, 'coord')).toEqual({ main: turns, byThread: new Map() })
+    expect(splitThreadWork(turns, undefined).main).toEqual(turns)
   })
 })

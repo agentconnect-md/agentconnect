@@ -96,11 +96,27 @@ async function ready(mode: 'frame' | 'connection') {
     )
   )
   await tick()
-  return { client, t, warn, runCron }
+  return { client, t, clock, warn, runCron }
 }
 
 const sent = (t: FakeTransport) => t.sent.map((raw) => JSON.parse(raw))
 const errorsFor = (t: FakeTransport, corr: string) => sent(t).filter((f) => f.type === 'error' && f.corr === corr)
+
+it('limits optional attribution lookup to one two-second attempt', async () => {
+  const { client, t, clock } = await ready('frame')
+  const request = client.readAccess({
+    agentId: AGENT,
+    asker: { consoleUserId: 'user-1' },
+    sessionIds: [],
+    includeCommitAuthors: true
+  })
+  const rejected = expect(request).rejects.toThrow()
+  clock.advance(2_000)
+  await rejected
+  clock.advance(10_000)
+  expect(sent(t).filter((frame) => frame.type === 'agent/read-access')).toHaveLength(1)
+  await client.stop()
+})
 
 /** Push one CP control frame and settle its dispatch. */
 async function control(t: FakeTransport, type: string, payload: unknown, orgId?: string): Promise<string> {

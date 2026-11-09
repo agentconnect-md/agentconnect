@@ -156,6 +156,7 @@ the picture it draws.
 - [background-task-aware-reclaim.md](designs/background-task-aware-reclaim.md) — ACP host reclamation that respects background jobs.
 - [runtime-model-catalog.md](designs/runtime-model-catalog.md) — Runtime model discovery, per-model fallback, and local caching.
 - **(draft)** [computer-use.md](designs/computer-use.md) — Computers: user desktops and Linux containers that agents operate through a desktop daemon with Cua Driver, a built-in WebRTC viewer, and the Linux → Docker → macOS → Windows development plan.
+- **(draft)** [computer-form-fill-and-vault.md](designs/computer-form-fill-and-vault.md) — Linux browser-extension form filling, model-private Fill cards, personal and organization Vaults, agent grants, encrypted storage, and staged delivery.
 
 ## Working papers
 

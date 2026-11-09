@@ -58,6 +58,14 @@ describe('webchat file names and types', () => {
     expect(splitFilesMarker(filesMarker(files))).toEqual({ text: '', files })
   })
 
+  it('splits a marker whose file names contain brackets', () => {
+    const files = [
+      { name: '[Tag][Some.Show].S01.torrent', mimeType: 'application/x-bittorrent' },
+      { name: 'notes].txt', mimeType: 'text/plain' }
+    ]
+    expect(splitFilesMarker(`grab these\n${filesMarker(files)}`)).toEqual({ text: 'grab these', files })
+  })
+
   it('leaves text without a well-formed trailing marker alone', () => {
     for (const text of ['plain', '[attached: a.pdf (application/pdf)] then more', 'x\n[attached: nope]']) {
       expect(splitFilesMarker(text)).toEqual({ text, files: [] })

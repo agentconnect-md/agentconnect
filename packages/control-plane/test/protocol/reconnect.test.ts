@@ -47,7 +47,7 @@ function authPayload(apiKey: string) {
 describe('daemon reconnect — new connection survives the old socket', () => {
   it('re-auth supersedes the old connection (closed 4409) and a late close does not evict the new entry', async () => {
     const h = buildWsHarness(prisma)
-    const token = await h.mintToken(DAEMON)
+    const token = await h.mintToken(DAEMON, { approved: true })
 
     // First connection authenticates and owns the registry entry.
     const oldStub = new DelayedCloseStub()
@@ -82,7 +82,7 @@ describe('daemon reconnect — new connection survives the old socket', () => {
 
   it('a normally-ordered disconnect still removes the entry (own close is not skipped)', async () => {
     const h = buildWsHarness(prisma)
-    const token = await h.mintToken(DAEMON)
+    const token = await h.mintToken(DAEMON, { approved: true })
 
     const { stub } = h.connect()
     stub.inject('auth', authPayload(token))

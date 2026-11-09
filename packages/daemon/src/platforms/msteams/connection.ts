@@ -32,8 +32,14 @@ import {
   MSTEAMS_WRITE_TIMEOUT_MS,
   MsTeamsApi,
   MsTeamsApiError,
+  MsTeamsClientCredentials,
+  MsTeamsGraphReader,
+  MsTeamsRelayGraphToken,
+  relayMsTeamsConnector,
   type MsTeamsChannelKind,
+  type MsTeamsCredentials,
   type MsTeamsMember,
+  type MsTeamsRelayPort,
   type MsTeamsTarget
 } from './api.js'
 import {
@@ -71,10 +77,11 @@ export interface MsTeamsConnectionGroup {
   integrations: { agentId: string; integrationId: string }[]
 }
 
-/** §7.5 opaque identity: the app, its tenant and its secret, so a rotated secret opens a new client and the old one drains. */
-export function msTeamsConnKey(c: Pick<IntegrationMsTeamsConfig, 'appId' | 'tenantId' | 'clientSecret'>): string {
+/** §7.5 opaque identity: the app, its tenant and its secret, or the bot row a relay-egress row sends as, so a rotated secret opens a new client and the old one drains. */
+export function msTeamsConnKey(c: IntegrationMsTeamsConfig): string {
+  const egress = 'clientSecret' in c ? c.clientSecret : `relay:${c.botId}`
   return createHash('sha256')
-    .update(JSON.stringify([c.appId.toLowerCase(), c.tenantId.toLowerCase(), c.clientSecret]))
+    .update(JSON.stringify([c.appId.toLowerCase(), c.tenantId.toLowerCase(), egress]))
     .digest('hex')
 }
 
@@ -120,10 +127,19 @@ export function splitMsTeamsText(text: string): string[] {
 /** The reply coordinates a Teams message carries in `adapterExt.msteams`, read defensively because the bag is persisted. */
 export function msTeamsTargetOf(msg: Pick<NormalizedMessage, 'platform' | 'adapterExt'>): MsTeamsTarget | undefined {
   if (msg.platform !== MSTEAMS_PLATFORM) return undefined
-  const ext = msg.adapterExt?.[MSTEAMS_PLATFORM] as { serviceUrl?: unknown; conversationId?: unknown } | undefined
+  const ext = msg.adapterExt?.[MSTEAMS_PLATFORM] as
+    { serviceUrl?: unknown; conversationId?: unknown; ticket?: unknown } | undefined
   const serviceUrl = typeof ext?.serviceUrl === 'string' ? ext.serviceUrl : undefined
   const conversationId = typeof ext?.conversationId === 'string' ? ext.conversationId : undefined
-  return serviceUrl?.startsWith('https://') && conversationId ? { serviceUrl, conversationId } : undefined
+  const ticket = typeof ext?.ticket === 'string' && ext.ticket ? ext.ticket : undefined
+  return serviceUrl?.startsWith('https://') && conversationId
+    ? { serviceUrl, conversationId, ...(ticket ? { ticket } : {}) }
+    : undefined
+}
+
+/** The team a channel sits in, as its team calls address it: the team's ID under the channel's serviceUrl, with the relay's team ticket. */
+export function msTeamsTeamTarget(serviceUrl: string, teamId: string, ticket?: string): MsTeamsTarget {
+  return { serviceUrl, conversationId: teamId, ...(ticket ? { ticket } : {}) }
 }
 
 /** What a turn's output needs: a send that answers the activity ID, an edit, and a delete. */
@@ -158,6 +174,9 @@ interface KnownConversation {
   name?: string
   /** A channel's enclosing team, whose channel list names it. */
   teamId?: string
+  /** The relay's tickets for the conversation and its team, which a deployment app's row sends with (§8.5); kept across restarts. */
+  ticket?: string
+  teamTicket?: string
 }
 
 /** A conversation as it is remembered across restarts: what the bot saw, plus its team's name once read. */
@@ -172,13 +191,21 @@ function rememberedConversation(facts: unknown): RememberedConversation | undefi
   const kind = f.kind
   if (!serviceUrl?.startsWith('https://') || (kind !== 'personal' && kind !== 'chat' && kind !== 'channel'))
     return undefined
-  const [name, teamId, team] = [text(f.name), text(f.teamId), text(f.team)]
+  const [name, teamId, team, ticket, teamTicket] = [
+    text(f.name),
+    text(f.teamId),
+    text(f.team),
+    text(f.ticket),
+    text(f.teamTicket)
+  ]
   return {
     serviceUrl,
     kind,
     ...(name ? { name } : {}),
     ...(kind === 'channel' && teamId ? { teamId } : {}),
-    ...(team ? { team } : {})
+    ...(team ? { team } : {}),
+    ...(ticket ? { ticket } : {}),
+    ...(kind === 'channel' && teamTicket ? { teamTicket } : {})
   }
 }
 
@@ -232,6 +259,22 @@ export interface MsTeamsDeps {
   budget?: WriteBudget
   /** Where the bot's conversations are kept across restarts; absent ⇒ memory only. */
   memory?: ConversationMemory
+  /** The daemon's relays, which a deployment app's row sends every call through (§8.5); absent ⇒ such a row cannot send. */
+  relay?: MsTeamsRelayPort
+}
+
+// A relay port with no relay behind it: every call is refused unsent, so a relay-egress row fails closed.
+const NO_RELAY: MsTeamsRelayPort = {
+  request: async () => {
+    throw new MsTeamsApiError(
+      'msteams: no relay serves this daemon',
+      'unavailable',
+      undefined,
+      undefined,
+      undefined,
+      true
+    )
+  }
 }
 
 function remember<K, V>(map: Map<K, V>, key: K, value: V, max: number): void {
@@ -301,24 +344,26 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
     this.now = deps.now ?? (() => Date.now())
     this.sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)))
     this.sendIntervalMs = deps.sendIntervalMs ?? MSTEAMS_CONVERSATION_INTERVAL_MS
-    this.api = new MsTeamsApi(group.config, {
+    const options = {
       ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
       now: this.now,
       sleep: this.sleep,
       ...(deps.random ? { random: deps.random } : {})
-    })
-    // A Graph token carries the consent of the tenant it is minted in, so it comes from the conversations' tenant, never the token tenant.
-    const { appId, tenantId, clientSecret } = group.config
+    }
+    const fetchImpl = deps.fetchImpl ?? ((...args: Parameters<typeof fetch>) => fetch(...args))
+    const config = group.config
+    // A deployment app's row holds no secret: its calls and its Graph tokens come through the relay (§8.5).
+    const relay = 'clientSecret' in config ? undefined : { port: deps.relay ?? NO_RELAY, botId: config.botId }
+    this.api = relay
+      ? new MsTeamsApi(relayMsTeamsConnector(relay.port, relay.botId), options)
+      : new MsTeamsApi(config as MsTeamsCredentials, options)
+    // A Graph token carries the consent of the tenant it is minted in: the conversations' tenant.
     this.graph = new MsTeamsGraph(
-      new MsTeamsApi(
-        { appId, tenantId, clientSecret },
-        {
-          scope: MSTEAMS_GRAPH_SCOPE,
-          ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
-          now: this.now,
-          sleep: this.sleep,
-          ...(deps.random ? { random: deps.random } : {})
-        }
+      new MsTeamsGraphReader(
+        relay
+          ? new MsTeamsRelayGraphToken(relay.port, relay.botId, this.now)
+          : new MsTeamsClientCredentials(config as MsTeamsCredentials, MSTEAMS_GRAPH_SCOPE, fetchImpl, this.now),
+        options
       )
     )
     const budget = deps.budget
@@ -332,11 +377,11 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
 
   // ── 1. transport lifecycle ──
 
-  /** No socket to open: reload the remembered conversations, then warm the token, which proves the app, tenant and secret together (§2). */
+  /** No socket to open: reload the remembered conversations, then warm the token, which proves the app, tenant and secret together (§2); a relay-egress row holds none to warm. */
   async start(): Promise<void> {
     this.stopped = false
     await this.restore()
-    await this.api.token()
+    await this.api.warm()
   }
 
   async stop(): Promise<void> {
@@ -409,12 +454,22 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
     const kind = msg.isDm ? 'personal' : target.conversationId.includes(';messageid=') ? 'channel' : 'chat'
     const known = this.conversations.get(msg.channel)
     const name = kind === 'personal' ? msg.sender.name : known?.name
-    const ext = msg.adapterExt?.[MSTEAMS_PLATFORM] as { teamId?: unknown } | undefined
+    const ext = msg.adapterExt?.[MSTEAMS_PLATFORM] as { teamId?: unknown; teamTicket?: unknown } | undefined
     const teamId = kind === 'channel' && typeof ext?.teamId === 'string' ? ext.teamId : known?.teamId
+    // The latest activity's tickets replace older ones, since they vouch for the serviceUrl it carried.
+    const teamTicket =
+      kind === 'channel' && typeof ext?.teamTicket === 'string' && ext.teamTicket ? ext.teamTicket : known?.teamTicket
     remember(
       this.conversations,
       msg.channel,
-      { serviceUrl: target.serviceUrl, kind, ...(name ? { name } : {}), ...(teamId ? { teamId } : {}) },
+      {
+        serviceUrl: target.serviceUrl,
+        kind,
+        ...(name ? { name } : {}),
+        ...(teamId ? { teamId } : {}),
+        ...(target.ticket ? { ticket: target.ticket } : {}),
+        ...(teamTicket ? { teamTicket } : {})
+      },
       CONVERSATIONS_MAX
     )
     const members = this.members.get(msg.channel) ?? new Map<string, string | undefined>()
@@ -430,7 +485,17 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
     if (!known) return undefined
     const conversationId =
       known.kind === 'channel' && thread && /^[^\s:;]+$/.test(thread) ? `${channel};messageid=${thread}` : channel
-    return { serviceUrl: known.serviceUrl, conversationId }
+    return { serviceUrl: known.serviceUrl, conversationId, ...(known.ticket ? { ticket: known.ticket } : {}) }
+  }
+
+  // A seen conversation as its own member reads address it.
+  private conversationTarget(channel: string, known: KnownConversation): MsTeamsTarget {
+    return { serviceUrl: known.serviceUrl, conversationId: channel, ...(known.ticket ? { ticket: known.ticket } : {}) }
+  }
+
+  // A channel's team as the team reads address it; undefined outside a team.
+  private teamOf(known: KnownConversation): MsTeamsTarget | undefined {
+    return known.teamId ? msTeamsTeamTarget(known.serviceUrl, known.teamId, known.teamTicket) : undefined
   }
 
   // ── 2. egress ──
@@ -592,15 +657,16 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
     const result =
       kind === 'shared'
         ? await this.graph.channelMembers(await this.groupIdOf(known), channel, max)
-        : await this.api.conversationMembers(known.serviceUrl, channel, max)
+        : await this.api.conversationMembers(this.conversationTarget(channel, known), max)
     for (const m of result.members) this.noteStanding(m)
     return result
   }
 
   // A channel's name and type from its team's channel list; a failed read names nothing.
   private async teamChannel(channel: string, known: KnownConversation): Promise<TeamChannel | undefined> {
-    if (!known.teamId) return undefined
-    const listed = (await this.teamChannelList(known.teamId, known.serviceUrl)).get(channel)
+    const team = this.teamOf(known)
+    if (!team) return undefined
+    const listed = (await this.teamChannelList(team)).get(channel)
     const current = this.conversations.get(channel)
     if (listed && current && current.name !== listed.name) {
       remember(this.conversations, channel, { ...current, name: listed.name }, CONVERSATIONS_MAX)
@@ -610,10 +676,11 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
   }
 
   // A team's channels, read at most once per TTL per team; a failed read answers none until the TTL passes.
-  private async teamChannelList(teamId: string, serviceUrl: string): Promise<Map<string, TeamChannel>> {
+  private async teamChannelList(team: MsTeamsTarget): Promise<Map<string, TeamChannel>> {
+    const teamId = team.conversationId
     let entry = this.teamChannels.get(teamId)
     if (!entry || this.now() - entry.at > TEAM_CHANNELS_TTL_MS) {
-      const channels = this.api.teamChannels(serviceUrl, teamId).then(
+      const channels = this.api.teamChannels(team).then(
         (list) =>
           new Map(
             list.map((c) => [c.id, { name: c.name ?? DEFAULT_CHANNEL_NAME, ...(c.kind ? { kind: c.kind } : {}) }])
@@ -632,17 +699,16 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
   /** A channel's team as the space it sits in, once the team's name is read; undefined for a chat or an unknown team. */
   async spaceOf(channel: string): Promise<{ id: string; name: string } | undefined> {
     const known = this.conversations.get(channel)
-    if (known?.kind !== 'channel' || !known.teamId) return undefined
-    const name = await this.teamName(known.teamId, known.serviceUrl)
-    return name ? { id: known.teamId, name } : undefined
+    const team = known?.kind === 'channel' ? this.teamOf(known) : undefined
+    if (!team) return undefined
+    const name = await this.teamName(team)
+    return name ? { id: team.conversationId, name } : undefined
   }
 
   /** The channels a team-wide install put the bot in, its team as their space: every standard channel the team's list names. */
-  async teamInstallPlaces(serviceUrl: string, teamId: string): Promise<ObservedChat[]> {
-    const [channels, team] = await Promise.all([
-      this.teamChannelList(teamId, serviceUrl),
-      this.teamName(teamId, serviceUrl)
-    ])
+  async teamInstallPlaces(target: MsTeamsTarget): Promise<ObservedChat[]> {
+    const teamId = target.conversationId
+    const [channels, team] = await Promise.all([this.teamChannelList(target), this.teamName(target)])
     // A private or shared channel takes the app only when it is added to that channel itself (§4.1), so the list does not say the bot is there.
     return [...channels]
       .filter(([id, c]) => c.kind === 'standard' || id === teamId)
@@ -650,10 +716,11 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
   }
 
   // A team's name from the Bot Connector's team details, read at most once per TTL per team; the last name known stands while a read fails.
-  private async teamName(teamId: string, serviceUrl: string): Promise<string | undefined> {
+  private async teamName(team: MsTeamsTarget): Promise<string | undefined> {
+    const teamId = team.conversationId
     let entry = this.teamNames.get(teamId)
     if (!entry || this.now() - entry.at > TEAM_CHANNELS_TTL_MS) {
-      const name = this.api.teamDetails(serviceUrl, teamId).then(
+      const name = this.api.teamDetails(team).then(
         (details) => details.name,
         (err: unknown) => {
           this.deps.log?.debug(`msteams: reading a team's details failed: ${(err as Error).message}`)
@@ -676,13 +743,16 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
     const known = this.conversations.get(join.conversationId)
     if (known?.kind === 'personal' || join.conversationId.startsWith('a:')) return []
     const reasons = new Set<PlaceExternalReason>()
+    const at: MsTeamsTarget = {
+      serviceUrl: join.serviceUrl,
+      conversationId: join.conversationId,
+      ...(join.ticket ? { ticket: join.ticket } : {})
+    }
     for (const { id, aadObjectId } of join.members) {
-      const member = await this.api
-        .conversationMember(join.serviceUrl, join.conversationId, aadObjectId ?? id)
-        .catch((err: unknown) => {
-          this.deps.log?.warn(`msteams: looking up a member who joined failed: ${(err as Error).message}`)
-          return undefined
-        })
+      const member = await this.api.conversationMember(at, aadObjectId ?? id).catch((err: unknown) => {
+        this.deps.log?.warn(`msteams: looking up a member who joined failed: ${(err as Error).message}`)
+        return undefined
+      })
       if (!member) continue
       this.noteStanding(member)
       const reason = memberExternalReason(member, this.tenantId)
@@ -692,7 +762,9 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
     // A person who joined the team reaches every standard channel; a channel or chat join reaches that one.
     const channels = new Set([join.conversationId])
     if (join.teamWide && join.teamId)
-      for (const [id, c] of await this.teamChannelList(join.teamId, join.serviceUrl))
+      for (const [id, c] of await this.teamChannelList(
+        msTeamsTeamTarget(join.serviceUrl, join.teamId, join.teamTicket)
+      ))
         if (c.kind === 'standard') channels.add(id)
     return [...channels].flatMap((channel) => [...reasons].map((reason) => ({ channel, reason })))
   }
@@ -709,33 +781,45 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
     if (!entry || !member?.id.startsWith('29:'))
       throw new MsTeamsApiError('msteams: no conversation this bot shares with the person names them', 'not_found')
     this.noteStanding(member)
-    const { serviceUrl } = entry
-    const chat = await this.api.openDirectConversation(serviceUrl, member.id, this.tenantId, this.botUserId)
+    const { at } = entry
+    const chat = await this.api.openDirectConversation(at, member.id, this.tenantId, this.botUserId)
     const name = member.name ?? this.names.get(user)
-    remember(this.conversations, chat, { serviceUrl, kind: 'personal', ...(name ? { name } : {}) }, CONVERSATIONS_MAX)
-    this.persist(chat)
-    return chat
+    remember(
+      this.conversations,
+      chat.id,
+      {
+        serviceUrl: at.serviceUrl,
+        kind: 'personal',
+        ...(name ? { name } : {}),
+        ...(chat.ticket ? { ticket: chat.ticket } : {})
+      },
+      CONVERSATIONS_MAX
+    )
+    this.persist(chat.id)
+    return chat.id
   }
 
   /** A conversation member's display name from the Bot Connector, for an event that names nobody; undefined when the lookup tells none. */
   async memberName(target: MsTeamsTarget, user: string): Promise<string | undefined> {
-    const member = await this.api.conversationMember(target.serviceUrl, target.conversationId, user)
+    const member = await this.api.conversationMember(target, user)
     return member?.name
   }
 
   // The person's roster entry where they were seen, else in each team the bot knows, whose roster lists every member of it.
-  private async rosterEntry(user: string): Promise<{ serviceUrl: string; member: MsTeamsMember } | undefined> {
+  private async rosterEntry(user: string): Promise<{ at: MsTeamsTarget; member: MsTeamsMember } | undefined> {
     const seen = this.seenIn(user)
     if (seen) {
-      const member = await this.api.conversationMember(seen.known.serviceUrl, seen.channel, user)
-      return member ? { serviceUrl: seen.known.serviceUrl, member } : undefined
+      const at = this.conversationTarget(seen.channel, seen.known)
+      const member = await this.api.conversationMember(at, user)
+      return member ? { at, member } : undefined
     }
     const teams = new Set<string>()
     for (const known of this.conversations.values()) {
-      if (known.kind !== 'channel' || !known.teamId || teams.has(known.teamId)) continue
-      teams.add(known.teamId)
-      const member = await this.api.conversationMember(known.serviceUrl, known.teamId, user).catch(() => undefined)
-      if (member) return { serviceUrl: known.serviceUrl, member }
+      const team = known.kind === 'channel' ? this.teamOf(known) : undefined
+      if (!team || teams.has(team.conversationId)) continue
+      teams.add(team.conversationId)
+      const member = await this.api.conversationMember(team, user).catch(() => undefined)
+      if (member) return { at: team, member }
     }
     return undefined
   }
@@ -756,7 +840,9 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
     for (const [channel, seen] of this.members) {
       const known = seen.has(user) ? this.conversations.get(channel) : undefined
       if (!known) continue
-      const member = await this.api.conversationMember(known.serviceUrl, channel, user).catch(() => undefined)
+      const member = await this.api
+        .conversationMember(this.conversationTarget(channel, known), user)
+        .catch(() => undefined)
       if (member) {
         this.noteStanding(member)
         return member
@@ -951,11 +1037,12 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
 
   // A channel's team as Graph addresses it, its Microsoft 365 group ID, read once per team; a failed read is forgotten.
   private async groupIdOf(known: KnownConversation): Promise<string> {
-    if (!known.teamId) throw new MsTeamsApiError('msteams: the channel’s team is unknown', 'not_found')
-    const teamId = known.teamId
+    const team = this.teamOf(known)
+    if (!team) throw new MsTeamsApiError('msteams: the channel’s team is unknown', 'not_found')
+    const teamId = team.conversationId
     let groupId = this.teamGroups.get(teamId)
     if (!groupId) {
-      groupId = this.api.teamGroupId(known.serviceUrl, teamId)
+      groupId = this.api.teamGroupId(team)
       groupId.catch(() => this.teamGroups.delete(teamId))
       remember(this.teamGroups, teamId, groupId, CONVERSATIONS_MAX)
     }

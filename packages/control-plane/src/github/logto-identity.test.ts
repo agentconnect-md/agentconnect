@@ -17,6 +17,18 @@ const MUTATIONS: SocialIdentityMutationGate = {
   runExclusive: async (_oidcSubject, mutation) => mutation()
 }
 
+it('resolves only the linked Microsoft object and refreshes it at a repository authorization gate', async () => {
+  const objectId = '00000000-0000-4000-8000-0000000000a2'
+  const users: Record<string, unknown> = {
+    subject: { identities: { azuread: { userId: objectId, details: { rawData: { mail: 'alex@example.test' } } } } }
+  }
+  const fake = fakeLogto(users)
+  const service = new LogtoIdentityService(MGMT, new FakeClock(1_800_000_000_000), MUTATIONS, fake.fetchImpl)
+  expect(await service.microsoftIdentityFor('subject')).toEqual({ objectId, email: 'alex@example.test' })
+  users.subject = { primaryEmail: 'alex@example.test', identities: { google: { userId: objectId } } }
+  expect(await service.microsoftIdentityFor('subject', 0)).toBeNull()
+})
+
 it('binds GitLab numeric identities to the verified OIDC issuer and invalidates on unlink', async () => {
   const issuer = 'https://gitlab.example.test/prefix'
   const users = {

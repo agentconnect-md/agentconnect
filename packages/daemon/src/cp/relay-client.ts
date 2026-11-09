@@ -53,7 +53,11 @@ import {
   type RdRoute,
   type RdRouteAck,
   type RdRouteReport,
-  type RdRouteReportAck
+  type RdRouteReportAck,
+  RD_PLATFORM_REQUEST_BUDGET_MS,
+  RD_PLATFORM_REQUEST_V1,
+  type RdPlatformRequest,
+  type RdPlatformReply
 } from '@agentconnect.md/protocol'
 import { Backoff, ReqRep, WireError, type Clock, type TimerHandle, type Transport } from '@agentconnect.md/connection'
 import type { Logger } from '../log.js'
@@ -62,6 +66,8 @@ import { AhpCarrier, ahpAvailable, type AhpCarrierDeps } from './ahp-carrier.js'
 const ACK_TIMEOUT_MS = 5000
 /** Longer than the relay's inner 5 s forward, so a slow target reads as the relay's `retry`, never a lost request. */
 const ROUTE_REQUEST_TIMEOUT_MS = 12_000
+/** Above the relay's whole-request budget, so a slow provider reads as the relay's answer, not a lost request. */
+const PLATFORM_REQUEST_TIMEOUT_MS = RD_PLATFORM_REQUEST_BUDGET_MS + 3_000
 /** rd/hello definitively rejected (bad/revoked key, daemonId mismatch) → stop dialing THIS relay. */
 const CLOSE_AUTH_FAILED = 4401
 
@@ -121,6 +127,8 @@ export interface RelayClientDeps extends AhpCarrierDeps {
   clusterIdentityToken?: () => string | undefined
   /** The daemon's adopted id (undefined until `auth/ok`; `rd/hello.daemonId` needs it). */
   daemonId: () => string | undefined
+  /** Capabilities that hold only while a runtime facet runs, read per connect. */
+  capabilities?: () => readonly string[]
   clock: Clock
   /** Dial factory — prod passes `ClientTransport.dial(url, { subprotocol, path })`; tests fake it. */
   connect: (url: string) => Promise<Transport>
@@ -267,6 +275,24 @@ export class RelayClient {
     return rep.payload
   }
 
+  /** Did this relay advertise `rd/platform/request`? */
+  supportsPlatformRequest(): boolean {
+    return this.isReady() && this.relayCapabilities?.has(RD_PLATFORM_REQUEST_V1) === true
+  }
+
+  /** One platform module's provider call through this relay, single-shot: a provider write must never be sent twice by a retransmit. */
+  async sendPlatformRequest(payload: RdPlatformRequest): Promise<RdPlatformReply> {
+    if (this.state !== 'READY') throw new WireError('INTERNAL', `rd link not ready (${this.state})`, true)
+    const rep = await this.correlator.request(
+      buildRelayDaemonFrame('rd/platform/request', payload),
+      (e) => this.transport!.send(e),
+      { maxTries: 1, ackTimeoutMs: PLATFORM_REQUEST_TIMEOUT_MS }
+    )
+    if (rep.type !== 'rd/platform/reply')
+      throw new WireError('INTERNAL', `expected rd/platform/reply, got ${rep.type}`, false)
+    return rep.payload
+  }
+
   private async attemptConnect(): Promise<void> {
     if (this.stopped || this.fatal) return
     const generation = ++this.generation
@@ -318,6 +344,7 @@ export class RelayClient {
         daemonId,
         capabilities: [
           ...DAEMON_RD_CAPABILITIES,
+          ...(this.deps.capabilities?.() ?? []),
           ...(ahpAvailable(this.deps) ? [API_AHP_V1_FEATURE, API_AHP_HANDSHAKE_V1_FEATURE] : [])
         ]
       })

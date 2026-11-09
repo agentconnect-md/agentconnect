@@ -200,6 +200,19 @@ describe('git on an authorized repository', () => {
       expect(route('POST', target)).toMatchObject({ kind: 'deny', status: 403 })
     }
   })
+
+  it('reads the `vsts/info` the Azure CLI resolves a remote with, for a held repository only', () => {
+    const read = { kind: 'repository', plane: 'api', ...WORKSPACE, readOnly: true }
+    expect(route('GET', `${base}/vsts/info`)).toEqual(read)
+    expect(route('HEAD', `${base}/vsts/info`)).toEqual(read)
+    expect(route('GET', '/example-org/Example%20Project/_git/Hidden%20Repo/vsts/info')).toEqual(
+      gitNotFound('Hidden Repo')
+    )
+    for (const target of [`${base}/vsts/info/x`, `${base}/VSTS/INFO`, `${base}/vsts`]) {
+      expect(route('GET', target)).toMatchObject({ kind: 'deny', status: 403 })
+    }
+    expect(route('POST', `${base}/vsts/info`)).toMatchObject({ kind: 'deny', status: 403 })
+  })
 })
 
 describe('the REST API naming a repository', () => {
@@ -449,6 +462,15 @@ describe('the organization-wide reads the Azure CLI makes', () => {
     }
     expect(route('POST', '/example-org/_apis/connectionData')).toMatchObject({ kind: 'deny', status: 403 })
     expect(route('GET', '/example-org/Example%20Project/_apis/connectionData')).toMatchObject({ kind: 'deny' })
+  })
+
+  it('forwards an OPTIONS of the bare `_apis` as a read, and no other method there', () => {
+    const read = { kind: 'repository', plane: 'api', ...WORKSPACE, readOnly: true }
+    expect(route('OPTIONS', '/example-org/_apis')).toEqual(read)
+    expect(route('OPTIONS', '/example-org/_apis/')).toEqual(read)
+    expect(route('GET', '/example-org/_apis')).toMatchObject({ kind: 'deny', status: 403 })
+    expect(route('POST', '/example-org/_apis')).toMatchObject({ kind: 'deny', status: 403 })
+    expect(route('OPTIONS', '/example-org/Example%20Project/_apis')).toMatchObject({ kind: 'deny', status: 403 })
   })
 })
 

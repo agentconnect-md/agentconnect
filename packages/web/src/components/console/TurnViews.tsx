@@ -17,7 +17,7 @@ import type { McpAppRpc } from '@agentconnect.md/protocol'
 import type { McpAppCardProps } from '@/components/console/McpAppCard'
 import { Avatar, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
-import { MessageFileCards } from '@/components/console/ComposerFiles'
+import { AttachmentCards, messageCards } from '@/components/console/ComposerFiles'
 import {
   CAPABILITY_LANE,
   APP_LANE,
@@ -33,7 +33,8 @@ import { ReplyInThreadButton, ThreadRootPress } from '@/components/console/Threa
 import { type TaskLink } from '@/components/console/task-link'
 import { CopyTurnButton, StepExtras, McpAppRow, turnWork, WorkStepList } from '@/components/console/WorkPanel'
 import { type Turn } from '@/components/console/session-turns'
-import { ElicitationCard, MessageImages, PlanBlock } from '@/components/console/TranscriptCards'
+import type { FmtStep } from '@/components/console/transcript-steps'
+import { ElicitationCard, PlanBlock } from '@/components/console/TranscriptCards'
 
 /** Whether a user turn prints a sender line (it is not you), which the avatar's alignment follows. */
 function showsSenderLabel(turn: { isCron: boolean; sp: { handle: string } }): boolean {
@@ -106,7 +107,8 @@ export function UserTurnView({
   platformMark,
   footer,
   onReply,
-  pressToReply = false
+  pressToReply = false,
+  lead
 }: {
   turn: UserTurn
   /** The integration whose mark stands in for a sender with no picture. */
@@ -117,6 +119,8 @@ export function UserTurnView({
   onReply?: (() => void) | undefined
   /** A long press replies too, as a phone reader has no hover. */
   pressToReply?: boolean
+  /** Above the bubble: the thread a handed message joined, which it opens. */
+  lead?: ReactNode
 }) {
   const { orgPath } = useOrgs()
   return (
@@ -137,6 +141,7 @@ export function UserTurnView({
             )}
           </span>
         )}
+        {lead}
         {turn.steer && (
           // A glyph and one word; the full meaning sits in the tooltip.
           <span
@@ -147,21 +152,20 @@ export function UserTurnView({
             {turn.steered ? 'Steered' : 'Steering…'}
           </span>
         )}
-        {turn.files && <MessageFileCards files={turn.files} />}
-        {(turn.text || turn.images || turn.body) && (
+        {/* A sent message wraps its cards right-aligned so none hides off-screen; the composer keeps one scrolling row. */}
+        <AttachmentCards className="mb-[3px] flex-wrap justify-end" cards={messageCards(turn.images, turn.files)} />
+        {(turn.text || turn.body) && (
           <div className={SELF_BUBBLE}>
             {turn.body?.sessionMessage && <SessionMessageCaption facts={turn.body.sessionMessage} />}
-            {turn.images && <MessageImages images={turn.images} spaced={!!turn.text} />}
             {turn.text && <MessageText text={turn.text} platform={turn.platform} />}
             {turn.body && <UserTurnDetails body={turn.body} platform={turn.platform} />}
           </div>
         )}
         {footer}
-        {/* A sent bubble's hover actions sit in the inter-turn gap, so revealing them never shifts the row. */}
-        {(turn.text || onReply) && (
+        {/* A sent bubble's hover action sits in the inter-turn gap, so revealing it never shifts the row; a person's message has no Copy. */}
+        {onReply && (
           <span className="absolute right-0 top-full flex items-center gap-1">
-            {onReply ? <ReplyInThreadButton onReply={onReply} /> : null}
-            {turn.text ? <CopyTurnButton text={turn.text} /> : null}
+            <ReplyInThreadButton onReply={onReply} />
           </span>
         )}
       </ThreadRootPress>
@@ -181,6 +185,33 @@ export function UserTurnView({
 }
 
 /** An agent's turn: its mark, a header that folds its work, then what it said in order, its plan, notices and approvals. */
+/** What a turn said last, as one plain sentence: the last sentence of its spoken answer, markers stripped; '' when it said nothing. */
+export function lastSpokenSentence(steps: readonly FmtStep[]): string {
+  const said = steps
+    .filter(
+      (s) =>
+        !WORK_LANES.has(s.lane) &&
+        s.lane !== NOTICE_LANE &&
+        s.lane !== PLAN_LANE &&
+        s.lane !== ELICIT_LANE &&
+        s.lane !== APP_LANE &&
+        s.lane !== CAPABILITY_LANE
+    )
+    .map((s) => s.text)
+    .filter(Boolean)
+    .join('\n')
+  const plain = said
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/[`*_~#>|]/g, '')
+  // Sentences end at a stop (Latin or CJK) or a line break; the last one with any words is what the turn left you with.
+  const sentences = plain
+    .split(/(?<=[.!?。！？])\s+|(?<=[。！？])|\n+/)
+    .map((part) => part.replace(/\s+/g, ' ').trim())
+    .filter((part) => /[\p{L}\p{N}]/u.test(part))
+  return sentences.at(-1) ?? ''
+}
+
 export function BotTurnView({
   turn,
   agentById,

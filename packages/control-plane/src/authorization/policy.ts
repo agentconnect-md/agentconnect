@@ -12,6 +12,7 @@ export const AuthorizationAction = {
   ResourceView: 'resource.view',
   ResourceEdit: 'resource.edit',
   ResourceManageSharing: 'resource.sharing.manage',
+  DaemonKeyIssue: 'daemon.key.issue',
   SessionView: 'session.view',
   SessionChangeVisibility: 'session.visibility.change',
   SessionContinue: 'session.continue'
@@ -65,6 +66,10 @@ export type AuthorizationRequest =
         | typeof AuthorizationAction.ResourceEdit
         | typeof AuthorizationAction.ResourceManageSharing
       resource: Shareable
+    }
+  | {
+      action: typeof AuthorizationAction.DaemonKeyIssue
+      resource: Shareable & { createdByUserId: string | null }
     }
   | {
       action:
@@ -145,6 +150,11 @@ export function can(principal: ViewCtx, request: AuthorizationRequest): boolean 
       return resourceIsEditable(request.resource, principal)
     case AuthorizationAction.ResourceManageSharing:
       return resourceIsEditable(request.resource, principal)
+    case AuthorizationAction.DaemonKeyIssue:
+      return (
+        principal.role === 'owner' ||
+        (request.resource.createdByUserId === principal.userId && resourceIsEditable(request.resource, principal))
+      )
     case AuthorizationAction.SessionView:
       return request.resource.externalProvider
         ? request.resource.visibility === 'private'
@@ -203,6 +213,13 @@ export function canEdit(resource: Shareable, principal: ViewCtx): boolean {
 
 export function canManageSharing(resource: Shareable, principal: ViewCtx): boolean {
   return can(principal, { action: AuthorizationAction.ResourceManageSharing, resource })
+}
+
+export function canIssueDaemonKey(
+  resource: Shareable & { createdByUserId: string | null },
+  principal: ViewCtx
+): boolean {
+  return can(principal, { action: AuthorizationAction.DaemonKeyIssue, resource })
 }
 
 /** The BASE identity set — the console identity every caller carries. The BFF

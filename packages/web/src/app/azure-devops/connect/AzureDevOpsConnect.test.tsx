@@ -142,7 +142,6 @@ async function chooseProjects() {
   await click('Continue')
   const box = host.querySelector<HTMLInputElement>(`[data-azure-devops-project="${PROJECT_A}"] input`)!
   await act(async () => box.click())
-  await click('Contributors')
 }
 
 const refusal = () => host.querySelector('[data-azure-devops-refusal]')
@@ -166,10 +165,15 @@ describe('AzureDevOpsConnect', () => {
     expect(mocks.choose).toHaveBeenCalledWith('org-a', FLOW, 'ticket-1', 'example-org')
 
     await click('Connect')
-    expect(mocks.apply).toHaveBeenCalledWith('org-a', FLOW, 'ticket-2', [
-      { projectId: PROJECT_A, group: 'contributors' }
-    ])
+    expect(mocks.apply).toHaveBeenCalledWith(
+      'org-a',
+      FLOW,
+      'ticket-2',
+      [{ projectId: PROJECT_A, group: 'contributors', allowTriggers: true }],
+      null
+    )
     expect(host.textContent).toContain('Azure DevOps is connected')
+    expect(host.querySelector('[data-azure-devops-trigger-outcomes]')).toBeNull()
     expect(host.querySelector('a')?.getAttribute('href')).toBe('/example/integrations')
     // Never kept anywhere a later page could read it.
     expect(JSON.stringify({ ...window.localStorage })).not.toContain('ticket')
@@ -196,22 +200,103 @@ describe('AzureDevOpsConnect', () => {
     expect(host.textContent).toContain('example-labs')
   })
 
-  it('skips the organization picker for Manage project access', async () => {
+  it('skips the organization picker for Manage project access, and opens on the access already held', async () => {
     mocks.finish.mockResolvedValue(started({ connectionId: CONNECTION_ID, organization: 'example-org' }))
     mocks.choose.mockResolvedValue({
       ticket: 'ticket-2',
       organization: 'example-org',
-      projects: [{ id: PROJECT_A, name: 'Example Project' }]
+      projects: [
+        { id: PROJECT_A, name: 'Example Project', access: { group: 'readers', allowTriggers: true } },
+        { id: PROJECT_B, name: 'Other Project' }
+      ]
     })
     mocks.apply.mockResolvedValue({ connection: CONNECTION, memberships: [] })
     await land(`code=c&state=${MANAGE_STATE}`)
     expect(mocks.organizations).not.toHaveBeenCalled()
     expect(mocks.choose).toHaveBeenCalledWith('org-a', FLOW, 'ticket-1', 'example-org')
-    const box = host.querySelector<HTMLInputElement>(`[data-azure-devops-project="${PROJECT_A}"] input`)!
-    await act(async () => box.click())
+    const box = (id: string) => host.querySelector<HTMLInputElement>(`[data-azure-devops-project="${id}"] input`)!
+    expect(box(PROJECT_A).checked).toBe(true)
+    expect(box(PROJECT_B).checked).toBe(false)
+    expect(host.querySelector(`[data-azure-devops-project="${PROJECT_A}"] [aria-pressed="true"]`)?.textContent).toBe(
+      'Read'
+    )
+    // A newly checked project starts at Write with triggers allowed.
+    await act(async () => box(PROJECT_B).click())
     await click('Apply')
-    expect(mocks.apply).toHaveBeenCalledWith('org-a', FLOW, 'ticket-2', [{ projectId: PROJECT_A, group: 'readers' }])
+    expect(mocks.apply).toHaveBeenCalledWith(
+      'org-a',
+      FLOW,
+      'ticket-2',
+      [
+        { projectId: PROJECT_A, group: 'readers', allowTriggers: true },
+        { projectId: PROJECT_B, group: 'contributors', allowTriggers: true }
+      ],
+      null
+    )
     expect(host.textContent).toContain('Project access updated')
+  })
+
+  it('grants all projects from one row, prefilled when held, and hides the project list while it is on', async () => {
+    mocks.finish.mockResolvedValue(started({ connectionId: CONNECTION_ID, organization: 'example-org' }))
+    mocks.choose.mockResolvedValue({
+      ticket: 'ticket-2',
+      organization: 'example-org',
+      projects: [{ id: PROJECT_A, name: 'Example Project', access: { group: 'readers', allowTriggers: false } }],
+      allProjects: { group: 'readers', allowTriggers: false }
+    })
+    mocks.apply.mockResolvedValue({ connection: CONNECTION, memberships: [] })
+    await land(`code=c&state=${MANAGE_STATE}`)
+    const all = () => host.querySelector<HTMLInputElement>('[data-azure-devops-all-projects] input[type="checkbox"]')!
+    expect(all().checked).toBe(true)
+    expect(host.querySelector(`[data-azure-devops-project="${PROJECT_A}"]`)).toBeNull()
+    await click('Write')
+    await click('Apply')
+    expect(mocks.apply).toHaveBeenCalledWith(
+      'org-a',
+      FLOW,
+      'ticket-2',
+      [{ projectId: PROJECT_A, group: 'readers', allowTriggers: false }],
+      { group: 'contributors', allowTriggers: true }
+    )
+  })
+
+  it('allows triggers by default for Write, lets Read opt in, and resets on a group change (§11.1)', async () => {
+    mocks.apply.mockResolvedValue({ connection: CONNECTION, memberships: [], triggers: [] })
+    await chooseProjects()
+    const allow = () => host.querySelector<HTMLInputElement>(`[data-azure-devops-allow-triggers="${PROJECT_A}"] input`)!
+    expect(allow().checked).toBe(true)
+    await click('Read')
+    expect(allow().checked).toBe(false)
+    await act(async () => allow().click())
+    expect(allow().checked).toBe(true)
+    // An unpicked project offers no toggle.
+    expect(host.querySelector(`[data-azure-devops-allow-triggers="${PROJECT_B}"]`)).toBeNull()
+    await click('Connect')
+    expect(mocks.apply).toHaveBeenCalledWith(
+      'org-a',
+      FLOW,
+      'ticket-2',
+      [{ projectId: PROJECT_A, group: 'readers', allowTriggers: true }],
+      null
+    )
+  })
+
+  it('names the projects where triggers were not allowed, with what is left to do by hand', async () => {
+    mocks.apply.mockResolvedValue({
+      connection: CONNECTION,
+      memberships: [],
+      triggers: [
+        { projectId: PROJECT_A, projectName: 'Example Project', outcome: 'refused' },
+        { projectId: PROJECT_B, projectName: 'Other Project', outcome: 'granted' }
+      ],
+      checklist: CHECKLIST
+    })
+    await chooseProjects()
+    await click('Connect')
+    const outcomes = host.querySelector('[data-azure-devops-trigger-outcomes]')!
+    expect(outcomes.textContent).toContain('Example Project: your account cannot change its service hook permissions.')
+    expect(outcomes.textContent).not.toContain('Other Project')
+    expect([...outcomes.querySelectorAll('ol li')].map((item) => item.textContent)).toEqual(CHECKLIST)
   })
 
   it('sends missing consent to an Entra administrator with the admin-consent link', async () => {

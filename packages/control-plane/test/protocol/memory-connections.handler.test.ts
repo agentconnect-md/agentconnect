@@ -116,7 +116,7 @@ describe('facts/memory-connections — daemon-scoped and revision-fenced', () =>
     })
 
     const h = buildWsHarness(prisma)
-    const token = await h.mintToken(DAEMON_1)
+    const token = await h.mintToken(DAEMON_1, { approved: true })
     const { stub } = h.connect()
     stub.inject('auth', authPayload(token))
     await stub.expectFrame('auth/ok')
@@ -150,7 +150,7 @@ describe('facts/memory-connections — daemon-scoped and revision-fenced', () =>
     const h = buildWsHarness(prisma, {
       relays: [{ relayId: RELAY, url: 'wss://relay.example/rd' }]
     })
-    const token = await h.mintToken(DAEMON_1)
+    const token = await h.mintToken(DAEMON_1, { approved: true })
     const { stub } = h.connect()
     stub.inject('auth', authPayload(token))
     await stub.expectFrame('auth/ok')
@@ -253,7 +253,7 @@ describe('facts/memory-connections — daemon-scoped and revision-fenced', () =>
     // AGENT_2 is placed on DAEMON_2; DAEMON_1 only holds its duty.
     await seedDutyGroup(prisma, GROUP, DAEMON_1, [AGENT_2])
     const h = buildWsHarness(prisma, { relays: [{ relayId: RELAY, url: 'wss://relay.example/rd' }] })
-    const token = await h.mintToken(DAEMON_1)
+    const token = await h.mintToken(DAEMON_1, { approved: true })
     const { stub } = h.connect()
     stub.inject('auth', authPayload(token))
     await stub.expectFrame('auth/ok')
@@ -277,7 +277,7 @@ describe('facts/memory-connections — daemon-scoped and revision-fenced', () =>
     const { connections, connection1, connection2 } = await fixture()
     const h = buildWsHarness(prisma, { relays: [{ relayId: RELAY, url: 'wss://relay.example/rd' }] })
     await seedDutyGroup(prisma, GROUP, DAEMON_1, [AGENT_2], { expiresAt: new Date(h.clock.now() - 1_000) })
-    const token = await h.mintToken(DAEMON_1)
+    const token = await h.mintToken(DAEMON_1, { approved: true })
     const { stub } = h.connect()
     stub.inject('auth', authPayload(token))
     await stub.expectFrame('auth/ok')

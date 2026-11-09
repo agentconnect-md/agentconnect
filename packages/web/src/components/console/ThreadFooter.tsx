@@ -1,6 +1,6 @@
 'use client'
 
-// A thread's footer under its root (webchat-threads.md §3, §6.1): its holding task's card with its reply count on its right, then who replied; a legacy task card is the same footer read from the task's row.
+// A thread's footer under its root (webchat-threads.md §3, §6.1): its reply line, then its holding task's card; a legacy task card is the same footer read from the task's row.
 
 import { useEffect, useState, type MouseEvent, type ReactNode } from 'react'
 import Link from 'next/link'
@@ -8,10 +8,12 @@ import { useFormatter, useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 import { taskStateKey, taskTone } from '@/components/console/task-list'
 import { StateIcon, type StateKind } from '@/components/console/StateIcon'
+import { AgentTurnHeader } from '@/components/console/AgentTurnHeader'
 import { useTaskRow } from '@/components/console/task-thread'
 import type { TaskLink } from '@/components/console/task-link'
 import type { AssistantSubsessionDto, SessionThreadAuthorDto, SessionThreadSummaryDto } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
+import { SessionShareButton } from '@/components/console/SessionShare'
 import { shortAgo } from '@/components/console/session-work'
 
 /** How often "· 39s" redraws: every second while it counts seconds, else every 30s; arithmetic, no request. */
@@ -25,8 +27,15 @@ export interface ThreadFooterView {
   lastReply?: SessionThreadAuthorDto & { excerpt?: string }
   /** Repliers, newest first. */
   participants: SessionThreadAuthorDto[]
-  /** The holding task; `title` is null where the reader may not see it. */
-  task?: { sessionId?: string; title: string | null; tone: StateKind; stateKey: TaskStateKey }
+  /** The holding task; `title` is null where the reader may not see it, or may not yet while it is `starting`. */
+  task?: {
+    sessionId?: string
+    title: string | null
+    summary?: string
+    tone: StateKind
+    stateKey: TaskStateKey
+    starting?: boolean
+  }
   running: boolean
   /** False when a task the reader may not view holds the thread: a count with no content, opening nothing. */
   readable: boolean
@@ -35,9 +44,12 @@ export interface ThreadFooterView {
 type TaskStateKey = ReturnType<typeof taskStateKey>
 
 /** A thread's footer as the daemon summarized it and the CP filtered it; a held thread rests between its turns, as a threaded task does. */
-export function footerOfSummary(summary: SessionThreadSummaryDto): ThreadFooterView {
-  const running = summary.running === true
+export function footerOfSummary(summary: SessionThreadSummaryDto, taskSummary?: string): ThreadFooterView {
   const task = summary.task
+  const starting = !summary.readable && task?.starting === true
+  const running = summary.running === true
+  // A starting task is about to run its first turn, so its card shows it working.
+  const busy = running || starting
   return {
     replies: summary.replies,
     ...(summary.lastReplyAt ? { lastReplyAt: summary.lastReplyAt } : {}),
@@ -48,8 +60,10 @@ export function footerOfSummary(summary: SessionThreadSummaryDto): ThreadFooterV
           task: {
             ...(task.sessionId ? { sessionId: task.sessionId } : {}),
             title: summary.readable ? (task.title ?? summary.rootExcerpt ?? '') : null,
-            tone: running ? 'running' : task.state === 'failed' ? 'failed' : 'idle',
-            stateKey: running ? 'state.open' : task.state === 'failed' ? 'state.failed' : 'state.idle'
+            ...(summary.readable && taskSummary ? { summary: taskSummary } : {}),
+            tone: busy ? 'running' : task.state === 'failed' ? 'failed' : 'idle',
+            stateKey: busy ? 'state.open' : task.state === 'failed' ? 'state.failed' : 'state.idle',
+            ...(starting ? { starting } : {})
           }
         }
       : {}),
@@ -67,6 +81,7 @@ export function footerOfTaskRow(link: TaskLink, row: AssistantSubsessionDto | un
     task: {
       sessionId: link.sessionId,
       title: row?.title ?? link.title,
+      ...(row?.summary ? { summary: row.summary } : {}),
       tone: row ? taskTone(row, null) : 'idle',
       stateKey: row ? taskStateKey(row) : 'state.idle'
     },
@@ -90,7 +105,12 @@ export function ThreadFooter({
   href,
   selected = false,
   onOpen,
-  nameOf = authorName
+  nameOf = authorName,
+  align = 'start',
+  onReply,
+  markOf,
+  part,
+  from
 }: {
   footer: ThreadFooterView
   /** The thread's root, which names it; absent for a task's card read from its row. */
@@ -103,11 +123,22 @@ export function ThreadFooter({
   onOpen?: () => void
   /** How a participant or the latest reply's author is named. */
   nameOf?: (author: SessionThreadAuthorDto) => string
+  /** Which edge the card and its line hug: a person's message sits on the right, so its footer does too. */
+  align?: 'start' | 'end'
+  /** Only the replies line, or only the holding task's card; absent draws both. */
+  part?: 'line' | 'card'
+  /** Draws the card as this agent's message: its mark and name above a card showing the task's summary. */
+  from?: { name: string; mark: ReactNode }
+  /** A replier's picture or agent icon for their mark; null falls back to their initials. */
+  markOf?: (author: SessionThreadAuthorDto) => ReactNode | null
+  /** The card's hover toolbar Reply: opens the thread ready to write in; absent, Reply opens it to read. */
+  onReply?: () => void
 }) {
   const t = useTranslations('Common.taskThread')
   const tl = useTranslations('Common.taskList')
   const format = useFormatter()
   const [now, setNow] = useState(() => Date.now())
+  const [previewShown, setPreviewShown] = useState(false)
   const tick = tickMs(footer.lastReplyAt, now)
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), tick)
@@ -118,7 +149,8 @@ export function ThreadFooter({
   // An unreadable thread opens nothing: its panel and its task's page would both show no content.
   const open = readable ? onOpen : undefined
   const to = readable ? href : undefined
-  const title = task?.title ?? t('hiddenTask')
+  // A task whose session the CP has no row for yet is starting, not withheld; it opens once its session exists.
+  const title = task?.title ?? (task?.starting ? t('startingTask') : t('hiddenTask'))
   const openLabel = task ? t('open', { title }) : t('openThread')
 
   // A plain click opens the thread beside the chat; a modified or middle click keeps the link's own new-tab behaviour.
@@ -148,44 +180,48 @@ export function ThreadFooter({
   const { replies, participants, lastReply } = footer
   const lastReplyAt = footer.lastReplyAt ? new Date(footer.lastReplyAt) : null
   const repliesLabel = replies > 0 ? t('replies', { count: replies }) : t('reply')
-  // "3 replies · 1m", the full time in its tooltip; a card carries it on its right, a thread with no task on its line.
-  const count = (attrs: Record<string, unknown>) => (
-    <span
-      className="flex-none whitespace-nowrap font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)"
-      {...attrs}
-      {...(replies > 0 && lastReplyAt
-        ? {
-            title: t('repliesTitle', {
-              replies: repliesLabel,
-              time: format.relativeTime(lastReplyAt, { now, style: 'narrow' })
-            })
-          }
-        : {})}
-    >
-      <span className="font-semibold text-(--brand)">{repliesLabel}</span>
-      {replies > 0 && lastReplyAt ? (
-        <time dateTime={footer.lastReplyAt!}> · {shortAgo(lastReplyAt.getTime(), now)}</time>
-      ) : null}
-    </span>
-  )
   const card = task
     ? target(
         cardClass,
         <>
-          <StateIcon state={task.tone} label={tl(task.stateKey)} />
-          <span
-            className={`min-w-0 flex-1 truncate font-sans text-[13.5px] font-medium leading-normal ${
-              task.title === null ? 'text-(--text-tertiary)' : 'text-(--text-primary)'
-            }`}
-          >
-            {title}
-          </span>
-          {count({ 'data-task-card-replies': '' })}
+          {from ? (
+            // As its agent's message: the task's summary alone, its title only where it has written none.
+            <span
+              data-task-card-summary=""
+              className={`min-w-0 flex-1 font-sans text-[13.5px] font-normal leading-[1.55] [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:3] overflow-hidden ${
+                task.title === null && !task.summary ? 'text-(--text-tertiary)' : 'text-(--text-primary)'
+              }`}
+            >
+              {task.summary ?? title}
+            </span>
+          ) : (
+            <>
+              <StateIcon state={task.tone} label={tl(task.stateKey)} />
+              {/* The title on its first line; the task's summary, where it wrote one, beneath it in a lighter face. */}
+              <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
+                <span
+                  className={`min-w-0 truncate font-sans text-[13.5px] font-medium leading-normal ${
+                    task.title === null ? 'text-(--text-tertiary)' : 'text-(--text-primary)'
+                  }`}
+                >
+                  {title}
+                </span>
+                {task.summary ? (
+                  <span
+                    data-task-card-summary=""
+                    className="min-w-0 truncate font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)"
+                  >
+                    {task.summary}
+                  </span>
+                ) : null}
+              </span>
+            </>
+          )}
         </>,
         {
+          'data-task-card-open': '',
           ...(open ? { 'aria-expanded': selected === true } : {}),
-          ...(open || to ? { 'aria-label': open ? openLabel : t('openPage', { title }) } : {}),
-          ...(open ? { title: openLabel } : {})
+          ...(open || to ? { 'aria-label': open ? openLabel : t('openPage', { title }) } : {})
         }
       )
     : null
@@ -198,69 +234,156 @@ export function ThreadFooter({
             key={author.sender}
             title={nameOf(author)}
             data-thread-participant={author.sender}
-            className={`flex h-[18px] w-[18px] items-center justify-center rounded-full border border-(--surface-card) bg-(--brand-soft) font-sans text-[8.5px] font-semibold leading-none text-(--brand-soft-text) ${
+            className={`flex h-[18px] w-[18px] items-center justify-center overflow-hidden rounded-full border border-(--surface-card) bg-(--brand-soft) font-sans text-[8.5px] font-semibold leading-none text-(--brand-soft-text) ${
               i > 0 ? 'ml-[-5px]' : ''
             }`}
           >
-            {initials(nameOf(author))}
+            {markOf?.(author) ?? initials(nameOf(author))}
           </span>
         ))}
       </span>
     ) : null
-  const preview = lastReply?.excerpt ? (
-    <span data-thread-preview="" className="min-w-0 truncate text-(--text-secondary)">
-      <span className="font-medium">{nameOf(lastReply)}</span>: {lastReply.excerpt}
-    </span>
-  ) : null
   const working = footer.running ? (
     <span role="status" data-thread-working="" className="flex-none text-(--text-tertiary)">
       {t('footerWorking')}
     </span>
   ) : null
-  const lineClass = `flex w-fit max-w-full min-w-0 items-center gap-[6px] px-[2px] font-sans text-[12.5px] font-normal leading-normal no-underline ${
-    open || to ? 'hover:underline' : ''
-  }`
+  // The latest reply is a hover card over the line, not inline text.
+  const preview = lastReply?.excerpt ? (
+    <span
+      role="tooltip"
+      data-thread-preview=""
+      className={`pointer-events-none absolute bottom-full z-[5] mb-[6px] hidden w-max max-w-[360px] rounded-[8px] border border-(--border-default) bg-(--surface-card) px-[10px] py-[6px] font-sans text-[12.5px] font-normal leading-[1.45] text-(--text-primary) shadow-(--shadow-md) [-webkit-box-orient:vertical] [-webkit-line-clamp:3] overflow-hidden ${previewShown ? '[display:-webkit-box]' : 'group-focus-within:[display:-webkit-box]'} ${
+        align === 'end' ? 'right-0' : 'left-0'
+      }`}
+    >
+      <span className="font-semibold">{nameOf(lastReply)}</span>: {lastReply.excerpt}
+    </span>
+  ) : null
 
-  // A held thread's card carries its count, so its line shows only who replied and what is happening; an unowned thread's line is all it has.
-  const line = task ? (
-    people || preview || working ? (
+  // Slack's message toolbar on a hovered card's top edge: Reply, then the task session's Share, as its own page offers it.
+  const reply = onReply ?? open
+  const share = readable ? task?.sessionId : undefined
+  const toolButton =
+    'flex h-7 w-7 cursor-pointer items-center justify-center rounded-[6px] border-0 bg-transparent p-0 text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)'
+  const toolbar =
+    reply || share ? (
       <div
-        data-thread-line=""
-        className="flex w-fit max-w-full min-w-0 items-center gap-[6px] px-[2px] font-sans text-[12.5px] font-normal leading-normal"
+        role="toolbar"
+        data-task-card-toolbar=""
+        aria-label={t('cardActions')}
+        className="absolute -top-[17px] right-[10px] z-[5] hidden items-center gap-[2px] rounded-[8px] border border-(--border-default) bg-(--surface-card) p-[2px] shadow-(--shadow-md) group-hover/card:flex group-focus-within/card:flex"
       >
-        {people}
-        {preview}
-        {working}
+        {reply ? (
+          <button
+            type="button"
+            data-task-card-reply=""
+            aria-label={t('replyInThread')}
+            title={t('replyInThread')}
+            onClick={reply}
+            className={toolButton}
+          >
+            <Icon name="message-square" size={15} />
+          </button>
+        ) : null}
+        {share ? (
+          <SessionShareButton sessionId={share} title={title} className={toolButton} data-task-card-share="" />
+        ) : null}
       </div>
     ) : null
-  ) : (
-    target(
-      lineClass,
-      <>
-        <Icon name="reply" size={13} color="var(--brand)" className="flex-none" />
-        {people}
-        {count({})}
-        {preview}
-        {working}
-      </>,
-      {
-        'data-task-card-replies': '',
-        ...(open ? { 'aria-label': openLabel, 'aria-expanded': selected === true } : {})
-      }
-    )
+
+  // Every thread, held or not, shows its replies the same way under its root: "people 3 replies · 1m", which opens it.
+  const line = (
+    <div className="group relative flex max-w-full min-w-0">
+      {target(
+        'flex w-fit max-w-full min-w-0 items-center gap-[6px] px-[2px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) no-underline',
+        <>
+          {people}
+          <span
+            data-thread-count=""
+            className="whitespace-nowrap"
+            // Only the count shows the latest reply; a replier's mark names just that replier.
+            onMouseEnter={() => setPreviewShown(true)}
+            onMouseLeave={() => setPreviewShown(false)}
+            // The hover card names the latest reply; a native tooltip on top of it would only cover it.
+            {...(replies > 0 && lastReplyAt && !preview
+              ? {
+                  title: t('repliesTitle', {
+                    replies: repliesLabel,
+                    time: format.relativeTime(lastReplyAt, { now, style: 'narrow' })
+                  })
+                }
+              : {})}
+          >
+            <span className={`font-semibold text-(--brand) ${open || to ? 'hover:underline' : ''}`}>
+              {repliesLabel}
+            </span>
+            {replies > 0 && lastReplyAt ? (
+              <time dateTime={footer.lastReplyAt!}> · {shortAgo(lastReplyAt.getTime(), now)}</time>
+            ) : null}
+          </span>
+          {working}
+        </>,
+        {
+          'data-task-card-replies': '',
+          'data-thread-line': '',
+          ...(open ? { 'aria-label': openLabel, 'aria-expanded': selected === true } : {})
+        }
+      )}
+      {preview}
+    </div>
   )
+
+  const cardBlock = card ? (
+    <div data-task-card-hover="" className="group/card relative flex w-full max-w-[520px] min-w-0">
+      {card}
+      {toolbar}
+    </div>
+  ) : null
+  // The card drawn as its agent's message: the agent's mark, its name and the task's state, then the card.
+  const message =
+    from && cardBlock && task ? (
+      <div data-task-card-message="" className="flex w-full min-w-0 items-start gap-2 desktop:gap-[10px]">
+        <span className="av flex h-[26px] w-[26px] flex-none items-center justify-center overflow-hidden rounded-md">
+          {from.mark}
+        </span>
+        <div className="min-w-0 flex-1">
+          <AgentTurnHeader name={from.name}>
+            <StateIcon state={task.tone} label={tl(task.stateKey)} />
+          </AgentTurnHeader>
+          {cardBlock}
+        </div>
+      </div>
+    ) : (
+      cardBlock
+    )
 
   return (
     <div
       {...(task?.sessionId ? { 'data-task-card': task.sessionId } : {})}
-      {...(rootId ? { 'data-thread-footer': rootId } : {})}
-      {...(readable ? {} : { 'data-thread-unreadable': '' })}
-      className="flex min-w-0 flex-col gap-[6px]"
+      {...(rootId ? { [part === 'card' ? 'data-thread-card' : 'data-thread-footer']: rootId } : {})}
+      {...(readable ? {} : task?.starting ? { 'data-thread-starting': '' } : { 'data-thread-unreadable': '' })}
+      className={`flex min-w-0 flex-col gap-[6px] ${align === 'end' ? 'items-end' : ''}`}
     >
-      {card}
-      {line}
+      {part !== 'card' ? line : null}
+      {part !== 'line' ? message : null}
     </div>
   )
+}
+
+/** A root's footer from its thread's summary, its card taking the holding task's summary from the conversation's task list. */
+export function RootThreadFooter({
+  agentId,
+  parentSessionId,
+  summary,
+  ...rest
+}: Omit<Parameters<typeof ThreadFooter>[0], 'footer'> & {
+  agentId: string
+  parentSessionId: string
+  summary: SessionThreadSummaryDto
+}) {
+  const row = useTaskRow(agentId, summary.task?.sessionId ?? null, parentSessionId)
+  return <ThreadFooter footer={footerOfSummary(summary, row?.summary)} {...rest} />
 }
 
 /** A coordinator's task drawn as its thread's footer from its own row (auto-session-mode.md §10), until its root carries the footer. */

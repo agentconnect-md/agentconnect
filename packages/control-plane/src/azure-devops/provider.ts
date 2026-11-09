@@ -1,5 +1,6 @@
 // Azure DevOps's entry in the code-host registry (azure-devops-integration.md §5, §6.1, §7): a binding through one connection vouches, and its credential is proxy-only.
 import {
+  AZURE_DEVOPS_HOOKS_V1_FEATURE,
   AZURE_DEVOPS_V1_FEATURE,
   azureDevOpsRepoAddress,
   normalizeGitUrl,
@@ -39,9 +40,9 @@ function routingOf(located: AzureDevOpsLocatedRepository): AzureDevOpsRepoRoutin
   }
 }
 
-/** git-workspace-model.md §6 for Azure DevOps: visible in a connected organization ⇒ managed, invisible ⇒ refused, unconnected ⇒ anonymous. */
+// A managed workspace requires both the application's visibility and the acting person's access.
 async function deriveAzureDevOpsWorkspace(derivation: CodeHostWorkspaceDerivation): Promise<DerivedWorkspace | null> {
-  const { deps, orgId, gitRepo, requestedAccess } = derivation
+  const { deps, orgId, actorUserId, gitRepo, requestedAccess } = derivation
   const address = azureDevOpsRepoAddress(gitRepo)
   const azure = deps.azureDevOps
   if (!address || !azure) return null
@@ -62,9 +63,15 @@ async function deriveAzureDevOpsWorkspace(derivation: CodeHostWorkspaceDerivatio
     return refuseFromConnection(e)
   }
   if (!located) refuseWorkspaceCredential(grantAccessMessage(label, address.organization, false))
+  let userAccess
+  try {
+    userAccess = await azure.userAuthz.assertAccess(actorUserId, located, requestedAccess ?? 'read')
+  } catch (e) {
+    return refuseFromConnection(e)
+  }
   let access: 'read' | 'write' = 'read'
   if (requestedAccess !== 'read') {
-    // One permission evaluation (§12 item 7): a `write` request needs Contribute; an unstated one takes what the identity holds.
+    // Inferred access is the common ceiling; explicit write requires both parties' Contribute permission.
     let contribute: boolean
     try {
       contribute = await azure.bindings.canContribute(located)
@@ -74,7 +81,7 @@ async function deriveAzureDevOpsWorkspace(derivation: CodeHostWorkspaceDerivatio
     if (requestedAccess === 'write' && !contribute) {
       refuseWorkspaceCredential(grantAccessMessage(label, address.organization, true))
     }
-    access = contribute ? 'write' : 'read'
+    access = contribute && userAccess.write ? 'write' : 'read'
   }
   const routing = routingOf(located)
   if (derivation.write) {
@@ -104,11 +111,13 @@ async function deriveAzureDevOpsWorkspace(derivation: CodeHostWorkspaceDerivatio
   }
 }
 
-/** Raising a grant to `write` needs Contribute on the repository; `comment` reads only (§6.3), so it needs nothing more. */
+// Every increase rechecks the human; write additionally requires the application's Contribute permission.
 async function upgradeAzureDevOpsGrant(ctx: CodeHostRepoAuthorizationContext): Promise<AgentRepoAuthDtoT | undefined> {
   const { deps, req, reply, orgId, agent, row, access, toDto } = ctx
-  const refused = (status: 404 | 409 | 429 | 502, message: string): undefined => {
-    const error = { 404: 'Not Found', 409: 'Conflict', 429: 'Too Many Requests', 502: 'Bad Gateway' }[status]
+  const refused = (status: 403 | 404 | 409 | 429 | 502, message: string): undefined => {
+    const error = { 403: 'Forbidden', 404: 'Not Found', 409: 'Conflict', 429: 'Too Many Requests', 502: 'Bad Gateway' }[
+      status
+    ]
     void reply.code(status).send({ error, statusCode: status, message })
     return undefined
   }
@@ -116,18 +125,18 @@ async function upgradeAzureDevOpsGrant(ctx: CodeHostRepoAuthorizationContext): P
   if (!azure || row.connectionId === undefined || row.azureDevOps === undefined) {
     return refused(409, 'the repository is not bound through an Azure DevOps connection in this organization')
   }
-  if (access === 'write') {
-    try {
-      const located = await azure.bindings.byRepositoryId(orgId, row.connectionId, row.azureDevOps.repositoryId)
-      if (!(await azure.bindings.canContribute(located))) {
-        return refused(409, grantAccessMessage(row.repoFullName, row.azureDevOps.organization, true))
-      }
-    } catch (e) {
-      if (e instanceof AzureDevOpsConnectDenied) return refused(e.status === 404 ? 404 : 409, e.message)
-      if (e instanceof AzureDevOpsApiError)
-        return refused(e.code === 'RATE_LIMITED' ? 429 : 502, `azure devops: ${e.message}`)
-      throw e
+  try {
+    const located = await azure.bindings.byRepositoryId(orgId, row.connectionId, row.azureDevOps.repositoryId)
+    await azure.userAuthz.assertAccess(req.principal?.userId, located, access)
+    if (access === 'write' && !(await azure.bindings.canContribute(located))) {
+      return refused(409, grantAccessMessage(row.repoFullName, row.azureDevOps.organization, true))
     }
+  } catch (e) {
+    if (e instanceof AzureDevOpsConnectDenied)
+      return refused(e.status === 403 || e.status === 404 ? e.status : 409, e.message)
+    if (e instanceof AzureDevOpsApiError)
+      return refused(e.code === 'RATE_LIMITED' ? 429 : 502, `azure devops: ${e.message}`)
+    throw e
   }
   const updated = await deps.repos.agentRepoAuth.updateAccess(row.id, access)
   if (!updated) return refused(404, 'authorization not found')
@@ -163,7 +172,9 @@ export const azureDevOpsCodeHostProvider: CodeHostProviderModule = {
     specHost: () => undefined,
     ruleHost: () => undefined,
     required: () => [AZURE_DEVOPS_V1_FEATURE],
-    requiredForInstance: () => []
+    requiredForInstance: () => [],
+    // A relay serves service hooks under its own string; it never runs the proxy `azure-devops-v1` names (§11.9).
+    ruleRequired: () => [AZURE_DEVOPS_HOOKS_V1_FEATURE]
   },
   workspace: {
     derive: deriveAzureDevOpsWorkspace,
@@ -205,17 +216,21 @@ export const azureDevOpsCodeHostProvider: CodeHostProviderModule = {
     legacySpecArm: () => null
   },
   hooks: {
-    // No hooks in v1 (§11): the create body admits no `azure-devops` arm and no row can store the kind.
+    // Run state is a pull-request status, informational by construction (§11.7): an administrator makes it a gate.
     effects: (body) => ({
       reviewPolicy: body.reviewPolicy ?? 'off',
       reportingMode: body.reportingMode ?? 'off',
       gateMode: 'informational'
     }),
-    // No webhook to converge: a binding is a catalog row and an identity (§5).
-    convergeManagedRepository: () => {}
+    // §11.2: the repository's subscriptions follow the union of its enabled hooks' kinds, and its rules are recompiled.
+    convergeManagedRepository: (deps, orgId, repoId, onError) => {
+      const hooks = deps.azureDevOps?.hooks
+      if (!hooks || repoId === null) return
+      return hooks.convergeRepository(orgId, repoId).catch(onError)
+    }
   },
   routing: {
-    // Unreachable: no routing family is registered for this provider, so no routed scope names it.
+    // Unreachable: Decision routing is not offered for Azure DevOps (§11.3), so no routed scope names it.
     requiredFeatures: [AZURE_DEVOPS_V1_FEATURE],
     familyLabel: (family) => family,
     anyUpdateCadence: () => ({ events: [], commentFamilies: [], mentionOnly: false }),

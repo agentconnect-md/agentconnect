@@ -1,31 +1,35 @@
 import { z } from 'zod'
-import { SharedImageDownload, SharedImageOriginal } from './webchat.js'
+import {
+  SharedImageDownload,
+  SharedImageOriginal,
+  WebchatImageAttachment,
+  webchatImagesWithinBudget
+} from './webchat.js'
+import { MESSAGE_ATTACHMENTS_MAX, UploadedFileReference } from '../user-turn-body.js'
+
+export {
+  MESSAGE_ATTACHMENTS_MAX,
+  UploadedFileReference,
+  MessageAttachmentSource,
+  PublishedAttachment
+} from '../user-turn-body.js'
 
 // File transfer through the deployment's bucket (source-cache-file-transfer.md): the CP signs, bytes never ride a WS.
 
 /** Daemon moves bytes on CP-signed URLs: it answers `workspace/upload` and asks `transfer/sign` and `transfer/get`. */
 export const FILE_TRANSFER_FEATURE = 'file-transfer-v2'
+export const WEBCHAT_UPLOADS_FEATURE = 'webchat-upload-previews-v1'
 
 /** At most this many uploaded files ride one webchat turn. */
-export const WEBCHAT_FILES_MAX = 4
+export const WEBCHAT_FILES_MAX = MESSAGE_ATTACHMENTS_MAX
 
 /** The console downloads text at or under this size through the CP's slice proxy; larger text and any binary use a transfer. */
 export const WORKSPACE_TRANSFER_TEXT_THRESHOLD_BYTES = 1024 * 1024
 
 /** Base64 of a 32-byte SHA-256, the form S3's `x-amz-checksum-sha256` takes. */
-export const TransferSha256 = z.string().regex(/^[A-Za-z0-9+/]{43}=$/, { message: 'must be a base64 SHA-256' })
-
-export const TransferFileName = z
-  .string()
-  .trim()
-  .min(1)
-  .max(255)
-  .regex(/^[^\u0000-\u001f\u007f/\\]+$/, 'file name must not contain control characters or path separators')
-
-export const TransferMimeType = z
-  .string()
-  .max(255)
-  .regex(/^[A-Za-z0-9][\w.+-]*\/[A-Za-z0-9][\w.+-]*$/, 'must be a type/subtype MIME type')
+export const TransferSha256 = UploadedFileReference.shape.sha256
+export const TransferFileName = UploadedFileReference.shape.name
+export const TransferMimeType = UploadedFileReference.shape.mimeType
 
 /** C→D REQ: snapshot one workspace file and PUT it to the URL `transfer/sign` returns for this `ticket`. */
 export const WorkspaceUploadReq = z.object({
@@ -122,14 +126,23 @@ export const TransferGetOk = z.object({
 export type TransferGetOk = z.infer<typeof TransferGetOk>
 
 /** A file the browser uploaded through a `TransferUploadGrant`; metadata only, the bytes are in the bucket. */
-export const WebchatFileAttachment = z.object({
-  uploadId: z.string().uuid(),
-  name: TransferFileName,
-  mimeType: TransferMimeType,
-  size: z.number().int().positive(),
-  sha256: TransferSha256
+export const WebchatFileAttachment = UploadedFileReference.extend({
+  preview: WebchatImageAttachment.optional()
 })
 export type WebchatFileAttachment = z.infer<typeof WebchatFileAttachment>
+
+// Count original files independently of the combined inline-image and preview byte budget.
+export function chatAttachmentsWithinBudget(input: {
+  images?: { data: string }[]
+  files?: WebchatFileAttachment[]
+}): boolean {
+  const images = input.images ?? []
+  const files = input.files ?? []
+  return (
+    images.length + files.length <= WEBCHAT_FILES_MAX &&
+    webchatImagesWithinBudget([...images, ...files.flatMap((file) => (file.preview ? [file.preview] : []))])
+  )
+}
 
 // ── Shared-image originals (webchat-generated-images.md §5): daemon-initiated, bound to one attachment id ──
 

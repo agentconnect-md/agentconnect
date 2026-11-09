@@ -20,7 +20,7 @@
  */
 import { timingSafeEqual } from 'node:crypto'
 import type { RcAuth } from '@agentconnect.md/protocol'
-import type { ApiKeyRepo } from '../persistence/ports.js'
+import type { ApiKeyRepo, DaemonAdmissionRepo } from '../persistence/ports.js'
 import type { Clock } from '../domain/clock.js'
 import type { ClusterDaemonIdentity } from '../ports.js'
 import { ApiKeyCodec } from './apiKey.js'
@@ -41,6 +41,7 @@ export class RelayAuthService {
     private readonly apiKeys: ApiKeyRepo,
     private readonly clock: Clock,
     private readonly config: RelayAuthConfig,
+    private readonly admission: Pick<DaemonAdmissionRepo, 'allowed'>,
     /** Absent when this deployment provisions no clusters — then only the key path exists. */
     private readonly clusterIdentity?: ClusterDaemonIdentity
   ) {}
@@ -71,6 +72,7 @@ export class RelayAuthService {
     if (!row.orgId) return null // daemon keys are always org-scoped
     if (row.revokedAt) return null
     if (row.expiresAt && row.expiresAt.getTime() <= this.clock.now()) return null
+    if (!(await this.admission.allowed([row.daemonId])).length) return null
     return { daemonId: row.daemonId, orgId: row.orgId }
   }
 
@@ -85,6 +87,7 @@ export class RelayAuthService {
       claimedDaemonId ? { daemonId: claimedDaemonId } : undefined
     )
     if (!verified) return null
+    if (!(await this.admission.allowed([verified.daemonId])).length) return null
     // No org: a pool identity is install-wide, unlike the key path this shares its shape with.
     return { daemonId: verified.daemonId }
   }

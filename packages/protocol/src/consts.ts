@@ -63,6 +63,15 @@ export function msTeamsMessagesUrl(publicRelayUrl: string): string {
   return `${publicRelayUrl.replace(/\/+$/, '')}${MSTEAMS_MESSAGES_PATH}`
 }
 
+/** The daemon sends a deployment-owned Teams app's Bot Connector calls through the relay and holds none of its credentials (teams-integration.md §8.5). */
+export const MSTEAMS_RELAY_EGRESS_V1_FEATURE = 'msteams-relay-egress-v1'
+
+/** The daemon sends a deployment-owned Google Chat app's Chat API calls through the relay and holds none of its credentials (google-chat-integration.md §10.10). */
+export const GOOGLE_CHAT_RELAY_EGRESS_V1_FEATURE = 'googlechat-relay-egress-v1'
+
+/** The Markdown mode every create and patch names; a patch without it reverts to Chat syntax (google-chat-integration.md §5). */
+export const GOOGLE_CHAT_MARKUP = 'MARKUP_SYNTAX_MARKDOWN'
+
 /** The action an elicitation card's buttons invoke; the relay forwards its click to the owning daemon. */
 export const GOOGLE_CHAT_ELICIT_FUNCTION = 'agentconnect.elicit'
 
@@ -449,6 +458,9 @@ export const GITEA_DEFAULT_BASE_URL = 'https://gitea.com'
 
 /** Daemon serves Azure DevOps workspaces and additional repositories through its credential proxy; gates placement and spec projection, fail-closed by omission. */
 export const AZURE_DEVOPS_V1_FEATURE = 'azure-devops-v1'
+
+/** Relay/daemon serves Azure DevOps service hooks (azure-devops-integration.md §11.9): gates the compiled rule's `azureDevOps` member and the relay's dispatch target, fail-closed by omission. */
+export const AZURE_DEVOPS_HOOKS_V1_FEATURE = 'azure-devops-hooks-v1'
 
 /** CP serves provider-qualified gitcred v2 request/grant fields. A daemon must not name a
  *  provider before seeing this, and must reject a grant whose provider or numeric repository

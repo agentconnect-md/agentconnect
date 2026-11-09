@@ -240,7 +240,7 @@ async function recordRunConfig(config: Partial<SessionDetailDto>) {
 }
 
 const picker = () => container?.querySelector<HTMLButtonElement>('button[aria-label="Model"]')
-const details = () => container?.querySelector('[role="tooltip"]')?.textContent ?? ''
+const details = () => container?.querySelector('[role="dialog"][aria-label="Session details"]')?.textContent ?? ''
 
 beforeEach(() => {
   wire.detail = detail({})

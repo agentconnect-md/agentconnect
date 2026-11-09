@@ -22,6 +22,7 @@ import { selectTurnTargets } from '@agentconnect.md/activation-policy'
 import { attachmentMention } from '@agentconnect.md/message'
 import {
   RelayWebchatOp,
+  WEBCHAT_UPLOADS_FEATURE,
   RD_WEBCHAT_ATTACH_V1,
   type RdChat,
   type RdWebchatPost,
@@ -309,7 +310,12 @@ export class RelayBrowserConnection implements ChatSink {
       type: 'ready',
       conversationId: this.deps.chatId,
       agentId: this.deps.agentId,
-      features: [WEBCHAT_IMAGES_FEATURE, WEBCHAT_THREADS_FEATURE, CONTINUATION_THREADS_FEATURE],
+      features: [
+        WEBCHAT_IMAGES_FEATURE,
+        WEBCHAT_THREADS_FEATURE,
+        CONTINUATION_THREADS_FEATURE,
+        WEBCHAT_UPLOADS_FEATURE
+      ],
       participants: this.deps.participants.map((p) => ({
         agentId: p.agentId,
         ...(p.primary ? { primary: true } : {})
@@ -424,6 +430,10 @@ export class RelayBrowserConnection implements ChatSink {
     // the conversation at its next activation. Fire-and-forget with postId dedup.
     // Uploaded files stay with the targeted agents; peers get the `[attached: …]` marker the targeted row carries.
     const fileMarker = attachmentMention(op.files)
+    const previews = [
+      ...(op.attachments ?? []),
+      ...(op.files ?? []).flatMap((file) => (file.preview ? [{ ...file.preview, name: file.name }] : []))
+    ]
     const contextPost: WebchatPost = {
       postId: post.postId,
       conversationId: this.deps.chatId,
@@ -432,7 +442,7 @@ export class RelayBrowserConnection implements ChatSink {
       at: post.at,
       // A post's thread is a webchat root; a platform thread stays on the continued turn.
       ...(op.thread && UUID_RE.test(op.thread) ? { thread: op.thread } : {}),
-      ...(op.attachments?.length ? { attachments: op.attachments } : {})
+      ...(previews.length ? { attachments: previews } : {})
     }
     for (const p of this.byAgentId.values()) {
       // A continued member session is independent of its peers (#2500), so a turn addressed elsewhere leaves it untouched.

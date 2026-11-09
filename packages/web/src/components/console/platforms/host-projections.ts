@@ -90,8 +90,8 @@ const CODE_HOST_BLURB: Record<CodeHostProvider, string> = {
   github: 'React to issues & PRs',
   gitlab: 'React to issues & MRs',
   gitea: 'React to issues & PRs',
-  // Not offered while Azure DevOps has no hooks (azure-devops-integration.md §11).
-  'azure-devops': 'React to issues & PRs'
+  // No issues on Azure Repos (azure-devops-integration.md §11.4).
+  'azure-devops': 'React to PRs'
 }
 
 /**

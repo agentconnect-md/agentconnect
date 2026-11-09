@@ -328,19 +328,22 @@ describe('a person’s images on the session page', () => {
       })
     ]
     await render()
-    const images = [...(container?.querySelectorAll('[data-message-images] img') ?? [])] as HTMLImageElement[]
+    const images = [
+      ...(container?.querySelectorAll('[data-attachments] [data-attachment="image"] img') ?? [])
+    ] as HTMLImageElement[]
     expect(images.map((image) => image.src)).toEqual([
       `data:image/png;base64,${raccoon.data}`,
       `data:image/jpeg;base64,${lion.data}`
     ])
-    expect(container?.querySelector('[data-message-files]')?.textContent).toContain('notes.pdf')
+    expect(container?.querySelector('[data-attachments] [data-attachment="file"]')?.textContent).toContain('notes.pdf')
     expect(text()).toContain('which animals are these')
   })
 
-  it('keeps a lone image at full bubble width', async () => {
+  it('shows a lone image as the same card, with no file name beside it', async () => {
     wire.messages = [row({ seq: 1, sender: 'sam', kind: 'text', text: 'what is this', attachments: [raccoon] })]
     await render()
-    expect(container?.querySelector('[data-message-images]')).toBeNull()
-    expect(container?.querySelector(`img[src="data:image/png;base64,${raccoon.data}"]`)).not.toBeNull()
+    const card = container?.querySelector('[data-attachments] [data-attachment="image"]')
+    expect(card?.querySelector(`img[src="data:image/png;base64,${raccoon.data}"]`)).not.toBeNull()
+    expect(card?.textContent).toBe('')
   })
 })

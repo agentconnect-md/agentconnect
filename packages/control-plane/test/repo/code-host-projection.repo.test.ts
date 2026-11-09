@@ -122,6 +122,15 @@ describe('code-host run projection ledger (gitlab-com-integration.md §16)', () 
     expect(stale.currentDeliveryKey).toBe('delivery-2')
   })
 
+  it('reads one natural key without creating it', async () => {
+    const base = input(await owner())
+    expect(await repo().getByNaturalKey(base.hookId, PROJECT, 42, HEAD, 1n)).toBeNull()
+    const opened = await upsert(base)
+    const read = await repo().getByNaturalKey(base.hookId, PROJECT, 42, HEAD, 1n)
+    expect(read).toMatchObject({ id: opened.id, currentDeliveryKey: 'delivery-1' })
+    expect(await repo().getByNaturalKey(base.hookId, PROJECT, 42, HEAD, 2n)).toBeNull()
+  })
+
   it('seals a terminal generation against a delayed queued edge', async () => {
     const ledger = repo()
     const base = input({ ...(await owner()), desiredState: 'completed', completedAt: NOW })

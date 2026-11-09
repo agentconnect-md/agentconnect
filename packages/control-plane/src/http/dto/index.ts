@@ -346,6 +346,16 @@ export const DaemonViewDto = z.object({
   sharedWith: z.array(z.string()), // explicit app_user.id audience; owners also have access
   canEdit: z.boolean(), // visible + non-viewer; gates non-sharing edits
   canManageSharing: z.boolean(), // visible + non-viewer; gates the sharing control
+  // The same policy as key issuance; gates Reconnect without deriving authority from display-only creator data.
+  canIssueKey: z.boolean(),
+  approval: z.object({
+    status: z.enum(['pending', 'approved', 'revoked']),
+    revision: z.number().int(),
+    source: z.string().nullable(),
+    changedAt: z.string().nullable(),
+    changedBy: z.string().nullable()
+  }),
+  canManageApproval: z.boolean(),
   /** Whether the CALLER may command restart/upgrade on this daemon (org OWNER only, §7).
    *  Gates the console's lifecycle controls so non-owners never see an action they'd 403 on. */
   canManageLifecycle: z.boolean()
@@ -2486,11 +2496,27 @@ export const AzureDevOpsRepositoryBindingDto = z.object({
   defaultBranch: z.string().nullable(),
   state: z.enum(['ready', 'runtime_degraded']),
   stateReason: z.enum(['secret_rejected', 'access_revoked', 'repository_unavailable']).nullable(),
+  /** Why the service hook subscriptions are not known to deliver (§11.2); null when healthy or when no trigger needs them. */
+  hookReason: z
+    .enum(['webhook_unverified', 'triggers_not_allowed', 'relay_url_unconfigured', 'subscriptions_failed'])
+    .nullable(),
+  /** When the relay last verified a delivery for this repository. */
+  lastVerifiedDeliveryAt: z.string().nullable(),
+  /** The subscriptions the Control Plane manages for it: one per delivery kind its triggers need. */
+  subscriptions: z.array(z.object({ kind: z.string(), status: z.string().nullable() })),
   createdAt: z.string()
 })
 export type AzureDevOpsRepositoryBindingDtoT = z.infer<typeof AzureDevOpsRepositoryBindingDto>
 
 export const AzureDevOpsRepositoryBindingListDto = z.object({ bindings: z.array(AzureDevOpsRepositoryBindingDto) })
+
+/** A rotation's progress (§11.2): promotion follows the first delivery verified under the next key once every subscription switched. */
+export const AzureDevOpsHookKeyRotationDto = z.object({
+  rotated: z.boolean(),
+  switched: z.number().int(),
+  total: z.number().int(),
+  reason: z.string().nullable()
+})
 
 /** Connect with Microsoft (§3.2 step 1); a connection id starts Manage project access for that connection. */
 export const StartAzureDevOpsConnectBody = z.strictObject({
@@ -2527,23 +2553,65 @@ export const ChooseAzureDevOpsOrganizationBody = z.strictObject({ organization: 
 export const AzureDevOpsProjectsDto = z.object({
   ticket: z.string().describe('The ticket with the organization recorded; send it with the next step.'),
   organization: z.string(),
-  projects: z.array(z.object({ id: z.string(), name: z.string() }))
+  projects: z.array(
+    z.object({
+      id: z.string(),
+      name: z.string(),
+      access: z
+        .object({ group: z.enum(['readers', 'contributors']), allowTriggers: z.boolean() })
+        .optional()
+        .describe(
+          'What the application already holds in the project; absent when it holds nothing or it cannot be read.'
+        )
+    })
+  ),
+  allProjects: z
+    .object({ group: z.enum(['readers', 'contributors']), allowTriggers: z.boolean() })
+    .optional()
+    .describe('Access to every project, including ones created later, when the application holds it.')
 })
-export const ApplyAzureDevOpsProjectsBody = z.strictObject({
-  projects: z
-    .array(z.strictObject({ projectId: z.guid(), group: z.enum(['readers', 'contributors']) }))
-    .min(1)
-    .max(100)
-})
+export const ApplyAzureDevOpsProjectsBody = z
+  .strictObject({
+    projects: z
+      .array(
+        z.strictObject({
+          projectId: z.guid(),
+          group: z.enum(['readers', 'contributors']),
+          allowTriggers: z
+            .boolean()
+            .optional()
+            .describe(
+              'Allow triggers (§11.1): give the application View and Edit subscriptions on the project. Absent ⇒ on for Contributors, off for Readers.'
+            )
+        })
+      )
+      .max(100),
+    allProjects: z
+      .strictObject({ group: z.enum(['readers', 'contributors']), allowTriggers: z.boolean() })
+      .optional()
+      .describe('Every project, including ones created later, granted at the organization roots.')
+  })
+  .refine((body) => body.projects.length > 0 || body.allProjects !== undefined, {
+    message: 'choose at least one project, or all projects'
+  })
 export const AzureDevOpsMembershipDto = z.object({
   projectId: z.string(),
   projectName: z.string(),
   group: z.enum(['readers', 'contributors']),
   outcome: z.enum(['added', 'already_member', 'refused', 'failed', 'group_missing', 'not_attempted'])
 })
+export const AzureDevOpsTriggerGrantDto = z.object({
+  projectId: z.string(),
+  projectName: z.string(),
+  outcome: z.enum(['granted', 'refused', 'failed'])
+})
 export const AzureDevOpsConnectResultDto = z.object({
   connection: AzureDevOpsConnectionDto,
-  memberships: z.array(AzureDevOpsMembershipDto)
+  memberships: z.array(AzureDevOpsMembershipDto),
+  /** One entry per project with Allow triggers on; a refusal does not fail the step. */
+  triggers: z.array(AzureDevOpsTriggerGrantDto),
+  /** What is left to do by hand, such as Allow triggers the caller's role could not grant. */
+  checklist: z.array(z.string()).optional()
 })
 
 export const GithubAppDto = z.object({
@@ -3437,11 +3505,31 @@ export const CreateGiteaHookBody = HookBodyBase.extend({
   reportingMode: HookReportingModeEnum.default('off')
 })
 
+/** Azure DevOps families (azure-devops-integration.md §11.4): pull requests and pushes only; no issues, releases or labels. */
+export const AzureDevOpsHookFamily = z.enum(['merge_request', 'push'])
+export const AzureDevOpsHookEventPattern = /^(merge_request:(opened|synchronize|review_requested|reopened|\*)|push:\*)$/
+
+/** Azure DevOps rows speak the GitLab family vocabulary like Gitea's; the repository is the surrogate numeric id of a bound repository. */
+export const CreateAzureDevOpsHookBody = HookBodyBase.extend({
+  kind: z.literal('azure-devops'),
+  // perThread by definition; the repository must already be bound in this organization and authorized for the agent.
+  repoId: z.string().regex(/^[1-9]\d*$/),
+  family: AzureDevOpsHookFamily,
+  events: z.array(z.string().regex(AzureDevOpsHookEventPattern)).min(1).max(10),
+  // The pull-request comment family; empty = no comments.
+  commentFamilies: z.array(z.literal('merge_request')).max(1).default([]),
+  mentionOnly: z.boolean().default(false),
+  // Formal reviews and the run status land with their writers; until then only `off` is accepted.
+  reviewPolicy: HookReviewPolicyEnum.default('off'),
+  reportingMode: HookReportingModeEnum.default('off')
+})
+
 export const CreateHookBody = z.discriminatedUnion('kind', [
   CreateWebhookHookBody,
   CreateGithubHookBody,
   CreateGitlabHookBody,
-  CreateGiteaHookBody
+  CreateGiteaHookBody,
+  CreateAzureDevOpsHookBody
 ])
 
 // PUT: `kind` discriminates the body but STAYS OPTIONAL for webhook updates —
@@ -3470,6 +3558,13 @@ export const UpdateHookBody = z.union([
     enabled: z.boolean().optional(),
     commentFamilies: z.array(GitlabCommentFamily).max(2).optional(),
     labelFilter: HookLabelFilter.optional(),
+    mentionOnly: z.boolean().optional(),
+    reviewPolicy: HookReviewPolicyEnum.optional(),
+    reportingMode: HookReportingModeEnum.optional()
+  }),
+  CreateAzureDevOpsHookBody.omit({ family: true }).extend({
+    enabled: z.boolean().optional(),
+    commentFamilies: z.array(z.literal('merge_request')).max(1).optional(),
     mentionOnly: z.boolean().optional(),
     reviewPolicy: HookReviewPolicyEnum.optional(),
     reportingMode: HookReportingModeEnum.optional()
@@ -3886,14 +3981,15 @@ export const SessionMessageDto = z.object({
   body: z.string().optional(), // JSON.stringify(ToolBody / PlanBody / ElicitBody); may be a truncated-but-valid-JSON preview
   bodyTruncated: z.boolean().optional(), // preview shrunk for the frame; full body via /sessions/:id/tool-body
   bodyBytes: z.number().optional(), // full (untruncated) body byte length
-  thread: z.string().optional() // `view=roots` alone: the root id of the thread this row is a reply in
+  thread: z.string().optional(), // `view=roots` alone: the root id of the thread this row is a reply in
+  handedTo: z.string().optional() // a webchat root handed into a task's thread: that thread's root id; the row stays at the root
 })
 /** `POST /sessions/:id/shared-images/:attachmentId/original` — the original's state and, when ready, a temporary GET. */
 export const SharedImageOriginalDto = SharedImageResolveOk
 
 const SessionThreadAuthorDto = z.object({ sender: z.string(), senderName: z.string().optional() })
 
-/** One thread footer (webchat-threads.md §5.3); `readable` false ⇒ a task the caller may not view holds it, so its excerpts and task title are left out (§7.1). */
+/** One thread footer (webchat-threads.md §5.3); `readable` false ⇒ a task the caller may not view holds it, or one still `starting`, so its excerpts and task title are left out (§7.1). */
 export const SessionThreadSummaryDto = z.object({
   rootId: z.string(),
   rootExcerpt: z.string().optional(),
@@ -3905,7 +4001,8 @@ export const SessionThreadSummaryDto = z.object({
     .object({
       sessionId: z.string().optional(),
       title: z.string().optional(),
-      state: z.enum(['open', 'done', 'failed'])
+      state: z.enum(['open', 'done', 'failed']),
+      starting: z.literal(true).optional() // no session row for the task yet: unread because it is starting, not withheld
     })
     .optional(),
   running: z.boolean().optional(),

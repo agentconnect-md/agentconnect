@@ -84,13 +84,32 @@ describe.skipIf(process.platform !== 'linux')('Kimi file API-key projection', ()
     expect(step.credentials!.writablePaths).toEqual([join(f.source, 'credentials')])
   })
 
-  it('refuses retained plaintext and new guest credentials rather than silently migrating them', () => {
+  it('rewrites retained plaintext or stale keys to their placeholders and leaves a guest-only key as it is', () => {
     const f = fixture()
     const credentials = f.prepare()
+    const placeholder = credentials.secrets[0]!.placeholder
     const dir = join(f.guest, '.kimi-code')
+    const path = join(dir, 'config.toml')
+    const providers = () => parse(readFileSync(path, 'utf8')).providers as Record<string, { api_key?: string }>
     mkdirSync(dir)
-    writeFileSync(join(dir, 'config.toml'), stringify(f.config))
-    expect(() => credentials.preparePrivateHome(f.guest)).toThrow(/new session/)
-    expect(readFileSync(join(dir, 'config.toml'), 'utf8')).toContain('fixture-key')
+    const retained = structuredClone(f.config) as { providers: Record<string, unknown> }
+    retained.providers.second = { ...f.config.providers.second, api_key: 'fixture-stale-key' }
+    retained.providers.guest = { type: 'openai', base_url: 'https://guest.example.test', api_key: 'fixture-guest-key' }
+    writeFileSync(path, stringify(retained))
+    credentials.preparePrivateHome(f.guest)
+    const text = readFileSync(path, 'utf8')
+    for (const value of ['fixture-key', 'fixture-stale-key', 'fixture-unsupported']) expect(text).not.toContain(value)
+    expect(providers().first!.api_key).toBe(placeholder)
+    expect(providers().second!.api_key).toBe(placeholder)
+    expect(providers().unsupported!.api_key).toMatch(/^msb-secret-/)
+    expect(providers().guest!.api_key).toBe('fixture-guest-key')
+  })
+
+  it('refuses a fresh copy whose host key changed after preparation', () => {
+    const f = fixture()
+    const credentials = f.prepare()
+    f.config.providers.first.api_key = 'fixture-changed'
+    f.write()
+    expect(() => credentials.preparePrivateHome(f.guest)).toThrow(/retry launch/)
   })
 })

@@ -131,8 +131,9 @@ export class DaemonAuthService implements DaemonAuth {
   private async mintEpoch(req: AuthReq, daemonId: string, orgId: string | null, tokenFp?: string): Promise<AuthResult> {
     const nowMs = this.clock.now()
     let sessionEpoch: bigint
+    let daemon
     try {
-      ;({ sessionEpoch } = await this.epoch.bumpSessionEpoch({
+      ;({ sessionEpoch, daemon } = await this.epoch.bumpSessionEpoch({
         daemonId: DaemonId(daemonId),
         orgId: orgId ? OrgId(orgId) : null,
         agentVersion: req.agentVersion,
@@ -180,6 +181,8 @@ export class DaemonAuthService implements DaemonAuth {
       daemonId: DaemonId(daemonId),
       orgId: orgId ? OrgId(orgId) : null,
       setId: memberSet?.id ?? null,
+      apiKeyId: tokenFp ?? null,
+      approval: daemon.approval,
       okFrame
     }
   }

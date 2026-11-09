@@ -50,7 +50,7 @@ import {
 import type { ResolvableAgent } from '../../orchestrator/placementResolver.js'
 import { makeSessionAccessResolver } from '../session-access.js'
 import { continuationAudience, continuationParentId } from '../../domain/continuation-audience.js'
-import { threadSummaryFor, threadTaskSessionIds } from '../../domain/thread-read.js'
+import { threadSummaryFor, threadTaskSessionIds, type ThreadTaskAccess } from '../../domain/thread-read.js'
 import {
   resolveContinuationHost,
   type ContinuationAttachments,
@@ -751,22 +751,24 @@ export function sessionRoutes(deps: HttpDeps) {
     })
     const threadReadsMissing = "this agent's daemon does not serve thread reads"
 
-    // webchat-threads.md §7.1: the held tasks of these threads whose sessions the caller may view, of the session's own agent only.
-    const viewableThreadTasks = async (
+    // webchat-threads.md §7.1: each held task's session the CP has a row for, and whether the caller may view it (of the session's own agent only).
+    const threadTaskAccess = async (
       req: FastifyRequest,
       agentId: string,
       summaries: readonly SessionThreadSummary[]
-    ): Promise<Set<string>> => {
+    ): Promise<ThreadTaskAccess> => {
       const ids = threadTaskSessionIds(summaries)
-      if (ids.length === 0) return new Set()
+      if (ids.length === 0) return new Map()
       const rows = (await Promise.all(ids.map((id) => deps.repos.session.get(orgOf(req), SessionId(id))))).filter(
-        (row): row is SessionMetaRecord => row !== null && row.agentId === agentId
+        (row): row is SessionMetaRecord => row !== null
       )
-      const access = await sessionAccess.forSessions(req, rows)
-      return new Set(
-        rows
-          .filter((row) => canViewSession(row, ctxOf(req), access.identitySet, access.externalAccess))
-          .map((row) => String(row.id))
+      const ofAgent = rows.filter((row) => row.agentId === agentId)
+      const access = await sessionAccess.forSessions(req, ofAgent)
+      return new Map(
+        rows.map((row) => [
+          String(row.id),
+          row.agentId === agentId && canViewSession(row, ctxOf(req), access.identitySet, access.externalAccess)
+        ])
       )
     }
 
@@ -809,7 +811,7 @@ export function sessionRoutes(deps: HttpDeps) {
           schema: {
             tags: [Tag.Sessions],
             summary: `Get ${label} session access sync`,
-            description: `Returns whether ${label} sessions use the provider's current audience for console access.`,
+            description: `Check whether ${label} sessions use the provider's current audience for console access. Returns sync availability, policy state, and revision information.`,
             operationId: `get${operationLabel}SessionAccess`,
             response: { 200: SessionExternalAccessDto }
           }
@@ -1340,14 +1342,14 @@ export function sessionRoutes(deps: HttpDeps) {
         }
         const page = read.value
         const threads = roots ? (page.threads ?? []) : undefined
-        const readableTasks = threads ? await viewableThreadTasks(req, session.agentId, threads) : new Set<string>()
+        const taskAccess: ThreadTaskAccess = threads ? await threadTaskAccess(req, session.agentId, threads) : new Map()
         return {
           sessionId: page.sessionId,
           messages: page.messages,
           nextCursor: page.nextCursor ?? null,
           liveCursor: page.liveCursor ?? null,
           liveMore: page.liveMore ?? false,
-          ...(threads ? { threads: threads.map((t) => threadSummaryFor(t, readableTasks)) } : {})
+          ...(threads ? { threads: threads.map((t) => threadSummaryFor(t, taskAccess)) } : {})
         }
       }
     )
@@ -1400,7 +1402,7 @@ export function sessionRoutes(deps: HttpDeps) {
         }
         const page = read.value
         if (!page.summary) return reply.code(404).send(notFound)
-        const summary = threadSummaryFor(page.summary, await viewableThreadTasks(req, session.agentId, [page.summary]))
+        const summary = threadSummaryFor(page.summary, await threadTaskAccess(req, session.agentId, [page.summary]))
         if (!summary.readable) {
           return {
             sessionId: page.sessionId,

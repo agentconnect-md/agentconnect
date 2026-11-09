@@ -1,5 +1,5 @@
 // The console's own session visibility for whoever asks an agent a cross-platform read, and a console user's linked chat identity (assistant-mode.md §5.5).
-import type { AgentReadAccess, AgentReadAccessOk } from '@agentconnect.md/protocol'
+import type { AgentReadAccess, AgentReadAccessOk, CommitAuthor } from '@agentconnect.md/protocol'
 import type { LinkedChatIdentity } from '../github/logto-identity.js'
 import type { CpPlatformRegistry } from '../platforms/provider.js'
 import type { AgentRepo, BotRepo, IntegrationRepo, OrgMemberRole, OrgRepo, UserRepo } from '../persistence/ports.js'
@@ -23,6 +23,7 @@ export interface ReadAccessDeps {
   platforms: Pick<CpPlatformRegistry, 'get'>
   /** Absent when the deployment has no sign-in configured — then no chat member is linked. */
   identity?: { chatIdentitiesFor(sub: string): Promise<LinkedChatIdentity[]> }
+  commitAuthorsFor?(viewer: ReadAccessViewer): Promise<CommitAuthor[]>
   /** The agent's sessions among `sessionIds` this viewer could see in the console; `ownerOnly` keeps only those they own. */
   sessionsVisible(
     viewer: ReadAccessViewer,
@@ -54,7 +55,10 @@ export async function resolveReadAccess(
   const linked = req.linkedOn
     ? { linkedMemberId: await linkedMemberOn(req.agentId, req.linkedOn, viewer.userId, deps) }
     : {}
-  return { asker: 'linked', visibleSessionIds, consoleUserId: viewer.userId, ...linked }
+  const authors = req.includeCommitAuthors
+    ? { commitAuthors: (await deps.commitAuthorsFor?.(viewer).catch(() => [])) ?? [] }
+    : {}
+  return { asker: 'linked', visibleSessionIds, consoleUserId: viewer.userId, ...linked, ...authors }
 }
 
 /** The agent's bot and the tenant its chat members are matched under (Slack's workspace, Feishu/Lark's region), or null. */

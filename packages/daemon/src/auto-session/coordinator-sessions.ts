@@ -7,7 +7,7 @@ import { parseArgs, requiredString, ToolArgumentError } from '../mcp/ops/args.js
 import { taskTitleField, TASK_TITLE_MAX_CHARS } from '../mcp/ops/send-message-actions.js'
 import { deriveTitle } from '../session/derive-title.js'
 import { isNoResponsePrefix } from '../session/no-response.js'
-import { sessionKey, type LocalStore } from '../store/local-store.js'
+import { sessionKey, transcriptChannelKey, type LocalStore } from '../store/local-store.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
 import { a2aCoordChannel } from '../cp/cp-collab-routes.js'
 import { isSubsessionCoordinate, subsessionCoordinate } from '../session/subsession-coordinate.js'
@@ -15,6 +15,7 @@ import { coordinatorMessageId, type ReportAbout } from './coordinator-prompt.js'
 import {
   answerThreadOf,
   CoordinatorTurns,
+  inThread,
   platformMessageIdOf,
   replyThreadOf,
   threadless,
@@ -233,12 +234,14 @@ export class CoordinatorSessions {
           const owners = new Set([key, await this.taskOwner(ctx.agentId, ctx, key)])
           const handed = await this.handTo(owners, ctx.agentId, call.taskId, held.message, call.message)
           this.turns.settle(key, call.messageId, 'route')
-          return handed.moved
-            ? {
-                ok: true,
-                taskId: handed.taskKey,
-                note: "The message moved to the task's own channel, which its thread now links to."
-              }
+          if (handed.moved)
+            return {
+              ok: true,
+              taskId: handed.taskKey,
+              note: "The message moved to the task's own channel, which its thread now links to."
+            }
+          return handed.joined !== undefined
+            ? { ok: true, taskId: handed.taskKey, joinedThread: coordinatorMessageId(handed.joined) }
             : { ok: true, taskId: handed.taskKey, attachedThread: call.messageId }
         }
         case 'replyToMessage': {
@@ -461,14 +464,14 @@ export class CoordinatorSessions {
       )
   }
 
-  /** Hand a message to one of the coordinator's threaded tasks and attach its thread (§5.1, §6.4), or move it into the task's place (§6.8). */
+  /** Hand a message to one of the coordinator's threaded tasks and attach its thread (§5.1, §6.4), join a webchat root to the task's thread, or move it into the task's place (§6.8). */
   private async handTo(
     owners: ReadonlySet<string>,
     agentId: string,
     taskId: string,
     message: DeliveredMessage,
     background?: string
-  ): Promise<{ taskKey: string; moved: boolean }> {
+  ): Promise<{ taskKey: string; moved: boolean; joined?: string }> {
     const { msg } = message
     const store = this.host.store()
     const index = store.assistantSubsessions
@@ -507,6 +510,18 @@ export class CoordinatorSessions {
       throw new Error(
         `sendMessage: the thread of ${message.id} already belongs to task ${owner}; hand the message there`
       )
+    const joined =
+      owner === undefined ? await this.joinedThreadOf(agentId, row.childSessionKey, threads, msg) : undefined
+    if (joined !== undefined) {
+      // A webchat root joins the task's thread and stays at the root, marked as handed there (webchat-threads.md §5.1).
+      await store.markTranscriptHanded(
+        { transcriptChannel: transcriptChannelKey(msg.channel, msg.transportScope), agentId },
+        msg.transcriptPostId!,
+        joined
+      )
+      await this.deliverToTask(agentId, row.childSessionKey, message, background, joined)
+      return { taskKey: row.childSessionKey, moved: false, joined }
+    }
     if (owner === undefined)
       await index.attachThread({
         agentId,
@@ -518,6 +533,21 @@ export class CoordinatorSessions {
       })
     await this.deliverToTask(agentId, row.childSessionKey, message, background)
     return { taskKey: row.childSessionKey, moved: false }
+  }
+
+  /** The thread a webchat root handed to a task joins: the task's thread in the message's conversation, never a legacy page task's. */
+  private async joinedThreadOf(
+    agentId: string,
+    taskKey: string,
+    threads: readonly TaskRoom[],
+    msg: NormalizedMessage
+  ): Promise<string | undefined> {
+    if (msg.platform !== 'webchat' || threadless(msg) || inThread(msg) || msg.transcriptPostId === undefined) return
+    if (pageTaskCoordinate(taskKey, msg.platform, agentId) !== undefined) return
+    const session = await this.sessionOf(taskKey, threads)
+    const here = threads.filter((at) => at.channel === msg.channel)
+    const thread = (here.find((at) => at.thread === session.thread) ?? here[0])?.thread
+    return thread !== undefined && thread !== replyThreadOf(msg) ? thread : undefined
   }
 
   /** The newest room a task holds in a conversation other than the message's, where a message moves (§6.8). */
@@ -537,12 +567,13 @@ export class CoordinatorSessions {
     return this.host.threadLink?.(message.integrationId, { platform: message.msg.platform, ...room })
   }
 
-  /** Dispatch a message to a threaded task: the task keeps its own session, the message's thread stays where it answers (§6.4). */
+  /** Dispatch a message to a threaded task: the task keeps its own session and answers in `answerIn`, else the message's thread (§6.4). */
   private async deliverToTask(
     agentId: string,
     taskKey: string,
     message: DeliveredMessage,
-    background?: string
+    background?: string,
+    answerIn?: string
   ): Promise<void> {
     const store = this.host.store()
     // A legacy page task's message moves into its conversation, which the coordinator links to, threaded or not (§10).
@@ -569,7 +600,7 @@ export class CoordinatorSessions {
     this.host.dispatch(
       agentId,
       messageForTask(
-        { ...message.msg, thread: replyThreadOf(message.msg) },
+        { ...message.msg, thread: answerIn ?? replyThreadOf(message.msg) },
         {
           ...(sessionThread ? { sessionThread } : {}),
           ...(background ? { background } : {})

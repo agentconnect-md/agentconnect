@@ -3904,3 +3904,34 @@ describe('Slack HTTP events while the owning daemon reconnects', () => {
     expect(sendMsg.mock.calls[0]![0]).toMatchObject({ agentId: AGENT_ID, msgId: 'slack:D1:1720000000.000100' })
   })
 })
+
+describe('RelayIngressManager platform requests', () => {
+  const routerOf = (manager: RelayIngressManager) => (manager as unknown as { router: BotArbitrationRouter }).router
+  const plugin = (answer = vi.fn(async () => ({ outcome: 'ok' as const }))) =>
+    ({ platformId: 'msteams', daemonRequest: answer }) as unknown as RelayPlatformIngressPlugin
+
+  it('hands a request to the bot’s plugin only from a daemon the assignment names', async () => {
+    const answer = vi.fn(async () => ({ outcome: 'ok' as const }))
+    const manager = new RelayIngressManager(deps(), [plugin(answer)])
+    routerOf(manager).upsert({ ...assignment(), platform: 'msteams' })
+    const req = { platformId: 'msteams', botId: BOT_ID, payload: { op: 'graph-token' } }
+    expect(await manager.handlePlatformRequest(OTHER_DAEMON_ID, req)).toEqual({
+      outcome: 'refused',
+      reason: 'not_member',
+      retryable: true
+    })
+    expect(answer).not.toHaveBeenCalled()
+    expect(await manager.handlePlatformRequest(DAEMON_ID, req)).toEqual({ outcome: 'ok' })
+    expect(answer).toHaveBeenCalledWith(expect.objectContaining({ botId: BOT_ID }), { op: 'graph-token' })
+  })
+
+  it('refuses an unknown bot, a bot of another platform, and a platform with no request facet', async () => {
+    const manager = new RelayIngressManager(deps(), [plugin()])
+    routerOf(manager).upsert(assignment())
+    const ask = (platformId: string, botId: string) =>
+      manager.handlePlatformRequest(DAEMON_ID, { platformId, botId, payload: {} })
+    expect(await ask('msteams', OTHER_AGENT_ID)).toEqual({ outcome: 'refused', reason: 'unknown_bot', retryable: true })
+    expect(await ask('msteams', BOT_ID)).toEqual({ outcome: 'refused', reason: 'unknown_bot', retryable: true })
+    expect(await ask('slack', BOT_ID)).toEqual({ outcome: 'refused', reason: 'unsupported' })
+  })
+})

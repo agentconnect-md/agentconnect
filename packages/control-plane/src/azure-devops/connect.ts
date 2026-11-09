@@ -246,6 +246,8 @@ export interface AzureDevOpsProjectChoice {
   projectId: string
   projectName: string
   group: 'readers' | 'contributors'
+  /** §11.1 Allow triggers: the service principal's View and Edit subscriptions on the project. */
+  allowTriggers?: boolean
 }
 
 /** Everything a flow carries between steps; the delegated token exists nowhere else. */
@@ -260,6 +262,12 @@ export interface AzureDevOpsFlowTicket {
   organization?: string
   organizationInstanceId?: string
   projects?: AzureDevOpsProjectChoice[]
+  /** The access the project list showed, by project id; absent when it could not be read, so Apply removes nothing. */
+  shownAccess?: Record<string, { group: 'readers' | 'contributors'; allowTriggers: boolean }>
+  /** All projects, present and future, as Apply asked for it. */
+  allProjects?: { group: 'readers' | 'contributors'; allowTriggers: boolean }
+  /** All projects as the page showed it held; absent when it was not held or could not be read. */
+  shownAllProjects?: { group: 'readers' | 'contributors'; allowTriggers: boolean }
   expiresAt: number
 }
 
@@ -273,8 +281,20 @@ const Ticket = z.object({
   organization: z.string().optional(),
   organizationInstanceId: z.string().optional(),
   projects: z
-    .array(z.object({ projectId: z.string(), projectName: z.string(), group: z.enum(['readers', 'contributors']) }))
+    .array(
+      z.object({
+        projectId: z.string(),
+        projectName: z.string(),
+        group: z.enum(['readers', 'contributors']),
+        allowTriggers: z.boolean().optional()
+      })
+    )
     .optional(),
+  shownAccess: z
+    .record(z.string(), z.object({ group: z.enum(['readers', 'contributors']), allowTriggers: z.boolean() }))
+    .optional(),
+  allProjects: z.object({ group: z.enum(['readers', 'contributors']), allowTriggers: z.boolean() }).optional(),
+  shownAllProjects: z.object({ group: z.enum(['readers', 'contributors']), allowTriggers: z.boolean() }).optional(),
   expiresAt: z.number()
 })
 

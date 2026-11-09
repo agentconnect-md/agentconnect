@@ -328,6 +328,8 @@ describe('toolsForIntegrations', () => {
     expect(schema).not.toHaveProperty('anyOf')
     expect(schema.required).toEqual(['action', 'message'])
     expect(schema.additionalProperties).toBe(false)
+    expect(schema).not.toHaveProperty('properties.attachments.items.$schema')
+    expect(schema).toHaveProperty('properties.attachments.maxItems', 10)
     expect(Object.keys(schema.properties)).toEqual([
       'action',
       'message',
@@ -340,6 +342,7 @@ describe('toolsForIntegrations', () => {
       'title',
       'messageId',
       'attachment',
+      'attachments',
       'platform',
       'integrationId'
     ])

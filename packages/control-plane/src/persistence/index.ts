@@ -43,6 +43,7 @@ export {
 export {
   PgAzureDevOpsConnectionRepo,
   PgAzureDevOpsConnectionSecretStore,
+  PgAzureDevOpsHookRepo,
   PgAzureDevOpsRepositoryBindingRepo
 } from './repositories/azure-devops.repo.js'
 export { PgCodeHostReviewLeaseRepo } from './repositories/code-host-review.repo.js'

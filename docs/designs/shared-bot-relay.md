@@ -425,7 +425,8 @@ The daemon presents in `rd/hello` whatever it presents on its control socket:
 its daemon API key, or — for an in-cluster daemon — the projected ServiceAccount
 token, which wins when both are present. Because the relay has no database, it
 delegates verification to CP with `rc/verify(kind = 'daemon-key' |
-'daemon-token')` and caches the successful identity for the life of that socket.
+'daemon-token')` and caches the successful identity for that socket, subject to
+revocation and, for daemon keys, periodic authorization checks.
 
 The claimed `daemonId` travels with the token so the CP can require it to match
 the cloud member record bound to the TokenReview-attested Pod UID (see "Identity is per Pod,
@@ -438,6 +439,19 @@ then closes the matching connection and stops routing to it.
 
 Existing authenticated sockets can continue through a CP outage. A new daemon
 socket cannot be authenticated until the CP verification path recovers.
+For self-hosted daemon keys, the relay rechecks the socket's credential 60 seconds
+after each completed check.
+An explicit denial or different daemon identity closes the socket; verification
+errors retain the cached identity and schedule another check. A missed revoke
+push is therefore caught by the next successful check after CP recovery, with
+no fixed revocation deadline during an outage. Existing duty fences and credential
+lifetimes still apply independently; revalidation does not renew them.
+
+Verified pool sockets retain their Pod-bound identity for the connection and
+honor revoke notifications and duty fences. The relay does not periodically
+replay their projected token: kubelet rotates it, and the daemon reads the current
+token on each new connection. Expiry of the handshake token alone does not close
+an established pool socket.
 
 ## 10. Inbound Routing
 
@@ -880,6 +894,18 @@ Later, separately: the
   token. Replies, attachment downloads, cron anchors, and platform tools reuse
   the normal daemon path.
 - Direct Slack integrations retain their daemon-owned socket transport.
+- A platform whose credential must not reach daemons sends through the relay:
+  `rd/platform/request { platformId, botId, payload }` →
+  `rd/platform/reply { outcome, reason?, retryable?, payload? }`, sent to a
+  relay that advertised `platform-request-v1`. The relay answers only for a bot
+  whose assignment names the requesting daemon as a member, and the bot's relay
+  platform module checks the payload. It answers within
+  `RD_PLATFORM_REQUEST_BUDGET_MS`, which the daemon's wait exceeds. `refused`
+  and `unavailable` mean the provider was never called, so the daemon asks the
+  next ready relay; `retryable` marks a refusal that assignment lag may explain.
+  The deployment-owned Teams and Google Chat apps use it
+  ([teams-integration.md §8.5](teams-integration.md#85-egress-for-the-deployment-apps-rows),
+  [google-chat-integration.md §10.10](google-chat-integration.md#1010-egress-for-the-deployment-apps-customer-rows)).
 - Webchat output is returned through `rd/chat` to the relay holding the browser
   session. That relay delivers output, completion, and canonical posts to every
   verified browser connection for the conversation; opening or closing another
@@ -992,7 +1018,10 @@ guarantees. Relay crash-delivery and replay guarantees remain unchanged.
 | Target daemon unavailable           | Slack redelivers its messages until its last attempt (about six minutes), then they are dropped and counted; Lark / Feishu messages are dropped and counted; unrelated daemons continue | Target delivery fails visibly                                    | Target session cannot start or continue                            | That daemon cannot send                       |
 | Partial daemon-to-pool connectivity | A Slack callback landing without its target socket is answered 503 and redelivered, possibly to another instance; a Lark / Feishu one is dropped and counted                            | Same bounded-loss outcome                                        | A browser must reconnect to an instance with the target connection | Unaffected                                    |
 
-Direct integrations do not depend on relay availability.
+Direct integrations do not depend on relay availability. The rows of a
+deployment-owned Teams or Google Chat app send through the relay, so they cannot
+send while no relay is reachable; any relay can serve them, from its last snapshot through a
+CP outage.
 
 ## 14. Security and Trust Boundaries
 
@@ -1003,6 +1032,22 @@ Direct integrations do not depend on relay availability.
 - The Lark / Feishu Verification Token and optional Encrypt Key are stored by CP
   and held by assigned relays. The Lark / Feishu App Secret is sent only to member daemons
   and is never placed in a relay assignment.
+- A Microsoft Teams bot's secret differs by owner. An organization's own bot's
+  secret is sent only to member daemons and never to a relay. The
+  deployment-owned Teams app's secret works in every tenant the app serves, so
+  it stays on CP and relays and never reaches a daemon or a customer row: its
+  rows' daemons send every Bot Connector call through a relay with
+  `rd/platform/request`, and the relay checks the daemon's membership, a
+  relay-signed conversation ticket and an allowlisted Bot Connector host
+  ([teams-integration.md §8.5](teams-integration.md#85-egress-for-the-deployment-apps-rows)).
+- A Google Chat app's service-account key differs by owner the same way. An
+  organization's own app's key is sent only to member daemons. The
+  deployment-owned app's key reaches every customer that installed it, so it
+  stays on CP and relays: its customer rows' daemons send every Chat API call
+  through a relay, which checks the daemon's membership and the target Space's
+  Workspace customer as Google reports it, and limits each row's share of the
+  project's quota
+  ([google-chat-integration.md §10.10](google-chat-integration.md#1010-egress-for-the-deployment-apps-customer-rows)).
 - Hook verification secrets are stored by CP and broadcast only to trusted
   relays.
 - Stored credential material passes through `SecretCipher`. Secret-bearing

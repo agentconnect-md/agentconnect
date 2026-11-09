@@ -160,7 +160,7 @@ export function GitPanel({
   /** Whether the reader's role may mutate this agent's checkout. The write routes 403 a viewer, so its controls are WITHHELD rather than drawn to fail — the same rule that kept them absent in M2. Defaults closed: a caller that has not resolved a role has not established one. */
   canWrite?: boolean
   /** A file row was pressed: open this path's diff, on this side of the index. The viewer is the caller's (§4). */
-  /** A row was pressed. `untracked` rows have no diff to show — git prints nothing for a path it has never seen — so the caller opens the FILE instead. */
+  /** A row was pressed. An `untracked` row's whole content is its change, so the caller opens the FILE instead. */
   onOpenDiff: (path: string, staged: boolean, untracked: boolean) => void
   /** The inputs to {@link gitTabStatus} and the tab's badge. */
   onVerdictChange?: (verdict: GitPanelVerdict) => void
@@ -313,7 +313,7 @@ export function GitPanel({
     const name = file.path.split('/').at(-1) ?? file.path
     const dir = file.path.slice(0, Math.max(0, file.path.length - name.length - 1))
     const selected = openPath === file.path && openStaged === staged
-    // `??` on either half: git has never seen this path, so `git diff` prints nothing for it and a Diff view would say "no unstaged changes" about a file whose whole content is the change. Its content IS the diff, so the row opens the file.
+    // `??` on either half: the whole file is the change, so the row opens it as a file; Diff mode shows it wholly added.
     const untracked = file.index === '?' || file.workingDir === '?'
     const busyKey = `${staged ? 'staged' : 'changes'}:${file.path}`
     return (

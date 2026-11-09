@@ -1305,6 +1305,7 @@ export interface SessionStep {
   code?: string
   files?: SessionFile[]
   image?: SessionImage
+  images?: SessionImage[]
   /** A shared image the agent published (webchat-generated-images.md); `postId` is its canonical post. */
   sharedImage?: SharedImageState
   /** Client-side timestamp for live playground/webchat steps. Persisted transcripts
@@ -2453,6 +2454,15 @@ export interface DaemonAutoUpgradeResult {
 }
 
 export interface DaemonRow {
+  approval?: {
+    status: 'pending' | 'approved' | 'revoked'
+    revision: number
+    source: string | null
+    changedAt: string | null
+    changedBy: string | null
+  }
+  canManageApproval?: boolean
+  sessionEpoch?: number
   /** Stable CP id — the rename target and the AddDaemon "connected?" match key. */
   daemonId: string
   /** Display label: human-assigned name, else hostname, else a short id. */
@@ -2473,6 +2483,8 @@ export interface DaemonRow {
   lifecycleOp: DaemonLifecycleOp | null
   /** Whether the caller may command restart/upgrade on this daemon (org owner only). */
   canManageLifecycle: boolean
+  /** Whether the caller may obtain a replacement daemon credential. */
+  canIssueKey: boolean
   /** The daemon installs new releases itself and restarts when idle. */
   autoUpgrade: boolean
   /** The daemon advertised auto-upgrade: supervised by the service or CLI, and not a pool member. */

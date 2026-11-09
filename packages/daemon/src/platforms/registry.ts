@@ -114,4 +114,9 @@ export class PlatformModuleRegistry {
   get(platformId: string): DaemonPlatformModule | undefined {
     return this.byId.get(platformId)
   }
+
+  /** Every module's registration features, once each, in module order. */
+  registrationFeatures(): string[] {
+    return [...new Set([...this.byId.values()].flatMap((entry) => entry.registrationFeatures ?? []))]
+  }
 }

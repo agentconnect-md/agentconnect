@@ -15,7 +15,7 @@ export interface PlaygroundData {
   /** One prepared image waiting in this session's composer. */
   getPgImage: (id: string) => SessionImage | undefined
   setPgImage: (id: string, image?: SessionImage) => void
-  /** Non-image files staged in this session's composer, uploading or ready. */
+  /** Images and documents staged in this session's composer, including failed uploads. */
   getPgFiles: (id: string) => ComposerFile[]
   setPgFiles: (id: string, update: (files: ComposerFile[]) => ComposerFile[]) => void
   /** Worktree choice staged for a synthetic session's first turn. */
@@ -83,7 +83,15 @@ export interface PlaygroundData {
     participants?: Array<{ agentId: string; name: string; primary?: boolean }>
   ) => boolean
   /** Send `text` in a thread of a coordinator conversation (webchat-threads.md §6.3), leaving its composer alone; a session-targeted continuation writes it in that thread of its task or its coordinator (§7). */
-  pgSendThread: (id: string, agentId: string, text: string, thread: string, conversationId?: string) => boolean
+  pgSendThread: (
+    id: string,
+    agentId: string,
+    text: string,
+    thread: string,
+    conversationId?: string,
+    image?: SessionImage,
+    files?: WebchatFileAttachment[]
+  ) => boolean
   /** The thread the turn in flight was sent in, undefined at the root or when idle. */
   getPgTurnThread: (id: string) => string | undefined
   /** What the relay's `ready` frame said it supports; undefined until a socket of this session is verified. */

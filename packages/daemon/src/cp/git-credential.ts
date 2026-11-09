@@ -90,6 +90,9 @@ const GITLAB_EFFECT_KEY = (agentId: string, projectId: string): string => `fxgla
 const GITEA_POST_KEY = (agentId: string, repoId: string): string => `postgitea\u0000${agentId}\u0000${repoId}`
 const GITEA_EFFECT_KEY = (agentId: string, repoId: string): string => `fxgitea\u0000${agentId}\u0000${repoId}`
 
+/** The Azure DevOps final poster's lease (azure-devops-integration.md §11.5), per (agent, repository). */
+const AZURE_DEVOPS_POST_KEY = (agentId: string, repoId: string): string => `postazure\u0000${agentId}\u0000${repoId}`
+
 /** The GitHub broker's token: the agent's own grant on the repository, in a keyspace of its own per (agent, repo). */
 const GITHUB_EFFECT_KEY = (agentId: string, repo: string): string =>
   `fxgithub\u0000${agentId}\u0000${repo.toLowerCase()}`
@@ -437,6 +440,35 @@ export class GitCredentialCache {
   /** Drop the cached Gitea broker lease after Gitea rejects it, so the single retry re-mints. */
   invalidateGiteaEffect(agentId: string, repoId: string, presentedToken?: string): void {
     this.dropCached(GITEA_EFFECT_KEY(agentId, repoId), presentedToken)
+  }
+
+  /** The Azure DevOps final poster's lease (§11.5): `comment` on a repository with the named enabled hook, served to the daemon alone; asked only in a hook turn. */
+  async getAzureDevOpsPostLease(agentId: string, repoId: string, hookId: string): Promise<Entry> {
+    if (this.deps.providerV2Supported?.() !== true) {
+      throw new GitCredUnavailableError(
+        'the control plane is too old for azure-devops credentials (gitcred-provider-v2 not advertised)',
+        false
+      )
+    }
+    const key = AZURE_DEVOPS_POST_KEY(agentId, repoId)
+    const forceRefresh = this.refreshPosts.has(key)
+    const entry = await this.getKeyed(key, agentId, {
+      agentId,
+      reason: 'helper',
+      provider: 'azure-devops',
+      externalRepoId: repoId,
+      purpose: 'azure_devops_hook_reply',
+      hookId,
+      consumer: 'daemon',
+      ...(forceRefresh ? { forceRefresh: true } : {})
+    })
+    if (forceRefresh) this.refreshPosts.delete(key)
+    return entry
+  }
+
+  /** Drop the cached Azure DevOps poster lease after Azure DevOps rejects it. */
+  invalidateAzureDevOpsPost(agentId: string, repoId: string, presentedToken?: string): void {
+    this.dropCached(AZURE_DEVOPS_POST_KEY(agentId, repoId), presentedToken)
   }
 
   /** Evict one daemon-owned writer's cached token and force its next mint past the CP cache. */

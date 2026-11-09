@@ -4,9 +4,16 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Agent, DaemonRow } from '@/lib/data'
 
-const mocks = vi.hoisted(() => ({ mobile: false, daemon: null as DaemonRow | null, agents: [] as Agent[] }))
+const mocks = vi.hoisted(() => ({
+  mobile: false,
+  daemon: null as DaemonRow | null,
+  agents: [] as Agent[],
+  openModal: vi.fn()
+}))
 vi.mock('next/navigation', () => ({ useParams: () => ({ id: 'd1' }), useRouter: () => ({ push: vi.fn() }) }))
-vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ orgPath: (path: string) => `/example${path}` }) }))
+vi.mock('@/lib/org-context', () => ({
+  useOrgs: () => ({ orgPath: (path: string) => `/example${path}`, activeOrg: { role: 'collaborator' } })
+}))
 vi.mock('@/lib/profile', () => ({ useProfile: () => ({ me: null }) }))
 vi.mock('@/lib/use-is-mobile', () => ({ useIsMobile: () => mocks.mobile }))
 vi.mock('@/lib/feature-flags', () => ({ featureFlagEnabled: () => false }))
@@ -17,7 +24,7 @@ vi.mock('@/lib/acp-registry', () => ({
 vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({ daemons: [mocks.daemon], agents: mocks.agents, memberSets: [], members: [] })
 }))
-vi.mock('@/components/console/ModalProvider', () => ({ useModal: () => ({ openModal: vi.fn() }) }))
+vi.mock('@/components/console/ModalProvider', () => ({ useModal: () => ({ openModal: mocks.openModal }) }))
 vi.mock('@/components/console/FleetDetail', async (original) => ({
   ...(await original<typeof import('@/components/console/FleetDetail')>()),
   FleetUsageCard: () => null,
@@ -32,6 +39,7 @@ let host: HTMLDivElement
 let root: Root
 
 beforeEach(() => {
+  mocks.openModal.mockClear()
   mocks.agents = []
   mocks.daemon = {
     daemonId: 'd1',
@@ -85,6 +93,25 @@ const choose = async (label: string) => {
   const button = Array.from(control()!.querySelectorAll('button')).find((b) => b.textContent === label)!
   await act(async () => button.click())
 }
+
+describe.each([false, true])('daemon reconnect permission (mobile: %s)', (mobile) => {
+  it.each([false, true])('uses the server-issued credential permission (%s) for a collaborator', async (allowed) => {
+    mocks.mobile = mobile
+    Object.assign(mocks.daemon!, { status: 'offline', canEdit: true, canIssueKey: allowed })
+    await render()
+    if (!mobile) {
+      await act(async () => host.querySelector<HTMLButtonElement>('button[title="Daemon actions"]')!.click())
+    }
+    const reconnect = Array.from(host.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Reconnect'
+    )
+    expect(Boolean(reconnect)).toBe(allowed)
+    if (reconnect) {
+      await act(async () => reconnect.click())
+      expect(mocks.openModal).toHaveBeenCalledWith('reconnectDaemon', mocks.daemon)
+    }
+  })
+})
 
 describe.each([false, true])('runtime environment view (mobile: %s)', (mobile) => {
   beforeEach(() => {

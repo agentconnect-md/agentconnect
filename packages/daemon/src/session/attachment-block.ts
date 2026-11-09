@@ -2,6 +2,7 @@ import type { ContentBlock } from '@agentclientprotocol/sdk/unstable'
 import {
   SessionImageAttachment as SessionImageAttachmentSchema,
   type SessionImageAttachment,
+  type UploadedFileReference,
   TRANSCRIPT_IMAGE_MAX_COUNT,
   WEBCHAT_IMAGE_MAX_BYTES
 } from '@agentconnect.md/protocol'
@@ -83,14 +84,33 @@ export function attachmentToBlock(
  *  declared size already exceeds maxBytes is never fetched. */
 export async function buildAttachmentBlocks(attachments: Attachment[], deps: AttachmentDeps): Promise<ContentBlock[]> {
   const cap = deps.maxBytes ?? Infinity
-  return Promise.all(
+  const blocks = await Promise.all(
     attachments.map(async (att) => {
-      if (att.transfer) return transferBlock(att, await deps.transferUrl?.(att).catch(() => undefined))
+      if (att.transfer) {
+        const link = transferBlock(att, await deps.transferUrl?.(att).catch(() => undefined))
+        const preview = att.transcriptThumbnail
+        return preview && deps.supports('image')
+          ? [link, { type: 'image' as const, data: preview.data.toString('base64'), mimeType: preview.mimeType }]
+          : [link]
+      }
       const overCap = typeof att.size === 'number' && att.size > cap
       const readThroughTool = !att.mimeType.startsWith('image/') && att.readerToolName
       const bytes = overCap || readThroughTool ? null : (att.inlineData ?? (await deps.download(att).catch(() => null)))
-      return attachmentToBlock(att, bytes, deps.supports)
+      return [attachmentToBlock(att, bytes, deps.supports)]
     })
+  )
+  const identifiers = attachments
+    .filter((att) => att.sourceUrl && !att.transfer)
+    .map((att) => `Attached file: ${att.name}; fileId=${att.id}`)
+  return [...blocks.flat(), ...(identifiers.length ? [{ type: 'text' as const, text: identifiers.join('\n') }] : [])]
+}
+
+// Keep native upload identifiers and integrity metadata with the receiving message.
+export function transcriptUploads(attachments: Attachment[] | undefined): UploadedFileReference[] {
+  return (attachments ?? []).flatMap((file) =>
+    file.transfer && file.size !== undefined
+      ? [{ ...file.transfer, name: file.name, mimeType: file.mimeType, size: file.size }]
+      : []
   )
 }
 
@@ -106,7 +126,7 @@ export function transferBlock(att: Attachment, link: { url: string; expiresAt: n
   return {
     type: 'text',
     text: [
-      `[uploaded file: ${label}]`,
+      `[uploaded file: ${label}; uploadId=${att.transfer?.uploadId}]`,
       `The user uploaded this file. It is not in your workspace yet; download it when you need it, for example:`,
       `mkdir -p uploads && curl -fsSL -o ${shellQuote(`uploads/${att.name}`)} ${shellQuote(link.url)}`,
       `The link expires at ${new Date(link.expiresAt).toISOString()}; do not repeat it in replies.`

@@ -44,6 +44,7 @@ const fleetRow: DaemonFleetDto = {
   sharedWith: [],
   canEdit: true,
   canManageSharing: true,
+  canIssueKey: false,
   canManageLifecycle: true
 } as DaemonFleetDto
 

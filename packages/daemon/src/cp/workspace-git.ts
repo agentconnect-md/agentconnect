@@ -454,13 +454,20 @@ export function createWorkspaceGit(
       // `:(literal)` disables pathspec magic and globbing, so a path containing `*`,
       // `:` or a leading `!` names exactly the file it looks like. An empty relative
       // path IS the workspace root — diff the whole tree.
-      const pathspec = rel === '' ? [] : ['--', `:(literal)${rel}`]
-      const scope = req.staged ? ['--cached'] : []
+      let pathspec = rel === '' ? [] : ['--', `:(literal)${rel}`]
+      let scope = req.staged ? ['--cached'] : []
 
-      const counted = await git.readBounded(['diff', ...scope, '--numstat', '-z', ...pathspec], METADATA_OUTPUT_BUDGET)
-      const rows = parseNumstatZ(counted.out.toString('utf8'))
+      let counted = await git.readBounded(['diff', ...scope, '--numstat', '-z', ...pathspec], METADATA_OUTPUT_BUDGET)
+      let rows = parseNumstatZ(counted.out.toString('utf8'))
+      // `git diff` never shows an untracked file, so its unstaged change is the whole file against /dev/null.
+      if (rows.length === 0 && !req.staged && rel !== '' && (await isUntrackedFile(git, rel))) {
+        scope = ['--no-index']
+        pathspec = ['--', '/dev/null', rel]
+        counted = await git.readBounded(['diff', ...scope, '--numstat', '-z', ...pathspec], METADATA_OUTPUT_BUDGET)
+        rows = parseNumstatZ(counted.out.toString('utf8'))
+      }
       if (rows.length === 0) {
-        // No change in this scope: the path exists (unchanged, or untracked, which `git diff` never shows) or it does not, and both are DATA; `canonical` is null for EVERY path of an off-disk root, so git answers there instead.
+        // No change in this scope: the path exists (unchanged) or it does not, and both are DATA; `canonical` is null for EVERY path of an off-disk root, so git answers there instead.
         const exists = workspaces.offDisk(placeOf(req.agentId, at)) ? await pathExists(git, rel) : canonical !== null
         return { agentId: req.agentId, path: req.path, isRepo: true, exists }
       }
@@ -946,6 +953,15 @@ async function pathExists(git: GitRunner, rel: string): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+/** Whether `rel` names exactly one untracked, non-ignored file — a directory lists its children instead, so it never matches. */
+async function isUntrackedFile(git: GitRunner, rel: string): Promise<boolean> {
+  const out = await git.readBounded(
+    ['ls-files', '-z', '--others', '--exclude-standard', '--', `:(literal)${rel}`],
+    METADATA_OUTPUT_BUDGET
+  )
+  return out.out.toString('utf8') === `${rel}\0`
 }
 
 /** One remote's fetch URL, authorized through the same policy the origin goes through, or null

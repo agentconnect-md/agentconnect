@@ -17,6 +17,7 @@ export interface RuntimeSessionIdentity {
   thread: string
   transportScope: string | null
   triggeredBy: string
+  initiator?: string
   threadUrl?: string
   memoryProvider: SessionRecord['memoryProvider']
   workspaceIsolation: 'shared' | 'session'
@@ -244,10 +245,9 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
       // A genuinely new session has no row and starts at null, as before.
       lastDeliveredTs: rec?.lastDeliveredTs ?? null,
       updatedAt: Date.now(),
-      // The source that created the session (first-wins in the store; read back
-      // as `session/list`'s triggeredBy). Hook routing identity remains separate
-      // from the GitHub actor credited on the transcript row.
+      // Routing identity and public attribution are separate, first-wins records.
       triggeredBy: identity.triggeredBy,
+      initiator: rec?.initiator ?? identity.initiator,
       ...(identity.threadUrl ? { threadUrl: identity.threadUrl } : {}),
       memoryProvider: identity.memoryProvider,
       workspaceIsolation: identity.workspaceIsolation,

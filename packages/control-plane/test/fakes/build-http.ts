@@ -8,6 +8,7 @@
  * stub (no `OIDC_ISSUER`). Tests drive it with `app.inject` — DB-backed, NO socket.
  */
 import { PgDecisionRepo } from '../../src/persistence/repositories/decision.repo.js'
+import { PgDaemonAdmissionRepo } from '../../src/persistence/repositories/daemon-admission.repo.js'
 import { PgGithubAppRepo } from '../../src/persistence/repositories/github-app.repo.js'
 import { PgBotDecisionRoutingRepo } from '../../src/persistence/repositories/bot-decision-routing.repo.js'
 import type { FastifyInstance } from 'fastify'
@@ -48,6 +49,7 @@ import {
   PgGiteaRepositoryBindingRepo,
   PgGiteaWebhookSecretStore,
   PgAzureDevOpsConnectionRepo,
+  PgAzureDevOpsHookRepo,
   PgAzureDevOpsRepositoryBindingRepo,
   PgOrgRepo,
   PgOrgInviteLinkRepo,
@@ -121,6 +123,7 @@ import { DUTY_LEASE_DEFAULTS } from '../../src/orchestrator/dutyLease.js'
 import { ControlSender } from '../../src/orchestrator/outbound.js'
 import { AgentDelivery } from '../../src/orchestrator/agentDelivery.js'
 import { PlacementResolver } from '../../src/orchestrator/placementResolver.js'
+import { RelayRoster } from '../../src/orchestrator/relayRoster.js'
 import { RelayControlSender } from '../../src/orchestrator/relayControl.js'
 import { HttpBotOrchestrator } from '../../src/orchestrator/httpBot.js'
 import { CollabRoutesService } from '../../src/orchestrator/collabRoutes.service.js'
@@ -405,6 +408,7 @@ export function buildHttpApp(
   // Same graph as prod: every replicate site resolves its targets here, so the
   // duty ledger is a real repo and a holder actually receives the pushes.
   const placementResolver = new PlacementResolver({
+    approved: (ids) => new PgDaemonAdmissionRepo(prisma).allowed(ids),
     duties: dutyGroupRepo,
     liveMembers: async (setId) => {
       const members = new Set(await memberSets.memberIdsOf(setId))
@@ -524,7 +528,16 @@ export function buildHttpApp(
           host: giteaSeam.api.baseUrl
         }
       : undefined,
-    codeHostDecisionRoutingRepo
+    codeHostDecisionRoutingRepo,
+    undefined,
+    // A suite that brings Azure DevOps service hooks compiles their rules from the same tables production reads.
+    depsOverrides?.azureDevOps?.hooks
+      ? {
+          bindings: new PgAzureDevOpsRepositoryBindingRepo(prisma),
+          connections: new PgAzureDevOpsConnectionRepo(prisma),
+          hooks: new PgAzureDevOpsHookRepo(prisma, cipher)
+        }
+      : undefined
   )
   // Same scope reconciler as production; host choice reads the live connection's features.
   const hookRouting = new HookRoutingService({
@@ -563,6 +576,7 @@ export function buildHttpApp(
     }),
     clock,
     repos: {
+      daemonAdmission: new PgDaemonAdmissionRepo(prisma),
       agent: agentRepo,
       assignment: new PgAssignmentRepo(prisma),
       memberSet: memberSets,
@@ -648,6 +662,7 @@ export function buildHttpApp(
     agentDelivery,
     placementResolver,
     relayControl,
+    relayRoster: new RelayRoster(new PgRelayRepo(prisma), sender, clock, configOverrides?.RELAY_STALE_MS ?? 0),
     httpBot: new HttpBotOrchestrator(
       botRepo,
       botSecretStore,

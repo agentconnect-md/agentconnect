@@ -114,6 +114,14 @@ function downgradeAutoForPeer(spec: IntegrationSpec): IntegrationSpec {
   return { ...spec, core: { ...spec.core, sessionModes } }
 }
 
+/** Whether a daemon may hold this integration at all: it advertises every feature the spec requires; one that does not gets it removed. */
+export function integrationDeliverableToPeer(
+  spec: Pick<IntegrationSpec, 'requires'>,
+  features: readonly string[] | undefined
+): boolean {
+  return (spec.requires ?? []).every((feature) => features?.includes(feature) === true)
+}
+
 /** The spec a daemon may receive: assistant-mode places `auto` with auto-v1, other `auto` as `createNew` without it, routing stripped without routing-v1, every decision rule without trigger-v1, held Off. */
 export function encodeIntegrationSpecForPeer(
   spec: IntegrationSpec,

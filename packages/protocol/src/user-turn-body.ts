@@ -1,6 +1,45 @@
 // ⚠️ NO RELATIVE IMPORTS — a bundler compiles this from source; web's protocol-imports.leaf.test.ts enforces it.
 import { z } from 'zod'
 
+export const MESSAGE_ATTACHMENTS_MAX = 10
+
+// Durable upload metadata; signed URLs and image previews stay outside this record.
+export const UploadedFileReference = z.object({
+  uploadId: z.string().uuid(),
+  name: z
+    .string()
+    .trim()
+    .min(1)
+    .max(255)
+    .regex(/^[^\u0000-\u001f\u007f/\\]+$/, 'file name must not contain control characters or path separators'),
+  mimeType: z
+    .string()
+    .max(255)
+    .regex(/^[A-Za-z0-9][\w.+-]*\/[A-Za-z0-9][\w.+-]*$/, 'must be a type/subtype MIME type'),
+  size: z.number().int().positive(),
+  sha256: z.string().regex(/^[A-Za-z0-9+/]{43}=$/, { message: 'must be a base64 SHA-256' })
+})
+export type UploadedFileReference = z.infer<typeof UploadedFileReference>
+
+export const MessageAttachmentSource = z.discriminatedUnion('source', [
+  z.strictObject({ source: z.literal('workspace'), path: z.string().trim().min(1).max(1024) }),
+  z.strictObject({ source: z.literal('upload'), uploadId: z.string().uuid() }),
+  z.strictObject({
+    source: z.literal('platform'),
+    platform: z.string().trim().min(1),
+    integrationId: z.string().trim().min(1).optional(),
+    fileId: z.string().trim().min(1).max(255)
+  })
+])
+export type MessageAttachmentSource = z.infer<typeof MessageAttachmentSource>
+export const PublishedAttachment = z.object({
+  source: MessageAttachmentSource,
+  name: z.string(),
+  mimeType: z.string(),
+  fileId: z.string().optional()
+})
+export type PublishedAttachment = z.infer<typeof PublishedAttachment>
+
 /** The Linear facts behind one delegated or prompted turn — what the console formats, never instructions. */
 export const LinearTurnFacts = z.object({
   event: z.enum(['created', 'prompted']).optional(),
@@ -22,9 +61,9 @@ export const LinearTurnFacts = z.object({
 })
 export type LinearTurnFacts = z.infer<typeof LinearTurnFacts>
 
-/** The code-host facts behind one GitHub, GitLab, or Gitea delivery turn. */
+/** The code-host facts behind one GitHub, GitLab, Gitea, or Azure DevOps delivery turn. */
 export const CodehostTurnFacts = z.object({
-  provider: z.enum(['github', 'gitlab', 'gitea']),
+  provider: z.enum(['github', 'gitlab', 'gitea', 'azure-devops']),
   event: z.string(),
   action: z.string().optional(),
   subject: z.object({
@@ -82,14 +121,11 @@ export const TaskLinkFacts = z.object({
 })
 export type TaskLinkFacts = z.infer<typeof TaskLinkFacts>
 
-/**
- * What lies behind one user-turn `text` row, transported as a JSON STRING in `SessionMessage.body`.
- * `prompt` is the text the model actually received when it differs from the row's `text` (replay
- * reads it); the platform facts are what the console renders behind the bubble. Absent on rows
- * from before it existed and on turns whose prompt IS the text.
- */
+// JSON in SessionMessage.body: the model's prompt when it differs from text, plus facts the console renders.
 export const UserTurnBody = z.object({
   prompt: z.string().optional(),
+  uploads: z.array(UploadedFileReference).max(MESSAGE_ATTACHMENTS_MAX).optional(),
+  publishedAttachments: z.array(PublishedAttachment).max(MESSAGE_ATTACHMENTS_MAX).optional(),
   linear: LinearTurnFacts.optional(),
   codehost: CodehostTurnFacts.optional(),
   sessionMessage: SessionMessageTurnFacts.optional(),

@@ -781,6 +781,8 @@ export interface SessionMessageDto {
   bodyBytes?: number // full (untruncated) body byte length
   /** The roots view alone: the root id of the thread this row is a reply in (webchat-threads.md §8). */
   thread?: string
+  /** A webchat root handed into a task's thread: that thread's root id; the row stays at the root and reads as a reply there (webchat-threads.md §5.1). */
+  handedTo?: string
 }
 
 /** Who wrote in a thread, as its footer names them. */
@@ -798,8 +800,8 @@ export interface SessionThreadSummaryDto {
   lastReply?: SessionThreadAuthorDto & { excerpt?: string }
   /** Repliers, newest first, at most five. */
   participants: SessionThreadAuthorDto[]
-  /** The task that holds the thread; `sessionId` is absent while it starts. */
-  task?: { sessionId?: string; title?: string; state: 'open' | 'done' | 'failed' }
+  /** The task that holds the thread; `sessionId` is absent while it starts, and `starting` marks it unread until its session exists. */
+  task?: { sessionId?: string; title?: string; state: 'open' | 'done' | 'failed'; starting?: true }
   /** A turn runs in the thread now. */
   running?: boolean
   readable: boolean
@@ -1315,6 +1317,8 @@ export interface DaemonCapabilityDto {
 
 /** `GET /daemons/:id` — both halves, catalog included. */
 export interface DaemonViewDto {
+  approval?: DaemonRow['approval']
+  canManageApproval?: boolean
   daemonId: string
   host: string | null
   name: string | null
@@ -1360,6 +1364,8 @@ export interface DaemonViewDto {
   canManageSharing: boolean
   /** Whether the caller may command restart/upgrade on this daemon (org owner only). */
   canManageLifecycle: boolean
+  /** Whether the caller may obtain a replacement daemon credential. */
+  canIssueKey: boolean
   /** The auto-upgrade switch; absent on an older CP ⇒ off. */
   autoUpgrade?: boolean
   /** The daemon advertised auto-upgrade support; absent on an older CP ⇒ unsupported. */
@@ -2536,6 +2542,10 @@ export function daemonFromDto(
     lifecycleOp,
     lifecycleStatus: lifecycleStatus(lifecycleOp) ?? null,
     canManageLifecycle: d.canManageLifecycle ?? false,
+    canIssueKey: d.canIssueKey,
+    approval: d.approval,
+    canManageApproval: d.canManageApproval ?? false,
+    sessionEpoch: d.sessionEpoch,
     autoUpgrade: d.autoUpgrade ?? false,
     autoUpgradeSupported: d.autoUpgradeSupported ?? false,
     lastAutoUpgrade: d.lastAutoUpgrade ?? null,
@@ -4805,6 +4815,14 @@ export async function fetchDaemons(orgId?: string): Promise<DaemonRow[]> {
   return (await apiGet<DaemonFleetDto[]>(`${orgBase(orgId)}/daemons`)).map(daemonFromDto)
 }
 
+export async function changeDaemonApproval(daemon: DaemonRow, status: 'approved' | 'revoked'): Promise<void> {
+  await apiPost(`${orgBase()}/daemons/${encodeURIComponent(daemon.daemonId)}/approval`, {
+    status,
+    revision: daemon.approval?.revision,
+    sessionEpoch: daemon.sessionEpoch
+  })
+}
+
 /** Fleet-wide capability, keyed by daemon id — merged onto the liveness rows. */
 export async function fetchDaemonCapabilities(orgId?: string): Promise<Map<string, DaemonCapabilityDto>> {
   const rows = await apiGet<DaemonCapabilityDto[]>(`${orgBase(orgId)}/daemons/capabilities`)
@@ -5225,11 +5243,31 @@ export interface CreateGiteaHookInput {
   reportingMode?: HookReportingMode
 }
 
+/** Azure DevOps rows speak the same family vocabulary, narrowed to pull requests and pushes (azure-devops-integration.md §11.4). */
+export type AzureDevOpsHookFamily = 'merge_request' | 'push'
+export type AzureDevOpsCommentFamily = 'merge_request'
+
+// azure-devops kind: the repository must already be bound and authorized for the agent; no label filter exists.
+export interface CreateAzureDevOpsHookInput {
+  agentId: string
+  name: string
+  enabled?: boolean
+  repoId: string // the bound repository's surrogate numeric id
+  family: AzureDevOpsHookFamily
+  events: string[] // 'merge_request:opened' / 'merge_request:*' / 'push:*'
+  commentFamilies?: AzureDevOpsCommentFamily[]
+  mentionOnly?: boolean
+  reviewPolicy?: HookReviewPolicy
+  // 'status' publishes the pull request's status.
+  reportingMode?: HookReportingMode
+}
+
 // The family is immutable, so no update body carries it — changing a row's
 // family is a delete plus a create.
 export type UpdateGithubHookInput = Omit<CreateGithubHookInput, 'family'>
 export type UpdateGitlabHookInput = Omit<CreateGitlabHookInput, 'family'>
 export type UpdateGiteaHookInput = Omit<CreateGiteaHookInput, 'family'>
+export type UpdateAzureDevOpsHookInput = Omit<CreateAzureDevOpsHookInput, 'family'>
 
 // ── trusted users ── the per-repository vouch list a code-host hook's settings edit.
 // Reached through a hook (that is the row the console holds), stored per repository: every
@@ -5411,6 +5449,22 @@ export async function createGiteaHook(input: CreateGiteaHookInput): Promise<Crea
 // Update a gitea hook's subscription. Whole-definition PUT, like the other two.
 export async function updateGiteaHook(id: string, input: UpdateGiteaHookInput, orgId?: string): Promise<HookDto> {
   return apiPut<HookDto>(`${orgBase(orgId)}/hooks/${encodeURIComponent(id)}`, { kind: 'gitea', ...input })
+}
+
+// Azure DevOps subscription — no URL, no secret: the service hook subscriptions carry their own key. One session per pull request.
+export async function createAzureDevOpsHook(input: CreateAzureDevOpsHookInput): Promise<CreatedHookDto> {
+  const hook = await apiPost<CreatedHookDto>(`${orgBase()}/hooks`, { kind: 'azure-devops', ...input })
+  track('hook_created', { org_id: apiOrgId, agent_id: hook.agentId, hook_kind: hook.kind, hook_id: hook.id })
+  return hook
+}
+
+// Update an azure-devops hook's subscription. Whole-definition PUT, like the others.
+export async function updateAzureDevOpsHook(
+  id: string,
+  input: UpdateAzureDevOpsHookInput,
+  orgId?: string
+): Promise<HookDto> {
+  return apiPut<HookDto>(`${orgBase(orgId)}/hooks/${encodeURIComponent(id)}`, { kind: 'azure-devops', ...input })
 }
 
 export async function deleteHook(id: string): Promise<void> {
@@ -7525,7 +7579,17 @@ export interface AzureDevOpsRepositoryDto {
   bindingId: string | null
 }
 
-/** One bound repository: a catalog row and an identity, no webhook. */
+/** Why a repository's service hook subscriptions are not known to deliver (azure-devops-integration.md §11.2). */
+export type AzureDevOpsHookReason =
+  'webhook_unverified' | 'triggers_not_allowed' | 'relay_url_unconfigured' | 'subscriptions_failed'
+
+/** One service hook subscription the Control Plane manages: its delivery kind and Azure DevOps's last observed status. */
+export interface AzureDevOpsHookSubscriptionDto {
+  kind: string
+  status: string | null
+}
+
+/** One bound repository: a catalog row, an identity, and the subscriptions its triggers need. */
 export interface AzureDevOpsRepositoryBindingDto {
   id: string
   connectionId: string
@@ -7537,7 +7601,19 @@ export interface AzureDevOpsRepositoryBindingDto {
   defaultBranch: string | null
   state: 'ready' | 'runtime_degraded'
   stateReason: AzureDevOpsStateReason | null
+  /** Absent from a Control Plane without Azure DevOps triggers. */
+  hookReason?: AzureDevOpsHookReason | null
+  lastVerifiedDeliveryAt?: string | null
+  subscriptions?: AzureDevOpsHookSubscriptionDto[]
   createdAt: string
+}
+
+/** A key rotation's progress: the new key takes over once every subscription switched and a delivery verifies under it. */
+export interface AzureDevOpsHookKeyRotationDto {
+  rotated: boolean
+  switched: number
+  total: number
+  reason: string | null
 }
 
 export type AzureDevOpsProjectGroup = 'readers' | 'contributors'
@@ -7564,12 +7640,26 @@ export interface AzureDevOpsProjectsDto {
   /** The ticket with the organization recorded; the next step sends this one. */
   ticket: string
   organization: string
-  projects: Array<{ id: string; name: string }>
+  /** `access` is what the application already holds in the project. */
+  projects: Array<{ id: string; name: string; access?: { group: AzureDevOpsProjectGroup; allowTriggers: boolean } }>
+  /** Access to every project, including ones created later, when the application holds it. */
+  allProjects?: { group: AzureDevOpsProjectGroup; allowTriggers: boolean }
+}
+
+/** Allow triggers on one project (§11.1): granted, refused for the caller's role, or failed. */
+export interface AzureDevOpsTriggerGrantDto {
+  projectId: string
+  projectName: string
+  outcome: 'granted' | 'refused' | 'failed'
 }
 
 export interface AzureDevOpsConnectResultDto {
   connection: AzureDevOpsConnectionDto
   memberships: AzureDevOpsMembershipDto[]
+  /** One entry per project with Allow triggers on; absent from a Control Plane without triggers. */
+  triggers?: AzureDevOpsTriggerGrantDto[]
+  /** What is left to do by hand, such as Allow triggers the caller's role could not grant. */
+  checklist?: string[]
 }
 
 /** The connection list doubles as the enabled-probe: 404 ⇒ a Control Plane without Azure DevOps. */
@@ -7617,6 +7707,14 @@ export function fetchAzureDevOpsConnectionRepositories(connectionId: string): Pr
 export function fetchAzureDevOpsRepositories(orgId?: string): Promise<AzureDevOpsRepositoryBindingDto[]> {
   return apiGet<{ bindings: AzureDevOpsRepositoryBindingDto[] }>(`${orgBase(orgId)}/azure-devops/repositories`).then(
     (body) => body.bindings
+  )
+}
+
+/** Re-key a repository's service hook subscriptions; the old key stays accepted for 36 hours after the new one takes over. */
+export function rotateAzureDevOpsHookKey(id: string): Promise<AzureDevOpsHookKeyRotationDto> {
+  return apiPost<AzureDevOpsHookKeyRotationDto>(
+    `${orgBase()}/azure-devops/repositories/${encodeURIComponent(id)}/rotate-hook-key`,
+    {}
   )
 }
 
@@ -7685,9 +7783,13 @@ export function applyAzureDevOpsConnectProjects(
   orgId: string,
   flowId: string,
   ticket: string,
-  projects: Array<{ projectId: string; group: AzureDevOpsProjectGroup }>
+  projects: Array<{ projectId: string; group: AzureDevOpsProjectGroup; allowTriggers?: boolean }>,
+  allProjects?: { group: AzureDevOpsProjectGroup; allowTriggers: boolean } | null
 ): Promise<AzureDevOpsConnectResultDto> {
-  return azureDevOpsFlowStep('POST', orgId, flowId, 'projects', ticket, { projects })
+  return azureDevOpsFlowStep('POST', orgId, flowId, 'projects', ticket, {
+    projects,
+    ...(allProjects ? { allProjects } : {})
+  })
 }
 
 export function verifyAzureDevOpsConnect(

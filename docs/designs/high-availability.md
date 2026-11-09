@@ -61,6 +61,16 @@ does not mean that every authority has a CP-controlled expiry:
   `T_reassign > T_fence`; see [the duty lease contract](k8s-daemon-pool.md#5-the-duty-ledger-and-lease-service-d6-d7).
 - Secret leases, where used, have their own TTL. Cached relay grants without a
   TTL do not expire merely because the CP connection or ownership lease ends.
+- Daemon-to-relay connections cache their verified identity through a CP outage.
+  For self-hosted daemon keys, the relay rechecks authorization 60 seconds after
+  each completed check; errors preserve the connection and schedule another check. A revoke push
+  or definitive negative result closes it. A missed push has no fixed revocation
+  deadline while the CP is unavailable and converges on the next successful check
+  after recovery. This interval is not a work-authority TTL and does not extend
+  duty fences or credential lifetimes. New sockets still require CP verification.
+  Verified pool sockets retain their Pod-bound identity across projected-token
+  rotation; they do not replay the handshake token in periodic checks and remain
+  subject to revoke notifications and duty fences.
 - Standalone daemons outside a member set have no duty self-fence. Their local
   execution may continue, but CP-dependent operations can still fail.
 

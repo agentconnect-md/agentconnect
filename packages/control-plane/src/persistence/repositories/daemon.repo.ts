@@ -39,6 +39,13 @@ const withUsers = { createdBy: true, lastModifiedBy: true, setMembership: { sele
 
 function toRecord(d: DaemonWithUsers): DaemonRecord {
   return {
+    approval: {
+      status: d.approvalStatus,
+      revision: d.approvalRevision,
+      source: d.approvalSource,
+      changedAt: d.approvalChangedAt,
+      changedBy: d.approvalChangedBy
+    },
     id: DaemonId(d.id),
     orgId: d.orgId ? OrgId(d.orgId) : null,
     host: d.host,
@@ -128,7 +135,16 @@ export class PgDaemonRepo implements DaemonRepo {
     if (existing) return toRecord(existing)
     try {
       const daemon = await this.db.daemon.create({
-        data: { id: randomUUID(), orgId: null, clusterIdentity, clusterPodUid, status: 'provisioned' },
+        data: {
+          id: randomUUID(),
+          orgId: null,
+          clusterIdentity,
+          clusterPodUid,
+          status: 'provisioned',
+          approvalStatus: 'approved',
+          approvalSource: 'system',
+          approvalChangedAt: new Date()
+        },
         include: withUsers
       })
       return toRecord(daemon)

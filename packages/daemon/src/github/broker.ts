@@ -193,6 +193,10 @@ export class GithubBroker implements CodeHostEffectBroker {
     const at = { owner, repo }
     const ledger = { sessionKey: target.sessionKey, repo: target.repoId }
     switch (op.kind) {
+      case 'readMergeRequestDescription': {
+        const lease = await this.lease(target, 'pull.get')
+        return record(await this.call(target, lease, 'pull.get', { ...at, number: numberOf(op.iid) })).body ?? ''
+      }
       case 'createComment': {
         const params = { ...at, number: numberOf(op.iid) }
         const lease = await this.lease(target, 'comment.create')

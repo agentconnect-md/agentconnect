@@ -3,6 +3,12 @@ import { z } from 'zod'
 import { cacheOptions } from '../../cache.js'
 import type { BotRecord } from '../../persistence/ports.js'
 import { BotAccessError, BotSessionAccessService, type BotSessionAccessDeps } from '../bot-session-access.js'
+import {
+  MSTEAMS_DEPLOYMENT_SECRET_MARKER,
+  isMsTeamsDeploymentRow,
+  usesMsTeamsDeploymentApp,
+  type MsTeamsPlatformApp
+} from './deployment-app.js'
 import { MSTEAMS_TOKEN_SCOPE, msTeamsTokenTenant, msTeamsTokenUrl } from './provider.js'
 
 /** The public cloud's global Bot Connector origin, which answers member lookups for every region (teams-integration.md §4.5). */
@@ -25,14 +31,23 @@ export function msTeamsSessionRealm(bot: Pick<BotRecord, 'externalTenantId'>): s
 const Token = z.object({ access_token: z.string().min(1), expires_in: z.coerce.number().positive() })
 const Member = z.object({ aadObjectId: z.string(), tenantId: z.string() })
 
-// The bot's client secret proves membership through the Bot Connector with no Graph permission.
-export function createMsTeamsSessionAccess(deps: BotSessionAccessDeps, fetchImpl: typeof fetch = fetch) {
+// The bot's client secret proves membership through the Bot Connector with no Graph permission; a deployment app's row uses the app's own, held here and never on the row (§8.5).
+export function createMsTeamsSessionAccess(
+  deps: BotSessionAccessDeps,
+  fetchImpl: typeof fetch = fetch,
+  app?: MsTeamsPlatformApp
+) {
   const tokens = new LRUCache<string, string, { bot: BotRecord; secret: string; signal: AbortSignal }>({
     ...cacheOptions(deps.clock, 1_000),
     ttl: 60_000,
     fetchMethod: async (_key, _stale, { context, options }) => {
-      const { bot, secret, signal } = context
-      const response = await fetchImpl(msTeamsTokenUrl(msTeamsTokenTenant(bot)!), {
+      const { bot, signal } = context
+      // A deployment app's row uses only the configured app's credential, never what its secret slot holds.
+      const deployment = isMsTeamsDeploymentRow(bot, app) || context.secret === MSTEAMS_DEPLOYMENT_SECRET_MARKER
+      if (deployment && !usesMsTeamsDeploymentApp(bot, app)) throw new BotAccessError('app_authorization')
+      const secret = deployment ? app!.clientSecret : context.secret
+      const tenant = deployment ? app!.tenantId : msTeamsTokenTenant(bot)!
+      const response = await fetchImpl(msTeamsTokenUrl(tenant), {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({

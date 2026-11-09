@@ -20,6 +20,7 @@ const wire = vi.hoisted(() => ({
   threads: [] as unknown[],
   historyCalls: [] as unknown[],
   threadReads: [] as string[],
+  threadReplies: [] as unknown[],
   live: [] as unknown[],
   owns: true
 }))
@@ -71,7 +72,8 @@ vi.mock('@/lib/api', async (importOriginal) => {
         sessionId,
         rootId,
         messages: [
-          { seq: 1, sender: 'sam', ts: '1700000001', kind: 'text', text: 'Why is the deploy slow?', postId: rootId }
+          { seq: 1, sender: 'sam', ts: '1700000001', kind: 'text', text: 'Why is the deploy slow?', postId: rootId },
+          ...wire.threadReplies
         ],
         nextCursor: null,
         liveCursor: null,
@@ -345,6 +347,7 @@ beforeEach(() => {
   wire.threads = []
   wire.historyCalls = []
   wire.threadReads = []
+  wire.threadReplies = []
   wire.live = []
   wire.owns = true
   daemonFeatures.length = 0
@@ -382,10 +385,59 @@ describe('a webchat coordinator’s main timeline (webchat-threads.md §6.1)', (
     // The coordinator's answer to the root has no label; the one answering the thread's reply does.
     expect(labels).toHaveLength(1)
     expect(labels[0]?.textContent).toBe('In thread: Why is the deploy slow?')
-    expect(q(`[data-turn-answered-in="${ROOT}"]`)?.textContent).toBe('Answered in the thread')
-    // Both turns stay in the main timeline.
+    // Its prose stays on the main timeline; its work in the thread does not.
     expect(text()).toContain('Looking into it.')
     expect(text()).toContain('Answered in its thread.')
+    expect(q(`[data-turn-answered-in="${ROOT}"]`)).toBeNull()
+  })
+
+  it('draws the coordinator’s work in a thread in its panel, between the root and a divider over the replies', async () => {
+    conversation()
+    wire.threadReplies = [{ seq: 6, sender: 'agent-1', ts: '1700000006', kind: 'text', text: 'Use a warm cache.' }]
+    nav.search = `thread=${ROOT}`
+    await open()
+    const panel = q(`[data-thread-panel="${ROOT}"]`)!
+    const order = [...panel.querySelectorAll('[data-thread-message], [data-thread-replies-divider]')].map((el) =>
+      el.hasAttribute('data-thread-replies-divider') ? 'divider' : el.getAttribute('data-thread-message')
+    )
+    expect(order).toEqual(['person', 'agent', 'divider', 'agent'])
+    const messages = panel.querySelectorAll('[data-thread-message]')
+    expect(messages[1]?.querySelector('[data-turn-fold]')?.getAttribute('title')).toBe('ran 1 command')
+    expect(messages[2]?.textContent).toContain('Use a warm cache.')
+  })
+
+  it('marks a message handed into a task’s thread, opens that thread from it, and draws the coordinator’s work on it there', async () => {
+    const HANDED = '1b2c3d4e-5f60-4a7b-8c9d-0e1f2a3b4c5d'
+    wire.messages = [
+      row(1, 'sam', 'Why is the deploy slow?', { postId: ROOT }),
+      row(2, 'sam', 'also check the cache', { postId: HANDED, handedTo: ROOT }),
+      row(3, 'agent-1', 'sendMessage', { kind: 'tool', thread: HANDED, toolCallId: 'call-h' })
+    ]
+    wire.threads = [
+      {
+        rootId: ROOT,
+        rootExcerpt: 'Why is the deploy slow?',
+        replies: 2,
+        lastReplyAt: '2026-10-01T00:00:00.000Z',
+        participants: [{ sender: 'sam', senderName: 'Sam' }],
+        task: { sessionId: 'task-1', title: 'Deploy speed', state: 'open' },
+        readable: true
+      }
+    ]
+    await open()
+    // The root's task card is the coordinator's message beside the timeline, not inside the person's bubble column.
+    const message = q(`[data-thread-card="${ROOT}"] [data-task-card-message]`)
+    expect(message?.textContent).toContain('Deploy speed')
+    expect(message?.closest('.group\\/turn')).toBeNull()
+    expect(q(`[data-thread-footer="${ROOT}"] [data-task-card-open]`)).toBeNull()
+    const lead = q(`[data-turn-handed-to="${ROOT}"]`)
+    expect(lead?.textContent).toBe('Replied to a thread:Deploy speed')
+    // The coordinator's work on the handed message is not on the main timeline.
+    expect(container?.querySelectorAll('[data-turn-fold]')).toHaveLength(0)
+    await click(`[data-turn-handed-to="${ROOT}"]`)
+    const panel = q(`[data-thread-panel="${ROOT}"]`)
+    expect(panel).not.toBeNull()
+    expect(panel?.querySelector('[data-turn-fold]')?.getAttribute('title')).toBe('ran 1 command')
   })
 
   it('opens a thread from its footer, its label and its answered line, at the conversation’s ?thread=', async () => {
@@ -435,6 +487,8 @@ describe('writing in a thread (webchat-threads.md §6.3)', () => {
     conversation()
     await open()
     expect(container?.querySelectorAll('[data-reply-in-thread]')).toHaveLength(1)
+    // A person's message offers no Copy.
+    expect(q('[data-reply-in-thread]')?.parentElement?.querySelectorAll('button')).toHaveLength(1)
     await click('[data-reply-in-thread]')
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0))
@@ -578,7 +632,8 @@ describe('a Slack coordinator’s page in Slack’s shape (webchat-threads.md §
     expect([...(container?.querySelectorAll('[data-turn-in-thread]') ?? [])].map((el) => el.textContent)).toEqual([
       'In thread: Why is the deploy slow?'
     ])
-    expect(q(`[data-turn-answered-in="${ROOT_TS}"]`)).not.toBeNull()
+    // The coordinator's work in the thread is drawn in its panel, not here.
+    expect(q(`[data-turn-answered-in="${ROOT_TS}"]`)).toBeNull()
     // A reader who may not continue the coordinator is offered no Reply in thread.
     expect(q('[data-reply-in-thread]')).toBeNull()
   })

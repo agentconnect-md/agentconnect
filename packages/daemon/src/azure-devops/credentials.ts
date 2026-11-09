@@ -45,8 +45,8 @@ export const azureDevOpsCredentials: CodeHostCredentialModule = {
   // The protocol's normalizer already writes every accepted form as the four-segment canonical address.
   canonicalCloneUrl: (normalized) => normalized,
   managedRemoteUrl: (repository) => repository,
-  // No hooks in v1 (§11), so no purpose is re-resolved live.
-  liveCredentialPurposes: [],
+  // The hook reply lease follows the hook's lifecycle, which never replicates a spec (§11.5).
+  liveCredentialPurposes: ['azure_devops_hook_reply'],
   workspaceRepoId: (workspace) => workspace.azureDevOpsRepoId,
   resolvesByName: false,
   placeSecondaryRoot: (row): SecondaryRootPlacement | undefined => {

@@ -75,7 +75,11 @@ import {
   type MemoryDefinitionDeps
 } from './agentDefinitions.js'
 import { daemonSupportsAgent, encodeAgentSpecForPeer, requiredDaemonFeatures } from '../domain/daemon-features.js'
-import { encodeIntegrationSpecForPeer, type ProjectedSessionMode } from '../domain/decision-trigger-features.js'
+import {
+  encodeIntegrationSpecForPeer,
+  integrationDeliverableToPeer,
+  type ProjectedSessionMode
+} from '../domain/decision-trigger-features.js'
 import type { AgentId, DaemonId } from '../domain/ids.js'
 import { AgentId as toAgentId, DaemonId as toDaemonId, IntegrationId as toIntegrationId } from '../domain/ids.js'
 import { sessionKeyStr, type SessionKey } from '../domain/sessionKey.js'
@@ -446,7 +450,16 @@ async function projectSpec(
   if (!provider) throw new Error(`no control-plane platform provider registered for ${i.platform}`)
   const config = await provider.projectIntegrationConfig(i, bot, core, secret)
   if (config === undefined) return null
-  return { orgId: i.orgId, integrationId: i.id, agentId: i.agentId, platform: i.platform, core, config }
+  const requires = provider.requiredDaemonFeatures?.(config) ?? []
+  return {
+    orgId: i.orgId,
+    integrationId: i.id,
+    agentId: i.agentId,
+    platform: i.platform,
+    core,
+    config,
+    ...(requires.length ? { requires: [...requires] } : {})
+  }
 }
 
 /** Union two roster halves by row id, keeping the first occurrence — the placement
@@ -514,6 +527,45 @@ export class Placement implements ReconcileService {
     if (!daemon) {
       // Should not happen — auth created the row — but stay defensive.
       throw new Error(`reconcile: unknown daemon ${daemonId}`)
+    }
+
+    const sessionRetention = SessionRetentionSetting.safeParse(daemon.sessionRetention)
+    const workspaceRetention = SessionRetentionSetting.safeParse(daemon.workspaceRetention)
+    const retention = {
+      ...(sessionRetention.success ? { sessionRetention: sessionRetention.data } : {}),
+      ...(workspaceRetention.success ? { workspaceRetention: workspaceRetention.data } : {})
+    }
+    if (daemon.approval.status !== 'approved') {
+      const [agents, integrations] = daemon.orgId
+        ? await Promise.all([this.agents.list(daemon.orgId), this.integrations.listForOrg(daemon.orgId)])
+        : [[], []]
+      const agentIds = new Set(agents.map((a) => a.id as string))
+      const integrationIds = new Set(integrations.map((i) => i.id as string))
+      return {
+        routingEpoch: Number(daemon.routingEpoch),
+        ...retention,
+        autoUpgrade: daemon.autoUpgrade,
+        serverFeatures: [],
+        assignments: [],
+        agents: [],
+        crons: [],
+        integrations: [],
+        mcpServers: [],
+        memoryConnections: [],
+        leases: [],
+        relays: [],
+        collabRoutes: { generation: 0, channels: [], agents: [], platformKinds: [] },
+        drop: {
+          assignments: req.localState.assignments,
+          crons: req.localState.crons,
+          agents: req.localState.agents
+            .filter((a) => a.origin === 'cp' || agentIds.has(a.agentId))
+            .map((a) => ({ agentId: a.agentId, action: 'detach' as const })),
+          integrations: req.localState.integrations
+            .filter((i) => i.origin === 'cp' || integrationIds.has(i.integrationId))
+            .map((i) => i.integrationId)
+        }
+      }
     }
 
     // The roster is `pinned-to-me ∪ agents in the duties I hold`. A duty grant is
@@ -606,9 +658,14 @@ export class Placement implements ReconcileService {
       return false
     })
 
-    const desiredIntegrations = assembledIntegrations.filter(
+    const servable = assembledIntegrations.filter(
       (spec): spec is IntegrationSpec => spec !== null && !quarantinedAgentIds.has(spec.agentId)
     )
+    // A daemon that would ignore a spec keeps its last one, so one it cannot take is dropped explicitly instead.
+    const desiredIntegrations = servable.filter((spec) => integrationDeliverableToPeer(spec, req.capabilities.features))
+    const withheldIntegrationIds = servable
+      .filter((spec) => !integrationDeliverableToPeer(spec, req.capabilities.features))
+      .map((spec) => spec.integrationId)
 
     const desiredAssignments = activeAssignments
       .filter((assignment) => !quarantinedAgentIds.has(assignment.agentId))
@@ -725,18 +782,18 @@ export class Placement implements ReconcileService {
     // A CP-owned integration omitted from the deliverable roster is pruned,
     // including when its secret is unavailable. Future non-active statuses must
     // make an explicit retain-versus-remove choice here.
-    const dropIntegrations = staleIntegrationCandidates
-      .filter((local) => local.origin === 'cp' || orgIntegrationIds.has(local.integrationId))
-      .map((local) => local.integrationId)
-
-    // Console-set retention, the reconnect baseline for the config/push hot update; an unexpected stored value is omitted ("keep local config").
-    const sessionRetention = SessionRetentionSetting.safeParse(daemon.sessionRetention)
-    const workspaceRetention = SessionRetentionSetting.safeParse(daemon.workspaceRetention)
+    const dropIntegrations = [
+      ...new Set([
+        ...staleIntegrationCandidates
+          .filter((local) => local.origin === 'cp' || orgIntegrationIds.has(local.integrationId))
+          .map((local) => local.integrationId),
+        ...withheldIntegrationIds
+      ])
+    ]
 
     return {
       routingEpoch: Number(daemon.routingEpoch), // re-issue same — convergence, not bump
-      ...(sessionRetention.success ? { sessionRetention: sessionRetention.data } : {}),
-      ...(workspaceRetention.success ? { workspaceRetention: workspaceRetention.data } : {}),
+      ...retention,
       // The console's auto-upgrade switch; the config/push `upgrade.auto` hot update rides on this baseline.
       autoUpgrade: daemon.autoUpgrade,
       // Transport capabilities are connection-level and register.ts replaces
@@ -787,11 +844,15 @@ export class Placement implements ReconcileService {
   // ── Live placement / rebalance (Phase 3) ──────────────────────────────────
 
   /** Candidate pool: reachable, READY daemons with spare capacity, least-loaded first. */
-  private candidates(): DaemonConnState[] {
-    return this.must()
+  private async candidates(): Promise<DaemonConnState[]> {
+    const live = this.must()
       .registry.reachableDaemons()
       .filter((d) => d.state === 'READY' && d.load.agents < d.maxAgents)
       .sort((a, b) => a.load.agents - b.load.agents)
+    const approved = await Promise.all(
+      live.map(async (d) => (await this.daemons.getUnscoped(toDaemonId(d.daemonId)))?.approval.status === 'approved')
+    )
+    return live.filter((_, i) => approved[i])
   }
 
   /**
@@ -804,9 +865,14 @@ export class Placement implements ReconcileService {
     const orch = this.must()
 
     const existingOwner = orch.registry.ownerOf(key)
-    if (existingOwner?.reachable && existingOwner.state === 'READY') return existingOwner.daemonId
+    if (
+      existingOwner?.reachable &&
+      existingOwner.state === 'READY' &&
+      (await this.daemons.getUnscoped(toDaemonId(existingOwner.daemonId)))?.approval.status === 'approved'
+    )
+      return existingOwner.daemonId
 
-    const cand = this.candidates()[0]
+    const cand = (await this.candidates())[0]
     if (!cand) throw new NoCapacity(key)
 
     const routingEpoch = await orch.epoch.bumpRoutingEpoch(toDaemonId(cand.daemonId))

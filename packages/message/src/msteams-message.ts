@@ -83,6 +83,9 @@ export interface MsTeamsAdapterExt {
   userId: string
   /** A channel's enclosing team, when the activity names one. */
   teamId?: string
+  /** The relay's tickets for the conversation and its team, which a deployment app's row sends through the relay with; never set by this normalizer. */
+  ticket?: string
+  teamTicket?: string
 }
 
 export type MsTeamsUnsupportedReason = 'activity_type' | 'conversation_type' | 'sender_type' | 'thread_missing'

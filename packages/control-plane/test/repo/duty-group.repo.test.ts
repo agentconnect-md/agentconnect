@@ -11,6 +11,7 @@ import type { DutyGroupRecord } from '../../src/persistence/ports.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { AgentId, DaemonId, OrgId } from '../../src/domain/ids.js'
 import { joinPool } from '../fakes/member-set.js'
+import { seedDaemon } from '../fixtures/seed.js'
 
 const ORG = OrgId(DEFAULT_ORG_ID)
 const M1 = DaemonId('d1111111-1111-4111-8111-111111111111')
@@ -50,6 +51,11 @@ function reconcile(repo: PgDutyGroupRepo, edges: { agentId: string; botId: strin
 }
 
 describe('DutyGroupRepo — ledger writes (real Postgres)', () => {
+  beforeEach(async () => {
+    await seedDaemon(prisma, M1)
+    await seedDaemon(prisma, M2)
+  })
+
   it('reconcile creates vacant groups; claimVacant grants them with a term bump', async () => {
     const repo = new PgDutyGroupRepo(prisma, minter())
     await reconcile(repo, [{ agentId: A1, botId: B1 }], [A2], T0)
@@ -229,8 +235,8 @@ describe('DutyGroupRepo — agent-home claims (real Postgres)', () => {
   beforeEach(async () => {
     await prisma.daemon.createMany({
       data: [
-        { id: M1, orgId: null, maxAgents: 8, status: 'ready' },
-        { id: M2, orgId: null, maxAgents: 8, status: 'ready' }
+        { approvalStatus: 'approved', id: M1, orgId: null, maxAgents: 8, status: 'ready' },
+        { approvalStatus: 'approved', id: M2, orgId: null, maxAgents: 8, status: 'ready' }
       ]
     })
     const setId = await joinPool(prisma, M1, M2)
@@ -348,7 +354,16 @@ describe('DutyGroupRepo — the rollout barrier `newerGenerationLive` (real Post
 
   async function member(id: string, generation: string | null, since: Date | null, lastSeenAt: Date | null) {
     await prisma.daemon.create({
-      data: { id, orgId: null, maxAgents: 8, status: 'ready', generation, generationSince: since, lastSeenAt }
+      data: {
+        approvalStatus: 'approved',
+        id,
+        orgId: null,
+        maxAgents: 8,
+        status: 'ready',
+        generation,
+        generationSince: since,
+        lastSeenAt
+      }
     })
   }
 
@@ -459,7 +474,9 @@ describe('DutyGroupRepo — pool telemetry (real Postgres)', () => {
     (await repo.poolTelemetry(now, LEASE_MS, maxMembers)).find((r) => r.installWide)!
 
   async function liveMember(id: string, maxAgents = 8, lastSeenAt: Date | null = T0) {
-    await prisma.daemon.create({ data: { id, orgId: null, maxAgents, status: 'ready', lastSeenAt } })
+    await prisma.daemon.create({
+      data: { approvalStatus: 'approved', id, orgId: null, maxAgents, status: 'ready', lastSeenAt }
+    })
   }
 
   it('capacity is the live members budget; a member past the lease horizon leaves it', async () => {
@@ -481,7 +498,9 @@ describe('DutyGroupRepo — pool telemetry (real Postgres)', () => {
   it('a machine-placed agent vacancy is not the pool unmet demand', async () => {
     await liveMember(M1)
     await joinPool(prisma, M1)
-    await prisma.daemon.create({ data: { id: LOCAL, orgId: DEFAULT_ORG_ID, maxAgents: 4, status: 'ready' } })
+    await prisma.daemon.create({
+      data: { approvalStatus: 'approved', id: LOCAL, orgId: DEFAULT_ORG_ID, maxAgents: 4, status: 'ready' }
+    })
     await prisma.agent.create({
       data: {
         id: A1,
@@ -581,7 +600,9 @@ describe('DutyGroupRepo — pool telemetry (real Postgres)', () => {
   it('a group mixing a set-placed and a machine-placed agent is demand for nobody', async () => {
     await liveMember(M1)
     const setId = await joinPool(prisma, M1)
-    await prisma.daemon.create({ data: { id: LOCAL, orgId: DEFAULT_ORG_ID, maxAgents: 4, status: 'ready' } })
+    await prisma.daemon.create({
+      data: { approvalStatus: 'approved', id: LOCAL, orgId: DEFAULT_ORG_ID, maxAgents: 4, status: 'ready' }
+    })
     await prisma.agent.createMany({
       data: [
         { id: A1, orgId: DEFAULT_ORG_ID, name: 'pooled', runtime: 'claude', placementKind: 'set', setId },
@@ -625,6 +646,7 @@ describe('DutyGroupRepo — the platform-capability claim gate (real Postgres)',
   async function member(id: string, platforms: string[], lastSeenAt: Date | null = T0) {
     await prisma.daemon.create({
       data: {
+        approvalStatus: 'approved',
         id,
         orgId: null,
         maxAgents: 8,
@@ -930,7 +952,9 @@ describe('DutyGroupRepo — the platform-capability claim gate (real Postgres)',
   // Fail-closed on the daemon read itself: a row whose capabilities carry no list advertises
   // nothing, rather than reading as "no restriction".
   it('a member whose capabilities name no platform list claims nothing that needs one', async () => {
-    await prisma.daemon.create({ data: { id: M1, orgId: null, maxAgents: 8, status: 'ready', lastSeenAt: T0 } })
+    await prisma.daemon.create({
+      data: { approvalStatus: 'approved', id: M1, orgId: null, maxAgents: 8, status: 'ready', lastSeenAt: T0 }
+    })
     const setId = await joinPool(prisma, M1)
     await pooledAgent(A1, setId, 'needs-slack')
     await pooledAgent(A2, setId, 'botless')

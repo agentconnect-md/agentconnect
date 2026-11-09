@@ -11,10 +11,10 @@ import {
   endpointHost,
   microsandboxPlaceholder,
   placeSecrets,
+  protectedCopyValue,
   replaceSecretValue,
   type KeyOwner,
-  type SecretPlaceholder,
-  type SecretSources
+  type SecretPlaceholder
 } from './secret-values.js'
 import type { MicrosandboxCredentials, MicrosandboxSecret } from './secrets.js'
 
@@ -73,8 +73,7 @@ const DEFAULT_HOSTS: Record<string, string | undefined> = {
 export function prepareKimiSecrets(
   hostEnv: NodeJS.ProcessEnv,
   _explicitEnv: Record<string, string> = {},
-  placeholder: SecretPlaceholder = microsandboxPlaceholder,
-  sources: SecretSources = {}
+  placeholder: SecretPlaceholder = microsandboxPlaceholder
 ): MicrosandboxCredentials | undefined {
   const files = new Map<string, { source: string; destination: string }>()
   for (const location of runtimeStateLocations('kimi', hostEnv)) {
@@ -141,14 +140,13 @@ export function prepareKimiSecrets(
           if (file.destination !== config.destination) return replaceSeedText(text, replacements)
           const projected = document(text)
           for (const { path, value } of fileConfigApiKeys(projected)) {
-            const binding = bindings.get(JSON.stringify(path))
-            // An srt copy holds the key in the clear before the proxy and whenever it is off, which its placeholder replaces.
-            if (sources.protectRetained && retained) {
-              if (binding) setPath(projected, path, binding.placeholder)
-              continue
-            }
-            if (!binding || (retained ? value !== binding.placeholder : value !== binding.readValue()))
-              throw new Error('Kimi API credentials changed or are unprotected; start a new session')
+            const next = protectedCopyValue(
+              value,
+              bindings.get(JSON.stringify(path)),
+              retained,
+              'Host Kimi API credentials changed; retry launch'
+            )
+            if (next !== undefined) setPath(projected, path, next)
           }
           return stringifyToml(replaceValues(projected, replacements) as Record<string, unknown>)
         })

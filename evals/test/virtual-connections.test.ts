@@ -64,6 +64,29 @@ describe('VirtualSlackConnection — the concrete-connection surface the daemon 
     expect(recorded.map((effect) => effect.kind)).toEqual(['chrome', 'chrome', 'chrome'])
   })
 
+  it('publishes one caption for a file batch and returns its message anchor', async () => {
+    const { port, recorded } = worldStub()
+    const conn = new VirtualSlackConnection('int-1', { workspaceId: 'T-EVAL' }, port)
+    const result = await conn.uploadFiles(
+      'C-KNOWN',
+      ['one.txt', 'two.txt'].map((name) => ({ name, bytes: Buffer.from(name) })),
+      'Report ready',
+      { thread: '1700.000001' },
+      { agentAuthorId: 'agent-1' }
+    )
+    expect(result).toEqual({ ok: true, messageId: '1700000000.000001' })
+    expect(recorded).toEqual([
+      expect.objectContaining({
+        kind: 'reply',
+        text: 'Report ready',
+        thread: '1700.000001',
+        identity: { agentAuthorId: 'agent-1' }
+      })
+    ])
+    await expect(conn.uploadFiles('C-KNOWN', [], 'Empty')).resolves.toEqual({ ok: false, reason: 'platform_error' })
+    expect(recorded).toHaveLength(1)
+  })
+
   it('surfaces a rejected reply to the caller as the platform-shaped error (§7.2)', async () => {
     const rejection: OutboundEffectResult = { status: 'rejected', sequence: 9, reason: 'not_a_member' }
     const { port } = worldStub({ recordOutbound: async () => rejection })
@@ -93,6 +116,7 @@ describe('VirtualSlackConnection — the concrete-connection surface the daemon 
     await expect(conn.getUserProfile('U-HUMAN')).resolves.toMatchObject({ id: 'U-HUMAN', name: 'human' })
     await expect(conn.getUserProfile('U-UNKNOWN')).resolves.toEqual({ id: 'U-UNKNOWN' })
     await expect(conn.downloadFile()).resolves.toBeNull()
+    await expect(conn.getFileInfo('F-UNKNOWN')).resolves.toBeUndefined()
   })
 
   it('provides bounded channel history pages from the virtual world', async () => {

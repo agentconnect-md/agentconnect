@@ -94,7 +94,10 @@ describe('the coordinator prompt and batch', () => {
     })
     expect(prompt).toContain('in a private webchat conversation (conv-1) with one person')
     expect(prompt).toContain('at the conversation root or in a thread under a root message, which the message names')
-    expect(prompt).toContain("The task answers in the message's thread.")
+    expect(prompt).toContain(
+      'The task answers in its own thread: a message at the conversation root joins that thread, and a message in ' +
+        'another thread brings that thread to the task.'
+    )
     expect(prompt).toContain("which posts a visible reply in the message's thread")
     expect(prompt).toContain('- No other agent is in this conversation.')
     expect(prompt).toContain('The person reads your text as you write it, so write nothing but your calls.')

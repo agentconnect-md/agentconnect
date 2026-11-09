@@ -20,6 +20,7 @@ import {
   READ_ACCESS_BATCH_V1_FEATURE,
   WORKSPACE_GIT_V1_FEATURE,
   MAX_FRAME_BYTES,
+  MSTEAMS_RELAY_EGRESS_V1_FEATURE,
   isFrame
 } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
@@ -46,7 +47,15 @@ const MOVE_ID = '44444444-4444-4444-8444-444444444444'
  */
 async function seedReconcileState(): Promise<void> {
   await prisma.daemon.create({
-    data: { id: DAEMON, orgId: DEFAULT_ORG_ID, sessionEpoch: 1n, routingEpoch: 7n, maxAgents: 4, status: 'ready' }
+    data: {
+      id: DAEMON,
+      orgId: DEFAULT_ORG_ID,
+      sessionEpoch: 1n,
+      routingEpoch: 7n,
+      maxAgents: 4,
+      status: 'ready',
+      approvalStatus: 'approved'
+    }
   })
   await prisma.agent.create({
     data: {
@@ -774,6 +783,59 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
         ]
       }
     ])
+  })
+
+  it('drops a deployment Teams app’s row from a daemon that cannot send through the relay, and gives it no secret', async () => {
+    await seedReconcileState()
+    const APP = { appId: '0a0a0a0a-0a0a-4a0a-8a0a-0a0a0a0a0a0a', tenantId: '0b0b0b0b-0b0b-4b0b-8b0b-0b0b0b0b0b0b' }
+    const BOT = 'b1b1b1b1-b1b1-4b1b-8b1b-b1b1b1b1b1b1'
+    const INTEG = '1f1f1f1f-1f1f-4f1f-8f1f-1f1f1f1f1f1f'
+    await prisma.bot.create({
+      data: {
+        id: BOT,
+        orgId: DEFAULT_ORG_ID,
+        platform: 'msteams',
+        name: 'Microsoft Teams · Example',
+        prebuilt: true,
+        transport: 'http',
+        externalAppId: APP.appId,
+        externalTenantId: '0c0c0c0c-0c0c-4c0c-8c0c-0c0c0c0c0c0c',
+        platformConfig: { tokenTenantId: APP.tenantId }
+      }
+    })
+    // An older build's copy of the deployment secret, not yet purged.
+    await prisma.botSecret.create({ data: { botId: BOT, botToken: 'deployment-secret-example', appToken: null } })
+    await prisma.integration.create({
+      data: { id: INTEG, orgId: DEFAULT_ORG_ID, agentId: AGENT, botId: BOT, platform: 'msteams', name: 'teams' }
+    })
+    const register = async (features: string[]) => {
+      const h = buildWsHarness(prisma, { msTeamsApp: { ...APP, clientSecret: 'deployment-secret-example' } })
+      const { stub } = await authThenAwaitOk(h)
+      const payload = registerPayload()
+      stub.inject(
+        'register',
+        {
+          ...payload,
+          capabilities: { ...payload.capabilities, platforms: ['slack', 'msteams'], features },
+          localState: { ...payload.localState, integrations: [{ integrationId: INTEG, origin: 'cp' }] }
+        },
+        { id: REG_ID }
+      )
+      const ok = await stub.expectFrame('register/ok')
+      if (!isFrame('register/ok')(ok)) throw new Error('expected register/ok')
+      return ok.payload
+    }
+
+    const older = await register([])
+    expect(older.integrations.map((i) => i.integrationId)).not.toContain(INTEG)
+    expect(older.drop.integrations).toContain(INTEG)
+    expect(JSON.stringify(older)).not.toContain('deployment-secret-example')
+
+    const current = await register([MSTEAMS_RELAY_EGRESS_V1_FEATURE])
+    const teams = current.integrations.find((i) => i.integrationId === INTEG)
+    expect(teams?.config).toMatchObject({ egress: 'relay', botId: BOT })
+    expect(current.drop.integrations).not.toContain(INTEG)
+    expect(JSON.stringify(current)).not.toContain('deployment-secret-example')
   })
 
   it('reconcile roster names who may act in chat by each platform’s session access sync', async () => {

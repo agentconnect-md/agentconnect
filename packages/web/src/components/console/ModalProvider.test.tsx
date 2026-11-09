@@ -10,8 +10,12 @@ const mocks = vi.hoisted(() => ({
   deleteDaemon: vi.fn(),
   renameDaemon: vi.fn(),
   saveSharing: vi.fn(),
-  refresh: vi.fn()
+  refresh: vi.fn(),
+  push: vi.fn()
 }))
+
+vi.mock('next/navigation', () => ({ useRouter: () => ({ push: mocks.push }) }))
+vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ orgPath: (path: string) => `/org/test${path}` }) }))
 
 vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({
@@ -63,6 +67,7 @@ beforeEach(() => {
   mocks.renameDaemon.mockReset().mockResolvedValue(undefined)
   mocks.saveSharing.mockReset().mockResolvedValue(undefined)
   mocks.refresh.mockReset()
+  mocks.push.mockReset()
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
@@ -183,5 +188,20 @@ describe('AddDaemonModal chaining', () => {
     await act(async () => done.click())
 
     expect(onDone).toHaveBeenCalledWith('dmn_live')
+  })
+
+  it('opens the pending daemon instead of offering agent placement', async () => {
+    mocks.provisionDaemon.mockResolvedValue({ daemonId: 'dmn_live', command: 'test' })
+    mocks.daemons = [{ daemonId: 'dmn_live', name: 'edge-1', status: 'online', approval: { status: 'pending' } }]
+    const onDone = vi.fn()
+    const onClose = vi.fn()
+    await act(async () =>
+      root.render(<AddDaemonModal onClose={onClose} onDone={onDone} registerDismiss={() => () => {}} />)
+    )
+    const done = [...host.querySelectorAll('button')].find((b) => b.textContent === 'Done')!
+    await act(async () => done.click())
+    expect(onDone).not.toHaveBeenCalled()
+    expect(onClose).toHaveBeenCalledOnce()
+    expect(mocks.push).toHaveBeenCalledWith('/org/test/daemons/dmn_live')
   })
 })

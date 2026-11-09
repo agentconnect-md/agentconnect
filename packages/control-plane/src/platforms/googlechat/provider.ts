@@ -4,9 +4,10 @@ import type { ZodRawShape } from 'zod'
 import type { FastifyPluginAsync } from 'fastify'
 import {
   GOOGLE_CHAT_PLATFORM,
+  GOOGLE_CHAT_RELAY_EGRESS_V1_FEATURE,
+  IntegrationGoogleChatConfig,
   RcGoogleChatAnchor,
-  googleChatEventsUrl,
-  type IntegrationGoogleChatConfig
+  googleChatEventsUrl
 } from '@agentconnect.md/protocol'
 import type { GoogleChatPlatformAppConfig } from '../../config/google-chat-platform.js'
 import {
@@ -29,6 +30,14 @@ import {
   serviceAccountProject,
   type GoogleChatAppFailure
 } from './credential.js'
+import {
+  GOOGLE_CHAT_DEPLOYMENT_KEY_MARKER,
+  GOOGLE_CHAT_DEPLOYMENT_OWNER,
+  GOOGLE_CHAT_ROW_OWNER_KEY,
+  googleChatDeploymentSecrets,
+  isGoogleChatDeploymentRow,
+  usesGoogleChatDeploymentApp
+} from './deployment-app.js'
 import {
   GOOGLE_CHAT_CLAIM_TAKEN_MESSAGE,
   googleChatPrimaryTenant,
@@ -146,14 +155,9 @@ export function googleChatKeyProject(serviceAccountKey: string): string {
   return projectId
 }
 
-/** The rows one Chat app writes, keyed by its resolved identity and, for a claimed customer, by that customer (§10.3); a single-tenant row only records its own ids beside the tenantless key. */
-export function buildGoogleChatInstall(
-  app: ResolvedGoogleChatApp,
-  tenant: GoogleChatTenant = {},
-  keying: 'customer' | 'single' = 'customer'
-): CpNewBotInstall {
+/** The row an organization's own Chat app writes, keyed by its resolved identity; it only records its own ids beside the tenantless key (§10.3). */
+export function buildGoogleChatInstall(app: ResolvedGoogleChatApp, tenant: GoogleChatTenant = {}): CpNewBotInstall {
   const { projectId, projectNumber } = app
-  const primary = keying === 'customer' ? googleChatPrimaryTenant(tenant) : undefined
   return {
     bot: { externalAppId: projectNumber, platformConfig: { projectId, ...googleChatTenantEntries(tenant) } },
     // The key's canonical JSON in the `botToken` slot; it reaches the assigned daemon only.
@@ -164,8 +168,32 @@ export function buildGoogleChatInstall(
     },
     externalIdentity: {
       externalAppId: projectNumber,
-      externalTenantId: primary ?? TENANTLESS_SENTINEL,
-      conflictMessage: primary ? GOOGLE_CHAT_CLAIM_TAKEN_MESSAGE : GOOGLE_CHAT_APP_TAKEN_MESSAGE
+      externalTenantId: TENANTLESS_SENTINEL,
+      conflictMessage: GOOGLE_CHAT_APP_TAKEN_MESSAGE
+    }
+  }
+}
+
+/** The row a claimed customer of the deployment app writes, keyed by that customer (§10.3): it names its owner and stores a marker, since the app's key never leaves the deployment (§10.10). */
+export function buildGoogleChatClaimInstall(
+  app: Pick<ResolvedGoogleChatApp, 'projectId' | 'projectNumber'>,
+  tenant: GoogleChatTenant
+): CpNewBotInstall {
+  const { projectId, projectNumber } = app
+  return {
+    bot: {
+      externalAppId: projectNumber,
+      platformConfig: {
+        projectId,
+        ...googleChatTenantEntries(tenant),
+        [GOOGLE_CHAT_ROW_OWNER_KEY]: GOOGLE_CHAT_DEPLOYMENT_OWNER
+      }
+    },
+    secrets: googleChatDeploymentSecrets(),
+    externalIdentity: {
+      externalAppId: projectNumber,
+      externalTenantId: googleChatPrimaryTenant(tenant) ?? TENANTLESS_SENTINEL,
+      conflictMessage: GOOGLE_CHAT_CLAIM_TAKEN_MESSAGE
     }
   }
 }
@@ -224,21 +252,34 @@ function googleChatRowTenantFields(bot: GoogleChatRowIdentity): { tenantIds?: st
   return own.length > 0 ? { ownTenantIds: own } : {}
 }
 
-/** The daemon spec payload, with the relay's events URL its card buttons name (§11.5); undefined when the row lacks its app identity or key. */
+/** The daemon spec payload, with the relay's events URL its card buttons name (§11.5); undefined when the row lacks its app identity or key. A deployment app's customer row gets no key, only the relay as its egress (§10.10). */
 export function googleChatIntegrationConfig(
-  bot: GoogleChatRowIdentity,
+  bot: GoogleChatRowIdentity & Pick<BotRecord, 'id'> & Partial<Pick<BotRecord, 'prebuilt'>>,
   secrets: Pick<BotSecretMaterial, 'botToken'>,
-  publicRelayUrl?: string
+  publicRelayUrl?: string,
+  app?: Pick<GoogleChatPlatformAppConfig, 'projectNumber'>
 ): IntegrationGoogleChatConfig | undefined {
   const projectId = bot.platformConfig?.projectId
-  if (!bot.externalAppId || typeof projectId !== 'string' || !secrets.botToken) return undefined
-  return {
+  if (!bot.externalAppId || typeof projectId !== 'string') return undefined
+  const identity = {
     projectId,
     projectNumber: bot.externalAppId,
-    serviceAccountKey: secrets.botToken,
     ...googleChatRowTenantFields(bot),
     ...(publicRelayUrl ? { eventsUrl: googleChatEventsUrl(publicRelayUrl) } : {})
   }
+  // Decided by what the row stores, never by the current configuration alone; with no matching app it delivers nothing, and never the direct mode.
+  if (isGoogleChatDeploymentRow(bot, app) || secrets.botToken === GOOGLE_CHAT_DEPLOYMENT_KEY_MARKER) {
+    if (!usesGoogleChatDeploymentApp(bot, app) || !identity.tenantIds?.length) return undefined
+    return { ...identity, tenantIds: identity.tenantIds, egress: 'relay', botId: bot.id }
+  }
+  if (!secrets.botToken) return undefined
+  return { ...identity, serviceAccountKey: secrets.botToken }
+}
+
+/** What a daemon must advertise to hold a projected config: the relay egress for a deployment app's customer row (§10.10). */
+export function googleChatRequiredDaemonFeatures(config: unknown): readonly string[] {
+  const parsed = IntegrationGoogleChatConfig.safeParse(config)
+  return parsed.success && 'egress' in parsed.data ? [GOOGLE_CHAT_RELAY_EGRESS_V1_FEATURE] : []
 }
 
 /** The relay assignment: no secret, the project number its tokens must be signed for (§11.2), the app's identity, a customer row's tenant keys, and a single-tenant row's own keys. */
@@ -280,7 +321,7 @@ export interface GoogleChatCpProviderDeps {
   installRoutes?: { org: FastifyPluginAsync[]; publicCallback: FastifyPluginAsync[] }
   /** The deployment app, read per call: organizations claim it from Google Chat and never install it per agent (§3). */
   readonly app?: Pick<GoogleChatPlatformAppConfig, 'projectNumber'>
-  /** The boot pass that re-stamps a rotated deployment key on the customer rows (§10.3). */
+  /** The boot pass that removes the deployment key from the app's rows (§10.10). */
   credentialReconciler?: { start(): void; stop(): void }
   /** The relay pool's public http(s) origin, under which the daemon names the events URL in its card buttons (§11.5). */
   publicRelayUrl?: string
@@ -316,8 +357,7 @@ export function createGoogleChatCpProvider(
           projectNumber: identity.externalAppId,
           serviceAccountKey: credentials.serviceAccountKey
         },
-        customerId ? { customerId } : {},
-        'single'
+        customerId ? { customerId } : {}
       )
     },
 
@@ -325,9 +365,11 @@ export function createGoogleChatCpProvider(
     projectBotIdentity: (input) => {
       if (!input.externalAppId) return {}
       const tenant = googleChatTenantOf(input.platformConfig)
+      const owner = input.platformConfig?.[GOOGLE_CHAT_ROW_OWNER_KEY]
       const platformConfig = {
         ...(input.platformConfig?.projectId ? { projectId: input.platformConfig.projectId } : {}),
-        ...googleChatTenantEntries(tenant)
+        ...googleChatTenantEntries(tenant),
+        ...(owner === GOOGLE_CHAT_DEPLOYMENT_OWNER ? { [GOOGLE_CHAT_ROW_OWNER_KEY]: owner } : {})
       }
       return {
         externalAppId: input.externalAppId,
@@ -337,18 +379,21 @@ export function createGoogleChatCpProvider(
     },
 
     secretShape: {
-      slots: { botToken: 'Google Chat service-account key JSON (daemon egress only; never sent to the relay)' },
+      slots: {
+        botToken:
+          'An own app’s Google Chat service-account key JSON, sent to its serving daemon and never to the relay; a deployment app’s row holds a marker instead'
+      },
       httpAssignRequires: []
     },
 
     envSchema: GoogleChatCpEnvSchema,
 
-    // The one loop re-stamps keys; Google offers no app-authenticated read of the app's `users/…` name, so only traffic reveals it (§3).
+    // The one loop removes the deployment key from rows; Google offers no app-authenticated read of the app's `users/…` name, so only traffic reveals it (§3).
     ...(deps.credentialReconciler
       ? {
           backgroundLoops: [
             {
-              label: 'googlechat-credential-restamp',
+              label: 'googlechat-deployment-key-purge',
               start: () => deps.credentialReconciler!.start(),
               stop: () => deps.credentialReconciler!.stop()
             }
@@ -367,8 +412,10 @@ export function createGoogleChatCpProvider(
     async projectIntegrationConfig(_integration, bot, _core, secrets) {
       return googleChatRowShadowsAnchor(bot, deps.app?.projectNumber)
         ? undefined
-        : googleChatIntegrationConfig(bot, secrets, deps.publicRelayUrl)
+        : googleChatIntegrationConfig(bot, secrets, deps.publicRelayUrl, deps.app)
     },
+
+    requiredDaemonFeatures: googleChatRequiredDaemonFeatures,
 
     async projectBotAssign(bot) {
       return googleChatBotAssignBags(bot)

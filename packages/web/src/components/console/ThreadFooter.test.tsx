@@ -19,6 +19,16 @@ vi.mock('@/lib/api', () => ({
     wire.listReads.push(`${agentId}/${opts.parentSessionId}`)
     return Promise.resolve({ subsessions: wire.rows, truncated: false, nextCursor: null })
   }),
+  fetchSessionDetail: vi.fn((sessionId: string) =>
+    Promise.resolve({
+      id: sessionId,
+      title: 'Find what blocks api 1.5',
+      platform: 'webchat',
+      channelName: null,
+      visibility: 'org',
+      canChangeVisibility: false
+    })
+  ),
   fetchAssistantSubsession: vi.fn((agentId: string, sessionId: string) => {
     wire.rowReads.push(`${agentId}/${sessionId}`)
     return Promise.resolve(taskRow({ state: 'done', threaded: true }))
@@ -29,6 +39,11 @@ vi.mock('next/link', () => ({
   default: ({ children, ...rest }: { children: React.ReactNode } & React.AnchorHTMLAttributes<HTMLAnchorElement>) => (
     <a {...rest}>{children}</a>
   )
+}))
+
+vi.mock('@/lib/data-context', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  useConsoleData: () => ({ revalidateSessionLists: () => Promise.resolve() })
 }))
 
 vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ orgPath: (path: string) => `/acme${path}` }) }))
@@ -83,8 +98,14 @@ async function render(node: React.ReactNode) {
 }
 
 describe('TaskThreadFooter', () => {
-  it('shows the task’s state and its replies, and opens its thread on click', async () => {
-    wire.rows = [taskRow({ replies: 3, lastReplyAt: new Date(Date.now() - 60_000).toISOString() })]
+  it('shows its replies line, then the task’s card with its state, title and summary, and opens its thread on click', async () => {
+    wire.rows = [
+      taskRow({
+        replies: 3,
+        lastReplyAt: new Date(Date.now() - 60_000).toISOString(),
+        summary: 'Found the lock held by the migration'
+      })
+    ]
     const onOpen = vi.fn()
     await render(<TaskThreadFooter agentId="agent_1" link={link} parentSessionId="ses_coordinator" onOpen={onOpen} />)
     const card = container.querySelector('[data-task-card="ses_task"]')!
@@ -92,13 +113,16 @@ describe('TaskThreadFooter', () => {
     expect(card.querySelector('[data-state-icon]')?.getAttribute('aria-label')).toBe('Running')
     const replies = card.querySelector<HTMLElement>('[data-task-card-replies]')!
     expect(replies.textContent).toBe('3 replies · 1m')
-    expect(replies.title).toBe('3 replies, last reply 1m ago')
-    expect(card.querySelectorAll('a')).toHaveLength(1)
+    expect(card.querySelector<HTMLElement>('[data-thread-count]')?.title).toBe('3 replies, last reply 1m ago')
+    // The count is on the line above the card, which carries only the task's title and summary.
+    const face = card.querySelector<HTMLAnchorElement>('[data-task-card-open]')!
+    expect(replies.compareDocumentPosition(face) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(face.textContent).not.toContain('repl')
+    expect(face.querySelector('[data-task-card-summary]')?.textContent).toBe('Found the lock held by the migration')
     expect(wire.listReads).toEqual(['agent_1/ses_coordinator'])
     expect(wire.rowReads).toEqual([])
 
-    // A plain click anywhere on the card, its reply count included, opens the thread beside the chat.
-    const face = card.querySelector<HTMLAnchorElement>('a')!
+    // A plain click on the card or its replies line opens the thread beside the chat.
     expect(face.getAttribute('href')).toBe('/acme/sessions/ses_task')
     act(() => face.click())
     act(() => replies.click())
@@ -121,8 +145,8 @@ describe('TaskThreadFooter', () => {
 
   it('links to the task’s page where no thread can open beside the chat, reading the task alone', async () => {
     await render(<TaskThreadFooter agentId="agent_1" link={link} parentSessionId={null} />)
-    expect(container.querySelector('a')?.getAttribute('href')).toBe('/acme/sessions/ses_task')
-    expect(container.querySelector('button')).toBeNull()
+    expect(container.querySelector('[data-task-card-open]')?.getAttribute('href')).toBe('/acme/sessions/ses_task')
+    expect(container.querySelector('button:not([data-task-card-share])')).toBeNull()
     expect(wire.listReads).toEqual([])
     expect(wire.rowReads).toEqual(['agent_1/ses_task'])
   })
@@ -145,6 +169,97 @@ function summary(over: Partial<SessionThreadSummaryDto> = {}): SessionThreadSumm
 }
 
 describe('ThreadFooter', () => {
+  it('marks each replier with their picture or agent icon where given, else their initials', async () => {
+    await render(
+      <ThreadFooter
+        footer={footerOfSummary(summary())}
+        rootId="post-root"
+        markOf={(author) => (author.sender === 'agent_1' ? <img data-mark="agent" alt="" /> : null)}
+      />
+    )
+    const marks = [...container.querySelectorAll('[data-thread-participant]')]
+    expect(
+      marks.map((m) => [m.getAttribute('title'), m.textContent, !!m.querySelector('[data-mark="agent"]')])
+    ).toEqual([
+      ['Dana Reyes', 'DR', false],
+      ['deploy-bot', '', true]
+    ])
+  })
+
+  it('draws only its replies line, or only its card as the agent’s message with the task’s summary and no title', async () => {
+    const held = summary({ task: { sessionId: 'ses_task', title: 'Find what blocks api 1.5', state: 'open' } })
+    await render(
+      <ThreadFooter footer={footerOfSummary(held, 'Found the lock')} rootId="post-root" part="line" onOpen={() => {}} />
+    )
+    expect(container.querySelector('[data-thread-footer="post-root"] [data-thread-line]')).not.toBeNull()
+    expect(container.querySelector('[data-task-card-open]')).toBeNull()
+    await render(
+      <ThreadFooter
+        footer={footerOfSummary(held, 'Found the lock')}
+        rootId="post-root"
+        part="card"
+        from={{ name: 'deploy-bot', mark: <span data-mark="" /> }}
+        onOpen={() => {}}
+      />
+    )
+    const message = container.querySelector('[data-thread-card="post-root"] [data-task-card-message]')!
+    expect(container.querySelector('[data-thread-line]')).toBeNull()
+    expect(message.querySelector('[data-mark]')).not.toBeNull()
+    expect(message.textContent).toContain('deploy-bot')
+    expect(message.querySelector('[data-state-icon]')?.getAttribute('aria-label')).toBe('Idle')
+    const face = message.querySelector('[data-task-card-open]')!
+    expect(face.textContent).toBe('Found the lock')
+    expect(face.getAttribute('aria-label')).toContain('Find what blocks api 1.5')
+    expect(message.querySelector('[data-task-card-toolbar]')).not.toBeNull()
+  })
+
+  it('offers Reply and the task session’s Share in a toolbar on the card', async () => {
+    const onOpen = vi.fn()
+    const onReply = vi.fn()
+    const held = summary({ task: { sessionId: 'ses_task', title: 'Find what blocks api 1.5', state: 'open' } })
+    await render(
+      <ThreadFooter
+        footer={footerOfSummary(held, 'Found the lock')}
+        rootId="post-root"
+        onOpen={onOpen}
+        onReply={onReply}
+      />
+    )
+    expect(container.querySelector('[data-task-card-summary]')?.textContent).toBe('Found the lock')
+    // The latest reply waits for a hover over the count, not over a replier's mark.
+    const preview = container.querySelector<HTMLElement>('[data-thread-preview]')!
+    expect(preview.getAttribute('role')).toBe('tooltip')
+    const shown = () =>
+      preview.className.includes('[display:-webkit-box]') && !preview.className.includes('group-focus-within')
+    const hover = (el: Element, type: 'mouseover' | 'mouseout') =>
+      act(() => {
+        el.dispatchEvent(new MouseEvent(type, { bubbles: true }))
+      })
+    expect(shown()).toBe(false)
+    hover(container.querySelector('[data-thread-participant]')!, 'mouseover')
+    expect(shown()).toBe(false)
+    hover(container.querySelector('[data-thread-count]')!, 'mouseover')
+    expect(shown()).toBe(true)
+    hover(container.querySelector('[data-thread-count]')!, 'mouseout')
+    expect(shown()).toBe(false)
+    const toolbar = container.querySelector('[data-task-card-hover] [role="toolbar"]')!
+    expect([...toolbar.querySelectorAll('button')].map((b) => b.getAttribute('aria-label'))).toEqual([
+      'Reply in thread',
+      'Share'
+    ])
+    act(() => toolbar.querySelector<HTMLButtonElement>('[data-task-card-reply]')!.click())
+    expect(onReply).toHaveBeenCalledTimes(1)
+    expect(onOpen).not.toHaveBeenCalled()
+    // Share is the task's own page's: its dialog, with who can see the session and its link.
+    await act(async () => toolbar.querySelector<HTMLButtonElement>('[data-task-card-share]')!.click())
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    const dialog = document.querySelector('[role="dialog"]')
+    expect(dialog?.textContent).toContain('Find what blocks api 1.5')
+    expect(dialog?.textContent).toContain('Who can see it')
+  })
+
   it('draws an unowned thread as its replies line: repliers, count, last reply and preview, opening the thread', async () => {
     const onOpen = vi.fn()
     await render(<ThreadFooter footer={footerOfSummary(summary())} rootId="post-root" onOpen={onOpen} />)
@@ -156,8 +271,10 @@ describe('ThreadFooter', () => {
       ['Dana Reyes', 'DR'],
       ['deploy-bot', 'D']
     ])
-    const count = footer.querySelector<HTMLElement>('[title="2 replies, last reply 2m ago"]')!
+    const count = footer.querySelector<HTMLElement>('[data-thread-count]')!
     expect(count.textContent).toBe('2 replies · 2m')
+    // The preview is the line's hover card, so no native tooltip covers it.
+    expect(count.hasAttribute('title')).toBe(false)
     expect(footer.querySelector('[data-thread-preview]')?.textContent).toBe(
       'Dana Reyes: Still slow after the cache fix'
     )
@@ -189,6 +306,14 @@ describe('ThreadFooter', () => {
     })
   })
 
+  it('hugs the right edge under a person’s message, card and line alike, however long the line runs', async () => {
+    const held = summary({ task: { sessionId: 'ses_task', title: 'Profile the deploy', state: 'open' } })
+    await render(<ThreadFooter footer={footerOfSummary(held)} rootId="post-root" align="end" />)
+    expect(container.querySelector('[data-thread-footer="post-root"]')!.className).toContain('items-end')
+    await render(<ThreadFooter footer={footerOfSummary(held)} rootId="post-root" />)
+    expect(container.querySelector('[data-thread-footer="post-root"]')!.className).not.toContain('items-end')
+  })
+
   it('keeps an unreadable thread to its count and repliers, and opens nothing', async () => {
     const hidden = summary({
       rootExcerpt: undefined,
@@ -211,6 +336,21 @@ describe('ThreadFooter', () => {
     expect(footer.textContent).toContain('2 replies')
     expect(footer.querySelectorAll('[data-thread-participant]')).toHaveLength(2)
     expect(footer.querySelector('[data-thread-preview]')).toBeNull()
+    expect(footer.querySelector('a, button')).toBeNull()
+  })
+
+  it('shows a task whose session does not exist yet as starting, not as one you can’t open', async () => {
+    const starting = summary({
+      rootExcerpt: undefined,
+      task: { state: 'open', starting: true },
+      readable: false
+    })
+    await render(<ThreadFooter footer={footerOfSummary(starting)} rootId="post-root" onOpen={vi.fn()} />)
+    const footer = container.querySelector('[data-thread-footer="post-root"]')!
+    expect(footer.hasAttribute('data-thread-starting')).toBe(true)
+    expect(footer.hasAttribute('data-thread-unreadable')).toBe(false)
+    expect(footer.textContent).toContain('Starting the task…')
+    expect(footer.textContent).not.toContain('A task you can’t open')
     expect(footer.querySelector('a, button')).toBeNull()
   })
 })

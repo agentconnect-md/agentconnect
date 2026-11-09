@@ -531,6 +531,42 @@ describe('handleGitCredRequest — repoFullName passthrough (issue #457)', () =>
     expect(mintForAgent).not.toHaveBeenCalled()
   })
 
+  it('serves the hook reply lease to the daemon alone, for an enabled azure-devops hook of the agent on that repository (§11.5)', async () => {
+    const lease = { username: 'identity', token: 'example-token', ttlSec: 3000, access: 'comment' }
+    const grantForHookReply = vi.fn(async () => lease)
+    let hook: Record<string, unknown> | null = { agentId: AGENT_ID, kind: 'azure-devops', enabled: true, repoId: 7n }
+    const deps = {
+      agent: { get: async () => PLACED_AGENT },
+      hook: { get: async () => hook },
+      azureDevOpsGitcred: { grantForHookReply }
+    } as unknown as DaemonWsDeps
+    const ask = (over: Record<string, unknown> = {}) =>
+      gitcredFrame({
+        provider: 'azure-devops',
+        consumer: 'daemon',
+        purpose: 'azure_devops_hook_reply',
+        hookId: HOOK_ID,
+        externalRepoId: '7',
+        ...over
+      })
+    const served = fakeConn()
+    const frame = ask()
+    await handleGitCredRequest(frame, served, deps)
+    expect(served.replyTo).toHaveBeenCalledWith(frame, 'gitcred/grant', lease)
+    expect(grantForHookReply).toHaveBeenCalledWith(ORG_ID, 7n, false)
+    // The proxy never holds it, a request without its hook is refused, and another repository or a disabled hook names nothing.
+    for (const over of [{ consumer: 'proxy' }, { hookId: undefined }, { externalRepoId: '8' }]) {
+      const conn = fakeConn()
+      await handleGitCredRequest(ask(over), conn, deps)
+      expect(conn.sendError).toHaveBeenCalledWith(expect.anything(), 'SCOPE_DENIED', expect.any(String), false)
+    }
+    hook = { agentId: AGENT_ID, kind: 'azure-devops', enabled: false, repoId: 7n }
+    const disabled = fakeConn()
+    await handleGitCredRequest(ask(), disabled, deps)
+    expect(disabled.sendError).toHaveBeenCalledWith(expect.anything(), 'SCOPE_DENIED', expect.any(String), false)
+    expect(grantForHookReply).toHaveBeenCalledTimes(1)
+  })
+
   it('refuses Azure DevOps when the control plane wires no lease service', async () => {
     const deps = { agent: { get: async () => PLACED_AGENT } } as unknown as DaemonWsDeps
     const conn = fakeConn()

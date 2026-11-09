@@ -43,8 +43,9 @@ function repo(row: ApiKeyRecord | null): ApiKeyRepo {
 }
 
 function service(row: ApiKeyRecord | null, opts: { RELAY_TOKEN?: string } = {}): RelayAuthService {
-  return new RelayAuthService(codec, repo(row), clock, { ...opts, HEARTBEAT_SEC: 15 })
+  return new RelayAuthService(codec, repo(row), clock, { ...opts, HEARTBEAT_SEC: 15 }, admission)
 }
+const admission = { allowed: async (ids: readonly string[]) => [...ids] }
 
 describe('RelayAuthService — token mode', () => {
   it('accepts the exact shared secret', async () => {
@@ -134,34 +135,32 @@ describe('RelayAuthService.verifyDaemonToken (rc/verify daemon-token)', () => {
   }
 
   it('resolves a verified projected token to an org-less install-wide identity', async () => {
-    const svc = new RelayAuthService(codec, repo(null), clock, { HEARTBEAT_SEC: 15 }, { verify: async () => identity })
+    const svc = new RelayAuthService(codec, repo(null), clock, { HEARTBEAT_SEC: 15 }, admission, {
+      verify: async () => identity
+    })
     expect(await svc.verifyDaemonToken('projected')).toEqual({ daemonId: identity.daemonId })
   })
 
   it('refuses a token the cluster did not accept', async () => {
-    const svc = new RelayAuthService(codec, repo(null), clock, { HEARTBEAT_SEC: 15 }, { verify: async () => null })
+    const svc = new RelayAuthService(codec, repo(null), clock, { HEARTBEAT_SEC: 15 }, admission, {
+      verify: async () => null
+    })
     expect(await svc.verifyDaemonToken('projected')).toBeNull()
   })
 
   it('refuses every token where the deployment provisions no clusters', async () => {
-    const svc = new RelayAuthService(codec, repo(null), clock, { HEARTBEAT_SEC: 15 })
+    const svc = new RelayAuthService(codec, repo(null), clock, { HEARTBEAT_SEC: 15 }, admission)
     expect(await svc.verifyDaemonToken('projected')).toBeNull()
   })
 
   it('forwards the claimed daemonId for identity verification', async () => {
     const claims: unknown[] = []
-    const svc = new RelayAuthService(
-      codec,
-      repo(null),
-      clock,
-      { HEARTBEAT_SEC: 15 },
-      {
-        verify: async (_token, claim) => {
-          claims.push(claim)
-          return identity
-        }
+    const svc = new RelayAuthService(codec, repo(null), clock, { HEARTBEAT_SEC: 15 }, admission, {
+      verify: async (_token, claim) => {
+        claims.push(claim)
+        return identity
       }
-    )
+    })
     expect(await svc.verifyDaemonToken('projected', identity.daemonId)).toEqual({ daemonId: identity.daemonId })
     expect(claims).toEqual([{ daemonId: identity.daemonId }])
   })
@@ -196,7 +195,7 @@ describe('RelayAuthService.verifyDaemonKey (rc/verify daemon-key, read-only)', (
     const { token } = codec.mint()
     const touch = vi.fn(async () => {})
     const repo = { findByHash: vi.fn(async () => daemonRecord()), touchLastUsed: touch } as unknown as ApiKeyRepo
-    const svc = new RelayAuthService(codec, repo, clock, { HEARTBEAT_SEC: 15 })
+    const svc = new RelayAuthService(codec, repo, clock, { HEARTBEAT_SEC: 15 }, admission)
     await svc.verifyDaemonKey(token)
     expect(touch).not.toHaveBeenCalled()
   })
@@ -209,7 +208,7 @@ describe('RelayAuthService.verifyDaemonKey (rc/verify daemon-key, read-only)', (
       }),
       touchLastUsed: vi.fn(async () => {})
     } as unknown as ApiKeyRepo
-    const svc = new RelayAuthService(codec, repo, clock, { HEARTBEAT_SEC: 15 })
+    const svc = new RelayAuthService(codec, repo, clock, { HEARTBEAT_SEC: 15 }, admission)
     await expect(svc.verifyDaemonKey(token)).rejects.toThrow('db down')
   })
 })

@@ -130,6 +130,16 @@ export function askingToJoin(
     }
   }
   const wrapped: Partial<MessageGateway> = {
+    ...(gw.uploadFiles
+      ? {
+          uploadFiles: async (channel, ...rest): Promise<UploadOutcome> => {
+            const first = await gw.uploadFiles!(channel, ...rest)
+            if (first.ok || first.notJoined !== true) return first
+            if (!(await joinAfterAsking(ctx, tool, integrationId, channel, join, deps, parked))) return first
+            return await gw.uploadFiles!(channel, ...rest)
+          }
+        }
+      : {}),
     postMessage: (channel, ...rest) => retried(() => gw.postMessage(channel, ...rest)),
     ...(gw.getChannelHistory
       ? { getChannelHistory: (channel, ...rest) => retried(() => gw.getChannelHistory!(channel, ...rest)) }

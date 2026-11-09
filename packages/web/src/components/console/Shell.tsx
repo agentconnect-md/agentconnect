@@ -50,7 +50,7 @@ import {
   systemPrefersDark,
   type ThemePreference
 } from '@/lib/theme'
-import { isFlatSessionView, sessionListSearchParams } from '@/lib/session-list-view'
+import { sessionListSearchParams } from '@/lib/session-list-view'
 import { NotificationProvider, useNotifications } from '@/lib/notifications'
 import { NotificationBell, NotificationToastContainer } from './NotificationCenter'
 import { useDaemonNotifier } from '@/lib/daemon-notifications'
@@ -62,6 +62,7 @@ import { EscapeLayer } from './Scrim'
 import { localeList } from '@/i18n/config'
 import { NAV_GROUPS, NAV_LABEL_KEYS, SECTIONS, navVisible } from './nav'
 import { HELP_LINK_DEFAULTS, helpDocsBase } from '@/lib/help-links'
+import { DaemonApprovalCount } from './DaemonApproval'
 
 // A section's own page owns the list app bar (menu button, no back) on mobile; anything
 // nested under it is a "push" screen (back-button app bar). `/conversations/:key` is the
@@ -413,9 +414,6 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
   const [connectAiOpen, setConnectAiOpen] = useState(false)
   const [githubNotice, setGithubNotice] = useState<GithubCallbackNotice | null>(null)
   const help = resolveHelpLinks()
-  // Push-screen share action: the session detail app bar surfaces a top-right link
-  // icon (design) that copies the deep link; a brief check-swap confirms the copy.
-  const [linkCopied, setLinkCopied] = useState(false)
   // Gate the first paint until the auth check resolves so an unauthenticated
   // visitor never flashes the console before the /login redirect. In no-auth
   // OSS mode there's nothing to check, so we're ready immediately.
@@ -667,20 +665,6 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
     else router.push(parentListHref)
   }
 
-  // Session detail is the one push screen with a shareable deep link. Copy the
-  // org-scoped URL, matching the desktop "Copy link" button, and flash the icon
-  // to a check for ~1.6s.
-  const isSessionDetail = seg[0] === 'sessions' && seg.length === 2
-  const copyLink = () => {
-    try {
-      const suffix = isFlatSessionView(searchParams) ? '?view=flat' : ''
-      void navigator.clipboard?.writeText?.(window.location.origin + orgPath(`${barePath}${suffix}`))?.catch?.(() => {})
-    } catch {
-      /* noop */
-    }
-    setLinkCopied(true)
-    setTimeout(() => setLinkCopied(false), 1600)
-  }
   const githubNoticeMessage = githubNotice
     ? t(
         githubNotice.messageKey === 'githubInstalled'
@@ -766,6 +750,7 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                         {/* No inline color — `.navitem.on svg` tints the active glyph brand. */}
                         <Icon name={item.icon} size={18} />
                         <span>{navLabel(item.href, item.label)}</span>
+                        {item.href === '/daemons' && <DaemonApprovalCount />}
                       </Link>
                     )
                   })}
@@ -1001,19 +986,6 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                           name={mobileAction.icon}
                           size={20}
                           color={mobileAction.active ? 'var(--brand)' : undefined}
-                        />
-                      </button>
-                    )}
-                    {isSessionDetail && (
-                      <button
-                        className="mappbtn"
-                        aria-label={linkCopied ? t('actions.linkCopied') : t('actions.copyLink')}
-                        onClick={copyLink}
-                      >
-                        <Icon
-                          name={linkCopied ? 'check' : 'link'}
-                          size={20}
-                          color={linkCopied ? 'var(--brand)' : undefined}
                         />
                       </button>
                     )}
@@ -1305,6 +1277,7 @@ function MobileDrawer({
               >
                 <Icon name={item.icon} size={20} />
                 <span>{navLabel(item.href, item.label)}</span>
+                {item.href === '/daemons' && <DaemonApprovalCount />}
               </Link>
             ))}
           </Fragment>

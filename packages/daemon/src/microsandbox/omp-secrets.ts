@@ -17,10 +17,10 @@ import { withDescentSync } from '../shim/safe-descent.js'
 import {
   microsandboxPlaceholder,
   placeSecrets,
+  protectedCopyValue,
   replaceSecretValue,
   type KeyOwner,
-  type SecretPlaceholder,
-  type SecretSources
+  type SecretPlaceholder
 } from './secret-values.js'
 import type { MicrosandboxCredentials, MicrosandboxSecret } from './secrets.js'
 
@@ -35,25 +35,18 @@ const HOSTS: Record<string, string> = {
   groq: 'api.groq.com',
   mistral: 'api.mistral.ai'
 }
-const PLACEHOLDER = /^msb-secret-AC_OMP_API_[A-F0-9]{16}$/
 
 // Inspect a private copy: SQLite must never resolve guest-controlled journal paths on the host.
-function checkRetainedDatabase(
-  parent: string,
-  bindings: ReadonlyMap<string, MicrosandboxSecret>,
-  protect: boolean
-): boolean {
+function checkRetainedDatabase(parent: string, bindings: ReadonlyMap<string, MicrosandboxSecret>): boolean {
   const temporary = mkdtempSync(join(tmpdir(), 'ac-omp-retained-'))
   try {
     if (!copyOmpDatabase(parent, temporary)) return false
     const copy = join(temporary, 'agent.db')
     const stale: [OmpApiCredential, string][] = []
     for (const row of readOmpApiCredentials(copy)) {
-      const binding = bindings.get(`${row.id}:${row.provider}`)
-      if (binding ? row.key === binding.placeholder : protect || PLACEHOLDER.test(row.key)) continue
-      // An srt copy holds the key in the clear before the proxy and whenever it is off, which its placeholder replaces.
-      if (!protect || !binding) throw new Error('unprotected or changed private credentials')
-      stale.push([row, binding.placeholder])
+      // A bound row takes its placeholder whatever it holds; an unbound one is left as it is.
+      const next = bindings.get(`${row.id}:${row.provider}`)?.placeholder
+      if (next !== undefined && next !== row.key) stale.push([row, next])
     }
     if (stale.length > 0) {
       rewriteOmpApiKeys(copy, stale)
@@ -72,8 +65,7 @@ function checkRetainedDatabase(
 export function prepareOmpSecrets(
   hostEnv: NodeJS.ProcessEnv,
   _explicitEnv: Record<string, string> = {},
-  placeholder: SecretPlaceholder = microsandboxPlaceholder,
-  sources: SecretSources = {}
+  placeholder: SecretPlaceholder = microsandboxPlaceholder
 ): MicrosandboxCredentials | undefined {
   const location = runtimeStateLocations('omp', hostEnv)[0]!
   const source = join(location.source, 'agent.db')
@@ -116,15 +108,14 @@ export function prepareOmpSecrets(
     ],
     preparePrivateHome(home) {
       withDescentSync(home, location.destination.split('/'), (parent) => {
-        if (checkRetainedDatabase(parent, bindings, sources.protectRetained === true)) return
+        if (checkRetainedDatabase(parent, bindings)) return
         extractOmpCredentials(source, join(parent, 'agent.db'), (row) => {
           try {
             const data: unknown = JSON.parse(String(row.data))
             if (row.credential_type === 'api_key') {
               const key = (data as { key?: unknown })?.key
-              const binding = bindings.get(`${row.id}:${row.provider}`)
-              if (typeof key === 'string' && key.trim() && (!binding || key !== binding.readValue()))
-                throw new Error('changed source')
+              if (typeof key === 'string' && key.trim())
+                protectedCopyValue(key, bindings.get(`${row.id}:${row.provider}`), false, 'changed source')
             }
             return { ...row, data: project(data) }
           } catch {

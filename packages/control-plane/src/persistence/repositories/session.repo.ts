@@ -23,7 +23,7 @@ import {
 } from '../../generated/prisma/client.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import { lockSessionLineage } from '../session-lineage-lock.js'
-import { isStoredHookKind } from '../hook-kind.js'
+import { fromDbHookKind, isStoredHookKind } from '../hook-kind.js'
 import type {
   HookKind,
   SessionRepo,
@@ -84,7 +84,7 @@ function toRecord(s: SessionMeta): SessionMetaRecord {
     triggeredBy: s.triggeredBy,
     channelName: s.channelName,
     triggeredByName: s.triggeredByName,
-    hookKind: (s.hookKind as HookKind | null) ?? null,
+    hookKind: s.hookKind ? fromDbHookKind(s.hookKind) : null,
     threadUrl: s.threadUrl,
     runtime: s.runtime,
     model: s.model,

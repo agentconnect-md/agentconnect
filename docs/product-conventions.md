@@ -12,6 +12,14 @@ saved reply is available; saving a prompt alone must not hide an unfinished repl
 A completed turn with no text reply retires its live work on the next transcript
 refresh after its prompt has been saved and all stream lanes finish.
 
+## Legacy webchat connection retries
+
+Before a message reaches the socket, a failed legacy webchat connection retries up to
+six times with delays of 0.5, 1, 2, 4, 4, and 4 seconds. The message keeps its identity
+and appears once. Explicit API refusals are not retried. Stop cancels an unsent message
+and its pending retries; leaving the console also cancels them. Messages already sent
+continue through the existing acknowledgement and stream-recovery path.
+
 ## User-facing language
 
 User-facing UI copy must describe concepts, actions, and outcomes that matter to the
@@ -31,7 +39,7 @@ Every Agent, Daemon, scheduled task, MCP provider, skill source, and Decision se
 **Selected** has at least one current organization member who can see it. The
 selected-member list records explicit sharing. Organization Owners can also view,
 edit, and re-share every resource in their organization; creation attribution
-grants no access. Sharing controls must state the Owner exception on desktop and
+alone grants no access. Sharing controls must state the Owner exception on desktop and
 mobile, and read-only access summaries include Owners alongside selected members.
 Removing an Owner from the selection does not revoke their role-based access.
 
@@ -51,6 +59,38 @@ organization owner only where the audience would otherwise become empty.
 This convention governs human Console access only. The independently configured
 agent-to-agent inbound and outbound policies may intentionally use **Selected**
 with an empty peer list to deny peer discovery or calls.
+
+## Reconnecting a daemon
+
+An organization Owner or the daemon's creator who still has edit permission may
+obtain a replacement connection credential, even when the original machine is
+offline or its credential is lost. Other editors cannot do so. Reconnect uses
+the same server-projected permission on desktop and mobile. Creation attribution
+never overrides current membership, sharing, or the read-only Viewer role.
+When no creator is recorded, an organization Owner handles recovery.
+
+## Approving a daemon
+
+New self-hosted daemons need an organization Owner's approval, including machines
+created by an Owner. Approval is separate from online/offline status. Before
+approval, the machine can connect, report health and installed runtimes, and use
+the authorized maintenance and reconnect flows. It cannot run organization agents,
+including a creator's private Console agents, or receive their data or credentials.
+Independent local CLI use is unaffected.
+
+Owners review **Created by**, **Host**, and **Status** from Infra before approving.
+Pending daemons show **Pending approval** and an Owner-only **Review** action.
+Approval, revocation and reapproval use the same permissions on desktop and mobile;
+ordinary editing permissions do not change. There is no global rollout banner or
+claim that Owners have been notified.
+
+Existing daemon records, including offline machines, are approved once by the
+schema migration. Their valid keys keep working. New records default to pending.
+Reconnect and replacement credentials preserve the current approval state; a
+revoked daemon needs an Owner's approval again. Revocation stops new organization
+authorizations and withdraws managed access within its authority lifetimes; it
+cannot recall data or credentials already received by the machine. Verified
+managed pool identities do not require an Owner to approve each replacement Pod.
 
 ## What people can do in chat
 
@@ -186,6 +226,8 @@ A runtime-reported terminal failure is a failed turn even when its prompt respon
 the daemon retries once after five seconds within the same admitted task. A review keeps
 its original review authority throughout that retry. A second failure, a failure after
 work began, or a failure requiring user action is reported without another automatic attempt.
+When a runtime reports an HTTP error without a response body, the failure notice
+retains the status code instead of showing only that the body was empty.
 
 ## Moving an agent from an unavailable daemon
 
@@ -480,9 +522,10 @@ The console's transcript marks what is new and lets a reader move through it:
   A first visit has no line.
 - **Jump to latest** appears above the composer while the reader is scrolled up,
   and returns them to the end, which the transcript then follows again.
-- On desktop, a **turn map** at the right edge has one short tick per turn, named
-  in its tip by who spoke. The turn in view gets the one long tick; clicking a tick
-  jumps to its turn. A long conversation's map is
+- On desktop, a **turn map** at the right edge has one short tick per turn, closely
+  spaced. Its tip names who spoke and what they said: a person's words, or an agent's
+  last sentence. The turn in view gets a slightly longer, darker tick, centred on the
+  column; clicking a tick jumps to its turn. A long conversation's map is
   sampled to forty ticks, always keeping the newest.
 
 ## Slack message attribution footer
@@ -642,8 +685,8 @@ target's daemon after the post is made.
 ### Sharing a produced file into the current conversation
 
 `shareFile` posts a file from the agent's workspace into the conversation the agent is
-answering — the one visible send that is not `sendMessage`'s job, since every `sendMessage`
-post lands at a channel root. The model supplies only a workspace-relative path and an
+answering. `sendMessage` with `action: "postMessage"` and `attachments` instead publishes to
+an explicit destination. For `shareFile`, the model supplies only a workspace-relative path and an
 optional plain-text caption; every coordinate comes from the trusted active turn, so the
 file lands in the thread that asked, threaded the way that platform threads (Slack
 `thread_ts`, Telegram reply placement, Discord thread channel, Feishu topic root — which is
@@ -705,35 +748,49 @@ download link — and is told not to repeat the file as Markdown. Peers in a mul
 conversation see the caption and card or chip as transcript only; a shared file never
 wakes another agent or feeds its content to another agent's model.
 
-### Forwarding a received file
+### Publishing files to an explicit destination
 
-A `toUser` or bare-`channel` send may carry `attachment`, naming a file **this
-conversation received** exactly as the agent's `[attached: …]` marker spells it. This is
-the only way a shared image reaches another platform: an agent can describe what it saw,
-but it cannot produce the bytes, and no send accepts model-supplied file content.
+`sendMessage` with `action: "postMessage"` accepts up to ten `attachments`. Each item
+selects its existing source: `workspace` plus a relative `path`, `upload` plus a received
+`uploadId`, or `platform` plus `platform`, `fileId`, and an optional source `integrationId`.
+The source integration is independent of the destination; ambiguous source bots require
+an explicit selection. Names are labels, never identifiers. The daemon checks source read
+access and destination write access, resolves the whole group, and applies the same file
+and turn byte limits as `shareFile` before publication. A targetless cron can generate
+files and explicitly publish the result this way without a new cron display setting.
+Larger groups are refused before publication; callers split them into separate sends.
 
-The daemon resolves the name against its own transcript for the caller's conversation, so
-an agent can forward only what was delivered to it, and the bytes never pass through the
-model. It forwards the bounded copy already retained for console replay rather than
-re-fetching the original, so a forwarded image can be smaller than the one that arrived.
+An upload lookup is scoped to the receiving session, agent, and organization. Its native
+identifier and integrity metadata remain in the daemon transcript; signed URLs are never
+persisted. Workspace paths belong to the calling session, including headless tasks and
+sandboxes. Destination records retain source provenance and never present the source path
+as a downloadable destination-workspace file.
 
-**Only that retained copy is forwardable — one image per message.** The `[attached: …]`
-marker lists every file on a message, but a document, a second image on the same message,
-and an image too large to retain have no bytes to forward. Naming one is refused as _not
-forwardable_ rather than as an unknown name, because the agent read the name correctly and
-would otherwise retry it.
+The singular `attachment` remains compatible for forwarding a retained image by name.
+It uses the bounded transcript copy. Supplying both spellings is an error; new calls use
+the source identifiers to distinguish same-name files.
 
 A file share is its own message on the receiving platform, not a decorated text post: the
-send's `message` becomes the file's caption, and each platform sends it the way that
-platform shows a file — an image previews inline where the platform can do that, and a
-caption too long for the platform's limit becomes its own message instead of being
-truncated.
+send's required `message` becomes the caption, limited to 1000 characters. Slack publishes
+the whole group with one caption at the channel root or in an existing thread. Platforms
+without a batch upload capability refuse multiple files before publishing any of them.
 
 Such a send anchors like any other channel-root post, and so seeds a session, wherever the
-platform answers with the message it created. Slack is the exception: its file share
-returns the file and no message id, so a Slack forward anchors nothing and seeds no
-session. Nothing else depends on which case applies — the send degrades to the same
-behaviour as a post whose id never came back.
+platform answers with the message it created. Slack reads the share timestamp back from
+the uploaded file. `threadTarget` uses that provider root for follow-up posts; `post.thread`
+stays null for a root post. Missing timestamps or failed local bookkeeping produce a
+success notice after publication. An indeterminate upload may have landed: it keeps its
+turn budget and explicitly forbids retrying.
+
+Webchat accepts mixed multi-select, paste, and drop in its home, session, and thread
+composers. Up to ten images or documents share one selection limit. Each has its own
+preview, upload status, remove, and retry controls; failed items hold the send. On current
+daemons with object storage, image originals use the same `uploadId` flow as documents,
+with bounded previews for the model and transcript. The combined preview byte budget is
+independent of the file count; compressing previews leaves the originals intact. Viewing
+and forwarding require no workspace copy. Historical inline images and image-only input without object storage
+remain supported. Originals keep the upload bucket's temporary lifecycle; a retained
+preview does not promise permanent original bytes.
 
 An unresolvable name, a target platform that cannot host files, or a share that posted
 nothing fails the whole send rather than reporting an image as sent.
@@ -2401,6 +2458,38 @@ generic evaluation events, or logs. The Memory page links the execution session;
 source-session selection remains input metadata and must not displace that run's own
 usage in the history presentation.
 
+## Pull-request initiator attribution
+
+Pull requests and merge requests opened through the code-host tools carry an
+`Initiated by **Alex**` line naming the person. This attribution is
+shown even when the optional agent/runtime/model footer is off. Names are plain
+text; a display name does not imply a linked code-host account or send a mention.
+Raw account IDs and sign-in addresses are not published as names.
+
+When a task's initiator has a verified linked GitHub, GitLab, or Microsoft account, the agent's
+standing instructions supply the matching host's `Co-authored-by` trailer for
+new commits. GitHub uses the linked account's noreply address; GitLab uses only
+its explicitly public address. Azure DevOps uses the linked Microsoft email only
+after matching one active human account in the connected organization by tenant,
+Entra object ID, and email. The configured agent author and
+committer remain in place. This is agent guidance, not a commit hook or a
+requirement to link an account before opening a PR. Missing identities and lookup
+failures retain the name attribution. Application or bot credentials do not identify
+the human who initiated a task; Gitea retains the name fallback.
+
+Ordinary conversations receive no session-wide coauthor instruction, since their
+participants can change. Identity lookup is lazy at delegation or PR creation
+and at most once when a logical session opens; it has a single two-second attempt.
+
+A task records its initiator and linked commit identities when it starts and carries that attribution through
+delegation, including delegation to another daemon. A long conversation delegates
+for the person whose request it is handling; its first participant does not own
+everyone else's tasks. Scheduled runs and webhooks name the automation instead.
+
+An edit to a PR description retains the initiator already published on that PR,
+including when another person or agent makes the edit. An older PR without
+initiator attribution is not assigned to the person editing it.
+
 ## GitHub informational review checks
 
 An accepted review starts as `queued` until the daemon reports active preparation. When the daemon
@@ -2547,6 +2636,20 @@ delivery. An ordinary unmentioned follow-up also remains conversation-only and
 does not replace the current review verdict.
 
 ## Workspace navigation and repository access
+
+Selecting a managed Azure DevOps repository requires the person's existing
+linked Microsoft account to have the requested repository access. The
+application verifies that account's effective permissions and access level;
+there is no additional personal Azure DevOps authorization step. Repository
+pickers hide repositories the person cannot read, and saving a workspace,
+adding a repository, or raising its access checks again. Inferred workspace
+access is the common ceiling of the person and application. An unverified
+identity grants no new authority; provider failures ask the user to retry.
+Microsoft account linking must be enabled in the deployment's console sign-in
+configuration. No-auth deployments and deployments without that connector
+cannot create or increase managed Azure repository authority.
+The Integrations management list retains existing bindings and their health
+without personal repository access or a live Azure request.
 
 The workspace options live in the agent's Workspace tab, above the files they
 configure — not in Configuration, and not behind a summary row that navigates

@@ -1,4 +1,6 @@
 import { z } from 'zod'
+import { TaskInitiator } from '../initiator.js'
+import { GOOGLE_CHAT_MARKUP } from '../consts.js'
 import { RdAhpOpen, RdAhpOpened, RdAhpAuthorize, RdAhpAuthorized, RdAhpMessage, RdAhpClose } from '../ahp.js'
 import { CodeHostReplyTarget } from '../code-host.js'
 import { ExternalSessionAudience } from './telemetry.js'
@@ -24,6 +26,7 @@ import {
   TurnThreadId
 } from './webchat.js'
 import {
+  AzureDevOpsHookMetadata,
   GiteaHookMetadata,
   GitlabHookMetadata,
   GithubHookMetadata,
@@ -31,7 +34,7 @@ import {
   HookInstructions,
   OptionalHookConfigSnapshot
 } from './hook.js'
-import { WEBCHAT_FILES_MAX, WebchatFileAttachment } from './file-transfer.js'
+import { WEBCHAT_FILES_MAX, WebchatFileAttachment, chatAttachmentsWithinBudget } from './file-transfer.js'
 import { CronTarget } from './cron.js'
 import { Platform } from './route.js'
 import { WebchatRemoteMcpEntitlement } from './remote-mcp.js'
@@ -54,6 +57,7 @@ import { DECISION_ROUTING_FORWARD_V1_FEATURE } from './decision.js'
  *  - `rd/ack`                      D→R REP — receipt (+ webchat turn verdict)
  *  - `rd/route` (+ `/ack`)          D→R REQ / R→D REP — a routed target forward (§6)
  *  - `rd/route/report` (+ `/ack`)   D→R REQ / R→D REP — a selection's owner + participants
+ *  - `rd/platform/request` (+ `/reply`) D→R REQ / R→D REP — a provider call made with relay-held credentials
  *  - `rd/chat`                     D→R EVT — webchat output stream back to the
  *                                  browser (webchat is the one BIDIRECTIONAL
  *                                  source: its far end hangs off the relay)
@@ -139,6 +143,9 @@ export const RD_HOOK_INSTRUCTIONS_V1 = 'hook-instructions-v1'
 /** `codehost-release-v1`: this daemon decodes a GitLab/Gitea `release` target; an older one rejects the member, so a relay never sends it one. */
 export const RD_CODEHOST_RELEASE_V1 = 'codehost-release-v1'
 
+/** `platform-request-v1`: this relay answers `rd/platform/request`, a provider call a platform module makes for a daemon with credentials the daemon never holds. */
+export const RD_PLATFORM_REQUEST_V1 = 'platform-request-v1'
+
 /** The fixed-text posts a relay can ask for; each is a daemon-authored constant, never wire text. */
 export const RdHookNotice = z.enum(['actor_not_trusted'])
 export type RdHookNotice = z.infer<typeof RdHookNotice>
@@ -212,53 +219,58 @@ export const WebchatTimeZone = z
   .regex(/^[A-Za-z0-9_+\-/]+$/)
 
 export const RelayWebchatOp = z.discriminatedUnion('op', [
-  z.object({
-    op: z.literal('turn'),
-    text: z.string(),
-    // The author's mutable display handle — the transcript author line and the name a
-    // session worktree's branch is cut under.
-    user: z.string().optional(),
-    // The author's STABLE CP principal, which is what the daemon records as the
-    // transcript sender so a display-name change never re-identifies past rows.
-    // Absent on frames from an older relay; the daemon then falls back to `user`.
-    userId: z.string().optional(),
-    // The author's public avatar URL from the verified CP verdict; a Slack mirror posts under it.
-    userPicture: z.string().url().max(2_048).optional(),
-    // The author's linked chat identities (`<platform>:<tenant>:<memberId>`) from the verified CP verdict, so a continuation can address the author on its own platform.
-    userIdentities: z.array(z.string().min(1).max(512)).max(8).optional(),
-    // New browsers allocate this before sending so a pre-ack reconnect can name
-    // the exact turn. Optional for older clients; the daemon allocates a fallback.
-    turnId: z.string().uuid().optional(),
-    // Structured mentions from the composer (agent ids ⊆ the conversation roster).
-    // The daemon maps them onto `mentionedBots` so a mentioned agent activates
-    // with `trigger:'mention'`. Targeting is separate: the relay already picked
-    // THIS frame's target (RdMsgWebchat.agentId); mentions are prompt context.
-    mentions: z.array(z.string().uuid()).max(16).optional(),
-    // Canonical post identity, minted ONCE by the relay when it accepts the turn
-    // and shared by every per-target copy — see WebchatPost. Absent on frames
-    // from an older relay; the daemon then mints locally (single-agent shape).
-    post: z.object({ postId: z.string().uuid(), at: z.number().int() }).optional(),
-    // The thread this turn replies in, a root's `postId` or a continued coordinator's platform root; absent ⇒ a root. An older daemon ignores it.
-    thread: TurnThreadId.optional(),
-    attachments: z.array(WebchatImageAttachment).max(1).optional(),
-    // Files the browser already PUT to the Source Cache bucket; the daemon hands the agent presigned GETs.
-    files: z.array(WebchatFileAttachment).max(WEBCHAT_FILES_MAX).optional(),
-    // A fresh Playground has no daemon session to receive standalone `set_*`
-    // operations yet. Carry only the settings the user changed with its first turn.
-    runtime: WebchatRuntimeConfig.optional(),
-    // Per-conversation workspace override. The daemon honors it only while
-    // creating the logical session; later turns cannot move an existing session.
-    worktree: z.boolean().optional(),
-    // Steer-or-refuse (#1847): the browser sent this while a turn was running and keeps its
-    // own queue, so the daemon steers it into that turn or refuses `busy` — never parks it.
-    steer: z.boolean().optional(),
-    // The chat API the turn came through; the daemon evaluates that API's Decision gate before admitting it.
-    origin: AgentApiProtocolName.optional(),
-    // The author's browser time zone, so an assistant-mode agent reasons in their local time; an older daemon ignores it.
-    timeZone: WebchatTimeZone.optional(),
-    // Stamped by the relay from the verified verdict; absent from an older relay or Control Plane.
-    callerRole: ChatCallerRole.optional()
-  }),
+  z
+    .object({
+      op: z.literal('turn'),
+      text: z.string(),
+      // The author's mutable display handle — the transcript author line and the name a
+      // session worktree's branch is cut under.
+      user: z.string().optional(),
+      // The author's STABLE CP principal, which is what the daemon records as the
+      // transcript sender so a display-name change never re-identifies past rows.
+      // Absent on frames from an older relay; the daemon then falls back to `user`.
+      userId: z.string().optional(),
+      // The author's public avatar URL from the verified CP verdict; a Slack mirror posts under it.
+      userPicture: z.string().url().max(2_048).optional(),
+      // The author's linked chat identities (`<platform>:<tenant>:<memberId>`) from the verified CP verdict, so a continuation can address the author on its own platform.
+      userIdentities: z.array(z.string().min(1).max(512)).max(8).optional(),
+      // New browsers allocate this before sending so a pre-ack reconnect can name
+      // the exact turn. Optional for older clients; the daemon allocates a fallback.
+      turnId: z.string().uuid().optional(),
+      // Structured mentions from the composer (agent ids ⊆ the conversation roster).
+      // The daemon maps them onto `mentionedBots` so a mentioned agent activates
+      // with `trigger:'mention'`. Targeting is separate: the relay already picked
+      // THIS frame's target (RdMsgWebchat.agentId); mentions are prompt context.
+      mentions: z.array(z.string().uuid()).max(16).optional(),
+      // Canonical post identity, minted ONCE by the relay when it accepts the turn
+      // and shared by every per-target copy — see WebchatPost. Absent on frames
+      // from an older relay; the daemon then mints locally (single-agent shape).
+      post: z.object({ postId: z.string().uuid(), at: z.number().int() }).optional(),
+      // The thread this turn replies in, a root's `postId` or a continued coordinator's platform root; absent ⇒ a root. An older daemon ignores it.
+      thread: TurnThreadId.optional(),
+      attachments: z.array(WebchatImageAttachment).max(1).optional(),
+      // Files the browser already PUT to the Source Cache bucket; the daemon hands the agent presigned GETs.
+      files: z.array(WebchatFileAttachment).max(WEBCHAT_FILES_MAX).optional(),
+      // A fresh Playground has no daemon session to receive standalone `set_*`
+      // operations yet. Carry only the settings the user changed with its first turn.
+      runtime: WebchatRuntimeConfig.optional(),
+      // Per-conversation workspace override. The daemon honors it only while
+      // creating the logical session; later turns cannot move an existing session.
+      worktree: z.boolean().optional(),
+      // Steer-or-refuse (#1847): the browser sent this while a turn was running and keeps its
+      // own queue, so the daemon steers it into that turn or refuses `busy` — never parks it.
+      steer: z.boolean().optional(),
+      // The chat API the turn came through; the daemon evaluates that API's Decision gate before admitting it.
+      origin: AgentApiProtocolName.optional(),
+      // The author's browser time zone, so an assistant-mode agent reasons in their local time; an older daemon ignores it.
+      timeZone: WebchatTimeZone.optional(),
+      // Stamped by the relay from the verified verdict; absent from an older relay or Control Plane.
+      callerRole: ChatCallerRole.optional()
+    })
+    .refine(
+      (turn) => chatAttachmentsWithinBudget({ images: turn.attachments, files: turn.files }),
+      'attachments exceed the message budget'
+    ),
   // A conversation post another participant produced (a user turn targeted
   // elsewhere, or a peer agent's reply), fanned out by the relay so THIS frame's
   // agent sees the full conversation. The daemon always records it (deduplicated
@@ -705,6 +717,9 @@ export const WireGoogleChatCardAction = z.object({
 })
 export type WireGoogleChatCardAction = z.infer<typeof WireGoogleChatCardAction>
 
+/** The longest relay conversation ticket (teams-integration.md §8.5): a conversation ID and service URL, encoded, plus a MAC. */
+export const MSTEAMS_TICKET_MAX = 2048
+
 /** A verified Microsoft Teams `adaptiveCard/action` invoke, as the relay forwards it in a `platform_action` payload (teams-integration.md §4.4). */
 export const WireMsTeamsCardAction = z.object({
   /** The `Action.Execute` verb the button named. */
@@ -722,7 +737,9 @@ export const WireMsTeamsCardAction = z.object({
   /** The clicker's bot-specific `29:…` ID. */
   userId: z.string().min(1),
   /** The clicker's display name, which a settled card names them by. Presentation only. */
-  userName: z.string().min(1).max(256).optional()
+  userName: z.string().min(1).max(256).optional(),
+  /** The relay's ticket for the conversation, on a deployment app's row only (§8.5). */
+  ticket: z.string().min(1).max(MSTEAMS_TICKET_MAX).optional()
 })
 export type WireMsTeamsCardAction = z.infer<typeof WireMsTeamsCardAction>
 
@@ -744,7 +761,10 @@ export const WireMsTeamsMembersAdded = z.object({
   members: z
     .array(z.object({ id: z.string().min(1), aadObjectId: z.string().min(1).optional() }))
     .min(1)
-    .max(MSTEAMS_MEMBERS_ADDED_MAX)
+    .max(MSTEAMS_MEMBERS_ADDED_MAX),
+  /** The relay's tickets for the conversation and its team, on a deployment app's row only (§8.5). */
+  ticket: z.string().min(1).max(MSTEAMS_TICKET_MAX).optional(),
+  teamTicket: z.string().min(1).max(MSTEAMS_TICKET_MAX).optional()
 })
 export type WireMsTeamsMembersAdded = z.infer<typeof WireMsTeamsMembersAdded>
 
@@ -761,9 +781,208 @@ export const WireMsTeamsBotAdded = z.object({
   /** Whether the bot was added to the whole team, which puts it in every standard channel; absent from older relays. */
   teamWide: z.boolean().optional(),
   /** The person who added the bot, whom a group or channel welcome mentions. */
-  addedBy: z.object({ id: z.string().min(1), name: z.string().min(1).max(256).optional() }).optional()
+  addedBy: z.object({ id: z.string().min(1), name: z.string().min(1).max(256).optional() }).optional(),
+  /** The relay's tickets for the conversation and its team, on a deployment app's row only (§8.5). */
+  ticket: z.string().min(1).max(MSTEAMS_TICKET_MAX).optional(),
+  teamTicket: z.string().min(1).max(MSTEAMS_TICKET_MAX).optional()
 })
 export type WireMsTeamsBotAdded = z.infer<typeof WireMsTeamsBotAdded>
+
+const MsTeamsTicket = z.string().min(1).max(MSTEAMS_TICKET_MAX)
+// A path segment the relay encodes; a dot segment would be collapsed out of the operation's path.
+const msTeamsSegment = (max: number) =>
+  z
+    .string()
+    .min(1)
+    .max(max)
+    .refine((value) => value !== '.' && value !== '..', 'a dot segment is not an ID')
+const MsTeamsConversationId = msTeamsSegment(512)
+const MsTeamsItemId = msTeamsSegment(256)
+
+/** A deployment Teams app's Bot Connector call in an `rd/platform/request` (teams-integration.md §8.5): a fixed set, whose URL and body the relay builds from the ticket. */
+export const WireMsTeamsCall = z.discriminatedUnion('op', [
+  z.object({
+    op: z.literal('post-activity'),
+    ticket: MsTeamsTicket,
+    conversationId: MsTeamsConversationId,
+    activity: z.record(z.string(), z.unknown())
+  }),
+  z.object({
+    op: z.literal('update-activity'),
+    ticket: MsTeamsTicket,
+    conversationId: MsTeamsConversationId,
+    activityId: MsTeamsItemId,
+    activity: z.record(z.string(), z.unknown())
+  }),
+  z.object({
+    op: z.literal('delete-activity'),
+    ticket: MsTeamsTicket,
+    conversationId: MsTeamsConversationId,
+    activityId: MsTeamsItemId
+  }),
+  z.object({
+    op: z.literal('get-member'),
+    ticket: MsTeamsTicket,
+    conversationId: MsTeamsConversationId,
+    memberId: MsTeamsItemId
+  }),
+  z.object({
+    op: z.literal('get-paged-members'),
+    ticket: MsTeamsTicket,
+    conversationId: MsTeamsConversationId,
+    continuationToken: z.string().min(1).max(4096).optional()
+  }),
+  z.object({ op: z.literal('get-team'), ticket: MsTeamsTicket, teamId: MsTeamsConversationId }),
+  z.object({ op: z.literal('get-team-conversations'), ticket: MsTeamsTicket, teamId: MsTeamsConversationId }),
+  // A 1:1 chat with one member; the relay names the bot and the row's tenant itself.
+  z.object({ op: z.literal('create-conversation'), ticket: MsTeamsTicket, memberId: MsTeamsItemId }),
+  // An app-only Microsoft Graph token for the row's own tenant, which the daemon then calls Graph with.
+  z.object({ op: z.literal('graph-token') })
+])
+export type WireMsTeamsCall = z.infer<typeof WireMsTeamsCall>
+
+/** What the relay answers a {@link WireMsTeamsCall} with: Microsoft's status and JSON body, and tickets for conversations the answer named. */
+export const WireMsTeamsCallResult = z.object({
+  status: z.number().int().min(100).max(599),
+  body: z.record(z.string(), z.unknown()).optional(),
+  retryAfterMs: z.number().int().nonnegative().optional(),
+  /** Conversation ID → ticket, for a conversation the call opened or a team's channel it listed. */
+  tickets: z.record(z.string(), MsTeamsTicket).optional()
+})
+export type WireMsTeamsCallResult = z.infer<typeof WireMsTeamsCallResult>
+
+// The alphabet the message normalizer takes Google's names in; a whole dot segment would be collapsed out of the operation's path.
+const GOOGLE_CHAT_SEGMENT = '[A-Za-z0-9._-]{1,256}'
+const googleChatName = (pattern: string) =>
+  z
+    .string()
+    .regex(new RegExp(`^${pattern}$`))
+    .refine((name) => name.split('/').every((part) => part !== '.' && part !== '..'), 'a dot segment is not an ID')
+const GoogleChatSpaceName = googleChatName(`spaces/${GOOGLE_CHAT_SEGMENT}`)
+const GoogleChatMessageName = googleChatName(`spaces/${GOOGLE_CHAT_SEGMENT}/messages/${GOOGLE_CHAT_SEGMENT}`)
+const GoogleChatThreadName = googleChatName(`spaces/${GOOGLE_CHAT_SEGMENT}/threads/${GOOGLE_CHAT_SEGMENT}`)
+const GoogleChatUserName = googleChatName(`users/${GOOGLE_CHAT_SEGMENT}`)
+const GoogleChatClientId = z.string().regex(/^[A-Za-z0-9._-]{1,128}$/)
+const GoogleChatCards = z.array(z.record(z.string(), z.unknown())).max(100)
+const GoogleChatText = z.string().max(40_000)
+
+/** A deployment Google Chat app's Chat API call in an `rd/platform/request` (google-chat-integration.md §10.10): a fixed set, whose URL and body the relay builds, each inside the row's own Workspace customer. */
+export const WireGoogleChatCall = z.discriminatedUnion('op', [
+  z.object({
+    op: z.literal('create-message'),
+    space: GoogleChatSpaceName,
+    requestId: GoogleChatClientId,
+    messageId: GoogleChatClientId.optional(),
+    thread: GoogleChatThreadName.optional(),
+    text: GoogleChatText.optional(),
+    cardsV2: GoogleChatCards.optional(),
+    fallbackText: GoogleChatText.optional(),
+    privateViewer: GoogleChatUserName.optional()
+  }),
+  z.object({ op: z.literal('patch-text'), message: GoogleChatMessageName, text: GoogleChatText }),
+  z.object({ op: z.literal('patch-cards'), message: GoogleChatMessageName, cardsV2: GoogleChatCards }),
+  z.object({ op: z.literal('delete-message'), message: GoogleChatMessageName }),
+  z.object({ op: z.literal('get-message'), message: GoogleChatMessageName }),
+  z.object({ op: z.literal('get-space'), space: GoogleChatSpaceName }),
+  z.object({ op: z.literal('list-dm-humans'), space: GoogleChatSpaceName }),
+  z.object({
+    op: z.literal('list-members'),
+    space: GoogleChatSpaceName,
+    pageToken: z.string().min(1).max(4096).optional()
+  }),
+  z.object({ op: z.literal('find-direct-message'), user: GoogleChatUserName }),
+  z.object({ op: z.literal('list-spaces'), pageToken: z.string().min(1).max(4096).optional() })
+])
+export type WireGoogleChatCall = z.infer<typeof WireGoogleChatCall>
+
+/** What the relay answers a {@link WireGoogleChatCall} with: Google's status and JSON body. */
+export const WireGoogleChatCallResult = z.object({
+  status: z.number().int().min(100).max(599),
+  body: z.record(z.string(), z.unknown()).optional(),
+  retryAfterMs: z.number().int().nonnegative().optional()
+})
+export type WireGoogleChatCallResult = z.infer<typeof WireGoogleChatCallResult>
+
+/** One Chat API request, relative to the API root. */
+export interface GoogleChatHttpRequest {
+  method: 'GET' | 'POST' | 'PATCH' | 'DELETE'
+  path: string
+  query?: Record<string, string>
+  body?: Record<string, unknown>
+}
+
+const GOOGLE_CHAT_SPACES_PAGE_SIZE = 100
+const encodeGoogleChatName = (name: string) => name.split('/').map(encodeURIComponent).join('/')
+
+/** The one request each call makes, on the daemon with an organization's own key and on the relay with the deployment's: a call never names a path. */
+export function googleChatCallRequest(call: WireGoogleChatCall): GoogleChatHttpRequest {
+  switch (call.op) {
+    case 'create-message':
+      return {
+        method: 'POST',
+        path: `${encodeGoogleChatName(call.space)}/messages`,
+        query: {
+          ...(call.messageId ? { messageId: call.messageId } : {}),
+          requestId: call.requestId,
+          ...(call.thread ? { messageReplyOption: 'REPLY_MESSAGE_OR_FAIL' } : {})
+        },
+        body: {
+          ...(call.text !== undefined ? { text: call.text, markupSyntax: GOOGLE_CHAT_MARKUP } : {}),
+          ...(call.cardsV2 ? { cardsV2: call.cardsV2 } : {}),
+          ...(call.fallbackText ? { fallbackText: call.fallbackText } : {}),
+          ...(call.thread ? { thread: { name: call.thread } } : {}),
+          ...(call.privateViewer ? { privateMessageViewer: { name: call.privateViewer } } : {})
+        }
+      }
+    case 'patch-text':
+      return {
+        method: 'PATCH',
+        path: encodeGoogleChatName(call.message),
+        query: { updateMask: 'text' },
+        body: { text: call.text, markupSyntax: GOOGLE_CHAT_MARKUP }
+      }
+    case 'patch-cards':
+      return {
+        method: 'PATCH',
+        path: encodeGoogleChatName(call.message),
+        query: { updateMask: 'cardsV2' },
+        body: { cardsV2: call.cardsV2 }
+      }
+    case 'delete-message':
+      return { method: 'DELETE', path: encodeGoogleChatName(call.message) }
+    case 'get-message':
+      return { method: 'GET', path: encodeGoogleChatName(call.message) }
+    case 'get-space':
+      return { method: 'GET', path: encodeGoogleChatName(call.space) }
+    case 'list-dm-humans':
+      return {
+        method: 'GET',
+        path: `${encodeGoogleChatName(call.space)}/members`,
+        query: { pageSize: '2', filter: 'member.type = "HUMAN"' }
+      }
+    case 'list-members':
+      return {
+        method: 'GET',
+        path: `${encodeGoogleChatName(call.space)}/members`,
+        query: {
+          pageSize: '100',
+          filter: 'member.type = "HUMAN"',
+          ...(call.pageToken ? { pageToken: call.pageToken } : {})
+        }
+      }
+    case 'find-direct-message':
+      return { method: 'GET', path: 'spaces:findDirectMessage', query: { name: call.user } }
+    case 'list-spaces':
+      return {
+        method: 'GET',
+        path: 'spaces',
+        query: {
+          pageSize: String(GOOGLE_CHAT_SPACES_PAGE_SIZE),
+          ...(call.pageToken ? { pageToken: call.pageToken } : {})
+        }
+      }
+  }
+}
 
 /** The longest note a Teams card click's ack may hand the relay to show the clicker. */
 export const MSTEAMS_CARD_NOTE_MAX = 500
@@ -873,9 +1092,10 @@ export const RdMsgHook = z.object({
   // normalization discriminator. Optional member — an older daemon never sees
   // it (dispatch is gated on the daemon advertising gitlab-com-v1).
   gitlab: GitlabHookMetadata.optional(),
-  // Gitea counterpart (gitea-integration.md §8). Optional member — an older daemon never
-  // sees it (dispatch is gated on the daemon advertising gitea-v1).
+  // Gitea counterpart (gitea-integration.md §8); dispatch is gated on the daemon advertising gitea-v1.
   gitea: GiteaHookMetadata.optional(),
+  // Azure DevOps counterpart (azure-devops-integration.md §11.4); dispatch is gated on the daemon advertising azure-devops-hooks-v1.
+  azureDevOps: AzureDevOpsHookMetadata.optional(),
   context: HookContext.optional(), // trimmed envelope; message extraction/fencing happens on the daemon
   // A generic hook's owner-authored instructions; when present the payload is fenced data. Dispatch is gated on `hook-instructions-v1`.
   instructions: HookInstructions.optional(),
@@ -1040,6 +1260,8 @@ export const RdAgentMsg = z.object({
   originSessionId: z.string().min(1).optional(),
   // A null snapshot preserves a Console-only origin even when a later hook has a public target.
   originCodeHostReplyTarget: CodeHostReplyTarget.nullable().optional(),
+  // Public attribution inherited from the sending task, never an authorization identity.
+  initiator: TaskInitiator.optional(),
   originCoords: z
     .object({
       platform: Platform, // S1a open reader (route.ts policy)
@@ -1155,6 +1377,8 @@ export const RdAgentMsgFwd = z.object({
   originSessionId: z.string().min(1).optional(),
   // A null snapshot preserves a Console-only origin even when a later hook has a public target.
   originCodeHostReplyTarget: CodeHostReplyTarget.nullable().optional(),
+  // Public attribution inherited from the sending task, never an authorization identity.
+  initiator: TaskInitiator.optional(),
   originCoords: z
     .object({
       platform: Platform, // S1a open reader (route.ts policy)
@@ -1321,6 +1545,28 @@ export type RdRouteReport = z.infer<typeof RdRouteReport>
 export const RdRouteReportAck = z.object({ accepted: z.boolean(), reason: z.string().max(64).optional() })
 export type RdRouteReportAck = z.infer<typeof RdRouteReportAck>
 
+// ── platform requests (D→R) ──────────────────────────────────────────────────
+
+// D→R REQ → rd/platform/reply: one provider call the bot's relay-side platform module makes for this daemon; the relay checks the socket's daemon is a member of `botId`'s assignment, and the module checks the rest.
+export const RdPlatformRequest = z.object({
+  platformId: z.string().min(1).max(64),
+  botId: z.string().uuid(),
+  payload: z.unknown()
+})
+export type RdPlatformRequest = z.infer<typeof RdPlatformRequest>
+
+// `refused` and `unavailable` both mean the provider was never called; `retryable` marks a refusal another relay, or this one once its assignments converge, may not repeat.
+export const RdPlatformReply = z.object({
+  outcome: z.enum(['ok', 'refused', 'unavailable']),
+  reason: z.string().max(64).optional(),
+  retryable: z.boolean().optional(),
+  payload: z.unknown().optional()
+})
+export type RdPlatformReply = z.infer<typeof RdPlatformReply>
+
+/** The relay answers an `rd/platform/request` within this, provider calls and token requests included; a daemon waits longer. */
+export const RD_PLATFORM_REQUEST_BUDGET_MS = 12_000
+
 // ── webchat output stream (D→R) ──────────────────────────────────────────────
 
 // One item of a webchat reply stream. Reuses the webchat frame payloads verbatim
@@ -1392,6 +1638,8 @@ export const RELAY_DAEMON_SCHEMAS = {
   'rd/route/ack': RdRouteAck,
   'rd/route/report': RdRouteReport,
   'rd/route/report/ack': RdRouteReportAck,
+  'rd/platform/request': RdPlatformRequest,
+  'rd/platform/reply': RdPlatformReply,
   'rd/chat': RdChat,
   'rd/webchat-post': RdWebchatPost,
   'rd/webchat-image-update': RdWebchatImageUpdate,
@@ -1425,6 +1673,8 @@ export const RelayDaemonFrame = z.discriminatedUnion('type', [
   frameSchema('rd/route/ack', RELAY_DAEMON_SCHEMAS['rd/route/ack']),
   frameSchema('rd/route/report', RELAY_DAEMON_SCHEMAS['rd/route/report']),
   frameSchema('rd/route/report/ack', RELAY_DAEMON_SCHEMAS['rd/route/report/ack']),
+  frameSchema('rd/platform/request', RELAY_DAEMON_SCHEMAS['rd/platform/request']),
+  frameSchema('rd/platform/reply', RELAY_DAEMON_SCHEMAS['rd/platform/reply']),
   frameSchema('rd/chat', RELAY_DAEMON_SCHEMAS['rd/chat']),
   frameSchema('rd/webchat-post', RELAY_DAEMON_SCHEMAS['rd/webchat-post']),
   frameSchema('rd/webchat-image-update', RELAY_DAEMON_SCHEMAS['rd/webchat-image-update']),

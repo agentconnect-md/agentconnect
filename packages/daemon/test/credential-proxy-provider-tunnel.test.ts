@@ -260,15 +260,19 @@ describe.skipIf(process.platform === 'win32')('an executor or VM session’s pro
       bundle,
       {
         method: 'POST',
-        path: '/v1/messages',
+        path: '/v1/stream',
         headers: { 'x-api-key': proxy.providerPlaceholderFor(AGENT, 'org:anthropic')! }
       },
-      () => (during = { provider: tunnel.streamCount('provider'), codehost: tunnel.streamCount('codehost') })
+      () => {
+        if (during.provider !== -1) return
+        during = { provider: tunnel.streamCount('provider'), codehost: tunnel.streamCount('codehost') }
+        releaseStream()
+      }
     )
     expect(reply.status).toBe(200)
     expect(seen.map((entry) => entry.headers['x-api-key'])).toEqual([REAL_KEY])
     expect(resolveProviderSlot).toHaveBeenCalledWith(AGENT, 'org:anthropic')
-    // It rode the provider tunnel, not the code-host one.
+    // Observe the tunnel while its upstream response is still open.
     expect(during).toEqual({ provider: 1, codehost: 0 })
   })
 

@@ -9,11 +9,17 @@ chart. A deployment offers it once its Control Plane has a transfer bucket
 
 ## 1. What it adds
 
-1. **Webchat uploads any file, of any size.** A non-image file the user attaches in the
+1. **Webchat uploads any file, within deployment limits.** A file the user attaches in the
    console is PUT by the browser straight into the bucket: in one PUT, or as an S3
    multipart upload when it is larger than one part (§2.1). The agent's prompt names the
    file and carries a presigned GET, which the agent downloads into its own workspace
-   when it needs the bytes. Images keep their inline path.
+   when it needs the bytes. Image originals use the same upload flow and carry a bounded
+   preview for vision and transcript replay. Up to ten mixed files can be selected,
+   pasted, or dropped together; failed uploads stay staged until retried or removed.
+   `webchat-upload-previews-v1` advertises this behavior on the daemon and relay. Historical
+   inline images and image-only input without object storage keep their existing path.
+   The transcript stores upload identifiers and integrity metadata, never signed URLs.
+   Forwarding by `uploadId` reads the original directly without creating a workspace copy.
 2. **Large and binary workspace files download through the bucket.** The owning daemon
    snapshots the file where it lives (a sandbox pod, or its own disk) and PUTs it on a
    URL the Control Plane signs; the browser then fetches a presigned GET. A revision
@@ -181,9 +187,10 @@ A browser upload larger than its part size goes as an S3 multipart upload under 
   - `transfer/get` (D→C: `agentId`, `uploadId`, `size`, `sha256`, `network`) →
     `transfer/get/ok` (`url?`, `expiresAt?`; both absent when the bucket does not hold
     exactly those bytes).
-- **Webchat turn:** `RelayWebchatOp.turn.files` holds up to `WEBCHAT_FILES_MAX` (4)
+- **Webchat turn:** `RelayWebchatOp.turn.files` holds up to `WEBCHAT_FILES_MAX` (10)
   `WebchatFileAttachment`s (`uploadId`, `name`, `mimeType`, `size`, `sha256`). The relay
-  validates and forwards them.
+  validates and forwards them. Optional image previews share the existing 160 KiB
+  decoded-byte budget across the whole message; this does not limit the number of originals.
 - **Errors** reuse the workspace error frame and reasons, plus:
 
   | Reason                 | HTTP |

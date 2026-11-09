@@ -87,6 +87,22 @@ sequenceDiagram
 - **READY** is the only state in which the CP issues ordinary orchestration control. Before READY, `auth`/`register` are valid, plus operation-scoped `daemon/bootstrap/result` and `daemon/lifecycle/progress` while `REGISTERING`; anything else → `error PROTOCOL_STATE`.
 - **DRAINING** is entered on `daemon/drain` (§6) — daemon stops accepting new `route/assign`, finishes in-flight, then closes.
 
+READY does not imply organization approval. Pending or revoked daemons may use
+only enrollment, machine facts and maintenance frames, subject to the lifecycle
+rules above: `auth/ok`, `register`, `register/ok`, `heartbeat`,
+`capabilities/update`, `config/push`, `facts/runtime-profile`,
+`facts/daemon-runtimes`, `daemon/bootstrap/result`, `daemon/lifecycle/progress`,
+`daemon/lifecycle/begin`, `daemon/lifecycle/begin/ok`, `daemon/restart`,
+`daemon/restart/ack`, `daemon/upgrade`, and `daemon/upgrade/ack`. Registration
+returns an empty organization-managed roster until approval.
+
+Other inbound requests receive `SCOPE_DENIED`; protected outbound traffic is
+withheld. Correlated replies are checked against the original request type
+before settling it, and a generic `ack` inherits its request's approval gate.
+Every check also validates the approval revision, session epoch and authenticating
+key; stale authority closes the connection with a transient reconnect code.
+See [Organization approval](daemon-api-key-auth.md#organization-approval).
+
 ### 2.2 Heartbeat & watchdog
 
 - WS-level `ping`/`pong` (library keepalive) **plus** app-level `heartbeat` EVT carrying a load snapshot.
@@ -898,6 +914,8 @@ const AgentActivate = z.object({
 ```
 
 For a placement move, the CP first sends an acknowledged source detach with `discardActiveTurns`. The source closes admission synchronously, cancels admitted turns without waiting for a final reply, stops their runtime authority, and archives its local replica. The CP then releases the source session assignments and compare-and-sets `Agent.daemonId`. No ACP session state, transcript, workspace, or memory bytes are copied or replayed; subsequent messages create fresh target sessions. The CP stages the target with `agent/detach` (an absent agent is valid), followed by one acknowledged authoritative `agent/activate` bundle. Both target requests use the same fresh `moveId`; a daemon persists that fence and rejects a late activate from a superseded move. Activation exact-converges CP integrations and CP crons, validates capacity/runtime/model/MCP support, warms the ACP host, and only then opens the dispatch gate.
+
+MCP proxy grants and external-memory definitions (including stdio secret leases) are sent only after placement commits and the target's serving authority is rechecked. Required external-memory definitions are validated before cutover, so an unavailable relay or grant refuses the move or repair without detaching a serving daemon. Registry deliveries precede `agent/activate`, and their contents participate in the activation stability check. A gate conflict, failed source detach, or placement CAS miss sends no such credentials to the target. Set/pool admission candidates receive none: the actual duty holder obtains them through authorized `duty/fetch`; an `unstageOnly` release does not deliver registry credentials. Same-target repair, staged reconnect recovery, and source rollback use the same owned activation path. A failure after commit may have delivered credentials while the target was authorized; cleanup does not recall copied keys.
 
 The source keeps its `staging` fence after the move, as a durable fail-closed
 tombstone: the archived replica must never become servable again, and only a later

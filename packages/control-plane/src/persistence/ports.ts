@@ -53,6 +53,7 @@ import type {
   CodeHostReviewOpState,
   CodeHostReviewState,
   CodeHostProvider,
+  AzureDevOpsDeliveryKind,
   AzureDevOpsRepoRouting,
   FollowUpEventKind,
   FollowUpWatchSubject,
@@ -191,6 +192,7 @@ export type LaunchStatus = 'launching' | 'running' | 'stopped' | 'crashed'
 export type LeaseStatus = 'active' | 'expired' | 'revoked'
 export type AcpSupport = 'full' | 'partial' | 'none'
 export type AuditKind =
+  | 'daemon_approval'
   | 'daemon_auth'
   | 'daemon_register'
   | 'daemon_unreachable'
@@ -240,7 +242,35 @@ export interface RegisterReqInput {
   bootId?: RegisterReq['bootId']
 }
 
+export interface DaemonApproval {
+  status: 'pending' | 'approved' | 'revoked'
+  revision: number
+  source: string | null
+  changedAt: Date | null
+  changedBy: string | null
+}
+
+export interface DaemonAdmissionRepo {
+  allowed(daemonIds: readonly string[]): Promise<string[]>
+  connection(
+    input: { daemonId: string; orgId: string | null; sessionEpoch: number; apiKeyId: string | null; revision: number },
+    now: Date
+  ): Promise<'approved' | 'pending' | 'revoked' | 'stale'>
+  change(
+    input: {
+      orgId: OrgId
+      daemonId: DaemonId
+      actorUserId?: string
+      status: 'approved' | 'revoked'
+      revision: number
+      sessionEpoch: number
+    },
+    now: Date
+  ): Promise<DaemonApproval>
+}
+
 export interface DaemonRecord {
+  approval: DaemonApproval
   id: DaemonId
   /** Null only for an install-wide pool member. */
   orgId: OrgId | null
@@ -3205,8 +3235,8 @@ export interface CronRepo {
 //   HookDef rows into rc/hook-assign rules; event payloads never land here.
 // ───────────────────────────────────────────────────────────────────────────
 
-/** The wire vocabulary minus Azure DevOps, which has no hooks in v1 (azure-devops-integration.md §11) and so no stored kind. */
-export type HookKind = Exclude<WireHookKind, 'azure-devops'>
+/** Every wire hook kind is a stored one; the database spells `azure-devops` as Prisma's `azure_devops` (persistence/hook-kind.ts). */
+export type HookKind = WireHookKind
 export type HookSessionMode = 'perDelivery' | 'perThread' | 'perSubject' | 'shared'
 export type GithubCommentFamily = 'issues' | 'pull_request'
 /** The stored comment-family vocabulary across code hosts; rows carry one host's subset. */
@@ -3994,6 +4024,14 @@ export interface CodeHostRunProjectionRepo {
     fallbackNextAttemptAt: Date
   ): Promise<CodeHostRunProjectionRecord | null>
   get(projectionId: string): Promise<CodeHostRunProjectionRecord | null>
+  /** The row for one natural key, without locking it; null when none exists. */
+  getByNaturalKey(
+    hookId: HookId,
+    projectId: bigint,
+    mergeRequestIid: number,
+    headSha: string,
+    projectionEpoch: bigint
+  ): Promise<CodeHostRunProjectionRecord | null>
 }
 
 /** The Control-Plane-written projection's writer members (gitea-integration.md §10.4); the daemon-written GitLab note never claims. */
@@ -5209,8 +5247,15 @@ export interface AzureDevOpsRepositoryBindingRecord {
   defaultBranch: string | null
   state: AzureDevOpsBindingState
   stateReason: AzureDevOpsDegradedReason | null
+  /** The service hook subscriptions' health (§11.2), apart from `state`, which leases read; null when healthy or unhooked. */
+  hookReason: AzureDevOpsHookReason | null
+  lastVerifiedDeliveryAt: Date | null
   createdAt: Date
 }
+
+/** Why a binding's subscriptions are not known to deliver (§11.1, §11.2). */
+export type AzureDevOpsHookReason =
+  'webhook_unverified' | 'triggers_not_allowed' | 'relay_url_unconfigured' | 'subscriptions_failed'
 
 /** The repository facts a binding is created or refreshed from, as the identity read them (§5). */
 export interface AzureDevOpsRepositoryFacts {
@@ -5250,6 +5295,66 @@ export interface AzureDevOpsRepositoryBindingRepo {
   ): Promise<AzureDevOpsRepositoryBindingRecord | null>
   /** Remove under the binding's row lock; `referenced` while a workspace or grant names it. */
   remove(orgId: string, bindingId: string): Promise<'removed' | 'referenced' | 'missing'>
+  /** Every binding of the surrogate id in the organization, one per connection that binds it. */
+  listForRepo(orgId: string, repoId: bigint): Promise<AzureDevOpsRepositoryBindingRecord[]>
+  /** Every binding of the surrogate id on the deployment; the claim keeps them in one organization. */
+  listForRepoUnscoped(repoId: bigint): Promise<AzureDevOpsRepositoryBindingRecord[]>
+}
+
+/** The binding's service hook keys (§11.2), opened; relay-only material, never logged or sent to a daemon. */
+export interface AzureDevOpsHookKeys {
+  current: string
+  generation: bigint
+  next: string | null
+  previous: string | null
+  previousExpiresAt: Date | null
+}
+
+/** One recorded service hook subscription (§11.2). */
+export interface AzureDevOpsHookSubscriptionRecord {
+  id: string
+  bindingId: string
+  subscriptionId: string
+  kind: AzureDevOpsDeliveryKind
+  status: string | null
+  /** The key generation the last acknowledged create or PUT carried. */
+  keyGeneration: bigint
+}
+
+/** The binding's subscriptions, keys and hook state (§11.2): the convergence, rotation and promotion read and write only these. */
+export interface AzureDevOpsHookRepo {
+  keys(orgId: string, bindingId: string): Promise<AzureDevOpsHookKeys | null>
+  /** Seal a first current key; an existing one is kept. */
+  ensureKeys(orgId: string, bindingId: string, current: string): Promise<AzureDevOpsHookKeys>
+  /** Seal the next key unless a rotation is already under way. */
+  beginRotation(orgId: string, bindingId: string, next: string): Promise<AzureDevOpsHookKeys>
+  /** The barrier (§11.2): promote next to current only when every recorded subscription carries it; null when it did not. */
+  promoteIfSwitched(orgId: string, bindingId: string, previousExpiresAt: Date): Promise<AzureDevOpsHookKeys | null>
+  /** Forget a previous key whose window closed. */
+  dropExpiredPrevious(orgId: string, bindingId: string, now: Date): Promise<boolean>
+  deleteKeys(orgId: string, bindingId: string): Promise<void>
+  subscriptions(bindingId: string): Promise<AzureDevOpsHookSubscriptionRecord[]>
+  /** Recorded the moment Azure DevOps acknowledges the create. */
+  recordSubscription(input: {
+    bindingId: string
+    subscriptionId: string
+    kind: AzureDevOpsDeliveryKind
+    status: string | null
+    keyGeneration: bigint
+  }): Promise<AzureDevOpsHookSubscriptionRecord>
+  /** Recorded the moment Azure DevOps acknowledges a PUT, or a read observes a status. */
+  updateSubscription(id: string, patch: { status?: string | null; keyGeneration?: bigint }): Promise<void>
+  removeSubscription(id: string): Promise<void>
+  setHookState(
+    bindingId: string,
+    patch: { hookReason?: AzureDevOpsHookReason | null; lastVerifiedDeliveryAt?: Date | null }
+  ): Promise<void>
+  /** Take the binding's subscription lease; false while a live peer holds it. */
+  acquireLease(bindingId: string, owner: string, until: Date, now: Date): Promise<boolean>
+  releaseLease(bindingId: string, owner: string): Promise<void>
+  markConvergeOwed(bindingId: string, at: Date | null): Promise<void>
+  /** Bindings with recorded subscriptions or an owed convergence, for the sweep. */
+  listHooked(limit: number): Promise<AzureDevOpsRepositoryBindingRecord[]>
 }
 
 /** The managed webhook's sealed signing keys (§7): the current one and, mid-rotation, its successor. */

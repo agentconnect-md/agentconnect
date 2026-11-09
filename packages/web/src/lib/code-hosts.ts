@@ -57,7 +57,6 @@ export const CODE_HOST_PROJECTION: Record<CodeHostProvider, CodeHostProjection> 
     docsPath: 'connect-automate/triggers-automation/gitea',
     hooks: true
   },
-  // No hooks in the first version (azure-devops-integration.md §11).
   'azure-devops': {
     label: 'Azure DevOps',
     publicHost: 'dev.azure.com',
@@ -65,7 +64,7 @@ export const CODE_HOST_PROJECTION: Record<CodeHostProvider, CodeHostProjection> 
     repoNounShort: 'repo',
     changeNoun: 'pull_request',
     docsPath: 'connect-automate/triggers-automation/azure-devops',
-    hooks: false
+    hooks: true
   }
 }
 
@@ -77,10 +76,18 @@ const CODE_HOST_CONSOLE_READY: Record<CodeHostProvider, boolean> = {
   'azure-devops': true
 }
 
-/** The hosts the console offers; every `Record<CodeHostProvider, …>` stays total regardless. */
-export const PICKABLE_CODE_HOST_PROVIDERS: readonly CodeHostProvider[] = CODE_HOST_PROVIDERS.filter(
-  (provider) => CODE_HOST_CONSOLE_READY[provider]
-)
+/** The order the console lists hosts in; total by type, so a new provider must be placed. */
+const CODE_HOST_DISPLAY_RANK: Record<CodeHostProvider, number> = {
+  github: 0,
+  gitlab: 1,
+  'azure-devops': 2,
+  gitea: 3
+}
+
+/** The hosts the console offers, in display order; every `Record<CodeHostProvider, …>` stays total regardless. */
+export const PICKABLE_CODE_HOST_PROVIDERS: readonly CodeHostProvider[] = [...CODE_HOST_PROVIDERS]
+  .sort((a, b) => CODE_HOST_DISPLAY_RANK[a] - CODE_HOST_DISPLAY_RANK[b])
+  .filter((provider) => CODE_HOST_CONSOLE_READY[provider])
 
 /** The hosts a trigger picker offers: pickable and with hooks of their own. */
 export const TRIGGER_CODE_HOST_PROVIDERS: readonly CodeHostProvider[] = PICKABLE_CODE_HOST_PROVIDERS.filter(

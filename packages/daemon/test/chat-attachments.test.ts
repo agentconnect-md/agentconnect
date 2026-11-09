@@ -1,7 +1,11 @@
 import { describe, expect, expectTypeOf, it, vi } from 'vitest'
 import type { WebchatFileAttachment } from '@agentconnect.md/protocol'
 import { ChatUploadReference, decodeChatAttachments, resolveChatUploadUrl } from '../src/session/chat-attachments.js'
-import { buildAttachmentBlocks } from '../src/session/attachment-block.js'
+import {
+  buildAttachmentBlocks,
+  transcriptImageAttachments,
+  transcriptUploads
+} from '../src/session/attachment-block.js'
 
 const file = {
   uploadId: '3f1c2a4e-9b7d-4e21-8c3a-0d5e6f7a8b9c',
@@ -12,6 +16,50 @@ const file = {
 }
 
 describe('shared chat attachments', () => {
+  it('keeps mixed upload identifiers and images through model input and transcript replay without a workspace copy', async () => {
+    const preview = { name: 'preview.webp', mimeType: 'image/webp' as const, data: 'aGVsbG8=' }
+    const image = {
+      ...file,
+      uploadId: '41bc0e5c-f5b1-4c4c-882c-10905089a779',
+      name: 'screenshot.png',
+      mimeType: 'image/png',
+      preview
+    }
+    const attachments = decodeChatAttachments('turn', { files: [file, image] })
+    const download = vi.fn()
+    const blocks = await buildAttachmentBlocks(attachments, {
+      download,
+      supports: () => true,
+      transferUrl: async () => ({ url: 'https://store.example.test/file', expiresAt: 1000 })
+    })
+    expect(blocks).toContainEqual({ type: 'image', data: preview.data, mimeType: preview.mimeType })
+    expect(JSON.stringify(blocks)).toContain(image.uploadId)
+    expect(transcriptUploads(attachments)).toEqual([file, { ...image, preview: undefined }])
+    expect(transcriptImageAttachments(attachments)).toEqual([{ ...preview, name: image.name }])
+    expect(download).not.toHaveBeenCalled()
+  })
+
+  it('bounds mixed selections and their combined preview bytes', () => {
+    const image = { name: 'image.webp', mimeType: 'image/webp', data: Buffer.alloc(160 * 1024).toString('base64') }
+    expect(() =>
+      decodeChatAttachments('turn', { images: [image], files: Array.from({ length: 10 }, () => file) })
+    ).toThrow()
+    expect(() =>
+      decodeChatAttachments('turn', { images: [image], files: [{ ...file, preview: { ...image, data: 'aGVsbG8=' } }] })
+    ).toThrow()
+    const preview = { ...image, data: Buffer.alloc(80 * 1024).toString('base64') }
+    expect(
+      decodeChatAttachments('turn', {
+        files: [
+          { ...file, preview },
+          { ...file, preview }
+        ]
+      })
+    ).toHaveLength(2)
+    expect(() =>
+      decodeChatAttachments('turn', { files: Array.from({ length: 3 }, () => ({ ...file, preview })) })
+    ).toThrow()
+  })
   it('keeps the existing upload shape and normalizes metadata without signing or fetching bytes', () => {
     expectTypeOf<ChatUploadReference>().toEqualTypeOf<WebchatFileAttachment>()
     expect(decodeChatAttachments('turn', { files: [file] })).toEqual([
@@ -42,7 +90,9 @@ describe('shared chat attachments', () => {
   })
 
   it('bounds both image and uploaded-file counts before dispatch', () => {
-    expect(() => decodeChatAttachments('turn', { files: Array.from({ length: 5 }, () => file) })).toThrow()
+    const files = Array.from({ length: 10 }, () => file)
+    expect(decodeChatAttachments('turn', { files })).toHaveLength(10)
+    expect(() => decodeChatAttachments('turn', { files: [...files, file] })).toThrow()
     const image = { name: 'a.png', mimeType: 'image/png', data: 'aGVsbG8=' }
     expect(() => decodeChatAttachments('turn', { images: [image, image] })).toThrow()
   })

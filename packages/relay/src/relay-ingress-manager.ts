@@ -32,6 +32,8 @@ import type {
   RdRouteAck,
   RdRouteReason,
   RdRouteReport,
+  RdPlatformReply,
+  RdPlatformRequest,
   RdRouteReportAck,
   RdAck,
   RdMsgIm,
@@ -419,6 +421,19 @@ export class RelayIngressManager {
   /** `rd/route` from an evaluation host: deliver one frozen target of its selection (message-intake.md §6 step 6). */
   async handleRoute(fromDaemonId: string, route: RdRoute): Promise<RdRouteAck> {
     return await this.routeForward(fromDaemonId, route)
+  }
+
+  /** `rd/platform/request`: a provider call for a bot the requesting daemon serves, answered by the bot's platform plugin; anything else is refused. */
+  async handlePlatformRequest(fromDaemonId: string, req: RdPlatformRequest): Promise<RdPlatformReply> {
+    const plugin = this.ingressPlugins.get(req.platformId)?.plugin
+    if (!plugin?.daemonRequest) return { outcome: 'refused', reason: 'unsupported' }
+    // This relay's assignments may trail another's or the CP's, so both refusals are worth a retry elsewhere or later.
+    const assignment = this.deploymentBots.has(req.botId) ? undefined : this.router.get(req.botId)
+    if (!assignment || assignment.platform !== req.platformId)
+      return { outcome: 'refused', reason: 'unknown_bot', retryable: true }
+    if (!assignment.members.some((m) => m.daemonId === fromDaemonId))
+      return { outcome: 'refused', reason: 'not_member', retryable: true }
+    return await plugin.daemonRequest(assignment, req.payload)
   }
 
   /** `rd/route/report` from the host: the owner (only where none exists) and admitted participants, via the CP legs. */

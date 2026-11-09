@@ -77,6 +77,7 @@ import {
 import { createWebchatDeltaBuffer, type WebchatDeltaBuffer } from '@/lib/webchat-delta-buffer'
 import { createWebchatStallWatch, type WebchatStallWatch } from '@/lib/webchat-stall-watch'
 import { filesMarker, type ComposerFile } from '@/lib/webchat-file'
+import { WEBCHAT_UPLOADS_FEATURE } from '@/lib/shared-file'
 import type { PlaygroundData, QueuedTurn, WebchatRuntimeConfig } from './contract'
 export type { QueuedTurn } from './contract'
 
@@ -148,6 +149,7 @@ const Ctx = createContext<PlaygroundData | null>(null)
 /** One live webchat socket per playground session. */
 interface Conn {
   ws?: WebSocket
+  features?: readonly string[]
   ready: Promise<WebSocket>
   conversationId?: string
   closing?: boolean
@@ -393,6 +395,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const stagedWorktree = useRef<Map<string, boolean>>(new Map())
   const busyRef = useRef<Record<string, boolean>>({})
   const closingAll = useRef(false)
+  const pendingDials = useRef(new Map<string, () => void>())
   /** MCP App view RPCs awaiting their `app_rpc_result` event, by the browser-minted `callId`. */
   const appCalls = useRef(
     new Map<string, (outcome: { ok: true; result: unknown } | { ok: false; error: string }) => void>()
@@ -473,8 +476,11 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   // Close every socket when the provider unmounts (console teardown).
   useEffect(() => {
     const map = conns.current
+    const dials = pendingDials.current
     return () => {
       closingAll.current = true
+      for (const cancel of dials.values()) cancel()
+      dials.clear()
       for (const c of map.values()) {
         c.closing = true
         if (c.reconnectTimer) window.clearTimeout(c.reconnectTimer)
@@ -1501,6 +1507,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       }
 
       const scheduleReconnect = (): void => {
+        // The pre-send retry in pgSend owns a dial that has not put its turn on the wire yet.
+        if (pendingDials.current.has(id)) return
         const reconnectId = conn.conversationId ?? resumeId ?? conversationIds.current.get(id)
         // An unacked steer keeps reconnecting too: its verdict is the only way to learn whether the
         // runtime took it, and its identity must survive until then.
@@ -1533,10 +1541,11 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
             : webchatWsUrl(orgId, agentId, resumeId, rosterAgentIds.current.get(id))
         )
           .then((url) => {
+            if (closingAll.current || conn.closing) throw new Error('connection cancelled')
             const ws = new WebSocket(url)
-            ws.onopen = () => resolve(ws)
             ws.onerror = () => reject(new Error('webchat connection failed'))
             ws.onclose = () => {
+              reject(new Error('webchat connection closed before ready'))
               if (conn.reconnectTimer) window.clearTimeout(conn.reconnectTimer)
               conn.reconnectTimer = undefined
               dropSelf()
@@ -1620,6 +1629,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
               }
               if (m.type === 'ready') {
                 const features = Array.isArray(m.features) ? m.features : []
+                conn.features = features
                 setRelayFeaturesBy((cur) =>
                   cur[id]?.join('\n') === features.join('\n') ? cur : { ...cur, [id]: features }
                 )
@@ -1677,6 +1687,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                   })
                 }
                 conn.probeIds = m.participants?.length ? m.participants.map((p) => p.agentId) : [agentId]
+                resolve(ws)
                 resendUnackedSteers(ws)
                 if (resumeStream && busyRef.current[id]) {
                   sendResume(ws)
@@ -1877,6 +1888,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
             if (conns.current.get(id) === conn) conn.ws = ws
           })
           .catch((err) => {
+            if (conn.closing || closingAll.current) return reject(err)
             dropSelf() // URL/token resolution failed — drop the poisoned entry so a retry rebuilds
             if (busyRef.current[id] && resumeId) scheduleReconnect()
             reject(err) // settle `ready` so pgSend's .catch clears the busy flag
@@ -1980,6 +1992,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
 
   const pgDiscard = useCallback(
     (id: string): void => {
+      pendingDials.current.get(id)?.()
       dropConn(id)
       setPgSessions((cur) => {
         if (!(id in cur)) return cur
@@ -2110,62 +2123,14 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         turnId: requestedTurnId,
         text: shown,
         ...(image ? { image } : {}),
+        ...(files?.some((file) => file.preview)
+          ? { images: files.flatMap((file) => (file.preview ? [{ ...file.preview, name: file.name }] : [])) }
+          : {}),
         ...(shownIn ? { thread: shownIn } : {})
       })
       setBusy(id, true)
-      // Targeting (webchat-multi-agents.md §4.2): conversation membership is a
-      // STANDING mention — an unmentioned message goes to the WHOLE roster
-      // (each agent may silently decline); explicit @mentions narrow the turn
-      // to the named participants. The relay validates against its verified
-      // roster, and also applies the same all-participants default itself, so a
-      // resumed conversation with no client-side roster still reaches everyone.
-      const session = pgSessions[id]
-      // An ADOPTED webchat session has no pgSessions entry — its roster comes
-      // from the fetched session detail (knownParticipants). Without it the
-      // send degrades to the relay's all-participants default: mentions can't
-      // narrow, and no lanes are pre-created (leaving delivery to the
-      // early-frame admission path).
-      //
-      // The staged-ref fallback (resolveRoster) covers the FIRST send of a
-      // fresh multi-agent conversation: openPlayground stages the session and
-      // HomeView sends in the same tick, so `pgSessions[id]` is still the
-      // pre-stage snapshot. Reading only state here silently dropped
-      // mentions/targets (and lane pre-creation) from every first message —
-      // the standing mention never reached the wire, so the parallel-answer
-      // race could still silence an agent on exactly the message most users
-      // test with.
-      const roster = resolveRoster(session?.participants, knownParticipants, rosterAgentIds.current.get(id), (a) =>
-        rosterNames.current.get(id)?.get(a)
-      )
-      if (!session && knownParticipants && knownParticipants.length > 1 && !rosterNames.current.has(id)) {
-        rosterNames.current.set(id, new Map(knownParticipants.map((p) => [p.agentId, p.name])))
-      }
-      const typed = typedMentionIds(roster, text)
-      const commandTarget =
-        commandPick &&
-        roster.some((p) => p.agentId === commandPick.agentId) &&
-        leadingCommandToken(text) === commandPick.name &&
-        !typed.includes(commandPick.agentId)
-          ? [commandPick.agentId]
-          : []
-      const mentions = [...typed, ...commandTarget]
-      const targets =
-        roster.length > 1
-          ? mentions.length
-            ? mentions
-            : roster.map((p) => p.agentId)
-          : (rosterAgentIds.current.get(id) ?? [agentForId])
-      // Membership is a standing mention — a bare multi-agent send materializes it as
-      // the whole roster in structured `mentions` (see wireMentions), the same wire
-      // shape an explicit @-everyone message produces. Delivery is unchanged: targets
-      // already covered the roster.
-      const sentMentions = wireMentions(roster, mentions)
       pendingTurnIds.current.set(id, requestedTurnId)
       finishedTurnLanes.current.delete(id)
-      for (const target of targets) {
-        streamCursors.current.set(laneKey(id, target), createWebchatCursor<WebchatOutput, WebchatDone>(requestedTurnId))
-      }
-      syncBusyLanes(id)
       if (conversationId) conversationIds.current.set(id, conversationId)
       reconnectAttempts.current.delete(id)
       // First send of a fresh conversation mints a real session on the daemon. The SSE
@@ -2174,6 +2139,68 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       // so nudge the session lists shortly after the send lands.
       const isNewConversation = !conversationId && !conversationIds.current.get(id)
       const putOnWire = (ws: WebSocket): void => {
+        if (
+          files?.some((file) => file.preview) &&
+          !conns.current.get(id)?.features?.includes(WEBCHAT_UPLOADS_FEATURE)
+        ) {
+          const draftId = shownIn ? `${id}#${shownIn}` : id
+          setPgInput(draftId, [text, pgDrafts.current[draftId]].filter(Boolean).join('\n\n'))
+          if (image) setPgImage(draftId, image)
+          setPgFiles(draftId, (staged) => [
+            ...staged,
+            ...files.map((attachment) => ({
+              key: attachment.uploadId,
+              name: attachment.name,
+              size: attachment.size,
+              status: 'ready' as const,
+              attachment,
+              preview: attachment.preview
+            }))
+          ])
+          mutateSteps(id, (steps) => steps.filter((step) => step.turnId !== requestedTurnId))
+          pushStep(id, {
+            kind: 'done',
+            turnId: requestedTurnId,
+            text: 'Image uploads need an updated chat relay. Your draft has been kept; nothing was sent.'
+          })
+          pendingTurnFrames.current.delete(id)
+          pendingTurnIds.current.delete(id)
+          dropLanes(id)
+          setBusy(id, false)
+          return
+        }
+        // Resolve targets after the handshake, which may be the first source of the conversation's roster.
+        const session = pgSessions[id]
+        const roster = resolveRoster(session?.participants, knownParticipants, rosterAgentIds.current.get(id), (a) =>
+          rosterNames.current.get(id)?.get(a)
+        )
+        if (!session && knownParticipants && knownParticipants.length > 1 && !rosterNames.current.has(id)) {
+          rosterNames.current.set(id, new Map(knownParticipants.map((p) => [p.agentId, p.name])))
+        }
+        const typed = typedMentionIds(roster, text)
+        const commandTarget =
+          commandPick &&
+          roster.some((p) => p.agentId === commandPick.agentId) &&
+          leadingCommandToken(text) === commandPick.name &&
+          !typed.includes(commandPick.agentId)
+            ? [commandPick.agentId]
+            : []
+        const mentions = [...typed, ...commandTarget]
+        const targets =
+          roster.length > 1
+            ? mentions.length
+              ? mentions
+              : roster.map((p) => p.agentId)
+            : (rosterAgentIds.current.get(id) ?? [agentForId])
+        // A bare message mentions every member; explicit mentions narrow its targets.
+        const sentMentions = wireMentions(roster, mentions)
+        for (const target of targets) {
+          streamCursors.current.set(
+            laneKey(id, target),
+            createWebchatCursor<WebchatOutput, WebchatDone>(requestedTurnId)
+          )
+        }
+        syncBusyLanes(id)
         const frame = JSON.stringify({
           text,
           turnId: requestedTurnId,
@@ -2226,23 +2253,57 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         }
         if (conns.current.get(id) === conn) conns.current.delete(id)
       }
-      // ONE rebuild before a turn is declared unsent. The first send of a fresh playground rides the socket `openPlayground` warmed seconds earlier (connect() reuses a CONNECTING one), so a dial that died in the browser took the message that opens the conversation down with it — and the retry the reader typed by hand started a SECOND conversation, blind to the first. Only a transport failure is rebuilt: a CP verdict (no relay pool, an incapable daemon, a conversation that is not theirs) is an answer, not a blip. A failure AFTER the frame reached the socket is the reconnect's resend to recover, never a fresh dial's.
-      const putThrough = (conn: Conn, mayRebuild: boolean): void => {
+      let cancelled = false
+      let retryTimer: number | undefined
+      let activeConn: Conn
+      const cancelDial = (): void => {
+        cancelled = true
+        if (retryTimer !== undefined) window.clearTimeout(retryTimer)
+        abandon(activeConn)
+        pendingDials.current.delete(id)
+      }
+      pendingDials.current.set(id, cancelDial)
+      // Retry only before sending; stream recovery owns frames that may already have reached the server.
+      const putThrough = (conn: Conn, attempt: number): void => {
+        activeConn = conn
         let onWire = false
         conn.ready
           .then((ws) => {
+            if (cancelled || closingAll.current) return
+            pendingDials.current.delete(id)
             onWire = true
             putOnWire(ws)
           })
           .catch((err) => {
-            if (!mayRebuild || onWire || err instanceof ApiError) return reportUnsent(err)
+            if (cancelled || closingAll.current) return
+            if (onWire || err instanceof ApiError || attempt >= WEBCHAT_RECONNECT_MAX_ATTEMPTS) {
+              if (!onWire) abandon(conn)
+              pendingDials.current.delete(id)
+              return reportUnsent(err)
+            }
             abandon(conn)
-            putThrough(connect(id, agentForId, conversationId), false)
+            setBusy(id, true)
+            const delay = Math.min(WEBCHAT_RECONNECT_MAX_MS, WEBCHAT_RECONNECT_BASE_MS * 2 ** attempt)
+            retryTimer = window.setTimeout(() => {
+              retryTimer = undefined
+              if (!cancelled && !closingAll.current) putThrough(connect(id, agentForId, conversationId), attempt + 1)
+            }, delay)
           })
       }
-      putThrough(connect(id, agentForId, conversationId), true)
+      putThrough(connect(id, agentForId, conversationId), 0)
     },
-    [pgSessions, connect, pushStep, setBusy, refreshSessions]
+    [
+      pgSessions,
+      connect,
+      pushStep,
+      setBusy,
+      refreshSessions,
+      setPgInput,
+      setPgFiles,
+      setPgImage,
+      mutateSteps,
+      dropLanes
+    ]
   )
 
   /** Send a message INTO the running turn (#1847). The step lands at once as a steer; no lane
@@ -2406,7 +2467,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       const image = imageArg ?? pgImageBy[id]
       const staged = pgFilesBy[id] ?? NO_FILES
       // A file still uploading holds the send: the turn may only name bytes the store already has.
-      if (!filesArg && staged.some((f) => f.status === 'uploading')) return false
+      if (!filesArg && staged.some((f) => f.status !== 'ready')) return false
       const files = filesArg ?? staged.flatMap((f) => (f.status === 'ready' && f.attachment ? [f.attachment] : []))
       if (!text && !image && !files.length) return false
       setPgInput(id, '')
@@ -2438,10 +2499,18 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
 
   /** A message in one thread; the thread panel owns its own draft, so the conversation's composer is untouched. */
   const pgSendThread = useCallback(
-    (id: string, agentForId: string, text: string, thread: string, conversationId?: string) => {
+    (
+      id: string,
+      agentForId: string,
+      text: string,
+      thread: string,
+      conversationId?: string,
+      image?: SessionImage,
+      files?: WebchatFileAttachment[]
+    ) => {
       const trimmed = text.trim()
-      if (!trimmed || !thread) return false
-      return submitTurn(id, agentForId, trimmed, undefined, conversationId, undefined, undefined, undefined, thread)
+      if ((!trimmed && !image && !files?.length) || !thread) return false
+      return submitTurn(id, agentForId, trimmed, image, conversationId, undefined, undefined, files, thread)
     },
     [submitTurn]
   )
@@ -2611,15 +2680,26 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     [connect]
   )
 
-  /** Interrupt the running turn (fire-and-forget). The daemon ends the turn with a
-   *  relay `done` item, which clears pgBusy via the socket's done handler. */
+  // Cancel an unsent dial locally; a running turn clears busy when the daemon confirms cancellation.
   const pgCancel = useCallback(
     (id: string, agentForId: string, conversationId?: string) => {
+      const cancelDial = pendingDials.current.get(id)
+      if (cancelDial) {
+        cancelDial()
+        pushStep(id, {
+          kind: 'done',
+          turnId: pendingTurnIds.current.get(id),
+          text: 'Message cancelled before sending.'
+        })
+        pendingTurnIds.current.delete(id)
+        setBusy(id, false)
+        return
+      }
       connect(id, agentForId, conversationId)
         .ready.then((ws) => ws.send(JSON.stringify({ type: 'cancel' })))
         .catch(() => {})
     },
-    [connect]
+    [connect, pushStep, setBusy]
   )
 
   // Once the daemon creates the real session, the route switches from the synthetic

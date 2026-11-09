@@ -54,6 +54,7 @@ import type {
   RcDeploymentConfig,
   RdAck,
   RdMsgPlatformAction,
+  RdPlatformReply,
   RdRouteAck,
   WireNormalizedMessage
 } from '@agentconnect.md/protocol'
@@ -380,4 +381,6 @@ export interface RelayPlatformIngressPlugin<TIngest extends RelayBotIngress = Re
   handle(ingest: TIngest, verified: TVerified, host: RelayIngressHost): Promise<HandledDelivery>
   /** OPTIONAL: assignments derived from the CP's deployment snapshot rather than a bot row; core replaces them on every registration, and they route and report nothing. */
   deploymentAssignments?(snapshot: RcDeploymentConfig | undefined): BotAssignment[]
+  /** OPTIONAL: answer a daemon's `rd/platform/request` for one of this platform's bots; core has already checked the daemon is a member of `assignment`, and the plugin checks everything the payload asks for. */
+  daemonRequest?(assignment: BotAssignment, payload: unknown): Promise<RdPlatformReply>
 }

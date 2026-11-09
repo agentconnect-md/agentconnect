@@ -172,9 +172,10 @@ A `chat.bot` token cannot read its project, so validation mints a second token
 for the same service account with the `cloud-platform.read-only` scope and reads
 the owning project from Cloud Resource Manager (`GET /v1/projects/{projectId}`).
 The number it returns is the app identity; an entered number is optional and
-must match it. The service account therefore needs the Browser role
-(`resourcemanager.projects.get`) on its project, and that project needs the Cloud
-Resource Manager API enabled.
+must match it. The service account therefore needs `resourcemanager.projects.get`
+on its project, which Setup suggests granting as the Browser role (a role that
+also grants more, §10.10), and that project needs the Cloud Resource Manager API
+enabled.
 
 The deployment app has no single-organization mode. One app for one agent of
 one organization would be a first-come slot on a deployment serving several
@@ -263,7 +264,7 @@ credentials and shows the derived installation metadata:
 | Google Cloud project ID  | Non-secret app identity in platform configuration; this is not a Workspace tenant ID.                                                                                 |
 | Verified project number  | Canonical app identity, named by the add-on service account that signs requests; resolved through Cloud Resource Manager with the key; must match any entered number. |
 | HTTP endpoint URL        | Generated from the configured relay origin and the Google Chat module route; copy into the add-on's connection settings; every token's audience.                      |
-| Service-account key JSON | Write-only credential in the encrypted bot secret store; the deployment app's secret is copied onto each claimed customer row.                                        |
+| Service-account key JSON | Write-only credential in the encrypted bot secret store; the deployment app's key stays in its configuration, and its customer rows hold a marker (§10.10).           |
 | Chat app user identity   | The app's `users/…` name from traffic (a verified add or mention, or the first reply); Google has no app-authenticated read.                                          |
 
 Keep the app and service account in one project for the first version. Build the
@@ -279,14 +280,16 @@ Request `chat.bot` for asynchronous Chat API calls. Do not request user
 impersonation or domain-wide delegation. Validate the app project's canonical
 identity and its relationship to the credential before creating the relay
 assignment; user-entered project metadata alone must not claim another app.
-The relay receives only public verification metadata, not the service-account
-private key.
+For an organization's own app the relay receives only public verification
+metadata, not the service-account private key; the deployment app's key is held
+by the relays, which send its customer rows' calls (§10.10).
 
 Accept only the supported service-account credential shape. Reject arbitrary
 credential-provider configurations and endpoint overrides; use Google's fixed
 auth and API endpoints. Secrets must not appear in API responses, browser state
-after submission, telemetry, fixtures, or logs. Decrypted credentials travel only
-through the existing authenticated spec projection to the assigned daemon.
+after submission, telemetry, fixtures, or logs. An own app's decrypted credentials
+travel only through the existing authenticated spec projection to the assigned
+daemon; the deployment app's never reach a daemon (§10.10).
 Workload identity and ambient application-default credentials are future options.
 
 Use the existing external app identity and uniqueness contract to prevent binding
@@ -634,7 +637,12 @@ list alone. A DM surfaces from its first delivery and is named after the one
 person in it: the DM space carries no display name, and app authentication may
 list a space's human memberships (`spaces.members.list`, which excludes only
 Chat apps), so the read port answers the DM's name from that single membership
-and leaves the row on its id when the read fails or finds more than one person. Output mode adds no chrome: every mode but `none` streams the same
+and leaves the row on its id when the read fails or finds more than one person.
+`listChannelMembers` reads every page of human memberships, deduplicated by user
+resource name, under one read deadline. App authentication does not expose Chat
+apps in this roster. A failed page fails the read instead of returning an empty
+or partial roster. The separate DM identity check still requires exactly one human member.
+Output mode adds no chrome: every mode but `none` streams the same
 way, because Google Chat has no status bar, typing indicator, or reaction to
 spend a richer mode on.
 
@@ -831,7 +839,8 @@ fence of both install paths, the tenant a single-tenant row records from its
 traffic and reports as `rc/bot-tenant`
 (§10.3), filtered discovery and the fenced writes on the daemon, the per-app
 write budget (§10.8), re-stamping customer rows on key rotation (§10.3), and
-releasing a freed customer (§10.5). Since then the deployment app always
+releasing a freed customer (§10.5). The customer rows no longer hold the key at
+all: their calls go through the relay (§10.10). Since then the deployment app always
 serves every organization and its anchor rides the relay's deployment snapshot
 instead of a bot row (§3, §10.4). Every provider fact below was verified on
 September 27, 2026, either in Google's reference documentation or against a
@@ -878,9 +887,10 @@ the Control Plane's deployment snapshot (§10.4). Every claimed customer gets a
 `externalTenantId` the customer's primary tenant key, `customers/{customer}`
 when the claim proved it and `domains/{domainId}` otherwise, one row per
 `(app, customer)`, each owned by one organization. Its public `platformConfig`
-keeps the project ID beside the bare `customerId` and `domainIds`, its credential
-is a copy of the deployment key, and it is marked prebuilt, so the key follows the Setup Server rather than a
-console paste. Its relay assignment carries `tenantIds`, every tenant key the
+keeps the project ID beside the bare `customerId` and `domainIds` and the owner
+entry `appOwner: deployment`, its secret slot holds a marker rather than the
+deployment key, and it is marked prebuilt, so no console paste can give it a
+key; its daemon sends through the relay (§10.10). Its relay assignment carries `tenantIds`, every tenant key the
 row knows, beside the unchanged `apiAppId`; a single-tenant row carries the keys
 it has recorded as `ownTenantIds` (below), which core neither indexes nor fences
 on. A row is therefore a customer row (tenant-keyed) or a single row (an
@@ -935,11 +945,9 @@ sender's row. One customer maps to one organization, exactly as one Slack team
 does; a second organization cannot claim a customer or a domain another one
 holds.
 
-Customer rows copy the deployment key when a claim writes them. The key moves
-only across a restart, so a boot pass of the provider
-(`GoogleChatCredentialReconciler`) compares each customer row of the app with the
-configured key, logging neither, and re-stamps and re-syncs every row that
-differs.
+Customer rows hold no copy of the deployment key. A boot pass of the provider
+(`GoogleChatCredentialReconciler`) replaces any copy an older build stamped with
+the marker and re-syncs the row (§10.10); a rotated key reaches only the relays.
 
 A bring-your-own app keeps its single row. Such a single-tenant row records its
 own tenant beside the tenantless key rather than being keyed by it: the customer the install probe
@@ -1160,13 +1168,16 @@ answer, from two requests.
   `spaces.get` for a named Space's `customer` and the one human member's
   `domainId` for a DM, cached per Space, and refuses a Space outside the row's
   keys with the `tenant_refused` category, which the turn output records in the
-  daemon log while the reply stays in the transcript, never a silent drop. A
+  daemon log while the reply stays in the transcript, never a silent drop. For a
+  customer row the relay enforces the same fence with Google's own reads
+  (§10.10), so this one is a second line. A
   single-tenant row refuses another customer's Space and writes into any DM
   (§10.3); a row without keys keeps today's behaviour. Two rows of one app on
   one daemon never share a connection: the connection key includes the row's
   tenant keys.
 - **Quota**: every organization on the published app shares one project's
-  3,000 writes per minute. The per-Space queue stays; under it, one token
+  3,000 writes per minute. The relay enforces each customer row's share (§10.10);
+  the daemon's own budget is cooperative. The per-Space queue stays; under it, one token
   bucket per app on each daemon, keyed by the project number so a rotation's
   overlapping connections share it, admits creates and patches. Its refill
   defaults to 3,000 a minute divided by `googleChat.poolSize` in the daemon's
@@ -1214,6 +1225,142 @@ answers synchronously (§11.7), and a claim from a direct message and then from 
 Space round-trips, which also proves a sign-in's Google account id equals the
 Chat user id. Still to verify live: whether a domain-wide administrator install
 delivers one add (`addedToSpacePayload`) per user.
+
+### 10.10 Egress for the deployment app's customer rows
+
+Status: **implemented**, not yet measured against Google. It replaces the copy
+of the deployment key every claimed customer row used to hold, and the boot pass
+that re-stamped and re-pushed it.
+
+**Why the daemon holds no key.** App authentication (`chat.bot`) acts as the
+Chat app itself, and its reach is every Space the app is a member of, in every
+Workspace customer that installed it: `spaces.list` names them all (§10.2).
+Google offers no Chat credential or token limited to one customer, and token
+downscoping exists only for Cloud Storage. Daemons can be enrolled by any
+member of an organization, so the key, or any token minted from it, on a daemon
+would let one organization's member list every customer's Spaces and rosters,
+post as the trusted app into any of them, rewrite or delete other
+organizations' agent replies, and spend the project's shared quota. The key
+can also mint any other scope its IAM grants allow (§3). It therefore stays on
+the Control Plane and the relays, and a customer row's daemon sends through the
+relay. An organization's own app (§3) is unchanged: its key is that
+organization's own and keeps sending directly.
+
+**Which rows.** A row is the deployment app's by what it stores, never by the
+current configuration alone: an `appOwner: deployment` entry in its
+`platformConfig`, which every claim now writes; the `prebuilt` flag every
+earlier claim wrote; the marker in its secret slot; or the configured project
+number. A tenant key alone proves nothing, because an organization's own app
+can be keyed by the customer its install probe proved. Such a row stores the
+marker `googlechat-deployment-app:no-key` in place of a key, and a request to
+replace its key is refused with 409.
+
+**The spec.** A deployment row's `IntegrationGoogleChatConfig` carries the
+project ID and number, its `tenantIds`, the events URL, `egress: 'relay'`, and
+the row's `botId`, and no `serviceAccountKey`. Only a customer-keyed row of the
+configured project gets one: a row whose project is not the configured one, or
+with no app configured, gets no spec at all, never a stored key and never the
+direct mode; a tenantless row of the deployment project still serves nothing
+(§10.3).
+
+**Older daemons.** The spec names `googlechat-relay-egress-v1` in
+`IntegrationSpec.requires`, which the Google Chat daemon module advertises
+through its registration features. Wherever integrations reach a daemon
+(`register/ok`, `integration/upsert`, `agent/activate` and `duty/fetch/ok`), a
+daemon without it gets the integration removed instead, as for the Teams
+deployment app ([teams-integration.md §8.5](teams-integration.md#85-egress-for-the-deployment-apps-rows)).
+The removal stops further use, but it cannot recall a key an older build
+already delivered: **upgrading to this change requires rotating the deployment
+app's service-account key**, or disabling the old one, once every Control Plane
+and relay runs it.
+
+**Migration.** A boot pass (`GoogleChatCredentialReconciler`) runs whatever the
+configuration is: it reads every Google Chat row's secret slot, and for each
+deployment row, the marker included, records the owner entry, replaces a stored
+key with the marker, and re-syncs the row. It never stamps a key back.
+
+**The relay's credential.** The Control Plane's deployment snapshot carries the
+app (`googleChatApp`: the project number and the key) whenever the app is
+configured, independent of the anchor (§10.4). The relay mints `chat.bot`
+tokens with it, one cached per process and renewed early, never with a `sub`.
+
+**The call.** The daemon sends `rd/platform/request`
+`{ platformId: 'googlechat', botId, payload }` to a relay that advertises
+`platform-request-v1`. The payload is one of a fixed set, exactly the calls
+the daemon makes today: create a message (text, cards, fallback text, a thread
+of the same Space, a private viewer, the `client-` message ID and request ID),
+patch its text or cards, delete it, read it back, read a Space, list a DM's
+human members, page through a Space's human members, find a DM with a person,
+and list Spaces. The relay builds the
+path, query and body itself, under the fixed Chat API root; the schema refuses
+any name outside Google's alphabet and any `.` or `..` segment, and the relay
+also checks that the final path is the one it built. Core checks that the
+socket's daemon is a member of the bot's assignment; the plugin then requires
+the assignment to be a customer row of the snapshot's project.
+
+**The customer fence.** Before a call acts in a Space, the relay reads what
+Google says of it with the app's own token: `spaces.get` gives a named Space's
+immutable `customer`, and a DM's one human member gives `domainId`. The Space
+must be inside the row's `tenantIds`, which come from the Control Plane's
+assignment and never from the daemon; a group chat, a Space without a customer
+or a DM without exactly one human is refused. The result is cached per relay
+process for an hour, at most 10,000 Spaces, and a failed read is never cached:
+Google's refusal of the read is answered as Google's, and a read that failed or
+got no answer stops the call as unsent, so a lookup failure never lets a write
+through. A found DM is fenced the same way before it is named to the daemon,
+and `spaces.list` is filtered to the row's customer.
+
+**Quota.** Every organization on the app shares one project's 3,000 writes and
+3,000 reads a minute. The relay gives each row a token bucket per kind, 750
+writes and 750 reads a minute with the same burst, a quarter of the project as
+a daemon's own budget defaults to (§10.8). A call past it is answered as a
+`429` with a retry delay before anything reaches Google. The buckets are per
+relay instance and not coordinated: a daemon that spreads its calls over N
+relays could take N shares, which still bounds one organization well below the
+whole project for a small pool.
+
+**Semantics.** One 12-second budget covers the token, the fence reads, the call
+and one retry after a 401, below the daemon's 15-second wait. Out of time
+before the call, the relay answers `unavailable`; a call that got no answer is
+answered as a gateway timeout. A refusal assignment or snapshot lag can explain
+(`unknown_bot`, `not_member`, `not_deployment_app`) carries `retryable`, and
+the daemon asks the next ready relay; a tenant refusal or an invalid call is
+final. A handler failure is an error frame the daemon treats as a call that may
+have landed, and a reply the relay could not send is not replaced. A create
+that may have reached Google is never sent again from a relay row: the daemon
+reads it back by its `client-` ID and reports what it finds, while one the
+relay says never went out is retried.
+
+**The daemon.** `GoogleChatConnection` sits on a transport chosen from the spec:
+direct with the organization's own key, or the relay. Without a relay a
+deployment row cannot send, and there is no other way out. The daemon's own
+fence, discovery filter and write budget stay as a second line.
+
+**High availability.** No Control Plane call is on this path. A relay keeps
+serving from its last snapshot through a Control Plane outage, and any relay can
+serve any call. Inbound already needs the relay (§2); a relay outage now also
+pauses the customer rows' outbound calls.
+
+**Rotation.** The key moves only across a restart: the Control Plane reads it
+from the Setup Server's configuration, and every relay takes the new key from
+its next snapshot, dropping its cached token. Nothing is pushed to daemons.
+
+**Session access.** The Control Plane's member checks for a deployment row use
+the configured app's key, never the row's slot, and refuse when no matching app
+is configured.
+
+**Known limits.**
+
+- The relay routes an inbound event by the tenant key in the unsigned body;
+  only the project number is signed. Forging it needs a valid token for the
+  relay's events URL, which Google sends only to the relay.
+- A claim needs only one internal member of a customer's Space (§10.5); after
+  it, the claiming organization serves that customer's conversations with the
+  app. That is a claim policy question, separate from the key.
+- Setup suggests the Browser role for the project-number check (§3). That role
+  grants more than the check needs, including the project's IAM policy and its
+  folder and organization metadata; a custom role with only
+  `resourcemanager.projects.get` is enough. Setup is unchanged.
 
 ## 11. Workspace add-on form
 
@@ -1376,7 +1523,8 @@ travels as a parameter:
 ### 11.6 Outbound and configuration
 
 Outbound is the daemon's app-authenticated `spaces.messages.create` and `patch`
-with the key of §3. Google's own add-on quickstart replies asynchronously through
+with the key of §3, or, for the deployment app's customer rows, the same calls
+through the relay (§10.10). Google's own add-on quickstart replies asynchronously through
 the Chat API with a service-account key, and this was verified to keep working for
 a converted app (§11.7). On the Chat API configuration page the operator builds the
 app as a Google Workspace add-on (the default for a new app; an existing one is

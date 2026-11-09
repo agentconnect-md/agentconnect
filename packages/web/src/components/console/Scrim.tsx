@@ -43,17 +43,19 @@ export function EscapeLayer({ onEscape }: { onEscape: (() => void) | undefined }
 export function Scrim({
   onEscape,
   onClick,
+  className,
   children
 }: {
   onEscape: (() => void) | undefined
   onClick?: MouseEventHandler<HTMLDivElement>
+  className?: string
   children: ReactNode
 }) {
   useEscapeLayer(onEscape)
   const pressedInside = useRef(false)
   return (
     <div
-      className="scrim"
+      className={className ? `scrim ${className}` : 'scrim'}
       onMouseDown={(event) => {
         pressedInside.current = event.target !== event.currentTarget
       }}

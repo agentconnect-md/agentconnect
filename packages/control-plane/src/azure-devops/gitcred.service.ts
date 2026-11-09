@@ -12,6 +12,7 @@ import type {
 import { AzureDevOpsApiError, readConnectionData, type AzureDevOpsApiClient } from './api.js'
 import { AzureDevOpsConnectDenied, type AzureDevOpsConnectionService } from './connection.service.js'
 import { LEASE_MARGIN_MS } from './token-cache.js'
+import { hookBindingOf } from './hook.service.js'
 
 /** A lease ends this long before the token inside it, so the proxy never presents an expired one. */
 export const LEASE_MARGIN_SEC = LEASE_MARGIN_MS / 1000
@@ -24,7 +25,7 @@ export const FORCE_REFRESH_MIN_INTERVAL_MS = 30_000
 
 export interface AzureDevOpsGitcredDeps {
   connections: Pick<AzureDevOpsConnectionRepo, 'get'>
-  bindings: Pick<AzureDevOpsRepositoryBindingRepo, 'byRepo'>
+  bindings: Pick<AzureDevOpsRepositoryBindingRepo, 'byRepo' | 'listForRepo'>
   /** The additional-repository allowlist, the second authority beside the workspace. */
   repoAuths: Pick<AgentRepoAuthorizationRepo, 'listForAgent'>
   service: Pick<AzureDevOpsConnectionService, 'accessToken' | 'withApi' | 'purgeToken'>
@@ -50,6 +51,19 @@ export class AzureDevOpsGitcredService {
     const { repoId, connectionId, clamp } = await this.authority(agent, requestedExternalRepoId)
     const access: 'read' | 'write' = requestedAccess === 'read' ? 'read' : clamp
     return this.lease(agent.orgId, connectionId, repoId, access, forceRefresh)
+  }
+
+  /** §11.5: the final poster's lease, at `comment` on the repository's hooked binding; the handler already checked the enabled hook. */
+  async grantForHookReply(orgId: string, repoId: bigint, forceRefresh = false): Promise<GitCredGrant> {
+    const binding = hookBindingOf(await this.deps.bindings.listForRepo(orgId, repoId))
+    if (!binding) {
+      throw new GitCredDeniedError(
+        'the repository is not bound through an Azure DevOps connection',
+        'SCOPE_DENIED',
+        false
+      )
+    }
+    return this.lease(orgId, binding.connectionId, repoId, 'comment', forceRefresh)
   }
 
   /** The repository this request may be served for, the connection that serves it, and its ceiling. */
@@ -86,7 +100,7 @@ export class AzureDevOpsGitcredService {
     orgId: string,
     connectionId: string,
     repoId: bigint,
-    access: 'read' | 'write',
+    access: 'read' | 'comment' | 'write',
     forceRefresh: boolean
   ): Promise<GitCredGrant> {
     const binding = await this.deps.bindings.byRepo(orgId, connectionId, repoId)

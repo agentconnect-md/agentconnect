@@ -64,6 +64,7 @@ The action vocabulary represents the distinct OSS policies that exist today:
 | `resource.view`             | visibility, Selected audience                                                          | organization owner, org-visible, or explicitly selected                                                                                                                                  |
 | `resource.edit`             | shareable resource                                                                     | visible and role is not viewer                                                                                                                                                           |
 | `resource.sharing.manage`   | shareable resource                                                                     | same as `resource.edit`                                                                                                                                                                  |
+| `daemon.key.issue`          | shareable daemon and immutable creator ID                                              | organization owner, or matching creator with current `resource.edit` permission                                                                                                          |
 | `session.view`              | tier, owner identity, identity set, external access                                    | org-visible, identity-owned, or admitted by the external audience                                                                                                                        |
 | `session.visibility.change` | tier, owner identity, identity set, external provider, thread coordinate, task lineage | identity-owned, not provider-bound, not an `append` session (an unread coordinate counts as one), and not a task (a reserved `subsession:` coordinate with unread lineage counts as one) |
 
@@ -132,7 +133,10 @@ already-sized page.
 
 `sharedWith` is the explicit audience for a restricted resource, in addition to
 the role-based owner exception;
-`createdByUserId` remains immutable creation attribution and grants no access.
+`createdByUserId` remains immutable creation attribution and never bypasses
+membership or visibility. Daemon-key issuance uses it only together with current
+edit permission; a creator removed from the audience cannot recover access by
+requesting another key.
 Removing a member prunes their ID from every Selected visibility carrier before
 deleting the membership. If an audience would otherwise become empty, removal
 adds a deterministic current organization owner while keeping the resource

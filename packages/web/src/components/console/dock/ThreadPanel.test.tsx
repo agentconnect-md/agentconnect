@@ -8,6 +8,8 @@ import { SWRConfig } from 'swr'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionMessageDto } from '@/lib/api'
 import type { Agent, SessionStep } from '@/lib/data'
+import type { ComposerFile } from '@/lib/webchat-file'
+import type { PlaygroundData } from '@/components/console/playground/contract'
 
 const taskRow = vi.hoisted(() => ({
   sessionId: 'ses_task',
@@ -24,6 +26,8 @@ const taskRow = vi.hoisted(() => ({
 const wire = vi.hoisted(() => ({
   canContinue: true as boolean | null,
   drafts: {} as Record<string, string>,
+  files: {} as Record<string, ComposerFile[]>,
+  sentFiles: [] as unknown[],
   live: [] as SessionStep[],
   calls: [] as string[],
   extra: [] as SessionMessageDto[],
@@ -116,8 +120,10 @@ vi.mock('@/components/console/PlaygroundProvider', () => {
     isPgBusy: () => wire.busy,
     getPgImage: () => undefined,
     setPgImage: () => {},
-    getPgFiles: () => [],
-    setPgFiles: () => {},
+    getPgFiles: (id: string) => wire.files[id] ?? [],
+    setPgFiles: (id: string, update: (files: ComposerFile[]) => ComposerFile[]) => {
+      wire.files[id] = update(wire.files[id] ?? [])
+    },
     pgCancel: (id: string, agentId: string) => wire.calls.push(`cancel:${id}:${agentId}`),
     reconcileLiveSteps: () => {},
     markSessionTarget: (id: string, target?: string, threads?: boolean) =>
@@ -132,8 +138,11 @@ vi.mock('@/components/console/PlaygroundProvider', () => {
       wire.calls.push(`send:${id}:${agentId}:${wire.drafts[id] ?? ''}`)
       return true
     },
-    pgSendThread: (id: string, agentId: string, text: string, thread: string, conversationId?: string) => {
+    pgSendThread: (
+      ...[id, agentId, text, thread, conversationId, , files]: Parameters<PlaygroundData['pgSendThread']>
+    ) => {
       wire.calls.push(`thread:${id}:${agentId}:${text}:${thread}${conversationId ? `:${conversationId}` : ''}`)
+      wire.sentFiles.push(files)
       return true
     },
     setPgInput: (id: string, text: string) => {
@@ -162,12 +171,18 @@ vi.mock(import('@/components/marks'), async (importOriginal) => ({
   AgentIconView: () => <span data-agent-avatar="" />
 }))
 
+vi.mock('@/lib/data-context', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  useConsoleData: () => ({ revalidateSessionLists: () => Promise.resolve() })
+}))
+
 vi.mock('@/lib/org-context', () => ({
   useOrgs: () => ({ activeOrg: { id: 'org_acme' }, orgPath: (path: string) => `/acme${path}` })
 }))
 
 import { ThreadPanel } from './ThreadPanel'
-import { DockExpandContext, type DockExpand } from './SessionDock'
+import type { Turn } from '../session-turns'
+import { msgStep } from '../transcript-steps'
 import { renderWithIntl } from '@/i18n/test-utils'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
@@ -183,6 +198,8 @@ let withTask = true
 beforeEach(() => {
   wire.canContinue = true
   wire.drafts = {}
+  wire.files = {}
+  wire.sentFiles = []
   wire.live = []
   wire.calls = []
   wire.extra = []
@@ -206,23 +223,19 @@ afterEach(() => {
   container.remove()
 })
 
-const NO_DOCK: DockExpand = { available: false, expanded: false, setExpanded: () => {} }
-
-async function render(dock: DockExpand = NO_DOCK) {
+async function render() {
   await act(async () => {
     root.render(
       renderWithIntl(
         <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-          <DockExpandContext.Provider value={dock}>
-            <ThreadPanel
-              agentId="agent_1"
-              agentName="deploy-bot"
-              {...(withTask ? { task } : {})}
-              parentSessionId="ses_coordinator"
-              onBack={back}
-              {...props}
-            />
-          </DockExpandContext.Provider>
+          <ThreadPanel
+            agentId="agent_1"
+            agentName="deploy-bot"
+            {...(withTask ? { task } : {})}
+            parentSessionId="ses_coordinator"
+            onBack={back}
+            {...props}
+          />
         </SWRConfig>
       )
     )
@@ -281,6 +294,15 @@ describe('ThreadPanel', () => {
     expect(expand.getAttribute('href')).toBe('/acme/sessions/ses_task')
     act(() => backButton.click())
     expect(back).toHaveBeenCalledTimes(1)
+  })
+
+  it('shares the task’s own session from its header, as the session page does', async () => {
+    await render()
+    const share = container.querySelector<HTMLButtonElement>('[data-task-thread-share]')!
+    expect(share.getAttribute('aria-label')).toBe('Share')
+    await act(async () => share.click())
+    const dialog = document.querySelector('[role="dialog"]')
+    expect(dialog?.textContent).toContain('Copy link')
   })
 
   it('draws the task’s own approval in its thread, at the turn that asked', async () => {
@@ -682,6 +704,7 @@ describe('ThreadPanel on a thread’s record (webchat-threads.md §6.2)', () => 
     expect(panel.querySelector('h3')?.textContent).toBe('Thread')
     expect(panel.querySelector('[data-state-icon]')).toBeNull()
     expect(panel.querySelector('[data-task-thread-expand]')).toBeNull()
+    expect(panel.querySelector('[data-task-thread-share]')).toBeNull()
     expect(panel.querySelector('textarea')).toBeNull()
     expect(panel.textContent).not.toContain('You can read this task')
   })
@@ -716,6 +739,45 @@ describe('ThreadPanel on a thread’s record (webchat-threads.md §6.2)', () => 
     // Another member writes through the task, in this thread of the several it may hold.
     expect(wire.calls).toContain('thread:ses_task:agent_1:try a warm cache:post-root')
     expect(wire.drafts.ses_task).toBe('')
+  })
+
+  it('draws the coordinator’s work on the thread from the main timeline under its root, above a divider and the replies', async () => {
+    wire.record = recordPage()
+    withTask = false
+    const work: Turn = {
+      kind: 'bot',
+      key: 'b-main:in:post-root',
+      agentName: 'deploy-bot',
+      agentId: 'agent_1',
+      model: '',
+      time: '',
+      steps: [{ ...msgStep(reply(4, 'agent_1', 'Opened a task to look into the cache.')), thread: 'post-root' }]
+    }
+    props = { record: ref, fromMain: [work] }
+    await render()
+    const panel = container.querySelector('[data-thread-panel="post-root"]')!
+    const order = [...panel.querySelectorAll('[data-thread-message], [data-thread-replies-divider]')].map((el) =>
+      el.hasAttribute('data-thread-replies-divider') ? 'divider' : el.textContent
+    )
+    expect(order).toHaveLength(5)
+    expect(order[0]).toContain('Why is the deploy slow?')
+    expect(order[1]).toContain('Opened a task to look into the cache.')
+    expect(order[2]).toBe('divider')
+    expect(order[3]).toContain('The cache misses on every build.')
+    expect(order[4]).toContain('Can you fix it?')
+    expect(panel.querySelector('[data-thread-replies-divider]')?.textContent).toBe('Replies')
+  })
+
+  it('draws no divider over a page that starts after the root', async () => {
+    wire.record = recordPage({
+      messages: [reply(3, 'user_lee', 'Can you fix it?', { senderName: 'Lee Park' }), reply(4, 'agent_1', 'On it.')],
+      nextCursor: 'c-older'
+    })
+    withTask = false
+    props = { record: ref }
+    await render()
+    expect(container.querySelectorAll('[data-thread-message]')).toHaveLength(2)
+    expect(container.querySelector('[data-thread-replies-divider]')).toBeNull()
   })
 
   it('shows a thread whose task the reader may not view as unreadable, with no content and no composer', async () => {
@@ -948,6 +1010,36 @@ describe('ThreadPanel for the conversation’s owner (webchat-threads.md §6.3)'
   const step = (over: Partial<SessionStep> & Pick<SessionStep, 'kind' | 'text'>): SessionStep => ({
     turnId: 't1',
     ...over
+  })
+
+  it('sends a mixed attachment-only reply in its thread and clears only that draft', async () => {
+    wire.record = recordPage()
+    withTask = false
+    props = { record: ref, writer, platform: 'webchat', fileTransfer: true }
+    const files = ['image/png', 'application/pdf'].map((mimeType, index) => ({
+      uploadId: crypto.randomUUID(),
+      name: index ? 'report.pdf' : 'shot.png',
+      mimeType,
+      size: 20,
+      sha256: 'A'.repeat(43) + '='
+    }))
+    wire.drafts.ses_coordinator = 'Root draft'
+    wire.files['ses_coordinator#post-root'] = files.map((attachment) => ({
+      key: attachment.uploadId,
+      name: attachment.name,
+      size: attachment.size,
+      status: 'ready',
+      attachment
+    }))
+    await render()
+    expect(container.querySelector('input[type="file"]')?.hasAttribute('multiple')).toBe(true)
+    act(() =>
+      container.querySelector('textarea')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    )
+    expect(wire.calls).toContain('thread:ses_coordinator:agent_1::post-root:conv-1')
+    expect(wire.sentFiles).toEqual([files])
+    expect(wire.files['ses_coordinator#post-root']).toEqual([])
+    expect(wire.drafts.ses_coordinator).toBe('Root draft')
   })
 
   it('writes in an unowned thread on the conversation’s socket and shows only that thread’s live steps', async () => {

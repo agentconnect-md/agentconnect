@@ -333,6 +333,7 @@
       "finishedAt": "完成于 {time}"
     },
     "taskThread": {
+      "cardActions": "会话串操作",
       "replies": "{count, plural, other {# 条回复}}",
       "reply": "回复",
       "repliesTitle": "{replies}，最后回复于 {time}",
@@ -350,16 +351,16 @@
       "close": "关闭",
       "backTitle": "回到全部任务",
       "coordinatorTitle": "回到协调会话",
-      "shrink": "收回到侧边栏",
       "closeTask": "关闭任务",
       "startedBy": "由协调会话发起",
-      "pageHint": "协调会话只读这个任务的总结，不读每条回复。",
       "thread": "会话串",
       "openThread": "打开会话串",
       "hiddenTask": "你无法打开的任务",
+      "startingTask": "正在启动任务…",
       "footerWorking": "处理中…",
       "showEarlier": "显示更早的消息",
       "unreadable": "只有能打开持有这个会话串的任务的人才能查看它。",
+      "starting": "任务正在启动，稍后即可打开这个会话串。",
       "missing": "这个会话串不在这个会话里。",
       "threadPlaceholder": "在会话串里回复",
       "threadHintTask": "持有这个会话串的任务会在这里回答",
@@ -367,11 +368,13 @@
       "replyInThread": "在会话串中回复",
       "inThread": "在会话串中：{root}",
       "inThreadBare": "在会话串中",
+      "repliedToThread": "回复了会话串：",
       "answeredInThread": "已在会话串中回答",
       "messageActions": "消息操作",
       "openOnPlatform": "在 {platform} 中打开",
       "threadHintMirrored": "以你的名义发到 {platform} 会话串里，持有它的任务会在那里回答",
-      "threadHintMirroredCoordinator": "以你的名义发到 {platform} 会话串里，协调会话会在那里回答"
+      "threadHintMirroredCoordinator": "以你的名义发到 {platform} 会话串里，协调会话会在那里回答",
+      "repliesDivider": "回复"
     },
     "githubApp": {
       "title": "GitHub App",
@@ -956,9 +959,7 @@
         "closePanels": "关闭面板",
         "loading": "加载中",
         "loadingDots": "加载中…",
-        "nothingToShow": "暂无内容",
-        "expandPanel": "放大面板",
-        "collapsePanel": "收起面板"
+        "nothingToShow": "暂无内容"
       },
       "gitPanel": {
         "staged": "已暂存",
@@ -1081,7 +1082,7 @@
       },
       "addFiles": "添加文件",
       "addImages": "添加图片",
-      "continuationImagesOnly": "从控制台只能向这个聊天帖子发送图片。",
+      "continuationImagesOnly": "此对话一次只能附加一张图片，暂不支持文档或多个附件。",
       "viewOriginal": "查看原图",
       "downloadOriginal": "下载",
       "originalUploading": "正在上传原图…",
@@ -1095,6 +1096,8 @@
       "fitToScreen": "适应屏幕",
       "actualSize": "实际大小",
       "closeViewer": "关闭",
+      "dropToAttach": "拖放文件以添加附件",
+      "removeFile": "移除 {name}",
       "computer": "电脑",
       "computerPick": "电脑",
       "computerNone": "这个 agent 没有你可以查看的电脑。",
@@ -1568,18 +1571,20 @@
       "continue": "继续",
       "cancel": "取消",
       "projectsTitle": "选择项目",
-      "projectsDescription": "Agent 可以使用你在 {organization} 中所选项目里的仓库。",
+      "projectsHint": "读：Agent 可以克隆。写：还可以推送。允许触发器：拉取请求可以启动 Agent。取消勾选会移除对应权限。",
+      "allProjects": "所有项目",
+      "allProjectsHint": "包括以后新建的项目。需要 Project Collection Administrator。",
+      "projectsDescription": "{organization} 中 Agent 可以使用的项目。",
       "noProjects": "这个组织里没有你能看到的项目。",
-      "groupFor": "{project} 的组",
-      "readers": "Readers",
-      "contributors": "Contributors",
-      "groupHint": "只选 Agent 需要的项目。Readers 只能读取，Contributors 还能推送。",
+      "groupFor": "{project} 的权限",
+      "read": "读",
+      "write": "写",
       "applying": "正在应用…",
       "apply": "应用",
       "connect": "连接",
       "managedTitle": "项目访问已更新",
       "doneTitle": "Azure DevOps 已连接",
-      "doneBody": "Agent 现在可以使用该应用在 {organization} 中能看到的仓库。",
+      "doneBody": "Agent 现在可以使用 {organization} 中所选的项目。",
       "backToIntegrations": "返回集成",
       "checkAgain": "重新检查",
       "signInAgain": "重新登录",
@@ -1610,7 +1615,11 @@
         "expiredTitle": "这次登录已过期",
         "expiredBody": "请从 Azure DevOps 卡片重新开始连接。",
         "genericTitle": "无法连接 Azure DevOps"
-      }
+      },
+      "allowTriggers": "允许触发器",
+      "triggersMissedTitle": "还有项目未允许触发器",
+      "triggersRefused": "{project}：你的账号无法修改它的服务挂钩权限。",
+      "triggersFailed": "{project}：Azure DevOps 没有响应。请稍后再次管理项目访问。"
     }
   },
   "Home": {
@@ -2108,6 +2117,35 @@
         "connectionExists": "此组织已有 Azure DevOps 连接。",
         "organizationTaken": "该 Azure DevOps 组织已连接到此部署上的另一个组织。",
         "deploymentApplicationMissing": "此部署没有 Microsoft 应用。请改用自己的应用。"
+      },
+      "ownApplicationTriggers": "如需使用触发器，还要在每个项目的服务挂钩安全设置中授予该应用“查看订阅”和“编辑订阅”权限。",
+      "hookBadges": {
+        "webhookUnverified": "触发器待验证",
+        "triggersNotAllowed": "未允许触发器",
+        "relayUrlUnconfigured": "触发器不可用",
+        "subscriptionsFailed": "触发器出错"
+      },
+      "hookReasons": {
+        "webhookUnverified": "正在等待 Azure DevOps 发来第一个事件，以确认触发器可用。",
+        "triggersNotAllowed": "请在“管理项目访问”中为该仓库所在项目允许触发器。",
+        "triggersNotAllowedOwn": "请在 Azure DevOps 中为该仓库所在项目授予该应用“查看订阅”和“编辑订阅”权限。",
+        "relayUrlUnconfigured": "此部署没有配置公开的 webhook 地址，Azure DevOps 无法发送事件。",
+        "subscriptionsFailed": "Azure DevOps 拒绝了服务挂钩订阅，系统会自动重试。"
+      },
+      "lastDelivery": "最近事件 {time}",
+      "noDeliveryYet": "尚无事件",
+      "rotateKey": "轮换密钥",
+      "rotateTitle": "轮换服务挂钩密钥",
+      "rotateBody": "替换用于验证 {repo} 事件的密钥。旧密钥会继续有效 36 小时，Azure DevOps 已排队的事件仍能送达。",
+      "rotate": "轮换",
+      "rotated": "密钥已更换。Azure DevOps 发来下一个事件后，新密钥生效。",
+      "rotatedPartly": "Azure DevOps 中途停止响应，其余部分会自动切换到新密钥。",
+      "rotateRefusals": {
+        "noSubscriptions": "该仓库没有可轮换的服务挂钩订阅。",
+        "busy": "订阅正在更新，请稍后再试。",
+        "relayUrlUnconfigured": "此部署没有配置公开的 webhook 地址。",
+        "missing": "该仓库已不再连接。",
+        "failed": "Azure DevOps 拒绝了新密钥，请稍后再试。"
       }
     },
     "noConversations": "暂无会话，机器人首次进入{room}后，列表会显示在这里。",
@@ -2434,6 +2472,14 @@
           "helpApprove": "允许 bot 在同一次评审中记录一次批准。Gitea 会拒绝 bot 批准自己发起的拉取请求。",
           "helpStatusCheck": "为排队中、运行中和最终结果在拉取请求的头部发布一条提交状态。除非运维将其设为必需检查，否则它不会阻止合并。",
           "repositoryMissing": "此仓库仍在设置中。评审和提交状态通过组织的 Gitea bot 写入，请先完成仓库添加。"
+        },
+        "azureDevOps": {
+          "title": "PR 评审",
+          "statusCheckLabel": "PR 状态",
+          "helpInlineComments": "以评论线程发布评审，可在具体改动行或行范围上添加评论。",
+          "helpRequestChanges": "允许投“等待作者”票。共用同一连接的 Agent 共用一张票，以最近一次评审为准。",
+          "helpApprove": "允许投批准票。它是否计入分支策略由该策略决定。",
+          "helpStatusCheck": "为排队中、运行中和最终结果发布拉取请求状态。只有管理员为它添加状态策略后，它才会阻止完成拉取请求。"
         }
       },
       "deleteBot": {
@@ -2527,7 +2573,10 @@
         "ahpDescription": "通过标准 AHP v1 会话和聊天动作连接兼容的 Agent 客户端。",
         "ahpOff": "未启用",
         "ahpPilot": "试点"
-      }
+      },
+      "azureDevOpsLoadError": "无法加载 Azure DevOps 仓库 — {error}",
+      "azureDevOpsNotAuthorized": "{agent} 未获授权访问 {repo}。请在 agent 的“工作区”页授权该仓库，或先将其设为 agent 的工作区仓库。",
+      "azureDevOpsNoBoundRepository": "还没有正在使用的 Azure DevOps 仓库。请先在 {agent} 的“工作区”页授权一个仓库，再回到这里添加触发器。"
     },
     "api": {
       "title": "API",
@@ -2993,6 +3042,7 @@
         "uploadFailed": "上传失败"
       },
       "daemonSelect": {
+        "approvalRequired": "请先由组织 Owner 批准此 daemon。",
         "runsOn": "运行位置",
         "noDaemonsConnected": "未连接任何 Daemon",
         "groupMeta": "{count, plural, other {# 个 Daemon}}",
@@ -3400,7 +3450,8 @@
         "newChannels": "新频道默认",
         "newChannelsAuto": "自动",
         "newChannelsMention": "@提及 · 按话题",
-        "newChannelsOff": "关闭"
+        "newChannelsOff": "关闭",
+        "pullRequestStatus": "PR 状态"
       },
       "tools": {
         "loading": "加载中…",
@@ -4262,6 +4313,32 @@
     }
   },
   "Daemons": {
+    "approval": {
+      "pending": "待批准",
+      "revoked": "已撤销",
+      "review": "审核",
+      "approve": "批准",
+      "approveAgain": "重新批准",
+      "revoke": "撤销批准",
+      "cancel": "取消",
+      "saving": "保存中…",
+      "waitingForYou": "等待你批准",
+      "count": "{count} 台待批准",
+      "waiting": "等待组织 Owner 批准",
+      "revokedTitle": "已撤销批准",
+      "waitingDescription": "批准后，此 daemon 才能运行组织中的 agent。",
+      "changedBy": "由 {name} 撤销 · {date}",
+      "approveTitle": "批准 {name}",
+      "revokeTitle": "撤销对 {name} 的批准",
+      "approveDescription": "允许此 daemon 运行组织中的 agent，并访问它们的数据和凭据。",
+      "revokeDescription": "停止授权此 daemon 执行组织任务。此前接收的数据和凭据仍保留在机器上。",
+      "createdBy": "创建者",
+      "host": "主机",
+      "status": "状态",
+      "online": "在线",
+      "offline": "离线",
+      "connectFirst": "请先连接此 daemon，再批准。"
+    },
     "deleteModal": {
       "title": "删除 daemon",
       "body": "{daemon} 将从控制平面移除。其 daemon 进程会继续运行，直到你在主机上停止它，但它将无法再托管 Agent 或保持连接。此操作无法撤销。",

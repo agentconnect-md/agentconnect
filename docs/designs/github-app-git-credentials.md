@@ -514,6 +514,34 @@ attribution footer (agent, runtime, model, session link) to the description
 of a pull request or issue it creates, below a hidden marker. It does this
 before any host's broker runs, so GitLab and Gitea get the same footer.
 
+Change requests also carry an `Initiated by` line independently of that optional
+footer. The session pins an initiator snapshot at creation, separate from its
+routing identity; delegation inherits it, and cross-daemon calls carry it through
+the relay without changing authorization. A description update reads the current
+description through the broker and retains its recorded initiator, so another
+session cannot take credit by rewriting the body. Names are escaped plain text,
+with no inferred code-host mentions, account IDs or sign-in addresses.
+
+The snapshot also carries verified linked commit identities resolved through
+`agent/read-access` for the initiating organization member. GitHub social or
+repository identity supplies the account's numeric ID and login for its noreply
+address. A GitLab OAuth connection must belong to that console member, and its
+authenticated user must match the recorded provider ID; only its explicitly
+public email is used. Ambiguous links and lookup failures supply no commit identity.
+Azure DevOps uses the console user's linked Microsoft identity. Its email searches
+the connected organization's identities; an active human account must match both
+the connection's tenant and the linked Entra object ID, with the same email.
+The application credential only reads that identity and never supplies its author.
+Tasks with fixed initiators receive a `Co-authored-by` trailer per remote host in their standing instructions
+for new commits, preserving the bot author and committer. Gitea bot connections
+supply no personal identity. There is no mandatory
+linking flow or commit hook.
+
+Ordinary conversations have no session-wide coauthor block. Their current
+requester is resolved lazily when delegating or opening a PR; ordinary follow-up
+turns make no attribution lookup. Attribution reads use one two-second attempt,
+leaving normal read-access requests on their existing retry policy.
+
 - A rewrite replaces only the text above the marker and re-appends the footer,
   so an agent that edits its description keeps it.
 - A marker block in the agent's own input is dropped first, so a footer is
@@ -735,6 +763,10 @@ the proxy's CA certificate:
 - A CONNECT to one of the routes enters the tunnel as a fresh CONNECT with
   no client header; any other host is connected directly, as the session
   would without a proxy, since `HTTPS_PROXY` cannot be scoped to some hosts.
+- Ordinary HTTP proxy requests to other authorities are authenticated and
+  forwarded directly, with request and response streaming and no proxy credentials
+  forwarded upstream. A credential-tunnel authority requires CONNECT; an HTTP
+  request never downgrades that route to a direct connection.
 - On the holder, the tunnel ends at a Unix socket of the agent's own that
   honors only that agent's placeholder and refuses a CONNECT to anything but
   its routes, whatever the executor's shim forwards.
@@ -935,9 +967,11 @@ default, which is `saas`, or the base URL the launch or the runtime's file
 configures; a key found in a file is named by the hashed variable its preparer
 gives it. The session's variable and its private HOME copy of the file hold the
 slot's placeholder, and the file is projected rather than shared. A private copy
-an earlier `srt` launch left with the key in the clear is projected too, where a
-VM refuses one. Resolving the slot reads the key again where the machine keeps
-it, and is refused once the key is gone or the runtime sends it to another host.
+an earlier launch left, in `srt` or a VM, has each key the host still binds
+replaced by its placeholder, whether it holds that key in the clear or a stale
+one, and keeps a key the host no longer binds as it is. Resolving the slot reads
+the key again where the machine keeps it, and is refused once the key is gone or
+the runtime sends it to another host.
 Subscription and OAuth sign-ins are shared or seeded as before. A runtime keeps
 its keys as before, and the daemon logs that once, when one of them reaches no
 single HTTPS host the proxy recognizes (a cleartext or ported base URL, Codex

@@ -65,8 +65,8 @@ describe('WorkspaceFormFields', () => {
       'Scratch',
       'GitHub',
       'GitLab',
-      'Gitea',
       'Azure DevOps',
+      'Gitea',
       'Git URL'
     ])
     // The tiles are compact chips, so each one's one-line description is its tooltip.
@@ -95,9 +95,9 @@ describe('WorkspaceFormFields', () => {
     await act(async () => buttons[2]?.click())
     expect(onChange).toHaveBeenCalledWith('gitlab')
     await act(async () => buttons[3]?.click())
-    expect(onChange).toHaveBeenCalledWith('gitea')
-    await act(async () => buttons[4]?.click())
     expect(onChange).toHaveBeenCalledWith('azure-devops')
+    await act(async () => buttons[4]?.click())
+    expect(onChange).toHaveBeenCalledWith('gitea')
     await act(async () => buttons[5]?.click())
     expect(onChange).toHaveBeenCalledWith('giturl')
   })
@@ -107,7 +107,7 @@ describe('WorkspaceFormFields', () => {
     await render(<WorkspaceModeField value="scratch" onChange={vi.fn()} />)
 
     const labels = Array.from(container?.querySelectorAll('button') ?? []).map((button) => button.textContent)
-    expect(labels).toEqual(['Scratch', 'GitHub', 'GitLab', 'Gitea', 'Azure DevOps'])
+    expect(labels).toEqual(['Scratch', 'GitHub', 'GitLab', 'Azure DevOps', 'Gitea'])
   })
 
   it('keeps the Git URL tile for a workspace already on one, flag or not', async () => {
@@ -119,8 +119,8 @@ describe('WorkspaceFormFields', () => {
       'Scratch',
       'GitHub',
       'GitLab',
-      'Gitea',
       'Azure DevOps',
+      'Gitea',
       'Git URL'
     ])
     expect(buttons[5]?.getAttribute('aria-pressed')).toBe('true')

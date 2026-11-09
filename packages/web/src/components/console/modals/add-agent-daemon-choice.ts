@@ -1,6 +1,6 @@
 import { groupSetIdOf, type DaemonRow, type MemberSetRow } from '@/lib/data'
 
-type DaemonChoiceRow = Pick<DaemonRow, 'pool' | 'daemonId' | 'status' | 'memberSetId'>
+type DaemonChoiceRow = Pick<DaemonRow, 'pool' | 'daemonId' | 'status' | 'memberSetId' | 'approval'>
 
 /** What create submits. A set target — Cloud or one of the org's groups — names the SET, never a
  *  member: pinning a member id is what left an agent stranded on a Pod the next rollout replaced. */
@@ -33,24 +33,27 @@ export function addAgentDaemonChoice<T extends DaemonChoiceRow>(
   selectedValue: string,
   groups: readonly MemberSetRow[] = []
 ): AddAgentDaemonChoice<T> {
-  const poolDaemons = daemons.filter((daemon) => daemon.pool && daemon.status === 'online')
+  const approved = (daemon: T) => !daemon.approval || daemon.approval.status === 'approved'
+  const poolDaemons = daemons.filter((daemon) => approved(daemon) && daemon.pool && daemon.status === 'online')
   // Group membership does not disqualify a machine as a target: a `daemon` placement is eligible
   // for exactly that machine either way, so it stays the agent's only holder (daemon-groups.md §3).
   // Only Cloud members are excluded, and above — a pool Pod is a replaceable identity to pin to.
   const localDaemons = onlineFirst(daemons.filter((daemon) => !daemon.pool))
   const liveMemberOf = (group: MemberSetRow): T | undefined =>
-    daemons.find((daemon) => daemon.status === 'online' && group.memberDaemonIds.includes(daemon.daemonId))
+    daemons.find(
+      (daemon) => approved(daemon) && daemon.status === 'online' && group.memberDaemonIds.includes(daemon.daemonId)
+    )
   // Every group is OFFERED; only a serving one is selectable. Hiding an empty group answered the
   // operator's "where is the group I just made?" with silence.
   const availableGroups = groups.filter((group) => liveMemberOf(group) !== undefined)
   const offeredGroups = groups
 
   const selectedGroup = availableGroups.find((group) => groupSetIdOf(selectedValue) === group.setId)
-  const selectedLocal = localDaemons.find((daemon) => daemon.daemonId === selectedValue)
+  const selectedLocal = localDaemons.find((daemon) => approved(daemon) && daemon.daemonId === selectedValue)
   // Falls back in the order the form offers: the explicit pick, else Cloud, else the first machine.
   const value = selectedGroup
     ? selectedValue
-    : (selectedLocal?.daemonId ?? (poolDaemons.length > 0 ? '' : (localDaemons[0]?.daemonId ?? '')))
+    : (selectedLocal?.daemonId ?? (poolDaemons.length > 0 ? '' : (localDaemons.find(approved)?.daemonId ?? '')))
 
   // Re-looked up from `value`, never from `selectedLocal`: when nothing was chosen and there is no
   // Cloud, `value` falls back to the first machine — which `selectedLocal` knows nothing about.

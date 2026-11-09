@@ -54,6 +54,7 @@ import {
   GITCRED_GITHUB_V2_FEATURE,
   GITCRED_PROVIDER_V2_FEATURE,
   GITEA_V1_FEATURE,
+  AZURE_DEVOPS_HOOKS_V1_FEATURE,
   GITLAB_EFFECT_V1_FEATURE,
   INTEGRATION_REVOKED_FEATURE,
   INTEGRATION_TENANT_FEATURE,
@@ -118,7 +119,10 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
 
   // Inject the current relay roster so the daemon converges to the relays it should
   // dial (shared-bot-relay.md §5). Hot changes ride the `relay/roster` EVT.
-  const [relays, gitCommitIdentity] = await Promise.all([deps.relayRoster(), deps.github?.getGitCommitIdentity()])
+  const approved = conn.approval.status === 'approved'
+  const [relays, gitCommitIdentity] = approved
+    ? await Promise.all([deps.relayRoster(), deps.github?.getGitCommitIdentity()])
+    : [[], undefined]
 
   // register/ok grows with the daemon's agents and the org's conversations, so it is the first frame that may need fragments.
   if (req.capabilities.features.includes(FRAME_FRAGMENTS_FEATURE)) conn.enableFrameFragments()
@@ -156,6 +160,8 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       GITLAB_EFFECT_V1_FEATURE,
       // gitea-integration.md §11: gitea gitcred purposes, the gitea hook/start arm, and the review and commit-status surfaces.
       GITEA_V1_FEATURE,
+      // azure-devops-integration.md §11.9: the azure-devops hook/start arm, its reviews, and its pull-request status.
+      AZURE_DEVOPS_HOOKS_V1_FEATURE,
       // §15.1/§17.2: this CP serves the provider-neutral review authorization, the
       // publication lease with its operation ledger, and the body-free result.
       CODEHOST_REVIEW_V1_FEATURE,
@@ -234,7 +240,13 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       DAEMON_LIFECYCLE_BEGIN_FEATURE
     ]
   })
+  await conn.flush()
+  if (conn.closedSignal.aborted) return
   deps.connReg.markReady(conn.daemonId, conn)
+  if (!approved) {
+    await deps.registry.settleLifecycleOpOnReady(did)
+    return
+  }
   deps.pullRequestFeedback?.kick()
   deps.followUpWatch?.kick()
   deps.capabilityRequests?.daemonReady(

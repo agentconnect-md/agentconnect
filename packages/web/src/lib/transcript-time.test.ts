@@ -3,6 +3,7 @@ import {
   formatTranscriptTime,
   parseTranscriptTime,
   formatTranscriptRowTime,
+  turnTimeLabel,
   transcriptRowTimeMs
 } from './transcript-time'
 
@@ -38,5 +39,15 @@ describe('transcript time', () => {
     // Legacy fallback: no stored axis → derive from ts exactly as before.
     expect(transcriptRowTimeMs({ ts: '1754123457123' })).toBe(1_754_123_457_123)
     expect(formatTranscriptRowTime({ ts: 'om_abc' })).toBe('')
+  })
+})
+
+describe('turnTimeLabel', () => {
+  const now = new Date(2026, 10, 9, 15, 0).getTime()
+  it('keeps a time from today bare, and leads one from another day with its date and another year with its year', () => {
+    expect(turnTimeLabel('2:17:37 PM', new Date(2026, 10, 9, 14, 17).getTime(), now)).toBe('2:17:37 PM')
+    expect(turnTimeLabel('4:28:11 AM', new Date(2026, 10, 7, 4, 28).getTime(), now)).toBe('Nov 7, 4:28:11 AM')
+    expect(turnTimeLabel('9:00:00 AM', new Date(2025, 0, 2, 9).getTime(), now)).toBe('Jan 2, 2025, 9:00:00 AM')
+    expect(turnTimeLabel('9:00:00 AM', undefined, now)).toBe('9:00:00 AM')
   })
 })

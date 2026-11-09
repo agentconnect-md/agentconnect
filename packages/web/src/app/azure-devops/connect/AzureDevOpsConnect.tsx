@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
 import { Spinner, Wordmark } from '@/components/marks'
+import { TooltipLayer } from '@/components/console/Tooltip'
 import {
   ApiError,
   applyAzureDevOpsConnectProjects,
@@ -62,7 +63,9 @@ interface Refusal {
   ticket?: string
 }
 
-type Project = { id: string; name: string }
+type ProjectAccess = { group: AzureDevOpsProjectGroup; allowTriggers: boolean }
+
+type Project = { id: string; name: string; access?: ProjectAccess }
 
 type Step =
   | { kind: 'loading' }
@@ -127,6 +130,10 @@ export default function AzureDevOpsConnect() {
   const [integrationsHref, setIntegrationsHref] = useState('/')
   const [chosenOrganization, setChosenOrganization] = useState('')
   const [groups, setGroups] = useState<Map<string, AzureDevOpsProjectGroup>>(new Map())
+  // Allow triggers per project, where the person changed it; otherwise on for Contributors and off for Readers (§11.1).
+  const [triggerPicks, setTriggerPicks] = useState<Map<string, boolean>>(new Map())
+  // Every project, including ones created later; while on, the per-project rows are left as they are.
+  const [allProjects, setAllProjects] = useState<ProjectAccess | null>(null)
   // The flow ticket lives in this page's memory for the flow alone: never storage, never a URL.
   const flow = useRef<{ flowId: string; ticket: string } | null>(null)
   // The landing's query, read once: the first effect run clears the address bar, and Strict Mode runs it again.
@@ -146,7 +153,11 @@ export default function AzureDevOpsConnect() {
     if (!current) return
     const chosen = await chooseAzureDevOpsConnectOrganization(org, current.flowId, current.ticket, organization)
     flow.current = { ...current, ticket: chosen.ticket }
-    setGroups(new Map())
+    // Opens on what the application already holds; Apply makes Azure DevOps match the page.
+    const held = chosen.projects.filter((project) => project.access)
+    setGroups(new Map(held.map((project) => [project.id, project.access!.group])))
+    setTriggerPicks(new Map(held.map((project) => [project.id, project.access!.allowTriggers])))
+    setAllProjects(chosen.allProjects ?? null)
     setStep({ kind: 'projects', organization: chosen.organization, projects: chosen.projects })
   }
 
@@ -228,11 +239,15 @@ export default function AzureDevOpsConnect() {
   const apply = () =>
     act(async () => {
       const current = flow.current
-      if (!current || groups.size === 0) return
-      const projects = [...groups.entries()].map(([projectId, group]) => ({ projectId, group }))
+      if (!current || (groups.size === 0 && !allProjects)) return
+      const projects = [...groups.entries()].map(([projectId, group]) => ({
+        projectId,
+        group,
+        allowTriggers: triggersAllowed(projectId, group)
+      }))
       setStep({
         kind: 'done',
-        result: await applyAzureDevOpsConnectProjects(orgId, current.flowId, current.ticket, projects)
+        result: await applyAzureDevOpsConnectProjects(orgId, current.flowId, current.ticket, projects, allProjects)
       })
     })
 
@@ -248,16 +263,36 @@ export default function AzureDevOpsConnect() {
       window.location.assign((await startAzureDevOpsConnect(connectionId ?? undefined, orgId)).authorizeUrl)
     })
 
-  const toggleProject = (projectId: string) =>
+  // A newly checked project starts at Write with triggers allowed.
+  const toggleProject = (projectId: string) => {
     setGroups((current) => {
       const next = new Map(current)
       if (next.has(projectId)) next.delete(projectId)
-      else next.set(projectId, 'readers')
+      else next.set(projectId, 'contributors')
       return next
     })
+    setTriggerPicks((current) => {
+      const next = new Map(current)
+      next.delete(projectId)
+      return next
+    })
+  }
 
-  const setGroup = (projectId: string, group: AzureDevOpsProjectGroup) =>
+  // A group change resets the project's Allow triggers to that group's default.
+  const setGroup = (projectId: string, group: AzureDevOpsProjectGroup) => {
     setGroups((current) => new Map(current).set(projectId, group))
+    setTriggerPicks((current) => {
+      const next = new Map(current)
+      next.delete(projectId)
+      return next
+    })
+  }
+
+  const triggersAllowed = (projectId: string, group: AzureDevOpsProjectGroup): boolean =>
+    triggerPicks.get(projectId) ?? group === 'contributors'
+
+  const setTriggers = (projectId: string, allowed: boolean) =>
+    setTriggerPicks((current) => new Map(current).set(projectId, allowed))
 
   const managed = connectionId !== null
 
@@ -313,12 +348,46 @@ export default function AzureDevOpsConnect() {
         ) : step.kind === 'projects' ? (
           <>
             <div>
-              <h1 className="text-[18px] font-semibold leading-normal text-(--text-primary)">{t('projectsTitle')}</h1>
+              <h1 className="flex items-center gap-2 text-[18px] font-semibold leading-normal text-(--text-primary)">
+                {t('projectsTitle')}
+                <span
+                  className="flex text-(--text-tertiary)"
+                  title={t('projectsHint')}
+                  data-azure-devops-projects-hint=""
+                >
+                  <Icon name="info" size={14} />
+                </span>
+              </h1>
               <p className="mt-2 text-[13px] leading-[1.55] text-(--text-secondary)">
                 {t('projectsDescription', { organization: step.organization })}
               </p>
             </div>
-            {step.projects.length === 0 ? (
+            <div data-azure-devops-all-projects="" className="flex flex-wrap items-center justify-between gap-2">
+              <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-[10px] text-[14px] font-medium text-(--text-primary)">
+                <input
+                  type="checkbox"
+                  checked={allProjects !== null}
+                  disabled={busy}
+                  onChange={() =>
+                    setAllProjects((current) => (current ? null : { group: 'contributors', allowTriggers: true }))
+                  }
+                />
+                <span className="min-w-0 truncate">{t('allProjects')}</span>
+                <span className="flex text-(--text-tertiary)" title={t('allProjectsHint')}>
+                  <Icon name="info" size={13} />
+                </span>
+              </label>
+              {allProjects && (
+                <AccessControls
+                  label={t('allProjects')}
+                  access={allProjects}
+                  busy={busy}
+                  onGroup={(group) => setAllProjects({ group, allowTriggers: group === 'contributors' })}
+                  onTriggers={(allowTriggers) => setAllProjects({ ...allProjects, allowTriggers })}
+                />
+              )}
+            </div>
+            {allProjects ? null : step.projects.length === 0 ? (
               <p className="text-[13px] leading-[1.55] text-(--text-secondary)">{t('noProjects')}</p>
             ) : (
               <div className="flex max-h-[320px] flex-col gap-2 overflow-y-auto">
@@ -340,37 +409,22 @@ export default function AzureDevOpsConnect() {
                         <span className="min-w-0 truncate">{project.name}</span>
                       </label>
                       {group !== undefined && (
-                        <span
-                          role="group"
-                          aria-label={t('groupFor', { project: project.name })}
-                          className="pillbar flex-none gap-[2px] p-[2px]"
-                        >
-                          {(['readers', 'contributors'] as const).map((value) => (
-                            <button
-                              key={value}
-                              type="button"
-                              aria-pressed={group === value}
-                              disabled={busy}
-                              className={
-                                group === value
-                                  ? 'pill on px-[10px] py-[3px] text-[12px]'
-                                  : 'pill px-[10px] py-[3px] text-[12px]'
-                              }
-                              onClick={() => setGroup(project.id, value)}
-                            >
-                              {value === 'readers' ? t('readers') : t('contributors')}
-                            </button>
-                          ))}
-                        </span>
+                        <AccessControls
+                          label={project.name}
+                          triggersFor={project.id}
+                          access={{ group, allowTriggers: triggersAllowed(project.id, group) }}
+                          busy={busy}
+                          onGroup={(value) => setGroup(project.id, value)}
+                          onTriggers={(allowed) => setTriggers(project.id, allowed)}
+                        />
                       )}
                     </div>
                   )
                 })}
               </div>
             )}
-            <p className="text-[12px] leading-[1.5] text-(--text-tertiary)">{t('groupHint')}</p>
             <div className="flex flex-wrap gap-[10px]">
-              <Button onClick={() => void apply()} disabled={busy || groups.size === 0}>
+              <Button onClick={() => void apply()} disabled={busy || (groups.size === 0 && !allProjects)}>
                 {busy ? t('applying') : managed ? t('apply') : t('connect')}
               </Button>
               <a href={integrationsHref} className="dsbtn dsbtn-ghost">
@@ -391,6 +445,7 @@ export default function AzureDevOpsConnect() {
                 {t('doneBody', { organization: step.result.connection.organization })}
               </p>
             </div>
+            <TriggerOutcomes result={step.result} />
             <a href={integrationsHref} className="dsbtn dsbtn-primary">
               {t('backToIntegrations')}
             </a>
@@ -408,6 +463,46 @@ export default function AzureDevOpsConnect() {
           />
         )}
       </div>
+      <TooltipLayer />
+    </div>
+  )
+}
+
+/** Projects where Allow triggers did not take (§11.1), with what is left to do by hand; silent when every grant took. */
+function TriggerOutcomes({ result }: { result: AzureDevOpsConnectResultDto }) {
+  const t = useTranslations('Auth.azureDevOpsConnect')
+  const missed = (result.triggers ?? []).filter((grant) => grant.outcome !== 'granted')
+  if (missed.length === 0 && !result.checklist?.length) return null
+  return (
+    <div
+      data-azure-devops-trigger-outcomes=""
+      className="flex w-full flex-col gap-2 rounded-md border border-(--border-subtle) bg-(--status-paused-soft) px-3 py-[10px] text-left"
+    >
+      <div className="flex items-start gap-2 text-[13px] font-semibold leading-[1.5] text-(--text-primary)">
+        <Icon name="triangle-alert" size={14} color="var(--amber-500)" className="mt-[3px] flex-none" />
+        <span>{t('triggersMissedTitle')}</span>
+      </div>
+      {missed.length > 0 && (
+        <ul className="m-0 flex list-none flex-col gap-1 p-0 text-[12.5px] leading-[1.5] text-(--text-secondary)">
+          {missed.map((grant) => (
+            <li key={grant.projectId} data-azure-devops-trigger-outcome={grant.outcome} className="break-words">
+              {grant.outcome === 'refused'
+                ? t('triggersRefused', { project: grant.projectName })
+                : t('triggersFailed', { project: grant.projectName })}
+            </li>
+          ))}
+        </ul>
+      )}
+      {/* The checklist comes from the Control Plane: it names the application by its client ID. */}
+      {result.checklist?.length ? (
+        <ol className="m-0 flex list-decimal flex-col gap-[6px] pl-5 text-[12.5px] leading-[1.55] text-(--text-primary)">
+          {result.checklist.map((item) => (
+            <li key={item} className="break-words">
+              {item}
+            </li>
+          ))}
+        </ol>
+      ) : null}
     </div>
   )
 }
@@ -497,5 +592,56 @@ function RefusalView({
         </a>
       </div>
     </div>
+  )
+}
+
+/** Read or Write, and Allow triggers, for one project or for all of them. */
+function AccessControls({
+  label,
+  triggersFor,
+  access,
+  busy,
+  onGroup,
+  onTriggers
+}: {
+  label: string
+  triggersFor?: string
+  access: ProjectAccess
+  busy: boolean
+  onGroup: (group: AzureDevOpsProjectGroup) => void
+  onTriggers: (allowed: boolean) => void
+}) {
+  const t = useTranslations('Auth.azureDevOpsConnect')
+  return (
+    <span className="flex flex-none items-center gap-3">
+      <span role="group" aria-label={t('groupFor', { project: label })} className="pillbar flex-none gap-[2px] p-[2px]">
+        {(['readers', 'contributors'] as const).map((value) => (
+          <button
+            key={value}
+            type="button"
+            aria-pressed={access.group === value}
+            disabled={busy}
+            className={
+              access.group === value ? 'pill on px-[10px] py-[3px] text-[12px]' : 'pill px-[10px] py-[3px] text-[12px]'
+            }
+            onClick={() => onGroup(value)}
+          >
+            {value === 'readers' ? t('read') : t('write')}
+          </button>
+        ))}
+      </span>
+      <label
+        data-azure-devops-allow-triggers={triggersFor ?? 'all'}
+        className="flex cursor-pointer items-center gap-[6px] text-[12.5px] text-(--text-secondary)"
+      >
+        <input
+          type="checkbox"
+          checked={access.allowTriggers}
+          disabled={busy}
+          onChange={(event) => onTriggers(event.target.checked)}
+        />
+        {t('allowTriggers')}
+      </label>
+    </span>
   )
 }

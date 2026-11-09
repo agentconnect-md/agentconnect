@@ -39,7 +39,8 @@ import {
 import { type AppConfig, resolveWebAppUrl } from './config/env.js'
 import { resolveGithubAppConfig } from './github/config.js'
 import { resolveGitlabAppConfig } from './gitlab/config.js'
-import { GitlabApiClient, type FetchLike as GitlabFetchLike } from './gitlab/api.js'
+import { GitlabApiClient, gitlabCurrentUser, type FetchLike as GitlabFetchLike } from './gitlab/api.js'
+import { resolveCommitAuthors } from './codehost/commit-authors.js'
 import { GitlabOauthService } from './gitlab/oauth.service.js'
 import { DELETION_PENDING_REASON, GitlabAccountService } from './gitlab/account.service.js'
 import { GitlabProvisioner } from './gitlab/provisioner.js'
@@ -58,14 +59,20 @@ import { GiteaProvisioner } from './gitea/provisioner.js'
 import { GiteaBindingService } from './gitea/binding.service.js'
 import { GiteaConvergeSweeper } from './gitea/converge-sweeper.js'
 import { GiteaGitcredService } from './gitea/gitcred.service.js'
-import { AzureDevOpsApiClient, type FetchLike as AzureDevOpsFetchLike } from './azure-devops/api.js'
+import { AzureDevOpsApiClient, readMicrosoftUser, type FetchLike as AzureDevOpsFetchLike } from './azure-devops/api.js'
 import { AzureDevOpsTokenCache } from './azure-devops/token-cache.js'
 import { AzureDevOpsConnectionService, azureDevOpsSecretFingerprint } from './azure-devops/connection.service.js'
+import { AzureDevOpsUserAuthzService } from './azure-devops/user-authz.js'
 import { AzureDevOpsBindingService } from './azure-devops/binding.service.js'
 import { AzureDevOpsGitcredService } from './azure-devops/gitcred.service.js'
 import { AzureDevOpsConnectFlowService } from './azure-devops/connect-flow.service.js'
+import { AzureDevOpsHookService } from './azure-devops/hook.service.js'
+import { azureDevOpsReviewPublisher } from './azure-devops/review-publisher.js'
+import { AzureDevOpsHookSweeper } from './azure-devops/hook-sweeper.js'
+import { AzureDevOpsMembershipAuthzService } from './azure-devops/membership-authz.service.js'
 import { azureDevOpsConnectKeys } from './azure-devops/connect.js'
 import { GiteaStatusCoordinator, GiteaStatusReporter } from './gitea/status-projection.js'
+import { AzureDevOpsStatusCoordinator, AzureDevOpsStatusReporter } from './azure-devops/status-projection.js'
 import { GiteaMembershipAuthzService } from './gitea/membership-authz.service.js'
 import { unionGiteaWebhookEvents } from './gitea/webhook-events.js'
 import { resolveSlackPlatformAppConfig } from './config/slack-platform.js'
@@ -103,6 +110,7 @@ import { GithubUserAuthzService } from './github/user-authz.js'
 import { RepositoryGrantReattestor, strictRepoAccessLookups } from './github/repository-grant-reattestor.js'
 import { type Clock, systemClock } from './domain/clock.js'
 import { K8sHttp } from '@agentconnect.md/k8s-client'
+import { PgDaemonAdmissionRepo } from './persistence/repositories/daemon-admission.repo.js'
 import { ClusterDaemonIdentityService, ClusterWorkloadIdentityService, loadClusterAccess } from './cluster/index.js'
 
 import {
@@ -195,6 +203,7 @@ import {
   PgGiteaWebhookSecretStore,
   PgAzureDevOpsConnectionRepo,
   PgAzureDevOpsConnectionSecretStore,
+  PgAzureDevOpsHookRepo,
   PgAzureDevOpsRepositoryBindingRepo,
   PgCodeHostReviewLeaseRepo,
   PgSocialIdentityMutationGate,
@@ -382,7 +391,7 @@ import { msTeamsRoutes } from './platforms/msteams/routes.js'
 import { msTeamsConnectRoutes } from './platforms/msteams/connect-routes.js'
 import { msTeamsConnectKeys } from './platforms/msteams/connect.js'
 import { MsTeamsCredentialReconciler } from './platforms/msteams/credential-reconciler.js'
-import { msTeamsConnectAnchor, resolveMsTeamsPlatformApp } from './platforms/msteams/deployment-app.js'
+import { msTeamsConnectAnchor, msTeamsRelayApp, resolveMsTeamsPlatformApp } from './platforms/msteams/deployment-app.js'
 import { createTelegramCpProvider } from './platforms/telegram/provider.js'
 import { createDiscordCpProvider } from './platforms/discord/provider.js'
 import { createSlackCpProvider, createSlackToolingCredentials } from './platforms/slack/provider.js'
@@ -397,6 +406,7 @@ import { createGoogleChatCpProvider, googleChatClaimAnchor } from './platforms/g
 import { GoogleChatCredentialReconciler } from './platforms/googlechat/credential-reconciler.js'
 import { googleChatAppRoutes, googleChatKeyRoutes } from './platforms/googlechat/routes.js'
 import { googleChatClaimRoutes } from './platforms/googlechat/claim.js'
+import { googleChatRelayApp } from './platforms/googlechat/deployment-app.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from './http/routes/slack-install.js'
 import { slackPlatformInstallRoutes, slackPlatformCallbackRoutes } from './http/routes/slack-platform-install.js'
 import { slackWorkspaceIngress } from './platforms/slack/workspace-install.js'
@@ -552,6 +562,7 @@ export function buildContainer(
 
   // ── C6 repositories (the ONLY @prisma/client importers) ───────────────────
   const repos = {
+    daemonAdmission: new PgDaemonAdmissionRepo(prisma),
     daemon: new PgDaemonRepo(prisma),
     daemonLifecycleOp: new PgDaemonLifecycleOpRepo(prisma),
     apiKey: new PgApiKeyRepo(prisma),
@@ -796,6 +807,7 @@ export function buildContainer(
       ...(config.RELAY_TOKEN ? { RELAY_TOKEN: config.RELAY_TOKEN } : {}),
       HEARTBEAT_SEC: config.HEARTBEAT_SEC
     },
+    repos.daemonAdmission,
     clusterIdentity
   )
   const relayStaleMs = config.RELAY_STALE_SEC * 1000
@@ -923,6 +935,7 @@ export function buildContainer(
   // The ONE answer to "which daemons serve this agent" — what its placement names, plus every
   // current duty holder (orchestrator/placementResolver.ts).
   const placementResolver = new PlacementResolver({
+    approved: (ids) => repos.daemonAdmission.allowed(ids),
     duties: repos.dutyGroup,
     // The set's members ready to take a trigger. Only the rendezvous fallback reads this: a set
     // agent whose lease lapsed has no holder, and any member can claim it on receipt.
@@ -1000,6 +1013,8 @@ export function buildContainer(
   // The Gitea edge, bound once to the resolved instance; every Gitea URL in the process composes from it.
   const giteaApi = new GiteaApiClient(giteaCfg.baseUrl, opts.giteaFetch)
   const giteaWebhookSecretStore = new PgGiteaWebhookSecretStore(prisma, secretCipher)
+  // Azure DevOps service hook state (azure-devops-integration.md §11.2): sealed keys and recorded subscriptions.
+  const azureDevOpsHookRepo = new PgAzureDevOpsHookRepo(prisma, secretCipher)
   const hookService = new HookService(
     repos.hook,
     repos.hookSecret,
@@ -1033,7 +1048,13 @@ export function buildContainer(
       host: giteaCfg.baseUrl
     },
     repos.codeHostDecisionRouting,
-    githubAppCfg ? repos.githubApp : undefined
+    githubAppCfg ? repos.githubApp : undefined,
+    // azure-devops-kind compile sources (azure-devops-integration.md §11.3): the hooked binding, its connection, keys and subscriptions.
+    {
+      bindings: repos.azureDevOpsRepositoryBinding,
+      connections: repos.azureDevOpsConnection,
+      hooks: azureDevOpsHookRepo
+    }
   )
 
   // The single fencing site (allocates seq, stamps epoch/launchId on C→D frames).
@@ -1849,8 +1870,49 @@ export function buildContainer(
     secretFingerprint: azureDevOpsSecretFingerprint(config.API_KEY_PEPPER),
     log: { warn: (obj, msg) => http.log.warn(obj, msg), info: (obj, msg) => http.log.info(obj, msg) }
   })
+  // §11.2: subscriptions follow the repository's enabled hooks; every change recompiles the repository's rules.
+  const azureDevOpsHooks = new AzureDevOpsHookService({
+    connections: repos.azureDevOpsConnection,
+    bindings: repos.azureDevOpsRepositoryBinding,
+    hooks: azureDevOpsHookRepo,
+    service: azureDevOpsConnectionService,
+    api: azureDevOpsApi,
+    clock,
+    ...(config.PUBLIC_RELAY_URL ? { publicRelayUrl: config.PUBLIC_RELAY_URL } : {}),
+    listHooks: (orgId) => repos.hook.listForOrgKind(OrgId(orgId), 'azure-devops'),
+    onChanged: async (orgId, repoId) => {
+      for (const row of await repos.hook.listForOrgKind(OrgId(orgId), 'azure-devops')) {
+        if (row.repoId === repoId) await hookService.broadcast(row)
+      }
+    },
+    log: { warn: (obj, msg) => http.log.warn(obj, msg) }
+  })
+  const azureDevOpsHookSweeper = new AzureDevOpsHookSweeper({
+    hooks: azureDevOpsHooks,
+    clock,
+    log: { warn: (obj, msg) => http.log.warn(obj, msg) }
+  })
+  // The Azure DevOps arm of rc/codehost-membership-authz (§11.4): the actor's groups against the repository's list chain.
+  const azureDevOpsMembershipAuthz = new AzureDevOpsMembershipAuthzService({
+    hooks: repos.hook,
+    bindings: repos.azureDevOpsRepositoryBinding,
+    connections: repos.azureDevOpsConnection,
+    service: azureDevOpsConnectionService,
+    api: azureDevOpsApi,
+    clock,
+    log: { warn: (obj, msg) => http.log.warn(obj, msg) }
+  })
   const azureDevOps = {
     connections: azureDevOpsConnectionService,
+    userAuthz: new AzureDevOpsUserAuthzService({
+      api: azureDevOpsApi,
+      service: azureDevOpsConnectionService,
+      microsoftIdentityFor: async (userId) => {
+        const sub = await repos.user.getOidcSubject(userId)
+        return sub && logtoIdentity ? logtoIdentity.microsoftIdentityFor(sub, 0) : null
+      }
+    }),
+    hooks: azureDevOpsHooks,
     bindings: new AzureDevOpsBindingService({
       connections: repos.azureDevOpsConnection,
       bindings: repos.azureDevOpsRepositoryBinding,
@@ -1893,7 +1955,9 @@ export function buildContainer(
             }
           }
         : {}),
-      ...(webAppUrl ? { webAppUrl } : {})
+      ...(webAppUrl ? { webAppUrl } : {}),
+      // A project that now allows triggers recovers the hooked repositories that waited for it.
+      onTriggersAllowed: (orgId, connectionId) => azureDevOpsHooks.convergeConnection(orgId, connectionId)
     })
   }
   // The §6 convergence sweep, the half of a contended pass's obligation that survives a restart.
@@ -1968,6 +2032,34 @@ export function buildContainer(
     }
   })
   giteaStatusReporterRef.current = giteaStatusReporter
+
+  // azure-devops-integration.md §11.7: a pull-request status the Control Plane writes with the connection's token.
+  const azureDevOpsStatusReporterRef: { current?: AzureDevOpsStatusReporter } = {}
+  const azureDevOpsStatusProjection = new AzureDevOpsStatusCoordinator({
+    projections: new PgCodeHostRunProjectionRepo(prisma),
+    runs: repos.hook,
+    agents: repos.agent,
+    bindings: repos.azureDevOpsRepositoryBinding,
+    connections: repos.azureDevOpsConnection,
+    clock,
+    kick: () => azureDevOpsStatusReporterRef.current?.kick()
+  })
+  const azureDevOpsStatusReporter = new AzureDevOpsStatusReporter({
+    projections: new PgCodeHostRunProjectionRepo(prisma),
+    bindings: repos.azureDevOpsRepositoryBinding,
+    connections: repos.azureDevOpsConnection,
+    service: azureDevOpsConnectionService,
+    api: azureDevOpsApi,
+    orgs: repos.org,
+    clock,
+    ...(webAppUrl ? { webAppUrl } : {}),
+    log: {
+      info: (o, m) => http.log.info(o, m),
+      warn: (o, m) => http.log.warn(o, m),
+      error: (o, m) => http.log.error(o, m)
+    }
+  })
+  azureDevOpsStatusReporterRef.current = azureDevOpsStatusReporter
 
   const readSessionBranch = async (
     agent: AgentRecord,
@@ -2125,7 +2217,7 @@ export function buildContainer(
         placement: placementResolver
       })
     : undefined
-  // Formal reviews (§15.1/§15.2): the publisher is GitLab's per-agent service account or the Gitea connection's bot user (§5).
+  // Formal reviews (§15.1/§15.2): GitLab's per-agent service account, the Gitea connection's bot user, or the Azure DevOps connection identity.
   const codeHostReviewBroker = new CodeHostReviewBrokerService({
     onPublished: (orgId, agentId, result, sessionId) =>
       codeHostFeedback.reviewPublished(orgId, agentId, result, sessionId),
@@ -2142,6 +2234,10 @@ export function buildContainer(
         const connection = await repos.giteaConnection.get(orgId, binding.connectionId)
         if (!connection || connection.state !== 'connected') return null
         return { serviceAccountExternalId: connection.botUserId, projectPath: binding.repoPath }
+      }
+      if (provider === 'azure-devops') {
+        const deps = { bindings: repos.azureDevOpsRepositoryBinding, connections: repos.azureDevOpsConnection }
+        return azureDevOpsReviewPublisher(deps, orgId, projectExternalId)
       }
       if (provider !== 'gitlab' || !gitlabAppCfg) return null
       const binding = await repos.gitlabProjectBinding.byProject(orgId, projectExternalId)
@@ -2337,11 +2433,16 @@ export function buildContainer(
     clock,
     ...(logtoIdentity ? { identity: logtoIdentity } : {})
   }
-  const googleChatSessionAccess = new GoogleChatSessionAccessService({
-    ...botSessionAccessDeps,
-    users: repos.user,
-    configured: configuredSocialProviders.includes('google')
-  })
+  // The deployment's Chat app (google-chat-integration.md §10.10): its key stays on the CP and relay, so its rows' member checks use it from here.
+  const googleChatSessionAccess = new GoogleChatSessionAccessService(
+    {
+      ...botSessionAccessDeps,
+      users: repos.user,
+      configured: configuredSocialProviders.includes('google')
+    },
+    fetch,
+    googleChatPlatformApp
+  )
   const telegramSessionAccess = createTelegramSessionAccess({
     ...botSessionAccessDeps,
     configured: configuredSocialProviders.includes('telegram')
@@ -2350,10 +2451,13 @@ export function buildContainer(
     ...botSessionAccessDeps,
     configured: configuredSocialProviders.includes('discord')
   })
-  const msTeamsSessionAccess = createMsTeamsSessionAccess({
-    ...botSessionAccessDeps,
-    configured: configuredSocialProviders.includes('azuread')
-  })
+  // The deployment's Teams app (teams-integration.md §8): its secret stays on the CP and relay, so its rows' member checks use it from here.
+  const msTeamsPlatformApp = resolveMsTeamsPlatformApp(config)
+  const msTeamsSessionAccess = createMsTeamsSessionAccess(
+    { ...botSessionAccessDeps, configured: configuredSocialProviders.includes('azuread') },
+    fetch,
+    msTeamsPlatformApp
+  )
 
   // Built once and shared between the route deps (the live paths) and the
   // platform providers below — one closure per platform, not two.
@@ -2437,6 +2541,7 @@ export function buildContainer(
     // per-host decisions through the bundle (gitea-integration.md §13.5).
     codeHosts: codeHostProviders,
     repos: {
+      daemonAdmission: repos.daemonAdmission,
       agent: repos.agent,
       assignment: repos.assignment,
       memberSet: repos.memberSet,
@@ -2525,6 +2630,7 @@ export function buildContainer(
     placementResolver,
     visibilityPush,
     relayControl,
+    relayRoster,
     httpBot,
     collabRoutes,
     agentMutations,
@@ -2977,7 +3083,7 @@ export function buildContainer(
   if (googleChatPlatformApp && !googleChatAnchor) {
     http.log.warn('google chat: no https console URL, so unclaimed Workspace organizations get no claim prompt')
   }
-  // A rotated deployment key reaches the claimed customer rows on the next boot (§10.3).
+  // Removes the deployment app's key from any of its rows an older build stamped (§10.10).
   const googleChatCredentialReconciler = new GoogleChatCredentialReconciler({
     bots: repos.bot,
     secrets: repos.botSecret,
@@ -2988,8 +3094,7 @@ export function buildContainer(
     log: http.log
   })
 
-  // The deployment's Teams app (teams-integration.md §8); a rotated secret reaches the connected tenants' rows on the next boot.
-  const msTeamsPlatformApp = resolveMsTeamsPlatformApp(config)
+  // Removes the deployment app's secret from any of its rows an older build stamped (teams-integration.md §8.5).
   const msTeamsCredentialReconciler = new MsTeamsCredentialReconciler({
     bots: repos.bot,
     secrets: repos.botSecret,
@@ -3111,7 +3216,7 @@ export function buildContainer(
     createDingTalkCpProvider({ installRoutes: [dingTalkCredentialRoutes(httpDeps)] }),
     createMsTeamsCpProvider({
       installRoutes: [
-        msTeamsRoutes(httpDeps),
+        msTeamsRoutes(httpDeps, fetch, msTeamsPlatformApp),
         msTeamsConnectRoutes(httpDeps, {
           ...(msTeamsPlatformApp ? { app: msTeamsPlatformApp } : {}),
           keys: msTeamsConnectKeys(config.API_KEY_PEPPER),
@@ -3192,6 +3297,7 @@ export function buildContainer(
       )
   })
   const wsDeps: DaemonWsServerDeps = {
+    admission: repos.daemonAdmission,
     ahpSessions: new AhpSessionService({
       authorization: ahpAuthorization,
       bindings: repos.ahpSessionBinding,
@@ -3260,6 +3366,39 @@ export function buildContainer(
           users: repos.user,
           platforms,
           ...(logtoIdentity ? { identity: logtoIdentity } : {}),
+          commitAuthorsFor: (viewer) =>
+            resolveCommitAuthors(viewer, {
+              ...(logtoIdentity
+                ? {
+                    socialAccount: async (userId) => {
+                      const sub = await repos.user.getOidcSubject(userId)
+                      return sub ? logtoIdentity.socialAccountFor(sub) : null
+                    }
+                  }
+                : {}),
+              ...(gitlabOauthService && gitlabApi && gitlabAppCfg
+                ? {
+                    gitlab: {
+                      host: new URL(gitlabAppCfg.baseUrl).host,
+                      connections: repos.gitlabConnection,
+                      currentUser: async (orgId, connectionId) =>
+                        gitlabCurrentUser(await gitlabOauthService.withAccessToken(orgId, connectionId), gitlabApi)
+                    }
+                  }
+                : {}),
+              azureDevOps: {
+                connections: repos.azureDevOpsConnection,
+                userFor: (connection, objectId, email) =>
+                  azureDevOpsConnectionService.withApi(connection, (token) =>
+                    readMicrosoftUser(azureDevOpsApi, token, {
+                      organization: connection.organization,
+                      tenantId: connection.tenantId,
+                      objectId,
+                      email
+                    })
+                  )
+              }
+            }),
           sessionsVisible: sessionsVisibleTo(httpDeps, () => http.log)
         },
         expectedOrgId
@@ -3346,6 +3485,7 @@ export function buildContainer(
     ...(githubRunCoordinator ? { githubRunCoordinator } : {}),
     ...(codeHostNoteProjection ? { codeHostNoteProjection } : {}),
     giteaStatusProjection,
+    azureDevOpsStatusProjection,
     relayRoster: () => relayRoster.entries(),
     clock,
     config: {
@@ -3380,7 +3520,11 @@ export function buildContainer(
     relayPublicBase,
     webAppUrl,
     // The relay answers a Teams tenant no organization connected with the deployment app's own card (teams-integration.md §8.4).
-    msTeamsConnectAnchor(msTeamsPlatformApp, webAppUrl)
+    msTeamsConnectAnchor(msTeamsPlatformApp, webAppUrl),
+    // The relay sends the app's rows' Bot Connector calls and mints their Graph tokens (§8.5).
+    msTeamsRelayApp(msTeamsPlatformApp, config.API_KEY_PEPPER),
+    // The relay sends the app's customer rows' Chat API calls (google-chat-integration.md §10.10).
+    googleChatRelayApp(googleChatPlatformApp)
   )
   const relayWsDeps: RelayWsServerDeps = {
     log: http.log,
@@ -3437,12 +3581,25 @@ export function buildContainer(
     // Provider fail-per-value: each arm answers only for its own host; an unknown host is denied.
     authorizeCodeHostMembership: async (req) => {
       if (req.provider === 'gitea') return giteaMembershipAuthz.allowed(req)
+      if (req.provider === 'azure-devops') return azureDevOpsMembershipAuthz.allowed(req)
       return gitlabMembershipAuthz ? gitlabMembershipAuthz.allowed(req) : false
     },
     // One verified delivery the relay observed (gitea-integration.md §6, §7): the binding is marked
     // verified and a rotated key promoted; a provider this deployment does not manage is ignored.
     onCodeHostDelivery: async (observed) => {
-      if (observed.provider !== 'gitea' || !/^[1-9]\d*$/.test(observed.repoExternalId)) return
+      if (!/^[1-9]\d*$/.test(observed.repoExternalId)) return
+      // §11.2: the binding is verified, and a delivery under the next key promotes it once every subscription switched.
+      if (observed.provider === 'azure-devops') {
+        await azureDevOpsHooks.observeDelivery({
+          repoId: BigInt(observed.repoExternalId),
+          at: new Date(observed.receivedAt),
+          ...(observed.verifiedWith !== undefined ? { verifiedWith: observed.verifiedWith } : {})
+        })
+        return
+      }
+      if (observed.provider !== 'gitea') return
+      // Gitea keeps no previous key, so a delivery verified under one names nothing this binding holds.
+      if (observed.verifiedWith === 'previous') return
       await giteaProvisioner.observeDelivery({
         repoId: BigInt(observed.repoExternalId),
         at: new Date(observed.receivedAt),
@@ -3686,6 +3843,28 @@ export function buildContainer(
           else await giteaStatusProjection.afterDeliveryFailed(edge)
         })().catch((err) => http.log.warn({ err, hookId: report.hookId }, 'gitea status: delivery convergence failed'))
       }
+      // azure-devops-integration.md §11.7: the same edge for the pull-request status; an update kind names no head yet.
+      if (host?.provider === 'azure-devops') {
+        void (async () => {
+          const hook = await repos.hook.getUnscoped(HookId(report.hookId))
+          if (hook?.kind !== host.provider) return
+          const edge = {
+            hookId: report.hookId,
+            agentId: report.agentId,
+            deliveryKey: report.deliveryKey,
+            orgId: hook.orgId,
+            state: 'queued' as const,
+            reason: report.reason ?? null,
+            azureDevOps: host.metadata,
+            snapshot: report,
+            at: firedAt
+          }
+          if (report.status === 'accepted') await azureDevOpsStatusProjection.afterAccepted(edge)
+          else await azureDevOpsStatusProjection.afterDeliveryFailed(edge)
+        })().catch((err) =>
+          http.log.warn({ err, hookId: report.hookId }, 'azure-devops status: delivery convergence failed')
+        )
+      }
     },
     // The in-Slack config modal picked a channel's default agent — persist + recompile
     // the bot's routes. Swallow+log: a store error must not close the shared relay link.
@@ -3828,6 +4007,7 @@ export function buildContainer(
       agentMemoryStagingSweeper.start()
       githubRunReporter?.start()
       giteaStatusReporter.start()
+      azureDevOpsStatusReporter.start()
       hookRedeliveryReconciler?.start()
       repositoryGrantReattestor?.start()
       mcpOauthRefresher.start()
@@ -3835,6 +4015,7 @@ export function buildContainer(
       gitlabRetirementSweeper?.start()
       gitlabConvergeSweeper?.start()
       giteaConvergeSweeper.start()
+      azureDevOpsHookSweeper.start()
       // §3.5: the deployment secret moves only across a restart, so one pass at boot re-stamps it.
       void azureDevOpsConnectionService
         .reconcileDeploymentSecret()
@@ -3870,6 +4051,7 @@ export function buildContainer(
       githubApps?.stop()
       githubRunReporter?.stop()
       giteaStatusReporter.stop()
+      azureDevOpsStatusReporter.stop()
       hookRedeliveryReconciler?.stop()
       repositoryGrantReattestor?.stop()
       mcpOauthRefresher.stop()
@@ -3877,6 +4059,7 @@ export function buildContainer(
       gitlabRetirementSweeper?.stop()
       gitlabConvergeSweeper?.stop()
       giteaConvergeSweeper.stop()
+      azureDevOpsHookSweeper.stop()
       installationDoorbell?.stop()
       for (const reaper of pendingInstallReapers) reaper.stop()
       relaySweeper.stop()

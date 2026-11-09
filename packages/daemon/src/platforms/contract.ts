@@ -522,4 +522,6 @@ export interface DaemonPlatformModule {
   readonly memberJoins?: RelayMemberJoins
   /** The bot's own installs, arriving as relayed `platform_action`s; absent ⇒ none do. */
   readonly botAdds?: RelayBotAdds
+  /** Features this module adds to the daemon's registration, which the CP reads before sending it this platform's integrations; absent ⇒ none. */
+  readonly registrationFeatures?: readonly string[]
 }

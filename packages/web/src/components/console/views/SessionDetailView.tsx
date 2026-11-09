@@ -77,7 +77,6 @@ import { RuntimeModelSelect } from '@/components/console/RuntimeModelSelect'
 import { FollowUpTaskSummary } from '@/components/console/follow-up'
 import { modelEvaluationsTarget } from '@/components/console/decisions/ModelSelectionEvaluations'
 import { SessionModelSelectionResult } from '@/components/console/decisions/SessionModelSelectionResult'
-import { CoordinatorTag } from '@/components/console/CoordinatorTag'
 import { HeaderPeople, personSub } from '@/components/console/HeaderPeople'
 import { TranscriptApprovalsProvider, UnplacedApprovals } from '@/components/console/TurnApprovals'
 import { approvalTurnStart, type ApprovalTurnAnchor } from '@/components/console/approval-placement'
@@ -88,7 +87,7 @@ import type { McpAppRpc } from '@agentconnect.md/protocol'
 import { NotFound } from '@/components/console/NotFound'
 import { Avatar, Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
-import { transcriptRowTimeMs } from '@/lib/transcript-time'
+import { transcriptRowTimeMs, turnTimeLabel } from '@/lib/transcript-time'
 import { liveResumeMembers, sessionResumeMembers, sessionResumeState } from '@/lib/session-resume'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { consoleKeys } from '@/lib/swr-keys'
@@ -104,9 +103,17 @@ import { NewDivider, SeenRecorder, TranscriptMap, type MapTurn } from '@/compone
 import { useSessionTranscript } from '@/lib/use-session-transcript'
 import { socialLoginProviders } from '@/lib/social-login-providers'
 import { isAuthConfigured } from '@/lib/auth'
-import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
-import { ComposerFileChips, stageComposerFile } from '@/components/console/ComposerFiles'
-import { transferCapable, sessionFileDownload } from '@/lib/shared-file'
+import { clipboardFiles, prepareWebchatImage } from '@/lib/webchat-image'
+import { copyLink } from '@/lib/copy-link'
+import {
+  AttachmentCards,
+  FileDropOverlay,
+  INLINE_IMAGE_KEY,
+  composerCards,
+  stageComposerFiles,
+  useFileDrop
+} from '@/components/console/ComposerFiles'
+import { transferCapable, uploadPreviewsCapable, sessionFileDownload } from '@/lib/shared-file'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
 import { MentionMenu, type MentionOption } from '@/components/console/MentionMenu'
@@ -135,8 +142,7 @@ import {
 } from '@/components/console/session-work'
 import { ApprovalRequestsCard, usePendingRequestCount } from '@/components/console/ApprovalRequestsCard'
 import { activityScope, ASSISTANT_TASK_HANDLE_FEATURE } from '@/lib/agent-activity'
-import { SessionVisibilityControl } from '@/components/console/SessionVisibilityControl'
-import { SessionAgentFocusMenu, type SessionAgentFocusOption } from '@/components/console/SessionAgentFocusMenu'
+import type { SessionAgentFocusOption } from '@/components/console/SessionAgentFocusMenu'
 import { useCrumbSlot } from '@/components/console/Shell'
 import { DockPanel, SessionDock, SessionDockSlot, type DockTab } from '@/components/console/dock/SessionDock'
 import { ComputerPanel } from '@/components/console/dock/ComputerPanel'
@@ -163,7 +169,7 @@ import { TaskBrief } from '@/components/console/TaskBrief'
 import { SendButton } from '@/components/console/SendButton'
 import { SessionShareDialog, type ShareVisibility } from '@/components/console/SessionShareDialog'
 import { useIsMobile } from '@/lib/use-is-mobile'
-import { footerOfSummary, TaskThreadFooter, ThreadFooter } from '@/components/console/ThreadFooter'
+import { RootThreadFooter, TaskThreadFooter } from '@/components/console/ThreadFooter'
 import {
   firstWords,
   liveReplyThreads,
@@ -171,6 +177,7 @@ import {
   threadAutoOpen,
   threadShapeOf,
   threadToAutoOpen,
+  splitThreadWork,
   WEBCHAT_THREADS_FEATURE,
   CONTINUATION_THREADS_FEATURE,
   type ThreadAutoOpen
@@ -211,8 +218,8 @@ import {
   chatSettingsAllowed
 } from '@/lib/session-runtime-controls'
 import type { FmtStep } from '@/components/console/transcript-steps'
-import { buildTurns, type SessionParticipant, type Turn } from '@/components/console/session-turns'
-import { BotTurnView, UserTurnView } from '@/components/console/TurnViews'
+import { buildTurns, turnTimeMs, type SessionParticipant, type Turn } from '@/components/console/session-turns'
+import { BotTurnView, UserTurnView, lastSpokenSentence } from '@/components/console/TurnViews'
 type ComposerMenuKey = 'permission' | 'model' | 'effort' | 'addAgent'
 
 // Session composer chips (mirrors HomeView); effort and approval live in the model picker.
@@ -233,12 +240,9 @@ const COMPOSER_RECIPIENT_OFF = `${COMPOSER_RECIPIENT} border-transparent bg-tran
 // lineage fetch is in flight.
 const EMPTY_CONVERSATION_FAMILY: ConversationLineage['family'] = { parentSessions: [], childSessions: [] }
 
-// Shared open/dismiss state for the header's hover-or-tap popovers (Details,
-// Requests). `tapped` is the touch path: a tap neither hovers nor reliably
-// focuses a button (Safari does not focus one on tap), so the mobile triggers
-// toggle this latch instead of relying on the desktop hover presence. Escape
-// dismisses until every presence signal drops.
+// The same header popovers support hover, keyboard focus and tap at every width.
 function useHeaderPopover() {
+  const ref = useRef<HTMLDivElement>(null)
   const [state, setState] = useState({ hovered: false, focused: false, tapped: false, dismissed: false })
   const open = (state.hovered || state.focused || state.tapped) && !state.dismissed
   const setPresence = (key: 'hovered' | 'focused', value: boolean) =>
@@ -246,12 +250,10 @@ function useHeaderPopover() {
       const next = { ...current, [key]: value }
       return { ...next, dismissed: next.hovered || next.focused || next.tapped ? current.dismissed : false }
     })
-  const closeTap = () => setState((current) => ({ ...current, tapped: false, dismissed: false }))
-  const toggleTap = () => setState((current) => ({ ...current, tapped: !current.tapped, dismissed: false }))
+  const toggleTap = () => setState((current) => ({ ...current, tapped: !current.tapped, dismissed: current.tapped }))
   // Stable (setState identity), so session-switch reset effects can depend on it.
   const reset = useCallback(() => setState({ hovered: false, focused: false, tapped: false, dismissed: false }), [])
-  // Hover does not move focus to the trigger, so Escape has to be observed while
-  // the popover is open rather than only on the button.
+  // Escape and an outside press dismiss even when a touch did not move focus.
   useEffect(() => {
     if (!open) return
     const dismiss = (event: KeyboardEvent) => {
@@ -260,12 +262,21 @@ function useHeaderPopover() {
       event.stopPropagation()
       setState((current) => ({ ...current, tapped: false, dismissed: true }))
     }
+    const outside = (event: PointerEvent) => {
+      if (!ref.current?.contains(event.target as Node)) reset()
+    }
     document.addEventListener('keydown', dismiss, true)
-    return () => document.removeEventListener('keydown', dismiss, true)
-  }, [open])
-  return { open, setPresence, closeTap, toggleTap, reset }
+    document.addEventListener('pointerdown', outside)
+    return () => {
+      document.removeEventListener('keydown', dismiss, true)
+      document.removeEventListener('pointerdown', outside)
+    }
+  }, [open, reset])
+  return { ref, open, setPresence, toggleTap, reset }
 }
 
+/** No thread holds any coordinator work outside the roots view. */
+const EMPTY_THREAD_WORK: ReadonlyMap<string, Turn[]> = new Map()
 /** Stable identity for a composer with no participants to ask — keeps useRuntimeCommands' memo still. */
 const EMPTY_ROSTER: ReadonlyArray<{ agentId: string; name: string }> = []
 const noOwnerIcon = () => undefined
@@ -281,7 +292,7 @@ function ComposerTextarea({
   sessionId,
   placeholder,
   onSend,
-  onImageFile,
+  onAttachFiles,
   mentionCandidates,
   onPickMention,
   onMentionJoiningChange,
@@ -296,7 +307,7 @@ function ComposerTextarea({
   sessionId: string
   placeholder: string
   onSend: () => void
-  onImageFile?: (file: File) => void
+  onAttachFiles?: (files: File[]) => void
   /** The viewer's earlier prompts in the loaded window, oldest first — Up/Down on an empty draft recalls them. */
   history: readonly ComposerHistoryEntry[]
   /** Transcript paging, so Up at the oldest loaded prompt pages earlier history in. */
@@ -420,11 +431,11 @@ function ComposerTextarea({
             command.sync(el.value, caret)
           }}
           onPaste={(event) => {
-            if (!onImageFile) return
-            const image = clipboardImageFile(event.clipboardData)
-            if (!image) return
+            if (!onAttachFiles) return
+            const selected = clipboardFiles(event.clipboardData)
+            if (!selected.length) return
             event.preventDefault()
-            onImageFile(image)
+            onAttachFiles(selected)
           }}
           onKeyDown={(e) => {
             // History first: a recalled `/cmd` or `@name` must not hand Up/Down to a picker mid-walk.
@@ -1018,9 +1029,9 @@ export default function SessionDetailView() {
   const detailTooltipId = useId()
   const requestsTooltipId = useId()
   const {
+    ref: detailPopoverRef,
     open: detailOpen,
     setPresence: updateDetailPresence,
-    closeTap: closeDetailTap,
     toggleTap: toggleDetailTap,
     reset: resetDetailPopover
   } = useHeaderPopover()
@@ -1066,6 +1077,11 @@ export default function SessionDetailView() {
   const [routeSession, setRouteSession] = useState<Session | null>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
   const imagePrepareGenerationRef = useRef(0)
+  // The drop handler is bound below the view's early returns, so the hook reaches it through a ref.
+  const onDropFilesRef = useRef<(files: File[]) => void>(() => {})
+  const fileDrop = useFileDrop((files) => onDropFilesRef.current(files))
+  // The drop target starts under the header, which rises out of the drop zone on desktop.
+  const [dropHeader, setDropHeader] = useState<HTMLDivElement | null>(null)
 
   const pgSession = getPgSession(id)
   const localSession =
@@ -2141,7 +2157,11 @@ export default function SessionDetailView() {
   // Everything above only APPENDS rows; nothing ever moved the viewport, so a
   // live session's newest output landed below the fold. Follow it — but only for
   // a reader who is already at the bottom (see lib/stick-to-bottom).
-  const { pin: stickToBottom, awayFromBottom } = useStickToBottom(conversationKey ?? sid ?? null)
+  const {
+    pin: stickToBottom,
+    release: releaseFollow,
+    awayFromBottom
+  } = useStickToBottom(conversationKey ?? sid ?? null)
   // What this browser last read here, for the NEW line; it advances only while the reader looks at the end.
   const seen = useSeenMarker(MOCK_MODE ? null : (conversationKey ?? sid ?? null), !awayFromBottom)
   // The transcript scroller's scrollbar width, which the composer below it insets by to stay in line with the column.
@@ -2163,14 +2183,7 @@ export default function SessionDetailView() {
     return () => window.clearInterval(timer)
   }, [session?.id, session?.platform, sessionBusy])
 
-  // Publish title + status to the shell's crumb. Both have to come from here, not from
-  // `allSessions`: a deep link (or a parent/child link) to a session outside the loaded
-  // cursor pages only exists as the `fetchSessionDetail`-backed row above. Without the
-  // title the crumb collapses to the bare "Sessions" label — taking the status badge
-  // nested inside it down with it — and the Details popover no longer carries a status
-  // the desktop could fall back to.
-  // The slot carries the route id it describes: the shell renders the next route before
-  // this effect's cleanup runs, so without it session A's crumb paints on session B.
+  // Publish the loaded session's title and status to its route-scoped mobile app bar.
   const { register: registerCrumb } = useCrumbSlot()
   const crumbTitle = session?.title ?? ''
   const crumbStatusKey = session?.status ?? ''
@@ -2181,7 +2194,12 @@ export default function SessionDetailView() {
   const headerState = sessionState(session?.statusLabel ?? '', sessionBusy)
   useEffect(() => {
     if (!crumbTitle) return
-    registerCrumb({ id, title: crumbTitle, status: crumbStatusKey, statusLabel: crumbStatusLabel })
+    registerCrumb({
+      id,
+      title: crumbTitle,
+      status: crumbStatusKey,
+      statusLabel: crumbStatusLabel
+    })
     return () => registerCrumb(null)
   }, [registerCrumb, id, crumbTitle, crumbStatusKey, crumbStatusLabel])
 
@@ -2191,6 +2209,7 @@ export default function SessionDetailView() {
   useEffect(() => {
     imagePrepareGenerationRef.current += 1
     setCopied(false)
+    setShareOpen(false)
     resetDetailPopover()
     requestsPopover.reset()
     setWorkOverride(new Map())
@@ -2390,37 +2409,6 @@ export default function SessionDetailView() {
           }
         }
       : null
-  const visibilityControl =
-    headerFocusSessionId && (focusedSessionDetail || focusedSession?.visibility || visibilityLoading) ? (
-      <SessionVisibilityControl
-        key={headerFocusSessionId}
-        sessionId={headerFocusSessionId}
-        visibility={
-          focusedSessionDetail?.visibility ?? focusedSession?.visibility ?? (visibilityLoading ? 'private' : undefined)
-        }
-        state={focusedSessionDetail?.visibilityState}
-        canChange={focusedSessionDetail?.canChangeVisibility === true}
-        loading={visibilityLoading}
-        externalProvider={focusedSessionDetail?.externalProvider}
-        externalResolution={focusedSessionDetail?.externalResolution}
-        feishuRegion={focusedSessionDetail?.feishuRegion}
-        // Native runtime memory has no per-session gate, so the copy must not
-        // promise a memory boundary this tier cannot deliver.
-        nativeMemory={focusedAgent?.memoryProvider === 'native'}
-        onChanged={({ visibility, state }) => {
-          // Reflect the new tier locally, then re-read: the detail row also
-          // carries the authoritative pending/applied state, and the lists must
-          // drop (or regain) the row for other members.
-          const mutateFocusedDetail =
-            headerFocusSessionId === currentSessionDetail?.id ? mutateSessionDetail : mutateExtraHeaderDetail
-          void mutateFocusedDetail(
-            (current) => (current ? { ...current, visibility, visibilityState: state } : current),
-            { revalidate: true }
-          )
-          void revalidateSessionLists()
-        }}
-      />
-    ) : null
   const isPg = session.platform === 'playground'
   // A task (follow-up, approved proposal or delegated task) is never its conversation's own session.
   const taskPage = session.subsession === true
@@ -2543,31 +2531,13 @@ export default function SessionDetailView() {
   const pgBusy = sessionBusy
   const pgImage = getPgImage(session.id)
   const pgFiles = getPgFiles(session.id)
-  const filesUploading = pgFiles.some((f) => f.status === 'uploading')
+  const filesUploading = pgFiles.some((f) => f.status !== 'ready')
   // A continued chat thread takes images (mirrored there); files go where nothing mirrors, or on a task's own page.
   const continuationAttachments = composerDetail?.continuationAttachments ?? null
   const attachmentsEnabled = !isContinuable || taskOwnPage || continuationAttachments !== null
   const filesEnabled = !isContinuable || taskOwnPage || continuationAttachments === 'images_and_files'
   // A message waiting to go out in a thread is that thread's, not the composer's.
   const pgQueue = getPgQueue(session.id).filter((queued) => !queued.thread)
-  const hasSessionWorktree =
-    !!focusedAgent &&
-    isGitWorkspace(focusedAgent.workspace) &&
-    (focusedSessionDetail?.workspaceIsolation ?? focusedSession?.workspaceIsolation) === 'session' &&
-    !(focusedSessionDetail?.contentPurgedAt ?? focusedSession?.contentPurgedAt)
-  const workspaceHref =
-    focusedAgent && headerFocusAgentId
-      ? `/agents/${headerFocusAgentId}?tab=workspace${
-          hasSessionWorktree && headerFocusSessionId ? `&worktree=${encodeURIComponent(headerFocusSessionId)}` : ''
-        }`
-      : null
-  const workspaceIcon = focusedAgent && isGitWorkspace(focusedAgent.workspace) ? 'git-branch' : 'folder'
-  const focusedAgentLabel = focusedAgent ? agentLabel(focusedAgent) : (headerFocusOption?.label ?? 'agent')
-  // Named by the focused agent's effective boundary, so a confined session is not offered a "worktree" it does not get (git-workspace-model.md §11).
-  const focusedIsolation = agentSessionIsolationLabel(focusedAgent ?? { execution: HOST_STRATEGY }, orgSetIds)
-  const workspaceTitle = hasSessionWorktree
-    ? `Open ${focusedAgentLabel}’s ${focusedIsolation.checkout}`
-    : `Open ${focusedAgentLabel}’s workspace`
   // Keep the historical scope after purge or workspace replacement so an unavailable checkout never falls back to primary.
   const filesSessionId =
     (focusedSessionDetail?.workspaceIsolation ?? focusedSession?.workspaceIsolation) === 'session'
@@ -2676,21 +2646,28 @@ export default function SessionDetailView() {
     if (sent) stickToBottom()
     return sent
   }
-  // Non-image files upload straight to the object store when the composing agent's daemon presigns transfers.
+  // Originals upload straight to the object store when the composing agent's daemon supports transfers.
   const composerAgent = agents.find((a) => a.id === composerAgentId)
   const composerTransfer =
     composerAgent !== undefined &&
-    transferCapable(agentCapabilitySource(composerAgent, daemons, memberSets)?.caps.features)
-  const onAttachFile = (file: File | undefined): void => {
-    if (!attachmentsEnabled || !file) return
-    if (file.type.startsWith('image/')) return void onImageFile(file)
+    uploadPreviewsCapable(agentCapabilitySource(composerAgent, daemons, memberSets)?.caps.features)
+  // Files dropped anywhere on the conversation take the paperclip's path.
+  const dropEnabled = attachmentsEnabled && isLive && !resumeDisabled && !viewerOpen
+  onDropFilesRef.current = (files) => onAttachFiles(files)
+  const onAttachFiles = (selected: File[]): void => {
+    if (imageInputRef.current) imageInputRef.current.value = ''
+    if (!attachmentsEnabled || !selected.length) return
     setAttachMenuOpen(false)
-    if (!filesEnabled) {
+    if (!filesEnabled || !composerTransfer) {
+      if (selected.length === 1 && selected[0]!.type.startsWith('image/')) return void onImageFile(selected[0])
       setImageError(t('continuationImagesOnly'))
-      if (imageInputRef.current) imageInputRef.current.value = ''
       return
     }
-    stageComposerFile(
+    if (pgImage) {
+      setImageError('Remove the inline image before adding uploaded files.')
+      return
+    }
+    stageComposerFiles(
       {
         sessionId: session.id,
         agentId: composerAgentId,
@@ -2699,7 +2676,7 @@ export default function SessionDetailView() {
         setPgFiles,
         onError: setImageError
       },
-      file
+      selected
     )
     if (imageInputRef.current) imageInputRef.current.value = ''
   }
@@ -2778,6 +2755,7 @@ export default function SessionDetailView() {
   const isolationLabel = agentSessionIsolationLabel(owner ?? { execution: HOST_STRATEGY }, orgSetIds)
   const canChooseWorktree =
     isPg &&
+    !coordinatorPage &&
     !multiLive &&
     !!owner?.workspace &&
     isGitWorkspace(owner.workspace) &&
@@ -2836,32 +2814,17 @@ export default function SessionDetailView() {
     const picked = agents.find((a) => a.id === option.id)
     return picked ? pgAddAgent(session.id, picked) : undefined
   }
-  // A task's owning session, where its page's back, shrink and close lead; none when the owner is hidden from this reader.
+  // A task's owning session, where its page's back and close lead; none when the owner is hidden from this reader.
   const taskOwner = taskOwnPage ? (currentSessionDetail?.parentSession ?? null) : null
   const taskOwnerHref = taskOwner
     ? orgPath(`/sessions/${encodeURIComponent(taskOwner.id)}${flatView ? '?view=flat' : ''}`)
     : null
-  // A threaded task shrinks to its first thread, a legacy page task to itself (webchat-threads.md §6.2, §7).
-  const taskFirstThread = namesThread(threadShapeOf(currentSessionDetail?.platform), currentSessionDetail?.thread)
-    ? currentSessionDetail.thread
-    : null
-  const taskShrinkHref = taskOwner
-    ? orgPath(
-        `/sessions/${encodeURIComponent(taskOwner.id)}?${new URLSearchParams({
-          ...(flatView ? { view: 'flat' } : {}),
-          ...(taskFirstThread ? { thread: taskFirstThread } : { task: currentSessionDetail?.id ?? session.id })
-        })}`
-      )
-    : null
-  const onCopyLink = () => {
-    try {
-      const canonicalId = session.realSessionId ?? session.id
-      const link =
-        window.location.origin + orgPath(`/sessions/${encodeURIComponent(canonicalId)}${flatView ? '?view=flat' : ''}`)
-      void navigator.clipboard?.writeText(link)?.catch?.(() => {})
-    } catch {
-      /* noop */
-    }
+  const onCopyLink = async () => {
+    const canonicalId = session.realSessionId ?? session.id
+    const link =
+      window.location.origin + orgPath(`/sessions/${encodeURIComponent(canonicalId)}${flatView ? '?view=flat' : ''}`)
+    setCopied(false)
+    if (!(await copyLink(link, tShare('copyLink')))) return
     setCopied(true)
     setTimeout(() => setCopied(false), 1600)
   }
@@ -2875,7 +2838,7 @@ export default function SessionDetailView() {
     return { id, name: crons.find((c) => c.id === id)?.name ?? null }
   }
 
-  const { turns, speakers } = buildTurns({
+  const { turns: builtTurns, speakers } = buildTurns({
     session,
     rows: wantTranscript ? (visibleMsgs ?? []) : undefined,
     liveSteps,
@@ -2897,6 +2860,10 @@ export default function SessionDetailView() {
     pictureOf: (identity) => memberPictureByIdentity.get(identity),
     sourceLabel: platName(sessionIntegration)
   })
+  // In the roots view the coordinator's work in a thread is drawn in that thread's panel, not on the main timeline.
+  const { main: turns, byThread: threadWork } = threadsView
+    ? splitThreadWork(builtTurns, session.agentId)
+    : { main: builtTurns, byThread: EMPTY_THREAD_WORK }
 
   // A coordinator's task cards, under the first turn of the coordinator after the message each task was opened for.
   const openedTaskCards = new Map<string, TaskLink[]>()
@@ -2927,24 +2894,66 @@ export default function SessionDetailView() {
     if (agent) return agentLabel(agent)
     return isSelf(author.sender) ? tt('you') : (author.senderName ?? author.sender)
   }
+  // A replier's mark on a footer: an agent's icon, else the person's picture; initials where neither is known.
+  const threadAuthorMark = (author: SessionThreadAuthorDto) => {
+    const agent = agentById.get(author.sender)
+    if (agent) return <AgentIconView icon={agent.icon} runtime={agent.runtime} size={16} />
+    const picture = isSelf(author.sender) ? viewer.picture : memberPictureByIdentity.get(author.sender)
+    return picture ? <img src={picture} alt="" className="h-full w-full object-cover" /> : null
+  }
   // The conversation with the thread open, which a modified click on its footer opens in a new tab.
   const threadHref = (rootId: string): string =>
     `${pathname}?${new URLSearchParams({ ...(flatView ? { view: 'flat' } : {}), thread: rootId })}`
-  const rootFooter = (turn: Turn) => {
+  // A root's thread: its replies line under the person's bubble, then its task's card on the left as the coordinator's message.
+  const rootFooter = (turn: Turn, part: 'line' | 'card') => {
     const rootId = rootOf(turn)
     const summary = rootId ? threadSummaries.get(rootId) : undefined
-    if (!rootId || !summary) return null
+    if (!rootId || !summary || (part === 'card' && !summary.task)) return null
     return (
-      <div className="mt-[3px] flex w-full justify-end">
-        <ThreadFooter
-          footer={footerOfSummary(summary)}
+      <div className={part === 'line' ? 'mt-[3px] flex w-full justify-end' : 'mt-[6px] flex w-full'}>
+        <RootThreadFooter
+          part={part}
+          {...(part === 'card' && owner
+            ? {
+                from: {
+                  name: agentLabel(owner),
+                  mark: <AgentIconView icon={owner.icon} runtime={owner.runtime} size={26} />
+                }
+              }
+            : {})}
+          agentId={session.agentId ?? ''}
+          parentSessionId={session.id}
+          summary={summary}
           rootId={rootId}
           href={threadHref(rootId)}
+          {...(threadWriter ? { onReply: () => replyInThread(rootId) } : {})}
           selected={openRoot === rootId}
           onOpen={() => openRootThread(rootId)}
           nameOf={threadAuthorName}
+          markOf={threadAuthorMark}
+          align="end"
         />
       </div>
+    )
+  }
+  // A message the coordinator handed into a task's thread says so above its bubble, as Slack's "replied to a thread", and opens it.
+  const handedLead = (turn: Turn) => {
+    if (turn.kind !== 'user' || !turn.handedTo) return null
+    const rootId = turn.handedTo
+    const summary = threadSummaries.get(rootId)
+    const name = summary?.task?.title ?? summary?.rootExcerpt ?? rootTextOf.get(rootId)
+    return (
+      <button
+        type="button"
+        data-turn-handed-to={rootId}
+        onClick={() => openRootThread(rootId)}
+        className="flex max-w-full min-w-0 cursor-pointer items-center gap-[4px] border-0 bg-transparent p-0 pr-1 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)"
+      >
+        <span className="flex-none">{tt('repliedToThread')}</span>
+        <span className="min-w-0 truncate font-medium text-(--brand) hover:underline">
+          {name ? firstWords(name) : tt('inThreadBare')}
+        </span>
+      </button>
     )
   }
   const threadLine =
@@ -3396,12 +3405,17 @@ export default function SessionDetailView() {
     return at !== undefined && (max === null || at > max) ? at : max
   }, null)
   const newDividerAt = newDividerIndex(turnStartsMs, seen.marker)
-  // The turn map's ticks, each named in its tip by who spoke.
-  const mapTurns: MapTurn[] = turns.map((turn) =>
-    turn.kind === 'user'
-      ? { key: turn.key, tip: `${turn.sp.name}: ${turn.text.replace(/\s+/g, ' ').slice(0, 60)}` }
-      : { key: turn.key, tip: [turn.agentName, turn.time].filter(Boolean).join(' · ') }
-  )
+  // The turn map's ticks, each named in its tip by who spoke and what they said: a person's words, an agent's last sentence.
+  const tipLine = (text: string) => (text.length > 80 ? `${text.slice(0, 79)}…` : text)
+  const mapTurns: MapTurn[] = turns.map((turn) => {
+    if (turn.kind === 'user')
+      return { key: turn.key, tip: `${turn.sp.name}: ${tipLine(turn.text.replace(/\s+/g, ' ').trim())}` }
+    const said = lastSpokenSentence(turn.steps)
+    return {
+      key: turn.key,
+      tip: said ? `${turn.agentName}: ${tipLine(said)}` : [turn.agentName, turn.time].filter(Boolean).join(' · ')
+    }
+  })
   const approvalTurns: ApprovalTurnAnchor[] = turns.flatMap((turn, i) =>
     turn.kind === 'bot'
       ? [
@@ -3471,6 +3485,17 @@ export default function SessionDetailView() {
     // grows with the transcript, so the page itself never scrolls. The transcript column and the
     // dock are each their own overflow region and scroll independently.
     <div className="relative flex h-full min-h-0 items-stretch">
+      {shareOpen ? (
+        <SessionShareDialog
+          title={session.title}
+          place={channelDisplay.label || null}
+          platform={channelDisplay.platform}
+          copied={copied}
+          onCopyLink={onCopyLink}
+          visibility={shareVisibility}
+          onClose={() => setShareOpen(false)}
+        />
+      ) : null}
       {/* The viewer is full-width in every band (§7) — a file wants the columns a transcript does not. The 880px cap is the only geometry that changes: the dock's reserved TRACK keeps its column either way, which is the one thing §7 forbids trading. */}
       {/* The SCROLLER is full-width so its vertical scrollbar rides the far-right edge of the
           transcript area, not the centre of a capped box. `overflow-x-hidden` is load-bearing: a
@@ -3490,15 +3515,21 @@ export default function SessionDetailView() {
       {/* Column: fixed header chrome ABOVE the scrolling transcript pane. The header lives OUTSIDE
       the scroller (no `sticky`), so it never scrolls away and the pane below can be virtualized. */}
       {/* On desktop the header's divider runs from the nav's edge (and to the page's where the dock is a drawer), continuing the nav's own line at 52px. */}
-      <div className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col desktop:before:pointer-events-none desktop:before:absolute desktop:before:top-[17px] desktop:before:right-0 desktop:before:-left-[30px] desktop:before:h-px desktop:before:bg-(--border-subtle) desktop:max-wide:before:-right-[30px]">
+      <div
+        {...(dropEnabled ? fileDrop.handlers : {})}
+        className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col desktop:before:pointer-events-none desktop:before:absolute desktop:before:top-[17px] desktop:before:right-0 desktop:before:-left-[30px] desktop:before:h-px desktop:before:bg-(--border-subtle) desktop:max-wide:before:-right-[30px]"
+      >
+        {dropEnabled && fileDrop.over ? (
+          <FileDropOverlay top={dropHeader ? dropHeader.offsetTop + dropHeader.offsetHeight : 0} />
+        ) : null}
         {/* Only a transcript on screen is read: the file viewer hides it, so nothing is recorded meanwhile. */}
         {!viewerOpen ? <SeenRecorder newestMs={newestTurnMs} markSeen={seen.markSeen} /> : null}
-        {!viewerOpen ? <TranscriptMap turns={mapTurns} /> : null}
+        {!viewerOpen ? <TranscriptMap turns={mapTurns} onJump={() => releaseFollow()} /> : null}
         {/* HEADER CHROME — title + action bar (+ any notices). Centred to line up with the 880px
         transcript below. `flex-none`; no `sticky`, no bottom `margin` — the meta row's border-b is
         the flush divider with the transcript, with no blank gap under the line. */}
         {/* On desktop the header rises into `.content`'s top padding, so its one line is level with the nav's brand row. */}
-        <div className="mx-auto w-full min-w-0 max-w-[880px] flex-none desktop:-mt-[34px]">
+        <div ref={setDropHeader} className="mx-auto w-full min-w-0 max-w-[880px] flex-none desktop:-mt-[34px]">
           <div>
             {/* A task's own page names the session it belongs to and leads back there; its tool calls stay in its transcript. */}
             {taskPage && currentSessionDetail ? (
@@ -3530,60 +3561,85 @@ export default function SessionDetailView() {
               </div>
             ) : null}
             {followUpPageAgentId ? <FollowUpTaskSummary agentId={followUpPageAgentId} sessionId={session.id} /> : null}
-            {/* DESKTOP HEADER — one line: the session's state, name and place on the left, who and what as icons on the right. Mobile has its own row below. */}
+            {/* One responsive header: the mobile app bar owns the title; these actions stay the same at every width. */}
             {/* Where the dock is a drawer, its fixed Panels toggle sits over the row's right end, so the row leaves it room. */}
             <div
               data-session-header=""
-              className="hidden min-w-0 items-center gap-2 desktop:flex desktop:h-[52px] desktop:max-wide:pr-11"
+              className="relative flex min-w-0 items-center gap-2 max-desktop:border-b max-desktop:border-(--border-subtle) max-desktop:bg-(--surface-card) max-desktop:px-4 max-desktop:py-[9px] desktop:h-[52px] desktop:max-wide:pr-11"
             >
-              {taskOwnerHref ? (
-                <Link
-                  data-task-page-back=""
-                  className={HEADER_ICON_BTN}
-                  href={taskOwnerHref}
-                  title={tt('coordinatorTitle')}
-                  aria-label={tt('coordinatorTitle')}
-                >
-                  <Icon name="chevron-left" size={16} />
-                </Link>
-              ) : null}
-              <StateIcon
-                state={headerState}
-                label={headerState === 'idle' && headerStatusLabel ? headerStatusLabel : tState(headerState)}
-              />
-              <h1
-                title={session.title}
-                className="m-0 min-w-0 truncate font-sans text-[17px] font-semibold leading-normal tracking-[-.01em] text-(--text-primary)"
-              >
-                {session.title}
-              </h1>
-              {taskPage && currentSessionDetail ? (
-                currentSessionDetail.parentSession ? (
+              <div className="hidden min-w-0 items-center gap-2 desktop:flex">
+                {taskOwnerHref ? (
                   <Link
-                    data-header-task-owner=""
+                    data-task-page-back=""
                     className={HEADER_ICON_BTN}
-                    href={orgPath(
-                      `/sessions/${encodeURIComponent(currentSessionDetail.parentSession.id)}${flatView ? '?view=flat' : ''}`
-                    )}
-                    title={t('taskOfOpen', {
-                      title:
-                        currentSessionDetail.parentSession.title?.trim() ||
-                        `Session ${currentSessionDetail.parentSession.id.slice(0, 8)}`
-                    })}
-                    aria-label={t('taskOfOpen', {
-                      title:
-                        currentSessionDetail.parentSession.title?.trim() ||
-                        `Session ${currentSessionDetail.parentSession.id.slice(0, 8)}`
-                    })}
+                    href={taskOwnerHref}
+                    title={tt('coordinatorTitle')}
+                    aria-label={tt('coordinatorTitle')}
                   >
-                    <Icon name="corner-down-right" size={15} />
+                    <Icon name="chevron-left" size={16} />
                   </Link>
+                ) : null}
+                <StateIcon
+                  state={headerState}
+                  label={headerState === 'idle' && headerStatusLabel ? headerStatusLabel : tState(headerState)}
+                />
+                <h1
+                  title={session.title}
+                  className="m-0 min-w-0 truncate font-sans text-[17px] font-semibold leading-normal tracking-[-.01em] text-(--text-primary)"
+                >
+                  {session.title}
+                </h1>
+                {taskPage && currentSessionDetail ? (
+                  currentSessionDetail.parentSession ? (
+                    <Link
+                      data-header-task-owner=""
+                      className={HEADER_ICON_BTN}
+                      href={orgPath(
+                        `/sessions/${encodeURIComponent(currentSessionDetail.parentSession.id)}${flatView ? '?view=flat' : ''}`
+                      )}
+                      title={t('taskOfOpen', {
+                        title:
+                          currentSessionDetail.parentSession.title?.trim() ||
+                          `Session ${currentSessionDetail.parentSession.id.slice(0, 8)}`
+                      })}
+                      aria-label={t('taskOfOpen', {
+                        title:
+                          currentSessionDetail.parentSession.title?.trim() ||
+                          `Session ${currentSessionDetail.parentSession.id.slice(0, 8)}`
+                      })}
+                    >
+                      <Icon name="corner-down-right" size={15} />
+                    </Link>
+                  ) : (
+                    <span data-header-task-owner="" className={HEADER_ICON_BTN} title={t('taskOwnerHidden')}>
+                      <Icon name="corner-down-right" size={15} />
+                    </span>
+                  )
+                ) : null}
+                {session.threadUrl ? (
+                  <a
+                    data-header-place=""
+                    className={HEADER_CHIP_LINK}
+                    href={session.threadUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={`Open the ${platName(sessionIntegration)} thread`}
+                  >
+                    <span className="imark h-[14px] w-[14px] flex-none rounded-xs">
+                      <PlatformMark platform={channelDisplay.platform} />
+                    </span>
+                    <span className="truncate">{channelDisplay.label}</span>
+                  </a>
                 ) : (
-                  <span data-header-task-owner="" className={HEADER_ICON_BTN} title={t('taskOwnerHidden')}>
-                    <Icon name="corner-down-right" size={15} />
+                  <span data-header-place="" className={HEADER_CHIP}>
+                    <span className="imark h-[14px] w-[14px] flex-none rounded-xs">
+                      <PlatformMark platform={channelDisplay.platform} />
+                    </span>
+                    <span className="truncate">{channelDisplay.label}</span>
                   </span>
-                )
-              ) : null}
+                )}
+              </div>
+              <span className="flex-1" />
               {session.coordinator ? (
                 <span
                   data-header-coordinator=""
@@ -3595,29 +3651,6 @@ export default function SessionDetailView() {
                   <Icon name="network" size={15} />
                 </span>
               ) : null}
-              {session.threadUrl ? (
-                <a
-                  data-header-place=""
-                  className={HEADER_CHIP_LINK}
-                  href={session.threadUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  title={`Open the ${platName(sessionIntegration)} thread`}
-                >
-                  <span className="imark h-[14px] w-[14px] flex-none rounded-xs">
-                    <PlatformMark platform={channelDisplay.platform} />
-                  </span>
-                  <span className="truncate">{channelDisplay.label}</span>
-                </a>
-              ) : (
-                <span data-header-place="" className={HEADER_CHIP}>
-                  <span className="imark h-[14px] w-[14px] flex-none rounded-xs">
-                    <PlatformMark platform={channelDisplay.platform} />
-                  </span>
-                  <span className="truncate">{channelDisplay.label}</span>
-                </span>
-              )}
-              <span className="flex-1" />
               <HeaderPeople
                 agents={headerFocusOptions}
                 focusAgentId={headerFocusAgentId}
@@ -3647,16 +3680,16 @@ export default function SessionDetailView() {
               {requestsPanel && (
                 // The pill says how many wait for this reader; the popover keeps the answered history too.
                 <div
-                  className="relative flex flex-none items-center"
+                  ref={requestsPopover.ref}
+                  className="flex flex-none items-center desktop:relative"
                   // One header popover at a time: entering Requests closes Details.
                   onMouseEnter={() => {
-                    updateDetailPresence('hovered', false)
-                    updateDetailPresence('focused', false)
+                    resetDetailPopover()
                     requestsPopover.setPresence('hovered', true)
                   }}
                   onMouseLeave={() => requestsPopover.setPresence('hovered', false)}
                   onFocus={() => {
-                    updateDetailPresence('focused', false)
+                    resetDetailPopover()
                     requestsPopover.setPresence('focused', true)
                   }}
                   // Ignore focus moving inside the wrapper, so tabbing from the trigger into Allow/Deny works.
@@ -3679,6 +3712,7 @@ export default function SessionDetailView() {
                     aria-haspopup="dialog"
                     aria-expanded={requestsPopover.open}
                     aria-controls={requestsTooltipId}
+                    onClick={requestsPopover.toggleTap}
                   >
                     <Icon name={pendingRequestCount > 0 ? 'shield-alert' : 'shield-check'} size={15} />
                     {pendingRequestCount > 0 ? <span>{pendingRequestCount}</span> : null}
@@ -3689,13 +3723,13 @@ export default function SessionDetailView() {
                     id={requestsTooltipId}
                     role="dialog"
                     aria-label={t('approvalRequests')}
-                    className={`absolute top-full right-0 z-50 pt-[5px] transition-[opacity,visibility] ${
+                    className={`absolute top-full right-4 left-4 z-50 pt-[5px] transition-[opacity,visibility] desktop:right-0 desktop:left-auto ${
                       requestsPopover.open
                         ? 'pointer-events-auto visible opacity-100'
                         : 'pointer-events-none invisible opacity-0'
                     }`}
                   >
-                    <div className="max-h-[340px] w-[min(420px,calc(100vw-64px))] overflow-auto rounded-[9px] border border-(--border-default) bg-(--surface-card) shadow-(--shadow-lg)">
+                    <div className="max-h-[min(340px,60vh)] overflow-auto rounded-[9px] border border-(--border-default) bg-(--surface-card) shadow-(--shadow-lg) desktop:w-[min(420px,calc(100vw-64px))]">
                       {requestsPanel}
                     </div>
                   </div>
@@ -3703,16 +3737,16 @@ export default function SessionDetailView() {
               )}
               {/* `flex` on the wrapper keeps the button on the row's centre line; the transparent padding bridges trigger and panel for the hover. */}
               <div
-                className="relative flex flex-none items-center"
+                ref={detailPopoverRef}
+                className="flex flex-none items-center desktop:relative"
                 // And entering Details closes Requests.
                 onMouseEnter={() => {
-                  requestsPopover.setPresence('hovered', false)
-                  requestsPopover.setPresence('focused', false)
+                  requestsPopover.reset()
                   updateDetailPresence('hovered', true)
                 }}
                 onMouseLeave={() => updateDetailPresence('hovered', false)}
                 onFocus={() => {
-                  requestsPopover.setPresence('focused', false)
+                  requestsPopover.reset()
                   updateDetailPresence('focused', true)
                 }}
                 // Focus moving between descendants (trigger to panel) must not drop presence.
@@ -3726,18 +3760,22 @@ export default function SessionDetailView() {
                   data-header-details=""
                   className={`${HEADER_ICON_BTN} cursor-pointer border-0 bg-transparent focus-visible:outline-none focus-visible:shadow-(--focus-ring)`}
                   aria-label={t('details')}
-                  aria-describedby={detailTooltipId}
+                  aria-haspopup="dialog"
+                  aria-controls={detailTooltipId}
+                  aria-expanded={detailOpen}
+                  onClick={toggleDetailTap}
                 >
                   <Icon name="info" size={15} />
                 </button>
                 <div
                   id={detailTooltipId}
-                  role="tooltip"
-                  className={`absolute top-full right-0 z-50 w-max pt-[5px] transition-[opacity,visibility] ${
+                  role="dialog"
+                  aria-label={t('sessionDetails')}
+                  className={`absolute top-full right-4 left-4 z-50 pt-[5px] transition-[opacity,visibility] desktop:right-0 desktop:left-auto desktop:w-max ${
                     detailOpen ? 'pointer-events-auto visible opacity-100' : 'pointer-events-none invisible opacity-0'
                   }`}
                 >
-                  <div className="max-h-[340px] min-w-[216px] overflow-auto rounded-[9px] border border-(--border-default) bg-(--surface-card) px-0 py-[5px] shadow-(--shadow-lg)">
+                  <div className="max-h-[min(340px,60vh)] overflow-auto rounded-[9px] border border-(--border-default) bg-(--surface-card) px-0 py-[5px] shadow-(--shadow-lg) desktop:min-w-[216px]">
                     {detailPanel}
                   </div>
                 </div>
@@ -3753,39 +3791,16 @@ export default function SessionDetailView() {
               >
                 <Icon name="share" size={15} />
               </button>
-              {shareOpen ? (
-                <SessionShareDialog
-                  title={session.title}
-                  place={channelDisplay.label || null}
-                  platform={channelDisplay.platform}
-                  copied={copied}
-                  onCopyLink={onCopyLink}
-                  visibility={shareVisibility}
-                  onClose={() => setShareOpen(false)}
-                />
-              ) : null}
-              {/* A task's own page is its expanded view: shrink puts it back in its coordinator's side panel, close returns to the coordinator. */}
-              {taskOwnerHref && taskShrinkHref ? (
-                <>
-                  <Link
-                    data-task-page-shrink=""
-                    className={HEADER_ICON_BTN}
-                    href={taskShrinkHref}
-                    title={tt('shrink')}
-                    aria-label={tt('shrink')}
-                  >
-                    <Icon name="minimize-2" size={14} />
-                  </Link>
-                  <Link
-                    data-task-page-close=""
-                    className={HEADER_ICON_BTN}
-                    href={taskOwnerHref}
-                    title={tt('closeTask')}
-                    aria-label={tt('closeTask')}
-                  >
-                    <Icon name="x" size={15} />
-                  </Link>
-                </>
+              {taskOwnerHref ? (
+                <Link
+                  data-task-page-close=""
+                  className={HEADER_ICON_BTN}
+                  href={taskOwnerHref}
+                  title={tt('closeTask')}
+                  aria-label={tt('closeTask')}
+                >
+                  <Icon name="x" size={15} />
+                </Link>
               ) : null}
             </div>
           </div>
@@ -3805,87 +3820,6 @@ export default function SessionDetailView() {
               {t('staleLinkWarning')}
             </div>
           )}
-
-          {/* MOBILE HEADER ROW — the desktop meta row's shape at 390px: the focused
-          agent, workspace, visibility, and everything numeric collapsed behind
-          the SAME Details popover. It replaces the old 4-up stat strip and the
-          daemon/runtime/model config line, both of which now live in the popover;
-          three stacked bands of chrome above the transcript were the phone's whole
-          first screen. Tap toggles (`tapped`) — there is no hover to lean on. */}
-          <div className="relative flex items-center gap-2 border-b border-(--border-subtle) bg-(--surface-card) px-4 py-[9px] desktop:hidden">
-            <span className="flex min-w-0 flex-1">
-              <SessionAgentFocusMenu
-                options={headerFocusOptions}
-                value={headerFocusAgentId}
-                onChange={(agentId) => changeHeaderFocus(agentId)}
-              />
-            </span>
-            <CoordinatorTag show={session.coordinator} />
-            {!coordinatorPage && workspaceHref ? (
-              // Borderless on purpose (no `iconbtn`): a boxed button in this strip of plain text reads as the odd one out.
-              <Link
-                href={orgPath(workspaceHref)}
-                className="flex h-[26px] w-[22px] flex-none items-center justify-center rounded-md text-(--text-secondary) no-underline active:bg-(--surface-active)"
-                title={workspaceTitle}
-                aria-label={workspaceTitle}
-              >
-                <Icon name={workspaceIcon} size={14} />
-              </Link>
-            ) : null}
-            {visibilityControl}
-            <button
-              type="button"
-              onClick={toggleDetailTap}
-              aria-expanded={detailOpen}
-              // Its own id: the desktop tooltip stays in the DOM (hidden by CSS, not
-              // unmounted), so sharing one would put a duplicate id on the page.
-              aria-controls={`${detailTooltipId}-mobile`}
-              className="inline-flex h-[26px] flex-none items-center gap-1 rounded-md border-0 bg-transparent px-0 font-sans text-[12px] font-medium leading-normal text-(--text-secondary) active:bg-(--surface-active)"
-            >
-              <Icon name="info" size={14} />
-              {t('details')}
-            </button>
-            {requestsPanel && (
-              <button
-                type="button"
-                onClick={requestsPopover.toggleTap}
-                aria-expanded={requestsPopover.open}
-                aria-controls={`${requestsTooltipId}-mobile`}
-                aria-label={t('approvalRequests')}
-                className="inline-flex h-[26px] flex-none items-center gap-1 rounded-md border-0 bg-transparent px-0 font-sans text-[12px] font-medium leading-normal text-(--text-secondary) active:bg-(--surface-active)"
-              >
-                <Icon name="shield-check" size={14} />
-              </button>
-            )}
-            {detailOpen && (
-              <>
-                {/* Tap-away close: a popover a phone cannot dismiss without hitting the
-                  same 26px trigger again is a trap. */}
-                <div className="fixed inset-0 z-40" onClick={closeDetailTap} aria-hidden="true" />
-                <div
-                  id={`${detailTooltipId}-mobile`}
-                  role="dialog"
-                  aria-label={t('sessionDetails')}
-                  className="absolute top-full right-4 z-50 max-h-[60vh] w-[min(280px,calc(100vw-32px))] overflow-auto rounded-[9px] border border-(--border-default) bg-(--surface-card) py-[5px] shadow-(--shadow-lg)"
-                >
-                  {detailPanel}
-                </div>
-              </>
-            )}
-            {requestsPanel && requestsPopover.open && (
-              <>
-                <div className="fixed inset-0 z-40" onClick={requestsPopover.closeTap} aria-hidden="true" />
-                <div
-                  id={`${requestsTooltipId}-mobile`}
-                  role="dialog"
-                  aria-label={t('approvalRequests')}
-                  className="absolute top-full right-4 z-50 max-h-[60vh] w-[min(360px,calc(100vw-32px))] overflow-auto rounded-[9px] border border-(--border-default) bg-(--surface-card) shadow-(--shadow-lg)"
-                >
-                  {requestsPanel}
-                </div>
-              </>
-            )}
-          </div>
 
           {familyLinks && (
             <MobileSessionFamilyLinks
@@ -4062,20 +3996,24 @@ export default function SessionDetailView() {
                           {ti === newDividerAt ? <NewDivider /> : null}
                           {turn.time && (
                             <div className="mono text-center text-[11px] leading-normal text-(--text-tertiary)">
-                              {turn.time}
+                              {turnTimeLabel(turn.time, turnTimeMs(turn))}
                             </div>
                           )}
                           {turn.kind === 'user' ? (
-                            <UserTurnView
-                              turn={turn}
-                              platformMark={usesIntegrationAvatar ? sessionIntegration : undefined}
-                              footer={rootFooter(turn)}
-                              onReply={(() => {
-                                const root = replyRootOf(turn)
-                                return root ? () => replyInThread(root) : undefined
-                              })()}
-                              pressToReply={isMobile}
-                            />
+                            <>
+                              <UserTurnView
+                                turn={turn}
+                                platformMark={usesIntegrationAvatar ? sessionIntegration : undefined}
+                                footer={rootFooter(turn, 'line')}
+                                lead={handedLead(turn)}
+                                onReply={(() => {
+                                  const root = replyRootOf(turn)
+                                  return root ? () => replyInThread(root) : undefined
+                                })()}
+                                pressToReply={isMobile}
+                              />
+                              {rootFooter(turn, 'card')}
+                            </>
                           ) : (
                             (() => {
                               const turnInFlight = sessionTurnInFlight(mainBusy, session.statusLabel)
@@ -4369,35 +4307,22 @@ export default function SessionDetailView() {
                   <input
                     ref={imageInputRef}
                     type="file"
+                    multiple
                     hidden
                     accept={filesEnabled ? undefined : 'image/*'}
-                    onChange={(event) => onAttachFile(event.target.files?.[0])}
+                    onChange={(event) => onAttachFiles(Array.from(event.target.files ?? []))}
                   />
                 )}
                 {attachmentsEnabled && (
-                  <ComposerFileChips
-                    files={pgFiles}
-                    onRemove={(key) => setPgFiles(session.id, (files) => files.filter((f) => f.key !== key))}
+                  <AttachmentCards
+                    className="px-[15px] pt-3"
+                    cards={composerCards(pgFiles, pgImage)}
+                    onRemove={(key) =>
+                      key === INLINE_IMAGE_KEY
+                        ? setPgImage(session.id)
+                        : setPgFiles(session.id, (files) => files.filter((f) => f.key !== key))
+                    }
                   />
-                )}
-                {attachmentsEnabled && pgImage && (
-                  <div className="relative mx-[15px] mt-3 w-fit">
-                    <img
-                      src={`data:${pgImage.mimeType};base64,${pgImage.data}`}
-                      alt={pgImage.name}
-                      title={pgImage.name}
-                      className="h-20 w-20 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) object-cover"
-                    />
-                    <button
-                      type="button"
-                      className="iconbtn absolute -right-2 -top-2 h-6 w-6 rounded-full shadow-(--shadow-xs)"
-                      title={t('removeImage')}
-                      aria-label={t('removeImage')}
-                      onClick={() => setPgImage(session.id)}
-                    >
-                      <Icon name="x" size={14} />
-                    </button>
-                  </div>
                 )}
                 <ComposerTextarea
                   sessionId={session.id}
@@ -4407,7 +4332,7 @@ export default function SessionDetailView() {
                       : `Message ${pickRecipient ? composerAgentName : session.agentName}…`
                   }
                   onSend={() => onPgSend()}
-                  onImageFile={attachmentsEnabled ? (file) => void onImageFile(file) : undefined}
+                  onAttachFiles={attachmentsEnabled ? onAttachFiles : undefined}
                   mentionCandidates={mentionCandidates}
                   onPickMention={onPickMention}
                   onMentionJoiningChange={setMentionJoining}
@@ -4643,14 +4568,6 @@ export default function SessionDetailView() {
                   />
                 </div>
               </div>
-              {taskOwnPage && isContinuable ? (
-                <div
-                  data-task-page-hint=""
-                  className="px-[2px] pt-[6px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)"
-                >
-                  {tt('pageHint')}
-                </div>
-              ) : null}
             </div>
           </div>
         ) : null}
@@ -4781,6 +4698,7 @@ export default function SessionDetailView() {
           {(openThread || openRoot) && session.agentId ? (
             <ThreadPanel
               key={openRoot ?? openThread?.sessionId}
+              {...(openRoot && threadWork.get(openRoot) ? { fromMain: threadWork.get(openRoot) } : {})}
               agentId={session.agentId}
               agentName={session.agentName ?? ''}
               agentIcon={owner?.icon}

@@ -58,6 +58,32 @@ const slackError = (code: string, extra: Record<string, unknown> = {}) =>
   Object.assign(new Error(code), { data: { error: code, ...extra } })
 
 describe('SlackConnection.uploadFile', () => {
+  it('publishes several files with one caption and one completion in the requested thread', async () => {
+    const getUploadURLExternal = vi
+      .fn()
+      .mockResolvedValueOnce({ upload_url: 'https://files.slack.com/upload/a', file_id: 'F1' })
+      .mockResolvedValueOnce({ upload_url: 'https://files.slack.com/upload/b', file_id: 'F2' })
+    const completeUploadExternal = vi.fn(async () => ({}))
+    const conn = connWith({ getUploadURLExternal, completeUploadExternal })
+    const files = [
+      { bytes: Buffer.from('a'), name: 'same.txt' },
+      { bytes: Buffer.from('b'), name: 'same.txt' }
+    ]
+    await expect(conn.uploadFiles('C1', files, 'Ready', { thread: '100.1' })).resolves.toMatchObject({
+      ok: true,
+      fileIds: ['F1', 'F2']
+    })
+    expect(completeUploadExternal).toHaveBeenCalledExactlyOnceWith({
+      files: [
+        { id: 'F1', title: 'same.txt' },
+        { id: 'F2', title: 'same.txt' }
+      ],
+      channel_id: 'C1',
+      thread_ts: '100.1',
+      initial_comment: 'Ready'
+    })
+  })
+
   it('shares under the agent’s own identity, the only way a file post can carry one', async () => {
     // `chat.postMessage` cannot attach a file, so the upload's completion IS the message —
     // and `username`/`icon_url` on that call are the only identity it will ever accept.
@@ -78,7 +104,7 @@ describe('SlackConnection.uploadFile', () => {
         }
       )
       // The share's own ts, read back from files.info — see the anchoring test below.
-    ).resolves.toEqual({ ok: true, messageId: '1700000000.000100' })
+    ).resolves.toEqual({ ok: true, fileIds: ['F1'], messageId: '1700000000.000100' })
 
     expect(getUploadURLExternal).toHaveBeenCalledWith({ filename: 'shot.png', length: bytes.byteLength })
     // channel_id is what turns a hosted file into a message; without it the upload stays
@@ -114,6 +140,7 @@ describe('SlackConnection.uploadFile', () => {
 
     await expect(conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' }, 'hi')).resolves.toEqual({
       ok: true,
+      fileIds: ['F9'],
       messageId: '1700000000.000900'
     })
     expect(uploadV2).toHaveBeenCalledOnce()
@@ -185,6 +212,7 @@ describe('SlackConnection.uploadFile', () => {
     const info = vi.fn(sharedAt('1700000000.000200', 'C9'))
     await expect(connWith({ info }).uploadFile('C9', { bytes: Buffer.from('x'), name: 'a.png' })).resolves.toEqual({
       ok: true,
+      fileIds: ['F1'],
       messageId: '1700000000.000200'
     })
     expect(info).toHaveBeenCalledWith({ file: 'F1' })
@@ -194,6 +222,7 @@ describe('SlackConnection.uploadFile', () => {
     const conn = connWith({ info: sharedAt('1700000000.000300', 'D2', 'private') })
     await expect(conn.uploadFile('D2', { bytes: Buffer.from('x'), name: 'a.png' })).resolves.toEqual({
       ok: true,
+      fileIds: ['F1'],
       messageId: '1700000000.000300'
     })
   })
@@ -205,7 +234,10 @@ describe('SlackConnection.uploadFile', () => {
         throw new Error('ratelimited')
       }
     })
-    await expect(conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' })).resolves.toEqual({ ok: true })
+    await expect(conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' })).resolves.toEqual({
+      ok: true,
+      fileIds: ['F1']
+    })
   })
 
   it('classifies a missing files:write scope, the likeliest first-run failure', async () => {

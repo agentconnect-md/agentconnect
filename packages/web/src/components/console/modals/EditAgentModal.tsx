@@ -426,7 +426,10 @@ export default function EditAgentModal({
   }, [loaded])
 
   const moveReady = (d: (typeof daemons)[number] | undefined) =>
-    !!d && d.status === 'online' && d.caps.features.includes('agent-move-v1')
+    !!d &&
+    (!d.approval || d.approval.status === 'approved') &&
+    d.status === 'online' &&
+    d.caps.features.includes('agent-move-v1')
   // The group the picker currently names, if any — the one thing `daemonId` alone cannot say.
   const selectedGroupId = groupSetIdOf(daemonId)
   const selectedGroup = memberSets.find((group) => group.setId === selectedGroupId)
@@ -533,16 +536,20 @@ export default function EditAgentModal({
     ...daemonChoices.localChoices.map((candidate) => {
       const eligible = moveReady(candidate)
       const current = candidate.daemonId === initialDaemonId.current
+      const unapproved = candidate.approval && candidate.approval.status !== 'approved'
       return {
         value: candidate.daemonId,
         label: candidate.name,
-        ...(candidate.status !== 'online'
-          ? { meta: 'offline' }
-          : !candidate.caps.features.includes('agent-move-v1')
-            ? { meta: 'needs update' }
-            : {}),
-        title:
-          candidate.status !== 'online'
+        ...(unapproved
+          ? { meta: t('daemonSelect.approvalRequired') }
+          : candidate.status !== 'online'
+            ? { meta: 'offline' }
+            : !candidate.caps.features.includes('agent-move-v1')
+              ? { meta: 'needs update' }
+              : {}),
+        title: unapproved
+          ? t('daemonSelect.approvalRequired')
+          : candidate.status !== 'online'
             ? 'Offline — bring this machine online to use it.'
             : !candidate.caps.features.includes('agent-move-v1')
               ? 'Upgrade required before this machine can host the agent.'

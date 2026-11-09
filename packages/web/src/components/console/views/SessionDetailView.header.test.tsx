@@ -347,21 +347,31 @@ describe('the one-line session header', () => {
     expect(quiet.textContent).toBe('')
   })
 
-  it('shares from the header: who can see the session, its link, and Done', async () => {
-    wire.detail = { ...detail(true), visibility: 'org', canChangeVisibility: true }
-    await render()
-    await act(async () => header()!.querySelector<HTMLButtonElement>('[data-header-share]')!.click())
-    const dialog = container!.ownerDocument.querySelector('[data-share-dialog]')!
-    expect(dialog.textContent).toContain('Share “Usage report”')
-    expect(dialog.textContent).toContain('Who can see it')
-    // The owner chooses between everyone and private; the current one is picked.
-    const choices = [...dialog.querySelectorAll('[role="radio"]')]
-    expect(choices.map((c) => c.textContent?.slice(0, 7))).toEqual(['Everyon', 'Private'])
-    expect(choices[0]!.getAttribute('aria-checked')).toBe('true')
-    expect(dialog.textContent).toContain('Copy link')
-    await act(async () => [...dialog.querySelectorAll('button')].find((b) => b.textContent === 'Done')!.click())
-    expect(container!.ownerDocument.querySelector('[data-share-dialog]')).toBeNull()
-  })
+  it.each(['desktop', 'compact'])(
+    'shares from the %s header: who can see the session, its link, and Done',
+    async (layout) => {
+      wire.detail = { ...detail(true), visibility: 'org', canChangeVisibility: true }
+      const matchMedia = window.matchMedia
+      vi.spyOn(window, 'matchMedia').mockImplementation((query) => ({
+        ...matchMedia(query),
+        matches: layout === 'compact'
+      }))
+      await render()
+      expect(container!.querySelectorAll('[data-header-share]')).toHaveLength(1)
+      await act(async () => header()!.querySelector<HTMLButtonElement>('[data-header-share]')!.click())
+      const dialog = container!.ownerDocument.querySelector('[data-share-dialog]')!
+      expect(header()!.contains(dialog)).toBe(false)
+      expect(dialog.textContent).toContain('Share “Usage report”')
+      expect(dialog.textContent).toContain('Who can see it')
+      // The owner chooses between everyone and private; the current one is picked.
+      const choices = [...dialog.querySelectorAll('[role="radio"]')]
+      expect(choices.map((c) => c.textContent?.slice(0, 7))).toEqual(['Everyon', 'Private'])
+      expect(choices[0]!.getAttribute('aria-checked')).toBe('true')
+      expect(dialog.textContent).toContain('Copy link')
+      await act(async () => [...dialog.querySelectorAll('button')].find((b) => b.textContent === 'Done')!.click())
+      expect(container!.ownerDocument.querySelector('[data-share-dialog]')).toBeNull()
+    }
+  )
 
   it('opens one header popover at a time, without native tips over them', async () => {
     await render()
@@ -376,7 +386,21 @@ describe('the one-line session header', () => {
       details.parentElement!.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, relatedTarget: document.body }))
     })
     expect(requests.getAttribute('aria-expanded')).toBe('false')
-    expect(document.getElementById(details.getAttribute('aria-describedby')!)?.className).not.toContain('invisible')
+    const panel = document.getElementById(details.getAttribute('aria-controls')!)
+    expect(panel?.getAttribute('role')).toBe('dialog')
+    expect(panel?.className).not.toContain('invisible')
+  })
+
+  it.each(['details', 'requests'])('toggles %s by tap and closes it on an outside press', async (name) => {
+    await render()
+    const trigger = header()!.querySelector<HTMLButtonElement>(`[data-header-${name}]`)!
+    await act(async () => trigger.click())
+    expect(trigger.getAttribute('aria-expanded')).toBe('true')
+    await act(async () => trigger.click())
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+    await act(async () => trigger.click())
+    await act(async () => document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })))
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
   })
 
   it('opens who is in the session from the faces, with who can see it at the foot', async () => {
@@ -435,7 +459,7 @@ describe('the one-line session header', () => {
     expect(container?.textContent).toContain('npm test')
   })
 
-  it('makes a threaded task’s page its expanded view: back, shrink into the side panel and close lead to its owner, and its dock opens on Files', async () => {
+  it('returns from a task’s page to its owner with Back or Close and opens its dock on Files', async () => {
     // A threaded task runs in its own platform thread; the CP's `task` says some session owns it.
     wire.detail = {
       ...detail(true),
@@ -452,9 +476,7 @@ describe('the one-line session header', () => {
     await render()
     const row = header()!
     expect(row.querySelector('[data-task-page-back]')?.getAttribute('href')).toBe('/acme/sessions/owner-1')
-    expect(row.querySelector('[data-task-page-shrink]')?.getAttribute('href')).toBe(
-      '/acme/sessions/owner-1?task=session-1'
-    )
+    expect(row.querySelector('[data-task-page-shrink]')).toBeNull()
     expect(row.querySelector('[data-task-page-close]')?.getAttribute('href')).toBe('/acme/sessions/owner-1')
     const tabs = [...(container?.querySelectorAll('[data-dock-tab]') ?? [])].map((el) =>
       el.getAttribute('data-dock-tab')
@@ -462,52 +484,6 @@ describe('the one-line session header', () => {
     expect(tabs).not.toContain('sessions')
     expect(tabs).toContain('files')
     expect(container?.querySelector('[data-dock-tab="files"]')?.getAttribute('aria-selected')).toBe('true')
-  })
-
-  it('shrinks a webchat coordinator’s task into its first thread (webchat-threads.md §6.2)', async () => {
-    const root = '6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b'
-    wire.detail = {
-      ...detail(true),
-      task: true,
-      platform: 'webchat',
-      thread: root,
-      parentSession: {
-        id: 'owner-1',
-        agentId: 'agent-1',
-        agentName: 'Ops bot',
-        platform: 'webchat',
-        title: 'Ship api 1.5',
-        subsession: false
-      }
-    }
-    await render()
-    expect(header()?.querySelector('[data-task-page-shrink]')?.getAttribute('href')).toBe(
-      `/acme/sessions/owner-1?thread=${root}`
-    )
-  })
-
-  it('shrinks a Slack coordinator’s task into its first thread (webchat-threads.md §7)', async () => {
-    const root = '1754123456.000200'
-    const owner = {
-      id: 'owner-1',
-      agentId: 'agent-1',
-      agentName: 'Ops bot',
-      platform: 'slack',
-      title: 'Ship api 1.5',
-      subsession: false
-    }
-    wire.detail = {
-      ...detail(true),
-      task: true,
-      platform: 'slack',
-      channel: 'C0EXAMPLE',
-      thread: root,
-      parentSession: owner
-    }
-    await render()
-    expect(header()?.querySelector('[data-task-page-shrink]')?.getAttribute('href')).toBe(
-      `/acme/sessions/owner-1?thread=${root}`
-    )
   })
 
   it('gives an ordinary session no way back to a coordinator, and keeps its Sessions tab', async () => {

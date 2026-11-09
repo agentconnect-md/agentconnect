@@ -1,7 +1,10 @@
-// Google Chat's Layer-1 connection (google-chat-integration.md §5): app-authenticated REST egress, no socket.
-import { createHash, createPrivateKey, randomUUID, type KeyObject } from 'node:crypto'
-import { SignJWT } from 'jose'
-import type { IntegrationGoogleChatConfig } from '@agentconnect.md/protocol'
+// Google Chat's Layer-1 connection (google-chat-integration.md §5): REST egress with no socket, over the row's transport.
+import { createHash, randomUUID } from 'node:crypto'
+import {
+  googleChatCallRequest,
+  type IntegrationGoogleChatConfig,
+  type WireGoogleChatCall
+} from '@agentconnect.md/protocol'
 import type { Agent } from '../../agents/agent-schema.js'
 import type { Logger } from '../../log.js'
 import type {
@@ -12,63 +15,37 @@ import type {
   PlatformUserProfile
 } from '../contract.js'
 import { platformIntegrationConfig } from '../integration-config.js'
+import type { PlatformRelay } from '../platform-relay.js'
 import { PlatformSendQueue } from '../send-queue.js'
 import { renderGoogleChatMarkdown, splitGoogleChatText } from './render.js'
+import {
+  DirectGoogleChatTransport,
+  GoogleChatApiError,
+  RelayGoogleChatTransport,
+  type GoogleChatFailureKind,
+  type GoogleChatTransport
+} from './transport.js'
 import type { GoogleChatWriteBudget } from './write-budget.js'
 
-/** Google's fixed OAuth token endpoint; the key's own `token_uri` is never followed (§3). */
-export const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
-/** The fixed Chat API root; no endpoint override is accepted (§3). */
-export const GOOGLE_CHAT_API_ROOT = 'https://chat.googleapis.com/v1'
-/** App authentication only: no user impersonation, no domain-wide delegation (§3). */
-export const GOOGLE_CHAT_BOT_SCOPE = 'https://www.googleapis.com/auth/chat.bot'
-/** The Markdown mode every create and patch names; a patch without it reverts to Chat syntax (§5). */
-export const GOOGLE_CHAT_MARKUP = 'MARKUP_SYNTAX_MARKDOWN'
+export { GOOGLE_CHAT_MARKUP } from '@agentconnect.md/protocol'
+export {
+  GOOGLE_CHAT_API_ROOT,
+  GOOGLE_CHAT_BOT_SCOPE,
+  GOOGLE_TOKEN_ENDPOINT,
+  GoogleChatApiError,
+  TOKEN_RENEW_MARGIN_MS,
+  TOKEN_RETRY_MS,
+  type GoogleChatFailureKind
+} from './transport.js'
+
 /** Google allows one write per second per Space, shared by every app acting in it (§5). */
 export const GOOGLE_CHAT_SPACE_INTERVAL_MS = 1_000
-/** Renew the hour-long access token this far before it expires. */
-export const TOKEN_RENEW_MARGIN_MS = 5 * 60 * 1000
-/** How long a failed mint blocks the next attempt, so a rejected key is not hammered per send. */
-export const TOKEN_RETRY_MS = 30_000
 /** A read port's own deadline when its caller sets none — a stall costs a name, never a caller. */
 export const GOOGLE_CHAT_READ_DEADLINE_MS = 5_000
-const REQUEST_TIMEOUT_MS = 15_000
 const SEND_MAX_ATTEMPTS = 3
 const SEND_RETRY_BASE_MS = 1_000
 const SEND_RETRY_CAP_MS = 5_000
-const SPACES_PAGE_SIZE = 100
 const MAX_LISTED_SPACES = 200
-
-/** Why one Chat API call failed, in the vocabulary the delivery status is reported in. */
-export type GoogleChatFailureKind =
-  | 'credential_rejected'
-  | 'forbidden'
-  | 'not_found'
-  | 'already_exists'
-  | 'invalid'
-  | 'rate_limited'
-  | 'unavailable'
-  | 'ambiguous'
-  | 'tenant_refused'
-
-/** A Chat API or token-endpoint refusal; `ambiguous` means the request may have landed. */
-export class GoogleChatApiError extends Error {
-  constructor(
-    message: string,
-    readonly kind: GoogleChatFailureKind,
-    readonly status?: number,
-    /** The provider's own `Retry-After`, when it sent one — preferred over our backoff. */
-    readonly retryAfterMs?: number
-  ) {
-    super(message)
-    this.name = 'GoogleChatApiError'
-  }
-
-  /** Worth another attempt of an idempotent request. */
-  get retryable(): boolean {
-    return this.kind === 'rate_limited' || this.kind === 'unavailable' || this.kind === 'ambiguous'
-  }
-}
 
 /** One connection's worth of consolidated integrations (§7.5 registry group shape). */
 export interface ConsolidatedGoogleChatGroup {
@@ -79,18 +56,13 @@ export interface ConsolidatedGoogleChatGroup {
   integrations: { agentId: string; integrationId: string }[]
 }
 
-/** §7.5 opaque identity: the app, its key, the row's tenant, and the events URL its cards name, so any change opens a new client (§10.8, §11.5). */
-export function googleChatConnKey(
-  c: Pick<
-    IntegrationGoogleChatConfig,
-    'projectNumber' | 'serviceAccountKey' | 'tenantIds' | 'ownTenantIds' | 'eventsUrl'
-  >
-): string {
+/** §7.5 opaque identity: the app, its key or the bot row the relay serves, the row's tenant, and the events URL its cards name, so any change opens a new client (§10.8, §11.5). */
+export function googleChatConnKey(c: IntegrationGoogleChatConfig): string {
   return createHash('sha256')
     .update(
       JSON.stringify([
         c.projectNumber,
-        c.serviceAccountKey,
+        'egress' in c ? { relay: c.botId } : c.serviceAccountKey,
         c.tenantIds ?? null,
         c.ownTenantIds ?? null,
         c.eventsUrl ?? null
@@ -160,6 +132,8 @@ export interface GoogleChatDeps {
   newRequestId?: () => string
   /** The app's write budget on this daemon, shared by every connection of the app (§10.8); absent ⇒ unbudgeted. */
   budget?: GoogleChatWriteBudget
+  /** The daemon's relays, the only way out for a deployment app's row (§10.10); absent ⇒ such a row sends nothing. */
+  relay?: PlatformRelay
 }
 
 /** A Chat message the daemon created, addressed by its resource name and the id it chose. */
@@ -193,64 +167,6 @@ interface MessageResource {
 /** How many send-tool posts remember their thread, for the post's settlement right after the send. */
 const POSTED_THREADS_MAX = 256
 
-interface CachedToken {
-  token: string
-  expiresAtMs: number
-}
-
-interface ParsedKey {
-  clientEmail: string
-  privateKeyId?: string
-  signingKey: KeyObject
-}
-
-/** The service-account key's usable parts, or the reason it is not one; the JSON itself never reaches a log. */
-function parseServiceAccountKey(raw: string): ParsedKey | GoogleChatApiError {
-  let fields: Record<string, unknown>
-  try {
-    const parsed: unknown = JSON.parse(raw)
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error('not an object')
-    fields = parsed as Record<string, unknown>
-  } catch {
-    return new GoogleChatApiError('the service-account key is not a JSON object', 'credential_rejected')
-  }
-  const text = (name: string): string | undefined =>
-    typeof fields[name] === 'string' && (fields[name] as string).trim() !== '' ? (fields[name] as string) : undefined
-  const clientEmail = text('client_email')
-  const privateKey = text('private_key')
-  if (fields.type !== 'service_account' || !clientEmail || !privateKey)
-    return new GoogleChatApiError('the service-account key lacks client_email or private_key', 'credential_rejected')
-  try {
-    const signingKey = createPrivateKey({ key: privateKey, format: 'pem' })
-    if (signingKey.asymmetricKeyType !== 'rsa') throw new Error('not rsa')
-    const privateKeyId = text('private_key_id')
-    return { clientEmail, ...(privateKeyId ? { privateKeyId } : {}), signingKey }
-  } catch {
-    return new GoogleChatApiError('the service-account private_key is not a readable RSA key', 'credential_rejected')
-  }
-}
-
-/** `Retry-After`, as delta-seconds or an HTTP date. Absent/unparseable ⇒ the caller's own backoff. */
-function retryAfterMs(res: Response, now: number): number | undefined {
-  const raw = res.headers?.get?.('retry-after')
-  if (!raw) return undefined
-  const seconds = Number(raw)
-  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000)
-  const at = Date.parse(raw)
-  return Number.isNaN(at) ? undefined : Math.max(0, at - now)
-}
-
-async function readJson(res: Response): Promise<Record<string, unknown> | undefined> {
-  try {
-    const body: unknown = await res.json()
-    return typeof body === 'object' && body !== null && !Array.isArray(body)
-      ? (body as Record<string, unknown>)
-      : undefined
-  } catch {
-    return undefined
-  }
-}
-
 /** The Chat API's error message, bounded, or the bare status. */
 function errorDetail(body: Record<string, unknown> | undefined, status: number): string {
   const message = (body?.error as { message?: unknown } | undefined)?.message
@@ -278,8 +194,7 @@ export class GoogleChatConnection implements PlatformConnection {
   readonly workspaceUrl = ''
   /** The relay's public events URL, which every card button names as its function (§11.5). */
   readonly eventsUrl: string | undefined
-  private readonly parsedKey: ParsedKey | GoogleChatApiError
-  private readonly fetchImpl: typeof fetch
+  private readonly transport: GoogleChatTransport
   private readonly now: () => number
   private readonly sleep: (ms: number) => Promise<void>
   private readonly random: () => number
@@ -294,11 +209,6 @@ export class GoogleChatConnection implements PlatformConnection {
   private readonly postedThreads = new Map<string, string>()
   /** Every write takes one token of the app's budget before it runs, under the Space's own spacing. */
   private readonly writeGate: (() => Promise<void>) | undefined
-  private cached: CachedToken | undefined
-  /** Single-flight mint: concurrent sends inside the margin issue one token request. */
-  private minting: Promise<CachedToken> | undefined
-  private mintBlockedUntil = 0
-  private mintFailure: GoogleChatApiError | undefined
   private appUserName: string | undefined
   private stopped = false
 
@@ -309,11 +219,19 @@ export class GoogleChatConnection implements PlatformConnection {
     this.agentId = group.agentId
     this.projectNumber = group.config.projectNumber
     this.eventsUrl = group.config.eventsUrl
-    this.parsedKey = parseServiceAccountKey(group.config.serviceAccountKey)
-    if (this.parsedKey instanceof GoogleChatApiError)
-      deps.log?.warn(`googlechat: integration ${this.integrationId}: ${this.parsedKey.message}`)
-    this.fetchImpl = deps.fetchImpl ?? ((...args: Parameters<typeof fetch>) => fetch(...args))
     this.now = deps.now ?? (() => Date.now())
+    const config = group.config
+    // Chosen by the spec alone: a relay row holds no key, so it has no direct path to fall back on.
+    this.transport =
+      'egress' in config
+        ? new RelayGoogleChatTransport(deps.relay, config.botId)
+        : new DirectGoogleChatTransport(
+            config.serviceAccountKey,
+            deps.fetchImpl ?? ((...args: Parameters<typeof fetch>) => fetch(...args)),
+            this.now,
+            deps.log,
+            this.integrationId
+          )
     this.sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)))
     this.random = deps.random ?? (() => Math.random())
     this.newRequestId = deps.newRequestId ?? (() => randomUUID())
@@ -335,10 +253,10 @@ export class GoogleChatConnection implements PlatformConnection {
 
   // ── 1. transport lifecycle ──
 
-  /** No socket to open: warm the token; the app identity comes from traffic, never from a read at connect. */
+  /** No socket to open: warm the transport; the app identity comes from traffic, never from a read at connect. */
   async start(): Promise<void> {
     this.stopped = false
-    await this.token()
+    await this.transport.start()
   }
 
   async stop(): Promise<void> {
@@ -358,23 +276,21 @@ export class GoogleChatConnection implements PlatformConnection {
     /** A `users/…` the message is private to: only they and the app see it (app authentication, which this connection uses). */
     privateViewer?: string
   }): Promise<GoogleChatMessageRef> {
-    const query: Record<string, string> = { messageId: input.clientId, requestId: input.clientId }
-    if (input.thread) query.messageReplyOption = 'REPLY_MESSAGE_OR_FAIL'
-    const body = {
-      ...(input.text !== undefined ? { text: input.text, markupSyntax: GOOGLE_CHAT_MARKUP } : {}),
-      ...(input.cardsV2 ? { cardsV2: input.cardsV2 } : {}),
+    const call: WireGoogleChatCall = {
+      op: 'create-message',
+      space: input.space,
+      messageId: input.clientId,
+      requestId: input.clientId,
+      ...(input.text !== undefined ? { text: input.text } : {}),
+      ...(input.cardsV2 ? { cardsV2: input.cardsV2 as Record<string, unknown>[] } : {}),
       ...(input.fallbackText ? { fallbackText: input.fallbackText } : {}),
-      ...(input.thread ? { thread: { name: input.thread } } : {}),
-      ...(input.privateViewer ? { privateMessageViewer: { name: input.privateViewer } } : {})
+      ...(input.thread ? { thread: input.thread } : {}),
+      ...(input.privateViewer ? { privateViewer: input.privateViewer } : {})
     }
     const byClientId = `${input.space}/messages/${input.clientId}`
     await this.assertOwnTenant(input.space)
     const send = async (): Promise<GoogleChatMessageRef> => {
-      const created = await this.request<MessageResource>('POST', `${input.space}/messages`, {
-        query,
-        body,
-        retry: 'rate_limit_only'
-      })
+      const created = await this.request<MessageResource>(call, { retry: 'rate_limit_only' })
       this.noteAppIdentity(created.sender?.name)
       // Only Google's own echo says what the wire shows; a missing one is reported as missing, never as the input.
       return {
@@ -394,6 +310,8 @@ export class GoogleChatConnection implements PlatformConnection {
         const existing = await this.readMessage(byClientId)
         if (existing) return { ...existing, clientId: input.clientId }
         if (kind === 'already_exists') throw err
+        // A relay's create that may have reached Google stays as it is, found or not (§10.10).
+        if (!this.transport.resendsAmbiguousCreate && !(err as GoogleChatApiError).unsent) throw err
         // Nothing landed: the same request once more — same id, same body.
         return await send()
       }
@@ -404,12 +322,7 @@ export class GoogleChatConnection implements PlatformConnection {
   async patchMessage(name: string, text: string): Promise<void> {
     await this.assertOwnTenant(spaceOf(name))
     await this.queueFor(spaceOf(name)).enqueue(
-      () =>
-        this.request<MessageResource>('PATCH', name, {
-          query: { updateMask: 'text' },
-          body: { text, markupSyntax: GOOGLE_CHAT_MARKUP },
-          retry: 'idempotent'
-        }),
+      () => this.request<MessageResource>({ op: 'patch-text', message: name, text }, { retry: 'idempotent' }),
       this.writeGate
     )
   }
@@ -419,7 +332,7 @@ export class GoogleChatConnection implements PlatformConnection {
     await this.assertOwnTenant(spaceOf(name))
     await this.queueFor(spaceOf(name)).enqueue(async () => {
       try {
-        await this.request<MessageResource>('DELETE', name, { retry: 'idempotent' })
+        await this.request<MessageResource>({ op: 'delete-message', message: name }, { retry: 'idempotent' })
       } catch (err) {
         if (!(err instanceof GoogleChatApiError && err.kind === 'not_found')) throw err
       }
@@ -431,11 +344,10 @@ export class GoogleChatConnection implements PlatformConnection {
     await this.assertOwnTenant(spaceOf(name))
     await this.queueFor(spaceOf(name)).enqueue(
       () =>
-        this.request<MessageResource>('PATCH', name, {
-          query: { updateMask: 'cardsV2' },
-          body: { cardsV2 },
-          retry: 'idempotent'
-        }),
+        this.request<MessageResource>(
+          { op: 'patch-cards', message: name, cardsV2: cardsV2 as Record<string, unknown>[] },
+          { retry: 'idempotent' }
+        ),
       this.writeGate
     )
   }
@@ -447,16 +359,17 @@ export class GoogleChatConnection implements PlatformConnection {
 
   /** Post chrome (a command reply, a failure notice) with a per-call request id, so a retry cannot double-post. */
   async postChrome(space: string, thread: string | undefined, text: string): Promise<void> {
-    const query: Record<string, string> = { requestId: this.newRequestId() }
-    if (thread) query.messageReplyOption = 'REPLY_MESSAGE_OR_FAIL'
-    const body = { text, markupSyntax: GOOGLE_CHAT_MARKUP, ...(thread ? { thread: { name: thread } } : {}) }
+    const call: WireGoogleChatCall = {
+      op: 'create-message',
+      space,
+      requestId: this.newRequestId(),
+      text,
+      ...(thread ? { thread } : {})
+    }
     await this.assertOwnTenant(space)
     await this.queueFor(space).enqueue(async () => {
-      const created = await this.request<MessageResource>('POST', `${space}/messages`, {
-        query,
-        body,
-        retry: 'idempotent'
-      })
+      const retry = this.transport.resendsAmbiguousCreate ? 'idempotent' : 'rate_limit_only'
+      const created = await this.request<MessageResource>(call, { retry })
       this.noteAppIdentity(created.sender?.name)
     }, this.writeGate)
   }
@@ -522,15 +435,15 @@ export class GoogleChatConnection implements PlatformConnection {
 
   /** `spaces.get` names a named Space's customer; a DM's tenant is its one human member's domain, read only under a strict fence. */
   private async readSpaceTenant(space: string): Promise<SpaceTenant> {
-    const resource = await this.request<SpaceResource>('GET', space, { retry: 'idempotent' })
+    const resource = await this.request<SpaceResource>({ op: 'get-space', space }, { retry: 'idempotent' })
     if (resource.spaceType !== 'DIRECT_MESSAGE') {
       return { kind: 'space', ...(resource.customer ? { customer: resource.customer } : {}) }
     }
     if (this.fence?.mode !== 'strict') return { kind: 'dm' }
-    const page = await this.request<{ memberships?: MembershipResource[] }>('GET', `${space}/members`, {
-      query: { pageSize: '2', filter: 'member.type = "HUMAN"' },
-      retry: 'idempotent'
-    })
+    const page = await this.request<{ memberships?: MembershipResource[] }>(
+      { op: 'list-dm-humans', space },
+      { retry: 'idempotent' }
+    )
     const humans = (page.memberships ?? []).filter((m) => m.member?.type === 'HUMAN')
     const domainId = humans.length === 1 ? humans[0]!.member?.domainId : undefined
     return { kind: 'dm', ...(domainId ? { domain: `domains/${domainId}` } : {}) }
@@ -540,7 +453,7 @@ export class GoogleChatConnection implements PlatformConnection {
 
   async getChannelInfo(channel: string, opts: { signal?: AbortSignal } = {}): Promise<PlatformChannelInfo> {
     const signal = opts.signal ?? AbortSignal.timeout(GOOGLE_CHAT_READ_DEADLINE_MS)
-    const space = await this.request<SpaceResource>('GET', channel, { retry: 'none', signal })
+    const space = await this.request<SpaceResource>({ op: 'get-space', space: channel }, { retry: 'none', signal })
     const isIm = space.spaceType === 'DIRECT_MESSAGE'
     // A DM space carries no display name, so its row is named after the one person in it (§5).
     const name = isIm ? await this.dmCounterpartName(channel, signal) : space.displayName
@@ -550,11 +463,10 @@ export class GoogleChatConnection implements PlatformConnection {
   /** The DM's single human member's display name: app authentication may list human memberships, not the app's own. */
   private async dmCounterpartName(space: string, signal: AbortSignal): Promise<string | undefined> {
     try {
-      const page = await this.request<{ memberships?: MembershipResource[] }>('GET', `${space}/members`, {
-        query: { pageSize: '2', filter: 'member.type = "HUMAN"' },
-        retry: 'none',
-        signal
-      })
+      const page = await this.request<{ memberships?: MembershipResource[] }>(
+        { op: 'list-dm-humans', space },
+        { retry: 'none', signal }
+      )
       const humans = (page.memberships ?? []).filter((m) => m.member?.type === 'HUMAN')
       return humans.length === 1 ? humans[0]!.member?.displayName || undefined : undefined
     } catch {
@@ -564,29 +476,50 @@ export class GoogleChatConnection implements PlatformConnection {
 
   /** The one human in a DM, by user resource name; undefined when Google lists none or several. */
   async directMessagePerson(space: string): Promise<string | undefined> {
-    const page = await this.request<{ memberships?: MembershipResource[] }>('GET', `${space}/members`, {
-      query: { pageSize: '2', filter: 'member.type = "HUMAN"' },
-      retry: 'none',
-      signal: AbortSignal.timeout(GOOGLE_CHAT_READ_DEADLINE_MS)
-    })
+    const page = await this.request<{ memberships?: MembershipResource[] }>(
+      { op: 'list-dm-humans', space },
+      { retry: 'none', signal: AbortSignal.timeout(GOOGLE_CHAT_READ_DEADLINE_MS) }
+    )
     const humans = (page.memberships ?? []).filter((m) => m.member?.type === 'HUMAN')
     return humans.length === 1 ? humans[0]!.member?.name || undefined : undefined
   }
 
   /** The app's existing DM with one person (`spaces:findDirectMessage`); throws when they have none. */
   async findDirectMessage(user: string): Promise<string> {
-    const space = await this.request<SpaceResource>('GET', 'spaces:findDirectMessage', {
-      query: { name: user },
-      retry: 'none',
-      signal: AbortSignal.timeout(GOOGLE_CHAT_READ_DEADLINE_MS)
-    })
+    const space = await this.request<SpaceResource>(
+      { op: 'find-direct-message', user },
+      { retry: 'none', signal: AbortSignal.timeout(GOOGLE_CHAT_READ_DEADLINE_MS) }
+    )
     if (!space.name) throw new GoogleChatApiError('Google Chat found no direct message with that person', 'not_found')
     return space.name
   }
 
-  /** No member enumeration in this version: a Space's roster is not something a turn reads. */
-  async listMembers(_channel: string): Promise<PlatformMemberRef[]> {
-    return []
+  /** App authentication lists human memberships only; every page shares the read deadline. */
+  async listMembers(channel: string): Promise<PlatformMemberRef[]> {
+    const signal = AbortSignal.timeout(GOOGLE_CHAT_READ_DEADLINE_MS)
+    const members = new Map<string, PlatformMemberRef>()
+    const pages = new Set<string>()
+    let pageToken: string | undefined
+    do {
+      const page = await this.request<{ memberships?: MembershipResource[]; nextPageToken?: string }>(
+        { op: 'list-members', space: channel, ...(pageToken ? { pageToken } : {}) },
+        { retry: 'none', signal }
+      )
+      for (const { member } of page.memberships ?? []) {
+        if (member?.type !== 'HUMAN' || !member.name) continue
+        members.set(member.name, {
+          id: member.name,
+          ...(member.displayName ? { name: member.displayName } : {}),
+          isBot: false
+        })
+      }
+      pageToken = page.nextPageToken || undefined
+      if (pageToken) {
+        if (pages.has(pageToken)) throw new GoogleChatApiError('Google Chat repeated a membership page', 'invalid')
+        pages.add(pageToken)
+      }
+    } while (pageToken)
+    return [...members.values()]
   }
 
   /** The named Spaces the app is a member of, as the observed conversation rows (§5); DMs surface from traffic. */
@@ -616,133 +549,51 @@ export class GoogleChatConnection implements PlatformConnection {
     return null
   }
 
-  // ── token ──
-
-  /** A live access token: the cache while it is outside the renewal margin, else one single-flight mint. */
-  async token(): Promise<string> {
-    const now = this.now()
-    if (this.cached && this.cached.expiresAtMs - now > TOKEN_RENEW_MARGIN_MS) return this.cached.token
-    if (now < this.mintBlockedUntil) {
-      if (this.cached && this.cached.expiresAtMs > now) return this.cached.token
-      throw this.mintFailure ?? new GoogleChatApiError('token mint is backing off', 'unavailable')
-    }
-    return (await this.mint()).token
-  }
-
-  private mint(): Promise<CachedToken> {
-    if (this.minting) return this.minting
-    const pending = this.mintOnce()
-      .then((token) => {
-        this.cached = token
-        this.mintFailure = undefined
-        return token
-      })
-      .catch((err: unknown) => {
-        this.mintBlockedUntil = this.now() + TOKEN_RETRY_MS
-        this.mintFailure = err instanceof GoogleChatApiError ? err : undefined
-        throw err
-      })
-      .finally(() => {
-        this.minting = undefined
-      })
-    this.minting = pending
-    return pending
-  }
-
-  /** One JWT-bearer grant: `iss` the service account, `scope` chat.bot, `aud` the fixed token endpoint (§3). */
-  private async mintOnce(): Promise<CachedToken> {
-    if (this.parsedKey instanceof GoogleChatApiError) throw this.parsedKey
-    const key = this.parsedKey
-    const issuedAt = Math.floor(this.now() / 1000)
-    const assertion = await new SignJWT({ scope: GOOGLE_CHAT_BOT_SCOPE })
-      .setProtectedHeader({ alg: 'RS256', typ: 'JWT', ...(key.privateKeyId ? { kid: key.privateKeyId } : {}) })
-      .setIssuer(key.clientEmail)
-      .setAudience(GOOGLE_TOKEN_ENDPOINT)
-      .setIssuedAt(issuedAt)
-      .setExpirationTime(issuedAt + 3_600)
-      .sign(key.signingKey)
-    let res: Response
-    try {
-      res = await this.fetchImpl(GOOGLE_TOKEN_ENDPOINT, {
-        method: 'POST',
-        headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
-        body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion }).toString(),
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
-      })
-    } catch (err) {
-      throw new GoogleChatApiError(`token endpoint unreachable: ${(err as Error).message}`, 'unavailable')
-    }
-    const body = await readJson(res)
-    if (!res.ok) {
-      const code = typeof body?.error === 'string' ? body.error : `HTTP ${res.status}`
-      // 4xx names the credential (`invalid_grant`, `invalid_client`); anything else is Google's side.
-      const kind: GoogleChatFailureKind = res.status >= 400 && res.status < 500 ? 'credential_rejected' : 'unavailable'
-      throw new GoogleChatApiError(`token endpoint refused the service-account grant (${code})`, kind, res.status)
-    }
-    const token = typeof body?.access_token === 'string' ? body.access_token : undefined
-    const expiresIn = typeof body?.expires_in === 'number' ? body.expires_in : 3_600
-    if (!token) throw new GoogleChatApiError('token endpoint answered without an access token', 'unavailable')
-    return { token, expiresAtMs: this.now() + expiresIn * 1000 }
-  }
-
   // ── REST transport ──
 
-  /** One Chat API call with bounded, jittered retries: `idempotent` retries every retryable refusal, `rate_limit_only` just a 429. */
+  /** One Chat API call over the row's transport with bounded, jittered retries: `idempotent` retries every retryable refusal, `rate_limit_only` just a 429; a call that never went out may always be repeated. */
   private async request<T>(
-    method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
-    path: string,
-    opts: {
-      query?: Record<string, string>
-      body?: unknown
-      retry: 'idempotent' | 'rate_limit_only' | 'none'
-      signal?: AbortSignal
-    }
+    call: WireGoogleChatCall,
+    opts: { retry: 'idempotent' | 'rate_limit_only' | 'none'; signal?: AbortSignal }
   ): Promise<T> {
     if (this.stopped) throw new GoogleChatApiError('connection stopped', 'unavailable')
-    const url = new URL(`${GOOGLE_CHAT_API_ROOT}/${path}`)
-    for (const [k, v] of Object.entries(opts.query ?? {})) url.searchParams.set(k, v)
+    const { method, path } = googleChatCallRequest(call)
     let refreshed = false
     for (let attempt = 1; ; attempt += 1) {
-      const token = await this.token()
       let err: GoogleChatApiError
       try {
-        const res = await this.fetchImpl(url, {
-          method,
-          headers: {
-            authorization: `Bearer ${token}`,
-            accept: 'application/json',
-            ...(opts.body !== undefined ? { 'content-type': 'application/json' } : {})
-          },
-          ...(opts.body !== undefined ? { body: JSON.stringify(opts.body) } : {}),
-          signal: opts.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS)
-        })
-        if (res.ok) return ((await readJson(res)) ?? {}) as T
-        const detail = errorDetail(await readJson(res), res.status)
+        const answer = await this.transport.attempt(call, opts.signal)
+        if (answer.status >= 200 && answer.status < 300) return (answer.body ?? {}) as T
         // One 401 may be a token that aged out under us: drop the cache and try once with a fresh mint.
-        if (res.status === 401 && !refreshed) {
+        if (answer.status === 401 && !refreshed) {
           refreshed = true
-          this.cached = undefined
+          this.transport.invalidate()
           continue
         }
         err = new GoogleChatApiError(
-          `chat api ${method} ${path} failed: ${detail}`,
-          classifyStatus(res.status),
-          res.status,
-          retryAfterMs(res, this.now())
+          `chat api ${method} ${path} failed: ${errorDetail(answer.body, answer.status)}`,
+          classifyStatus(answer.status),
+          answer.status,
+          answer.retryAfterMs
         )
       } catch (thrown) {
-        if (thrown instanceof GoogleChatApiError) throw thrown
-        err = new GoogleChatApiError(
-          `chat api ${method} ${path} did not answer: ${(thrown as Error).message}`,
-          'ambiguous'
-        )
+        if (thrown instanceof GoogleChatApiError) {
+          if (!thrown.unsent) throw thrown
+          err = thrown
+        } else {
+          err = new GoogleChatApiError(
+            `chat api ${method} ${path} did not answer: ${(thrown as Error).message}`,
+            'ambiguous'
+          )
+        }
       }
       const retry =
-        opts.retry === 'idempotent'
+        err.unsent ||
+        (opts.retry === 'idempotent'
           ? err.retryable
           : opts.retry === 'rate_limit_only'
             ? err.kind === 'rate_limited'
-            : false
+            : false)
       if (!retry || attempt >= SEND_MAX_ATTEMPTS) throw err
       const backoff = err.retryAfterMs ?? SEND_RETRY_BASE_MS * 2 ** (attempt - 1) * (1 + this.random() * 0.25)
       await this.sleep(Math.min(backoff, SEND_RETRY_CAP_MS))
@@ -751,7 +602,7 @@ export class GoogleChatConnection implements PlatformConnection {
 
   private async readMessage(name: string): Promise<GoogleChatMessageRef | undefined> {
     try {
-      const message = await this.request<MessageResource>('GET', name, { retry: 'idempotent' })
+      const message = await this.request<MessageResource>({ op: 'get-message', message: name }, { retry: 'idempotent' })
       this.noteAppIdentity(message.sender?.name)
       return {
         name: message.name ?? name,
@@ -768,11 +619,10 @@ export class GoogleChatConnection implements PlatformConnection {
     const spaces: SpaceResource[] = []
     let pageToken: string | undefined
     do {
-      const page = await this.request<{ spaces?: SpaceResource[]; nextPageToken?: string }>('GET', 'spaces', {
-        query: { pageSize: String(SPACES_PAGE_SIZE), ...(pageToken ? { pageToken } : {}) },
-        retry: 'none',
-        signal
-      })
+      const page = await this.request<{ spaces?: SpaceResource[]; nextPageToken?: string }>(
+        { op: 'list-spaces', ...(pageToken ? { pageToken } : {}) },
+        { retry: 'none', signal }
+      )
       spaces.push(...(page.spaces ?? []))
       pageToken = page.nextPageToken
     } while (pageToken && spaces.length < MAX_LISTED_SPACES)

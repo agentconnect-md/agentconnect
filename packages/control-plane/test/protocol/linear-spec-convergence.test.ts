@@ -94,7 +94,7 @@ function registerPayload() {
 }
 
 async function snapshot(h: ReturnType<typeof buildWsHarness>) {
-  const token = await h.mintToken(DAEMON)
+  const token = await h.mintToken(DAEMON, { approved: true })
   const { stub } = h.connect()
   stub.inject('auth', { apiKey: token, daemonId: DAEMON, agentVersion: '1.4.0' }, { id: AUTH_ID })
   await stub.expectFrame('auth/ok')

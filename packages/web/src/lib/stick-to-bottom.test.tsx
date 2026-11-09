@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nearBottom, useStickToBottom } from './stick-to-bottom'
 
 // happy-dom has no layout engine, so the scroller's metrics are stubbed and the
@@ -32,11 +32,13 @@ class FakeResizeObserver {
 }
 
 let reArm: (() => void) | undefined
+let letGo: ((forMs?: number) => void) | undefined
 let away = false
 
 function Probe({ resetKey }: { resetKey: string }) {
-  const { pin, awayFromBottom } = useStickToBottom(resetKey)
+  const { pin, release, awayFromBottom } = useStickToBottom(resetKey)
   reArm = pin
+  letGo = release
   away = awayFromBottom
   return null
 }
@@ -90,6 +92,7 @@ afterEach(() => {
   page.remove()
   fireResize = undefined
   reArm = undefined
+  letGo = undefined
   away = false
 })
 
@@ -340,5 +343,51 @@ describe('useStickToBottom child swap', () => {
     setMetrics(3000)
     act(() => fireResize?.())
     expect(scroller.scrollTop).toBe(bottom())
+  })
+})
+
+describe('useStickToBottom release (a turn-map jump)', () => {
+  it('follows growth again once a jump that landed at the end comes to rest', () => {
+    setMetrics(2000)
+    scroller.scrollTop = bottom()
+    act(() => root.render(<Probe resetKey="s1" />))
+    act(() => letGo?.(1500))
+    // A scroll during the hold does not re-arm; the rest at the end does.
+    act(() => scroller.dispatchEvent(new Event('scroll')))
+    act(() => scroller.dispatchEvent(new Event('scrollend')))
+    setMetrics(2600)
+    act(() => fireResize?.())
+    expect(scroller.scrollTop).toBe(bottom())
+  })
+
+  it('stays where a jump into history landed', () => {
+    setMetrics(2000)
+    scroller.scrollTop = bottom()
+    act(() => root.render(<Probe resetKey="s1" />))
+    act(() => letGo?.(1500))
+    scroller.scrollTop = 200
+    act(() => scroller.dispatchEvent(new Event('scroll')))
+    act(() => scroller.dispatchEvent(new Event('scrollend')))
+    setMetrics(2600)
+    act(() => fireResize?.())
+    expect(scroller.scrollTop).toBe(200)
+  })
+
+  it('settles a jump that never moved when the hold runs out', () => {
+    vi.useFakeTimers()
+    try {
+      setMetrics(2000)
+      scroller.scrollTop = bottom()
+      act(() => root.render(<Probe resetKey="s1" />))
+      act(() => letGo?.(1500))
+      act(() => {
+        vi.advanceTimersByTime(1500)
+      })
+      setMetrics(2600)
+      act(() => fireResize?.())
+      expect(scroller.scrollTop).toBe(bottom())
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

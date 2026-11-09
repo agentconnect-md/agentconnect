@@ -156,7 +156,7 @@ describe.skipIf(process.platform !== 'linux')('microsandbox OMP SQLite API crede
     }
   })
 
-  it('hides unknown providers and refuses retained plaintext or changed host credentials without rewriting them', () => {
+  it('hides unknown providers and refuses a fresh copy whose host credentials changed', () => {
     const opts = fixture()
     withDatabase(join(opts.source, 'agent.db'), (db) =>
       db.exec("UPDATE auth_credentials SET provider='custom-provider' WHERE id=1")
@@ -165,10 +165,6 @@ describe.skipIf(process.platform !== 'linux')('microsandbox OMP SQLite API crede
       path = join(launch.env.PI_CODING_AGENT_DIR!, 'agent.db')
     expect(launch.microsandbox.secrets).toEqual([])
     expect(readOmpApiCredentials(path)[0]?.key).toMatch(/^msb-secret-/)
-    withDatabase(path, (db) => db.prepare('UPDATE auth_credentials SET data=? WHERE id=1').run(JSON.stringify({ key })))
-    const before = readFileSync(path)
-    expect(() => prepareMicrosandboxLaunch(opts)).toThrow(/start a new session/)
-    expect(readFileSync(path)).toEqual(before)
     const fresh = fixture(),
       protection = prepareMicrosandboxCredentials('omp', fresh.runtime, fresh.stateSourceEnv)!
     const home = prepareRuntimeHome('omp', fresh.scopeDir, fresh.stateSourceEnv, undefined, protection.seedExclusions)
@@ -178,6 +174,39 @@ describe.skipIf(process.platform !== 'linux')('microsandbox OMP SQLite API crede
     )
     expect(() => protection.preparePrivateHome(home)).toThrow(/changed/)
     expect(existsSync(join(home, '.omp/agent/agent.db'))).toBe(false)
+  })
+
+  it('rewrites a plaintext or stale key in a retained copy to its placeholder and leaves an unbound row as it is', () => {
+    const opts = fixture(),
+      launch = prepareMicrosandboxLaunch(opts),
+      placeholder = launch.microsandbox.secrets![0]!.placeholder
+    const directory = launch.env.PI_CODING_AGENT_DIR!,
+      path = join(directory, 'agent.db')
+    const keyOf = (id: number) => readOmpApiCredentials(path).find((row) => row.id === id)?.key
+    const holds = (value: string) =>
+      readdirSync(directory, { withFileTypes: true })
+        .filter((file) => file.isFile())
+        .some((file) => readFileSync(join(directory, file.name)).includes(Buffer.from(value)))
+    withDatabase(path, (db) => {
+      db.prepare('UPDATE auth_credentials SET data=? WHERE id=1').run(JSON.stringify({ key }))
+      db.prepare("INSERT INTO auth_credentials VALUES (3, 'openai', 'api_key', ?, NULL, NULL, 1, 1)").run(
+        JSON.stringify({ key: 'fixture-guest-key' })
+      )
+    })
+    expect(prepareMicrosandboxLaunch(opts).microsandbox.secrets![0]!.placeholder).toBe(placeholder)
+    expect(keyOf(1)).toBe(placeholder)
+    expect(keyOf(3)).toBe('fixture-guest-key')
+    expect(holds(key)).toBe(false)
+    withDatabase(join(opts.source, 'agent.db'), (db) =>
+      db.prepare('UPDATE auth_credentials SET data=? WHERE id=1').run(JSON.stringify({ key: 'fixture-rotated-key' }))
+    )
+    withDatabase(path, (db) =>
+      db.prepare('UPDATE auth_credentials SET data=? WHERE id=1').run(JSON.stringify({ key: 'fixture-stale-key' }))
+    )
+    expect(prepareMicrosandboxLaunch(opts).microsandbox.secrets![0]!.readValue()).toBe('fixture-rotated-key')
+    expect(keyOf(1)).toBe(placeholder)
+    expect(holds('fixture-stale-key')).toBe(false)
+    expect(holds('fixture-rotated-key')).toBe(false)
   })
 
   it('refuses private database and WAL symlinks and orphan sidecars', () => {

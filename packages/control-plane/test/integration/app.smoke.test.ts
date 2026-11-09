@@ -172,6 +172,7 @@ describe('Phase 5 — whole-app assembly via buildApp (REST + WS share one DB/or
 
   it("a REST POST /agents is visible in a later daemon's register/ok reconcile snapshot", async () => {
     const { app, wsUrl, token } = await start()
+    await prisma.daemon.update({ where: { id: DAEMON }, data: { approvalStatus: 'approved' } })
 
     // 1. Create an agent placed on THIS daemon, with an inline github workspace,
     //    through the C2 BFF (REST) — same app instance.

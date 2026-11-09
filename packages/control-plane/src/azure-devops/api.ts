@@ -196,8 +196,22 @@ async function devOpsRequest<T>(
   path: string,
   init: { method?: 'GET' | 'POST'; body?: unknown } = {}
 ): Promise<T> {
-  client.checkThrottle(organization)
   const url = `${client.devOpsBaseUrl}/${encodeURIComponent(organization)}/${path}`
+  const json = await azureDevOpsCall<T>(client, token, organization, url, init)
+  if (json === undefined)
+    throw new AzureDevOpsApiError('Azure DevOps answered without a body', 200, 'UNAVAILABLE', true)
+  return json
+}
+
+/** One call to an absolute Azure DevOps URL under the organization's throttle gate; a 204 or an empty answer is undefined. */
+export async function azureDevOpsCall<T>(
+  client: AzureDevOpsApiClient,
+  token: string,
+  organization: string,
+  url: string,
+  init: { method?: 'GET' | 'POST' | 'PUT' | 'DELETE'; body?: unknown } = {}
+): Promise<T | undefined> {
+  client.checkThrottle(organization)
   let res: Response
   try {
     res = await client.fetch(url, {
@@ -214,10 +228,8 @@ async function devOpsRequest<T>(
   }
   const retryAfterMs = client.observeThrottle(organization, res)
   if (res.ok) {
-    const json = (await res.json().catch(() => undefined)) as T | undefined
-    if (json === undefined)
-      throw new AzureDevOpsApiError('Azure DevOps answered without a body', res.status, 'UNAVAILABLE', true)
-    return json
+    if (res.status === 204) return undefined
+    return (await res.json().catch(() => undefined)) as T | undefined
   }
   const text = await res.text().catch(() => '')
   const serviceError = res.headers.get('x-tfs-serviceerror') ?? ''
@@ -291,6 +303,88 @@ export async function readConnectionData(
     identityName: typeof name === 'string' && name.trim() ? name.trim() : null,
     instanceId: json.instanceId.toLowerCase()
   }
+}
+
+export interface AzureDevOpsUserIdentity {
+  name: string
+  email: string
+}
+
+interface MicrosoftIdentityLookup {
+  organization: string
+  tenantId: string
+  objectId: string
+  email: string
+}
+
+interface RawMicrosoftIdentity {
+  id?: unknown
+  descriptor?: unknown
+  providerDisplayName?: unknown
+  isActive?: unknown
+  isContainer?: unknown
+  properties?: Record<string, { $value?: unknown }>
+}
+
+// Email locates candidates; only the linked object ID within the connection's tenant establishes identity.
+async function findMicrosoftIdentity(
+  client: AzureDevOpsApiClient,
+  token: string,
+  input: MicrosoftIdentityLookup
+): Promise<RawMicrosoftIdentity | null> {
+  const query = new URLSearchParams({
+    searchFilter: 'MailAddress',
+    filterValue: input.email,
+    queryMembership: 'None',
+    'api-version': API_VERSION
+  })
+  const result = await azureDevOpsCall<{ value?: RawMicrosoftIdentity[] }>(
+    client,
+    token,
+    input.organization,
+    `https://vssps.dev.azure.com/${encodeURIComponent(input.organization)}/_apis/identities?${query}`
+  )
+  const same = (value: unknown, expected: string) =>
+    typeof value === 'string' && value.trim().toLowerCase() === expected.trim().toLowerCase()
+  const matches = (Array.isArray(result?.value) ? result.value : []).filter(
+    (identity) =>
+      identity?.isActive === true &&
+      identity.isContainer !== true &&
+      same(identity.properties?.SchemaClassName?.$value, 'User') &&
+      same(identity.properties?.Domain?.$value, input.tenantId) &&
+      same(
+        identity.properties?.['http://schemas.microsoft.com/identity/claims/objectidentifier']?.$value,
+        input.objectId
+      ) &&
+      same(identity.properties?.Mail?.$value, input.email)
+  )
+  return matches.length === 1 ? matches[0]! : null
+}
+
+export async function readMicrosoftUser(
+  client: AzureDevOpsApiClient,
+  token: string,
+  input: MicrosoftIdentityLookup
+): Promise<AzureDevOpsUserIdentity | null> {
+  const name = (await findMicrosoftIdentity(client, token, input))?.providerDisplayName
+  return typeof name === 'string' && name.trim() ? { name: name.trim(), email: input.email } : null
+}
+
+export interface AzureDevOpsMicrosoftIdentity {
+  id: string
+  descriptor: string
+}
+
+// Authorization needs the stable identity and security descriptor, independently of its display name.
+export async function readMicrosoftIdentity(
+  client: AzureDevOpsApiClient,
+  token: string,
+  input: MicrosoftIdentityLookup
+): Promise<AzureDevOpsMicrosoftIdentity | null> {
+  const identity = await findMicrosoftIdentity(client, token, input)
+  return identity && isGuid(identity.id) && typeof identity.descriptor === 'string' && identity.descriptor.trim()
+    ? { id: identity.id.toLowerCase(), descriptor: identity.descriptor }
+    : null
 }
 
 /** One repository as the identity sees it (§5), keyed by GUID. */

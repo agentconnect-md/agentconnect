@@ -50,7 +50,9 @@ Credentials are the **app ID**, the **tenant ID**, and the **client secret**.
 They map onto existing columns with no migration: `externalAppId` ← app ID,
 `externalTenantId` ← tenant ID, and the `botToken` secret slot ← client secret.
 The relay's assignment carries the app and tenant IDs and the bot's mention
-identity `28:<appId>`; the secret goes to the daemon alone, as with Google Chat.
+identity `28:<appId>`; an organization's own secret goes to the daemon alone, as
+with Google Chat. The deployment's own app is the exception: its secret never
+leaves the deployment, and its rows send through the relay (§8.5).
 
 Validation requests a client-credentials token from the tenant's endpoint
 (`https://login.microsoftonline.com/{tenantId}/oauth2/v2.0/token`, scope
@@ -102,7 +104,8 @@ Tokens issued by Entra rather than the Bot Framework are refused.
 
 Outbound calls go to the `serviceUrl` the conversation's latest activity
 carried, which the daemon records per conversation and keeps in its local store
-across restarts; proactive sends need that
+across restarts; a row of the deployment's app makes them through the relay
+(§8.5). Proactive sends need that
 recorded reference, since Teams offers no lookup by email or user principal
 name. The `serviceUrl` is regional and tenant-specific
 (`https://smba.trafficmanager.net/<region>/<tenantId>/`), so it is read, never
@@ -701,11 +704,23 @@ together.
 
 Every connected tenant gets a **customer row**: the deployment app's ID as
 `externalAppId` and the customer tenant as `externalTenantId`, one row per
-`(app, tenant)`, owned by one organization, marked prebuilt, with a copy of the
-deployment secret. Its public `platformConfig` records the home tenant as
-`tokenTenantId`. A boot pass re-stamps the secret on every customer row when
-the configured secret changes, as Google Chat's reconciler does
-([Google Chat §10.3](google-chat-integration.md#103-data-model-one-row-per-customer-as-slack-does-per-team)).
+`(app, tenant)`, owned by one organization, marked prebuilt. Its public
+`platformConfig` records the home tenant as `tokenTenantId`. The row holds **no
+copy of the deployment secret**: its secret slot holds a fixed marker, and its
+daemon sends through the relay (§8.5). A row is a deployment-app row by what it
+stores, so removing or replacing the configured app never turns it into an
+organization's own bot: `platformConfig.appOwner: deployment`, which every
+connect writes, or the `tokenTenantId` and prebuilt flag every earlier connect
+wrote; a row whose `externalAppId` is the configured app's ID, or whose secret
+slot holds the marker, is one too. A boot pass runs whatever the configuration
+is and reads every Teams row's slot: it records `appOwner` on every such row,
+replaces any secret an older build stamped there with the marker, and re-syncs
+the row. Replacing a Teams secret from the Console is refused for such a row.
+
+With no row copies, rotating the secret touches only the identity provider's
+connector, the Control Plane and the relay, which take the new value from Setup
+on their next start or registration. Entra keeps two secrets of one app valid
+at once, so the new secret is added before the old one is deleted.
 
 The relay's assignment is the `(app ID, tenant ID)` pair of §3, so the
 composite index routes each activity to its tenant's row; an activity from a
@@ -714,10 +729,10 @@ tenant matters, the two tenants stay apart:
 
 - **The customer tenant** is the session realm (§4.5), the daemon's tenant
   scope, the relay's fence, and the tenant whose members are matched.
-- **The token tenant** issues every token the bot uses: the daemon's outbound
-  calls and the Control Plane's member lookups (§4.5). `IntegrationMsTeamsConfig`
-  gains an optional `tokenTenantId`; absent, it is `tenantId`, so an
-  organization's own bot is unchanged.
+- **The token tenant** issues every Bot Connector token the bot uses: the
+  relay's calls for the row's daemon (§8.5) and the Control Plane's member
+  lookups (§4.5). Both mint it with the deployment app's own credential, never
+  a row's. An organization's own bot keeps its own tenant for both.
 
 One customer row serves one agent, as an organization's own bot does (§1). An
 organization that wants another agent in the same tenant registers its own bot
@@ -728,8 +743,10 @@ for it.
 When the deployment app is configured, the Teams wizard leads with **Connect
 with Microsoft** and keeps **Register your own bot instead** one click away. A
 per-agent install that pastes the deployment app's ID is refused
-(`MSTEAMS_DEPLOYMENT_APP`), and a customer row's secret follows the Setup Server
-rather than a Console rotation.
+(`MSTEAMS_DEPLOYMENT_APP`), and the deployment app's secret follows the Setup
+Server rather than a Console rotation. Connecting needs the agent's daemon to
+advertise `msteams-relay-egress-v1` (§8.5); an older daemon is refused with
+`MSTEAMS_CONNECT_NO_AGENT` and a reason to upgrade it.
 
 1. **Sign-in.** The Console asks the Control Plane for an authorization URL
    (`POST /orgs/:orgId/integrations/msteams/connect`, `{ agentId }`, an editor
@@ -813,11 +830,11 @@ the snapshot's credentials and updates them in place when a snapshot changes
 them.
 
 **Egress on the relay.** Teams takes no reply in the HTTP response, so the
-anchor posts its answers itself, which is the one place the relay holds a Teams
-secret: it mints a Bot Framework token from the home tenant with the client
-credentials (§8.1) and posts to the activity's `serviceUrl`, which the token
-check has already bound to the activity. Only the deployment app's secret
-reaches the relay; an organization's own bot stays secret-free there.
+anchor posts its answers itself: it mints a Bot Framework token from the home
+tenant with the client credentials (§8.1) and posts to the activity's
+`serviceUrl`, which the token check has already bound to the activity. Only the
+deployment app's secret reaches the relay, for the anchor and for its rows'
+egress (§8.5); an organization's own bot stays secret-free there.
 
 **What it answers.**
 
@@ -863,7 +880,122 @@ same app ID conflict; whether the welcome reaches a personal install from the
 Store before the tenant's admin approves the app; whether the relay's token
 posts into a tenant whose admin never consented to the app.
 
-### 8.5 Open
+### 8.5 Egress for the deployment app's rows
+
+Status: **implemented**, not yet measured against Microsoft.
+
+**Why the daemon holds no secret.** The deployment app's secret is one Entra
+credential shared by every connected tenant, and it is also the Microsoft
+sign-in application (§4.5) and the deployment's Azure DevOps application.
+Microsoft offers no Bot Connector credential or token limited to one tenant: a
+Bot Connector token carries no customer tenant and works in every tenant the
+app is installed in. Daemons can be enrolled by any member of an organization,
+so a secret or a Bot Connector token on a daemon would let one organization's
+member act as the bot in every other tenant, read their resource-specific
+consent through Graph, and reach the deployment's Azure DevOps grants. The
+secret therefore stays on the Control Plane, the relay and the identity
+provider, and a row's daemon sends through the relay.
+
+**The spec.** A deployment-app row's `IntegrationMsTeamsConfig` carries the app
+and tenant IDs, `egress: 'relay'`, and the row's `botId`, and no `clientSecret`
+or token tenant. An organization's own bot keeps `clientSecret` and sends
+directly. A deployment-app row whose app is not the configured one, or with no
+app configured, gets no spec at all, never its stored secret.
+
+**Older daemons.** The spec names `msteams-relay-egress-v1` in
+`IntegrationSpec.requires`, which a Teams daemon module advertises through its
+platform module's registration features. A daemon would ignore a spec it cannot
+parse and keep the one it holds, so the Control Plane never sends it one:
+wherever integrations reach a daemon (`register/ok`, `integration/upsert`,
+`agent/activate` and `duty/fetch/ok`), a daemon without a required feature gets
+the integration removed (`drop.integrations` or `integration/remove`) instead.
+The removal stops further use, but it cannot recall a secret an older build
+already delivered: **upgrading to this change requires rotating the deployment
+app's secret** once every Control Plane and relay runs it.
+
+**The relay's credential.** The Control Plane's deployment snapshot carries the
+app (`msTeamsApp`: app ID, home tenant, secret, and a ticket key) whenever the
+app is configured, independent of the anchor. The ticket key is derived from
+the Control Plane's pepper by a domain-separated HMAC, as its other signing
+keys are, so it needs no operator configuration and is the same on every relay.
+
+**Conversation tickets.** When the relay forwards a verified activity of a
+deployment-app row (a message, a card click, the bot's own install, people
+joining), it adds a ticket for the conversation and, in a team, one for the
+team: `t1.<conversation ID and service URL>.<HMAC over the version, the row's
+botId, its tenant, the conversation ID and the service URL>`. A channel
+thread's `;messageid=` suffix is dropped, so one ticket covers the channel. The
+daemon keeps the tickets beside the conversation's `serviceUrl` in its store,
+so they survive restarts, and replaces them with each new activity's.
+
+**The call.** The daemon sends `rd/platform/request` on its authenticated
+relay socket, `{ platformId: 'msteams', botId, payload }`, to any relay that
+advertises `platform-request-v1`. The payload is one of a fixed set: post,
+update or delete an activity, read one member or a page of members, read a
+team's details or its channels, open a 1:1 chat, or mint a Graph token. The
+relay checks, keeping no state of its own:
+
+1. the socket's daemon is a member of the bot's assignment, and the assignment
+   is a deployment-app row (its app ID is the snapshot's), whose tenant T is
+   the assignment's tenant;
+2. the ticket's MAC holds for this `botId` and T, and the call's conversation
+   or team is the one the ticket names;
+3. the ticket's service URL is an https URL on a Bot Connector host:
+   `smba.trafficmanager.net` and the GCC, GCC High and DoD hosts
+   `smba.infra.gcc.teams.microsoft.com`, `smba.infra.gov.teams.microsoft.us`
+   and `smba.infra.dod.teams.microsoft.us`.
+
+It then builds the path and body itself under the ticket's service URL, never
+a path or URL from the request, and refuses an ID that would change that path
+(a `.` or `..` segment, which the schema also rejects). It attaches a
+home-tenant Bot Connector token and answers Microsoft's status, `Retry-After`
+and JSON body. One budget of 12 seconds covers the token request, the send and
+a single retry after a 401, and the daemon waits 15 seconds, so the relay always
+answers first: out of time before sending, it answers `unavailable`; a send cut
+off by the budget answers a gateway timeout, which the daemon treats as a send
+that may have landed and never repeats for a post. Opening a 1:1 chat
+names the bot and sets `tenantId` and `channelData.tenant.id` to T whatever the
+daemon asked, and answers a ticket for the new chat; a team's channel list
+answers a ticket for each channel. A refused call answers `refused`; Entra
+unreachable answers `unavailable`, which the daemon retries as unsent.
+
+**Graph.** The relay mints an app-only Graph token against
+`/{T}/oauth2/v2.0/token` for the row's tenant only and hands it to the daemon,
+which caches it and keeps calling Graph directly. Such a token carries only T's
+resource-specific consent.
+
+**The daemon.** `MsTeamsApi` sits on a transport chosen from the spec: direct
+with the bot's own token, or the relay. Retries and their classification stay
+the daemon's: a call no relay took is retried even for a post, and one the
+relay may have sent is treated as a send that may have landed. Without a relay
+a deployment-app row cannot send.
+
+**Assignment lag.** Relays receive assignments independently, and a pool
+member's routes follow its duty with a delay, so one relay may not yet list the
+daemon. `refused` and `unavailable` both mean Microsoft was never called; a
+refusal the relay's assignments or snapshot may still lift (`unknown_bot`,
+`not_member`, or `not_deployment_app` when its snapshot names no app or another
+one) carries `retryable`. A handler failure, which may follow the call to
+Microsoft, is answered with an error frame the daemon treats as a send that may
+have landed, and a reply the relay could not send is not replaced by another. The daemon then asks the
+next ready relay, each of which checks membership on its own, and treats a
+refusal every relay returned as retryable as a call not sent, which its usual
+bounded backoff retries. A call that may have reached Microsoft is never sent to
+a second relay.
+
+**High availability.** No Control Plane call is on this path. A relay keeps
+serving from its last snapshot through a Control Plane outage, and any relay
+can serve any call, since every relay holds the same key and credential.
+
+**Known limits.**
+
+- A conversation last active before this change has no ticket until its next
+  activity, so a proactive send to it is refused until then.
+- The relay takes the tenant from the activity body, which the token does not
+  sign. Forging it needs a valid inbound token, which Microsoft sends only to
+  the relay.
+
+### 8.6 Open
 
 - Whether members of a tenant that connected through §8.3 can sign in with
   Microsoft without their own consent prompt (§4.5).

@@ -56,6 +56,17 @@ function giteaHookAuthorizes(
   return hook !== null && hook.agentId === agentId && hook.kind === 'gitea' && hook.enabled && hook.repoId === repoId
 }
 
+/** azure-devops-integration.md §11.5: an ENABLED azure-devops hook of this agent on that very repository. */
+function azureDevOpsHookAuthorizes(
+  hook: HookRecord | null,
+  agentId: AgentId,
+  repoId: bigint
+): hook is HookRecord & { repoId: bigint } {
+  return (
+    hook !== null && hook.agentId === agentId && hook.kind === 'azure-devops' && hook.enabled && hook.repoId === repoId
+  )
+}
+
 export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
   if (!isFrame('gitcred/request')(frame)) return
   const {
@@ -127,7 +138,31 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
 
   try {
     if (azureDevOpsRequest) {
-      // No hooks in v1 (§11), so no purpose-gated lease exists for Azure DevOps.
+      // §11.5: the daemon's final poster, at `comment` for a repository with an enabled hook, whatever the agent's tier.
+      if (purpose === 'azure_devops_hook_reply') {
+        if (consumer !== 'daemon' || hookId === undefined || externalRepoId === undefined) {
+          conn.sendError(
+            frame.id,
+            'SCOPE_DENIED',
+            'azure-devops hook reply credentials are served to the daemon for a hook and a repository',
+            false
+          )
+          return
+        }
+        const hook = await deps.hook.get(orgId, HookId(hookId))
+        if (!azureDevOpsHookAuthorizes(hook, AgentId(agentId), BigInt(externalRepoId))) {
+          conn.sendError(
+            frame.id,
+            'SCOPE_DENIED',
+            'hook is not an enabled azure-devops hook of this agent on that repository',
+            false
+          )
+          return
+        }
+        const grant = await deps.azureDevOpsGitcred!.grantForHookReply(orgId, hook.repoId, forceRefresh === true)
+        conn.replyTo(frame, 'gitcred/grant', grant)
+        return
+      }
       if (purpose !== undefined) {
         conn.sendError(frame.id, 'SCOPE_DENIED', `azure-devops has no ${purpose} credential`, false)
         return

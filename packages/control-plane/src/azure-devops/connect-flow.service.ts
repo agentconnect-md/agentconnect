@@ -6,6 +6,7 @@ import { AzureDevOpsApiError, readConnectionData, requestAccessToken, type Azure
 import {
   ADD_USERS_REFUSED,
   addGroupMembership,
+  allowServiceHookSubscriptions,
   addServicePrincipalEntitlement,
   addServicePrincipalThroughGroup,
   findProjectGroup,
@@ -13,10 +14,19 @@ import {
   listProjects,
   raiseServicePrincipalToBasic,
   reachesRepositories,
+  grantOrgWideAccess,
   readGraphDescriptor,
+  readOrgWideAccess,
+  readProjectGroups,
   readResourceTenant,
+  readServiceHookGrants,
   readServicePrincipalAccessLevel,
-  type AzureDevOpsMembershipOutcome
+  removeGroupMembership,
+  removeOrgWideAccess,
+  revokeServiceHookSubscriptions,
+  type AzureDevOpsOrgWideAccess,
+  type AzureDevOpsMembershipOutcome,
+  type AzureDevOpsTriggerGrantOutcome
 } from './admin-api.js'
 import {
   AzureDevOpsSignInError,
@@ -48,6 +58,13 @@ export interface AzureDevOpsMembershipReport {
   projectName: string
   group: 'readers' | 'contributors'
   outcome: AzureDevOpsMembershipOutcome | 'group_missing' | 'not_attempted'
+}
+
+/** How Allow triggers went on one project (§11.1); `refused` names a role the caller lacks and is in the checklist. */
+export interface AzureDevOpsTriggerReport {
+  projectId: string
+  projectName: string
+  outcome: AzureDevOpsTriggerGrantOutcome
 }
 
 export interface AzureDevOpsConnectRefusalDetails {
@@ -85,6 +102,8 @@ export interface AzureDevOpsConnectFlowDeps {
   deploymentApplication?: AzureDevOpsDeploymentApplication
   /** The Console origin whose `/azure-devops/connect` page Microsoft redirects to. */
   webAppUrl?: string
+  /** After Allow triggers was granted somewhere: converge the connection's hooked repositories again. */
+  onTriggersAllowed?: (orgId: string, connectionId: string) => Promise<void> | void
 }
 
 export interface AzureDevOpsFlowStart {
@@ -99,9 +118,20 @@ export interface AzureDevOpsFlowStart {
 export interface AzureDevOpsFlowResult {
   connection: AzureDevOpsConnectionRecord
   memberships: AzureDevOpsMembershipReport[]
+  /** One entry per project with Allow triggers on. */
+  triggers: AzureDevOpsTriggerReport[]
+  /** What the caller could not do here and someone must do by hand; absent when nothing is left. */
+  checklist?: string[]
 }
 
 /** Connect-time answers the new and managed flows share; never a token. */
+/** A project of the chosen organization, with what the application already holds there. */
+export interface AzureDevOpsListedProject {
+  id: string
+  name: string
+  access?: { group: 'readers' | 'contributors'; allowTriggers: boolean }
+}
+
 interface ServicePrincipal {
   objectId: string
   displayName: string | null
@@ -326,7 +356,12 @@ export class AzureDevOpsConnectFlowService {
   async chooseOrganization(
     ticket: AzureDevOpsFlowTicket,
     organization: string
-  ): Promise<{ ticket: string; organization: string; projects: Array<{ id: string; name: string }> }> {
+  ): Promise<{
+    ticket: string
+    organization: string
+    projects: AzureDevOpsListedProject[]
+    allProjects?: AzureDevOpsOrgWideAccess
+  }> {
     if (ticket.connectionId && !same(ticket.organization, organization)) {
       throw new AzureDevOpsConnectDenied(
         `Manage project access is for ${ticket.organization}`,
@@ -357,7 +392,138 @@ export class AzureDevOpsConnectFlowService {
     }
     const next: AzureDevOpsFlowTicket = { ...ticket, organization: chosen, organizationInstanceId: instanceId }
     delete next.projects
-    return { ticket: sealAzureDevOpsFlowTicket(this.deps.keys, next), organization: chosen, projects }
+    delete next.shownAccess
+    delete next.allProjects
+    delete next.shownAllProjects
+    // The page opens on what the application already holds; the ticket keeps it, the only access Apply may take away.
+    const current = await this.currentAccess(next, chosen)
+    const listed = projects.map((project): AzureDevOpsListedProject => {
+      const groups = current?.groups.get(project.id.toLowerCase())
+      const group = groups?.has('contributors') ? 'contributors' : groups?.has('readers') ? 'readers' : null
+      return group
+        ? { ...project, access: { group, allowTriggers: current!.triggers.has(project.id.toLowerCase()) } }
+        : project
+    })
+    if (current) {
+      next.shownAccess = Object.fromEntries(
+        listed.flatMap((project) => (project.access ? [[project.id.toLowerCase(), project.access]] : []))
+      )
+      if (current.orgWide) next.shownAllProjects = current.orgWide
+    }
+    return {
+      ticket: sealAzureDevOpsFlowTicket(this.deps.keys, next),
+      organization: chosen,
+      projects: listed,
+      ...(current?.orgWide ? { allProjects: current.orgWide } : {})
+    }
+  }
+
+  /** The application's project groups and Allow triggers grants, as the administrator sees them; null when unreadable or not in the organization. */
+  private async currentAccess(
+    ticket: AzureDevOpsFlowTicket,
+    organization: string,
+    known?: { sp: ServicePrincipal; subject: string }
+  ): Promise<{
+    sp: ServicePrincipal
+    subject: string
+    groups: Map<string, Map<'readers' | 'contributors', string>>
+    triggers: Set<string>
+    orgWide: AzureDevOpsOrgWideAccess | null
+  } | null> {
+    try {
+      let found = known
+      if (!found) {
+        const { sp, appToken } = await this.servicePrincipal(ticket)
+        const identityId = await this.memberIdentity(appToken, organization)
+        if (identityId === null) return null
+        found = { sp, subject: await readGraphDescriptor(this.deps.api, ticket.accessToken, organization, identityId) }
+      }
+      const groups = await readProjectGroups(this.deps.api, ticket.accessToken, organization, found.subject)
+      const principal = { tenantId: ticket.tenantId, servicePrincipalObjectId: found.sp.objectId }
+      const triggers = await readServiceHookGrants(this.deps.api, ticket.accessToken, organization, principal)
+      // Reading the roots may need more than a Project Administrator has; the projects still show.
+      const orgWide = await readOrgWideAccess(this.deps.api, ticket.accessToken, organization, principal).catch(
+        () => null
+      )
+      return { ...found, groups, triggers, orgWide }
+    } catch {
+      return null
+    }
+  }
+
+  /** Take away what the page showed and no longer asks for: a group left or changed, and Allow triggers turned off; what is refused joins the checklist. */
+  private async removeUndesired(
+    ticket: AzureDevOpsFlowTicket,
+    organization: string,
+    sp: ServicePrincipal,
+    subject: string
+  ): Promise<{ checklist: string[]; revoked: boolean }> {
+    const orgWide = await this.removeOrgWide(ticket, organization, sp)
+    const shown = ticket.shownAccess
+    if (!shown) return orgWide
+    const current = await this.currentAccess(ticket, organization, { sp, subject })
+    if (!current) return orgWide
+    const desired = new Map((ticket.projects ?? []).map((choice) => [choice.projectId.toLowerCase(), choice]))
+    const names = new Map<string, string>()
+    try {
+      for (const project of await listProjects(this.deps.api, ticket.accessToken, organization))
+        names.set(project.id.toLowerCase(), project.name)
+    } catch {
+      // Names only label the checklist.
+    }
+    const checklist: string[] = []
+    let revoked = false
+    for (const [projectId, groups] of current.groups) {
+      const want = desired.get(projectId)
+      for (const [group, descriptor] of groups) {
+        // Only the group the page showed; one granted since, or never displayed, stays.
+        if (shown[projectId]?.group !== group || want?.group === group) continue
+        const outcome = await removeGroupMembership(
+          this.deps.api,
+          ticket.accessToken,
+          organization,
+          subject,
+          descriptor
+        )
+        if (outcome !== 'removed')
+          checklist.push(`Remove it from the ${GROUP_NAME[group]} group of ${names.get(projectId) ?? projectId}.`)
+      }
+    }
+    for (const projectId of current.triggers) {
+      if (!shown[projectId]?.allowTriggers || desired.get(projectId)?.allowTriggers) continue
+      const outcome = await revokeServiceHookSubscriptions(this.deps.api, ticket.accessToken, organization, {
+        projectId,
+        tenantId: ticket.tenantId,
+        servicePrincipalObjectId: sp.objectId
+      })
+      if (outcome === 'removed') revoked = true
+      else checklist.push(`Turn off Allow triggers on ${names.get(projectId) ?? projectId}.`)
+    }
+    return { checklist: [...orgWide.checklist, ...checklist], revoked: revoked || orgWide.revoked }
+  }
+
+  /** All projects as the page showed it: the entries go by the ticket, not a fresh read, so a removal cut short finishes on retry. */
+  private async removeOrgWide(
+    ticket: AzureDevOpsFlowTicket,
+    organization: string,
+    sp: ServicePrincipal
+  ): Promise<{ checklist: string[]; revoked: boolean }> {
+    const shownAll = ticket.shownAllProjects
+    if (!shownAll) return { checklist: [], revoked: false }
+    const access = !ticket.allProjects
+    const triggers = shownAll.allowTriggers && !ticket.allProjects?.allowTriggers
+    if (!access && !triggers) return { checklist: [], revoked: false }
+    const outcome = await removeOrgWideAccess(this.deps.api, ticket.accessToken, organization, {
+      tenantId: ticket.tenantId,
+      servicePrincipalObjectId: sp.objectId,
+      access,
+      triggers
+    })
+    if (outcome === 'removed') return { checklist: [], revoked: triggers }
+    return {
+      checklist: [access ? 'Remove its access to all projects.' : 'Turn off Allow triggers for all projects.'],
+      revoked: false
+    }
   }
 
   /** A guest signs in at their home tenant; the organization's own tenant, from an unauthenticated read, must be the one signed in at. */
@@ -532,7 +698,8 @@ export class AzureDevOpsConnectFlowService {
   /** Step 4: the entitlement and the memberships, then steps 5 and 6. */
   async applyProjects(
     ticket: AzureDevOpsFlowTicket,
-    requested: ReadonlyArray<{ projectId: string; group: 'readers' | 'contributors' }>
+    requested: ReadonlyArray<{ projectId: string; group: 'readers' | 'contributors'; allowTriggers?: boolean }>,
+    allProjects?: AzureDevOpsOrgWideAccess
   ): Promise<AzureDevOpsFlowResult> {
     const organization = await this.guard(ticket)
     let projects: Array<{ id: string; name: string }>
@@ -543,15 +710,22 @@ export class AzureDevOpsConnectFlowService {
     }
     const byId = new Map(projects.map((project) => [project.id, project]))
     const choices = new Map<string, AzureDevOpsProjectChoice>()
-    for (const { projectId, group } of requested) {
+    for (const { projectId, group, allowTriggers } of requested) {
       const project = byId.get(projectId.toLowerCase())
       if (!project) {
         throw new AzureDevOpsConnectDenied(`no project ${projectId} in ${organization}`, 400, 'project_not_found')
       }
-      // Contributors already reads; one group per project.
-      choices.set(project.id, { projectId: project.id, projectName: project.name, group })
+      // Contributors already reads; one group per project. Allow triggers defaults on with Contributors (§11.1).
+      choices.set(project.id, {
+        projectId: project.id,
+        projectName: project.name,
+        group,
+        allowTriggers: allowTriggers ?? group === 'contributors'
+      })
     }
     const recorded: AzureDevOpsFlowTicket = { ...ticket, projects: [...choices.values()] }
+    if (allProjects) recorded.allProjects = allProjects
+    else delete recorded.allProjects
     const resume = sealAzureDevOpsFlowTicket(this.deps.keys, recorded)
     const { sp, appToken } = await this.servicePrincipal(recorded)
     const identityId = await this.memberIdentity(appToken, organization)
@@ -561,13 +735,20 @@ export class AzureDevOpsConnectFlowService {
       const level = await this.ensureBasic(recorded, organization, identityId)
       const subject = await this.subjectOf(recorded, organization, identityId)
       const { memberships } = await this.applyMemberships(recorded, organization, recorded.projects!, subject)
-      this.requireAuthority(recorded, organization, sp, memberships)
+      const orgWide = await this.applyOrgWide(recorded, organization, sp)
+      this.requireAuthority(recorded, organization, sp, memberships, orgWide === 'granted')
       if (level.outcome === 'refused') {
         throw this.entitlementRefusal(organization, sp, level.errorCodes, memberships, true, resume)
       }
       if (memberships.some((m) => !SUCCEEDED.has(m.outcome)))
         throw this.incomplete(organization, sp, memberships, resume, level.outcome === 'basic')
-      return this.finish(recorded, memberships, resume)
+      return this.finish(
+        recorded,
+        sp,
+        memberships,
+        resume,
+        this.withOrgWide(await this.removeUndesired(recorded, organization, sp, subject), recorded, orgWide)
+      )
     }
 
     let entitlement: Awaited<ReturnType<typeof addServicePrincipalEntitlement>>
@@ -593,7 +774,8 @@ export class AzureDevOpsConnectFlowService {
       const { memberships } = await this.applyMemberships(recorded, organization, recorded.projects!, subject)
       if (memberships.some((m) => !SUCCEEDED.has(m.outcome)))
         throw this.incomplete(organization, sp, memberships, resume, true)
-      return this.finish(recorded, memberships, resume)
+      const orgWide = await this.applyOrgWide(recorded, organization, sp)
+      return this.finish(recorded, sp, memberships, resume, this.withOrgWide(undefined, recorded, orgWide))
     }
 
     // Refused: a Project Administrator may still make the memberships, which also bring the service principal in at the default level.
@@ -635,9 +817,10 @@ export class AzureDevOpsConnectFlowService {
     ticket: AzureDevOpsFlowTicket,
     organization: string,
     sp: ServicePrincipal,
-    memberships: AzureDevOpsMembershipReport[]
+    memberships: AzureDevOpsMembershipReport[],
+    orgWideGranted = false
   ): void {
-    if (ticket.connectionId || memberships.some((m) => SUCCEEDED.has(m.outcome))) return
+    if (ticket.connectionId || orgWideGranted || memberships.some((m) => SUCCEEDED.has(m.outcome))) return
     throw new AzureDevOpsConnectRefusal(
       `Your account could not make or confirm any of the chosen project memberships in ${organization}. Connecting needs a Project Administrator of those projects or a Project Collection Administrator.`,
       403,
@@ -696,17 +879,55 @@ export class AzureDevOpsConnectFlowService {
     )
   }
 
+  /** §11.1 Allow triggers on each chosen project, with the delegated token; a refusal is reported, never fatal to the step. */
+  private async allowTriggers(
+    ticket: AzureDevOpsFlowTicket,
+    sp: ServicePrincipal
+  ): Promise<AzureDevOpsTriggerReport[]> {
+    const reports: AzureDevOpsTriggerReport[] = []
+    for (const choice of ticket.projects ?? []) {
+      if (!choice.allowTriggers) continue
+      let outcome: AzureDevOpsTriggerGrantOutcome
+      try {
+        outcome = await allowServiceHookSubscriptions(this.deps.api, ticket.accessToken, ticket.organization!, {
+          projectId: choice.projectId,
+          tenantId: ticket.tenantId,
+          servicePrincipalObjectId: sp.objectId
+        })
+      } catch {
+        // Throttled: the rest of the step stands, and the checklist says what is left.
+        outcome = 'failed'
+      }
+      reports.push({ projectId: choice.projectId, projectName: choice.projectName, outcome })
+    }
+    return reports
+  }
+
+  /** What is left for Allow triggers: the role that can grant it, and where to grant it by hand. */
+  private triggerChecklist(
+    organization: string,
+    sp: ServicePrincipal,
+    refused: readonly AzureDevOpsTriggerReport[]
+  ): string[] {
+    const { app } = this.live()
+    const named = sp.displayName ? ` (${sp.displayName})` : ''
+    return refused.map(
+      (report) =>
+        `Allow triggers on ${report.projectName}: in ${organization}, Project settings → Service hooks → Security, allow the application's service principal (client ID ${app.clientId}${named}) View subscriptions and Edit subscriptions, or ask a Project Collection Administrator to run Manage project access with Allow triggers on.`
+    )
+  }
+
   /** Resume after a manual step: re-check membership, make the memberships the caller may, then steps 5 and 6. */
   async verify(ticket: AzureDevOpsFlowTicket): Promise<AzureDevOpsFlowResult> {
     const organization = await this.guard(ticket)
-    if (!ticket.projects?.length) {
+    if (!ticket.projects?.length && !ticket.allProjects) {
       throw new AzureDevOpsConnectDenied('choose the projects first', 409, 'projects_required')
     }
     const resume = sealAzureDevOpsFlowTicket(this.deps.keys, ticket)
     const { sp, appToken } = await this.servicePrincipal(ticket)
     const identityId = await this.memberIdentity(appToken, organization)
     if (identityId === null) {
-      const memberships = ticket.projects.map((choice) => ({ ...choice, outcome: 'not_attempted' as const }))
+      const memberships = (ticket.projects ?? []).map((choice) => ({ ...choice, outcome: 'not_attempted' as const }))
       throw new AzureDevOpsConnectRefusal(
         `The application's service principal is not in ${organization} yet; finish the checklist, then verify.`,
         409,
@@ -722,19 +943,58 @@ export class AzureDevOpsConnectFlowService {
     const level = await this.ensureBasic(ticket, organization, identityId)
     const subject = await this.subjectOf(ticket, organization, identityId)
     // A membership the caller may not make may already exist by hand; steps 5 and 6 decide.
-    const { memberships } = await this.applyMemberships(ticket, organization, ticket.projects, subject)
-    this.requireAuthority(ticket, organization, sp, memberships)
+    const { memberships } = await this.applyMemberships(ticket, organization, ticket.projects ?? [], subject)
+    const orgWide = await this.applyOrgWide(ticket, organization, sp)
+    this.requireAuthority(ticket, organization, sp, memberships, orgWide === 'granted')
     if (level.outcome === 'refused') {
       throw this.entitlementRefusal(organization, sp, level.errorCodes, memberships, true, resume)
     }
-    return this.finish(ticket, memberships, resume)
+    return this.finish(
+      ticket,
+      sp,
+      memberships,
+      resume,
+      this.withOrgWide(await this.removeUndesired(ticket, organization, sp, subject), ticket, orgWide)
+    )
+  }
+
+  /** All projects, when Apply asked for it: the three root grants; null when it did not. */
+  private async applyOrgWide(
+    ticket: AzureDevOpsFlowTicket,
+    organization: string,
+    sp: ServicePrincipal
+  ): Promise<AzureDevOpsTriggerGrantOutcome | null> {
+    if (!ticket.allProjects) return null
+    return grantOrgWideAccess(this.deps.api, ticket.accessToken, organization, {
+      tenantId: ticket.tenantId,
+      servicePrincipalObjectId: sp.objectId,
+      ...ticket.allProjects
+    })
+  }
+
+  /** Folds the All projects grant into what finish reports: a refusal joins the checklist, granted triggers reconverge. */
+  private withOrgWide(
+    removal: { checklist: string[]; revoked: boolean } | undefined,
+    ticket: AzureDevOpsFlowTicket,
+    orgWide: AzureDevOpsTriggerGrantOutcome | null
+  ): { checklist: string[]; revoked: boolean } {
+    const base = removal ?? { checklist: [], revoked: false }
+    if (orgWide === null) return base
+    if (orgWide !== 'granted')
+      return {
+        ...base,
+        checklist: [...base.checklist, 'Access to all projects needs a Project Collection Administrator.']
+      }
+    return { ...base, revoked: base.revoked || ticket.allProjects!.allowTriggers }
   }
 
   /** Steps 5 and 6: a new connection, or for Manage project access the existing one re-verified; a refusal it can recover from keeps the ticket. */
   private async finish(
     ticket: AzureDevOpsFlowTicket,
+    sp: ServicePrincipal,
     memberships: AzureDevOpsMembershipReport[],
-    resume: string
+    resume: string,
+    removal: { checklist: string[]; revoked: boolean } = { checklist: [], revoked: false }
   ): Promise<AzureDevOpsFlowResult> {
     try {
       const connection = ticket.connectionId
@@ -744,7 +1004,23 @@ export class AzureDevOpsConnectFlowService {
             { organization: ticket.organization!, tenantId: ticket.tenantId },
             ticket.userId
           )
-      return { connection, memberships }
+      const triggers = await this.allowTriggers(ticket, sp)
+      const refused = triggers.filter((report) => report.outcome !== 'granted')
+      if (removal.revoked || triggers.some((report) => report.outcome === 'granted')) {
+        try {
+          await this.deps.onTriggersAllowed?.(ticket.orgId, connection.id)
+        } catch {
+          // Convergence is retried by its own sweep; the connection already stands.
+        }
+      }
+      return {
+        connection,
+        memberships,
+        triggers,
+        ...(refused.length > 0 || removal.checklist.length > 0
+          ? { checklist: [...removal.checklist, ...this.triggerChecklist(ticket.organization!, sp, refused)] }
+          : {})
+      }
     } catch (e) {
       if (e instanceof AzureDevOpsConnectDenied && RESUMABLE.has(e.code)) {
         throw new AzureDevOpsConnectRefusal(e.message, e.status, e.code, {

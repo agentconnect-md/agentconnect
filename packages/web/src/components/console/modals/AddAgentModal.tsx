@@ -378,8 +378,14 @@ export default function AddAgentModal({
     ...localDaemons.map((candidate) => ({
       value: candidate.daemonId,
       label: candidate.name,
+      disabled: !!candidate.approval && candidate.approval.status !== 'approved',
       ...(candidate.status === 'online' ? {} : { meta: candidate.status }),
-      title: candidate.status === 'online' ? t('daemonSelect.localOnline') : t('daemonSelect.localOffline')
+      title:
+        candidate.approval && candidate.approval.status !== 'approved'
+          ? t('daemonSelect.approvalRequired')
+          : candidate.status === 'online'
+            ? t('daemonSelect.localOnline')
+            : t('daemonSelect.localOffline')
     }))
   ]
   // A group offers what one serving member offers, as the Control Plane checks it; the pool's boundary is its pod.

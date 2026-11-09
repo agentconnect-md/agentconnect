@@ -4,6 +4,18 @@ const transcriptTime = new Intl.DateTimeFormat('en-US', {
   second: '2-digit'
 })
 
+const turnDay = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' })
+const turnDayYear = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+
+/** A turn's time line: its clock time, led by its date when it is not from today (and its year when not this year). */
+export function turnTimeLabel(time: string, ms: number | undefined, now: number = Date.now()): string {
+  if (!time || ms === undefined || !Number.isFinite(ms)) return time
+  const at = new Date(ms)
+  const today = new Date(now)
+  if (at.toDateString() === today.toDateString()) return time
+  return `${(at.getFullYear() === today.getFullYear() ? turnDay : turnDayYear).format(at)}, ${time}`
+}
+
 /** Strip the deterministic uniqueness suffix from daemon transcript timestamps. */
 function timestampValue(raw: string | null | undefined): string {
   return (

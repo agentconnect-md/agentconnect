@@ -1,19 +1,4 @@
-/**
- * `RelayDaemonConnection` — the per-socket FSM for a daemon dialing the relay over
- * the `rd/*` wire (shared-bot-relay.md §7.2 / §9). The accept-side mirror of the
- * daemon's `RelayClient`.
- *
- * States: AUTHENTICATING (only `rd/hello`) → READY. On hello the relay holds no
- * database, so it DELEGATES the daemon's API key to the CP via `rc/verify` and
- * caches the verdict for the connection's lifetime; on success it echoes its own
- * `relayId` so the daemon can confirm it reached the roster entry it dialed.
- *
- * Once READY the relay bridges browser webchat over this socket (§7.2, PR 3): it
- * SENDS `rd/msg` (a browser op, awaiting the `rd/ack` verdict) and RECEIVES `rd/chat`
- * (the agent's reply stream), which it routes back to the browser by `chatId`.
- *
- * The presented API key is secret material — NEVER logged.
- */
+// Daemon-facing relay connection with periodic daemon-key checks; credentials must never be logged.
 import {
   buildRelayDaemonFrame,
   API_AHP_V1_FEATURE,
@@ -23,6 +8,7 @@ import {
   decodeRelayDaemonFrame,
   RD_CODEHOST_REPLY_TARGET_V1,
   RD_DECISION_ROUTE_V1,
+  RD_PLATFORM_REQUEST_V1,
   RD_WEBCHAT_IMAGES_V1,
   RD_WEBCHAT_PROMPT_SUGGESTION_V1,
   type RdWebchatImageUpdate,
@@ -32,6 +18,8 @@ import {
   type RdRouteAck,
   type RdRouteReport,
   type RdRouteReportAck,
+  type RdPlatformRequest,
+  type RdPlatformReply,
   type RdHello,
   type RdHelloOk,
   type RdMsg,
@@ -44,7 +32,14 @@ import {
   type RcVerifyResult,
   type ErrorCode
 } from '@agentconnect.md/protocol'
-import { ReqRep, WireError, type Clock, type RequestOpts, type ServerTransport } from '@agentconnect.md/connection'
+import {
+  ReqRep,
+  WireError,
+  type Clock,
+  type TimerHandle,
+  type RequestOpts,
+  type ServerTransport
+} from '@agentconnect.md/connection'
 import type { Logger } from './log.js'
 
 type State = 'AUTHENTICATING' | 'READY' | 'CLOSED'
@@ -53,6 +48,7 @@ type State = 'AUTHENTICATING' | 'READY' | 'CLOSED'
 const CLOSE_AUTH_FAILED = 4401 // definitively-invalid credential → daemon stops dialing THIS relay
 const CLOSE_TRY_LATER = 1013 // relay not ready / transient verify error → daemon backs off + retries
 const ACK_TIMEOUT_MS = 5000
+export const DAEMON_AUTH_RECHECK_MS = 60_000
 
 export interface RelayDaemonConnDeps {
   /** Delegate a credential check to the CP (`RelayCpClient.verify`). Throws when the
@@ -89,6 +85,8 @@ export interface RelayDaemonConnDeps {
   onRoute: (fromDaemonId: string, msg: RdRoute) => Promise<RdRouteAck>
   /** An evaluation host's owner/participant report, bound the same way. */
   onRouteReport: (fromDaemonId: string, msg: RdRouteReport) => RdRouteReportAck | Promise<RdRouteReportAck>
+  /** A platform module's provider call for a bot, bound to the socket's authenticated daemonId; absent ⇒ refused. */
+  onPlatformRequest?: (fromDaemonId: string, msg: RdPlatformRequest) => Promise<RdPlatformReply>
   log: Logger
   bufferedAmount?: () => number
 }
@@ -97,6 +95,7 @@ export class RelayDaemonConnection {
   state: State = 'AUTHENTICATING'
   daemonId = ''
   private helloInFlight = false
+  private refreshTimer?: TimerHandle
   /** Which verified credential authenticated this socket. `daemon-token` is a TokenReviewed
    *  install-wide pool identity — duty-governed, so it can rendezvous a webchat trigger.
    *  `daemon-key` is an org-scoped standalone daemon that would answer `no_agent` instead. */
@@ -147,7 +146,7 @@ export class RelayDaemonConnection {
         frame,
         (e) => {
           bytes = Buffer.byteLength(e)
-          this.transport.send(e)
+          this.write(e)
         },
         opts
       )
@@ -171,7 +170,7 @@ export class RelayDaemonConnection {
   async forwardAgentMsg(payload: RdAgentMsgFwd): Promise<RdAgentMsgAck> {
     if (this.state !== 'READY') throw new WireError('INTERNAL', `rd link not ready (${this.state})`, true)
     const frame = buildRelayDaemonFrame('rd/agentmsg/fwd', payload)
-    const rep = await this.correlator.request(frame, (e) => this.transport.send(e))
+    const rep = await this.correlator.request(frame, (e) => this.write(e))
     if (rep.type !== 'rd/agentmsg/ack') {
       throw new WireError('INTERNAL', `expected rd/agentmsg/ack, got ${rep.type}`, false)
     }
@@ -207,10 +206,11 @@ export class RelayDaemonConnection {
     if ((this.deps.bufferedAmount?.() ?? 0) + Buffer.byteLength(text) > 1024 * 1024) {
       throw new WireError('OVERLOADED', 'AHP carrier overloaded', true)
     }
-    this.transport.send(text)
+    this.write(text)
   }
 
   private async onText(text: string): Promise<void> {
+    if (this.state === 'CLOSED') return
     const decoded = decodeRelayDaemonFrame(text)
     if (!decoded.ok) {
       const code = this.decodeErrorCode(decoded.msg)
@@ -291,12 +291,16 @@ export class RelayDaemonConnection {
             })
           return
         }
+        case 'rd/platform/request': {
+          void this.answerPlatformRequest(frame, frame.payload)
+          return
+        }
         default:
           this.sendError(frame.id, 'PROTOCOL_STATE', `unsupported: ${frame.type}`)
       }
     } catch (err) {
       this.deps.log.warn(`relay: rd connection handler error: ${(err as Error).message}`)
-      if (this.state !== 'CLOSED') this.close(1011, 'SERVER_INTERNAL')
+      this.close(1011, 'SERVER_INTERNAL')
     }
   }
 
@@ -315,7 +319,8 @@ export class RelayDaemonConnection {
           type === 'rd/webchat-prompt-suggestion' ||
           type === 'rd/agentmsg' ||
           type === 'rd/route' ||
-          type === 'rd/route/report'
+          type === 'rd/route/report' ||
+          type === 'rd/platform/request'
         )
       default:
         return false
@@ -387,11 +392,13 @@ export class RelayDaemonConnection {
     this.credentialKind = presented.kind
     this.capabilities = new Set(hello.capabilities ?? [])
     this.state = 'READY'
+    if (presented.kind === 'daemon-key') this.scheduleKeyRevalidation(presented.credential)
     this.reply(frame, 'rd/hello/ok', {
       relayId,
       capabilities: [
         RD_CODEHOST_REPLY_TARGET_V1,
         RD_DECISION_ROUTE_V1,
+        RD_PLATFORM_REQUEST_V1,
         RD_WEBCHAT_IMAGES_V1,
         RD_WEBCHAT_PROMPT_SUGGESTION_V1
       ]
@@ -399,24 +406,63 @@ export class RelayDaemonConnection {
     this.deps.onReady(this.daemonId, this)
   }
 
-  private reply(req: RelayDaemonFrame, type: 'rd/hello/ok', payload: RdHelloOk): void {
-    this.transport.send(JSON.stringify(buildRelayDaemonFrame(type, payload, { corr: req.id })))
+  // Recheck organization daemon keys; projected pool tokens rotate without expiring their verified socket identity.
+  private scheduleKeyRevalidation(apiKey: string): void {
+    if (this.state !== 'READY') return
+    this.refreshTimer = this.deps.clock.setTimeout(() => {
+      void this.deps
+        .verify('daemon-key', apiKey, this.daemonId)
+        .then((result) => {
+          if (this.state === 'READY' && (!result.ok || result.daemonId !== this.daemonId)) {
+            this.close(CLOSE_TRY_LATER, 'daemon authorization changed')
+          }
+        })
+        .catch(() => {})
+        .finally(() => this.scheduleKeyRevalidation(apiKey))
+    }, DAEMON_AUTH_RECHECK_MS)
   }
 
-  /** Answer an inbound `rd/route` or `rd/route/report` request. */
-  private replyFrame<T extends 'rd/route/ack' | 'rd/route/report/ack'>(
+  private write(text: string): void {
+    if (this.state !== 'READY') throw new WireError('INTERNAL', 'daemon admission unavailable', true)
+    this.transport.send(text)
+  }
+
+  private reply(req: RelayDaemonFrame, type: 'rd/hello/ok', payload: RdHelloOk): void {
+    this.write(JSON.stringify(buildRelayDaemonFrame(type, payload, { corr: req.id })))
+  }
+
+  // A handler failure may follow the provider call, so it answers an error the daemon reads as ambiguous, never `unavailable`; a failed reply is only logged.
+  private async answerPlatformRequest(frame: RelayDaemonFrame, msg: RdPlatformRequest): Promise<void> {
+    const handle = this.deps.onPlatformRequest
+    let reply: RdPlatformReply
+    try {
+      reply = handle ? await handle(this.daemonId, msg) : { outcome: 'refused', reason: 'unsupported' }
+    } catch (err) {
+      this.deps.log.warn(`relay: rd/platform/request failed: ${(err as Error).message}`)
+      if (this.state !== 'CLOSED') this.sendError(frame.id, 'INTERNAL', 'platform request failed', false)
+      return
+    }
+    try {
+      this.replyFrame(frame, 'rd/platform/reply', reply)
+    } catch (err) {
+      this.deps.log.warn(`relay: rd/platform/reply not sent: ${(err as Error).message}`)
+    }
+  }
+
+  /** Answer an inbound `rd/route`, `rd/route/report` or `rd/platform/request` request. */
+  private replyFrame<T extends 'rd/route/ack' | 'rd/route/report/ack' | 'rd/platform/reply'>(
     req: RelayDaemonFrame,
     type: T,
-    payload: T extends 'rd/route/ack' ? RdRouteAck : RdRouteReportAck
+    payload: T extends 'rd/route/ack' ? RdRouteAck : T extends 'rd/platform/reply' ? RdPlatformReply : RdRouteReportAck
   ): void {
-    if (this.state === 'CLOSED') return
-    this.transport.send(JSON.stringify(buildRelayDaemonFrame(type, payload as never, { corr: req.id })))
+    if (this.state !== 'READY') return
+    this.write(JSON.stringify(buildRelayDaemonFrame(type, payload as never, { corr: req.id })))
   }
 
   /** Ack an inbound `rd/agentmsg` (corr = the source's REQ id) with the typed verdict. */
   private replyAgentAck(req: RelayDaemonFrame, ack: RdAgentMsgAck): void {
-    if (this.state === 'CLOSED') return
-    this.transport.send(JSON.stringify(buildRelayDaemonFrame('rd/agentmsg/ack', ack, { corr: req.id })))
+    if (this.state !== 'READY') return
+    this.write(JSON.stringify(buildRelayDaemonFrame('rd/agentmsg/ack', ack, { corr: req.id })))
   }
 
   private sendError(corr: string, code: ErrorCode, message: string, retryable = false): void {
@@ -454,6 +500,7 @@ export class RelayDaemonConnection {
   }
 
   private fireClosed(): void {
+    if (this.refreshTimer !== undefined) this.deps.clock.clearTimeout(this.refreshTimer)
     const listeners = [...this.closeListeners]
     this.closeListeners.clear()
     const attachments = [...this.ahpListeners]

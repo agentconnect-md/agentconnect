@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { CommitAuthor } from '../initiator.js'
 
 /** Who asks: a console user, or a chat member on one of the agent's bots whom the Control Plane resolves to one. */
 export const ReadAccessAsker = z.union([
@@ -19,7 +20,9 @@ export const AgentReadAccess = z.object({
   // A DM or webchat source: only sessions the asker owns count, whoever else the console shows them to.
   ownerOnly: z.boolean().optional(),
   // With `read-access-linked-v1`: also answer which chat identity the asker's console user linked in this bot's workspace.
-  linkedOn: z.string().uuid().optional()
+  linkedOn: z.string().uuid().optional(),
+  // Best-effort attribution lookup for the linked person; never changes the access verdict.
+  includeCommitAuthors: z.boolean().optional()
 })
 export type AgentReadAccess = z.infer<typeof AgentReadAccess>
 
@@ -34,6 +37,7 @@ export const AgentReadAccessOk = z.object({
   // The console user a `linked` asker resolved to, which keys their memory layer; absent from an older Control Plane.
   consoleUserId: z.string().min(1).max(256).optional(),
   // The member id the asker's console user linked in `linkedOn`'s workspace, null for none; absent from an older Control Plane.
-  linkedMemberId: z.string().min(1).max(256).nullable().optional()
+  linkedMemberId: z.string().min(1).max(256).nullable().optional(),
+  commitAuthors: z.array(CommitAuthor).max(8).optional()
 })
 export type AgentReadAccessOk = z.infer<typeof AgentReadAccessOk>

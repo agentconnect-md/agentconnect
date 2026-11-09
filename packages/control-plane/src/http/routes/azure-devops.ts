@@ -18,10 +18,15 @@ import {
   ErrorDto,
   IdParam,
   ReplaceAzureDevOpsSecretBody,
+  AzureDevOpsHookKeyRotationDto,
   type AzureDevOpsConnectionDtoT,
   type AzureDevOpsRepositoryBindingDtoT
 } from '../dto/index.js'
-import type { AzureDevOpsConnectionRecord, AzureDevOpsRepositoryBindingRecord } from '../../persistence/ports.js'
+import type {
+  AzureDevOpsConnectionRecord,
+  AzureDevOpsHookSubscriptionRecord,
+  AzureDevOpsRepositoryBindingRecord
+} from '../../persistence/ports.js'
 
 const ERROR_NAMES = {
   400: 'Bad Request',
@@ -55,7 +60,10 @@ export function connectionToDto(r: AzureDevOpsConnectionRecord, boundRepositorie
   }
 }
 
-function bindingToDto(r: AzureDevOpsRepositoryBindingRecord): AzureDevOpsRepositoryBindingDtoT {
+function bindingToDto(
+  r: AzureDevOpsRepositoryBindingRecord,
+  subscriptions: ReadonlyArray<Pick<AzureDevOpsHookSubscriptionRecord, 'kind' | 'status'>>
+): AzureDevOpsRepositoryBindingDtoT {
   return {
     id: r.id,
     connectionId: r.connectionId,
@@ -67,6 +75,9 @@ function bindingToDto(r: AzureDevOpsRepositoryBindingRecord): AzureDevOpsReposit
     defaultBranch: r.defaultBranch,
     state: r.state,
     stateReason: r.stateReason,
+    hookReason: r.hookReason,
+    lastVerifiedDeliveryAt: r.lastVerifiedDeliveryAt ? r.lastVerifiedDeliveryAt.toISOString() : null,
+    subscriptions: subscriptions.map(({ kind, status }) => ({ kind, status })),
     createdAt: r.createdAt.toISOString()
   }
 }
@@ -243,7 +254,7 @@ export function azureDevOpsRoutes(deps: HttpDeps) {
           tags: [Tag.AzureDevOps],
           summary: 'Disconnect Azure DevOps',
           description:
-            'Removes the connection, its sealed secret and its bound repositories at once: there is no webhook to clean up. Refused with 409 while an agent workspace or an additional-repository grant still uses one of its repositories, naming them. The service principal stays in the Azure DevOps organization until an administrator removes it there.',
+            'Removes the connection, its sealed secret and its bound repositories at once, then deletes the service hook subscriptions it made. Refused with 409 while an agent workspace or an additional-repository grant still uses one of its repositories, naming them. The service principal stays in the Azure DevOps organization until an administrator removes it there.',
           operationId: 'disconnectAzureDevOps',
           params: IdParam,
           response: { 204: z.null(), 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
@@ -254,7 +265,9 @@ export function azureDevOpsRoutes(deps: HttpDeps) {
         const orgId = orgOf(req)
         const record = await deps.repos.azureDevOpsConnection.get(orgId, req.params.id)
         if (!record) return notFound(reply, 'azure devops connection')
-        const outcome = await azure.connections.disconnect(orgId, record.id)
+        const outcome = azure.hooks
+          ? await azure.hooks.disconnect(orgId, record.id, () => azure.connections.disconnect(orgId, record.id))
+          : await azure.connections.disconnect(orgId, record.id)
         if (outcome === 'missing') return notFound(reply, 'azure devops connection')
         if (outcome === 'referenced') {
           const bindings = await deps.repos.azureDevOpsRepositoryBinding.listForConnection(orgId, record.id)
@@ -274,12 +287,19 @@ export function azureDevOpsRoutes(deps: HttpDeps) {
       {
         schema: {
           tags: [Tag.AzureDevOps],
-          summary: 'List the repositories an Azure DevOps connection can see',
+          summary: 'List Azure DevOps repositories available to the caller',
           description:
-            'The picker (§5): every Git repository in the organization the connection’s identity can see, without disabled repositories or those in maintenance, keyed by GUID. A row already bound through this connection carries its binding; any other row is bound when a workspace or grant first names it. Metadata only.',
+            'Repositories readable by both the connection and the caller’s linked Microsoft account, without disabled repositories or those in maintenance. A previously bound row carries its binding; any other row is bound when a workspace or grant first names it. Metadata only.',
           operationId: 'listAzureDevOpsConnectionRepositories',
           params: IdParam,
-          response: { 200: AzureDevOpsRepositoryListDto, 404: ErrorDto, 409: ErrorDto, 429: ErrorDto, 502: ErrorDto }
+          response: {
+            200: AzureDevOpsRepositoryListDto,
+            403: ErrorDto,
+            404: ErrorDto,
+            409: ErrorDto,
+            429: ErrorDto,
+            502: ErrorDto
+          }
         }
       },
       async (req, reply) => {
@@ -287,7 +307,11 @@ export function azureDevOpsRoutes(deps: HttpDeps) {
         const connection = await deps.repos.azureDevOpsConnection.get(orgId, req.params.id)
         if (!connection) return notFound(reply, 'azure devops connection')
         try {
-          const repositories = await azure.bindings.visibleRepositories(connection)
+          const repositories = await azure.userAuthz.filterRepositories(
+            req.principal?.userId,
+            connection,
+            await azure.bindings.visibleRepositories(connection)
+          )
           const bindings = await deps.repos.azureDevOpsRepositoryBinding.listForConnection(orgId, connection.id)
           const boundBy = new Map(bindings.map((binding) => [binding.repositoryId, binding]))
           const ids = await deps.repos.azureDevOpsRepositoryBinding.identitiesOf(repositories.map((repo) => repo.id))
@@ -315,14 +339,48 @@ export function azureDevOpsRoutes(deps: HttpDeps) {
           tags: [Tag.AzureDevOps],
           summary: 'List bound Azure DevOps repositories',
           description:
-            'The organization’s bound repositories with their state: `ready`, or `runtime_degraded` with `secret_rejected`, `access_revoked` or `repository_unavailable`.',
+            'The organization’s bound repositories with their state: `ready`, or `runtime_degraded` with `secret_rejected`, `access_revoked` or `repository_unavailable`. A repository with Azure DevOps triggers also carries its service hook subscriptions, one per delivery kind, and `hookReason` while they are not known to deliver: `webhook_unverified` until a delivery verifies, `triggers_not_allowed` when the application lacks View and Edit subscriptions on the project, `relay_url_unconfigured`, or `subscriptions_failed`.',
           operationId: 'listAzureDevOpsRepositories',
           response: { 200: AzureDevOpsRepositoryBindingListDto }
         }
       },
       async (req) => {
         const rows = await deps.repos.azureDevOpsRepositoryBinding.listForOrg(orgOf(req))
-        return { bindings: rows.map(bindingToDto) }
+        const hooks = azure.hooks
+        return {
+          bindings: await Promise.all(
+            rows.map(async (row) => bindingToDto(row, hooks ? await hooks.subscriptionsOf(row.id) : []))
+          )
+        }
+      }
+    )
+
+    r.post(
+      '/azure-devops/repositories/:id/rotate-hook-key',
+      {
+        schema: {
+          tags: [Tag.AzureDevOps],
+          summary: 'Rotate an Azure DevOps repository’s service hook key',
+          description:
+            'Seals a next key, sends it to the relays beside the current one, then replaces each recorded service hook subscription with the next key, recording each acknowledgement so a rotation cut short resumes without re-keying any subscription twice. The key is promoted once every subscription has switched and a delivery verifies under it; the old key is then accepted for 36 hours of Azure DevOps retries. Answers how many subscriptions have switched so far.',
+          operationId: 'rotateAzureDevOpsHookKey',
+          params: IdParam,
+          response: { 200: AzureDevOpsHookKeyRotationDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const orgId = orgOf(req)
+        if (!azure.hooks) {
+          return reply.code(409).send({
+            error: ERROR_NAMES[409],
+            statusCode: 409,
+            message: 'Azure DevOps triggers are not available on this deployment'
+          })
+        }
+        const target = await deps.repos.azureDevOpsRepositoryBinding.get(orgId, req.params.id)
+        if (!target) return notFound(reply, 'azure devops repository')
+        return azure.hooks.rotate(orgId, target.id)
       }
     )
 
@@ -333,7 +391,7 @@ export function azureDevOpsRoutes(deps: HttpDeps) {
           tags: [Tag.AzureDevOps],
           summary: 'Remove a bound Azure DevOps repository',
           description:
-            'Removes the binding at once, releasing the deployment-global repository claim when no other connection of the organization binds it. Refused with 409 while an agent workspace or an additional-repository grant still uses the repository, naming them.',
+            'Removes the binding at once, releasing the deployment-global repository claim when no other connection of the organization binds it, then deletes its service hook subscriptions; its triggers stop firing. Refused with 409 while an agent workspace or an additional-repository grant still uses the repository, naming them.',
           operationId: 'deleteAzureDevOpsRepository',
           params: IdParam,
           response: { 204: z.null(), 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
@@ -344,7 +402,10 @@ export function azureDevOpsRoutes(deps: HttpDeps) {
         const orgId = orgOf(req)
         const target = await deps.repos.azureDevOpsRepositoryBinding.get(orgId, req.params.id)
         if (!target) return notFound(reply, 'azure devops repository')
-        const outcome = await deps.repos.azureDevOpsRepositoryBinding.remove(orgId, target.id)
+        // Its subscriptions are deleted once the binding is gone; an orphan Azure DevOps keeps is refused by the relay and retires on its own.
+        const outcome = azure.hooks
+          ? await azure.hooks.removeBinding(orgId, target.id)
+          : await deps.repos.azureDevOpsRepositoryBinding.remove(orgId, target.id)
         if (outcome === 'missing') return notFound(reply, 'azure devops repository')
         if (outcome === 'referenced') {
           return reply.code(409).send({

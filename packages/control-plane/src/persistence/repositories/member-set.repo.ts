@@ -96,10 +96,13 @@ export async function assertDaemonNotInSet(
   agentId: string,
   daemonId: string
 ): Promise<void> {
-  const [row] = await tx.$queryRaw<{ orgId: string | null }[]>(
-    Prisma.sql`SELECT "orgId" FROM "daemon" WHERE id = ${daemonId}::uuid`
+  await lockDaemonMembership(tx, daemonId)
+  const [row] = await tx.$queryRaw<{ orgId: string | null; approvalStatus: string }[]>(
+    Prisma.sql`SELECT "orgId", "approvalStatus" FROM "daemon" WHERE id = ${daemonId}::uuid`
   )
   if (row && row.orgId === null) throw new DaemonPlacementInSet(agentId, daemonId)
+  if (row && row.approvalStatus !== 'approved')
+    throw Object.assign(new Error('daemon approval required'), { statusCode: 409 })
 }
 
 const toRecord = (row: MemberSetRecord): MemberSetRecord => ({
@@ -193,6 +196,9 @@ export class PgMemberSetRepo implements MemberSetRepo {
         if (current.setId !== setId) throw new DaemonAlreadyInSet(daemonId, current.setId)
         return
       }
+      const daemon = await tx.daemon.findUnique({ where: { id: daemonId }, select: { approvalStatus: true } })
+      if (daemon?.approvalStatus !== 'approved')
+        throw Object.assign(new Error('daemon approval required'), { statusCode: 409 })
       await enrollDaemonInSet(tx, setId, daemonId)
     })
   }

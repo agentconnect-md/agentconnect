@@ -59,7 +59,7 @@ export class GitlabMembershipAuthzService {
 
   private async resolve(req: RcCodeHostMembershipAuthz): Promise<boolean> {
     // Provider fail-per-value (§17.2): this service answers only for gitlab.
-    if (req.provider !== 'gitlab') return false
+    if (req.provider !== 'gitlab' || req.actorExternalId === undefined) return false
     const projectId = BigInt(req.repoExternalId)
     const fences = [
       { hookId: req.hookId, configRevision: req.configRevision, dispatchRevision: req.dispatchRevision },

@@ -1,4 +1,4 @@
-// Azure DevOps's daemon seams (azure-devops-integration.md §4–§6, §11): a credential only the proxy and the daemon's own Git present, and no hooks in v1.
+// Azure DevOps's daemon seams (azure-devops-integration.md §4–§6, §11): a credential only the proxy and the daemon's own Git present.
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -53,7 +53,7 @@ describe('the credential seam', () => {
     expect(module.proxyOnly).toBe(true)
     expect(['github', 'gitlab', 'gitea'].map(isProxyOnlyProvider)).toEqual([false, false, false])
     expect(isProxyOnlyProvider('azure-devops')).toBe(true)
-    expect(module.liveCredentialPurposes).toEqual([])
+    expect(module.liveCredentialPurposes).toEqual(['azure_devops_hook_reply'])
     expect(module.workspaceRepoId({ azureDevOpsRepoId: '42', giteaRepoId: '7' })).toBe('42')
   })
 
@@ -128,16 +128,16 @@ describe('the credential seam', () => {
   })
 })
 
-describe('hooks (no Azure DevOps hooks in v1)', () => {
-  it('refuses a delivery whose envelope names Azure DevOps before a turn starts, and opens no reply target', () => {
+describe('hooks without a trusted member', () => {
+  it('fences no instance and opens no reply target for an envelope alone', () => {
     const { host, warn } = turnFinalHost()
-    expect(codeHostHostFence(fire('azure-devops'), host)).toBe('code_host_not_implemented')
-    expect(warn).toHaveBeenCalledOnce()
+    expect(codeHostHostFence(fire('azure-devops'), host)).toBeUndefined()
+    expect(warn).not.toHaveBeenCalled()
     expect(codeHostReplyTarget(fire('azure-devops'))).toBeUndefined()
     expect(codeHostHostFence(fire('webhook'), host)).toBeUndefined()
   })
 
-  it('admits nothing: no trusted member can name the provider', () => {
+  it('admits nothing without the trusted member', () => {
     expect(hookAdmissionFor({ hookId: HOOK, agentId: AGENT })).toBeUndefined()
   })
 })

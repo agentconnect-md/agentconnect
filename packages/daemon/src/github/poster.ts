@@ -225,7 +225,7 @@ function isKnownNonReplyText(text: string): boolean {
   )
 }
 
-function escapeMarkdownText(raw: string): string {
+export function escapeMarkdownText(raw: string): string {
   const flat = raw.replace(/\s+/g, ' ').trim().slice(0, 200) || 'unknown agent'
   return flat.replace(/([\\`*_\[\]~<>])/g, '\\$1')
 }

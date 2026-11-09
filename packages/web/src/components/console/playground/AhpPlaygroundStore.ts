@@ -167,7 +167,8 @@ export class AhpPlaygroundStore {
           name: attachment.name,
           size: attachment.size,
           status: 'ready' as const,
-          attachment
+          attachment,
+          preview: attachment.preview
         }))
       ])
     for (const listener of this.draftListeners) listener()

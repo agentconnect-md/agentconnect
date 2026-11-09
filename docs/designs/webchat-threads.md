@@ -105,9 +105,10 @@ The routing table is auto-session-mode.md §7, and it is the whole rule:
 - **Opening a task opens a thread or attaches to one.** `delegateTask {messageId}` on a root message
   opens the task on that message's thread. On a message that is already in a thread, the task
   attaches to that thread. `messageTask {messageId}` attaches the message's thread to an existing
-  task as one more thread (§6.4 there). In webchat these go through the same `openTask` / `handTo`
-  branch Slack uses; `openPageTask`, `messageForPageTask` and the link card are not used for a daemon
-  that serves threads (§10).
+  task as one more thread (§6.4 there), except a webchat message at the root: it joins the task's
+  thread in the conversation, where the task answers, and its own thread is not attached (§5.1). In
+  webchat these go through the same `openTask` / `handTo` branch Slack uses; `openPageTask`,
+  `messageForPageTask` and the link card are not used for a daemon that serves threads (§10).
 - **A task starts with the whole thread.** A task opened on a thread that already has replies, for
   example a coordinator answer and a person's follow-ups, receives the thread record so far as its
   first round's context, not only the message it was opened for.
@@ -154,6 +155,11 @@ that allows a second participant. Slack's own thread participation rules are unc
   names the thread, and the turn's `output`, `done` and committed posts carry it as `thread`. The
   coordinator's turns carry no `thread`: they stay in the main timeline (§6.1). No turn in a
   coordinator conversation takes the browser's per-turn runtime or worktree (`coordinated`).
+- **A root handed to a task** (`messageTask` on a webchat message at the root) joins the task's
+  thread R: its session's thread, else its first held thread in the conversation. `handTo` attaches
+  nothing, marks the row handed to R, and dispatches the message with `thread: R`, so the task
+  answers and streams in R. The call answers `{ ok, taskId, joinedThread }`. A message in a thread,
+  a legacy page task and every other platform keep attaching the message's thread.
 - **A task the coordinator opens or hands a message to** has no browser turn. It runs with a post-only
   context (`WebchatTransport.webchatThreadContext`) and posts each answer with `initiator: 'agent'`
   and the thread, as an agent wake does. Its inbox row replays with the same context.
@@ -216,6 +222,16 @@ As implemented (PR 4):
 - Peers' `context` copies stay on `webchat:<conv>`, because a coordinator conversation has no other
   participants (§4.1).
 
+A root handed into a task's thread:
+
+- The row stays where it was recorded: its thread is its own `postId`, and the task's admission of the
+  same post adds no second row, since text rows dedupe on `(orgId, channel, ts)`.
+- `transcript.handedTo` names the thread R it joined (store v78, both dialects).
+  `LocalStore.markTranscriptHanded` sets it and bumps the row's revision, so open views see it.
+- Readers place the row by `COALESCE(handedTo, thread)`: R's thread record and reply count include
+  it, and it has no footer of its own. Messages handed before the change carry no mark. Their own
+  thread stays attached to the task, so they keep their own footer.
+
 ### 5.2 Task coordinates
 
 A coordinator task opened for a webchat message is keyed like a Slack threaded task: channel
@@ -247,6 +263,7 @@ As implemented (PR 7):
 - **The coordinator's posts in a thread** (`replyToMessage`, a legacy link card) carry
   `UserTurnBody.threadPost`, since they share the coordinator's admission with its turns.
   `postWebchatAgentMessage` sets it whenever it posts in a thread.
+- **A root handed into a thread** counts as one of its replies and gets no summary of its own (§5.1).
 - **The summary** (`SessionThreadSummary`) carries the root's excerpt, the reply count, `lastReplyAt`,
   the latest reply's author and excerpt, up to five repliers newest first, the holding task's session
   id, title and state from the task index, and `running` while the task's session is prompting. Its
@@ -319,8 +336,9 @@ As implemented (PR 6):
   task held the thread then; they are in the thread and in its reply count.
 - A coordinator turn answering a thread message carries a label, "In thread: <the root's first
   words>", that opens the thread. A turn answering a root has none.
-- A `replyToMessage` call shows in the main timeline as one line, "Answered in the thread", that
-  opens the thread; the answer's text is only in the thread, and the footer previews it.
+- The coordinator's work on a thread (its reasoning and tool calls, `replyToMessage` included) is
+  drawn in that thread's panel, not in the main timeline; the answer's text is only in the thread,
+  and the footer previews it.
 - Nothing is posted to the main timeline on a thread's behalf: there is no "also send to the
   conversation".
 - Hovering a root offers **Reply in thread** beside Copy; on a phone, a tap on the footer or a
@@ -328,6 +346,7 @@ As implemented (PR 6):
 
 As implemented (PR 11):
 
+- **Time lines** between turns lead with the date for a turn not from today (`turnTimeLabel`).
 - **The roots view.** A webchat coordinator's page reads `session/history` with `view: 'roots'`
   (`useSessionTranscript`'s `rootsView`) and keeps each page's `threads` by root, the newest read
   winning; an open thread panel's own read updates its footer too. A 409 `DAEMON_FEATURE_MISSING`
@@ -335,10 +354,11 @@ As implemented (PR 11):
 - **A person's row with `thread`** is drawn as no bubble: it ends the turn before it, and the
   coordinator turn after it is labelled "In thread: <first words>" from the footer's `rootExcerpt`,
   else the root's own text. A root (a person's row whose `postId` is a UUID and that has no
-  `thread`) gets `ThreadFooter` under its bubble once a summary names it. The coordinator's turn rows
-  carry `thread` too, but stay in the main timeline.
-- **`replyToMessage`** is read off the coordinator's tool row (`rawInput.action`), and its line opens
-  the row's `thread`, else the thread of the message id it names.
+  `thread`) gets `ThreadFooter` under its bubble once a summary names it. The coordinator's prose
+  rows stay in the main timeline; its other rows with `thread` (reasoning, tools) leave it for that
+  thread's panel (`splitThreadWork`), a turn left with nothing dropped.
+- **`replyToMessage`** is read off the coordinator's tool row (`rawInput.action`); where the row has
+  no `thread`, its "Answered in the thread" line opens the thread of the message id it names.
 - **Live steps** carry `thread` (`SessionStep.thread`): the owner's message sent in a thread, and
   every frame and post the daemon stamps with one. The main timeline leaves them out; a coordinator
   turn answering such a message streams there unstamped and takes the label. The typing indicator
@@ -351,12 +371,13 @@ As implemented (PR 11):
 - The thread opens in the side panel, replacing `TaskThreadPanel` with a general `ThreadPanel`: the
   root at the top, then the thread's chat messages in order (people, the coordinator's answers,
   other agents) and the holding task's turns with their work folded as today, then a thread
-  composer. Coordinator turns are in the main timeline, not here.
+  composer. Under the root, the coordinator's work on the thread from the main timeline (§6.1); a
+  "Replies" divider then separates what came from the main timeline from the replies below it.
 - A thread a task holds shows the task's header as today: state, title, Stop, the task's runtime
   picker, its approvals, and a link to the task's own page. An unowned thread shows a plain header;
   the console offers no "make this a task" control, since opening a task is the coordinator's call.
-- The address is `?thread=<rootId>` on the conversation's page, replacing `?task=<id>`; a task page's
-  shrink link points at its first thread.
+- The address is `?thread=<rootId>` on the conversation's page, replacing `?task=<id>`.
+  A task page's Back and Close controls return to the coordinator.
 - On a desktop, a thread opens in the panel when its first reply starts while the person watches,
   the latest one when several do; threads already there when the page opened do not. A phone does
   not open the sheet; the footer shows "is working…" and the reply count.
@@ -375,11 +396,20 @@ As implemented (PR 10):
   thread a "Show earlier messages" control that pages back with `cursor`.
 - **409 `DAEMON_FEATURE_MISSING`** from the thread read falls back to the task's session when the
   panel knows the task; an unowned thread then shows a load failure.
-- **`ThreadFooter`** (`ThreadFooter.tsx`, formerly `TaskThreadCard`) draws a `ThreadFooterView`: the
-  holding task's card (state and title), then the replies line with up to five repliers, the count,
-  the last reply's time, the preview and "working…" while `running`. `footerOfSummary` builds it from
-  a `SessionThreadSummaryDto`. A held thread rests between turns, as a threaded task does. An
-  unreadable footer names "a task you can't open", shows no preview and opens nothing.
+- **`ThreadFooter`** (`ThreadFooter.tsx`, formerly `TaskThreadCard`) draws a `ThreadFooterView`, held
+  or not, as the replies line (up to five repliers, the count, the last reply's time and "working…"
+  while `running`; repliers are drawn with their picture or agent icon, the count's hover card
+  previews the latest reply), then the holding task's card: its state, its title and, beneath in a
+  lighter face, the task's own summary where it wrote one. On a root (`part`), the line stays under
+  the person's bubble and the card is drawn on the left as the coordinator's message (`from`): its
+  mark, name and the task's state, over a card showing the task's summary alone. Hovering the
+  card shows a toolbar on its top edge with Reply (opens the thread at its composer) and the task
+  session's Share, the dialog its own page's header opens (`SessionShareButton`); a held thread's
+  panel header offers the same Share. `footerOfSummary` builds it from a `SessionThreadSummaryDto`, and
+  `RootThreadFooter` adds the summary from the conversation's task list. A held thread rests between
+  turns, as a threaded task does. An unreadable footer names "a task you can't open", shows no
+  preview and opens nothing; one whose task is `starting` says it is starting instead, until its
+  session exists.
   `TaskThreadFooter` builds the same footer from a task's row, which is how today's link and
   `openedForMessageId` cards are drawn, so they look as before.
 - **Bindings** (`lib/api.ts`): `fetchSessionMessages(id, {view: 'roots'})` returns `threads`, and
@@ -392,7 +422,6 @@ As implemented (PR 11):
   readable footer, so a daemon without thread reads falls back to the task's session. The page's
   address follows the open thread (`?thread=<rootId>`, written with `router.replace`), and an
   address it did not write opens the thread it names. `?task=<id>` still opens a legacy page task.
-  A webchat task's page shrinks to `?thread=<its session's thread>`; a page task keeps `?task=`.
 - **Auto-open** (desktop only, `threadToAutoOpen`) opens the latest thread whose first reply arrives
   while the page is open: a root that had no replies when the page first saw it and now has some, or
   a thread an agent starts speaking in live. Each opens once.
@@ -457,8 +486,8 @@ A coordinator on Slack is drawn with the same components and rules as §6:
 
 - **Roots** are the channel roots the coordinator received since its coordinate began, read from the
   channel record. A `!new` at the root starts a new coordinator page; the old one keeps its roots.
-- **Coordinator turns** stay in the main timeline with the labels of §6.1; task reports to the
-  coordinator show there too.
+- **Coordinator turns** stay in the main timeline with the labels of §6.1, their work on a thread
+  drawn in its panel; task reports to the coordinator show there too.
 - **Thread footers** sit under their roots and count the Slack thread's record (§3): people, the
   coordinator's `replyToMessage`, the task's answers, other agents, observations included. A task
   that also holds a Code channel (auto-session-mode.md §6.8) shows the channel in its footer.
@@ -500,7 +529,7 @@ As implemented (PR 12):
   thread, so the daemon writes it in the task's own Slack thread as the task's page does, and the hint
   says so; webchat's `pgSendThread` is kept for a shape with `continuesInThread`. A thread no task
   holds has no composer.
-- **A Slack task's page** shrinks to `?thread=<its session's thread>`, the ts of the thread it opened on.
+- **A Slack task's page** returns to the coordinator through Back or Close.
 - **Not drawn yet:** a task's Code channel in its footer. The summary (§5.3) names only the holding
   task, not the other threads it holds, so the footer cannot show the channel until it does.
 
@@ -551,7 +580,8 @@ As implemented (PR 8):
 - **A held thread** is a summary with `task`. Its content is shown only when the caller may view
   `task.sessionId`, a session of the same agent (`threadReadable`, `domain/thread-read.ts`). A task
   whose session does not exist yet, or that the CP has no row for, is read by nobody, so the check
-  fails closed while a task is starting.
+  fails closed while a task is starting; its footer's `task.starting` says so, so the console shows
+  "starting" rather than "a task you can't open" for those few seconds.
 - **Without that view** a footer keeps the reply count, authors, last reply time, the task's state
   and `running`, and loses `rootExcerpt`, the latest reply's excerpt and the task's title; it says
   `readable: false`. The thread read answers that footer with no messages and no cursors.
@@ -570,6 +600,7 @@ As implemented (PR 8):
 | Continued coordinator threads             | `continuation-threads-v1` from the daemon (same switch) and in the relay's `ready` (§7, PR 13)                    |
 | Relay → browser hello                     | `webchat-threads-v1` in the `ready` frame's `features` once the relay forwards `thread`                           |
 | `session/history` (daemon control RPC)    | A `roots` view: roots and coordinator turns with the §5.3 summaries, paged like today                             |
+| Session message rows                      | `handedTo?: string` on a webchat root handed into a task's thread: that thread's root id (§5.1)                   |
 | `session/thread` (new daemon control RPC) | One thread record by `(sessionId, rootId)`, paged; authorized by §7.1                                             |
 | Daemon feature for the reads              | `session-thread-reads-v1`, static; the CP sends neither read to a daemon without it                               |
 | BFF                                       | `GET /orgs/:org/sessions/:id/messages?view=roots` and `GET /orgs/:org/sessions/:id/threads/:rootId/messages` (C2) |
@@ -597,6 +628,9 @@ As implemented (PR 7):
   frame budget; a forward page (`after`) adds up to 20 threads whose rows changed since the cursor and
   whose root the session received. When more changed, its cursor stops before the first one left out
   and `liveMore` is set, so the next poll reports it.
+- **A handed root** keeps its place in both views and carries `handedTo`. In the `roots` view it names
+  that thread's summary instead of one of its own. `session/thread` for R includes it in order among
+  R's replies, also with `handedTo`, and the BFF routes pass the field through.
 - **`session/thread`** (`agentId` required) answers only for a root the session received, on its
   coordinate or admitted into it; a reply's id, an unknown root or another agent's session get an empty
   page without `summary`. It pages by event time where ids order natively, else by seq, and tails by

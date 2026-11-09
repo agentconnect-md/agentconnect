@@ -1,5 +1,6 @@
 // The Azure DevOps calls Connect with Microsoft makes (azure-devops-integration.md §3.2 steps 3-4): the administrator's organizations and projects, the entitlement, and Graph memberships; never log a token or a body.
-import { AzureDevOpsApiError, isGuid, type AzureDevOpsApiClient } from './api.js'
+import { AzureDevOpsApiError, GIT_REPOSITORIES_NAMESPACE, isGuid, type AzureDevOpsApiClient } from './api.js'
+import { EDIT_SUBSCRIPTIONS, SERVICE_HOOKS_NAMESPACE, VIEW_SUBSCRIPTIONS, serviceHooksToken } from './hooks-api.js'
 
 /** The fixed hosts; the fake in tests answers for them in place of the network. */
 export const PROFILE_BASE = 'https://app.vssps.visualstudio.com'
@@ -25,7 +26,7 @@ async function adminRequest(
   token: string,
   url: string,
   init: {
-    method?: 'GET' | 'POST' | 'PUT' | 'PATCH'
+    method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
     body?: unknown
     contentType?: string
     okStatuses?: readonly number[]
@@ -48,7 +49,7 @@ async function adminRequest(
   const continuationToken = res.headers.get('x-ms-continuationtoken')
   if ((res.ok && res.status !== 203) || init.okStatuses?.includes(res.status)) {
     const json: unknown = await res.json().catch(() => null)
-    if (res.ok && json === null && res.status !== 204) {
+    if (res.ok && json === null && res.status !== 204 && init.method !== 'DELETE') {
       throw new AzureDevOpsApiError('Azure DevOps answered without a body', res.status, 'UNAUTHORIZED', true)
     }
     return { status: res.status, json, continuationToken }
@@ -361,6 +362,39 @@ export async function addGroupMembership(
   }
 }
 
+/** How allowing triggers on one project went (§11.1). */
+export type AzureDevOpsTriggerGrantOutcome = 'granted' | 'refused' | 'failed'
+
+/** §11.1: allow the service principal View and Edit subscriptions on a project, with the administrator's delegated token. */
+export async function allowServiceHookSubscriptions(
+  api: AzureDevOpsApiClient,
+  token: string,
+  organization: string,
+  input: { projectId: string; tenantId: string; servicePrincipalObjectId: string }
+): Promise<AzureDevOpsTriggerGrantOutcome> {
+  const descriptor = servicePrincipalClaim(input.tenantId, input.servicePrincipalObjectId)
+  try {
+    await adminRequest(
+      api,
+      token,
+      `${api.devOpsBaseUrl}/${org(organization)}/_apis/accesscontrolentries/${SERVICE_HOOKS_NAMESPACE}?api-version=${API_VERSION}`,
+      {
+        method: 'POST',
+        body: {
+          token: serviceHooksToken(input.projectId),
+          merge: true,
+          accessControlEntries: [{ descriptor, allow: VIEW_SUBSCRIPTIONS | EDIT_SUBSCRIPTIONS, deny: 0 }]
+        }
+      }
+    )
+    return 'granted'
+  } catch (e) {
+    if (!(e instanceof AzureDevOpsApiError)) throw e
+    if (e.code === 'RATE_LIMITED') throw e
+    return e.code === 'FORBIDDEN' || e.code === 'UNAUTHORIZED' || e.code === 'ACCESS_REVOKED' ? 'refused' : 'failed'
+  }
+}
+
 /** Adds the service principal to the organization through a group, at the organization's default access level; for a caller who may not grant Basic. */
 export async function addServicePrincipalThroughGroup(
   api: AzureDevOpsApiClient,
@@ -382,5 +416,242 @@ export async function addServicePrincipalThroughGroup(
     if (e instanceof AzureDevOpsApiError && e.code === 'RATE_LIMITED') throw e
     if (e instanceof AzureDevOpsApiError) return null
     throw e
+  }
+}
+
+export type AzureDevOpsProjectGroup = 'readers' | 'contributors'
+
+/** The Readers and Contributors groups that directly hold the subject, by project id. */
+export async function readProjectGroups(
+  api: AzureDevOpsApiClient,
+  token: string,
+  organization: string,
+  subjectDescriptor: string
+): Promise<Map<string, Map<AzureDevOpsProjectGroup, string>>> {
+  const answer = await adminRequest(
+    api,
+    token,
+    `${GRAPH_BASE}/${org(organization)}/_apis/graph/memberships/${encodeURIComponent(subjectDescriptor)}?direction=up&api-version=${PREVIEW_VERSION}`
+  )
+  const containers = ((answer.json as { value?: unknown } | null)?.value ?? []) as Array<{
+    containerDescriptor?: unknown
+  }>
+  const byProject = new Map<string, Map<AzureDevOpsProjectGroup, string>>()
+  for (const { containerDescriptor } of containers) {
+    if (typeof containerDescriptor !== 'string' || !containerDescriptor.startsWith('vssgp.')) continue
+    const group = (
+      await adminRequest(
+        api,
+        token,
+        `${GRAPH_BASE}/${org(organization)}/_apis/graph/groups/${encodeURIComponent(containerDescriptor)}?api-version=${PREVIEW_VERSION}`
+      )
+    ).json as { principalName?: unknown; domain?: unknown } | null
+    const name = typeof group?.principalName === 'string' ? group.principalName.toLowerCase() : ''
+    const kind = name.endsWith('\\contributors') ? 'contributors' : name.endsWith('\\readers') ? 'readers' : null
+    const projectId =
+      typeof group?.domain === 'string' ? /TeamProject\/([0-9a-f-]{36})$/i.exec(group.domain)?.[1] : undefined
+    if (!kind || !projectId) continue
+    const groups = byProject.get(projectId.toLowerCase()) ?? new Map<AzureDevOpsProjectGroup, string>()
+    groups.set(kind, containerDescriptor)
+    byProject.set(projectId.toLowerCase(), groups)
+  }
+  return byProject
+}
+
+const servicePrincipalClaim = (tenantId: string, objectId: string) =>
+  `Microsoft.VisualStudio.Services.Claims.AadServicePrincipal;${tenantId}\\${objectId}`
+
+/** The project ids where the service principal holds View and Edit subscriptions (§11.1), in one recursive read. */
+export async function readServiceHookGrants(
+  api: AzureDevOpsApiClient,
+  token: string,
+  organization: string,
+  input: { tenantId: string; servicePrincipalObjectId: string }
+): Promise<Set<string>> {
+  const descriptor = servicePrincipalClaim(input.tenantId, input.servicePrincipalObjectId)
+  const answer = await adminRequest(
+    api,
+    token,
+    `${api.devOpsBaseUrl}/${org(organization)}/_apis/accesscontrollists/${SERVICE_HOOKS_NAMESPACE}?token=PublisherSecurity&recurse=true&descriptors=${encodeURIComponent(descriptor)}&includeExtendedInfo=false&api-version=${API_VERSION}`
+  )
+  const lists = ((answer.json as { value?: unknown } | null)?.value ?? []) as Array<{
+    token?: unknown
+    acesDictionary?: Record<string, { allow?: unknown; deny?: unknown }>
+  }>
+  const granted = new Set<string>()
+  const both = VIEW_SUBSCRIPTIONS | EDIT_SUBSCRIPTIONS
+  for (const list of lists) {
+    const projectId =
+      typeof list.token === 'string' ? /^PublisherSecurity\/([0-9a-f-]{36})$/i.exec(list.token)?.[1] : undefined
+    if (!projectId) continue
+    const allowed = Object.values(list.acesDictionary ?? {}).some(
+      (ace) => (Number(ace.allow) & both) === both && (Number(ace.deny) & both) === 0
+    )
+    if (allowed) granted.add(projectId.toLowerCase())
+  }
+  return granted
+}
+
+export type AzureDevOpsRemovalOutcome = 'removed' | 'refused' | 'failed'
+
+/** Take the subject out of one group; one that is no longer a member counts as removed. */
+export async function removeGroupMembership(
+  api: AzureDevOpsApiClient,
+  token: string,
+  organization: string,
+  subjectDescriptor: string,
+  groupDescriptor: string
+): Promise<AzureDevOpsRemovalOutcome> {
+  try {
+    await adminRequest(
+      api,
+      token,
+      `${GRAPH_BASE}/${org(organization)}/_apis/graph/memberships/${encodeURIComponent(subjectDescriptor)}/${encodeURIComponent(groupDescriptor)}?api-version=${PREVIEW_VERSION}`,
+      { method: 'DELETE', okStatuses: [404] }
+    )
+    return 'removed'
+  } catch (e) {
+    return removalOutcome(e)
+  }
+}
+
+/** Withdraw the service principal's View and Edit subscriptions on a project (§11.1). */
+export async function revokeServiceHookSubscriptions(
+  api: AzureDevOpsApiClient,
+  token: string,
+  organization: string,
+  input: { projectId: string; tenantId: string; servicePrincipalObjectId: string }
+): Promise<AzureDevOpsRemovalOutcome> {
+  const descriptor = servicePrincipalClaim(input.tenantId, input.servicePrincipalObjectId)
+  try {
+    await adminRequest(
+      api,
+      token,
+      `${api.devOpsBaseUrl}/${org(organization)}/_apis/accesscontrolentries/${SERVICE_HOOKS_NAMESPACE}?token=${encodeURIComponent(serviceHooksToken(input.projectId))}&descriptors=${encodeURIComponent(descriptor)}&api-version=${API_VERSION}`,
+      { method: 'DELETE' }
+    )
+    return 'removed'
+  } catch (e) {
+    return removalOutcome(e)
+  }
+}
+
+function removalOutcome(e: unknown): AzureDevOpsRemovalOutcome {
+  if (!(e instanceof AzureDevOpsApiError)) throw e
+  if (e.code === 'RATE_LIMITED') throw e
+  return e.code === 'FORBIDDEN' || e.code === 'UNAUTHORIZED' || e.code === 'ACCESS_REVOKED' ? 'refused' : 'failed'
+}
+
+const PROJECT_NAMESPACE = '52d39943-cb85-4d7f-8fa8-c6baac873819'
+const PROJECT_READ = 1
+const GIT_READ = 2
+/** What a project's Contributors group holds: read, contribute, branches, tags, notes, pull requests. */
+const GIT_WRITE = 2 | 4 | 16 | 32 | 64 | 16384
+/** The root tokens every project inherits from: the project itself, its repositories, its service hooks. */
+const ORG_ROOTS = {
+  project: { namespace: PROJECT_NAMESPACE, token: '$PROJECT' },
+  git: { namespace: GIT_REPOSITORIES_NAMESPACE, token: 'repoV2' },
+  hooks: { namespace: SERVICE_HOOKS_NAMESPACE, token: 'PublisherSecurity' }
+} as const
+
+/** The service principal's access to every project, present and future, granted at the namespace roots. */
+export interface AzureDevOpsOrgWideAccess {
+  group: AzureDevOpsProjectGroup
+  allowTriggers: boolean
+}
+
+type ServicePrincipalRef = { tenantId: string; servicePrincipalObjectId: string }
+
+async function rootAllow(
+  api: AzureDevOpsApiClient,
+  token: string,
+  organization: string,
+  root: { namespace: string; token: string },
+  descriptor: string
+): Promise<number> {
+  const answer = await adminRequest(
+    api,
+    token,
+    `${api.devOpsBaseUrl}/${org(organization)}/_apis/accesscontrollists/${root.namespace}?token=${encodeURIComponent(root.token)}&descriptors=${encodeURIComponent(descriptor)}&recurse=false&includeExtendedInfo=false&api-version=${API_VERSION}`
+  )
+  const lists = ((answer.json as { value?: unknown } | null)?.value ?? []) as Array<{
+    token?: unknown
+    acesDictionary?: Record<string, { allow?: unknown }>
+  }>
+  const list = lists.find((entry) => entry.token === root.token)
+  return Object.values(list?.acesDictionary ?? {}).reduce((bits, ace) => bits | (Number(ace.allow) || 0), 0)
+}
+
+/** Organization-wide access as granted at the roots; null when the projects themselves are not readable from there. */
+export async function readOrgWideAccess(
+  api: AzureDevOpsApiClient,
+  token: string,
+  organization: string,
+  input: ServicePrincipalRef
+): Promise<AzureDevOpsOrgWideAccess | null> {
+  const descriptor = servicePrincipalClaim(input.tenantId, input.servicePrincipalObjectId)
+  if ((await rootAllow(api, token, organization, ORG_ROOTS.project, descriptor)) & PROJECT_READ) {
+    const git = await rootAllow(api, token, organization, ORG_ROOTS.git, descriptor)
+    const group = (git & GIT_WRITE) === GIT_WRITE ? 'contributors' : git & GIT_READ ? 'readers' : null
+    if (!group) return null
+    const hooks = await rootAllow(api, token, organization, ORG_ROOTS.hooks, descriptor)
+    const both = VIEW_SUBSCRIPTIONS | EDIT_SUBSCRIPTIONS
+    return { group, allowTriggers: (hooks & both) === both }
+  }
+  return null
+}
+
+/** Grant every project at the roots; the Git entry is replaced, so Write lowered to Read drops the write bits. */
+export async function grantOrgWideAccess(
+  api: AzureDevOpsApiClient,
+  token: string,
+  organization: string,
+  input: ServicePrincipalRef & AzureDevOpsOrgWideAccess
+): Promise<AzureDevOpsTriggerGrantOutcome> {
+  const descriptor = servicePrincipalClaim(input.tenantId, input.servicePrincipalObjectId)
+  const write = (root: { namespace: string; token: string }, allow: number, merge: boolean) =>
+    adminRequest(
+      api,
+      token,
+      `${api.devOpsBaseUrl}/${org(organization)}/_apis/accesscontrolentries/${root.namespace}?api-version=${API_VERSION}`,
+      { method: 'POST', body: { token: root.token, merge, accessControlEntries: [{ descriptor, allow, deny: 0 }] } }
+    )
+  try {
+    await write(ORG_ROOTS.project, PROJECT_READ, true)
+    await write(ORG_ROOTS.git, input.group === 'contributors' ? GIT_WRITE : GIT_READ, false)
+    if (input.allowTriggers) await write(ORG_ROOTS.hooks, VIEW_SUBSCRIPTIONS | EDIT_SUBSCRIPTIONS, true)
+    return 'granted'
+  } catch (e) {
+    if (!(e instanceof AzureDevOpsApiError)) throw e
+    if (e.code === 'RATE_LIMITED') throw e
+    return e.code === 'FORBIDDEN' || e.code === 'UNAUTHORIZED' || e.code === 'ACCESS_REVOKED' ? 'refused' : 'failed'
+  }
+}
+
+/** Take back organization-wide access, Allow triggers, or both. */
+export async function removeOrgWideAccess(
+  api: AzureDevOpsApiClient,
+  token: string,
+  organization: string,
+  input: ServicePrincipalRef & { access: boolean; triggers: boolean }
+): Promise<AzureDevOpsRemovalOutcome> {
+  const descriptor = servicePrincipalClaim(input.tenantId, input.servicePrincipalObjectId)
+  // Project read goes last: it is what makes the others readable, so a removal cut short stays visible.
+  const roots = [
+    ...(input.triggers ? [ORG_ROOTS.hooks] : []),
+    ...(input.access ? [ORG_ROOTS.git, ORG_ROOTS.project] : [])
+  ]
+  try {
+    for (const root of roots) {
+      await adminRequest(
+        api,
+        token,
+        `${api.devOpsBaseUrl}/${org(organization)}/_apis/accesscontrolentries/${root.namespace}?token=${encodeURIComponent(root.token)}&descriptors=${encodeURIComponent(descriptor)}&api-version=${API_VERSION}`,
+        { method: 'DELETE' }
+      )
+    }
+    return 'removed'
+  } catch (e) {
+    return removalOutcome(e)
   }
 }

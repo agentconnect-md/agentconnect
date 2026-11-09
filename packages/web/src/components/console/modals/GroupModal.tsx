@@ -5,6 +5,7 @@ import { presentedDaemonStatus, type MemberSetRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { Button, Icon, Toggle } from '@/components/ui'
 import { useTranslations } from 'next-intl'
+import { DaemonApprovalBadge } from '../DaemonApproval'
 
 /**
  * New / Edit group (docs/designs/daemon-groups.md §2) — name and membership in one dialog.
@@ -114,7 +115,8 @@ export default function GroupModal({ group, onClose }: { group?: MemberSetRow; o
                   <button
                     key={daemon.daemonId}
                     type="button"
-                    className="flex w-full cursor-pointer items-center gap-[10px] border-0 border-b border-(--border-subtle) bg-(--surface-card) px-3 py-[10px] text-left last:border-b-0 hover:bg-(--surface-hover)"
+                    className="flex w-full cursor-pointer items-center gap-[10px] border-0 border-b border-(--border-subtle) bg-(--surface-card) px-3 py-[10px] text-left last:border-b-0 hover:bg-(--surface-hover) disabled:cursor-default disabled:opacity-60"
+                    disabled={!checked && !!daemon.approval && daemon.approval.status !== 'approved'}
                     onClick={() => toggle(daemon.daemonId)}
                   >
                     <span
@@ -139,6 +141,7 @@ export default function GroupModal({ group, onClose }: { group?: MemberSetRow; o
                             : t('offlineStatus')}
                       </span>
                     </span>
+                    <DaemonApprovalBadge daemon={daemon} />
                   </button>
                 )
               })}

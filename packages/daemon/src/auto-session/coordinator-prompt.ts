@@ -62,7 +62,9 @@ function placeWords(input: CoordinatorPromptInput) {
           'thread under a root message, which the message names.',
         place: 'conversation',
         taskLink: 'link',
-        taskAnswers: "in the message's thread",
+        taskAnswers:
+          'in its own thread: a message at the conversation root joins that thread, and a message in another thread ' +
+          'brings that thread to the task',
         replyPosts: "in the message's thread",
         finalText:
           'The person reads your text as you write it, so write nothing but your calls. After them, end the turn with ' +

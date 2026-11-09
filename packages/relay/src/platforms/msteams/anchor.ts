@@ -1,11 +1,9 @@
 // The deployment Teams app's answer to a tenant no organization connected (teams-integration.md §8.4): a welcome or Connect card, posted by the relay itself.
 import type { RcMsTeamsAnchor } from '@agentconnect.md/protocol'
 import type { Logger } from '../../log.js'
+import { MSTEAMS_BOT_SCOPE, MsTeamsAppTokens } from './egress.js'
 
-const TOKEN_SCOPE = 'https://api.botframework.com/.default'
 const TIMEOUT_MS = 10_000
-/** A token is refreshed this long before Entra says it expires. */
-const TOKEN_MARGIN_MS = 60_000
 const GUIDE_URL = 'https://www.agentconnect.md/docs/connect-automate/chat-platforms'
 const SUPPORT_EMAIL = 'contact@agentconnect.md'
 
@@ -111,22 +109,19 @@ export function msTeamsAnchorCard(answer: NonNullable<MsTeamsAnchorAnswer>, conn
 
 /** The anchor's sender: a Bot Framework token from the app's home tenant, cached until shortly before it expires. */
 export class MsTeamsAnchorEgress {
-  private token?: { value: string; until: number }
+  private readonly tokens: MsTeamsAppTokens
 
   constructor(
     public anchor: RcMsTeamsAnchor,
     private readonly fetchImpl: typeof fetch,
-    private readonly now: () => number = Date.now
-  ) {}
+    now: () => number = Date.now
+  ) {
+    this.tokens = new MsTeamsAppTokens(anchor, fetchImpl, now)
+  }
 
   /** Take a new snapshot's anchor in place, so the ingest already built keeps sending; a changed credential drops the token. */
   update(anchor: RcMsTeamsAnchor): void {
-    if (
-      anchor.appId !== this.anchor.appId ||
-      anchor.tenantId !== this.anchor.tenantId ||
-      anchor.clientSecret !== this.anchor.clientSecret
-    )
-      this.token = undefined
+    this.tokens.update(anchor)
     this.anchor = anchor
   }
 
@@ -159,27 +154,7 @@ export class MsTeamsAnchorEgress {
   }
 
   private async accessToken(): Promise<string> {
-    if (this.token && this.token.until > this.now()) return this.token.value
-    const response = await this.fetchImpl(
-      `https://login.microsoftonline.com/${encodeURIComponent(this.anchor.tenantId)}/oauth2/v2.0/token`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({
-          grant_type: 'client_credentials',
-          client_id: this.anchor.appId,
-          client_secret: this.anchor.clientSecret,
-          scope: TOKEN_SCOPE
-        }).toString(),
-        signal: AbortSignal.timeout(TIMEOUT_MS)
-      }
-    )
-    const body = obj(await response.json().catch(() => undefined))
-    const value = str(body?.access_token)
-    if (!response.ok || !value) throw new Error(`Entra answered ${response.status} without a token`)
-    const expiresIn = typeof body?.expires_in === 'number' ? body.expires_in * 1000 : 0
-    this.token = { value, until: this.now() + Math.max(0, expiresIn - TOKEN_MARGIN_MS) }
-    return value
+    return (await this.tokens.get(this.anchor.tenantId, MSTEAMS_BOT_SCOPE)).value
   }
 }
 

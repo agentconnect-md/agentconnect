@@ -47,9 +47,14 @@ export class PlacementResolver {
       /** A member set's members that are live right now. Only {@link PlacementResolver.dispatchDaemon}
        *  uses it, and only as the rendezvous target — never as a claim of who serves what. */
       liveMembers?: (setId: string) => Promise<string[]>
+      approved?: (daemonIds: readonly string[]) => Promise<string[]>
       clock: Clock
     }
   ) {}
+
+  private approved(ids: readonly string[]): Promise<string[]> {
+    return this.deps.approved ? this.deps.approved(ids) : Promise.resolve([...ids])
+  }
 
   private holders(agentId: string): Promise<DaemonId[]> {
     if (!this.deps.duties) return Promise.resolve([])
@@ -73,7 +78,7 @@ export class PlacementResolver {
    * names the confirmed member.
    */
   async routableDaemons(agent: ResolvableAgent): Promise<string[]> {
-    return [...new Set([...placementTargets(agent), ...(await this.confirmedHolders(agent.id))])]
+    return this.approved([...new Set([...placementTargets(agent), ...(await this.confirmedHolders(agent.id))])])
   }
 
   /** The one daemon an ingress projection should name, or null when nothing may be addressed. */
@@ -91,12 +96,13 @@ export class PlacementResolver {
       : duties.confirmedHoldersOfMany
         ? await duties.confirmedHoldersOfMany(ids, now)
         : new Map(await Promise.all(ids.map(async (id) => [id, await duties.confirmedHoldersOf(id, now)] as const)))
-    return new Map(ids.map((id) => [id as string, held.get(id)?.[0] ?? null]))
+    const approved = new Set(await this.approved([...held.values()].flat()))
+    return new Map(ids.map((id) => [id as string, held.get(id)?.find((daemonId) => approved.has(daemonId)) ?? null]))
   }
 
   /** Every daemon that serves this agent: what placement names, then every live duty holder. */
   async servingDaemons(agent: ResolvableAgent): Promise<string[]> {
-    return [...new Set([...placementTargets(agent), ...(await this.holders(agent.id))])]
+    return this.approved([...new Set([...placementTargets(agent), ...(await this.holders(agent.id))])])
   }
 
   /** The one daemon a live edge read should go to, or null when nothing serves the agent. */
@@ -135,7 +141,12 @@ export class PlacementResolver {
     const setHasLiveMember = (setId: string): Promise<boolean> => {
       let cached = liveBySet.get(setId)
       if (!cached) {
-        cached = this.deps.liveMembers ? this.deps.liveMembers(setId).then((m) => m.length > 0) : Promise.resolve(false)
+        cached = this.deps.liveMembers
+          ? this.deps
+              .liveMembers(setId)
+              .then((m) => this.approved(m))
+              .then((m) => m.length > 0)
+          : Promise.resolve(false)
         liveBySet.set(setId, cached)
       }
       return cached
@@ -150,7 +161,7 @@ export class PlacementResolver {
       }
       const eligibility = dutyEligibility(row)
       if (eligibility.scope !== 'set') continue
-      const pending = (await this.holders(row.agentId)).length > 0 || (await setHasLiveMember(eligibility.setId))
+      const pending = (await this.servingDaemons(agent)).length > 0 || (await setHasLiveMember(eligibility.setId))
       if (pending) resolved.push({ ...row, daemonId: null })
     }
     return resolved
@@ -169,7 +180,7 @@ export class PlacementResolver {
     if (routable) return routable
     const eligibility = dutyEligibility(agent)
     if (eligibility.scope !== 'set' || !this.deps.liveMembers) return null
-    return ((await this.deps.liveMembers(eligibility.setId))[0] as DaemonId | undefined) ?? null
+    return ((await this.approved(await this.deps.liveMembers(eligibility.setId)))[0] as DaemonId | undefined) ?? null
   }
 }
 

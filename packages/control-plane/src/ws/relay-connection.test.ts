@@ -124,7 +124,13 @@ function build(
   const codec = new ApiKeyCodec({ API_KEY_PEPPER: 'unit-test-pepper-0123456789abcdefghij' })
   const apiKeys = { findByHash: vi.fn(async () => null), touchLastUsed: vi.fn(async () => {}) } as unknown as ApiKeyRepo
   const auth = (over.auth ??
-    new RelayAuthService(codec, apiKeys, clock, { RELAY_TOKEN, HEARTBEAT_SEC: 15 })) as RelayAuthService
+    new RelayAuthService(
+      codec,
+      apiKeys,
+      clock,
+      { RELAY_TOKEN, HEARTBEAT_SEC: 15 },
+      { allowed: async (ids) => [...ids] }
+    )) as RelayAuthService
 
   const upsertByName = vi.fn(async (name: string, daemonUrl: string): Promise<RelayRecord> => ({
     id: RELAY_ID,
@@ -583,7 +589,13 @@ describe('RelayConnection FSM', () => {
       findByHash: vi.fn(async () => null),
       touchLastUsed: vi.fn(async () => {})
     } as unknown as ApiKeyRepo
-    const auth = new RelayAuthService(codec, apiKeys, clock, { RELAY_TOKEN, HEARTBEAT_SEC: 15 })
+    const auth = new RelayAuthService(
+      codec,
+      apiKeys,
+      clock,
+      { RELAY_TOKEN, HEARTBEAT_SEC: 15 },
+      { allowed: async (ids) => [...ids] }
+    )
     const relays = {
       upsertByName: vi.fn(async (name: string, daemonUrl: string): Promise<RelayRecord> => ({
         id: RELAY_ID,

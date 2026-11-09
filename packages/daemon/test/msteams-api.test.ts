@@ -1,11 +1,15 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import type { RdPlatformReply, WireMsTeamsCall } from '@agentconnect.md/protocol'
 import {
   MSTEAMS_MAX_RETRY_AFTER_MS,
   MSTEAMS_TOKEN_SCOPE,
   MsTeamsApi,
   MsTeamsApiError,
+  MsTeamsRelayGraphToken,
   msTeamsActivitiesUrl,
-  msTeamsTokenEndpoint
+  msTeamsTokenEndpoint,
+  relayMsTeamsConnector,
+  type MsTeamsRelayPort
 } from '../src/platforms/msteams/api.js'
 
 const ZERO = '00000000-0000-0000-0000-000000000000'
@@ -116,22 +120,6 @@ describe('MsTeamsApi', () => {
     expect(sends.map((c) => c.headers.authorization)).toEqual(['Bearer tok-1', 'Bearer tok-1', 'Bearer tok-2'])
   })
 
-  it('takes a deployment app’s token from its home tenant rather than the tenant it serves', async () => {
-    const HOME = '11111111-1111-4111-8111-111111111111'
-    const { impl, calls } = fakeFetch([{ status: 201, body: { id: 'act-1' } }])
-    const hosted = (async (url: unknown, init?: RequestInit) =>
-      String(url) === msTeamsTokenEndpoint(HOME)
-        ? ({
-            ok: true,
-            status: 200,
-            json: async () => ({ access_token: 'tok-home', expires_in: 3600 })
-          } as unknown as Response)
-        : impl(url as string, init)) as typeof fetch
-    const client = new MsTeamsApi({ ...CREDENTIALS, tokenTenantId: HOME }, { fetchImpl: hosted, now: () => 1_000_000 })
-    await client.postActivity(target, {})
-    expect(calls.map((c) => c.headers.authorization)).toEqual(['Bearer tok-home'])
-  })
-
   it('shares one token request between concurrent calls', async () => {
     const { impl, calls } = fakeFetch([
       { status: 201, body: { id: 'act-1' } },
@@ -237,5 +225,123 @@ describe('MsTeamsApi', () => {
   it('counts a delete of an activity already gone as deleted', async () => {
     const { impl } = fakeFetch([{ status: 404, body: { error: { code: 'NotFound' } } }])
     await expect(api(impl).deleteActivity(target, '1700000000001')).resolves.toBeUndefined()
+  })
+})
+
+describe('MsTeamsApi through the relay (§8.5)', () => {
+  const BOT = '22222222-2222-4222-8222-222222222222'
+  const ticketed = { ...target, ticket: 't1.example.mac' }
+
+  function relayed(replies: (RdPlatformReply | Error)[]) {
+    const sent: { botId: string; call: WireMsTeamsCall }[] = []
+    const sleeps: number[] = []
+    const port: MsTeamsRelayPort = {
+      request: async (botId, call) => {
+        sent.push({ botId, call })
+        const next = replies.shift()
+        if (!next) throw new Error('unexpected relay call')
+        if (next instanceof Error) throw next
+        return next
+      }
+    }
+    const client = new MsTeamsApi(relayMsTeamsConnector(port, BOT), {
+      now: () => 1_000_000,
+      sleep: async (ms) => {
+        sleeps.push(ms)
+      },
+      random: () => 0
+    })
+    return { client, sent, sleeps }
+  }
+
+  it('sends a post as the fixed operation with the conversation’s ticket, and never fetches a token itself', async () => {
+    const { client, sent } = relayed([{ outcome: 'ok', payload: { status: 201, body: { id: 'act-1' } } }])
+    expect(await client.postActivity(ticketed, { type: 'message', text: 'hi' })).toBe('act-1')
+    expect(sent).toEqual([
+      {
+        botId: BOT,
+        call: {
+          op: 'post-activity',
+          ticket: 't1.example.mac',
+          conversationId: CHANNEL_THREAD,
+          activity: { type: 'message', text: 'hi' }
+        }
+      }
+    ])
+  })
+
+  it('refuses a conversation the relay has not ticketed without sending anything', async () => {
+    const { client, sent } = relayed([])
+    const err = (await client.postActivity(target, {}).catch((e: unknown) => e)) as MsTeamsApiError
+    expect(err.kind).toBe('forbidden')
+    expect(sent).toEqual([])
+  })
+
+  it('retries a post no relay took, since nothing reached Microsoft, but never one the relay may have sent', async () => {
+    const unsent = new MsTeamsApiError('no relay', 'unavailable', undefined, undefined, undefined, true)
+    const { client, sent } = relayed([unsent, { outcome: 'ok', payload: { status: 201, body: { id: 'act-2' } } }])
+    expect(await client.postActivity(ticketed, {})).toBe('act-2')
+    expect(sent).toHaveLength(2)
+
+    const lost = relayed([new MsTeamsApiError('no answer', 'ambiguous')])
+    const err = (await lost.client.postActivity(ticketed, {}).catch((e: unknown) => e)) as MsTeamsApiError
+    expect(err.kind).toBe('ambiguous')
+    expect(lost.sent).toHaveLength(1)
+  })
+
+  it('reads Microsoft’s status from the relay’s answer, and a relay refusal as forbidden', async () => {
+    const { client } = relayed([
+      { outcome: 'ok', payload: { status: 403, body: { error: { code: 'MessageWritesBlocked' } } } }
+    ])
+    const err = (await client.postActivity(ticketed, {}).catch((e: unknown) => e)) as MsTeamsApiError
+    expect(err.kind).toBe('writes_blocked')
+
+    const refused = relayed([{ outcome: 'refused', reason: 'ticket' }])
+    const no = (await refused.client.postActivity(ticketed, {}).catch((e: unknown) => e)) as MsTeamsApiError
+    expect(no.kind).toBe('forbidden')
+  })
+
+  it('retries a refusal the relays’ assignments may still lift, a bounded number of times, even for a post', async () => {
+    const lagging = { outcome: 'refused' as const, reason: 'not_member', retryable: true }
+    const { client, sent, sleeps } = relayed([
+      lagging,
+      lagging,
+      { outcome: 'ok', payload: { status: 201, body: { id: 'act-3' } } }
+    ])
+    expect(await client.postActivity(ticketed, {})).toBe('act-3')
+    expect(sent).toHaveLength(3)
+    expect(sleeps).toHaveLength(2)
+
+    const stuck = relayed([lagging, lagging, lagging, lagging])
+    const err = (await stuck.client.postActivity(ticketed, {}).catch((e: unknown) => e)) as MsTeamsApiError
+    expect(err.kind).toBe('unavailable')
+    expect(stuck.sent).toHaveLength(4)
+  })
+
+  it('takes a new 1:1 chat’s ticket from the relay’s answer and asks it only for the member', async () => {
+    const { client, sent } = relayed([
+      { outcome: 'ok', payload: { status: 201, body: { id: 'a:new-chat' }, tickets: { 'a:new-chat': 't1.chat.mac' } } }
+    ])
+    expect(await client.openDirectConversation(ticketed, '29:member', ZERO, `28:${ZERO}`)).toEqual({
+      id: 'a:new-chat',
+      ticket: 't1.chat.mac'
+    })
+    expect(sent[0]!.call).toEqual({ op: 'create-conversation', ticket: 't1.example.mac', memberId: '29:member' })
+  })
+
+  it('mints a Graph token through the relay and keeps it until five minutes before it expires', async () => {
+    const port: MsTeamsRelayPort = {
+      request: vi.fn(async () => ({
+        outcome: 'ok' as const,
+        payload: { status: 200, body: { access_token: 'graph-1', expires_in: 3600 } }
+      }))
+    }
+    const clock = { t: 1_000_000 }
+    const tokens = new MsTeamsRelayGraphToken(port, BOT, () => clock.t)
+    expect(await tokens.token()).toBe('graph-1')
+    clock.t += 50 * 60_000
+    expect(await tokens.token()).toBe('graph-1')
+    expect(port.request).toHaveBeenCalledTimes(1)
+    expect(port.request).toHaveBeenCalledWith(BOT, { op: 'graph-token' })
   })
 })

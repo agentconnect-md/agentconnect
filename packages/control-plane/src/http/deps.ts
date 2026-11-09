@@ -106,10 +106,12 @@ import type { GiteaApiClient } from '../gitea/api.js'
 import type { AzureDevOpsConnectionService } from '../azure-devops/connection.service.js'
 import type { AzureDevOpsBindingService } from '../azure-devops/binding.service.js'
 import type { AzureDevOpsConnectFlowService } from '../azure-devops/connect-flow.service.js'
+import type { AzureDevOpsHookService } from '../azure-devops/hook.service.js'
 import type { PullRequestViewService } from '../github/pull-request-view.service.js'
 import type { SessionPullRequestLinkService } from '../github/session-pull-request-link.service.js'
 import type { GithubUserAuthzService } from '../github/user-authz.js'
 import type { LogtoIdentityService } from '../github/logto-identity.js'
+import type { AzureDevOpsUserAuthzService } from '../azure-devops/user-authz.js'
 import type { GithubRepoIdentityService } from '../github/repo-identity.js'
 import type { HookService } from '../hooks/hook.service.js'
 import type { DaemonRegistry, DaemonAuth, ApiKeyAdmin, DaemonLiveness, ClusterWorkloadIdentity } from '../ports.js'
@@ -128,6 +130,7 @@ import type { RelayControlSender } from '../orchestrator/relayControl.js'
 import type { HttpBotOrchestrator } from '../orchestrator/httpBot.js'
 import type { CollabRoutesService } from '../orchestrator/collabRoutes.service.js'
 import type { AgentMutationGate } from '../orchestrator/agentMutationGate.js'
+import type { RelayRosterView } from '../orchestrator/agentDefinitions.js'
 import type { SessionEventSink } from '../events/sink.js'
 import type { UsageWriter } from '../usage/writer.js'
 import type { HumanAuthConfig } from './plugins/auth.js'
@@ -211,6 +214,7 @@ export interface HttpDeps {
   /** Shared process clock: delegated MCP execution uses the same timer seam as its reaper. */
   clock: Clock
   repos: {
+    daemonAdmission: import('../persistence/ports.js').DaemonAdmissionRepo
     agent: AgentRepo
     assignment: AssignmentRepo
     /** CP-commanded daemon restart/upgrade tracking (cli-daemon-split.md §7) — the
@@ -433,6 +437,8 @@ export interface HttpDeps {
   /** CP→relay control fan-out — pushes `rc/daemon-revoke` to connected relays when a
    *  daemon key is revoked / a daemon is removed (shared-bot-relay.md §9). */
   relayControl: RelayControlSender
+  /** Current live relay endpoints for credential-bearing definition projections. */
+  relayRoster: RelayRosterView
   /** HTTP-bot assignment + attributed-route compilation (shared-bot-relay.md §4.2/§10).
    *  Install / uninstall / toggle / channel-owner changes call it to (re)assign a
    *  HTTP bot's ingest to the relay pool and push its routes + send-only daemon specs. */
@@ -558,8 +564,11 @@ export interface HttpDeps {
   azureDevOps?: {
     connections: AzureDevOpsConnectionService
     bindings: AzureDevOpsBindingService
+    userAuthz: AzureDevOpsUserAuthzService
     /** Connect with Microsoft and Manage project access (§3.2); absent ⇒ the connect routes refuse. */
     connect?: AzureDevOpsConnectFlowService
+    /** Service hook subscriptions (§11.2); absent ⇒ no Azure DevOps trigger can be saved. */
+    hooks?: AzureDevOpsHookService
   }
   /** The PR panel's read projection; absent like {@link github} ⇒ the route 404s, hiding the tab. */
   pullRequestView?: PullRequestViewService

@@ -32,7 +32,12 @@ import type { LoadedAgent } from '../agents/load-agents.js'
 import type { AcpHost } from '../acp/acp-host.js'
 import type { CpClient } from '../cp/client.js'
 import type { Logger } from '../log.js'
-import { buildHookMessage, githubOpensReviewGeneration, hookAnchorText } from '../messages/hook-message.js'
+import {
+  buildHookMessage,
+  githubOpensReviewGeneration,
+  hookAnchorText,
+  type HookPromptSupplement
+} from '../messages/hook-message.js'
 import { appendTurnPrompt, type NormalizedMessage } from '../messages/normalized.js'
 import type { ReplyGithubReviewThreadsReq, ReplyGithubReviewThreadsResult, SubmitGithubReviewReq } from '../mcp/ops.js'
 import type { CodeHostReviewAdapter } from '../codehost/review-adapter.js'
@@ -65,8 +70,10 @@ import { codeHostLinkSource } from '../platforms/link-source.js'
 import { replyTargetProvider, type CodeHostReplyTarget } from '../codehost/reply-target.js'
 import {
   codeHostHostFence,
+  codeHostIgnoredDelivery,
   codeHostPromptSupplement,
   codeHostReplyTarget,
+  codeHostResolveDelivery,
   codeHostThreadWorktreeCleanup,
   turnFinalFor,
   type CodeHostFinalPoster,
@@ -213,20 +220,26 @@ export class GithubReviewOrchestrator {
    * dispatch. Accepted is returned only after {@link onHookFire} has crossed
    * the durable-inbox admission barrier; the model turn itself remains async.
    */
-  async dispatchRelayHook(msg: RdMsgHook): Promise<RdAck> {
-    if (msg.routing) return await this.routeHostCopy({ ...msg, routing: msg.routing })
-    const durable = await this.replayDurableAdmission(msg)
+  async dispatchRelayHook(delivered: RdMsgHook): Promise<RdAck> {
+    if (delivered.routing) return await this.routeHostCopy({ ...delivered, routing: delivered.routing })
+    const durable = await this.replayDurableAdmission(delivered)
     if (durable) return durable
-    const cleanup = codeHostThreadWorktreeCleanup(msg)
-    const maintenance = cleanup !== undefined || githubDeletedHookEvent(msg)
-    const agent = this.agents.get(msg.agentId)
+    const agent = this.agents.get(delivered.agentId)
     if (!agent) {
-      this.log.warn(`hook: no agent "${msg.agentId}" on this daemon — rejecting fire ${msg.msgId}`)
-      return { msgId: msg.msgId, accepted: false, reason: 'no_agent' }
+      this.log.warn(`hook: no agent "${delivered.agentId}" on this daemon — rejecting fire ${delivered.msgId}`)
+      return { msgId: delivered.msgId, accepted: false, reason: 'no_agent' }
     }
     // §24.4: a delivery naming another instance than the spec is REFUSED, never re-targeted.
-    const hostMismatch = codeHostHostFence(msg, this.turnFinalHost)
-    if (hostMismatch) return { msgId: msg.msgId, accepted: false, reason: hostMismatch }
+    const hostMismatch = codeHostHostFence(delivered, this.turnFinalHost)
+    if (hostMismatch) return { msgId: delivered.msgId, accepted: false, reason: hostMismatch }
+    // A host that classifies a delivery on a read does so before any gate reads its event (azure-devops-integration.md §11.4).
+    const resolved =
+      delivered.notice === undefined ? await codeHostResolveDelivery(delivered, this.turnFinalHost) : { msg: delivered }
+    if ('refused' in resolved) return { msgId: delivered.msgId, accepted: false, reason: resolved.refused }
+    const msg = resolved.msg
+    const cleanup = codeHostThreadWorktreeCleanup(msg)
+    const maintenance =
+      cleanup !== undefined || githubDeletedHookEvent(msg) || codeHostIgnoredDelivery(msg) !== undefined
     if (!maintenance && this.host.paused(msg.agentId)) {
       this.log.info(`hook: agent "${msg.agentId}" is paused — rejecting fire ${msg.msgId}`)
       return { msgId: msg.msgId, accepted: false, reason: 'paused' }
@@ -254,7 +267,7 @@ export class GithubReviewOrchestrator {
       this.log.info(`hook: agent "${msg.agentId}" is draining — rejecting fire ${msg.msgId}`)
       return { msgId: msg.msgId, accepted: false, reason: 'draining' }
     }
-    const admission = await this.onHookFire(msg)
+    const admission = await this.onHookFire(msg, resolved.supplement)
     return {
       msgId: msg.msgId,
       accepted: admission.accepted,
@@ -287,16 +300,18 @@ export class GithubReviewOrchestrator {
    * trigger text lands in the channel and the session threads under it,
    * without one the fire runs headless.
    */
-  async onHookFire(msg: RdMsgHook): Promise<{ accepted: boolean; reason?: string }> {
+  async onHookFire(msg: RdMsgHook, supplied?: HookPromptSupplement): Promise<{ accepted: boolean; reason?: string }> {
     if (msg.notice !== undefined) return this.postHookNotice(msg, msg.notice)
     const cleanup = codeHostThreadWorktreeCleanup(msg)
-    const deleted = githubDeletedHookEvent(msg)
+    // A deleted subject, or a delivery its host classified as nothing to do, completes without a turn.
+    const ignored = githubDeletedHookEvent(msg) ? 'deleted_event_ignored' : codeHostIgnoredDelivery(msg)
     // A lifecycle cleanup always addresses the stable GitHub thread session,
     // never an optional IM anchor configured for ordinary hook output.
-    const supplement = cleanup || deleted ? undefined : await codeHostPromptSupplement(msg, this.turnFinalHost)
-    const nmsg = buildHookMessage(cleanup || deleted ? { ...msg, target: undefined } : msg, randomUUID(), supplement)
+    const supplement =
+      cleanup || ignored ? undefined : (supplied ?? (await codeHostPromptSupplement(msg, this.turnFinalHost)))
+    const nmsg = buildHookMessage(cleanup || ignored ? { ...msg, target: undefined } : msg, randomUUID(), supplement)
     // A routed fire renders why it was chosen beside the event; it has no background rows to pick.
-    if (msg.routeSelection && !cleanup && !deleted)
+    if (msg.routeSelection && !cleanup && !ignored)
       nmsg.channelIntake = { seq: 0, backgroundSeqs: [], hookRoute: msg.routeSelection }
     const snapshot = hookSnapshot(msg)
     const hookContext: HookDispatchContext = {
@@ -309,7 +324,7 @@ export class GithubReviewOrchestrator {
       ...(snapshot ? { snapshot } : {}),
       ...pickCodeHostHookMembers(msg)
     }
-    if (cleanup || deleted) {
+    if (cleanup || ignored) {
       const key = sessionKey(nmsg.platform, nmsg.channel, nmsg.thread ?? nmsg.msgId, msg.agentId, nmsg.transportScope)
       const entry: QueueEntry = {
         agentId: msg.agentId,
@@ -325,7 +340,7 @@ export class GithubReviewOrchestrator {
       const persistence = await this.host.persistInbox(entry, `maintenance:${key}`, { required: true })
       if (persistence !== 'existing') {
         if (cleanup) void this.completeGithubThreadWorktreeCleanup(hookContext, key, cleanup, entry)
-        else await this.host.emitHookCompletion(hookContext, 'success', { reason: 'deleted_event_ignored' }, entry)
+        else await this.host.emitHookCompletion(hookContext, 'success', { reason: ignored }, entry)
       }
       return { accepted: true }
     }
