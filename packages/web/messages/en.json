@@ -350,7 +350,6 @@
       "close": "Close",
       "backTitle": "Back to all tasks",
       "coordinatorTitle": "Back to the coordinator",
-      "shrink": "Back into the side panel",
       "closeTask": "Close the task",
       "startedBy": "Started by the coordinator",
       "pageHint": "The coordinator reads this task’s summary, not each reply.",
@@ -956,9 +955,7 @@
         "closePanels": "Close panels",
         "loading": "Loading",
         "loadingDots": "Loading…",
-        "nothingToShow": "Nothing to show",
-        "expandPanel": "Expand the panel",
-        "collapsePanel": "Collapse the panel"
+        "nothingToShow": "Nothing to show"
       },
       "gitPanel": {
         "staged": "Staged",

@@ -350,7 +350,6 @@
       "close": "关闭",
       "backTitle": "回到全部任务",
       "coordinatorTitle": "回到协调会话",
-      "shrink": "收回到侧边栏",
       "closeTask": "关闭任务",
       "startedBy": "由协调会话发起",
       "pageHint": "协调会话只读这个任务的总结，不读每条回复。",
@@ -956,9 +955,7 @@
         "closePanels": "关闭面板",
         "loading": "加载中",
         "loadingDots": "加载中…",
-        "nothingToShow": "暂无内容",
-        "expandPanel": "放大面板",
-        "collapsePanel": "收起面板"
+        "nothingToShow": "暂无内容"
       },
       "gitPanel": {
         "staged": "已暂存",
