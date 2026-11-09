@@ -280,7 +280,12 @@ export function buildTurns(input: BuildTurnsInput): { turns: Turn[]; speakers: M
         }
         answeringThread = undefined
         const answeredIn = threadsView && threadShape ? replyToMessageThread(m, threadShape) : undefined
-        const step = { ...msgStep(m, toolSessionId, rowPlatform), ...(answeredIn ? { answeredIn } : {}) }
+        const step = {
+          ...msgStep(m, toolSessionId, rowPlatform),
+          ...(answeredIn ? { answeredIn } : {}),
+          // Only its work (not its prose) moves into the thread's panel: prose there is read from the thread itself.
+          ...(threadsView && m.thread && (m.kind || 'text').toLowerCase() !== 'text' ? { thread: m.thread } : {})
+        }
         last.steps.push(step)
         if (last.wake) last.wake = false
         if (!last.time && step.time) last.time = step.time

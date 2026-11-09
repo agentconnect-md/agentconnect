@@ -176,6 +176,8 @@ vi.mock('@/lib/org-context', () => ({
 }))
 
 import { ThreadPanel } from './ThreadPanel'
+import type { Turn } from '../session-turns'
+import { msgStep } from '../transcript-steps'
 import { renderWithIntl } from '@/i18n/test-utils'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
@@ -722,6 +724,45 @@ describe('ThreadPanel on a thread’s record (webchat-threads.md §6.2)', () => 
     // Another member writes through the task, in this thread of the several it may hold.
     expect(wire.calls).toContain('thread:ses_task:agent_1:try a warm cache:post-root')
     expect(wire.drafts.ses_task).toBe('')
+  })
+
+  it('draws the coordinator’s work on the thread from the main timeline under its root, above a divider and the replies', async () => {
+    wire.record = recordPage()
+    withTask = false
+    const work: Turn = {
+      kind: 'bot',
+      key: 'b-main:in:post-root',
+      agentName: 'deploy-bot',
+      agentId: 'agent_1',
+      model: '',
+      time: '',
+      steps: [{ ...msgStep(reply(4, 'agent_1', 'Opened a task to look into the cache.')), thread: 'post-root' }]
+    }
+    props = { record: ref, fromMain: [work] }
+    await render()
+    const panel = container.querySelector('[data-thread-panel="post-root"]')!
+    const order = [...panel.querySelectorAll('[data-thread-message], [data-thread-replies-divider]')].map((el) =>
+      el.hasAttribute('data-thread-replies-divider') ? 'divider' : el.textContent
+    )
+    expect(order).toHaveLength(5)
+    expect(order[0]).toContain('Why is the deploy slow?')
+    expect(order[1]).toContain('Opened a task to look into the cache.')
+    expect(order[2]).toBe('divider')
+    expect(order[3]).toContain('The cache misses on every build.')
+    expect(order[4]).toContain('Can you fix it?')
+    expect(panel.querySelector('[data-thread-replies-divider]')?.textContent).toBe('Replies')
+  })
+
+  it('draws no divider over a page that starts after the root', async () => {
+    wire.record = recordPage({
+      messages: [reply(3, 'user_lee', 'Can you fix it?', { senderName: 'Lee Park' }), reply(4, 'agent_1', 'On it.')],
+      nextCursor: 'c-older'
+    })
+    withTask = false
+    props = { record: ref }
+    await render()
+    expect(container.querySelectorAll('[data-thread-message]')).toHaveLength(2)
+    expect(container.querySelector('[data-thread-replies-divider]')).toBeNull()
   })
 
   it('shows a thread whose task the reader may not view as unreadable, with no content and no composer', async () => {

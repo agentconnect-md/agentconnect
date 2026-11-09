@@ -78,6 +78,7 @@ export function ThreadPanel({
   writer,
   focusComposer = false,
   onSummary,
+  fromMain = EMPTY,
   threadUrl
 }: {
   /** The coordinator's agent, which runs the task. */
@@ -119,6 +120,8 @@ export function ThreadPanel({
   focusComposer?: boolean
   /** Told each footer the record's reads return, so the timeline's footer keeps up with an open thread. */
   onSummary?: (summary: SessionThreadSummaryDto) => void
+  /** The coordinator's turns in this thread from the main timeline: its tool calls on the root, drawn above the replies. */
+  fromMain?: readonly Turn[]
   /** The thread's page on its platform, which the header links. */
   threadUrl?: string
 }) {
@@ -236,6 +239,43 @@ export function ThreadPanel({
       : turn
   )
   const [workOverride, setWorkOverride] = useState<ReadonlyMap<string, boolean>>(() => new Map())
+  // The root leads the thread; the coordinator's work on it from the main timeline sits under it, ahead of the replies.
+  const earlierUnread = fromRecord ? thread.hasEarlier : Boolean(session.page?.nextCursor)
+  const threadRoot = turns[0]?.kind === 'user' && !earlierUnread ? turns.slice(0, 1) : []
+  const threadReplies = turns.slice(threadRoot.length)
+  const renderTurn = (turn: Turn, i: number, list: readonly Turn[], sid: string | undefined) => (
+    // The session page's turn: its time line, then the person's bubble or the agent's block.
+    <div
+      key={turn.key}
+      data-thread-message={turn.kind === 'user' ? 'person' : 'agent'}
+      {...(turn.kind === 'bot' && turn.agentId && turn.agentId !== agentId
+        ? { 'data-thread-agent': turn.agentId }
+        : {})}
+      className="flex min-w-0 flex-col gap-[5px]"
+    >
+      {turn.time ? (
+        <div className="mono text-center text-[11px] leading-normal text-(--text-tertiary)">{turn.time}</div>
+      ) : null}
+      {turn.kind === 'user' ? (
+        <UserTurnView turn={turn} />
+      ) : (
+        <BotTurnView
+          turn={turn}
+          agentById={agents}
+          owner={agents.get(agentId)}
+          ownerRuntime={agentRuntime ?? ''}
+          sessionId={sid}
+          streaming={busy && list === turns && i === turns.length - 1}
+          workOpen={workPanelOpen(workOverride.get(turn.key))}
+          onToggleWork={() =>
+            setWorkOverride((prev) => toggleWorkPanel(prev, turn.key, workPanelOpen(prev.get(turn.key))))
+          }
+          promptMs={exchangePromptMs(list, i)}
+          answerElicitation={answerElicitation}
+        />
+      )}
+    </div>
+  )
 
   // A read that lands after the turn ends retires the live copy of what it now carries.
   const ownSessionId = ownThread?.sessionId
@@ -457,39 +497,21 @@ export function ThreadPanel({
           turns={turns}
           lastExchangeAt={lastExchangeAt}
         >
-          {turns.map((turn, i) => (
-            // The session page's turn: its time line, then the person's bubble or the agent's block.
+          {/* The root, then the coordinator's work on it from the main timeline, a divider, and the thread's replies below. */}
+          {threadRoot.map((turn, i) => renderTurn(turn, i, turns, holderId ?? record?.sessionId))}
+          {fromMain.map((turn, i) => renderTurn(turn, i, fromMain, record?.sessionId))}
+          {(threadRoot.length > 0 || fromMain.length > 0) && threadReplies.length > 0 ? (
             <div
-              key={turn.key}
-              data-thread-message={turn.kind === 'user' ? 'person' : 'agent'}
-              {...(turn.kind === 'bot' && turn.agentId && turn.agentId !== agentId
-                ? { 'data-thread-agent': turn.agentId }
-                : {})}
-              className="flex min-w-0 flex-col gap-[5px]"
+              data-thread-replies-divider=""
+              role="separator"
+              className="flex items-center gap-3 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary) before:h-px before:flex-1 before:bg-(--border-subtle) after:h-px after:flex-1 after:bg-(--border-subtle)"
             >
-              {turn.time ? (
-                <div className="mono text-center text-[11px] leading-normal text-(--text-tertiary)">{turn.time}</div>
-              ) : null}
-              {turn.kind === 'user' ? (
-                <UserTurnView turn={turn} />
-              ) : (
-                <BotTurnView
-                  turn={turn}
-                  agentById={agents}
-                  owner={agents.get(agentId)}
-                  ownerRuntime={agentRuntime ?? ''}
-                  sessionId={holderId ?? record?.sessionId}
-                  streaming={busy && i === turns.length - 1}
-                  workOpen={workPanelOpen(workOverride.get(turn.key))}
-                  onToggleWork={() =>
-                    setWorkOverride((prev) => toggleWorkPanel(prev, turn.key, workPanelOpen(prev.get(turn.key))))
-                  }
-                  promptMs={exchangePromptMs(turns, i)}
-                  answerElicitation={answerElicitation}
-                />
-              )}
+              {t('repliesDivider')}
             </div>
-          ))}
+          ) : null}
+          {threadReplies.map((turn, i) =>
+            renderTurn(turn, i + threadRoot.length, turns, holderId ?? record?.sessionId)
+          )}
           <UnplacedApprovals />
         </ApprovalsScope>
         {busy && !replying ? (

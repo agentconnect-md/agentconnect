@@ -177,6 +177,7 @@ import {
   threadAutoOpen,
   threadShapeOf,
   threadToAutoOpen,
+  splitThreadWork,
   WEBCHAT_THREADS_FEATURE,
   CONTINUATION_THREADS_FEATURE,
   type ThreadAutoOpen
@@ -274,6 +275,8 @@ function useHeaderPopover() {
   return { ref, open, setPresence, toggleTap, reset }
 }
 
+/** No thread holds any coordinator work outside the roots view. */
+const EMPTY_THREAD_WORK: ReadonlyMap<string, Turn[]> = new Map()
 /** Stable identity for a composer with no participants to ask — keeps useRuntimeCommands' memo still. */
 const EMPTY_ROSTER: ReadonlyArray<{ agentId: string; name: string }> = []
 const noOwnerIcon = () => undefined
@@ -2835,7 +2838,7 @@ export default function SessionDetailView() {
     return { id, name: crons.find((c) => c.id === id)?.name ?? null }
   }
 
-  const { turns, speakers } = buildTurns({
+  const { turns: builtTurns, speakers } = buildTurns({
     session,
     rows: wantTranscript ? (visibleMsgs ?? []) : undefined,
     liveSteps,
@@ -2857,6 +2860,10 @@ export default function SessionDetailView() {
     pictureOf: (identity) => memberPictureByIdentity.get(identity),
     sourceLabel: platName(sessionIntegration)
   })
+  // In the roots view the coordinator's work in a thread is drawn in that thread's panel, not on the main timeline.
+  const { main: turns, byThread: threadWork } = threadsView
+    ? splitThreadWork(builtTurns, session.agentId)
+    : { main: builtTurns, byThread: EMPTY_THREAD_WORK }
 
   // A coordinator's task cards, under the first turn of the coordinator after the message each task was opened for.
   const openedTaskCards = new Map<string, TaskLink[]>()
@@ -4653,6 +4660,7 @@ export default function SessionDetailView() {
           {(openThread || openRoot) && session.agentId ? (
             <ThreadPanel
               key={openRoot ?? openThread?.sessionId}
+              {...(openRoot && threadWork.get(openRoot) ? { fromMain: threadWork.get(openRoot) } : {})}
               agentId={session.agentId}
               agentName={session.agentName ?? ''}
               agentIcon={owner?.icon}

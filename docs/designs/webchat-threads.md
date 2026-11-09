@@ -319,8 +319,9 @@ As implemented (PR 6):
   task held the thread then; they are in the thread and in its reply count.
 - A coordinator turn answering a thread message carries a label, "In thread: <the root's first
   words>", that opens the thread. A turn answering a root has none.
-- A `replyToMessage` call shows in the main timeline as one line, "Answered in the thread", that
-  opens the thread; the answer's text is only in the thread, and the footer previews it.
+- The coordinator's work on a thread (its reasoning and tool calls, `replyToMessage` included) is
+  drawn in that thread's panel, not in the main timeline; the answer's text is only in the thread,
+  and the footer previews it.
 - Nothing is posted to the main timeline on a thread's behalf: there is no "also send to the
   conversation".
 - Hovering a root offers **Reply in thread** beside Copy; on a phone, a tap on the footer or a
@@ -335,10 +336,11 @@ As implemented (PR 11):
 - **A person's row with `thread`** is drawn as no bubble: it ends the turn before it, and the
   coordinator turn after it is labelled "In thread: <first words>" from the footer's `rootExcerpt`,
   else the root's own text. A root (a person's row whose `postId` is a UUID and that has no
-  `thread`) gets `ThreadFooter` under its bubble once a summary names it. The coordinator's turn rows
-  carry `thread` too, but stay in the main timeline.
-- **`replyToMessage`** is read off the coordinator's tool row (`rawInput.action`), and its line opens
-  the row's `thread`, else the thread of the message id it names.
+  `thread`) gets `ThreadFooter` under its bubble once a summary names it. The coordinator's prose
+  rows stay in the main timeline; its other rows with `thread` (reasoning, tools) leave it for that
+  thread's panel (`splitThreadWork`), a turn left with nothing dropped.
+- **`replyToMessage`** is read off the coordinator's tool row (`rawInput.action`); where the row has
+  no `thread`, its "Answered in the thread" line opens the thread of the message id it names.
 - **Live steps** carry `thread` (`SessionStep.thread`): the owner's message sent in a thread, and
   every frame and post the daemon stamps with one. The main timeline leaves them out; a coordinator
   turn answering such a message streams there unstamped and takes the label. The typing indicator
@@ -351,7 +353,8 @@ As implemented (PR 11):
 - The thread opens in the side panel, replacing `TaskThreadPanel` with a general `ThreadPanel`: the
   root at the top, then the thread's chat messages in order (people, the coordinator's answers,
   other agents) and the holding task's turns with their work folded as today, then a thread
-  composer. Coordinator turns are in the main timeline, not here.
+  composer. Under the root, the coordinator's work on the thread from the main timeline (§6.1); a
+  "Replies" divider then separates what came from the main timeline from the replies below it.
 - A thread a task holds shows the task's header as today: state, title, Stop, the task's runtime
   picker, its approvals, and a link to the task's own page. An unowned thread shows a plain header;
   the console offers no "make this a task" control, since opening a task is the coordinator's call.
@@ -456,8 +459,8 @@ A coordinator on Slack is drawn with the same components and rules as §6:
 
 - **Roots** are the channel roots the coordinator received since its coordinate began, read from the
   channel record. A `!new` at the root starts a new coordinator page; the old one keeps its roots.
-- **Coordinator turns** stay in the main timeline with the labels of §6.1; task reports to the
-  coordinator show there too.
+- **Coordinator turns** stay in the main timeline with the labels of §6.1, their work on a thread
+  drawn in its panel; task reports to the coordinator show there too.
 - **Thread footers** sit under their roots and count the Slack thread's record (§3): people, the
   coordinator's `replyToMessage`, the task's answers, other agents, observations included. A task
   that also holds a Code channel (auto-session-mode.md §6.8) shows the channel in its footer.
