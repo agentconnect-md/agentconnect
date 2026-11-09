@@ -63,6 +63,7 @@ let setPgInput: ReturnType<typeof usePlayground>['setPgInput']
 let getPgInput: ReturnType<typeof usePlayground>['getPgInput']
 let setPgImage: ReturnType<typeof usePlayground>['setPgImage']
 let getPgImage: ReturnType<typeof usePlayground>['getPgImage']
+let getPgFiles: ReturnType<typeof usePlayground>['getPgFiles']
 let openPlayground: ReturnType<typeof usePlayground>['openPlayground']
 let getPgQueue: ReturnType<typeof usePlayground>['getPgQueue']
 let pgCancelQueued: ReturnType<typeof usePlayground>['pgCancelQueued']
@@ -94,6 +95,7 @@ function Probe() {
   getPgInput = pg.getPgInput
   setPgImage = pg.setPgImage
   getPgImage = pg.getPgImage
+  getPgFiles = pg.getPgFiles
   openPlayground = pg.openPlayground
   getPgQueue = pg.getPgQueue
   pgCancelQueued = pg.pgCancelQueued
@@ -185,6 +187,7 @@ describe('Decision runtime startup', () => {
     await act(async () => {
       socket.readyState = 1
       socket.onopen?.()
+      socket.onmessage?.({ data: JSON.stringify({ type: 'ready' }) })
     })
     const { turnId } = JSON.parse(String(socket.send.mock.calls.at(-1)?.[0])) as { turnId: string }
     act(() => {
@@ -271,6 +274,7 @@ describe('Runtime changes before the first turn', () => {
     await act(async () => {
       socket.readyState = 1
       socket.onopen?.()
+      socket.onmessage?.({ data: JSON.stringify({ type: 'ready' }) })
     })
     const [turn, ...rest] = sent(socket)
     expect(rest).toEqual([])
@@ -478,6 +482,7 @@ describe('agent-initiated post frames', () => {
     await act(async () => {
       sock.readyState = 1
       sock.onopen?.()
+      sock.onmessage?.({ data: JSON.stringify({ type: 'ready' }) })
     })
     const frame = JSON.stringify({
       type: 'post',
@@ -519,6 +524,7 @@ describe('stream text delta batching', () => {
     await act(async () => {
       socket.readyState = 1
       socket.onopen?.()
+      socket.onmessage?.({ data: JSON.stringify({ type: 'ready' }) })
     })
     const turn = JSON.parse(String(socket.send.mock.calls.at(-1)?.[0])) as { turnId: string }
     return { socket, turnId: turn.turnId }
@@ -969,6 +975,7 @@ describe('reconnect after an unacked turn', () => {
     await act(async () => {
       first.readyState = 1
       first.onopen?.()
+      first.onmessage?.({ data: JSON.stringify({ type: 'ready' }) })
     })
     const turn = frames(first)[0] as { turnId: string; text: string }
     expect(turn).toMatchObject({ text: 'hello' })
@@ -1119,7 +1126,7 @@ describe('reconnect after an unacked turn', () => {
 
   // The relay mints the canonical post identity per received frame, so a re-sent multi-agent turn
   // partially admitted the first time would duplicate the user message on the rest of the roster.
-  it('never re-sends a multi-agent turn — those lanes resume as before', async () => {
+  it.each(['composer', 'relay'])('never re-sends a multi-agent turn with its roster from %s', async (source) => {
     ReconnectSocket.instances = []
     Reflect.set(globalThis, 'WebSocket', ReconnectSocket)
     const api = await import('@/lib/api')
@@ -1129,12 +1136,13 @@ describe('reconnect after an unacked turn', () => {
       { agentId: 'agent-2', name: 'two' }
     ]
     await act(async () => {
-      pgSend('s1', 'agent-1', 'hello both', 'c1', roster)
+      pgSend('s1', 'agent-1', 'hello both', 'c1', source === 'composer' ? roster : undefined)
     })
     const first = ReconnectSocket.instances[0]!
     await act(async () => {
       first.readyState = 1
       first.onopen?.()
+      first.onmessage?.({ data: JSON.stringify({ type: 'ready', participants: roster }) })
     })
     const turn = frames(first)[0] as { turnId: string }
     const second = await dropAndReconnect(first)
@@ -1205,6 +1213,7 @@ describe('a stream whose frames a relay gap dropped', () => {
     await act(async () => {
       socket.readyState = 1
       socket.onopen?.()
+      socket.onmessage?.({ data: JSON.stringify({ type: 'ready' }) })
     })
     const { turnId } = frames(socket)[0] as { turnId: string }
     await deliver(socket, { type: 'ack', ack: { accepted: true, turnId, agentId: 'agent-1' } })
@@ -1576,6 +1585,7 @@ describe('in-band elicitation cards', () => {
     await act(async () => {
       socket.readyState = 1
       socket.onopen?.()
+      socket.onmessage?.({ data: JSON.stringify({ type: 'ready' }) })
     })
     const turn = JSON.parse(String(socket.send.mock.calls.at(-1)?.[0])) as { turnId: string }
     return { socket, turnId: turn.turnId }
@@ -1754,6 +1764,7 @@ describe('shared image cards', () => {
     await act(async () => {
       socket.readyState = 1
       socket.onopen?.()
+      socket.onmessage?.({ data: JSON.stringify({ type: 'ready' }) })
     })
     const turn = JSON.parse(String(socket.send.mock.calls.at(-1)?.[0])) as { turnId: string }
     return { socket, turnId: turn.turnId }
@@ -1766,7 +1777,7 @@ describe('shared image cards', () => {
 
   const POST = '33333333-3333-4333-8333-333333333333'
   const ATT = '44444444-4444-4444-8444-444444444444'
-  const attachment = { name: 'chart.png', mimeType: 'image/png', data: 'AAAA' }
+  const attachment = { name: 'chart.png', mimeType: 'image/png' as const, data: 'AAAA' }
   const cache = (status: string) => ({
     kind: 'cache',
     attachmentId: ATT,
@@ -1784,6 +1795,55 @@ describe('shared image cards', () => {
     original: cache('pending'),
     revision: 0
   }
+
+  it.each([true, false])('waits for relay capabilities before sending an upload (supported: %s)', async (supported) => {
+    ImageSocket.instances = []
+    Reflect.set(globalThis, 'WebSocket', ImageSocket)
+    const api = await import('@/lib/api')
+    vi.mocked(api.webchatWsUrl).mockResolvedValue('wss://relay.test/ws')
+    const file = {
+      uploadId: ATT,
+      name: 'chart.png',
+      mimeType: 'image/png',
+      size: 3,
+      sha256: 'A'.repeat(43) + '=',
+      preview: attachment
+    }
+    await act(async () => {
+      pgSend('s1', 'agent-1', 'Inspect this chart', 'c1', undefined, undefined, undefined, [file])
+    })
+    const socket = ImageSocket.instances[0]!
+    await act(async () => {
+      socket.readyState = 1
+      socket.onopen?.()
+    })
+    expect(socket.send).not.toHaveBeenCalled()
+    expect(isPgBusy('s1')).toBe(true)
+    expect(getPgInput('s1')).toBe('')
+    expect(getLiveSteps('s1').some((step) => step.kind === 'done')).toBe(false)
+
+    await act(async () => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'ready',
+          conversationId: 'c1',
+          features: supported ? ['webchat-upload-previews-v1'] : []
+        })
+      })
+    })
+    if (supported) {
+      expect(socket.send).toHaveBeenCalledTimes(1)
+      expect(JSON.parse(String(socket.send.mock.calls[0]?.[0]))).toMatchObject({
+        text: 'Inspect this chart',
+        files: [file]
+      })
+    } else {
+      expect(socket.send).not.toHaveBeenCalled()
+      expect(isPgBusy('s1')).toBe(false)
+      expect(getPgInput('s1')).toBe('Inspect this chart')
+      expect(getPgFiles('s1')).toMatchObject([{ status: 'ready', attachment: file }])
+    }
+  })
 
   it('splits the text around the card and keeps one card when the post copy arrives too', async () => {
     const { socket, turnId } = await openStream()
@@ -1895,6 +1955,7 @@ describe('mid-turn steering', () => {
     await act(async () => {
       socket.readyState = 1
       socket.onopen?.()
+      socket.onmessage?.({ data: JSON.stringify({ type: 'ready' }) })
     })
     const turn = JSON.parse(String(socket.send.mock.calls.at(-1)?.[0])) as { turnId: string }
     act(() => {
@@ -2373,6 +2434,7 @@ describe('mid-turn steering', () => {
     await act(async () => {
       socket.readyState = 1
       socket.onopen?.()
+      socket.onmessage?.({ data: JSON.stringify({ type: 'ready' }) })
     })
     await act(async () => {
       expect(pgSend('s1', 'agent-1', 'queued as before', 'c1')).toBe(true)
@@ -2408,24 +2470,36 @@ describe('a dial that dies before the turn reaches the socket', () => {
     vi.mocked(api.webchatWsUrl).mockResolvedValue('wss://relay.test/ws')
   })
 
-  it('rebuilds once and puts the SAME turn on the fresh socket', async () => {
-    await act(async () => {
-      pgSend('s1', 'agent-1', 'hello')
-    })
-    await act(async () => {
-      DyingSocket.instances[0]!.onerror?.({})
-    })
-    await settle()
-    expect(DyingSocket.instances).toHaveLength(2)
-    const live = DyingSocket.instances[1]!
-    await act(async () => {
-      live.readyState = 1
-      live.onopen?.()
-    })
-    const turnId = getLiveSteps('s1').find((s) => s.text === 'hello')?.turnId
-    expect(JSON.parse(String(live.send.mock.calls[0]?.[0]))).toMatchObject({ text: 'hello', turnId })
-    expect(getLiveSteps('s1').some((s) => String(s.text).includes('couldn’t connect to the chat server'))).toBe(false)
-  })
+  it.each(['error', 'close'] as const)(
+    'rebuilds once after %s and puts the SAME turn on the fresh socket',
+    async (event) => {
+      await act(async () => {
+        pgSend('s1', 'agent-1', 'hello')
+      })
+      await act(async () => {
+        const socket = DyingSocket.instances[0]!
+        if (event === 'error') socket.onerror?.({})
+        else {
+          socket.readyState = 1
+          socket.onopen?.()
+          socket.readyState = 3
+          socket.onclose?.()
+        }
+      })
+      await settle()
+      expect(DyingSocket.instances).toHaveLength(2)
+      expect(isPgBusy('s1')).toBe(true)
+      const live = DyingSocket.instances[1]!
+      await act(async () => {
+        live.readyState = 1
+        live.onopen?.()
+        live.onmessage?.({ data: JSON.stringify({ type: 'ready' }) })
+      })
+      const turnId = getLiveSteps('s1').find((s) => s.text === 'hello')?.turnId
+      expect(JSON.parse(String(live.send.mock.calls[0]?.[0]))).toMatchObject({ text: 'hello', turnId })
+      expect(getLiveSteps('s1').some((s) => String(s.text).includes('couldn’t connect to the chat server'))).toBe(false)
+    }
+  )
 
   it('reports the turn unsent when the rebuilt dial dies too', async () => {
     await act(async () => {
@@ -2480,6 +2554,7 @@ describe('MCP App card lifetime (webchat-mcp-apps.md §7.3)', () => {
     await act(async () => {
       socket.readyState = 1
       socket.onopen?.()
+      socket.onmessage?.({ data: JSON.stringify({ type: 'ready' }) })
     })
     const turn = JSON.parse(String(socket.send.mock.calls.at(-1)?.[0])) as { turnId: string }
     return { socket, turnId: turn.turnId }
@@ -2682,9 +2757,6 @@ describe('a continuation lane retargeted to another member session', () => {
     await act(async () => {
       first!.readyState = 1
       first!.onopen?.()
-    })
-    const turnId = (JSON.parse(String(first!.send.mock.calls.at(-1)?.[0])) as { turnId: string }).turnId
-    act(() => {
       first!.onmessage?.({
         data: JSON.stringify({
           type: 'ready',
@@ -2692,6 +2764,9 @@ describe('a continuation lane retargeted to another member session', () => {
           participants: [{ agentId: 'agent-architect', primary: true }]
         })
       })
+    })
+    const turnId = (JSON.parse(String(first!.send.mock.calls.at(-1)?.[0])) as { turnId: string }).turnId
+    act(() => {
       first!.onmessage?.({
         data: JSON.stringify({ type: 'done', done: { turnId, agentId: 'agent-architect', lastIndex: -1 } })
       })
@@ -2701,6 +2776,12 @@ describe('a continuation lane retargeted to another member session', () => {
     act(() => markSessionTarget('s-architect', 's-review'))
     await act(async () => {
       pgSend('s-architect', 'agent-review', 'second')
+    })
+    await act(async () => {
+      const second = TargetSocket.instances[1]!
+      second.readyState = 1
+      second.onopen?.()
+      second.onmessage?.({ data: JSON.stringify({ type: 'ready' }) })
     })
 
     // A lane still keyed to the previous socket's roster would wait on an agent this socket never reaches.
@@ -2749,6 +2830,7 @@ describe('messages in a coordinator conversation’s threads (webchat-threads.md
     await act(async () => {
       socket.readyState = 1
       socket.onopen?.()
+      socket.onmessage?.({ data: JSON.stringify({ type: 'ready' }) })
     })
     return socket
   }
@@ -2851,6 +2933,7 @@ describe('messages in a coordinator conversation’s threads (webchat-threads.md
     await act(async () => {
       socket.readyState = 1
       socket.onopen?.()
+      socket.onmessage?.({ data: JSON.stringify({ type: 'ready' }) })
     })
     expect(frames(socket).at(-1)).toMatchObject({ text: 'try a warm cache', thread: ROOT })
     expect(getLiveSteps('ses_task')[0]).not.toHaveProperty('thread')
@@ -2868,6 +2951,7 @@ describe('messages in a coordinator conversation’s threads (webchat-threads.md
     await act(async () => {
       socket.readyState = 1
       socket.onopen?.()
+      socket.onmessage?.({ data: JSON.stringify({ type: 'ready' }) })
     })
     expect(frames(socket).at(-1)).toMatchObject({ text: 'and the cache?', thread: TS })
     expect(getLiveSteps('ses_coordinator')[0]).toMatchObject({ kind: 'msg', thread: TS })
