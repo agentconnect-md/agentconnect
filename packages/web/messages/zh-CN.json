@@ -355,7 +355,6 @@
       "coordinatorTitle": "回到协调会话",
       "closeTask": "关闭任务",
       "startedBy": "由协调会话发起",
-      "pageHint": "协调会话只读这个任务的总结，不读每条回复。",
       "thread": "会话串",
       "openThread": "打开会话串",
       "hiddenTask": "你无法打开的任务",
