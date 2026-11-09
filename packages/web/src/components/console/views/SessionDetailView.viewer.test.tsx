@@ -508,7 +508,7 @@ it.each(['talk', 'approve', 'settings'] as const)(
     wire.steps = []
     wire.runtimeSession = { runtime: 'claude', model: 'sonnet', effort: 'high', runtimePending: true }
     await render()
-    const details = () => container?.querySelector('[role="tooltip"]')?.textContent ?? ''
+    const details = () => container?.querySelector('[role="dialog"][aria-label="Session details"]')?.textContent ?? ''
     const effort = () => document.querySelector('select[aria-label="Effort"]')
     const approval = () => document.querySelector('select[aria-label="Approval"]')
     expect(container?.querySelector('[aria-label="Model"]')?.textContent).toBe('By decision')
@@ -549,7 +549,9 @@ it.each(['talk', 'approve', 'settings'] as const)(
     } else {
       expect(effort()).toBeNull()
       expect(approval()).toBeNull()
-      expect(document.querySelector('[role="dialog"]')?.textContent).toContain('Runtime changes are disabled')
+      expect(document.querySelector('[role="dialog"][aria-label="Model"]')?.textContent).toContain(
+        'Runtime changes are disabled'
+      )
     }
   }
 )
@@ -1519,7 +1521,7 @@ describe('the Tasks tab’s Delegated group', () => {
       await openTab('tasks')
       // The sheet labels only the active tab, so this one carries its name for screen readers alone while inactive.
       expect(container?.querySelector('[data-dock-tab="tasks"]')?.textContent).toContain('Tasks')
-      expect(container?.querySelector('[role="dialog"]')?.querySelector('[data-subsessions-panel]')).not.toBeNull()
+      expect(container?.querySelector('[data-subsessions-panel]')?.closest('[role="dialog"]')).not.toBeNull()
       const panel = container?.querySelector('[data-subsessions-panel]')
       expect(panel?.querySelector('button[aria-label="Stop"]')).not.toBeNull()
     } finally {

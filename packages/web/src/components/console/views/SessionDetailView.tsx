@@ -3575,17 +3575,6 @@ export default function SessionDetailView() {
                     </span>
                   )
                 ) : null}
-                {session.coordinator ? (
-                  <span
-                    data-header-coordinator=""
-                    role="img"
-                    className={HEADER_ICON_BTN}
-                    title={t('coordinatorTip')}
-                    aria-label={t('coordinatorTip')}
-                  >
-                    <Icon name="network" size={15} />
-                  </span>
-                ) : null}
                 {session.threadUrl ? (
                   <a
                     data-header-place=""
@@ -3610,6 +3599,17 @@ export default function SessionDetailView() {
                 )}
               </div>
               <span className="flex-1" />
+              {session.coordinator ? (
+                <span
+                  data-header-coordinator=""
+                  role="img"
+                  className={HEADER_ICON_BTN}
+                  title={t('coordinatorTip')}
+                  aria-label={t('coordinatorTip')}
+                >
+                  <Icon name="network" size={15} />
+                </span>
+              ) : null}
               <HeaderPeople
                 agents={headerFocusOptions}
                 focusAgentId={headerFocusAgentId}
@@ -3719,7 +3719,8 @@ export default function SessionDetailView() {
                   data-header-details=""
                   className={`${HEADER_ICON_BTN} cursor-pointer border-0 bg-transparent focus-visible:outline-none focus-visible:shadow-(--focus-ring)`}
                   aria-label={t('details')}
-                  aria-describedby={detailTooltipId}
+                  aria-haspopup="dialog"
+                  aria-controls={detailTooltipId}
                   aria-expanded={detailOpen}
                   onClick={toggleDetailTap}
                 >
@@ -3727,7 +3728,8 @@ export default function SessionDetailView() {
                 </button>
                 <div
                   id={detailTooltipId}
-                  role="tooltip"
+                  role="dialog"
+                  aria-label={t('sessionDetails')}
                   className={`absolute top-full right-4 left-4 z-50 pt-[5px] transition-[opacity,visibility] desktop:right-0 desktop:left-auto desktop:w-max ${
                     detailOpen ? 'pointer-events-auto visible opacity-100' : 'pointer-events-none invisible opacity-0'
                   }`}

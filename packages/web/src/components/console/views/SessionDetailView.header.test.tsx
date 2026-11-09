@@ -386,7 +386,9 @@ describe('the one-line session header', () => {
       details.parentElement!.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, relatedTarget: document.body }))
     })
     expect(requests.getAttribute('aria-expanded')).toBe('false')
-    expect(document.getElementById(details.getAttribute('aria-describedby')!)?.className).not.toContain('invisible')
+    const panel = document.getElementById(details.getAttribute('aria-controls')!)
+    expect(panel?.getAttribute('role')).toBe('dialog')
+    expect(panel?.className).not.toContain('invisible')
   })
 
   it.each(['details', 'requests'])('toggles %s by tap and closes it on an outside press', async (name) => {
