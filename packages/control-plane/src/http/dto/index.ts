@@ -3989,7 +3989,7 @@ export const SharedImageOriginalDto = SharedImageResolveOk
 
 const SessionThreadAuthorDto = z.object({ sender: z.string(), senderName: z.string().optional() })
 
-/** One thread footer (webchat-threads.md §5.3); `readable` false ⇒ a task the caller may not view holds it, so its excerpts and task title are left out (§7.1). */
+/** One thread footer (webchat-threads.md §5.3); `readable` false ⇒ a task the caller may not view holds it, or one still `starting`, so its excerpts and task title are left out (§7.1). */
 export const SessionThreadSummaryDto = z.object({
   rootId: z.string(),
   rootExcerpt: z.string().optional(),
@@ -4001,7 +4001,8 @@ export const SessionThreadSummaryDto = z.object({
     .object({
       sessionId: z.string().optional(),
       title: z.string().optional(),
-      state: z.enum(['open', 'done', 'failed'])
+      state: z.enum(['open', 'done', 'failed']),
+      starting: z.literal(true).optional() // no session row for the task yet: unread because it is starting, not withheld
     })
     .optional(),
   running: z.boolean().optional(),

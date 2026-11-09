@@ -338,4 +338,19 @@ describe('ThreadFooter', () => {
     expect(footer.querySelector('[data-thread-preview]')).toBeNull()
     expect(footer.querySelector('a, button')).toBeNull()
   })
+
+  it('shows a task whose session does not exist yet as starting, not as one you can’t open', async () => {
+    const starting = summary({
+      rootExcerpt: undefined,
+      task: { state: 'open', starting: true },
+      readable: false
+    })
+    await render(<ThreadFooter footer={footerOfSummary(starting)} rootId="post-root" onOpen={vi.fn()} />)
+    const footer = container.querySelector('[data-thread-footer="post-root"]')!
+    expect(footer.hasAttribute('data-thread-starting')).toBe(true)
+    expect(footer.hasAttribute('data-thread-unreadable')).toBe(false)
+    expect(footer.textContent).toContain('Starting the task…')
+    expect(footer.textContent).not.toContain('A task you can’t open')
+    expect(footer.querySelector('a, button')).toBeNull()
+  })
 })

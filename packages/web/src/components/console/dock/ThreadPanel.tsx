@@ -483,10 +483,10 @@ export function ThreadPanel({
         ) : null}
         {unreadable ? (
           <span
-            data-thread-unreadable=""
+            {...(summary?.task?.starting ? { 'data-thread-starting': '' } : { 'data-thread-unreadable': '' })}
             className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)"
           >
-            {t('unreadable')}
+            {summary?.task?.starting ? t('starting') : t('unreadable')}
           </span>
         ) : null}
         {fromRecord && thread.missing ? (
