@@ -610,9 +610,9 @@ describe('DreamRunner pipeline', () => {
     const adoptedRun = async (): Promise<string> => {
       const started = await runner.start('a1', { trigger: 'manual' })
       await settle(store, started.dreamId)
-      for (let i = 0; i < 100 && store.dreams.get(started.dreamId)?.status !== 'adopted'; i++) {
-        await new Promise((r) => setTimeout(r, 5))
-      }
+      // `adopted` lands before the staging trim; the job stays in flight until auto-adoption has finished.
+      const deadline = Date.now() + SETTLE_DEADLINE_MS
+      while (runner.inFlight('a1') && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5))
       expect(store.dreams.get(started.dreamId)?.status).toBe('adopted')
       return started.dreamId
     }
