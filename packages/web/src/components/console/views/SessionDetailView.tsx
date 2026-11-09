@@ -1077,6 +1077,8 @@ export default function SessionDetailView() {
   // The drop handler is bound below the view's early returns, so the hook reaches it through a ref.
   const onDropFilesRef = useRef<(files: File[]) => void>(() => {})
   const fileDrop = useFileDrop((files) => onDropFilesRef.current(files))
+  // The drop target starts under the header, which rises out of the drop zone on desktop.
+  const [dropHeader, setDropHeader] = useState<HTMLDivElement | null>(null)
 
   const pgSession = getPgSession(id)
   const localSession =
@@ -3468,7 +3470,9 @@ export default function SessionDetailView() {
         {...(dropEnabled ? fileDrop.handlers : {})}
         className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col desktop:before:pointer-events-none desktop:before:absolute desktop:before:top-[17px] desktop:before:right-0 desktop:before:-left-[30px] desktop:before:h-px desktop:before:bg-(--border-subtle) desktop:max-wide:before:-right-[30px]"
       >
-        {dropEnabled && fileDrop.over ? <FileDropOverlay /> : null}
+        {dropEnabled && fileDrop.over ? (
+          <FileDropOverlay top={dropHeader ? dropHeader.offsetTop + dropHeader.offsetHeight : 0} />
+        ) : null}
         {/* Only a transcript on screen is read: the file viewer hides it, so nothing is recorded meanwhile. */}
         {!viewerOpen ? <SeenRecorder newestMs={newestTurnMs} markSeen={seen.markSeen} /> : null}
         {!viewerOpen ? <TranscriptMap turns={mapTurns} onJump={() => releaseFollow()} /> : null}
@@ -3476,7 +3480,7 @@ export default function SessionDetailView() {
         transcript below. `flex-none`; no `sticky`, no bottom `margin` — the meta row's border-b is
         the flush divider with the transcript, with no blank gap under the line. */}
         {/* On desktop the header rises into `.content`'s top padding, so its one line is level with the nav's brand row. */}
-        <div className="mx-auto w-full min-w-0 max-w-[880px] flex-none desktop:-mt-[34px]">
+        <div ref={setDropHeader} className="mx-auto w-full min-w-0 max-w-[880px] flex-none desktop:-mt-[34px]">
           <div>
             {/* A task's own page names the session it belongs to and leads back there; its tool calls stay in its transcript. */}
             {taskPage && currentSessionDetail ? (

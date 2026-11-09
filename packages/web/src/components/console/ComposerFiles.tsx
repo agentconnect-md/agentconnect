@@ -115,12 +115,14 @@ export function useFileDrop(onFiles: (files: File[]) => void) {
 }
 
 /** The dashed drop target and scrim shown over a drop zone while files are dragged across it. */
-export function FileDropOverlay() {
+export function FileDropOverlay({ top = 0 }: { top?: number }) {
   const t = useTranslations('Sessions.detail')
   return (
     <div
       aria-hidden
       data-file-drop=""
+      // The measured top keeps the target clear of chrome above the drop zone (STYLE.md rule 8).
+      style={top ? { top } : undefined}
       className="pointer-events-none absolute inset-0 z-50 flex bg-(--surface-app)/80 p-3 backdrop-blur-[2px]"
     >
       <div className="flex flex-1 flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-(--brand) bg-(--brand-soft)/50">
@@ -155,20 +157,42 @@ export function fileExtension(name: string, mimeType?: string): string {
   return mimeType?.split('/')[1]?.split(/[.+;-]/)[0] || 'file'
 }
 
-/** Click-to-enlarge view of an attached image. */
+/** Click-to-enlarge view of an attached image; it fades and scales in, and out again before unmounting. */
 function ImageLightbox({ src, name, onClose }: { src: string; name: string; onClose: () => void }) {
+  const t = useTranslations('Common.actions')
+  const [closing, setClosing] = useState(false)
+  const close = (): void => {
+    if (closing) return
+    setClosing(true)
+    setTimeout(onClose, LIGHTBOX_MS) // ponytail: a timer, not transitionend, so reduced motion still closes
+  }
   return createPortal(
-    <Scrim onEscape={onClose} onClick={onClose}>
+    <Scrim
+      onEscape={close}
+      onClick={close}
+      className={`transition-opacity duration-200 starting:opacity-0 motion-reduce:transition-none ${closing ? 'opacity-0' : ''}`}
+    >
+      <button
+        type="button"
+        className="iconbtn absolute top-4 right-4 h-9 w-9 rounded-full bg-(--surface-card) shadow-(--shadow-md)"
+        aria-label={t('close')}
+        title={t('close')}
+        onClick={close}
+      >
+        <Icon name="x" size={18} />
+      </button>
       <img
         src={src}
         alt={name}
         title={name}
-        className="max-h-full max-w-full cursor-zoom-out rounded-md object-contain shadow-(--shadow-xl)"
+        className={`max-h-full max-w-full cursor-zoom-out rounded-md bg-(--surface-card) object-contain shadow-(--shadow-xl) transition-transform duration-200 starting:scale-95 motion-reduce:transition-none ${closing ? 'scale-95' : ''}`}
       />
     </Scrim>,
     document.body
   )
 }
+
+const LIGHTBOX_MS = 200
 
 function Card({ card, removeLabel, onRemove }: { card: AttachmentCard; removeLabel?: string; onRemove?: () => void }) {
   const [open, setOpen] = useState(false)
@@ -183,7 +207,7 @@ function Card({ card, removeLabel, onRemove }: { card: AttachmentCard; removeLab
     <div
       data-attachment={src ? 'image' : 'file'}
       {...(card.status ? { 'data-composer-file': card.status } : {})}
-      title={card.error ?? (card.mimeType ? `${card.name} (${card.mimeType})` : card.name)}
+      title={card.error ?? card.name}
       className={`${CARD} ${tone} ${src ? '' : 'flex flex-col justify-between p-3'}`}
     >
       {src ? (
