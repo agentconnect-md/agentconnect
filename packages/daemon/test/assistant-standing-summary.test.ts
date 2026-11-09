@@ -463,7 +463,7 @@ describe('a task’s summary reminder (auto-session-mode.md §6.7)', () => {
   const parentKey = sessionKey('slack', 'C0GENERAL', 'append:1', 'bot-a', 'slack:scope-1')
   const taskKey = sessionKey('slack', 'C0GENERAL', 'subsession:d-1', 'bot-a', 'slack:scope-1')
 
-  it('counts each turn, reminds from the second turn with no summary, and again once one is 5 turns old', async () => {
+  it('asks for a summary before the first reply, then reminds when missing or 5 turns old', async () => {
     const s = await open()
     const index = s.assistantSubsessions
     await index.open({
@@ -473,8 +473,8 @@ describe('a task’s summary reminder (auto-session-mode.md §6.7)', () => {
       parentSessionKey: parentKey
     })
     const turn = () => taskSummaryReminder(index, 'bot-a', taskKey)
-    // The first turn is asked by its standing context; the second, still without a summary, is reminded.
-    expect(await turn()).toBeUndefined()
+    // The first turn gets a reply deadline; later turns keep the missing-summary reminder.
+    expect(await turn()).toContain('Before your final response in this first turn, call updateTask')
     expect(await turn()).toContain('This task has no summary yet. Call updateTask')
     expect(await turn()).toContain('This task has no summary yet.')
     await index.setSummary('bot-a', taskKey, { summary: 'Scope: x. Status: in progress. Next: y.', now: 1 })
