@@ -55,6 +55,7 @@ import {
   parseDreamProposal,
   storeDigest,
   type DreamProposal,
+  type DreamRevision,
   type DreamTranscriptSource
 } from './dreamer.js'
 import { acceptedDreamSkillSummaries, publishAcceptedDreamSkill } from '../skills/dream-skills.js'
@@ -77,10 +78,10 @@ import { inspectLocalSkillSource } from '../skills/skill-source-snapshot.js'
  * injected `extract`), and it never logs memory or transcript bodies.
  */
 
-/** Unknown agent / dream / staged path → `BAD_PAYLOAD` on the wire. */
 /** The checked `revisions` list beside a dream's staged store, kept as the dream's audit log. */
 const DREAM_REVISIONS_FILE = 'revisions.json'
 
+/** Unknown agent / dream / staged path → `BAD_PAYLOAD` on the wire. */
 export class DreamViolationError extends Error {
   constructor(message: string) {
     super(message)
@@ -1365,6 +1366,7 @@ export class DreamRunner {
           await this.deps.store.updateDream(adopted)
           this.emitLifecycle({ type: 'memory.dream.adopted', dream: adopted })
           const superseded = await this.supersedeCompletedDreams(agentId, dreamId, adoptedAt)
+          await this.trimAdoptedStaging(agentId, dreamId)
           this.deps.log.info(
             `dream ${dreamId} adopted for agent ${agentId} (${stagedFiles.length} files, ${superseded} competing proposal(s) superseded)`
           )
@@ -1537,6 +1539,25 @@ export class DreamRunner {
       })
     }
     return candidates.length
+  }
+
+  /** After an adoption only its `revisions.json` explains the change: drop its inputs and staged store (now live),
+   *  and every earlier adoption's staging, so one revisions log is kept at a time. Best effort, never fails adoption. */
+  private async trimAdoptedStaging(agentId: string, adoptedDreamId: string): Promise<void> {
+    try {
+      const { staging } = this.portsFor(agentId)
+      const base = this.dreamDir(agentId, adoptedDreamId)
+      for (const part of ['input', MEMORY_DIRNAME, LEGACY_STAGED_DIRNAME]) await staging.rm(join(base, part))
+      for (const entry of await staging.readdir(DREAMS_DIRNAME)) {
+        if (entry.kind !== 'dir' || entry.name === adoptedDreamId) continue
+        const earlier = await this.deps.store.getDream(agentId, entry.name)
+        if (earlier?.status === 'adopted') await this.removeStoreStaging(agentId, earlier)
+      }
+    } catch (err) {
+      this.deps.log.warn(
+        `dream ${adoptedDreamId}: could not trim adopted staging (${err instanceof Error ? err.message : 'unknown'})`
+      )
+    }
   }
 
   /** Skills have an INDEPENDENT review lifecycle (design §7): removing a store
@@ -1815,6 +1836,27 @@ export class DreamRunner {
     const stagedDir = await resolveStagedDir(staging, this.dreamDir(agentId, dreamId))
     const file = await staging.readFile(join(stagedDir, path))
     return file ? { content: file.content, mtime: file.mtime } : null
+  }
+
+  /** The dream's checked revisions log, or null when it kept none (an older dream, or one past the next adoption). */
+  async stagedRevisions(agentId: string, dreamId: string): Promise<DreamRevision[] | null> {
+    this.assertStagedContentAllowed()
+    await this.getDream(agentId, dreamId)
+    const file = await this.portsFor(agentId).staging.readFile(
+      join(this.dreamDir(agentId, dreamId), DREAM_REVISIONS_FILE)
+    )
+    if (!file) return null
+    try {
+      const parsed: unknown = JSON.parse(file.content)
+      if (!Array.isArray(parsed)) return null
+      // The file is the daemon's own output; keep only rows still shaped like one.
+      return parsed.filter(
+        (row): row is DreamRevision =>
+          typeof row === 'object' && row !== null && Array.isArray(row.sessionIds) && Array.isArray(row.into)
+      )
+    } catch {
+      return null
+    }
   }
 
   /** Review token for the staged memory-store proposal: the digest the console

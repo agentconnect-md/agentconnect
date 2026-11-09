@@ -357,6 +357,7 @@ export type MemoryRecordHistoryPage = z.infer<typeof MemoryRecordHistoryPage>
  * - `memory/dream/list|get`: job metadata for the history view.
  * - `memory/dream/files` + `memory/dream/file/read`: browse the STAGED output
  *   tree (byte-sliced like `memory/read`; same UTF-8-boundary semantics).
+ * - `memory/dream/revisions`: the checked revisions log, an explanation beside the diff.
  * - `memory/dream/skill/accept|dismiss`: review actions on mined skill
  *   candidates (skills are never auto-adopted; see the design §7).
  */
@@ -526,6 +527,39 @@ export const DreamFilesPage = z
   })
   .strict()
 export type DreamFilesPage = z.infer<typeof DreamFilesPage>
+
+/** Daemon feature: answers `memory/dream/revisions`; the CP answers `exists:false` for a daemon without it. */
+export const MEMORY_DREAM_REVISIONS_FEATURE = 'memory-dream-revisions-v1'
+
+/** One checked revision a dream listed (design §5): model-authored audit text, proxied and never persisted by the CP. */
+export const DreamRevision = z
+  .object({
+    path: z.string(),
+    change: z.enum(['corrected', 'dropped', 'moved']),
+    why: z.enum(['contradicted', 'transient', 'expired', 'secret']).optional(),
+    note: z.string().max(512),
+    sessionIds: z.array(z.string()).max(64),
+    into: z.array(z.string()).max(64),
+    /** Set when the daemon did not apply the entry (uncited or inconsistent); the file was kept. */
+    problem: z.string().optional()
+  })
+  .strict()
+export type DreamRevision = z.infer<typeof DreamRevision>
+
+/** C→D REQ: the checked revisions one dream listed, kept beside its staging until the next adoption. */
+export const DreamRevisionsReq = DreamCancelReq
+export type DreamRevisionsReq = z.infer<typeof DreamRevisionsReq>
+
+/** D→C REP (corr = the req id): `exists:false` when the dream kept no revisions log. */
+export const DreamRevisionsPage = z
+  .object({
+    agentId: z.string(),
+    dreamId: z.string(),
+    exists: z.boolean(),
+    revisions: z.array(DreamRevision).max(256)
+  })
+  .strict()
+export type DreamRevisionsPage = z.infer<typeof DreamRevisionsPage>
 
 /** C→D REQ: read one byte slice of a STAGED dream file (semantics of `memory/read`). */
 export const DreamFileReadReq = z

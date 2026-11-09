@@ -5,6 +5,7 @@ import type {
   DreamDiscardReq,
   DreamFileReadReq,
   DreamFilesReq,
+  DreamRevisionsReq,
   DreamGetReq,
   DreamListReq,
   DreamSkillReadReq,
@@ -72,6 +73,13 @@ export const dreamFiles: ControlHandler<DreamControlDeps> = (frame: AnyFrame, de
     .files(frame.payload as DreamFilesReq)
     .then((page) => wire.reply(frame, 'memory/dream/files/page', page))
     .catch((err) => dreamError(wire, frame.id, 'memory/dream/files', err))
+}
+
+export const dreamRevisions: ControlHandler<DreamControlDeps> = (frame: AnyFrame, deps, wire) => {
+  deps.dreamReader
+    .revisions(frame.payload as DreamRevisionsReq)
+    .then((page) => wire.reply(frame, 'memory/dream/revisions/page', page))
+    .catch((err) => dreamError(wire, frame.id, 'memory/dream/revisions', err))
 }
 
 export const dreamFileRead: ControlHandler<DreamControlDeps> = (frame: AnyFrame, deps, wire) => {

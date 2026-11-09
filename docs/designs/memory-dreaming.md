@@ -318,7 +318,8 @@ interface DreamRecord {
    to run unattended, and nobody is expected to review it. The checked list is
    staged as `memory-dreams/<dreamId>/revisions.json` as the dream's audit log,
    never copied into the CP record, since its notes are model-authored text that
-   can quote memory. A snapshot topic that is neither written nor removed by a
+   can quote memory. The console reads it through `memory/dream/revisions` (§10)
+   to explain the diff. A snapshot topic that is neither written nor removed by a
    valid `dropped` or `moved` revision is an omission, not a prune: staging
    copies it forward byte-for-byte, so a live topic leaves the store only by a
    checked revision. This is the first step
@@ -454,7 +455,12 @@ warns that this skips content review.
    are reconciled the same way when an older daemon store is upgraded.
 
 `discardDream` deletes the staging directory and marks `discarded`. Backups
-are pruned to the most recent one on each successful adoption.
+are pruned to the most recent one on each successful adoption. Adoption also
+drops the adopted dream's `input/` and staged store, which is live now, keeping
+only its `revisions.json`, and removes every earlier adopted dream's staging:
+like the backup, one adoption's explanation is kept, until the next. Pending
+skill and organization candidates keep their own staging (§7). This trim is
+best effort after the swap and never fails an adoption.
 
 `autoAdopt` runs the same path immediately on completion without content
 review. The fence in step 2 still applies — on conflict the dream completes as
@@ -650,6 +656,10 @@ architecture invariant:
   `dream.review` read that returns the staged store tree and skill candidates
   via the existing byte-sliced CP memory-reader path (`cp/memory-reader.ts`)
   so staged bodies are proxied, bounded, and never persisted by the CP.
+  `memory/dream/revisions` returns the checked revisions log the same way —
+  proxied, at most 256 entries, never stored — behind the
+  `memory-dream-revisions-v1` feature; for a daemon without it the CP answers
+  that the dream kept no log.
 - **CP REST** under the agent memory surface
   (`/agents/:id/memory/dreams[...]`), tagged/summarized per the OpenAPI
   conventions; the CP relays over the daemon WS and stores at most the
@@ -666,6 +676,14 @@ architecture invariant:
   "Recommended skills" list rendering
   each candidate's `SKILL.md` and scripts with Accept / Dismiss. Accepted
   skills also surface on the Tools & Skills page alongside imported sources.
+  Beside each file's diff the review shows that file's revision: the change,
+  its reason or destinations, the model's note, and "Not applied" for an entry
+  the daemon rejected. When the latest adopted dream named any, its history
+  row offers a file-pen icon with the count (its tooltip names them "notable
+  changes"), and the collapsed History heading carries the same mark; most dreams
+  name none and show neither, so its presence is the cue. They explain, never
+  gate: nothing about adoption waits on them, and a failed read shows no button
+  and leaves the review as it was, without waking the sandbox.
   Both branches of the mobile/desktop split follow the existing
   memory-settings pattern.
 
@@ -701,11 +719,12 @@ metadata, not the Dream session's usage.
 
 ## 12. Phasing
 
-| Phase | Scope                                                                                                                                                                                                                      |
-| ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| D-1   | Protocol schema (`MemoryDreamingPolicy`), shared extraction-session helper, daemon `DreamRunner` + staged store pipeline, manual trigger via frames, console review + adopt/discard.                                       |
-| D-2a  | `autoAdopt` independent of prompt-channel trust, the distillation rebase rule, backup pruning. **Done.**                                                                                                                   |
-| D-2b  | Scheduled dreams (`DreamScheduler` cron trigger + reconciliation) and the console schedule control. **Done.** Evaluation-event dashboards remain.                                                                          |
-| D-3   | Skill mining (`mineSkills`): extract-procedures phase, staged skill candidates, console recommendations with accept/dismiss, integration with the shared-skills install flow. **Done.**                                    |
-| D-4   | Idle-trigger heuristic; revisit external-provider dreaming.                                                                                                                                                                |
-| D-5   | Verify phase and retention rule (§5): `revisions` in the dream reply with daemon-checked citations, unnamed snapshot topics carried forward, an invalid removal not applied, so the dream stays fully automatic. **Done.** |
+| Phase | Scope                                                                                                                                                                                                                             |
+| ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D-1   | Protocol schema (`MemoryDreamingPolicy`), shared extraction-session helper, daemon `DreamRunner` + staged store pipeline, manual trigger via frames, console review + adopt/discard.                                              |
+| D-2a  | `autoAdopt` independent of prompt-channel trust, the distillation rebase rule, backup pruning. **Done.**                                                                                                                          |
+| D-2b  | Scheduled dreams (`DreamScheduler` cron trigger + reconciliation) and the console schedule control. **Done.** Evaluation-event dashboards remain.                                                                                 |
+| D-3   | Skill mining (`mineSkills`): extract-procedures phase, staged skill candidates, console recommendations with accept/dismiss, integration with the shared-skills install flow. **Done.**                                           |
+| D-4   | Idle-trigger heuristic; revisit external-provider dreaming.                                                                                                                                                                       |
+| D-5   | Verify phase and retention rule (§5): `revisions` in the dream reply with daemon-checked citations, unnamed snapshot topics carried forward, an invalid removal not applied, so the dream stays fully automatic. **Done.**        |
+| D-6   | Revisions in the console (§6, §10): the checked log read through `memory/dream/revisions`, shown beside each file's diff and on the latest adopted dream as an explanation, never a gate; kept until the next adoption. **Done.** |

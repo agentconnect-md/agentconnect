@@ -5,26 +5,29 @@
  * only as correlated replies, byte-sliced exactly like `memory/read`
  * (UTF-8 boundary + encoded-frame budget). Never log staged contents.
  */
-import type {
-  DreamStartReq,
-  DreamCancelReq,
-  DreamListReq,
-  DreamListPage,
-  DreamGetReq,
-  DreamAdoptReq,
-  DreamDiscardReq,
-  DreamFilesReq,
-  DreamFilesPage,
-  DreamFileReadReq,
-  DreamFileReadContent,
-  DreamSkillReviewReq,
-  DreamSkillReadReq,
-  DreamSkillContent,
-  DreamState,
-  OrganizationSuggestionReadReq,
-  OrganizationSuggestionChunk,
-  OrganizationSuggestionReviewReq,
-  Ack
+import {
+  DreamRevision,
+  type DreamStartReq,
+  type DreamCancelReq,
+  type DreamListReq,
+  type DreamListPage,
+  type DreamGetReq,
+  type DreamAdoptReq,
+  type DreamDiscardReq,
+  type DreamFilesReq,
+  type DreamFilesPage,
+  type DreamRevisionsReq,
+  type DreamRevisionsPage,
+  type DreamFileReadReq,
+  type DreamFileReadContent,
+  type DreamSkillReviewReq,
+  type DreamSkillReadReq,
+  type DreamSkillContent,
+  type DreamState,
+  type OrganizationSuggestionReadReq,
+  type OrganizationSuggestionChunk,
+  type OrganizationSuggestionReviewReq,
+  type Ack
 } from '@agentconnect.md/protocol'
 import { fitToBudget, utf8Boundary } from '../wire-slice.js'
 import type { DreamRunner } from '../dream/runner.js'
@@ -38,6 +41,8 @@ export interface DreamReader {
   discard(req: DreamDiscardReq): Promise<DreamState>
   files(req: DreamFilesReq): Promise<DreamFilesPage>
   fileRead(req: DreamFileReadReq): Promise<DreamFileReadContent>
+  /** The dream's checked revisions, re-validated on read; entries that no longer parse are left out. */
+  revisions(req: DreamRevisionsReq): Promise<DreamRevisionsPage>
   /** Full staged body of one candidate, so the console can show what accepting
    *  would install. Bounded by the miner's own caps; missing staging is DATA. */
   skillRead(req: DreamSkillReadReq): Promise<DreamSkillContent>
@@ -117,6 +122,19 @@ export function createDreamReader(runner: DreamRunner): DreamReader {
         nextOffset,
         truncated: nextOffset < size
       }
+    },
+
+    async revisions(req) {
+      const raw = await runner.stagedRevisions(req.agentId, req.dreamId)
+      const revisions = (raw ?? []).slice(0, 256).flatMap((entry) => {
+        const parsed = DreamRevision.safeParse({
+          ...entry,
+          sessionIds: entry.sessionIds.slice(0, 64),
+          into: entry.into.slice(0, 64)
+        })
+        return parsed.success ? [parsed.data] : []
+      })
+      return { agentId: req.agentId, dreamId: req.dreamId, exists: raw !== null, revisions }
     },
 
     async skillRead(req) {
