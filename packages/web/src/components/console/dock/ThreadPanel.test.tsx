@@ -171,6 +171,11 @@ vi.mock(import('@/components/marks'), async (importOriginal) => ({
   AgentIconView: () => <span data-agent-avatar="" />
 }))
 
+vi.mock('@/lib/data-context', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  useConsoleData: () => ({ revalidateSessionLists: () => Promise.resolve() })
+}))
+
 vi.mock('@/lib/org-context', () => ({
   useOrgs: () => ({ activeOrg: { id: 'org_acme' }, orgPath: (path: string) => `/acme${path}` })
 }))
@@ -294,9 +299,9 @@ describe('ThreadPanel', () => {
   it('shares the task’s own session from its header, as the session page does', async () => {
     await render()
     const share = container.querySelector<HTMLButtonElement>('[data-task-thread-share]')!
-    expect(share.getAttribute('aria-label')).toBe('Share “Find what blocks api 1.5”')
-    act(() => share.click())
-    const dialog = container.querySelector('[role="dialog"]')
+    expect(share.getAttribute('aria-label')).toBe('Share')
+    await act(async () => share.click())
+    const dialog = document.querySelector('[role="dialog"]')
     expect(dialog?.textContent).toContain('Copy link')
   })
 

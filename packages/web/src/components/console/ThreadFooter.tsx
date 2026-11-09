@@ -12,7 +12,7 @@ import { useTaskRow } from '@/components/console/task-thread'
 import type { TaskLink } from '@/components/console/task-link'
 import type { AssistantSubsessionDto, SessionThreadAuthorDto, SessionThreadSummaryDto } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
-import { copyLink } from '@/lib/copy-link'
+import { SessionShareButton } from '@/components/console/SessionShare'
 import { shortAgo } from '@/components/console/session-work'
 
 /** How often "· 39s" redraws: every second while it counts seconds, else every 30s; arithmetic, no request. */
@@ -95,8 +95,7 @@ export function ThreadFooter({
   onOpen,
   nameOf = authorName,
   align = 'start',
-  onReply,
-  shareHref
+  onReply
 }: {
   footer: ThreadFooterView
   /** The thread's root, which names it; absent for a task's card read from its row. */
@@ -113,8 +112,6 @@ export function ThreadFooter({
   align?: 'start' | 'end'
   /** The card's hover toolbar Reply: opens the thread ready to write in; absent, Reply opens it to read. */
   onReply?: () => void
-  /** The address the toolbar's Share copies; absent, the card has no Share. */
-  shareHref?: string
 }) {
   const t = useTranslations('Common.taskThread')
   const tl = useTranslations('Common.taskList')
@@ -126,12 +123,6 @@ export function ThreadFooter({
     return () => clearInterval(timer)
   }, [tick])
 
-  const [copied, setCopied] = useState(false)
-  useEffect(() => {
-    if (!copied) return
-    const timer = setTimeout(() => setCopied(false), 1500)
-    return () => clearTimeout(timer)
-  }, [copied])
   const { task, readable } = footer
   // An unreadable thread opens nothing: its panel and its task's page would both show no content.
   const open = readable ? onOpen : undefined
@@ -193,8 +184,7 @@ export function ThreadFooter({
         {
           'data-task-card-open': '',
           ...(open ? { 'aria-expanded': selected === true } : {}),
-          ...(open || to ? { 'aria-label': open ? openLabel : t('openPage', { title }) } : {}),
-          ...(open ? { title: openLabel } : {})
+          ...(open || to ? { 'aria-label': open ? openLabel : t('openPage', { title }) } : {})
         }
       )
     : null
@@ -234,9 +224,9 @@ export function ThreadFooter({
     </span>
   ) : null
 
-  // Slack's message toolbar over a hovered card: Reply, then Share.
+  // Slack's message toolbar on a hovered card's top edge: Reply, then the task session's Share, as its own page offers it.
   const reply = onReply ?? open
-  const share = readable && shareHref ? shareHref : undefined
+  const share = readable ? task?.sessionId : undefined
   const toolButton =
     'flex h-7 w-7 cursor-pointer items-center justify-center rounded-[6px] border-0 bg-transparent p-0 text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)'
   const toolbar =
@@ -245,7 +235,7 @@ export function ThreadFooter({
         role="toolbar"
         data-task-card-toolbar=""
         aria-label={t('cardActions')}
-        className="absolute top-1/2 right-[8px] z-[5] -translate-y-1/2 hidden items-center gap-[2px] rounded-[8px] border border-(--border-default) bg-(--surface-card) p-[2px] shadow-(--shadow-md) group-hover/card:flex group-focus-within/card:flex"
+        className="absolute -top-[17px] right-[10px] z-[5] hidden items-center gap-[2px] rounded-[8px] border border-(--border-default) bg-(--surface-card) p-[2px] shadow-(--shadow-md) group-hover/card:flex group-focus-within/card:flex"
       >
         {reply ? (
           <button
@@ -260,18 +250,7 @@ export function ThreadFooter({
           </button>
         ) : null}
         {share ? (
-          <button
-            type="button"
-            data-task-card-share=""
-            aria-label={copied ? t('linkCopied') : t('shareThread')}
-            title={copied ? t('linkCopied') : t('shareThread')}
-            onClick={() => {
-              void copyLink(new URL(share, window.location.href).href, t('shareThread')).then(setCopied)
-            }}
-            className={toolButton}
-          >
-            <Icon name={copied ? 'check' : 'forward'} size={15} />
-          </button>
+          <SessionShareButton sessionId={share} title={title} className={toolButton} data-task-card-share="" />
         ) : null}
       </div>
     ) : null
@@ -287,7 +266,8 @@ export function ThreadFooter({
           <span
             data-thread-count=""
             className="whitespace-nowrap"
-            {...(replies > 0 && lastReplyAt
+            // The hover card names the latest reply; a native tooltip on top of it would only cover it.
+            {...(replies > 0 && lastReplyAt && !preview
               ? {
                   title: t('repliesTitle', {
                     replies: repliesLabel,
