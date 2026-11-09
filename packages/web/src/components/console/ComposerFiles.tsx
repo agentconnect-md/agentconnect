@@ -163,7 +163,7 @@ function ImageLightbox({ src, name, onClose }: { src: string; name: string; onCl
         src={src}
         alt={name}
         title={name}
-        className="max-h-full max-w-full cursor-zoom-out rounded-md object-contain shadow-(--shadow-xl)"
+        className="max-h-full max-w-full cursor-zoom-out rounded-md bg-(--surface-card) object-contain shadow-(--shadow-xl)"
       />
     </Scrim>,
     document.body
