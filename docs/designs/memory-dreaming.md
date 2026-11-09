@@ -308,10 +308,11 @@ interface DreamRecord {
    topic and a change: `corrected` must cite a mined session and be written,
    `dropped` must give one of the four retention reasons (citing a mined
    session for `contradicted`) and must not also be written, and `moved` must
-   name in `into` the written files now holding its content. The daemon checks
-   every citation against the mined set, the way it checks a skill's (§7). An
-   entry that breaks a rule — an unknown path, a missing reason, a citation
-   outside the set, a file both written and dropped — is kept with its problem
+   name in `into` the written files now holding its content. The daemon keeps
+   only the citations that name a mined session, the way it checks a skill's
+   (§7), and an entry that needs evidence must keep at least one. An entry that
+   breaks a rule — an unknown path, a missing reason, no mined citation left, a
+   file both written and dropped — is kept with its problem
    and removes nothing. Every such case resolves automatically toward keeping
    the file, so it neither fails the dream nor asks a human: dreaming is meant
    to run unattended, and nobody is expected to review it. The checked list is
