@@ -395,6 +395,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const stagedWorktree = useRef<Map<string, boolean>>(new Map())
   const busyRef = useRef<Record<string, boolean>>({})
   const closingAll = useRef(false)
+  const pendingDials = useRef(new Map<string, () => void>())
   /** MCP App view RPCs awaiting their `app_rpc_result` event, by the browser-minted `callId`. */
   const appCalls = useRef(
     new Map<string, (outcome: { ok: true; result: unknown } | { ok: false; error: string }) => void>()
@@ -475,8 +476,11 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   // Close every socket when the provider unmounts (console teardown).
   useEffect(() => {
     const map = conns.current
+    const dials = pendingDials.current
     return () => {
       closingAll.current = true
+      for (const cancel of dials.values()) cancel()
+      dials.clear()
       for (const c of map.values()) {
         c.closing = true
         if (c.reconnectTimer) window.clearTimeout(c.reconnectTimer)
@@ -1535,6 +1539,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
             : webchatWsUrl(orgId, agentId, resumeId, rosterAgentIds.current.get(id))
         )
           .then((url) => {
+            if (closingAll.current || conn.closing) throw new Error('connection cancelled')
             const ws = new WebSocket(url)
             ws.onerror = () => reject(new Error('webchat connection failed'))
             ws.onclose = () => {
@@ -1881,6 +1886,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
             if (conns.current.get(id) === conn) conn.ws = ws
           })
           .catch((err) => {
+            if (conn.closing || closingAll.current) return reject(err)
             dropSelf() // URL/token resolution failed — drop the poisoned entry so a retry rebuilds
             if (busyRef.current[id] && resumeId) scheduleReconnect()
             reject(err) // settle `ready` so pgSend's .catch clears the busy flag
@@ -1984,6 +1990,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
 
   const pgDiscard = useCallback(
     (id: string): void => {
+      pendingDials.current.get(id)?.()
       dropConn(id)
       setPgSessions((cur) => {
         if (!(id in cur)) return cur
@@ -2244,22 +2251,44 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         }
         if (conns.current.get(id) === conn) conns.current.delete(id)
       }
-      // ONE rebuild before a turn is declared unsent. The first send of a fresh playground rides the socket `openPlayground` warmed seconds earlier (connect() reuses a CONNECTING one), so a dial that died in the browser took the message that opens the conversation down with it — and the retry the reader typed by hand started a SECOND conversation, blind to the first. Only a transport failure is rebuilt: a CP verdict (no relay pool, an incapable daemon, a conversation that is not theirs) is an answer, not a blip. A failure AFTER the frame reached the socket is the reconnect's resend to recover, never a fresh dial's.
-      const putThrough = (conn: Conn, mayRebuild: boolean): void => {
+      let cancelled = false
+      let retryTimer: number | undefined
+      let activeConn: Conn
+      const cancelDial = (): void => {
+        cancelled = true
+        if (retryTimer !== undefined) window.clearTimeout(retryTimer)
+        abandon(activeConn)
+        pendingDials.current.delete(id)
+      }
+      pendingDials.current.set(id, cancelDial)
+      // Retry only before sending; stream recovery owns frames that may already have reached the server.
+      const putThrough = (conn: Conn, attempt: number): void => {
+        activeConn = conn
         let onWire = false
         conn.ready
           .then((ws) => {
+            if (cancelled || closingAll.current) return
+            pendingDials.current.delete(id)
             onWire = true
             putOnWire(ws)
           })
           .catch((err) => {
-            if (!mayRebuild || onWire || err instanceof ApiError) return reportUnsent(err)
+            if (cancelled || closingAll.current) return
+            if (onWire || err instanceof ApiError || attempt >= WEBCHAT_RECONNECT_MAX_ATTEMPTS) {
+              if (!onWire) abandon(conn)
+              pendingDials.current.delete(id)
+              return reportUnsent(err)
+            }
             abandon(conn)
             setBusy(id, true)
-            putThrough(connect(id, agentForId, conversationId), false)
+            const delay = Math.min(WEBCHAT_RECONNECT_MAX_MS, WEBCHAT_RECONNECT_BASE_MS * 2 ** attempt)
+            retryTimer = window.setTimeout(() => {
+              retryTimer = undefined
+              if (!cancelled && !closingAll.current) putThrough(connect(id, agentForId, conversationId), attempt + 1)
+            }, delay)
           })
       }
-      putThrough(connect(id, agentForId, conversationId), true)
+      putThrough(connect(id, agentForId, conversationId), 0)
     },
     [
       pgSessions,
@@ -2649,15 +2678,26 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     [connect]
   )
 
-  /** Interrupt the running turn (fire-and-forget). The daemon ends the turn with a
-   *  relay `done` item, which clears pgBusy via the socket's done handler. */
+  // Cancel an unsent dial locally; a running turn clears busy when the daemon confirms cancellation.
   const pgCancel = useCallback(
     (id: string, agentForId: string, conversationId?: string) => {
+      const cancelDial = pendingDials.current.get(id)
+      if (cancelDial) {
+        cancelDial()
+        pushStep(id, {
+          kind: 'done',
+          turnId: pendingTurnIds.current.get(id),
+          text: 'Message cancelled before sending.'
+        })
+        pendingTurnIds.current.delete(id)
+        setBusy(id, false)
+        return
+      }
       connect(id, agentForId, conversationId)
         .ready.then((ws) => ws.send(JSON.stringify({ type: 'cancel' })))
         .catch(() => {})
     },
-    [connect]
+    [connect, pushStep, setBusy]
   )
 
   // Once the daemon creates the real session, the route switches from the synthetic
