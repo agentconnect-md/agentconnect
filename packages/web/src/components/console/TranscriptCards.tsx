@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { usePendingAction } from '@/components/console/PendingActions'
-import { type ElicitAnswerValue, type ElicitFieldSpec, type SessionImage } from '@/lib/data'
+import { type ElicitAnswerValue, type ElicitFieldSpec } from '@/lib/data'
 import { Icon } from '@/components/ui'
 import { foldCustomAnswers, planLabel, typedInvalidReason } from '@/components/console/session-work'
 import type { FmtStep } from '@/components/console/transcript-steps'
@@ -14,35 +14,6 @@ const PLAN_MARK: Record<string, typeof PLAN_PENDING> = {
   completed: { icon: 'circle-check', color: 'var(--green-500)', text: 'text-(--text-tertiary)' },
   in_progress: { icon: 'circle-dot', color: 'var(--blue-500)', text: 'text-(--text-primary) font-medium' },
   pending: PLAN_PENDING
-}
-
-// A sent message's inline images: one at full bubble width, several as an uncropped two-column grid.
-export function MessageImages({ images, spaced }: { images: readonly SessionImage[]; spaced: boolean }) {
-  if (images.length === 1) {
-    const [image] = images
-    return (
-      <img
-        src={`data:${image!.mimeType};base64,${image!.data}`}
-        alt={image!.name}
-        className={`max-h-[360px] max-w-full rounded-md object-contain ${spaced ? 'mb-[10px]' : ''}`}
-      />
-    )
-  }
-  return (
-    <div
-      className={`grid w-[360px] max-w-full grid-cols-2 gap-[6px] ${spaced ? 'mb-[10px]' : ''}`}
-      data-message-images=""
-    >
-      {images.map((image, i) => (
-        <img
-          key={`${i}:${image.name}`}
-          src={`data:${image.mimeType};base64,${image.data}`}
-          alt={image.name}
-          className="aspect-square w-full rounded-md bg-(--surface-sunken) object-contain"
-        />
-      ))}
-    </div>
-  )
 }
 
 /** The turn's task list as its own block above the answer, never folded into work; a row without its body shows its summary. */

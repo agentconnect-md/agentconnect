@@ -106,7 +106,14 @@ import { socialLoginProviders } from '@/lib/social-login-providers'
 import { isAuthConfigured } from '@/lib/auth'
 import { clipboardFiles, prepareWebchatImage } from '@/lib/webchat-image'
 import { copyLink } from '@/lib/copy-link'
-import { ComposerFileChips, stageComposerFiles } from '@/components/console/ComposerFiles'
+import {
+  AttachmentCards,
+  FileDropOverlay,
+  INLINE_IMAGE_KEY,
+  composerCards,
+  stageComposerFiles,
+  useFileDrop
+} from '@/components/console/ComposerFiles'
 import { transferCapable, uploadPreviewsCapable, sessionFileDownload } from '@/lib/shared-file'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
@@ -426,14 +433,6 @@ function ComposerTextarea({
             if (!selected.length) return
             event.preventDefault()
             onAttachFiles(selected)
-          }}
-          onDragOver={(event) => {
-            if (onAttachFiles && event.dataTransfer.types.includes('Files')) event.preventDefault()
-          }}
-          onDrop={(event) => {
-            if (!onAttachFiles || !event.dataTransfer.files.length) return
-            event.preventDefault()
-            onAttachFiles(Array.from(event.dataTransfer.files))
           }}
           onKeyDown={(e) => {
             // History first: a recalled `/cmd` or `@name` must not hand Up/Down to a picker mid-walk.
@@ -1075,6 +1074,9 @@ export default function SessionDetailView() {
   const [routeSession, setRouteSession] = useState<Session | null>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
   const imagePrepareGenerationRef = useRef(0)
+  // The drop handler is bound below the view's early returns, so the hook reaches it through a ref.
+  const onDropFilesRef = useRef<(files: File[]) => void>(() => {})
+  const fileDrop = useFileDrop((files) => onDropFilesRef.current(files))
 
   const pgSession = getPgSession(id)
   const localSession =
@@ -2694,6 +2696,9 @@ export default function SessionDetailView() {
   const composerTransfer =
     composerAgent !== undefined &&
     uploadPreviewsCapable(agentCapabilitySource(composerAgent, daemons, memberSets)?.caps.features)
+  // Files dropped anywhere on the conversation take the paperclip's path.
+  const dropEnabled = attachmentsEnabled && isLive && !resumeDisabled && !viewerOpen
+  onDropFilesRef.current = (files) => onAttachFiles(files)
   const onAttachFiles = (selected: File[]): void => {
     if (imageInputRef.current) imageInputRef.current.value = ''
     if (!attachmentsEnabled || !selected.length) return
@@ -3509,7 +3514,11 @@ export default function SessionDetailView() {
       {/* Column: fixed header chrome ABOVE the scrolling transcript pane. The header lives OUTSIDE
       the scroller (no `sticky`), so it never scrolls away and the pane below can be virtualized. */}
       {/* On desktop the header's divider runs from the nav's edge (and to the page's where the dock is a drawer), continuing the nav's own line at 52px. */}
-      <div className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col desktop:before:pointer-events-none desktop:before:absolute desktop:before:top-[17px] desktop:before:right-0 desktop:before:-left-[30px] desktop:before:h-px desktop:before:bg-(--border-subtle) desktop:max-wide:before:-right-[30px]">
+      <div
+        {...(dropEnabled ? fileDrop.handlers : {})}
+        className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col desktop:before:pointer-events-none desktop:before:absolute desktop:before:top-[17px] desktop:before:right-0 desktop:before:-left-[30px] desktop:before:h-px desktop:before:bg-(--border-subtle) desktop:max-wide:before:-right-[30px]"
+      >
+        {dropEnabled && fileDrop.over ? <FileDropOverlay /> : null}
         {/* Only a transcript on screen is read: the file viewer hides it, so nothing is recorded meanwhile. */}
         {!viewerOpen ? <SeenRecorder newestMs={newestTurnMs} markSeen={seen.markSeen} /> : null}
         {!viewerOpen ? <TranscriptMap turns={mapTurns} onJump={() => releaseFollow()} /> : null}
@@ -4395,29 +4404,15 @@ export default function SessionDetailView() {
                   />
                 )}
                 {attachmentsEnabled && (
-                  <ComposerFileChips
-                    files={pgFiles}
-                    onRemove={(key) => setPgFiles(session.id, (files) => files.filter((f) => f.key !== key))}
+                  <AttachmentCards
+                    className="px-[15px] pt-3"
+                    cards={composerCards(pgFiles, pgImage)}
+                    onRemove={(key) =>
+                      key === INLINE_IMAGE_KEY
+                        ? setPgImage(session.id)
+                        : setPgFiles(session.id, (files) => files.filter((f) => f.key !== key))
+                    }
                   />
-                )}
-                {attachmentsEnabled && pgImage && (
-                  <div className="relative mx-[15px] mt-3 w-fit">
-                    <img
-                      src={`data:${pgImage.mimeType};base64,${pgImage.data}`}
-                      alt={pgImage.name}
-                      title={pgImage.name}
-                      className="h-20 w-20 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) object-cover"
-                    />
-                    <button
-                      type="button"
-                      className="iconbtn absolute -right-2 -top-2 h-6 w-6 rounded-full shadow-(--shadow-xs)"
-                      title={t('removeImage')}
-                      aria-label={t('removeImage')}
-                      onClick={() => setPgImage(session.id)}
-                    >
-                      <Icon name="x" size={14} />
-                    </button>
-                  </div>
                 )}
                 <ComposerTextarea
                   sessionId={session.id}

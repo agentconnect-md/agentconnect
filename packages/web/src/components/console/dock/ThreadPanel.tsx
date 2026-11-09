@@ -30,7 +30,14 @@ import { buildTurns, type Turn } from '@/components/console/session-turns'
 import { BotTurnView, UserTurnView } from '@/components/console/TurnViews'
 import type { TaskLink } from '@/components/console/task-link'
 import { fetchSessionDetail, type SessionThreadSummaryDto } from '@/lib/api'
-import { ComposerFileChips, stageComposerFiles } from '@/components/console/ComposerFiles'
+import {
+  AttachmentCards,
+  FileDropOverlay,
+  INLINE_IMAGE_KEY,
+  composerCards,
+  stageComposerFiles,
+  useFileDrop
+} from '@/components/console/ComposerFiles'
 import { clipboardFiles, prepareWebchatImage } from '@/lib/webchat-image'
 import { RunningCommandsDock } from '@/components/console/RunningCommandsDock'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
@@ -642,8 +649,6 @@ function ThreadComposer({
     const timer = window.setTimeout(() => boxRef.current?.focus(), 0)
     return () => window.clearTimeout(timer)
   }, [autoFocus, canReply])
-  // No reply box where this reader may not continue the task; its background commands still show.
-  if (!canReply && !checking) return dock ? <div className="flex-none px-3 pb-3 empty:hidden">{dock}</div> : null
   // Uploaded originals and their previews travel together; older conversations keep inline image input.
   const pick = async (selected: File[]) => {
     if (inputRef.current) inputRef.current.value = ''
@@ -683,36 +688,30 @@ function ThreadComposer({
       setPreparing(false)
     }
   }
+  const fileDrop = useFileDrop((selected) => void pick(selected))
+  // No reply box where this reader may not continue the task; its background commands still show.
+  if (!canReply && !checking) return dock ? <div className="flex-none px-3 pb-3 empty:hidden">{dock}</div> : null
   const canSend = canReply && (hasText || hasAttachment) && !uploading && !preparing
+  const dropEnabled = !!attach && canReply
   return (
     // On desktop the bottom inset is the conversation composer's (`.content`'s 26px + its footer's 4px), so the two boxes line up.
-    <div className="flex-none px-3 pt-[10px] pb-3 desktop:pb-[30px]">
+    <div
+      {...(dropEnabled ? fileDrop.handlers : {})}
+      className="relative flex-none px-3 pt-[10px] pb-3 desktop:pb-[30px]"
+    >
+      {dropEnabled && fileDrop.over ? <FileDropOverlay /> : null}
       {dock}
       <div className="flex flex-col rounded-[11px] border border-(--border-default) bg-(--surface-card) shadow-(--shadow-xs) transition-[border-color,box-shadow] focus-within:border-(--border-strong) focus-within:shadow-(--focus-shadow)">
         {attach ? (
-          <ComposerFileChips
-            files={files}
-            onRemove={(key) => setPgFiles(sessionId, (staged) => staged.filter((file) => file.key !== key))}
+          <AttachmentCards
+            className="px-[15px] pt-3"
+            cards={composerCards(files, image)}
+            onRemove={(key) =>
+              key === INLINE_IMAGE_KEY
+                ? setPgImage(sessionId)
+                : setPgFiles(sessionId, (staged) => staged.filter((file) => file.key !== key))
+            }
           />
-        ) : null}
-        {attach && image ? (
-          <div className="relative mx-[15px] mt-3 w-fit">
-            <img
-              src={`data:${image.mimeType};base64,${image.data}`}
-              alt={image.name}
-              title={image.name}
-              className="h-20 w-20 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) object-cover"
-            />
-            <button
-              type="button"
-              className="iconbtn absolute -top-2 -right-2 h-6 w-6 rounded-full shadow-(--shadow-xs)"
-              title={t('removeImage')}
-              aria-label={t('removeImage')}
-              onClick={() => setPgImage(sessionId)}
-            >
-              <Icon name="x" size={14} />
-            </button>
-          </div>
         ) : null}
         <textarea
           ref={boxRef}
@@ -729,14 +728,6 @@ function ThreadComposer({
             if (!attach || !selected.length) return
             event.preventDefault()
             void pick(selected)
-          }}
-          onDragOver={(event) => {
-            if (attach && event.dataTransfer.types.includes('Files')) event.preventDefault()
-          }}
-          onDrop={(event) => {
-            if (!attach || !event.dataTransfer.files.length) return
-            event.preventDefault()
-            void pick(Array.from(event.dataTransfer.files))
           }}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {

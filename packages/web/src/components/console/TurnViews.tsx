@@ -17,7 +17,7 @@ import type { McpAppRpc } from '@agentconnect.md/protocol'
 import type { McpAppCardProps } from '@/components/console/McpAppCard'
 import { Avatar, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
-import { MessageFileCards } from '@/components/console/ComposerFiles'
+import { AttachmentCards, messageCards } from '@/components/console/ComposerFiles'
 import {
   CAPABILITY_LANE,
   APP_LANE,
@@ -34,7 +34,7 @@ import { type TaskLink } from '@/components/console/task-link'
 import { CopyTurnButton, StepExtras, McpAppRow, turnWork, WorkStepList } from '@/components/console/WorkPanel'
 import { type Turn } from '@/components/console/session-turns'
 import type { FmtStep } from '@/components/console/transcript-steps'
-import { ElicitationCard, MessageImages, PlanBlock } from '@/components/console/TranscriptCards'
+import { ElicitationCard, PlanBlock } from '@/components/console/TranscriptCards'
 
 /** Whether a user turn prints a sender line (it is not you), which the avatar's alignment follows. */
 function showsSenderLabel(turn: { isCron: boolean; sp: { handle: string } }): boolean {
@@ -148,11 +148,10 @@ export function UserTurnView({
             {turn.steered ? 'Steered' : 'Steering…'}
           </span>
         )}
-        {turn.files && <MessageFileCards files={turn.files} />}
-        {(turn.text || turn.images || turn.body) && (
+        <AttachmentCards className="mb-[3px]" cards={messageCards(turn.images, turn.files)} />
+        {(turn.text || turn.body) && (
           <div className={SELF_BUBBLE}>
             {turn.body?.sessionMessage && <SessionMessageCaption facts={turn.body.sessionMessage} />}
-            {turn.images && <MessageImages images={turn.images} spaced={!!turn.text} />}
             {turn.text && <MessageText text={turn.text} platform={turn.platform} />}
             {turn.body && <UserTurnDetails body={turn.body} platform={turn.platform} />}
           </div>
