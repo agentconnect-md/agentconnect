@@ -40,9 +40,9 @@ function routingOf(located: AzureDevOpsLocatedRepository): AzureDevOpsRepoRoutin
   }
 }
 
-/** git-workspace-model.md §6 for Azure DevOps: visible in a connected organization ⇒ managed, invisible ⇒ refused, unconnected ⇒ anonymous. */
+// A managed workspace requires both the application's visibility and the acting person's access.
 async function deriveAzureDevOpsWorkspace(derivation: CodeHostWorkspaceDerivation): Promise<DerivedWorkspace | null> {
-  const { deps, orgId, gitRepo, requestedAccess } = derivation
+  const { deps, orgId, actorUserId, gitRepo, requestedAccess } = derivation
   const address = azureDevOpsRepoAddress(gitRepo)
   const azure = deps.azureDevOps
   if (!address || !azure) return null
@@ -63,9 +63,15 @@ async function deriveAzureDevOpsWorkspace(derivation: CodeHostWorkspaceDerivatio
     return refuseFromConnection(e)
   }
   if (!located) refuseWorkspaceCredential(grantAccessMessage(label, address.organization, false))
+  let userAccess
+  try {
+    userAccess = await azure.userAuthz.assertAccess(actorUserId, located, requestedAccess ?? 'read')
+  } catch (e) {
+    return refuseFromConnection(e)
+  }
   let access: 'read' | 'write' = 'read'
   if (requestedAccess !== 'read') {
-    // One permission evaluation (§12 item 7): a `write` request needs Contribute; an unstated one takes what the identity holds.
+    // Inferred access is the common ceiling; explicit write requires both parties' Contribute permission.
     let contribute: boolean
     try {
       contribute = await azure.bindings.canContribute(located)
@@ -75,7 +81,7 @@ async function deriveAzureDevOpsWorkspace(derivation: CodeHostWorkspaceDerivatio
     if (requestedAccess === 'write' && !contribute) {
       refuseWorkspaceCredential(grantAccessMessage(label, address.organization, true))
     }
-    access = contribute ? 'write' : 'read'
+    access = contribute && userAccess.write ? 'write' : 'read'
   }
   const routing = routingOf(located)
   if (derivation.write) {
@@ -105,11 +111,13 @@ async function deriveAzureDevOpsWorkspace(derivation: CodeHostWorkspaceDerivatio
   }
 }
 
-/** Raising a grant to `write` needs Contribute on the repository; `comment` reads only (§6.3), so it needs nothing more. */
+// Every increase rechecks the human; write additionally requires the application's Contribute permission.
 async function upgradeAzureDevOpsGrant(ctx: CodeHostRepoAuthorizationContext): Promise<AgentRepoAuthDtoT | undefined> {
   const { deps, req, reply, orgId, agent, row, access, toDto } = ctx
-  const refused = (status: 404 | 409 | 429 | 502, message: string): undefined => {
-    const error = { 404: 'Not Found', 409: 'Conflict', 429: 'Too Many Requests', 502: 'Bad Gateway' }[status]
+  const refused = (status: 403 | 404 | 409 | 429 | 502, message: string): undefined => {
+    const error = { 403: 'Forbidden', 404: 'Not Found', 409: 'Conflict', 429: 'Too Many Requests', 502: 'Bad Gateway' }[
+      status
+    ]
     void reply.code(status).send({ error, statusCode: status, message })
     return undefined
   }
@@ -117,18 +125,18 @@ async function upgradeAzureDevOpsGrant(ctx: CodeHostRepoAuthorizationContext): P
   if (!azure || row.connectionId === undefined || row.azureDevOps === undefined) {
     return refused(409, 'the repository is not bound through an Azure DevOps connection in this organization')
   }
-  if (access === 'write') {
-    try {
-      const located = await azure.bindings.byRepositoryId(orgId, row.connectionId, row.azureDevOps.repositoryId)
-      if (!(await azure.bindings.canContribute(located))) {
-        return refused(409, grantAccessMessage(row.repoFullName, row.azureDevOps.organization, true))
-      }
-    } catch (e) {
-      if (e instanceof AzureDevOpsConnectDenied) return refused(e.status === 404 ? 404 : 409, e.message)
-      if (e instanceof AzureDevOpsApiError)
-        return refused(e.code === 'RATE_LIMITED' ? 429 : 502, `azure devops: ${e.message}`)
-      throw e
+  try {
+    const located = await azure.bindings.byRepositoryId(orgId, row.connectionId, row.azureDevOps.repositoryId)
+    await azure.userAuthz.assertAccess(req.principal?.userId, located, access)
+    if (access === 'write' && !(await azure.bindings.canContribute(located))) {
+      return refused(409, grantAccessMessage(row.repoFullName, row.azureDevOps.organization, true))
     }
+  } catch (e) {
+    if (e instanceof AzureDevOpsConnectDenied)
+      return refused(e.status === 403 || e.status === 404 ? e.status : 409, e.message)
+    if (e instanceof AzureDevOpsApiError)
+      return refused(e.code === 'RATE_LIMITED' ? 429 : 502, `azure devops: ${e.message}`)
+    throw e
   }
   const updated = await deps.repos.agentRepoAuth.updateAccess(row.id, access)
   if (!updated) return refused(404, 'authorization not found')

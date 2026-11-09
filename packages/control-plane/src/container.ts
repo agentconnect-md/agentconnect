@@ -62,6 +62,7 @@ import { GiteaGitcredService } from './gitea/gitcred.service.js'
 import { AzureDevOpsApiClient, readMicrosoftUser, type FetchLike as AzureDevOpsFetchLike } from './azure-devops/api.js'
 import { AzureDevOpsTokenCache } from './azure-devops/token-cache.js'
 import { AzureDevOpsConnectionService, azureDevOpsSecretFingerprint } from './azure-devops/connection.service.js'
+import { AzureDevOpsUserAuthzService } from './azure-devops/user-authz.js'
 import { AzureDevOpsBindingService } from './azure-devops/binding.service.js'
 import { AzureDevOpsGitcredService } from './azure-devops/gitcred.service.js'
 import { AzureDevOpsConnectFlowService } from './azure-devops/connect-flow.service.js'
@@ -1903,6 +1904,14 @@ export function buildContainer(
   })
   const azureDevOps = {
     connections: azureDevOpsConnectionService,
+    userAuthz: new AzureDevOpsUserAuthzService({
+      api: azureDevOpsApi,
+      service: azureDevOpsConnectionService,
+      microsoftIdentityFor: async (userId) => {
+        const sub = await repos.user.getOidcSubject(userId)
+        return sub && logtoIdentity ? logtoIdentity.microsoftIdentityFor(sub, 0) : null
+      }
+    }),
     hooks: azureDevOpsHooks,
     bindings: new AzureDevOpsBindingService({
       connections: repos.azureDevOpsConnection,

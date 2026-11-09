@@ -378,6 +378,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
       let binding
       try {
         const located = await azure.bindings.byRepositoryId(orgId, body.connectionId, body.repositoryId)
+        await azure.userAuthz.assertAccess(req.principal?.userId, located, body.access)
         const path = `${located.connection.organization}/${located.repository.projectName}/${located.repository.name}`
         if (body.access === 'write' && !(await azure.bindings.canContribute(located))) {
           return refused(409, grantAccessMessage(path, located.connection.organization, true))

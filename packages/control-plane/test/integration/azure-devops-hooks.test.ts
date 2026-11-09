@@ -103,6 +103,7 @@ async function harness() {
   running = buildHttpApp(prisma, { PUBLIC_RELAY_URL: RELAY_URL }, undefined, undefined, {
     azureDevOps: {
       connections: service,
+      userAuthz: fake.userAuthz(service),
       bindings: new AzureDevOpsBindingService({ connections: connectionRepo, bindings, service, api: fake.api }),
       hooks
     }

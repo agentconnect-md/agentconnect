@@ -53,7 +53,7 @@ afterEach(async () => {
   running = undefined
 })
 
-function harness(opts: { fake?: FakeAzureDevOpsOptions; deploymentSecret?: string } = {}) {
+function harness(opts: { fake?: FakeAzureDevOpsOptions; deploymentSecret?: string; linked?: boolean } = {}) {
   const fake = new FakeAzureDevOps(opts.fake)
   const connectionRepo = new PgAzureDevOpsConnectionRepo(prisma)
   const bindings = new PgAzureDevOpsRepositoryBindingRepo(prisma)
@@ -91,7 +91,7 @@ function harness(opts: { fake?: FakeAzureDevOpsOptions; deploymentSecret?: strin
     }
   })
   running = buildHttpApp(prisma, {}, undefined, undefined, {
-    azureDevOps: { connections: service, bindings: bindingService }
+    azureDevOps: { connections: service, bindings: bindingService, userAuthz: fake.userAuthz(service, opts.linked) }
   })
   const gitcred = new AzureDevOpsGitcredService({
     connections: connectionRepo,
@@ -120,6 +120,111 @@ async function createAgent(h: ReturnType<typeof harness>, gitRepo: string, acces
     }
   })
 }
+
+it('refuses managed repository authority without the acting person’s linked Microsoft identity', async () => {
+  const h = harness({ linked: false })
+  await h.connect()
+  const result = await createAgent(h, GIT_REPO, 'read')
+  expect(result.statusCode).toBe(409)
+  expect(await prisma.azureDevOpsRepositoryBinding.count()).toBe(0)
+})
+
+describe('the acting person’s Azure repository access', () => {
+  const resource = `repoV2/${PROJECT_ID}/${REPOSITORY_ID}`
+
+  it('filters both catalogs and refuses canonical, legacy and GUID addresses after access is removed', async () => {
+    const h = harness()
+    const connection = await h.connect()
+    expect((await createAgent(h, GIT_REPO, 'read')).statusCode).toBe(201)
+    h.fake.effectivePermissions.set(resource, { effectiveAllow: 6, effectiveDeny: 2 })
+    const listed = await h.a.app.inject({
+      method: 'GET',
+      url: `${ORG}/azure-devops/connections/${connection.id}/repositories`
+    })
+    expect(listed.statusCode).toBe(200)
+    expect(listed.json()).toEqual({ repositories: [] })
+    const bound = await h.a.app.inject({ method: 'GET', url: `${ORG}/azure-devops/repositories` })
+    expect(bound.statusCode).toBe(200)
+    expect(bound.json()).toEqual({ bindings: [] })
+    for (const address of [
+      GIT_REPO,
+      'https://example-org.visualstudio.com/DefaultCollection/Example%20Project/_git/Example%20Repo',
+      `https://dev.azure.com/example-org/${PROJECT_ID}/_git/${REPOSITORY_ID}`
+    ]) {
+      expect((await createAgent(h, address, 'read')).statusCode).toBe(409)
+      const preview = await h.a.app.inject({
+        method: 'GET',
+        url: `${ORG}/git/resolve?${new URLSearchParams({ gitRepo: address })}`
+      })
+      expect(preview.statusCode).toBe(409)
+    }
+    expect(await prisma.agent.count()).toBe(1)
+    expect(await prisma.azureDevOpsRepositoryBinding.count()).toBe(1)
+  })
+
+  it('caps inferred workspace access and refuses an explicit increase without changing the workspace', async () => {
+    const h = harness()
+    await h.connect()
+    h.fake.effectivePermissions.set(resource, { effectiveAllow: 2 })
+    const created = await createAgent(h, GIT_REPO)
+    expect(created.statusCode).toBe(201)
+    expect(created.json().workspace.credential.access).toBe('read')
+    expect((await createAgent(h, GIT_REPO, 'write')).statusCode).toBe(409)
+    const before = await prisma.agent.findUniqueOrThrow({ where: { id: created.json().id } })
+    const replaced = await h.a.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${before.id}/workspace`,
+      payload: { mode: 'git', gitRepo: GIT_REPO, access: 'write' }
+    })
+    expect(replaced.statusCode).toBe(409)
+    expect(await prisma.agent.findUniqueOrThrow({ where: { id: before.id } })).toEqual(before)
+  })
+
+  it('gates additional grants and every increase with fresh human permissions', async () => {
+    const h = harness()
+    const connection = await h.connect()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId)
+    const grant = (access: string) =>
+      h.a.app.inject({
+        method: 'POST',
+        url: `${ORG}/agents/${agentId}/repos`,
+        payload: { provider: 'azure-devops', connectionId: connection.id, repositoryId: REPOSITORY_ID, access }
+      })
+    h.fake.effectivePermissions.set(resource, {})
+    expect((await grant('read')).statusCode).toBe(403)
+    expect(await prisma.azureDevOpsRepositoryBinding.count()).toBe(0)
+    h.fake.effectivePermissions.set(resource, { effectiveAllow: 2 })
+    expect((await grant('write')).statusCode).toBe(403)
+    const granted = await grant('read')
+    expect(granted.statusCode).toBe(200)
+    const grantId = granted.json().id as string
+    const upgrade = (access: string) =>
+      h.a.app.inject({
+        method: 'PATCH',
+        url: `${ORG}/agents/${agentId}/repos/${grantId}`,
+        payload: { access }
+      })
+    h.fake.effectivePermissions.set(resource, {})
+    expect((await upgrade('comment')).statusCode).toBe(403)
+    expect((await h.a.deps.repos.agentRepoAuth.listForAgent(AgentId(agentId)))[0]!.access).toBe('read')
+    h.fake.effectivePermissions.set(resource, { effectiveAllow: 2 })
+    expect((await upgrade('comment')).statusCode).toBe(200)
+    expect((await upgrade('write')).statusCode).toBe(403)
+    h.fake.effectivePermissions.set(resource, { effectiveAllow: 6 })
+    expect((await upgrade('write')).statusCode).toBe(200)
+  })
+
+  it('returns a retryable provider failure without creating repository authority', async () => {
+    const h = harness()
+    await h.connect()
+    const fetch = h.fake.api.fetch.bind(h.fake.api)
+    h.fake.api.fetch = (url, init) =>
+      url.includes('/accesscontrollists/') ? Promise.resolve(Response.json({}, { status: 503 })) : fetch(url, init)
+    expect((await createAgent(h, GIT_REPO, 'read')).statusCode).toBe(502)
+    expect(await prisma.azureDevOpsRepositoryBinding.count()).toBe(0)
+  })
+})
 
 describe('connecting an own application (§3.2)', () => {
   it('verifies the identity, records the organization instance, and never echoes the secret', async () => {

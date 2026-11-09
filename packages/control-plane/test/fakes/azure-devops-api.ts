@@ -1,5 +1,7 @@
 // A stateful fake of the Entra token endpoint and dev.azure.com, shaped like azure-devops-integration.md §12's answers; every identifier is synthetic.
 import { AzureDevOpsApiClient, type FetchLike } from '../../src/azure-devops/api.js'
+import { AzureDevOpsUserAuthzService } from '../../src/azure-devops/user-authz.js'
+import type { AzureDevOpsConnectionService } from '../../src/azure-devops/connection.service.js'
 
 // The fixed hosts themselves: the fake answers in place of the network, so the production URLs are what is exercised.
 export const LOGIN_BASE = 'https://login.microsoftonline.com'
@@ -23,6 +25,10 @@ export const SECOND_PROJECT_ID = '00000000-0000-4000-8000-000000000004'
 export const AUTH_CODE = 'example-code'
 export const ADMIN_TOKEN = 'example-admin-token'
 export const ORGANIZATION = 'example-org'
+export const USER_OBJECT_ID = '00000000-0000-4000-8000-0000000000a2'
+export const USER_IDENTITY_ID = '00000000-0000-4000-8000-0000000000a3'
+export const USER_DESCRIPTOR = `Microsoft.IdentityModel.Claims.ClaimsIdentity;${TENANT_ID}\\${USER_OBJECT_ID}`
+export const LINKED_MICROSOFT = { objectId: USER_OBJECT_ID, email: 'alex@example.test' }
 export const PROJECT = 'Example Project'
 export const REPOSITORY = 'Example Repo'
 
@@ -101,6 +107,23 @@ const PROJECT_NAMESPACE = '52d39943-cb85-4d7f-8fa8-c6baac873819'
 const GIT_NAMESPACE = '2e9eb7ed-3c0a-47d4-87c1-0ffdd275fd87'
 
 export class FakeAzureDevOps {
+  readonly user = {
+    id: USER_IDENTITY_ID,
+    objectId: USER_OBJECT_ID,
+    tenantId: TENANT_ID,
+    descriptor: USER_DESCRIPTOR,
+    email: LINKED_MICROSOFT.email,
+    active: true,
+    metaType: 'member',
+    accessLevel: {
+      accountLicenseType: 'express',
+      licensingSource: 'account',
+      msdnLicenseType: 'none',
+      status: 'active'
+    }
+  }
+  readonly effectivePermissions = new Map<string, { effectiveAllow?: number; effectiveDeny?: number }>()
+  projectVisibility: 'private' | 'public' = 'private'
   readonly requests: Array<{ method: string; url: string; body?: string }> = []
   /** Projects where the service principal holds View and Edit subscriptions (§11.1). */
   readonly serviceHookGrants = new Set<string>()
@@ -161,6 +184,14 @@ export class FakeAzureDevOps {
     this.repositories = opts.repositories ?? [exampleRepository()]
     this.expiresInSec = opts.expiresInSec ?? 3599
     this.api = new AzureDevOpsApiClient({ fetch: this.fetch, ...(now ? { now } : {}) })
+  }
+
+  userAuthz(service: Pick<AzureDevOpsConnectionService, 'withApi'>, linked = true): AzureDevOpsUserAuthzService {
+    return new AzureDevOpsUserAuthzService({
+      api: this.api,
+      service,
+      microsoftIdentityFor: async () => (linked ? LINKED_MICROSOFT : null)
+    })
   }
 
   private json(status: number, body: unknown, headers: Record<string, string> = {}): Response {
@@ -227,10 +258,51 @@ export class FakeAzureDevOps {
   private administration(url: string, method: string, init?: RequestInit): Response {
     const auth = new Headers(init?.headers).get('authorization') ?? ''
     if (url.startsWith(`${GRAPH_BASE}/${ORGANIZATION}/_apis/identities?`) && auth.startsWith('Bearer example-token-')) {
+      if (new URL(url).searchParams.get('searchFilter') === 'MailAddress') {
+        return this.json(200, {
+          value: [
+            {
+              id: this.user.id,
+              descriptor: this.user.descriptor,
+              providerDisplayName: 'Alex Example',
+              isActive: this.user.active,
+              isContainer: false,
+              properties: {
+                SchemaClassName: { $value: 'User' },
+                Domain: { $value: this.user.tenantId },
+                Mail: { $value: this.user.email },
+                'http://schemas.microsoft.com/identity/claims/objectidentifier': { $value: this.user.objectId }
+              }
+            }
+          ]
+        })
+      }
       const id = new URL(url).searchParams.get('identityIds') ?? ''
       const identity = this.identities.get(id)
       // The live API answers an unknown id with a null entry.
       return this.json(200, { count: 1, value: [identity ? { id, ...identity } : null] })
+    }
+    if (
+      url.startsWith(`${ENTITLEMENTS_BASE}/${ORGANIZATION}/_apis/userentitlements?`) &&
+      auth.startsWith('Bearer example-token-')
+    ) {
+      return this.json(200, {
+        items: [
+          {
+            id: this.user.id,
+            user: {
+              origin: 'aad',
+              originId: this.user.objectId,
+              domain: this.user.tenantId,
+              subjectKind: 'user',
+              metaType: this.user.metaType
+            },
+            accessLevel: this.user.accessLevel
+          }
+        ],
+        continuationToken: null,
+        totalCount: 1
+      })
     }
     if (auth !== `Bearer ${ADMIN_TOKEN}`) {
       return this.json(401, { message: 'unauthorized' })
@@ -544,6 +616,29 @@ export class FakeAzureDevOps {
         this.subscriptions.set(id, replaced)
         return this.json(200, this.masked(replaced))
       }
+    }
+    if (path.startsWith(`/${ORGANIZATION}/_apis/projects/`) && method === 'GET') {
+      return this.json(200, { id: path.split('/').at(-1), visibility: this.projectVisibility })
+    }
+    if (
+      path.startsWith(`/${ORGANIZATION}/_apis/accesscontrollists/`) &&
+      new URL(url).searchParams.get('includeExtendedInfo') === 'true'
+    ) {
+      const query = new URL(url).searchParams
+      const resource = query.get('token') ?? ''
+      if (this.aclForbidden.has(resource)) return this.json(403, { message: 'Access denied' })
+      const descriptor = query.get('descriptors') ?? ''
+      const bits = this.effectivePermissions.get(resource) ?? { effectiveAllow: path.endsWith(GIT_NAMESPACE) ? 6 : 1 }
+      return this.json(200, {
+        value: [
+          {
+            token: resource,
+            acesDictionary: {
+              [descriptor]: { descriptor, allow: 0, deny: 0, extendedInfo: bits }
+            }
+          }
+        ]
+      })
     }
     if (path === `/${ORGANIZATION}/_apis/accesscontrollists/${GIT_NAMESPACE}` && method === 'GET') {
       const token = new URL(url).searchParams.get('token') ?? ''

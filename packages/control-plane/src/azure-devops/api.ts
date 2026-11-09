@@ -310,25 +310,35 @@ export interface AzureDevOpsUserIdentity {
   email: string
 }
 
-/** Resolve a linked Microsoft person within this tenant; the email searches candidates, while the Entra ID proves the match. */
-export async function readMicrosoftUser(
+interface MicrosoftIdentityLookup {
+  organization: string
+  tenantId: string
+  objectId: string
+  email: string
+}
+
+interface RawMicrosoftIdentity {
+  id?: unknown
+  descriptor?: unknown
+  providerDisplayName?: unknown
+  isActive?: unknown
+  isContainer?: unknown
+  properties?: Record<string, { $value?: unknown }>
+}
+
+// Email locates candidates; only the linked object ID within the connection's tenant establishes identity.
+async function findMicrosoftIdentity(
   client: AzureDevOpsApiClient,
   token: string,
-  input: { organization: string; tenantId: string; objectId: string; email: string }
-): Promise<AzureDevOpsUserIdentity | null> {
-  type Identity = {
-    providerDisplayName?: unknown
-    isActive?: unknown
-    isContainer?: unknown
-    properties?: Record<string, { $value?: unknown }>
-  }
+  input: MicrosoftIdentityLookup
+): Promise<RawMicrosoftIdentity | null> {
   const query = new URLSearchParams({
     searchFilter: 'MailAddress',
     filterValue: input.email,
     queryMembership: 'None',
     'api-version': API_VERSION
   })
-  const result = await azureDevOpsCall<{ value?: Identity[] }>(
+  const result = await azureDevOpsCall<{ value?: RawMicrosoftIdentity[] }>(
     client,
     token,
     input.organization,
@@ -348,9 +358,33 @@ export async function readMicrosoftUser(
       ) &&
       same(identity.properties?.Mail?.$value, input.email)
   )
-  if (matches.length !== 1) return null
-  const name = matches[0]!.providerDisplayName
+  return matches.length === 1 ? matches[0]! : null
+}
+
+export async function readMicrosoftUser(
+  client: AzureDevOpsApiClient,
+  token: string,
+  input: MicrosoftIdentityLookup
+): Promise<AzureDevOpsUserIdentity | null> {
+  const name = (await findMicrosoftIdentity(client, token, input))?.providerDisplayName
   return typeof name === 'string' && name.trim() ? { name: name.trim(), email: input.email } : null
+}
+
+export interface AzureDevOpsMicrosoftIdentity {
+  id: string
+  descriptor: string
+}
+
+// Authorization needs the stable identity and security descriptor, independently of its display name.
+export async function readMicrosoftIdentity(
+  client: AzureDevOpsApiClient,
+  token: string,
+  input: MicrosoftIdentityLookup
+): Promise<AzureDevOpsMicrosoftIdentity | null> {
+  const identity = await findMicrosoftIdentity(client, token, input)
+  return identity && isGuid(identity.id) && typeof identity.descriptor === 'string' && identity.descriptor.trim()
+    ? { id: identity.id.toLowerCase(), descriptor: identity.descriptor }
+    : null
 }
 
 /** One repository as the identity sees it (§5), keyed by GUID. */

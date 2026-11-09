@@ -81,6 +81,7 @@ function harness(opts: { deploymentApplication?: boolean } = {}) {
   running = buildHttpApp(prisma, {}, undefined, undefined, {
     azureDevOps: {
       connections: service,
+      userAuthz: fake.userAuthz(service),
       bindings: new AzureDevOpsBindingService({ connections: connectionRepo, bindings, service, api: fake.api }),
       connect
     }
