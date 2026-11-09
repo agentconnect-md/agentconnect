@@ -183,6 +183,14 @@ class FakeStore implements DreamStorePort {
 // The JSON reply now carries only review-queue proposals; the store itself is what
 // the model WROTE through the memory tools, so a fake extraction has to write too.
 const PROPOSAL = JSON.stringify({ agentSkills: [], organizationKnowledge: [], organizationSkills: [] })
+/** A reply that drops the named snapshot topics as transient, the only way a dream now removes one. */
+const dropping = (...paths: string[]): string =>
+  JSON.stringify({
+    agentSkills: [],
+    organizationKnowledge: [],
+    organizationSkills: [],
+    revisions: paths.map((path) => ({ path, change: 'dropped', why: 'transient', note: 'scratch' }))
+  })
 
 /** Stand in for the model writing its rebuilt store through the bound memory tools.
  *  Returns the topics written, which is what the daemon reports as provenance. */
@@ -522,10 +530,9 @@ describe('DreamRunner pipeline', () => {
   })
 
   it('stages what the model wrote through the shared write path, indexed by its own headers', async () => {
-    // The composed contract: a dream writes with the memory tools bound to its staged
-    // store, so the same normalize/stamp/index-regen a turn gets applies there — and a
-    // topic the model never rewrote is simply gone, because staging replaces the store.
+    // A dream writes through the memory tools bound to its staged store; a topic leaves only by a dropped revision.
     const { dir, store, runner } = await setup({
+      extract: async () => dropping('prefs.md'),
       stagedWrite: async (stagedStore) => {
         await writeWithSidecar(
           stagedStore,
@@ -551,6 +558,39 @@ describe('DreamRunner pipeline', () => {
     expect(adopted).toMatch(/modified: \d{4}-/)
     expect(await readMemoryFile(local(dir), MEMORY_INDEX)).toBe(stagedIndex?.content)
     expect(await readMemoryFile(local(dir), 'prefs.md')).toBe('')
+  })
+
+  it('carries forward a snapshot topic the model neither wrote nor named', async () => {
+    const { store, runner } = await setup({ stagedFiles: [{ path: 'fresh.md', content: '- newly learned fact' }] })
+    const started = await runner.start('a1', { trigger: 'manual' })
+    await settle(store, started.dreamId)
+
+    expect((await runner.stagedFiles('a1', started.dreamId))?.map((f) => f.name)).toEqual([
+      'MEMORY.md',
+      'fresh.md',
+      'prefs.md'
+    ])
+    expect((await runner.stagedRead('a1', started.dreamId, 'prefs.md'))?.content).toContain('- uses tabs again')
+  })
+
+  it('keeps a file whose drop is invalid and still auto-adopts the dream', async () => {
+    const { dir, store, runner } = await setup({
+      policy: { enabled: true, autoAdopt: true },
+      stagedFiles: [{ path: 'fresh.md', content: '- newly learned fact' }],
+      extract: async () =>
+        JSON.stringify({
+          revisions: [{ path: 'prefs.md', change: 'dropped', why: 'contradicted', sessionIds: ['forged'] }]
+        })
+    })
+    const started = await runner.start('a1', { trigger: 'schedule' })
+    await settle(store, started.dreamId)
+    for (let i = 0; i < 100 && store.dreams.get(started.dreamId)?.status !== 'adopted'; i++) {
+      await new Promise((r) => setTimeout(r, 5))
+    }
+
+    expect(store.dreams.get(started.dreamId)?.status).toBe('adopted')
+    expect(await readMemoryFile(local(dir), 'prefs.md')).toContain('- uses tabs again')
+    expect(await readMemoryFile(local(dir), 'fresh.md')).toContain('- newly learned fact')
   })
 
   it('fails a dream that wrote no memory rather than staging a store that deletes every topic', async () => {
@@ -1182,6 +1222,7 @@ describe('DreamRunner adoption', () => {
         { path: 'prefs.md', content: '- consolidated preference' },
         { path: 'fresh.md', content: '- newly learned fact' }
       ],
+      extract: async () => dropping('obsolete.md'),
       historyFor: () => sink
     })
     await writeMemoryFile(local(dir), 'obsolete.md', '- no longer relevant\n', undefined, 'tool', sink)
@@ -1286,7 +1327,8 @@ describe('DreamRunner adoption', () => {
       stagedFiles: [
         { path: 'prefs.md', content: '- consolidated preference' },
         { path: 'fresh.md', content: '- newly learned fact' }
-      ]
+      ],
+      extract: async () => dropping('obsolete.md')
     })
     await writeWithSidecar(local(dir), 'obsolete.md', '- no longer relevant\n', undefined, 'tool')
     const started = await runner.start('a1', { trigger: 'manual' })
