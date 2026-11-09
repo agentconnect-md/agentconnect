@@ -12,6 +12,14 @@ saved reply is available; saving a prompt alone must not hide an unfinished repl
 A completed turn with no text reply retires its live work on the next transcript
 refresh after its prompt has been saved and all stream lanes finish.
 
+## Legacy webchat connection retries
+
+Before a message reaches the socket, a failed legacy webchat connection retries up to
+six times with delays of 0.5, 1, 2, 4, 4, and 4 seconds. The message keeps its identity
+and appears once. Explicit API refusals are not retried. Stop cancels an unsent message
+and its pending retries; leaving the console also cancels them. Messages already sent
+continue through the existing acknowledgement and stream-recovery path.
+
 ## User-facing language
 
 User-facing UI copy must describe concepts, actions, and outcomes that matter to the

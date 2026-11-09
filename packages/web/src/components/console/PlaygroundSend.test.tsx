@@ -37,7 +37,7 @@ vi.mock('@/lib/api', () => ({
   // Rejects by default so the acceptance tests keep their fail-fast send path
   // (busy clears, the queue dispatcher runs); the post-frame tests resolve it.
   webchatWsUrl: vi.fn(async () => {
-    throw new Error('no relay in this test')
+    throw new (await import('@/lib/api')).ApiError('no relay in this test', 503)
   }),
   webchatSessionWsUrl: vi.fn(async () => 'wss://relay.test/session')
 }))
@@ -57,6 +57,7 @@ class StubSocket {
   removeEventListener = vi.fn()
 }
 
+let pgCancel: ReturnType<typeof usePlayground>['pgCancel']
 let pgSend: ReturnType<typeof usePlayground>['pgSend']
 let pgNotice: ReturnType<typeof usePlayground>['pgNotice']
 let setPgInput: ReturnType<typeof usePlayground>['setPgInput']
@@ -89,6 +90,7 @@ let getPgRelayFeatures: ReturnType<typeof usePlayground>['getPgRelayFeatures']
 
 function Probe() {
   const pg = usePlayground()
+  pgCancel = pg.pgCancel
   pgSend = pg.pgSend
   pgNotice = pg.pgNotice
   setPgInput = pg.setPgInput
@@ -148,7 +150,7 @@ afterEach(() => {
 describe('Decision runtime startup', () => {
   afterEach(async () => {
     const api = await import('@/lib/api')
-    vi.mocked(api.webchatWsUrl).mockRejectedValue(new Error('no relay in this test'))
+    vi.mocked(api.webchatWsUrl).mockRejectedValue(new api.ApiError('no relay in this test', 503))
   })
 
   const agent = {
@@ -253,7 +255,7 @@ describe('Runtime changes before the first turn', () => {
 
   afterEach(async () => {
     const api = await import('@/lib/api')
-    vi.mocked(api.webchatWsUrl).mockRejectedValue(new Error('no relay in this test'))
+    vi.mocked(api.webchatWsUrl).mockRejectedValue(new api.ApiError('no relay in this test', 503))
   })
 
   it('sends no set_* frame until the daemon reports a session, then sends them', async () => {
@@ -2463,58 +2465,175 @@ describe('a dial that dies before the turn reaches the socket', () => {
   /** Let a rebuild settle: its socket is two promises deep (mint, then dial). */
   const settle = () => act(async () => {})
 
+  afterEach(() => vi.useRealTimers())
+
   beforeEach(async () => {
+    vi.useFakeTimers()
     DyingSocket.instances = []
     Reflect.set(globalThis, 'WebSocket', DyingSocket)
     const api = await import('@/lib/api')
     vi.mocked(api.webchatWsUrl).mockResolvedValue('wss://relay.test/ws')
   })
 
-  it.each(['error', 'close'] as const)(
-    'rebuilds once after %s and puts the SAME turn on the fresh socket',
-    async (event) => {
-      await act(async () => {
-        pgSend('s1', 'agent-1', 'hello')
-      })
-      await act(async () => {
-        const socket = DyingSocket.instances[0]!
-        if (event === 'error') socket.onerror?.({})
-        else {
-          socket.readyState = 1
-          socket.onopen?.()
-          socket.readyState = 3
-          socket.onclose?.()
-        }
-      })
-      await settle()
-      expect(DyingSocket.instances).toHaveLength(2)
-      expect(isPgBusy('s1')).toBe(true)
-      const live = DyingSocket.instances[1]!
-      await act(async () => {
-        live.readyState = 1
-        live.onopen?.()
-        live.onmessage?.({ data: JSON.stringify({ type: 'ready' }) })
-      })
-      const turnId = getLiveSteps('s1').find((s) => s.text === 'hello')?.turnId
-      expect(JSON.parse(String(live.send.mock.calls[0]?.[0]))).toMatchObject({ text: 'hello', turnId })
-      expect(getLiveSteps('s1').some((s) => String(s.text).includes('couldn’t connect to the chat server'))).toBe(false)
-    }
-  )
+  it.each(['error', 'close'] as const)('retries after %s and puts the SAME turn on the fresh socket', async (event) => {
+    await act(async () => {
+      pgSend('s1', 'agent-1', 'hello')
+    })
+    await act(async () => {
+      const socket = DyingSocket.instances[0]!
+      if (event === 'error') socket.onerror?.({})
+      else {
+        socket.readyState = 1
+        socket.onopen?.()
+        socket.readyState = 3
+        socket.onclose?.()
+      }
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500)
+    })
+    expect(DyingSocket.instances).toHaveLength(2)
+    expect(isPgBusy('s1')).toBe(true)
+    const live = DyingSocket.instances[1]!
+    await act(async () => {
+      live.readyState = 1
+      live.onopen?.()
+      live.onmessage?.({ data: JSON.stringify({ type: 'ready' }) })
+    })
+    const turnId = getLiveSteps('s1').find((s) => s.text === 'hello')?.turnId
+    expect(JSON.parse(String(live.send.mock.calls[0]?.[0]))).toMatchObject({ text: 'hello', turnId })
+    expect(getLiveSteps('s1').some((s) => String(s.text).includes('couldn’t connect to the chat server'))).toBe(false)
+  })
 
-  it('reports the turn unsent when the rebuilt dial dies too', async () => {
+  it('backs off through six retries before reporting an unsent turn', async () => {
+    await act(async () => {
+      pgSend('s1', 'agent-1', 'hello')
+    })
+    for (const [attempt, delay] of [500, 1000, 2000, 4000, 4000, 4000].entries()) {
+      await act(async () => {
+        DyingSocket.instances[attempt]!.onerror?.({})
+      })
+      expect(isPgBusy('s1')).toBe(true)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(delay - 1)
+      })
+      expect(DyingSocket.instances).toHaveLength(attempt + 1)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1)
+      })
+      expect(DyingSocket.instances).toHaveLength(attempt + 2)
+    }
+    await act(async () => {
+      DyingSocket.instances[6]!.onerror?.({})
+    })
+    expect(isPgBusy('s1')).toBe(false)
+    expect(
+      getLiveSteps('s1').filter((s) => String(s.text).includes('couldn’t connect to the chat server'))
+    ).toHaveLength(1)
+    expect(DyingSocket.instances.every((s) => s.send.mock.calls.length === 0)).toBe(true)
+  })
+
+  it('reports one warning when every dial of a continued conversation fails', async () => {
+    await act(async () => {
+      pgSend('s1', 'agent-1', 'hello', 'c1')
+    })
+    for (const [attempt, delay] of [500, 1000, 2000, 4000, 4000, 4000].entries()) {
+      await act(async () => {
+        const socket = DyingSocket.instances[attempt]!
+        socket.onerror?.({})
+        socket.onclose?.()
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(delay)
+      })
+    }
+    await act(async () => {
+      const socket = DyingSocket.instances[6]!
+      socket.onerror?.({})
+      socket.onclose?.()
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000)
+    })
+    expect(DyingSocket.instances).toHaveLength(7)
+    expect(isPgBusy('s1')).toBe(false)
+    const warnings = getLiveSteps('s1').filter((s) => s.kind === 'done')
+    expect(warnings).toHaveLength(1)
+    expect(String(warnings[0]?.text)).toContain('couldn’t connect to the chat server')
+  })
+
+  it('recovers after several failures without duplicating the prompt', async () => {
+    await act(async () => {
+      pgSend('s1', 'agent-1', 'hello')
+    })
+    for (const [attempt, delay] of [500, 1000, 2000].entries()) {
+      await act(async () => {
+        DyingSocket.instances[attempt]!.onerror?.({})
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(delay)
+      })
+    }
+    const socket = DyingSocket.instances[3]!
+    await act(async () => {
+      socket.readyState = 1
+      socket.onopen?.()
+      socket.onmessage?.({ data: JSON.stringify({ type: 'ready' }) })
+    })
+    const prompts = getLiveSteps('s1').filter((step) => step.kind === 'msg')
+    expect(prompts).toHaveLength(1)
+    expect(socket.send).toHaveBeenCalledTimes(1)
+    expect(JSON.parse(String(socket.send.mock.calls[0]?.[0]))).toMatchObject({
+      turnId: prompts[0]!.turnId,
+      text: 'hello'
+    })
+    expect(DyingSocket.instances.slice(0, 3).every((s) => s.send.mock.calls.length === 0)).toBe(true)
+  })
+
+  it('does not send when stopped during an outstanding dial', async () => {
+    await act(async () => {
+      pgSend('s1', 'agent-1', 'hello')
+    })
+    const socket = DyingSocket.instances[0]!
+    act(() => pgCancel('s1', 'agent-1'))
+    await act(async () => {
+      socket.readyState = 1
+      socket.onopen?.()
+      socket.onmessage?.({ data: JSON.stringify({ type: 'ready' }) })
+    })
+    expect(socket.send).not.toHaveBeenCalled()
+    expect(isPgBusy('s1')).toBe(false)
+  })
+
+  it('cancels a pending retry without sending the message later', async () => {
     await act(async () => {
       pgSend('s1', 'agent-1', 'hello')
     })
     await act(async () => {
       DyingSocket.instances[0]!.onerror?.({})
     })
-    await settle()
+    act(() => pgCancel('s1', 'agent-1'))
     await act(async () => {
-      DyingSocket.instances[1]!.onerror?.({})
+      await vi.advanceTimersByTimeAsync(30_000)
     })
-    await settle()
-    expect(DyingSocket.instances).toHaveLength(2)
-    expect(getLiveSteps('s1').some((s) => String(s.text).includes('couldn’t connect to the chat server'))).toBe(true)
+    expect(DyingSocket.instances).toHaveLength(1)
+    expect(DyingSocket.instances[0]!.send).not.toHaveBeenCalled()
+    expect(isPgBusy('s1')).toBe(false)
+  })
+
+  it('clears a pending retry when the console unmounts', async () => {
+    await act(async () => {
+      pgSend('s1', 'agent-1', 'hello')
+    })
+    await act(async () => {
+      DyingSocket.instances[0]!.onerror?.({})
+    })
+    act(() => root.render(null))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000)
+    })
+    expect(DyingSocket.instances).toHaveLength(1)
+    expect(DyingSocket.instances[0]!.send).not.toHaveBeenCalled()
   })
 
   it('does not rebuild on a CP verdict — a refusal is an answer, not a blip', async () => {
@@ -2836,7 +2955,7 @@ describe('messages in a coordinator conversation’s threads (webchat-threads.md
   }
   afterEach(async () => {
     const api = await import('@/lib/api')
-    vi.mocked(api.webchatWsUrl).mockRejectedValue(new Error('no relay in this test'))
+    vi.mocked(api.webchatWsUrl).mockRejectedValue(new api.ApiError('no relay in this test', 503))
   })
 
   it('sends a message in a thread without touching the composer, and keeps what answers there in it', async () => {
