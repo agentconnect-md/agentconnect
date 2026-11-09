@@ -3735,6 +3735,23 @@ export interface DreamFilesDto {
   reviewToken?: string
 }
 
+/** One file a dream corrected, dropped or moved, with its reason; `problem` set means the daemon did not apply it. */
+export interface DreamRevisionDto {
+  path: string
+  change: 'corrected' | 'dropped' | 'moved'
+  why?: 'contradicted' | 'transient' | 'expired' | 'secret'
+  note: string
+  sessionIds: string[]
+  into: string[]
+  problem?: string
+}
+
+export interface DreamRevisionsDto {
+  /** false ⇒ the dream kept no revisions log (an older dream, or one before the latest adoption). */
+  exists: boolean
+  revisions: DreamRevisionDto[]
+}
+
 /** A dream is terminal (won't change) once it reaches one of these states. */
 export function isDreamTerminal(status: DreamStatus): boolean {
   return status !== 'pending' && status !== 'running'
@@ -3831,6 +3848,11 @@ export async function discardDream(agentId: string, dreamId: string): Promise<Dr
 /** List a dream's staged output files (the review surface). */
 export async function listDreamFiles(agentId: string, dreamId: string): Promise<DreamFilesDto> {
   return apiGet<DreamFilesDto>(`${dreamBase(agentId)}/${encodeURIComponent(dreamId)}/files`)
+}
+
+/** Why a dream changed each file it named — an explanation only, never a gate on adoption. */
+export async function listDreamRevisions(agentId: string, dreamId: string): Promise<DreamRevisionsDto> {
+  return apiGet<DreamRevisionsDto>(`${dreamBase(agentId)}/${encodeURIComponent(dreamId)}/revisions`)
 }
 
 /** Read a staged dream file WHOLE (pages every slice, like fetchAgentMemoryFull). */

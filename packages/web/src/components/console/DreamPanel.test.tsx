@@ -16,6 +16,7 @@ const api = vi.hoisted(() => ({
   discardDream: vi.fn(),
   cancelDream: vi.fn(),
   listDreamFiles: vi.fn(),
+  listDreamRevisions: vi.fn(),
   fetchDreamFileFull: vi.fn(),
   fetchAgentMemoryFull: vi.fn(),
   listAgentMemory: vi.fn(),
@@ -73,6 +74,7 @@ beforeEach(() => {
     files: [{ name: 'MEMORY.md', size: 10, mtime: 'x' }],
     reviewToken: 'sha256:store'
   })
+  api.listDreamRevisions.mockResolvedValue({ exists: true, revisions: [] })
   api.fetchDreamFileFull.mockResolvedValue({ exists: true, content: '# Memory (rebuilt)' })
   api.fetchAgentMemoryFull.mockResolvedValue({ exists: true, content: '# Memory (old)', mtime: null })
   api.listAgentMemory.mockResolvedValue({ exists: true, files: [{ name: 'MEMORY.md', size: 10, mtime: 'x' }] })
@@ -651,5 +653,87 @@ describe('DreamPanel', () => {
     const host = await render({ canEdit: false })
     expect(button(host, 'Accept')?.disabled).toBe(true)
     expect(button(host, 'Dismiss')?.disabled).toBe(true)
+  })
+  it('shows why a dream drops a file beside that file’s diff', async () => {
+    api.listDreams.mockResolvedValue([dream()])
+    api.listAgentMemory.mockResolvedValue({
+      exists: true,
+      files: [
+        { name: 'MEMORY.md', size: 10, mtime: 'x' },
+        { name: 'outage.md', size: 10, mtime: 'x' }
+      ]
+    })
+    api.listDreamRevisions.mockResolvedValue({
+      exists: true,
+      revisions: [
+        {
+          path: 'outage.md',
+          change: 'dropped',
+          why: 'expired',
+          note: 'The March outage is over.',
+          sessionIds: [],
+          into: []
+        }
+      ]
+    })
+    const host = await render()
+    await act(async () => button(host, 'Review')?.click())
+    await act(async () => {
+      await Promise.resolve()
+    })
+    // Deletions sort first, so the dropped file is the one selected and explained.
+    expect(host.textContent).toContain('Dropped: no longer current')
+    expect(host.textContent).toContain('The March outage is over.')
+    expect(api.listDreamRevisions).toHaveBeenCalledWith(AGENT, 'drm-1')
+  })
+
+  it('keeps the review usable when the reasons cannot be read', async () => {
+    api.listDreams.mockResolvedValue([dream()])
+    api.listDreamRevisions.mockRejectedValue(new Error('offline'))
+    const host = await render()
+    await act(async () => button(host, 'Review')?.click())
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(host.querySelector('table[aria-label="Line changes"]')).not.toBeNull()
+    expect(button(host, 'Adopt')?.disabled).toBe(false)
+  })
+
+  it('lists an adopted dream’s per-file reasons, marking the ones it did not apply', async () => {
+    api.listDreams.mockResolvedValue([dream({ status: 'adopted' })])
+    api.listDreamRevisions.mockResolvedValue({
+      exists: true,
+      revisions: [
+        { path: 'deploys.md', change: 'moved', note: 'Merged into ops.', sessionIds: [], into: ['ops.md'] },
+        {
+          path: 'prefs.md',
+          change: 'dropped',
+          note: 'Old.',
+          sessionIds: [],
+          into: [],
+          problem: 'drop without a retention reason'
+        }
+      ]
+    })
+    const host = await render()
+    host.querySelector('details')?.setAttribute('open', '')
+    await act(async () => button(host, 'Reasons')?.click())
+    expect(host.textContent).toContain('deploys.md')
+    expect(host.textContent).toContain('Moved into ops.md')
+    expect(host.textContent).toContain('Merged into ops.')
+    expect(host.textContent).toContain('prefs.md')
+    expect(host.textContent).toContain('Not applied')
+    expect(host.textContent).toContain('The file was kept as it was (drop without a retention reason).')
+    // Explanation only: nothing in it adopts, discards or otherwise acts.
+    expect(api.adoptDream).not.toHaveBeenCalled()
+    expect(api.discardDream).not.toHaveBeenCalled()
+  })
+
+  it('says an older adopted dream’s reasons are no longer kept', async () => {
+    api.listDreams.mockResolvedValue([dream({ status: 'adopted' })])
+    api.listDreamRevisions.mockResolvedValue({ exists: false, revisions: [] })
+    const host = await render()
+    await act(async () => button(host, 'Reasons')?.click())
+    expect(host.textContent).toContain('Reasons are kept only for the latest adopted dream.')
   })
 })

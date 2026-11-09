@@ -11,6 +11,8 @@
 //   3. Review — the staged store a completed dream produced, diffed against
 //      what is live now, plus Adopt / Discard. A dream is STAGED by design, so
 //      the trigger without this review surface would be a dead end.
+//   4. Reasons — why a dream corrected, dropped or moved each file it named, beside
+//      the diff and on the latest adopted dream. An explanation only, never a gate.
 //
 // Everything proxies live to the owning daemon, so an offline agent is an
 // expected state (503 → a friendly notice), not an error.
@@ -28,6 +30,7 @@ import {
   dismissDreamSkill,
   cancelDream,
   listDreamFiles,
+  listDreamRevisions,
   fetchDreamFileFull,
   fetchAgentMemoryFull,
   listAgentMemory,
@@ -36,6 +39,7 @@ import {
   fmtCost,
   ApiError,
   type DreamDto,
+  type DreamRevisionDto,
   type DreamSkillContentDto,
   type MemoryFileEntry
 } from '@/lib/api'
@@ -136,6 +140,7 @@ export function DreamPanel({
   const [actionError, setActionError] = useState<string | null>(null)
   const [actionNotice, setActionNotice] = useState<string | null>(null)
   const [reviewing, setReviewing] = useState<string | null>(null)
+  const [explaining, setExplaining] = useState<string | null>(null)
   const [confirmStart, setConfirmStart] = useState(false)
   const [confirmAdopt, setConfirmAdopt] = useState<{ dreamId: string; reviewToken?: string } | null>(null)
   // The snapshot fence tripped: the live store moved under this dream. Adopting anyway is a
@@ -385,6 +390,15 @@ export function DreamPanel({
                   {reviewing === dream.dreamId ? t('hide') : t('review')}
                 </Button>
               ) : null}
+              {dream.status === 'adopted' ? (
+                <Button
+                  variant="secondary"
+                  size="xs"
+                  onClick={() => setExplaining(explaining === dream.dreamId ? null : dream.dreamId)}
+                >
+                  {explaining === dream.dreamId ? t('hide') : t('reasons')}
+                </Button>
+              ) : null}
               {dream.status === 'completed' && canEdit ? (
                 <Button variant="secondary" size="xs" disabled={busy} onClick={() => discard(dream.dreamId)}>
                   {t('discard')}
@@ -401,6 +415,11 @@ export function DreamPanel({
                 </Button>
               ) : null}
             </span>
+            {dream.status === 'adopted' && explaining === dream.dreamId ? (
+              <div className="basis-full">
+                <DreamRevisions agentId={agentId} dreamId={dream.dreamId} />
+              </div>
+            ) : null}
           </li>
         )
       })}
@@ -614,6 +633,7 @@ function DreamReview({
   // Same-bytes review fence token from the staged listing; echoed on Adopt so the
   // daemon binds adoption to exactly the bytes shown here (task #36 Phase B).
   const [reviewToken, setReviewToken] = useState<string | undefined>(undefined)
+  const [revisions, setRevisions] = useState<Map<string, DreamRevisionDto>>(new Map())
   const request = useRef(0)
 
   useEffect(() => {
@@ -622,11 +642,18 @@ function DreamReview({
     setSelected(null)
     reset()
     setReviewToken(undefined)
+    setRevisions(new Map())
     void (async () => {
       try {
-        const [stagedPage, livePage] = await Promise.all([listDreamFiles(agentId, dreamId), listAgentMemory(agentId)])
+        const [stagedPage, livePage, revisionPage] = await Promise.all([
+          listDreamFiles(agentId, dreamId),
+          listAgentMemory(agentId),
+          // Reasons only explain the diff, so a failed read leaves the review usable without them.
+          listDreamRevisions(agentId, dreamId).catch(() => null)
+        ])
         if (!alive) return
         setReviewToken(stagedPage.reviewToken)
+        setRevisions(new Map((revisionPage?.revisions ?? []).map((revision) => [revision.path, revision])))
         const stagedNames = new Set(stagedPage.files.map((f: MemoryFileEntry) => f.name))
         const liveNames = new Set(livePage.exists ? livePage.files.map((f: MemoryFileEntry) => f.name) : [])
         const merged = [...new Set([...stagedNames, ...liveNames])]
@@ -673,6 +700,7 @@ function DreamReview({
   }, [agentId, dreamId, selected, refused])
 
   const deleting = (paths ?? []).filter((p) => p.live && !p.staged)
+  const revision = selected ? revisions.get(selected) : undefined
 
   return (
     <div className="flex flex-col gap-3 rounded-(--radius-md) border border-(--border-subtle) bg-(--surface-sunken) p-3">
@@ -723,7 +751,97 @@ function DreamReview({
           <Spinner /> {t('loading')}
         </div>
       ) : selected ? (
-        <LineDiff before={live} after={staged} />
+        <>
+          {revision ? <RevisionReason revision={revision} /> : null}
+          <LineDiff before={live} after={staged} />
+        </>
+      ) : null}
+    </div>
+  )
+}
+
+/** What a dream did to one file and why, in one line plus the model's note; an unapplied entry says so. */
+function RevisionReason({ revision }: { revision: DreamRevisionDto }) {
+  const t = useTranslations('Agents.detail.dreams')
+  const what =
+    revision.change === 'moved'
+      ? t('revisionMoved', { files: revision.into.join(', ') })
+      : revision.change === 'dropped'
+        ? t('revisionDropped', { why: revision.why ?? 'other' })
+        : t('revisionCorrected')
+  return (
+    <div className="flex flex-col gap-[2px] rounded-sm border border-(--border-subtle) bg-(--surface-card) px-3 py-2 font-sans text-[12px] font-normal leading-[1.5]">
+      <span className="flex flex-wrap items-center gap-2">
+        <span
+          className={revision.problem ? 'font-semibold text-(--text-tertiary)' : 'font-semibold text-(--text-primary)'}
+        >
+          {what}
+        </span>
+        {revision.problem ? (
+          <span className="rounded-full bg-(--surface-sunken) px-2 py-[1px] text-[10.5px] text-(--text-secondary)">
+            {t('revisionNotApplied')}
+          </span>
+        ) : null}
+      </span>
+      {revision.note ? <span className="text-(--text-secondary)">{revision.note}</span> : null}
+      {revision.problem ? (
+        <span className="text-[11px] text-(--text-tertiary)">
+          {revision.change === 'corrected'
+            ? t('revisionProblem', { problem: revision.problem })
+            : t('revisionProblemKept', { problem: revision.problem })}
+        </span>
+      ) : null}
+    </div>
+  )
+}
+
+/** The reasons an adopted dream gave for each file it named, read live from its owning daemon. */
+function DreamRevisions({ agentId, dreamId }: { agentId: string; dreamId: string }) {
+  const t = useTranslations('Agents.detail.dreams')
+  const [page, setPage] = useState<{ exists: boolean; revisions: DreamRevisionDto[] } | null>(null)
+  const { attempt, error, asleepNotice, reset, refused } = useStagedRead(agentId, page !== null)
+
+  useEffect(() => {
+    let alive = true
+    setPage(null)
+    reset()
+    void listDreamRevisions(agentId, dreamId)
+      .then((next) => {
+        if (alive) setPage(next)
+      })
+      .catch((e: unknown) => {
+        if (alive) refused(e, 'Could not load the reasons.')
+      })
+    return () => {
+      alive = false
+    }
+    // `attempt` is the wake's re-issue of this read.
+  }, [agentId, dreamId, attempt, reset, refused])
+
+  return (
+    <div className="mt-2 flex flex-col gap-2 rounded-(--radius-md) border border-(--border-subtle) bg-(--surface-sunken) p-3">
+      {asleepNotice ??
+        (error ? <div className="font-sans text-[12px] leading-normal text-(--status-error)">{error}</div> : null)}
+      {page === null && !error && !asleepNotice ? (
+        <div className="flex items-center gap-2 font-sans text-[12px] text-(--text-tertiary)">
+          <Spinner /> {t('loading')}
+        </div>
+      ) : null}
+      {page && !page.exists ? (
+        <div className="font-sans text-[12px] leading-normal text-(--text-tertiary)">{t('reasonsGone')}</div>
+      ) : null}
+      {page?.exists && page.revisions.length === 0 ? (
+        <div className="font-sans text-[12px] leading-normal text-(--text-tertiary)">{t('noReasons')}</div>
+      ) : null}
+      {page?.revisions.length ? (
+        <ul className="m-0 flex list-none flex-col gap-2 p-0">
+          {page.revisions.map((revision) => (
+            <li key={revision.path} className="flex flex-col gap-1">
+              <span className="font-mono text-[11.5px] leading-normal text-(--text-primary)">{revision.path}</span>
+              <RevisionReason revision={revision} />
+            </li>
+          ))}
+        </ul>
       ) : null}
     </div>
   )

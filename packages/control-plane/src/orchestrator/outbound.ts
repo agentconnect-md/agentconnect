@@ -30,6 +30,7 @@ import {
   MEMORY_ENTRIES_V1_FEATURE,
   MEMORY_ENTRIES_SEARCH_V1_FEATURE,
   MEMORY_ENTRIES_HISTORY_V1_FEATURE,
+  MEMORY_DREAM_REVISIONS_FEATURE,
   MEMORY_ENTRIES_WRITE_V1_FEATURE,
   memoryEntryMutationFits,
   type MemoryEntriesWriteReq,
@@ -148,6 +149,8 @@ import {
   DreamDiscardReq,
   DreamFilesReq,
   DreamFilesPage,
+  DreamRevisionsReq,
+  DreamRevisionsPage,
   DreamFileReadReq,
   DreamFileReadContent,
   DreamSkillReviewReq,
@@ -1017,6 +1020,14 @@ export class ControlSender {
   async dreamFiles(daemonId: string, req: DreamFilesReq): Promise<DreamFilesPage> {
     const c = this.must(daemonId)
     return c.conn.request<DreamFilesPage>('memory/dream/files', req, { epoch: c.sessionEpoch })
+  }
+
+  /** A dream's checked revisions log, proxied and never stored; a daemon without the frame has none to show. */
+  async dreamRevisions(daemonId: string, req: DreamRevisionsReq): Promise<DreamRevisionsPage> {
+    const c = this.must(daemonId)
+    if (!c.capabilities?.features?.includes(MEMORY_DREAM_REVISIONS_FEATURE))
+      return { agentId: req.agentId, dreamId: req.dreamId, exists: false, revisions: [] }
+    return c.conn.request<DreamRevisionsPage>('memory/dream/revisions', req, { epoch: c.sessionEpoch })
   }
 
   /** Full staged body of one candidate, so a reviewer sees what accepting installs. */

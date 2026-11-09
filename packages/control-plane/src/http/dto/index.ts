@@ -4446,6 +4446,21 @@ export const DreamFilesDto = z.object({
   /** Same-bytes review fence token (task #36 Phase B); present only when `exists`. */
   reviewToken: z.string().optional()
 })
+/** `GET …/dreams/:dreamId/revisions` — why the dream changed each file it named; `problem` set means not applied. */
+export const DreamRevisionsDto = z.object({
+  exists: z.boolean(), // false ⇒ no revisions log kept for this dream
+  revisions: z.array(
+    z.object({
+      path: z.string(),
+      change: z.enum(['corrected', 'dropped', 'moved']),
+      why: z.enum(['contradicted', 'transient', 'expired', 'secret']).optional(),
+      note: z.string(),
+      sessionIds: z.array(z.string()),
+      into: z.array(z.string()),
+      problem: z.string().optional()
+    })
+  )
+})
 /** `GET …/dreams/:dreamId/file` — one byte slice of a staged file (memory/read semantics). */
 export const DreamFileDto = z.object({
   path: z.string(),
@@ -4985,6 +5000,7 @@ export type MemoryRecordHistoryPageDtoT = z.infer<typeof MemoryRecordHistoryPage
 export type DreamDtoT = z.infer<typeof DreamDto>
 export type DreamListDtoT = z.infer<typeof DreamListDto>
 export type DreamFilesDtoT = z.infer<typeof DreamFilesDto>
+export type DreamRevisionsDtoT = z.infer<typeof DreamRevisionsDto>
 export type DreamFileDtoT = z.infer<typeof DreamFileDto>
 export type WorkspaceGitStatusDtoT = z.infer<typeof WorkspaceGitStatusDto>
 export type WorkspaceGitDiffDtoT = z.infer<typeof WorkspaceGitDiffDto>

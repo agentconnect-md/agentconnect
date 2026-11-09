@@ -2442,6 +2442,14 @@ or that cites none of the sessions the dream read, is not applied and the file i
 never stops the dream or asks anyone to review it. With automatic acceptance the previous store is the one
 retained backup, so a removed file can be restored only until the next adoption.
 
+The dream's history shows the reason beside each file it named: corrected, dropped
+with its reason, or moved with the files now holding it, plus the model's one-line
+note, and an entry the daemon did not apply is marked "Not applied". A completed
+dream shows the reason above that file's diff; the latest adopted dream shows the
+list under its history row. The reasons are an explanation only — showing them never
+delays or blocks adoption — and, like the backup, they are kept until the next
+adoption.
+
 Reviewing a completed dream shows each file as the same live-to-proposed line diff
 used by managed-memory history. Added and deleted files use an empty live or proposed
 side respectively, so their entire contents are visibly marked as additions or

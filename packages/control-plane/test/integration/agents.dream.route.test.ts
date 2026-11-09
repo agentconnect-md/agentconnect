@@ -29,6 +29,8 @@ import type {
   DreamState,
   DreamListPage,
   DreamFilesPage,
+  DreamRevisionsReq,
+  DreamRevisionsPage,
   DreamFileReadContent
 } from '@agentconnect.md/protocol'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
@@ -118,6 +120,16 @@ class SpyControl {
       entries: [{ name: 'MEMORY.md', size: 12, mtime: '2026-07-24T00:00:00.000Z' }]
     }
   }
+  revisionsCalls: DreamRevisionsReq[] = []
+  async dreamRevisions(_d: string, req: DreamRevisionsReq): Promise<DreamRevisionsPage> {
+    this.revisionsCalls.push(req)
+    return {
+      agentId: AGENT,
+      dreamId: req.dreamId,
+      exists: true,
+      revisions: [{ path: 'outage.md', change: 'dropped', why: 'expired', note: 'over', sessionIds: [], into: [] }]
+    }
+  }
   skillAcceptCalls: DreamSkillReviewReq[] = []
   skillDismissCalls: DreamSkillReviewReq[] = []
   async dreamSkillAccept(_d: string, req: DreamSkillReviewReq): Promise<DreamState> {
@@ -180,6 +192,11 @@ describe('memory dreaming routes — proxy + managed guard', () => {
     const file = await running.app.inject({ url: `${ORG}/agents/${AGENT}/memory/dreams/drm-1/file?path=MEMORY.md` })
     expect(file.json()).toMatchObject({ exists: true, content: '# Memory\n', nextOffset: 9 })
     expect(s.fileCalls[0]).toMatchObject({ path: 'MEMORY.md', offset: 0, limit: 65536 })
+    expect((await running.app.inject({ url: `${ORG}/agents/${AGENT}/memory/dreams/drm-1/revisions` })).json()).toEqual({
+      exists: true,
+      revisions: [{ path: 'outage.md', change: 'dropped', why: 'expired', note: 'over', sessionIds: [], into: [] }]
+    })
+    expect(s.revisionsCalls).toEqual([{ agentId: AGENT, dreamId: 'drm-1' }])
   })
 
   it('adopts (forwarding force) and discards', async () => {

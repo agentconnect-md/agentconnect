@@ -6,7 +6,8 @@ import {
   MEMORY_ENTRIES_V1_FEATURE,
   MEMORY_ENTRIES_SEARCH_V1_FEATURE,
   MEMORY_ENTRIES_HISTORY_V1_FEATURE,
-  MEMORY_ENTRIES_WRITE_V1_FEATURE
+  MEMORY_ENTRIES_WRITE_V1_FEATURE,
+  MEMORY_DREAM_REVISIONS_FEATURE
 } from '@agentconnect.md/protocol'
 import { describe, expect, it, vi } from 'vitest'
 import type { LaunchRepo } from '../persistence/ports.js'
@@ -144,3 +145,13 @@ it.each(['create', 'update', 'delete'] as const)(
     expect(correlator.inflight()).toBe(0)
   }
 )
+
+it('asks only a daemon that serves dream revisions, and shows an old one as having none', async () => {
+  const req = { agentId: DAEMON, dreamId: 'drm-1' }
+  const old = senderWith(['memory-dreaming-v1'])
+  expect(await old.sender.dreamRevisions(DAEMON, req)).toEqual({ ...req, exists: false, revisions: [] })
+  expect(old.sent).toEqual([])
+  const live = senderWith([MEMORY_DREAM_REVISIONS_FEATURE])
+  await live.sender.dreamRevisions(DAEMON, req)
+  expect(live.sent).toEqual([{ type: 'memory/dream/revisions', payload: req, ext: { epoch: 7 }, budget: undefined }])
+})

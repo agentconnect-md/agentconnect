@@ -31,6 +31,7 @@ import {
 import { LocalMemoryFs, MemorySandboxUnavailableError } from '../src/memory/fs.js'
 import { acceptedDreamSkillSources } from '../src/skills/dream-skills.js'
 import { storeDigest } from '../src/dream/dreamer.js'
+import { createDreamReader } from '../src/cp/dream-reader.js'
 import { inspectLocalSkillSource } from '../src/skills/skill-source-snapshot.js'
 import type { MemoryFs } from '../src/memory/fs.js'
 import { sidecarMemoryHistory, type MemoryHomePorts } from '../src/memory/home.js'
@@ -591,6 +592,70 @@ describe('DreamRunner pipeline', () => {
     expect(store.dreams.get(started.dreamId)?.status).toBe('adopted')
     expect(await readMemoryFile(local(dir), 'prefs.md')).toContain('- uses tabs again')
     expect(await readMemoryFile(local(dir), 'fresh.md')).toContain('- newly learned fact')
+  })
+
+  it('serves the checked revisions after an auto-adopt and keeps only the latest adoption’s log', async () => {
+    const { dir, store, runner } = await setup({
+      policy: { enabled: true, autoAdopt: true },
+      stagedFiles: [{ path: 'fresh.md', content: '- newly learned fact' }],
+      extract: async () =>
+        JSON.stringify({
+          revisions: [
+            { path: 'prefs.md', change: 'dropped', why: 'transient', note: 'scratch notes' },
+            { path: 'gone.md', change: 'dropped', why: 'expired', note: 'never existed' }
+          ]
+        })
+    })
+    const reader = createDreamReader(runner)
+    const adoptedRun = async (): Promise<string> => {
+      const started = await runner.start('a1', { trigger: 'manual' })
+      await settle(store, started.dreamId)
+      for (let i = 0; i < 100 && store.dreams.get(started.dreamId)?.status !== 'adopted'; i++) {
+        await new Promise((r) => setTimeout(r, 5))
+      }
+      expect(store.dreams.get(started.dreamId)?.status).toBe('adopted')
+      return started.dreamId
+    }
+
+    const first = await adoptedRun()
+    const page = await reader.revisions({ agentId: 'a1', dreamId: first })
+    expect(page.exists).toBe(true)
+    expect(page.revisions).toEqual([
+      { path: 'prefs.md', change: 'dropped', why: 'transient', note: 'scratch notes', sessionIds: [], into: [] },
+      expect.objectContaining({ path: 'gone.md', problem: 'not a file of the existing store' })
+    ])
+    // The staged store is live now and its inputs are spent: only the explanation stays.
+    expect(await readdir(join(dir, 'memory-dreams', first))).toEqual(['revisions.json'])
+
+    const second = await adoptedRun()
+    expect(await readdir(join(dir, 'memory-dreams'))).toEqual([second])
+    expect(await reader.revisions({ agentId: 'a1', dreamId: first })).toEqual({
+      agentId: 'a1',
+      dreamId: first,
+      exists: false,
+      revisions: []
+    })
+  })
+
+  it('serves only well-formed revisions, clamped to the wire bounds', async () => {
+    const { dir, store, runner } = await setup({})
+    const started = await runner.start('a1', { trigger: 'manual' })
+    await settle(store, started.dreamId)
+    const many = Array.from({ length: 80 }, (_, i) => `s${i}`)
+    await writeFile(
+      join(dir, 'memory-dreams', started.dreamId, 'revisions.json'),
+      JSON.stringify([
+        { path: 'a.md', change: 'corrected', note: '', sessionIds: many, into: [] },
+        { path: 'b.md', change: 'renamed', note: '', sessionIds: [], into: [] },
+        'junk'
+      ])
+    )
+    const page = await createDreamReader(runner).revisions({ agentId: 'a1', dreamId: started.dreamId })
+    expect(page.revisions.map((r) => [r.path, r.sessionIds.length])).toEqual([['a.md', 64]])
+    await writeFile(join(dir, 'memory-dreams', started.dreamId, 'revisions.json'), '{not json')
+    expect(await createDreamReader(runner).revisions({ agentId: 'a1', dreamId: started.dreamId })).toMatchObject({
+      exists: false
+    })
   })
 
   it('fails a dream that wrote no memory rather than staging a store that deletes every topic', async () => {

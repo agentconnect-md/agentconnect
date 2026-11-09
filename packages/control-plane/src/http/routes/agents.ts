@@ -41,6 +41,7 @@ import {
   DreamInfo,
   DreamListPage,
   DreamFilesPage,
+  DreamRevisionsPage,
   DreamFileReadContent,
   agentComputerUseOf,
   LIVE_SECRETS_MAX
@@ -276,6 +277,7 @@ import {
   DreamDto,
   DreamListDto,
   DreamFilesDto,
+  DreamRevisionsDto,
   DreamFileDto,
   DreamIdParam,
   DreamSkillParam,
@@ -308,6 +310,7 @@ import {
   type DreamDtoT,
   type DreamListDtoT,
   type DreamFilesDtoT,
+  type DreamRevisionsDtoT,
   type DreamFileDtoT
 } from '../dto/index.js'
 import {
@@ -650,6 +653,10 @@ export function toDreamFilesDto(rep: DreamFilesPage): DreamFilesDtoT {
     files: rep.entries,
     ...(rep.reviewToken !== undefined ? { reviewToken: rep.reviewToken } : {})
   }
+}
+
+export function toDreamRevisionsDto(rep: DreamRevisionsPage): DreamRevisionsDtoT {
+  return { exists: rep.exists, revisions: rep.revisions }
 }
 
 export function toDreamFileDto(rep: DreamFileReadContent): DreamFileDtoT {
@@ -6000,6 +6007,34 @@ export function agentRoutes(deps: HttpDeps) {
         try {
           return toDreamFilesDto(
             await deps.control.dreamFiles(agent.daemonId, { agentId: agent.id, dreamId: req.params.dreamId })
+          )
+        } catch (err) {
+          if (sendDreamFailure(reply, err)) return
+          throw err
+        }
+      }
+    )
+
+    // A dream's checked revisions log: proxied live from the daemon, never persisted (model-authored notes).
+    r.get(
+      '/agents/:id/memory/dreams/:dreamId/revisions',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: "List a dream's revisions",
+          description:
+            'Proxy the checked revisions a dream listed — each file it corrected, dropped or moved, with the reason and a one-line note — live from the owning daemon. Entries with `problem` were not applied. A dream that kept no log is data (exists:false).',
+          operationId: 'listAgentMemoryDreamRevisions',
+          params: DreamIdParam,
+          response: { 200: DreamRevisionsDto, 400: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await dreamAgentOrReply(req, reply, req.params.id)
+        if (!agent) return
+        try {
+          return toDreamRevisionsDto(
+            await deps.control.dreamRevisions(agent.daemonId, { agentId: agent.id, dreamId: req.params.dreamId })
           )
         } catch (err) {
           if (sendDreamFailure(reply, err)) return
