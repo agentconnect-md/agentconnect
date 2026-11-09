@@ -838,9 +838,10 @@ reviewer can read exactly what the agent changed, file by file. **Landed.**
 
 Known M2 follow-ups, none of which change what the code does today:
 
-- An **untracked** file has no diff in either scope (`git diff` never shows one),
-  so its Git-panel row opens a Diff view that says so. Opening untracked rows in
-  File mode instead would read better, and costs nothing new on the wire.
+- An **untracked** file's Git-panel row opens it in File mode. `git diff` never
+  shows an untracked file, so the daemon's unstaged diff for one is
+  `git diff --no-index /dev/null <path>` — the whole file as added; its staged
+  diff stays empty.
 - The viewer's `+`/`−` are counted from the **rows on screen**, not from
   `WorkspaceGitFile.additions/deletions`: those count both sides of the index
   against HEAD, so beside a one-scope diff they would disagree with it. The
