@@ -453,6 +453,8 @@ describe('writing in a thread (webchat-threads.md §6.3)', () => {
     conversation()
     await open()
     expect(container?.querySelectorAll('[data-reply-in-thread]')).toHaveLength(1)
+    // A person's message offers no Copy.
+    expect(q('[data-reply-in-thread]')?.parentElement?.querySelectorAll('button')).toHaveLength(1)
     await click('[data-reply-in-thread]')
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0))

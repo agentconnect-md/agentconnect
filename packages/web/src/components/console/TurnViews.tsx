@@ -158,11 +158,10 @@ export function UserTurnView({
           </div>
         )}
         {footer}
-        {/* A sent bubble's hover actions sit in the inter-turn gap, so revealing them never shifts the row. */}
-        {(turn.text || onReply) && (
+        {/* A sent bubble's hover action sits in the inter-turn gap, so revealing it never shifts the row; a person's message has no Copy. */}
+        {onReply && (
           <span className="absolute right-0 top-full flex items-center gap-1">
-            {onReply ? <ReplyInThreadButton onReply={onReply} /> : null}
-            {turn.text ? <CopyTurnButton text={turn.text} /> : null}
+            <ReplyInThreadButton onReply={onReply} />
           </span>
         )}
       </ThreadRootPress>
