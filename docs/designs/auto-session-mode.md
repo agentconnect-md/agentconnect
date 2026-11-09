@@ -677,9 +677,9 @@ not addressed to this agent. Cost grows with the number of agents.
     replies only in the thread, the coordinator's turns in the main timeline with "In thread: …" on
     one that answered a reply, and `replyToMessage` as one line "Answered in the thread". A footer,
     a label, that line or Reply in thread opens the thread in the side panel at `?thread=<rootId>`,
-    where the owner writes in it on the conversation's own socket. A task's page shrinks into its
-    first thread, and on a desktop a thread whose first reply starts while the owner watches opens
-    by itself (webchat-threads.md §6).
+    where the owner writes in it on the conversation's own socket. A task's page returns to the
+    coordinator through Back or Close. On a desktop, a thread whose first reply starts while the
+    owner watches opens by itself (webchat-threads.md §6).
 - Before webchat had threads, a task the coordinator opened for a webchat message continued on its own
   page, which is its conversation. Such a page task keeps running as described here until it closes,
   and a message without a post (such as an MCP app's) still opens one; webchat-threads.md §10
@@ -696,11 +696,11 @@ not addressed to this agent. Cost grows with the number of agents.
     session id, title, and whether the task was opened or handed the message). The console draws a
     post that carries it as the task's card. A click on the card or its replies opens the task's
     thread in the coordinator's side panel, as the Tasks list does, where people read and reply; a
-    modified click (or the panel's expand) opens the task's own page: the same page a direct link
-    lands on, with a way back to the coordinator, a shrink into the coordinator's side panel
-    (`?task=<id>` on the coordinator's page), the task's Files, Git, Tasks and Computer, and what the
-    coordinator opened it with folded at the top. The card shows the task's `replies`: the messages its people and
-    the task posted after the one that opened it, which the daemon counts. A coordinator on a
+    modified click or the panel's task-page link opens the task's own page: the same page a direct link
+    lands on, with Back and Close returning to the coordinator, the task's Files, Git, Tasks and
+    Computer, and what the coordinator opened it with folded at the top. The card shows the task's
+    `replies`: the messages its people and the task posted after the one that opened it, which the
+    daemon counts. A coordinator on a
     platform with threads posts no link card, so its task row carries `openedForMessageId`, the
     platform id of the message it was opened for. The console draws the card under the
     coordinator's turn that answered that message, once per task, on a platform whose module declares
@@ -734,8 +734,8 @@ not addressed to this agent. Cost grows with the number of agents.
   the Slack thread. In a thread no task holds, and from Reply in thread on a root, whoever may
   continue the coordinator writes there too: the message is mirrored into the Slack thread, then
   routed as any reply in it, to the coordinator with its thread named or to a task holding the
-  thread by then. A Slack task's page shrinks into its first thread (webchat-threads.md §7). Other
-  platforms keep the flat transcript.
+  thread by then. A Slack task's page returns to the coordinator through Back or Close
+  (webchat-threads.md §7). Other platforms keep the flat transcript.
 
 ## 12. Validation
 

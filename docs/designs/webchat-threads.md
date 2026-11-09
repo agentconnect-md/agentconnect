@@ -355,8 +355,8 @@ As implemented (PR 11):
 - A thread a task holds shows the task's header as today: state, title, Stop, the task's runtime
   picker, its approvals, and a link to the task's own page. An unowned thread shows a plain header;
   the console offers no "make this a task" control, since opening a task is the coordinator's call.
-- The address is `?thread=<rootId>` on the conversation's page, replacing `?task=<id>`; a task page's
-  shrink link points at its first thread.
+- The address is `?thread=<rootId>` on the conversation's page, replacing `?task=<id>`.
+  A task page's Back and Close controls return to the coordinator.
 - On a desktop, a thread opens in the panel when its first reply starts while the person watches,
   the latest one when several do; threads already there when the page opened do not. A phone does
   not open the sheet; the footer shows "is working…" and the reply count.
@@ -392,7 +392,6 @@ As implemented (PR 11):
   readable footer, so a daemon without thread reads falls back to the task's session. The page's
   address follows the open thread (`?thread=<rootId>`, written with `router.replace`), and an
   address it did not write opens the thread it names. `?task=<id>` still opens a legacy page task.
-  A webchat task's page shrinks to `?thread=<its session's thread>`; a page task keeps `?task=`.
 - **Auto-open** (desktop only, `threadToAutoOpen`) opens the latest thread whose first reply arrives
   while the page is open: a root that had no replies when the page first saw it and now has some, or
   a thread an agent starts speaking in live. Each opens once.
@@ -500,7 +499,7 @@ As implemented (PR 12):
   thread, so the daemon writes it in the task's own Slack thread as the task's page does, and the hint
   says so; webchat's `pgSendThread` is kept for a shape with `continuesInThread`. A thread no task
   holds has no composer.
-- **A Slack task's page** shrinks to `?thread=<its session's thread>`, the ts of the thread it opened on.
+- **A Slack task's page** returns to the coordinator through Back or Close.
 - **Not drawn yet:** a task's Code channel in its footer. The summary (§5.3) names only the holding
   task, not the other threads it holds, so the footer cannot show the channel until it does.
 

@@ -2809,22 +2809,10 @@ export default function SessionDetailView() {
     const picked = agents.find((a) => a.id === option.id)
     return picked ? pgAddAgent(session.id, picked) : undefined
   }
-  // A task's owning session, where its page's back, shrink and close lead; none when the owner is hidden from this reader.
+  // A task's owning session, where its page's back and close lead; none when the owner is hidden from this reader.
   const taskOwner = taskOwnPage ? (currentSessionDetail?.parentSession ?? null) : null
   const taskOwnerHref = taskOwner
     ? orgPath(`/sessions/${encodeURIComponent(taskOwner.id)}${flatView ? '?view=flat' : ''}`)
-    : null
-  // A threaded task shrinks to its first thread, a legacy page task to itself (webchat-threads.md §6.2, §7).
-  const taskFirstThread = namesThread(threadShapeOf(currentSessionDetail?.platform), currentSessionDetail?.thread)
-    ? currentSessionDetail.thread
-    : null
-  const taskShrinkHref = taskOwner
-    ? orgPath(
-        `/sessions/${encodeURIComponent(taskOwner.id)}?${new URLSearchParams({
-          ...(flatView ? { view: 'flat' } : {}),
-          ...(taskFirstThread ? { thread: taskFirstThread } : { task: currentSessionDetail?.id ?? session.id })
-        })}`
-      )
     : null
   const onCopyLink = async () => {
     const canonicalId = session.realSessionId ?? session.id
@@ -3750,28 +3738,16 @@ export default function SessionDetailView() {
               >
                 <Icon name="share" size={15} />
               </button>
-              {/* A task's own page is its expanded view: shrink puts it back in its coordinator's side panel, close returns to the coordinator. */}
-              {taskOwnerHref && taskShrinkHref ? (
-                <>
-                  <Link
-                    data-task-page-shrink=""
-                    className={HEADER_ICON_BTN}
-                    href={taskShrinkHref}
-                    title={tt('shrink')}
-                    aria-label={tt('shrink')}
-                  >
-                    <Icon name="minimize-2" size={14} />
-                  </Link>
-                  <Link
-                    data-task-page-close=""
-                    className={HEADER_ICON_BTN}
-                    href={taskOwnerHref}
-                    title={tt('closeTask')}
-                    aria-label={tt('closeTask')}
-                  >
-                    <Icon name="x" size={15} />
-                  </Link>
-                </>
+              {taskOwnerHref ? (
+                <Link
+                  data-task-page-close=""
+                  className={HEADER_ICON_BTN}
+                  href={taskOwnerHref}
+                  title={tt('closeTask')}
+                  aria-label={tt('closeTask')}
+                >
+                  <Icon name="x" size={15} />
+                </Link>
               ) : null}
             </div>
           </div>

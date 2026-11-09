@@ -176,7 +176,6 @@ vi.mock('@/lib/org-context', () => ({
 }))
 
 import { ThreadPanel } from './ThreadPanel'
-import { DockExpandContext, type DockExpand } from './SessionDock'
 import { renderWithIntl } from '@/i18n/test-utils'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
@@ -217,23 +216,19 @@ afterEach(() => {
   container.remove()
 })
 
-const NO_DOCK: DockExpand = { available: false, expanded: false, setExpanded: () => {} }
-
-async function render(dock: DockExpand = NO_DOCK) {
+async function render() {
   await act(async () => {
     root.render(
       renderWithIntl(
         <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-          <DockExpandContext.Provider value={dock}>
-            <ThreadPanel
-              agentId="agent_1"
-              agentName="deploy-bot"
-              {...(withTask ? { task } : {})}
-              parentSessionId="ses_coordinator"
-              onBack={back}
-              {...props}
-            />
-          </DockExpandContext.Provider>
+          <ThreadPanel
+            agentId="agent_1"
+            agentName="deploy-bot"
+            {...(withTask ? { task } : {})}
+            parentSessionId="ses_coordinator"
+            onBack={back}
+            {...props}
+          />
         </SWRConfig>
       )
     )

@@ -552,6 +552,9 @@ whole reason a slot exists (a body whose horizontal position is a constant of th
 route, not of a round-trip) still applies, so the persisted width has to be on the
 **first painted frame**.
 
+The resize handle is the panel's width control; the tab strip has no separate
+expand or collapse action.
+
 **How the width gets there.** Not from a render: in no-auth mode the console is
 genuinely server-rendered (`Shell.tsx` gates on `useState(!isAuthConfigured())`,
 true on both sides), the server has no localStorage, and the browser paints the
