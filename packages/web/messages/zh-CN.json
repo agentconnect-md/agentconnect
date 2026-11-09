@@ -336,7 +336,6 @@
       "cardActions": "会话串操作",
       "replies": "{count, plural, other {# 条回复}}",
       "reply": "回复",
-      "repliesTitle": "{replies}，最后回复于 {time}",
       "open": "打开 {title} 的会话串",
       "openPage": "在单独页面打开 {title}",
       "earlier": "更早的消息在任务页面上",

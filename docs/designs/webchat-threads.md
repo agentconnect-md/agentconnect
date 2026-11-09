@@ -82,14 +82,14 @@ Three decisions carry the design:
 
 ## 3. Vocabulary
 
-| Term          | Meaning                                                                                                                                                    |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Root          | A message at the conversation's top level                                                                                                                  |
-| Thread        | A root and the replies under it, named by the root's id: its Slack `ts`, its webchat `postId`                                                              |
-| Owned thread  | A thread a task holds (auto-session-mode.md §2); a task may hold several                                                                                   |
-| Thread record | The channel-record rows whose physical thread is the thread, whichever sessions admitted them, observations included                                       |
-| Reply count   | Slack's count: every chat message in the thread record except the root, from people and agents alike; work rows (tool calls, reasoning) are not counted    |
-| Thread footer | The line under a root: reply count, participants, last reply time and a one-line preview, the holding task's state and title, and "is working…" while live |
+| Term          | Meaning                                                                                                                                                 |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Root          | A message at the conversation's top level                                                                                                               |
+| Thread        | A root and the replies under it, named by the root's id: its Slack `ts`, its webchat `postId`                                                           |
+| Owned thread  | A thread a task holds (auto-session-mode.md §2); a task may hold several                                                                                |
+| Thread record | The channel-record rows whose physical thread is the thread, whichever sessions admitted them, observations included                                    |
+| Reply count   | Slack's count: every chat message in the thread record except the root, from people and agents alike; work rows (tool calls, reasoning) are not counted |
+| Thread footer | The line under a root: reply count, participants and last reply time, the holding task's state and summary, and "is working…" while live                |
 
 ## 4. Routing (unchanged, now applied to webchat)
 
@@ -337,12 +337,11 @@ As implemented (PR 6):
 - A coordinator turn answering a thread message carries a label, "In thread: <the root's first
   words>", that opens the thread. A turn answering a root has none.
 - The coordinator's work on a thread (its reasoning and tool calls, `replyToMessage` included) is
-  drawn in that thread's panel, not in the main timeline; the answer's text is only in the thread,
-  and the footer previews it.
+  drawn in that thread's panel, not in the main timeline; the answer's text is only in the thread.
 - Nothing is posted to the main timeline on a thread's behalf: there is no "also send to the
   conversation".
-- Hovering a root offers **Reply in thread** beside Copy; on a phone, a tap on the footer or a
-  long-press menu does.
+- A root's replies line opens its thread; a root with no thread yet offers **Reply in thread** on
+  hover. On a phone, a tap on the footer or a long-press menu does.
 
 As implemented (PR 11):
 
@@ -398,8 +397,8 @@ As implemented (PR 10):
   panel knows the task; an unowned thread then shows a load failure.
 - **`ThreadFooter`** (`ThreadFooter.tsx`, formerly `TaskThreadCard`) draws a `ThreadFooterView`, held
   or not, as the replies line (up to five repliers, the count, the last reply's time and "working…"
-  while `running`; repliers are drawn with their picture or agent icon, the count's hover card
-  previews the latest reply), then the holding task's card: its state, its title and, beneath in a
+  while `running`; repliers are drawn with their picture or agent icon; the line has no hover
+  text), then the holding task's card: its state, its title and, beneath in a
   lighter face, the task's own summary where it wrote one. On a root (`part`), the line stays under
   the person's bubble and the card is drawn on the left as the coordinator's message (`from`): its
   mark, name and the task's state, over a card showing the task's summary alone. Hovering the

@@ -113,7 +113,8 @@ describe('TaskThreadFooter', () => {
     expect(card.querySelector('[data-state-icon]')?.getAttribute('aria-label')).toBe('Running')
     const replies = card.querySelector<HTMLElement>('[data-task-card-replies]')!
     expect(replies.textContent).toBe('3 replies · 1m')
-    expect(card.querySelector<HTMLElement>('[data-thread-count]')?.title).toBe('3 replies, last reply 1m ago')
+    // The line carries no hover text: its count and time say it.
+    expect(card.querySelector('[data-thread-count]')?.hasAttribute('title')).toBe(false)
     // The count is on the line above the card, which carries only the task's title and summary.
     const face = card.querySelector<HTMLAnchorElement>('[data-task-card-open]')!
     expect(replies.compareDocumentPosition(face) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
@@ -226,22 +227,7 @@ describe('ThreadFooter', () => {
       />
     )
     expect(container.querySelector('[data-task-card-summary]')?.textContent).toBe('Found the lock')
-    // The latest reply waits for a hover over the count, not over a replier's mark.
-    const preview = container.querySelector<HTMLElement>('[data-thread-preview]')!
-    expect(preview.getAttribute('role')).toBe('tooltip')
-    const shown = () =>
-      preview.className.includes('[display:-webkit-box]') && !preview.className.includes('group-focus-within')
-    const hover = (el: Element, type: 'mouseover' | 'mouseout') =>
-      act(() => {
-        el.dispatchEvent(new MouseEvent(type, { bubbles: true }))
-      })
-    expect(shown()).toBe(false)
-    hover(container.querySelector('[data-thread-participant]')!, 'mouseover')
-    expect(shown()).toBe(false)
-    hover(container.querySelector('[data-thread-count]')!, 'mouseover')
-    expect(shown()).toBe(true)
-    hover(container.querySelector('[data-thread-count]')!, 'mouseout')
-    expect(shown()).toBe(false)
+    expect(container.querySelector('[data-thread-preview]')).toBeNull()
     const toolbar = container.querySelector('[data-task-card-hover] [role="toolbar"]')!
     expect([...toolbar.querySelectorAll('button')].map((b) => b.getAttribute('aria-label'))).toEqual([
       'Reply in thread',
@@ -260,7 +246,7 @@ describe('ThreadFooter', () => {
     expect(dialog?.textContent).toContain('Who can see it')
   })
 
-  it('draws an unowned thread as its replies line: repliers, count, last reply and preview, opening the thread', async () => {
+  it('draws an unowned thread as its replies line: repliers and count, opening the thread', async () => {
     const onOpen = vi.fn()
     await render(<ThreadFooter footer={footerOfSummary(summary())} rootId="post-root" onOpen={onOpen} />)
     const footer = container.querySelector('[data-thread-footer="post-root"]')!
@@ -273,11 +259,9 @@ describe('ThreadFooter', () => {
     ])
     const count = footer.querySelector<HTMLElement>('[data-thread-count]')!
     expect(count.textContent).toBe('2 replies · 2m')
-    // The preview is the line's hover card, so no native tooltip covers it.
+    // No hover text on the line: the latest reply is read in the thread.
     expect(count.hasAttribute('title')).toBe(false)
-    expect(footer.querySelector('[data-thread-preview]')?.textContent).toBe(
-      'Dana Reyes: Still slow after the cache fix'
-    )
+    expect(footer.querySelector('[data-thread-preview]')).toBeNull()
     expect(footer.querySelector('[data-thread-working]')).toBeNull()
     // No task, so no page to link: a button opens the thread.
     expect(footer.querySelector('a')).toBeNull()

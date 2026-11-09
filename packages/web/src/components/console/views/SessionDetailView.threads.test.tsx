@@ -373,7 +373,8 @@ describe('a webchat coordinator’s main timeline (webchat-threads.md §6.1)', (
     expect(wire.historyCalls[0]).toMatchObject({ view: 'roots' })
     const footer = q(`[data-thread-footer="${ROOT}"]`)
     expect(footer?.textContent).toContain('2 replies')
-    expect(footer?.querySelector('[data-thread-preview]')?.textContent).toContain('Use a warm cache.')
+    // The latest reply is read in the thread, not previewed on hover.
+    expect(footer?.querySelector('[data-thread-preview]')).toBeNull()
     expect(text()).toContain('Why is the deploy slow?')
     expect(text()).not.toContain('and the cache?')
   })
@@ -483,17 +484,22 @@ describe('a webchat coordinator’s main timeline (webchat-threads.md §6.1)', (
 })
 
 describe('writing in a thread (webchat-threads.md §6.3)', () => {
-  it('offers the owner Reply in thread on a root, which opens its thread with a composer that takes the caret', async () => {
+  it('offers the owner Reply in thread on a root with no thread yet, which opens it with a composer that takes the caret', async () => {
     conversation()
+    wire.messages = [...wire.messages, row(6, 'sam', 'Ship the notes', { postId: LATER })]
     await open()
+    // A root whose replies line opens its thread has no hover Reply; one with no thread yet does.
     expect(container?.querySelectorAll('[data-reply-in-thread]')).toHaveLength(1)
+    expect(
+      q(`[data-thread-footer="${ROOT}"]`)?.closest('.group\\/turn')?.querySelector('[data-reply-in-thread]')
+    ).toBeNull()
     // A person's message offers no Copy.
     expect(q('[data-reply-in-thread]')?.parentElement?.querySelectorAll('button')).toHaveLength(1)
     await click('[data-reply-in-thread]')
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0))
     })
-    const box = q(`[data-thread-panel="${ROOT}"] [data-thread-composer]`)
+    const box = q(`[data-thread-panel="${LATER}"] [data-thread-composer]`)
     expect(box).not.toBeNull()
     expect(document.activeElement).toBe(box)
   })
@@ -518,7 +524,7 @@ describe('writing in a thread (webchat-threads.md §6.3)', () => {
     conversation()
     setViewport(true)
     await open()
-    const bubble = q('[data-reply-in-thread]')?.closest<HTMLElement>('.relative')
+    const bubble = q(`[data-thread-footer="${ROOT}"]`)?.closest<HTMLElement>('.relative')
     expect(bubble).toBeTruthy()
     await act(async () => {
       bubble!.dispatchEvent(new Event('touchstart', { bubbles: true }))
@@ -643,8 +649,9 @@ describe('a Slack coordinator’s page in Slack’s shape (webchat-threads.md §
     daemonFeatures.push('continuation-threads-v1')
     const { list, detail: read } = slack('slack')
     await open(list, { ...read, canContinue: true, continuationUnavailableReason: null } as SessionDetailDto)
-    expect(container?.querySelectorAll('[data-reply-in-thread]')).toHaveLength(1)
-    await click('[data-reply-in-thread]')
+    // Its replies line opens the thread, so the root offers no separate hover Reply.
+    expect(q('[data-reply-in-thread]')).toBeNull()
+    await click(`[data-thread-footer="${ROOT_TS}"] [data-task-card-replies]`)
     const panel = q(`[data-thread-panel="${ROOT_TS}"]`)
     expect(panel?.querySelector('[data-thread-composer]')).not.toBeNull()
     expect(panel?.textContent).toContain('Posted in the Slack thread under your name; the coordinator answers there')

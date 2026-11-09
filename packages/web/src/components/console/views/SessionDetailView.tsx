@@ -4011,6 +4011,7 @@ export default function SessionDetailView() {
                                   return root ? () => replyInThread(root) : undefined
                                 })()}
                                 pressToReply={isMobile}
+                                replyButton={!threadSummaries.has(rootOf(turn) ?? '')}
                               />
                               {rootFooter(turn, 'card')}
                             </>

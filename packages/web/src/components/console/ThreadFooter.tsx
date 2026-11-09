@@ -4,7 +4,7 @@
 
 import { useEffect, useState, type MouseEvent, type ReactNode } from 'react'
 import Link from 'next/link'
-import { useFormatter, useTranslations } from 'next-intl'
+import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 import { taskStateKey, taskTone } from '@/components/console/task-list'
 import { StateIcon, type StateKind } from '@/components/console/StateIcon'
@@ -24,7 +24,6 @@ const tickMs = (lastReplyAt: string | undefined, now: number) =>
 export interface ThreadFooterView {
   replies: number
   lastReplyAt?: string
-  lastReply?: SessionThreadAuthorDto & { excerpt?: string }
   /** Repliers, newest first. */
   participants: SessionThreadAuthorDto[]
   /** The holding task; `title` is null where the reader may not see it, or may not yet while it is `starting`. */
@@ -53,7 +52,6 @@ export function footerOfSummary(summary: SessionThreadSummaryDto, taskSummary?: 
   return {
     replies: summary.replies,
     ...(summary.lastReplyAt ? { lastReplyAt: summary.lastReplyAt } : {}),
-    ...(summary.lastReply ? { lastReply: summary.lastReply } : {}),
     participants: summary.participants,
     ...(task
       ? {
@@ -136,9 +134,7 @@ export function ThreadFooter({
 }) {
   const t = useTranslations('Common.taskThread')
   const tl = useTranslations('Common.taskList')
-  const format = useFormatter()
   const [now, setNow] = useState(() => Date.now())
-  const [previewShown, setPreviewShown] = useState(false)
   const tick = tickMs(footer.lastReplyAt, now)
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), tick)
@@ -177,7 +173,7 @@ export function ThreadFooter({
   const cardClass = `card flex w-full max-w-[520px] min-w-0 items-center gap-[10px] px-[14px] py-[11px] text-left no-underline ${
     open || to ? 'click' : ''
   } ${selected ? 'border-(--border-strong) bg-(--surface-hover) shadow-none' : ''}`
-  const { replies, participants, lastReply } = footer
+  const { replies, participants } = footer
   const lastReplyAt = footer.lastReplyAt ? new Date(footer.lastReplyAt) : null
   const repliesLabel = replies > 0 ? t('replies', { count: replies }) : t('reply')
   const card = task
@@ -248,20 +244,8 @@ export function ThreadFooter({
       {t('footerWorking')}
     </span>
   ) : null
-  // The latest reply is a hover card over the line, not inline text.
-  const preview = lastReply?.excerpt ? (
-    <span
-      role="tooltip"
-      data-thread-preview=""
-      className={`pointer-events-none absolute bottom-full z-[5] mb-[6px] hidden w-max max-w-[360px] rounded-[8px] border border-(--border-default) bg-(--surface-card) px-[10px] py-[6px] font-sans text-[12.5px] font-normal leading-[1.45] text-(--text-primary) shadow-(--shadow-md) [-webkit-box-orient:vertical] [-webkit-line-clamp:3] overflow-hidden ${previewShown ? '[display:-webkit-box]' : 'group-focus-within:[display:-webkit-box]'} ${
-        align === 'end' ? 'right-0' : 'left-0'
-      }`}
-    >
-      <span className="font-semibold">{nameOf(lastReply)}</span>: {lastReply.excerpt}
-    </span>
-  ) : null
 
-  // Slack's message toolbar on a hovered card's top edge: Reply, then the task session's Share, as its own page offers it.
+  // Slack's message toolbar above a hovered card, over its border and padding only: Reply, then the task session's Share.
   const reply = onReply ?? open
   const share = readable ? task?.sessionId : undefined
   const toolButton =
@@ -272,7 +256,7 @@ export function ThreadFooter({
         role="toolbar"
         data-task-card-toolbar=""
         aria-label={t('cardActions')}
-        className="absolute -top-[17px] right-[10px] z-[5] hidden items-center gap-[2px] rounded-[8px] border border-(--border-default) bg-(--surface-card) p-[2px] shadow-(--shadow-md) group-hover/card:flex group-focus-within/card:flex"
+        className="absolute right-[10px] bottom-full z-[5] -mb-[8px] hidden items-center gap-[2px] rounded-[8px] border border-(--border-default) bg-(--surface-card) p-[2px] shadow-(--shadow-md) group-hover/card:flex group-focus-within/card:flex"
       >
         {reply ? (
           <button
@@ -294,27 +278,12 @@ export function ThreadFooter({
 
   // Every thread, held or not, shows its replies the same way under its root: "people 3 replies · 1m", which opens it.
   const line = (
-    <div className="group relative flex max-w-full min-w-0">
+    <div className="flex max-w-full min-w-0">
       {target(
         'flex w-fit max-w-full min-w-0 items-center gap-[6px] px-[2px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) no-underline',
         <>
           {people}
-          <span
-            data-thread-count=""
-            className="whitespace-nowrap"
-            // Only the count shows the latest reply; a replier's mark names just that replier.
-            onMouseEnter={() => setPreviewShown(true)}
-            onMouseLeave={() => setPreviewShown(false)}
-            // The hover card names the latest reply; a native tooltip on top of it would only cover it.
-            {...(replies > 0 && lastReplyAt && !preview
-              ? {
-                  title: t('repliesTitle', {
-                    replies: repliesLabel,
-                    time: format.relativeTime(lastReplyAt, { now, style: 'narrow' })
-                  })
-                }
-              : {})}
-          >
+          <span data-thread-count="" className="whitespace-nowrap">
             <span className={`font-semibold text-(--brand) ${open || to ? 'hover:underline' : ''}`}>
               {repliesLabel}
             </span>
@@ -330,7 +299,6 @@ export function ThreadFooter({
           ...(open ? { 'aria-label': openLabel, 'aria-expanded': selected === true } : {})
         }
       )}
-      {preview}
     </div>
   )
 
