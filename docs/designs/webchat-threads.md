@@ -346,6 +346,7 @@ As implemented (PR 6):
 
 As implemented (PR 11):
 
+- **Time lines** between turns lead with the date for a turn not from today (`turnTimeLabel`).
 - **The roots view.** A webchat coordinator's page reads `session/history` with `view: 'roots'`
   (`useSessionTranscript`'s `rootsView`) and keeps each page's `threads` by root, the newest read
   winning; an open thread panel's own read updates its footer too. A 409 `DAEMON_FEATURE_MISSING`
@@ -397,8 +398,11 @@ As implemented (PR 10):
   panel knows the task; an unowned thread then shows a load failure.
 - **`ThreadFooter`** (`ThreadFooter.tsx`, formerly `TaskThreadCard`) draws a `ThreadFooterView`, held
   or not, as the replies line (up to five repliers, the count, the last reply's time and "working…"
-  while `running`; the preview is a hover card over it), then the holding task's card: its state,
-  its title and, beneath in a lighter face, the task's own summary where it wrote one. Hovering the
+  while `running`; repliers are drawn with their picture or agent icon, the count's hover card
+  previews the latest reply), then the holding task's card: its state, its title and, beneath in a
+  lighter face, the task's own summary where it wrote one. On a root (`part`), the line stays under
+  the person's bubble and the card is drawn on the left as the coordinator's message (`from`): its
+  mark, name and the task's state, over a card showing the task's summary alone. Hovering the
   card shows a toolbar on its top edge with Reply (opens the thread at its composer) and the task
   session's Share, the dialog its own page's header opens (`SessionShareButton`); a held thread's
   panel header offers the same Share. `footerOfSummary` builds it from a `SessionThreadSummaryDto`, and

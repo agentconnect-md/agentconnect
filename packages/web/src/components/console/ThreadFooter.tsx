@@ -8,6 +8,7 @@ import { useFormatter, useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 import { taskStateKey, taskTone } from '@/components/console/task-list'
 import { StateIcon, type StateKind } from '@/components/console/StateIcon'
+import { AgentTurnHeader } from '@/components/console/AgentTurnHeader'
 import { useTaskRow } from '@/components/console/task-thread'
 import type { TaskLink } from '@/components/console/task-link'
 import type { AssistantSubsessionDto, SessionThreadAuthorDto, SessionThreadSummaryDto } from '@/lib/api'
@@ -96,7 +97,9 @@ export function ThreadFooter({
   nameOf = authorName,
   align = 'start',
   onReply,
-  markOf
+  markOf,
+  part,
+  from
 }: {
   footer: ThreadFooterView
   /** The thread's root, which names it; absent for a task's card read from its row. */
@@ -111,6 +114,10 @@ export function ThreadFooter({
   nameOf?: (author: SessionThreadAuthorDto) => string
   /** Which edge the card and its line hug: a person's message sits on the right, so its footer does too. */
   align?: 'start' | 'end'
+  /** Only the replies line, or only the holding task's card; absent draws both. */
+  part?: 'line' | 'card'
+  /** Draws the card as this agent's message: its mark and name above a card showing the task's summary. */
+  from?: { name: string; mark: ReactNode }
   /** A replier's picture or agent icon for their mark; null falls back to their initials. */
   markOf?: (author: SessionThreadAuthorDto) => ReactNode | null
   /** The card's hover toolbar Reply: opens the thread ready to write in; absent, Reply opens it to read. */
@@ -165,25 +172,39 @@ export function ThreadFooter({
     ? target(
         cardClass,
         <>
-          <StateIcon state={task.tone} label={tl(task.stateKey)} />
-          {/* The title on its first line; the task's summary, where it wrote one, beneath it in a lighter face. */}
-          <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
+          {from ? (
+            // As its agent's message: the task's summary alone, its title only where it has written none.
             <span
-              className={`min-w-0 truncate font-sans text-[13.5px] font-medium leading-normal ${
-                task.title === null ? 'text-(--text-tertiary)' : 'text-(--text-primary)'
+              data-task-card-summary=""
+              className={`min-w-0 flex-1 font-sans text-[13.5px] font-normal leading-[1.55] [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:3] overflow-hidden ${
+                task.title === null && !task.summary ? 'text-(--text-tertiary)' : 'text-(--text-primary)'
               }`}
             >
-              {title}
+              {task.summary ?? title}
             </span>
-            {task.summary ? (
-              <span
-                data-task-card-summary=""
-                className="min-w-0 truncate font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)"
-              >
-                {task.summary}
+          ) : (
+            <>
+              <StateIcon state={task.tone} label={tl(task.stateKey)} />
+              {/* The title on its first line; the task's summary, where it wrote one, beneath it in a lighter face. */}
+              <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
+                <span
+                  className={`min-w-0 truncate font-sans text-[13.5px] font-medium leading-normal ${
+                    task.title === null ? 'text-(--text-tertiary)' : 'text-(--text-primary)'
+                  }`}
+                >
+                  {title}
+                </span>
+                {task.summary ? (
+                  <span
+                    data-task-card-summary=""
+                    className="min-w-0 truncate font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)"
+                  >
+                    {task.summary}
+                  </span>
+                ) : null}
               </span>
-            ) : null}
-          </span>
+            </>
+          )}
         </>,
         {
           'data-task-card-open': '',
@@ -301,20 +322,39 @@ export function ThreadFooter({
     </div>
   )
 
+  const cardBlock = card ? (
+    <div data-task-card-hover="" className="group/card relative flex w-full max-w-[520px] min-w-0">
+      {card}
+      {toolbar}
+    </div>
+  ) : null
+  // The card drawn as its agent's message: the agent's mark, its name and the task's state, then the card.
+  const message =
+    from && cardBlock && task ? (
+      <div data-task-card-message="" className="flex w-full min-w-0 items-start gap-2 desktop:gap-[10px]">
+        <span className="av flex h-[26px] w-[26px] flex-none items-center justify-center overflow-hidden rounded-md">
+          {from.mark}
+        </span>
+        <div className="min-w-0 flex-1">
+          <AgentTurnHeader name={from.name}>
+            <StateIcon state={task.tone} label={tl(task.stateKey)} />
+          </AgentTurnHeader>
+          {cardBlock}
+        </div>
+      </div>
+    ) : (
+      cardBlock
+    )
+
   return (
     <div
       {...(task?.sessionId ? { 'data-task-card': task.sessionId } : {})}
-      {...(rootId ? { 'data-thread-footer': rootId } : {})}
+      {...(rootId ? { [part === 'card' ? 'data-thread-card' : 'data-thread-footer']: rootId } : {})}
       {...(readable ? {} : { 'data-thread-unreadable': '' })}
       className={`flex min-w-0 flex-col gap-[6px] ${align === 'end' ? 'items-end' : ''}`}
     >
-      {line}
-      {card ? (
-        <div data-task-card-hover="" className="group/card relative flex w-full max-w-[520px] min-w-0">
-          {card}
-          {toolbar}
-        </div>
-      ) : null}
+      {part !== 'card' ? line : null}
+      {part !== 'line' ? message : null}
     </div>
   )
 }

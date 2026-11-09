@@ -186,6 +186,33 @@ describe('ThreadFooter', () => {
     ])
   })
 
+  it('draws only its replies line, or only its card as the agent’s message with the task’s summary and no title', async () => {
+    const held = summary({ task: { sessionId: 'ses_task', title: 'Find what blocks api 1.5', state: 'open' } })
+    await render(
+      <ThreadFooter footer={footerOfSummary(held, 'Found the lock')} rootId="post-root" part="line" onOpen={() => {}} />
+    )
+    expect(container.querySelector('[data-thread-footer="post-root"] [data-thread-line]')).not.toBeNull()
+    expect(container.querySelector('[data-task-card-open]')).toBeNull()
+    await render(
+      <ThreadFooter
+        footer={footerOfSummary(held, 'Found the lock')}
+        rootId="post-root"
+        part="card"
+        from={{ name: 'deploy-bot', mark: <span data-mark="" /> }}
+        onOpen={() => {}}
+      />
+    )
+    const message = container.querySelector('[data-thread-card="post-root"] [data-task-card-message]')!
+    expect(container.querySelector('[data-thread-line]')).toBeNull()
+    expect(message.querySelector('[data-mark]')).not.toBeNull()
+    expect(message.textContent).toContain('deploy-bot')
+    expect(message.querySelector('[data-state-icon]')?.getAttribute('aria-label')).toBe('Idle')
+    const face = message.querySelector('[data-task-card-open]')!
+    expect(face.textContent).toBe('Found the lock')
+    expect(face.getAttribute('aria-label')).toContain('Find what blocks api 1.5')
+    expect(message.querySelector('[data-task-card-toolbar]')).not.toBeNull()
+  })
+
   it('offers Reply and the task session’s Share in a toolbar on the card', async () => {
     const onOpen = vi.fn()
     const onReply = vi.fn()

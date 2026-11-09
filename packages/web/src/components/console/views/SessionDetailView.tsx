@@ -87,7 +87,7 @@ import type { McpAppRpc } from '@agentconnect.md/protocol'
 import { NotFound } from '@/components/console/NotFound'
 import { Avatar, Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
-import { transcriptRowTimeMs } from '@/lib/transcript-time'
+import { transcriptRowTimeMs, turnTimeLabel } from '@/lib/transcript-time'
 import { liveResumeMembers, sessionResumeMembers, sessionResumeState } from '@/lib/session-resume'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { consoleKeys } from '@/lib/swr-keys'
@@ -218,7 +218,7 @@ import {
   chatSettingsAllowed
 } from '@/lib/session-runtime-controls'
 import type { FmtStep } from '@/components/console/transcript-steps'
-import { buildTurns, type SessionParticipant, type Turn } from '@/components/console/session-turns'
+import { buildTurns, turnTimeMs, type SessionParticipant, type Turn } from '@/components/console/session-turns'
 import { BotTurnView, UserTurnView, lastSpokenSentence } from '@/components/console/TurnViews'
 type ComposerMenuKey = 'permission' | 'model' | 'effort' | 'addAgent'
 
@@ -2904,13 +2904,23 @@ export default function SessionDetailView() {
   // The conversation with the thread open, which a modified click on its footer opens in a new tab.
   const threadHref = (rootId: string): string =>
     `${pathname}?${new URLSearchParams({ ...(flatView ? { view: 'flat' } : {}), thread: rootId })}`
-  const rootFooter = (turn: Turn) => {
+  // A root's thread: its replies line under the person's bubble, then its task's card on the left as the coordinator's message.
+  const rootFooter = (turn: Turn, part: 'line' | 'card') => {
     const rootId = rootOf(turn)
     const summary = rootId ? threadSummaries.get(rootId) : undefined
-    if (!rootId || !summary) return null
+    if (!rootId || !summary || (part === 'card' && !summary.task)) return null
     return (
-      <div className="mt-[3px] flex w-full justify-end">
+      <div className={part === 'line' ? 'mt-[3px] flex w-full justify-end' : 'mt-[6px] flex w-full'}>
         <RootThreadFooter
+          part={part}
+          {...(part === 'card' && owner
+            ? {
+                from: {
+                  name: agentLabel(owner),
+                  mark: <AgentIconView icon={owner.icon} runtime={owner.runtime} size={26} />
+                }
+              }
+            : {})}
           agentId={session.agentId ?? ''}
           parentSessionId={session.id}
           summary={summary}
@@ -3986,21 +3996,24 @@ export default function SessionDetailView() {
                           {ti === newDividerAt ? <NewDivider /> : null}
                           {turn.time && (
                             <div className="mono text-center text-[11px] leading-normal text-(--text-tertiary)">
-                              {turn.time}
+                              {turnTimeLabel(turn.time, turnTimeMs(turn))}
                             </div>
                           )}
                           {turn.kind === 'user' ? (
-                            <UserTurnView
-                              turn={turn}
-                              platformMark={usesIntegrationAvatar ? sessionIntegration : undefined}
-                              footer={rootFooter(turn)}
-                              lead={handedLead(turn)}
-                              onReply={(() => {
-                                const root = replyRootOf(turn)
-                                return root ? () => replyInThread(root) : undefined
-                              })()}
-                              pressToReply={isMobile}
-                            />
+                            <>
+                              <UserTurnView
+                                turn={turn}
+                                platformMark={usesIntegrationAvatar ? sessionIntegration : undefined}
+                                footer={rootFooter(turn, 'line')}
+                                lead={handedLead(turn)}
+                                onReply={(() => {
+                                  const root = replyRootOf(turn)
+                                  return root ? () => replyInThread(root) : undefined
+                                })()}
+                                pressToReply={isMobile}
+                              />
+                              {rootFooter(turn, 'card')}
+                            </>
                           ) : (
                             (() => {
                               const turnInFlight = sessionTurnInFlight(mainBusy, session.statusLabel)
