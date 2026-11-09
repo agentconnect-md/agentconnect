@@ -1484,6 +1484,84 @@ describe('the roots view and session/thread (webchat-threads.md §8)', () => {
     }
     await s.close()
   })
+
+  // webchat-threads.md §5.1: a root handed to a task joins its thread, and one handed before stays a thread of its own.
+  it('keeps a root handed into a task’s thread in the timeline, marked, read in that thread, and without a footer', async () => {
+    const s = await conversation()
+    const reader = createSessionReader(s)
+    const HANDED = crypto.randomUUID()
+    const ATTACHED = crypto.randomUUID()
+    await s.appendTranscript(post('11', ATTACHED, { postId: ATTACHED, admission: coordinator }))
+    await s.appendTranscript(post('11', R1, { postId: ATTACHED, admission: task }))
+    await s.assistantSubsessions.attachThread({
+      agentId: AGENT,
+      childSessionKey: taskKey,
+      platform: 'webchat',
+      channel: CONV,
+      thread: ATTACHED,
+      sinceRound: 2,
+      now: 2
+    })
+    await s.appendTranscript(post('12', ATTACHED, { sender: AGENT, admission: task }))
+    await s.appendTranscript(post('13', HANDED, { postId: HANDED, admission: coordinator }))
+    const before = await reader.history({ agentId: AGENT, sessionId: 'sid-coord', limit: 50, view: 'roots' })
+    // The task's copy keeps the one row at the root; the mark is what moves its reading into the thread.
+    await s.appendTranscript(post('13', R1, { postId: HANDED, admission: task }))
+    const channel = transcriptChannelKey(CONV)
+    expect(await s.markTranscriptHanded({ transcriptChannel: channel, agentId: AGENT }, HANDED, R1)).toBe(true)
+    expect(await s.markTranscriptHanded({ transcriptChannel: channel, agentId: AGENT }, HANDED, R1)).toBe(false)
+
+    const page = await reader.history({ agentId: AGENT, sessionId: 'sid-coord', limit: 50, view: 'roots' })
+    expect(SessionMessage.array().parse(page.messages)).toHaveLength(page.messages.length)
+    const at = (ts: string) => page.messages.find((m) => m.ts === ts)
+    expect(at('13')).toMatchObject({ handedTo: R1 })
+    expect(at('13')?.thread).toBeUndefined()
+    expect(at('11')?.handedTo).toBeUndefined()
+    const footers = new Map(page.threads?.map((t) => [t.rootId, t]))
+    expect(footers.has(HANDED)).toBe(false)
+    expect(footers.get(R1)).toMatchObject({ replies: 5, lastReply: { sender: 'U1', excerpt: 'm13' } })
+    // A message handed before the change is the root of a thread the task holds, with its own footer.
+    expect(footers.get(ATTACHED)).toMatchObject({ replies: 1, task: { title: 'Fix the login bug' } })
+
+    const thread = await reader.thread({ agentId: AGENT, sessionId: 'sid-coord', rootId: R1, limit: 50 })
+    expect(thread.messages.map((m) => [m.ts, m.handedTo])).toEqual([
+      ['1', undefined],
+      ['3', undefined],
+      ['5', undefined],
+      ['6', undefined],
+      ['7', undefined],
+      ['13', R1]
+    ])
+    expect(thread.summary).toMatchObject({ replies: 5, lastReply: { excerpt: 'm13' } })
+    const attached = await reader.thread({ agentId: AGENT, sessionId: 'sid-coord', rootId: ATTACHED, limit: 50 })
+    expect(attached.messages.map((m) => [m.ts, m.handedTo])).toEqual([
+      ['11', undefined],
+      ['12', undefined]
+    ])
+
+    // The mark reaches an open view as a change to the row, with the thread's footer.
+    const tail = await reader.history({
+      agentId: AGENT,
+      sessionId: 'sid-coord',
+      limit: 50,
+      view: 'roots',
+      after: before.liveCursor!
+    })
+    expect(tail.messages.map((m) => [m.ts, m.handedTo])).toEqual([['13', R1]])
+    expect(tail.threads?.map((t) => t.rootId)).toEqual([R1])
+    const threadTail = await reader.thread({
+      agentId: AGENT,
+      sessionId: 'sid-coord',
+      rootId: R1,
+      limit: 50,
+      after: before.liveCursor!
+    })
+    expect(threadTail.messages.map((m) => m.ts)).toEqual(['13'])
+    // The flat view carries the mark too.
+    const flat = await reader.history({ agentId: AGENT, sessionId: 'sid-coord', limit: 50 })
+    expect(flat.messages.find((m) => m.ts === '13')).toMatchObject({ handedTo: R1 })
+    await s.close()
+  })
 })
 
 describe('stored screenshot references survive a capped tool body', () => {

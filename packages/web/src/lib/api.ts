@@ -781,6 +781,8 @@ export interface SessionMessageDto {
   bodyBytes?: number // full (untruncated) body byte length
   /** The roots view alone: the root id of the thread this row is a reply in (webchat-threads.md §8). */
   thread?: string
+  /** A webchat root handed into a task's thread: that thread's root id; the row stays at the root and reads as a reply there (webchat-threads.md §5.1). */
+  handedTo?: string
 }
 
 /** Who wrote in a thread, as its footer names them. */

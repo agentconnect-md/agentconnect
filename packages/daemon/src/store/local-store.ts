@@ -223,7 +223,7 @@ function rootsViewSql(view: 'roots' | undefined): string {
 
 /** {@link THREAD_RECORD_SQL}'s binds for one session reading one thread. */
 function threadRecordBinds(scope: TranscriptSessionScope, rootId: string): string[] {
-  return [rootId, scope.coordinate, scope.agentId, scope.sessionKey, scope.agentId, rootId, rootId]
+  return [rootId, scope.coordinate, scope.agentId, scope.sessionKey, scope.agentId, rootId, rootId, rootId]
 }
 
 function idScope(column: string, values: readonly string[] | undefined): { sql: string; params: SqlParams } {
@@ -587,6 +587,7 @@ export interface TranscriptRow extends Omit<TranscriptEntry, 'thread'> {
   tool_call_id?: string | null // the one snake_case column; readers never alias it. NULL off tool rows
   attachmentsJson?: string | null // JSON.stringify(SessionImageAttachment[]); inline webchat only
   sharedImageJson?: string | null // JSON.stringify(SharedImage); shared-image rows only
+  handedTo?: string | null // the thread a webchat root was handed into, where it reads as a reply (webchat-threads.md §5.1)
 }
 
 /** A row's shared image, or undefined when absent or unreadable — a corrupt sidecar never breaks a page. */
@@ -743,9 +744,13 @@ const OWN_TURN_IN_THREAD_SQL = `(transcript.thread <> ? AND transcript.sender = 
         AND EXISTS (SELECT 1 FROM transcript_recipient tr_o WHERE tr_o.seq = transcript.seq AND tr_o.sessionKey = ?)
         AND NOT ${THREAD_POST_SQL})`
 
-// One thread's record as a session reads it (§8): its root, and its rows but the session's own turns and peers' work rows. Binds (root, coordinate, agentId, sessionKey, agentId, root, root).
+// One thread's record as a session reads it (§8): its root, its rows but the session's own turns and peers' work rows, and the roots handed into it. Binds (root, coordinate, agentId, sessionKey, agentId, root, root, root).
 const THREAD_RECORD_SQL = `((transcript.thread = ? AND NOT ${OWN_TURN_IN_THREAD_SQL} AND (transcript.kind = 'text' OR transcript.sender = ?))
-        OR (transcript.kind = 'text' AND (transcript.ts = ? OR transcript.postId = ?)))`
+        OR (transcript.kind = 'text' AND (transcript.ts = ? OR transcript.postId = ?))
+        OR (transcript.kind = 'text' AND transcript.handedTo = ?))`
+
+// The thread a row reads in: the one a root was handed into (webchat-threads.md §5.1), else its own.
+const READ_THREAD_SQL = 'COALESCE(transcript.handedTo, transcript.thread)'
 
 /** A recorded root row as the thread reads see it: the ids it may be named by and its own thread. */
 export interface ThreadRootRow {
@@ -1390,7 +1395,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 77
+export const SCHEMA_VERSION = 78
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -2155,7 +2160,9 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
     await addColumn(db, store.postgres, 'assistant_subsession_thread', 'reportThread', 'TEXT')
   },
   // v77 pins the initiator independently of the session's routing identity.
-  async (db, store) => await addColumn(db, store.postgres, 'sessions', 'initiator', 'TEXT')
+  async (db, store) => await addColumn(db, store.postgres, 'sessions', 'initiator', 'TEXT'),
+  // v78 records the thread a webchat root was handed into, where its task answers (webchat-threads.md §5.1).
+  async (db, store) => await addColumn(db, store.postgres, 'transcript', 'handedTo', 'TEXT')
 ]
 
 /** Tasks gain when they closed, the message they were opened for, what they opened and a getting-to-know task's marker; an ended watch task counts as closed when it last changed. */
@@ -3245,7 +3252,8 @@ export class LocalStore {
         attachmentsJson TEXT, quoteJson TEXT, trustedAgentBot INTEGER, revision INTEGER NOT NULL DEFAULT 0,
         postId TEXT,
         sessionScope TEXT NOT NULL DEFAULT '',
-        sharedImageJson TEXT
+        sharedImageJson TEXT,
+        handedTo TEXT
       );
       CREATE INDEX IF NOT EXISTS transcript_channel_seq ON transcript (orgId, channel, seq);
       -- One conversational message is one row per conversation, whoever admits it. Internal rows
@@ -4520,7 +4528,7 @@ export class LocalStore {
       )) as ThreadRootRow | undefined
   }
 
-  /** Each thread's replies as its summary counts them (webchat-threads.md §3, §5.3): chat messages but the root and the reading session's own turns. */
+  /** Each thread's replies as its summary counts them (webchat-threads.md §3, §5.3): chat messages but the root and the reading session's own turns, roots handed into it included. */
   async threadReplyStats(
     scope: TranscriptSessionScope,
     rootIds: readonly string[],
@@ -4530,15 +4538,15 @@ export class LocalStore {
     if (rootIds.length === 0) return stats
     const partition = this.orgForRead(scope.agentId, scope.orgId)
     const replies = `orgId = ? AND channel = ? AND kind = 'text'
-            AND NOT (COALESCE(ts, '') = transcript.thread OR COALESCE(postId, '') = transcript.thread)
+            AND (handedTo IS NOT NULL OR NOT (COALESCE(ts, '') = transcript.thread OR COALESCE(postId, '') = transcript.thread))
             AND NOT ${OWN_TURN_IN_THREAD_SQL}`
     const own = [scope.coordinate, scope.agentId, scope.sessionKey]
     const marks = rootIds.map(() => '?').join(', ')
     const counts = (await this.db
       .prepare(
-        `SELECT thread, COUNT(*) AS n, MAX(eventTimeUs) AS last FROM transcript
-          WHERE thread IN (${marks}) AND ${replies}
-          GROUP BY thread`
+        `SELECT ${READ_THREAD_SQL} AS thread, COUNT(*) AS n, MAX(eventTimeUs) AS last FROM transcript
+          WHERE ${READ_THREAD_SQL} IN (${marks}) AND ${replies}
+          GROUP BY ${READ_THREAD_SQL}`
       )
       .all(...rootIds, partition, scope.transcriptChannel, ...own)) as {
       thread: string
@@ -4550,13 +4558,13 @@ export class LocalStore {
       if (n < 1) continue
       const latest = (await this.db
         .prepare(
-          `SELECT sender, text FROM transcript WHERE thread = ? AND ${replies}
+          `SELECT sender, text FROM transcript WHERE ${READ_THREAD_SQL} = ? AND ${replies}
             ORDER BY COALESCE(eventTimeUs, 0) DESC, seq DESC LIMIT 1`
         )
         .get(row.thread, partition, scope.transcriptChannel, ...own)) as { sender: string; text: string } | undefined
       const senders = (await this.db
         .prepare(
-          `SELECT sender FROM transcript WHERE thread = ? AND ${replies}
+          `SELECT sender FROM transcript WHERE ${READ_THREAD_SQL} = ? AND ${replies}
             GROUP BY sender ORDER BY COALESCE(MAX(eventTimeUs), 0) DESC, MAX(seq) DESC LIMIT ?`
         )
         .all(row.thread, partition, scope.transcriptChannel, ...own, participantsMax)) as { sender: string }[]
@@ -4579,17 +4587,17 @@ export class LocalStore {
   ): Promise<{ thread: string; revision: number }[]> {
     const rows = (await this.db
       .prepare(
-        `SELECT transcript.thread AS thread, MAX(transcript.revision) AS n FROM transcript
-          WHERE orgId = ? AND channel = ? AND revision > ? AND revision <= ? AND thread IS NOT NULL
+        `SELECT ${READ_THREAD_SQL} AS thread, MAX(transcript.revision) AS n FROM transcript
+          WHERE orgId = ? AND channel = ? AND revision > ? AND revision <= ? AND ${READ_THREAD_SQL} IS NOT NULL
             AND EXISTS (SELECT 1 FROM transcript r
                          WHERE r.orgId = transcript.orgId AND r.channel = transcript.channel AND r.kind = 'text'
-                           AND (r.ts = transcript.thread OR r.postId = transcript.thread)
+                           AND (r.ts = ${READ_THREAD_SQL} OR r.postId = ${READ_THREAD_SQL})
                            AND (r.thread = ? OR EXISTS (
                              SELECT 1 FROM transcript_recipient tr_r WHERE tr_r.seq = r.seq AND tr_r.sessionKey = ?))
                            AND (r.sender = ? OR EXISTS (
                              SELECT 1 FROM transcript_recipient tr_g WHERE tr_g.seq = r.seq AND tr_g.agentId = ?)))
-          GROUP BY transcript.thread
-          ORDER BY MAX(transcript.revision), transcript.thread LIMIT ?`
+          GROUP BY ${READ_THREAD_SQL}
+          ORDER BY MAX(transcript.revision), ${READ_THREAD_SQL} LIMIT ?`
       )
       .all(
         this.orgForRead(scope.agentId, scope.orgId),
@@ -6699,6 +6707,43 @@ export class LocalStore {
         )
       }
       return stored
+    })
+  }
+
+  /** Record that a webchat root post was handed into `thread`, which reads it as a reply while it stays at the root (webchat-threads.md §5.1); whether a row changed. */
+  async markTranscriptHanded(
+    scope: { transcriptChannel: string; agentId: string },
+    postId: string,
+    thread: string
+  ): Promise<boolean> {
+    const orgId = this.orgFor(scope.agentId)
+    const channel = scope.transcriptChannel
+    return await this.transcriptMutex.run(async () => {
+      const { changes, revision } = await this.writeTranscriptRows(orgId, channel, [
+        {
+          kind: 'run',
+          sql: `UPDATE transcript SET handedTo = ?, revision = ?
+                 WHERE orgId = ? AND channel = ? AND postId = ? AND kind = 'text' AND COALESCE(handedTo, '') <> ?`,
+          params: [thread, this.transcriptRevision + 1, orgId, channel, postId, thread]
+        }
+      ])
+      if ((changes[0] ?? 0) === 0) return false
+      this.transcriptRevision = revision
+      const admitted = (await this.lockedDb
+        .prepare(
+          `SELECT tr.agentId AS agentId, tr.sessionKey AS sessionKey FROM transcript_recipient tr
+           JOIN transcript t ON t.seq = tr.seq
+           WHERE t.orgId = ? AND t.channel = ? AND t.postId = ? AND t.kind = 'text'`
+        )
+        .all(orgId, channel, postId)) as { agentId: string; sessionKey: string }[]
+      this.notifyTranscriptMutation(
+        channel,
+        thread,
+        [scope.agentId, ...admitted.map((r) => r.agentId)],
+        this.transcriptRevision,
+        admitted.map((r) => r.sessionKey)
+      )
+      return true
     })
   }
 

@@ -1115,12 +1115,18 @@ describe('session read-back frames (console history pull)', () => {
     const page = decodeEnvelope(
       envelope('session/history/page', {
         sessionId: SESSION_ID,
-        messages: [{ seq: 2, sender: AGENT_ID, ts: '2', kind: 'text', text: 'on it', thread: 'root-1' }],
+        messages: [
+          { seq: 2, sender: AGENT_ID, ts: '2', kind: 'text', text: 'on it', thread: 'root-1' },
+          { seq: 3, sender: '@dana', ts: '3', kind: 'text', text: 'also this', handedTo: 'root-1' }
+        ],
         threads: [summary]
       })
     )
     if (!page.ok || !isFrame('session/history/page')(page.frame)) throw new Error('expected page')
     expect(page.frame.payload.messages[0]!.thread).toBe('root-1')
+    // A root handed into a task's thread stays at the root and names that thread (webchat-threads.md §5.1).
+    expect(page.frame.payload.messages[1]!.handedTo).toBe('root-1')
+    expect(page.frame.payload.messages[1]!.thread).toBeUndefined()
     expect(page.frame.payload.threads).toEqual([summary])
     const tooMany = { ...summary, participants: Array.from({ length: 6 }, (_, i) => ({ sender: `u${i}` })) }
     expect(

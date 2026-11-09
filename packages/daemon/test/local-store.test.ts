@@ -4266,6 +4266,35 @@ describe('thread reads (webchat-threads.md §8)', () => {
     await s.close()
   })
 
+  it('reads a root handed into a thread as one of its replies, while the row keeps its own thread', async () => {
+    const s = await store()
+    await seed(s)
+    const handed = randomUUID()
+    await s.appendTranscript(row('12', handed, { postId: handed, admission: coordinator }))
+    const before = await s.currentTranscriptRevision()
+    expect(await s.markTranscriptHanded({ transcriptChannel: 'CV', agentId: 'bot-a' }, handed, R1)).toBe(true)
+    expect(await s.markTranscriptHanded({ transcriptChannel: 'CV', agentId: 'bot-a' }, handed, R1)).toBe(false)
+    const marked = (await s.transcriptPage('CV', handed, null, 50, 'bot-a')).rows
+    expect(marked.map((r) => [r.ts, r.thread, r.handedTo])).toEqual([['12', handed, R1]])
+    expect((await s.threadPageForAgent(scope, R1, null, 50)).rows.map((r) => r.ts).reverse()).toEqual([
+      '1',
+      '4',
+      '5',
+      '6',
+      '7',
+      '9',
+      '12'
+    ])
+    expect((await s.threadTailForAgent(scope, R1, before, 50)).rows.map((r) => r.ts)).toEqual(['12'])
+    expect(await s.threadsChangedBetween(scope, before, await s.currentTranscriptRevision(), 20)).toEqual([
+      { thread: R1, revision: await s.currentTranscriptRevision() }
+    ])
+    const stats = await s.threadReplyStats(scope, [R1, handed], 2)
+    expect(stats.get(R1)).toMatchObject({ replies: 5, latest: { sender: 'U1', text: 'm12' } })
+    expect(stats.has(handed)).toBe(false)
+    await s.close()
+  })
+
   it('keeps a coordinator’s posts in threads out of its roots view, and in its session history', async () => {
     const s = await store()
     await seed(s)

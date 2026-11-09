@@ -105,9 +105,10 @@ The routing table is auto-session-mode.md §7, and it is the whole rule:
 - **Opening a task opens a thread or attaches to one.** `delegateTask {messageId}` on a root message
   opens the task on that message's thread. On a message that is already in a thread, the task
   attaches to that thread. `messageTask {messageId}` attaches the message's thread to an existing
-  task as one more thread (§6.4 there). In webchat these go through the same `openTask` / `handTo`
-  branch Slack uses; `openPageTask`, `messageForPageTask` and the link card are not used for a daemon
-  that serves threads (§10).
+  task as one more thread (§6.4 there), except a webchat message at the root: it joins the task's
+  thread in the conversation, where the task answers, and its own thread is not attached (§5.1). In
+  webchat these go through the same `openTask` / `handTo` branch Slack uses; `openPageTask`,
+  `messageForPageTask` and the link card are not used for a daemon that serves threads (§10).
 - **A task starts with the whole thread.** A task opened on a thread that already has replies, for
   example a coordinator answer and a person's follow-ups, receives the thread record so far as its
   first round's context, not only the message it was opened for.
@@ -154,6 +155,11 @@ that allows a second participant. Slack's own thread participation rules are unc
   names the thread, and the turn's `output`, `done` and committed posts carry it as `thread`. The
   coordinator's turns carry no `thread`: they stay in the main timeline (§6.1). No turn in a
   coordinator conversation takes the browser's per-turn runtime or worktree (`coordinated`).
+- **A root handed to a task** (`messageTask` on a webchat message at the root) joins the task's
+  thread R: its session's thread, else its first held thread in the conversation. `handTo` attaches
+  nothing, marks the row handed to R, and dispatches the message with `thread: R`, so the task
+  answers and streams in R. The call answers `{ ok, taskId, joinedThread }`. A message in a thread,
+  a legacy page task and every other platform keep attaching the message's thread.
 - **A task the coordinator opens or hands a message to** has no browser turn. It runs with a post-only
   context (`WebchatTransport.webchatThreadContext`) and posts each answer with `initiator: 'agent'`
   and the thread, as an agent wake does. Its inbox row replays with the same context.
@@ -216,6 +222,16 @@ As implemented (PR 4):
 - Peers' `context` copies stay on `webchat:<conv>`, because a coordinator conversation has no other
   participants (§4.1).
 
+A root handed into a task's thread:
+
+- The row stays where it was recorded: its thread is its own `postId`, and the task's admission of the
+  same post adds no second row, since text rows dedupe on `(orgId, channel, ts)`.
+- `transcript.handedTo` names the thread R it joined (store v78, both dialects).
+  `LocalStore.markTranscriptHanded` sets it and bumps the row's revision, so open views see it.
+- Readers place the row by `COALESCE(handedTo, thread)`: R's thread record and reply count include
+  it, and it has no footer of its own. Messages handed before the change carry no mark. Their own
+  thread stays attached to the task, so they keep their own footer.
+
 ### 5.2 Task coordinates
 
 A coordinator task opened for a webchat message is keyed like a Slack threaded task: channel
@@ -247,6 +263,7 @@ As implemented (PR 7):
 - **The coordinator's posts in a thread** (`replyToMessage`, a legacy link card) carry
   `UserTurnBody.threadPost`, since they share the coordinator's admission with its turns.
   `postWebchatAgentMessage` sets it whenever it posts in a thread.
+- **A root handed into a thread** counts as one of its replies and gets no summary of its own (§5.1).
 - **The summary** (`SessionThreadSummary`) carries the root's excerpt, the reply count, `lastReplyAt`,
   the latest reply's author and excerpt, up to five repliers newest first, the holding task's session
   id, title and state from the task index, and `running` while the task's session is prompting. Its
@@ -577,6 +594,7 @@ As implemented (PR 8):
 | Continued coordinator threads             | `continuation-threads-v1` from the daemon (same switch) and in the relay's `ready` (§7, PR 13)                    |
 | Relay → browser hello                     | `webchat-threads-v1` in the `ready` frame's `features` once the relay forwards `thread`                           |
 | `session/history` (daemon control RPC)    | A `roots` view: roots and coordinator turns with the §5.3 summaries, paged like today                             |
+| Session message rows                      | `handedTo?: string` on a webchat root handed into a task's thread: that thread's root id (§5.1)                   |
 | `session/thread` (new daemon control RPC) | One thread record by `(sessionId, rootId)`, paged; authorized by §7.1                                             |
 | Daemon feature for the reads              | `session-thread-reads-v1`, static; the CP sends neither read to a daemon without it                               |
 | BFF                                       | `GET /orgs/:org/sessions/:id/messages?view=roots` and `GET /orgs/:org/sessions/:id/threads/:rootId/messages` (C2) |
@@ -604,6 +622,9 @@ As implemented (PR 7):
   frame budget; a forward page (`after`) adds up to 20 threads whose rows changed since the cursor and
   whose root the session received. When more changed, its cursor stops before the first one left out
   and `liveMore` is set, so the next poll reports it.
+- **A handed root** keeps its place in both views and carries `handedTo`. In the `roots` view it names
+  that thread's summary instead of one of its own. `session/thread` for R includes it in order among
+  R's replies, also with `handedTo`, and the BFF routes pass the field through.
 - **`session/thread`** (`agentId` required) answers only for a root the session received, on its
   coordinate or admitted into it; a reply's id, an unknown root or another agent's session get an empty
   page without `summary`. It pages by event time where ids order natively, else by seq, and tails by

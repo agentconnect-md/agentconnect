@@ -381,12 +381,14 @@ describe("a member's coordinator conversation in webchat (auto-session-mode.md Â
       if (call) {
         const { ctx } = await booted.coordinator()
         const receipt = (await live.d.coordinators.decide(ctx, call)) as { taskId?: string; posted?: unknown }
+        receipts.push(receipt)
         if (receipt.taskId) taskId = receipt.taskId
         if (receipt.posted) replies.push(receipt.posted)
       }
       say('AC_NO_RESPONSE')
     })
     const replies: unknown[] = []
+    const receipts: unknown[] = []
     const { d, posts, send } = booted
     live.d = d
     const index = d.store.assistantSubsessions
@@ -417,7 +419,9 @@ describe("a member's coordinator conversation in webchat (auto-session-mode.md Â
     const inRoot = await d.store.transcriptPage(channel, first.postId, null, 50, AGENT)
     expect(inRoot.rows.map((row: { text: string }) => row.text).sort()).toEqual(['fix the retry', 'task answer 1'])
     expect(coordinatorPrompts).toHaveLength(1)
-    expect(coordinatorPrompts[0]).toContain("The task answers in the message's thread.")
+    expect(coordinatorPrompts[0]).toContain(
+      'The task answers in its own thread: a message at the conversation root joins'
+    )
 
     // A reply in the thread the task holds goes to the task, never the coordinator, and streams in that thread.
     const reply = await send('use jitter too', OWNER, CONV, undefined, first.postId)
@@ -429,17 +433,22 @@ describe("a member's coordinator conversation in webchat (auto-session-mode.md Â
     expect(frames.every((thread) => thread === first.postId)).toBe(true)
     expect(posts.at(-1)).toEqual({ text: 'task answer 2', thread: first.postId })
 
-    // A root handed to the task attaches its thread, where the task answers; no link card is posted.
+    // A root handed to the task joins the task's thread, where the task answers; its own thread is not attached and no link card is posted.
     const second = await send('also handle 429')
     await vi.waitFor(() => expect(taskPrompts).toHaveLength(3), WAIT)
     await vi.waitFor(() => expect(posts.at(-1)?.text).toBe('task answer 3'), WAIT)
     expect(taskPrompts[2]).toContain('also handle 429')
-    expect((await index.threadsOf(AGENT, taskId)).map((one: { thread: string }) => one.thread)).toEqual([
-      first.postId,
-      second.postId
-    ])
-    expect(posts.at(-1)).toEqual({ text: 'task answer 3', initiator: 'agent', thread: second.postId })
+    expect(receipts.at(-1)).toEqual({ ok: true, taskId, joinedThread: `msg-${first.postId}` })
+    expect((await index.threadsOf(AGENT, taskId)).map((one: { thread: string }) => one.thread)).toEqual([first.postId])
+    expect(posts.at(-1)).toEqual({ text: 'task answer 3', initiator: 'agent', thread: first.postId })
     expect(posts.some((post) => post.taskLink !== undefined)).toBe(false)
+    // The person's row stays at the root, marked as handed into the task's thread, where the answer is recorded.
+    const handedRows = await d.store.transcriptPage(channel, second.postId, null, 50, AGENT)
+    expect(handedRows.rows.map((row: { text: string; handedTo?: string }) => [row.text, row.handedTo])).toEqual([
+      ['also handle 429', first.postId]
+    ])
+    const inTaskThread = await d.store.transcriptPage(channel, first.postId, null, 50, AGENT)
+    expect(inTaskThread.rows.map((row: { text: string }) => row.text)).toContain('task answer 3')
 
     // A reply by call is the coordinator's own post in the message's thread.
     const asked = await send('how is it going?')
@@ -460,8 +469,29 @@ describe("a member's coordinator conversation in webchat (auto-session-mode.md Â
     expect(inThread.messages.map((m) => m.text)).toEqual(['how is it going?', 'Still on it.'])
     expect(timeline.threads?.find((t) => t.rootId === first.postId)).toMatchObject({
       task: { title: 'Fix the retry' },
-      lastReply: { excerpt: 'task answer 2' }
+      replies: 5,
+      lastReply: { excerpt: 'task answer 3' }
     })
+    // The handed root stays in the timeline with no footer of its own, and reads as a reply in the task's thread.
+    const handed = timeline.messages.find((m) => m.text === 'also handle 429')
+    expect(handed).toMatchObject({ handedTo: first.postId })
+    expect(handed?.thread).toBeUndefined()
+    expect(timeline.threads?.some((t) => t.rootId === second.postId)).toBe(false)
+    const taskThread = await reader.thread({
+      agentId: AGENT,
+      sessionId: coordinatorId,
+      rootId: first.postId,
+      limit: 50
+    })
+    expect(taskThread.messages.map((m) => [m.text, m.handedTo])).toEqual([
+      ['fix the retry', undefined],
+      ['task answer 1', undefined],
+      ['use jitter too', undefined],
+      ['task answer 2', undefined],
+      ['also handle 429', first.postId],
+      ['task answer 3', undefined]
+    ])
+    expect(taskThread.summary).toMatchObject({ replies: 5, lastReply: { excerpt: 'task answer 3' } })
 
     // Every message is addressed to the agent, so one left undecided opens a task on its own thread.
     await vi.waitFor(() => expect(d.pending.size + d.inflight.size).toBe(0), WAIT)
@@ -486,7 +516,8 @@ describe("a member's coordinator conversation in webchat (auto-session-mode.md Â
     const script: Record<string, (messageId: string) => Record<string, unknown>> = {
       'fix the retry': (messageId) => ({ action: 'delegateTask', messageId, title: 'Fix the retry' }),
       'also handle 429': (messageId) => ({ action: 'messageTask', messageId, taskId }),
-      'how is it going?': (messageId) => ({ action: 'replyToMessage', messageId, message: 'Still on it.' })
+      'how is it going?': (messageId) => ({ action: 'replyToMessage', messageId, message: 'Still on it.' }),
+      'any news?': (messageId) => ({ action: 'replyToMessage', messageId, message: 'Not yet.' })
     }
     const booted = await boot(async (_id, text, say) => {
       const id = /<message id="(msg-[^"]+)"/.exec(text)?.[1]
@@ -512,10 +543,13 @@ describe("a member's coordinator conversation in webchat (auto-session-mode.md Â
     const first = await send('fix the retry')
     await vi.waitFor(() => expect(taskPrompts).toHaveLength(1), WAIT)
     await settle()
-    const second = await send('also handle 429')
+    // A message in an unowned thread handed to the task attaches that thread to it.
+    const second = await send('how is it going?')
+    await settle()
+    await send('also handle 429', OWNER, CONV, undefined, second.postId)
     await vi.waitFor(() => expect(taskPrompts).toHaveLength(2), WAIT)
     await settle()
-    const unowned = await send('how is it going?')
+    const unowned = await send('any news?')
     await settle()
     const asked = coordinatorPrompts.length
     const task = (await d.store.getSession(taskId)).sessionId
