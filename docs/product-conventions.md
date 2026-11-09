@@ -2661,6 +2661,12 @@ cannot create or increase managed Azure repository authority.
 The Integrations management list retains existing bindings and their health
 without personal repository access or a live Azure request.
 
+For cross-tenant Microsoft guests, the login service verifies the same account's
+identity in the repository's tenant without changing its console link or adding
+an Azure authorization step. Guests who signed in before token storage was
+enabled need one normal Microsoft sign-in after the upgrade. A tenant policy
+that prevents silent verification may require administrator assistance.
+
 Azure repository leases recheck the recorded authorizer's current Microsoft
 identity and full authorized tier on every issuance and renewal. Lost access
 or an unlinked identity stops new leases; existing leases expire within an hour.

@@ -92,6 +92,7 @@ interface LogtoConnector {
   name: string | null
   isDemo: boolean
   config: Record<string, unknown>
+  enableTokenStorage: boolean
 }
 
 interface LogtoSignInExperience {
@@ -106,6 +107,7 @@ interface DesiredConnector {
   id: string
   connectorId: string
   config: Record<string, unknown>
+  enableTokenStorage?: boolean
   metadata?: { target: string; name: { en: string } }
 }
 
@@ -265,6 +267,7 @@ function parseConnector(value: unknown): LogtoConnector | null {
     target,
     name: typeof name === 'string' ? name : null,
     isDemo: row.isDemo === true || DEMO_CONNECTOR_IDS.includes(row.connectorId),
+    enableTokenStorage: row.enableTokenStorage === true,
     config: asRecord(row.config)
   }
 }
@@ -309,6 +312,7 @@ function desiredConnector(target: string, desired: LogtoSetupDesired): DesiredCo
     return {
       id: LOGTO_LOGIN_APPS.azuread.id,
       connectorId: 'azuread-universal',
+      enableTokenStorage: true,
       config: {
         ...desired.azuread,
         cloudInstance: 'https://login.microsoftonline.com',
@@ -369,6 +373,7 @@ function desiredConnector(target: string, desired: LogtoSetupDesired): DesiredCo
 function connectorMatches(connector: LogtoConnector, desired: DesiredConnector): boolean {
   return (
     connector.connectorId === desired.connectorId &&
+    (desired.enableTokenStorage === undefined || connector.enableTokenStorage === desired.enableTokenStorage) &&
     Object.entries(desired.config).every(
       ([key, value]) => key === 'clientSecret' || isDeepStrictEqual(connector.config[key] ?? {}, value)
     )
@@ -909,6 +914,7 @@ export class LogtoAdminClaimClient {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             config: expected.config,
+            ...(expected.enableTokenStorage === undefined ? {} : { enableTokenStorage: expected.enableTokenStorage }),
             ...(expected.metadata ? { metadata: expected.metadata } : {}),
             syncProfile: true
           })
@@ -928,6 +934,7 @@ export class LogtoAdminClaimClient {
           id: expected.id,
           connectorId: expected.connectorId,
           config: expected.config,
+          ...(expected.enableTokenStorage === undefined ? {} : { enableTokenStorage: expected.enableTokenStorage }),
           ...(expected.metadata ? { metadata: expected.metadata } : {}),
           syncProfile: true
         })

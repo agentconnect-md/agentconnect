@@ -394,9 +394,46 @@ export class LogtoIdentityService {
   // Repository gates can require fresh evidence of the existing Microsoft link without requesting another authorization.
   async microsoftIdentityFor(sub: string, maxAgeMs?: number): Promise<MicrosoftIdentity | null> {
     const identity = (await this.logtoUser(sub, maxAgeMs))?.identities?.azuread
-    const objectId = typeof identity?.userId === 'string' ? identity.userId.toLowerCase() : undefined
+    const objectId = typeof identity?.userId === 'string' ? identity.userId : undefined
     const email = firstString(identity?.details?.email, identity?.details?.rawData?.mail)?.trim()
-    return objectId && ENTRA_OBJECT_ID.test(objectId) && email ? { objectId, email } : null
+    return objectId && ENTRA_OBJECT_ID.test(objectId.toLowerCase()) && email ? { objectId, email } : null
+  }
+
+  // Logto keeps the login tokens; this endpoint returns only the same account's verified tenant identity.
+  async microsoftTenantIdentityFor(
+    sub: string,
+    linked: MicrosoftIdentity,
+    tenantId: string
+  ): Promise<MicrosoftIdentity | null> {
+    const res = await this.request(`/api/users/${encodeURIComponent(sub)}/identities/azuread/tenant-identity`, {
+      method: 'POST',
+      body: JSON.stringify({ tenantId, expectedIdentityId: linked.objectId })
+    })
+    if (res.status === 404) return null
+    if (!res.ok) {
+      const error = await this.responseError('Microsoft tenant identity verification', res)
+      if (res.status === 422 && error.code === 'user.identity_not_exists_in_current_user') return null
+      if (
+        res.status === 422 &&
+        ['secrets.third_party_token_set.token_not_found', 'connector.social_invalid_access_token'].includes(
+          error.code ?? ''
+        )
+      ) {
+        throw new LogtoApiError('Microsoft sign-in needs refreshing', 422, false, 'MICROSOFT_IDENTITY_REFRESH_REQUIRED')
+      }
+      throw error
+    }
+    const resolved = (await res.json().catch(() => null)) as { userId?: unknown; tenantId?: unknown } | null
+    if (
+      !resolved ||
+      typeof resolved.userId !== 'string' ||
+      !ENTRA_OBJECT_ID.test(resolved.userId.toLowerCase()) ||
+      typeof resolved.tenantId !== 'string' ||
+      resolved.tenantId.toLowerCase() !== tenantId.toLowerCase()
+    ) {
+      throw new LogtoApiError('invalid Microsoft tenant identity response', 502, true)
+    }
+    return { objectId: resolved.userId, email: linked.email }
   }
 
   // Cached sign-in methods narrowed for Profile display, without exposing raw provider data.

@@ -29,6 +29,46 @@ it('resolves only the linked Microsoft object and refreshes it at a repository a
   expect(await service.microsoftIdentityFor('subject', 0)).toBeNull()
 })
 
+it('requests a tenant identity tied to the current source link without accepting tokens or email as proof', async () => {
+  const linked = { objectId: '00000000-0000-4000-8000-0000000000a2', email: 'alex@example.test' }
+  const tenantId = '00000000-0000-4000-8000-0000000000a3'
+  const guestId = '00000000-0000-4000-8000-0000000000a4'
+  const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.endsWith('/oidc/token')) return Response.json({ access_token: 'example-token', expires_in: 3600 })
+    expect(url).toBe(`${MGMT.endpoint}/api/users/subject/identities/azuread/tenant-identity`)
+    expect(init?.method).toBe('POST')
+    expect(JSON.parse(String(init?.body))).toEqual({ tenantId, expectedIdentityId: linked.objectId })
+    return Response.json({ tenantId, userId: guestId })
+  })
+  const service = new LogtoIdentityService(MGMT, new FakeClock(0), MUTATIONS, fetchImpl)
+  expect(await service.microsoftTenantIdentityFor('subject', linked, tenantId)).toEqual({
+    ...linked,
+    objectId: guestId
+  })
+  for (const invalid of [null, { tenantId: guestId, userId: guestId }, { tenantId, email: linked.email }]) {
+    fetchImpl.mockResolvedValueOnce(Response.json(invalid))
+    await expect(service.microsoftTenantIdentityFor('subject', linked, tenantId)).rejects.toMatchObject({
+      status: 502,
+      retryable: true
+    })
+  }
+  fetchImpl.mockResolvedValueOnce(Response.json({ code: 'user.identity_not_exists_in_current_user' }, { status: 422 }))
+  expect(await service.microsoftTenantIdentityFor('subject', linked, tenantId)).toBeNull()
+  fetchImpl.mockResolvedValueOnce(Response.json({ code: 'entity.not_found' }, { status: 404 }))
+  expect(await service.microsoftTenantIdentityFor('subject', linked, tenantId)).toBeNull()
+  fetchImpl.mockResolvedValueOnce(
+    Response.json({ code: 'secrets.third_party_token_set.token_not_found' }, { status: 422 })
+  )
+  await expect(service.microsoftTenantIdentityFor('subject', linked, tenantId)).rejects.toMatchObject({
+    code: 'MICROSOFT_IDENTITY_REFRESH_REQUIRED'
+  })
+  fetchImpl.mockResolvedValueOnce(Response.json({ code: 'connector.general' }, { status: 502 }))
+  await expect(service.microsoftTenantIdentityFor('subject', linked, tenantId)).rejects.toMatchObject({
+    status: 502,
+    retryable: true
+  })
+})
+
 it('binds GitLab numeric identities to the verified OIDC issuer and invalidates on unlink', async () => {
   const issuer = 'https://gitlab.example.test/prefix'
   const users = {

@@ -193,7 +193,8 @@ export class FakeAzureDevOps {
     return new AzureDevOpsUserAuthzService({
       api: this.api,
       service,
-      microsoftIdentityFor: async () => ((typeof linked === 'function' ? linked() : linked) ? LINKED_MICROSOFT : null)
+      microsoftIdentityFor: async () => ((typeof linked === 'function' ? linked() : linked) ? LINKED_MICROSOFT : null),
+      microsoftTenantIdentityFor: async () => null
     })
   }
 
