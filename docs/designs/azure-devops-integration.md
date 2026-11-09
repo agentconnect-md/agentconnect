@@ -352,8 +352,9 @@ after the upgrade. Direct identity matches need no cache. No Azure DevOps delega
 scope or additional personal authorization flow is introduced. Target-tenant
 consent or conditional-access policy can still prevent silent resolution; the
 request is refused and asks for sign-in refresh or administrator assistance.
-Unavailable identity proof and provider outages do not persist an access-loss
-verdict for an existing grant.
+Missing or expired stored login state and provider outages do not persist an
+access-loss verdict for an existing grant. A login service without the
+tenant-identity endpoint retains the existing denial for unmatched identities.
 
 The application reads the person's repository and project ACLs with their
 descriptor and `includeExtendedInfo=true`. Azure's `effectiveAllow` and

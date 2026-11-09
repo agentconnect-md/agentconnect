@@ -409,6 +409,7 @@ export class LogtoIdentityService {
       method: 'POST',
       body: JSON.stringify({ tenantId, expectedIdentityId: linked.objectId })
     })
+    if (res.status === 404) return null
     if (!res.ok) {
       const error = await this.responseError('Microsoft tenant identity verification', res)
       if (res.status === 422 && error.code === 'user.identity_not_exists_in_current_user') return null

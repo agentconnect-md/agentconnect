@@ -54,6 +54,8 @@ it('requests a tenant identity tied to the current source link without accepting
   }
   fetchImpl.mockResolvedValueOnce(Response.json({ code: 'user.identity_not_exists_in_current_user' }, { status: 422 }))
   expect(await service.microsoftTenantIdentityFor('subject', linked, tenantId)).toBeNull()
+  fetchImpl.mockResolvedValueOnce(Response.json({ code: 'entity.not_found' }, { status: 404 }))
+  expect(await service.microsoftTenantIdentityFor('subject', linked, tenantId)).toBeNull()
   fetchImpl.mockResolvedValueOnce(
     Response.json({ code: 'secrets.third_party_token_set.token_not_found' }, { status: 422 })
   )
