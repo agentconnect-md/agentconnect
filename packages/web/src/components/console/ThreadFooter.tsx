@@ -255,13 +255,12 @@ export function ThreadFooter({
       </div>
     ) : null
 
-  // Every thread, held or not, shows its replies the same way under its root: "↩ people 3 replies · 1m", which opens it.
+  // Every thread, held or not, shows its replies the same way under its root: "people 3 replies · 1m", which opens it.
   const line = (
     <div className="group relative flex max-w-full min-w-0">
       {target(
         'flex w-fit max-w-full min-w-0 items-center gap-[6px] px-[2px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) no-underline',
         <>
-          <Icon name="reply" size={13} color="var(--brand)" className="flex-none" />
           {people}
           <span
             data-thread-count=""
