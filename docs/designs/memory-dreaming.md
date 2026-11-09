@@ -679,8 +679,9 @@ architecture invariant:
   Beside each file's diff the review shows that file's revision: the change,
   its reason or destinations, the model's note, and "Not applied" for an entry
   the daemon rejected. When the latest adopted dream named any, its history
-  row offers a "Notable changes · N" button listing them per file; most dreams
-  name none and show no button, so its presence is the cue. They explain, never
+  row offers a file-pen icon with the count (its tooltip names them "notable
+  changes"), and the collapsed History heading carries the same mark; most dreams
+  name none and show neither, so its presence is the cue. They explain, never
   gate: nothing about adoption waits on them, and a failed read shows no button
   and leaves the review as it was, without waking the sandbox.
   Both branches of the mobile/desktop split follow the existing

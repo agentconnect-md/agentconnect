@@ -409,13 +409,23 @@ export function DreamPanel({
                 </Button>
               ) : null}
               {notable?.dreamId === dream.dreamId ? (
-                <Button
-                  variant="secondary"
-                  size="xs"
-                  onClick={() => setExplaining(explaining === dream.dreamId ? null : dream.dreamId)}
-                >
-                  {explaining === dream.dreamId ? t('hide') : t('notableChanges', { count: notable.revisions.length })}
-                </Button>
+                <span title={t('notableChanges', { count: notable.revisions.length })}>
+                  <Button
+                    variant="secondary"
+                    size="xs"
+                    ariaLabel={t('notableChanges', { count: notable.revisions.length })}
+                    ariaExpanded={explaining === dream.dreamId}
+                    onClick={() => setExplaining(explaining === dream.dreamId ? null : dream.dreamId)}
+                  >
+                    {explaining === dream.dreamId ? (
+                      t('hide')
+                    ) : (
+                      <>
+                        <Icon name="file-pen-line" size={13} /> {notable.revisions.length}
+                      </>
+                    )}
+                  </Button>
+                </span>
               ) : null}
               {dream.status === 'completed' && canEdit ? (
                 <Button variant="secondary" size="xs" disabled={busy} onClick={() => discard(dream.dreamId)}>
@@ -525,8 +535,20 @@ export function DreamPanel({
                 <Icon name="chevron-right" size={13} className="transition-transform group-open:rotate-90" />
                 {t('history')}
               </span>
-              <span className="font-mono text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                {pastDreams.length}
+              <span className="flex items-center gap-3">
+                {/* The collapsed history still says when its latest adoption named files worth a look. */}
+                {notable ? (
+                  <span
+                    title={t('notableChanges', { count: notable.revisions.length })}
+                    className="inline-flex items-center gap-1 font-mono text-[11px] font-normal leading-normal text-(--text-secondary)"
+                  >
+                    <Icon name="file-pen-line" size={12} />
+                    {notable.revisions.length}
+                  </span>
+                ) : null}
+                <span className="font-mono text-[11px] font-normal leading-normal text-(--text-tertiary)">
+                  {pastDreams.length}
+                </span>
               </span>
             </summary>
             <div className="mt-3">{renderDreamRows(pastDreams)}</div>

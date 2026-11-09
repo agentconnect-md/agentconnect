@@ -2446,7 +2446,8 @@ The dream's history shows the reason beside each file it named: corrected, dropp
 with its reason, or moved with the files now holding it, plus the model's one-line
 note, and an entry the daemon did not apply is marked "Not applied". A completed
 dream shows the reason above that file's diff. The latest adopted dream offers a
-"Notable changes" button with the count only when it named any, so most dreams show
+file-pen icon with the count, tooltip "notable changes", on its row and on the collapsed
+History heading, only when it named any, so most dreams show
 nothing extra and the button itself is the cue to look. The reasons are an explanation only — showing them never
 delays or blocks adoption — and, like the backup, they are kept until the next
 adoption.

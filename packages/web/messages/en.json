@@ -3277,7 +3277,7 @@
         "accept": "Accept",
         "showSkill": "Show what this installs",
         "candidateGone": "This candidate is no longer staged.",
-        "notableChanges": "Notable changes · {count}",
+        "notableChanges": "{count, plural, one {# notable change} other {# notable changes}}",
         "revisionCorrected": "Corrected by later sessions",
         "revisionDropped": "Dropped: {why, select, contradicted {contradicted by later sessions} transient {transient task progress} expired {no longer current} secret {held a secret} other {no reason given}}",
         "revisionMoved": "Moved into {files}",

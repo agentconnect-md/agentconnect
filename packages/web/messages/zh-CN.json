@@ -3277,7 +3277,7 @@
         "accept": "接受",
         "showSkill": "查看安装内容",
         "candidateGone": "此候选内容已不再暂存。",
-        "notableChanges": "值得注意的更改 · {count}",
+        "notableChanges": "{count} 项值得注意的更改",
         "revisionCorrected": "根据之后的会话修正",
         "revisionDropped": "已删除：{why, select, contradicted {被之后的会话推翻} transient {临时任务进度} expired {已不再适用} secret {包含机密} other {未给出原因}}",
         "revisionMoved": "已移至 {files}",
