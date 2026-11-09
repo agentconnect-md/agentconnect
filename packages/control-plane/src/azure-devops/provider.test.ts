@@ -36,13 +36,20 @@ describe('the azure-devops code-host entry', () => {
       kind: 'azure-devops' as const,
       repoId: 42n,
       connectionId: CONNECTION_ID,
+      attestedByUserId: 'user-1',
       azureDevOps: ROUTING,
       gitRepo: GIT_REPO,
       defaultBranch: 'main',
       access: 'write' as const
     }
     expect(provider.workspace.writeFromDerived(derived)).toEqual({
-      credential: { provider: 'azure-devops', access: 'write', connectionId: CONNECTION_ID, azureDevOps: ROUTING },
+      credential: {
+        provider: 'azure-devops',
+        access: 'write',
+        connectionId: CONNECTION_ID,
+        azureDevOps: ROUTING,
+        attestedByUserId: 'user-1'
+      },
       workspaceRepoId: 42n
     })
     const { repoId: _omitted, ...preview } = derived
@@ -54,6 +61,7 @@ describe('the azure-devops code-host entry', () => {
       provider: 'azure-devops' as const,
       access: 'read' as const,
       connectionId: CONNECTION_ID,
+      attestedByUserId: 'user-1',
       azureDevOps: ROUTING
     }
     expect(provider.workspace.toSpec(credential, 42n)).toEqual({

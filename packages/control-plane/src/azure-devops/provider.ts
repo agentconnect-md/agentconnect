@@ -95,6 +95,7 @@ async function deriveAzureDevOpsWorkspace(derivation: CodeHostWorkspaceDerivatio
       kind: 'azure-devops',
       repoId: binding.repoId,
       connectionId: located.connection.id,
+      attestedByUserId: actorUserId ?? null,
       azureDevOps: routing,
       gitRepo: binding.cloneUrl,
       defaultBranch: binding.defaultBranch ?? 'main',
@@ -104,6 +105,7 @@ async function deriveAzureDevOpsWorkspace(derivation: CodeHostWorkspaceDerivatio
   return {
     kind: 'azure-devops',
     connectionId: located.connection.id,
+    attestedByUserId: actorUserId ?? null,
     azureDevOps: routing,
     gitRepo: located.repository.cloneUrl,
     defaultBranch: located.repository.defaultBranch ?? 'main',
@@ -138,8 +140,13 @@ async function upgradeAzureDevOpsGrant(ctx: CodeHostRepoAuthorizationContext): P
       return refused(e.code === 'RATE_LIMITED' ? 429 : 502, `azure devops: ${e.message}`)
     throw e
   }
-  const updated = await deps.repos.agentRepoAuth.updateAccess(row.id, access)
-  if (!updated) return refused(404, 'authorization not found')
+  const result = await deps.repos.agentRepoAuth.raiseAttested(row.id, access, {
+    userId: req.principal!.userId,
+    at: new Date(deps.clock.now())
+  })
+  if (!result) return refused(404, 'authorization not found')
+  if (result.restored) ctx.specChanged()
+  const updated = result.row
   void deps.repos.audit
     .append({
       kind: 'agent_repo_change',
@@ -187,6 +194,7 @@ export const azureDevOpsCodeHostProvider: CodeHostProviderModule = {
           provider: 'azure-devops',
           access: derived.access,
           connectionId: derived.connectionId,
+          attestedByUserId: derived.attestedByUserId,
           azureDevOps: derived.azureDevOps
         },
         workspaceRepoId: derived.repoId

@@ -499,9 +499,14 @@ GitHub access.
   time with `FOR UPDATE SKIP LOCKED` and stamps its check time first, so
   replicas take different grants and a grant whose check fails rotates to the
   back instead of pinning the queue.
-- **Scope.** GitHub rows, and only where the per-user gate is configured, as at
-  creation. A GitLab or Gitea row is vouched for by its managed binding, and an
-  installation grant has no per-repository attestation (decision 10).
+- **Scope.** GitHub rows where the per-user gate is configured, plus Azure
+  DevOps rows through its existing Microsoft identity gate. The providers share
+  the scheduling, verdict persistence, audit and projection loop in
+  `codehost/repository-grant-reattestor.ts`. Azure also checks the authorizer on
+  every workspace or additional-repository lease; see
+  [Azure DevOps integration](azure-devops-integration.md#33-people). A GitLab or
+  Gitea row is vouched for by its managed binding, and an installation grant has
+  no per-repository attestation (decision 10).
 
 ## Daemon
 

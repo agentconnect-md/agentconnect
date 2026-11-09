@@ -4,15 +4,19 @@ import type { Clock } from '../domain/clock.js'
 import { GitCredDeniedError } from '../github/service.js'
 import type {
   AgentRecord,
+  AgentRepo,
   AgentRepoAuthorizationRepo,
   AzureDevOpsConnectionRecord,
   AzureDevOpsConnectionRepo,
   AzureDevOpsRepositoryBindingRepo
 } from '../persistence/ports.js'
+import { isHonoredRepoGrant } from '../persistence/ports.js'
 import { AzureDevOpsApiError, readConnectionData, type AzureDevOpsApiClient } from './api.js'
 import { AzureDevOpsConnectDenied, type AzureDevOpsConnectionService } from './connection.service.js'
 import { LEASE_MARGIN_MS } from './token-cache.js'
 import { hookBindingOf } from './hook.service.js'
+import type { AzureDevOpsUserAuthzService } from './user-authz.js'
+import { AZURE_STALE_REASON_TEXT } from './repository-grant-reattestor.js'
 
 /** A lease ends this long before the token inside it, so the proxy never presents an expired one. */
 export const LEASE_MARGIN_SEC = LEASE_MARGIN_MS / 1000
@@ -24,6 +28,8 @@ export const DEGRADED_PROBE_HOLD_MS = 60_000
 export const FORCE_REFRESH_MIN_INTERVAL_MS = 30_000
 
 export interface AzureDevOpsGitcredDeps {
+  agents: Pick<AgentRepo, 'get'>
+  authz: Pick<AzureDevOpsUserAuthzService, 'attestAccess'>
   connections: Pick<AzureDevOpsConnectionRepo, 'get'>
   bindings: Pick<AzureDevOpsRepositoryBindingRepo, 'byRepo' | 'listForRepo'>
   /** The additional-repository allowlist, the second authority beside the workspace. */
@@ -31,6 +37,14 @@ export interface AzureDevOpsGitcredDeps {
   service: Pick<AzureDevOpsConnectionService, 'accessToken' | 'withApi' | 'purgeToken'>
   api: AzureDevOpsApiClient
   clock: Clock
+}
+
+interface Authority {
+  repoId: bigint
+  connectionId: string
+  clamp: 'read' | 'write'
+  attestedByUserId: string | null
+  grantId: string | null
 }
 
 export class AzureDevOpsGitcredService {
@@ -48,9 +62,28 @@ export class AzureDevOpsGitcredService {
     requestedAccess?: 'read' | 'write',
     forceRefresh = false
   ): Promise<GitCredGrant> {
-    const { repoId, connectionId, clamp } = await this.authority(agent, requestedExternalRepoId)
+    const authority = await this.authority(agent, requestedExternalRepoId)
+    const { repoId, connectionId, clamp } = authority
     const access: 'read' | 'write' = requestedAccess === 'read' ? 'read' : clamp
-    return this.lease(agent.orgId, connectionId, repoId, access, forceRefresh)
+    const grant = await this.lease(agent.orgId, connectionId, repoId, access, forceRefresh, authority)
+    // A completed external check cannot lend its authority to a replacement workspace or grant.
+    const current = await this.deps.agents.get(agent.orgId, agent.id)
+    const next = current && (await this.authority(current, requestedExternalRepoId))
+    if (
+      !next ||
+      next.repoId !== repoId ||
+      next.connectionId !== connectionId ||
+      next.clamp !== clamp ||
+      next.attestedByUserId !== authority.attestedByUserId ||
+      next.grantId !== authority.grantId
+    ) {
+      throw new GitCredDeniedError(
+        'repository authorization changed while verifying access — retry',
+        'LEASE_DENIED',
+        true
+      )
+    }
+    return grant
   }
 
   /** §11.5: the final poster's lease, at `comment` on the repository's hooked binding; the handler already checked the enabled hook. */
@@ -67,10 +100,7 @@ export class AzureDevOpsGitcredService {
   }
 
   /** The repository this request may be served for, the connection that serves it, and its ceiling. */
-  private async authority(
-    agent: AgentRecord,
-    requested?: bigint
-  ): Promise<{ repoId: bigint; connectionId: string; clamp: 'read' | 'write' }> {
+  private async authority(agent: AgentRecord, requested?: bigint): Promise<Authority> {
     const workspace =
       agent.workspace.mode === 'git' && agent.workspace.credential?.provider === 'azure-devops'
         ? agent.workspace.credential
@@ -80,7 +110,13 @@ export class AzureDevOpsGitcredService {
       if (workspace === undefined || workspaceRepo === undefined) {
         throw new GitCredDeniedError('agent workspace is not an Azure DevOps repository', 'SCOPE_DENIED', false)
       }
-      return { repoId: workspaceRepo, connectionId: workspace.connectionId, clamp: workspace.access }
+      return {
+        repoId: workspaceRepo,
+        connectionId: workspace.connectionId,
+        clamp: workspace.access,
+        attestedByUserId: workspace.attestedByUserId,
+        grantId: null
+      }
     }
     const grant = (await this.deps.repoAuths.listForAgent(agent.id)).find(
       (row) => row.provider === 'azure-devops' && row.repoId === requested && row.connectionId !== undefined
@@ -92,8 +128,21 @@ export class AzureDevOpsGitcredService {
         false
       )
     }
+    if (!isHonoredRepoGrant(grant)) {
+      throw new GitCredDeniedError(
+        `repository authorization is suspended: ${AZURE_STALE_REASON_TEXT[grant.stale!.reason]}`,
+        'LEASE_DENIED',
+        false
+      )
+    }
     // `comment` reads only on Azure DevOps (§6.3), so it leases as `read`.
-    return { repoId: requested, connectionId: grant.connectionId, clamp: grant.access === 'write' ? 'write' : 'read' }
+    return {
+      repoId: requested,
+      connectionId: grant.connectionId,
+      clamp: grant.access === 'write' ? 'write' : 'read',
+      attestedByUserId: grant.attestedByUserId,
+      grantId: grant.id
+    }
   }
 
   private async lease(
@@ -101,7 +150,8 @@ export class AzureDevOpsGitcredService {
     connectionId: string,
     repoId: bigint,
     access: 'read' | 'comment' | 'write',
-    forceRefresh: boolean
+    forceRefresh: boolean,
+    authority?: Authority
   ): Promise<GitCredGrant> {
     const binding = await this.deps.bindings.byRepo(orgId, connectionId, repoId)
     if (!binding) {
@@ -120,6 +170,32 @@ export class AzureDevOpsGitcredService {
     }
     const connection = await this.deps.connections.get(orgId, connectionId)
     if (!connection) throw new GitCredDeniedError('the Azure DevOps connection is gone', 'SCOPE_DENIED', false)
+    if (authority) {
+      let reason
+      try {
+        reason = await this.deps.authz.attestAccess(
+          authority.attestedByUserId,
+          {
+            connection,
+            repository: { id: binding.repositoryId, projectId: binding.projectId }
+          },
+          authority.clamp
+        )
+      } catch (error) {
+        const code = error instanceof AzureDevOpsApiError && error.code === 'RATE_LIMITED' ? 'RATE_LIMITED' : 'INTERNAL'
+        throw new GitCredDeniedError(
+          'could not verify the repository authorizer’s Azure DevOps access — retry',
+          code,
+          true
+        )
+      }
+      if (reason)
+        throw new GitCredDeniedError(
+          `repository authorization is suspended: ${AZURE_STALE_REASON_TEXT[reason]}`,
+          'LEASE_DENIED',
+          false
+        )
+    }
     if (forceRefresh) this.purgeForced(connection.id)
     const token = await this.token(connection)
     const nowMs = this.deps.clock.now()

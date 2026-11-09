@@ -305,7 +305,7 @@ describe('repository dropdown', () => {
 
     // The dropdown is narrow, so the marker is an icon that keeps the repository name readable.
     const marker = within('[data-repository-authorization="r1"]')?.querySelector('[role="img"][aria-label="Suspended"]')
-    expect(marker?.getAttribute('title')).toBe('The member who authorized it no longer has this access on GitHub')
+    expect(marker?.getAttribute('title')).toBe('The member who authorized it no longer has this repository access')
     expect(within('[data-repository-authorization="r1"]')?.textContent).toContain('example-org/tools')
     expect(within('[data-repository-authorization="r2"]')?.querySelector('[aria-label="Suspended"]')).toBeNull()
   })

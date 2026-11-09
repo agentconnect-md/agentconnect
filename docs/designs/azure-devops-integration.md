@@ -358,8 +358,33 @@ The repository picker applies this check. Workspace creation/replacement and
 additional-grant creation/increases fetch fresh evidence before granting
 authority; a picker result is never reused to authorize a save. An unreadable
 or ambiguous identity grants nothing, and a provider outage remains retryable.
-Existing workspace and grant authority is not continuously re-attested by this
-admission check.
+Every workspace or additional-repository lease repeats the check against the
+stored authorizer and full authorized tier before applying a requested read
+clamp. Workspace saves record `workspaceAttestedByUserId`; additional grants
+record `attestedByUserId`, replaced by the caller on a tier increase. After the
+external check, the lease verifies that the workspace or grant still names the
+same authorizer, repository, connection and tier. A replacement grant's row ID
+cannot reuse the old check.
+
+Confirmed access loss or identity unlinking returns `LEASE_DENIED`, evicting the
+daemon's cached lease while allowing later retries. Provider failures prevent
+new leases but are retryable and do not mark access lost. A previously issued
+lease can remain usable until its expiry, at most one hour; copied data cannot
+be recalled. The enabled hook's daemon-only reply authority remains separate.
+
+Additional grants use the shared repository re-attestation loop, independently
+of GitHub configuration, with the existing `REPO_GRANT_REATTEST_*` cadence and
+batch limits. A stale grant leaves the spec, which clears cached credentials;
+a later successful sweep restores it. Increasing its tier records the caller
+and restores a stale grant, or a member can revoke and authorize it again.
+Lease checks are read-only and do not race the sweep's persisted verdicts.
+
+Legacy workspaces have no reliable authorizer: the agent creator or last editor
+cannot establish who authorized the current repository. Their nullable field
+is left empty, and new leases are refused until a permitted member saves the
+workspace through its existing editor. Saving the same repository and tier can
+record a new authorizer without replacing the checkout. This adds no personal
+OAuth flow or access-sync prerequisite.
 
 ### 3.4 Tokens
 
@@ -1018,9 +1043,6 @@ connection-write, and secret routes manage a credential and are
   Entra can reach, and it can follow without changing anything downstream of
   §3.4.
 - More than one Azure DevOps organization per AgentConnect organization.
-- Periodic re-attestation of existing Azure repository grants. The admission
-  checks in §3.3 cover new authority and increases; ongoing revocation of older
-  grants is a separate follow-up.
 - Pipelines, Boards, Wiki, and Artifacts, and publishing a Marketplace
   extension.
 - Work-item triggers and tools. Azure Boards items belong to a project, not a

@@ -569,6 +569,8 @@ describe('the reply lease (§11.5)', () => {
     const h = await harness()
     await hooked(h)
     const gitcred = new AzureDevOpsGitcredService({
+      agents: h.a.deps.repos.agent,
+      authz: h.fake.userAuthz(h.service),
       connections: h.connectionRepo,
       bindings: h.bindings,
       repoAuths: new PgAgentRepoAuthorizationRepo(prisma),

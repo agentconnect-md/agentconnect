@@ -222,7 +222,9 @@ function sameWorkspaceCredential(
     (left.provider === 'github' ? left.installationId : undefined) ===
       (right.provider === 'github' ? right.installationId : undefined) &&
     ('connectionId' in left ? left.connectionId : undefined) ===
-      ('connectionId' in right ? right.connectionId : undefined)
+      ('connectionId' in right ? right.connectionId : undefined) &&
+    ('attestedByUserId' in left ? left.attestedByUserId : undefined) ===
+      ('attestedByUserId' in right ? right.attestedByUserId : undefined)
   )
 }
 

@@ -151,7 +151,7 @@ describe('EditWorkspaceModal repository access toggle', () => {
       el.textContent?.includes('Suspended')
     )
     expect(badges).toHaveLength(1)
-    expect(badges[0]?.title).toBe('The member who authorized it no longer has a linked GitHub account')
+    expect(badges[0]?.title).toBe('The member who authorized it no longer has a linked account for this provider')
     expect(badges[0]?.parentElement?.textContent).toContain('example-org/example-repo')
   })
 

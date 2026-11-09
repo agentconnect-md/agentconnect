@@ -65,6 +65,7 @@ import { AzureDevOpsConnectionService, azureDevOpsSecretFingerprint } from './az
 import { AzureDevOpsUserAuthzService } from './azure-devops/user-authz.js'
 import { AzureDevOpsBindingService } from './azure-devops/binding.service.js'
 import { AzureDevOpsGitcredService } from './azure-devops/gitcred.service.js'
+import { AzureDevOpsRepositoryGrantReattestor } from './azure-devops/repository-grant-reattestor.js'
 import { AzureDevOpsConnectFlowService } from './azure-devops/connect-flow.service.js'
 import { AzureDevOpsHookService } from './azure-devops/hook.service.js'
 import { azureDevOpsReviewPublisher } from './azure-devops/review-publisher.js'
@@ -2883,7 +2884,33 @@ export function buildContainer(
       )
     : undefined
 
-  // Re-attests repository grants wherever creation attests them (the per-user GitHub gate); armed only by startBackground().
+  const reprojectRepoGrant = async (orgId: OrgId, agentId: AgentId): Promise<void> => {
+    const agent = await repos.agent.get(orgId, agentId)
+    if (!agent) return
+    await agentDelivery.upsert(agent, (err, daemonId) => {
+      if (err instanceof NoConnection) http.log.debug({ agentId, daemonId }, 'agent/upsert skipped: daemon offline')
+      else http.log.warn({ err, agentId, daemonId }, 'grant re-attestation: spec reconcile failed')
+    })
+  }
+  const repoGrantReattestorConfig = {
+    intervalMs: config.REPO_GRANT_REATTEST_INTERVAL_SEC * 1000,
+    reattestAfterMs: config.REPO_GRANT_REATTEST_AFTER_SEC * 1000,
+    batch: config.REPO_GRANT_REATTEST_BATCH
+  }
+  // Each provider reuses its creation gate; Azure's loop does not depend on GitHub configuration.
+  const azureDevOpsGrantReattestor = new AzureDevOpsRepositoryGrantReattestor(
+    {
+      grants: repos.agentRepoAuth,
+      connections: repos.azureDevOpsConnection,
+      bindings: repos.azureDevOpsRepositoryBinding,
+      authz: azureDevOps.userAuthz,
+      audit: repos.audit,
+      reproject: reprojectRepoGrant,
+      clock,
+      log: http.log
+    },
+    repoGrantReattestorConfig
+  )
   const repositoryGrantReattestor =
     github && githubUserAuthz && logtoIdentity
       ? new RepositoryGrantReattestor(
@@ -2900,23 +2927,11 @@ export function buildContainer(
               clock
             }),
             audit: repos.audit,
-            reproject: async (orgId, agentId) => {
-              const agent = await repos.agent.get(orgId, agentId)
-              if (!agent) return
-              await agentDelivery.upsert(agent, (err, daemonId) => {
-                if (err instanceof NoConnection)
-                  http.log.debug({ agentId, daemonId }, 'agent/upsert skipped: daemon offline')
-                else http.log.warn({ err, agentId, daemonId }, 'grant re-attestation: spec reconcile failed')
-              })
-            },
+            reproject: reprojectRepoGrant,
             clock,
             log: http.log
           },
-          {
-            intervalMs: config.REPO_GRANT_REATTEST_INTERVAL_SEC * 1000,
-            reattestAfterMs: config.REPO_GRANT_REATTEST_AFTER_SEC * 1000,
-            batch: config.REPO_GRANT_REATTEST_BATCH
-          }
+          repoGrantReattestorConfig
         )
       : undefined
 
@@ -3466,6 +3481,8 @@ export function buildContainer(
     }),
     // Azure DevOps leases (azure-devops-integration.md §6.1): the connection's cached token, to the proxy plane only.
     azureDevOpsGitcred: new AzureDevOpsGitcredService({
+      agents: repos.agent,
+      authz: azureDevOps.userAuthz,
       connections: repos.azureDevOpsConnection,
       bindings: repos.azureDevOpsRepositoryBinding,
       repoAuths: repos.agentRepoAuth,
@@ -4010,6 +4027,7 @@ export function buildContainer(
       azureDevOpsStatusReporter.start()
       hookRedeliveryReconciler?.start()
       repositoryGrantReattestor?.start()
+      azureDevOpsGrantReattestor.start()
       mcpOauthRefresher.start()
       gitlabRotator?.start()
       gitlabRetirementSweeper?.start()
@@ -4054,6 +4072,7 @@ export function buildContainer(
       azureDevOpsStatusReporter.stop()
       hookRedeliveryReconciler?.stop()
       repositoryGrantReattestor?.stop()
+      azureDevOpsGrantReattestor.stop()
       mcpOauthRefresher.stop()
       gitlabRotator?.stop()
       gitlabRetirementSweeper?.stop()

@@ -2661,6 +2661,17 @@ cannot create or increase managed Azure repository authority.
 The Integrations management list retains existing bindings and their health
 without personal repository access or a live Azure request.
 
+Azure repository leases recheck the recorded authorizer's current Microsoft
+identity and full authorized tier on every issuance and renewal. Lost access
+or an unlinked identity stops new leases; existing leases expire within an hour.
+Additional grants also use the scheduled suspension and recovery check. A
+workspace records the person who last saved its repository and access; an
+additional grant records its creator, replaced by the person who raises its
+tier. Older Azure workspaces without a recorded authorizer require a member
+with that access to save them again. The existing workspace editor permits
+saving an unchanged Azure workspace for this purpose, without replacing its
+checkout or adding a personal authorization step.
+
 The workspace options live in the agent's Workspace tab, above the files they
 configure — not in Configuration, and not behind a summary row that navigates
 there. A single `Edit` action owns the workspace source (scratch, GitHub,

@@ -2225,8 +2225,8 @@
         "lowerAccessRevoke": "Revoke and authorize again to lower access",
         "grantSuspended": "Suspended",
         "grantSuspendedReason": {
-          "access_lost": "The member who authorized it no longer has this access on GitHub",
-          "identity_unlinked": "The member who authorized it no longer has a linked GitHub account",
+          "access_lost": "The member who authorized it no longer has this repository access",
+          "identity_unlinked": "The member who authorized it no longer has a linked account for this provider",
           "attester_removed": "The member who authorized it no longer has an account"
         },
         "githubWriteAccess": "Push, open PRs & run GitHub Actions",
