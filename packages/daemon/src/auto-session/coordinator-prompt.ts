@@ -261,6 +261,9 @@ export function coordinatorPrompt(input: CoordinatorPromptInput): string {
       "call it with their message's id as messageId and reply to their message as well.",
     '- Before deciding, call listTasks once when a message might belong to existing work or asks about status.',
     "- Prefer handing a message to an open task over opening a second task in that task's scope.",
+    '- A line like [attached: chart.png (image/png)] is all you see of a file. A task handed the message receives the ' +
+      'file itself, so a message with an attachment that is for you goes to an open task or a new one; replyToMessage ' +
+      'refuses it.',
     '- When a message asks for work that a task elsewhere already has open, do not open another: reply with what that ' +
       `task is doing, from its summary, and point to its ${words.taskLink}. Never message or stop a task from elsewhere.`,
     '- This session may run under a read-only or plan permission mode. It restricts native file and shell tools only: ' +
