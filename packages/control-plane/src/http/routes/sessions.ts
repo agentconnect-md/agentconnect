@@ -809,7 +809,7 @@ export function sessionRoutes(deps: HttpDeps) {
           schema: {
             tags: [Tag.Sessions],
             summary: `Get ${label} session access sync`,
-            description: `Returns whether ${label} sessions use the provider's current audience for console access.`,
+            description: `Check whether ${label} sessions use the provider's current audience for console access. Returns sync availability, policy state, and revision information.`,
             operationId: `get${operationLabel}SessionAccess`,
             response: { 200: SessionExternalAccessDto }
           }
