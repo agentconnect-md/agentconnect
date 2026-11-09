@@ -1,0 +1,25 @@
+description: AgentConnect memory dreaming — does a dream correct a note the conversation contradicted?
+
+prompts:
+  - '{{case}}'
+
+providers:
+  # Real-runtime subject only: a scripted host has no memory tools, so the engine
+  # gate for this game is evals/test/memory-dream.test.ts. Requires
+  # AGENTCONNECT_EVAL_SUBJECT_ROOT and AGENTCONNECT_EVAL_ROOT_AGENT.
+  - id: file://providers/memory-dream.ts
+    label: real-agent
+    config:
+      name: real-agent
+
+tests: file://cases/memory-dream.yaml
+
+evaluateOptions:
+  cache: false
+  maxConcurrency: 1
+
+outputPath:
+  - .artifacts/evaluation/dreams/results.json
+  - .artifacts/evaluation/dreams/results.junit.xml
+
+sharing: false

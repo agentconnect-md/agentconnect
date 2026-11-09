@@ -40,6 +40,8 @@ export interface VirtualChannelInfo {
   name?: string
   isIm?: boolean
   isPrivate?: boolean
+  /** Shared with another organization, as the real connection reports it; null confirms an internal room. */
+  externalReason?: PlaceExternalReason | null
 }
 
 export interface VirtualMember {

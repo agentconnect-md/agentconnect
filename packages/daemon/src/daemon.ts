@@ -1468,6 +1468,8 @@ import {
   type StartupPhase
 } from './session/startup-progress.js'
 import type {
+  DaemonEvaluationDreamInput,
+  DaemonEvaluationDreamResult,
   DaemonEvaluationOptions,
   DaemonEvaluationTurnInput,
   DaemonEvaluationTurnResult
@@ -1482,6 +1484,8 @@ export {
 export { FailStopError, QueueFullError } from './daemon/turn-types.js'
 export type { WebchatSink } from './webchat/types.js'
 export type {
+  DaemonEvaluationDreamInput,
+  DaemonEvaluationDreamResult,
   DaemonEvaluationOptions,
   DaemonEvaluationTurnInput,
   DaemonEvaluationTurnResult
@@ -3762,6 +3766,48 @@ export class Daemon {
   /** Drive a real daemon turn through the same path as relay webchat (the Promptfoo adapter's only surface). */
   async runEvaluationTurn(input: DaemonEvaluationTurnInput): Promise<DaemonEvaluationTurnResult> {
     return this.evalHooks.runTurn(input)
+  }
+
+  /** Run one dream for an evaluation agent to its end (memory-dreaming.md §5), adopting it when the policy did not. */
+  async runEvaluationDream(input: DaemonEvaluationDreamInput): Promise<DaemonEvaluationDreamResult> {
+    if (!this.evalHooks.enabled) throw new Error('daemon evaluation observer is not enabled')
+    const agent = this.agents.get(input.agentId)
+    if (!agent) throw new Error(`unknown evaluation agent ${input.agentId}`)
+    if (!this.dreamSchedulePolicyFor(agent)?.enabled) return { dreamId: null, status: 'unavailable', sessionIds: [] }
+    const runner = this.dreamRunner()
+    const started = await runner.start(input.agentId, { trigger: 'manual' })
+    const deadline = Date.now() + (input.timeoutMs ?? 10 * 60_000)
+    for (;;) {
+      const dream = await runner.get(input.agentId, started.dreamId)
+      if (dream.status !== 'pending' && dream.status !== 'running' && dream.status !== 'completed') {
+        return {
+          dreamId: dream.dreamId,
+          status: dream.status,
+          sessionIds: dream.sessionIds,
+          ...(dream.error ? { error: dream.error.type } : {})
+        }
+      }
+      // Auto-adoption follows completion once the reservation is released; a dream the policy left for review is adopted here.
+      if (dream.status === 'completed' && !runner.inFlight(input.agentId)) {
+        try {
+          const adopted = await runner.adopt(input.agentId, started.dreamId, false)
+          return { dreamId: adopted.dreamId, status: adopted.status, sessionIds: adopted.sessionIds }
+        } catch (err) {
+          // Auto-adoption may have won the race; a fence conflict leaves it completed and reviewable.
+          const current = await runner.get(input.agentId, started.dreamId)
+          if (current.status !== 'completed') continue
+          return {
+            dreamId: current.dreamId,
+            status: current.status,
+            sessionIds: current.sessionIds,
+            error: err instanceof Error ? err.message : 'adoption refused'
+          }
+        }
+      }
+      if (Date.now() >= deadline)
+        throw new Error(`dream ${started.dreamId} did not settle within ${input.timeoutMs ?? 600_000}ms`)
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
   }
 
   // Evaluate without starting an ACP turn; consumers supply their own admission and replay fences.

@@ -169,7 +169,7 @@ Rules:
 - Unlike per-turn distillation, you MAY rewrite, merge, and delete entries — but only inside the returned proposal.
 - Preserve the existing topic boundaries, filenames, and content by default. A dream is consolidation, not a taxonomy redesign.
 - If an existing topic still covers substantially the same subject, keep its exact filename even when updating its content.
-- Copy an existing file byte-for-byte when it needs no substantive change. Do not rename or rewrite files merely to improve wording, formatting, naming style, ordering, or consistency.
+- Leave a file that needs no substantive change unwritten; it is kept as it is. Do not rename or rewrite files merely to improve wording, formatting, naming style, ordering, or consistency.
 - Rename, merge, or split files only when a material content change makes the existing structure misleading. Prefer the smallest diff when multiple proposals are equally faithful.
 - Every memory must be self-contained and understandable without the conversation.
 - Topic filenames are lowercase kebab-case .md names.
@@ -179,10 +179,10 @@ ${MEMORY_FORMAT_GUIDANCE}
 - Never include credentials, tokens, or other secrets.
 - Return JSON only with four explicit categories:
   {"agentSkills":[],"organizationKnowledge":[],"organizationSkills":[],"revisions":[]}.
-- List every existing file you correct, drop, or move in "revisions": {"path":"deploys.md","change":"corrected|dropped|moved","why":"contradicted|transient|expired|secret","note":"one line for the reviewer","sessionIds":["..."],"into":["..."]}. A correction cites the sessions that contradict the old note. Drop a file only when it was contradicted (cite the sessions), is transient task progress, has expired, or holds a secret, and give that "why" — never because the transcripts do not mention it. A moved file names the files now holding its content in "into".
+- "revisions" lists each existing file you corrected, dropped or moved: {"path":"deploys.md","change":"corrected|dropped|moved","why":"contradicted|transient|expired|secret","note":"one line","sessionIds":["..."],"into":["..."]}. Cite the sessions behind a correction or a contradiction; a moved file names its destinations in "into". A file the transcripts do not mention is not stale.
 - WRITE the rebuilt store with \`writeMemory\`, one call per topic file. Your JSON reply carries ONLY the review-queue proposals above — the memory itself is what you wrote.
 ${READ_ONLY_MODE_MEMORY_WRITES_NOTE}
-- Those writes land in an EMPTY staging area that REPLACES the live store if a human adopts it: write every file you are keeping, copying an unchanged one byte-for-byte from the snapshot. A snapshot file you neither write nor list in "revisions" is kept as it is.
+- Those writes land in a staging area that replaces the live store on adoption. A snapshot file you neither write nor list in "revisions" is kept as it is.
 - \`readMemory\` reads back what you have staged so far, never the live store. The existing store is the snapshot in your working directory; read it with your file tools.
 - Do NOT write MEMORY.md. The index is generated from your files' \`description\` headers, so a good description is what makes a memory findable — that is where the effort belongs.
 - Topic filenames must be lowercase kebab-case \`.md\`; a write that is not will be refused.

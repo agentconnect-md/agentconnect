@@ -9,6 +9,7 @@
  * delivery awaits its handle, not global idleness.
  */
 import { Daemon, type DaemonEvaluationOptions } from '../daemon.js'
+import type { DaemonEvaluationDreamInput, DaemonEvaluationDreamResult } from '../daemon/evaluation-types.js'
 import { EvaluationEventCollector } from './artifacts.js'
 import { compositeEvaluationObserver, type EvaluationCapabilityProfile, type EvaluationEvent } from './events.js'
 import type {
@@ -26,6 +27,8 @@ export interface DaemonEvaluationHarnessOptions {
   capabilityProfile?: EvaluationCapabilityProfile
   /** Scripted ACP hosts (deterministic mode's reproducible subject, §8.1). */
   hostFactory?: NonNullable<ConstructorParameters<typeof Daemon>[0]>['hostFactory']
+  /** Dream execution under a scripted host needs the explicit test-only opt-in (memory-dreaming.md §2). */
+  dreamOperationPolicy?: NonNullable<ConstructorParameters<typeof Daemon>[0]>['dreamOperationPolicy']
   /** Values redacted from every recorded artifact. */
   secrets?: readonly string[]
   onObserverError?: (error: unknown) => void
@@ -49,8 +52,14 @@ export class DaemonEvaluationHarness {
       root: options.root,
       evaluation,
       probeRuntimes: async () => [],
-      ...(options.hostFactory ? { hostFactory: options.hostFactory } : {})
+      ...(options.hostFactory ? { hostFactory: options.hostFactory } : {}),
+      ...(options.dreamOperationPolicy ? { dreamOperationPolicy: options.dreamOperationPolicy } : {})
     })
+  }
+
+  /** One dream to its end for an agent of the prepared subject (memory-dreaming.md §5). */
+  dream(input: DaemonEvaluationDreamInput): Promise<DaemonEvaluationDreamResult> {
+    return this.daemon.runEvaluationDream(input)
   }
 
   async start(): Promise<void> {

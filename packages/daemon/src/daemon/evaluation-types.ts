@@ -1,4 +1,4 @@
-import type { WebchatEvent } from '@agentconnect.md/protocol'
+import type { DreamStatus, WebchatEvent } from '@agentconnect.md/protocol'
 import type { EvaluationCapabilityProfile, EvaluationObserver } from '../evaluation/events.js'
 import type { DaemonEvaluationEnvironment } from '../evaluation/environment.js'
 
@@ -33,4 +33,19 @@ export interface DaemonEvaluationTurnResult {
   events: WebchatEvent[]
   stopReason?: string
   usage?: { used?: number }
+}
+
+export interface DaemonEvaluationDreamInput {
+  agentId: string
+  /** How long the dream may take to reach a terminal state, adoption included. */
+  timeoutMs?: number
+}
+
+/** One dream run to its end: `unavailable` when the agent's memory cannot dream (memory off or not managed). */
+export interface DaemonEvaluationDreamResult {
+  dreamId: string | null
+  status: 'unavailable' | DreamStatus
+  /** The sessions the dream mined — the evidence a verify phase can correct a note against. */
+  sessionIds: string[]
+  error?: string
 }

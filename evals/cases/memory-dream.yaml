@@ -1,0 +1,23 @@
+# Memory dreaming cases (memory-dreaming.md §5). One provider invocation is one
+# complete run — save a fact, correct it in conversation, dream, ask again — and
+# the agent's reply to the last thread is the observable outcome. Run several
+# trials for a reliability figure, e.g. `node evals/run-dreams.mjs -- --repeat 5`.
+
+- description: Dreaming · a note the conversation contradicted is corrected
+  metadata:
+    feature: memory
+    game: memory-dream
+  vars:
+    expected: '6543'
+    match: exact
+    case: |
+      {
+        "kind": "memory-dream",
+        "id": "memory-dream-verify-v1",
+        "seed": 42,
+        "timeoutMs": 900000
+      }
+  assert:
+    - type: javascript
+      value: file://assertions/outcome.ts
+      metric: outcome

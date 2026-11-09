@@ -58,6 +58,12 @@ Requirements:
 
 The behavioral runner currently supports daemon-local managed/native memory. An external-memory connection depends on the live CP registry and secret leases, which this isolated CP-off runner intentionally does not copy; evaluate such a plugin in a separately prepared disposable environment until an explicit connection-fixture adapter exists.
 
+## Dreaming
+
+`pnpm eval:dreams` measures the verify phase of memory dreaming (memory-dreaming.md §5) end to end: in one public Slack room of the Collaboration Arena, a person asks the agent to save a fact, corrects it in a later thread without asking for a save, the agent dreams, and a fresh thread asks for the value. The agent's reply to that last thread is the outcome; it matches the corrected value only when the dream checked the old note against the correction and adopted the rewrite. The room is public on purpose: dreams mine only the sessions whose conversation uses the shared memory layer, which the webchat turns of the add-on suite never do.
+
+It runs the same real-runtime template as `eval:addons` (`AGENTCONNECT_EVAL_SUBJECT_ROOT`, `AGENTCONNECT_EVAL_ROOT_AGENT`) with the agent's memory switched to managed and dreaming on with automatic acceptance; the rest of the template is stripped as for a game. There is no scripted cell in Promptfoo, since a scripted host has no memory tools; the engine gate for the game lives in `evals/test/memory-dream.test.ts` and runs under `eval:gates`. Artifacts land under `<artifact-root>/dreams/<case>/<seed-trial>/` as `events.jsonl` and `world-events.jsonl`. Repeat for a reliability figure: `node evals/run-dreams.mjs -- --repeat 5`.
+
 ## Run
 
 ```bash

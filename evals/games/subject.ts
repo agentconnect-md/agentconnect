@@ -60,7 +60,15 @@ function assertNoSymlinks(path: string, label: string): void {
 /** Disposable scripted subject: one scripted-runtime agent per compiled agent id.
  *  Integrations stay EMPTY on disk — the evaluation environment (§5) is the only
  *  authority that projects the virtual integrations in. */
-export function prepareScriptedSubject(topology: CompiledTopology): PreparedGameSubject {
+/** Per-seat `agent.json` fields a game needs beyond the defaults (a memory binding, say); applied last. */
+export interface GameSubjectOptions {
+  agent?: Record<string, unknown>
+}
+
+export function prepareScriptedSubject(
+  topology: CompiledTopology,
+  options: GameSubjectOptions = {}
+): PreparedGameSubject {
   const root = mkdtempSync(join(tmpdir(), 'ac-arena-'))
   writeFileSync(
     join(root, 'config.json'),
@@ -84,7 +92,8 @@ export function prepareScriptedSubject(topology: CompiledTopology): PreparedGame
           runtime: 'scripted',
           workspace: { mode: 'from-scratch', path: join(agentDir, 'workspace') },
           integrations: [],
-          output: { mode: 'low', showFooter: false, showStatusBar: false }
+          output: { mode: 'low', showFooter: false, showStatusBar: false },
+          ...(options.agent ?? {})
         },
         null,
         2
@@ -106,7 +115,8 @@ export function prepareScriptedSubject(topology: CompiledTopology): PreparedGame
  */
 export function prepareRealSubject(
   topology: CompiledTopology,
-  spec: Extract<GameSubjectSpec, { kind: 'real' }>
+  spec: Extract<GameSubjectSpec, { kind: 'real' }>,
+  options: GameSubjectOptions = {}
 ): PreparedGameSubject {
   const sourceRoot = resolve(spec.subjectRoot)
   const configPath = join(sourceRoot, 'config.json')
@@ -182,7 +192,8 @@ export function prepareRealSubject(
         mcpServers: [],
         memory: { provider: 'none' },
         workspace: { mode: 'from-scratch', path: workspacePath, gitBranch: 'main', pullOnNewSession: true, skills: [] },
-        output: { mode: 'low', showFooter: false, showStatusBar: false }
+        output: { mode: 'low', showFooter: false, showStatusBar: false },
+        ...(options.agent ?? {})
       }
       writeFileSync(join(targetAgentDir, 'agent.json'), `${JSON.stringify(prepared, null, 2)}\n`, { mode: 0o600 })
     }
@@ -197,8 +208,14 @@ export function prepareRealSubject(
   }
 }
 
-export function prepareGameSubject(topology: CompiledTopology, spec: GameSubjectSpec): PreparedGameSubject {
-  return spec.kind === 'scripted' ? prepareScriptedSubject(topology) : prepareRealSubject(topology, spec)
+export function prepareGameSubject(
+  topology: CompiledTopology,
+  spec: GameSubjectSpec,
+  options: GameSubjectOptions = {}
+): PreparedGameSubject {
+  return spec.kind === 'scripted'
+    ? prepareScriptedSubject(topology, options)
+    : prepareRealSubject(topology, spec, options)
 }
 
 /** How long a runtime gets to prove it can start before the probe gives up and
