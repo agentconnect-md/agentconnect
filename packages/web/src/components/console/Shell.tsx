@@ -23,7 +23,6 @@ import { getMyAccess, type OrgDto } from '@/lib/api'
 import { CONSOLE_SWR_CONFIG } from '@/lib/console-swr'
 import { agentLabel, poolLabel } from '@/lib/data'
 import { detailCrumb, type CrumbSlot } from '@/lib/crumb'
-import { copyLink } from '@/lib/copy-link'
 import { PlaygroundProvider } from './PlaygroundProvider'
 import { ModalProvider, useModal } from './ModalProvider'
 import { PendingActionsProvider } from './PendingActions'
@@ -51,7 +50,7 @@ import {
   systemPrefersDark,
   type ThemePreference
 } from '@/lib/theme'
-import { isFlatSessionView, sessionListSearchParams } from '@/lib/session-list-view'
+import { sessionListSearchParams } from '@/lib/session-list-view'
 import { NotificationProvider, useNotifications } from '@/lib/notifications'
 import { NotificationBell, NotificationToastContainer } from './NotificationCenter'
 import { useDaemonNotifier } from '@/lib/daemon-notifications'
@@ -414,9 +413,6 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
   const [connectAiOpen, setConnectAiOpen] = useState(false)
   const [githubNotice, setGithubNotice] = useState<GithubCallbackNotice | null>(null)
   const help = resolveHelpLinks()
-  // Push-screen share action: the session detail app bar surfaces a top-right link
-  // icon (design) that copies the deep link; a brief check-swap confirms the copy.
-  const [linkCopied, setLinkCopied] = useState(false)
   // Gate the first paint until the auth check resolves so an unauthenticated
   // visitor never flashes the console before the /login redirect. In no-auth
   // OSS mode there's nothing to check, so we're ready immediately.
@@ -668,16 +664,6 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
     else router.push(parentListHref)
   }
 
-  // Copy the org-scoped session URL and flash the icon only after the clipboard write succeeds.
-  const isSessionDetail = seg[0] === 'sessions' && seg.length === 2
-  const onCopyLink = async () => {
-    const suffix = isFlatSessionView(searchParams) ? '?view=flat' : ''
-    const link = window.location.origin + orgPath(`${barePath}${suffix}`)
-    setLinkCopied(false)
-    if (!(await copyLink(link, t('actions.copyLink')))) return
-    setLinkCopied(true)
-    setTimeout(() => setLinkCopied(false), 1600)
-  }
   const githubNoticeMessage = githubNotice
     ? t(
         githubNotice.messageKey === 'githubInstalled'
@@ -998,19 +984,6 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                           name={mobileAction.icon}
                           size={20}
                           color={mobileAction.active ? 'var(--brand)' : undefined}
-                        />
-                      </button>
-                    )}
-                    {isSessionDetail && (
-                      <button
-                        className="mappbtn"
-                        aria-label={linkCopied ? t('actions.linkCopied') : t('actions.copyLink')}
-                        onClick={onCopyLink}
-                      >
-                        <Icon
-                          name={linkCopied ? 'check' : 'link'}
-                          size={20}
-                          color={linkCopied ? 'var(--brand)' : undefined}
                         />
                       </button>
                     )}

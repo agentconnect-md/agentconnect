@@ -530,12 +530,11 @@ describe.each([
   it('marks a coordinator’s own page in the desktop header and the phone header alike', async () => {
     await open({ platform: 'slack', channel: 'C0123', thread: 'append:coordinator-1700000000000' })
 
-    // The desktop header names it with an icon; the phone header keeps the word.
-    expect(
-      container?.querySelector('[data-session-header] [data-header-coordinator]')?.getAttribute('aria-label')
-    ).toContain('Coordinator')
-    const tags = [...(container?.querySelectorAll('[data-coordinator-tag]') ?? [])]
-    expect(tags.map((tag) => tag.textContent)).toEqual(['Coordinator'])
+    const header = container?.querySelector('[data-session-header]')
+    const marker = header?.querySelector('[data-header-coordinator]')
+    expect(marker?.getAttribute('aria-label')).toContain('Coordinator')
+    // Both widths use the same marker, outside the desktop-only title group.
+    expect(marker?.parentElement).toBe(header)
     expect(container?.querySelector('[data-task-owner]')).toBeNull()
   })
 })
