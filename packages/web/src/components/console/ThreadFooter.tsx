@@ -90,7 +90,8 @@ export function ThreadFooter({
   href,
   selected = false,
   onOpen,
-  nameOf = authorName
+  nameOf = authorName,
+  align = 'start'
 }: {
   footer: ThreadFooterView
   /** The thread's root, which names it; absent for a task's card read from its row. */
@@ -103,6 +104,8 @@ export function ThreadFooter({
   onOpen?: () => void
   /** How a participant or the latest reply's author is named. */
   nameOf?: (author: SessionThreadAuthorDto) => string
+  /** Which edge the card and its line hug: a person's message sits on the right, so its footer does too. */
+  align?: 'start' | 'end'
 }) {
   const t = useTranslations('Common.taskThread')
   const tl = useTranslations('Common.taskList')
@@ -255,7 +258,7 @@ export function ThreadFooter({
       {...(task?.sessionId ? { 'data-task-card': task.sessionId } : {})}
       {...(rootId ? { 'data-thread-footer': rootId } : {})}
       {...(readable ? {} : { 'data-thread-unreadable': '' })}
-      className="flex min-w-0 flex-col gap-[6px]"
+      className={`flex min-w-0 flex-col gap-[6px] ${align === 'end' ? 'items-end' : ''}`}
     >
       {card}
       {line}

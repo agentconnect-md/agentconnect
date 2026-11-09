@@ -2903,6 +2903,7 @@ export default function SessionDetailView() {
           selected={openRoot === rootId}
           onOpen={() => openRootThread(rootId)}
           nameOf={threadAuthorName}
+          align="end"
         />
       </div>
     )
