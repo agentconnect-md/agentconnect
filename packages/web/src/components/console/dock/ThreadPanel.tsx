@@ -26,7 +26,8 @@ import {
   withoutAttribution,
   type ThreadRecordRef
 } from '@/components/console/task-thread'
-import { buildTurns, type Turn } from '@/components/console/session-turns'
+import { buildTurns, turnTimeMs, type Turn } from '@/components/console/session-turns'
+import { turnTimeLabel } from '@/lib/transcript-time'
 import { BotTurnView, UserTurnView } from '@/components/console/TurnViews'
 import type { TaskLink } from '@/components/console/task-link'
 import { fetchSessionDetail, type SessionThreadSummaryDto } from '@/lib/api'
@@ -255,7 +256,9 @@ export function ThreadPanel({
       className="flex min-w-0 flex-col gap-[5px]"
     >
       {turn.time ? (
-        <div className="mono text-center text-[11px] leading-normal text-(--text-tertiary)">{turn.time}</div>
+        <div className="mono text-center text-[11px] leading-normal text-(--text-tertiary)">
+          {turnTimeLabel(turn.time, turnTimeMs(turn))}
+        </div>
       ) : null}
       {turn.kind === 'user' ? (
         <UserTurnView turn={turn} />

@@ -77,6 +77,12 @@ export type Turn =
       inThread?: string
     }
 
+/** When a turn happened, for its time line: a person's message's own time, else its agent's first timed step. */
+export function turnTimeMs(turn: Turn): number | undefined {
+  if (turn.kind === 'user') return turn.timeMs
+  return turn.steps.find((step) => step.timeMs !== undefined)?.timeMs
+}
+
 export type SessionParticipant = {
   id: string
   sp: ReturnType<typeof speaker>

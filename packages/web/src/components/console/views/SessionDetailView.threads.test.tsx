@@ -425,6 +425,11 @@ describe('a webchat coordinator’s main timeline (webchat-threads.md §6.1)', (
       }
     ]
     await open()
+    // The root's task card is the coordinator's message beside the timeline, not inside the person's bubble column.
+    const message = q(`[data-thread-card="${ROOT}"] [data-task-card-message]`)
+    expect(message?.textContent).toContain('Deploy speed')
+    expect(message?.closest('.group\\/turn')).toBeNull()
+    expect(q(`[data-thread-footer="${ROOT}"] [data-task-card-open]`)).toBeNull()
     const lead = q(`[data-turn-handed-to="${ROOT}"]`)
     expect(lead?.textContent).toBe('Replied to a thread:Deploy speed')
     // The coordinator's work on the handed message is not on the main timeline.
