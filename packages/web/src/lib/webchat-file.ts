@@ -215,7 +215,7 @@ export interface MarkedFile {
 
 /** Split a message's trailing `[attached: …]` marker into its files; an unparseable marker stays in the text. */
 export function splitFilesMarker(text: string): { text: string; files: MarkedFile[] } {
-  const marker = /(?:^|\n)\[attached: ([^\]\n]+)\]$/.exec(text)
+  const marker = /(?:^|\n)\[attached: ([^\n]+)\]$/.exec(text)
   if (!marker) return { text, files: [] }
   const entry = /(.+?) \(([A-Za-z0-9][\w.+-]*\/[A-Za-z0-9][\w.+-]*)\)(?:, |$)/y
   const files: MarkedFile[] = []

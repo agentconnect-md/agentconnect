@@ -128,7 +128,7 @@ export function isStandingContextTitleEcho(title: string): boolean {
  * can never equal the full row, so it is excluded before reaching here.
  */
 function sameQuotedBody(replayedText: string, quotedText: string): boolean {
-  const normalizeMentionSeparator = (s: string): string => s.replace(/\n(\[attached: [^\]]*\])$/, ' $1').trim()
+  const normalizeMentionSeparator = (s: string): string => s.replace(/\n(\[attached: [^\n]*\])$/, ' $1').trim()
   return normalizeMentionSeparator(replayedText) === normalizeMentionSeparator(quotedText)
 }
 

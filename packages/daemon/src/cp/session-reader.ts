@@ -88,7 +88,7 @@ function transcriptAttachments(
 // Drop each inlined image's whole entry from the trailing `[attached: …]` marker, by name; other files keep their label.
 function withoutAttachmentMention(text: string, attachments: NonNullable<SessionMessage['attachments']>): string {
   if (attachments.length === 0) return text
-  const label = /(?:^|\n)\[attached: ([^\]\n]*)\]$/.exec(text)
+  const label = /(?:^|\n)\[attached: ([^\n]*)\]$/.exec(text)
   if (!label) return text
   let list = label[1]!
   for (const { name } of attachments) {
