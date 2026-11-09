@@ -166,9 +166,20 @@ describe('createWorkspaceGit.diff against a real repo', () => {
     expect(d.diff).toContain('-here for now')
   })
 
-  it('an untracked file has no diff in either scope (the console opens it as a file)', async () => {
+  it('an untracked file diffs as wholly added when unstaged, and has nothing staged', async () => {
     const d = await seam.diff({ agentId: AGENT, path: 'untracked.txt', staged: false })
-    expect(d).toEqual({ agentId: AGENT, path: 'untracked.txt', isRepo: true, exists: true })
+    expect(d).toMatchObject({ isRepo: true, exists: true })
+    expect(d.diff).toContain('new file mode')
+    expect(d.diff).toContain('+brand new')
+    const staged = await seam.diff({ agentId: AGENT, path: 'untracked.txt', staged: true })
+    expect(staged).toEqual({ agentId: AGENT, path: 'untracked.txt', isRepo: true, exists: true })
+  })
+
+  it('an untracked directory is not mistaken for one untracked file', async () => {
+    mkdirSync(join(repo, 'fresh'), { recursive: true })
+    writeFileSync(join(repo, 'fresh', 'a.txt'), 'a\n')
+    const d = await seam.diff({ agentId: AGENT, path: 'fresh', staged: false })
+    expect(d).toEqual({ agentId: AGENT, path: 'fresh', isRepo: true, exists: true })
   })
 
   it('a directory path diffs its subtree', async () => {
@@ -516,13 +527,10 @@ describe.skipIf(process.platform === 'win32')('createWorkspaceGit against a work
     })
   })
 
-  it('counts an untracked file as present, since git diff never shows one either way', async () => {
-    await expect(clusterSeam.diff({ agentId: AGENT, path: 'untracked.txt', staged: false })).resolves.toEqual({
-      agentId: AGENT,
-      path: 'untracked.txt',
-      isRepo: true,
-      exists: true
-    })
+  it('diffs an untracked file as wholly added through the runner', async () => {
+    const d = await clusterSeam.diff({ agentId: AGENT, path: 'untracked.txt', staged: false })
+    expect(d).toMatchObject({ isRepo: true, exists: true })
+    expect(d.diff).toContain('+brand new')
   })
 
   it('still carries a real diff, so the existence answer did not replace the read', async () => {
