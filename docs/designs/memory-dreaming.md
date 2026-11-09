@@ -59,9 +59,7 @@ and cross-session. Beyond facts, the same cross-session view also exposes
 **reusable procedures** — command sequences, scripts, and workflows the agent
 keeps re-deriving — which dreaming can surface as candidate skills (§7).
 
-Two gaps remained in that pipeline, both named in Anthropic's research note on
-the components of agent memory
-(https://www.anthropic.com/research/components-of-agent-memory). A dream mined
+Two gaps remained in that pipeline. A dream mined
 the transcripts for new signal but never checked the notes it already held
 against them, so a note that was wrong from the start was copied forward
 byte-for-byte for as long as nothing in the mined window happened to contradict
@@ -70,8 +68,8 @@ again. And a dream could drop a file, but the only reasons it was given were
 transient progress, pleasantries and secrets, while every other rule held the
 store in place, so a store only grew. §5 closes both: a **verify** phase whose
 corrections cite the sessions they rest on, checked by the daemon, and a
-**retention** rule under which a file leaves the store only for a stated reason
-a reviewer can read — never because the model forgot to write it.
+**retention** rule under which a file leaves the store only for a stated,
+checked reason — never because the model forgot to write it.
 
 Scope constraints for v1:
 
@@ -306,25 +304,30 @@ interface DreamRecord {
    human reviews is byte-for-byte the one adoption installs. Parse the returned
    JSON (§5) for the review queue only — skills and organization suggestions,
    validated per §7, and the `revisions` list (§5) — and stage candidates to
-   `memory-dreams/<dreamId>/skills/<name>/`. Each revision names a topic of the
-   snapshot or the staging, a change kind and a reason, and cites mined session
-   ids where its kind needs evidence; the daemon checks every citation against
-   the mined set, the way it checks a skill's (§7), and an unknown path, a
-   missing reason or a citation outside the set makes the entry invalid. An
-   invalid entry does not fail the dream: the dream completes as reviewable,
-   never auto-adopted — the same hard fence a non-distill write trips (§8) —
-   and the review shows the entry as uncited. A snapshot topic the model
-   neither wrote nor named in `revisions` is an omission, not a prune: staging
-   copies it forward byte-for-byte, so the only way a live topic leaves the
-   store is a `dropped` revision a reviewer can read. This is the first step
+   `memory-dreams/<dreamId>/skills/<name>/`. Each revision names a snapshot
+   topic and a change: `corrected` must cite a mined session and be written,
+   `dropped` must give one of the four retention reasons (citing a mined
+   session for `contradicted`) and must not also be written, and `moved` must
+   name in `into` the written files now holding its content. The daemon checks
+   every citation against the mined set, the way it checks a skill's (§7). An
+   entry that breaks a rule — an unknown path, a missing reason, a citation
+   outside the set, a file both written and dropped — is kept with its problem
+   and removes nothing. Every such case resolves automatically toward keeping
+   the file, so it neither fails the dream nor asks a human: dreaming is meant
+   to run unattended, and nobody is expected to review it. The checked list is
+   staged as `memory-dreams/<dreamId>/revisions.json` as the dream's audit log,
+   never copied into the CP record, since its notes are model-authored text that
+   can quote memory. A snapshot topic that is neither written nor removed by a
+   valid `dropped` or `moved` revision is an omission, not a prune: staging
+   copies it forward byte-for-byte, so a live topic leaves the store only by a
+   checked revision. This is the first step
    toward the typed change set
    [unified-memory-interface.md](unified-memory-interface.md) §7 anticipates,
    where omission means unchanged; it lands with its own tests and never in the
    same change as a tool rename. A parse failure ⇒ `failed`, and so
-   does a run that wrote no topic file while the live store had some: the store
-   is what the model wrote, so writing nothing is no proposal at all, not an
-   empty one — completing it would let adoption install an index-only store over
-   a live one. The staging of a run that never completes is dropped, `input/`
+   does a run that wrote no topic file while the live store had some: carry-forward
+   would make it a no-op, but a run that wrote nothing did not engage with the
+   store, and its review queue is not worth trusting. The staging of a run that never completes is dropped, `input/`
    included — a failed, canceled, or interrupted dream leaves nothing behind.
 5. **Finish.** Mark `completed`; emit `memory.dream.completed` on the
    evaluation-events channel (alongside the existing `memory.capture.*`
@@ -371,15 +374,20 @@ with the same injection posture and a six-phase pipeline:
   least two distinct sessions, never one-off task steps.
 - Unlike distillation, rewriting and deleting are **allowed** — that is the
   point — but only inside the staged store, never in the live one.
-- **Evidence, not assertion.** A correction the verify phase makes, and a
-  rename, merge or split, is listed in `revisions` with the mined sessions it
-  rests on. The daemon checks every citation against the mined set (§4 step 4):
-  the transcripts are attacker-controlled, and a planted "correction" must not
-  be able to overwrite a true note on the strength of its own text. A
-  model-authored verified label is not verification
+- **Evidence, not assertion.** A correction the verify phase makes is listed
+  in `revisions` with the mined sessions it rests on, and the daemon checks each
+  citation against the mined set (§4 step 4). That rejects an invented citation
+  and gives a reviewer a session to open; it does not stop a planted correction,
+  whose text lives in a mined session and cites it validly. Under automatic
+  acceptance such a correction is adopted on the model's judgement, the same
+  residual the §2 auto-accept caveat and §8 already accept. A model-authored
+  verified label is not verification
   ([unified-memory-interface.md](unified-memory-interface.md) §7); the daemon
-  records the citations as evidence and nothing more. A correction that cites
-  nothing valid leaves the dream reviewable rather than auto-adopted.
+  records the citations as evidence and nothing more: an uncited correction is
+  still adopted, because the model could have rewritten the file without
+  listing it at all. Citations gate only removal. A rename,
+  merge or split is a `moved` revision: it makes no evidence claim, so it cites
+  no session, but names its destinations.
 - **Retention.** A dream drops a topic file for one of four reasons, and names
   it: `contradicted` — its content was overturned by cited evidence and nothing
   in it survives; `transient` — one-off task progress, pleasantries, scratch;
@@ -396,20 +404,19 @@ with the same injection posture and a six-phase pipeline:
   equally faithful proposals prefer the smallest diff.
 - The rebuilt store is WRITTEN, not returned: one `writeMemory` call per topic
   file, into a staging area that starts empty and replaces the live store on
-  adoption — so a `dropped` revision is how it prunes, and an unchanged file is
+  adoption — so a `dropped` or `moved` revision is how it prunes, and an unchanged file is
   copied byte-for-byte, by the model or by staging. `MEMORY.md` is generated,
   never written by the model.
 - The JSON reply carries only the review queue:
   `{"agentSkills":[{"name":"...","description":"...","skill":"<SKILL.md body>",
 "scripts":[{"path":"...","content":"..."}]}],"organizationKnowledge":[],
 "organizationSkills":[],"revisions":[{"path":"deploys.md",
-"change":"corrected|dropped|restructured","reason":"contradicted|transient|expired|secret|misleading",
-"note":"one line a reviewer reads","sessionIds":["..."]}]}` — skills present
-  only when mining is enabled. `sessionIds` is required for `corrected` and for
-  `contradicted`; a `restructured` entry names the snapshot topic that was
-  renamed, merged or split and its note says where the content went. The
-  console review shows each revision's reason, note and citations beside that
-  file's diff.
+"change":"corrected|dropped|moved","why":"contradicted|transient|expired|secret",
+"note":"one line a reviewer reads","sessionIds":["..."],"into":["..."]}]}` —
+  skills present only when mining is enabled. `why` is the retention reason of
+  a `dropped` entry; `into` belongs to `moved`. The prompt folds the verify
+  phase into gather signal and states the retention rule once, beside this
+  shape, to keep the prompt change small.
 - The operator's `instructions` string is appended to the system prompt (it is
   operator-, not model- or user-supplied — same trust class as the rest of the
   prompt).
@@ -693,11 +700,11 @@ metadata, not the Dream session's usage.
 
 ## 12. Phasing
 
-| Phase | Scope                                                                                                                                                                                                                                      |
-| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| D-1   | Protocol schema (`MemoryDreamingPolicy`), shared extraction-session helper, daemon `DreamRunner` + staged store pipeline, manual trigger via frames, console review + adopt/discard.                                                       |
-| D-2a  | `autoAdopt` independent of prompt-channel trust, the distillation rebase rule, backup pruning. **Done.**                                                                                                                                   |
-| D-2b  | Scheduled dreams (`DreamScheduler` cron trigger + reconciliation) and the console schedule control. **Done.** Evaluation-event dashboards remain.                                                                                          |
-| D-3   | Skill mining (`mineSkills`): extract-procedures phase, staged skill candidates, console recommendations with accept/dismiss, integration with the shared-skills install flow. **Done.**                                                    |
-| D-4   | Idle-trigger heuristic; revisit external-provider dreaming.                                                                                                                                                                                |
-| D-5   | Verify phase and retention rule (§5): `revisions` in the review queue with daemon-checked citations, unnamed snapshot topics carried forward, reviewable-not-auto-adopted on an invalid entry, console review of reasons. **Design only.** |
+| Phase | Scope                                                                                                                                                                                                                      |
+| ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D-1   | Protocol schema (`MemoryDreamingPolicy`), shared extraction-session helper, daemon `DreamRunner` + staged store pipeline, manual trigger via frames, console review + adopt/discard.                                       |
+| D-2a  | `autoAdopt` independent of prompt-channel trust, the distillation rebase rule, backup pruning. **Done.**                                                                                                                   |
+| D-2b  | Scheduled dreams (`DreamScheduler` cron trigger + reconciliation) and the console schedule control. **Done.** Evaluation-event dashboards remain.                                                                          |
+| D-3   | Skill mining (`mineSkills`): extract-procedures phase, staged skill candidates, console recommendations with accept/dismiss, integration with the shared-skills install flow. **Done.**                                    |
+| D-4   | Idle-trigger heuristic; revisit external-provider dreaming.                                                                                                                                                                |
+| D-5   | Verify phase and retention rule (§5): `revisions` in the dream reply with daemon-checked citations, unnamed snapshot topics carried forward, an invalid removal not applied, so the dream stays fully automatic. **Done.** |

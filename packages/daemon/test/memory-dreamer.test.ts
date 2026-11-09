@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   MEMORY_DREAM_SYSTEM_PROMPT,
   buildDreamExplorationPrompt,
+  carriedForwardTopics,
+  checkDreamRevisions,
   dreamSessionFileName,
   renderDreamSessionFile,
   dreamSystemPrompt,
@@ -536,5 +538,67 @@ describe('mined skill candidates', () => {
     // The policy now tells it NOT to write the index — descriptions drive it.
     expect(dreamSystemPrompt(true)).toContain('Do NOT write MEMORY.md')
     expect(dreamSystemPrompt(true).startsWith(MEMORY_DREAM_SYSTEM_PROMPT)).toBe(true)
+  })
+})
+
+describe('dream revisions', () => {
+  const ctx = { snapshot: ['a.md', 'b.md', 'c.md', 'd.md'], staged: ['a.md', 'e.md'], minedSessionIds: ['s1'] }
+
+  it('accepts cited corrections, reasoned drops and moves into written files', () => {
+    const revisions = checkDreamRevisions(
+      [
+        { path: 'a.md', change: 'corrected', note: 'port changed', sessionIds: ['s1', 'forged'] },
+        { path: 'b.md', change: 'dropped', why: 'expired' },
+        { path: 'c.md', change: 'moved', into: ['e.md'] }
+      ],
+      ctx
+    )
+    expect(revisions.map((r) => [r.path, r.problem])).toEqual([
+      ['a.md', undefined],
+      ['b.md', undefined],
+      ['c.md', undefined]
+    ])
+    expect(revisions[0]!.sessionIds).toEqual(['s1'])
+    expect(carriedForwardTopics(ctx.snapshot, ctx.staged, revisions)).toEqual(['d.md'])
+  })
+
+  it('keeps an uncited, unreasoned or inconsistent entry with its problem', () => {
+    const problems = checkDreamRevisions(
+      [
+        { path: 'a.md', change: 'corrected', sessionIds: ['forged'] },
+        { path: 'b.md', change: 'dropped' },
+        { path: 'c.md', change: 'dropped', why: 'contradicted' },
+        { path: 'd.md', change: 'moved', into: ['missing.md'] },
+        { path: 'zz.md', change: 'dropped', why: 'transient' },
+        { path: 'b.md', change: 'dropped', why: 'transient' }
+      ],
+      ctx
+    ).map((r) => r.problem)
+    expect(problems).toEqual([
+      'correction cites no mined session',
+      'drop without a retention reason',
+      'contradiction cites no mined session',
+      'move names no written destination',
+      'not a file of the existing store',
+      'listed twice'
+    ])
+  })
+
+  it('carries forward a file whose drop or move is invalid', () => {
+    const revisions = checkDreamRevisions(
+      [
+        { path: 'b.md', change: 'dropped' },
+        { path: 'c.md', change: 'dropped', why: 'contradicted', sessionIds: ['forged'] },
+        { path: 'd.md', change: 'moved', into: ['missing.md'] }
+      ],
+      ctx
+    )
+    expect(carriedForwardTopics(ctx.snapshot, ctx.staged, revisions)).toEqual(['b.md', 'c.md', 'd.md'])
+  })
+
+  it('refuses a drop of a file the dream also wrote', () => {
+    expect(checkDreamRevisions([{ path: 'a.md', change: 'dropped', why: 'transient' }], ctx)[0]!.problem).toBe(
+      'dropped file was also written'
+    )
   })
 })

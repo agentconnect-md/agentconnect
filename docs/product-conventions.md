@@ -2437,9 +2437,9 @@ proposals prefer the smallest diff.
 A dream removes a memory file only for a stated reason — contradicted by the sessions
 it mined, transient, expired, or a secret — and a correction it makes from those
 sessions cites them. A file the dream neither rewrote nor named is kept unchanged, so
-a file never disappears because the model forgot it. A correction or removal whose
-citation the daemon cannot verify leaves the dream for manual review even when
-automatic acceptance is on. With automatic acceptance the previous store is the one
+a file never disappears because the model forgot it. A removal without a valid reason,
+or whose citation the daemon cannot verify, is not applied and the file is kept; it
+never stops the dream or asks anyone to review it. With automatic acceptance the previous store is the one
 retained backup, so a removed file can be restored only until the next adoption.
 
 Reviewing a completed dream shows each file as the same live-to-proposed line diff

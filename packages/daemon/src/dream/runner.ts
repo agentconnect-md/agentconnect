@@ -46,6 +46,8 @@ import {
 } from '../memory/store.js'
 import {
   buildDreamExplorationPrompt,
+  carriedForwardTopics,
+  checkDreamRevisions,
   dreamSessionFileName,
   renderDreamSessionFile,
   dreamSystemPrompt,
@@ -76,6 +78,9 @@ import { inspectLocalSkillSource } from '../skills/skill-source-snapshot.js'
  */
 
 /** Unknown agent / dream / staged path → `BAD_PAYLOAD` on the wire. */
+/** The checked `revisions` list beside a dream's staged store, kept as the dream's audit log. */
+const DREAM_REVISIONS_FILE = 'revisions.json'
+
 export class DreamViolationError extends Error {
   constructor(message: string) {
     super(message)
@@ -870,6 +875,19 @@ export class DreamRunner {
         })
         return
       }
+
+      // Omission means unchanged (design §5): only a valid `dropped` or `moved` revision removes a snapshot topic.
+      const snapshotTopics = files.filter((file) => file.name !== MEMORY_INDEX).map((file) => file.name)
+      const revisions = checkDreamRevisions(proposal.revisions, {
+        snapshot: snapshotTopics,
+        staged: stagedNames,
+        minedSessionIds: sources.map((s) => s.sessionId)
+      })
+      for (const name of carriedForwardTopics(snapshotTopics, stagedNames, revisions)) {
+        const file = files.find((f) => f.name === name)
+        if (file) await staging.writeFile(join(base, MEMORY_DIRNAME, name), file.content)
+      }
+      await staging.writeFile(join(base, DREAM_REVISIONS_FILE), JSON.stringify(revisions))
 
       if (!mineSkills) {
         proposal.skills = []
