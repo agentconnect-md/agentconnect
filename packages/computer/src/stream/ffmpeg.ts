@@ -37,7 +37,7 @@ const FFMPEG_BUILDS: Record<string, FfmpegBuild> = {
   // Linux distros often lack libx264 (and sudo), so the static build is pinned there too.
   'linux-arm64': {
     version: STATIC,
-    url: `https://github.com/eugeneware/ffmpeg-static/releases/download/${STATIC}/ffmpeg-linux-arm64.gz`,
+    url: `https://github.com/eugeneware/ffmpeg-static/releases/download/${STATIC}/ffmpeg-linux-arm64.gz?download=1`,
     sha256: '754a678672298bc68156adff58aa7385a592c2b30b1d0ae8750c45c915c4bac0'
   },
   'linux-x64': {
