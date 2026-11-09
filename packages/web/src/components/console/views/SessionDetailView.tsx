@@ -2795,6 +2795,7 @@ export default function SessionDetailView() {
   const isolationLabel = agentSessionIsolationLabel(owner ?? { execution: HOST_STRATEGY }, orgSetIds)
   const canChooseWorktree =
     isPg &&
+    !coordinatorPage &&
     !multiLive &&
     !!owner?.workspace &&
     isGitWorkspace(owner.workspace) &&
