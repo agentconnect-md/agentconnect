@@ -336,7 +336,6 @@
       "cardActions": "Thread actions",
       "replies": "{count, plural, one {# reply} other {# replies}}",
       "reply": "Reply",
-      "repliesTitle": "{replies}, last reply {time}",
       "open": "Open the thread of {title}",
       "openPage": "Open {title} on its own page",
       "earlier": "Earlier messages are on the task’s page",
