@@ -355,7 +355,6 @@
       "coordinatorTitle": "Back to the coordinator",
       "closeTask": "Close the task",
       "startedBy": "Started by the coordinator",
-      "pageHint": "The coordinator reads this task’s summary, not each reply.",
       "thread": "Thread",
       "openThread": "Open the thread",
       "hiddenTask": "A task you can’t open",

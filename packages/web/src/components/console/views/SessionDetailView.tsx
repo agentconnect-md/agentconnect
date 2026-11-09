@@ -4527,14 +4527,6 @@ export default function SessionDetailView() {
                   />
                 </div>
               </div>
-              {taskOwnPage && isContinuable ? (
-                <div
-                  data-task-page-hint=""
-                  className="px-[2px] pt-[6px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)"
-                >
-                  {tt('pageHint')}
-                </div>
-              ) : null}
             </div>
           </div>
         ) : null}
