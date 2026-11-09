@@ -85,7 +85,7 @@ export function HeaderPeople({
     // Mouse only: a tap's emulated enter would otherwise hold the popover open past a second tap.
     <div
       ref={wrapRef}
-      className="relative flex flex-none items-center"
+      className="flex flex-none items-center desktop:relative"
       onPointerEnter={(event) => event.pointerType === 'mouse' && setHovered(true)}
       onPointerLeave={(event) => event.pointerType === 'mouse' && setHovered(false)}
     >
@@ -115,12 +115,12 @@ export function HeaderPeople({
       </button>
       {open ? (
         // The transparent top padding bridges trigger and panel, so the hover survives the gap.
-        <div className="absolute top-full right-0 z-50 pt-[6px]">
+        <div className="absolute top-full right-4 left-4 z-50 pt-[6px] desktop:right-0 desktop:left-auto">
           <div
             role="dialog"
             aria-label={t('dialog')}
             data-header-people-dialog=""
-            className="min-w-[280px] rounded-[10px] border border-(--border-default) bg-(--surface-card) p-[6px] shadow-(--shadow-lg)"
+            className="max-h-[60vh] overflow-auto rounded-[10px] border border-(--border-default) bg-(--surface-card) p-[6px] shadow-(--shadow-lg) desktop:min-w-[280px]"
           >
             <div className={LABEL}>{agents.length > 1 ? t('agents') : t('agent')}</div>
             {agents.map((agent) => {
