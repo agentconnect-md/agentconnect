@@ -148,7 +148,8 @@ export function UserTurnView({
             {turn.steered ? 'Steered' : 'Steering…'}
           </span>
         )}
-        <AttachmentCards className="mb-[3px]" cards={messageCards(turn.images, turn.files)} />
+        {/* A sent message wraps its cards right-aligned so none hides off-screen; the composer keeps one scrolling row. */}
+        <AttachmentCards className="mb-[3px] flex-wrap justify-end" cards={messageCards(turn.images, turn.files)} />
         {(turn.text || turn.body) && (
           <div className={SELF_BUBBLE}>
             {turn.body?.sessionMessage && <SessionMessageCaption facts={turn.body.sessionMessage} />}
