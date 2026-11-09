@@ -425,7 +425,8 @@ The daemon presents in `rd/hello` whatever it presents on its control socket:
 its daemon API key, or — for an in-cluster daemon — the projected ServiceAccount
 token, which wins when both are present. Because the relay has no database, it
 delegates verification to CP with `rc/verify(kind = 'daemon-key' |
-'daemon-token')` and caches the successful identity for the life of that socket.
+'daemon-token')` and caches the successful identity for that socket, subject to
+revocation and periodic authorization checks.
 
 The claimed `daemonId` travels with the token so the CP can require it to match
 the cloud member record bound to the TokenReview-attested Pod UID (see "Identity is per Pod,
@@ -438,6 +439,12 @@ then closes the matching connection and stops routing to it.
 
 Existing authenticated sockets can continue through a CP outage. A new daemon
 socket cannot be authenticated until the CP verification path recovers.
+The relay rechecks the socket's credential 60 seconds after each completed check.
+An explicit denial or different daemon identity closes the socket; verification
+errors retain the cached identity and schedule another check. A missed revoke
+push is therefore caught by the next successful check after CP recovery, with
+no fixed revocation deadline during an outage. Existing duty fences and credential
+lifetimes still apply independently; revalidation does not renew them.
 
 ## 10. Inbound Routing
 

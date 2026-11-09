@@ -182,9 +182,12 @@ authenticating key before dispatching requests or sending protected replies and
 pushes. Placement and duty claims enforce the same approval boundary. A revoked
 holder's existing duty horizon is preserved until self-fencing, without renewal;
 composition reconciliation waits for that horizon before rewriting its
-organization's duty groups. Relay connections reverify with the CP halfway
-through a 120-second admission lease and fail closed at expiry. A missed revoke
-push therefore cannot keep a relay connection authorized indefinitely.
+organization's duty groups. Relay connections reverify with the CP 60 seconds
+after each completed check. A revoke push or definitive negative result closes
+the connection; verification errors preserve established ingress and schedule
+another check. A missed push is caught at the next successful check after CP
+recovery, without a fixed revocation deadline during an outage. New relay
+connections still require successful verification.
 
 Approval trusts the daemon and its authorized recovery path: an Owner or a
 creator with current edit access may replace a lost credential without another
@@ -226,14 +229,19 @@ Multiple active keys per daemon are allowed for overlap rotation:
 3. Confirm the new credential is in use.
 4. Revoke the old key.
 
+Manual approval or reapproval is the exception: it retains the reviewed live
+connection's authenticating key and retires the daemon's other active keys.
+Ordinary reconnect and rotation on an approved daemon, and the one-time migration
+of existing daemons, preserve valid keys.
+
 Minting or revoking a key does not directly change `sessionEpoch`; the next
 successful authentication advances it through the normal handshake path.
 
 Key revocation prevents the next authentication attempt immediately. The revoke
 route also tells relays to drop the daemon's relay reach. An established direct
 Control Plane connection rechecks its authenticating key on subsequent traffic
-and closes when the key is invalid. Relays also bound missed revocation pushes
-with their admission lease. This does not recall previously issued credentials
+and closes when the key is invalid. Relays catch missed revocation pushes through
+periodic verification when the CP is reachable. This does not recall previously issued credentials
 or force independent local execution to stop.
 
 Audit events record the actor, daemon id, key row id, display tail, and reason.

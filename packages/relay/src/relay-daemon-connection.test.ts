@@ -15,11 +15,7 @@ import {
 } from '@agentconnect.md/protocol'
 import { FakeClock, type ServerTransport } from '@agentconnect.md/connection'
 import { GOOGLE_TOKEN_ENDPOINT, GoogleChatRelayEgress } from './platforms/googlechat/egress.js'
-import {
-  DAEMON_ADMISSION_LEASE_MS,
-  RelayDaemonConnection,
-  type RelayDaemonConnDeps
-} from './relay-daemon-connection.js'
+import { DAEMON_AUTH_RECHECK_MS, RelayDaemonConnection, type RelayDaemonConnDeps } from './relay-daemon-connection.js'
 import type { Logger } from './log.js'
 
 const RELAY_ID = '11111111-1111-4111-8111-111111111111'
@@ -109,18 +105,39 @@ function build(
 }
 
 describe('RelayDaemonConnection (rd/* accept FSM)', () => {
-  it('closes an established link when revalidation finds revoked approval', async () => {
+  it.each([
+    { ok: false, reason: 'not authorized' },
+    { ok: true, daemonId: OTHER_DAEMON }
+  ] as RcVerifyResult[])('closes an established link when revalidation rejects its identity: %j', async (verdict) => {
     const h = build()
     h.transport.feed('rd/hello', { apiKey: 'test-key', daemonId: DAEMON_ID })
     await vi.waitFor(() => expect(h.conn.state).toBe('READY'))
-    h.verify.mockResolvedValue({ ok: false, reason: 'not authorized' })
-    h.clock.advance(DAEMON_ADMISSION_LEASE_MS / 2)
+    h.verify.mockResolvedValue(verdict)
+    h.clock.advance(DAEMON_AUTH_RECHECK_MS)
     await vi.waitFor(() => expect(h.conn.state).toBe('CLOSED'))
     expect(h.onClosed).toHaveBeenCalledWith(DAEMON_ID, h.conn)
     await expect(h.conn.forwardAgentMsg({} as never)).rejects.toThrow('not ready')
   })
 
-  it('expires a lease while CP verification is unavailable and cannot revive from a late result', async () => {
+  it('keeps established ingress through CP errors and rechecks after recovery', async () => {
+    const h = build()
+    h.transport.feed('rd/hello', { apiKey: 'test-key', daemonId: DAEMON_ID })
+    await vi.waitFor(() => expect(h.conn.state).toBe('READY'))
+    h.verify.mockRejectedValue(new Error('CP unavailable'))
+    for (let i = 0; i < 3; i++) {
+      h.clock.advance(DAEMON_AUTH_RECHECK_MS)
+      await vi.waitFor(() => expect(h.clock.pending).toBe(1))
+    }
+    expect(h.verify).toHaveBeenCalledTimes(4)
+    expect(h.conn.state).toBe('READY')
+    h.transport.feed('rd/route/report', { botId: RELAY_ID, sessionKey: 'C1/C1', channel: 'C1', participants: [] })
+    await vi.waitFor(() => expect(h.transport.lastRep('rd/route/report/ack')?.payload).toEqual({ accepted: true }))
+    h.verify.mockResolvedValue({ ok: false, reason: 'not authorized' })
+    h.clock.advance(DAEMON_AUTH_RECHECK_MS)
+    await vi.waitFor(() => expect(h.conn.state).toBe('CLOSED'))
+  })
+
+  it('cannot revive a revoked connection from an in-flight successful recheck', async () => {
     const h = build()
     h.transport.feed('rd/hello', { apiKey: 'test-key', daemonId: DAEMON_ID })
     await vi.waitFor(() => expect(h.conn.state).toBe('READY'))
@@ -131,11 +148,12 @@ describe('RelayDaemonConnection (rd/* accept FSM)', () => {
           release = resolve
         })
     )
-    h.clock.advance(DAEMON_ADMISSION_LEASE_MS / 2)
-    h.clock.advance(DAEMON_ADMISSION_LEASE_MS / 2)
+    h.clock.advance(DAEMON_AUTH_RECHECK_MS)
+    h.conn.close(1013, 'daemon authorization changed')
     expect(h.conn.state).toBe('CLOSED')
     release({ ok: true, daemonId: DAEMON_ID })
-    await Promise.resolve()
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(h.clock.pending).toBe(0)
     expect(h.conn.state).toBe('CLOSED')
     expect(h.onReady).toHaveBeenCalledTimes(1)
   })

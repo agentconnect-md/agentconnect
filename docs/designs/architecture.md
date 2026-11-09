@@ -244,6 +244,11 @@ The Control Plane achieves "orchestration without touching messages" over the co
 - **Scaling and placement**: make agent- and session-level placement and scaling decisions from the load and health reported by daemons. It does not start or stop daemon processes.
 - **Degraded semantics**: during CP outages, local work continues within its authority lifetime; CP-dependent requests can fail. New placement and scaling pause. The proposed HA rollout adds bounded request recovery without extending duty fences.
 
+Established authenticated relay connections survive CP verification errors.
+Revoke notifications or definitive negative checks close them; periodic checks
+catch missed notifications after CP recovery. New connections still require CP
+verification, and existing duty fences and credential lifetimes remain in force.
+
 ---
 
 ## 8. Multiple Agents and Multiple Daemons
