@@ -111,6 +111,7 @@ import type { PullRequestViewService } from '../github/pull-request-view.service
 import type { SessionPullRequestLinkService } from '../github/session-pull-request-link.service.js'
 import type { GithubUserAuthzService } from '../github/user-authz.js'
 import type { LogtoIdentityService } from '../github/logto-identity.js'
+import type { AzureDevOpsUserAuthzService } from '../azure-devops/user-authz.js'
 import type { GithubRepoIdentityService } from '../github/repo-identity.js'
 import type { HookService } from '../hooks/hook.service.js'
 import type { DaemonRegistry, DaemonAuth, ApiKeyAdmin, DaemonLiveness, ClusterWorkloadIdentity } from '../ports.js'
@@ -563,6 +564,7 @@ export interface HttpDeps {
   azureDevOps?: {
     connections: AzureDevOpsConnectionService
     bindings: AzureDevOpsBindingService
+    userAuthz: AzureDevOpsUserAuthzService
     /** Connect with Microsoft and Manage project access (§3.2); absent ⇒ the connect routes refuse. */
     connect?: AzureDevOpsConnectFlowService
     /** Service hook subscriptions (§11.2); absent ⇒ no Azure DevOps trigger can be saved. */

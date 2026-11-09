@@ -192,6 +192,27 @@ describe('AddAgentRepoModal, Azure DevOps repositories', () => {
     expect(document.body.textContent).toContain('example-org/Example Project/example-repo is already authorized')
   })
 
+  it('does not offer a bound repository excluded by the personal access check', async () => {
+    connected()
+    mocks.fetchVisible.mockResolvedValue([visible(UNBOUND, 'example-second', null, null)])
+    await render()
+    await pickAzureDevOps()
+    await openPicker()
+    expect(document.querySelector(`[data-azure-devops-choice="${BOUND}"]`)).toBeNull()
+    expect(document.querySelector(`[data-azure-devops-choice="${UNBOUND}"]`)).not.toBeNull()
+  })
+
+  it('shows the permission-check failure without falling back to bound repositories', async () => {
+    connected()
+    mocks.fetchVisible.mockRejectedValue(new Error('permission verification unavailable'))
+    await render()
+    await pickAzureDevOps()
+    await openPicker()
+    expect(document.body.textContent).toContain('permission verification unavailable')
+    expect(document.querySelector('[data-azure-devops-choice]')).toBeNull()
+    expect(mocks.createAgentRepo).not.toHaveBeenCalled()
+  })
+
   it('sends the reader to the Integrations card while nothing is connected', async () => {
     mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [], deploymentApplication: true })
     await render()

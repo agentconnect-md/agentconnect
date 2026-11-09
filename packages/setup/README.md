@@ -32,6 +32,13 @@ Google is the shortest local sign-in path because its Web OAuth client accepts
 the bundled bare `localhost` origins. Slack remains disabled until every
 required public service URL uses HTTPS.
 
+Managed Azure DevOps repository selection requires console sign-in through
+Logto with Microsoft account linking (`azuread`) enabled. Each person uses their
+existing linked Microsoft account; no additional Azure DevOps authorization is
+requested. The loopback no-auth stack cannot create or increase these repository
+grants. Connecting and maintaining the organization's Azure application still
+uses the existing management flow. See [Azure DevOps, People](../../docs/designs/azure-devops-integration.md#33-people).
+
 An organization that signs in through its own identity provider can choose
 **Single sign-on (OIDC or SAML)** instead of a social provider. Setup first asks
 Logto to create the connector and shows the redirect URI (OIDC) or the ACS URL

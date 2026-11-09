@@ -317,11 +317,49 @@ refused.
 
 ### 3.3 People
 
-Nobody signs in again to use Azure DevOps. Agents act as the application, and
-the console sign-in stays whatever the deployment offers. Who may make a
-repository an agent's workspace or additional repository follows the agent's
-edit rights, as on Gitea: a person's own Azure DevOps permissions are not
-consulted in the first version (§10).
+Agents act as the application. A person selecting a managed repository needs
+both the agent's edit rights and the corresponding access in Azure DevOps.
+The check uses the Microsoft account already linked in Profile and the
+connection's application token; there is no additional personal authorization
+flow or retained personal Azure DevOps token.
+
+This is a prerequisite even for a self-hosted deployment: console sign-in must
+be configured through Logto with Microsoft account linking (`azuread`) enabled.
+The loopback no-auth stack, a deployment without that connector, and a person
+without its linked identity cannot select or grant a managed Azure repository.
+Agent edit rights alone never replace this check. Connecting or maintaining the
+organization's application remains available under the existing management
+rules; its credentials do not prove the administrator's personal repository access.
+
+The linked Entra object ID must match one active human identity in the
+connection's tenant. Email locates candidates but never establishes identity.
+A guest whose linked identity names a different home-tenant object is refused
+unless it already matches the resource-tenant identity; an email-only match
+cannot authorize repository access.
+
+The application reads the person's repository and project ACLs with their
+descriptor and `includeExtendedInfo=true`. Azure's `effectiveAllow` and
+`effectiveDeny` resolve group membership and inheritance; the service does not
+reconstruct permission inheritance or require access to organization-root ACLs.
+The target repository needs Read and the target project needs View project-level
+information for these queries. Basic user-entitlement search, without extended
+selection, supplies account status and license information; full user-detail
+administration rights are unnecessary.
+
+Repository access requires project visibility, effective Git Read, and an
+eligible access level. Write additionally requires effective Contribute.
+Basic and recognized subscription tiers are accepted; Stakeholder reaches
+repositories only in a project Azure reports as public. Disabled, removed and
+expired entitlements grant nothing. An assigned `msdn/eligible` category alone
+does not prove a recognized subscription. Pending invitations still require an
+active identity, a supported license, and effective permissions.
+
+The repository picker applies this check. Workspace creation/replacement and
+additional-grant creation/increases fetch fresh evidence before granting
+authority; a picker result is never reused to authorize a save. An unreadable
+or ambiguous identity grants nothing, and a provider outage remains retryable.
+Existing workspace and grant authority is not continuously re-attested by this
+admission check.
 
 ### 3.4 Tokens
 
@@ -419,8 +457,13 @@ repository names may contain spaces; paths are compared after percent-decoding.
 ## 5. Repositories
 
 The picker reads `GET https://dev.azure.com/{organization}/_apis/git/repositories`
-across the whole organization, which returns what the identity can see, drops
-disabled repositories and those in maintenance, and keys rows by GUID.
+across the whole organization, drops disabled repositories and those in
+maintenance, filters to repositories the caller can read (§3.3), and keys rows
+by GUID. Its merge only enriches authorized rows with binding metadata; a bound
+row cannot restore a repository the human access check excluded. The management
+catalog remains a database-only list of existing bindings and their health, so
+administrators can diagnose degraded connections without personal repository
+access or a working Azure API. That metadata never authorizes a new grant.
 
 Binding is implicit on first use, as in Gitea §6, minus the webhook steps: the
 write that names a repository (a workspace, or an additional-repository grant)
@@ -449,10 +492,11 @@ refused with "grant the application access to this repository". Project and
 repository names match case-insensitively, and a project GUID stands for the
 project name. A `write` request on a repository where the identity lacks
 Contribute is refused the same way, read through one permission evaluation
-(§12, item 7); a request that names no tier takes `write` where the identity
-holds Contribute and `read` otherwise. Every other Azure DevOps address stays
-anonymous, as any unmanaged host does, and a `write` request for one is
-refused.
+(§12, item 7). The acting person must independently have the requested access
+(§3.3); a request that names no tier takes `write` only where both the person
+and application hold Contribute, and `read` otherwise. Every other Azure DevOps
+address stays anonymous, as any unmanaged host does, and a `write` request for
+one is refused.
 
 Clone addresses are normalized to `https://dev.azure.com/{organization}/{project}/_git/{repository}`.
 The normalizer accepts:
@@ -973,10 +1017,10 @@ connection-write, and secret routes manage a credential and are
 - Workload identity federation in place of a client secret. It needs an issuer
   Entra can reach, and it can follow without changing anything downstream of
   §3.4.
-- Checking a person's own Azure DevOps permissions before they bind a
-  repository. That needs a delegated Azure DevOps token per person and a
-  linked Microsoft identity, and it can follow the first version.
 - More than one Azure DevOps organization per AgentConnect organization.
+- Periodic re-attestation of existing Azure repository grants. The admission
+  checks in §3.3 cover new authority and increases; ongoing revocation of older
+  grants is a separate follow-up.
 - Pipelines, Boards, Wiki, and Artifacts, and publishing a Marketplace
   extension.
 - Work-item triggers and tools. Azure Boards items belong to a project, not a
@@ -1222,9 +1266,9 @@ review, as in GitLab §12.1, which Gitea inherits.
 **Collaborator gate.** Opened, comment, review-requested and reopened
 deliveries are authorized live through `rc/codehost-membership-authz`. Azure
 DevOps answers a permission question only for the caller
-(`permissionevaluationbatch`), and an access-control list query for another
-identity answers only that identity's explicit entries, without what its
-groups grant (**verified**). The Azure DevOps arm therefore evaluates it:
+(`permissionevaluationbatch`), and the webhook helper's raw access-control list
+query for another identity answers only that identity's explicit entries,
+without what its groups grant (**verified**). The Azure DevOps arm therefore evaluates it:
 
 1. read the actor's identity with `queryMembership=ExpandedUp`, which lists
    every group it belongs to, directly or not (**verified**);

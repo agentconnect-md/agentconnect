@@ -287,12 +287,19 @@ export function azureDevOpsRoutes(deps: HttpDeps) {
       {
         schema: {
           tags: [Tag.AzureDevOps],
-          summary: 'List the repositories an Azure DevOps connection can see',
+          summary: 'List Azure DevOps repositories available to the caller',
           description:
-            'The picker (§5): every Git repository in the organization the connection’s identity can see, without disabled repositories or those in maintenance, keyed by GUID. A row already bound through this connection carries its binding; any other row is bound when a workspace or grant first names it. Metadata only.',
+            'Repositories readable by both the connection and the caller’s linked Microsoft account, without disabled repositories or those in maintenance. A previously bound row carries its binding; any other row is bound when a workspace or grant first names it. Metadata only.',
           operationId: 'listAzureDevOpsConnectionRepositories',
           params: IdParam,
-          response: { 200: AzureDevOpsRepositoryListDto, 404: ErrorDto, 409: ErrorDto, 429: ErrorDto, 502: ErrorDto }
+          response: {
+            200: AzureDevOpsRepositoryListDto,
+            403: ErrorDto,
+            404: ErrorDto,
+            409: ErrorDto,
+            429: ErrorDto,
+            502: ErrorDto
+          }
         }
       },
       async (req, reply) => {
@@ -300,7 +307,11 @@ export function azureDevOpsRoutes(deps: HttpDeps) {
         const connection = await deps.repos.azureDevOpsConnection.get(orgId, req.params.id)
         if (!connection) return notFound(reply, 'azure devops connection')
         try {
-          const repositories = await azure.bindings.visibleRepositories(connection)
+          const repositories = await azure.userAuthz.filterRepositories(
+            req.principal?.userId,
+            connection,
+            await azure.bindings.visibleRepositories(connection)
+          )
           const bindings = await deps.repos.azureDevOpsRepositoryBinding.listForConnection(orgId, connection.id)
           const boundBy = new Map(bindings.map((binding) => [binding.repositoryId, binding]))
           const ids = await deps.repos.azureDevOpsRepositoryBinding.identitiesOf(repositories.map((repo) => repo.id))

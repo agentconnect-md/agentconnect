@@ -1,6 +1,6 @@
 'use client'
 
-// The Azure DevOps picker's data (azure-devops-integration.md §5): what the connection's identity can see merged with the bound rows; connecting happens on the Integrations card.
+// The Azure DevOps picker offers the person's authorized catalog with optional management metadata.
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
@@ -22,9 +22,9 @@ export interface AzureDevOpsRepositoryPicker {
   loading: boolean
   /** Nothing was ever offered: the notice case, not a search that matches nothing. */
   empty: boolean
-  /** Neither list could be read. */
+  /** The authorized repository catalog could not be read. */
   error: string | null
-  /** Why the identity's list could not be read while the bound rows still show. */
+  /** Binding metadata could not be read, but authorized choices remain available. */
   listError: string | null
   reload: () => void
   reloading: boolean
@@ -69,9 +69,8 @@ export function useAzureDevOpsRepositories(active: boolean): AzureDevOpsReposito
         setBindings(rows)
         setVisible(seen.status === 'fulfilled' ? seen.value : [])
         if (seen.status === 'rejected') {
-          if (rows.length === 0) setError(errorText(seen.reason))
-          else setListError(errorText(seen.reason))
-        }
+          setError(errorText(seen.reason))
+        } else if (bound.status === 'rejected') setListError(errorText(bound.reason))
       } catch (e) {
         if (!alive) return
         setBindings([])

@@ -123,6 +123,11 @@ export interface SocialIdentitySummary {
   workspace?: { teamId: string; name?: string; domain?: string; url?: string }
 }
 
+export interface MicrosoftIdentity {
+  objectId: string
+  email: string
+}
+
 /** Everything the Profile card needs about an account's sign-in methods. */
 export interface SocialAccount {
   identities: SocialIdentitySummary[]
@@ -386,12 +391,15 @@ export class LogtoIdentityService {
     if (users || logins) this.log?.debug({ sub, users, logins }, 'logto identity warm-ahead fired')
   }
 
-  /**
-   * The account's sign-in methods, narrowed for display. Serving this from here
-   * rather than letting the browser call Logto directly is the point: the
-   * upstream read is cached and made from a process that sits next to Logto,
-   * instead of once per page load from wherever the user happens to be.
-   */
+  // Repository gates can require fresh evidence of the existing Microsoft link without requesting another authorization.
+  async microsoftIdentityFor(sub: string, maxAgeMs?: number): Promise<MicrosoftIdentity | null> {
+    const identity = (await this.logtoUser(sub, maxAgeMs))?.identities?.azuread
+    const objectId = typeof identity?.userId === 'string' ? identity.userId.toLowerCase() : undefined
+    const email = firstString(identity?.details?.email, identity?.details?.rawData?.mail)?.trim()
+    return objectId && ENTRA_OBJECT_ID.test(objectId) && email ? { objectId, email } : null
+  }
+
+  // Cached sign-in methods narrowed for Profile display, without exposing raw provider data.
   async socialAccountFor(sub: string): Promise<SocialAccount> {
     const user = await this.logtoUser(sub)
     if (!user) return { identities: [], hasSecurityVerificationMethod: false }
