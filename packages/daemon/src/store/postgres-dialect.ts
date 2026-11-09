@@ -57,6 +57,7 @@ export const canonicalColumns = [
   'daemonId',
   'defaultModel',
   'detailJson',
+  'handedTo',
   'defaultPermissionMode',
   'deliveryReason',
   'desiredHash',

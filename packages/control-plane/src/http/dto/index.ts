@@ -3981,7 +3981,8 @@ export const SessionMessageDto = z.object({
   body: z.string().optional(), // JSON.stringify(ToolBody / PlanBody / ElicitBody); may be a truncated-but-valid-JSON preview
   bodyTruncated: z.boolean().optional(), // preview shrunk for the frame; full body via /sessions/:id/tool-body
   bodyBytes: z.number().optional(), // full (untruncated) body byte length
-  thread: z.string().optional() // `view=roots` alone: the root id of the thread this row is a reply in
+  thread: z.string().optional(), // `view=roots` alone: the root id of the thread this row is a reply in
+  handedTo: z.string().optional() // a webchat root handed into a task's thread: that thread's root id; the row stays at the root
 })
 /** `POST /sessions/:id/shared-images/:attachmentId/original` — the original's state and, when ready, a temporary GET. */
 export const SharedImageOriginalDto = SharedImageResolveOk

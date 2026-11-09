@@ -406,6 +406,35 @@ describe('a webchat coordinator’s main timeline (webchat-threads.md §6.1)', (
     expect(messages[2]?.textContent).toContain('Use a warm cache.')
   })
 
+  it('marks a message handed into a task’s thread, opens that thread from it, and draws the coordinator’s work on it there', async () => {
+    const HANDED = '1b2c3d4e-5f60-4a7b-8c9d-0e1f2a3b4c5d'
+    wire.messages = [
+      row(1, 'sam', 'Why is the deploy slow?', { postId: ROOT }),
+      row(2, 'sam', 'also check the cache', { postId: HANDED, handedTo: ROOT }),
+      row(3, 'agent-1', 'sendMessage', { kind: 'tool', thread: HANDED, toolCallId: 'call-h' })
+    ]
+    wire.threads = [
+      {
+        rootId: ROOT,
+        rootExcerpt: 'Why is the deploy slow?',
+        replies: 2,
+        lastReplyAt: '2026-10-01T00:00:00.000Z',
+        participants: [{ sender: 'sam', senderName: 'Sam' }],
+        task: { sessionId: 'task-1', title: 'Deploy speed', state: 'open' },
+        readable: true
+      }
+    ]
+    await open()
+    const lead = q(`[data-turn-handed-to="${ROOT}"]`)
+    expect(lead?.textContent).toBe('Replied to a thread:Deploy speed')
+    // The coordinator's work on the handed message is not on the main timeline.
+    expect(container?.querySelectorAll('[data-turn-fold]')).toHaveLength(0)
+    await click(`[data-turn-handed-to="${ROOT}"]`)
+    const panel = q(`[data-thread-panel="${ROOT}"]`)
+    expect(panel).not.toBeNull()
+    expect(panel?.querySelector('[data-turn-fold]')?.getAttribute('title')).toBe('ran 1 command')
+  })
+
   it('opens a thread from its footer, its label and its answered line, at the conversation’s ?thread=', async () => {
     conversation()
     await open()

@@ -405,6 +405,8 @@ async function rootsViewThreads(
       built[i]!.thread = r.thread
       return [r.thread]
     }
+    // A root handed into a thread stays in the timeline and carries that thread's footer, never one of its own.
+    if (r.kind === 'text' && r.handedTo) return [r.handedTo]
     const id = r.kind === 'text' ? rootIdOf(r) : undefined
     if (id !== undefined && !roots.has(id)) roots.set(id, r)
     return id !== undefined ? [id] : []
@@ -489,6 +491,7 @@ async function readTranscriptPage(
       ts: r.ts,
       ...(r.eventTimeUs ? { eventTimeUs: r.eventTimeUs } : {}),
       ...(r.postId ? { postId: canonicalPostId(r.postId) } : {}),
+      ...(r.handedTo && r.kind === 'text' ? { handedTo: r.handedTo } : {}),
       kind: r.kind,
       text: substituteUserMentions(withoutAttachmentMention(r.text, attachments), names),
       ...(attachments.length ? { attachments } : {}),

@@ -59,7 +59,8 @@ const ROOTS_PAGE: SessionHistoryPage = {
   sessionId: COORDINATOR,
   messages: [
     { seq: 1, sender: 'user:owner', ts: '1', kind: 'text', text: 'hello', postId: ROOT_UNOWNED },
-    { seq: 2, sender: AGENT, ts: '2', kind: 'text', text: 'answering a reply', thread: ROOT_UNOWNED }
+    { seq: 2, sender: AGENT, ts: '2', kind: 'text', text: 'answering a reply', thread: ROOT_UNOWNED },
+    { seq: 4, sender: 'user:owner', ts: '4', kind: 'text', text: 'also this', handedTo: ROOT_SHARED }
   ],
   nextCursor: 'c-1',
   liveCursor: '9',
@@ -71,7 +72,12 @@ const threadPage = (rootId: string): SessionThreadPage => {
   return {
     sessionId: COORDINATOR,
     rootId,
-    messages: summary ? [{ seq: 3, sender: 'user:owner', ts: '3', kind: 'text', text: `in ${rootId}` }] : [],
+    messages: summary
+      ? [
+          { seq: 3, sender: 'user:owner', ts: '3', kind: 'text', text: `in ${rootId}` },
+          { seq: 4, sender: 'user:owner', ts: '4', kind: 'text', text: 'handed here', handedTo: rootId }
+        ]
+      : [],
     ...(summary ? { nextCursor: 'tc-1', liveCursor: '12', liveMore: true, summary } : {})
   }
 }
@@ -145,7 +151,7 @@ function app(viewer: string, spy: SpyControl): HttpApp {
 type FooterBody = SessionThreadSummary & { readable: boolean }
 
 describe('GET /sessions/:id/messages?view=roots', () => {
-  it('asks for the roots view, keeps each row’s thread, and leaves the content out of footers whose task the caller may not view', async () => {
+  it('asks for the roots view, keeps each row’s thread and handed thread, and leaves the content out of footers whose task the caller may not view', async () => {
     const viewer = await seed()
     const spy = new SpyControl()
     running = app(viewer, spy)
@@ -167,9 +173,17 @@ describe('GET /sessions/:id/messages?view=roots', () => {
         }
       }
     ])
-    const body = res.json() as { messages: Array<{ thread?: string }>; threads: FooterBody[]; nextCursor: string }
+    const body = res.json() as {
+      messages: Array<{ thread?: string; handedTo?: string }>
+      threads: FooterBody[]
+      nextCursor: string
+    }
     expect(body.nextCursor).toBe('c-1')
-    expect(body.messages.map((m) => m.thread)).toEqual([undefined, ROOT_UNOWNED])
+    expect(body.messages.map((m) => [m.thread, m.handedTo])).toEqual([
+      [undefined, undefined],
+      [ROOT_UNOWNED, undefined],
+      [undefined, ROOT_SHARED]
+    ])
     const byRoot = new Map(body.threads.map((t) => [t.rootId, t]))
     expect(byRoot.get(ROOT_UNOWNED)).toEqual({ ...footer(ROOT_UNOWNED), readable: true })
     expect(byRoot.get(ROOT_SHARED)).toEqual({ ...THREADS[1], readable: true })
@@ -215,7 +229,10 @@ describe('GET /sessions/:id/threads/:rootId/messages', () => {
     expect(res.json()).toEqual({
       sessionId: COORDINATOR,
       rootId: ROOT_UNOWNED,
-      messages: [{ seq: 3, sender: 'user:owner', ts: '3', kind: 'text', text: `in ${ROOT_UNOWNED}` }],
+      messages: [
+        { seq: 3, sender: 'user:owner', ts: '3', kind: 'text', text: `in ${ROOT_UNOWNED}` },
+        { seq: 4, sender: 'user:owner', ts: '4', kind: 'text', text: 'handed here', handedTo: ROOT_UNOWNED }
+      ],
       nextCursor: 'tc-1',
       liveCursor: '12',
       liveMore: true,
@@ -241,7 +258,7 @@ describe('GET /sessions/:id/threads/:rootId/messages', () => {
     })
     expect(shared.statusCode).toBe(200)
     expect(shared.json()).toMatchObject({
-      messages: [{ seq: 3 }],
+      messages: [{ seq: 3 }, { seq: 4, handedTo: ROOT_SHARED }],
       summary: { readable: true, task: { title: 'Shared task' } }
     })
     expect(spy.threadCalls[1]!.req).toEqual({

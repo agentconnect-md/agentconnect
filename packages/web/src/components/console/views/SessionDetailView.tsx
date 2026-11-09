@@ -2894,6 +2894,13 @@ export default function SessionDetailView() {
     if (agent) return agentLabel(agent)
     return isSelf(author.sender) ? tt('you') : (author.senderName ?? author.sender)
   }
+  // A replier's mark on a footer: an agent's icon, else the person's picture; initials where neither is known.
+  const threadAuthorMark = (author: SessionThreadAuthorDto) => {
+    const agent = agentById.get(author.sender)
+    if (agent) return <AgentIconView icon={agent.icon} runtime={agent.runtime} size={16} />
+    const picture = isSelf(author.sender) ? viewer.picture : memberPictureByIdentity.get(author.sender)
+    return picture ? <img src={picture} alt="" className="h-full w-full object-cover" /> : null
+  }
   // The conversation with the thread open, which a modified click on its footer opens in a new tab.
   const threadHref = (rootId: string): string =>
     `${pathname}?${new URLSearchParams({ ...(flatView ? { view: 'flat' } : {}), thread: rootId })}`
@@ -2913,9 +2920,30 @@ export default function SessionDetailView() {
           selected={openRoot === rootId}
           onOpen={() => openRootThread(rootId)}
           nameOf={threadAuthorName}
+          markOf={threadAuthorMark}
           align="end"
         />
       </div>
+    )
+  }
+  // A message the coordinator handed into a task's thread says so above its bubble, as Slack's "replied to a thread", and opens it.
+  const handedLead = (turn: Turn) => {
+    if (turn.kind !== 'user' || !turn.handedTo) return null
+    const rootId = turn.handedTo
+    const summary = threadSummaries.get(rootId)
+    const name = summary?.task?.title ?? summary?.rootExcerpt ?? rootTextOf.get(rootId)
+    return (
+      <button
+        type="button"
+        data-turn-handed-to={rootId}
+        onClick={() => openRootThread(rootId)}
+        className="flex max-w-full min-w-0 cursor-pointer items-center gap-[4px] border-0 bg-transparent p-0 pr-1 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)"
+      >
+        <span className="flex-none">{tt('repliedToThread')}</span>
+        <span className="min-w-0 truncate font-medium text-(--brand) hover:underline">
+          {name ? firstWords(name) : tt('inThreadBare')}
+        </span>
+      </button>
     )
   }
   const threadLine =
@@ -3966,6 +3994,7 @@ export default function SessionDetailView() {
                               turn={turn}
                               platformMark={usesIntegrationAvatar ? sessionIntegration : undefined}
                               footer={rootFooter(turn)}
+                              lead={handedLead(turn)}
                               onReply={(() => {
                                 const root = replyRootOf(turn)
                                 return root ? () => replyInThread(root) : undefined

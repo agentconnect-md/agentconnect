@@ -219,7 +219,9 @@ export const SessionMessage = z.object({
   bodyTruncated: z.boolean().optional(), // preview was shrunk for the frame; full body via session/tool-body
   bodyBytes: z.number().int().optional(), // full (untruncated) body byte length
   // The `roots` view alone (webchat-threads.md §8): the root id of the thread this row is a reply in.
-  thread: z.string().min(1).max(200).optional()
+  thread: z.string().min(1).max(200).optional(),
+  // A webchat root handed into a task's thread (webchat-threads.md §5.1): that thread's root id; the row stays at the root.
+  handedTo: z.string().min(1).max(200).optional()
 })
 export type SessionMessage = z.infer<typeof SessionMessage>
 
