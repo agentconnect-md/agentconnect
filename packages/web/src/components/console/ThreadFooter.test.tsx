@@ -189,6 +189,14 @@ describe('ThreadFooter', () => {
     })
   })
 
+  it('hugs the right edge under a person’s message, card and line alike, however long the line runs', async () => {
+    const held = summary({ task: { sessionId: 'ses_task', title: 'Profile the deploy', state: 'open' } })
+    await render(<ThreadFooter footer={footerOfSummary(held)} rootId="post-root" align="end" />)
+    expect(container.querySelector('[data-thread-footer="post-root"]')!.className).toContain('items-end')
+    await render(<ThreadFooter footer={footerOfSummary(held)} rootId="post-root" />)
+    expect(container.querySelector('[data-thread-footer="post-root"]')!.className).not.toContain('items-end')
+  })
+
   it('keeps an unreadable thread to its count and repliers, and opens nothing', async () => {
     const hidden = summary({
       rootExcerpt: undefined,
