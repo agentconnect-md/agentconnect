@@ -1095,6 +1095,8 @@
       "fitToScreen": "Fit to screen",
       "actualSize": "Actual size",
       "closeViewer": "Close",
+      "dropToAttach": "Drop files to attach",
+      "removeFile": "Remove {name}",
       "computer": "Computer",
       "computerPick": "Computer",
       "computerNone": "This agent has no computer you can watch.",

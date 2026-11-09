@@ -37,7 +37,14 @@ import { AgentIconView, LoadingState, LogoMark, Spinner } from '@/components/mar
 import { clipboardFiles, prepareWebchatImage } from '@/lib/webchat-image'
 import type { ComposerFile } from '@/lib/webchat-file'
 import { uploadPreviewsCapable } from '@/lib/shared-file'
-import { ComposerFileChips, stageComposerFiles } from '@/components/console/ComposerFiles'
+import {
+  AttachmentCards,
+  FileDropOverlay,
+  INLINE_IMAGE_KEY,
+  composerCards,
+  stageComposerFiles,
+  useFileDrop
+} from '@/components/console/ComposerFiles'
 import { useProfile } from '@/lib/profile'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import {
@@ -416,6 +423,7 @@ export default function HomeView() {
     )
     if (imageInputRef.current) imageInputRef.current.value = ''
   }
+  const fileDrop = useFileDrop(onAttachFiles)
 
   const clearComposer = (): void => {
     setInput('')
@@ -585,7 +593,11 @@ export default function HomeView() {
     // leftover viewport (useAvailableHeight), so the page fills a roomy window without
     // stretching a card past its rows, and scrolls rather than squashing when it can't.
     // Mobile keeps normal flow.
-    <div className="wrap max-w-[1000px] max-desktop:px-4 max-desktop:pt-4 max-desktop:pb-6">
+    <div
+      {...(agent ? fileDrop.handlers : {})}
+      className="wrap relative max-w-[1000px] max-desktop:px-4 max-desktop:pt-4 max-desktop:pb-6"
+    >
+      {agent && fileDrop.over ? <FileDropOverlay /> : null}
       {/* Centered greeting above the composer (design: 32px mark, 27px title). */}
       <div className="mt-[22px] mb-[22px] flex items-center justify-center gap-[13px]">
         <LogoMark size={32} />
@@ -613,26 +625,13 @@ export default function HomeView() {
           hidden
           onChange={(event) => onAttachFiles(Array.from(event.target.files ?? []))}
         />
-        <ComposerFileChips files={files} onRemove={(key) => setFiles((cur) => cur.filter((f) => f.key !== key))} />
-        {image && (
-          <div className="relative mx-[15px] mt-3 w-fit">
-            <img
-              src={`data:${image.mimeType};base64,${image.data}`}
-              alt={image.name}
-              title={image.name}
-              className="h-20 w-20 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) object-cover"
-            />
-            <button
-              type="button"
-              className="iconbtn absolute -right-2 -top-2 h-6 w-6 rounded-full shadow-(--shadow-xs)"
-              title={t('composer.removeImage')}
-              aria-label={t('composer.removeImage')}
-              onClick={() => setImage(undefined)}
-            >
-              <Icon name="x" size={14} />
-            </button>
-          </div>
-        )}
+        <AttachmentCards
+          className="px-[15px] pt-3"
+          cards={composerCards(files, image)}
+          onRemove={(key) =>
+            key === INLINE_IMAGE_KEY ? setImage(undefined) : setFiles((cur) => cur.filter((f) => f.key !== key))
+          }
+        />
         <div className="relative">
           <textarea
             ref={textareaRef}
@@ -654,14 +653,6 @@ export default function HomeView() {
               if (!selected.length) return
               event.preventDefault()
               onAttachFiles(selected)
-            }}
-            onDragOver={(event) => {
-              if (event.dataTransfer.types.includes('Files')) event.preventDefault()
-            }}
-            onDrop={(event) => {
-              if (!event.dataTransfer.files.length) return
-              event.preventDefault()
-              onAttachFiles(Array.from(event.dataTransfer.files))
             }}
             onKeyDown={(e) => {
               if (mention.handleKeyDown(e)) return
