@@ -169,7 +169,7 @@ import { TaskBrief } from '@/components/console/TaskBrief'
 import { SendButton } from '@/components/console/SendButton'
 import { SessionShareDialog, type ShareVisibility } from '@/components/console/SessionShareDialog'
 import { useIsMobile } from '@/lib/use-is-mobile'
-import { footerOfSummary, TaskThreadFooter, ThreadFooter } from '@/components/console/ThreadFooter'
+import { RootThreadFooter, TaskThreadFooter } from '@/components/console/ThreadFooter'
 import {
   firstWords,
   liveReplyThreads,
@@ -2903,10 +2903,14 @@ export default function SessionDetailView() {
     if (!rootId || !summary) return null
     return (
       <div className="mt-[3px] flex w-full justify-end">
-        <ThreadFooter
-          footer={footerOfSummary(summary)}
+        <RootThreadFooter
+          agentId={session.agentId ?? ''}
+          parentSessionId={session.id}
+          summary={summary}
           rootId={rootId}
           href={threadHref(rootId)}
+          shareHref={threadHref(rootId)}
+          {...(threadWriter ? { onReply: () => replyInThread(rootId) } : {})}
           selected={openRoot === rootId}
           onOpen={() => openRootThread(rootId)}
           nameOf={threadAuthorName}

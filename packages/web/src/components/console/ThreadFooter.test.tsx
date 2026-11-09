@@ -83,8 +83,14 @@ async function render(node: React.ReactNode) {
 }
 
 describe('TaskThreadFooter', () => {
-  it('shows the task’s state and its replies, and opens its thread on click', async () => {
-    wire.rows = [taskRow({ replies: 3, lastReplyAt: new Date(Date.now() - 60_000).toISOString() })]
+  it('shows its replies line, then the task’s card with its state, title and summary, and opens its thread on click', async () => {
+    wire.rows = [
+      taskRow({
+        replies: 3,
+        lastReplyAt: new Date(Date.now() - 60_000).toISOString(),
+        summary: 'Found the lock held by the migration'
+      })
+    ]
     const onOpen = vi.fn()
     await render(<TaskThreadFooter agentId="agent_1" link={link} parentSessionId="ses_coordinator" onOpen={onOpen} />)
     const card = container.querySelector('[data-task-card="ses_task"]')!
@@ -92,13 +98,16 @@ describe('TaskThreadFooter', () => {
     expect(card.querySelector('[data-state-icon]')?.getAttribute('aria-label')).toBe('Running')
     const replies = card.querySelector<HTMLElement>('[data-task-card-replies]')!
     expect(replies.textContent).toBe('3 replies · 1m')
-    expect(replies.title).toBe('3 replies, last reply 1m ago')
-    expect(card.querySelectorAll('a')).toHaveLength(1)
+    expect(card.querySelector<HTMLElement>('[data-thread-count]')?.title).toBe('3 replies, last reply 1m ago')
+    // The count is on the line above the card, which carries only the task's title and summary.
+    const face = card.querySelector<HTMLAnchorElement>('[data-task-card-open]')!
+    expect(replies.compareDocumentPosition(face) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(face.textContent).not.toContain('repl')
+    expect(face.querySelector('[data-task-card-summary]')?.textContent).toBe('Found the lock held by the migration')
     expect(wire.listReads).toEqual(['agent_1/ses_coordinator'])
     expect(wire.rowReads).toEqual([])
 
-    // A plain click anywhere on the card, its reply count included, opens the thread beside the chat.
-    const face = card.querySelector<HTMLAnchorElement>('a')!
+    // A plain click on the card or its replies line opens the thread beside the chat.
     expect(face.getAttribute('href')).toBe('/acme/sessions/ses_task')
     act(() => face.click())
     act(() => replies.click())
@@ -121,7 +130,7 @@ describe('TaskThreadFooter', () => {
 
   it('links to the task’s page where no thread can open beside the chat, reading the task alone', async () => {
     await render(<TaskThreadFooter agentId="agent_1" link={link} parentSessionId={null} />)
-    expect(container.querySelector('a')?.getAttribute('href')).toBe('/acme/sessions/ses_task')
+    expect(container.querySelector('[data-task-card-open]')?.getAttribute('href')).toBe('/acme/sessions/ses_task')
     expect(container.querySelector('button')).toBeNull()
     expect(wire.listReads).toEqual([])
     expect(wire.rowReads).toEqual(['agent_1/ses_task'])
@@ -145,6 +154,40 @@ function summary(over: Partial<SessionThreadSummaryDto> = {}): SessionThreadSumm
 }
 
 describe('ThreadFooter', () => {
+  it('offers Reply and Share in a toolbar over the card, Share copying the thread’s address', async () => {
+    const onOpen = vi.fn()
+    const onReply = vi.fn()
+    const written: string[] = []
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: (text: string) => (written.push(text), Promise.resolve()) }
+    })
+    const held = summary({ task: { sessionId: 'ses_task', title: 'Find what blocks api 1.5', state: 'open' } })
+    await render(
+      <ThreadFooter
+        footer={footerOfSummary(held, 'Found the lock')}
+        rootId="post-root"
+        onOpen={onOpen}
+        onReply={onReply}
+        shareHref="/acme/sessions/ses_coordinator?thread=post-root"
+      />
+    )
+    expect(container.querySelector('[data-task-card-summary]')?.textContent).toBe('Found the lock')
+    // The latest reply waits for a hover over the line.
+    expect(container.querySelector('[data-thread-preview]')?.getAttribute('role')).toBe('tooltip')
+    const toolbar = container.querySelector('[data-task-card-hover] [role="toolbar"]')!
+    expect([...toolbar.querySelectorAll('button')].map((b) => b.getAttribute('aria-label'))).toEqual([
+      'Reply in thread',
+      'Copy link to thread'
+    ])
+    act(() => toolbar.querySelector<HTMLButtonElement>('[data-task-card-reply]')!.click())
+    expect(onReply).toHaveBeenCalledTimes(1)
+    expect(onOpen).not.toHaveBeenCalled()
+    await act(async () => toolbar.querySelector<HTMLButtonElement>('[data-task-card-share]')!.click())
+    expect(written).toEqual([new URL('/acme/sessions/ses_coordinator?thread=post-root', location.href).href])
+    expect(toolbar.querySelector('[data-task-card-share]')?.getAttribute('aria-label')).toBe('Link copied')
+  })
+
   it('draws an unowned thread as its replies line: repliers, count, last reply and preview, opening the thread', async () => {
     const onOpen = vi.fn()
     await render(<ThreadFooter footer={footerOfSummary(summary())} rootId="post-root" onOpen={onOpen} />)

@@ -49,6 +49,8 @@ import { sessionAttributionAgentAuthors, sessionAttributionAgentId } from '@/lib
 import { CONSOLE_SWR_CONFIG, readOnceRegistered } from '@/lib/console-swr'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { useOrgs } from '@/lib/org-context'
+import { copyLink } from '@/lib/copy-link'
+import { SessionShareDialog } from '@/components/console/SessionShareDialog'
 import { approvalNotice, raisedIn, WebchatMcpApprovalCard } from '@/components/console/WebchatMcpApprovalCard'
 
 const HEADER_BTN =
@@ -353,6 +355,17 @@ export function ThreadPanel({
   const title = row?.title ?? task?.title ?? summary?.task?.title ?? t('thread')
   const tone = row ? taskTone(row, null) : null
   const pageHref = holderId ? orgPath(`/sessions/${encodeURIComponent(holderId)}`) : null
+  // The task's own session shares as the session header does: its link, without its audience, which its own page changes.
+  const ts = useTranslations('Sessions.share')
+  const [shareOpen, setShareOpen] = useState(false)
+  const [shareCopied, setShareCopied] = useState(false)
+  const copyPageLink = async () => {
+    if (!pageHref) return
+    setShareCopied(false)
+    if (!(await copyLink(window.location.origin + pageHref, ts('copyLink')))) return
+    setShareCopied(true)
+    setTimeout(() => setShareCopied(false), 1600)
+  }
   // A question in the thread is the task's, answered on its session.
   const answerElicitation = holderId
     ? (turnAgent: string | undefined, requestId: string | undefined, value: ElicitAnswerValue): void => {
@@ -373,6 +386,17 @@ export function ThreadPanel({
       {...(record ? { 'data-thread-panel': record.rootId } : {})}
       className="flex min-h-0 flex-1 flex-col"
     >
+      {shareOpen && pageHref ? (
+        <SessionShareDialog
+          title={title}
+          place={null}
+          platform={platform}
+          copied={shareCopied}
+          onCopyLink={() => void copyPageLink()}
+          visibility={null}
+          onClose={() => setShareOpen(false)}
+        />
+      ) : null}
       {/* Takes the tab strip's place, so on desktop it is the session header's 52px and its divider continues that line. */}
       <div className="flex h-[43px] min-w-0 flex-none items-center gap-[6px] border-b border-(--border-subtle) pr-2 pl-[10px] desktop:h-[52px]">
         <button
@@ -417,6 +441,18 @@ export function ThreadPanel({
           >
             <Icon name="external-link" size={14} />
           </a>
+        ) : null}
+        {pageHref ? (
+          <button
+            type="button"
+            data-task-thread-share=""
+            className={HEADER_BTN}
+            title={ts('title', { title })}
+            aria-label={ts('title', { title })}
+            onClick={() => setShareOpen(true)}
+          >
+            <Icon name="forward" size={14} />
+          </button>
         ) : null}
         {/* Expanding a task is opening its own page; a real link, so a modified click opens it in a new tab. */}
         {pageHref ? (
