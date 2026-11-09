@@ -136,7 +136,18 @@ beforeEach(() => {
     deploymentApplication: true
   })
   mocks.fetchAzureDevOpsRepositories.mockResolvedValue([binding])
-  mocks.fetchAzureDevOpsConnectionRepositories.mockResolvedValue([unbound])
+  mocks.fetchAzureDevOpsConnectionRepositories.mockResolvedValue([
+    {
+      repositoryId: binding.repositoryId,
+      projectId: binding.projectId,
+      path: binding.repoPath,
+      cloneUrl: binding.cloneUrl,
+      defaultBranch: binding.defaultBranch,
+      repoId: binding.repoId,
+      bindingId: binding.id
+    },
+    unbound
+  ])
   mocks.fetchAgentRepos.mockResolvedValue([authorization])
   mocks.fetchAgentHooks.mockResolvedValue([])
 })

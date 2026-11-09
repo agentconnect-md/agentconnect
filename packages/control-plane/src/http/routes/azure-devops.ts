@@ -339,38 +339,18 @@ export function azureDevOpsRoutes(deps: HttpDeps) {
           tags: [Tag.AzureDevOps],
           summary: 'List bound Azure DevOps repositories',
           description:
-            'Bound repositories readable by the caller’s linked Microsoft account, with their state: `ready`, or `runtime_degraded` with `secret_rejected`, `access_revoked` or `repository_unavailable`. A repository with Azure DevOps triggers also carries its service hook subscriptions, one per delivery kind, and `hookReason` while they are not known to deliver: `webhook_unverified` until a delivery verifies, `triggers_not_allowed` when the application lacks View and Edit subscriptions on the project, `relay_url_unconfigured`, or `subscriptions_failed`.',
+            'The organization’s bound repositories with their state: `ready`, or `runtime_degraded` with `secret_rejected`, `access_revoked` or `repository_unavailable`. A repository with Azure DevOps triggers also carries its service hook subscriptions, one per delivery kind, and `hookReason` while they are not known to deliver: `webhook_unverified` until a delivery verifies, `triggers_not_allowed` when the application lacks View and Edit subscriptions on the project, `relay_url_unconfigured`, or `subscriptions_failed`.',
           operationId: 'listAzureDevOpsRepositories',
-          response: {
-            200: AzureDevOpsRepositoryBindingListDto,
-            403: ErrorDto,
-            409: ErrorDto,
-            429: ErrorDto,
-            502: ErrorDto
-          }
+          response: { 200: AzureDevOpsRepositoryBindingListDto }
         }
       },
-      async (req, reply) => {
-        const orgId = orgOf(req)
-        try {
-          const rows = await deps.repos.azureDevOpsRepositoryBinding.listForOrg(orgId)
-          const connections = await deps.repos.azureDevOpsConnection.listForOrg(orgId)
-          const visible: AzureDevOpsRepositoryBindingRecord[] = []
-          for (const connection of connections) {
-            const candidates = rows
-              .filter((row) => row.connectionId === connection.id)
-              .map((row) => ({ id: row.repositoryId, projectId: row.projectId, row }))
-            const allowed = await azure.userAuthz.filterRepositories(req.principal?.userId, connection, candidates)
-            visible.push(...allowed.map(({ row }) => row))
-          }
-          const hooks = azure.hooks
-          return {
-            bindings: await Promise.all(
-              visible.map(async (row) => bindingToDto(row, hooks ? await hooks.subscriptionsOf(row.id) : []))
-            )
-          }
-        } catch (e) {
-          return failed(reply, e)
+      async (req) => {
+        const rows = await deps.repos.azureDevOpsRepositoryBinding.listForOrg(orgOf(req))
+        const hooks = azure.hooks
+        return {
+          bindings: await Promise.all(
+            rows.map(async (row) => bindingToDto(row, hooks ? await hooks.subscriptionsOf(row.id) : []))
+          )
         }
       }
     )

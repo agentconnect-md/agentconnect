@@ -82,7 +82,7 @@ export class AzureDevOpsUserAuthzService {
   ): Promise<T> {
     const missingIdentity = () =>
       new AzureDevOpsConnectDenied(
-        'link your Microsoft account in Profile to verify Azure DevOps repository access',
+        'Azure DevOps repository access requires configured Microsoft account linking and a linked Microsoft account',
         403,
         'MICROSOFT_IDENTITY_REQUIRED'
       )

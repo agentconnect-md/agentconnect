@@ -323,6 +323,14 @@ The check uses the Microsoft account already linked in Profile and the
 connection's application token; there is no additional personal authorization
 flow or retained personal Azure DevOps token.
 
+This is a prerequisite even for a self-hosted deployment: console sign-in must
+be configured through Logto with Microsoft account linking (`azuread`) enabled.
+The loopback no-auth stack, a deployment without that connector, and a person
+without its linked identity cannot select or grant a managed Azure repository.
+Agent edit rights alone never replace this check. Connecting or maintaining the
+organization's application remains available under the existing management
+rules; its credentials do not prove the administrator's personal repository access.
+
 The linked Entra object ID must match one active human identity in the
 connection's tenant. Email locates candidates but never establishes identity.
 A guest whose linked identity names a different home-tenant object is refused
@@ -346,7 +354,7 @@ expired entitlements grant nothing. An assigned `msdn/eligible` category alone
 does not prove a recognized subscription. Pending invitations still require an
 active identity, a supported license, and effective permissions.
 
-Both repository catalogs apply this check. Workspace creation/replacement and
+The repository picker applies this check. Workspace creation/replacement and
 additional-grant creation/increases fetch fresh evidence before granting
 authority; a picker result is never reused to authorize a save. An unreadable
 or ambiguous identity grants nothing, and a provider outage remains retryable.
@@ -451,8 +459,11 @@ repository names may contain spaces; paths are compared after percent-decoding.
 The picker reads `GET https://dev.azure.com/{organization}/_apis/git/repositories`
 across the whole organization, drops disabled repositories and those in
 maintenance, filters to repositories the caller can read (§3.3), and keys rows
-by GUID. The bound-repository catalog also verifies the caller so the picker's
-merge cannot restore a row that the human access check excluded.
+by GUID. Its merge only enriches authorized rows with binding metadata; a bound
+row cannot restore a repository the human access check excluded. The management
+catalog remains a database-only list of existing bindings and their health, so
+administrators can diagnose degraded connections without personal repository
+access or a working Azure API. That metadata never authorizes a new grant.
 
 Binding is implicit on first use, as in Gitea §6, minus the webhook steps: the
 write that names a repository (a workspace, or an additional-repository grant)
@@ -1007,6 +1018,9 @@ connection-write, and secret routes manage a credential and are
   Entra can reach, and it can follow without changing anything downstream of
   §3.4.
 - More than one Azure DevOps organization per AgentConnect organization.
+- Periodic re-attestation of existing Azure repository grants. The admission
+  checks in §3.3 cover new authority and increases; ongoing revocation of older
+  grants is a separate follow-up.
 - Pipelines, Boards, Wiki, and Artifacts, and publishing a Marketplace
   extension.
 - Work-item triggers and tools. Azure Boards items belong to a project, not a
@@ -1252,9 +1266,9 @@ review, as in GitLab §12.1, which Gitea inherits.
 **Collaborator gate.** Opened, comment, review-requested and reopened
 deliveries are authorized live through `rc/codehost-membership-authz`. Azure
 DevOps answers a permission question only for the caller
-(`permissionevaluationbatch`), and an access-control list query for another
-identity answers only that identity's explicit entries, without what its
-groups grant (**verified**). The Azure DevOps arm therefore evaluates it:
+(`permissionevaluationbatch`), and the webhook helper's raw access-control list
+query for another identity answers only that identity's explicit entries,
+without what its groups grant (**verified**). The Azure DevOps arm therefore evaluates it:
 
 1. read the actor's identity with `queryMembership=ExpandedUp`, which lists
    every group it belongs to, directly or not (**verified**);

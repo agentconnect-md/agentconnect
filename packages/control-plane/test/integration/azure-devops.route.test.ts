@@ -126,13 +126,14 @@ it('refuses managed repository authority without the acting person’s linked Mi
   await h.connect()
   const result = await createAgent(h, GIT_REPO, 'read')
   expect(result.statusCode).toBe(409)
+  expect(result.json().message).toContain('requires configured Microsoft account linking')
   expect(await prisma.azureDevOpsRepositoryBinding.count()).toBe(0)
 })
 
 describe('the acting person’s Azure repository access', () => {
   const resource = `repoV2/${PROJECT_ID}/${REPOSITORY_ID}`
 
-  it('filters both catalogs and refuses canonical, legacy and GUID addresses after access is removed', async () => {
+  it('filters the picker and refuses canonical, legacy and GUID addresses after access is removed', async () => {
     const h = harness()
     const connection = await h.connect()
     expect((await createAgent(h, GIT_REPO, 'read')).statusCode).toBe(201)
@@ -145,7 +146,7 @@ describe('the acting person’s Azure repository access', () => {
     expect(listed.json()).toEqual({ repositories: [] })
     const bound = await h.a.app.inject({ method: 'GET', url: `${ORG}/azure-devops/repositories` })
     expect(bound.statusCode).toBe(200)
-    expect(bound.json()).toEqual({ bindings: [] })
+    expect(bound.json().bindings).toHaveLength(1)
     for (const address of [
       GIT_REPO,
       'https://example-org.visualstudio.com/DefaultCollection/Example%20Project/_git/Example%20Repo',
@@ -160,6 +161,24 @@ describe('the acting person’s Azure repository access', () => {
     }
     expect(await prisma.agent.count()).toBe(1)
     expect(await prisma.azureDevOpsRepositoryBinding.count()).toBe(1)
+  })
+
+  it('retains degraded management metadata without a personal identity or Azure requests', async () => {
+    const h = harness({ linked: false })
+    const connection = await h.connect()
+    const service = h.a.deps.azureDevOps!.bindings
+    const binding = await service.ensureBound(
+      await service.byRepositoryId(DEFAULT_ORG_ID, connection.id, REPOSITORY_ID)
+    )
+    await h.bindings.setState(binding.id, 'runtime_degraded', 'access_revoked')
+    h.fake.api.fetch = async () => {
+      throw new Error('management metadata must not call Azure')
+    }
+    const result = await h.a.app.inject({ method: 'GET', url: `${ORG}/azure-devops/repositories` })
+    expect(result.statusCode).toBe(200)
+    expect(result.json().bindings).toEqual([
+      expect.objectContaining({ id: binding.id, state: 'runtime_degraded', stateReason: 'access_revoked' })
+    ])
   })
 
   it('caps inferred workspace access and refuses an explicit increase without changing the workspace', async () => {

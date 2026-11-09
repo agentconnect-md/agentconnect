@@ -2632,11 +2632,16 @@ does not replace the current review verdict.
 Selecting a managed Azure DevOps repository requires the person's existing
 linked Microsoft account to have the requested repository access. The
 application verifies that account's effective permissions and access level;
-there is no additional personal Azure DevOps authorization step. Both repository
-catalogs hide repositories the person cannot read, and saving a workspace,
+there is no additional personal Azure DevOps authorization step. Repository
+pickers hide repositories the person cannot read, and saving a workspace,
 adding a repository, or raising its access checks again. Inferred workspace
 access is the common ceiling of the person and application. An unverified
 identity grants no new authority; provider failures ask the user to retry.
+Microsoft account linking must be enabled in the deployment's console sign-in
+configuration. No-auth deployments and deployments without that connector
+cannot create or increase managed Azure repository authority.
+The Integrations management list retains existing bindings and their health
+without personal repository access or a live Azure request.
 
 The workspace options live in the agent's Workspace tab, above the files they
 configure — not in Configuration, and not behind a summary row that navigates
