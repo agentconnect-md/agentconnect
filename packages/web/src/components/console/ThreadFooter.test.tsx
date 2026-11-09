@@ -207,7 +207,7 @@ describe('ThreadFooter', () => {
     expect(container.querySelector('[data-thread-line]')).toBeNull()
     expect(message.querySelector('[data-mark]')).not.toBeNull()
     expect(message.textContent).toContain('deploy-bot')
-    expect(message.querySelector('[data-state-icon]')?.getAttribute('aria-label')).toBe('Idle')
+    expect(message.querySelector('[data-state-icon]')).toBeNull()
     const face = message.querySelector('[data-task-card-open]')!
     expect(face.textContent).toBe('Found the lock')
     expect(face.getAttribute('aria-label')).toContain('Find what blocks api 1.5')

@@ -317,7 +317,9 @@ export function ThreadFooter({
         </span>
         <div className="min-w-0 flex-1">
           <AgentTurnHeader name={from.name}>
-            <StateIcon state={task.tone} label={tl(task.stateKey)} />
+            {task.tone !== 'idle' && task.tone !== 'done' ? (
+              <StateIcon state={task.tone} label={tl(task.stateKey)} />
+            ) : null}
           </AgentTurnHeader>
           {cardBlock}
         </div>
