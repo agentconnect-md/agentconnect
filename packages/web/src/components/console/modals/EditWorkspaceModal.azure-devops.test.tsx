@@ -39,13 +39,13 @@ const agent = { id: 'agent-a', name: 'build-agent', canEdit: true, workspace: { 
 let root: Root | undefined
 let host: HTMLDivElement | undefined
 
-async function render() {
+async function render(currentAgent: Agent = agent) {
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
   await act(async () => {
     root?.render(
-      <EditWorkspaceModal agent={agent} authorized={[]} onClose={() => undefined} onChanged={() => undefined} />
+      <EditWorkspaceModal agent={currentAgent} authorized={[]} onClose={() => undefined} onChanged={() => undefined} />
     )
   })
 }
@@ -62,6 +62,52 @@ afterEach(async () => {
 })
 
 describe('EditWorkspaceModal, Azure DevOps workspace', () => {
+  it('can save an unchanged Azure workspace to reauthorize it', async () => {
+    mocks.fetchConnections.mockResolvedValue({
+      enabled: true,
+      connections: [{ id: CONNECTION_ID, organization: 'example-org', state: 'connected' }]
+    })
+    mocks.fetchRepositories.mockResolvedValue([])
+    mocks.fetchVisible.mockResolvedValue([
+      {
+        repositoryId: REPOSITORY,
+        projectId: '00000000-0000-4000-8000-000000000021',
+        path: 'example-org/Example Project/example-repo',
+        cloneUrl: CLONE_URL,
+        defaultBranch: 'main',
+        repoId: '7',
+        bindingId: 'binding-1'
+      }
+    ])
+    await render({
+      ...agent,
+      workspace: {
+        mode: 'git',
+        provider: 'azure-devops',
+        gitRepo: CLONE_URL,
+        repo: 'example-org/Example Project/example-repo',
+        repoId: '7',
+        branch: 'main',
+        gitAccess: 'write',
+        worktree: true,
+        agentDir: '/',
+        lastPull: '',
+        commit: '',
+        commitMsg: '',
+        commitTime: '',
+        clean: true,
+        files: []
+      }
+    } as Agent)
+    const save = buttonsNamed('Save')[0]!
+    expect(save.disabled).toBe(false)
+    await act(async () => save.click())
+    expect(mocks.setAgentWorkspace).toHaveBeenCalledWith(
+      'agent-a',
+      expect.objectContaining({ gitRepo: CLONE_URL, access: 'write' })
+    )
+  })
+
   it('saves a repository nothing has bound yet as its clone address — the save binds it', async () => {
     mocks.fetchConnections.mockResolvedValue({
       enabled: true,

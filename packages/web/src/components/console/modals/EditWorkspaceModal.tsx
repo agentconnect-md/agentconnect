@@ -530,7 +530,7 @@ export default function EditWorkspaceModal({
     (mode === 'giturl' &&
       (giturlWorkspace === null || repoChanged || branchChanged || agentDirChanged || worktreeChanged))
   const canSubmit =
-    changed &&
+    (changed || mode === 'azure-devops') &&
     (mode === 'scratch' ||
       (mode === 'gitlab'
         ? (!!glPick || !!glPublic) && agentDirError === null

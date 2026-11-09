@@ -57,7 +57,7 @@ const CoreConfigShape = {
   // sweeps every CRON_RUN_REAP_INTERVAL_SEC.
   CRON_RUN_TTL_SEC: z.coerce.number().int().default(1800),
   CRON_RUN_REAP_INTERVAL_SEC: z.coerce.number().int().default(300),
-  // Repository-grant re-attestation, where the per-user GitHub gate is configured: sweep cadence, per-grant recheck age, grants per sweep.
+  // Human repository-grant re-attestation: sweep cadence, per-grant recheck age, and grants per provider per sweep.
   REPO_GRANT_REATTEST_INTERVAL_SEC: z.coerce.number().int().min(60).default(600),
   REPO_GRANT_REATTEST_AFTER_SEC: z.coerce.number().int().min(3600).default(86_400),
   REPO_GRANT_REATTEST_BATCH: z.coerce.number().int().min(1).max(500).default(25),

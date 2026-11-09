@@ -186,11 +186,14 @@ export class FakeAzureDevOps {
     this.api = new AzureDevOpsApiClient({ fetch: this.fetch, ...(now ? { now } : {}) })
   }
 
-  userAuthz(service: Pick<AzureDevOpsConnectionService, 'withApi'>, linked = true): AzureDevOpsUserAuthzService {
+  userAuthz(
+    service: Pick<AzureDevOpsConnectionService, 'withApi'>,
+    linked: boolean | (() => boolean) = true
+  ): AzureDevOpsUserAuthzService {
     return new AzureDevOpsUserAuthzService({
       api: this.api,
       service,
-      microsoftIdentityFor: async () => (linked ? LINKED_MICROSOFT : null)
+      microsoftIdentityFor: async () => ((typeof linked === 'function' ? linked() : linked) ? LINKED_MICROSOFT : null)
     })
   }
 

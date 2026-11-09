@@ -1,5 +1,5 @@
 import { LogtoApiError, type MicrosoftIdentity } from '../github/logto-identity.js'
-import type { AzureDevOpsConnectionRecord, RepoAccess } from '../persistence/ports.js'
+import type { AzureDevOpsConnectionRecord, RepoAccess, RepoGrantStaleReason } from '../persistence/ports.js'
 import {
   AzureDevOpsApiError,
   GIT_REPOSITORIES_NAMESPACE,
@@ -9,7 +9,6 @@ import {
   type AzureDevOpsApiClient,
   type AzureDevOpsMicrosoftIdentity
 } from './api.js'
-import type { AzureDevOpsLocatedRepository } from './binding.service.js'
 import { AzureDevOpsConnectDenied, type AzureDevOpsConnectionService } from './connection.service.js'
 import {
   PROJECT_NAMESPACE,
@@ -30,6 +29,10 @@ interface RepositoryRef {
   id: string
   projectId: string
 }
+interface LocatedRepository {
+  connection: AzureDevOpsConnectionRecord
+  repository: RepositoryRef
+}
 interface UserRepoAccess {
   read: boolean
   write: boolean
@@ -43,7 +46,7 @@ export class AzureDevOpsUserAuthzService {
 
   async assertAccess(
     userId: string | undefined,
-    located: AzureDevOpsLocatedRepository,
+    located: LocatedRepository,
     access: RepoAccess
   ): Promise<UserRepoAccess> {
     const result = await this.withUser(userId, located.connection, (read) => read(located.repository))
@@ -55,6 +58,25 @@ export class AzureDevOpsUserAuthzService {
       )
     }
     return result
+  }
+
+  // A provider failure remains an error; only a confirmed refusal suspends existing authority.
+  async attestAccess(
+    userId: string | null,
+    located: LocatedRepository,
+    access: RepoAccess
+  ): Promise<RepoGrantStaleReason | null> {
+    if (!userId) return 'attester_removed'
+    try {
+      await this.assertAccess(userId, located, access)
+      return null
+    } catch (error) {
+      if (error instanceof AzureDevOpsConnectDenied) {
+        if (error.code === 'MICROSOFT_IDENTITY_REQUIRED') return 'identity_unlinked'
+        if (error.code === 'AZURE_DEVOPS_USER_NO_ACCESS') return 'access_lost'
+      }
+      throw error
+    }
   }
 
   async filterRepositories<T extends RepositoryRef>(

@@ -337,6 +337,7 @@ const CREDENTIAL_OF: Record<CodeHostProvider, (a: AgentWithUsers) => AgentWorksp
           provider: 'azure-devops',
           access: a.gitAccess,
           connectionId: a.workspaceConnectionId,
+          attestedByUserId: a.workspaceAttestedByUserId,
           azureDevOps: {
             organization: a.azureDevOpsWorkspace.connection.organization,
             projectId: a.azureDevOpsWorkspace.identity.projectId,
@@ -383,6 +384,7 @@ function workspaceColumns(workspace: AgentWorkspace) {
     gitCredentialProvider: credential?.provider ?? null,
     installationId: credential?.provider === 'github' ? credential.installationId : null,
     workspaceConnectionId: credential?.provider === 'azure-devops' ? credential.connectionId : null,
+    workspaceAttestedByUserId: credential?.provider === 'azure-devops' ? credential.attestedByUserId : null,
     // An anonymous checkout provably cannot push, so its row says `read`;
     // scratch keeps the column's legacy `write` default (nothing reads it there).
     gitAccess: credential?.access ?? (workspace.mode === 'git' ? 'read' : 'write')

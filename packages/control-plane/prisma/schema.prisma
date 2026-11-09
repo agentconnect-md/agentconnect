@@ -219,6 +219,7 @@ model User {
   addedTrustedActors               CodeHostTrustedActor[]     @relation("CodeHostTrustedActorAddedBy")
   createdRepoAuths                 AgentRepoAuthorization[]   @relation("AgentRepoAuthCreatedBy")
   attestedRepoAuths                AgentRepoAuthorization[]   @relation("AgentRepoAuthAttestedBy")
+  attestedWorkspaces               Agent[]                    @relation("AgentWorkspaceAttestedBy")
   createdInstallationAuths         AgentInstallationAuthorization[] @relation("AgentInstallationAuthCreatedBy")
   gitlabConnections                GitlabConnection[]         @relation("GitlabConnectionUser")
   githubRepoIdentity               GithubRepoIdentity?
@@ -958,6 +959,8 @@ model Agent {
   workspaceRepoId       BigInt?
   // The connection whose identity serves an `azure-devops` workspace (azure-devops-integration.md §3.2); null for every other host.
   workspaceConnectionId String?            @db.Uuid
+  // The member who last authorized the Azure workspace's repository and tier; older workspaces must be saved again.
+  workspaceAttestedByUserId String?
   // The organization GitHub App this agent works through (GithubApp.id), one agent per App. Null ⇒ the built-in App.
   githubAppId           String?            @unique @db.Uuid
   gitAccess             GitAccess          @default(write) // ceiling for minted tokens; meaningful only with a credential provider
@@ -1007,6 +1010,7 @@ model Agent {
   set                   MemberSet?                 @relation(fields: [setId], references: [id], onDelete: SetNull)
   createdBy             User?                      @relation("AgentCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   lastModifiedBy        User?                      @relation("AgentModifiedBy", fields: [lastModifiedByUserId], references: [id], onDelete: SetNull)
+  workspaceAttestedBy   User?                      @relation("AgentWorkspaceAttestedBy", fields: [workspaceAttestedByUserId], references: [id], onDelete: SetNull)
   assignments           Assignment[]
   launches              AgentLaunch[]
   sessions              SessionMeta[]

@@ -662,6 +662,30 @@ describe('AgentMoveService', () => {
     expect(t.activations[0]?.reconcileWorkspace).toBe(true)
   })
 
+  it('persists an Azure authorizer change on the same checkout and restores it on failed activation', async () => {
+    const workspace = {
+      mode: 'git',
+      gitRepo: 'https://dev.azure.com/example-org/Project/_git/Repo',
+      credential: {
+        provider: 'azure-devops',
+        access: 'write',
+        connectionId: 'connection-1',
+        attestedByUserId: null,
+        azureDevOps: { organization: 'example-org', projectId: 'project-1', repositoryId: 'repo-1' }
+      }
+    } satisfies GitAgentWorkspace
+    const next = { ...workspace, credential: { ...workspace.credential, attestedByUserId: 'user-1' } }
+    const t = make({ workspace })
+    expect((await t.service.setWorkspace(t.current(), next, WORKSPACE_REPO_ID)).workspace).toEqual(next)
+    expect(t.activations[0]?.prepareWorkspace).toBeUndefined()
+    expect(t.activations[0]?.reconcileWorkspace).toBe(true)
+    const rejected = make({ workspace, rejectWorkspaceActivate: true })
+    await expect(rejected.service.setWorkspace(rejected.current(), next, WORKSPACE_REPO_ID)).rejects.toThrow(
+      'clone failed'
+    )
+    expect(rejected.current().workspace).toEqual(workspace)
+  })
+
   it('allows a GitHub workspace to switch back to scratch', async () => {
     const t = make({ workspace: GITHUB_WORKSPACE })
 

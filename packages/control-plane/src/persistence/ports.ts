@@ -1213,6 +1213,7 @@ export type AgentWorkspaceCredential =
       access: 'read' | 'write'
       connectionId: string
       azureDevOps: AzureDevOpsRepoRouting
+      attestedByUserId: string | null
     }
 
 export type AgentWorkspace =

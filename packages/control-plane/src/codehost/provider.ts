@@ -100,6 +100,7 @@ export type DerivedWorkspace =
       /** The surrogate numeric id (azure-devops-integration.md §4); allocated only by a persisting derivation. */
       repoId?: bigint
       connectionId: string
+      attestedByUserId: string | null
       azureDevOps: AzureDevOpsRepoRouting
       gitRepo: string // the canonical four-segment address of the listed repository
       defaultBranch: string

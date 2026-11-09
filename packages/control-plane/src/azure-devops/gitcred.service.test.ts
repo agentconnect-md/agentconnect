@@ -11,7 +11,8 @@ import type {
   AgentRecord,
   AgentRepoAuthorizationRecord,
   AzureDevOpsConnectionRecord,
-  AzureDevOpsRepositoryBindingRecord
+  AzureDevOpsRepositoryBindingRecord,
+  RepoGrantStaleReason
 } from '../persistence/ports.js'
 
 const CONNECTION_ID = '00000000-0000-4000-8000-0000000000b1'
@@ -71,7 +72,13 @@ function agent(access: 'read' | 'write'): AgentRecord {
     workspace: {
       mode: 'git',
       gitRepo: 'https://dev.azure.com/example-org/Example%20Project/_git/Example%20Repo',
-      credential: { provider: 'azure-devops', access, connectionId: CONNECTION_ID, azureDevOps: ROUTING }
+      credential: {
+        provider: 'azure-devops',
+        access,
+        connectionId: CONNECTION_ID,
+        azureDevOps: ROUTING,
+        attestedByUserId: 'user-1'
+      }
     },
     workspaceRepoId: 7n
   } as unknown as AgentRecord
@@ -80,6 +87,7 @@ function agent(access: 'read' | 'write'): AgentRecord {
 function harness(
   opts: {
     expiresInMs?: number
+    access?: 'read' | 'write'
     grants?: Partial<AgentRepoAuthorizationRecord>[]
     bindings?: AzureDevOpsRepositoryBindingRecord[]
     connection?: Partial<AzureDevOpsConnectionRecord>
@@ -94,24 +102,36 @@ function harness(
   }))
   const withApi = vi.fn(opts.probe ?? (async () => undefined))
   const purgeToken = vi.fn()
+  const current = { agent: agent(opts.access ?? 'read') }
+  const attestAccess = vi.fn(async (): Promise<RepoGrantStaleReason | null> => null)
   const service = new AzureDevOpsGitcredService({
+    agents: { get: async () => current.agent },
+    authz: { attestAccess },
     connections: { get: async () => ({ ...connection, ...opts.connection }) },
     bindings: {
       byRepo: async (_org, connectionId, repoId) =>
         bindings.find((b) => b.connectionId === connectionId && b.repoId === repoId) ?? null,
       listForRepo: async (_org, repoId) => bindings.filter((b) => b.repoId === repoId)
     },
-    repoAuths: { listForAgent: async () => (opts.grants ?? []) as AgentRepoAuthorizationRecord[] },
+    repoAuths: {
+      listForAgent: async () =>
+        (opts.grants ?? []).map((g) => ({
+          id: 'grant-1',
+          attestedByUserId: 'user-2',
+          stale: null,
+          ...g
+        })) as AgentRepoAuthorizationRecord[]
+    },
     service: { accessToken, withApi: withApi as never, purgeToken },
     api: new AzureDevOpsApiClient(),
     clock: { now: () => clock.now } as never
   })
-  return { service, accessToken, withApi, purgeToken, clock }
+  return { service, accessToken, withApi, purgeToken, clock, attestAccess, current }
 }
 
 describe('AzureDevOpsGitcredService', () => {
   it('serves the workspace repository under its tier, echoing provider, id, path and epoch', async () => {
-    const { service } = harness()
+    const { service, current } = harness({ access: 'write' })
     const grant = await service.grantForAgent(agent('write'))
     // The basic-auth user is the identity's GUID, never its display name, which may hold a colon.
     expect(grant).toMatchObject({
@@ -124,6 +144,7 @@ describe('AzureDevOpsGitcredService', () => {
       credentialEpoch: '3'
     })
     expect((await service.grantForAgent(agent('write'), 7n, 'read')).access).toBe('read')
+    current.agent = agent('read')
     expect((await service.grantForAgent(agent('read'), 7n, 'write')).access).toBe('read')
   })
 
@@ -146,6 +167,72 @@ describe('AzureDevOpsGitcredService', () => {
     await expect(service.grantForAgent(agent('write'), 9n)).rejects.toMatchObject({ code: 'SCOPE_DENIED' })
     const scratch = { ...agent('write'), workspace: { mode: 'scratch' } } as unknown as AgentRecord
     await expect(service.grantForAgent(scratch)).rejects.toMatchObject({ code: 'SCOPE_DENIED' })
+  })
+
+  it.each(['access_lost', 'identity_unlinked', 'attester_removed'] as const)(
+    'refuses new leases for %s without returning the connection token',
+    async (reason) => {
+      const h = harness({ access: 'write' })
+      h.attestAccess.mockResolvedValue(reason)
+      await expect(h.service.grantForAgent(h.current.agent, 7n, 'read')).rejects.toMatchObject({ code: 'LEASE_DENIED' })
+      expect(h.attestAccess).toHaveBeenCalledWith(
+        'user-1',
+        expect.objectContaining({ repository: { id: ROUTING.repositoryId, projectId: ROUTING.projectId } }),
+        'write'
+      )
+      expect(h.accessToken).not.toHaveBeenCalled()
+    }
+  )
+
+  it('does not honor a suspended additional grant and keeps provider outages retryable', async () => {
+    const h = harness({
+      grants: [
+        {
+          provider: 'azure-devops',
+          repoId: 8n,
+          access: 'write',
+          connectionId: CONNECTION_ID,
+          stale: { since: new Date(NOW), reason: 'access_lost' }
+        }
+      ]
+    })
+    await expect(h.service.grantForAgent(h.current.agent, 8n)).rejects.toMatchObject({ code: 'LEASE_DENIED' })
+    expect(h.attestAccess).not.toHaveBeenCalled()
+    h.attestAccess.mockRejectedValue(new AzureDevOpsApiError('unavailable', 503, 'UNAVAILABLE', true))
+    await expect(h.service.grantForAgent(h.current.agent)).rejects.toMatchObject({ code: 'INTERNAL', retryable: true })
+    expect(h.accessToken).not.toHaveBeenCalled()
+  })
+
+  it('discards a checked lease if its workspace authorizer or grant row changes during the check', async () => {
+    const workspace = harness()
+    workspace.attestAccess.mockImplementation(async () => {
+      const credential =
+        workspace.current.agent.workspace.mode === 'git' && workspace.current.agent.workspace.credential
+      if (credential && credential.provider === 'azure-devops') credential.attestedByUserId = 'user-2'
+      return null
+    })
+    await expect(workspace.service.grantForAgent(agent('read'))).rejects.toMatchObject({
+      code: 'LEASE_DENIED',
+      retryable: true
+    })
+    const grants = [
+      {
+        id: 'old-grant',
+        provider: 'azure-devops' as const,
+        repoId: 8n,
+        access: 'read' as const,
+        connectionId: CONNECTION_ID
+      }
+    ]
+    const additional = harness({ grants })
+    additional.attestAccess.mockImplementation(async () => {
+      grants[0]!.id = 'replacement-grant'
+      return null
+    })
+    await expect(additional.service.grantForAgent(agent('read'), 8n)).rejects.toMatchObject({
+      code: 'LEASE_DENIED',
+      retryable: true
+    })
   })
 
   it('refuses a repository the identity no longer sees', async () => {

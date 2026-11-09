@@ -413,6 +413,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
           access: body.access,
           materialize: body.materialize,
           connectionId: binding.connectionId,
+          attestedAt: new Date(deps.clock.now()),
           ...(req.principal ? { createdByUserId: req.principal.userId } : {})
         })
       } catch (e) {
@@ -654,7 +655,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Update a repository authorization',
           description:
-            'Raise an existing repository grant to a stronger access tier after re-checking the caller’s matching GitHub permission, change how the repository is materialized (`materialize`: `always`, `decision` or `on-demand`; `decision` needs the agent’s `repositorySelector` and daemons serving the agent that advertise `repo-selector-v1`, else 409 with `REPOSITORY_SELECTOR_MISSING` or `DAEMON_FEATURE_MISSING`), or both. At least one field is required. Downgrades still require revoke and reauthorize so review-check cleanup remains explicit; `materialize` moves freely and re-projects the agent’s spec. Raising a GitHub grant makes the caller its attester, which also honors a `stale` grant again.',
+            'Raise an existing repository grant to a stronger access tier after re-checking the provider’s authorization requirements, change how the repository is materialized (`materialize`: `always`, `decision` or `on-demand`; `decision` needs the agent’s `repositorySelector` and daemons serving the agent that advertise `repo-selector-v1`, else 409 with `REPOSITORY_SELECTOR_MISSING` or `DAEMON_FEATURE_MISSING`), or both. At least one field is required. Downgrades still require revoke and reauthorize so review-check cleanup remains explicit; `materialize` moves freely and re-projects the agent’s spec. Raising a GitHub or Azure DevOps grant makes the caller its attester, which also honors a `stale` grant again.',
           operationId: 'updateAgentRepoAuthorization',
           params: AgentRepoAuthParam,
           body: UpdateAgentRepoAuthBody,

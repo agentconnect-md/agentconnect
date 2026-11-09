@@ -2,7 +2,7 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
-import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { seedAgent } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { trackedTestClock } from '../fakes/tracked-clock.js'
@@ -26,6 +26,8 @@ import {
 } from '../../src/azure-devops/connection.service.js'
 import { AzureDevOpsBindingService } from '../../src/azure-devops/binding.service.js'
 import { AzureDevOpsGitcredService } from '../../src/azure-devops/gitcred.service.js'
+import { AzureDevOpsRepositoryGrantReattestor } from '../../src/azure-devops/repository-grant-reattestor.js'
+import { FakeClock } from '../fakes/fake-clock.js'
 import { AzureDevOpsTokenCache } from '../../src/azure-devops/token-cache.js'
 import { readConnectionData } from '../../src/azure-devops/api.js'
 import {
@@ -54,6 +56,7 @@ afterEach(async () => {
 })
 
 function harness(opts: { fake?: FakeAzureDevOpsOptions; deploymentSecret?: string; linked?: boolean } = {}) {
+  const identity = { linked: opts.linked ?? true }
   const fake = new FakeAzureDevOps(opts.fake)
   const connectionRepo = new PgAzureDevOpsConnectionRepo(prisma)
   const bindings = new PgAzureDevOpsRepositoryBindingRepo(prisma)
@@ -91,9 +94,15 @@ function harness(opts: { fake?: FakeAzureDevOpsOptions; deploymentSecret?: strin
     }
   })
   running = buildHttpApp(prisma, {}, undefined, undefined, {
-    azureDevOps: { connections: service, bindings: bindingService, userAuthz: fake.userAuthz(service, opts.linked) }
+    azureDevOps: {
+      connections: service,
+      bindings: bindingService,
+      userAuthz: fake.userAuthz(service, () => identity.linked)
+    }
   })
   const gitcred = new AzureDevOpsGitcredService({
+    agents,
+    authz: running.deps.azureDevOps!.userAuthz,
     connections: connectionRepo,
     bindings,
     repoAuths: new PgAgentRepoAuthorizationRepo(prisma),
@@ -106,7 +115,7 @@ function harness(opts: { fake?: FakeAzureDevOpsOptions; deploymentSecret?: strin
     expect(res.statusCode).toBe(200)
     return res.json() as { id: string; credentialEpoch: string }
   }
-  return { a: running, fake, service, bindings, connectionRepo, gitcred, epochChanges, connect, renames }
+  return { a: running, fake, service, bindings, connectionRepo, gitcred, epochChanges, connect, renames, identity }
 }
 
 async function createAgent(h: ReturnType<typeof harness>, gitRepo: string, access?: 'read' | 'write') {
@@ -120,6 +129,117 @@ async function createAgent(h: ReturnType<typeof harness>, gitRepo: string, acces
     }
   })
 }
+
+it.each(['workspace', 'additional'] as const)('rechecks %s authority before renewing a lease', async (source) => {
+  const h = harness()
+  const connection = await h.connect()
+  let agentId: string
+  let repoId: bigint | undefined
+  if (source === 'workspace') {
+    const created = await createAgent(h, GIT_REPO, 'write')
+    expect(created.statusCode).toBe(201)
+    agentId = created.json().id
+  } else {
+    agentId = randomUUID()
+    await seedAgent(prisma, agentId)
+    const added = await h.a.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents/${agentId}/repos`,
+      payload: { provider: 'azure-devops', connectionId: connection.id, repositoryId: REPOSITORY_ID, access: 'write' }
+    })
+    expect(added.statusCode).toBe(200)
+    repoId = BigInt(added.json().repoId)
+  }
+  const agent = (await new PgAgentRepo(prisma).get(OrgId(DEFAULT_ORG_ID), AgentId(agentId)))!
+  expect((await h.gitcred.grantForAgent(agent, repoId)).access).toBe('write')
+  h.fake.effectivePermissions.set(`repoV2/${PROJECT_ID}/${REPOSITORY_ID}`, { effectiveAllow: 2 })
+  // Asking for read cannot keep a write authorization alive after its authorizer loses write.
+  await expect(h.gitcred.grantForAgent(agent, repoId, 'read')).rejects.toMatchObject({ code: 'LEASE_DENIED' })
+  h.fake.effectivePermissions.clear()
+  expect((await h.gitcred.grantForAgent(agent, repoId)).access).toBe('write')
+  h.identity.linked = false
+  await expect(h.gitcred.grantForAgent(agent, repoId)).rejects.toMatchObject({ code: 'LEASE_DENIED' })
+  h.identity.linked = true
+  expect((await h.gitcred.grantForAgent(agent, repoId)).access).toBe('write')
+})
+
+it('requires a fresh workspace save for legacy authority and does not invent an authorizer', async () => {
+  const h = harness()
+  await h.connect()
+  const created = await createAgent(h, GIT_REPO, 'write')
+  const agentId = AgentId(created.json().id)
+  const agents = h.a.deps.repos.agent
+  await prisma.agent.update({ where: { id: agentId }, data: { workspaceAttestedByUserId: null } })
+  const legacy = (await agents.get(OrgId(DEFAULT_ORG_ID), agentId))!
+  await expect(h.gitcred.grantForAgent(legacy)).rejects.toMatchObject({ code: 'LEASE_DENIED' })
+  const saved = await h.a.app.inject({
+    method: 'PUT',
+    url: `${ORG}/agents/${agentId}/workspace`,
+    payload: { mode: 'git', gitRepo: GIT_REPO, access: 'write' }
+  })
+  expect(saved.statusCode).toBe(200)
+  const fresh = (await agents.get(OrgId(DEFAULT_ORG_ID), agentId))!
+  expect(fresh.workspace).toMatchObject({ credential: { attestedByUserId: DEFAULT_OWNER_ID } })
+  expect((await h.gitcred.grantForAgent(fresh)).access).toBe('write')
+  expect(saved.json().workspace.credential).not.toHaveProperty('attestedByUserId')
+})
+
+it('suspends and restores Azure grants through the shared sweep, and an upgrade records its new authorizer', async () => {
+  const h = harness()
+  const connection = await h.connect()
+  const agentId = AgentId(randomUUID())
+  await seedAgent(prisma, agentId)
+  const added = await h.a.app.inject({
+    method: 'POST',
+    url: `${ORG}/agents/${agentId}/repos`,
+    payload: { provider: 'azure-devops', connectionId: connection.id, repositoryId: REPOSITORY_ID, access: 'read' }
+  })
+  expect(added.statusCode).toBe(200)
+  const id = added.json().id as string
+  const loopClock = new FakeClock(clock.now() + 86_400_000)
+  const repo = h.a.deps.repos.agentRepoAuth
+  const loop = new AzureDevOpsRepositoryGrantReattestor(
+    {
+      grants: repo,
+      connections: h.connectionRepo,
+      bindings: h.bindings,
+      authz: h.a.deps.azureDevOps!.userAuthz,
+      audit: h.a.deps.repos.audit,
+      reproject: async () => {},
+      clock: loopClock
+    },
+    { intervalMs: 1000, reattestAfterMs: 1000, batch: 10 }
+  )
+  const agent = (await h.a.deps.repos.agent.get(OrgId(DEFAULT_ORG_ID), agentId))!
+  h.identity.linked = false
+  expect(await loop.sweep()).toMatchObject({ checked: 1, stale: 1, flipped: 1 })
+  expect((await repo.get(id))?.stale?.reason).toBe('identity_unlinked')
+  expect((await h.a.deps.agentSpecs.assemble(agent)).workspace?.additionalRepos).toEqual([])
+  await expect(h.gitcred.grantForAgent(agent, BigInt(added.json().repoId))).rejects.toMatchObject({
+    code: 'LEASE_DENIED'
+  })
+  h.identity.linked = true
+  loopClock.advance(1001)
+  expect(await loop.sweep()).toMatchObject({ held: 1, flipped: 1 })
+  expect((await repo.get(id))?.stale).toBeNull()
+  expect((await h.a.deps.agentSpecs.assemble(agent)).workspace?.additionalRepos).toHaveLength(1)
+  const oldAuthorizer = await prisma.user.create({
+    data: { id: randomUUID(), displayName: 'Former authorizer', email: 'former@example.test' }
+  })
+  await prisma.agentRepoAuthorization.update({ where: { id }, data: { attestedByUserId: oldAuthorizer.id } })
+  await prisma.user.delete({ where: { id: oldAuthorizer.id } })
+  loopClock.advance(1001)
+  expect(await loop.sweep()).toMatchObject({ stale: 1, flipped: 1 })
+  expect((await repo.get(id))?.stale?.reason).toBe('attester_removed')
+  const raised = await h.a.app.inject({
+    method: 'PATCH',
+    url: `${ORG}/agents/${agentId}/repos/${id}`,
+    payload: { access: 'write' }
+  })
+  expect(raised.statusCode).toBe(200)
+  expect(await repo.get(id)).toMatchObject({ access: 'write', attestedByUserId: DEFAULT_OWNER_ID, stale: null })
+  expect((await h.gitcred.grantForAgent(agent, BigInt(added.json().repoId))).access).toBe('write')
+})
 
 it('refuses managed repository authority without the acting person’s linked Microsoft identity', async () => {
   const h = harness({ linked: false })
