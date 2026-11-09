@@ -3,6 +3,7 @@
 // The session header's Share for a session other than the page's own, such as a thread's task: the same dialog, read from that session's row.
 
 import { useState } from 'react'
+import { createPortal } from 'react-dom'
 import useSWR from 'swr'
 import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
@@ -66,7 +67,8 @@ export function SessionShareDialogFor({
     setCopied(true)
     setTimeout(() => setCopied(false), 1600)
   }
-  return (
+  // On the page's body, so its scrim covers the whole console rather than the side panel it was opened from.
+  return createPortal(
     <SessionShareDialog
       title={detail?.title ?? fallbackTitle}
       place={detail?.channelName ?? null}
@@ -75,7 +77,8 @@ export function SessionShareDialogFor({
       onCopyLink={() => void onCopyLink()}
       visibility={visibility}
       onClose={onClose}
-    />
+    />,
+    document.body
   )
 }
 

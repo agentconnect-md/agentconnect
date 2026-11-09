@@ -2894,6 +2894,13 @@ export default function SessionDetailView() {
     if (agent) return agentLabel(agent)
     return isSelf(author.sender) ? tt('you') : (author.senderName ?? author.sender)
   }
+  // A replier's mark on a footer: an agent's icon, else the person's picture; initials where neither is known.
+  const threadAuthorMark = (author: SessionThreadAuthorDto) => {
+    const agent = agentById.get(author.sender)
+    if (agent) return <AgentIconView icon={agent.icon} runtime={agent.runtime} size={16} />
+    const picture = isSelf(author.sender) ? viewer.picture : memberPictureByIdentity.get(author.sender)
+    return picture ? <img src={picture} alt="" className="h-full w-full object-cover" /> : null
+  }
   // The conversation with the thread open, which a modified click on its footer opens in a new tab.
   const threadHref = (rootId: string): string =>
     `${pathname}?${new URLSearchParams({ ...(flatView ? { view: 'flat' } : {}), thread: rootId })}`
@@ -2913,6 +2920,7 @@ export default function SessionDetailView() {
           selected={openRoot === rootId}
           onOpen={() => openRootThread(rootId)}
           nameOf={threadAuthorName}
+          markOf={threadAuthorMark}
           align="end"
         />
       </div>

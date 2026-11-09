@@ -169,6 +169,23 @@ function summary(over: Partial<SessionThreadSummaryDto> = {}): SessionThreadSumm
 }
 
 describe('ThreadFooter', () => {
+  it('marks each replier with their picture or agent icon where given, else their initials', async () => {
+    await render(
+      <ThreadFooter
+        footer={footerOfSummary(summary())}
+        rootId="post-root"
+        markOf={(author) => (author.sender === 'agent_1' ? <img data-mark="agent" alt="" /> : null)}
+      />
+    )
+    const marks = [...container.querySelectorAll('[data-thread-participant]')]
+    expect(
+      marks.map((m) => [m.getAttribute('title'), m.textContent, !!m.querySelector('[data-mark="agent"]')])
+    ).toEqual([
+      ['Dana Reyes', 'DR', false],
+      ['deploy-bot', '', true]
+    ])
+  })
+
   it('offers Reply and the task session’s Share in a toolbar on the card', async () => {
     const onOpen = vi.fn()
     const onReply = vi.fn()
@@ -182,8 +199,22 @@ describe('ThreadFooter', () => {
       />
     )
     expect(container.querySelector('[data-task-card-summary]')?.textContent).toBe('Found the lock')
-    // The latest reply waits for a hover over the line.
-    expect(container.querySelector('[data-thread-preview]')?.getAttribute('role')).toBe('tooltip')
+    // The latest reply waits for a hover over the count, not over a replier's mark.
+    const preview = container.querySelector<HTMLElement>('[data-thread-preview]')!
+    expect(preview.getAttribute('role')).toBe('tooltip')
+    const shown = () =>
+      preview.className.includes('[display:-webkit-box]') && !preview.className.includes('group-focus-within')
+    const hover = (el: Element, type: 'mouseover' | 'mouseout') =>
+      act(() => {
+        el.dispatchEvent(new MouseEvent(type, { bubbles: true }))
+      })
+    expect(shown()).toBe(false)
+    hover(container.querySelector('[data-thread-participant]')!, 'mouseover')
+    expect(shown()).toBe(false)
+    hover(container.querySelector('[data-thread-count]')!, 'mouseover')
+    expect(shown()).toBe(true)
+    hover(container.querySelector('[data-thread-count]')!, 'mouseout')
+    expect(shown()).toBe(false)
     const toolbar = container.querySelector('[data-task-card-hover] [role="toolbar"]')!
     expect([...toolbar.querySelectorAll('button')].map((b) => b.getAttribute('aria-label'))).toEqual([
       'Reply in thread',

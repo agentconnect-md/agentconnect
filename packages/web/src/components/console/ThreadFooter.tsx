@@ -95,7 +95,8 @@ export function ThreadFooter({
   onOpen,
   nameOf = authorName,
   align = 'start',
-  onReply
+  onReply,
+  markOf
 }: {
   footer: ThreadFooterView
   /** The thread's root, which names it; absent for a task's card read from its row. */
@@ -110,6 +111,8 @@ export function ThreadFooter({
   nameOf?: (author: SessionThreadAuthorDto) => string
   /** Which edge the card and its line hug: a person's message sits on the right, so its footer does too. */
   align?: 'start' | 'end'
+  /** A replier's picture or agent icon for their mark; null falls back to their initials. */
+  markOf?: (author: SessionThreadAuthorDto) => ReactNode | null
   /** The card's hover toolbar Reply: opens the thread ready to write in; absent, Reply opens it to read. */
   onReply?: () => void
 }) {
@@ -117,6 +120,7 @@ export function ThreadFooter({
   const tl = useTranslations('Common.taskList')
   const format = useFormatter()
   const [now, setNow] = useState(() => Date.now())
+  const [previewShown, setPreviewShown] = useState(false)
   const tick = tickMs(footer.lastReplyAt, now)
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), tick)
@@ -197,11 +201,11 @@ export function ThreadFooter({
             key={author.sender}
             title={nameOf(author)}
             data-thread-participant={author.sender}
-            className={`flex h-[18px] w-[18px] items-center justify-center rounded-full border border-(--surface-card) bg-(--brand-soft) font-sans text-[8.5px] font-semibold leading-none text-(--brand-soft-text) ${
+            className={`flex h-[18px] w-[18px] items-center justify-center overflow-hidden rounded-full border border-(--surface-card) bg-(--brand-soft) font-sans text-[8.5px] font-semibold leading-none text-(--brand-soft-text) ${
               i > 0 ? 'ml-[-5px]' : ''
             }`}
           >
-            {initials(nameOf(author))}
+            {markOf?.(author) ?? initials(nameOf(author))}
           </span>
         ))}
       </span>
@@ -216,7 +220,7 @@ export function ThreadFooter({
     <span
       role="tooltip"
       data-thread-preview=""
-      className={`pointer-events-none absolute bottom-full z-[5] mb-[6px] hidden w-max max-w-[360px] rounded-[8px] border border-(--border-default) bg-(--surface-card) px-[10px] py-[6px] font-sans text-[12.5px] font-normal leading-[1.45] text-(--text-primary) shadow-(--shadow-md) [-webkit-box-orient:vertical] [-webkit-line-clamp:3] overflow-hidden group-hover:[display:-webkit-box] group-focus-within:[display:-webkit-box] ${
+      className={`pointer-events-none absolute bottom-full z-[5] mb-[6px] hidden w-max max-w-[360px] rounded-[8px] border border-(--border-default) bg-(--surface-card) px-[10px] py-[6px] font-sans text-[12.5px] font-normal leading-[1.45] text-(--text-primary) shadow-(--shadow-md) [-webkit-box-orient:vertical] [-webkit-line-clamp:3] overflow-hidden ${previewShown ? '[display:-webkit-box]' : 'group-focus-within:[display:-webkit-box]'} ${
         align === 'end' ? 'right-0' : 'left-0'
       }`}
     >
@@ -265,6 +269,9 @@ export function ThreadFooter({
           <span
             data-thread-count=""
             className="whitespace-nowrap"
+            // Only the count shows the latest reply; a replier's mark names just that replier.
+            onMouseEnter={() => setPreviewShown(true)}
+            onMouseLeave={() => setPreviewShown(false)}
             // The hover card names the latest reply; a native tooltip on top of it would only cover it.
             {...(replies > 0 && lastReplyAt && !preview
               ? {
@@ -275,7 +282,7 @@ export function ThreadFooter({
                 }
               : {})}
           >
-            <span className={`font-semibold text-(--brand) ${open || to ? 'group-hover:underline' : ''}`}>
+            <span className={`font-semibold text-(--brand) ${open || to ? 'hover:underline' : ''}`}>
               {repliesLabel}
             </span>
             {replies > 0 && lastReplyAt ? (
