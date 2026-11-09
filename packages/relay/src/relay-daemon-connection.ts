@@ -1,4 +1,4 @@
-// Daemon-facing relay connection with periodic CP authorization checks; credentials must never be logged.
+// Daemon-facing relay connection with periodic daemon-key checks; credentials must never be logged.
 import {
   buildRelayDaemonFrame,
   API_AHP_V1_FEATURE,
@@ -392,7 +392,7 @@ export class RelayDaemonConnection {
     this.credentialKind = presented.kind
     this.capabilities = new Set(hello.capabilities ?? [])
     this.state = 'READY'
-    this.scheduleRevalidation(presented)
+    if (presented.kind === 'daemon-key') this.scheduleKeyRevalidation(presented.credential)
     this.reply(frame, 'rd/hello/ok', {
       relayId,
       capabilities: [
@@ -406,19 +406,19 @@ export class RelayDaemonConnection {
     this.deps.onReady(this.daemonId, this)
   }
 
-  // Recheck missed revocations when the CP is reachable without expiring established ingress during an outage.
-  private scheduleRevalidation(presented: { kind: 'daemon-key' | 'daemon-token'; credential: string }): void {
+  // Recheck organization daemon keys; projected pool tokens rotate without expiring their verified socket identity.
+  private scheduleKeyRevalidation(apiKey: string): void {
     if (this.state !== 'READY') return
     this.refreshTimer = this.deps.clock.setTimeout(() => {
       void this.deps
-        .verify(presented.kind, presented.credential, this.daemonId)
+        .verify('daemon-key', apiKey, this.daemonId)
         .then((result) => {
           if (this.state === 'READY' && (!result.ok || result.daemonId !== this.daemonId)) {
             this.close(CLOSE_TRY_LATER, 'daemon authorization changed')
           }
         })
         .catch(() => {})
-        .finally(() => this.scheduleRevalidation(presented))
+        .finally(() => this.scheduleKeyRevalidation(apiKey))
     }, DAEMON_AUTH_RECHECK_MS)
   }
 

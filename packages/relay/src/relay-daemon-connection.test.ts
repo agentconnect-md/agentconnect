@@ -251,6 +251,23 @@ describe('RelayDaemonConnection (rd/* accept FSM)', () => {
     expect(conn.state).toBe('READY')
   })
 
+  it('keeps a verified pool socket after its original token expires and still honors revocation', async () => {
+    const h = build()
+    h.transport.feed('rd/hello', { serviceAccountToken: 'projected', daemonId: DAEMON_ID })
+    await vi.waitFor(() => expect(h.conn.state).toBe('READY'))
+    h.verify.mockResolvedValue({ ok: false, reason: 'projected token expired' })
+    h.clock.advance(3_600_000 + DAEMON_AUTH_RECHECK_MS)
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(h.conn.state).toBe('READY')
+    expect(h.verify).toHaveBeenCalledTimes(1)
+    h.transport.feed('rd/route/report', { botId: RELAY_ID, sessionKey: 'C1/C1', channel: 'C1', participants: [] })
+    await vi.waitFor(() => expect(h.transport.lastRep('rd/route/report/ack')?.payload).toEqual({ accepted: true }))
+    h.conn.close(4409, 'revoked')
+    expect(h.conn.state).toBe('CLOSED')
+    expect(h.onClosed).toHaveBeenCalledWith(DAEMON_ID, h.conn)
+    expect(h.clock.pending).toBe(0)
+  })
+
   it('refuses a hello carrying no credential at all (close 4401)', async () => {
     const { transport, verify } = build()
     transport.feed('rd/hello', { daemonId: DAEMON_ID })

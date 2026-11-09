@@ -182,12 +182,15 @@ authenticating key before dispatching requests or sending protected replies and
 pushes. Placement and duty claims enforce the same approval boundary. A revoked
 holder's existing duty horizon is preserved until self-fencing, without renewal;
 composition reconciliation waits for that horizon before rewriting its
-organization's duty groups. Relay connections reverify with the CP 60 seconds
-after each completed check. A revoke push or definitive negative result closes
+organization's duty groups. Self-hosted daemon-key relay connections reverify with
+the CP 60 seconds after each completed check. A revoke push or definitive negative result closes
 the connection; verification errors preserve established ingress and schedule
 another check. A missed push is caught at the next successful check after CP
 recovery, without a fixed revocation deadline during an outage. New relay
 connections still require successful verification.
+Verified pool sockets keep their Pod-bound identity across projected-token
+rotation and remain subject to revoke notifications and duty fences. They do not
+periodically replay the handshake token; reconnect reads and verifies the current token.
 
 Approval trusts the daemon and its authorized recovery path: an Owner or a
 creator with current edit access may replace a lost credential without another

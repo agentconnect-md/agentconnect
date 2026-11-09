@@ -426,7 +426,7 @@ its daemon API key, or — for an in-cluster daemon — the projected ServiceAcc
 token, which wins when both are present. Because the relay has no database, it
 delegates verification to CP with `rc/verify(kind = 'daemon-key' |
 'daemon-token')` and caches the successful identity for that socket, subject to
-revocation and periodic authorization checks.
+revocation and, for daemon keys, periodic authorization checks.
 
 The claimed `daemonId` travels with the token so the CP can require it to match
 the cloud member record bound to the TokenReview-attested Pod UID (see "Identity is per Pod,
@@ -439,12 +439,19 @@ then closes the matching connection and stops routing to it.
 
 Existing authenticated sockets can continue through a CP outage. A new daemon
 socket cannot be authenticated until the CP verification path recovers.
-The relay rechecks the socket's credential 60 seconds after each completed check.
+For self-hosted daemon keys, the relay rechecks the socket's credential 60 seconds
+after each completed check.
 An explicit denial or different daemon identity closes the socket; verification
 errors retain the cached identity and schedule another check. A missed revoke
 push is therefore caught by the next successful check after CP recovery, with
 no fixed revocation deadline during an outage. Existing duty fences and credential
 lifetimes still apply independently; revalidation does not renew them.
+
+Verified pool sockets retain their Pod-bound identity for the connection and
+honor revoke notifications and duty fences. The relay does not periodically
+replay their projected token: kubelet rotates it, and the daemon reads the current
+token on each new connection. Expiry of the handshake token alone does not close
+an established pool socket.
 
 ## 10. Inbound Routing
 
