@@ -334,8 +334,6 @@
     },
     "taskThread": {
       "cardActions": "会话串操作",
-      "shareThread": "复制会话串链接",
-      "linkCopied": "链接已复制",
       "replies": "{count, plural, other {# 条回复}}",
       "reply": "回复",
       "repliesTitle": "{replies}，最后回复于 {time}",

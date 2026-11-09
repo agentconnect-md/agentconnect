@@ -19,6 +19,16 @@ vi.mock('@/lib/api', () => ({
     wire.listReads.push(`${agentId}/${opts.parentSessionId}`)
     return Promise.resolve({ subsessions: wire.rows, truncated: false, nextCursor: null })
   }),
+  fetchSessionDetail: vi.fn((sessionId: string) =>
+    Promise.resolve({
+      id: sessionId,
+      title: 'Find what blocks api 1.5',
+      platform: 'webchat',
+      channelName: null,
+      visibility: 'org',
+      canChangeVisibility: false
+    })
+  ),
   fetchAssistantSubsession: vi.fn((agentId: string, sessionId: string) => {
     wire.rowReads.push(`${agentId}/${sessionId}`)
     return Promise.resolve(taskRow({ state: 'done', threaded: true }))
@@ -29,6 +39,11 @@ vi.mock('next/link', () => ({
   default: ({ children, ...rest }: { children: React.ReactNode } & React.AnchorHTMLAttributes<HTMLAnchorElement>) => (
     <a {...rest}>{children}</a>
   )
+}))
+
+vi.mock('@/lib/data-context', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  useConsoleData: () => ({ revalidateSessionLists: () => Promise.resolve() })
 }))
 
 vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ orgPath: (path: string) => `/acme${path}` }) }))
@@ -131,7 +146,7 @@ describe('TaskThreadFooter', () => {
   it('links to the task’s page where no thread can open beside the chat, reading the task alone', async () => {
     await render(<TaskThreadFooter agentId="agent_1" link={link} parentSessionId={null} />)
     expect(container.querySelector('[data-task-card-open]')?.getAttribute('href')).toBe('/acme/sessions/ses_task')
-    expect(container.querySelector('button')).toBeNull()
+    expect(container.querySelector('button:not([data-task-card-share])')).toBeNull()
     expect(wire.listReads).toEqual([])
     expect(wire.rowReads).toEqual(['agent_1/ses_task'])
   })
@@ -154,14 +169,9 @@ function summary(over: Partial<SessionThreadSummaryDto> = {}): SessionThreadSumm
 }
 
 describe('ThreadFooter', () => {
-  it('offers Reply and Share in a toolbar over the card, Share copying the thread’s address', async () => {
+  it('offers Reply and the task session’s Share in a toolbar on the card', async () => {
     const onOpen = vi.fn()
     const onReply = vi.fn()
-    const written: string[] = []
-    Object.defineProperty(navigator, 'clipboard', {
-      configurable: true,
-      value: { writeText: (text: string) => (written.push(text), Promise.resolve()) }
-    })
     const held = summary({ task: { sessionId: 'ses_task', title: 'Find what blocks api 1.5', state: 'open' } })
     await render(
       <ThreadFooter
@@ -169,7 +179,6 @@ describe('ThreadFooter', () => {
         rootId="post-root"
         onOpen={onOpen}
         onReply={onReply}
-        shareHref="/acme/sessions/ses_coordinator?thread=post-root"
       />
     )
     expect(container.querySelector('[data-task-card-summary]')?.textContent).toBe('Found the lock')
@@ -178,14 +187,19 @@ describe('ThreadFooter', () => {
     const toolbar = container.querySelector('[data-task-card-hover] [role="toolbar"]')!
     expect([...toolbar.querySelectorAll('button')].map((b) => b.getAttribute('aria-label'))).toEqual([
       'Reply in thread',
-      'Copy link to thread'
+      'Share'
     ])
     act(() => toolbar.querySelector<HTMLButtonElement>('[data-task-card-reply]')!.click())
     expect(onReply).toHaveBeenCalledTimes(1)
     expect(onOpen).not.toHaveBeenCalled()
+    // Share is the task's own page's: its dialog, with who can see the session and its link.
     await act(async () => toolbar.querySelector<HTMLButtonElement>('[data-task-card-share]')!.click())
-    expect(written).toEqual([new URL('/acme/sessions/ses_coordinator?thread=post-root', location.href).href])
-    expect(toolbar.querySelector('[data-task-card-share]')?.getAttribute('aria-label')).toBe('Link copied')
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    const dialog = document.querySelector('[role="dialog"]')
+    expect(dialog?.textContent).toContain('Find what blocks api 1.5')
+    expect(dialog?.textContent).toContain('Who can see it')
   })
 
   it('draws an unowned thread as its replies line: repliers, count, last reply and preview, opening the thread', async () => {

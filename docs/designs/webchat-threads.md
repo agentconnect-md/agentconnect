@@ -382,8 +382,9 @@ As implemented (PR 10):
   or not, as the replies line (up to five repliers, the count, the last reply's time and "working…"
   while `running`; the preview is a hover card over it), then the holding task's card: its state,
   its title and, beneath in a lighter face, the task's own summary where it wrote one. Hovering the
-  card shows a toolbar with Reply (opens the thread at its composer) and Share (copies the
-  `?thread=` address). `footerOfSummary` builds it from a `SessionThreadSummaryDto`, and
+  card shows a toolbar on its top edge with Reply (opens the thread at its composer) and the task
+  session's Share, the dialog its own page's header opens (`SessionShareButton`); a held thread's
+  panel header offers the same Share. `footerOfSummary` builds it from a `SessionThreadSummaryDto`, and
   `RootThreadFooter` adds the summary from the conversation's task list. A held thread rests between
   turns, as a threaded task does. An unreadable footer names "a task you can't open", shows no
   preview and opens nothing.

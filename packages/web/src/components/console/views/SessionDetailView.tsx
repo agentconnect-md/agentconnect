@@ -2909,7 +2909,6 @@ export default function SessionDetailView() {
           summary={summary}
           rootId={rootId}
           href={threadHref(rootId)}
-          shareHref={threadHref(rootId)}
           {...(threadWriter ? { onReply: () => replyInThread(rootId) } : {})}
           selected={openRoot === rootId}
           onOpen={() => openRootThread(rootId)}

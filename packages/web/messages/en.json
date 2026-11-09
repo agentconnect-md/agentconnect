@@ -334,8 +334,6 @@
     },
     "taskThread": {
       "cardActions": "Thread actions",
-      "shareThread": "Copy link to thread",
-      "linkCopied": "Link copied",
       "replies": "{count, plural, one {# reply} other {# replies}}",
       "reply": "Reply",
       "repliesTitle": "{replies}, last reply {time}",
