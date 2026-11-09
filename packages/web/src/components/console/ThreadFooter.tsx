@@ -27,8 +27,15 @@ export interface ThreadFooterView {
   lastReply?: SessionThreadAuthorDto & { excerpt?: string }
   /** Repliers, newest first. */
   participants: SessionThreadAuthorDto[]
-  /** The holding task; `title` is null where the reader may not see it. */
-  task?: { sessionId?: string; title: string | null; summary?: string; tone: StateKind; stateKey: TaskStateKey }
+  /** The holding task; `title` is null where the reader may not see it, or may not yet while it is `starting`. */
+  task?: {
+    sessionId?: string
+    title: string | null
+    summary?: string
+    tone: StateKind
+    stateKey: TaskStateKey
+    starting?: boolean
+  }
   running: boolean
   /** False when a task the reader may not view holds the thread: a count with no content, opening nothing. */
   readable: boolean
@@ -38,8 +45,11 @@ type TaskStateKey = ReturnType<typeof taskStateKey>
 
 /** A thread's footer as the daemon summarized it and the CP filtered it; a held thread rests between its turns, as a threaded task does. */
 export function footerOfSummary(summary: SessionThreadSummaryDto, taskSummary?: string): ThreadFooterView {
-  const running = summary.running === true
   const task = summary.task
+  const starting = !summary.readable && task?.starting === true
+  const running = summary.running === true
+  // A starting task is about to run its first turn, so its card shows it working.
+  const busy = running || starting
   return {
     replies: summary.replies,
     ...(summary.lastReplyAt ? { lastReplyAt: summary.lastReplyAt } : {}),
@@ -51,8 +61,9 @@ export function footerOfSummary(summary: SessionThreadSummaryDto, taskSummary?: 
             ...(task.sessionId ? { sessionId: task.sessionId } : {}),
             title: summary.readable ? (task.title ?? summary.rootExcerpt ?? '') : null,
             ...(summary.readable && taskSummary ? { summary: taskSummary } : {}),
-            tone: running ? 'running' : task.state === 'failed' ? 'failed' : 'idle',
-            stateKey: running ? 'state.open' : task.state === 'failed' ? 'state.failed' : 'state.idle'
+            tone: busy ? 'running' : task.state === 'failed' ? 'failed' : 'idle',
+            stateKey: busy ? 'state.open' : task.state === 'failed' ? 'state.failed' : 'state.idle',
+            ...(starting ? { starting } : {})
           }
         }
       : {}),
@@ -138,7 +149,8 @@ export function ThreadFooter({
   // An unreadable thread opens nothing: its panel and its task's page would both show no content.
   const open = readable ? onOpen : undefined
   const to = readable ? href : undefined
-  const title = task?.title ?? t('hiddenTask')
+  // A task whose session the CP has no row for yet is starting, not withheld; it opens once its session exists.
+  const title = task?.title ?? (task?.starting ? t('startingTask') : t('hiddenTask'))
   const openLabel = task ? t('open', { title }) : t('openThread')
 
   // A plain click opens the thread beside the chat; a modified or middle click keeps the link's own new-tab behaviour.
@@ -350,7 +362,7 @@ export function ThreadFooter({
     <div
       {...(task?.sessionId ? { 'data-task-card': task.sessionId } : {})}
       {...(rootId ? { [part === 'card' ? 'data-thread-card' : 'data-thread-footer']: rootId } : {})}
-      {...(readable ? {} : { 'data-thread-unreadable': '' })}
+      {...(readable ? {} : task?.starting ? { 'data-thread-starting': '' } : { 'data-thread-unreadable': '' })}
       className={`flex min-w-0 flex-col gap-[6px] ${align === 'end' ? 'items-end' : ''}`}
     >
       {part !== 'card' ? line : null}

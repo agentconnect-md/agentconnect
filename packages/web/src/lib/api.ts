@@ -800,8 +800,8 @@ export interface SessionThreadSummaryDto {
   lastReply?: SessionThreadAuthorDto & { excerpt?: string }
   /** Repliers, newest first, at most five. */
   participants: SessionThreadAuthorDto[]
-  /** The task that holds the thread; `sessionId` is absent while it starts. */
-  task?: { sessionId?: string; title?: string; state: 'open' | 'done' | 'failed' }
+  /** The task that holds the thread; `sessionId` is absent while it starts, and `starting` marks it unread until its session exists. */
+  task?: { sessionId?: string; title?: string; state: 'open' | 'done' | 'failed'; starting?: true }
   /** A turn runs in the thread now. */
   running?: boolean
   readable: boolean

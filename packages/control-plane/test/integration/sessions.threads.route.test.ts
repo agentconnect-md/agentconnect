@@ -198,6 +198,10 @@ describe('GET /sessions/:id/messages?view=roots', () => {
       expect(hidden.lastReply).toEqual({ sender: AGENT, senderName: 'Ada' })
       expect(hidden.task?.title).toBeUndefined()
     }
+    // Only a task with no session row yet is starting; a private or another agent's task is withheld.
+    expect(byRoot.get(ROOT_UNSTARTED)!.task).toEqual({ state: 'open', starting: true })
+    expect(byRoot.get(ROOT_PRIVATE)!.task).not.toHaveProperty('starting')
+    expect(byRoot.get(ROOT_FOREIGN)!.task).not.toHaveProperty('starting')
   })
 
   it('keeps the flat view as it was, and never sends the roots view to a daemon without thread reads', async () => {

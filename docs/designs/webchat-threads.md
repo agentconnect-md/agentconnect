@@ -408,7 +408,8 @@ As implemented (PR 10):
   panel header offers the same Share. `footerOfSummary` builds it from a `SessionThreadSummaryDto`, and
   `RootThreadFooter` adds the summary from the conversation's task list. A held thread rests between
   turns, as a threaded task does. An unreadable footer names "a task you can't open", shows no
-  preview and opens nothing.
+  preview and opens nothing; one whose task is `starting` says it is starting instead, until its
+  session exists.
   `TaskThreadFooter` builds the same footer from a task's row, which is how today's link and
   `openedForMessageId` cards are drawn, so they look as before.
 - **Bindings** (`lib/api.ts`): `fetchSessionMessages(id, {view: 'roots'})` returns `threads`, and
@@ -579,7 +580,8 @@ As implemented (PR 8):
 - **A held thread** is a summary with `task`. Its content is shown only when the caller may view
   `task.sessionId`, a session of the same agent (`threadReadable`, `domain/thread-read.ts`). A task
   whose session does not exist yet, or that the CP has no row for, is read by nobody, so the check
-  fails closed while a task is starting.
+  fails closed while a task is starting; its footer's `task.starting` says so, so the console shows
+  "starting" rather than "a task you can't open" for those few seconds.
 - **Without that view** a footer keeps the reply count, authors, last reply time, the task's state
   and `running`, and loses `rootExcerpt`, the latest reply's excerpt and the task's title; it says
   `readable: false`. The thread read answers that footer with no messages and no cursors.
