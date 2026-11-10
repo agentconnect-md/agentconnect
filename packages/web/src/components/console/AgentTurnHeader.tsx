@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, type ReactNode } from 'react'
+import Link from 'next/link'
 import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 import { formatWorkStatus, turnDurationMs } from '@/components/console/session-work'
@@ -35,12 +36,29 @@ function useNow(ticking: boolean): number {
 }
 
 /** An agent turn's one header line: its name, then — when it did work — a fold control that opens that work. */
-export function AgentTurnHeader({ name, work, children }: { name: string; work?: TurnWork; children?: ReactNode }) {
+export function AgentTurnHeader({
+  name,
+  href,
+  work,
+  children
+}: {
+  name: string
+  /** The agent's page, which its name opens as its icon does; absent where the agent is not known. */
+  href?: string
+  work?: TurnWork
+  children?: ReactNode
+}) {
   // Held here, not in the fold: a regenerated answer can drop the turn's work for a render, which would unmount the fold.
   const ms = useTurnDuration(work)
   return (
     <div className="mb-[5px] flex min-w-0 items-center gap-[7px]">
-      <span className={`${AGENT_NAME} max-w-[50%] flex-none truncate`}>{name}</span>
+      {href ? (
+        <Link href={href} className={`${AGENT_NAME} max-w-[50%] flex-none truncate no-underline hover:underline`}>
+          {name}
+        </Link>
+      ) : (
+        <span className={`${AGENT_NAME} max-w-[50%] flex-none truncate`}>{name}</span>
+      )}
       {children}
       {work && <TurnFold work={work} ms={ms} />}
     </div>

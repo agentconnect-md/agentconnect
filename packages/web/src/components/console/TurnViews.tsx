@@ -325,6 +325,7 @@ export function BotTurnView({
         )}
         <AgentTurnHeader
           name={turn.agentName}
+          {...(turnAgent ? { href: orgPath(`/agents/${encodeURIComponent(turnAgent.id)}`) } : {})}
           {...(workSteps.length > 0
             ? {
                 work: {
