@@ -85,6 +85,7 @@ import {
   PgSlackPlatformInstallStore,
   PgSlackWorkspaceInstallStore,
   PgFeishuAppRegistrationStore,
+  PgWechatPendingLoginStore,
   PgThreadAffinityStore,
   PgSlackUserConfigStore,
   PgLinearTokenStore,
@@ -148,6 +149,19 @@ import { createLinearCpProvider } from '../../src/platforms/linear/provider.js'
 import { createDingTalkCpProvider } from '../../src/platforms/dingtalk/provider.js'
 import { dingTalkCredentialRoutes } from '../../src/platforms/dingtalk/routes.js'
 import { createMsTeamsCpProvider } from '../../src/platforms/msteams/provider.js'
+import { createWeChatCpProvider } from '../../src/platforms/wechat/provider.js'
+import { weChatLoginRoutes } from '../../src/platforms/wechat/routes.js'
+import { WeChatLoginService } from '../../src/platforms/wechat/login.js'
+import { WECHAT_DEFAULT_API_URL, type WeChatLoginClient } from '../../src/platforms/wechat/ilink.js'
+
+const unreachableWeChat: WeChatLoginClient = {
+  newQrCode: async () => {
+    throw new Error('iLink is not stubbed')
+  },
+  status: async () => {
+    throw new Error('iLink is not stubbed')
+  }
+}
 import { msTeamsRoutes } from '../../src/platforms/msteams/routes.js'
 import { relayHttpBase } from '../../src/http/relay-ingress.js'
 import { LinearCredentialReconciler } from '../../src/platforms/linear/credential-reconciler.js'
@@ -242,6 +256,8 @@ export interface PlatformStubs {
   dingTalkFetch?: typeof fetch
   /** Entra's token endpoint, stubbed; absent ⇒ every credential check is a connectivity failure. */
   msTeamsFetch?: typeof fetch
+  /** iLink's QR login, stubbed; absent ⇒ WeChat is unreachable. */
+  weChatLoginClient?: WeChatLoginClient
 }
 
 /** The keys `buildHttpApp` peels out of its overrides bag into
@@ -266,7 +282,8 @@ const PLATFORM_STUB_KEYS = [
   'googleChatPlatformApp',
   'googleChatFetch',
   'dingTalkFetch',
-  'msTeamsFetch'
+  'msTeamsFetch',
+  'weChatLoginClient'
 ] as const satisfies readonly (keyof PlatformStubs)[]
 
 export interface HttpApp {
@@ -642,6 +659,7 @@ export function buildHttpApp(
       slackPlatformInstall: new PgSlackPlatformInstallStore(prisma),
       slackWorkspaceInstall: new PgSlackWorkspaceInstallStore(prisma, cipher),
       feishuAppRegistration: feishuAppRegistrationStore,
+      wechatPendingLogin: new PgWechatPendingLoginStore(prisma, cipher),
       slackUserConfig: slackUserConfigStore,
       linearToken: linearTokenStore,
       linearInstallState: linearInstallStateStore,
@@ -961,6 +979,24 @@ export function buildHttpApp(
       fetch: msTeamsFetch,
       installRoutes: [msTeamsRoutes(deps, msTeamsFetch)],
       ...(msTeamsRelayBase ? { publicRelayUrl: msTeamsRelayBase } : {})
+    }),
+    createWeChatCpProvider({
+      enabled: true,
+      routes: [
+        weChatLoginRoutes(
+          deps,
+          new WeChatLoginService(
+            deps.repos.wechatPendingLogin,
+            {
+              newQrCode: () => (platformStubs.weChatLoginClient ?? unreachableWeChat).newQrCode(),
+              status: (host, qrcode, code) =>
+                (platformStubs.weChatLoginClient ?? unreachableWeChat).status(host, qrcode, code)
+            },
+            WECHAT_DEFAULT_API_URL,
+            () => deps.clock.now()
+          )
+        )
+      ]
     })
   ])
 

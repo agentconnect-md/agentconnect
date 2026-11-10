@@ -3253,6 +3253,36 @@ model FeishuAppRegistration {
   @@map("feishu_app_registration")
 }
 
+// A personal-WeChat QR login (wechat-integration.md §2.2): the iLink login handle and, once confirmed, the bot token, both sealed by SecretCipher.
+model WechatPendingLogin {
+  id              String    @id @db.Uuid
+  // Non-null only while open: one login per agent, or per bot on a reconnect.
+  targetKey       String?   @unique
+  orgId           String
+  agentId         String    @db.Uuid
+  // The bot a reconnect re-binds; null for a new install.
+  botId           String?   @db.Uuid
+  requestedName   String?
+  createdByUserId String
+  qrcode          String? // sensitive — sealed by SecretCipher
+  qrUrl           String?
+  pollHost        String
+  status          String
+  failureReason   String?
+  botToken        String? // sensitive — sealed by SecretCipher
+  ilinkBotId      String?
+  ilinkUserId     String?
+  baseUrl         String?
+  integrationId   String?   @db.Uuid
+  resultBotId     String?   @db.Uuid
+  expiresAt       DateTime  @db.Timestamptz(6)
+  createdAt       DateTime  @default(now()) @db.Timestamptz(6)
+  settledAt       DateTime? @db.Timestamptz(6)
+
+  @@index([createdAt])
+  @@map("wechat_pending_login")
+}
+
 enum FeishuAppRegistrationStatus {
   pending
   authorized

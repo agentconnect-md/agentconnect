@@ -58,6 +58,7 @@ import type {
   SlackPlatformInstallStore,
   SlackWorkspaceInstallStore,
   FeishuAppRegistrationStore,
+  WechatPendingLoginStore,
   SlackUserConfigStore,
   LinearTokenStore,
   LinearInstallStateStore,
@@ -321,6 +322,8 @@ export interface HttpDeps {
     slackWorkspaceInstall: SlackWorkspaceInstallStore
     /** Durable, encrypted Feishu/Lark one-click device registrations. */
     feishuAppRegistration: FeishuAppRegistrationStore
+    /** Durable, encrypted personal-WeChat QR logins (wechat-integration.md §2.2). */
+    wechatPendingLogin: WechatPendingLoginStore
     /** One org's stored Slack App Configuration token (§Tier B); holds secret material, never DTO'd. */
     slackUserConfig: SlackUserConfigStore
     /** Connected Linear workspaces' rotating OAuth grants, keyed by connection identity; secret material. */

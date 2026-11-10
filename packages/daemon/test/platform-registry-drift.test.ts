@@ -52,8 +52,16 @@ describe('daemon platform registry (audit F16)', () => {
   })
 
   it('sends the derived list, not a copy, in the CP registration handshake', () => {
-    const daemon = new Daemon({ root: bareRoot() })
-    expect((daemon as any).registrationPlatforms()).toEqual(platformIds())
+    const daemon = new Daemon({ root: bareRoot() }) as any
+    daemon.cfg = { features: { wechat: true } }
+    expect(daemon.registrationPlatforms()).toEqual(platformIds())
+  })
+
+  it('offers WeChat to the Control Plane only while features.wechat is on', () => {
+    const daemon = new Daemon({ root: bareRoot() }) as any
+    expect(daemon.registrationPlatforms()).not.toContain('wechat')
+    daemon.cfg = { features: { wechat: false } }
+    expect(daemon.registrationPlatforms()).toEqual(platformIds().filter((id) => id !== 'wechat'))
   })
 
   it('agrees with every other platform-keyed registry in the daemon', () => {

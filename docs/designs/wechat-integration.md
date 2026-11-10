@@ -3,10 +3,10 @@
 Status: draft. Facts marked **documented** cite Tencent's own `openclaw-weixin` plugin
 (its protocol document or source); facts marked **observed** come from a live probe
 against `ilinkai.weixin.qq.com` on 2026-10-24 with one personal WeChat account; facts
-marked **unverified** still need a probe. The protocol, message, and daemon parts of §9.1
-are implemented, with their §9.2 offline tests, behind the `wechat` feature flag (§6); the
-Control Plane and web parts are not. A live acceptance on 2026-11-10 ran §9.3 against them;
-its findings are folded into §2.3, §3.3, §4.3, §4.5 and §4.7.
+marked **unverified** still need a probe. §9.1 is implemented, with its §9.2 offline tests,
+behind the `wechat` feature flag (§6), except the session-access plugin (§4.2), which waits
+on §7. A live acceptance on 2026-11-10 ran §9.3 against the daemon; its findings are folded
+into §2.3, §3.3, §4.3, §4.5 and §4.7.
 
 > Related: [platform modules](integration-plugin-architecture.md),
 > [QQ](qq-integration.md),
@@ -118,9 +118,11 @@ call per poll.
 ### 2.3 Credentials, identity, and revocation
 
 The bot token is the only secret. It goes to `BotSecret.botToken` through `SecretCipher`
-like every bot token. The bot row's demux identity is `externalAppId = ilink_bot_id`
-under the tenantless sentinel `-`. `platformConfig` holds public metadata
-only: the bound WeChat user id and the bound member's user id (§2.1).
+like every bot token, with `ilink_bot_id` beside it in `appToken`, so a re-scan replaces
+both in one credential write. The bot row claims no fenced external identity, because that
+id changes on every re-scan; `platformConfig` holds public metadata only: `wechatBotId`,
+the bound WeChat user id `wechatUserId`, the bound member's user id `boundMemberUserId`
+(§2.1), and the login's `baseurl` when it is not the public endpoint.
 
 There is no rotation. The token has no documented lifetime and no refresh call. When a
 call answers `ret` or `errcode` `-14`, the token is no longer valid (**documented**: the
@@ -423,12 +425,13 @@ than OpenClaw are unconfirmed (§1.1). One switch per layer turns it on:
 | ------------- | ----------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | Daemon        | `features.wechat` in config.json; `AGENTCONNECT_WECHAT=true` when it is unset | No WeChat connection opens, and a live one is pruned on the next reconcile. A WeChat integration is logged once and ignored. |
 | Console       | The `wechat` feature flag in `FEATURE_FLAGS`                                  | No install entry point, as for the `qq` flag.                                                                                |
-| Control Plane | The same flag, read by the WeChat provider                                    | QR-login routes answer 404, and creating or projecting a WeChat integration is refused.                                      |
-| Chart         | `features.wechat`                                                             | Drives the Console flag and the pool members' `AGENTCONNECT_WECHAT` together.                                                |
+| Control Plane | `WECHAT_ENABLED=true`, read by the WeChat provider                            | QR-login routes answer 404, and no WeChat integration is projected to a daemon.                                              |
+| Chart         | `features.wechat`                                                             | Drives the Console flag, the Control Plane's `WECHAT_ENABLED`, and the pool members' `AGENTCONNECT_WECHAT` together.         |
 
-The daemon and chart switches are implemented. The Console flag id exists and gates the
-WeChat web module when it lands. The Control Plane has no WeChat create path yet, so it
-cannot install WeChat today; its gate is part of the provider work.
+A daemon with `features.wechat` off also leaves `wechat` out of the platforms it registers,
+so the Control Plane refuses to start a WeChat login for an agent it serves. The generic
+`POST /integrations` route never creates a WeChat integration: only a QR login proves who
+the counterpart is.
 
 ## 7. Open decisions
 
@@ -489,8 +492,8 @@ The integration implements the host contracts of the
   - registry lines. No relay module.
 - **Control Plane:**
   - a provider with the QR login routes and `WechatPendingLogin` with its reaper (§2.2);
-  - the bot row binding and the reconnect route (§2.3);
-  - the integration projection and the session-access plugin (§4.2).
+  - the bot row binding and the reconnect, a QR login with `botId` (§2.3);
+  - the integration projection; the session-access plugin (§4.2) waits on §7.
 - **web:** the QR wizard, the bot's binding and reconnect settings, the mark, labels, and
   the `wechat` feature flag.
 

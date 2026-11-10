@@ -177,6 +177,7 @@ import {
   PgSlackPlatformInstallStore,
   PgSlackWorkspaceInstallStore,
   PgFeishuAppRegistrationStore,
+  PgWechatPendingLoginStore,
   PgSlackUserConfigStore,
   PgLinearTokenStore,
   PgLinearInstallStateStore,
@@ -390,6 +391,10 @@ import { QQCredentialRoutes } from './platforms/qq/routes.js'
 import { createDingTalkCpProvider } from './platforms/dingtalk/provider.js'
 import { dingTalkCredentialRoutes } from './platforms/dingtalk/routes.js'
 import { createMsTeamsCpProvider } from './platforms/msteams/provider.js'
+import { createWeChatCpProvider } from './platforms/wechat/provider.js'
+import { weChatLoginRoutes } from './platforms/wechat/routes.js'
+import { WeChatLoginService } from './platforms/wechat/login.js'
+import { createWeChatLoginClient, WECHAT_DEFAULT_API_URL, type WeChatLoginClient } from './platforms/wechat/ilink.js'
 import { msTeamsRoutes } from './platforms/msteams/routes.js'
 import { msTeamsConnectRoutes } from './platforms/msteams/connect-routes.js'
 import { msTeamsConnectKeys } from './platforms/msteams/connect.js'
@@ -500,6 +505,8 @@ export interface ContainerOpts {
   connectorsFetch?: FetchLike
   /** Linear OAuth/GraphQL fetch override — the connect funnel's suites run a stubbed Linear. */
   linearFetch?: FetchLike
+  /** The iLink login client — WeChat login suites run a fake one, never the network. */
+  weChatLoginClient?: WeChatLoginClient
   /** The at-rest transform every persisted secret VALUE passes through. Absent ⇒
    *  selected from `config.SECRET_CIPHER` (none → identity, vault-transit → Vault). */
   secretCipher?: SecretCipher
@@ -640,6 +647,7 @@ export function buildContainer(
     slackPlatformInstall: new PgSlackPlatformInstallStore(prisma),
     slackWorkspaceInstall: new PgSlackWorkspaceInstallStore(prisma, secretCipher),
     feishuAppRegistration: new PgFeishuAppRegistrationStore(prisma, secretCipher),
+    wechatPendingLogin: new PgWechatPendingLoginStore(prisma, secretCipher),
     slackUserConfig: new PgSlackUserConfigStore(prisma, secretCipher),
     linearToken: new PgLinearTokenStore(prisma, secretCipher),
     linearInstallState: new PgLinearInstallStateStore(prisma),
@@ -2623,6 +2631,7 @@ export function buildContainer(
       slackPlatformInstall: repos.slackPlatformInstall,
       slackWorkspaceInstall: repos.slackWorkspaceInstall,
       feishuAppRegistration: repos.feishuAppRegistration,
+      wechatPendingLogin: repos.wechatPendingLogin,
       slackUserConfig: repos.slackUserConfig,
       linearToken: repos.linearToken,
       linearInstallState: repos.linearInstallState,
@@ -3062,6 +3071,13 @@ export function buildContainer(
     configureHttpApp: configureFeishuHttpApp,
     registrations: new FeishuAppRegistrationService(repos.feishuAppRegistration)
   }
+  const weChatApiUrl = config.WECHAT_API_URL ?? WECHAT_DEFAULT_API_URL
+  const weChatLogins = new WeChatLoginService(
+    repos.wechatPendingLogin,
+    opts.weChatLoginClient ?? createWeChatLoginClient(weChatApiUrl),
+    weChatApiUrl,
+    () => clock.now()
+  )
   // ONE Linear API client and ONE token service, shared by the funnel routes, the provider's
   // disconnect edge and the orphan sweep — so "which store answers" and "when is a grant stale"
   // cannot drift between them (linear-integration.md §4.4).
@@ -3268,6 +3284,14 @@ export function buildContainer(
       ...(msTeamsPlatformApp ? { app: msTeamsPlatformApp } : {}),
       credentialReconciler: msTeamsCredentialReconciler,
       ...(relayPublicBase ? { publicRelayUrl: relayPublicBase } : {})
+    }),
+    // Registered unconditionally so the platform set is stable; `WECHAT_ENABLED` turns its routes and projection on (§6).
+    createWeChatCpProvider({
+      enabled: config.WECHAT_ENABLED,
+      ...(config.WECHAT_API_URL ? { apiUrl: config.WECHAT_API_URL } : {}),
+      routes: [weChatLoginRoutes(httpDeps, weChatLogins)],
+      logins: repos.wechatPendingLogin,
+      reapIntervalMs: config.SLACK_INSTALL_REAP_INTERVAL_SEC * 1000
     })
   ])
 

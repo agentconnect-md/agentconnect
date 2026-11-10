@@ -24,6 +24,7 @@ import { createSlackCpProvider } from './slack/provider.js'
 import { createFeishuCpProvider } from './feishu/provider.js'
 import { createLinearCpProvider } from './linear/provider.js'
 import { createGoogleChatCpProvider } from './googlechat/provider.js'
+import { createWeChatCpProvider } from './wechat/provider.js'
 import { createMsTeamsCpProvider } from './msteams/provider.js'
 
 /** Every supported deployment key. */
@@ -142,6 +143,8 @@ const EXPECTED_KEYS = [
   'VAULT_TRANSIT_MOUNT',
   'WAITLIST_MODE',
   'WEBCHAT_PROTOCOL',
+  'WECHAT_API_URL',
+  'WECHAT_ENABLED',
   'WS_PATH'
 ] as const
 
@@ -240,7 +243,8 @@ describe('platform env declarations', () => {
       createFeishuCpProvider({}),
       createLinearCpProvider({}),
       createGoogleChatCpProvider(),
-      createMsTeamsCpProvider()
+      createMsTeamsCpProvider(),
+      createWeChatCpProvider({ enabled: false })
     ])
     const fromProviders = registry
       .all()

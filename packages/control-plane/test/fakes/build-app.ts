@@ -46,6 +46,7 @@ import { createFeishuCpProvider } from '../../src/platforms/feishu/provider.js'
 import { createLinearCpProvider } from '../../src/platforms/linear/provider.js'
 import { createDingTalkCpProvider } from '../../src/platforms/dingtalk/provider.js'
 import { createMsTeamsCpProvider } from '../../src/platforms/msteams/provider.js'
+import { createWeChatCpProvider } from '../../src/platforms/wechat/provider.js'
 import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
 import { ApiKeyCodec } from '../../src/registry/apiKey.js'
 import { DaemonAuthService } from '../../src/registry/authService.js'
@@ -83,7 +84,8 @@ const PLATFORMS = buildCpPlatformRegistry([
   createFeishuCpProvider({}),
   createLinearCpProvider({}),
   createDingTalkCpProvider(),
-  createMsTeamsCpProvider()
+  createMsTeamsCpProvider(),
+  createWeChatCpProvider({ enabled: true })
 ])
 
 export function buildDaemonApp(prisma: PrismaClient, opts: { wsConfig?: Partial<WsConfig> } = {}): DaemonApp {

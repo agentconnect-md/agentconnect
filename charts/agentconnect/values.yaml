@@ -148,7 +148,7 @@ features:
   gitUrl: true
   # The QQ integration's console entry points; off hides them (an existing QQ bot keeps its Bots tab).
   qq: true
-  # Personal WeChat over iLink (experimental): the console's install entry points and the pool members' features.wechat; off, no member polls iLink.
+  # Personal WeChat over iLink (experimental): the console's QR login, the Control Plane's WECHAT_ENABLED and the pool members' features.wechat; off, no member polls iLink.
   wechat: false
   # The built-in agent offers the deployment's Google Chat app first, through its Marketplace listing; turn it on once that listing is live.
   googleChatDeploymentApp: false

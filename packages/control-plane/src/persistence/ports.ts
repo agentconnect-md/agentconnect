@@ -6118,6 +6118,76 @@ export interface FeishuAppRegistrationStore {
   reapExpired(staleBefore: Date): Promise<number>
 }
 
+// WechatPendingLoginStore — a personal-WeChat QR login (wechat-integration.md §2.2). The login handle and the
+// confirmed bot token are sealed at rest; every read and write is org-fenced.
+export type WechatLoginState = 'waiting' | 'scanned' | 'verify_code' | 'authorized' | 'completed' | 'failed'
+
+export interface WechatPendingLoginRecord {
+  id: string
+  targetKey: string | null
+  orgId: OrgId
+  agentId: AgentId
+  botId: BotId | null
+  requestedName: string | null
+  createdByUserId: string
+  qrcode: string | null
+  qrUrl: string | null
+  pollHost: string
+  status: WechatLoginState
+  failureReason: string | null
+  botToken: string | null
+  ilinkBotId: string | null
+  ilinkUserId: string | null
+  baseUrl: string | null
+  integrationId: IntegrationId | null
+  resultBotId: BotId | null
+  expiresAt: Date
+  createdAt: Date
+  settledAt: Date | null
+}
+
+export interface CreateWechatPendingLoginInput {
+  id: string
+  targetKey: string
+  orgId: OrgId
+  agentId: AgentId
+  botId?: BotId
+  requestedName?: string
+  createdByUserId: string
+  qrcode: string
+  qrUrl: string
+  pollHost: string
+  expiresAt: Date
+}
+
+export interface WechatPendingLoginStore {
+  create(input: CreateWechatPendingLoginInput): Promise<WechatPendingLoginRecord>
+  get(orgId: OrgId, id: string): Promise<WechatPendingLoginRecord | null>
+  getActiveTarget(orgId: OrgId, targetKey: string): Promise<WechatPendingLoginRecord | null>
+  /** Advance an open login (a new code, a redirect host, a scan); a settled one is left alone. */
+  advance(
+    orgId: OrgId,
+    id: string,
+    patch: { status: 'waiting' | 'scanned' | 'verify_code'; qrcode?: string; qrUrl?: string; pollHost?: string }
+  ): Promise<void>
+  /** Keep a confirmed login's bot token until its install lands, so a failed install is retried on the next poll. */
+  authorize(
+    orgId: OrgId,
+    id: string,
+    result: { botToken: string; ilinkBotId: string; ilinkUserId: string; baseUrl: string | null }
+  ): Promise<void>
+  /** End a login, releasing its target and dropping the sealed handle and token. */
+  settle(
+    orgId: OrgId,
+    id: string,
+    outcome:
+      { status: 'completed'; integrationId: IntegrationId; botId: BotId } | { status: 'failed'; failureReason: string },
+    at: Date
+  ): Promise<void>
+  /** Delete logins created before `staleBefore`. */
+  reapExpired(staleBefore: Date): Promise<number>
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // PresetAgentStore — per-org preset provisioning state (preset-agents.md §3.2).
 // Rows are WRITTEN by the org-creation seam / the one-time backfill / the

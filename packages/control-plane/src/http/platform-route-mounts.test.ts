@@ -48,6 +48,9 @@ import { createDingTalkCpProvider } from '../platforms/dingtalk/provider.js'
 import { dingTalkCredentialRoutes } from '../platforms/dingtalk/routes.js'
 import { createMsTeamsCpProvider } from '../platforms/msteams/provider.js'
 import { msTeamsRoutes } from '../platforms/msteams/routes.js'
+import { createWeChatCpProvider } from '../platforms/wechat/provider.js'
+import { weChatLoginRoutes } from '../platforms/wechat/routes.js'
+import type { WeChatLoginService } from '../platforms/wechat/login.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from './routes/slack-install.js'
 import { slackPlatformInstallRoutes, slackPlatformCallbackRoutes } from './routes/slack-platform-install.js'
 import { feishuRegistrationRoutes } from './routes/feishu-registration.js'
@@ -98,6 +101,7 @@ const EXPECTED_MOUNTS: Record<CpRouteScope, Record<string, string[]>> = {
     googleChatKeyRoutesPlugin: ['PUT /bots/:id/googlechat/key'],
     googleChatClaimRoutesPlugin: ['POST /integrations/googlechat/claim'],
     dingTalkCredentialRoutesPlugin: ['PUT /bots/:id/dingtalk/credentials'],
+    weChatLoginRoutesPlugin: ['POST /integrations/wechat/login', 'GET /integrations/wechat/login/:id'],
     msTeamsRoutesPlugin: [
       'PUT /bots/:id/msteams/credentials',
       'GET /integrations/:id/msteams/app-package',
@@ -206,7 +210,8 @@ function productionPlatforms(deps: HttpDeps): CpPlatformRegistry {
       }
     }),
     createDingTalkCpProvider({ installRoutes: [dingTalkCredentialRoutes(deps)] }),
-    createMsTeamsCpProvider({ installRoutes: [msTeamsRoutes(deps)] })
+    createMsTeamsCpProvider({ installRoutes: [msTeamsRoutes(deps)] }),
+    createWeChatCpProvider({ enabled: true, routes: [weChatLoginRoutes(deps, {} as WeChatLoginService)] })
   ])
 }
 
