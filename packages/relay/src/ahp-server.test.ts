@@ -41,7 +41,7 @@ async function fixture(
   let lost = () => {}
   const conn = {
     state: 'READY',
-    supports: vi.fn(() => true),
+    supports: vi.fn((_feature: string) => true),
     authorizeAhp: vi.fn(async (_payload: unknown, _initial?: boolean) => true),
     sendAhp: vi.fn(),
     listenAhp: (_id: string, next: typeof listener) => {
