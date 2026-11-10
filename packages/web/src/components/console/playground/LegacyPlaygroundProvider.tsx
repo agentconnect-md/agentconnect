@@ -24,6 +24,8 @@ import {
   isGitWorkspace,
   type Agent,
   type ElicitAnswerValue,
+  type FillCardAnswer,
+  type FillCardBody,
   type ElicitFieldSpec,
   type Session,
   type SessionImage,
@@ -209,6 +211,8 @@ type WebchatEvent =
   | { kind: 'app_template'; appId: string; seq: number; chunk: string }
   | { kind: 'app_resolved'; appId: string; outcome: McpAppOutcome }
   | { kind: 'app_rpc_result'; appId: string; callId: string; outcome: McpAppRpcResult }
+  | { kind: 'fill_request'; card: FillCardBody }
+  | { kind: 'fill_resolved'; requestId: string; outcome: NonNullable<FillCardBody['resolved']> }
   | ({ kind: 'image'; postId: string; at: number; text: string } & SharedImageState)
 
 /** The session status snapshot carried in a relay `rd/chat` WebchatOutput payload
@@ -747,6 +751,19 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
               capability: { ...step.capability, resolved: { status: ev.status, text: ev.text } },
               observedAtMs
             })
+          }
+          return steps
+        }
+        if (ev.kind === 'fill_request') {
+          // A Fill card: the website and its field descriptors, answered over this socket and never kept as a draft.
+          return [...steps, lane({ kind: 'fill', text: ev.card.website.origin, fill: ev.card, boundary: true })]
+        }
+        if (ev.kind === 'fill_resolved') {
+          for (let i = steps.length - 1; i >= 0; i--) {
+            const step = steps[i]!
+            if (step.kind !== 'fill' || step.fill?.requestId !== ev.requestId) continue
+            if ((step.agentId ?? undefined) !== agentId) continue
+            return replaceAt(i, { ...step, fill: { ...step.fill, resolved: ev.outcome }, observedAtMs })
           }
           return steps
         }
@@ -2680,6 +2697,24 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     [connect]
   )
 
+  /** Send a Fill card's answer; the values go straight onto the socket and the card settles with `fill_resolved`. */
+  const pgAnswerFill = useCallback(
+    (
+      id: string,
+      agentForId: string,
+      requestId: string,
+      answer: FillCardAnswer,
+      conversationId?: string
+    ): Promise<{ accepted: boolean; reason?: string }> =>
+      connect(id, agentForId, conversationId)
+        .ready.then((ws) => {
+          ws.send(JSON.stringify({ type: 'fill_submit', requestId, ...answer, agentId: agentForId }))
+          return { accepted: true }
+        })
+        .catch(() => ({ accepted: false, reason: 'this conversation is not connected' })),
+    [connect]
+  )
+
   // Cancel an unsent dial locally; a running turn clears busy when the daemon confirms cancellation.
   const pgCancel = useCallback(
     (id: string, agentForId: string, conversationId?: string) => {
@@ -2827,6 +2862,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       pgAnswerElicitation,
       pgAppRpc,
       pgCloseApp,
+      pgAnswerFill,
       pgCancel,
       getPgSession,
       getPgSuggestion,
@@ -2868,6 +2904,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       pgAnswerElicitation,
       pgAppRpc,
       pgCloseApp,
+      pgAnswerFill,
       pgCancel,
       getPgSession,
       getPgSuggestion,

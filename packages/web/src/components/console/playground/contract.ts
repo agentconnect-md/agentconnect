@@ -1,4 +1,4 @@
-import type { Agent, ElicitAnswerValue, Session, SessionImage, SessionStep } from '@/lib/data'
+import type { Agent, ElicitAnswerValue, FillCardAnswer, Session, SessionImage, SessionStep } from '@/lib/data'
 import type { McpAppRpc, WebchatFileAttachment } from '@agentconnect.md/protocol'
 import type { SessionMessageDto } from '@/lib/api'
 import type { ComposerFile } from '@/lib/webchat-file'
@@ -137,6 +137,14 @@ export interface PlaygroundData {
   ) => Promise<{ ok: true; result: unknown } | { ok: false; error: string }>
   /** Tell the daemon the reader closed an MCP App frame. */
   pgCloseApp: (id: string, agentId: string, appId: string, conversationId?: string) => void
+  /** Answer a Fill card (computer-form-fill-and-vault.md §6); the values go only to the daemon, never kept here. */
+  pgAnswerFill: (
+    id: string,
+    agentId: string,
+    requestId: string,
+    answer: FillCardAnswer,
+    conversationId?: string
+  ) => Promise<{ accepted: boolean; reason?: string }>
   getPgSession: (id: string) => Session | undefined
   /** The runtime's predicted next prompt for this session's empty composer, if it sent one. */
   getPgSuggestion: (id: string) => string | undefined

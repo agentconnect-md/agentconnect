@@ -472,6 +472,12 @@ export const COMPUTER_COMMAND_LINE_GUIDANCE = [
   '- uncertain on computer_exec or computer_write_file means it may or may not have run and was NOT retried: inspect with another command before running it again.'
 ].join('\n')
 
+/** Added where computer_fill_form is offered (computer-form-fill-and-vault.md §5.1). */
+export const COMPUTER_FILL_GUIDANCE = [
+  '- To sign in or fill any website form, open the page, then call computer_fill_form: the person types the values, passwords included, into a Fill card, and you never see them. Never ask for a password in chat or type one with computer_type.',
+  "- computer_fill_form fills only: take a screenshot, then click the form's button yourself. ambiguous means several forms: pass one `form` id; cancelled or expired means the person did not fill it."
+].join('\n')
+
 /** Whether an agent's sessions are offered the tools (§5.2): a Computer grants it or it has a managed mode the pool serves, the CP serves them, and its runtime shows MCP images. */
 export function computerToolsOffered(input: {
   computerUse: AgentComputerUse | undefined

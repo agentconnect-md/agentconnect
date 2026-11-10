@@ -31,6 +31,9 @@ export const APP_LANE = 'APP'
 /** A capability request card (capability-requests.md §4.4.2). NOT a work lane, like ELICIT: it is handed to the reader. */
 export const CAPABILITY_LANE = 'CAPABILITY'
 
+/** A Fill card (computer-form-fill-and-vault.md §6). NOT a work lane, like ELICIT: it is handed to the reader. */
+export const FILL_LANE = 'FILL'
+
 const CAPABILITY_STATUSES = new Set(['completed', 'declined', 'expired', 'withdrawn'])
 
 /** Parse a `capability` row's body; null for anything without a request id, and the caller then shows the row's own text. */

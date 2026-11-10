@@ -15,6 +15,11 @@ import {
   type CoordinatorModel
 } from '@agentconnect.md/protocol/coordinator-model'
 import type { TaskLinkFacts } from '@agentconnect.md/protocol/user-turn-body'
+import type {
+  ComputerFillCard,
+  ComputerFillCardOutcome,
+  ComputerFormValue
+} from '@agentconnect.md/protocol/computer-form-fill'
 import { autoOrFullAccessPermissionMode } from '@agentconnect.md/protocol/assistant-permission-modes'
 import { gitRepoHostname, managedGitlabRepoPath } from './git-url-tile'
 import {
@@ -328,7 +333,7 @@ export function agentIsPlaced(agent: Pick<Agent, 'daemon' | 'runtime' | 'placeme
 // not a work lane at all. Renaming `plan` to `think` would be the honest fix; it is left
 // alone here so this change stays about the task list.
 export type LaneKind =
-  'msg' | 'plan' | 'tool' | 'edit' | 'done' | 'notice' | 'planblock' | 'elicit' | 'app' | 'capability'
+  'msg' | 'plan' | 'tool' | 'edit' | 'done' | 'notice' | 'planblock' | 'elicit' | 'app' | 'capability' | 'fill'
 
 export interface LaneInfo {
   lane: string
@@ -424,6 +429,15 @@ const LANE_MAP: Record<LaneKind, LaneInfo> = {
   // work lane: the card is handed to the reader. The row colors are unused — the card paints itself.
   capability: {
     lane: 'CAPABILITY',
+    laneColor: 'var(--text-tertiary)',
+    dot: 'var(--text-disabled)',
+    weight: 400,
+    textColor: 'var(--text-primary)',
+    codeColor: 'var(--text-secondary)'
+  },
+  // A Fill card (computer-form-fill-and-vault.md §6): handed to the reader like `elicit`, so NOT a work lane.
+  fill: {
+    lane: 'FILL',
     laneColor: 'var(--text-tertiary)',
     dot: 'var(--text-disabled)',
     weight: 400,
@@ -1391,7 +1405,15 @@ export interface SessionStep {
   }
   /** A capability request card — present only on a `capability` step; its state is read from the request itself. */
   capability?: CapabilityCardBody
+  /** A Fill card — present only on a `fill` step: the website and field descriptors, never a value. */
+  fill?: FillCardBody
 }
+
+/** A Fill card as the conversation carries it, and how it ended once settled (computer-form-fill-and-vault.md §6). */
+export type FillCardBody = ComputerFillCard & { resolved?: ComputerFillCardOutcome }
+
+/** A reader's answer to a Fill card: the values for the website, or a decline. */
+export type FillCardAnswer = { values: ComputerFormValue[] } | { cancel: true }
 
 /** A capability request as the conversation carries it: enough to show the card before the request is fetched, and how it ended once settled. */
 export interface CapabilityCardBody {

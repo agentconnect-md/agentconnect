@@ -105,6 +105,34 @@ describe('standard AHP view', () => {
     // A reopen or settle outside a turn never reaches the cached outcome, so the card reads the request instead.
     expect(steps.at(-1)?.capability).not.toHaveProperty('resolved')
   })
+  it('renders Fill cards from session metadata on their turn, settled in place', () => {
+    const state = chat([{ kind: 'markdown', id: 'one', content: 'Opening the sign-in form' }])
+    const fill = {
+      requestId: '7f9d6c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f',
+      computerName: 'Desk',
+      website: { origin: 'https://login.example.test' },
+      kind: 'login',
+      fields: [],
+      expiresAt: '2026-11-10T10:10:00.000Z'
+    }
+    const session = {
+      _meta: {
+        'agentconnect.md': {
+          fills: [
+            { ...fill, turnId: 'turn', resolved: 'filled' },
+            { ...fill, turnId: 'other' }
+          ]
+        }
+      }
+    } as unknown as SessionState
+    const steps = ahpSteps(state, 'agent', session)
+    expect(steps.map((step) => step.kind)).toEqual(['msg', 'done', 'fill'])
+    expect(steps.at(-1)).toMatchObject({
+      text: 'https://login.example.test',
+      fill: { ...fill, resolved: 'filled' },
+      boundary: true
+    })
+  })
   it('projects the status snapshot onto session usage, keeping fields it omits', () => {
     expect(ahpUsageFields(undefined, { totalTokens: 1 })).toEqual({})
     expect(ahpUsageFields({ costAmount: 0.5, costCurrency: 'USD' }, { totalTokens: 1200, contextUsed: 9 })).toEqual({

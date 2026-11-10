@@ -188,6 +188,8 @@ export interface FmtStep {
   elicit?: NonNullable<SessionStep['elicit']>
   // A capability request card — present only on a CAPABILITY_LANE step.
   capability?: NonNullable<SessionStep['capability']>
+  // A Fill card — present only on a FILL_LANE step.
+  fill?: NonNullable<SessionStep['fill']>
   app?: NonNullable<SessionStep['app']>
   // A superseded answer collapsed into this lane — carried so the summary can skip it.
   demoted?: boolean
@@ -274,6 +276,7 @@ export function fmtStep(stp: SessionStep, platform?: string): FmtStep {
     ...(stp.kind === 'planblock' ? { plan: stp.plan ?? [] } : {}),
     ...(stp.kind === 'elicit' && stp.elicit ? { elicit: stp.elicit } : {}),
     ...(stp.kind === 'capability' && stp.capability ? { capability: stp.capability } : {}),
+    ...(stp.kind === 'fill' && stp.fill ? { fill: stp.fill } : {}),
     ...(stp.kind === 'app' && stp.app ? { app: stp.app } : {}),
     ...(stp.demoted ? { demoted: true } : {}),
     ...(stp.taskLink ? { taskLink: stp.taskLink } : {}),

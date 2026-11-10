@@ -2,7 +2,7 @@
 
 import { type CSSProperties, type ReactNode } from 'react'
 import Link from 'next/link'
-import { speaker, type Agent, type ElicitAnswerValue } from '@/lib/data'
+import { speaker, type Agent, type ElicitAnswerValue, type FillCardAnswer } from '@/lib/data'
 import { agentToneColor } from '@/lib/agent-tone'
 import { AGENT_PROSE, SELF_BUBBLE } from '@/components/console/transcript-bubbles'
 import { AgentTurnHeader } from '@/components/console/AgentTurnHeader'
@@ -20,6 +20,7 @@ import { useOrgs } from '@/lib/org-context'
 import { AttachmentCards, messageCards } from '@/components/console/ComposerFiles'
 import {
   CAPABILITY_LANE,
+  FILL_LANE,
   APP_LANE,
   ELICIT_LANE,
   NOTICE_LANE,
@@ -29,6 +30,7 @@ import {
   withPromptStart
 } from '@/components/console/session-work'
 import { CapabilityRequestCard } from '@/components/console/CapabilityRequestCard'
+import { FillCard } from '@/components/console/FillCard'
 import { ThreadRootPress } from '@/components/console/ThreadRootActions'
 import { type TaskLink } from '@/components/console/task-link'
 import { StepExtras, McpAppRow, turnWork, WorkStepList } from '@/components/console/WorkPanel'
@@ -191,7 +193,8 @@ export function lastSpokenSentence(steps: readonly FmtStep[]): string {
         s.lane !== PLAN_LANE &&
         s.lane !== ELICIT_LANE &&
         s.lane !== APP_LANE &&
-        s.lane !== CAPABILITY_LANE
+        s.lane !== CAPABILITY_LANE &&
+        s.lane !== FILL_LANE
     )
     .map((s) => s.text)
     .filter(Boolean)
@@ -226,6 +229,7 @@ export function BotTurnView({
   appRpc,
   appReport,
   closeApp,
+  answerFill,
   onShare
 }: {
   turn: BotTurn
@@ -260,6 +264,14 @@ export function BotTurnView({
     | undefined
   appReport?: ((agentId: string | undefined, text: string) => boolean) | undefined
   closeApp?: ((agentId: string | undefined, appId: string) => void) | undefined
+  /** Answers a Fill card over the live socket; absent ⇒ the card renders as a record. */
+  answerFill?:
+    | ((
+        agentId: string | undefined,
+        requestId: string,
+        answer: FillCardAnswer
+      ) => Promise<{ accepted: boolean; reason?: string }>)
+    | undefined
   /** Shares this message: its Share dialog with a link to it. */
   onShare?: (() => void) | undefined
 }) {
@@ -272,7 +284,9 @@ export function BotTurnView({
   const saidSteps = turn.steps.filter((s) => !WORK_LANES.has(s.lane) && s.lane !== NOTICE_LANE && s.lane !== PLAN_LANE)
   // A coordinator's link to a task it opened or passed a message to is a card that opens the task's thread.
   const taskLinks = saidSteps.map((s) => (taskFooter ? (s.taskLink ?? null) : null))
-  const textSteps = saidSteps.filter((s) => s.lane !== ELICIT_LANE && s.lane !== APP_LANE && s.lane !== CAPABILITY_LANE)
+  const textSteps = saidSteps.filter(
+    (s) => s.lane !== ELICIT_LANE && s.lane !== APP_LANE && s.lane !== CAPABILITY_LANE && s.lane !== FILL_LANE
+  )
   const { workSteps, summary, failed } = turnWork(turn.steps)
   // Keyed by agent id so the colour survives a rename; an id-less row falls back to its name.
   const turnTone = agentToneColor(turn.agentId || turn.agentName)
@@ -360,6 +374,15 @@ export function BotTurnView({
             ) : st.lane === CAPABILITY_LANE && st.capability ? (
               <div key={`c:${st.capability.requestId}`}>
                 <CapabilityRequestCard body={st.capability} />
+              </div>
+            ) : st.lane === FILL_LANE && st.fill ? (
+              <div key={`f:${st.fill.requestId}`}>
+                <FillCard
+                  body={st.fill}
+                  {...(answerFill
+                    ? { onAnswer: (answer) => answerFill(turn.agentId, st.fill!.requestId, answer) }
+                    : {})}
+                />
               </div>
             ) : st.lane === ELICIT_LANE ? (
               <div key={`e:${st.elicit?.requestId ?? si}`}>

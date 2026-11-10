@@ -386,6 +386,15 @@ export class AhpPlaygroundStore {
           }
         }
       },
+      pgAnswerFill: async (id, agentId, requestId, answer) => {
+        const peer = this.entries.get(id)?.connection.peers.get(agentId)
+        if (!peer) return { accepted: false, reason: 'Reconnect to answer this card.' }
+        try {
+          return await peer.fillSubmit(requestId, answer)
+        } catch (error) {
+          return { accepted: false, reason: error instanceof Error ? error.message : 'The answer could not be sent.' }
+        }
+      },
       pgCloseApp: (id, agentId, appId) => {
         const connection = this.entries.get(id)?.connection
         const peer = connection?.peers.get(agentId)

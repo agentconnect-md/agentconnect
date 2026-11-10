@@ -7549,5 +7549,27 @@
       "open": "Open in AgentConnect",
       "whoCan": "People who can complete it: {names}"
     }
+  },
+  "FillCard": {
+    "crumb": "Fill form · {computer}",
+    "frame": "Form in a frame from {origin}",
+    "required": "required",
+    "fill": "Fill",
+    "cancel": "Cancel",
+    "noSubmit": "Fills only; the agent submits",
+    "privacyNote": "These values go to the website on the computer, never to the agent.",
+    "unmaskedNote": "These values go to the website on the computer, never to the agent. A website may show a field as you typed it, so later screenshots can include it.",
+    "notAccepted": "This answer was not accepted.",
+    "outcome": {
+      "sending": "Sent to the website…",
+      "filled": "Filled.",
+      "partial": "Partly filled.",
+      "failed": "Not filled.",
+      "uncertain": "It is unclear whether the form was filled.",
+      "target_changed": "The page changed before filling; nothing was written.",
+      "unsupported": "This computer could not fill the form.",
+      "cancelled": "Cancelled; nothing was filled.",
+      "expired": "Expired; nothing was filled."
+    }
   }
 }
