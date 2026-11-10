@@ -6,6 +6,14 @@ export const SANDBOX_EXTENSIONS_GROUP = 'extensions.agents.x-k8s.io/v1beta1'
 
 export type OperatingMode = 'Running' | 'Suspended'
 
+/** What a guarded resume tests and writes for one container of the Sandbox's pod template. */
+export interface ResumeImage {
+  containerIndex: number
+  observedName: string
+  observedImage: string
+  targetImage: string
+}
+
 export const SANDBOX_LAUNCH_GENERATION = 'agentconnect.md/launch-generation'
 export interface SandboxFence {
   sandboxUid: string
@@ -331,14 +339,23 @@ export class SandboxApi {
     throw new Error(`sandbox ${name} changed during all 5 launch fencing attempts`)
   }
 
-  async resumeWithRuntimeImage(
+  async resumeWithRuntimeImage(name: string, image: ResumeImage, fence: SandboxFence): Promise<Sandbox> {
+    return await this.resumeWithImage(name, image, sandboxFenceTests(fence))
+  }
+
+  /** Resume a Sandbox no launch fences, such as a desktop's, onto `image`: only this incarnation, only while Suspended on the observed image. */
+  async resumeWithImageIfCurrent(name: string, image: ResumeImage, uid: string): Promise<Sandbox> {
+    return await this.resumeWithImage(name, image, [{ op: 'test', path: '/metadata/uid', value: uid }])
+  }
+
+  private async resumeWithImage(
     name: string,
-    image: { containerIndex: number; observedName: string; observedImage: string; targetImage: string },
-    fence: SandboxFence
+    image: ResumeImage,
+    guards: Array<{ op: 'test'; path: string; value: string }>
   ): Promise<Sandbox> {
     const containerPath = `/spec/podTemplate/spec/containers/${image.containerIndex}`
     const body: Array<{ op: 'test' | 'replace'; path: string; value: string }> = [
-      ...sandboxFenceTests(fence),
+      ...guards,
       { op: 'test', path: '/spec/operatingMode', value: 'Suspended' },
       { op: 'test', path: `${containerPath}/name`, value: image.observedName },
       { op: 'test', path: `${containerPath}/image`, value: image.observedImage }

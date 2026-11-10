@@ -1,5 +1,5 @@
 import type { ShimCapability } from '../shim/protocol.js'
-import type { Sandbox } from './sandbox-api.js'
+import type { ResumeImage, Sandbox } from './sandbox-api.js'
 import { sandboxSubjectAgentId, sandboxSubjectSessionLeaf } from '../remote/sandbox-subject.js'
 
 // The subject helpers carry nothing Kubernetes-specific, so they live beside the shim dial layer and are re-exported here.
@@ -80,35 +80,58 @@ export const PROBE_GRANTS: ShimCapability[] = ['probe', 'acp']
 
 export { LaunchTimeoutError } from '../remote/shim-endpoint.js'
 
-/**
- * The runtime image the pool's template pins, resolved from the cluster rather than from any
- * daemon-side configuration: it is what a sandbox will actually run, and it is the same answer for
- * every member at a given moment. That makes it the honest identity for anything that describes
- * the image rather than the member — the pool-wide runtime probe keys its published result on it,
- * so a template bump is a different key and cannot be served a previous image's answer.
- */
-export async function poolRuntimeImage(
-  api: {
-    getWarmPool: (name: string) => Promise<{ spec?: { sandboxTemplateRef?: { name?: string } } }>
-    getSandboxTemplate: (name: string) => Promise<{
-      spec?: { podTemplate?: { spec?: { containers?: Array<{ name?: string; image?: string }> } } }
-    }>
-  },
-  warmPoolName: string
+type PoolTemplateApi = {
+  getWarmPool: (name: string) => Promise<{ spec?: { sandboxTemplateRef?: { name?: string } } }>
+  getSandboxTemplate: (name: string) => Promise<{
+    spec?: { podTemplate?: { spec?: { containers?: Array<{ name?: string; image?: string }> } } }
+  }>
+}
+
+/** The image the pool's template pins for its `runtime` container: read from the cluster, so every member agrees, and a template bump is a new probe key. */
+export async function poolRuntimeImage(api: PoolTemplateApi, warmPoolName: string): Promise<string> {
+  return await poolContainerImage(api, warmPoolName, 'runtime')
+}
+
+/** The image the pool's template pins for the named container. */
+export async function poolContainerImage(
+  api: PoolTemplateApi,
+  warmPoolName: string,
+  containerName: string
 ): Promise<string> {
   const pool = await api.getWarmPool(warmPoolName)
   const templateName = pool.spec?.sandboxTemplateRef?.name
-  // Absent and non-canonical are separate reports: one is a template that was never wired up, the
-  // other a value someone padded, and an operator chases them differently.
+  // Absent and padded are separate reports: an operator chases a never-wired template and a padded value differently.
   if (!templateName?.trim()) throw new Error(`sandbox warm pool ${warmPoolName} has no sandboxTemplateRef.name`)
   if (templateName.trim() !== templateName) {
     throw new Error(`sandbox warm pool ${warmPoolName} has invalid sandboxTemplateRef.name`)
   }
   const template = await api.getSandboxTemplate(templateName)
-  const containers = (template.spec?.podTemplate?.spec?.containers ?? []).filter((one) => one.name === 'runtime')
-  if (containers.length > 1) throw new Error(`sandbox template ${templateName} has multiple runtime containers`)
+  const containers = (template.spec?.podTemplate?.spec?.containers ?? []).filter((one) => one.name === containerName)
+  if (containers.length > 1)
+    throw new Error(`sandbox template ${templateName} has multiple ${containerName} containers`)
   const image = containers[0]?.image
-  if (!image?.trim()) throw new Error(`sandbox template ${templateName} runtime container has no image`)
-  if (image.trim() !== image) throw new Error(`sandbox template ${templateName} runtime container has invalid image`)
+  if (!image?.trim()) throw new Error(`sandbox template ${templateName} ${containerName} container has no image`)
+  if (image.trim() !== image) {
+    throw new Error(`sandbox template ${templateName} ${containerName} container has invalid image`)
+  }
   return image
+}
+
+/** Where the named container sits in this Sandbox's own pod template and the image it runs now. */
+export function sandboxContainerImage(
+  sandboxName: string,
+  sandbox: Sandbox,
+  containerName: string
+): Omit<ResumeImage, 'targetImage'> {
+  const containers = sandbox.spec?.podTemplate?.spec?.containers ?? []
+  const indexes = containers.flatMap((container, index) => (container.name === containerName ? [index] : []))
+  if (indexes.length === 0) throw new Error(`sandbox ${sandboxName} has no ${containerName} container`)
+  if (indexes.length > 1) throw new Error(`sandbox ${sandboxName} has multiple ${containerName} containers`)
+  const containerIndex = indexes[0]!
+  const observedImage = containers[containerIndex]?.image
+  if (!observedImage?.trim()) throw new Error(`sandbox ${sandboxName} ${containerName} container has no image`)
+  if (observedImage.trim() !== observedImage) {
+    throw new Error(`sandbox ${sandboxName} ${containerName} container has invalid image`)
+  }
+  return { containerIndex, observedName: containerName, observedImage }
 }
