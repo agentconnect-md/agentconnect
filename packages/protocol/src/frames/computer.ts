@@ -175,6 +175,8 @@ export const ComputerCapabilitiesSchema = z.object({
   // The command-line tier can run here (§5.7): computer_exec, and the file tools.
   exec: z.boolean().optional(),
   files: z.boolean().optional(),
+  // The browser extension is installed here and `computer_form_*` are served (computer-form-fill-and-vault.md §8).
+  formFill: z.boolean().optional(),
   displays: z
     .array(
       z.object({

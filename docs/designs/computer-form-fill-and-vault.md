@@ -1,8 +1,8 @@
 # Computer form filling and Vault
 
-> Status: Design, not implemented. Product decisions agreed on 2026-11-09.
+> Status: Design, implementation in progress. Product decisions agreed on 2026-11-09.
 > Scope: Linux Chromium/Chrome; container Computers first, Linux desktops second.
-> Delivery stages and acceptance: §11; implementation has not started.
+> Delivery stages and acceptance: §11; S1 is in progress (#3849).
 > A throwaway Linux Chromium spike ran on 2026-11-09; its results are in §8.1.
 
 ## 1. Purpose and boundary
@@ -178,34 +178,56 @@ If several candidates remain, ask the agent to focus/select one. Tab, frame,
 origin and document identity are rechecked before writing; a changed target
 requires rediscovery instead of reusing stale coordinates or selectors.
 
-### 5.1 Confirmed tool surface
+### 5.1 Tool surface (settled)
 
-- `computer_fill_login { computer?, item?, account? }`: find the login form,
-  resolve an authorized Login and fill the present fields; request missing
-  values through a Fill card.
-- `computer_fill_personal_info { computer?, item? }`: fill authorized Personal
-  info. Missing fields can be collected through the unified Fill card.
-- `vault_list {}`: authorized non-secret summaries. No secret field reads and
-  no general Personal info field-value retrieval.
+The interview confirmed `computer_fill_login` and `computer_fill_personal_info`,
+then proposed one `computer_fill_form`. The implementation settles on the single
+tool, with separate item references instead of one `item`, and ships no aliases:
+
+- `computer_fill_form { computer?, form?, reason? }`: discover the target form on
+  the session's desktop, collect its values through a Fill card (S2) and fill
+  them. `form` is a form ID from an earlier `ambiguous` result; `reason` is one
+  line the card shows. The result reports the website origin, the form's kind and
+  each field's ID, label, purpose and outcome, never a value.
+- With Vault, the same tool gains `login?` (a Login item ID or username) and
+  `personalInfo?` (a Personal info item ID), plus `vault_list {}`. Separate
+  references say which item supplies which fields in a mixed registration form;
+  the card collects the rest. Arguments arrive only with the stage that honors them.
+- The kind of form is not an argument. The extension classifies each form as
+  `login`, `registration`, `personal_info` or `other`, and the result reports it.
 
 Explicit item selection never bypasses origin matching, grants or consent.
 Multiple candidates require human choice unless an explicit reference or username
 selects exactly one eligible item. Keep the selected item for the session's
 multi-step login, subject to fresh grant checks on subsequent fills.
 
-### 5.2 Proposed unified tool surface
+### 5.2 Internal operation contract
 
-The final interview proposed `computer_fill_form { computer?, item?, kind? }`
-with `kind = auto | login | personal_info`, plus `vault_list`. This naming change
-was not separately confirmed before the request to publish the design. Treat it
-as an implementation proposal, not an agreed API. The implementation should settle
-one public surface before registering tools; do not ship overlapping aliases
-without a compatibility need.
+The wire schemas live in `packages/protocol/src/computer-form-fill.ts`, version 1.
+The agent daemon reaches the desktop over the existing relay data plane with three
+desktop-internal MCP tools, served only to channel-token callers (agent daemons),
+never to local client tokens, and never offered to a model:
 
-The common operation must support mixed registration forms by composing a Login,
-Personal info and temporary input. For mixed fills, references must distinguish
-which item supplies which fields; the proposed singular `item` argument is not a
-complete contract for that case.
+| Tool                     | Arguments                        | Result                                                              |
+| ------------------------ | -------------------------------- | ------------------------------------------------------------------- |
+| `computer_form_discover` | `v`, `form?`                     | Active tab origin, forms with value-free field descriptors, target. |
+| `computer_form_fill`     | `v`, `requestId`, target, values | Per-field status, overall status, whether the page navigated.       |
+| `computer_form_status`   | `v`, `requestId`                 | `done` with the stored result, `running`, or `unknown`.             |
+
+A target names tab, frame, Chromium `documentId`, top and frame origins and form ID;
+the extension rechecks all of them before writing. Overall statuses are `filled`,
+`partial`, `failed`, `target_changed` (nothing written), `uncertain` (outcome unknown,
+not retried), `cancelled` and `unsupported`. Field statuses are `filled`, `unverified`
+(written but changed back), `not_found`, `disabled`, `invalid_value` and `skipped`.
+A `requestId` is single-use: a repeat is refused, never replayed. Cancellation is
+the caller abandoning the request before the desktop sends it to the extension;
+after that, the outcome is final or `uncertain`, and `computer_form_status` reports it.
+
+Negotiation: the desktop reports the `formFill` capability when its browser
+integration is installed; an agent daemon treats a missing internal tool as
+`unsupported` with nothing sent. The extension's `hello` carries its wire protocol
+and a compiled build ID; the daemon closes a mismatch with `4426` and an
+unattributed socket with `4401`.
 
 ## 6. Fill cards and saving
 
@@ -470,8 +492,6 @@ validation and cannot be a deterministic CI acceptance gate.
 
 These are engineering proposals or unfinished details, not missing product approval:
 
-- Choose the final unified/separate tool contract (§5), including mixed-item
-  references, form selection and opaque request IDs.
 - Transport, profile attribution, permissions, endpoint authentication and
   policy packaging are demonstrated on Linux Chromium (§8.1). Still open: why
   forced-install updates did not apply in place, and the managed-pod proxy
