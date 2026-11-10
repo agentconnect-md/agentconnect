@@ -53,6 +53,12 @@
       "import": "./dist/computer-command-line.js",
       "default": "./dist/computer-command-line.js"
     },
+    "./computer-form-fill": {
+      "development": "./src/computer-form-fill.ts",
+      "types": "./dist/computer-form-fill.d.ts",
+      "import": "./dist/computer-form-fill.js",
+      "default": "./dist/computer-form-fill.js"
+    },
     "./organization-files": {
       "development": "./src/organization-files.ts",
       "types": "./dist/organization-files.d.ts",
