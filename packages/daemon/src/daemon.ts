@@ -9693,7 +9693,7 @@ export class Daemon {
         const cli = codeHostCliLaunch({
           providers: this.credentialProxyHosts(agent.id).map((host) => host.provider),
           placeholder: this.credentialProxy.proxy.placeholderFor(agent.id),
-          root: remoteRoots?.runtimeRoot ?? DEFAULT_SHIM_RUNTIME_ROOT,
+          root: launch.runtimeHome ?? remoteRoots?.runtimeRoot ?? DEFAULT_SHIM_RUNTIME_ROOT,
           hostKey: opts.hostKey,
           own: (name) => env[name] !== undefined || runtimeEnv[name] !== undefined
         })

@@ -7,6 +7,11 @@ import { dirname, join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
 import { agentHostKey, hostKeyDirName, sessionHostKey, sessionKeyDirName } from '../src/acp/host-key.js'
 import { sandboxSettingsDir } from '../src/acp/sandbox.js'
+import {
+  CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV,
+  type CodexPermissionProfileConfig
+} from '../src/acp/codex-permission-profiles.js'
+import { CLI_STATE_DIR } from '../src/credential-proxy/cli-env.js'
 import { prepareRuntimeLaunch, privateRuntimeHomeFor } from '../src/launch/prepare.js'
 import { sessionKey } from '../src/store/local-store.js'
 import { pendingTurnKey, sdkLeaseKey } from '../src/daemon/turn-types.js'
@@ -190,6 +195,57 @@ describe.each(['srt', 'microsandbox'])('sandbox.env (%s)', (backend) => {
     }
   )
 })
+
+it.skipIf(process.platform === 'win32')(
+  'keeps proxied CLI state inside the HOME writable by Codex VM tools',
+  async () => {
+    const root = withRuntimes(
+      scaffold({ runtime: 'codex-acp', workspace: { mode: 'from-scratch', path: 'workspace' } }),
+      { 'codex-acp': { command: 'node', args: ['unused'] } }
+    )
+    const daemon = new Daemon({ root, sandboxMechanism: 'bwrap', probeRuntimes: async () => [] })
+    try {
+      await daemon.start()
+      useMicrosandbox(daemon)
+      const d = daemon as any
+      const agent = d.agents.get('bot-a')
+      Object.assign(agent.workspace, {
+        mode: 'git-repo',
+        gitCredential: 'azure-devops',
+        gitRepo: 'https://dev.azure.com/example-org/example-project/_git/example-repo',
+        azureDevOpsRepoId: '42',
+        azureDevOps: {
+          organization: 'example-org',
+          projectId: '00000000-0000-4000-8000-000000000001',
+          repositoryId: '00000000-0000-4000-8000-000000000011'
+        }
+      })
+      const key = KEY('cli-state')
+      const cwd = join(agent.dir, 'sessions', sessionKeyDirName(key), 'workspace')
+      mkdirSync(cwd, { recursive: true })
+      const { opts } = d.buildAcpHost(agent, d.cfg, {
+        hostKey: sessionHostKey(agent.id, key),
+        strategy: 'microsandbox',
+        cwd
+      }).host
+      const env = { ...opts.env, ...opts.codehost.env }
+      const home = join(dirname(realpathSync(cwd)), 'home')
+      expect(env.HOME).toBe(home)
+      expect(dirname(env.AZURE_CONFIG_DIR)).toBe(join(home, CLI_STATE_DIR))
+      expect(env.AZURE_EXTENSION_DIR).toBe(join(env.AZURE_CONFIG_DIR, 'cliextensions'))
+      expect(env.AZURE_DEVOPS_EXT_PAT).toBe(env.AC_CODEHOST_CREDENTIAL)
+      expect(opts.clearDirs).toContain(env.AZURE_CONFIG_DIR)
+      const policy: CodexPermissionProfileConfig = JSON.parse(env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV])
+      const filesystem = policy.configOverrides.find((line) =>
+        line.startsWith(`permissions.${policy.modeProfiles.agent}.filesystem=`)
+      )!
+      expect(filesystem).toContain(`${JSON.stringify(home)} = "write"`)
+    } finally {
+      await daemon.stop()
+      rmSync(root, { recursive: true, force: true })
+    }
+  }
+)
 
 it.skipIf(process.platform === 'win32')(
   'does not reintroduce excluded agent secrets through the VM proxy',
