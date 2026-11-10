@@ -3137,6 +3137,7 @@ export class Daemon {
       orgSlug: () => this.cpOrgSlug,
       googleChatWriteBudgets: () =>
         (this.googleChatBudgets ??= new GoogleChatWriteBudgets(googleChatWriteBudgetSettings(this.cfg.googleChat))),
+      weChatEnabled: () => this.cfg.features.wechat,
       agents: () => this.agents,
       transportAgents: (agents) => this.transportAgents(agents),
       evaluationIntegrationIds: () => this.evaluationIntegrationIds,

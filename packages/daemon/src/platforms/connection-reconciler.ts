@@ -66,7 +66,13 @@ import {
   MsTeamsConnection,
   msTeamsMemoryScope
 } from './msteams/connection.js'
-import { consolidateWeChat, WeChatConnection, weChatConnKey, weChatEndpointOverrides } from './wechat/connection.js'
+import {
+  consolidateWeChat,
+  WeChatConnection,
+  weChatConnKey,
+  weChatEndpointOverrides,
+  type WeChatConnectionGroup
+} from './wechat/connection.js'
 import { weChatStateStore } from './wechat/state.js'
 import { MsTeamsWriteBudgets } from './msteams/write-budget.js'
 import { msTeamsRelayPort } from './msteams/api.js'
@@ -177,6 +183,8 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
   orgSlug(): string | undefined
   /** The daemon's per-app Google Chat write budgets (§10.8), shared by every connection of one app. */
   googleChatWriteBudgets(): GoogleChatWriteBudgets
+  /** The operator's `features.wechat` switch; off, WeChat integrations get no connection. */
+  weChatEnabled(): boolean
   agents(): Map<string, LoadedAgent>
   /** The roster consolidation counts credentials over — evaluation-owned agents excluded. */
   transportAgents(agents?: LoadedAgent[]): LoadedAgent[]
@@ -352,9 +360,21 @@ export class ConnectionReconciler {
   readonly weChatPool = new ConnectionPool<WeChatConnection>('wechat', (conn) => weChatConnKey(conn.group))
   // Read once at daemon start (wechat-integration.md §6).
   private readonly weChatEndpoints = weChatEndpointOverrides()
+  private weChatOffLogged = false
+
+  // With `features.wechat` off every WeChat integration is undesired, so none polls and live ones are pruned.
+  private weChatGroups(agents: LoadedAgent[]): Map<string, WeChatConnectionGroup> {
+    const groups = consolidateWeChat(agents, this.weChatEndpoints)
+    if (!groups.size || this.host.weChatEnabled()) return groups
+    if (!this.weChatOffLogged) {
+      this.weChatOffLogged = true
+      this.log.warn('wechat: integrations are configured but features.wechat is off; not connecting')
+    }
+    return new Map()
+  }
 
   async reconcileWeChatConnections(): Promise<void> {
-    for (const [key, group] of consolidateWeChat(this.host.transportAgents(), this.weChatEndpoints)) {
+    for (const [key, group] of this.weChatGroups(this.host.transportAgents())) {
       let conn = this.weChatPool.find(key)
       if (!conn) {
         if (!this.weChatPool.beginConnect(key)) continue
@@ -369,7 +389,7 @@ export class ConnectionReconciler {
         })
         try {
           await conn.start()
-          if (this.host.draining() || !consolidateWeChat(this.host.transportAgents(), this.weChatEndpoints).has(key)) {
+          if (this.host.draining() || !this.weChatGroups(this.host.transportAgents()).has(key)) {
             await conn.stop()
             continue
           }
@@ -639,7 +659,7 @@ export class ConnectionReconciler {
     const msTeamsByIntegration = new Map<string, string>()
     for (const group of msTeams.values())
       for (const { integrationId } of group.integrations) msTeamsByIntegration.set(integrationId, group.key)
-    const weChatGroups = consolidateWeChat(agents, this.weChatEndpoints)
+    const weChatGroups = this.weChatGroups(agents)
     const weChatByIntegration = new Map<string, string>()
     for (const [key, group] of weChatGroups)
       for (const { integrationId } of group.integrations) weChatByIntegration.set(integrationId, key)
