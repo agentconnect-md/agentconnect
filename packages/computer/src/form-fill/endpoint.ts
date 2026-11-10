@@ -10,6 +10,7 @@ import {
   type FormFillRequest
 } from '@agentconnect.md/protocol/computer-form-fill'
 import { WebSocket, WebSocketServer } from 'ws'
+import type { Check } from '../setup.js'
 
 /** A request that could not be answered; `sent` says whether it may have reached the browser. */
 export class FormFillLinkError extends Error {
@@ -46,6 +47,7 @@ interface Pending {
 interface Link {
   socket: WebSocket
   desktop: string
+  version: string
   pid: number
   pending: Map<number, Pending>
   missedPings: number
@@ -59,6 +61,8 @@ export class FormFillEndpoint {
   private readonly links = new Map<string, Link>()
   private nextId = 1
   private pinger: NodeJS.Timeout | undefined
+  // The last build a desktop's browser was refused for: it still runs another extension until it restarts (§10).
+  private readonly refused = new Map<string, { buildId: string; at: number }>()
 
   constructor(private readonly options: FormFillEndpointOptions) {}
 
@@ -99,11 +103,39 @@ export class FormFillEndpoint {
     return this.links.get(desktop)?.socket.readyState === WebSocket.OPEN
   }
 
+  /** Why a desktop has no link, in words an agent or doctor can act on. */
+  unavailableReason(desktop: string): string {
+    const refused = this.refused.get(desktop)
+    return refused
+      ? `this desktop's browser runs another build of the form-fill extension (${refused.buildId}); restart the browser so it loads this one`
+      : "this desktop's browser extension is not connected"
+  }
+
+  /** doctor's live view: which desktops' browsers are connected, and which run another build. */
+  check(): Check {
+    const connected = [...this.links.values()].filter((link) => link.socket.readyState === WebSocket.OPEN)
+    const stale = [...this.refused.entries()].filter(([desktop]) => !this.connected(desktop))
+    if (stale.length)
+      return {
+        name: 'form fill browsers',
+        status: 'warn',
+        detail: `another extension build on desktop ${stale.map(([desktop]) => desktop).join(', ')}`,
+        fix: 'restart the browser there; if it persists, run form-fill install again'
+      }
+    return connected.length
+      ? {
+          name: 'form fill browsers',
+          status: 'ok',
+          detail: `extension ${connected[0]!.version} connected on desktop ${connected.map((link) => link.desktop).join(', ')}`
+        }
+      : { name: 'form fill browsers', status: 'info', detail: 'no browser has connected yet; open the browser' }
+  }
+
   /** Sends one request to a desktop's extension; rejects with {@link FormFillLinkError} when it is not answered. */
   request(desktop: string, body: RequestBody, timeoutMs: number): Promise<FormFillReply> {
     const link = this.links.get(desktop)
     if (!link || link.socket.readyState !== WebSocket.OPEN)
-      return Promise.reject(new FormFillLinkError("this desktop's browser extension is not connected", false))
+      return Promise.reject(new FormFillLinkError(this.unavailableReason(desktop), false))
     const id = this.nextId++
     return new Promise<FormFillReply>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -151,12 +183,21 @@ export class FormFillEndpoint {
         this.options.log(
           `form fill: desktop ${desktop} runs another extension build (${hello?.buildId ?? 'no hello'}); restart its browser`
         )
+        if (hello) this.refused.set(desktop, { buildId: hello.buildId, at: Date.now() })
         socket.close(FORM_FILL_CLOSE.unsupported, 'unsupported extension build')
         return
       }
+      this.refused.delete(desktop)
       const previous = this.links.get(desktop)
       if (previous) this.drop(previous, FORM_FILL_CLOSE.superseded, 'superseded')
-      const link: Link = { socket, desktop, pid: attributed.pid, pending: new Map(), missedPings: 0 }
+      const link: Link = {
+        socket,
+        desktop,
+        version: hello.version,
+        pid: attributed.pid,
+        pending: new Map(),
+        missedPings: 0
+      }
       this.links.set(desktop, link)
       socket.on('message', (raw) => this.onReply(link, String(raw)))
       socket.send(JSON.stringify({ type: 'welcome', protocol: COMPUTER_FORM_FILL_PROTOCOL }))

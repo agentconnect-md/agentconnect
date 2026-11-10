@@ -108,6 +108,25 @@ describe('form fill endpoint (computer-form-fill-and-vault.md §8)', () => {
     expect((lost as FormFillLinkError).sent).toBe(true)
   })
 
+  it('reports in doctor which browsers are connected, and which run another build, and tells an agent why', async () => {
+    const { port } = await start({ profile: '/profiles/d1' })
+    expect(endpoint!.check()).toMatchObject({ status: 'info' })
+    const stale = await dial(port)
+    await hello(stale, 'stale-build')
+    expect(await stale.closed).toBe(4426)
+    expect(endpoint!.check()).toMatchObject({ status: 'warn', detail: 'another extension build on desktop d1' })
+    expect(endpoint!.unavailableReason('d1')).toMatch(/restart the browser/)
+    const fresh = await dial(port)
+    await hello(fresh)
+    await until(() => endpoint!.connected('d1'))
+    expect(endpoint!.check()).toEqual({
+      name: 'form fill browsers',
+      status: 'ok',
+      detail: 'extension 2.0.0 connected on desktop d1'
+    })
+    expect(endpoint!.unavailableReason('d1')).toBe("this desktop's browser extension is not connected")
+  })
+
   it('lets a newer link from the same desktop supersede the older one', async () => {
     const { port } = await start({ profile: '/profiles/main' })
     const first = await dial(port)

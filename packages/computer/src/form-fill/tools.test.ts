@@ -21,6 +21,7 @@ async function start(principal: McpPrincipal) {
   const desktops: string[] = []
   const service = new FormFillService({
     connected: () => true,
+    unavailableReason: () => 'not connected',
     request: async (desktop, body) => {
       desktops.push(desktop)
       const { requestId } = body as { requestId: string }

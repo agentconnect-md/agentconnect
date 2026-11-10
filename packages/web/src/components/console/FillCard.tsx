@@ -144,6 +144,7 @@ export function FillCard({
             </label>
           ))}
           <span className={HINT}>{unmaskedSecret ? t('unmaskedNote') : t('privacyNote')}</span>
+          {body.kind === 'login' ? <span className={HINT}>{t('sessionNote')}</span> : null}
           {error ? (
             <span className="inline-flex min-w-0 items-start gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--brand-soft-text)">
               <span className="mt-[2px] flex-none">

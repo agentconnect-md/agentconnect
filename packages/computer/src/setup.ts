@@ -1,5 +1,5 @@
 import { FORM_FILL_EXTENSION } from './form-fill/build.js'
-import { detectBrowsers, formFillCheck } from './form-fill/desktop-install.js'
+import { configuredFormFillPort, detectBrowsers, formFillCheck } from './form-fill/desktop-install.js'
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join } from 'node:path'
@@ -172,7 +172,7 @@ export async function doctor(ctx: SetupContext, captureTimeoutMs = 15_000): Prom
     checks.push(
       formFillCheck({
         build: FORM_FILL_EXTENSION,
-        port: config.formFillPort,
+        port: configuredFormFillPort(config.formFillPort),
         browsers: detectBrowsers(),
         command: selfCommand()
       })
