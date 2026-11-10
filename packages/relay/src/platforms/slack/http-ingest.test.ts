@@ -1064,10 +1064,12 @@ describe('SlackHttpIngest events', () => {
     }
   )
 
-  // App lifecycle (preset-agents.md §5.3): the workspace pulled the app / revoked
-  // its tokens. Not a chat event — it has no user/bot_id, so without the explicit
-  // branch the routable-event filters would silently drop it.
-  it.each(['app_uninstalled', 'tokens_revoked'] as const)('reports %s upstream as a bot revocation', async (type) => {
+  // Lifecycle events bypass chat filters but must identify a revoked bot grant.
+  it.each([
+    { type: 'app_uninstalled' },
+    { type: 'tokens_revoked', tokens: { bot: ['UBOT'] } },
+    { type: 'tokens_revoked', tokens: { bot: ['UOTHER', 'UBOT'], oauth: ['U-ALICE'] } }
+  ])('reports $type upstream as a bot revocation', async (event) => {
     const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT' })) } }
     const onBotRevoked = vi.fn()
     const onMessage = vi.fn(async () => 'accepted' as const)
@@ -1078,11 +1080,34 @@ describe('SlackHttpIngest events', () => {
     )
     await ingest.start()
 
-    // The envelope's `event_time` rides along (already ms here): the CP fences a
-    // revocation that predates the credential it would kill.
-    await ingest.handleEvent({ type }, 1_700_000_000_000)
+    // Preserve the envelope time so the CP can fence delayed revocations.
+    await ingest.handleEvent(event, 1_700_000_000_000)
 
-    expect(onBotRevoked).toHaveBeenCalledWith(type, { evidence: 'event', eventAtMs: 1_700_000_000_000 })
+    expect(onBotRevoked).toHaveBeenCalledWith(event.type, { evidence: 'event', eventAtMs: 1_700_000_000_000 })
+    expect(onMessage).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { name: 'personal tokens only', tokens: { oauth: ['U-ALICE'] } },
+    { name: 'empty bot list', tokens: { oauth: ['U-ALICE'], bot: [] } },
+    { name: 'another bot', tokens: { bot: ['UOTHER'] } },
+    { name: 'missing tokens', tokens: undefined },
+    { name: 'malformed bot list', tokens: { bot: 'UBOT' } },
+    { name: 'unknown bot identity', tokens: { bot: ['UBOT', ''] }, botUserId: '' }
+  ])('ignores token revocation for $name', async ({ tokens, botUserId = 'UBOT' }) => {
+    const web = { auth: { test: vi.fn(async () => ({ user_id: botUserId })) } }
+    const onBotRevoked = vi.fn()
+    const onMessage = vi.fn(async () => 'accepted' as const)
+    const ingest = new SlackHttpIngest(
+      'bot',
+      { botToken: 'xoxb', signingSecret: 's' },
+      deps(web, { onBotRevoked, onMessage })
+    )
+    await ingest.start()
+
+    await ingest.handleEvent({ type: 'tokens_revoked', tokens }, 1_700_000_000_000)
+
+    expect(onBotRevoked).not.toHaveBeenCalled()
     expect(onMessage).not.toHaveBeenCalled()
   })
 

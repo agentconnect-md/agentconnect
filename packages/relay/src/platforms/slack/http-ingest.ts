@@ -42,6 +42,7 @@ export type SlackMessageEvent = SlackMessageLike & {
   /** Who added the member, on a `member_joined_channel`. */
   inviter?: string
   assistant_thread?: { user_id?: string; channel_id?: string; thread_ts?: string }
+  tokens?: { bot?: unknown; oauth?: unknown }
 }
 
 /** block_id / action_id of the modal's agent selector (local to this file). */
@@ -621,11 +622,12 @@ export class SlackHttpIngest {
           })
         return
       }
-      // App lifecycle: the workspace pulled the app / revoked its tokens. Not a
-      // chat event (no user/bot_id — isRoutableEvent would drop it), so branch
-      // before the chat filters. `tokens_revoked` is treated as a full revoke —
-      // the app has exactly one bot token, and Slack sends it when that dies.
+      // Personal token revocations must not disconnect the workspace's bot.
       if (event?.type === 'app_uninstalled' || event?.type === 'tokens_revoked') {
+        if (event.type === 'tokens_revoked') {
+          const bot = event.tokens?.bot
+          if (!this.botUserId || !Array.isArray(bot) || !bot.includes(this.botUserId)) return
+        }
         this.deps.onBotRevoked?.(event.type, { evidence: 'event', ...(eventAtMs !== undefined ? { eventAtMs } : {}) })
         return
       }
