@@ -61,7 +61,7 @@ beforeEach(() => {
     id: 'login-1',
     status: 'waiting',
     qrUrl: 'https://liteapp.weixin.qq.com/q/abc',
-    expiresAt: '2026-11-10T00:10:00.000Z',
+    expiresAt: new Date(Date.now() + 120_000).toISOString(),
     failureReason: null,
     integrationId: null,
     botId: null,

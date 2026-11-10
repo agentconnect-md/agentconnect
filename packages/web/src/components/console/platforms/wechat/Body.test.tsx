@@ -20,6 +20,7 @@ vi.mock('./api', () => ({ weChatApi: { startLogin: mocks.startLogin, getLogin: m
 
 import { ApiError } from '@/lib/api'
 import { WeChatWizardBody } from './Body'
+import { WECHAT_POLL_MIN_INTERVAL_MS } from './login'
 
 const agent = { id: 'agent-a', name: 'deploy-bot' } as unknown as Agent
 const QR = 'https://liteapp.weixin.qq.com/q/abc?qrcode=1'
@@ -86,6 +87,12 @@ async function answer(next: WeChatLoginDto): Promise<void> {
   await act(async () => poll.resolve(next))
 }
 
+/** Answer the oldest pending long poll, then let the paced follow-up poll start. */
+async function answerAndFollow(next: WeChatLoginDto): Promise<void> {
+  await answer(next)
+  await act(async () => new Promise((resolve) => setTimeout(resolve, WECHAT_POLL_MIN_INTERVAL_MS + 20)))
+}
+
 async function type(input: HTMLInputElement, value: string): Promise<void> {
   await act(async () => {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, value)
@@ -136,12 +143,12 @@ describe('WeChatWizardBody', () => {
     expect(mocks.polls).toHaveLength(1)
     expect(mocks.polls[0]!.id).toBe('login-1')
 
-    // A refreshed code replaces the old one and the next poll follows at once.
-    await answer(dto({ qrUrl: `${QR}&r=2` }))
+    // A refreshed code replaces the old one and the next poll follows.
+    await answerAndFollow(dto({ qrUrl: `${QR}&r=2` }))
     expect(host.querySelector(`a[href="${QR}&r=2"]`)).not.toBeNull()
     expect(mocks.polls).toHaveLength(1)
 
-    await answer(dto({ status: 'scanned' }))
+    await answerAndFollow(dto({ status: 'scanned' }))
     expect(text()).toContain('confirm on your phone')
     expect(mocks.polls).toHaveLength(1)
 
@@ -171,7 +178,7 @@ describe('WeChatWizardBody', () => {
     await answer(dto({ status: 'verify_code', qrUrl: null }))
     expect(text()).toContain("didn't match")
     await click('Confirm')
-    await answer(dto({ status: 'scanned' }))
+    await answerAndFollow(dto({ status: 'scanned' }))
     expect(mocks.polls[0]!.options.verifyCode).toBeUndefined()
   })
 
@@ -201,7 +208,7 @@ describe('WeChatWizardBody', () => {
     expect(host.querySelector('svg[role="img"]')).not.toBeNull()
   })
 
-  it('counts the code down and stops polling once it runs out', async () => {
+  it('masks the code at its deadline but still takes the poll already in flight', async () => {
     vi.useFakeTimers()
     try {
       await render()
@@ -212,7 +219,33 @@ describe('WeChatWizardBody', () => {
       const signal = mocks.polls[0]!.options.signal!
       await act(async () => vi.advanceTimersByTime(60_000))
       expect(text()).toContain('QR code expired')
-      expect(signal.aborted).toBe(true)
+      expect(signal.aborted).toBe(false)
+      // A scan that landed at the deadline still shows.
+      await answer(dto({ status: 'scanned' }))
+      expect(text()).toContain('confirm on your phone')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stops polling once the server reports the code past its deadline', async () => {
+    await render()
+    await click('Show QR code')
+    await answer(dto({ expiresAt: new Date(Date.now() - 1000).toISOString() }))
+    expect(text()).toContain('QR code expired')
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 1100)))
+    expect(mocks.polls).toHaveLength(0)
+  })
+
+  it('spaces out polls that come back at once', async () => {
+    vi.useFakeTimers()
+    try {
+      await render()
+      await click('Show QR code')
+      await answer(dto())
+      expect(mocks.polls).toHaveLength(0)
+      await act(async () => vi.advanceTimersByTime(1000))
+      expect(mocks.polls).toHaveLength(1)
     } finally {
       vi.useRealTimers()
     }

@@ -10,6 +10,9 @@ import { weChatApi, type WeChatLoginDto } from './api'
 // A failed poll that is not a refusal (network, 5xx) retries after this pause rather than ending the login.
 export const WECHAT_POLL_RETRY_MS = 2000
 
+// The least time between two polls, so an answer that comes back at once never turns into a tight loop.
+export const WECHAT_POLL_MIN_INTERVAL_MS = 1000
+
 type FailureKey = 'failed.expired' | 'failed.verifyCodeBlocked' | 'failed.agentUnavailable' | 'failed.setupFailed'
 
 const FAILURES: Record<NonNullable<WeChatLoginDto['failureReason']>, FailureKey> = {
@@ -67,14 +70,10 @@ export function useWeChatLogin(input: {
     return () => clearInterval(tick)
   }, [waiting])
 
-  // A code that ran out stops polling; the member asks for a fresh one.
-  useEffect(() => {
-    if (timedOut) setPoll(null)
-  }, [timedOut])
-
   useEffect(() => {
     if (!poll) return
     const ctrl = new AbortController()
+    const began = Date.now()
     let retry: ReturnType<typeof setTimeout> | undefined
     weChatApi
       .getLogin(poll.id, { ...(poll.verifyCode ? { verifyCode: poll.verifyCode } : {}), signal: ctrl.signal })
@@ -83,9 +82,12 @@ export function useWeChatLogin(input: {
           if (ctrl.signal.aborted) return
           setLogin(next)
           setCodeRejected(poll.verifyCode !== undefined && next.status === 'verify_code')
-          // A verification prompt waits for the member's number instead of polling without one.
-          if (next.status === 'waiting' || next.status === 'scanned') setPoll({ id: poll.id, n: poll.n + 1 })
-          else setPoll(null)
+          // A verification prompt waits for the member's number; an unscanned code past its deadline waits for a refresh.
+          const expired = next.status === 'waiting' && Date.parse(next.expiresAt) <= Date.now()
+          if ((next.status === 'waiting' && !expired) || next.status === 'scanned') {
+            const pause = Math.max(0, WECHAT_POLL_MIN_INTERVAL_MS - (Date.now() - began))
+            retry = setTimeout(() => setPoll({ id: poll.id, n: poll.n + 1 }), pause)
+          } else setPoll(null)
           if (next.status === 'completed') onCompleted.current(next)
         },
         (error: unknown) => {

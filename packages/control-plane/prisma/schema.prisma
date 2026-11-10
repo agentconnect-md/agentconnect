@@ -3275,6 +3275,9 @@ model WechatPendingLogin {
   baseUrl         String?
   integrationId   String?   @db.Uuid
   resultBotId     String?   @db.Uuid
+  // One poll at a time installs a confirmed login, across replicas; an expired claim is free again.
+  claimToken      String?   @db.Uuid
+  claimedUntil    DateTime? @db.Timestamptz(6)
   expiresAt       DateTime  @db.Timestamptz(6)
   createdAt       DateTime  @default(now()) @db.Timestamptz(6)
   settledAt       DateTime? @db.Timestamptz(6)

@@ -194,4 +194,33 @@ describe('WeChat QR login', () => {
     })
     expect(created.statusCode).toBe(400)
   })
+
+  it('installs once when two polls of a confirmed login overlap', async () => {
+    const agentId = await placedAgent()
+    const { app } = harness([confirmed('twice@im.bot'), confirmed('twice@im.bot')])
+    const login = (await start(app, { agentId })).json() as { id: string }
+    const [a, b] = await Promise.all([poll(app, login.id), poll(app, login.id)])
+    expect([a.statusCode, b.statusCode]).toEqual([200, 200])
+    expect(await prisma.bot.count({ where: { platform: 'wechat' } })).toBe(1)
+    expect(await prisma.integration.count({ where: { agentId } })).toBe(1)
+    expect((await poll(app, login.id)).json()).toMatchObject({ status: 'completed' })
+  })
+
+  it('refuses an API key on both login routes', async () => {
+    const agentId = await placedAgent()
+    const { app } = harness([])
+    const personal = (
+      await app.app.inject({ method: 'POST', url: '/api/v1/me/keys', payload: { orgId: DEFAULT_ORG_ID } })
+    ).json() as { apiKey: string }
+    const headers = { authorization: `Bearer ${personal.apiKey}` }
+    for (const request of [
+      { method: 'POST' as const, url: `${ORG}/integrations/wechat/login`, payload: { agentId } },
+      { method: 'GET' as const, url: `${ORG}/integrations/wechat/login/${randomUUID()}` }
+    ]) {
+      const res = await app.app.inject({ ...request, headers })
+      expect(res.statusCode, request.url).toBe(403)
+      expect(res.json().message).toBe('interactive sign-in required')
+    }
+    expect(await prisma.wechatPendingLogin.count()).toBe(0)
+  })
 })

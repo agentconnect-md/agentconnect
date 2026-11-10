@@ -18,6 +18,8 @@ CREATE TABLE "wechat_pending_login" (
     "baseUrl" TEXT,
     "integrationId" UUID,
     "resultBotId" UUID,
+    "claimToken" UUID,
+    "claimedUntil" TIMESTAMPTZ(6),
     "expiresAt" TIMESTAMPTZ(6) NOT NULL,
     "createdAt" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "settledAt" TIMESTAMPTZ(6),

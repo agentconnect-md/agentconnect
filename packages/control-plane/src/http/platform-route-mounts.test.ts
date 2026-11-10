@@ -247,6 +247,9 @@ async function builtServer(): Promise<{ app: FastifyInstance; routes: string[]; 
   return { app, routes, platforms }
 }
 
+// Interactive-only routes leave the OpenAPI document, so the conventions check skips them.
+const INTERACTIVE_ONLY_MOUNTS = new Set(['POST /integrations/wechat/login', 'GET /integrations/wechat/login/:id'])
+
 describe('platform route mounts', () => {
   it('mounts every provider plugin at its pinned paths, and the callbacks at BOTH public prefixes', async () => {
     const { app, routes, platforms } = await builtServer()
@@ -358,6 +361,7 @@ describe('platform route mounts', () => {
       }
       const documented = Object.values(EXPECTED_MOUNTS.org)
         .flat()
+        .filter((route) => !INTERACTIVE_ONLY_MOUNTS.has(route))
         .map((route) => {
           const [method, path] = route.split(' ') as [string, string]
           return { method: method.toLowerCase(), url: `/api/v1/orgs/{orgId}${path.replace(/:(\w+)/g, '{$1}')}` }

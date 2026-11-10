@@ -20,6 +20,7 @@ const API = 'https://ilinkai.weixin.qq.com'
 
 function memoryStore(): WechatPendingLoginStore & { rows: Map<string, WechatPendingLoginRecord> } {
   const rows = new Map<string, WechatPendingLoginRecord>()
+  const claims = new Map<string, { token: string; until: Date }>()
   const open = (r: WechatPendingLoginRecord) => !['completed', 'failed'].includes(r.status)
   return {
     rows,
@@ -55,6 +56,15 @@ function memoryStore(): WechatPendingLoginStore & { rows: Map<string, WechatPend
     },
     async authorize(_orgId, id, result) {
       Object.assign(rows.get(id)!, { status: 'authorized', qrcode: null, ...result })
+    },
+    async claim(_orgId, id, token, now, until) {
+      const row = rows.get(id)!
+      if (row.status !== 'authorized' || (claims.get(id) && claims.get(id)!.until > now)) return false
+      claims.set(id, { token, until })
+      return true
+    },
+    async release(_orgId, id, token) {
+      if (claims.get(id)?.token === token) claims.delete(id)
     },
     async settle(_orgId, id, outcome, at) {
       const row = rows.get(id)!
@@ -162,6 +172,35 @@ describe('WeChat QR login service', () => {
     await expect(service.poll(ORG, 'member-1', login.id, async () => installed)).resolves.toMatchObject({
       status: 'failed',
       failureReason: 'expired'
+    })
+  })
+
+  it('installs a confirmed login once when two polls overlap', async () => {
+    const store = memoryStore()
+    const service = new WeChatLoginService(store, client([confirmed, confirmed]), API)
+    const login = await service.start({ orgId: ORG, agentId: AGENT, createdByUserId: 'member-1' })
+    let calls = 0
+    let finish!: () => void
+    const finalize = async () => {
+      calls += 1
+      await new Promise<void>((resolve) => (finish = resolve))
+      return installed
+    }
+    const first = service.poll(ORG, 'member-1', login.id, finalize)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await expect(service.poll(ORG, 'member-1', login.id, finalize)).resolves.toMatchObject({ status: 'scanned' })
+    finish()
+    await expect(first).resolves.toMatchObject({ status: 'completed' })
+    expect(calls).toBe(1)
+  })
+
+  it('counts a scan that lands at the deadline', async () => {
+    let now = Date.parse('2026-11-10T00:00:00Z')
+    const service = new WeChatLoginService(memoryStore(), client([{ status: 'scaned' }]), API, () => now)
+    const login = await service.start({ orgId: ORG, agentId: AGENT, createdByUserId: 'member-1' })
+    now += WECHAT_QR_TTL_MS + 1
+    await expect(service.poll(ORG, 'member-1', login.id, async () => installed)).resolves.toMatchObject({
+      status: 'scanned'
     })
   })
 })

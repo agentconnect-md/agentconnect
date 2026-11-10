@@ -111,6 +111,26 @@ export class PgWechatPendingLoginStore implements WechatPendingLoginStore {
     })
   }
 
+  async claim(orgId: OrgId, id: string, token: string, now: Date, until: Date): Promise<boolean> {
+    const { count } = await this.prisma.wechatPendingLogin.updateMany({
+      where: {
+        id,
+        orgId,
+        status: 'authorized',
+        OR: [{ claimedUntil: null }, { claimedUntil: { lte: now } }]
+      },
+      data: { claimToken: token, claimedUntil: until }
+    })
+    return count === 1
+  }
+
+  async release(orgId: OrgId, id: string, token: string): Promise<void> {
+    await this.prisma.wechatPendingLogin.updateMany({
+      where: { id, orgId, claimToken: token },
+      data: { claimToken: null, claimedUntil: null }
+    })
+  }
+
   async settle(
     orgId: OrgId,
     id: string,
@@ -125,6 +145,8 @@ export class PgWechatPendingLoginStore implements WechatPendingLoginStore {
         targetKey: null,
         qrcode: null,
         botToken: null,
+        claimToken: null,
+        claimedUntil: null,
         settledAt: at,
         ...(outcome.status === 'completed'
           ? { integrationId: outcome.integrationId, resultBotId: outcome.botId }

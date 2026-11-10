@@ -99,32 +99,35 @@ async function republish(deps: HttpDeps, req: FastifyRequest, orgId: OrgId, bot:
 function finalizer(deps: HttpDeps, req: FastifyRequest) {
   return async (login: WeChatConfirmedLogin): Promise<{ integrationId: IntegrationId; botId: BotId }> => {
     const orgId = login.orgId
-    const agent = await deps.repos.agent.get(orgId, login.agentId)
-    if (!agent || !canView(agent, ctxOf(req)) || !canEdit(agent, ctxOf(req))) {
-      throw new WeChatLoginSetupError('agent_unavailable')
-    }
-    const identity = weChatBotIdentity(login)
-    if (login.botId) {
-      const bot = await deps.repos.bot.get(orgId, login.botId)
-      if (!bot || bot.platform !== WECHAT_PLATFORM_ID) throw new WeChatLoginSetupError('setup_failed')
-      const integration = (await deps.repos.integration.listForBot(bot.id)).find((i) => i.agentId === agent.id)
-      if (!integration) throw new WeChatLoginSetupError('agent_unavailable')
-      // A re-scan issues a new bot id and token for the same WeChat user (§2.3), replaced in place.
-      await deps.repos.botCredential.install(orgId, bot.id, material(login), new Date(deps.clock.now()))
-      await deps.repos.bot.mergeBotIdentity(orgId, bot.id, () => ({ platformConfig: identity }))
-      const current = await deps.repos.bot.get(orgId, bot.id)
-      if (current) await republish(deps, req, orgId, current)
-      return { integrationId: integration.id, botId: bot.id }
-    }
-    // A retried install whose rows already landed finds them by the bot id this login issued.
-    for (const bot of await deps.repos.bot.listForOrg(orgId)) {
-      if (bot.platform !== WECHAT_PLATFORM_ID || bot.platformConfig?.wechatBotId !== login.ilinkBotId) continue
-      const integration = (await deps.repos.integration.listForBot(bot.id)).find((i) => i.agentId === agent.id)
-      if (integration) return { integrationId: integration.id, botId: bot.id }
-    }
-    const release = deps.agentMutations.tryBeginMutation(agent.id)
+    // The agent is read and authorized under the move gate, so the install lands on its current placement.
+    const release = deps.agentMutations.tryBeginMutation(login.agentId)
     if (!release) throw new PlacementBusy('agent placement is changing')
     try {
+      const agent = await deps.repos.agent.get(orgId, login.agentId)
+      if (!agent || !canView(agent, ctxOf(req)) || !canEdit(agent, ctxOf(req))) {
+        throw new WeChatLoginSetupError('agent_unavailable')
+      }
+      const identity = weChatBotIdentity(login)
+      if (login.botId) {
+        const bot = await deps.repos.bot.get(orgId, login.botId)
+        if (!bot || bot.platform !== WECHAT_PLATFORM_ID) throw new WeChatLoginSetupError('setup_failed')
+        const integration = (await deps.repos.integration.listForBot(bot.id)).find((i) => i.agentId === agent.id)
+        if (!integration) throw new WeChatLoginSetupError('agent_unavailable')
+        // A re-scan issues a new bot id and token for the same WeChat user (§2.3), replaced in place.
+        await deps.repos.botCredential.install(orgId, bot.id, material(login), new Date(deps.clock.now()))
+        await deps.repos.bot.mergeBotIdentity(orgId, bot.id, () => ({ platformConfig: identity }))
+        const current = await deps.repos.bot.get(orgId, bot.id)
+        if (current) await republish(deps, req, orgId, current)
+        return { integrationId: integration.id, botId: bot.id }
+      }
+      // A retried install whose rows already landed finds them by the bot id this login issued, and publishes them again.
+      for (const bot of await deps.repos.bot.listForOrg(orgId)) {
+        if (bot.platform !== WECHAT_PLATFORM_ID || bot.platformConfig?.wechatBotId !== login.ilinkBotId) continue
+        const integration = (await deps.repos.integration.listForBot(bot.id)).find((i) => i.agentId === agent.id)
+        if (!integration) continue
+        await republish(deps, req, orgId, bot)
+        return { integrationId: integration.id, botId: bot.id }
+      }
       const placed = await installable(deps, req, agent)
       if (!placed.ok) throw new WeChatLoginSetupError('agent_unavailable')
       const { integration, bot } = await installNewBot(deps, req.log, {
@@ -150,6 +153,8 @@ export function weChatLoginRoutes(deps: HttpDeps, service: WeChatLoginService): 
     r.post(
       '/integrations/wechat/login',
       {
+        // A login installs a bot credential, so only a signed-in member may run it, never an API key or token.
+        config: { interactiveOnly: true },
         schema: {
           tags: [Tag.Integrations],
           summary: 'Start a WeChat QR login',
@@ -210,6 +215,7 @@ export function weChatLoginRoutes(deps: HttpDeps, service: WeChatLoginService): 
     r.get(
       '/integrations/wechat/login/:id',
       {
+        config: { interactiveOnly: true },
         schema: {
           tags: [Tag.Integrations],
           summary: 'Poll a WeChat QR login',

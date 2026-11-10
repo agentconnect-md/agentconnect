@@ -7,6 +7,9 @@ import { weChatPollHost, type WeChatLoginClient } from './ilink.js'
 /** How long one QR code is offered; WeChat expires its codes after about two minutes (§2.2). */
 export const WECHAT_QR_TTL_MS = 2 * 60 * 1000
 
+/** How long one poll holds a confirmed login's install before another may take it over. */
+export const WECHAT_INSTALL_CLAIM_MS = 2 * 60 * 1000
+
 /** How long a scanned login may wait for the member's confirmation. */
 export const WECHAT_LOGIN_TTL_MS = 10 * 60 * 1000
 
@@ -149,13 +152,20 @@ export class WeChatLoginService {
     if (!row || row.createdByUserId !== userId) return null
     if (row.status === 'completed' || row.status === 'failed') return snapshot(row)
     const now = new Date(this.now())
-    if (timedOut(row, now)) {
+    // An unscanned code past its deadline still gets one status call, so a scan that landed at the deadline counts.
+    if (row.status !== 'waiting' && timedOut(row, now)) {
       await this.store.settle(orgId, id, { status: 'failed', failureReason: 'expired' }, now)
       return this.reread(orgId, row)
     }
     if (row.status !== 'authorized') {
       const confirmed = await this.check(row, verifyCode)
-      if (!confirmed) return this.reread(orgId, row)
+      if (!confirmed) {
+        const after = await this.store.get(orgId, id)
+        if (after?.status === 'waiting' && timedOut(after, new Date(this.now()))) {
+          await this.store.settle(orgId, id, { status: 'failed', failureReason: 'expired' }, new Date(this.now()))
+        }
+        return this.reread(orgId, row)
+      }
     }
     return this.install(orgId, id, finalize)
   }
@@ -233,6 +243,12 @@ export class WeChatLoginService {
       await this.store.settle(orgId, id, { status: 'failed', failureReason: 'setup_failed' }, new Date(this.now()))
       return this.reread(orgId, row)
     }
+    // A second tab's overlapping poll finds the claim taken and reports the login as still pending.
+    const token = randomUUID()
+    const now = this.now()
+    if (!(await this.store.claim(orgId, id, token, new Date(now), new Date(now + WECHAT_INSTALL_CLAIM_MS)))) {
+      return this.reread(orgId, row)
+    }
     let installed
     try {
       installed = await finalize({
@@ -249,6 +265,8 @@ export class WeChatLoginService {
     } catch (error) {
       if (error instanceof WeChatLoginSetupError) {
         await this.store.settle(orgId, id, { status: 'failed', failureReason: error.reason }, new Date(this.now()))
+      } else {
+        await this.store.release(orgId, id, token)
       }
       return this.reread(orgId, row)
     }

@@ -372,6 +372,30 @@ export async function rewrapAllSecrets(
   }
 
   {
+    // A personal-WeChat QR login's iLink handle and confirmed bot token; both are cleared on settle, so most rows reseal nothing.
+    let rows = 0
+    let values = 0
+    let skipped = 0
+    for (const r of await prisma.wechatPendingLogin.findMany()) {
+      if (r.qrcode === null && r.botToken === null) continue
+      const scope = orgScope(OrgId(r.orgId))
+      const res = await prisma.wechatPendingLogin.updateMany({
+        where: { id: r.id, qrcode: r.qrcode, botToken: r.botToken },
+        data: {
+          qrcode: await resealNullable(r.qrcode, scope),
+          botToken: await resealNullable(r.botToken, scope)
+        }
+      })
+      if (res.count === 0) skipped += 1
+      else {
+        rows += 1
+        values += (r.qrcode === null ? 0 : 1) + (r.botToken === null ? 0 : 1)
+      }
+    }
+    done('wechat_pending_login', rows, values, skipped)
+  }
+
+  {
     // A managed computer egress proxy's password (computer-use.md §15.4); most organizations store none.
     let rows = 0
     let skipped = 0

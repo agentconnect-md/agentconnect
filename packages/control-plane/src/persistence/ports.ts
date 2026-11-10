@@ -6176,6 +6176,10 @@ export interface WechatPendingLoginStore {
     id: string,
     result: { botToken: string; ilinkBotId: string; ilinkUserId: string; baseUrl: string | null }
   ): Promise<void>
+  /** Take the one install of a confirmed login until `until`; false while another poll holds it. */
+  claim(orgId: OrgId, id: string, token: string, now: Date, until: Date): Promise<boolean>
+  /** Hand a claim back after a failed install, so the next poll retries it. */
+  release(orgId: OrgId, id: string, token: string): Promise<void>
   /** End a login, releasing its target and dropping the sealed handle and token. */
   settle(
     orgId: OrgId,
