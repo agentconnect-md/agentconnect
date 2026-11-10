@@ -60,6 +60,9 @@ RUN AGENTCONNECT_COMPUTER_HOME=/opt/agentconnect/tools node /opt/agentconnect/ag
   && chmod -R a+rX /opt/agentconnect \
   && printf '#!/bin/sh\nexec node /opt/agentconnect/agentconnect-computer.mjs "$@"\n' > /usr/local/bin/agentconnect-computer \
   && chmod 755 /usr/local/bin/agentconnect-computer
+# The form-fill extension, force-installed by managed policy from a local CRX; its id follows the extension build (§8).
+RUN node /opt/agentconnect/agentconnect-computer.mjs install-extension /opt/agentconnect/extension \
+  --policy-dir /etc/chromium/policies/managed --form-fill-port 7682 && chmod -R a+rX /opt/agentconnect/extension
 
 # Chromium's launcher sources /etc/chromium.d, which reads the egress forwarder's port in a managed pod (§15.4).
 COPY packages/computer/docker/chromium-flags /etc/chromium.d/agentconnect
@@ -75,7 +78,7 @@ USER computer
 WORKDIR /home/computer
 # 1280x800 is the screenshot size (§5.3); isolation is declared, since /.dockerenv is absent under Podman and Kubernetes.
 # npm -g, go install and cargo install land in the home volume; Debian's Go would otherwise refuse a newer go.mod.
-ENV RESOLUTION=1280x800x24 LISTEN_HOST=0.0.0.0 PORT=7681 BROWSER=chromium \
+ENV RESOLUTION=1280x800x24 LISTEN_HOST=0.0.0.0 PORT=7681 FORM_FILL_PORT=7682 BROWSER=chromium \
   AGENTCONNECT_COMPUTER_HOME=/home/computer/.agentconnect/computer AGENTCONNECT_COMPUTER_ISOLATION=container \
   NPM_CONFIG_PREFIX=/home/computer/.local GOTOOLCHAIN=auto PATH=/home/computer/.local/bin:/home/computer/go/bin:/home/computer/.cargo/bin:$PATH
 # Home holds the daemon data dir (config, Computer key, audit), the browser profile, and user-installed tools.

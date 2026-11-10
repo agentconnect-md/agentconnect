@@ -300,8 +300,10 @@ is proposed, not existing Vault functionality.
 
 ## 8. Linux extension and execution
 
-Package the extension with the Computer release/image, with a stable extension
-ID. The container image installs it without a store using supported Chromium
+Package the extension with the Computer release/image. Its ID is stable per
+extension build: the CRX is signed with a P-256 key derived from the build ID,
+so one build always installs under one ID and a changed extension under a new
+one. The container image installs it without a store using supported Chromium
 loading/installation facilities. Linux desktop packaging verifies Chrome and
 Chromium distribution paths, ownership and whether elevated installation is
 needed. Snap/Flatpak and Firefox are not promised initially. No macOS/Windows
@@ -316,6 +318,12 @@ extension reads from `chrome.storage.managed`. On first install that value can
 arrive after the service worker starts, so the extension reconnects when the
 managed area changes. Debian's Chromium wrapper passes its own
 `--load-extension`, which a launcher's later `--load-extension` replaces.
+The daemon bundle embeds the extension, and `agentconnect-computer
+install-extension` writes the CRX, a `file://` update manifest and the policy at
+image build. Chromium installs a `file://` forced CRX signed only with ECDSA.
+An image with a changed extension names a new ID in the force-install list, so
+Chromium removes the old extension and installs the new one when the browser
+restarts. This avoids relying on in-place updates (§8.2).
 
 The local transport is an extension service-worker WebSocket to the desktop
 daemon's loopback endpoint. Bind to loopback and require the extension's
@@ -323,18 +331,21 @@ daemon's loopback endpoint. Bind to loopback and require the extension's
 does not stop a same-host client from forging the header, and an arbitrary first
 connection is not necessarily the browser the agent is operating. On Linux the
 daemon therefore attributes each accepted socket to its owning process, Chromium's
-network service. It then walks up to the browser process and maps that process's
-`--user-data-dir` to a desktop, rejecting any peer that does not resolve to a
-known profile. Child processes rewrite their title into one string, so read the
-browser ancestor's arguments, not the child's. This needs read access to the
-browser's `/proc` entries (same user or root).
+network service. It then walks up to the browser process, identified by its
+`/proc/<pid>/exe` and the absence of a `--type=` switch, and picks the known
+desktop profile under which that browser holds files open. It rejects any peer
+that does not resolve to a known profile. Chromium rewrites every process title,
+the browser's own included, into one space-joined string, so `--user-data-dir`
+is not parsed from it. This needs read access to the browser's `/proc` entries
+(same user or root).
 
 Managed pods route browser loopback traffic through the egress forwarder
 (`--proxy-bypass-list=<-loopback>` in `packages/computer/docker/chromium-flags`).
 With that flag the daemon sees the forwarder as the peer and rejects every
 extension connection. Exempt the extension endpoint from the proxy
 (`<-loopback>;127.0.0.1:<port>`, leaving page loopback traffic proxied), or have
-the forwarder attribute the tunneled socket itself. A 20-second ping keeps the
+the forwarder attribute the tunneled socket itself; the image exempts the
+endpoint. A 20-second ping keeps the
 MV3 worker's socket open and an alarm reconnects a terminated worker. Native
 Messaging remains a fallback if needed.
 
@@ -403,7 +414,8 @@ assertions and 12 encryption checks passed.
 | Desktop attribution     | Two profiles connected at once and each was attributed to its desktop through `/proc`; a forged-Origin local client and a web-page WebSocket were rejected.                |
 | Canary oracle           | 11 canaries reached the websites and none appeared in daemon or Chromium logs, the vault file or 22 model-visible results.                                                 |
 
-Open after the spike: a forced-install extension never updated in place. After
+Open after the spike, and avoided rather than solved by per-build IDs (§8): a
+forced-install extension never updated in place. After
 install Chromium did not fetch the update manifest again, and
 `requestUpdateCheck()` returned `no_update` and then `throttled`. Until the cause
 is known, assume a new extension version arrives only with a fresh profile or an
@@ -512,9 +524,8 @@ validation and cannot be a deterministic CI acceptance gate.
 These are engineering proposals or unfinished details, not missing product approval:
 
 - Transport, profile attribution, permissions, endpoint authentication and
-  policy packaging are demonstrated on Linux Chromium (§8.2). Still open: why
-  forced-install updates did not apply in place, and the managed-pod proxy
-  exemption versus forwarder-side attribution (§8).
+  policy packaging are implemented for the container image (§8). Still open: why
+  forced-install updates did not apply in place, which per-build IDs avoid.
 - Define fill/consent timeouts and bounded in-memory lifetimes using existing
   turn cancellation and credential expiry; never resurrect secret input after restart.
 - Define the trusted requester/use authorization on CP credential operations and

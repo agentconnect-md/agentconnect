@@ -71,7 +71,7 @@ describe('profileOwner', () => {
 })
 
 describe('seedProfile', () => {
-  it('copies the master without its locks, caches, open tabs or fork baselines', () => {
+  it('copies the master without its locks, caches, open tabs or fork baselines, keeping service worker scripts', () => {
     const dir = temp()
     const master = masterProfile(dir)
     for (const path of [
@@ -79,6 +79,7 @@ describe('seedProfile', () => {
       'Default/Code Cache/js',
       'GPUCache/x',
       'Default/Sessions/s',
+      'Default/Service Worker/ScriptCache/index',
       'Default/Prefs'
     ]) {
       mkdirSync(join(master, path, '..'), { recursive: true })
@@ -90,7 +91,8 @@ describe('seedProfile', () => {
     seedProfile(master, join(dir, 'desktop'))
 
     expect(readdirSync(join(dir, 'desktop')).sort()).toEqual(['Default', 'Local State'])
-    expect(readdirSync(join(dir, 'desktop', 'Default')).sort()).toEqual(['Cookies', 'Prefs'])
+    expect(readdirSync(join(dir, 'desktop', 'Default')).sort()).toEqual(['Cookies', 'Prefs', 'Service Worker'])
+    expect(readdirSync(join(dir, 'desktop', 'Default', 'Service Worker'))).toEqual(['ScriptCache'])
   })
 })
 
