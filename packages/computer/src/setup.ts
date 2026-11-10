@@ -1,3 +1,5 @@
+import { FORM_FILL_EXTENSION } from './form-fill/build.js'
+import { detectBrowsers, formFillCheck } from './form-fill/desktop-install.js'
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join } from 'node:path'
@@ -167,6 +169,14 @@ export async function doctor(ctx: SetupContext, captureTimeoutMs = 15_000): Prom
     const plan = installPlan()
     const install = plan ? planText(plan) : undefined
     checks.push(desktopsCheck(config.perAgentDesktops, await probeDesktopSupport(), selfCommand(), install))
+    checks.push(
+      formFillCheck({
+        build: FORM_FILL_EXTENSION,
+        port: config.formFillPort,
+        browsers: detectBrowsers(),
+        command: selfCommand()
+      })
+    )
   }
   checks.push(await daemonCheck(config))
   return checks

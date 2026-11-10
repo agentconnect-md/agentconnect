@@ -118,30 +118,49 @@ export function packCrx(zip: Buffer, key: KeyObject): Buffer {
   return Buffer.concat([prefix, header, zip])
 }
 
-/** Writes the CRX, its update manifest and the managed policy that force-installs it and names the endpoint. */
-export function installExtension(options: { build: ExtensionBuild; dir: string; policyDir: string; port: number }): {
+/** The policy file every browser's managed-policy directory gets. */
+export const FORM_FILL_POLICY_FILE = 'agentconnect-form-fill.json'
+
+/** What an install writes: the CRX and its update manifest in `dir`, and one policy that names both by their final paths. */
+export function extensionArtifacts(options: { build: ExtensionBuild; dir: string; port: number }): {
   id: string
   version: string
+  crx: Buffer
+  updateXml: string
+  policy: string
 } {
   const key = extensionKey(options.build.buildId)
   const id = extensionId(key)
   const version = (JSON.parse(options.build.files['manifest.json'] ?? '{}') as { version?: string }).version ?? '0.0.0'
-  mkdirSync(options.dir, { recursive: true })
-  const crx = join(options.dir, 'form-fill.crx')
-  writeFileSync(crx, packCrx(zipStored(options.build.files), key))
-  const manifest = join(options.dir, 'update.xml')
-  writeFileSync(
-    manifest,
-    `<?xml version='1.0' encoding='UTF-8'?>\n<gupdate xmlns='http://www.google.com/update2/response' protocol='2.0'>\n  <app appid='${id}'>\n    <updatecheck codebase='file://${crx}' version='${version}' />\n  </app>\n</gupdate>\n`
-  )
-  mkdirSync(options.policyDir, { recursive: true })
+  const crxPath = join(options.dir, 'form-fill.crx')
+  const manifestPath = join(options.dir, 'update.xml')
+  const updateXml = `<?xml version='1.0' encoding='UTF-8'?>\n<gupdate xmlns='http://www.google.com/update2/response' protocol='2.0'>\n  <app appid='${id}'>\n    <updatecheck codebase='file://${crxPath}' version='${version}' />\n  </app>\n</gupdate>\n`
   // Exactly one install mechanism: the force-install list, never --load-extension as well (§8).
   const policy = {
-    ExtensionInstallForcelist: [`${id};file://${manifest}`],
+    ExtensionInstallForcelist: [`${id};file://${manifestPath}`],
     '3rdparty': { extensions: { [id]: { [COMPUTER_FORM_FILL_ENDPOINT_KEY]: `ws://127.0.0.1:${options.port}/` } } }
   }
-  const target = join(options.policyDir, 'agentconnect-form-fill.json')
-  writeFileSync(`${target}.tmp`, `${JSON.stringify(policy, null, 2)}\n`)
+  return {
+    id,
+    version,
+    crx: packCrx(zipStored(options.build.files), key),
+    updateXml,
+    policy: `${JSON.stringify(policy, null, 2)}\n`
+  }
+}
+
+/** Writes the CRX, its update manifest and the managed policy, as the image build (root) does. */
+export function installExtension(options: { build: ExtensionBuild; dir: string; policyDir: string; port: number }): {
+  id: string
+  version: string
+} {
+  const artifacts = extensionArtifacts(options)
+  mkdirSync(options.dir, { recursive: true })
+  writeFileSync(join(options.dir, 'form-fill.crx'), artifacts.crx)
+  writeFileSync(join(options.dir, 'update.xml'), artifacts.updateXml)
+  mkdirSync(options.policyDir, { recursive: true })
+  const target = join(options.policyDir, FORM_FILL_POLICY_FILE)
+  writeFileSync(`${target}.tmp`, artifacts.policy)
   renameSync(`${target}.tmp`, target)
-  return { id, version }
+  return { id: artifacts.id, version: artifacts.version }
 }

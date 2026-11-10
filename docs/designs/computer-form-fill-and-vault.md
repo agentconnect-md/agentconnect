@@ -345,6 +345,16 @@ An image with a changed extension names a new ID in the force-install list, so
 Chromium removes the old extension and installs the new one when the browser
 restarts. This avoids relying on in-place updates (§8.2).
 
+A person's Linux desktop installs the same artifacts with `agentconnect-computer
+form-fill install`: one confirmed `sudo` step writes the CRX and update manifest
+to `/opt/agentconnect/form-fill` and the policy to `/etc/chromium/policies/managed`
+and `/etc/opt/chrome/policies/managed`. Snap and Flatpak browsers, which do not
+read those directories, are reported as unsupported. `doctor` reports the install
+as current, another build's (reinstall and restart the browser), missing, or
+without an endpoint. Checked in containers on 2026-11-10 against Debian 13
+Chromium, Google Chrome deb, Fedora Chromium and Google Chrome rpm: each
+force-installed the extension, which dialed the endpoint with the bundle's build ID.
+
 The local transport is an extension service-worker WebSocket to the desktop
 daemon's loopback endpoint. Bind to loopback and require the extension's
 `chrome-extension://<id>` Origin, which rejects web-page WebSockets. Origin alone
