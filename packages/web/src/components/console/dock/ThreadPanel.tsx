@@ -247,17 +247,8 @@ export function ThreadPanel({
       : turn
   )
   const [workOverride, setWorkOverride] = useState<ReadonlyMap<string, boolean>>(() => new Map())
-  // A question the holding task asks is answered on the task's own session, which the panel opens while one waits: no browser turn opened it.
-  const awaitsAnswer = turns.some(
-    (turn) => turn.kind === 'bot' && turn.steps.some((step) => step.elicit && !step.elicit.outcome)
-  )
-  // The task's own webchat conversation, where the daemon takes its answers; the coordinator's conversation does not.
+  // The webchat conversation the task's questions wait in: the one its coordinator's conversation and its tasks share.
   const taskConversation = detail?.channel ?? undefined
-  useEffect(() => {
-    if (!holderId || !awaitsAnswer || !taskConversation) return
-    markSessionTarget(holderId)
-    pgAttach(holderId, agentId, taskConversation)
-  }, [holderId, awaitsAnswer, agentId, taskConversation, markSessionTarget, pgAttach])
   // The root leads the thread; the coordinator's work on it from the main timeline sits under it, ahead of the replies.
   const earlierUnread = fromRecord ? thread.hasEarlier : Boolean(session.page?.nextCursor)
   const threadRoot = turns[0]?.kind === 'user' && !earlierUnread ? turns.slice(0, 1) : []
@@ -409,12 +400,11 @@ export function ThreadPanel({
   const title = row?.title ?? task?.title ?? summary?.task?.title ?? t('thread')
   const tone = row ? taskTone(row, null) : null
   const pageHref = holderId ? orgPath(`/sessions/${encodeURIComponent(holderId)}`) : null
-  // A question in the thread is the task's, answered on its session.
+  // A question in the thread is the task's, answered on the conversation's own socket, as its page does: a continuation socket the composer targets has a conversation of its own, where no question waits.
   const answerElicitation = holderId
     ? (turnAgent: string | undefined, requestId: string | undefined, value: ElicitAnswerValue): void => {
         if (!requestId) return
-        markSessionTarget(holderId)
-        pgAnswerElicitation(holderId, turnAgent ?? agentId, requestId, value, taskConversation)
+        pgAnswerElicitation(parentSessionId ?? holderId, turnAgent ?? agentId, requestId, value, taskConversation)
       }
     : undefined
   // A turn a person's message follows answered an earlier exchange.

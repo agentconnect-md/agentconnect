@@ -400,13 +400,8 @@ describe('ThreadPanel', () => {
         .find((button) => button.textContent === 'Merge')!
         .click()
     )
-    // The task's own conversation is opened while its question waits, and the answer rides it, never the coordinator's.
-    expect(wire.calls).toEqual([
-      'target:ses_task',
-      'attach:ses_task:agent_1:conv-task',
-      'target:ses_task',
-      'answer:ses_task:agent_1:q-1:yes:conv-task'
-    ])
+    // The answer rides the conversation's own socket on the shared channel, never a continuation socket targeting the task.
+    expect(wire.calls).toEqual(['answer:ses_coordinator:agent_1:q-1:yes:conv-task'])
   })
 
   it('checks a typed answer against its constraints before sending it', async () => {
@@ -432,12 +427,7 @@ describe('ThreadPanel', () => {
     expect(submit().disabled).toBe(true)
     type('v1.5.0')
     act(() => submit().click())
-    expect(wire.calls).toEqual([
-      'target:ses_task',
-      'attach:ses_task:agent_1:conv-task',
-      'target:ses_task',
-      'answer:ses_task:agent_1:q-3:v1.5.0:conv-task'
-    ])
+    expect(wire.calls).toEqual(['answer:ses_coordinator:agent_1:q-3:v1.5.0:conv-task'])
   })
 
   it('keeps an unfinished answer when the thread remounts, as switching the task view does', async () => {
