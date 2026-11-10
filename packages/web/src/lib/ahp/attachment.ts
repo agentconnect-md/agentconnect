@@ -168,6 +168,22 @@ export class AhpAttachment {
   async closeApp(appId: string): Promise<void> {
     await this.appRequest<null>('agentconnect/appClose', { appId })
   }
+  /** Answers a Fill card (computer-form-fill-and-vault.md §6); the daemon reads who answered from this attachment. */
+  fillSubmit(
+    requestId: string,
+    answer: { values: unknown[] } | { cancel: true }
+  ): Promise<{ accepted: boolean; reason?: string }> {
+    const profile = this.view.extensions?.['agentconnect.md'] as { fillCards?: boolean } | undefined
+    if (!this.view.connected || !this.client || !this.chatUri)
+      return Promise.reject(new Error('Reconnect to answer this card.'))
+    if (profile?.fillCards !== true)
+      return Promise.reject(new Error('Fill cards are unavailable in this conversation.'))
+    const request = this.client.request.bind(this.client) as (
+      method: string,
+      params: Record<string, unknown>
+    ) => Promise<{ accepted: boolean; reason?: string }>
+    return request('agentconnect/fillSubmit', { channel: this.chatUri, requestId, ...answer })
+  }
   private appRequest<T>(method: string, params: Record<string, unknown>): Promise<T> {
     const profile = this.view.extensions?.['agentconnect.md'] as { mcpApps?: boolean } | undefined
     if (!this.view.connected || !this.client || !this.chatUri)

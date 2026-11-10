@@ -349,6 +349,8 @@ import { McpControlServer } from './mcp/control-server.js'
 import {
   COMPUTER_COMMAND_LINE_GUIDANCE,
   COMPUTER_COMMAND_LINE_TOOLS,
+  COMPUTER_FILL_GUIDANCE,
+  COMPUTER_FILL_TOOLS,
   COMPUTER_TOOLS,
   COMPUTER_USE_GUIDANCE,
   ComputerTools,
@@ -3445,7 +3447,14 @@ export class Daemon {
       available: (auth) =>
         this.servesAgent(auth.agentId) && this.orgForAgent(auth.agentId) === auth.orgId && !this.draining,
       initializeMetadata: {
-        'agentconnect.md': { webchat: true, files: true, filePreviews: true, steering: true, mcpApps: true }
+        'agentconnect.md': {
+          webchat: true,
+          files: true,
+          filePreviews: true,
+          steering: true,
+          mcpApps: true,
+          fillCards: true
+        }
       },
       now: () => this.clock.now(),
       provider: (id) => ahpAgentInfo(id, this.agents.get(id)?.name ?? id, this.agents.get(id)?.runtimeOverrides?.model),
@@ -5915,6 +5924,9 @@ export class Daemon {
         // The command-line tier (computer-use.md §5.7) needs a CP whose tokens name it; each Computer's policy decides per call.
         const commandLine = computers && this.cpClient?.supportsServerFeature(COMPUTER_COMMAND_LINE_FEATURE) === true
         if (commandLine) tools.push(...COMPUTER_COMMAND_LINE_TOOLS)
+        // Form filling needs a surface that shows Fill cards: the console's webchat (computer-form-fill-and-vault.md §6).
+        const fills = computers && platform === 'webchat'
+        if (fills) tools.push(...COMPUTER_FILL_TOOLS)
         if (!this.mcpToolServerReachable()) tools = []
         const instructions =
           [
@@ -5922,7 +5934,11 @@ export class Daemon {
             coordinator ? this.coordinatorInstructions(agent, { platform, channel, integrationId }) : undefined,
             codeHostEffectGuidance(tools),
             computers && tools.length > 0
-              ? [COMPUTER_USE_GUIDANCE, ...(commandLine ? [COMPUTER_COMMAND_LINE_GUIDANCE] : [])].join('\n')
+              ? [
+                  COMPUTER_USE_GUIDANCE,
+                  ...(commandLine ? [COMPUTER_COMMAND_LINE_GUIDANCE] : []),
+                  ...(fills ? [COMPUTER_FILL_GUIDANCE] : [])
+                ].join('\n')
               : undefined
           ]
             .filter(Boolean)

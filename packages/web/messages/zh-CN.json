@@ -7549,5 +7549,27 @@
       "open": "在 AgentConnect 中打开",
       "whoCan": "可以完成它的人：{names}"
     }
+  },
+  "FillCard": {
+    "crumb": "填写表单 · {computer}",
+    "frame": "表单位于来自 {origin} 的框架中",
+    "required": "必填",
+    "fill": "填写",
+    "cancel": "取消",
+    "noSubmit": "只填写，由 agent 提交",
+    "privacyNote": "这些值会发送到电脑上的网站，不会发给 agent。",
+    "unmaskedNote": "这些值会发送到电脑上的网站，不会发给 agent。网站可能以明文显示某个字段，之后的截图可能会包含它。",
+    "notAccepted": "这个回答未被接受。",
+    "outcome": {
+      "sending": "已发送到网站…",
+      "filled": "已填写。",
+      "partial": "已部分填写。",
+      "failed": "未填写。",
+      "uncertain": "无法确定表单是否已填写。",
+      "target_changed": "页面在填写前已变化，没有写入任何内容。",
+      "unsupported": "这台电脑无法填写该表单。",
+      "cancelled": "已取消，没有填写任何内容。",
+      "expired": "已过期，没有填写任何内容。"
+    }
   }
 }

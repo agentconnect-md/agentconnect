@@ -14,6 +14,7 @@ import type {
 } from '@microsoft/agent-host-protocol'
 import type {
   CapabilityCardBody,
+  FillCardBody,
   ElicitAnswerValue,
   ElicitFieldSpec,
   Session,
@@ -102,6 +103,7 @@ export function ahpSteps(chat: ChatState, agentId: string, session?: SessionStat
         apps?: Array<{ turnId: string; card: McpAppCard; html?: string; outcome?: McpAppOutcome }>
         plan?: { turnId: string; entries: NonNullable<SessionStep['plan']> }
         capabilities?: Array<CapabilityCardBody & { turnId: string }>
+        fills?: Array<FillCardBody & { turnId: string }>
       }
     | undefined
   const turns = [...chat.turns, ...(chat.activeTurn ? [chat.activeTurn] : [])]
@@ -214,6 +216,8 @@ export function ahpSteps(chat: ChatState, agentId: string, session?: SessionStat
     for (const { turnId, resolved: _resolved, ...capability } of meta?.capabilities ?? [])
       if (turnId === turn.id)
         steps.push({ ...base, kind: 'capability', text: capability.summary, capability, boundary: true })
+    for (const { turnId, ...fill } of meta?.fills ?? [])
+      if (turnId === turn.id) steps.push({ ...base, kind: 'fill', text: fill.website.origin, fill, boundary: true })
     stampTurnEnd(steps, turn, base.observedAtMs)
   }
   if (chat.steeringMessage)

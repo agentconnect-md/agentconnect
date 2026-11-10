@@ -47,6 +47,7 @@ import {
   status,
   type Agent,
   type ElicitAnswerValue,
+  type FillCardAnswer,
   type Session,
   type SessionStep
 } from '@/lib/data'
@@ -1018,6 +1019,7 @@ export default function SessionDetailView() {
     pgAnswerElicitation,
     pgAppRpc,
     pgCloseApp,
+    pgAnswerFill,
     pgCancel,
     getPgRelayFeatures,
     getPgTurnThread
@@ -2759,6 +2761,12 @@ export default function SessionDetailView() {
       ? (agentId: string | undefined, appId: string): void =>
           pgCloseApp(session.id, agentId ?? session.agentId ?? '', appId, webchatConversationId)
       : undefined
+  // A Fill card's values ride the same live socket as the composer; elsewhere the card is a record.
+  const answerFill =
+    isLive && (isPg || isWebchat)
+      ? (agentId: string | undefined, requestId: string, answer: FillCardAnswer) =>
+          pgAnswerFill(session.id, agentId ?? session.agentId ?? '', requestId, answer, webchatConversationId)
+      : undefined
   // Joins and removals (§3.1/§3.1a) mutate provider-side state an adopted session never had, so they stay playground-only.
   const pgWorktree =
     worktreeSelections[session.id] ??
@@ -4088,6 +4096,7 @@ export default function SessionDetailView() {
                                   appReport={appReport}
                                   onShare={shareMessage(turn)}
                                   closeApp={closeApp}
+                                  answerFill={answerFill}
                                 />
                               )
                             })()
