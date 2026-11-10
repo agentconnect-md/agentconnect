@@ -28,6 +28,7 @@ export interface WeChatLogin {
   phase: WeChatLoginPhase
   login: WeChatLoginDto | null
   starting: boolean
+  reconciling: boolean
   sendingCode: boolean
   codeRejected: boolean
   // A refusal of the poll itself (404 gone, 403), shown in place of a failure reason.
@@ -107,7 +108,7 @@ export function useWeChatLogin(input: {
   }, [poll])
 
   async function start(): Promise<string | null> {
-    if (busy.current) return null
+    if (busy.current || poll) return null
     busy.current = true
     setStarting(true)
     setPollError(null)
@@ -145,6 +146,7 @@ export function useWeChatLogin(input: {
     phase,
     login,
     starting,
+    reconciling: timedOut && poll !== null,
     sendingCode: poll?.verifyCode !== undefined,
     codeRejected,
     pollError,
@@ -174,7 +176,7 @@ export function WeChatLoginView({ state, onRetry }: { state: WeChatLogin; onRetr
             <span className="font-sans text-[12.5px] font-semibold leading-normal text-(--text-secondary)">
               {t('qr.expired')}
             </span>
-            <Button size="sm" disabled={state.starting} onClick={onRetry}>
+            <Button size="sm" disabled={state.starting || state.reconciling} onClick={onRetry}>
               <Icon name="refresh-cw" size={13} />
               {state.starting ? t('starting') : t('qr.refreshCode')}
             </Button>
@@ -193,7 +195,7 @@ export function WeChatLoginView({ state, onRetry }: { state: WeChatLogin; onRetr
         <Line icon="circle-alert" color="var(--status-error)">
           {reason ?? (state.pollError || t('failed.gone'))}
         </Line>
-        <Button size="sm" variant="secondary" disabled={state.starting} onClick={onRetry}>
+        <Button size="sm" variant="secondary" disabled={state.starting || state.reconciling} onClick={onRetry}>
           {state.starting ? t('starting') : t('retry')}
         </Button>
       </div>

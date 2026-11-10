@@ -35,6 +35,7 @@ export interface WeChatLoginSnapshot {
 
 /** The confirmed login a finalizer installs: a new bot for the agent, or new credentials for `botId`. */
 export interface WeChatConfirmedLogin {
+  id: string
   orgId: OrgId
   agentId: AgentId
   botId: BotId | null
@@ -252,6 +253,7 @@ export class WeChatLoginService {
     let installed
     try {
       installed = await finalize({
+        id: row.id,
         orgId,
         agentId: row.agentId,
         botId: row.botId,

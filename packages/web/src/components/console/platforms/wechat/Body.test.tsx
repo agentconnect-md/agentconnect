@@ -220,6 +220,9 @@ describe('WeChatWizardBody', () => {
       await act(async () => vi.advanceTimersByTime(60_000))
       expect(text()).toContain('QR code expired')
       expect(signal.aborted).toBe(false)
+      expect(buttonWith('Refresh QR code')?.disabled).toBe(true)
+      await click('Refresh QR code')
+      expect(mocks.startLogin).toHaveBeenCalledTimes(1)
       // A scan that landed at the deadline still shows.
       await answer(dto({ status: 'scanned' }))
       expect(text()).toContain('confirm on your phone')
