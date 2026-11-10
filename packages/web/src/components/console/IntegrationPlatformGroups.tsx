@@ -1,4 +1,4 @@
-import type { CSSProperties, ReactNode } from 'react'
+import { useState, type CSSProperties, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import { PLATFORMS, platformOffered, type PlatformTile } from './platforms/host-projections'
 import { platformRegistry } from './platforms/registry'
@@ -8,10 +8,12 @@ export const PLATFORM_TILE_WIDTH = 'w-[calc((100%_-_(var(--tile-cols)_-_1)_*_--s
 
 export function IntegrationPlatformGroups({
   renderTile,
-  className
+  className,
+  selectedPlatform
 }: {
   renderTile: (tile: PlatformTile) => ReactNode
   className?: string
+  selectedPlatform?: string
 }) {
   const t = useTranslations('Integrations.dialog')
   const tiles = PLATFORMS.filter((tile) => platformOffered(tile.key))
@@ -22,16 +24,36 @@ export function IntegrationPlatformGroups({
       return (module ? (module.integrationGroup ?? 'chat') : 'workflow') === group
     })
   }))
-  const cols = Math.max(...groups.map((entry) => entry.tiles.length))
+  const [expanded, setExpanded] = useState(() =>
+    groups
+      .find((entry) => entry.group === 'chat')!
+      .tiles.slice(6)
+      .some((tile) => tile.key === selectedPlatform)
+  )
+  const cols = Math.min(7, Math.max(...groups.map((entry) => entry.tiles.length)))
 
   return (
     <div className={`flex flex-col gap-5 ${className ?? ''}`} style={{ '--tile-cols': cols } as CSSProperties}>
-      {groups.map(({ group, tiles: groupTiles }) => (
-        <section key={group} aria-label={t(group)} className="min-w-0">
-          <h3 className="fldlbl mb-2">{t(group)}</h3>
-          <div className="flex gap-2">{groupTiles.map(renderTile)}</div>
-        </section>
-      ))}
+      {groups.map(({ group, tiles: groupTiles }) => {
+        const collapsed = group === 'chat' && groupTiles.length > 7 && !expanded
+        return (
+          <section key={group} aria-label={t(group)} className="min-w-0">
+            <h3 className="fldlbl mb-2">{t(group)}</h3>
+            <div className="flex flex-wrap gap-2">
+              {(collapsed ? groupTiles.slice(0, 6) : groupTiles).map(renderTile)}
+              {collapsed && (
+                <button
+                  type="button"
+                  className={`ptile ${PLATFORM_TILE_WIDTH} flex-none justify-center px-0 font-sans text-[11px] font-semibold leading-normal hover:border-(--border-strong) hover:bg-(--surface-hover) desktop:text-[12px]`}
+                  onClick={() => setExpanded(true)}
+                >
+                  {t('more')}
+                </button>
+              )}
+            </div>
+          </section>
+        )
+      })}
     </div>
   )
 }
