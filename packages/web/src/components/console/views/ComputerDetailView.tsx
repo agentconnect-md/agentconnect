@@ -121,7 +121,6 @@ function ComputerDetail({
   const canStop = computer.canEdit && !revoked && !stopped
   const canResume = computer.canEditPolicy && stopped
   const pool = computer.poolActions ?? { wake: false, sleep: false, reset: false }
-  const hasPoolActions = Boolean(computer.allocation) && (pool.wake || pool.sleep || pool.reset)
 
   const run = async (action: () => Promise<ComputerDto | void>, after?: () => void) => {
     if (busy) return
@@ -144,29 +143,17 @@ function ComputerDetail({
   }
 
   const seen = computer.lastSeenAt ? ago(computer.lastSeenAt) : t('never')
-  const display = computer.capabilities.displays[0]
   const desktop = shownDesktop(computer, chosenDesktop)
   const agentDesktop = computer.desktops?.find((candidate) => candidate.id === desktop)
   const lease = agentDesktop ? agentDesktop.lease : (computer.lease ?? null)
   const waiting = agentDesktop ? agentDesktop.waiting : (computer.waiting ?? [])
 
-  const stopButton = canStop ? (
-    <Button
-      variant="secondary"
-      size="sm"
-      className="text-(--status-error) hover:border-(--status-error) hover:bg-(--status-error-soft)"
-      disabled={busy}
-      onClick={() =>
-        void run(
-          () => stopComputer(computer.id),
-          () => setTimeout(onRefresh, SETTLE_MS)
-        )
-      }
-    >
-      <Icon name="octagon-x" size={14} />
-      {t('actions.stop')}
-    </Button>
-  ) : canResume ? (
+  const stop = () =>
+    void run(
+      () => stopComputer(computer.id),
+      () => setTimeout(onRefresh, SETTLE_MS)
+    )
+  const resumeButton = canResume ? (
     <Button
       variant="primary"
       size="sm"
@@ -182,6 +169,9 @@ function ComputerDetail({
       {t('actions.resume')}
     </Button>
   ) : null
+  // A pool computer sleeps and wakes from the header; the menu keeps the rarer and destructive actions.
+  const sleepWake = !computer.allocation ? null : pool.wake ? 'wake' : pool.sleep ? 'sleep' : null
+  const canReset = Boolean(computer.allocation) && pool.reset
 
   // Who has control and who waits (§4.4), beside the screen.
   const control = (
@@ -260,8 +250,25 @@ function ComputerDetail({
           </div>
         </div>
         <div className="flex flex-none items-center gap-2">
-          <span className="hidden desktop:inline-flex">{stopButton}</span>
-          {(computer.canEdit || hasPoolActions) && (
+          {resumeButton}
+          {sleepWake && (
+            <span
+              className="inline-flex"
+              title={t(sleepWake === 'wake' ? 'pool.wakeHint' : 'pool.sleepHint')}
+              data-pool-power={sleepWake}
+            >
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={busy}
+                onClick={() => void run(() => (sleepWake === 'wake' ? wakeComputer : sleepComputer)(computer.id))}
+              >
+                <Icon name={sleepWake === 'wake' ? 'sun' : 'moon'} size={14} />
+                {t(sleepWake === 'wake' ? 'pool.wake' : 'pool.sleep')}
+              </Button>
+            </span>
+          )}
+          {(computer.canEdit || canReset) && (
             <div className="relative">
               <button
                 type="button"
@@ -278,38 +285,26 @@ function ComputerDetail({
                 <>
                   <div onClick={() => setMenuOpen(false)} className="fixed inset-0 z-45" />
                   <div className="dmenu right-0" role="menu" onClick={(e) => e.stopPropagation()}>
-                    {hasPoolActions && (
+                    {canReset && (
                       <>
-                        {pool.wake && (
-                          <button
-                            role="menuitem"
-                            className="dmi"
-                            disabled={busy}
-                            onClick={pick(() => void run(() => wakeComputer(computer.id)))}
-                          >
-                            <Icon name="sunrise" size={15} />
-                            {t('pool.wake')}
-                          </button>
-                        )}
-                        {pool.sleep && (
-                          <button
-                            role="menuitem"
-                            className="dmi"
-                            disabled={busy}
-                            onClick={pick(() => void run(() => sleepComputer(computer.id)))}
-                          >
-                            <Icon name="moon" size={15} />
-                            {t('pool.sleep')}
-                          </button>
-                        )}
-                        {pool.reset && (
-                          <button role="menuitem" className="dmi" onClick={pick(() => setConfirm('reset'))}>
-                            <Icon name="rotate-ccw" size={15} />
-                            {t('pool.reset')}
-                          </button>
-                        )}
+                        <button role="menuitem" className="dmi" onClick={pick(() => setConfirm('reset'))}>
+                          <Icon name="rotate-ccw" size={15} />
+                          {t('pool.reset')}
+                        </button>
                         {computer.canEdit && <div className="dmsep" />}
                       </>
+                    )}
+                    {canStop && (
+                      <button
+                        role="menuitem"
+                        className="dmi danger"
+                        disabled={busy}
+                        title={t('actions.disableHint')}
+                        onClick={pick(stop)}
+                      >
+                        <Icon name="octagon-x" size={15} />
+                        {t('actions.disable')}
+                      </button>
                     )}
                     {computer.canEdit && !revoked && (
                       <button role="menuitem" className="dmi danger" onClick={pick(() => setConfirm('revoke'))}>
@@ -330,11 +325,6 @@ function ComputerDetail({
           )}
         </div>
       </div>
-
-      {/* Mobile keeps the primary action in the body, full width and thumb-sized. */}
-      {stopButton && (
-        <div className="mt-3 mb-1 flex desktop:hidden [&>button]:h-11 [&>button]:flex-1">{stopButton}</div>
-      )}
 
       <div
         className="mb-4 flex items-end overflow-x-auto border-b border-(--border-subtle) desktop:mb-[18px]"
@@ -380,72 +370,40 @@ function ComputerDetail({
       )}
 
       {tab === 'overview' && (
-        <div className="flex flex-wrap items-start gap-4">
-          <div className="flex min-w-0 flex-[1.55_1_460px] flex-col gap-4">
-            <ComputerViewerCard computer={computer} control={control} desktop={desktop} onDesktop={setChosenDesktop} />
-            <ComputerDoctorCard computer={computer} />
-          </div>
-          <div className="flex min-w-0 flex-[1_1_300px] flex-col gap-4">
+        <div className="flex flex-col gap-4">
+          <ComputerViewerCard computer={computer} control={control} desktop={desktop} onDesktop={setChosenDesktop} />
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(280px,1fr))] items-start gap-4">
             <div className="card overflow-hidden max-desktop:rounded-lg">
               <div className="cardhead">
                 <span className="cardtitle">{t('detail.details')}</span>
               </div>
               <div className="-mt-px">
                 <Row label={t('detail.owner')}>{memberName(computer.ownerUserId)}</Row>
+                {computer.ownerAgentId && <Row label={t('detail.ownerAgent')}>{agentName(computer.ownerAgentId)}</Row>}
                 <Row label={t('detail.kind')}>
                   {t(`kind.${computer.kind}`)} · {t(`isolation.${computer.isolation}`)}
                 </Row>
                 {computer.allocation && (
-                  <>
-                    <Row label={t('detail.allocation')}>{t(`detail.allocationValue.${computer.allocation}`)}</Row>
-                    {computer.ownerAgentId && (
-                      <Row label={t('detail.ownerAgent')}>{agentName(computer.ownerAgentId)}</Row>
-                    )}
-                    <Row label={t('pool.phase')}>
-                      <span data-pool-phase={computer.poolPhase ?? ''}>
-                        {computer.poolPhase ? t(`poolPhase.${computer.poolPhase}`) : '—'}
-                      </span>
-                    </Row>
-                    {computer.poolError && (
-                      <Row label={t('pool.error')}>
-                        <span className="text-(--status-error)" title={computer.poolError}>
-                          {computer.poolError}
-                        </span>
-                      </Row>
-                    )}
-                  </>
+                  <Row label={t('detail.allocation')}>
+                    {t(`detail.allocationValue.${computer.allocation}`)}
+                    {' · '}
+                    <span data-pool-phase={computer.poolPhase ?? ''}>
+                      {computer.poolPhase ? t(`poolPhase.${computer.poolPhase}`) : '—'}
+                    </span>
+                  </Row>
                 )}
-                <Row label={t('detail.display')} mono>
-                  {display ? `${display.width}×${display.height} @${display.scale}x` : t('detail.unknown')}
-                </Row>
-                <Row label={t('detail.input')}>
-                  {!computer.capabilities.input
-                    ? t('detail.inputNone')
-                    : computer.capabilities.textInput === 'full'
-                      ? t('detail.inputFull')
-                      : t('detail.inputKeymap')}
-                </Row>
-                <Row label={t('detail.activity')}>
-                  {computer.capabilities.humanActivity === 'pointer+keyboard'
-                    ? t('detail.activityKeyboard')
-                    : t('detail.activityPointer')}
-                </Row>
-                <Row label={t('detail.viewer')}>
-                  {computer.capabilities.viewer ? t('detail.available') : t('detail.unavailable')}
-                </Row>
-                <Row label={t('detail.driver')} mono>
-                  {computer.driverVersion}
-                </Row>
-                <Row label={t('detail.screenshots')}>
-                  {computer.screenshotRetentionDays > 0
-                    ? t('detail.retention', { days: computer.screenshotRetentionDays })
-                    : t('detail.notStored')}
-                </Row>
+                {computer.poolError && (
+                  <Row label={t('pool.error')}>
+                    <span className="text-(--status-error)" title={computer.poolError}>
+                      {computer.poolError}
+                    </span>
+                  </Row>
+                )}
                 <Row label={t('detail.registered')}>
                   {format.dateTime(new Date(computer.createdAt), { dateStyle: 'medium', timeStyle: 'short' })}
                 </Row>
-                <div className="flex min-h-10 items-center gap-3 border-t border-(--border-subtle) pr-[10px] pl-4">
-                  <span className="w-[108px] flex-none font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+                <div className="flex min-h-8 items-center gap-3 border-t border-(--border-subtle) pr-[10px] pl-4">
+                  <span className="w-20 flex-none font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
                     {t('detail.visibility')}
                   </span>
                   <span className="flex-1" />
@@ -470,6 +428,7 @@ function ComputerDetail({
             </div>
             <ComputerAgentAccessCard computer={computer} />
           </div>
+          <ComputerDoctorCard computer={computer} />
         </div>
       )}
 
@@ -619,8 +578,8 @@ function Meta({ icon, children }: { icon: string; children: ReactNode }) {
 
 function Row({ label, mono = false, children }: { label: string; mono?: boolean; children: ReactNode }) {
   return (
-    <div className="flex min-h-9 items-center gap-3 border-t border-(--border-subtle) px-4 py-[6px]">
-      <span className="w-[108px] flex-none font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+    <div className="flex min-h-8 items-center gap-3 border-t border-(--border-subtle) px-4 py-[5px]">
+      <span className="w-20 flex-none font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
         {label}
       </span>
       <span

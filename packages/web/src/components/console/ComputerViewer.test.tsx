@@ -102,10 +102,12 @@ describe('ComputerViewerCard', () => {
     expect(fake.start).toHaveBeenCalled()
     expect(fake.deps!.computerId).toBe('c1')
     expect(el.querySelector('[data-viewer-path]')!.textContent).toContain('TURN relay')
-    expect(el.querySelector('[data-viewer-status]')!.textContent).toContain('Watching')
+    expect(el.querySelector('[data-viewer-status]')!.textContent).toBe('Live')
+    expect(el.querySelector<HTMLElement>('[data-viewer-status]')!.title).toContain('Watching')
 
     await act(async () => button(el, 'Take control')!.click())
-    expect(el.querySelector('[data-viewer-status]')!.textContent).toContain('You are in control')
+    expect(el.querySelector('[data-viewer-status]')!.textContent).toBe('Controlling')
+    expect(el.textContent).toContain('Agents are paused until you hand back')
     const surface = el.querySelector<HTMLDivElement>('[data-viewer-surface]')!
     act(() => {
       surface.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
@@ -120,7 +122,7 @@ describe('ComputerViewerCard', () => {
     await act(async () => button(el, 'Send')!.click())
     expect(fake.send).toHaveBeenCalledWith({ type: 'type', text: '上海' })
 
-    await act(async () => button(el, 'Release')!.click())
+    await act(async () => button(el, 'Hand back')!.click())
     expect(fake.release).toHaveBeenCalled()
     act(() => button(el, 'Stop watching')!.click())
     expect(fake.stop).toHaveBeenCalled()
@@ -148,6 +150,6 @@ describe('ComputerViewerCard', () => {
     const el = render(<ComputerViewerCard computer={computer()} createSession={create} />)
     await act(async () => button(el, 'Watch')!.click())
     expect(button(el, 'Take control')).toBeUndefined()
-    expect(el.textContent).toContain('Watching only')
+    expect(el.querySelector<HTMLElement>('[data-viewer-status]')!.title).toContain('Watching only')
   })
 })

@@ -7097,7 +7097,8 @@
       },
       "showPassing": "Show {count, plural, one {# passing check} other {# passing checks}}",
       "hidePassing": "Hide passing checks",
-      "none": "No checks"
+      "none": "No checks",
+      "allPass": "All checks pass"
     },
     "detail": {
       "notFound": "Computer not found",
@@ -7145,7 +7146,9 @@
       "resume": "Resume",
       "more": "Computer actions",
       "revoke": "Revoke",
-      "delete": "Delete"
+      "delete": "Delete",
+      "disable": "Disable agents",
+      "disableHint": "Stops all agent input now, until the computer is resumed."
     },
     "revoke": {
       "title": "Revoke computer",
@@ -7279,7 +7282,7 @@
       "privacy": "Video goes straight between your browser and the desktop, or through TURN. It never passes through AgentConnect.",
       "offline": "The viewer opens once this computer is online.",
       "offlineSeen": "Offline. Last seen {when}.",
-      "asleep": "Asleep. An agent’s next use wakes it, or Wake in the computer’s actions.",
+      "asleep": "Asleep. An agent’s next use wakes it, or use Wake above.",
       "connecting": "Connecting…",
       "failed": "The viewer stopped.",
       "watching": "Watching. Agents may keep working.",
@@ -7288,7 +7291,7 @@
       "paused": "Paused: {reason}",
       "agentWorking": "{holder} is working",
       "takeControl": "Take control",
-      "release": "Release",
+      "release": "Hand back",
       "send": "Send",
       "textPlaceholder": "Type text to send (IME, paste)",
       "surface": "Computer screen",
@@ -7308,8 +7311,16 @@
       "desktop": {
         "pick": "Desktop",
         "main": "Main desktop",
-        "agent": "{agent}'s desktop"
-      }
+        "agent": "{agent}'s desktop",
+        "tabs": "Desktops",
+        "idle": "Idle",
+        "working": "working"
+      },
+      "live": "Live",
+      "controlling": "Controlling",
+      "inControlBar": "You have the mouse and keyboard. Agents are paused until you hand back.",
+      "fullscreen": "Full screen",
+      "exitFullscreen": "Exit full screen (Esc)"
     },
     "allAgents": "All agents",
     "allocation": {
@@ -7344,7 +7355,9 @@
       "resetTitle": "Reset computer",
       "resetBody": "{name} will lose its desktop and its disk: files, browser profile and sign-ins are deleted, and any agent working on it is stopped. It then starts again empty, with the same name, agent access and policy.",
       "resetConfirm": "Reset",
-      "resetBusy": "Resetting…"
+      "resetBusy": "Resetting…",
+      "sleepHint": "Put this pool computer to sleep. It keeps its files and sign-ins.",
+      "wakeHint": "Wake this pool computer"
     },
     "lease": {
       "free": "No agent has control",

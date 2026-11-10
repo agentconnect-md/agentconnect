@@ -99,7 +99,16 @@ describe('ComputersSection', () => {
     expect(mocks.push).toHaveBeenCalledWith('/acme/computers/c1')
   })
 
-  it('says nothing about passing checks, so an offline computer does not read as ready', () => {
+  it('says all checks pass only for a computer that is online, so an offline one does not read as ready', () => {
+    mocks.computers = [
+      computer({
+        doctor: { checkedAt: '2026-10-21T00:00:00.000Z', checks: [{ name: 'driver', status: 'ok', detail: '' }] }
+      })
+    ]
+    expect(render().querySelector('[data-computer-row="c1"]')!.textContent).toContain('All checks pass')
+    act(() => root.unmount())
+    document.body.innerHTML = ''
+
     mocks.computers = [
       computer({
         status: 'offline',
