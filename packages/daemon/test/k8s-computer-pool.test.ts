@@ -21,6 +21,10 @@ afterEach(closeFakeApiServers)
 const NS = 'agents'
 const CLAIMS = `/apis/extensions.agents.x-k8s.io/v1beta1/namespaces/${NS}/sandboxclaims`
 const SANDBOXES = `/apis/agents.x-k8s.io/v1beta1/namespaces/${NS}/sandboxes`
+const WARM_POOL = `/apis/extensions.agents.x-k8s.io/v1beta1/namespaces/${NS}/sandboxwarmpools/computer-pool`
+const TEMPLATE = `/apis/extensions.agents.x-k8s.io/v1beta1/namespaces/${NS}/sandboxtemplates/computer-template`
+const IMAGE_V1 = 'registry.example.test/computer:1.0.0'
+const IMAGE_V2 = 'registry.example.test/computer:2.0.0'
 const C1 = '11111111-1111-4111-8111-111111111111'
 const C2 = '22222222-2222-4222-8222-222222222222'
 const T0 = '2026-10-21T10:00:00.000Z'
@@ -39,6 +43,10 @@ class FakeSandboxCluster {
   readonly writes: Array<{ method: string; path: string; body: unknown }> = []
   /** Pod addresses whose desktop daemon does not answer yet. */
   readonly unanswered = new Set<string>()
+  /** The image the desktop pool's template pins now; a claim copies it into its Sandbox. */
+  templateImage = IMAGE_V1
+  /** Fails the next Sandbox patch with 422, as a raced write would. */
+  rejectNextPatch = false
   private uid = 0
 
   readonly route: FakeRoute = ({ method, url, body }) => {
@@ -57,7 +65,10 @@ class FakeSandboxCluster {
       this.claims.set(name, stored)
       this.sandboxes.set(name, {
         metadata: { name, uid: `sandbox-${++this.uid}`, generation: 1 },
-        spec: { operatingMode: 'Running' }
+        spec: {
+          operatingMode: 'Running',
+          podTemplate: { spec: { containers: [{ name: 'computer', image: this.templateImage }] } }
+        }
       })
       this.volumes.set(name, { files: {} })
       return { status: 201, json: stored }
@@ -79,6 +90,13 @@ class FakeSandboxCluster {
         return { json: {} }
       }
     }
+    if (path === WARM_POOL && method === 'GET')
+      return { json: { spec: { sandboxTemplateRef: { name: 'computer-template' } } } }
+    if (path === TEMPLATE && method === 'GET') {
+      return {
+        json: { spec: { podTemplate: { spec: { containers: [{ name: 'computer', image: this.templateImage }] } } } }
+      }
+    }
     if (path === SANDBOXES && method === 'GET') return { json: { items: [...this.sandboxes.values()] } }
     if (path.startsWith(`${SANDBOXES}/`)) {
       const name = path.slice(SANDBOXES.length + 1)
@@ -87,11 +105,20 @@ class FakeSandboxCluster {
       if (method === 'GET') return { json: sandbox }
       if (method === 'PATCH') {
         const ops = parsed as Array<{ op: string; path: string; value: string }>
-        for (const op of ops) {
-          const current = op.path === '/metadata/uid' ? sandbox.metadata?.uid : sandbox.spec?.operatingMode
-          if (op.op === 'test' && current !== op.value) return { status: 422, json: { reason: 'Invalid' } }
+        if (this.rejectNextPatch) {
+          this.rejectNextPatch = false
+          return { status: 422, json: { reason: 'Invalid' } }
         }
-        const mode = ops.find((op) => op.op === 'replace')!.value as 'Running' | 'Suspended'
+        const next = structuredClone(sandbox)
+        for (const op of ops) {
+          const keys = op.path.slice(1).split('/')
+          const last = keys.pop()!
+          const parent = keys.reduce<any>((at, key) => at?.[key], next)
+          if (op.op === 'test' && parent?.[last] !== op.value) return { status: 422, json: { reason: 'Invalid' } }
+          if (op.op === 'replace') parent[last] = op.value
+        }
+        const mode = next.spec!.operatingMode!
+        Object.assign(sandbox, next)
         // A mode change is a new spec: the pod goes, and readiness waits for the next settle.
         sandbox.spec = { ...sandbox.spec, operatingMode: mode }
         sandbox.metadata = { ...sandbox.metadata, generation: (sandbox.metadata?.generation ?? 1) + 1 }
@@ -228,6 +255,62 @@ describe('ComputerPool', () => {
     })
     expect(cluster.volumes.get(computerClaimName(C1))!.files['profile/cookies.sqlite']).toBe('signed-in')
     expect(pushes).toHaveLength(1)
+  })
+
+  it("wakes a sleeping desktop onto the pool template's newer image, keeping its volume", async () => {
+    const { cluster, pool } = await setup()
+    await pool.handle(ensure(C1))
+    cluster.settle()
+    const name = computerClaimName(C1)
+    cluster.volumes.get(name)!.files['notes.txt'] = 'kept'
+    await pool.handle(ensure(C1, { running: false, create: false }))
+
+    cluster.templateImage = IMAGE_V2
+    expect((await pool.handle(ensure(C1, { create: false }))).state).toMatchObject({ pod: 'starting' })
+    const sandbox = cluster.sandboxes.get(name)!
+    expect(sandbox.spec?.operatingMode).toBe('Running')
+    expect(sandbox.spec?.podTemplate?.spec?.containers?.[0]?.image).toBe(IMAGE_V2)
+    expect(cluster.writes.at(-1)!.body).toEqual([
+      { op: 'test', path: '/metadata/uid', value: sandbox.metadata?.uid },
+      { op: 'test', path: '/spec/operatingMode', value: 'Suspended' },
+      { op: 'test', path: '/spec/podTemplate/spec/containers/0/name', value: 'computer' },
+      { op: 'test', path: '/spec/podTemplate/spec/containers/0/image', value: IMAGE_V1 },
+      { op: 'replace', path: '/spec/podTemplate/spec/containers/0/image', value: IMAGE_V2 },
+      { op: 'replace', path: '/spec/operatingMode', value: 'Running' }
+    ])
+    expect(cluster.volumes.get(name)!.files['notes.txt']).toBe('kept')
+  })
+
+  it("just resumes a desktop already on the pool template's image", async () => {
+    const { cluster, pool } = await setup()
+    await pool.handle(ensure(C1))
+    await pool.handle(ensure(C1, { running: false, create: false }))
+
+    await pool.handle(ensure(C1, { create: false }))
+    const sandbox = cluster.sandboxes.get(computerClaimName(C1))!
+    expect(sandbox.spec?.operatingMode).toBe('Running')
+    expect(sandbox.spec?.podTemplate?.spec?.containers?.[0]?.image).toBe(IMAGE_V1)
+    const patch = cluster.writes.at(-1)!.body as Array<{ op: string; path: string }>
+    expect(patch.filter((op) => op.op === 'replace').map((op) => op.path)).toEqual(['/spec/operatingMode'])
+  })
+
+  it('leaves a rejected wake patch for the next op instead of forcing it through', async () => {
+    const { cluster, pool } = await setup()
+    await pool.handle(ensure(C1))
+    await pool.handle(ensure(C1, { running: false, create: false }))
+    cluster.templateImage = IMAGE_V2
+
+    cluster.rejectNextPatch = true
+    const writes = cluster.writes.length
+    expect((await pool.handle(ensure(C1, { create: false }))).state).toMatchObject({ pod: 'starting' })
+    expect(cluster.writes.length).toBe(writes + 1)
+    const sandbox = cluster.sandboxes.get(computerClaimName(C1))!
+    expect(sandbox.spec?.operatingMode).toBe('Suspended')
+    expect(sandbox.spec?.podTemplate?.spec?.containers?.[0]?.image).toBe(IMAGE_V1)
+
+    await pool.handle(ensure(C1, { create: false }))
+    expect(sandbox.spec?.operatingMode).toBe('Running')
+    expect(sandbox.spec?.podTemplate?.spec?.containers?.[0]?.image).toBe(IMAGE_V2)
   })
 
   it('reports a wake whose claim is gone as missing and never creates a fresh one', async () => {

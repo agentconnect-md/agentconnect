@@ -4,10 +4,11 @@ import {
   GuardedResumeRejectedError,
   OperatingModeRejectedError,
   type OperatingMode,
+  type ResumeImage,
   type Sandbox,
   type SandboxApi
 } from './sandbox-api.js'
-import { poolRuntimeImage } from './sandbox-identity.js'
+import { poolRuntimeImage, sandboxContainerImage } from './sandbox-identity.js'
 import type { SandboxLaunch } from './endpoint-provider.js'
 
 const MAX_MODE_ATTEMPTS = 5
@@ -171,21 +172,8 @@ export class SandboxLease {
     )
   }
 
-  private async resolveResumeImage(
-    sandboxName: string,
-    sandbox: Sandbox
-  ): Promise<{ containerIndex: number; observedName: string; observedImage: string; targetImage: string }> {
+  private async resolveResumeImage(sandboxName: string, sandbox: Sandbox): Promise<ResumeImage> {
     const targetImage = await poolRuntimeImage(this.deps.api, this.deps.warmPoolName)
-    const containers = sandbox.spec?.podTemplate?.spec?.containers ?? []
-    const containerIndexes = containers.flatMap((container, index) => (container.name === 'runtime' ? [index] : []))
-    if (containerIndexes.length === 0) throw new Error(`sandbox ${sandboxName} has no runtime container`)
-    if (containerIndexes.length > 1) throw new Error(`sandbox ${sandboxName} has multiple runtime containers`)
-    const containerIndex = containerIndexes[0]!
-    const observedImage = containers[containerIndex]?.image
-    if (!observedImage?.trim()) throw new Error(`sandbox ${sandboxName} runtime container has no image`)
-    if (observedImage.trim() !== observedImage) {
-      throw new Error(`sandbox ${sandboxName} runtime container has invalid image`)
-    }
-    return { containerIndex, observedName: 'runtime', observedImage, targetImage }
+    return { ...sandboxContainerImage(sandboxName, sandbox, 'runtime'), targetImage }
   }
 }

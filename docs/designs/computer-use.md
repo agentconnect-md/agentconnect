@@ -1927,7 +1927,11 @@ cluster credentials ([k8s-daemon-pool.md](k8s-daemon-pool.md) D17):
   `desktop-<computerId>` against the desktop warm pool, so an `ephemeral` computer is usually a prewarmed pod; it
   labels the claim `agentconnect.md/computer`, never `agentconnect.md/agent`, so the agent orphan sweep leaves it alone.
   Sleep and wake switch the Sandbox's operating mode, guarded by its uid, and keep the claim and its home volume;
-  reclamation deletes the claim, which deletes the volume. A wake never creates a claim, so a lost volume is reported
+  reclamation deletes the claim, which deletes the volume. A wake also moves the Sandbox's `computer` container onto
+  the image the desktop warm pool's template pins now, in the same JSON patch that sets `Running` and that tests the
+  uid, the `Suspended` mode and the image it observed, as an agent sandbox's resume does; so Sleep → Wake upgrades a
+  desktop with its files, browser profile and sign-ins intact, and Reset is no longer the only way to a new image. A
+  rejected patch is left for the next op, and a template the member cannot read wakes the desktop on its own image. A wake never creates a claim, so a lost volume is reported
   instead of replaced silently.
 - **Registration.** A claim carries no environment, so a desktop pod starts in pool mode
   (`AGENTCONNECT_POOL_BOOTSTRAP_PORT`) and waits. Once its pod is ready, the member that claimed it dials the pod, as it

@@ -8,13 +8,14 @@ import type {
   ComputerPoolRegistration
 } from '@agentconnect.md/protocol'
 import {
+  GuardedResumeRejectedError,
   isSandboxReady,
   OperatingModeRejectedError,
   type Sandbox,
   type SandboxApi,
   type SandboxClaim
 } from './sandbox-api.js'
-import { resolvePodIp } from './sandbox-identity.js'
+import { poolContainerImage, resolvePodIp, sandboxContainerImage } from './sandbox-identity.js'
 
 /** A desktop claim's own labels; never `agentconnect.md/agent`, so the agent orphan sweep leaves desktops alone. */
 export const AC_LABEL_COMPUTER = 'agentconnect.md/computer'
@@ -25,6 +26,8 @@ export const K8S_COMPUTER_WARM_POOL_ENV = 'AC_K8S_COMPUTER_WARM_POOL'
 /** The port a desktop pod's pool bootstrap listens on. */
 export const K8S_COMPUTER_BOOTSTRAP_PORT_ENV = 'AC_K8S_COMPUTER_BOOTSTRAP_PORT'
 export const DEFAULT_COMPUTER_BOOTSTRAP_PORT = 7690
+/** The desktop template's container, whose image a wake moves onto the pool's current one. */
+export const COMPUTER_CONTAINER = 'computer'
 
 export interface ComputerPoolSettings {
   warmPoolName: string
@@ -90,7 +93,15 @@ export const httpComputerBootstrap: ComputerBootstrap = {
 export interface ComputerPoolDeps {
   api: Pick<
     SandboxApi,
-    'ensureClaim' | 'getClaim' | 'getSandbox' | 'deleteClaim' | 'listClaims' | 'setOperatingModeIfCurrent'
+    | 'ensureClaim'
+    | 'getClaim'
+    | 'getSandbox'
+    | 'deleteClaim'
+    | 'listClaims'
+    | 'setOperatingModeIfCurrent'
+    | 'resumeWithImageIfCurrent'
+    | 'getWarmPool'
+    | 'getSandboxTemplate'
   >
   settings: ComputerPoolSettings
   bootstrap?: ComputerBootstrap
@@ -176,7 +187,7 @@ export class ComputerPool {
       return state({ pod: 'suspended', ...created })
     }
     if (mode === 'Suspended') {
-      if (uid) await this.switchMode(sandboxName, 'Running', 'Suspended', uid)
+      if (uid) await this.resume(sandboxName, sandbox, uid)
       this.deps.log?.info(`desktop pool: resuming ${sandboxName} for computer ${op.computerId}`)
       return state({ pod: 'starting', ...created })
     }
@@ -219,6 +230,27 @@ export class ComputerPool {
       await this.deps.api.setOperatingModeIfCurrent(name, mode, observed, uid)
     } catch (err) {
       if (!(err instanceof OperatingModeRejectedError)) throw err
+    }
+  }
+
+  // A wake moves the desktop onto the pool's current image; its home volume stays with the claim.
+  private async resume(name: string, sandbox: Sandbox, uid: string) {
+    let image
+    try {
+      const targetImage = await poolContainerImage(this.deps.api, this.deps.settings.warmPoolName, COMPUTER_CONTAINER)
+      image = { ...sandboxContainerImage(name, sandbox, COMPUTER_CONTAINER), targetImage }
+    } catch (err) {
+      this.deps.log?.warn(`desktop pool: waking ${name} on its current image: ${(err as Error).message}`)
+      return await this.switchMode(name, 'Running', 'Suspended', uid)
+    }
+    try {
+      await this.deps.api.resumeWithImageIfCurrent(name, image, uid)
+    } catch (err) {
+      if (!(err instanceof GuardedResumeRejectedError)) throw err
+      return
+    }
+    if (image.observedImage !== image.targetImage) {
+      this.deps.log?.info(`desktop pool: sandbox ${name} image ${image.observedImage} → ${image.targetImage}; resumed`)
     }
   }
 
