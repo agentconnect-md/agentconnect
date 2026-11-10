@@ -1466,6 +1466,12 @@ not. On a desktop, a thread whose first reply starts while the owner watches ope
 phone the thread opens in the bottom sheet from its footer or from a long press on the root, and
 nothing opens by itself. A task's own page shrinks back into its first thread.
 
+A task that fails shows its failure in the thread and is marked failed in the task list.
+If startup fails before its session exists, its threads return to the coordinator so the
+failure remains readable and a later message can retry the work. An existing task keeps
+its threads after a failed turn. Startup errors show a bounded cause without credentials,
+remote URLs or absolute paths; full diagnostics stay in the daemon log.
+
 Once the owner publishes such a conversation, other members who may continue sessions may write
 at its root and in its threads, as in any shared session. Messages keep their actual sender's
 identity and reach the existing coordinator, or the task holding their thread. Members may also

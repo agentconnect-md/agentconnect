@@ -288,6 +288,17 @@ describe('SubsessionsPanel', () => {
     expect(rows()[2]?.querySelector('a')).toBeNull()
   })
 
+  it('shows a task that failed before its session existed as failed, with no link or Stop', async () => {
+    wire.pages = [page([row({ sessionId: null, title: 'Check repository', state: 'failed', canStop: false })])]
+    await render()
+    await unfold()
+    expect(rows()[0]?.textContent).toContain('Check repository')
+    expect(rows()[0]?.textContent).not.toContain('Starting…')
+    expect(stateOf(rows()[0])).toBe('Failed')
+    expect(rows()[0]?.querySelector('a')).toBeNull()
+    expect(actions('Stop')).toHaveLength(0)
+  })
+
   it('offers Stop only on a running task the reader may stop, and shows what the stop did', async () => {
     wire.pages = [
       page([

@@ -409,7 +409,7 @@ export function BackgroundTaskRow({
       >
         {row.title ?? t('untitled')}
       </Link>
-    ) : row.visible && followUp ? (
+    ) : row.visible && (followUp || row.state !== 'open') ? (
       <span className="min-w-0 truncate">{row.title ?? t('untitled')}</span>
     ) : row.visible ? (
       <span className="min-w-0 truncate font-normal text-(--text-secondary)">{t('starting')}</span>

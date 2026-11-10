@@ -364,6 +364,80 @@ describe("a member's coordinator conversation in webchat (auto-session-mode.md ย
     await other.daemon.stop()
   })
 
+  it.each(['workspace', 'runtime'] as const)(
+    'reports a task %s failure in its thread and permits retry',
+    async (stage) => {
+      let failing = true
+      let taskKey = ''
+      const booted = await boot(async (_id, text, say) => {
+        const messageId = /<message id="(msg-[^"]+)"/.exec(text)?.[1]
+        if (messageId) {
+          taskKey ||= sessionKey('webchat', CONV, messageId.slice(4), AGENT)
+          const { ctx } = await booted.coordinator()
+          await booted.d.coordinators.decide(ctx, { action: 'delegateTask', messageId, title: 'Check repository' })
+          say('AC_NO_RESPONSE')
+        } else {
+          if (stage === 'runtime' && failing) {
+            say('Checking.')
+            throw new Error('Provider rejected the request')
+          }
+          say('Recovered.')
+        }
+      })
+      const { d, posts, send, daemon } = booted
+      const prepare = d.prepareAgentWorkspace.bind(d)
+      const preparation = vi.spyOn(d, 'prepareAgentWorkspace').mockImplementation((...args) => {
+        if (stage === 'workspace' && failing && (args[2] as { sessionKey?: string })?.sessionKey === taskKey)
+          throw new Error(
+            "git clone failed: Cloning into '/home/agent/workspace'...\n" +
+              "fatal: unable to access 'https://example-user:example-credential@git.example.test/example-repo.git': The requested URL returned error: 403"
+          )
+        return prepare(...args)
+      })
+      try {
+        const first = await send('check repository access')
+        const index = d.store.assistantSubsessions
+        expect(await index.get(AGENT, taskKey)).toMatchObject({ state: 'failed' })
+        expect(posts).toEqual([
+          ...(stage === 'runtime' ? [{ text: 'Checking.', initiator: 'agent', thread: first.postId }] : []),
+          {
+            text: expect.stringContaining(stage === 'workspace' ? '403' : 'Provider rejected the request'),
+            initiator: 'agent',
+            thread: first.postId
+          }
+        ])
+        const failure = posts.at(-1)!.text
+        expect(failure).not.toMatch(/example-credential|git\.example\.test|\/home\/agent/)
+        const { key } = await booted.coordinator()
+        const reader = createSessionReader(d.store)
+        const thread = await reader.thread({
+          agentId: AGENT,
+          sessionId: await d.store.ensureOutwardSessionId(key, AGENT),
+          rootId: first.postId,
+          limit: 50
+        })
+        expect(thread.messages.filter((message) => message.text === failure)).toHaveLength(1)
+        if (stage === 'workspace') {
+          expect(await d.store.getSession(taskKey)).toBeUndefined()
+          expect(thread.summary?.task).toBeUndefined()
+          expect(await index.threadsOf(AGENT, taskKey)).toEqual([])
+        } else {
+          expect(thread.summary?.task).toMatchObject({ state: 'failed' })
+          expect(await index.threadsOf(AGENT, taskKey)).toHaveLength(1)
+        }
+
+        failing = false
+        await send('try again', OWNER, CONV, undefined, first.postId)
+        expect(posts.at(-1)).toMatchObject({ text: 'Recovered.', thread: first.postId })
+        expect(await index.get(AGENT, taskKey)).toMatchObject({ state: 'done' })
+        expect(await index.threadsOf(AGENT, taskKey)).toHaveLength(1)
+      } finally {
+        preparation.mockRestore()
+        await daemon.stop()
+      }
+    }
+  )
+
   // webchat-threads.md ยง4: a task opens on the message's thread and answers there, as a Slack coordinator's does.
   it("opens a task on the message's thread, which answers there, takes the thread's replies, and is handed and fallen back to", async () => {
     const live: { d?: any } = {}
