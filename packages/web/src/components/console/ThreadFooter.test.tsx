@@ -147,7 +147,7 @@ describe('TaskThreadFooter', () => {
   it('links to the task’s page where no thread can open beside the chat, reading the task alone', async () => {
     await render(<TaskThreadFooter agentId="agent_1" link={link} parentSessionId={null} />)
     expect(container.querySelector('[data-task-card-open]')?.getAttribute('href')).toBe('/acme/sessions/ses_task')
-    expect(container.querySelector('button:not([data-task-card-share])')).toBeNull()
+    expect(container.querySelector('button:not([data-message-share])')).toBeNull()
     expect(wire.listReads).toEqual([])
     expect(wire.rowReads).toEqual(['agent_1/ses_task'])
   })
@@ -233,11 +233,11 @@ describe('ThreadFooter', () => {
       'Reply in thread',
       'Share'
     ])
-    act(() => toolbar.querySelector<HTMLButtonElement>('[data-task-card-reply]')!.click())
+    act(() => toolbar.querySelector<HTMLButtonElement>('[data-reply-in-thread]')!.click())
     expect(onReply).toHaveBeenCalledTimes(1)
     expect(onOpen).not.toHaveBeenCalled()
     // Share is the task's own page's: its dialog, with who can see the session and its link.
-    await act(async () => toolbar.querySelector<HTMLButtonElement>('[data-task-card-share]')!.click())
+    await act(async () => toolbar.querySelector<HTMLButtonElement>('[data-message-share]')!.click())
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0))
     })

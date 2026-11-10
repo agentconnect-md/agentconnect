@@ -2,7 +2,6 @@
 
 import { type CSSProperties, type ReactNode } from 'react'
 import Link from 'next/link'
-import { useTranslations } from 'next-intl'
 import { speaker, type Agent, type ElicitAnswerValue } from '@/lib/data'
 import { agentToneColor } from '@/lib/agent-tone'
 import { AGENT_PROSE, SELF_BUBBLE } from '@/components/console/transcript-bubbles'
@@ -30,13 +29,13 @@ import {
   withPromptStart
 } from '@/components/console/session-work'
 import { CapabilityRequestCard } from '@/components/console/CapabilityRequestCard'
-import { ReplyInThreadButton, ThreadRootPress } from '@/components/console/ThreadRootActions'
+import { ThreadRootPress } from '@/components/console/ThreadRootActions'
 import { type TaskLink } from '@/components/console/task-link'
-import { CopyTurnButton, StepExtras, McpAppRow, turnWork, WorkStepList } from '@/components/console/WorkPanel'
+import { StepExtras, McpAppRow, turnWork, WorkStepList } from '@/components/console/WorkPanel'
 import { type Turn } from '@/components/console/session-turns'
 import type { FmtStep } from '@/components/console/transcript-steps'
 import { ElicitationCard, PlanBlock } from '@/components/console/TranscriptCards'
-import { HOVER_TOOL_BUTTON, HOVER_TOOL_ICON, HoverToolbar } from '@/components/console/HoverToolbar'
+import { CopyTurnButton, MessageMenu } from '@/components/console/MessageMenu'
 
 function ParticipantAvatar({
   agent,
@@ -94,44 +93,6 @@ function ParticipantAvatar({
 
 type UserTurn = Extract<Turn, { kind: 'user' }>
 type BotTurn = Extract<Turn, { kind: 'bot' }>
-
-/** A message's hover menu, a person's or an agent's alike: Reply in its thread where the reader may, and Copy of its text. */
-function MessageMenu({
-  text,
-  onReply,
-  onShare,
-  className,
-  ...attrs
-}: {
-  text?: string | undefined
-  onReply?: (() => void) | undefined
-  /** Shares the message: its session's Share dialog with a link to this message. */
-  onShare?: (() => void) | undefined
-  /** Where the menu floats on its message. */
-  className: string
-} & Record<`data-${string}`, string>) {
-  const tt = useTranslations('Common.taskThread')
-  const tShare = useTranslations('Sessions.share')
-  if (!text && !onReply && !onShare) return null
-  return (
-    <HoverToolbar group="turn" label={tt('messageActions')} className={className} {...attrs}>
-      {onReply ? <ReplyInThreadButton onReply={onReply} /> : null}
-      {text ? <CopyTurnButton text={text} className={HOVER_TOOL_BUTTON} /> : null}
-      {onShare ? (
-        <button
-          type="button"
-          data-message-share=""
-          aria-label={tShare('share')}
-          title={tShare('share')}
-          onClick={onShare}
-          className={HOVER_TOOL_BUTTON}
-        >
-          <Icon name="share" size={HOVER_TOOL_ICON} />
-        </button>
-      ) : null}
-    </HoverToolbar>
-  )
-}
 
 export function UserTurnView({
   turn,
