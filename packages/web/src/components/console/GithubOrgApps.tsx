@@ -2,13 +2,13 @@ import { useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import useSWR from 'swr'
 import { Button, Icon } from '@/components/ui'
-import { SQUARE_MARK_FILL_PCT } from '@/components/mark-box'
 import Link from 'next/link'
-import { AgentIconView, GithubMark } from '@/components/marks'
+import { AgentIconView } from '@/components/marks'
+import { GithubAppLogo } from './GithubAppLogo'
 import { useConsoleData } from '@/lib/data-context'
 import { Scrim } from '@/components/console/Scrim'
 import UninstallGithubInstallationModal from '@/components/console/modals/UninstallGithubInstallationModal'
-import { deleteGithubApp, fetchGithubApps, githubAppLogoUrl, githubAppPageUrl, type GithubOrgAppDto } from '@/lib/api'
+import { deleteGithubApp, fetchGithubApps, githubAppPageUrl, type GithubOrgAppDto } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
 
@@ -57,34 +57,6 @@ export function GithubAppRow({
       </div>
       <span className="flex items-center justify-between gap-3 desktop:justify-end">{aside}</span>
     </div>
-  )
-}
-
-/** The App's own logo in the row's 28px tile; the GitHub mark until its id is known or if the image fails. */
-function GithubAppLogo({ appId }: { appId?: number | null }) {
-  const [broken, setBroken] = useState<number | null>(null)
-  const tile =
-    'flex h-7 w-7 flex-none items-center justify-center overflow-hidden rounded-[7px] border border-(--border-default) bg-(--surface-card)'
-  if (appId != null && broken !== appId) {
-    return (
-      <span className={tile} data-github-app-logo={appId}>
-        <img
-          alt=""
-          src={githubAppLogoUrl(appId, 28)}
-          loading="lazy"
-          referrerPolicy="no-referrer"
-          className="h-full w-full object-cover"
-          onError={() => setBroken(appId)}
-        />
-      </span>
-    )
-  }
-  return (
-    <span className={tile}>
-      <span className="flex h-[14px] w-[14px] items-center justify-center">
-        <GithubMark color="var(--text-primary)" fillPct={SQUARE_MARK_FILL_PCT} />
-      </span>
-    </span>
   )
 }
 

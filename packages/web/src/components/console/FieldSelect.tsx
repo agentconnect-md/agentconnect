@@ -1,12 +1,13 @@
 'use client'
 
-import { useEffect, useRef, type KeyboardEvent } from 'react'
+import { useEffect, useRef, type KeyboardEvent, type ReactNode } from 'react'
 import { Icon } from '@/components/ui'
 import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 
 export interface FieldSelectOption<T extends string> {
   value: T
   label: string
+  icon?: ReactNode
   /** A short tag after the label, such as the kind of an entry. */
   tag?: string
   /** A hover hint on the option, spelling out what choosing it means. */
@@ -76,10 +77,12 @@ export function FieldSelect<T extends string>({
                 }`
           }
         >
+          {inline && current?.icon}
           {inline ? (
             <span>{current?.label ?? value}</span>
           ) : (
             <span className="flex min-w-0 flex-1 items-center gap-2">
+              {current?.icon}
               <span className="min-w-0 truncate">{current?.label ?? value}</span>
               {current?.tag && <OptionTag tag={current.tag} />}
             </span>
@@ -166,6 +169,7 @@ function FieldSelectMenu<T extends string>({
           className={`fopt focus-visible:bg-(--surface-hover) focus-visible:outline-none ${o.value === value ? 'on' : ''}`}
           onClick={() => onPick(o.value)}
         >
+          {o.icon}
           <span className="min-w-0 flex-1 truncate">{o.label}</span>
           {o.tag && <OptionTag tag={o.tag} />}
           <span className="flex w-4 flex-none items-center justify-center">

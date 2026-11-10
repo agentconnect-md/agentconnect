@@ -6,7 +6,8 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import useSWR from 'swr'
-import { Button, Icon } from '@/components/ui'
+import { Avatar, Button, Icon } from '@/components/ui'
+import { GithubAppLogo } from './GithubAppLogo'
 import { FieldSelect, type FieldSelectOption } from '@/components/console/FieldSelect'
 import { Scrim } from '@/components/console/Scrim'
 import {
@@ -110,9 +111,19 @@ export function GithubAppDialog({
 
   const usable = (apps ?? []).filter((app) => app.agentId === null || app.agentId === agent.id)
   const options: FieldSelectOption<string>[] = [
-    { value: BUILT_IN, label: builtInSlug ?? t('builtInFallback'), tag: t('builtIn') },
-    ...usable.map((app) => ({ value: app.id, label: app.slug, ...(app.agentId === null ? { tag: t('free') } : {}) })),
-    { value: CREATE, label: t('create') }
+    {
+      value: BUILT_IN,
+      label: builtInSlug ?? t('builtInFallback'),
+      tag: t('builtIn'),
+      icon: <GithubAppLogo appId={builtIn?.appId} size={20} />
+    },
+    ...usable.map((app) => ({
+      value: app.id,
+      label: app.slug,
+      icon: <GithubAppLogo appId={app.appId} size={20} />,
+      ...(app.agentId === null ? { tag: t('free') } : {})
+    })),
+    { value: CREATE, label: t('create'), icon: <Icon name="plus" size={20} /> }
   ]
   const chosenSlug = choice === BUILT_IN ? builtInSlug : usable.find((app) => app.id === choice)?.slug
   const uncovered = coverage?.filter((item) => !item.covered) ?? []
@@ -194,14 +205,30 @@ export function GithubAppDialog({
                     {
                       value: '',
                       label: owners?.personal ?? t('personalAccount'),
+                      icon: owners ? (
+                        <Avatar
+                          src={`https://github.com/${encodeURIComponent(owners.personal)}.png?size=40`}
+                          initials={owners.personal.slice(0, 2).toUpperCase()}
+                          size={20}
+                        />
+                      ) : (
+                        <Icon name="user" size={20} />
+                      ),
                       ...(owners ? { tag: t('personalAccount') } : {})
                     },
                     ...(owners?.organizations ?? []).map((login) => ({
                       value: login,
                       label: login,
+                      icon: (
+                        <Avatar
+                          src={`https://github.com/${encodeURIComponent(login)}.png?size=40`}
+                          initials={login.slice(0, 2).toUpperCase()}
+                          size={20}
+                        />
+                      ),
                       tag: t('organization')
                     })),
-                    { value: MANUAL_OWNER, label: t('manualOrganization') }
+                    { value: MANUAL_OWNER, label: t('manualOrganization'), icon: <Icon name="pencil" size={20} /> }
                   ]}
                   onChange={setOwner}
                   disabled={busy}

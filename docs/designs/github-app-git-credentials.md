@@ -356,6 +356,8 @@ existing Apps for it. Updating the manifest does not update existing installatio
 an administrator must add the permission in GitHub App settings and organization
 owners must approve the change, then refresh the account list. The picker is limited
 to organizations accessible to the App, not every organization the user belongs to.
+Until the update is approved, existing installations retain their previous permissions
+and repository features continue to work; organization discovery remains limited.
 The popup uses state and PKCE; the authenticated, agent-editor-only
 owner endpoints exchange the code, read `/user` and every page of active
 `/user/memberships/orgs`, and revoke the temporary token without persisting it or
