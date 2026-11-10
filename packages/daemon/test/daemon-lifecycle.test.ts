@@ -18,8 +18,10 @@ import { cwdWorkspaceIncarnation, workspaceIncarnationOf } from '../src/skills/w
 import { sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import { NO_RESPONSE_SENTINEL } from '../src/session/no-response.js'
 import { localWorkspaceFiles } from '../src/workspace/workspace-files.js'
+import { LocalGitRunner } from '../src/workspace/git-runner.js'
 import { FakeClock } from './cp/fake-clock.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
+import { inProcessShimExecutor } from './fixtures/in-process-shim.js'
 import { PodWorkspaceFs } from './fixtures/pod-workspace-fs.js'
 import { WAIT, waitBudget } from './wait-support.js'
 import { testPlane } from './workspace-plane-support.js'
@@ -264,6 +266,81 @@ describe('Daemon session lifecycle (#118)', () => {
       expect(d.microsandboxWorkspaceEnvironment(agent, agent.workspace.path)).toBeUndefined()
       expect(d.workspaceFilesFor(agent.id)).toBeUndefined()
     } finally {
+      await daemon.stop()
+    }
+  })
+
+  it.each([false, true])('replaces a managed VM workspace before mounting it (running VM: %s)', async (running) => {
+    const root = scaffold()
+    const daemon = new Daemon({ root, hostFactory: () => quietHost() as never })
+    const git = (cwd: string, args: string[]) =>
+      execFileSync('git', args, {
+        cwd,
+        encoding: 'utf8',
+        env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(root, 'empty-gitconfig') }
+      }).trim()
+    try {
+      await daemon.start()
+      const d = daemon as any
+      await vi.waitFor(() => expect(d.sessionRetentionSweepInFlight).toBe(false))
+      const agent = d.agents.get('bot-a')
+      agent.execution = 'microsandbox'
+      Object.assign(agent.workspace, {
+        mode: 'git-repo',
+        gitRepo: 'https://github.com/example-org/old-repo.git',
+        gitCredential: 'github-app'
+      })
+      mkdirSync(agent.workspace.path, { recursive: true })
+      git(agent.workspace.path, ['init', '-q', '--initial-branch=main'])
+      writeFileSync(join(agent.workspace.path, 'old.txt'), 'previous workspace')
+      d.workspaces.recordWorkspaceMaterialization(agent)
+
+      const source = join(root, 'source')
+      mkdirSync(source)
+      git(source, ['init', '-q', '--initial-branch=main'])
+      writeFileSync(join(source, 'new.txt'), 'replacement workspace')
+      git(source, ['add', 'new.txt'])
+      git(source, ['-c', 'user.name=Example', '-c', 'user.email=agent@example.test', 'commit', '-qm', 'initial'])
+      // Substitute only upstream transport; activation, helper configuration and publication use real Git and files.
+      const clone = vi.spyOn(LocalGitRunner.prototype, 'clone').mockImplementation(async (_repo, target, options) => {
+        git(root, ['clone', ...(options ?? []), source, target])
+        return undefined
+      })
+      vi.spyOn(d.gitCreds, 'get').mockResolvedValue(undefined)
+      const environment = {
+        id: 'bot-a/agent',
+        workspaceRoot: agent.dir,
+        mounts: [{ source: agent.workspace.path, target: agent.workspace.path, mode: 'writable' }]
+      }
+      d.microsandbox = {
+        environment: () => (running ? environment : undefined),
+        environmentIds: async () => [],
+        stopAll: async () => {}
+      }
+      d.wirePlaneResolver(d.microsandboxPlane)
+      vi.spyOn(d, 'microsandboxContext').mockReturnValue({ environment, launch: { env: { PATH: process.env.PATH } } })
+      const executor = inProcessShimExecutor()
+      d.localExecutor.withEnvironment = executor.withEnvironment
+
+      agent.workspace.gitRepo = 'https://github.com/example-org/new-repo.git'
+      await d.workspaces.prepareWorkspaceForActivation(agent, { reconcileMaterialization: true })
+
+      expect(clone).toHaveBeenCalledExactlyOnceWith(agent.workspace.gitRepo, expect.stringContaining('.clone-'), [
+        '--branch',
+        'main',
+        '--single-branch'
+      ])
+      expect(executor.seen.length).toBe(0)
+      expect(readFileSync(join(agent.workspace.path, 'new.txt'), 'utf8')).toBe('replacement workspace')
+      expect(existsSync(join(agent.workspace.path, 'old.txt'))).toBe(false)
+      expect(git(agent.workspace.path, ['config', '--get', 'credential.https://github.com.useHttpPath'])).toBe('true')
+      expect(d.workspaces.readMaterialization(agent)).toBe(d.workspaces.materializationKey(agent))
+      // Once published under the mounted path, Git still runs through the VM's shim.
+      expect((await d.workspaces.runnerFor(agent.id, agent.workspace.path).status()).current).toBe('main')
+      expect(executor.seen).toHaveLength(1)
+      expect(executor.seen[0]!.environment).toBe(environment)
+    } finally {
+      vi.restoreAllMocks()
       await daemon.stop()
     }
   })
