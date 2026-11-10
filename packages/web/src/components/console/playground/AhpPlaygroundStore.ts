@@ -395,6 +395,21 @@ export class AhpPlaygroundStore {
           return { accepted: false, reason: error instanceof Error ? error.message : 'The answer could not be sent.' }
         }
       },
+      pgOpenFill: async (id, agentId, requestId, conversationId) => {
+        const connection = this.entry(id, agentId, conversationId).connection
+        try {
+          await connection.connect()
+          const peer = connection.peers.get(agentId)
+          if (!peer) return { ok: false, reason: 'Reconnect to open this card.' }
+          const opened = await peer.fillOpen(requestId)
+          if (!opened.accepted || !opened.card)
+            return { ok: false, reason: opened.reason ?? 'This card cannot be opened.' }
+          connection.showFill(agentId, opened.card)
+          return { ok: true }
+        } catch (error) {
+          return { ok: false, reason: error instanceof Error ? error.message : 'This card cannot be opened.' }
+        }
+      },
       pgCloseApp: (id, agentId, appId) => {
         const connection = this.entries.get(id)?.connection
         const peer = connection?.peers.get(agentId)

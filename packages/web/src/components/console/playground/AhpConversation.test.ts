@@ -68,6 +68,23 @@ const turn = (text: string) => ({ queueId: text, agentId: 'a', text })
 const open = (refused = vi.fn()) =>
   new AhpConversation('org', 'a', [{ agentId: 'a', name: 'Alpha' }], vi.fn(), refused, vi.fn())
 describe('AHP conversation engine', () => {
+  it('shows a chat-asked Fill card once, as a local step of its agent', () => {
+    const entry = open()
+    const card = {
+      requestId: '7f9d6c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f',
+      computerName: 'Desk',
+      website: { origin: 'https://login.example.test' },
+      kind: 'login' as const,
+      fields: [],
+      expiresAt: '2026-11-10T10:10:00.000Z'
+    }
+    entry.showFill('a', card)
+    entry.showFill('a', card)
+    expect(entry.notices).toEqual([
+      { kind: 'fill', turnId: `fill:${card.requestId}`, agentId: 'a', text: 'https://login.example.test', fill: card }
+    ])
+  })
+
   it('fans one turn identity to the roster and narrows explicit mentions', async () => {
     const entry = open()
     entry.roster.push({ agentId: 'b', name: 'Beta' })

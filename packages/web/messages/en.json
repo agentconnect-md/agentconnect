@@ -1120,7 +1120,8 @@
         "map": "Turns in this conversation"
       },
       "jumpToLatest": "Jump to latest",
-      "attachFailed": "Couldn’t prepare that image."
+      "attachFailed": "Couldn’t prepare that image.",
+      "fillOpenFailed": "This Fill card can’t be opened here: {reason}"
     },
     "share": {
       "share": "Share",

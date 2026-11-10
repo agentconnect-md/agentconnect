@@ -1,3 +1,4 @@
+import type { FillCardBody } from '@/lib/data'
 import {
   chatReducer,
   sessionReducer,
@@ -183,6 +184,19 @@ export class AhpAttachment {
       params: Record<string, unknown>
     ) => Promise<{ accepted: boolean; reason?: string }>
     return request('agentconnect/fillSubmit', { channel: this.chatUri, requestId, ...answer })
+  }
+  /** Opens a chat-asked Fill card for this attachment's person; the daemon answers with the card or a refusal. */
+  fillOpen(requestId: string): Promise<{ accepted: boolean; reason?: string; card?: FillCardBody }> {
+    const profile = this.view.extensions?.['agentconnect.md'] as { fillCards?: boolean } | undefined
+    if (!this.view.connected || !this.client || !this.chatUri)
+      return Promise.reject(new Error('Reconnect to open this card.'))
+    if (profile?.fillCards !== true)
+      return Promise.reject(new Error('Fill cards are unavailable in this conversation.'))
+    const request = this.client.request.bind(this.client) as (
+      method: string,
+      params: Record<string, unknown>
+    ) => Promise<{ accepted: boolean; reason?: string; card?: FillCardBody }>
+    return request('agentconnect/fillOpen', { channel: this.chatUri, requestId })
   }
   private appRequest<T>(method: string, params: Record<string, unknown>): Promise<T> {
     const profile = this.view.extensions?.['agentconnect.md'] as { mcpApps?: boolean } | undefined

@@ -1222,6 +1222,7 @@ import { feishuApprovalCards } from './platforms/feishu/approval-card.js'
 import { feishuPlatformModule } from './platforms/feishu/module.js'
 import { slackApprovalCards } from './platforms/slack/approval-card.js'
 import { slackCapabilityCards } from './platforms/slack/capability-card.js'
+import { slackFillCards } from './platforms/slack/fill-card.js'
 import type { FillCardHandle, FillCardFacet, FillCardModel } from './platforms/fill-card.js'
 import type { ElicitCardHost } from './platforms/elicit-card.js'
 import { discordCapabilityCards } from './platforms/discord/capability-card.js'
@@ -1933,6 +1934,7 @@ export class Daemon {
         elicitCards: slackElicitCards,
         approvalCards: slackApprovalCards,
         capabilityCards: slackCapabilityCards,
+        fillCards: slackFillCards,
         createConverger: (ctx) =>
           new OutputConverger(ctx.mode as never, ctx.protectedAddresses ?? [], ctx.resolveFileLink),
         initialTurnState: (ctx): SlackTurnState => {

@@ -777,6 +777,12 @@ const DOCK_TABS: DockTab[] = [
 ]
 
 /** Loading keeps the same dock + body tracks as the transcript; a resolved 404 opts out, so its card gets the whole content wrap. */
+// Asks once per card and session; a child so the request can follow the view's early returns without breaking hook order.
+function FillOpener({ open }: { open: () => void }) {
+  useEffect(() => open(), [])
+  return null
+}
+
 function SessionDetailFrame({ children, withDock = true }: { children: ReactNode; withDock?: boolean }) {
   return (
     <div className="flex min-h-full items-stretch">
@@ -1020,6 +1026,7 @@ export default function SessionDetailView() {
     pgAppRpc,
     pgCloseApp,
     pgAnswerFill,
+    pgOpenFill,
     pgCancel,
     getPgRelayFeatures,
     getPgTurnThread
@@ -1061,6 +1068,7 @@ export default function SessionDetailView() {
     setWorkOverride((prev) => toggleWorkPanel(prev, key, currentOpen))
   const [imagePreparing, setImagePreparing] = useState(false)
   const [imageError, setImageError] = useState<string | null>(null)
+  const [fillOpenError, setFillOpenError] = useState<string | null>(null)
   const [attachMenuOpen, setAttachMenuOpen] = useState(false)
   const [composerMenuOpen, setComposerMenuOpen] = useState<ComposerMenuKey | null>(null)
   // Mirrors ComposerTextarea's mention.joining (isolated from this component
@@ -2761,12 +2769,24 @@ export default function SessionDetailView() {
       ? (agentId: string | undefined, appId: string): void =>
           pgCloseApp(session.id, agentId ?? session.agentId ?? '', appId, webchatConversationId)
       : undefined
-  // A Fill card's values ride the same live socket as the composer; elsewhere the card is a record.
+  // A Fill card's values ride the same live socket as the composer, a chat session's continuation included.
   const answerFill =
-    isLive && (isPg || isWebchat)
-      ? (agentId: string | undefined, requestId: string, answer: FillCardAnswer) =>
-          pgAnswerFill(session.id, agentId ?? session.agentId ?? '', requestId, answer, webchatConversationId)
+    isLive && (isPg || isWebchat || isContinuable)
+      ? (agentId: string | undefined, requestId: string, answer: FillCardAnswer) => {
+          if (isContinuable) markSessionTarget(session.id)
+          return pgAnswerFill(session.id, agentId ?? session.agentId ?? '', requestId, answer, webchatConversationId)
+        }
       : undefined
+  // A chat platform's Fill card links here with ?fill=<id>: the daemon hands the card to the person who asked, or refuses.
+  const fillRequest = answerFill ? searchParams.get('fill') : null
+  const openFill = () => {
+    if (!fillRequest) return
+    setFillOpenError(null)
+    if (isContinuable) markSessionTarget(session.id)
+    void pgOpenFill(session.id, session.agentId ?? '', fillRequest, webchatConversationId).then((opened) => {
+      if (!opened.ok) setFillOpenError(opened.reason ?? null)
+    })
+  }
   // Joins and removals (§3.1/§3.1a) mutate provider-side state an adopted session never had, so they stay playground-only.
   const pgWorktree =
     worktreeSelections[session.id] ??
@@ -4216,6 +4236,12 @@ export default function SessionDetailView() {
                     {imageError && (
                       <div className="font-sans text-[11.5px] font-medium leading-normal text-(--red-600)">
                         {imageError}
+                      </div>
+                    )}
+                    {fillRequest ? <FillOpener key={`${session.id}:${fillRequest}`} open={openFill} /> : null}
+                    {fillOpenError && (
+                      <div className="font-sans text-[11.5px] font-medium leading-normal text-(--red-600)">
+                        {t('fillOpenFailed', { reason: fillOpenError })}
                       </div>
                     )}
                     {/* Gap under the last turn; `flex-1` fills out a short transcript, and `-mt-4` cancels the mobile gutter so a collapsed spacer adds nothing. */}

@@ -273,6 +273,15 @@ fields the card showed, and expires an unanswered card after 10 minutes. Approva
 and the control lease come after the answer; a lost fill reply is settled from
 `computer_form_status` or reported as `uncertain`, never resent.
 
+On Slack the card is a link to the console session page with `?fill=<id>`. The
+page asks the daemon for the card over the session's continuation (`fill_open`,
+or AHP `agentconnect/fillOpen`) and answers it there. A chat-asked card is scoped
+to its session, and only a console user whose linked chat identities include the
+asking member (`<platform>:<tenant>:<member>`) may open or answer it. The relay
+stamps those identities from its verified verdict; on AHP it sends them only to
+daemons advertising `api-ahp-identities-v1`. An unlinked member must link their
+chat account first.
+
 Fill success and save success are separate outcomes. If CP is unavailable,
 filling may succeed while saving fails; say "filled, not saved" and let the
 person retry saving. Do not automatically replay a fill to retry a save.
