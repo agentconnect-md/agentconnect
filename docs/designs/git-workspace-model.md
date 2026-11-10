@@ -268,6 +268,8 @@ after workspace preparation. It adds each primary and secondary worktree's exact
 Git admin directory beneath an already authorized owner checkout, keeping hooks,
 config, worktree config and credential protections. It creates missing hooks
 directories before sandbox setup so the directory protections take effect.
+Worktrees outside the launcher's Git roots receive no extra grants and do not block
+session startup; newly added repositories wait for the shared host's idle refresh.
 The daemon sends the profiles
 on both new and load; the adapter applies them to the native thread, so a shared
 process also supports worktrees created after startup. This requires an adapter

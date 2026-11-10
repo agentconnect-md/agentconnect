@@ -61,9 +61,22 @@ describe('Codex session Git grants', () => {
             expect(Object.keys(fs).some((path) => path.endsWith(join('worktrees', 'primary-cold')))).toBe(false)
         }
         expect(Object.values(profiles[config.modeProfiles['read-only']]!.filesystem)).not.toContain('write')
-        await expect(codexSessionPermissionProfiles(serialized, [], directories)).rejects.toThrow(
-          'outside the authorized'
-        )
+        expect(await codexSessionPermissionProfiles(serialized, [], directories)).toBeUndefined()
+        const staleConfig = codexPermissionProfileConfig({
+          protectedRoots: [join(base, 'credentials')],
+          writableGitMetadataRoots: roots.slice(0, 1)
+        })!
+        const staleProfiles = (await codexSessionPermissionProfiles(
+          JSON.stringify(staleConfig),
+          roots.slice(0, 1),
+          directories
+        )) as Record<string, { filesystem: Record<string, string> }>
+        for (const id of [config.modeProfiles.agent, config.modeProfiles['agent-full-access']]) {
+          const fs = staleProfiles[id]!.filesystem
+          expect(fs[resolve(git('-C', directories[0]!, 'rev-parse', '--absolute-git-dir'))]).toBe('write')
+          expect(fs[resolve(git('-C', directories[1]!, 'rev-parse', '--absolute-git-dir'))]).toBeUndefined()
+          expect(fs[join(base, 'credentials')]).toBe('deny')
+        }
       }
       expect(JSON.stringify(config)).toBe(serialized)
     } finally {
