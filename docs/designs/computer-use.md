@@ -514,7 +514,8 @@ image running **the same desktop daemon**. The prototype was built and run on a 
 - **Browser [implemented]**: the entrypoint keeps one Chromium window open and maximized (`wmctrl`), restarting it
   with a 2–30 s backoff when it exits or crashes; flags in `/etc/chromium.d` (sourced by Debian's launcher on every
   start, an agent's included) and a managed policy turn off the first-run, default-browser, crash-restore, sign-in and
-  translate prompts that would block an unattended restart, and restore the last session. The profile lock names the
+  translate prompts that would block an unattended restart, restore the last session, and make Google the home page,
+  new-tab page and search engine in place of Debian's DuckDuckGo default. The profile lock names the
   hostname, which a woken pod no longer has, so the entrypoint removes it before anything starts. While another
   instance holds the profile (one an agent started), the supervisor waits for it instead of opening a second window.
   `BROWSER=none` turns it off.
