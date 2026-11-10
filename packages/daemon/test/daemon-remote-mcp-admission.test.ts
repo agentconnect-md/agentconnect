@@ -336,3 +336,48 @@ describe('which turn installs admin MCP in a webchat coordinator conversation', 
     ).toBeUndefined()
   })
 })
+
+describe('an idle-closed webchat session and its conversation authority', () => {
+  const entitlement = { authorityId: AUTHORITY, authorityGeneration: 1, expiresAt: '2030-01-01T00:00:00.000Z' }
+  const coordinatorKey = `webchat:${CONV}:append:coordinator-1:${AGENT_ID}`
+  const taskKey = `webchat:a2a:subsession:2:${AGENT_ID}`
+
+  async function conversation(sessions: Record<string, { state: string }>, openInChannel: boolean) {
+    const client = fakeGrantClient()
+    const daemon = Object.create(Daemon.prototype) as any
+    daemon.remoteWebchatGrants = new RemoteWebchatGrantManager(client as never)
+    daemon.store = {
+      hasOpenSessionInChannel: vi.fn(async () => openInChannel),
+      getSession: vi.fn(async (key: string) => sessions[key])
+    }
+    daemon.remoteWebchatGrants.noteEntitlement(CONV, AGENT_ID, entitlement)
+    await daemon.remoteWebchatGrants.provision(CONV, entitlement, Date.now(), AGENT_ID, taskKey)
+    return { daemon, client }
+  }
+
+  it('a coordinator closing while its task still works leaves the task its grant and the entitlement', async () => {
+    const { daemon, client } = await conversation({ [taskKey]: { state: 'prompting' } }, false)
+    await daemon.releaseIdleWebchatGrant({ key: coordinatorKey, agentId: AGENT_ID, channel: CONV })
+    expect(client.revokeWebchatMcpGrant).not.toHaveBeenCalled()
+    expect(daemon.remoteWebchatGrants.taskSessionKeys(CONV)).toEqual([taskKey])
+    expect(daemon.remoteWebchatGrants.inheritedEntitlement(CONV, AGENT_ID)).toEqual(entitlement)
+  })
+
+  it('an open session of the conversation keeps the authority, and a closing task drops only its own descriptor', async () => {
+    const { daemon, client } = await conversation({}, true)
+    await daemon.releaseIdleWebchatGrant({ key: taskKey, agentId: AGENT_ID, channel: CONV })
+    expect(client.revokeWebchatMcpGrant).not.toHaveBeenCalled()
+    expect(daemon.remoteWebchatGrants.taskSessionKeys(CONV)).toEqual([])
+    expect(daemon.remoteWebchatGrants.inheritedEntitlement(CONV, AGENT_ID)).toEqual(entitlement)
+  })
+
+  it("the conversation's last open session closing revokes its authority", async () => {
+    const { daemon, client } = await conversation({ [taskKey]: { state: 'closed' } }, false)
+    await daemon.releaseIdleWebchatGrant({ key: coordinatorKey, agentId: AGENT_ID, channel: CONV })
+    expect(client.revokeWebchatMcpGrant).toHaveBeenCalledWith(
+      expect.objectContaining({ authorityId: AUTHORITY, conversationId: CONV, reason: 'session_expired' })
+    )
+    expect(daemon.remoteWebchatGrants.taskSessionKeys(CONV)).toEqual([])
+    expect(daemon.remoteWebchatGrants.inheritedEntitlement(CONV, AGENT_ID)).toBeUndefined()
+  })
+})

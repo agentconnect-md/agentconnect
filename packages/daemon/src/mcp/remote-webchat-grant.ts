@@ -327,6 +327,15 @@ export class RemoteWebchatGrantManager {
     return [...ids]
   }
 
+  /** The task sessions holding a descriptor under `conversationId`'s authority. */
+  taskSessionKeys(conversationId: string): string[] {
+    const keys: string[] = []
+    for (const descriptor of this.active.values())
+      if (descriptor.conversationId === conversationId && descriptor.sessionKey !== undefined)
+        keys.push(descriptor.sessionKey)
+    return keys
+  }
+
   /** Drop the descriptors of `agentId`'s task sessions `pick` selects, so the next turn there installs a freshly issued grant. */
   forgetSessions(agentId: string, pick: (sessionKey: string) => boolean): void {
     for (const [key, descriptor] of [...this.active])

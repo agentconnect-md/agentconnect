@@ -2114,6 +2114,19 @@ describe('LocalStore session lifecycle (§7.3/#111/#118)', () => {
     await s.close()
   })
 
+  it('hasOpenSessionInChannel sees a channel open until its last session closes', async () => {
+    const s = await store()
+    await seed(s, 'first', 'bot-a', 'idle', 100)
+    await seed(s, 'second', 'bot-b', 'prompting', 100)
+    await s.closeIdleSessions(1000, 500)
+    expect(await s.hasOpenSessionInChannel('slack', 'C1')).toBe(true)
+    expect(await s.hasOpenSessionInChannel('webchat', 'C1')).toBe(false)
+    await s.setSessionState('second', 'idle', 100)
+    await s.closeIdleSessions(1000, 500)
+    expect(await s.hasOpenSessionInChannel('slack', 'C1')).toBe(false)
+    await s.close()
+  })
+
   it('lists rows left mid-turn, and releases one only while it is still the row that was read (#2245)', async () => {
     const s = await store()
     await seed(s, 'old-prompting', 'bot-a', 'prompting', 100)

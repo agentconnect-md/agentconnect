@@ -4162,6 +4162,14 @@ export class LocalStore {
       .get(agentId, platform, thread, transportScope ?? '')) as SessionRecord | undefined
   }
 
+  /** Whether any agent's session of `platform` in `channel` is still open (not closed). */
+  async hasOpenSessionInChannel(platform: string, channel: string): Promise<boolean> {
+    const row = await this.db
+      .prepare("SELECT 1 AS open FROM sessions WHERE platform = ? AND channel = ? AND state != 'closed' LIMIT 1")
+      .get(platform, channel)
+    return row !== undefined
+  }
+
   /** The most recently active addressable session (has an ACP id) in a channel, across
    *  ALL agents — or undefined. Used to resolve which agent a bare command targets when
    *  routing can't (e.g. a group `/status@bot` with no mention entity / thread). */
