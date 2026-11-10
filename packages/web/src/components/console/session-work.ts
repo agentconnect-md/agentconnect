@@ -1,6 +1,6 @@
 import { NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
 import type { PlanBody } from '@/lib/api'
-import type { CapabilityCardBody, ElicitBody, ElicitFieldSpec, McpAppBody } from '@/lib/data'
+import type { CapabilityCardBody, ElicitBody, ElicitFieldSpec, FillCardBody, McpAppBody } from '@/lib/data'
 
 // 2b chat style: an agent turn shows its spoken answer (MSG/DONE lanes) as plain
 // text and collapses its "work" — reasoning (THINK/PLAN), tool calls (TOOL), and
@@ -66,6 +66,36 @@ export function capabilityCard(body: string | undefined): CapabilityCardBody | n
 /** Request ids the LIVE stream is carrying, so a reload's transcript twin of the same card stands aside. */
 export function liveCapabilityIds(live: readonly { capability?: { requestId: string } }[]): Set<string> {
   return new Set(live.flatMap((step) => (step.capability?.requestId ? [step.capability.requestId] : [])))
+}
+
+const FILL_OUTCOMES = new Set([
+  'filled',
+  'partial',
+  'failed',
+  'uncertain',
+  'target_changed',
+  'unsupported',
+  'cancelled',
+  'expired'
+])
+
+/** Parse a `fill` row's body into its card; null for anything without a request, a website and fields. */
+export function fillCardBody(body: string | undefined): FillCardBody | null {
+  if (!body) return null
+  try {
+    const parsed = JSON.parse(body) as Partial<FillCardBody>
+    if (typeof parsed.requestId !== 'string' || typeof parsed.website?.origin !== 'string') return null
+    if (!Array.isArray(parsed.fields) || typeof parsed.expiresAt !== 'string') return null
+    const { resolved, ...card } = parsed as FillCardBody
+    return { ...card, ...(resolved && FILL_OUTCOMES.has(resolved) ? { resolved } : {}) }
+  } catch {
+    return null
+  }
+}
+
+/** Request ids of the Fill cards the LIVE stream is carrying, so a reload's transcript twin stands aside. */
+export function liveFillIds(live: readonly { fill?: { requestId: string } }[]): Set<string> {
+  return new Set(live.flatMap((step) => (step.fill?.requestId ? [step.fill.requestId] : [])))
 }
 
 /** The settlements a persisted app row may carry — anything else is a body we do not trust. */

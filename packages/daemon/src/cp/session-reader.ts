@@ -530,8 +530,8 @@ async function readTranscriptPage(
       if (Buffer.byteLength(r.body) <= PREVIEW_CAP) base.body = r.body
       return base
     }
-    // An elicitation or capability card's body is the card and has no full-body fetch: inline or not at all.
-    if (r.kind === 'elicit' || r.kind === 'capability') {
+    // An elicitation, capability or Fill card's body is the card and has no full-body fetch: inline or not at all.
+    if (r.kind === 'elicit' || r.kind === 'capability' || r.kind === 'fill') {
       if (Buffer.byteLength(r.body) <= PREVIEW_CAP) base.body = r.body
       return base
     }

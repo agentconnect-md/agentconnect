@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import type { McpAppBody } from '@/lib/data'
 import {
   agentTurnStreaming,
+  fillCardBody,
+  liveFillIds,
   exchangePromptMs,
   withPromptStart,
   capabilityCard,
@@ -518,5 +520,26 @@ describe('shortAgo', () => {
     expect(shortAgo(now - 3 * 3_600_000 - 59 * 60_000, now)).toBe('3h')
     expect(shortAgo(now - 2 * 86_400_000, now)).toBe('2d')
     expect(shortAgo(now + 5_000, now)).toBe('0s')
+  })
+})
+
+describe('fillCardBody', () => {
+  const card = {
+    requestId: '7f9d6c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f',
+    computerName: 'Desk',
+    website: { origin: 'https://login.example.test' },
+    kind: 'login',
+    fields: [],
+    expiresAt: '2026-11-10T10:10:00.000Z'
+  }
+  it('reads a recorded Fill card and keeps only a known outcome', () => {
+    expect(fillCardBody(JSON.stringify(card))).toEqual(card)
+    expect(fillCardBody(JSON.stringify({ ...card, resolved: 'filled' }))).toEqual({ ...card, resolved: 'filled' })
+    expect(fillCardBody(JSON.stringify({ ...card, resolved: 'bogus' }))).toEqual(card)
+    expect(fillCardBody(JSON.stringify({ ...card, website: undefined }))).toBeNull()
+    expect(fillCardBody('not json')).toBeNull()
+  })
+  it('names the cards the live stream carries', () => {
+    expect(liveFillIds([{ fill: { requestId: 'a' } }, {}])).toEqual(new Set(['a']))
   })
 })

@@ -267,7 +267,7 @@ value-free `fill_request` event, which AHP projects into the session's `fills`
 metadata, and settles it with `fill_resolved`. The answer is the relay op
 `fill_submit`, whose author the relay stamps from its verified verdict, or the
 AHP request `agentconnect/fillSubmit`, answered with the attachment's own user
-and conversation. The daemon keeps pending cards in memory only. It accepts an
+and conversation. The card is also a `fill` transcript row with its descriptors and, once settled, its outcome, so a coordinator task's thread and a reloaded page show it; a task's card is answered on the conversation's own socket and channel, like its questions. The daemon keeps pending answers in memory only. It accepts an
 answer only from the asking turn's person in the card's conversation, naming
 fields the card showed, and expires an unanswered card after 10 minutes. Approval
 and the control lease come after the answer; a lost fill reply is settled from
