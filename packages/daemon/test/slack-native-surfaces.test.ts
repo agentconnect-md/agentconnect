@@ -176,10 +176,11 @@ describe('Slack Plan feedback', () => {
     }
   })
 
-  it.each(['ordinary', 'dm', 'unowned', 'cancelled'])('does not read Plan feedback for a %s turn', async (kind) => {
+  it.each(['ordinary', 'dm', 'unowned', 'undiscovered', 'cancelled'])('skips feedback for %s turns', async (kind) => {
     const f = await fixture(kind !== 'ordinary')
     try {
       f.api.listViews.mockResolvedValue({ views: [{ view_key: 'plan', file_id: 'F_PLAN' }] })
+      if (kind === 'undiscovered') f.info.mockRejectedValue(new Error('Slack unavailable'))
       if (kind === 'unowned')
         f.info.mockResolvedValue({
           channel: {
@@ -469,7 +470,7 @@ describe('Slack native surfaces', () => {
     }
   })
 
-  it('publishes a task’s diff in the code channel it made against the start it kept in its thread (auto-session-mode.md §6.8)', async () => {
+  it.each([true, false])('keeps the first turn’s diff baseline even when cancelled (active=%s)', async (active) => {
     const root = mkdtempSync(join(tmpdir(), 'task-channel-diff-'))
     const git = (args: string[]) =>
       execFileSync('git', args, {
@@ -505,7 +506,7 @@ describe('Slack native surfaces', () => {
         await startSlackCodeTurn(
           origin,
           {},
-          { ...host, open: () => openTaskDiff(sources, 'task-key', false), keepStart }
+          { ...host, active: () => active, open: () => openTaskDiff(sources, 'task-key', false), keepStart }
         )
       ).toBeUndefined()
       expect(keepStart).toHaveBeenCalledOnce()

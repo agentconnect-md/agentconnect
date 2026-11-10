@@ -38,18 +38,21 @@ export async function startSlackCodeTurn(
     lastNotice?: { get(): string | undefined; set(text: string | undefined): void }
   }
 ): Promise<string | undefined> {
-  if (!turn.conn || turn.plan.isDm || !host.active()) return undefined
+  if (!turn.conn || turn.plan.isDm) return undefined
   // A task may move into a code channel it makes later, so its turn elsewhere keeps a start for a repository without a base branch (auto-session-mode.md §6.8).
   if (turn.plan.statusThread !== turn.plan.channel) {
     await host.keepStart?.().catch(() => {})
     return undefined
   }
+  if (!host.active()) return undefined
   const conn = turn.conn as SlackConnection
   let hasPublished = false
   let planCanvasId: string | undefined
+  let owned = false
   try {
     const channel = await conn.codeChannel(turn.plan.channel)
     if (!channel.code || !channel.owners.includes(conn.botUserId)) return undefined
+    owned = true
     const existing = (await conn.codeChannelApi('listViews', {
       channel_id: turn.plan.channel
     })) as AgentsConversationsListViewsResponse
@@ -60,7 +63,7 @@ export async function startSlackCodeTurn(
       await host
         .notice('Code diff is not updating. Slack could not confirm this code channel and its views.')
         .catch(() => {})
-    return host.active() ? SLACK_PLAN_FEEDBACK_UNAVAILABLE : undefined
+    return owned && host.active() ? SLACK_PLAN_FEEDBACK_UNAVAILABLE : undefined
   }
   if (!host.active()) return undefined
   let feedback: string | undefined

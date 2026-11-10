@@ -4,7 +4,7 @@ import { neutralizeDelimiters, UNTRUSTED_CONTENT_END } from '../../messages/hook
 export const SLACK_PLAN_FEEDBACK_UNAVAILABLE =
   'Slack Plan feedback could not be read for this turn. Do not assume there are no unresolved comments or claim to have reviewed them.'
 
-// Prefer recent feedback, keeping each root comment and its replies together within the prompt budget.
+// Slack returns threads and replies oldest first; prefer recent roots and keep each with its replies.
 export function slackPlanFeedback(
   canvas: AgentsConversationsGetCanvasResponse,
   mask: (text: string) => string
