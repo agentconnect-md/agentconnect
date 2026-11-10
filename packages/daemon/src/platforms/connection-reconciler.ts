@@ -66,6 +66,14 @@ import {
   MsTeamsConnection,
   msTeamsMemoryScope
 } from './msteams/connection.js'
+import {
+  consolidateWeChat,
+  WeChatConnection,
+  weChatConnKey,
+  weChatEndpointOverrides,
+  type WeChatConnectionGroup
+} from './wechat/connection.js'
+import { weChatStateStore } from './wechat/state.js'
 import { MsTeamsWriteBudgets } from './msteams/write-budget.js'
 import { msTeamsRelayPort } from './msteams/api.js'
 import type { PlatformRelay } from './platform-relay.js'
@@ -90,6 +98,7 @@ export type PlatformConnection =
   | GoogleChatConnection
   | DingTalkConnection
   | MsTeamsConnection
+  | WeChatConnection
 
 /**
  * The UI-action callbacks every platform connection is constructed with — a status-bar tap,
@@ -174,6 +183,8 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
   orgSlug(): string | undefined
   /** The daemon's per-app Google Chat write budgets (§10.8), shared by every connection of one app. */
   googleChatWriteBudgets(): GoogleChatWriteBudgets
+  /** The operator's `features.wechat` switch; off, WeChat integrations get no connection. */
+  weChatEnabled(): boolean
   agents(): Map<string, LoadedAgent>
   /** The roster consolidation counts credentials over — evaluation-owned agents excluded. */
   transportAgents(agents?: LoadedAgent[]): LoadedAgent[]
@@ -201,6 +212,7 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
     dingtalk?: ReadonlyMap<string, DingTalkConnection>
     googlechat: ReadonlyMap<string, GoogleChatConnection>
     msteams?: ReadonlyMap<string, MsTeamsConnection>
+    wechat?: ReadonlyMap<string, WeChatConnection>
   }
   /** Point an integration at a live connection and record the identity mention-routing
    *  matches — the bot user id on Slack/Discord, the @username on Telegram, the open_id on
@@ -218,6 +230,8 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
   bindGoogleChat(integrationId: string, conn: GoogleChatConnection, appUserName: string): void
   /** The bot's `28:<appId>`, the ID a Teams mention entity names. */
   bindMsTeams?(integrationId: string, conn: MsTeamsConnection, botUserId: string): void
+  /** The bot's `ilink_bot_id`. */
+  bindWeChat?(integrationId: string, conn: WeChatConnection, botId: string): void
   /** Drop an integration's connection binding, bot identity and channel snapshot together. */
   unbindIntegration(integrationId: string): void
   slackNameResolver(): SlackNameResolver | undefined
@@ -342,6 +356,56 @@ export class ConnectionReconciler {
     }
   }
 
+  // One poller per bot: iLink hands every message to every poller, so the duty lease is the only fence (wechat-integration.md §3.2).
+  readonly weChatPool = new ConnectionPool<WeChatConnection>('wechat', (conn) => weChatConnKey(conn.group))
+  // Read once at daemon start (wechat-integration.md §6).
+  private readonly weChatEndpoints = weChatEndpointOverrides()
+  private weChatOffLogged = false
+
+  // With `features.wechat` off every WeChat integration is undesired, so none polls and live ones are pruned.
+  private weChatGroups(agents: LoadedAgent[]): Map<string, WeChatConnectionGroup> {
+    const groups = consolidateWeChat(agents, this.weChatEndpoints)
+    if (!groups.size || this.host.weChatEnabled()) return groups
+    if (!this.weChatOffLogged) {
+      this.weChatOffLogged = true
+      this.log.warn('wechat: integrations are configured but features.wechat is off; not connecting')
+    }
+    return new Map()
+  }
+
+  async reconcileWeChatConnections(): Promise<void> {
+    for (const [key, group] of this.weChatGroups(this.host.transportAgents())) {
+      let conn = this.weChatPool.find(key)
+      if (!conn) {
+        if (!this.weChatPool.beginConnect(key)) continue
+        conn = new WeChatConnection(group, {
+          log: this.log,
+          state: weChatStateStore(this.host.store()),
+          onMessage: (msg) => {
+            if (conn) this.host.channelNameResolver()?.noteMessage(conn, msg)
+            this.host.onInbound(msg, this.host.srcIntegrationIds(conn))
+          }
+          // No onTokenRejected: -14 is an API error, not the lifecycle event `integration/revoked` accepts (§2.3).
+        })
+        try {
+          await conn.start()
+          if (this.host.draining() || !this.weChatGroups(this.host.transportAgents()).has(key)) {
+            await conn.stop()
+            continue
+          }
+          this.weChatPool.add(conn)
+        } catch {
+          await conn.stop()
+          this.log.warn('wechat: could not start polling; retry on next reconcile')
+          continue
+        } finally {
+          this.weChatPool.endConnect(key)
+        }
+      }
+      for (const { integrationId } of group.integrations) this.host.bindWeChat?.(integrationId, conn, conn.botUserId)
+    }
+  }
+
   // §7.5 connection pools — one per (platform, MODE), each keyed by the platform's
   // own opaque identity function. The pool owns the live set AND the in-flight
   // connect guard: a key is claimed BEFORE `await conn.start()` and released when
@@ -403,7 +467,8 @@ export class ConnectionReconciler {
       this.QQPool,
       this.googleChatPool,
       this.dingTalkPool,
-      this.msTeamsPool
+      this.msTeamsPool,
+      this.weChatPool
     ]
   }
 
@@ -594,10 +659,15 @@ export class ConnectionReconciler {
     const msTeamsByIntegration = new Map<string, string>()
     for (const group of msTeams.values())
       for (const { integrationId } of group.integrations) msTeamsByIntegration.set(integrationId, group.key)
+    const weChatGroups = this.weChatGroups(agents)
+    const weChatByIntegration = new Map<string, string>()
+    for (const [key, group] of weChatGroups)
+      for (const { integrationId } of group.integrations) weChatByIntegration.set(integrationId, key)
     const allDesiredIds = new Set([
       ...QQByIntegration.keys(),
       ...dingTalkByIntegration.keys(),
       ...msTeamsByIntegration.keys(),
+      ...weChatByIntegration.keys(),
       ...directByIntegration.keys(),
       ...sharedByIntegration.keys(),
       ...telegramByIntegration.keys(),
@@ -616,6 +686,9 @@ export class ConnectionReconciler {
     }
     for (const [id, conn] of bindings.msteams ?? []) {
       if (conn.key !== msTeamsByIntegration.get(id)) this.host.unbindIntegration(id)
+    }
+    for (const [id, conn] of bindings.wechat ?? []) {
+      if (weChatConnKey(conn.group) !== weChatByIntegration.get(id)) this.host.unbindIntegration(id)
     }
     // Unbinding drops the connection mapping, the bot identity and the channel
     // snapshot together — the three indexes an evicted integration must leave behind.
@@ -692,6 +765,7 @@ export class ConnectionReconciler {
     await this.prunePool(this.linearPool, new Set([...linear.values()].map((group) => group.key)))
     await this.prunePool(this.googleChatPool, new Set(googleChat.keys()))
     await this.prunePool(this.msTeamsPool, new Set(msTeams.keys()))
+    await this.prunePool(this.weChatPool, new Set(weChatGroups.keys()))
   }
 
   /** Close every connection in `pool` whose opaque identity consolidation no

@@ -10,6 +10,9 @@ import { z } from 'zod'
 import { AhpMode, ConfigSchema, WorkspaceGitOrigin, type Config } from './config-schema.js'
 import { resolveRoot, configPath, defaultAgentsDir } from '../paths.js'
 
+/** Turns `features.wechat` on when config.json does not state it. */
+export const WECHAT_FEATURE_ENV = 'AGENTCONNECT_WECHAT'
+
 export interface FlatOverrides {
   apiUrl?: string
   apiKey?: string
@@ -151,6 +154,11 @@ export function loadConfig(
     }
     cfg.security.workspaceGitAllowedOrigins = parsed.data
   }
+
+  // A file-less pool daemon turns WeChat on through the environment; a file that states it wins, read RAW as above.
+  const declaredWeChat = (raw as { features?: { wechat?: unknown } } | null)?.features?.wechat
+  const envWeChat = process.env[WECHAT_FEATURE_ENV]?.trim().toLowerCase()
+  if (declaredWeChat === undefined && (envWeChat === 'true' || envWeChat === '1')) cfg.features.wechat = true
 
   cfg.agentsDir = o.agentsDir ?? cfg.agentsDir ?? defaultAgentsDir(root)
   return cfg

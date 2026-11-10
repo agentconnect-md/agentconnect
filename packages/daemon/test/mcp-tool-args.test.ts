@@ -73,6 +73,19 @@ const dingTalkInt: Integration = {
   },
   config: { clientId: 'client-example', clientSecret: 'secret' }
 }
+const weChatInt: Integration = {
+  id: 'int-5',
+  platform: 'wechat',
+  core: {
+    mode: 'direct',
+    bindRules: [],
+    mutedChannels: [],
+    gated: false,
+    sessionModes: [],
+    decisions: { bindings: [], definitions: [] }
+  },
+  config: { botId: 'bot-example@im.bot', botToken: 'secret', boundUserId: 'user-example@im.wechat' }
+}
 
 const ALL_CAPABILITIES = new Set(['recall', 'create', 'get', 'update', 'delete'] as const)
 
@@ -90,6 +103,7 @@ const advertised: ToolDescriptor[] = [
     currentPlatform: 'telegram'
   }),
   ...toolsForIntegrations([dingTalkInt], { organizationKnowledge: true, decisions: true, currentPlatform: 'dingtalk' }),
+  ...toolsForIntegrations([weChatInt], { organizationKnowledge: true, decisions: true, currentPlatform: 'wechat' }),
   ...externalMemoryTools(ALL_CAPABILITIES),
   ...GITHUB_REVIEW_TOOLS,
   ...CODE_HOST_EFFECT_TOOLS.map((t) => t.descriptor),

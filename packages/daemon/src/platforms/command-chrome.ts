@@ -65,6 +65,8 @@ export interface CommandChromeSurface<TMsg, TInfo> {
    *  Slack/Discord: yes — a command inside a session thread targets that session.
    *  Reply-threading platforms mint a fresh thread per command: no. */
   readonly threadIdentifiesSession: boolean
+  /** Does `!stop` latch a mute until an @mention? False where one person owns the chat and cannot mention the bot; absent ⇒ true. */
+  readonly stopLatchesMute?: boolean
   /** Post a short control reply on the platform's own reply surface. */
   reply(conn: unknown, msg: TMsg, ctx: CommandChromeContext, text: string): void
   /** Render the `/status` line (+ session deep link when known). */
@@ -112,6 +114,11 @@ export class CommandChromeRegistry<TMsg, TInfo> {
   /** Coordinate fact, NOT rendering: unknown platforms answer false (see class doc). */
   threadIdentifiesSession(platform: string): boolean {
     return this.surfaces.get(platform)?.threadIdentifiesSession ?? false
+  }
+
+  /** Coordinate fact: unknown platforms keep the mute latch, the pre-existing `!stop` behavior. */
+  stopLatchesMute(platform: string): boolean {
+    return this.surfaces.get(platform)?.stopLatchesMute ?? true
   }
 
   /** Every registered platform id, registration order. Exists so the daemon's

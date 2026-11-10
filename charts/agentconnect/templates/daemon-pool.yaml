@@ -240,6 +240,11 @@ spec:
             - name: AC_RUNTIME_PROBE_ON_DEMAND
               value: 'true'
             {{- end }}
+            {{- if .Values.features.wechat }}
+            # A pool member has no config file, so features.wechat arrives as env.
+            - name: AGENTCONNECT_WECHAT
+              value: 'true'
+            {{- end }}
             {{- if not .Values.daemonPool.usageReporting }}
             # One writer per session: an upstream collector meters these sessions, so the member
             # must not also report them. Env, not config file — an in-cluster member has no file

@@ -206,6 +206,23 @@ export const IntegrationMsTeamsConfig = z.union([
 ])
 export type IntegrationMsTeamsConfig = z.infer<typeof IntegrationMsTeamsConfig>
 
+// The personal WeChat payload (wechat-integration.md §2.3): the QR login's bot token and the one WeChat user it binds.
+export const IntegrationWeChatConfig = z.object({
+  botId: z.string().min(1), // ilink_bot_id (`<hex>@im.bot`), the bot's public identity
+  botToken: z.string().min(1), // iLink bot token (plaintext — never log)
+  boundUserId: z.string().min(1), // ilink_user_id of the scanner, the bot's only possible counterpart
+  // The login's `baseurl` or a deployment override; absent means the public iLink endpoints.
+  apiUrl: z
+    .string()
+    .url({ protocol: /^https?$/ })
+    .optional(),
+  cdnUrl: z
+    .string()
+    .url({ protocol: /^https?$/ })
+    .optional()
+})
+export type IntegrationWeChatConfig = z.infer<typeof IntegrationWeChatConfig>
+
 /** Which session an activation joins (channel-session-mode.md §4): one per thread, the conversation's one session, or the coordinator's pick (auto-session-mode.md), which only a daemon advertising `SESSION_MODE_AUTO_V1_FEATURE` receives. */
 export const ChannelSessionMode = z.enum(['createNew', 'append', 'auto'])
 export type ChannelSessionMode = z.infer<typeof ChannelSessionMode>

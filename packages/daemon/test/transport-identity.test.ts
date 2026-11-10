@@ -130,6 +130,21 @@ describe('tenant scope (durable owner identity)', () => {
         config: { projectId: 'example-project', projectNumber: 'not-a-number', serviceAccountKey: '{"k":1}' }
       } as never)
     ).toBe('m9')
+    // A re-scan changes the bot id but not ilink_user_id, so the scope names neither the bot nor the integration.
+    expect(
+      await tenantScopeFor(host(undefined, 'm10'), {
+        id: 'i8',
+        platform: 'wechat',
+        config: { botId: 'b1@im.bot', botToken: 't', boundUserId: 'u1@im.wechat' }
+      } as never)
+    ).toBe('ilink')
+    expect(
+      await tenantScopeFor(host(undefined, 'm11'), {
+        id: 'i8',
+        platform: 'wechat',
+        config: { botId: 'b1@im.bot' }
+      } as never)
+    ).toBe('m11')
   })
 
   it('falls back to the minted scope on a payload the module schema refuses — never a throw', async () => {

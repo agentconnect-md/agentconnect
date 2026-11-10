@@ -13,6 +13,7 @@ import { dingTalkCommandChrome } from '../src/platforms/dingtalk/command-chrome.
 import { QQCommandChrome } from '../src/platforms/qq/command-chrome.js'
 import { linearCommandChrome } from '../src/platforms/linear/command-chrome.js'
 import { msTeamsCommandChrome } from '../src/platforms/msteams/command-chrome.js'
+import { weChatCommandChrome } from '../src/platforms/wechat/command-chrome.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 
 const ctx = { channel: 'C1', replyThread: '1700000000.001', sessionKey: 'k1' }
@@ -41,6 +42,15 @@ describe('command chrome registry', () => {
     for (const p of ['telegram', 'feishu', 'some-future-platform', 'constructor']) {
       expect(registry.threadIdentifiesSession(p)).toBe(false)
     }
+  })
+
+  it('keeps the !stop mute latch everywhere but a chat one person owns and cannot mention in', () => {
+    const r = new CommandChromeRegistry<NormalizedMessage, never>(slackCommandChrome as never)
+    r.register(telegramCommandChrome as never)
+    r.register(weChatCommandChrome as never)
+    expect(r.stopLatchesMute('wechat')).toBe(false)
+    for (const p of ['slack', 'telegram', 'some-future-platform', 'constructor'])
+      expect(r.stopLatchesMute(p)).toBe(true)
   })
 })
 

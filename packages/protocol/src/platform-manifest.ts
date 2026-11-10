@@ -117,6 +117,9 @@ export const DINGTALK_PLATFORM = 'dingtalk'
 // Microsoft Teams' platform id, registered in `KNOWN_PLATFORMS` with its Control Plane provider (teams-integration.md §6).
 export const MSTEAMS_PLATFORM = 'msteams'
 
+// Personal WeChat's platform id, served through Tencent's iLink bot API (wechat-integration.md).
+export const WECHAT_PLATFORM = 'wechat'
+
 /** The conservative arm of every axis — see the fail-closed note above. */
 export const DEFAULT_MANIFEST: Omit<PlatformManifest, 'platform'> = {
   consoleContinuation: false,
@@ -260,6 +263,14 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       dmChannelPattern: /^a:/,
       // A 1:1 chat is one continuous session, so only group chats and channels take `append` (teams-integration.md §4.1).
       appendKinds: ['channel']
+    }
+  ],
+  [
+    WECHAT_PLATFORM,
+    {
+      ...DEFAULT_MANIFEST,
+      // A bot has one counterpart, so its one conversation is keyed `dm:<ilink_user_id>` and is already one session (wechat-integration.md §4.1).
+      dmChannelPattern: /^dm:/
     }
   ]
 ])
