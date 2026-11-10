@@ -1,10 +1,5 @@
 // @vitest-environment happy-dom
-/**
- * The wizard's platform tiles are gated on the adapters the agent's PLACEMENT advertises. A set
- * placement names no member, so resolving `Agent.daemon` as a daemon id found nothing and read as
- * "no daemon yet" — which offered a pool agent every chat platform, including ones its own members
- * cannot serve. Resolved through `agentCapabilitySource`, one serving member answers for the set.
- */
+// Platform availability follows the agent's placement, including a pool or group's serving member.
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -156,11 +151,18 @@ describe('AddIntegrationModal, flag-gated platform tiles', () => {
     await render({ daemon: '—', placementKind: 'daemon' })
     expect(tileStates()).not.toHaveProperty('QQ')
     expect(tileStates()).toHaveProperty('Slack')
+    expect(tileStates()).not.toHaveProperty('More')
   })
 
   it('offers the QQ tile where the qq flag is on', async () => {
     window.__AC_ENV = { FEATURE_FLAGS: 'qq' }
     await render({ daemon: '—', placementKind: 'daemon' })
+    expect(tileStates()).not.toHaveProperty('QQ')
+    const more = document.querySelector<HTMLButtonElement>('button.ptile')!
+    expect(more.textContent).toBe('More')
+    await act(async () => more.click())
     expect(tileStates()['QQ']).toBe(false)
+    expect(tileStates()).not.toHaveProperty('More')
+    expect(document.querySelector('.ptile.on')?.textContent).toContain('Slack')
   })
 })
