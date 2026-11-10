@@ -18,6 +18,42 @@ import { CODEX_MCP_STARTUP_GRACE_MS, codexGuardianOperatorPolicy } from '../src/
 const here = dirname(fileURLToPath(import.meta.url))
 const fakeAgent = join(here, 'fixtures', 'fake-acp-agent.mjs')
 describe('AcpHost (against a fake ACP agent)', () => {
+  it.each([true, false])('gates and sends session profiles on new/load (supported=%s)', async (supported) => {
+    const profiles = {
+      'protected-workspace': { extends: ':workspace', filesystem: { '/repo/.git/worktrees/task': 'write' } }
+    }
+    const sessionProfiles = vi.fn(async () => profiles)
+    const host = new AcpHost(
+      { command: process.execPath, args: [fakeAgent], env: [] },
+      {
+        onUpdate: () => {},
+        codexSessionPermissionProfiles: sessionProfiles,
+        env: {
+          AC_INIT_META: JSON.stringify({ codex: { sessionPermissionProfiles: supported } }),
+          AC_EXPECT_SESSION_META: JSON.stringify({ codex: { permissionProfiles: profiles } })
+        }
+      }
+    )
+    await host.start()
+    try {
+      if (!supported) {
+        await expect(host.newSession('/repo')).rejects.toThrow('update the runtime')
+        await expect(host.loadSession('persisted', '/repo')).rejects.toThrow('update the runtime')
+        return
+      }
+      const cold = await host.newSession('/repo', [], undefined, undefined, ['/secondary'])
+      await host.newSession('/warm', [], undefined, undefined, ['/warm-secondary'])
+      await host.loadSession(cold, '/repo', [], undefined, undefined, ['/secondary'])
+      expect(sessionProfiles.mock.calls).toEqual([
+        [['/repo', '/secondary']],
+        [['/warm', '/warm-secondary']],
+        [['/repo', '/secondary']]
+      ])
+    } finally {
+      await host.stop()
+    }
+  })
+
   it.each([
     { capabilities: ['customInstructions'], native: true },
     { capabilities: ['sessionFailure'], native: false },

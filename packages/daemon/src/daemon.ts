@@ -1,4 +1,8 @@
 import { initiatorName, sessionInitiator } from './codehost/initiator.js'
+import {
+  CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV,
+  codexSessionPermissionProfiles
+} from './acp/codex-permission-profiles.js'
 import { dispatchAhpAppRequest, type AhpAppsScope } from './ahp/apps.js'
 import { AhpProtocolError } from './ahp/connection.js'
 import { initialAhpChat } from './ahp/initial-state.js'
@@ -9735,6 +9739,16 @@ export class Daemon {
       confined: () => this.podSubjectFor(agent, opts.hostKey) !== undefined
     }
     const host = new AcpHost(launchRuntime, {
+      ...(opts.strategy === 'host' && !remoteSession && !this.k8s && launch.env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV]
+        ? {
+            codexSessionPermissionProfiles: (directories: readonly string[]) =>
+              codexSessionPermissionProfiles(
+                launch.env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV]!,
+                launch.gitMetadataWriteRoots,
+                directories
+              )
+          }
+        : {}),
       // A plane runs the runtime in a sandbox pod or a VM; with none AcpHost falls back to its LocalDriver, which is what a self-hosted daemon wants.
       ...this.planeFor(planeLaunch)?.spawnFor(planeLaunch),
       onUpdate,

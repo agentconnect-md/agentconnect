@@ -263,6 +263,19 @@ the daemon keeps the in-process sandbox off there, and the console shows no stra
 picker for the pool. The console label derives from that strategy, never from the
 stored flag alone.
 
+On a local `host` runtime, Codex session setup refreshes the permission profiles
+after workspace preparation. It adds each primary and secondary worktree's exact
+Git admin directory beneath an already authorized owner checkout, keeping hooks,
+config, worktree config and credential protections. It creates missing hooks
+directories before sandbox setup so the directory protections take effect.
+Worktrees outside the launcher's Git roots receive no extra grants and do not block
+session startup; newly added repositories wait for the shared host's idle refresh.
+The daemon sends the profiles
+on both new and load; the adapter applies them to the native thread, so a shared
+process also supports worktrees created after startup. This requires an adapter
+advertising session permission profiles; an older adapter is rejected before the
+session starts when these grants are needed.
+
 ### Why the worktree cannot serve the confined case
 
 A linked worktree keeps its index under the owner checkout's
@@ -278,9 +291,8 @@ inner sandbox pins the cwd's _resolved_ git directory read-only and resolves
 conflicts by most-specific path; a subtree grant on the sessions parent never
 reaches a clone's own `.git` (its `index.lock` stays on a read-only mount), a
 glob grant is refused outright, and only an exact per-session path opens it.
-An exact path exists only for a host that knows which session it serves — hence
-one host per session, which is also what a private per-session `HOME` and a
-per-session sandbox policy need.
+Exact inner grants do not isolate the shared Git object store. Confined sessions
+still use one host per session for their private `HOME` and outer sandbox policy.
 
 ### The clone
 

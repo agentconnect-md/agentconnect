@@ -1,4 +1,6 @@
-import { isAbsolute, join, normalize } from 'node:path'
+import { lstat, mkdir, readFile, realpath } from 'node:fs/promises'
+import { dirname, isAbsolute, join, normalize, resolve } from 'node:path'
+import { parse } from 'smol-toml'
 
 export const CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV = 'CODEX_ACP_PERMISSION_PROFILE_CONFIG'
 
@@ -11,6 +13,47 @@ const PROFILE_IDS = {
 export interface CodexPermissionProfileConfig {
   configOverrides: string[]
   modeProfiles: Record<keyof typeof PROFILE_IDS, string>
+}
+
+/** Reopen this session's exact admin directories, within the launcher's existing Git grants. */
+export async function codexSessionPermissionProfiles(
+  launchConfig: string,
+  gitRoots: readonly string[],
+  directories: readonly string[]
+): Promise<Record<string, unknown> | undefined> {
+  const config = JSON.parse(launchConfig) as CodexPermissionProfileConfig
+  const profiles = parse(config.configOverrides.join('\n')).permissions as Record<
+    string,
+    { filesystem?: Record<string, string> }
+  >
+  const writableProfiles = [config.modeProfiles.agent, config.modeProfiles['agent-full-access']]
+  let changed = false
+  for (const directory of new Set(directories)) {
+    const dotGit = join(directory, '.git')
+    let target: string | undefined
+    try {
+      const stat = await lstat(dotGit)
+      if (!stat.isFile() || stat.size > 8192) continue
+      const pointer = /^gitdir: (.+)$/m.exec(await readFile(dotGit, 'utf8'))?.[1]?.trim()
+      if (pointer) target = await realpath(resolve(directory, pointer))
+    } catch (error) {
+      if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) continue
+      throw error
+    }
+    if (!target) continue
+    const root = gitRoots.find((candidate) => dirname(target) === join(candidate, 'worktrees'))
+    if (!root) continue
+    // Codex can protect a missing file, but a read-only directory must exist before sandbox setup.
+    for (const gitDir of [root, target]) await mkdir(join(gitDir, 'hooks'), { recursive: true })
+    for (const id of writableProfiles) {
+      const filesystem = profiles[id]?.filesystem
+      if (filesystem?.[root] !== 'write' || filesystem[`${join(root, 'worktrees')}/**`] !== 'write') continue
+      filesystem[target] = 'write'
+      for (const name of ['hooks', 'config', 'config.worktree']) filesystem[join(target, name)] = 'read'
+      changed = true
+    }
+  }
+  return changed ? profiles : undefined
 }
 
 export interface CodexPermissionProfileOptions {
@@ -108,7 +151,7 @@ export function codexPermissionProfileConfig(
           )}`
         ]
       : []
-  // Most-specific match wins; hooks/config get `read` (`deny` hides them, and Git needs its config); an owner `.git` names its `worktrees/**` because :workspace pins a worktree's admin dir read-only below the parent grant, while a session clone's `.git` (§11) is the exact pinned path and its entry alone reopens it.
+  // Session setup adds exact worktree admin grants; hooks/config remain readable but protected.
   const agentFilesystemEntries: Array<[string, string]> = [
     ...writableGitMetadataRoots.map((root): [string, string] => [root, 'write']),
     ...writableGitMetadataRoots.flatMap((root): Array<[string, string]> => [

@@ -1,6 +1,89 @@
 import { describe, expect, it } from 'vitest'
 import { join, resolve } from 'node:path'
-import { codexPermissionProfileConfig } from '../src/acp/codex-permission-profiles.js'
+import { mkdtempSync, realpathSync, rmSync, statSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { execFileSync } from 'node:child_process'
+import { codexPermissionProfileConfig, codexSessionPermissionProfiles } from '../src/acp/codex-permission-profiles.js'
+
+describe('Codex session Git grants', () => {
+  it('refreshes primary and secondary worktree grants while preserving every launch profile', async () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), 'codex-session-grants-')))
+    const git = (...args: string[]) => execFileSync('git', args, { stdio: 'pipe' }).toString().trim()
+    try {
+      const owners = ['primary', 'secondary'].map((name) => join(base, name))
+      for (const owner of owners) {
+        git('init', owner)
+        git(
+          '-C',
+          owner,
+          '-c',
+          'user.name=Test',
+          '-c',
+          'user.email=test@example.test',
+          '-c',
+          'commit.gpgsign=false',
+          'commit',
+          '--allow-empty',
+          '-m',
+          'Fixture'
+        )
+      }
+      const roots = owners.map((owner) => join(owner, '.git'))
+      for (const root of roots) rmSync(join(root, 'hooks'), { recursive: true, force: true })
+      const config = codexPermissionProfileConfig({
+        protectedRoots: [join(base, 'credentials')],
+        writableGitMetadataRoots: roots
+      })!
+      const serialized = JSON.stringify(config)
+      expect(await codexSessionPermissionProfiles(serialized, roots, owners)).toBeUndefined()
+      for (const label of ['cold', 'warm']) {
+        const directories = owners.map((owner) => `${owner}-${label}`)
+        for (const [index, owner] of owners.entries())
+          git('-C', owner, 'worktree', 'add', '-b', label, directories[index]!)
+        const profiles = (await codexSessionPermissionProfiles(serialized, roots, directories)) as Record<
+          string,
+          { filesystem: Record<string, string> }
+        >
+        for (const id of [config.modeProfiles.agent, config.modeProfiles['agent-full-access']]) {
+          const fs = profiles[id]!.filesystem
+          expect(fs[join(base, 'credentials')]).toBe('deny')
+          for (const directory of directories) {
+            const admin = resolve(git('-C', directory, 'rev-parse', '--absolute-git-dir'))
+            expect(fs[admin]).toBe('write')
+            expect(statSync(join(admin, 'hooks')).isDirectory()).toBe(true)
+            for (const name of ['hooks', 'config', 'config.worktree']) expect(fs[join(admin, name)]).toBe('read')
+          }
+          for (const root of roots) {
+            expect(fs[join(root, 'config')]).toBe('read')
+            expect(statSync(join(root, 'hooks')).isDirectory()).toBe(true)
+          }
+          if (label === 'warm')
+            expect(Object.keys(fs).some((path) => path.endsWith(join('worktrees', 'primary-cold')))).toBe(false)
+        }
+        expect(Object.values(profiles[config.modeProfiles['read-only']]!.filesystem)).not.toContain('write')
+        expect(await codexSessionPermissionProfiles(serialized, [], directories)).toBeUndefined()
+        const staleConfig = codexPermissionProfileConfig({
+          protectedRoots: [join(base, 'credentials')],
+          writableGitMetadataRoots: roots.slice(0, 1)
+        })!
+        const staleProfiles = (await codexSessionPermissionProfiles(
+          JSON.stringify(staleConfig),
+          roots.slice(0, 1),
+          directories
+        )) as Record<string, { filesystem: Record<string, string> }>
+        for (const id of [config.modeProfiles.agent, config.modeProfiles['agent-full-access']]) {
+          const fs = staleProfiles[id]!.filesystem
+          expect(fs[resolve(git('-C', directories[0]!, 'rev-parse', '--absolute-git-dir'))]).toBe('write')
+          expect(fs[resolve(git('-C', directories[1]!, 'rev-parse', '--absolute-git-dir'))]).toBeUndefined()
+          expect(fs[join(base, 'credentials')]).toBe('deny')
+        }
+      }
+      expect(JSON.stringify(config)).toBe(serialized)
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+})
 
 // Pod coordinates are POSIX by construction — the sandbox pod is always Linux.
 describe.skipIf(process.platform === 'win32')('Codex permission profile launch config', () => {
