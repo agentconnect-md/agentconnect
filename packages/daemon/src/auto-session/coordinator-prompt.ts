@@ -24,7 +24,7 @@ export interface CoordinatorPromptInput {
   /** How the platform mentions this agent, when known. */
   selfAddress?: string
   peers: readonly CoordinatorPeer[]
-  /** A member's private webchat conversation: one person, one message a turn, and the text written is shown (webchat-threads.md §4.2). */
+  /** A member's webchat conversation, shared if published: one message a turn, with streamed text. */
   webchat?: boolean
 }
 
@@ -52,13 +52,14 @@ export interface CoordinatorMessage extends ReportAbout {
 const where = (input: { channelId: string; channelName?: string }): string =>
   input.channelName ? `#${input.channelName} (${input.channelId})` : input.channelId
 
-/** The words the prompt names its place and a task's answer with: a channel's threads, or a private conversation's. */
+/** The words the prompt names its place and a task's answer with: a channel's threads, or a console conversation's. */
 function placeWords(input: CoordinatorPromptInput) {
   return input.webchat
     ? {
         intro:
-          `You coordinate the agent "${input.agentName}" in a private webchat conversation (${input.channelId}) ` +
-          'with one person. Their messages are delivered to you, one per turn, at the conversation root or in a ' +
+          `You coordinate the agent "${input.agentName}" in a webchat conversation (${input.channelId}). ` +
+          'Its owner may share it with other organization members. Messages name their sender and are delivered ' +
+          'to you, one per turn, at the conversation root or in a ' +
           'thread under a root message, which the message names.',
         place: 'conversation',
         taskLink: 'link',

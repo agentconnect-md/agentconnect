@@ -1466,11 +1466,12 @@ not. On a desktop, a thread whose first reply starts while the owner watches ope
 phone the thread opens in the bottom sheet from its footer or from a long press on the root, and
 nothing opens by itself. A task's own page shrinks back into its first thread.
 
-Once the owner publishes such a conversation, other members may write to its tasks too, from a
-task's own page or the panel of a thread the task holds: their message is a reply in the task's thread, goes to the task, and the task's
-answer streams back to them there. They cannot write at the conversation's root or in a thread no
-task holds, since those reach the coordinator, which only its owner talks to, and a task that has
-closed takes no more messages.
+Once the owner publishes such a conversation, other members who may continue sessions may write
+at its root and in its threads, as in any shared session. Messages keep their actual sender's
+identity and reach the existing coordinator, or the task holding their thread. Members may also
+write from a task's own page: their message is a reply in the task's thread, goes to the task, and
+the task's answer streams back to them there. Viewer members stay read-only, private conversations
+stay owner-only, and a task that has closed takes no more messages.
 
 A Slack coordinator's page in the console has the same shape. Its roots are the channel messages
 the coordinator received, each with its thread's footer, and replies the coordinator received in a

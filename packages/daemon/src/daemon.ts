@@ -3670,7 +3670,7 @@ export class Daemon {
     return true
   }
 
-  /** auto-session-mode.md §10: the coordinator a member's private conversation with an agent keys on, minted by its first message; undefined for any other conversation. */
+  /** An existing coordinator is shared by authorized senders; only its owner's first message mints it. */
   private async webchatCoordinator(
     agentId: string,
     conversationId: string,
@@ -3678,11 +3678,11 @@ export class Daemon {
     mint = true
   ): Promise<string | undefined> {
     if (!this.cfg.features.autoSessionMode) return undefined
+    const current = await this.store.currentAppendCoordinate(agentId, conversationId, null, 'coordinator')
+    if (current !== undefined || !mint) return current
     const orgId = this.orgForAgent(agentId)
     if (orgId === undefined || conversationId !== coordinatorConversationId(orgId, authorId, agentId)) return undefined
-    return mint
-      ? await this.store.resolveAppendCoordinate(agentId, conversationId, null, this.clock.now(), 'coordinator')
-      : await this.store.currentAppendCoordinate(agentId, conversationId, null, 'coordinator')
+    return await this.store.resolveAppendCoordinate(agentId, conversationId, null, this.clock.now(), 'coordinator')
   }
 
   private webchatMcpRevocationHost(): WebchatMcpRevocationHost {

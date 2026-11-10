@@ -9,12 +9,19 @@ import {
   type RcWebchatParticipant,
   type RegisterReq
 } from '@agentconnect.md/protocol'
-import { canEdit, canView } from '../authorization/policy.js'
+import { canContinueSession, canEdit, canView, identitySetOf, type SessionViewable } from '../authorization/policy.js'
 import { chatCallerRole } from '../domain/chat-actions.js'
 import { AgentId, OrgId, SessionId } from '../domain/ids.js'
 import { servesSessionContent } from '../domain/session-content.js'
 import { continuationAudience, continuationParentId, taskContinuationFeature } from '../domain/continuation-audience.js'
-import type { MemberSetRepo, OrgMemberRole, SessionContentStore, Shareable, ViewCtx } from '../persistence/ports.js'
+import type {
+  MemberSetRepo,
+  OrgMemberRole,
+  SessionContentStore,
+  Shareable,
+  ViewCtx,
+  WebchatConversationRepo
+} from '../persistence/ports.js'
 import type { PlacementResolver, ResolvableAgent } from '../orchestrator/placementResolver.js'
 import type { WebchatRemoteMcpService } from './webchatRemoteMcpService.js'
 import type { WebchatTokenClaims, WebchatTokenService } from './webchatToken.js'
@@ -29,7 +36,7 @@ export interface WebchatVerificationDeps {
   agents: { getUnscoped(agentId: AgentId): Promise<(ResolvableAgent & Shareable & { orgId: string }) | null> }
   daemons: { get(daemonId: string): VerificationDaemon | undefined }
   /** Roster reads for multi-agent conversations (webchat-multi-agents.md §6.2). */
-  conversations: {
+  conversations: Pick<WebchatConversationRepo, 'resumeBinding'> & {
     participants(
       orgId: OrgId,
       conversationId: string
@@ -187,6 +194,22 @@ export function webchatBinding(
     // primary — exactly the single-agent shape.
     // Fenced on the org the signed token asserts (org-scoped-data-layer.md §3).
     const roster = await deps.conversations.participants(OrgId(claims.orgId), claims.conversationId)
+    // Shared conversations re-read the same binding and session.continue policy as mint, including pre-roster rows.
+    if (!owner) {
+      const binding = await deps.conversations.resumeBinding(claims.conversationId, OrgId(claims.orgId))
+      if (!binding?.currentSessionIds.length || binding.currentSessionIds.some((id) => id === null))
+        return ACCESS_REVOKED
+      for (const id of binding.currentSessionIds) {
+        const session = await deps.sessions.getUnscoped(SessionId(id!))
+        if (
+          !session ||
+          session.orgId !== claims.orgId ||
+          session.contentPurgedAt !== null ||
+          !canContinueSession(session as SessionViewable, opts.viewer, identitySetOf(opts.viewer))
+        )
+          return ACCESS_REVOKED
+      }
+    }
     const participants: RcWebchatParticipant[] = []
     // Where this participant's content is, so a member the turn reaches another way can refuse it (#2218).
     const recordedBy = async (sessionId?: string | null): Promise<{ recordedDaemonId?: string }> => {

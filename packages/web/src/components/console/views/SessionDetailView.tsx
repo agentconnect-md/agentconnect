@@ -2448,9 +2448,11 @@ export default function SessionDetailView() {
     (continuationReason === 'agent_moved' ||
       continuationReason === 'daemon_offline' ||
       continuationReason === 'unavailable')
-  const isLive = !readOnlySubsession && (isPg || isWebchat || isContinuable || continuationBlocked)
   // The server says whether this caller owns a webchat conversation; a playground they opened is theirs until it answers.
   const ownsThisConversation = currentSessionDetail ? currentSessionDetail.ownsConversation : isPg ? true : undefined
+  const canWriteWebchat =
+    ownsThisConversation !== false || (currentSessionDetail?.visibility === 'org' && myRole !== 'viewer')
+  const isLive = !readOnlySubsession && (isPg || (isWebchat && canWriteWebchat) || isContinuable || continuationBlocked)
   // Where each agent runs NOW: a machine for a `daemon` placement, the set otherwise (a pool matched by `contentSetId`, a group by its holder).
   const placementByAgent = new Map(
     agents.map((agent) => [
@@ -2488,7 +2490,7 @@ export default function SessionDetailView() {
     : []
   const resumeState = isPg ? 'available' : sessionResumeState(persistedResumeMembers, placementByAgent)
   const resumeDisabled = (isWebchat && resumeState !== 'available') || continuationBlocked
-  // The owner writes in their coordinator's threads where its daemon answers in them and the relay forwards `thread` (webchat-threads.md §10).
+  // Authorized members write in coordinator threads where its daemon and relay both support them.
   const relayFeatures = threadsView && (isWebchat || isContinuable) ? getPgRelayFeatures(session.id) : undefined
   const ownerFeatures = owner ? agentCapabilitySource(owner, daemons, memberSets)?.caps.features : undefined
   const threadsWritable =
@@ -2496,7 +2498,7 @@ export default function SessionDetailView() {
     isWebchat &&
     isLive &&
     !resumeDisabled &&
-    ownsThisConversation === true &&
+    canWriteWebchat &&
     ownerFeatures?.includes(WEBCHAT_THREADS_FEATURE) === true &&
     (relayFeatures === undefined || relayFeatures.includes(WEBCHAT_THREADS_FEATURE))
   // Whoever may continue a platform coordinator writes in its threads too, mirrored there (webchat-threads.md §7).
