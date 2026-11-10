@@ -128,7 +128,7 @@ export async function startSlackCodeTurn(
     source.repositories.map(({ title, base }) => `${title} (against ${base ?? 'where this task started'})`)
   )
   return [
-    `The platform maintains the Code diff of ${repositories}, including uncommitted changes and commits. Work there: changes anywhere else, including a repository you clone yourself, do not appear in it. Do not call setSlackCodeView(type: diff) for this task or overwrite its Code view. HTML and PR views remain available.`,
+    `The platform maintains the Code diff of ${repositories}, including uncommitted changes and commits. Work there: changes anywhere else, including a repository you clone yourself, do not appear in it. Do not call setSlackCodeView(type: diff) for this task or overwrite its Code view. Canvas, HTML and PR views remain available.`,
     feedback
   ]
     .filter(Boolean)

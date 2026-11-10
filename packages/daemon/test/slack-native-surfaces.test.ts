@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import type { AgentsConversationsGetCanvasResponse } from '@slack/web-api'
+import type { AgentsConversationsGetCanvasResponse, AgentsConversationsListViewsResponse } from '@slack/web-api'
 import { normalizeSlackMessage } from '@agentconnect.md/message'
 import { SLACK_CODE_MODEL_KEY, SLACK_CODE_CONTEXT_KEY } from '@agentconnect.md/protocol'
 import { SlackConnection } from '../src/slack/connection.js'
@@ -61,7 +61,13 @@ async function fixture(code = true, deps: Record<string, unknown> = {}) {
     setProperties: vi.fn(async (_args: unknown) => ({})),
     archive: vi.fn(async (_args: unknown) => ({})),
     listViews: vi.fn(
-      async (_args: unknown): Promise<{ views?: { view_id?: string; view_key?: string; file_id?: string }[] }> => ({})
+      async (
+        _args: unknown
+      ): Promise<
+        Pick<AgentsConversationsListViewsResponse, 'views'> & {
+          session_views?: AgentsConversationsListViewsResponse['views']
+        }
+      > => ({})
     ),
     setCanvasContent: vi.fn(async (_args: unknown) => ({})),
     getCanvas: vi.fn(async (_args: unknown): Promise<AgentsConversationsGetCanvasResponse> => ({ ok: true })),
@@ -118,45 +124,127 @@ describe('Slack Plan feedback', () => {
       }
     )
 
-  it('reads fresh comments from the current Plan on each admitted turn, even without a diff repository', async () => {
+  it.each(['views', 'session_views'] as const)(
+    'reads fresh Plan comments from %s on each admitted turn without a diff repository',
+    async (field) => {
+      const f = await fixture()
+      try {
+        f.api.listViews.mockResolvedValue({ views: [], [field]: [{ view_key: 'plan', file_id: 'F_EARLIER' }] })
+        f.api.getCanvas.mockResolvedValue({
+          ok: true,
+          content: 'The entire canvas is not prompt context',
+          comments: [
+            { text: 'Already resolved', is_resolved: true },
+            {
+              id: 'comment1',
+              user_id: 'U1',
+              ts: '1.100',
+              quoted_text: 'Migrate the database',
+              text: 'Back up first, then migrate last',
+              replies: [{ user_id: 'U2', ts: '1.101', text: 'Include a rollback check' }]
+            }
+          ]
+        })
+        const first = await start(f)
+        expect(f.api.getCanvas).toHaveBeenCalledExactlyOnceWith({
+          channel: 'C1',
+          canvas_id: 'F_EARLIER',
+          content_format: 'markdown',
+          include_resolved: false
+        })
+        expect(first).toContain('"quoted_text":"Migrate the database"')
+        expect(first).toContain('"author":"U1","timestamp":"1.100"')
+        expect(first).toContain('Back up first, then migrate last')
+        expect(first).toContain('"author":"U2","timestamp":"1.101","text":"Include a rollback check"')
+        expect(first).not.toContain('Already resolved')
+        expect(first).not.toContain('The entire canvas')
+        f.api.listViews.mockResolvedValue({ views: [], [field]: [{ view_key: 'plan', file_id: 'F_REPLACED' }] })
+        f.api.getCanvas.mockResolvedValue({ ok: true, comments: [{ text: 'Now check the rollback' }] })
+        const second = await start(f)
+        expect(second).toContain('Now check the rollback')
+        expect(second).not.toContain('Back up first')
+        expect(f.api.getCanvas).toHaveBeenLastCalledWith(expect.objectContaining({ canvas_id: 'F_REPLACED' }))
+        expect(f.api.setCanvasContent).not.toHaveBeenCalled()
+      } finally {
+        await f.conn.stop()
+      }
+    }
+  )
+
+  it('attaches a commentable Plan through the tool, reads feedback and follows a replacement for runtime updates', async () => {
     const f = await fixture()
     try {
-      f.api.listViews.mockResolvedValue({ views: [{ view_key: 'plan', file_id: 'F_EARLIER' }] })
-      f.api.getCanvas.mockResolvedValue({
-        ok: true,
-        content: 'The entire canvas is not prompt context',
-        comments: [
-          { text: 'Already resolved', is_resolved: true },
-          {
-            id: 'comment1',
-            user_id: 'U1',
-            ts: '1.100',
-            quoted_text: 'Migrate the database',
-            text: 'Back up first, then migrate last',
-            replies: [{ user_id: 'U2', ts: '1.101', text: 'Include a rollback check' }]
-          }
-        ]
-      })
-      const first = await start(f)
-      expect(f.api.getCanvas).toHaveBeenCalledExactlyOnceWith({
-        channel: 'C1',
-        canvas_id: 'F_EARLIER',
-        content_format: 'markdown',
-        include_resolved: false
-      })
-      expect(first).toContain('"quoted_text":"Migrate the database"')
-      expect(first).toContain('"author":"U1","timestamp":"1.100"')
-      expect(first).toContain('Back up first, then migrate last')
-      expect(first).toContain('"author":"U2","timestamp":"1.101","text":"Include a rollback check"')
-      expect(first).not.toContain('Already resolved')
-      expect(first).not.toContain('The entire canvas')
-      f.api.listViews.mockResolvedValue({ views: [{ view_key: 'plan', file_id: 'F_REPLACED' }] })
-      f.api.getCanvas.mockResolvedValue({ ok: true, comments: [{ text: 'Now check the rollback' }] })
-      const second = await start(f)
-      expect(second).toContain('Now check the rollback')
-      expect(second).not.toContain('Back up first')
-      expect(f.api.getCanvas).toHaveBeenLastCalledWith(expect.objectContaining({ canvas_id: 'F_REPLACED' }))
-      expect(f.api.setCanvasContent).not.toHaveBeenCalled()
+      for (const canvasId of ['F_PLAN', 'F_REPLACED']) {
+        await SLACK_SESSION_TOOLS.execute(
+          'setSlackCodeView',
+          ctx,
+          { type: 'canvas', canvasId, viewKey: 'plan', name: 'Plan' },
+          f.env
+        )
+        expect(f.judgeWrite).toHaveBeenCalledWith({
+          kind: 'conversation',
+          platform: 'slack',
+          integrationId: 'i1',
+          channel: 'C1'
+        })
+        expect(f.judgeWrite).toHaveBeenCalledWith({
+          kind: 'document',
+          platform: 'slack',
+          integrationId: 'i1',
+          documentId: canvasId
+        })
+        expect(f.api.setView).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            channel_id: 'C1',
+            type: 'canvas',
+            canvas_id: canvasId,
+            view_key: 'plan',
+            name: 'Plan',
+            access_level: 'comment'
+          })
+        )
+        f.api.listViews.mockResolvedValue({
+          views: [{ view_id: 'code' }],
+          session_views: [{ view_key: 'plan', file_id: canvasId }]
+        })
+        f.api.getCanvas.mockResolvedValue({ ok: true, comments: [{ text: 'Keep implementation paused' }] })
+        expect(await start(f)).toContain('Keep implementation paused')
+        expect(f.api.getCanvas).toHaveBeenLastCalledWith(expect.objectContaining({ canvas_id: canvasId }))
+        f.conn.writePlanCanvas('C1', 'Updated plan')
+        await vi.waitFor(() =>
+          expect(f.api.setCanvasContent).toHaveBeenLastCalledWith({
+            channel: 'C1',
+            canvas_id: canvasId,
+            content: 'Updated plan'
+          })
+        )
+      }
+      const listed = await SLACK_SESSION_TOOLS.execute('manageSlackCodeChannel', ctx, { action: 'listViews' }, f.env)
+      expect(listed).toMatchObject({ views: [{ view_id: 'code' }, { view_key: 'plan', file_id: 'F_REPLACED' }] })
+    } finally {
+      await f.conn.stop()
+    }
+  })
+
+  it('refuses incomplete Canvas registrations and document writes before attaching a view', async () => {
+    const f = await fixture()
+    try {
+      for (const args of [
+        { type: 'canvas', viewKey: 'plan' },
+        { type: 'canvas', canvasId: 'F_PLAN' }
+      ])
+        await expect(SLACK_SESSION_TOOLS.execute('setSlackCodeView', ctx, args, f.env)).rejects.toThrow()
+      expect(f.judgeWrite).not.toHaveBeenCalled()
+      f.judgeWrite.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('Document write refused'))
+      await expect(
+        SLACK_SESSION_TOOLS.execute(
+          'setSlackCodeView',
+          ctx,
+          { type: 'canvas', canvasId: 'F_PLAN', viewKey: 'plan' },
+          f.env
+        )
+      ).rejects.toThrow('Document write refused')
+      expect(f.api.setView).not.toHaveBeenCalled()
     } finally {
       await f.conn.stop()
     }
@@ -573,7 +661,7 @@ describe('Slack native surfaces', () => {
         base_branch: 'origin/main',
         head_branch: 'Current workspace'
       })
-      f.api.listViews.mockResolvedValue({ views: [{ view_id: 'code' }] })
+      f.api.listViews.mockResolvedValue({ views: [], session_views: [{ view_id: 'code' }] })
       content = ''
       await startSlackCodeTurn(turn, state, {
         authorize,
@@ -996,6 +1084,7 @@ describe('Slack native surfaces', () => {
       canvas_id: 'F_FAKE_CANVAS',
       access_level: 'comment'
     })
+    f.api.listViews.mockResolvedValue({ views: [], session_views: [{ view_key: 'plan', file_id: 'F_FAKE_CANVAS' }] })
     f.conn.writePlanCanvas('C1', 'two')
     f.conn.writePlanCanvas('C1', 'three')
     f.conn.writePlanCanvas('C1', 'four')
@@ -1013,7 +1102,7 @@ describe('Slack native surfaces', () => {
 
   it('reuses the Plan tab a restarted daemon attached earlier, and writes nothing in a channel it does not own', async () => {
     const f = await fixture()
-    f.api.listViews.mockResolvedValue({ views: [{ view_key: 'plan', file_id: 'F_EARLIER' }] })
+    f.api.listViews.mockResolvedValue({ views: [], session_views: [{ view_key: 'plan', file_id: 'F_EARLIER' }] })
     f.conn.writePlanCanvas('C1', 'plan')
     await vi.waitFor(() =>
       expect(f.api.setCanvasContent).toHaveBeenCalledWith({ channel: 'C1', canvas_id: 'F_EARLIER', content: 'plan' })

@@ -102,8 +102,9 @@ The platform-owned session tool registry exposes four tools only to Slack sessio
   idempotency key prevents duplicate channels when a call is retried. Creation inside
   an existing code channel returns that channel without creating another one, including
   when the copied origin request arrives under a new message timestamp.
-- `setSlackCodeView`: publish a unified diff, self-contained HTML preview, or PR tab.
-  HTML keys are stable upsert identities; content is bounded by UTF-8 bytes.
+- `setSlackCodeView`: publish a unified diff, self-contained HTML preview, PR tab, or
+  existing Canvas with comment access. HTML and Canvas keys are stable upsert identities;
+  content is bounded by UTF-8 bytes.
 - `manageSlackCodeChannel`: replace up to three informational context links, list/remove tabs, or
   archive a completed task with an optional existing summary message.
 
@@ -176,15 +177,23 @@ does not imply an individual cancellation API. No agent tool call is needed to p
 
 ### Plan
 
-The Plan tab is written by the daemon, not by a tool. In a code channel this bot owns,
-each ACP `plan` update is rendered as a markdown checklist and kept in a canvas
+In a code channel this bot owns, each ACP `plan` update is rendered as a markdown
+checklist and kept in a canvas
 attached as view `plan` with comment access: the team can read and comment, and only
 the agent edits. The first update creates and attaches the canvas; later updates
 replace its content through `agents.conversations.setCanvasContent`, which rewrites
 only changed sections so comments on unchanged steps survive. Updates that arrive
-during a write collapse into the newest one. After a restart the canvas is found again
-through `agents.conversations.listViews`. The in-conversation plan message is
-unchanged.
+during a write collapse into the newest one. Each write finds the current canvas
+through `agents.conversations.listViews`, including after a restart or a replacement.
+View discovery combines the documented `views` with the native `session_views` response.
+The in-conversation plan message is unchanged.
+
+When no runtime plan has created this view, the agent can create a real Slack canvas
+with `createCanvas` and attach it with `setSlackCodeView`, using `type: canvas`, its
+`canvasId`, `viewKey: plan` and `name: Plan`. Attaching grants comment access and checks
+both the target conversation and the existing document's write authority. An ordinary
+canvas or an HTML page named Plan does not register the Plan view. Later runtime plan
+updates reuse the attached canvas.
 
 At each admitted turn in an owned code channel, the daemon finds the current Plan
 view and reads its unresolved comments through `agents.conversations.getCanvas`.
