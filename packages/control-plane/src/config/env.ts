@@ -341,7 +341,7 @@ const CoreConfigShape = {
   OPEN_CONNECTOR_PROVIDER_BLOCKLIST: z
     .string()
     .default(
-      'github,gitlab,gitea,azure-devops,linear,slack,slackbot,telegram,discord,discordbot,feishu,feishu_app_bot,feishu_custom_bot,googlechat,dingtalk_bot,dingtalk_mcp,microsoft_teams,microsoft_teams_bot'
+      'github,gitlab,gitea,azure-devops,linear,slack,slackbot,telegram,discord,discordbot,feishu,feishu_app_bot,feishu_custom_bot,googlechat,dingtalk_bot,dingtalk_mcp,microsoft_teams,microsoft_teams_bot,weixin_bot'
     ),
   // ── in-cluster Kubernetes access — opt-in by running a daemon pool ──
   // THE switch for the cluster surface, and the only access knob: turning it on asserts this
