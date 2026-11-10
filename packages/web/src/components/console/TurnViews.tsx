@@ -185,13 +185,13 @@ export function UserTurnView({
               {turn.text && <MessageText text={turn.text} platform={turn.platform} />}
               {turn.body && <UserTurnDetails body={turn.body} platform={turn.platform} />}
             </div>
-            {/* Its hover menu on the bubble's top edge, over its border and padding only. */}
-            <MessageMenu text={turn.text} onReply={onReply} className="right-[8px] bottom-full -mb-[6px]" />
+            {/* Its hover menu on the bubble's top edge at the side facing the timeline: a message on the right keeps its menu on the left. */}
+            <MessageMenu text={turn.text} onReply={onReply} className="left-[8px] bottom-full -mb-[6px]" />
           </div>
         )}
         {footer}
         {/* A message of attachments alone has no bubble: its menu sits on the column's top edge instead. */}
-        {turn.text || turn.body ? null : <MessageMenu onReply={onReply} className="top-0 right-0" />}
+        {turn.text || turn.body ? null : <MessageMenu onReply={onReply} className="top-0 left-0" />}
       </ThreadRootPress>
       <ParticipantAvatar
         agent={turn.agent}
