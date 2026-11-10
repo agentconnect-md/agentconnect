@@ -9,6 +9,7 @@ import type {
   SharedImageDownload,
   TaskLinkFacts
 } from '@agentconnect.md/protocol'
+import type { ComputerFillCard, ComputerFillCardOutcome } from '@agentconnect.md/protocol/computer-form-fill'
 import type { ToolEdit } from './tool-edits.js'
 
 // Masked application updates; protocol adapters own their envelopes, replay, and subscription state.
@@ -61,6 +62,9 @@ export type ChatEvent =
       selectedOptionId?: string
     }
   // A capability request's inline card and its settlement (capability-requests.md §4.4.2); core-owned like elicitation cards.
+  // A Fill card and its settlement (computer-form-fill-and-vault.md §6): descriptors and an outcome, never a value.
+  | { kind: 'fill_request'; card: ComputerFillCard }
+  | { kind: 'fill_resolved'; requestId: string; outcome: ComputerFillCardOutcome }
   | { kind: 'capability_request'; requestId: string; generation: number; summary: string; reason: string; link: string }
   | {
       kind: 'capability_request_resolved'

@@ -262,6 +262,17 @@ Default: **use once, do not save**. If Save is selected:
 - Offer explicit item update/create choice when a matching item already exists;
   do not silently overwrite a different account.
 
+Implementation: the agent daemon streams the card on the asking turn as a
+value-free `fill_request` event, which AHP projects into the session's `fills`
+metadata, and settles it with `fill_resolved`. The answer is the relay op
+`fill_submit`, whose author the relay stamps from its verified verdict, or the
+AHP request `agentconnect/fillSubmit`, answered with the attachment's own user
+and conversation. The daemon keeps pending cards in memory only. It accepts an
+answer only from the asking turn's person in the card's conversation, naming
+fields the card showed, and expires an unanswered card after 10 minutes. Approval
+and the control lease come after the answer; a lost fill reply is settled from
+`computer_form_status` or reported as `uncertain`, never resent.
+
 Fill success and save success are separate outcomes. If CP is unavailable,
 filling may succeed while saving fails; say "filled, not saved" and let the
 person retry saving. Do not automatically replay a fill to retry a save.

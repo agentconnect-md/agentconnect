@@ -1,3 +1,4 @@
+import type { AhpCustomMethod } from './apps.js'
 import { randomUUID } from 'node:crypto'
 import {
   AhpSessionUri,
@@ -68,7 +69,7 @@ export interface AhpServiceOptions {
   dispatch(params: DispatchActionParams, origin: ActionOrigin, context: AhpActionContext): Promise<void>
   toolBody?(binding: BoundAhpSession, auth: AhpAttachmentAuthorization, toolCallId: string): Promise<string | undefined>
   customRequest?(
-    method: 'agentconnect/appRpc' | 'agentconnect/appClose',
+    method: AhpCustomMethod,
     params: unknown,
     context: AhpActionContext,
     isCurrent: () => boolean
@@ -292,7 +293,7 @@ export class AhpService {
           : {}),
         ...(this.options.customRequest
           ? {
-              customRequest: async (method: 'agentconnect/appRpc' | 'agentconnect/appClose', params: unknown) =>
+              customRequest: async (method: AhpCustomMethod, params: unknown) =>
                 this.options.customRequest!(method, params, context((params as { channel: string }).channel), valid)
             }
           : {}),

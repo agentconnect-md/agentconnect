@@ -16,6 +16,20 @@ import {
   type ComputerPoolAcquire,
   type ComputerPoolAcquireResult
 } from '@agentconnect.md/protocol'
+import {
+  COMPUTER_FILL_CARD_TTL_MS,
+  COMPUTER_FILL_FORM_TOOL,
+  COMPUTER_FORM_DISCOVER_TOOL,
+  COMPUTER_FORM_FILL_TOOL,
+  COMPUTER_FORM_STATUS_TOOL,
+  ComputerFormDiscovery,
+  ComputerFormFillResult,
+  ComputerFormStatus,
+  type ComputerFillCard,
+  type ComputerFillCardOutcome,
+  type ComputerFormFieldStatus
+} from '@agentconnect.md/protocol/computer-form-fill'
+import { randomUUID } from 'node:crypto'
 import { ProtocolError } from '@modelcontextprotocol/client'
 import { z } from 'zod'
 import type { McpContentResult, SessionContext } from '../mcp/ops/context.js'
@@ -27,6 +41,7 @@ import {
   type ComputerGrantSource,
   type ComputerMcpConnection
 } from './data-plane.js'
+import type { FillCardAnswer } from './fill-cards.js'
 
 /** The Control Plane's lease service, as the daemon's CP client answers it. */
 export interface ComputerLeaseSource {
@@ -144,6 +159,28 @@ export const COMPUTER_TOOLS: readonly ToolDescriptor[] = [
   )
 ]
 
+/** Form filling (computer-form-fill-and-vault.md §5.1), offered where the conversation can show a Fill card. */
+export const COMPUTER_FILL_TOOLS: readonly ToolDescriptor[] = [
+  tool(
+    COMPUTER_FILL_FORM_TOOL,
+    "Fill the form in the browser on a computer with values a person types into a Fill card shown in this conversation, such as a sign-in, registration or address form. The person sees the website and its fields; the values, passwords included, never reach you. Returns which fields were filled. It never submits: click the form's button yourself afterwards. Takes the control lease only while filling. Linux container computers only.",
+    {
+      form: {
+        type: 'string',
+        minLength: 1,
+        maxLength: 128,
+        description: 'A form id from an earlier ambiguous result, when the page has several forms'
+      },
+      reason: {
+        type: 'string',
+        minLength: 1,
+        maxLength: 200,
+        description: 'One line the card shows the person, e.g. "Sign in to GitHub to open the pull request"'
+      }
+    }
+  )
+]
+
 const pathArg: ToolProperties = {
   path: {
     type: 'string',
@@ -199,7 +236,9 @@ export const COMPUTER_COMMAND_LINE_TOOLS: readonly ToolDescriptor[] = [
   )
 ]
 
-const TOOL_NAMES = new Set([...COMPUTER_TOOLS, ...COMPUTER_COMMAND_LINE_TOOLS].map((descriptor) => descriptor.name))
+const TOOL_NAMES = new Set(
+  [...COMPUTER_TOOLS, ...COMPUTER_COMMAND_LINE_TOOLS, ...COMPUTER_FILL_TOOLS].map((descriptor) => descriptor.name)
+)
 
 const COMMAND_LINE_TOOLS = new Set(COMPUTER_COMMAND_LINE_TOOLS.map((descriptor) => descriptor.name))
 // Tier tools that change the computer: a call that may have reached it is never resent (§5.4).
@@ -219,6 +258,7 @@ const INPUT_TOOLS = new Set([
 
 // Inputs whose first use in a session needs approval (§4.2); a move or a scroll does not count.
 const FIRST_INPUT_TOOLS = new Set([
+  'computer_fill_form',
   'computer_click',
   'computer_drag',
   'computer_type',
@@ -248,6 +288,14 @@ export type ComputerApprovalAnswer = 'allow' | 'allow_session' | 'deny'
 /** Asks the people a session's approvals go to: its conversation and the Computer's owner. */
 export interface ComputerApprover {
   ask(ctx: SessionContext, ask: ComputerApprovalAsk): Promise<ComputerApprovalAnswer>
+}
+
+/** Where a session's Fill card is shown and answered; the values in a `submit` go only to the fill that waits on it. */
+export interface ComputerFillSurface {
+  /** Shows the card and waits; undefined when this session's conversation cannot show one. */
+  ask(ctx: SessionContext, card: ComputerFillCard): Promise<FillCardAnswer | undefined>
+  /** Settles the shown card, without values, once the fill ends. */
+  settled(ctx: SessionContext, requestId: string, outcome: ComputerFillCardOutcome): void
 }
 
 /** Whether a call asks first under a Computer's policy: the session's first input there, until someone allows it. */
@@ -287,6 +335,8 @@ export function describeComputerAction(name: string, args: Record<string, unknow
       const cwd = typeof args.cwd === 'string' ? ` in ${args.cwd.slice(0, 200)}` : ''
       return `run “${command.length > 600 ? `${command.slice(0, 600)}…` : command}”${cwd}`
     }
+    case 'computer_fill_form':
+      return `fill ${String(args.fields)} form fields on ${String(args.origin).slice(0, 200)}`
     case 'computer_write_file': {
       const content = typeof args.content === 'string' ? args.content : ''
       return `write ${Buffer.byteLength(content)} bytes to ${String(args.path).slice(0, 300)}`
@@ -371,6 +421,13 @@ export const COMPUTER_TOOL_ARGS: ReadonlyMap<string, z.ZodType> = new Map<string
   [
     'computer_write_file',
     Computer.extend({ path: z.string().min(1).max(4096), content: z.string().max(COMPUTER_WRITE_MAX_BYTES) }).strict()
+  ],
+  [
+    COMPUTER_FILL_FORM_TOOL,
+    Computer.extend({
+      form: z.string().min(1).max(128).optional(),
+      reason: z.string().min(1).max(200).optional()
+    }).strict()
   ]
 ])
 
@@ -426,6 +483,39 @@ export function computerToolsOffered(input: {
   const use = input.computerUse
   const target = (use?.computers.length ?? 0) > 0 || (use?.managed !== undefined && input.poolServes === true)
   return use?.enabled === true && target && input.controlPlaneServes && input.runtimeShowsImages
+}
+
+const safeJson = (text: string): unknown => {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return undefined
+  }
+}
+
+// What a model learns when there is no single form to fill: the page's forms by id and kind, never a value.
+function fillSummary(computerId: string, discovery: ComputerFormDiscovery): McpContentResult {
+  const forms = discovery.forms.map((form) => ({
+    id: form.id,
+    kind: form.kind,
+    fields: form.fields.map((field) => field.label ?? field.name ?? field.purpose).slice(0, 12)
+  }))
+  const next =
+    discovery.status === 'ambiguous'
+      ? 'Call computer_fill_form again with `form` set to one of these ids.'
+      : 'Open the page with the form in the browser first, then call computer_fill_form again.'
+  const payload = {
+    status: discovery.status,
+    computer: computerId,
+    ...(discovery.tab ? { website: discovery.tab.topOrigin } : {}),
+    ...(forms.length ? { forms } : {}),
+    ...(discovery.reason ? { message: discovery.reason } : {}),
+    next
+  }
+  return {
+    mcpContent: [{ type: 'text', text: JSON.stringify(payload) }],
+    ...(discovery.status === 'ambiguous' ? {} : { mcpIsError: true })
+  }
 }
 
 /** A definite refusal (§5.4): nothing was sent to the desktop. */
@@ -537,6 +627,8 @@ export interface ComputerToolsDeps {
   connect?: (options: ComputerChannelOptions) => Promise<ComputerMcpConnection>
   /** Asks for approvals (§4.2); without it every input that needs one is refused. */
   approver?: ComputerApprover
+  /** Shows Fill cards (computer-form-fill-and-vault.md §6); without it computer_fill_form refuses. */
+  fillCards?: ComputerFillSurface
   log?: { debug(message: string): void; warn(message: string): void }
 }
 
@@ -578,6 +670,7 @@ export class ComputerTools {
       target = await this.awaken(state, await this.target(state, requested))
       if (name === 'computer_release') return await this.release(state, target)
       if (COMMAND_LINE_TOOLS.has(name)) return await this.commandLine(ctx, state, target, name, forwarded)
+      if (name === COMPUTER_FILL_FORM_TOOL) return await this.fillForm(ctx, state, target, forwarded)
       // Approval comes before the lease, so a person's answer never holds the Computer from others.
       const approval = INPUT_TOOLS.has(name) ? await this.approve(ctx, state, target, name, forwarded) : undefined
       const waited =
@@ -721,6 +814,220 @@ export class ComputerTools {
     })
     state.approving = run.catch(() => undefined)
     return await run
+  }
+
+  // computer_fill_form (computer-form-fill-and-vault.md §5, §6): discover, ask a person through a card while holding
+  // nothing, then fill under approval and the lease. The values never enter a result, a log or the model's context.
+  private async fillForm(
+    ctx: SessionContext,
+    state: SessionState,
+    computerId: string,
+    args: { form?: string; reason?: string }
+  ): Promise<McpContentResult> {
+    const surface = this.deps.fillCards
+    if (!surface)
+      throw new ComputerToolError(
+        'unsupported',
+        'computer_fill_form: this conversation cannot show a Fill card; nothing was sent'
+      )
+    const discovery = await this.discoverForm(state, computerId, args.form)
+    if (discovery.status !== 'found' || !discovery.target) return fillSummary(computerId, discovery)
+    const target = discovery.target
+    const form = discovery.forms.find((candidate) => candidate.id === target.formId)!
+    const grant = await this.grantFor(state, computerId, COMPUTER_FILL_FORM_TOOL)
+    const card: ComputerFillCard = {
+      requestId: randomUUID(),
+      computerName: (grant.name ?? computerId).slice(0, 200),
+      website: { origin: target.topOrigin, ...(discovery.tab?.title ? { title: discovery.tab.title } : {}) },
+      ...(target.frameOrigin !== target.topOrigin ? { frameOrigin: target.frameOrigin } : {}),
+      kind: form.kind,
+      fields: form.fields,
+      ...(args.reason ? { reason: args.reason } : {}),
+      expiresAt: new Date(this.now() + COMPUTER_FILL_CARD_TTL_MS).toISOString()
+    }
+    const answer = await surface.ask(ctx, card)
+    if (!answer)
+      throw new ComputerToolError(
+        'unsupported',
+        'computer_fill_form: this conversation cannot show a Fill card; nothing was sent'
+      )
+    const base = { computer: computerId, website: target.topOrigin, form: { id: form.id, kind: form.kind } }
+    if (answer.kind !== 'submit') {
+      const outcome = answer.kind === 'cancel' ? 'cancelled' : 'expired'
+      surface.settled(ctx, card.requestId, outcome)
+      const why =
+        answer.kind === 'cancel'
+          ? 'the person declined the Fill card'
+          : answer.kind === 'expired'
+            ? 'nobody answered the Fill card in time'
+            : 'the turn ended before the Fill card was answered'
+      return {
+        mcpContent: [
+          { type: 'text', text: JSON.stringify({ status: outcome, ...base, message: `${why}; nothing was filled` }) }
+        ]
+      }
+    }
+    let outcome: ComputerFillCardOutcome = 'failed'
+    try {
+      const result = await this.sendFill(ctx, state, computerId, target, answer.values)
+      outcome = result.status === 'cancelled' ? 'cancelled' : result.status
+      const statuses = new Map(result.fields.map((field) => [field.field, field.status]))
+      const payload = {
+        status: result.status,
+        ...base,
+        fields: form.fields.map((field) => ({
+          id: field.id,
+          ...(field.label ? { label: field.label } : {}),
+          purpose: field.purpose,
+          status: statuses.get(field.id) ?? ('not_provided' as ComputerFormFieldStatus | 'not_provided')
+        })),
+        navigated: result.navigated,
+        ...(result.reason ? { message: result.reason } : {}),
+        next:
+          result.status === 'uncertain'
+            ? 'Take a screenshot before acting again; the fill was not retried.'
+            : "Nothing was submitted: take a screenshot, then click the form's button if it is ready."
+      }
+      return {
+        mcpContent: [{ type: 'text', text: JSON.stringify(payload) }],
+        ...(result.status === 'filled' || result.status === 'partial' ? {} : { mcpIsError: true })
+      }
+    } finally {
+      answer.values = []
+      surface.settled(ctx, card.requestId, outcome)
+    }
+  }
+
+  private async discoverForm(
+    state: SessionState,
+    computerId: string,
+    form: string | undefined
+  ): Promise<ComputerFormDiscovery> {
+    let raw: unknown
+    try {
+      raw = await this.callDesktop(state, computerId, COMPUTER_FORM_DISCOVER_TOOL, { v: 1, ...(form ? { form } : {}) })
+    } catch (error) {
+      if (channelError(error)) throw error
+      if (error instanceof ProtocolError)
+        throw new ComputerToolError(
+          'unsupported',
+          'this computer cannot fill forms: it needs a Linux container computer with the AgentConnect browser extension; nothing was sent',
+          { computer: computerId }
+        )
+      throw new ComputerToolError(
+        'unavailable',
+        `computer_fill_form: the computer could not be reached: ${(error as Error).message}`
+      )
+    }
+    const text = contentOf(raw).find((block) => block.type === 'text')?.text ?? ''
+    const parsed = ComputerFormDiscovery.safeParse(safeJson(text))
+    if (!parsed.success) {
+      const refusal = safeJson(text) as { error?: string; message?: string } | undefined
+      throw new ComputerToolError(
+        refusal?.error ?? 'unavailable',
+        refusal?.message ?? 'computer_fill_form: the computer gave no form description',
+        { computer: computerId }
+      )
+    }
+    return parsed.data
+  }
+
+  // Approval and the lease come only now, after the person answered: a card never holds the computer from others.
+  private async sendFill(
+    ctx: SessionContext,
+    state: SessionState,
+    computerId: string,
+    target: NonNullable<ComputerFormDiscovery['target']>,
+    values: { field: string; value?: string; checked?: boolean }[]
+  ): Promise<ComputerFormFillResult> {
+    const origin = target.frameOrigin
+    const approval = await this.approve(ctx, state, computerId, COMPUTER_FILL_FORM_TOOL, {
+      origin,
+      fields: values.length
+    })
+    await this.acquire(ctx, state, computerId)
+    const requestId = randomUUID()
+    const uncertain = (reason: string): ComputerFormFillResult => ({
+      v: 1,
+      requestId,
+      status: 'uncertain',
+      fields: [],
+      navigated: false,
+      reason
+    })
+    let linked: Linked
+    try {
+      linked = await this.linked(state, computerId)
+    } catch (error) {
+      if (channelError(error)) throw error
+      return {
+        v: 1,
+        requestId,
+        status: 'failed',
+        fields: [],
+        navigated: false,
+        reason: `the computer could not be reached: ${(error as Error).message}; nothing was sent`
+      }
+    }
+    let raw: unknown
+    try {
+      raw = await this.invoke(
+        state,
+        computerId,
+        linked,
+        COMPUTER_FORM_FILL_TOOL,
+        { v: 1, requestId, target, values },
+        approval
+      )
+    } catch (error) {
+      if (error instanceof ProtocolError)
+        return {
+          v: 1,
+          requestId,
+          status: 'unsupported',
+          fields: [],
+          navigated: false,
+          reason: 'the computer refused the fill; nothing was sent'
+        }
+      // It may have reached the desktop: ask what happened, and never send it again (§8).
+      return await this.fillStatus(
+        state,
+        computerId,
+        requestId,
+        uncertain(`${(error as Error).message}; the fill may or may not have happened and was not retried`)
+      )
+    }
+    const text = contentOf(raw).find((block) => block.type === 'text')?.text ?? ''
+    const parsed = ComputerFormFillResult.safeParse(safeJson(text))
+    if (parsed.success && parsed.data.requestId === requestId) return parsed.data
+    // A definite refusal (busy, paused, a person active): the desktop sent nothing to the browser.
+    const refusal = safeJson(text) as { error?: string; message?: string } | undefined
+    if (refusal?.error && refusal.error !== 'uncertain')
+      throw new ComputerToolError(
+        refusal.error,
+        `computer_fill_form: ${refusal.message ?? refusal.error}; nothing was filled`,
+        { computer: computerId }
+      )
+    return uncertain('the computer answered without a fill result; the fill was not retried')
+  }
+
+  // A fill whose answer was lost: only a stored result settles it; `unknown` and `running` stay uncertain.
+  private async fillStatus(
+    state: SessionState,
+    computerId: string,
+    requestId: string,
+    fallback: ComputerFormFillResult
+  ): Promise<ComputerFormFillResult> {
+    try {
+      const raw = await this.callDesktop(state, computerId, COMPUTER_FORM_STATUS_TOOL, { v: 1, requestId })
+      const status = ComputerFormStatus.safeParse(
+        safeJson(contentOf(raw).find((block) => block.type === 'text')?.text ?? '')
+      )
+      if (status.success && status.data.state === 'done' && status.data.result) return status.data.result
+    } catch (error) {
+      this.deps.log?.debug(`computer: fill status query failed: ${(error as Error).message}`)
+    }
+    return fallback
   }
 
   // A person approves this one administrator prompt; nothing carries over to later prompts or the session.

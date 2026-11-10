@@ -11,6 +11,7 @@ import { ComputerChannelError, type ComputerMcpConnection } from '../../src/comp
 import { ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/client'
 import {
   COMPUTER_COMMAND_LINE_TOOLS,
+  COMPUTER_FILL_TOOLS,
   COMPUTER_TOOLS,
   COMPUTER_TOOL_ARGS,
   ComputerTools,
@@ -228,7 +229,7 @@ describe('computerToolsOffered', () => {
   })
 
   it('advertises an argument schema for every tool it validates', () => {
-    const all = [...COMPUTER_TOOLS, ...COMPUTER_COMMAND_LINE_TOOLS]
+    const all = [...COMPUTER_TOOLS, ...COMPUTER_COMMAND_LINE_TOOLS, ...COMPUTER_FILL_TOOLS]
     expect(all.map((tool) => tool.name).sort()).toEqual([...COMPUTER_TOOL_ARGS.keys()].sort())
     for (const tool of all) {
       if (tool.name === 'computer_list') continue

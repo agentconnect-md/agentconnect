@@ -198,6 +198,43 @@ describe('AHP checkpoint integration', () => {
     expect(cards().map((item) => item.requestId)).not.toContain('a')
   })
 
+  it('keeps Fill cards in session metadata as descriptors with their outcome', async () => {
+    const { state } = await fixture()
+    await state.add(binding)
+    const card = (requestId: string) => ({
+      requestId,
+      computerName: 'Desk',
+      website: { origin: 'https://login.example.test' },
+      kind: 'login' as const,
+      fields: [
+        {
+          id: 'f1',
+          control: 'password' as const,
+          purpose: 'current-password' as const,
+          required: true,
+          secret: true,
+          empty: true
+        }
+      ],
+      expiresAt: '2026-11-10T10:10:00.000Z'
+    })
+    const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
+    const send = (turnId: string, event: Parameters<typeof state.output>[1]['event']) =>
+      state.output('physical', { conversationId: 'c', turnId, index: 1, event })
+    const fills = () =>
+      (state.snapshot(binding.sessionUri) as { _meta: Record<string, { fills: unknown }> })._meta['agentconnect.md']!
+        .fills as Array<{ turnId: string; requestId: string; resolved?: string }>
+    await send('first', { kind: 'fill_request', card: card(id(1)) })
+    expect(fills()).toEqual([
+      expect.objectContaining({ turnId: 'first', requestId: id(1), website: { origin: 'https://login.example.test' } })
+    ])
+    await send('first', { kind: 'fill_resolved', requestId: id(1), outcome: 'filled' })
+    expect(fills()[0]!.resolved).toBe('filled')
+    for (let i = 2; i < 12; i++) await send('next', { kind: 'fill_request', card: card(id(i)) })
+    expect(fills()).toHaveLength(8)
+    expect(fills().map((item) => item.requestId)).not.toContain(id(1))
+  })
+
   it('continues from the last archive page into existing transcript history', async () => {
     const { checkpoints } = await fixture()
     const value: ChatState = {

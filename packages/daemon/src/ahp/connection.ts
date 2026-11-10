@@ -1,3 +1,4 @@
+import type { AhpCustomMethod } from './apps.js'
 import { z } from 'zod'
 import {
   ActionType,
@@ -46,7 +47,7 @@ export interface AhpHostPort {
   createSession(params: CreateSessionParams): Promise<void>
   dispatch(params: DispatchActionParams, origin: ActionOrigin): Promise<void>
   fetchTurns?(params: FetchTurnsParams): Promise<ChatTurnsLoadedAction | undefined>
-  customRequest?(method: 'agentconnect/appRpc' | 'agentconnect/appClose', params: unknown): Promise<unknown>
+  customRequest?(method: AhpCustomMethod, params: unknown): Promise<unknown>
   readFileEdit?(ref: FileEditRef): Promise<string | undefined>
   subscribeNotification?(listener: (notification: AhpCatalogNotification) => void, wanted: () => boolean): () => void
 }
@@ -316,7 +317,8 @@ export class AhpHostConnection {
         return result
       }
       case 'agentconnect/appRpc':
-      case 'agentconnect/appClose': {
+      case 'agentconnect/appClose':
+      case 'agentconnect/fillSubmit': {
         if (!this.port.customRequest) throw new AhpProtocolError(JsonRpcErrorCodes.MethodNotFound, 'Unknown method')
         await this.prepare(parse(subscription, message.params).channel)
         return this.port.customRequest(message.method, message.params)

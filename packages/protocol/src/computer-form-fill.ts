@@ -316,3 +316,39 @@ export const FormFillReply = z
   })
   .strict()
 export type FormFillReply = z.infer<typeof FormFillReply>
+
+// ---- the Fill card (computer-form-fill-and-vault.md §6): what a person sees, and how it settles ----
+
+/** How long a Fill card waits for its person before it expires unanswered. */
+export const COMPUTER_FILL_CARD_TTL_MS = 10 * 60_000
+
+/** The card the agent daemon shows for one pending fill: the website and its field descriptors, never a value. */
+export const ComputerFillCard = z
+  .object({
+    requestId: z.string().uuid(),
+    computerName: Text,
+    // The site as the browser reports it: a person decides by this, never by the agent's claim.
+    website: z.object({ origin: ComputerFormOrigin, title: Text.optional() }).strict(),
+    // Set when the form lives in a frame from another origin than the page.
+    frameOrigin: ComputerFormOrigin.optional(),
+    kind: z.enum(COMPUTER_FORM_KINDS),
+    fields: z.array(ComputerFormField).min(1).max(COMPUTER_FORM_FIELDS_MAX),
+    // The agent's one line on why it asks.
+    reason: Text.optional(),
+    expiresAt: z.string().datetime()
+  })
+  .strict()
+export type ComputerFillCard = z.infer<typeof ComputerFillCard>
+
+/** How a card ended; never a value, so it can be streamed and kept like any settled card. */
+export const COMPUTER_FILL_CARD_OUTCOMES = [
+  'filled',
+  'partial',
+  'failed',
+  'uncertain',
+  'target_changed',
+  'unsupported',
+  'cancelled',
+  'expired'
+] as const
+export type ComputerFillCardOutcome = (typeof COMPUTER_FILL_CARD_OUTCOMES)[number]

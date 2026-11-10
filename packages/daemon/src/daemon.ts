@@ -5,7 +5,13 @@ import { initialAhpChat } from './ahp/initial-state.js'
 import { ahpAgentInfo } from './ahp/agent-state.js'
 import { AhpRuntimeObserver } from './ahp/runtime-observer.js'
 import { AhpShadowService } from './ahp/shadow-service.js'
-import { SessionStatus, ActionType, MessageKind, AhpErrorCodes } from '@microsoft/agent-host-protocol'
+import {
+  SessionStatus,
+  ActionType,
+  MessageKind,
+  AhpErrorCodes,
+  JsonRpcErrorCodes
+} from '@microsoft/agent-host-protocol'
 import { AhpService, chatChannel } from './ahp/service.js'
 import { AhpApplication, ahpElicitValue } from './ahp/application.js'
 import { dispatchAhpAction, type AhpDispatchEnvironment } from './ahp/dispatch.js'
@@ -351,6 +357,8 @@ import {
   type ComputerApprovalAnswer,
   type ComputerApprovalAsk
 } from './computer/tools.js'
+import { AhpFillSubmit, PendingFillCards, type FillCardAnswer } from './computer/fill-cards.js'
+import type { ComputerFillCard, ComputerFillCardOutcome } from '@agentconnect.md/protocol/computer-form-fill'
 import { ADMIN_MCP_SERVER_NAME, RemoteWebchatGrantManager } from './mcp/remote-webchat-grant.js'
 import type { CodeHostEffectReq, MessageGateway, SessionContext } from './mcp/ops.js'
 import { notJoinedChannel } from './platforms/not-joined.js'
@@ -1394,7 +1402,7 @@ import {
   type TurnSettlement
 } from './daemon/turn-types.js'
 import { UUID_RE, type WebchatSink } from './webchat/types.js'
-import type { ChatTurnContext, ChatSink } from './session/chat-turn.js'
+import type { ChatTurnContext, ChatSink, ChatTurnOutput } from './session/chat-turn.js'
 import { resolveChatUploadUrl } from './session/chat-attachments.js'
 import { readBoundedBody } from './codehost/rest-read.js'
 import { webchatAuthorOf, WebchatTransport, type WebchatHost } from './webchat/transport.js'
@@ -2379,8 +2387,16 @@ export class Daemon {
       ),
     now: () => this.clock.now(),
     approver: { ask: (ctx, ask) => this.askComputerApproval(ctx, ask) },
+    fillCards: {
+      ask: (ctx, card) => this.askFillCard(ctx, card),
+      settled: (_ctx, requestId, outcome) => this.settleFillCard(requestId, outcome)
+    },
     log: { debug: (message) => this.log.debug(message), warn: (message) => this.log.warn(message) }
   })
+  /** Fill cards waiting for their person (computer-form-fill-and-vault.md §6): memory only, never persisted. */
+  private readonly fillCardWaits = new PendingFillCards()
+  /** Where each shown Fill card settles: the turn stream it was shown on. */
+  private readonly fillCardStreams = new Map<string, ChatTurnOutput>()
   private appSurface!: AppSurface
   /** CP-owned, daemon-private external-memory definitions + verified clients. */
   private memoryConnections?: CpMemoryConnectionRegistry
@@ -3544,71 +3560,74 @@ export class Daemon {
         return body === undefined ? undefined : this.maskAgentSecrets(auth.agentId, body)
       },
       customRequest: (method, params, context, isCurrent) =>
-        dispatchAhpAppRequest(
-          method,
-          params,
-          { ...context, isCurrent },
-          {
-            rpc: async (scope, input, emit) => {
-              const conversationId = await this.ahpAppConversation(scope, input.appId)
-              await this.handleAppRpc(
-                conversationId,
-                input.appId,
-                input.callId,
-                input.rpc,
-                { userId: scope.authorization.userId, user: scope.authorization.user },
-                {
-                  conversationId: scope.binding.conversationId,
-                  turnId: `app:${input.appId}`,
-                  index: 0,
-                  sink: { output: emit, done: () => {} }
-                },
-                {
-                  isCurrent,
-                  dispatchMessage: async (text) => {
-                    const turnId = randomUUID()
-                    try {
-                      await dispatchAhpAction(
-                        actions,
-                        {
-                          channel: chatChannel(scope.binding.sessionUri),
-                          clientSeq: 0,
-                          action: {
-                            type: ActionType.ChatTurnStarted,
-                            turnId,
-                            startedAt: new Date(this.clock.now()).toISOString(),
-                            message: { text, origin: { kind: MessageKind.User } }
-                          }
-                        },
-                        undefined,
-                        context,
-                        dispatchEnvironment
-                      )
-                      return { accepted: true, turnId }
-                    } catch (error) {
-                      if (error instanceof AhpProtocolError) return { accepted: false, turnId, reason: error.message }
-                      throw error
+        method === 'agentconnect/fillSubmit'
+          ? this.answerAhpFillCard(params, context, isCurrent)
+          : dispatchAhpAppRequest(
+              method,
+              params,
+              { ...context, isCurrent },
+              {
+                rpc: async (scope, input, emit) => {
+                  const conversationId = await this.ahpAppConversation(scope, input.appId)
+                  await this.handleAppRpc(
+                    conversationId,
+                    input.appId,
+                    input.callId,
+                    input.rpc,
+                    { userId: scope.authorization.userId, user: scope.authorization.user },
+                    {
+                      conversationId: scope.binding.conversationId,
+                      turnId: `app:${input.appId}`,
+                      index: 0,
+                      sink: { output: emit, done: () => {} }
+                    },
+                    {
+                      isCurrent,
+                      dispatchMessage: async (text) => {
+                        const turnId = randomUUID()
+                        try {
+                          await dispatchAhpAction(
+                            actions,
+                            {
+                              channel: chatChannel(scope.binding.sessionUri),
+                              clientSeq: 0,
+                              action: {
+                                type: ActionType.ChatTurnStarted,
+                                turnId,
+                                startedAt: new Date(this.clock.now()).toISOString(),
+                                message: { text, origin: { kind: MessageKind.User } }
+                              }
+                            },
+                            undefined,
+                            context,
+                            dispatchEnvironment
+                          )
+                          return { accepted: true, turnId }
+                        } catch (error) {
+                          if (error instanceof AhpProtocolError)
+                            return { accepted: false, turnId, reason: error.message }
+                          throw error
+                        }
+                      }
                     }
-                  }
+                  )
+                },
+                close: async (scope, input) => {
+                  const conversationId = await this.ahpAppConversation(scope, input.appId)
+                  const resolved = this.liveApps.resolve({ appId: input.appId, conversationId })
+                  if ('app' in resolved) {
+                    this.liveApps.settle(input.appId)
+                    this.settleAppCard(resolved.app, CLOSED)
+                  } else await this.recordAppClose(input.appId, conversationId)
+                  this.ahp?.output(scope.authorization.orgId, scope.authorization.agentId, scope.binding.sessionId, {
+                    conversationId: scope.binding.conversationId,
+                    turnId: `app:${input.appId}`,
+                    index: 0,
+                    event: { kind: 'app_resolved', appId: input.appId, outcome: CLOSED }
+                  })
                 }
-              )
-            },
-            close: async (scope, input) => {
-              const conversationId = await this.ahpAppConversation(scope, input.appId)
-              const resolved = this.liveApps.resolve({ appId: input.appId, conversationId })
-              if ('app' in resolved) {
-                this.liveApps.settle(input.appId)
-                this.settleAppCard(resolved.app, CLOSED)
-              } else await this.recordAppClose(input.appId, conversationId)
-              this.ahp?.output(scope.authorization.orgId, scope.authorization.agentId, scope.binding.sessionId, {
-                conversationId: scope.binding.conversationId,
-                turnId: `app:${input.appId}`,
-                index: 0,
-                event: { kind: 'app_resolved', appId: input.appId, outcome: CLOSED }
-              })
-            }
-          }
-        )
+              }
+            )
     })
   }
 
@@ -18105,6 +18124,19 @@ export class Daemon {
           { conversationId: msg.chatId, turnId: `app:${op.appId}`, index: 0, sink }
         )
         return { msgId: msg.msgId, accepted: true }
+      case 'fill_submit': {
+        // The values go only to the fill that waits on this card; nothing here records or logs them.
+        const answered = this.fillCardWaits.answer({
+          requestId: op.requestId,
+          conversationId: msg.chatId,
+          userId: op.userId,
+          ...(op.values ? { values: op.values } : {}),
+          ...(op.cancel ? { cancel: true } : {})
+        })
+        return answered.accepted
+          ? { msgId: msg.msgId, accepted: true }
+          : { msgId: msg.msgId, accepted: false, reason: answered.reason }
+      }
       case 'app_close': {
         // The conversation confines the close to a card this browser was actually shown, exactly
         // as it confines an elicitation answer.
@@ -32095,6 +32127,66 @@ export class Daemon {
     if (response.outcome.outcome !== 'selected') return 'deny'
     const chosen = response.outcome.optionId
     return chosen === 'allow' || chosen === 'allow_session' ? chosen : 'deny'
+  }
+
+  /** Shows a Fill card on the asking turn's chat stream and waits for its person; undefined where no stream can show it. */
+  private async askFillCard(ctx: SessionContext, card: ComputerFillCard): Promise<FillCardAnswer | undefined> {
+    const key = this.sessionKeyOf(ctx)
+    const live = [...this.pending.values()].find((pending) => pending.plan.sessionKey === key)
+    const stream = live?.webchat
+    if (!live || !stream) return undefined
+    try {
+      stream.sink.output({
+        conversationId: stream.conversationId,
+        turnId: stream.turnId,
+        index: stream.index++,
+        event: { kind: 'fill_request', card }
+      })
+    } catch (err) {
+      this.log.warn(`computer: Fill card not delivered for "${key}": ${formatErr(err)}`)
+      return undefined
+    }
+    this.fillCardStreams.set(card.requestId, stream)
+    return await this.fillCardWaits.wait(
+      card,
+      { conversationId: stream.conversationId, agentId: ctx.agentId, requesterUserId: live.plan.requesterId },
+      () => this.toolTurnRunnable(ctx)
+    )
+  }
+
+  /** AHP's answer to a Fill card: the attachment's verified user and conversation, never the request's claim. */
+  private async answerAhpFillCard(
+    params: unknown,
+    context: { authorization: { userId?: string }; binding: { conversationId: string } },
+    isCurrent: () => boolean
+  ): Promise<{ accepted: boolean; reason?: string }> {
+    const parsed = AhpFillSubmit.safeParse(params)
+    if (!parsed.success) throw new AhpProtocolError(JsonRpcErrorCodes.InvalidParams, 'Invalid Fill card answer')
+    if (!isCurrent()) throw new AhpProtocolError(AhpErrorCodes.PermissionDenied, 'Fill card access expired')
+    const answered = this.fillCardWaits.answer({
+      requestId: parsed.data.requestId,
+      conversationId: context.binding.conversationId,
+      userId: context.authorization.userId,
+      ...(parsed.data.values ? { values: parsed.data.values } : {}),
+      ...(parsed.data.cancel ? { cancel: true } : {})
+    })
+    return answered.accepted ? { accepted: true } : { accepted: false, reason: answered.reason }
+  }
+
+  private settleFillCard(requestId: string, outcome: ComputerFillCardOutcome): void {
+    const stream = this.fillCardStreams.get(requestId)
+    this.fillCardStreams.delete(requestId)
+    if (!stream) return
+    try {
+      stream.sink.output({
+        conversationId: stream.conversationId,
+        turnId: stream.turnId,
+        index: stream.index++,
+        event: { kind: 'fill_resolved', requestId, outcome }
+      })
+    } catch (err) {
+      this.log.debug(`computer: Fill card settlement not delivered: ${formatErr(err)}`)
+    }
   }
 
   /** The Computers an agent may use now (computer-use.md §4.1), as the CP derives them from each Computer's agent access. */
