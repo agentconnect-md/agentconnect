@@ -146,16 +146,15 @@ describe('ComputerDetailView', () => {
     expect(el.querySelector('[data-doctor-check="driver"]')!.textContent).toContain('agentconnect computer setup')
   })
 
-  it('stops from the console on both layouts and applies the returned row', async () => {
+  it('disables agents from the actions menu and applies the returned row', async () => {
     const stopped = computer({ stoppedAt: new Date().toISOString(), stoppedByUserId: 'u1', status: 'paused' })
     mocks.stopComputer.mockResolvedValue(stopped)
     const el = render(computer())
-    // One for the desktop header, one full-width in the mobile body.
-    const stops = button(el, 'Stop')
-    expect(stops).toHaveLength(2)
-    expect(stops[0]!.parentElement!.className).toContain('hidden desktop:inline-flex')
-    expect(stops[1]!.parentElement!.className).toContain('desktop:hidden')
-    await act(async () => stops[1]!.click())
+    openMenu(el)
+    const disable = button(el, 'Disable agents')
+    expect(disable).toHaveLength(1)
+    expect(disable[0]!.getAttribute('role')).toBe('menuitem')
+    await act(async () => disable[0]!.click())
     await settle()
     expect(mocks.stopComputer).toHaveBeenCalledWith('c1')
     expect(mocks.mutate).toHaveBeenCalledWith(stopped, { revalidate: false })
@@ -165,7 +164,7 @@ describe('ComputerDetailView', () => {
     const stopped = { stoppedAt: new Date().toISOString(), stoppedByUserId: 'u2', status: 'paused' as const }
     const owner = render(computer(stopped))
     expect(owner.textContent).toContain('Stopped by Dana')
-    expect(button(owner, 'Resume')).toHaveLength(2)
+    expect(button(owner, 'Resume')).toHaveLength(1)
     act(() => root.unmount())
     const peer = render(computer({ ...stopped, canEditPolicy: false }))
     expect(button(peer, 'Resume')).toHaveLength(0)
@@ -326,8 +325,8 @@ describe('ComputerDetailView', () => {
     expect(line.title).toContain('peer')
     expect(el.querySelector('[data-pool-chip]')!.textContent).toBe('Pool · Awake')
     expect(el.textContent).toContain('Pool computer, shared')
-    openMenu(el)
     expect(button(el, 'Wake')).toHaveLength(0)
+    expect(el.querySelector<HTMLElement>('[data-pool-power="sleep"]')!.title).toContain('keeps its files')
     await act(async () => button(el, 'Sleep')[0]!.click())
     await settle()
     expect(mocks.sleepComputer).toHaveBeenCalledWith('c1')
@@ -353,13 +352,13 @@ describe('ComputerDetailView', () => {
         ]
       })
     )
-    const picker = el.querySelector<HTMLSelectElement>('[data-desktop-picker]')!
-    expect([...picker.options].map((option) => option.textContent)).toEqual(['Main desktop', "ops's desktop"])
+    const tabs = [...el.querySelectorAll<HTMLButtonElement>('[data-desktop-tab]')]
+    expect(tabs.map((tab) => tab.dataset.desktopTab)).toEqual(['main', 'd1'])
+    expect(tabs[1]!.textContent).toBe("ops's desktopworking")
+    expect(tabs[0]!.getAttribute('aria-selected')).toBe('true')
     expect(el.querySelector('[data-computer-viewer]')!.textContent).toContain('No agent has control')
-    act(() => {
-      picker.value = 'd1'
-      picker.dispatchEvent(new Event('change', { bubbles: true }))
-    })
+    act(() => tabs[1]!.click())
+    expect(el.querySelector('[data-desktop-tab="d1"]')!.getAttribute('aria-selected')).toBe('true')
     expect(el.querySelector('[data-lease-holder="a1"]')!.textContent).toContain('ops has control')
     expect(el.querySelector('[data-lease-waiting]')!.textContent).toBe('1 waiting')
   })
@@ -383,7 +382,6 @@ describe('ComputerDetailView', () => {
     expect(el.textContent).toContain('Asleep')
     expect(el.textContent).toContain('No agent has control')
     expect(el.textContent).toContain('Made forops')
-    openMenu(el)
     await act(async () => button(el, 'Wake')[0]!.click())
     await settle()
     expect(mocks.wakeComputer).toHaveBeenCalledWith('c1')
@@ -416,6 +414,10 @@ describe('ComputerDetailView', () => {
     )
     expect(session.textContent).toContain('New for each session')
     openMenu(session)
-    expect([...session.querySelectorAll('[role="menuitem"]')].map((b) => b.textContent)).toEqual(['Revoke', 'Delete'])
+    expect([...session.querySelectorAll('[role="menuitem"]')].map((b) => b.textContent)).toEqual([
+      'Disable agents',
+      'Revoke',
+      'Delete'
+    ])
   })
 })

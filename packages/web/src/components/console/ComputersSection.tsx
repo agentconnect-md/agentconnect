@@ -21,7 +21,7 @@ import { useModal } from '@/components/console/ModalProvider'
 import { LoadingState } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { SectionHeader } from '@/components/console/SectionHeader'
-import { FLEET_GRID, FLEET_ROW } from '@/components/console/fleet-grid'
+import { FLEET_GRID } from '@/components/console/fleet-grid'
 import { useAgentName, useMemberName } from '@/components/console/computer-members'
 
 export function ComputersSection() {
@@ -121,7 +121,10 @@ function CloudComputersSection({
       <p className="mt-0 mb-[10px] max-w-[720px] font-sans text-[12px] font-normal leading-[1.55] text-(--text-tertiary)">
         {t('description')}
         {(managed.length > 0 || (enabled && !available)) && (
-          <span data-cloud-summary className="mt-[2px] block font-mono text-[11.5px] text-(--text-secondary)">
+          <span
+            data-cloud-summary
+            className="ml-[6px] font-mono text-[11.5px] whitespace-nowrap text-(--text-secondary)"
+          >
             {managed.length > 0 && t('meta', { running, asleep })}
             {managed.length > 0 && enabled && !available && ' · '}
             {enabled && !available && <span className="text-(--status-error)">{t('unavailable')}</span>}
@@ -223,11 +226,11 @@ export function ComputerRow({ computer }: { computer: ComputerDto }) {
       onKeyDown={(e) => {
         if (e.key === 'Enter') open()
       }}
-      className={`card click flex cursor-pointer flex-col gap-[10px] p-[14px] max-desktop:rounded-lg desktop:flex-row desktop:items-center desktop:gap-[14px] desktop:px-4 desktop:py-[13px] ${FLEET_ROW}`}
+      className={`card click flex cursor-pointer flex-col gap-[10px] p-[14px] max-desktop:rounded-lg desktop:flex-row desktop:items-center desktop:gap-[14px] desktop:min-h-[68px] desktop:px-4 desktop:py-[11px]`}
     >
       <div className="flex w-full min-w-0 items-center gap-3 desktop:w-auto desktop:flex-1 desktop:gap-[11px]">
         <span
-          className={`relative flex h-10 w-10 flex-none items-center justify-center rounded-md desktop:h-[38px] desktop:w-[38px] desktop:rounded-[9px] ${
+          className={`relative flex h-10 w-10 flex-none items-center justify-center rounded-md desktop:h-9 desktop:w-9 desktop:rounded-[8px] ${
             cloud ? 'bg-(--brand-soft)' : 'border border-(--border-subtle) bg-(--surface-sunken)'
           }`}
         >
@@ -237,7 +240,7 @@ export function ComputerRow({ computer }: { computer: ComputerDto }) {
             color={cloud ? 'var(--brand)' : dimmed ? 'var(--text-tertiary)' : 'var(--text-secondary)'}
           />
           <span
-            className="absolute -right-[3px] -bottom-[3px] h-3 w-3 rounded-full border-2 border-(--surface-card)"
+            className="absolute -right-[2px] -bottom-[2px] h-[9px] w-[9px] rounded-full shadow-[0_0_0_2px_var(--surface-card)]"
             style={{ background: tone.dot }}
           />
         </span>
@@ -259,7 +262,7 @@ export function ComputerRow({ computer }: { computer: ComputerDto }) {
         </span>
       </div>
       <div className="flex min-w-0 items-center justify-between gap-[14px] font-sans text-[12px] font-medium leading-normal desktop:flex-none desktop:justify-end">
-        {/* Passing checks say nothing, since green read as a ready computer; a cloud computer skips "No checks" too. */}
+        {/* Cloud checks are the pool's, so only problems show; an offline computer's old passes read as nothing. */}
         {doctor.fail > 0 ? (
           <span className="min-w-0 truncate text-(--status-error)">
             <Icon name="circle-x" size={13} className="mr-[5px] inline align-[-2px]" />
@@ -270,23 +273,39 @@ export function ComputerRow({ computer }: { computer: ComputerDto }) {
             <Icon name="triangle-alert" size={13} className="mr-[5px] inline align-[-2px]" />
             {t('doctor.warning', { count: doctor.warn })}
           </span>
-        ) : doctor.total === 0 && !cloud ? (
+        ) : cloud ? null : doctor.total === 0 ? (
           <span className="min-w-0 truncate text-(--text-tertiary)">
             <Icon name="circle-minus" size={13} className="mr-[5px] inline align-[-2px]" />
             {t('doctor.none')}
           </span>
-        ) : null}
-        {computer.lease ? (
-          <span data-lease-holder={computer.lease.agentId} className="min-w-0 truncate text-(--status-info)">
-            {t('inUseBy', { agent: agentName(computer.lease.agentId, computer.lease.agentName) })}
-            {waiting > 0 && <> · {t('waitingCount', { count: waiting })}</>}
-          </span>
-        ) : (
-          <span className="flex-none font-mono text-[11px] font-normal text-(--text-tertiary)">
-            {computer.status === 'revoked' ? t('revoked') : seen}
+        ) : dimmed ? null : (
+          <span className="min-w-0 truncate text-(--status-online)" data-doctor-pass>
+            <Icon name="circle-check" size={13} className="mr-[5px] inline align-[-2px]" />
+            {t('doctor.allPass')}
           </span>
         )}
-        <span className="hidden w-24 flex-none items-center gap-[7px] desktop:flex">
+        {/* Who holds it rides in the tooltip, so every row reads the same: checks, last seen, status. */}
+        <span
+          className={
+            computer.lease
+              ? 'flex-none font-mono text-[11px] font-normal text-(--status-info)'
+              : 'flex-none font-mono text-[11px] font-normal text-(--text-tertiary)'
+          }
+          title={
+            computer.lease
+              ? [
+                  t('inUseBy', { agent: agentName(computer.lease.agentId, computer.lease.agentName) }),
+                  waiting > 0 ? t('waitingCount', { count: waiting }) : null
+                ]
+                  .filter(Boolean)
+                  .join(' · ')
+              : undefined
+          }
+          data-lease-holder={computer.lease?.agentId}
+        >
+          {computer.status === 'revoked' ? t('revoked') : seen}
+        </span>
+        <span className="hidden min-w-16 flex-none items-center gap-[7px] desktop:flex">
           <span className="dot" style={{ background: tone.dot }} />
           <span className="truncate font-sans text-[12.5px] font-medium leading-normal" style={{ color: tone.text }}>
             {statusLabel}

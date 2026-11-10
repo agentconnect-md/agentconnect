@@ -7096,7 +7096,8 @@
       },
       "showPassing": "显示 {count, plural, other {# 项通过的检查}}",
       "hidePassing": "隐藏通过的检查",
-      "none": "无检查"
+      "none": "无检查",
+      "allPass": "全部检查通过"
     },
     "detail": {
       "notFound": "找不到电脑",
@@ -7144,7 +7145,9 @@
       "resume": "恢复",
       "more": "电脑操作",
       "revoke": "吊销",
-      "delete": "删除"
+      "delete": "删除",
+      "disable": "停用智能体",
+      "disableHint": "立即停止所有智能体输入，直到这台电脑被恢复。"
     },
     "revoke": {
       "title": "吊销电脑",
@@ -7278,7 +7281,7 @@
       "privacy": "视频在你的浏览器和桌面之间直连，或经 TURN 传输，从不经过 AgentConnect。",
       "offline": "这台电脑上线后才能打开查看器。",
       "offlineSeen": "离线。最后在线 {when}。",
-      "asleep": "已休眠。Agent 下次使用时会唤醒它，也可以在电脑操作菜单中选择“唤醒”。",
+      "asleep": "已休眠。智能体下次使用时会唤醒它，也可以点击上方的“唤醒”。",
       "connecting": "正在连接…",
       "failed": "查看器已停止。",
       "watching": "正在观看，智能体可以继续工作。",
@@ -7307,8 +7310,16 @@
       "desktop": {
         "pick": "桌面",
         "main": "主桌面",
-        "agent": "{agent} 的桌面"
-      }
+        "agent": "{agent} 的桌面",
+        "tabs": "桌面",
+        "idle": "空闲",
+        "working": "正在操作"
+      },
+      "live": "实时",
+      "controlling": "控制中",
+      "inControlBar": "鼠标和键盘由你控制，智能体已暂停，直到你交还控制。",
+      "fullscreen": "全屏",
+      "exitFullscreen": "退出全屏（Esc）"
     },
     "allAgents": "所有 Agent",
     "allocation": {
@@ -7343,7 +7354,9 @@
       "resetTitle": "重置计算机",
       "resetBody": "{name} 的桌面和磁盘将被删除：文件、浏览器配置和登录状态都会丢失，正在使用它的智能体会被停止。之后它会以相同的名称、智能体访问和策略重新启动，内容为空。",
       "resetConfirm": "重置",
-      "resetBusy": "正在重置…"
+      "resetBusy": "正在重置…",
+      "sleepHint": "让这台资源池电脑休眠，保留其文件和登录状态。",
+      "wakeHint": "唤醒这台资源池电脑"
     },
     "lease": {
       "free": "没有智能体在控制",
