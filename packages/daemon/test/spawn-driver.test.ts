@@ -44,11 +44,14 @@ function inMemoryRuntime(): { runtime: SpawnedRuntime; stopCalls: number[] } {
           await send({
             jsonrpc: '2.0',
             id: rpc.id,
-            result: {
-              protocolVersion: 1,
-              agentCapabilities: { loadSession: false },
-              agentInfo: { name: 'in-memory', version: '0.0.0' }
-            }
+            result:
+              rpc.params?.protocolVersion === 2
+                ? { protocolVersion: 2, info: { name: 'in-memory', version: '0.0.0' } }
+                : {
+                    protocolVersion: 1,
+                    agentCapabilities: { loadSession: false },
+                    agentInfo: { name: 'in-memory', version: '0.0.0' }
+                  }
           })
         } else if (rpc.method === 'session/new') {
           await send({ jsonrpc: '2.0', id: rpc.id, result: { sessionId: `mem-${++sessions}` } })
@@ -151,6 +154,7 @@ describe('SpawnDriver seam', () => {
       { driver: claude, onUpdate: () => {} }
     )
     await claudeHost.start()
+    expect(claudeHost.acpProtocolVersion()).toBe(1)
     expect(claude.requests[0]?.hints).toEqual([{ envVar: 'CLAUDE_CODE_EXECUTABLE', command: 'claude' }])
     await claudeHost.stop(10)
 
@@ -162,6 +166,7 @@ describe('SpawnDriver seam', () => {
       const codex = new InMemoryDriver(inMemoryRuntime().runtime)
       const codexHost = new AcpHost(runtime, { driver: codex, onUpdate: () => {} })
       await codexHost.start()
+      expect(codexHost.acpProtocolVersion()).toBe(2)
       expect(codex.requests[0]?.hints).toBeUndefined()
       await codexHost.stop(10)
     }

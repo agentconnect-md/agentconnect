@@ -657,6 +657,24 @@ async function runIsolatedFixture(
 }
 
 describe('AcpHost — account-bound app isolation', () => {
+  it('selects v2 for Codex while preserving the resumed standing-context refresh', async () => {
+    const host = new AcpHost(
+      { command: process.execPath, args: [envEchoAgent], env: [] },
+      {
+        runtimeId: 'codex-acp',
+        onUpdate: () => {}
+      }
+    )
+    try {
+      await host.start()
+      expect(host.acpProtocolVersion()).toBe(2)
+      expect(host.usesMetaSystemPrompt()).toBe(true)
+      expect(host.appliesSystemPromptOnLoad()).toBe(false)
+    } finally {
+      await host.stop()
+    }
+  })
+
   it('forces Codex apps off in the spawned process after all caller env is merged', async () => {
     const raw = JSON.stringify({ model: 'gpt-test', features: { fast_mode: true, apps: true } })
     const out = await runIsolatedFixture('codex-acp', 'CODEX_CONFIG', raw)
