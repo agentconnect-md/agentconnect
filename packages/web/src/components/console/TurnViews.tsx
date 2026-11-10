@@ -104,6 +104,28 @@ type UserTurn = Extract<Turn, { kind: 'user' }>
 type BotTurn = Extract<Turn, { kind: 'bot' }>
 
 /** A person's (or a schedule's) message: a right-aligned bubble, its sender line when it is not you, and its avatar. */
+/** A message's hover menu, a person's or an agent's alike: Reply in its thread where the reader may, and Copy of its text. */
+function MessageMenu({
+  text,
+  onReply,
+  className,
+  ...attrs
+}: {
+  text?: string | undefined
+  onReply?: (() => void) | undefined
+  /** Where the menu floats on its message. */
+  className: string
+} & Record<`data-${string}`, string>) {
+  const tt = useTranslations('Common.taskThread')
+  if (!text && !onReply) return null
+  return (
+    <HoverToolbar group="turn" label={tt('messageActions')} className={className} {...attrs}>
+      {onReply ? <ReplyInThreadButton onReply={onReply} /> : null}
+      {text ? <CopyTurnButton text={text} className={HOVER_TOOL_BUTTON} /> : null}
+    </HoverToolbar>
+  )
+}
+
 export function UserTurnView({
   turn,
   platformMark,
@@ -124,7 +146,6 @@ export function UserTurnView({
   /** Above the bubble: the thread a handed message joined, which it opens. */
   lead?: ReactNode
 }) {
-  const tt = useTranslations('Common.taskThread')
   const { orgPath } = useOrgs()
   return (
     <div className="group/turn flex items-start justify-end gap-[9px]">
@@ -158,20 +179,19 @@ export function UserTurnView({
         {/* A sent message wraps its cards right-aligned so none hides off-screen; the composer keeps one scrolling row. */}
         <AttachmentCards className="mb-[3px] flex-wrap justify-end" cards={messageCards(turn.images, turn.files)} />
         {(turn.text || turn.body) && (
-          <div className={SELF_BUBBLE}>
-            {turn.body?.sessionMessage && <SessionMessageCaption facts={turn.body.sessionMessage} />}
-            {turn.text && <MessageText text={turn.text} platform={turn.platform} />}
-            {turn.body && <UserTurnDetails body={turn.body} platform={turn.platform} />}
+          <div className="relative max-w-full">
+            <div className={SELF_BUBBLE}>
+              {turn.body?.sessionMessage && <SessionMessageCaption facts={turn.body.sessionMessage} />}
+              {turn.text && <MessageText text={turn.text} platform={turn.platform} />}
+              {turn.body && <UserTurnDetails body={turn.body} platform={turn.platform} />}
+            </div>
+            {/* Its hover menu on the bubble's top edge, over its border and padding only. */}
+            <MessageMenu text={turn.text} onReply={onReply} className="right-[8px] bottom-full -mb-[6px]" />
           </div>
         )}
         {footer}
-        {/* A sent bubble's hover action sits in the inter-turn gap, so revealing it never shifts the row; a person's message has no Copy. */}
-        {onReply && (
-          // Its hover menu, beside the bubble's top.
-          <HoverToolbar group="turn" label={tt('messageActions')} className="top-0 right-full mr-[6px]">
-            <ReplyInThreadButton onReply={onReply} />
-          </HoverToolbar>
-        )}
+        {/* A message of attachments alone has no bubble: its menu sits on the column's top edge instead. */}
+        {turn.text || turn.body ? null : <MessageMenu onReply={onReply} className="top-0 right-0" />}
       </ThreadRootPress>
       <ParticipantAvatar
         agent={turn.agent}
@@ -268,7 +288,6 @@ export function BotTurnView({
   appReport?: ((agentId: string | undefined, text: string) => boolean) | undefined
   closeApp?: ((agentId: string | undefined, appId: string) => void) | undefined
 }) {
-  const tt = useTranslations('Common.taskThread')
   const { orgPath } = useOrgs()
   // The answer reads as prose, work folds under the header line, and a daemon notice stands on its own line.
   const noticeSteps = turn.steps.filter((s) => s.lane === NOTICE_LANE)
@@ -312,11 +331,7 @@ export function BotTurnView({
       )}
       <div className="relative min-w-0 flex-1" style={{ '--agent-accent': turnTone } as CSSProperties}>
         {/* A finished answer's hover menu, at the right of its header row. */}
-        {!streaming && answerText ? (
-          <HoverToolbar group="turn" label={tt('messageActions')} className="-top-[3px] right-0" data-turn-toolbar="">
-            <CopyTurnButton text={answerText} className={HOVER_TOOL_BUTTON} />
-          </HoverToolbar>
-        ) : null}
+        {streaming ? null : <MessageMenu text={answerText} className="-top-[3px] right-0" data-turn-toolbar="" />}
         <AgentTurnHeader
           name={turn.agentName}
           {...(workSteps.length > 0

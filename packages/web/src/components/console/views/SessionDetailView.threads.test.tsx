@@ -504,8 +504,12 @@ describe('writing in a thread (webchat-threads.md §6.3)', () => {
     await open()
     // Each root's hover menu offers Reply, one with a thread as well as one with none yet.
     expect(container?.querySelectorAll('[data-reply-in-thread]')).toHaveLength(2)
-    // A person's message offers no Copy; its Reply is in its hover menu, as an agent's Copy is in theirs.
-    expect(q('[data-reply-in-thread]')?.parentElement?.querySelectorAll('button')).toHaveLength(1)
+    // A person's message and an agent's share one hover menu: Reply where the reader may, and Copy.
+    expect(
+      [...(q('[data-reply-in-thread]')?.parentElement?.querySelectorAll('button') ?? [])].map((b) =>
+        b.getAttribute('aria-label')
+      )
+    ).toEqual(['Reply in thread', 'Copy message'])
     expect(q('[data-reply-in-thread]')?.closest('[role="toolbar"]')).not.toBeNull()
     expect(q('[data-turn-toolbar] [title="Copy message"]')).not.toBeNull()
     act(() => container!.querySelectorAll<HTMLButtonElement>('[data-reply-in-thread]')[1]!.click())
