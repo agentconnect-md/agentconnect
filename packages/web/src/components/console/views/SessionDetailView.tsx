@@ -104,9 +104,7 @@ import { useSessionTranscript } from '@/lib/use-session-transcript'
 import { socialLoginProviders } from '@/lib/social-login-providers'
 import { isAuthConfigured } from '@/lib/auth'
 import { clipboardFiles, prepareWebchatImage } from '@/lib/webchat-image'
-import { copyLink } from '@/lib/copy-link'
 import { messageLink, useLocateMessage } from '@/lib/message-link'
-import { SessionShareDialogFor } from '@/components/console/SessionShare'
 import {
   AttachmentCards,
   FileDropOverlay,
@@ -1025,7 +1023,6 @@ export default function SessionDetailView() {
     getPgTurnThread
   } = usePlayground()
   const { user: viewer, me } = useProfile()
-  const [copied, setCopied] = useState(false)
   // The header's Share dialog: who can see the session, and its link.
   const [shareOpen, setShareOpen] = useState(false)
   // A message's Share: the page's Share dialog, its Copy link pointing at that message.
@@ -2218,7 +2215,6 @@ export default function SessionDetailView() {
   // component instance.
   useEffect(() => {
     imagePrepareGenerationRef.current += 1
-    setCopied(false)
     setShareOpen(false)
     resetDetailPopover()
     requestsPopover.reset()
@@ -2838,15 +2834,6 @@ export default function SessionDetailView() {
       `/sessions/${encodeURIComponent(session.realSessionId ?? session.id)}${flatView ? '?view=flat' : ''}`
     )
     return () => setMessageShare(messageLink(page, seq))
-  }
-  const onCopyLink = async () => {
-    const canonicalId = session.realSessionId ?? session.id
-    const link =
-      window.location.origin + orgPath(`/sessions/${encodeURIComponent(canonicalId)}${flatView ? '?view=flat' : ''}`)
-    setCopied(false)
-    if (!(await copyLink(link, tShare('copyLink')))) return
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1600)
   }
 
   // Resolve a `cron:<scheduleId>` author string to its schedule (name once the crons
@@ -3507,25 +3494,22 @@ export default function SessionDetailView() {
     // grows with the transcript, so the page itself never scrolls. The transcript column and the
     // dock are each their own overflow region and scroll independently.
     <div className="relative flex h-full min-h-0 items-stretch">
-      {messageShare ? (
-        <SessionShareDialogFor
-          sessionId={session.realSessionId ?? session.id}
-          fallbackTitle={session.title}
-          link={messageShare}
-          onClose={() => setMessageShare(null)}
-        />
-      ) : null}
-      {shareOpen ? (
-        <SessionShareDialog
-          title={session.title}
-          place={channelDisplay.label || null}
-          platform={channelDisplay.platform}
-          copied={copied}
-          onCopyLink={onCopyLink}
-          visibility={shareVisibility}
-          onClose={() => setShareOpen(false)}
-        />
-      ) : null}
+      <SessionShareDialog
+        key={session.realSessionId ?? session.id}
+        open={shareOpen || messageShare !== null}
+        title={session.title}
+        place={channelDisplay.label || null}
+        platform={channelDisplay.platform}
+        link={
+          messageShare ??
+          orgPath(`/sessions/${encodeURIComponent(session.realSessionId ?? session.id)}${flatView ? '?view=flat' : ''}`)
+        }
+        visibility={shareVisibility}
+        onClose={() => {
+          setShareOpen(false)
+          setMessageShare(null)
+        }}
+      />
       {/* The viewer is full-width in every band (§7) — a file wants the columns a transcript does not. The 880px cap is the only geometry that changes: the dock's reserved TRACK keeps its column either way, which is the one thing §7 forbids trading. */}
       {/* The SCROLLER is full-width so its vertical scrollbar rides the far-right edge of the
           transcript area, not the centre of a capped box. `overflow-x-hidden` is load-bearing: a

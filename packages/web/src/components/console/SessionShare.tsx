@@ -3,7 +3,6 @@
 // The session header's Share for a session other than the page's own, such as a thread's task: the same dialog, read from that session's row.
 
 import { useState } from 'react'
-import { createPortal } from 'react-dom'
 import useSWR from 'swr'
 import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
@@ -11,17 +10,18 @@ import { SessionShareDialog, type ShareVisibility } from '@/components/console/S
 import { useConsoleData } from '@/lib/data-context'
 import { fetchSessionDetail } from '@/lib/api'
 import { CONSOLE_SWR_CONFIG, readOnceRegistered } from '@/lib/console-swr'
-import { copyLink } from '@/lib/copy-link'
 import { useOrgs } from '@/lib/org-context'
 
 /** Share for one session, as its own page's header offers it: who can see it, changed here when the reader may, and its link. */
 export function SessionShareDialogFor({
+  open,
   sessionId,
   fallbackTitle,
   nativeMemory = false,
   link,
   onClose
 }: {
+  open: boolean
   sessionId: string
   /** The link Copy link copies, such as one message's; absent, the session's page. */
   link?: string
@@ -31,12 +31,10 @@ export function SessionShareDialogFor({
   nativeMemory?: boolean
   onClose: () => void
 }) {
-  const tShare = useTranslations('Sessions.share')
   const { orgPath } = useOrgs()
   const { revalidateSessionLists } = useConsoleData()
-  const [copied, setCopied] = useState(false)
   const { data: detail, mutate } = useSWR(
-    ['session-detail', sessionId],
+    open ? ['session-detail', sessionId] : null,
     ([, sid]) => readOnceRegistered(() => fetchSessionDetail(sid)),
     CONSOLE_SWR_CONFIG
   )
@@ -58,30 +56,16 @@ export function SessionShareDialogFor({
         }
       }
     : null
-  const onCopyLink = async () => {
-    setCopied(false)
-    if (
-      !(await copyLink(
-        link ?? window.location.origin + orgPath(`/sessions/${encodeURIComponent(sessionId)}`),
-        tShare('copyLink')
-      ))
-    )
-      return
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1600)
-  }
-  // On the page's body, so its scrim covers the whole console rather than the side panel it was opened from.
-  return createPortal(
+  return (
     <SessionShareDialog
+      open={open}
       title={detail?.title ?? fallbackTitle}
       place={detail?.channelName ?? null}
       platform={detail?.platform ?? ''}
-      copied={copied}
-      onCopyLink={() => void onCopyLink()}
+      link={link ?? orgPath(`/sessions/${encodeURIComponent(sessionId)}`)}
       visibility={visibility}
       onClose={onClose}
-    />,
-    document.body
+    />
   )
 }
 
@@ -114,14 +98,13 @@ export function SessionShareButton({
       >
         <Icon name="share" size={iconSize} />
       </button>
-      {open ? (
-        <SessionShareDialogFor
-          sessionId={sessionId}
-          fallbackTitle={title}
-          {...(nativeMemory !== undefined ? { nativeMemory } : {})}
-          onClose={() => setOpen(false)}
-        />
-      ) : null}
+      <SessionShareDialogFor
+        open={open}
+        sessionId={sessionId}
+        fallbackTitle={title}
+        {...(nativeMemory !== undefined ? { nativeMemory } : {})}
+        onClose={() => setOpen(false)}
+      />
     </>
   )
 }

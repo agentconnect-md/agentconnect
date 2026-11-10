@@ -249,7 +249,8 @@ export function ThreadPanel({
   const threadRoot = turns[0]?.kind === 'user' && !earlierUnread ? turns.slice(0, 1) : []
   const threadReplies = turns.slice(threadRoot.length)
   // A message's link: the holding task's own page, else this thread's address on the conversation, each with the message's anchor.
-  const [messageShare, setMessageShare] = useState<{ sessionId: string; link: string } | null>(null)
+  const [messageShare, setMessageShare] = useState<string | null>(null)
+  const shareSessionId = holderId ?? record?.sessionId
   // A link to a message of this thread lands on it, reading the thread's earlier messages back to it.
   useLocateMessage(
     'thread',
@@ -258,12 +259,11 @@ export function ThreadPanel({
   )
   const shareMessage = (turn: Turn): (() => void) | undefined => {
     const seq = turn.rowSeq
-    const sessionId = holderId ?? record?.sessionId
-    if (seq === undefined || !sessionId) return undefined
+    if (seq === undefined || !shareSessionId) return undefined
     const base = holderId
       ? orgPath(`/sessions/${encodeURIComponent(holderId)}`)
       : `${window.location.pathname}?${new URLSearchParams({ thread: record!.rootId })}`
-    return () => setMessageShare({ sessionId, link: messageLink(base, seq) })
+    return () => setMessageShare(messageLink(base, seq))
   }
   const renderTurn = (turn: Turn, i: number, list: readonly Turn[], sid: string | undefined) => (
     // The session page's turn: its time line, then the person's bubble or the agent's block.
@@ -408,11 +408,13 @@ export function ThreadPanel({
       {...(record ? { 'data-thread-panel': record.rootId } : {})}
       className="flex min-h-0 flex-1 flex-col"
     >
-      {messageShare ? (
+      {shareSessionId ? (
         <SessionShareDialogFor
-          sessionId={messageShare.sessionId}
+          key={shareSessionId}
+          open={messageShare !== null}
+          sessionId={shareSessionId}
           fallbackTitle={title}
-          link={messageShare.link}
+          link={messageShare ?? undefined}
           onClose={() => setMessageShare(null)}
         />
       ) : null}
