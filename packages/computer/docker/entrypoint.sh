@@ -104,7 +104,7 @@ args=(run --host "${LISTEN_HOST:-0.0.0.0}" --port "${PORT:-7681}")
 [ -n "${PUBLIC_URL:-}" ] && args+=(--public-url "$PUBLIC_URL")
 [ -n "${RTC_ADDRESS:-}" ] && args+=(--rtc-address "$RTC_ADDRESS")
 [ -n "${RTC_PORTS:-}" ] && args+=(--rtc-ports "$RTC_PORTS")
-# The form-fill extension the image force-installs dials this loopback port; FORM_FILL_PORT= turns it off.
+# The image's extension policy names port 7682, so FORM_FILL_PORT only turns form filling off (empty), never moves it.
 [ -n "${FORM_FILL_PORT:-}" ] && args+=(--form-fill-port "$FORM_FILL_PORT")
 if [ -n "$register_token" ]; then
   AGENTCONNECT_REGISTER_TOKEN="$register_token" node /opt/agentconnect/agentconnect-computer.mjs "${args[@]}" < /dev/null &

@@ -31,7 +31,7 @@ published with each release too (see [Run in Docker](#run-in-docker)).
 - A Docker image (Xvfb + Xfce + Chromium + LibreOffice) that registers from its environment, amd64 and arm64.
 - Form filling in the Docker image's Chromium (design: `docs/designs/computer-form-fill-and-vault.md`): a
   force-installed extension that discovers forms without reading values and fills them for agent sessions under
-  the control lease. The extension dials `127.0.0.1:7682` (`FORM_FILL_PORT`; empty turns it off), and the daemon
+  the control lease. The extension dials `127.0.0.1:7682`, a port fixed in the image's policy; `FORM_FILL_PORT=` (empty) turns it off, and any other value disconnects the extension, and the daemon
   accepts a socket only when `/proc` attributes it to a desktop's browser. `pnpm test:image` with
   `COMPUTER_IMAGE=<tag>` runs it end to end against fixture sites.
 
