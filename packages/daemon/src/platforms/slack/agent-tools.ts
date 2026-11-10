@@ -99,26 +99,30 @@ const createArgs = z.object({ name: text.max(255) }).strict()
 const viewArgs = z
   .object({
     channelId: text.optional(),
-    type: z.enum(['html', 'diff', 'pull_request']),
+    type: z.enum(['html', 'diff', 'pull_request', 'canvas']),
     viewKey: text.max(255).optional(),
     name: text.max(150).optional(),
     content: z.string().min(1).max(1000000).optional(),
     prUrl: z.url({ protocol: /^https$/ }).optional(),
+    canvasId: text.optional(),
     baseBranch: text.max(255).optional(),
     headBranch: text.max(255).optional()
   })
   .strict()
   .superRefine((a, ctx) => {
-    if (a.type === 'pull_request' ? !a.prUrl : !a.content)
-      ctx.addIssue({ code: 'custom', message: a.type === 'pull_request' ? 'prUrl is required' : 'content is required' })
-    if (a.type === 'html' && !a.viewKey) ctx.addIssue({ code: 'custom', message: 'HTML needs a stable viewKey' })
+    const required = a.type === 'canvas' ? 'canvasId' : a.type === 'pull_request' ? 'prUrl' : 'content'
+    if (!a[required]) ctx.addIssue({ code: 'custom', message: `${required} is required` })
+    if ((a.type === 'html' || a.type === 'canvas') && !a.viewKey)
+      ctx.addIssue({ code: 'custom', message: `${a.type} needs a stable viewKey` })
     if (a.content && Buffer.byteLength(a.content) > 1000000)
       ctx.addIssue({ code: 'custom', message: 'content exceeds 1000000 UTF-8 bytes' })
   })
 const manageArgs = z
   .object({
     channelId: text.optional(),
-    action: z.enum(['context', 'listViews', 'removeView', 'archive']),
+    action: z.enum(['context', 'listViews', 'getCanvas', 'removeView', 'archive']),
+    canvasId: text.optional(),
+    includeResolved: z.boolean().optional(),
     items: z
       .array(
         z
@@ -170,6 +174,7 @@ const manageArgs = z
     if (a.action === 'context' && !a.items)
       ctx.addIssue({ code: 'custom', message: 'context needs items (an empty array clears informational items)' })
     if (a.action === 'removeView' && !a.viewId) ctx.addIssue({ code: 'custom', message: 'removeView needs viewId' })
+    if (a.action === 'getCanvas' && !a.canvasId) ctx.addIssue({ code: 'custom', message: 'getCanvas needs canvasId' })
   })
 
 const codeTools: ToolDescriptor[] = [
@@ -226,7 +231,14 @@ async function execute(
     const info = await conn.codeChannel(channel)
     if (!info.code || !info.owners.includes(conn.botUserId))
       throw new Error('This bot does not own that Slack code channel')
-    if ('type' in a)
+    if ('type' in a) {
+      if (a.type === 'canvas')
+        await env.judgeWrite({
+          kind: 'document',
+          platform: ctx.platform,
+          integrationId: ctx.integrationId,
+          documentId: a.canvasId!
+        })
       return conn.codeChannelApi('setView', {
         channel_id: channel,
         type: a.type,
@@ -234,8 +246,17 @@ async function execute(
         name: a.name,
         content: a.content,
         pr_url: a.prUrl,
+        ...(a.type === 'canvas' ? { canvas_id: a.canvasId, access_level: 'comment' as const } : {}),
         base_branch: a.baseBranch,
         head_branch: a.headBranch
+      })
+    }
+    if (a.action === 'getCanvas')
+      return conn.codeChannelApi('getCanvas', {
+        channel,
+        canvas_id: a.canvasId!,
+        content_format: 'markdown',
+        include_resolved: a.includeResolved ?? false
       })
     if (a.action === 'context') {
       const symbols = { pending: '◷', passed: '✓', failed: '✕' }

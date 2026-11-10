@@ -102,10 +102,19 @@ The platform-owned session tool registry exposes four tools only to Slack sessio
   idempotency key prevents duplicate channels when a call is retried. Creation inside
   an existing code channel returns that channel without creating another one, including
   when the copied origin request arrives under a new message timestamp.
-- `setSlackCodeView`: publish a unified diff, self-contained HTML preview, or PR tab.
-  HTML keys are stable upsert identities; content is bounded by UTF-8 bytes.
-- `manageSlackCodeChannel`: replace up to three informational context links, list/remove tabs, or
-  archive a completed task with an optional existing summary message.
+- `setSlackCodeView`: publish a unified diff, self-contained HTML preview, PR tab, or
+  existing Canvas with comment access using `type: canvas`, `canvasId` and `viewKey`.
+  Attaching checks both conversation and document write authority. HTML and Canvas keys
+  are stable upsert identities; content is bounded by UTF-8 bytes.
+- `manageSlackCodeChannel`: replace up to three informational context links, list/remove tabs,
+  read an attached Canvas with `action: getCanvas` and `canvasId`, or archive a completed task
+  with an optional existing summary message. Canvas reads return Markdown, comment threads,
+  quoted text, replies and truncation flags from Slack; `includeResolved` defaults to false.
+  Reads use the tool's existing conversation authorization and channel ownership checks.
+
+View discovery combines Slack's `views` and `session_views` response fields. Canvas content
+and comments are read only on an explicit tool call, without adding turn-start context or
+changing the agent's standing guidance.
 
 The native context bar reserves two items for session controls: model and effort
 together, then current context usage such as `42k/200k`. These use monochrome code
@@ -186,23 +195,6 @@ during a write collapse into the newest one. After a restart the canvas is found
 through `agents.conversations.listViews`. The in-conversation plan message is
 unchanged.
 
-At each admitted turn in an owned code channel, the daemon finds the current Plan
-view and reads its unresolved comments through `agents.conversations.getCanvas`.
-The turn prompt receives a bounded snapshot with the quoted plan text, author IDs,
-timestamps and replies, fenced as external feedback rather than a new instruction
-or permission approval. The snapshot prefers recent threads, marks omitted content,
-and does not include the entire canvas. This also works for replies inside a code
-channel and for tasks whose session lives elsewhere. It does not require an
-eligible Git checkout or a working Code diff.
-
-A comment alone does not wake the agent: continue the conversation to have it
-consider the feedback. Unresolved comments are read again on later turns; the agent
-is told not to repeat already addressed work. The daemon neither resolves comments
-nor stores a separate copy. If Slack cannot provide the snapshot, the prompt says
-feedback is unavailable instead of treating the failure as an empty list. Missing
-Plan views and resolved-only comments add no prompt context. This uses the existing
-`code_channels:manage` scope.
-
 ### Automatic task diffs
 
 The daemon maintains the Code view for a task with isolated, assigned Git repositories.
@@ -248,5 +240,5 @@ The Control Plane continues to hold control metadata only.
 - [Layout block](https://docs.slack.dev/reference/block-kit/blocks/layout-block/)
 - [Data Table block](https://docs.slack.dev/reference/block-kit/blocks/data-table-block/)
 - [Canvas content](https://docs.slack.dev/reference/methods/canvases.getContent/)
-- [Plan Canvas comments](https://docs.slack.dev/reference/methods/agents.conversations.getCanvas/)
+- [Code channel Canvas content and comments](https://docs.slack.dev/reference/methods/agents.conversations.getCanvas/)
 - [Code channel views](https://docs.slack.dev/reference/methods/agents.conversations.setView/)
