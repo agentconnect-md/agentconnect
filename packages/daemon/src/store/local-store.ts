@@ -3610,6 +3610,14 @@ export class LocalStore {
         contextToken TEXT,
         updatedAt INTEGER NOT NULL
       );
+      -- Recent WeChat message texts by iLink message id, so a quote that names only an id resolves (wechat-integration.md §4.3).
+      CREATE TABLE IF NOT EXISTS wechat_message (
+        botId TEXT NOT NULL,
+        messageId TEXT NOT NULL,
+        text TEXT NOT NULL,
+        createdAt INTEGER NOT NULL,
+        PRIMARY KEY (botId, messageId)
+      );
       -- gitlab-com-integration.md §15.1: control-plane frames a finished review still OWES. Both
       -- the operation settle and the terminal result are idempotent REQs, so an unacknowledged one
       -- is replayed verbatim until the control plane takes it; a lost ack must never leave an
@@ -5257,6 +5265,30 @@ export class LocalStore {
          ON CONFLICT (botId) DO UPDATE SET contextToken = excluded.contextToken, updatedAt = excluded.updatedAt`
       )
       .run(botId, token, Date.now())
+  }
+
+  /** Keep one WeChat message's text under its iLink id, holding only the bot's newest `keep` rows. */
+  async rememberWeChatMessage(botId: string, messageId: string, text: string, keep: number): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO wechat_message (botId, messageId, text, createdAt) VALUES (?, ?, ?, ?)
+         ON CONFLICT (botId, messageId) DO NOTHING`
+      )
+      .run(botId, messageId, text, Date.now())
+    await this.db
+      .prepare(
+        `DELETE FROM wechat_message WHERE botId = ? AND messageId NOT IN
+           (SELECT messageId FROM wechat_message WHERE botId = ? ORDER BY createdAt DESC, messageId DESC LIMIT ?)`
+      )
+      .run(botId, botId, keep)
+  }
+
+  /** The text a WeChat message id was kept with; undefined once it aged out. */
+  async getWeChatMessageText(botId: string, messageId: string): Promise<string | undefined> {
+    const row = (await this.db
+      .prepare('SELECT text FROM wechat_message WHERE botId = ? AND messageId = ?')
+      .get(botId, messageId)) as { text: string } | undefined
+    return row?.text
   }
 
   /** Mint-once: concurrent callers converge on the first stored value. */

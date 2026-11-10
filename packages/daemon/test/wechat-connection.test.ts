@@ -1,8 +1,10 @@
+import { createHash } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import type { WeChatInboundMessage } from '@agentconnect.md/message'
 import { parseWeChatJson, weChatClientVersion, WeChatApi, WeChatApiError } from '../src/platforms/wechat/api.js'
 import { consolidateWeChat, WeChatConnection, type WeChatConnectionGroup } from '../src/platforms/wechat/connection.js'
 import { WECHAT_STALE_RETRY_MS } from '../src/platforms/wechat/poller.js'
+import { resolveWeChatPartial, WECHAT_QUOTE_UNAVAILABLE } from '../src/platforms/wechat/quote.js'
 import { memoryWeChatState } from '../src/platforms/wechat/state.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import type { LoadedAgent } from '../src/agents/load-agents.js'
@@ -67,6 +69,7 @@ async function pollThrough(steps: PollStep[]) {
   const drained = ctx.ilink.drained()
   await ctx.conn.start()
   await drained
+  await ctx.conn.settled()
   return ctx
 }
 
@@ -268,6 +271,90 @@ describe('the connection', () => {
     expect(await ctx.conn.downloadFile(`${CDN}/download?encrypted_query_param=file-ref`)).toBeNull()
     expect(await ctx.conn.downloadFile('wechat-media:999:0')).toBeNull()
     expect(ctx.warnings.join('\n')).not.toMatch(new RegExp(`${aesKey}|file-ref`))
+  })
+})
+
+describe('quotes that name a message by id', () => {
+  const quoting = (id: string, ref: Record<string, unknown>, text = 'explain this') =>
+    inbound(id, text, { item_list: [{ type: 1, text_item: { text }, ref_msg: ref }] })
+
+  it('resolves a quote of an earlier message in the same batch, in order', async () => {
+    const { messages, conn } = await pollThrough([
+      { msgs: [inbound('501', 'the original question'), quoting('502', { svr_id: '501' })] }
+    ])
+    expect(messages.map((msg) => msg.text)).toEqual(['the original question', 'explain this'])
+    expect(messages[1]!.quoted).toEqual({ text: 'the original question', messageId: '501' })
+    await conn.stop()
+  })
+
+  it('resolves a quote of the bot’s own reply by the id its send returned, and a selection within it', async () => {
+    const selection = 'second sentence'
+    const ctx = setup({
+      polls: [
+        {
+          msgs: [
+            quoting('601', { svr_id: '7254917391048562001' }),
+            quoting('602', {
+              svr_id: '7254917391048562001',
+              partial_text: {
+                start: 'second',
+                end: 'sentence',
+                startindex: 0,
+                endindex: 1,
+                quotemd5: createHash('md5').update(selection).digest('hex')
+              }
+            })
+          ]
+        }
+      ]
+    })
+    const reply = 'First sentence. And the second sentence.'
+    expect(await ctx.conn.sendText(`dm:${USER}`, reply)).toEqual([{ text: reply, messageId: '7254917391048562001' }])
+    const drained = ctx.ilink.drained()
+    await ctx.conn.start()
+    await drained
+    await ctx.conn.settled()
+    expect(ctx.messages[0]!.quoted).toEqual({ text: reply, messageId: '7254917391048562001' })
+    expect(ctx.messages[1]!.quoted).toEqual({ text: selection, messageId: '7254917391048562001', selection: true })
+    await ctx.conn.stop()
+  })
+
+  it('says a quoted message aged out instead of guessing at it', async () => {
+    const { messages, conn } = await pollThrough([{ msgs: [quoting('701', { svr_id: '9007199254740993123' })] }])
+    expect(messages[0]!.quoted).toEqual({ text: WECHAT_QUOTE_UNAVAILABLE, messageId: '9007199254740993123' })
+    await conn.stop()
+  })
+})
+
+describe('partial quote selection', () => {
+  const md5 = (s: string) => createHash('md5').update(s).digest('hex')
+
+  it('counts the end edge from the top of the text or from the start match, whichever the MD5 confirms', () => {
+    expect(
+      resolveWeChatPartial('abcedfabcgh', { start: 'a', end: 'c', startindex: 1, endindex: 1, quotemd5: md5('abc') })
+    ).toBe('abc')
+    // Here only the count from the start match reaches an end after the start.
+    expect(
+      resolveWeChatPartial('cd ab cd', { start: 'ab', end: 'cd', startindex: 0, endindex: 0, quotemd5: md5('ab cd') })
+    ).toBe('ab cd')
+  })
+
+  it('takes the first reading without an MD5 and nothing when the MD5 or the edges do not match', () => {
+    expect(resolveWeChatPartial('one two three', { start: 'one', end: 'two', startindex: 0, endindex: 0 })).toBe(
+      'one two'
+    )
+    expect(
+      resolveWeChatPartial('one two three', {
+        start: 'one',
+        end: 'two',
+        startindex: 0,
+        endindex: 0,
+        quotemd5: md5('nope')
+      })
+    ).toBeUndefined()
+    expect(
+      resolveWeChatPartial('one two three', { start: 'four', end: 'two', startindex: 0, endindex: 0 })
+    ).toBeUndefined()
   })
 })
 

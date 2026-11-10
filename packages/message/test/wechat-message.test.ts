@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { NormalizedPlatformMessageSchema, manifestFor, type NormalizedPlatformMessage } from '@agentconnect.md/protocol'
-import { normalizeWeChatMessage, type WeChatInboundMessage } from '../src/wechat-message.js'
+import { normalizeWeChatMessage, type WeChatInboundMessage, type WeChatMessageItem } from '../src/wechat-message.js'
 import {
   BIG_ID,
   BOT,
@@ -101,5 +101,34 @@ describe('WeChat normalization', () => {
     expect(normalize(foreignSender)).toBeNull()
     expect(normalize({ ...text, message_id: undefined })).toBeNull()
     expect(normalize({ ...text, from_user_id: '' })).toBeNull()
+  })
+})
+
+describe('WeChat quotes by id', () => {
+  const quoting = (ref: NonNullable<WeChatMessageItem['ref_msg']>): WeChatInboundMessage => ({
+    ...text,
+    item_list: [{ type: 1, text_item: { text: 'explain this' }, ref_msg: ref }]
+  })
+
+  it('hands an id-only quote, with any selection, to the caller and quotes nothing itself', () => {
+    const partial = { start: 'a', end: 'c', startindex: 0, endindex: 0, quotemd5: '900150983cd24fb0d6963f7d28e17f72' }
+    const result = normalize(quoting({ svr_id: '9007199254740993123', partial_text: partial }))!
+    expect(result.message.quoted).toBeUndefined()
+    expect(result.quoteRef).toEqual({ messageId: '9007199254740993123', partial })
+  })
+
+  it('falls back to the quoted item’s own msg_id, and counts an item without text as id-only', () => {
+    expect(normalize(quoting({ message_item: { type: 1, msg_id: '42' } }))!.quoteRef).toEqual({ messageId: '42' })
+  })
+
+  it('quotes inline content directly, keeping its id, with nothing to look up', () => {
+    const result = normalize(quoting({ svr_id: '77', message_item: { type: 1, text_item: { text: 'original' } } }))!
+    expect(result.message.quoted).toEqual({ text: 'original', messageId: '77' })
+    expect(result.quoteRef).toBeUndefined()
+  })
+
+  it('records each message under its own id, an attachment-only one by its names', () => {
+    expect(normalize(text)!.record).toEqual({ messageId: BIG_ID, text: 'hello there' })
+    expect(normalize(image)!.record).toEqual({ messageId: BIG_ID, text: '[attached: image-1.jpg]' })
   })
 })

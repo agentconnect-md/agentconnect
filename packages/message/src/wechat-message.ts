@@ -19,7 +19,27 @@ export interface WeChatMessageItem {
   voice_item?: { media?: WeChatCdnMedia; text?: string; playtime?: number }
   file_item?: { media?: WeChatCdnMedia; file_name?: string; len?: string }
   video_item?: { media?: WeChatCdnMedia; thumb_media?: WeChatCdnMedia }
-  ref_msg?: { title?: string; message_item?: WeChatMessageItem }
+  ref_msg?: {
+    title?: string
+    message_item?: WeChatMessageItem
+    svr_id?: string | number
+    partial_text?: WeChatPartialQuote
+  }
+}
+
+/** A quote of part of a message: the selection's edges, which occurrence of each, and the selection's MD5. */
+export interface WeChatPartialQuote {
+  start?: string
+  end?: string
+  startindex?: number
+  endindex?: number
+  quotemd5?: string
+}
+
+/** A quote that names its message by id only, which the connection resolves from its own record (§4.3). */
+export interface WeChatQuoteRef {
+  messageId: string
+  partial?: WeChatPartialQuote
 }
 
 /** One message from `getupdates` (wechat-integration.md §4.1); `message_id` must arrive as a string, it exceeds 2^53. */
@@ -63,6 +83,10 @@ export interface WeChatMediaRef {
 export interface WeChatNormalized {
   message: NormalizedPlatformMessage
   media: WeChatMediaRef[]
+  /** Set when the quote carries no content of its own, so the caller must look its text up. */
+  quoteRef?: WeChatQuoteRef
+  /** This message's iLink id and the text a later quote of it should show. */
+  record: { messageId: string; text: string }
 }
 
 const MAX_QUOTED_TEXT_CHARS = 1000
@@ -123,12 +147,20 @@ export function normalizeWeChatMessage(
   const attachments: PlatformAttachment[] = []
   const media: WeChatMediaRef[] = []
   let quoteText = ''
+  let quoteId: string | undefined
+  let quotePartial: WeChatPartialQuote | undefined
+  let quoteSeen = false
   for (const item of items) {
     if (!item || typeof item !== 'object') continue
     const text = itemText(item)
     if (text) texts.push(text)
     const ref = item.ref_msg
-    if (ref && !quoteText) quoteText = [str(ref.title) ?? '', itemText(ref.message_item)].filter(Boolean).join('\n')
+    if (ref && typeof ref === 'object' && !quoteSeen) {
+      quoteSeen = true
+      quoteText = [str(ref.title) ?? '', itemText(ref.message_item)].filter(Boolean).join('\n')
+      quoteId = messageIdOf(ref.svr_id) ?? messageIdOf(ref.message_item?.msg_id)
+      if (ref.partial_text && typeof ref.partial_text === 'object') quotePartial = ref.partial_text
+    }
     const file = mediaOf(item)
     const cdn = file?.media
     const encryptQueryParam = str(cdn?.encrypt_query_param)
@@ -162,15 +194,12 @@ export function normalizeWeChatMessage(
   }
 
   const text = texts.join('\n')
-  // A newer client may quote by server id alone; then nothing is quoted (§4.3).
-  const truncated = quoteText.length > MAX_QUOTED_TEXT_CHARS
-  const quoted: QuotedMessage | undefined = quoteText
-    ? {
-        text: truncated ? `${quoteText.slice(0, MAX_QUOTED_TEXT_CHARS)}…` : quoteText,
-        ...(truncated ? { excerpt: true } : {})
-      }
-    : undefined
+  // A newer client may quote by server id alone; the caller then resolves it from its record (§4.3).
+  const quoted = quoteText ? weChatQuote(quoteText, quoteId) : undefined
+  const quoteRef: WeChatQuoteRef | undefined =
+    !quoteText && quoteId ? { messageId: quoteId, ...(quotePartial ? { partial: quotePartial } : {}) } : undefined
   if (!text.trim() && !attachments.length) return null
+  const recordText = text.trim() ? text : attachments.map((a) => `[attached: ${a.name}]`).join(' ')
   const createdAt = payload.create_time_ms
   return {
     message: {
@@ -190,6 +219,19 @@ export function normalizeWeChatMessage(
         ? { platformTimeMs: createdAt }
         : {})
     },
-    media
+    media,
+    ...(quoteRef ? { quoteRef } : {}),
+    record: { messageId, text: recordText }
+  }
+}
+
+/** A quote as the agent reads it, bounded to 1,000 characters; `selection` marks part of a message. */
+export function weChatQuote(text: string, messageId?: string, selection = false): QuotedMessage {
+  const truncated = text.length > MAX_QUOTED_TEXT_CHARS
+  return {
+    text: truncated ? `${text.slice(0, MAX_QUOTED_TEXT_CHARS)}…` : text,
+    ...(messageId ? { messageId } : {}),
+    ...(selection ? { selection: true } : {}),
+    ...(truncated ? { excerpt: true } : {})
   }
 }

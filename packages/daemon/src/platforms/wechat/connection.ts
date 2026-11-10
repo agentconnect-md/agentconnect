@@ -3,9 +3,12 @@ import { createHash, randomUUID } from 'node:crypto'
 import {
   normalizeWeChatMessage,
   weChatDmChannel,
+  weChatQuote,
   type WeChatInboundMessage,
-  type WeChatMediaRef
+  type WeChatMediaRef,
+  type WeChatQuoteRef
 } from '@agentconnect.md/message'
+import type { QuotedMessage } from '@agentconnect.md/protocol'
 import type { LoadedAgent } from '../../agents/load-agents.js'
 import type { Logger } from '../../log.js'
 import type { NormalizedMessage } from '../../messages/normalized.js'
@@ -15,6 +18,7 @@ import { WeChatApi, WeChatApiError, WeChatTransportError, type WeChatApiOptions 
 import { WECHAT_ATTACHMENT_TOOL } from './attachments.js'
 import { downloadWeChatMedia } from './media.js'
 import { WeChatPoller, type WeChatPollerDeps } from './poller.js'
+import { resolveWeChatPartial, WECHAT_QUOTE_UNAVAILABLE } from './quote.js'
 import type { WeChatStatePort } from './state.js'
 import { splitWeChatText } from './text.js'
 
@@ -84,6 +88,7 @@ export class WeChatConnection implements PlatformConnection, WeChatReplyPort {
   private readonly media = new Map<string, WeChatMediaRef>()
   private contextToken?: string
   private sends: Promise<unknown> = Promise.resolve()
+  private inbound: Promise<void> = Promise.resolve()
   private foreignSenderLogged = false
 
   constructor(
@@ -129,21 +134,60 @@ export class WeChatConnection implements PlatformConnection, WeChatReplyPort {
 
   async stop(): Promise<void> {
     await this.poller.stop()
+    await this.settled()
     this.abort.abort()
+  }
+
+  /** Resolves once every polled message so far has been handed on or dropped. */
+  settled(): Promise<void> {
+    return this.inbound
   }
 
   workspaceId(): string {
     return this.group.botId
   }
 
+  // Serialized, so a quote lookup never lets a later message of the same batch overtake this one.
   private onPayload(payload: WeChatInboundMessage): void {
-    if (this.abort.signal.aborted) return
-    const msg = this.normalize(payload)
-    if (msg) this.deps.onMessage(msg)
+    this.inbound = this.inbound
+      .then(async () => {
+        if (this.abort.signal.aborted) return
+        const prepared = this.prepare(payload)
+        if (!prepared) return
+        const { message: msg, quoteRef, record } = prepared
+        if (quoteRef) msg.quoted = await this.resolveQuote(quoteRef)
+        if (this.abort.signal.aborted) return
+        await this.remember(record.messageId, record.text)
+        this.deps.onMessage(msg)
+      })
+      .catch((error: unknown) => {
+        this.deps.log.warn(`wechat: dropped a message (${error instanceof Error ? error.message : 'unknown error'})`)
+      })
+  }
+
+  // A quote naming only an id reads its text from this bot's record; an aged-out one says so, never guesses (§4.3).
+  private async resolveQuote(ref: WeChatQuoteRef): Promise<QuotedMessage> {
+    const text = await this.deps.state.messageText(this.group.botId, ref.messageId).catch(() => undefined)
+    if (!text) return weChatQuote(WECHAT_QUOTE_UNAVAILABLE, ref.messageId)
+    const selection = ref.partial ? resolveWeChatPartial(text, ref.partial) : undefined
+    return weChatQuote(selection ?? text, ref.messageId, selection !== undefined)
+  }
+
+  private async remember(messageId: string, text: string): Promise<void> {
+    if (!text.trim()) return
+    await this.deps.state.rememberMessage(this.group.botId, messageId, text).catch(() => {
+      this.deps.log.warn('wechat: could not record a message for quotes')
+    })
   }
 
   /** Normalize one polled message from the bound user, keeping its reply token and media keys here (§4.1, §4.5). */
   normalize(payload: WeChatInboundMessage): NormalizedMessage | null {
+    return this.prepare(payload)?.message ?? null
+  }
+
+  private prepare(
+    payload: WeChatInboundMessage
+  ): { message: NormalizedMessage; quoteRef?: WeChatQuoteRef; record: { messageId: string; text: string } } | null {
     if (payload.message_type === 1 && payload.from_user_id && payload.from_user_id !== this.group.boundUserId) {
       // iLink should never deliver one (§1.1); admitting it would hand the agent to someone nobody bound.
       if (!this.foreignSenderLogged)
@@ -165,7 +209,7 @@ export class WeChatConnection implements PlatformConnection, WeChatReplyPort {
     while (this.media.size > MEDIA_LIMIT) this.media.delete(this.media.keys().next().value!)
     const msg = result.message as NormalizedMessage
     for (const attachment of msg.attachments ?? []) attachment.readerToolName = WECHAT_ATTACHMENT_TOOL.name
-    return msg
+    return { message: msg, ...(result.quoteRef ? { quoteRef: result.quoteRef } : {}), record: result.record }
   }
 
   // The latest token rides every send; it is a reply credential, never logged and never sent to the Control Plane.
@@ -232,6 +276,7 @@ export class WeChatConnection implements PlatformConnection, WeChatReplyPort {
         // A fresh client id per message: iLink silently drops a repeated one (§4.4).
         const messageId = await this.api.sendText(this.group.boundUserId, `ac-${randomUUID()}`, part, this.contextToken)
         sent.push({ text: part, ...(messageId ? { messageId } : {}) })
+        if (messageId) await this.remember(messageId, part)
       } catch (error) {
         failed = error
         const reason =

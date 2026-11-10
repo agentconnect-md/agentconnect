@@ -29,3 +29,20 @@ describe('WeChat bot state', () => {
       expect(canonicalColumns).toContain(column)
   })
 })
+
+describe('WeChat message record', () => {
+  it('keeps each bot its newest texts by message id, the first write winning', async () => {
+    store = await openTestStore()
+    for (const id of ['1', '2', '3']) await store.rememberWeChatMessage('bot-a@im.bot', id, `text ${id}`, 2)
+    await store.rememberWeChatMessage('bot-a@im.bot', '3', 'rewritten', 2)
+    await store.rememberWeChatMessage('bot-b@im.bot', '1', 'other bot', 2)
+    expect(await store.getWeChatMessageText('bot-a@im.bot', '1')).toBeUndefined()
+    expect(await store.getWeChatMessageText('bot-a@im.bot', '2')).toBe('text 2')
+    expect(await store.getWeChatMessageText('bot-a@im.bot', '3')).toBe('text 3')
+    expect(await store.getWeChatMessageText('bot-b@im.bot', '1')).toBe('other bot')
+  })
+
+  it('names only columns the PostgreSQL case restore knows', () => {
+    for (const column of ['botId', 'messageId', 'createdAt']) expect(canonicalColumns).toContain(column)
+  })
+})
