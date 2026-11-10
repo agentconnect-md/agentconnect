@@ -3,6 +3,7 @@
 > Status: Design, not implemented. Product decisions agreed on 2026-11-09.
 > Scope: Linux Chromium/Chrome; container Computers first, Linux desktops second.
 > Delivery stages and acceptance: §11; implementation has not started.
+> A throwaway Linux Chromium spike ran on 2026-11-09; its results are in §8.1.
 
 ## 1. Purpose and boundary
 
@@ -284,19 +285,46 @@ Chromium distribution paths, ownership and whether elevated installation is
 needed. Snap/Flatpak and Firefox are not promised initially. No macOS/Windows
 extension installation is in scope.
 
-The proposed local transport is an extension service-worker WebSocket to the
-desktop daemon's loopback endpoint. Enforce the expected extension Origin and
-bind to loopback; verify these headers in a real extension instead of assuming
-normal web-page WebSocket behavior. Distinguish connections by browser profile
-and tab/window. An arbitrary first connection is not necessarily the browser the
-agent is operating. Authentication/port discovery and reconnect behavior must be
-proven in the spike; Native Messaging remains a fallback if needed.
+Install the extension by managed policy: `ExtensionInstallForcelist` pointing at
+a self-hosted update manifest and CRX, with no store and no `--load-extension`.
+Use exactly one install mechanism per image. When an unpacked copy and a forced
+install share an ID, Chromium unloads the unpacked copy and the forced install
+then fails. Deliver the daemon endpoint through `3rdparty` policy, which the
+extension reads from `chrome.storage.managed`. On first install that value can
+arrive after the service worker starts, so the extension reconnects when the
+managed area changes. Debian's Chromium wrapper passes its own
+`--load-extension`, which a launcher's later `--load-extension` replaces.
+
+The local transport is an extension service-worker WebSocket to the desktop
+daemon's loopback endpoint. Bind to loopback and require the extension's
+`chrome-extension://<id>` Origin, which rejects web-page WebSockets. Origin alone
+does not stop a same-host client from forging the header, and an arbitrary first
+connection is not necessarily the browser the agent is operating. On Linux the
+daemon therefore attributes each accepted socket to its owning process, Chromium's
+network service. It then walks up to the browser process and maps that process's
+`--user-data-dir` to a desktop, rejecting any peer that does not resolve to a
+known profile. Child processes rewrite their title into one string, so read the
+browser ancestor's arguments, not the child's. This needs read access to the
+browser's `/proc` entries (same user or root).
+
+Managed pods route browser loopback traffic through the egress forwarder
+(`--proxy-bypass-list=<-loopback>` in `packages/computer/docker/chromium-flags`).
+With that flag the daemon sees the forwarder as the peer and rejects every
+extension connection. Exempt the extension endpoint from the proxy
+(`<-loopback>;127.0.0.1:<port>`, leaving page loopback traffic proxied), or have
+the forwarder attribute the tunneled socket itself. A 20-second ping keeps the
+MV3 worker's socket open and an alarm reconnects a terminated worker. Native
+Messaging remains a fallback if needed.
 
 The extension resolves fields in its content scripts and returns bounded status.
-Programmatic input must be verified against real React/Vue controlled forms:
-setting `.value` alone is insufficient, and deprecated `execCommand` is not a
-universal compatibility guarantee. Include custom controls, select fields,
-address fields and multi-page logins in the supported-form matrix.
+Setting `.value` alone is insufficient for controlled forms, and deprecated
+`execCommand` is not a universal compatibility guarantee. Assigning `.value` in
+the isolated world and then dispatching `input` and `change` updated React 19 and
+Vue 3 `v-model` state, including `<select>`. A site that accepts only `isTrusted`
+events ignores this input. Trusted input would require the DevTools protocol,
+which this design does not use, so such sites are an unsupported class. Include
+custom controls, select fields, address fields, multi-page logins and
+`isTrusted`-only handlers in the supported-form matrix.
 
 Hold no input lease while a person completes a card. Once values are available,
 acquire/check the target desktop's lease, revalidate the target and fill under existing
@@ -314,6 +342,35 @@ Return `uncertain` after a disconnect/timeout with unknown outcome. Query bounde
 request status when available; retrying requires a fresh decision. Partial fills
 report individual field outcomes without values. Cancellation, navigation,
 expired authority and human takeover end the operation and clear temporary values.
+
+### 8.1 Spike evidence
+
+A throwaway harness exercised S1 and the Vault rules on Debian 13 arm64 with
+Chromium 156. It used one Xvfb display and Chromium profile per desktop, a
+stand-in desktop daemon, an AES-256-GCM vault with fake items and fixture sites
+on two origins. The agent's submit was an ordinary GUI click. All 32 scenario
+assertions and 12 encryption checks passed.
+
+| Area                    | Observed                                                                                                                                                                   |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Descriptors and binding | Discovery read no values. Fill targeted the discovered document ID and rechecked tab and frame origin; reloading the page while a card was open returned `target_changed`. |
+| Cross-origin frame      | `<all_urls>` host permission with all-frames injection reached a cross-origin iframe, and the Login matched on the frame origin.                                           |
+| Controlled inputs       | React 19 and Vue 3 forms submitted framework state, including a select.                                                                                                    |
+| Masking and fill-only   | Password fields stayed masked in screenshots. No fill submitted; a site that submits on input was reported as navigated.                                                   |
+| No replay               | A fill blocked by a slow page handler returned `uncertain` at the timeout; the late reply was dropped and the page saw one fill.                                           |
+| Vault rules             | Exact origin, grant required even for the owner, another member's same-origin item never offered, org `*` grant, one item kept across a multi-step login.                  |
+| Desktop attribution     | Two profiles connected at once and each was attributed to its desktop through `/proc`; a forged-Origin local client and a web-page WebSocket were rejected.                |
+| Canary oracle           | 11 canaries reached the websites and none appeared in daemon or Chromium logs, the vault file or 22 model-visible results.                                                 |
+
+Open after the spike: a forced-install extension never updated in place. After
+install Chromium did not fetch the update manifest again, and
+`requestUpdateCheck()` returned `no_update` and then `throttled`. Until the cause
+is known, assume a new extension version arrives only with a fresh profile or an
+explicit reinstall (§10). An unpacked extension also kept running stale
+service-worker code from its script cache after a restart, even with a version
+bump. Not covered: the webchat and Slack cards, the relay and agent-daemon hop,
+CP storage and consent, TOTP, branded Chrome, custom widgets, shadow DOM and real
+third-party sites.
 
 ## 9. CP storage and encryption
 
@@ -377,9 +434,13 @@ never becomes approval. Stop/cancel/expiry settles the card without values.
 
 Negotiate extension, desktop, daemon and CP capabilities before use. Shipping the
 extension with the image does not eliminate skew: persistent browsers, rolling
-upgrades and old runtimes exist. Unsupported versions fail clearly. There is no
-fallback that types secret values blindly through coordinates or the active OS
-focus.
+upgrades and old runtimes exist. The extension's hello reports a build ID
+compiled into the service-worker script, not only `manifest.version`, because
+Chromium can keep running cached worker code across a restart. Do not rely on
+in-place extension updates in a persistent profile (§8.1); a mismatched build is
+unsupported until the browser is restarted with a fresh install. Unsupported
+versions fail clearly. There is no fallback that types secret values blindly
+through coordinates or the active OS focus.
 
 ## 11. Delivery plan and acceptance
 
@@ -411,8 +472,10 @@ These are engineering proposals or unfinished details, not missing product appro
 
 - Choose the final unified/separate tool contract (§5), including mixed-item
   references, form selection and opaque request IDs.
-- Prove the extension service-worker transport, browser/profile selection,
-  permissions, local endpoint authentication and packaging in real Chromium.
+- Transport, profile attribution, permissions, endpoint authentication and
+  policy packaging are demonstrated on Linux Chromium (§8.1). Still open: why
+  forced-install updates did not apply in place, and the managed-pod proxy
+  exemption versus forwarder-side attribution (§8).
 - Define fill/consent timeouts and bounded in-memory lifetimes using existing
   turn cancellation and credential expiry; never resurrect secret input after restart.
 - Define the trusted requester/use authorization on CP credential operations and
