@@ -121,6 +121,7 @@ function useMicrosandbox(daemon: Daemon, environments: string[] = []) {
     driverFor,
     prepareEnvironment: vi.fn(async () => {}),
     refreshEnvironment: vi.fn(async () => {}),
+    environment: vi.fn(() => undefined),
     environmentIds: vi.fn(async () => environments),
     suspend: vi.fn(async () => {}),
     suspendUnlessBusy: vi.fn(async () => true),

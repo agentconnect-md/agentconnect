@@ -7679,8 +7679,8 @@ export class Daemon {
     if (!agent || !cwd || !this.usesMicrosandbox(agent)) return undefined
     if (!this.microsandbox)
       throw new Error(`microsandbox unavailable: ${this.microsandboxFailure ?? 'not initialized'}`)
-    // The daemon's own parent directory is used to prepare canonical clones before exposing a checkout.
-    if (cwd === agent.dir) return undefined
+    // Git follows the same mount ownership as workspace files; unmounted paths stay on this host.
+    if (!this.microsandboxWorkspaceEnvironment(agent, cwd)) return undefined
     const { environment, launch } = this.microsandboxContext(agent, cwd)
     const local = this.localVms()
     return localShimGitRunner({
