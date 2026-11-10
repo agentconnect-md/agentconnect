@@ -11,10 +11,10 @@ export const HOVER_TOOL_BUTTON =
 /** The icon size of a hover menu's actions. */
 export const HOVER_TOOL_ICON = 13
 
-// Literal per group so Tailwind sees each variant; the menu shows on its group's hover or keyboard focus, desktop only.
+// Literal per group so Tailwind sees each variant: hover or keyboard focus shows it, never a clicked button's lingering focus, so one menu shows at a time.
 const SHOW = {
-  turn: 'desktop:group-hover/turn:flex desktop:group-focus-within/turn:flex',
-  card: 'desktop:group-hover/card:flex desktop:group-focus-within/card:flex'
+  turn: 'desktop:group-hover/turn:flex desktop:group-has-[:focus-visible]/turn:flex',
+  card: 'desktop:group-hover/card:flex desktop:group-has-[:focus-visible]/card:flex'
 } as const
 
 export function HoverToolbar({

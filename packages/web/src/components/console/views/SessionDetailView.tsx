@@ -104,7 +104,7 @@ import { useSessionTranscript } from '@/lib/use-session-transcript'
 import { socialLoginProviders } from '@/lib/social-login-providers'
 import { isAuthConfigured } from '@/lib/auth'
 import { clipboardFiles, prepareWebchatImage } from '@/lib/webchat-image'
-import { messageLink, useLocateMessage } from '@/lib/message-link'
+import { landOnMessage, messageLink, useLocateMessage } from '@/lib/message-link'
 import {
   AttachmentCards,
   FileDropOverlay,
@@ -2164,11 +2164,16 @@ export default function SessionDetailView() {
     awayFromBottom
   } = useStickToBottom(conversationKey ?? sid ?? null)
   // A message link lands on its message once drawn, reading earlier pages back to it.
-  useLocateMessage('page', releaseFollow, {
-    has: visibleHasEarlier,
-    loading: pagingEarlier,
-    load: loadEarlierConversation
+  const mainEarlier = { has: visibleHasEarlier, loading: pagingEarlier, load: loadEarlierConversation }
+  useLocateMessage('page', releaseFollow, mainEarlier)
+  const mainEarlierRef = useRef(mainEarlier)
+  useEffect(() => {
+    mainEarlierRef.current = mainEarlier
   })
+  // A redirected message's label in a thread lands on it on the main timeline, the thread left open beside it.
+  const showInConversation = (seq: number) => {
+    landOnMessage('page', seq, { release: releaseFollow, earlier: () => mainEarlierRef.current })
+  }
   // What this browser last read here, for the NEW line; it advances only while the reader looks at the end.
   const seen = useSeenMarker(MOCK_MODE ? null : (conversationKey ?? sid ?? null), !awayFromBottom)
   // The transcript scroller's scrollbar width, which the composer below it insets by to stay in line with the column.
@@ -4723,6 +4728,7 @@ export default function SessionDetailView() {
             <ThreadPanel
               key={openRoot ?? openThread?.sessionId}
               {...(openRoot && threadWork.get(openRoot) ? { fromMain: threadWork.get(openRoot) } : {})}
+              onShowInConversation={showInConversation}
               agentId={session.agentId}
               agentName={session.agentName ?? ''}
               agentIcon={owner?.icon}
