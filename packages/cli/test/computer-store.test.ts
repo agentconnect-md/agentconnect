@@ -69,6 +69,8 @@ function publish(versions: FakeVersion[], tags: Record<string, string>): void {
 
 beforeAll(async () => {
   server = createServer((req, res) => {
+    // Synchronous fixture packing can delay idle-socket cleanup between tests.
+    res.setHeader('connection', 'close')
     requested.push(req.url ?? '')
     if (req.url === '/@agentconnect.md%2Fcomputer') {
       res.setHeader('content-type', 'application/json')
