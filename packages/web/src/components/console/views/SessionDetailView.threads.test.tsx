@@ -22,7 +22,8 @@ const wire = vi.hoisted(() => ({
   threadReads: [] as string[],
   threadReplies: [] as unknown[],
   live: [] as unknown[],
-  owns: true
+  owns: true,
+  role: 'collaborator'
 }))
 const spies = vi.hoisted(() => ({ pgSendThread: vi.fn(() => true) }))
 
@@ -146,7 +147,7 @@ vi.mock('@/lib/data-context', () => ({
 vi.mock('@/lib/org-context', () => ({
   useOrgs: () => ({
     activeOrg: { id: 'org-1', slug: 'acme' },
-    myRole: 'collaborator',
+    myRole: wire.role,
     orgPath: (p: string) => `/acme${p}`
   })
 }))
@@ -247,6 +248,7 @@ const detail = {
   model: 'sonnet',
   daemonId: 'daemon-1',
   workspaceIsolation: 'shared',
+  visibility: 'org',
   canContinue: false,
   continuationUnavailableReason: 'unsupported_platform'
 } as unknown as SessionDetailDto
@@ -350,6 +352,7 @@ beforeEach(() => {
   wire.threadReplies = []
   wire.live = []
   wire.owns = true
+  wire.role = 'collaborator'
   daemonFeatures.length = 0
   daemonFeatures.push('session-mode-auto-v1', 'webchat-threads-v1', 'session-thread-reads-v1')
   spies.pgSendThread.mockClear()
@@ -504,8 +507,9 @@ describe('writing in a thread (webchat-threads.md §6.3)', () => {
     expect(document.activeElement).toBe(box)
   })
 
-  it('offers no Reply in thread where the daemon does not answer in threads, or to a reader who does not own the conversation', async () => {
+  it('offers shared threads to members, while keeping viewers and unsupported daemons read-only', async () => {
     conversation()
+    wire.messages = [...wire.messages, row(6, 'sam', 'Ship the notes', { postId: LATER })]
     daemonFeatures.splice(daemonFeatures.indexOf('webchat-threads-v1'), 1)
     await open()
     expect(q('[data-reply-in-thread]')).toBeNull()
@@ -517,6 +521,22 @@ describe('writing in a thread (webchat-threads.md §6.3)', () => {
     daemonFeatures.push('webchat-threads-v1')
     wire.owns = false
     await open()
+    expect(q('[data-reply-in-thread]')).not.toBeNull()
+    await click(`[data-thread-footer="${ROOT}"] [data-task-card-replies]`)
+    expect(q('[data-thread-composer]')).not.toBeNull()
+
+    act(() => root?.unmount())
+    root = createRoot(container!)
+    wire.role = 'viewer'
+    await open()
+    expect(q('[data-reply-in-thread]')).toBeNull()
+    await click(`[data-thread-footer="${ROOT}"] [data-task-card-replies]`)
+    expect(q('[data-thread-composer]')).toBeNull()
+
+    act(() => root?.unmount())
+    root = createRoot(container!)
+    wire.role = 'collaborator'
+    await open(listRow, { ...detail, visibility: 'private' })
     expect(q('[data-reply-in-thread]')).toBeNull()
   })
 

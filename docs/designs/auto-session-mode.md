@@ -628,8 +628,11 @@ not addressed to this agent. Cost grows with the number of agents.
   - Its conversation id is derived from the organization, the member and the agent (a version 5
     UUID, `coordinatorConversationId` in `packages/protocol`). The Control Plane creates the
     conversation when the console mints with the `coordinator` flag, and the daemon recognizes it
-    from the turn's author, agent and organization, so neither the relay nor the Control Plane's
-    schema carries a marker. Only its owner resumes it, and it takes no other participants.
+    from the first turn's author, agent and organization, then from its recorded coordinator
+    coordinate, so neither the relay nor the Control Plane's schema carries a marker. It takes no
+    other agent participants. Resuming it uses the same `session.continue` policy as any webchat
+    conversation: private sessions stay owner-only; once shared with the organization, members
+    other than viewers may send messages at its root and in its threads under their own identity.
   - Its owner may publish it to the organization or pull it back, as with any owned webchat session,
     and every descendant session the owner owns follows both ways. A channel's coordinator stays the
     conversation's (channel-session-mode.md §9).
@@ -643,7 +646,7 @@ not addressed to this agent. Cost grows with the number of agents.
   - Each message runs as a turn of its own, never batched (§4.3's one-message form): its text streams
     to the browser and stays in the main conversation. `replyToMessage` is the coordinator's own post
     in the message's thread.
-  - The coordinator's prompt names the place a private conversation with one person, with threads: a
+  - The coordinator's prompt names the place a console conversation its owner may share, with threads: a
     task answers in the message's thread, and the text the coordinator writes is shown as it writes
     it, so it writes nothing but its calls and replies with `replyToMessage`.
   - It runs over the legacy webchat protocol; an AHP conversation stays an ordinary one for now.
@@ -672,13 +675,13 @@ not addressed to this agent. Cost grows with the number of agents.
   - Whoever may continue the coordinator writes to it from its page or its thread's panel, where the
     daemon advertises `webchat-threads-v1`: the message is a reply in the thread it names, or the
     task's own, among the threads the task holds, and runs on the task's session console-only, as a
-    background task's page does (webchat-threads.md §6.3). The root and threads no task holds stay
-    the owner's.
+    background task's page does (webchat-threads.md §6.3). The root and threads no task holds reach
+    the coordinator under the same continuation policy.
   - The console draws the conversation in Slack's shape: roots with their threads' footers, thread
     replies only in the thread, the coordinator's turns in the main timeline with "In thread: …" on
     one that answered a reply, and `replyToMessage` as one line "Answered in the thread". A footer,
     a label, that line or Reply in thread opens the thread in the side panel at `?thread=<rootId>`,
-    where the owner writes in it on the conversation's own socket. A task's page returns to the
+    where authorized members write in it on the conversation's own socket. A task's page returns to the
     coordinator through Back or Close. On a desktop, a thread whose first reply starts while the
     owner watches opens by itself (webchat-threads.md §6).
 - Before webchat had threads, a task the coordinator opened for a webchat message continued on its own

@@ -431,11 +431,11 @@ As implemented (PR 11):
 
 - **The owner** writes in any thread from the thread composer, which sends a `turn` with `thread` on
   the conversation's own socket; routing (§4) takes it to the task or the coordinator.
-- **Other members of a published coordinator** may write in a thread a task holds, from the task's
-  page or the thread panel, as they may write to a task's page today. Their message is sent through
-  the session-targeted continuation, recorded as a reply in that thread, and routed to the task.
-  They may not post roots or write in an unowned thread, since both reach the coordinator, which is
-  the owner's alone.
+- **Other members of a published coordinator** use the same `session.continue` policy as any shared
+  session. Non-viewer members may post roots and write in any readable thread on the conversation's
+  socket, under their own identity. The daemon reads the recorded coordinator coordinate, so roots
+  and unowned threads reach the existing coordinator and held threads reach their task. A task's
+  own page still uses session-targeted continuation.
 - The `targetSessionId` path otherwise stays for legacy page tasks (§10) and for continuing sessions
   of other integrations.
 
@@ -444,8 +444,8 @@ As implemented (PR 9):
 - **Who.** `continuableSession` (`packages/protocol`) accepts a webchat session with
   `taskParentSessionId`, the Control Plane's mark of a coordinator's task (§5.4). The composer, the
   token and every dial judge it by the coordinator's audience (`continuationAudience`, PR 3), so
-  other members write once the owner publishes the coordinator. The coordinator itself, an ordinary
-  conversation and a task its coordinator released stay closed.
+  other members write once the owner publishes the coordinator. Session-targeted continuation
+  remains for tasks; the coordinator and ordinary conversations resume on their own socket.
 - **Feature.** The Control Plane mints and verifies such a continuation only where the daemon
   advertises `webchat-threads-v1` (`taskContinuationFeature`, which still asks a page task's daemon for
   `task-page-messages-v1`). Without it the composer reads `unavailable`.
@@ -475,8 +475,8 @@ As implemented (PR 11):
 - **Another member** writes in a held thread through the task's session-targeted continuation, now
   with `thread` set to the panel's root, so it lands in that thread among the task's; its steps are
   not stamped, since the frames that answer it carry no thread.
-- **Who sees the composer**: Reply in thread and the owner's composer show only where the page's
-  reader owns the conversation, it can resume, its agent's daemon advertises `webchat-threads-v1`,
+- **Who sees the composer**: Reply in thread and the conversation's composer show where the page's
+  reader may continue the conversation, it can resume, its agent's daemon advertises `webchat-threads-v1`,
   and the relay's `ready` frame, once read, lists it (`getPgRelayFeatures`).
 
 ## 7. A Slack coordinator's page has Slack's shape

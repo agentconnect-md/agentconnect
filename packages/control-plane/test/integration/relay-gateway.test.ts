@@ -622,7 +622,7 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
   })
 
   // auto-session-mode.md §10: a member's private coordinator conversation, one per organization, member and agent.
-  it('POST …/webchat/token with coordinator mints the caller’s one coordinator conversation, theirs alone', async () => {
+  it('mints one coordinator per member and resumes a shared coordinator by session.continue', async () => {
     const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
     const daemonWs = await connectDaemonReady(base, [SESSION_MODE_AUTO_V1_FEATURE, WEBCHAT_MULTI_AGENT_FEATURE])
     await seedAgent(prisma, AGENT, { daemonId: DAEMON })
@@ -669,7 +669,7 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
     })
     expect(join.statusCode).toBe(409)
 
-    // Another member's coordinator conversation stays theirs, even on a session everyone may continue.
+    // Another member's coordinator follows the same session.continue policy as an ordinary conversation.
     const otherUserId = 'usr_coordinator_owner'
     await prisma.user.create({ data: { id: otherUserId, email: 'coordinator-owner@example.test' } })
     await prisma.membership.create({ data: { orgId: DEFAULT_ORG_ID, userId: otherUserId, role: 'collaborator' } })
@@ -681,7 +681,7 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
     await seedSessionMeta(prisma, theirSession, AGENT, {
       platform: 'webchat',
       channel: theirs,
-      visibility: 'org',
+      visibility: 'private',
       ownerIdentity: `user:${otherUserId}`,
       daemonId: DAEMON
     })
@@ -697,6 +697,47 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
     })
     expect((await mintConversationToken(app, { conversationId: theirs })).statusCode).toBe(404)
     expect((await mintWebchatToken(app, AGENT, { conversationId: theirs })).statusCode).toBe(404)
+
+    await prisma.sessionMeta.update({ where: { id: theirSession }, data: { visibility: 'org' } })
+    await prisma.membership.update({
+      where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: DEFAULT_OWNER_ID } },
+      data: { role: 'collaborator' }
+    })
+    const resumed = await mintConversationToken(app, { conversationId: theirs })
+    expect(resumed.statusCode).toBe(200)
+    expect((await mintWebchatToken(app, AGENT, { conversationId: theirs })).statusCode).toBe(200)
+    const token = (resumed.json() as { token: string }).token
+    const shared = await verifyWebchat(base, token, 'pod-coordinator-shared')
+    expect(shared.result).toMatchObject({ ok: true, conversationId: theirs, userId: DEFAULT_OWNER_ID })
+    shared.ws.close()
+
+    // Older conversations keep their current session on the conversation row without a participant backfill.
+    await prisma.webchatConversation.update({ where: { id: theirs }, data: { currentSessionId: theirSession } })
+    await prisma.webchatConversationAgent.deleteMany({ where: { conversationId: theirs } })
+    const legacy = await verifyWebchat(base, token, 'pod-coordinator-legacy')
+    expect(legacy.result).toMatchObject({ ok: true, conversationId: theirs })
+    legacy.ws.close()
+
+    await prisma.membership.update({
+      where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: DEFAULT_OWNER_ID } },
+      data: { role: 'viewer' }
+    })
+    expect((await mintConversationToken(app, { conversationId: theirs })).statusCode).toBe(404)
+    expect((await mintWebchatToken(app, AGENT, { conversationId: theirs })).statusCode).toBe(404)
+    const viewer = await verifyWebchat(base, token, 'pod-coordinator-viewer')
+    expect(viewer.result).toMatchObject({ ok: false, reason: 'access revoked' })
+    viewer.ws.close()
+
+    await prisma.membership.update({
+      where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: DEFAULT_OWNER_ID } },
+      data: { role: 'collaborator' }
+    })
+    await prisma.sessionMeta.update({ where: { id: theirSession }, data: { visibility: 'private' } })
+    expect((await mintConversationToken(app, { conversationId: theirs })).statusCode).toBe(404)
+    expect((await mintWebchatToken(app, AGENT, { conversationId: theirs })).statusCode).toBe(404)
+    const revoked = await verifyWebchat(base, token, 'pod-coordinator-revoked')
+    expect(revoked.result).toMatchObject({ ok: false, reason: 'access revoked' })
+    revoked.ws.close()
     daemonWs.close()
   })
 

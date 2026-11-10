@@ -92,7 +92,8 @@ describe('the coordinator prompt and batch', () => {
       peers: [],
       webchat: true
     })
-    expect(prompt).toContain('in a private webchat conversation (conv-1) with one person')
+    expect(prompt).toContain('in a webchat conversation (conv-1)')
+    expect(prompt).toContain('Its owner may share it with other organization members.')
     expect(prompt).toContain('at the conversation root or in a thread under a root message, which the message names')
     expect(prompt).toContain(
       'The task answers in its own thread: a message at the conversation root joins that thread, and a message in ' +

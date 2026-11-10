@@ -174,9 +174,6 @@ export function webchatTokenRoutes(deps: HttpDeps) {
       if (!binding) return null
       const resumable = { primaryAgentId: binding.primaryAgentId, currentSessionIds: binding.currentSessionIds }
       if (binding.ownerUserId === req.principal!.userId) return resumable
-      // A member's coordinator conversation is private to them (auto-session-mode.md §10).
-      if (conversationId === coordinatorConversationId(orgOf(req), binding.ownerUserId, binding.primaryAgentId))
-        return null
       const ids = binding.currentSessionIds.filter((id): id is SessionId => id !== null)
       if (ids.length === 0 || ids.length !== binding.currentSessionIds.length) return null
       const sessions = await Promise.all(ids.map((id) => deps.repos.session.get(orgOf(req), id)))

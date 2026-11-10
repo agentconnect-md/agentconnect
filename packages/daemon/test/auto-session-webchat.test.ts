@@ -165,11 +165,11 @@ async function boot(
 describe("a member's coordinator conversation in webchat (auto-session-mode.md ยง10)", () => {
   it('runs every message on the coordinator, addressed to it, and streams a one-message reply once', async () => {
     const prompts: string[] = []
-    const { daemon, d, posts, send } = await boot(async (_id, text, say) => {
+    const { daemon, d, host, posts, send } = await boot(async (_id, text, say) => {
       prompts.push(text)
       say('You are welcome.')
     })
-    const { messageId, streamed } = await send('thanks!')
+    const { messageId, streamed, postId } = await send('thanks!')
     expect(prompts[0]).toContain(`<message id="${messageId}" from="${OWNER}" mentions-you="yes">\nthanks!\n</message>`)
     expect(streamed).toBe('You are welcome.')
     // The browser's own turn commits the reply; the coordinator posts nothing beside it.
@@ -177,6 +177,15 @@ describe("a member's coordinator conversation in webchat (auto-session-mode.md ย
     const coordinate = await d.store.currentAppendCoordinate(AGENT, CONV, null, 'coordinator')
     expect(isCoordinatorCoordinate(coordinate)).toBe(true)
     expect(await d.store.getSession(sessionKey('webchat', CONV, coordinate, AGENT))).toBeDefined()
+    expect(await d.store.getSession(sessionKey('webchat', CONV, `webchat:${CONV}`, AGENT))).toBeUndefined()
+    // Authorization belongs to the Control Plane; another admitted sender keeps this coordinator and their own identity.
+    const member = 'user-2'
+    await send('hello from a member', member)
+    await send('a reply from a member', member, CONV, undefined, postId)
+    expect(prompts[1]).toContain(`from="${member}" mentions-you="yes">\nhello from a member`)
+    expect(prompts[2]).toContain(`from="${member}" mentions-you="yes" thread="${messageId}">\na reply from a member`)
+    expect(host.newSession).toHaveBeenCalledTimes(1)
+    expect(await d.store.currentAppendCoordinate(AGENT, CONV, null, 'coordinator')).toBe(coordinate)
     expect(await d.store.getSession(sessionKey('webchat', CONV, `webchat:${CONV}`, AGENT))).toBeUndefined()
     await daemon.stop()
   })

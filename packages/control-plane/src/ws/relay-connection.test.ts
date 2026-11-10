@@ -230,16 +230,14 @@ function buildWebchatVerifier(
     daemonId?: string | null
     daemonState?: string
     daemonFeatures?: string[]
-    /** Roster returned by the conversations repo (default: empty — the
-     *  pre-participant single-agent shape). */
+    /** Roster returned by the conversations repo; empty models a pre-participant conversation. */
     participants?: Awaited<ReturnType<WebchatVerificationDeps['conversations']['participants']>>
     /** Per-agent lookups (default: the primary on WEBCHAT_DAEMON_ID); visibility defaults to org-wide. */
     agentById?: Record<string, (Omit<VerifierAgent, keyof Shareable> & Partial<Shareable>) | null>
     /** Per-daemon connection state for member placements. */
     daemonById?: Record<string, { state: string; features?: string[] }>
     establish?: WebchatVerificationDeps['remoteMcp']['establish']
-    /** Conversation row (null = unknown conversation). Default: an ordinary
-     *  (untargeted) row, preserving the legacy verification shape. */
+    /** Conversation row (null = unknown); by default the signed user's ordinary conversation. */
     conversationRow?: { targetSessionId: string | null; ownerUserId?: string } | null
     /** Target session row for the continuation branch. */
     sessionById?: Record<string, Awaited<ReturnType<WebchatVerificationDeps['sessions']['getUnscoped']>>>
@@ -311,11 +309,16 @@ function buildWebchatVerifier(
       tokens: { verify },
       agents: { getUnscoped: getAgent },
       daemons: { get: getDaemon },
-      // Default: pre-participant conversation — the empty roster degrades to the
-      // token's primary (single-agent shape), keeping the remote-MCP gate reachable.
+      // The owner's empty roster keeps the pre-participant single-agent shape.
       conversations: {
         participants: async () => over.participants ?? [],
-        target: async () => (over.conversationRow === undefined ? { targetSessionId: null } : over.conversationRow)
+        target: async () =>
+          over.conversationRow === undefined ? { targetSessionId: null, ownerUserId: 'user-1' } : over.conversationRow,
+        resumeBinding: async () => ({
+          primaryAgentId: AgentId(WEBCHAT_AGENT_ID),
+          ownerUserId: over.conversationRow?.ownerUserId ?? 'user-1',
+          currentSessionIds: [null]
+        })
       },
       apiEntries: { listForAgent: async () => [] },
       sessions: { getUnscoped: async (id) => over.sessionById?.[id] ?? null },
@@ -1265,7 +1268,7 @@ describe('webchat verification multi-agent roster (webchat-multi-agents.md §6.2
     expect(result.ok).toBe(true)
     expect(result.participants).toEqual([
       { agentId: WEBCHAT_AGENT_ID, daemonId: WEBCHAT_DAEMON_ID, primary: true, callerRole: 'editor' },
-      { agentId: MEMBER_AGENT_ID, callerRole: 'participant' }
+      { agentId: MEMBER_AGENT_ID, callerRole: 'owner' }
     ])
 
     const vanished = buildWebchatVerifier({
@@ -1277,7 +1280,7 @@ describe('webchat verification multi-agent roster (webchat-multi-agents.md §6.2
     expect(gone.ok).toBe(true)
     expect(gone.participants).toEqual([
       { agentId: WEBCHAT_AGENT_ID, daemonId: WEBCHAT_DAEMON_ID, primary: true, callerRole: 'editor' },
-      { agentId: MEMBER_AGENT_ID, callerRole: 'participant' }
+      { agentId: MEMBER_AGENT_ID, callerRole: 'owner' }
     ])
   })
 })
@@ -1331,16 +1334,16 @@ describe('webchat verification names who the user is to each participant', () =>
   const roleOf = async (over: Parameters<typeof buildWebchatVerifier>[0]) =>
     (await buildWebchatVerifier(over).verifier('t')).participants?.map((p) => p.callerRole)
 
-  it('an editor of the agent, the owner who only views it, and anyone else who holds the token', async () => {
+  it('names editors and owners, and refuses a shared token held by a viewer', async () => {
     const mine = { targetSessionId: null, ownerUserId: 'user-1' }
     expect(await roleOf({ conversationRow: mine })).toEqual(['editor'])
     expect(await roleOf({ conversationRow: mine, role: 'viewer' })).toEqual(['owner'])
-    expect(await roleOf({ conversationRow: { targetSessionId: null, ownerUserId: 'user-2' }, role: 'viewer' })).toEqual(
-      ['participant']
-    )
+    expect(
+      await roleOf({ conversationRow: { targetSessionId: null, ownerUserId: 'user-2' }, role: 'viewer' })
+    ).toBeUndefined()
   })
 
-  it('names the owner of a multi-agent conversation to every participant, and leaves a vanished one unedited', async () => {
+  it('names the owner to every participant and refuses another member without continuable sessions', async () => {
     const roster = [
       { agentId: AgentId(WEBCHAT_AGENT_ID), role: 'primary' as const },
       { agentId: AgentId(MEMBER_AGENT_ID), role: 'member' as const }
@@ -1354,7 +1357,7 @@ describe('webchat verification names who the user is to each participant', () =>
     const theirs = { targetSessionId: null, ownerUserId: 'user-2' }
     expect(
       await roleOf({ participants: roster, conversationRow: theirs, agentById: { [MEMBER_AGENT_ID]: null } })
-    ).toEqual(['editor', 'participant'])
+    ).toBeUndefined()
   })
 })
 

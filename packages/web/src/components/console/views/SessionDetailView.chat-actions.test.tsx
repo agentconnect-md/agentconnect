@@ -216,6 +216,7 @@ const detail = (ownsConversation: boolean): SessionDetailDto =>
     outputMode: null,
     daemonId: 'daemon-1',
     workspaceIsolation: 'shared',
+    visibility: 'org',
     executorDaemonId: null,
     stayedHomeReason: null,
     ownsConversation
@@ -391,14 +392,11 @@ describe('a webchat conversation’s runtime controls', () => {
     expect(document.body.textContent).not.toContain('can change the runtime')
   })
 
-  it('tells anyone else who views it who may change the runtime instead of offering the controls', async () => {
+  it('keeps a shared conversation read-only for a viewer who does not own it', async () => {
     wire.chatActions = 'settings'
     wire.detail = detail(false)
     await render()
-    await act(async () => picker()?.click())
+    expect(picker()).toBeNull()
     expect(document.querySelector('[aria-label="Codex · model-c"]')).toBeNull()
-    expect(document.body.textContent).toContain(
-      'Only an Agent editor or this conversation’s owner can change the runtime.'
-    )
   })
 })
