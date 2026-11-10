@@ -777,6 +777,12 @@ const DOCK_TABS: DockTab[] = [
 ]
 
 /** Loading keeps the same dock + body tracks as the transcript; a resolved 404 opts out, so its card gets the whole content wrap. */
+// Asks once per card and session; a child so the request can follow the view's early returns without breaking hook order.
+function FillOpener({ open }: { open: () => void }) {
+  useEffect(() => open(), [])
+  return null
+}
+
 function SessionDetailFrame({ children, withDock = true }: { children: ReactNode; withDock?: boolean }) {
   return (
     <div className="flex min-h-full items-stretch">
@@ -2772,17 +2778,15 @@ export default function SessionDetailView() {
         }
       : undefined
   // A chat platform's Fill card links here with ?fill=<id>: the daemon hands the card to the person who asked, or refuses.
-  const fillRequest = searchParams.get('fill')
-  const fillAnswerable = answerFill !== undefined
-  useEffect(() => {
-    if (!fillRequest || !fillAnswerable) return
+  const fillRequest = answerFill ? searchParams.get('fill') : null
+  const openFill = () => {
+    if (!fillRequest) return
     setFillOpenError(null)
     if (isContinuable) markSessionTarget(session.id)
     void pgOpenFill(session.id, session.agentId ?? '', fillRequest, webchatConversationId).then((opened) => {
       if (!opened.ok) setFillOpenError(opened.reason ?? null)
     })
-    // Once per card and session: reconnects and re-renders must not ask again.
-  }, [fillRequest, session.id, fillAnswerable])
+  }
   // Joins and removals (§3.1/§3.1a) mutate provider-side state an adopted session never had, so they stay playground-only.
   const pgWorktree =
     worktreeSelections[session.id] ??
@@ -4234,6 +4238,7 @@ export default function SessionDetailView() {
                         {imageError}
                       </div>
                     )}
+                    {fillRequest ? <FillOpener key={`${session.id}:${fillRequest}`} open={openFill} /> : null}
                     {fillOpenError && (
                       <div className="font-sans text-[11.5px] font-medium leading-normal text-(--red-600)">
                         {t('fillOpenFailed', { reason: fillOpenError })}
