@@ -15223,6 +15223,19 @@ export class Daemon {
     return entitlement ? { conversationId: parent.channel, entitlement, sessionKey: key } : undefined
   }
 
+  /** An idle-closed webchat session drops its own grant; only its conversation's last open session revokes the authority (webchat-preset-agentconnect-mcp.md §5.4). */
+  private async releaseIdleWebchatGrant(row: { key: string; agentId: string; channel: string }): Promise<void> {
+    const grants = this.remoteWebchatGrants
+    if (!grants) return
+    grants.forgetSessions(row.agentId, (key) => key === row.key)
+    if (await this.store.hasOpenSessionInChannel('webchat', row.channel)) return
+    for (const key of grants.taskSessionKeys(row.channel)) {
+      const task = await this.store.getSession(key)
+      if (task && task.state !== 'closed') return
+    }
+    await grants.revokeConversation(row.channel, 'session_expired')
+  }
+
   /** Whether a task's coordinator still runs in its conversation, read from its session; undefined when the owner is no coordinator session recorded here. */
   private async coordinatorRunsAuto(agentId: string, ownerKey: string): Promise<boolean | undefined> {
     const owner = await this.store.getSession(ownerKey)
@@ -29703,14 +29716,9 @@ export class Daemon {
         .release(row.key)
         .catch((error) => this.log.warn(`key-server session cleanup failed for ${row.key} (${formatErr(error)})`))
       if (row.platform === 'webchat' && row.channel) {
-        const descriptor = this.remoteWebchatGrants
-        if (descriptor) {
-          void descriptor
-            .revokeConversation(row.channel, 'session_expired')
-            .catch((error) =>
-              this.log.warn(`remote MCP session-expiry revoke deferred to durable retry (${formatErr(error)})`)
-            )
-        }
+        void this.releaseIdleWebchatGrant(row).catch((error) =>
+          this.log.warn(`remote MCP session-expiry revoke deferred to durable retry (${formatErr(error)})`)
+        )
       }
       this.lastFooterReply.delete(row.key) // the session is gone — release its footer record
       // A host bound to the closed session has nothing left to serve — unless a new turn reopened the key since.

@@ -303,7 +303,11 @@ bounded authorization error, and rebuilding the ACP session obtains a fresh gran
 The sweep covers the gaps a turn-start check misses: a pause between turns that
 skips over the renewal window, and a long turn, such as one waiting on an approval,
 that outlives the grant. A session that is closed, including by the idle TTL, is
-no longer renewed; its grant is revoked with it. A session that stays open keeps one
+no longer renewed. Revocation is per authority, so closing a session revokes its
+conversation's authority only when no other session of that conversation is still
+open: a coordinator that idles out leaves the tasks it opened their grants (§5.4).
+A closed session whose conversation stays open drops its descriptor, and its grant
+lapses within its sliding lifetime. A session that stays open keeps one
 credential until its logical authority expires, and every revocation below still
 applies immediately.
 
@@ -348,6 +352,8 @@ coordinator opens there does the work, so it installs one instead:
 - **Lifetime.** The sweep renews a task's grant while the task's own session is open.
   A task's grant is never revoked on its own: the conversation's close, rotation or
   revocation ends it, and a closed task's grant lapses within its sliding lifetime.
+  The conversation closes when its last open session does, a task among them, not
+  when the coordinator alone reaches the idle TTL while a task it opened still works.
 - **Approval.** A write is an operation of the conversation, as any is. The console
   shows it where it was raised: a task's on the task's thread, which the dock opens
   when the coordinator opens the task, a coordinator's on the conversation. The
