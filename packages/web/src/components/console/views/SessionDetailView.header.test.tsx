@@ -348,7 +348,7 @@ describe('the one-line session header', () => {
   })
 
   it.each(['desktop', 'compact'])(
-    'shares from the %s header with a compact audience selector and a primary copy action',
+    'shares from the %s header with the original audience cards and a primary copy action',
     async (layout) => {
       wire.detail = { ...detail(true), visibility: 'org', canChangeVisibility: true }
       const matchMedia = window.matchMedia
@@ -363,7 +363,9 @@ describe('the one-line session header', () => {
       expect(header()!.contains(dialog)).toBe(false)
       expect(dialog.textContent).toContain('Share “Usage report”')
       expect(dialog.textContent).toContain('Who can see it')
-      expect(dialog.querySelector('[aria-haspopup="menu"]')?.textContent).toBe('Everyone')
+      const choices = [...dialog.querySelectorAll('[role="radio"]')]
+      expect(choices.map((choice) => choice.textContent?.slice(0, 7))).toEqual(['Everyon', 'Private'])
+      expect(choices[0]!.getAttribute('aria-checked')).toBe('true')
       expect(dialog.textContent).toContain('Copy link')
       expect(dialog.textContent).not.toContain('Done')
       await act(async () => dialog.querySelector<HTMLButtonElement>('[aria-label="Close"]')!.click())
