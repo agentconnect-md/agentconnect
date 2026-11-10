@@ -20,8 +20,10 @@
 >
 > Credential-degradation telemetry and the corresponding web warnings remain
 > planned. [Unified managed Git network operations](#unified-managed-git-network-operations)
-> is a proposed extension, with Azure DevOps delivered first; it is not implemented
-> by this document. The remaining sections describe the existing contract.
+> has an implemented Azure-first path inside execution environments. Other
+> providers, scoped source operations and the final host-side decision remain
+> later deliveries. Controlled transport tests exercise real Git; they do not
+> establish live Cloud/VM/executor validation or the required capacity results.
 >
 > The workspace _shape_ this document assumes (a per-host `github` mode) is
 > being re-modeled into a host-neutral `git` mode with a credential union —
@@ -1067,12 +1069,15 @@ Not covered yet:
 
 ### Unified managed Git network operations
 
-**Status: proposed, implementation pending.** This extends Phase 2 from runtime
-commands to every Git network operation using an AgentConnect-managed repository
-credential. The first delivery enables Azure DevOps in Cloud, local VMs and remote
-executors through the shared path; other providers can migrate afterwards. Until
-that delivery passes the acceptance checks below, the current Azure environment
-restrictions in [Azure DevOps §6.1](azure-devops-integration.md#61-proxy-only) remain.
+**Status: Azure-first common path implemented; later migrations proposed.** The
+shared preparation path connects Azure daemon workspace Git to the existing proxy
+in local SRT/VM, Cloud and remote executor host/SRT/VM environments. Per-operation
+route readiness replaces the blanket environment bans in
+[Azure DevOps §6.1](azure-devops-integration.md#61-proxy-only). Controlled transport
+tests exercise real Git clone, fetch and push through the shim listener and
+codehost tunnel, including a direct bundle download and authorization refusals.
+These fixtures do not establish the live environment matrix below. Other providers
+remain on their existing daemon-Git path, and the capacity gate has not been measured.
 
 #### Decision and scope
 
@@ -1138,12 +1143,11 @@ remain a documented limitation, not proof that the entire environment is token-f
 
 A prepared checkout and a successfully configured runtime are different from a
 cold start: Phase 2 already supplies runtime Git with the proxy route in these
-environments. There is no separate Azure runtime-Git transport to build. However,
-the current Azure host-start check rejects Cloud, VMs and remote executors even
-when the checkout already exists. Runtime Git working after a prepared checkout
-therefore does not prove that startup, daemon fetches or recovery work. Verify the
-runtime path with Azure, and remove the blanket check only with readiness coverage;
-a pre-existing checkout is not a bypass for missing proxy readiness.
+environments. The Azure-first delivery reuses that transport for daemon workspace
+Git and replaces the former blanket host-start refusal with route readiness.
+Runtime Git working after a prepared checkout does not prove that startup,
+daemon fetches or recovery work. A pre-existing checkout is not a bypass for
+missing proxy readiness; live validation must cover the full cold-start path.
 
 #### One operation, one target, one route
 

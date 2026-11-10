@@ -125,15 +125,27 @@ describe.skipIf(process.platform === 'win32')("Git over a local environment's sh
 })
 
 describe("Git over a local environment's shim behind the credential proxy", () => {
-  it('rewrites a caller replacement env before the environment names its own, and leaves a bare request alone', async () => {
+  it('rewrites a caller replacement env after binding and before the environment names its own', async () => {
     const seen: GitExecPayload[] = []
     const reply = { code: 0, stdout: '', stderr: '' }
     const owned = { HOME: '/session/home', AC_GITCRED_SOCKET: '/session/gitcred.sock' }
+    let bound = false
     const runner = localShimGitRunner({
-      run: (work) => work({ request: async (_capability, payload) => (seen.push(payload as GitExecPayload), reply) }),
+      run: async (work) => {
+        await Promise.resolve()
+        bound = true
+        try {
+          return await work({ request: async (_capability, payload) => (seen.push(payload as GitExecPayload), reply) })
+        } finally {
+          bound = false
+        }
+      },
       cwd: '/session/workspace',
       owned,
-      mapEnv: (env) => ({ ...env, AC_CODEHOST_CREDENTIAL: 'acph1_example.tag', HOME: '/mapped/home' })
+      mapEnv: (env) => {
+        expect(bound).toBe(true)
+        return { ...env, AC_CODEHOST_CREDENTIAL: 'acph1_example.tag', HOME: '/mapped/home' }
+      }
     })
     await runner.raw(['rev-parse', 'HEAD'])
     expect(seen.at(-1)!.env).toBeUndefined()

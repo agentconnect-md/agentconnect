@@ -27,7 +27,8 @@ import type { ShimSession } from '../shim/session.js'
 import { ShimWorkspaceFiles } from '../shim/workspace-files-channel.js'
 import { ShimWorkspaceFs } from '../shim/workspace-fs-channel.js'
 import type { TunnelListenOptions, TunnelName } from '../shim/tunnel.js'
-import type { GitRunner } from '../workspace/git-runner.js'
+import { GitTransportError, type GitRunner } from '../workspace/git-runner.js'
+import type { DaemonGitProxyRoute } from '../workspace/git-injection.js'
 import { RoutedWorkspaceFiles, WorkspaceViolationError, type WorkspaceFiles } from '../workspace/workspace-files.js'
 import { SESSIONS_DIR, sessionDirIn, sessionHomeIn } from '../workspace/session-layout.js'
 import type { WorkspacePlacement } from '../workspace/workspace-fs.js'
@@ -77,6 +78,8 @@ export interface ExecutorPlaneDeps {
   tunnelGreeting?: (subject: string, tunnel: TunnelName) => Buffer | undefined
   /** What a `listen` carries beside the name: `codehost`'s or `provider`'s routes and the CA its sessions trust. */
   tunnelListenOptions?: (agentId: string, tunnel: TunnelName) => TunnelListenOptions | undefined
+  /** Prepares one Git invocation with this binding's current code-host route. */
+  mapGitEnv?: (agentId: string, env: Record<string, string>, route?: DaemonGitProxyRoute) => Record<string, string>
   log: { info: (m: string) => void; warn: (m: string) => void; debug?: (m: string) => void }
   clock?: Clock
   /** Test seams: the dial's budget and the loss grace. */
@@ -441,23 +444,51 @@ export class ExecutorPlane implements ExecutionPlane {
       ...(sessionKey === undefined ? {} : { sessionKey })
     })
     const session = placed && this.boundSession(placed.subject)
-    if (!placed || !session) return undefined
-    // A caller's env replaces the shim's, and the credential helper it names dials this daemon's socket unless told
-    // otherwise; inside the environment that path does not exist, so it is pointed at the session's own tunnel (§5).
-    const roots = this.rootsFor(placed.sessionKey)
-    if (!roots) return new ShimGitRunner(session, cwd, undefined, abort)
-    const socket = shimPaths(roots.runtimeRoot).tunnels.agent
-    // Where srt routes the code hosts to this holder's proxy, its Git verifies them with the bundle the shim wrote, over any it sent.
-    const srt = this.srtCodehostFor(placed.sessionKey)
-    const trust = srt ? proxyTrustEnv({ bundlePath: srt.trustBundle }) : {}
+    const launch = placed && this.registry.currentLaunch(placed.subject)
+    if (!placed || !session || !launch) return undefined
+    const executorDaemonId = placed.executorDaemonId
+    const strategy = placed.strategy
     const requester: ShimRequester = {
-      request: (capability, payload, options) => {
-        const { env } = payload as GitExecPayload
-        const mapped =
-          env === undefined
-            ? payload
-            : { ...(payload as GitExecPayload), env: { ...env, [AGENT_CHANNEL_SOCKET_ENV]: socket, ...trust } }
-        return session.request(capability, mapped, options)
+      request: async (capability, payload, options) => {
+        if (
+          this.placements.get(placed.sessionKey) !== placed ||
+          placed.executorDaemonId !== executorDaemonId ||
+          placed.strategy !== strategy ||
+          this.registry.currentLaunch(placed.subject) !== launch ||
+          this.boundSession(placed.subject) !== session
+        ) {
+          throw new GitTransportError('the executor Git binding is no longer current')
+        }
+        this.endpoints.retain(launch)
+        try {
+          const { env } = payload as GitExecPayload
+          if (env === undefined) return await session.request(capability, payload, options)
+          const roots = this.rootsFor(placed.sessionKey)
+          const srt = this.srtCodehostFor(placed.sessionKey)
+          const listening = this.tunnels.listeningAt(placed.subject, 'codehost')
+          const proxy = listening?.proxy
+          const route: DaemonGitProxyRoute | undefined =
+            strategy === 'srt'
+              ? srt && { trustBundle: srt.trustBundle, domains: srt.domains }
+              : proxy && (strategy !== 'microsandbox' || listening?.guestTrust)
+                ? { proxyUrl: codehostProxyUrl(proxy), trustBundle: proxy.trustBundle }
+                : undefined
+          const mapped = this.deps.mapGitEnv?.(agentId, env, route) ?? env
+          return await session.request(
+            capability,
+            {
+              ...(payload as GitExecPayload),
+              env: {
+                ...mapped,
+                ...(roots ? { [AGENT_CHANNEL_SOCKET_ENV]: shimPaths(roots.runtimeRoot).tunnels.agent } : {}),
+                ...(srt ? proxyTrustEnv({ bundlePath: srt.trustBundle }) : {})
+              }
+            },
+            options
+          )
+        } finally {
+          this.endpoints.release(launch)
+        }
       }
     }
     return new ShimGitRunner(requester, cwd, undefined, abort)

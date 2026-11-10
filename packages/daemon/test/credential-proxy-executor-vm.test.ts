@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from '
 import type { Server } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { getCACertificates } from 'node:tls'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { generateCa } from '@anthropic-ai/sandbox-runtime'
 import type { AgentSpec } from '@agentconnect.md/protocol'
@@ -15,7 +16,8 @@ import { LocalExecutor } from '../src/execution/local-executor.js'
 import type { EnvironmentDescriptor } from '../src/execution/strategies.js'
 import { microsandboxCredentialStep } from '../src/microsandbox/secrets.js'
 import { applyProxySpawn } from '../src/remote/codehost-spawn.js'
-import { TunnelHost } from '../src/shim/tunnel-host.js'
+import { SHIM_SEED_ENV } from '../src/shim/protocol.js'
+import { TunnelHost, writeCodehostTrustBundle } from '../src/shim/tunnel-host.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { daemonSocket, fakeVm, fakeVmManager } from './fixtures/microsandbox-vm.js'
 
@@ -85,6 +87,22 @@ function msbSeed(dir: string): Record<string, string> {
 
 describe("a hosted VM launch's switch to its shim's codehost listener", () => {
   const base = { command: 'x', args: [], env: { AC_AGENT_ID: 'agent-a' } }
+
+  it('includes the shim and seed authorities in its listener bundle before any runtime starts', () => {
+    const dir = shortDir()
+    const ownCa = join(dir, 'own-ca.pem')
+    const seededCa = join(dir, 'seeded-ca.pem')
+    const bundlePath = join(dir, 'codehost-trust.pem')
+    writeFileSync(ownCa, msbCa)
+    writeFileSync(seededCa, guestRootCa)
+    writeCodehostTrustBundle(bundlePath, [proxyCa], {
+      GIT_SSL_CAINFO: ownCa,
+      [SHIM_SEED_ENV]: JSON.stringify({ NODE_EXTRA_CA_CERTS: seededCa })
+    })
+    const bundle = readFileSync(bundlePath, 'utf8')
+    for (const pem of [proxyCa, msbCa, guestRootCa, getCACertificates('default')[0]!])
+      expect(bundle).toContain(pem.trim())
+  })
 
   it('names no trust file of its own and asks the shim to keep those its seed names', () => {
     const launch = applyProxySpawn({ ...base, codehost: OVERLAY }, { codehost: LISTENER })

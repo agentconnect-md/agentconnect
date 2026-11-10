@@ -60,6 +60,34 @@ RUN node /build/scripts/tree-digest.mjs /out > /payload-digest
 FROM scratch AS runtime-payload-digest-export
 COPY --from=runtime-payload-digest /payload-digest /
 
+# Both runtime images share the pinned CLI and its system extension, independent of each session's empty Azure state.
+FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS azure-cli
+ARG AZURE_CLI_VERSION=2.92.0
+ARG AZURE_CLI_SHA256_AMD64=ad0285eaf900cd5e91218e9ad6ac28ce2749d3f8d3fe17f397d7fbf4ca5a5457
+ARG AZURE_CLI_SHA256_ARM64=670627cb5338b95dd77d3bfc8f548b11fe125a723ebff647e245a27e241ddcb9
+ARG AZURE_DEVOPS_VERSION=1.0.10
+ARG AZURE_DEVOPS_SHA256=cb38021f76cf93905f759c9d1b4b441bdeecfc98d4141ce26dd7b299af1aa56e
+ARG TARGETARCH
+RUN set -eu; \
+  arch="${TARGETARCH:-amd64}"; \
+  case "$arch" in \
+  amd64) sha256="$AZURE_CLI_SHA256_AMD64" ;; \
+  arm64) sha256="$AZURE_CLI_SHA256_ARM64" ;; \
+  *) echo "no pinned Azure CLI checksum for TARGETARCH=$arch" >&2; exit 1 ;; \
+  esac; \
+  apt-get update; \
+  apt-get install --no-install-recommends -y ca-certificates curl; \
+  curl --retry 5 -fsSL -o /tmp/azure-cli.deb \
+    "https://packages.microsoft.com/repos/azure-cli/pool/main/a/azure-cli/azure-cli_${AZURE_CLI_VERSION}-1~bookworm_${arch}.deb"; \
+  printf '%s  /tmp/azure-cli.deb\n' "$sha256" | sha256sum -c -; \
+  apt-get install --no-install-recommends -y /tmp/azure-cli.deb; \
+  wheel="azure_devops-${AZURE_DEVOPS_VERSION}-py2.py3-none-any.whl"; \
+  curl --retry 5 -fsSL -o "/tmp/${wheel}" "https://azcliprod.blob.core.windows.net/cli-extensions/${wheel}"; \
+  printf '%s  /tmp/%s\n' "$AZURE_DEVOPS_SHA256" "$wheel" | sha256sum -c -; \
+  AZURE_CORE_COLLECT_TELEMETRY=false az extension add --system --source "/tmp/${wheel}" --yes; \
+  chmod -R a-w /opt/az /usr/bin/az; \
+  rm -rf /var/lib/apt/lists/* /tmp/azure-cli.deb "/tmp/${wheel}"
+
 # Antigravity is the first, independently cached application layer in the full image.
 FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS antigravity
 ARG ANTIGRAVITY_VERSION=1.4.5
@@ -147,6 +175,8 @@ RUN curl --retry 5 -fsSL -o /tmp/goose.tar.bz2 \
 
 FROM ${RUNTIME_SANDBOX_FULL_BASE} AS runtime-sandbox-full-apps
 USER root
+COPY --link --from=azure-cli --chown=0:0 /opt/az/ /opt/az/
+COPY --from=azure-cli --chown=0:0 /usr/bin/az /usr/bin/az
 # Antigravity resolves its local harness relative to the ACP executable.
 COPY --link --from=antigravity --chown=0:0 /out/antigravity/ /opt/agentconnect/runtimes/antigravity/
 RUN printf '%s\n' '#!/bin/sh' \
@@ -205,6 +235,8 @@ USER 10001:10001
 
 FROM ${RUNTIME_SANDBOX_BASE} AS runtime-sandbox-apps
 USER root
+COPY --link --from=azure-cli --chown=0:0 /opt/az/ /opt/az/
+COPY --from=azure-cli --chown=0:0 /usr/bin/az /usr/bin/az
 ARG AGENT_BROWSER_VERSION
 RUN --mount=type=bind,source=docker/runtime-sandbox/install-agent-browser.sh,target=/tmp/install-agent-browser.sh \
   HOME=/root sh /tmp/install-agent-browser.sh

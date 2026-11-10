@@ -1,7 +1,7 @@
 // What a provider's own CLI reads in a proxied session on this machine (azure-devops-integration.md §6.4), from its credential module's `cli` member.
 import { createHash } from 'node:crypto'
 import { lstatSync, mkdirSync, rmSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, posix } from 'node:path'
 import { codeHostCredentials, type CodeHostCli } from '../codehost/credentials.js'
 import type { Config } from '../config/config-schema.js'
 
@@ -39,12 +39,16 @@ function clisOf(providers: Iterable<string>): CodeHostCli[] {
   return [...clis]
 }
 
+function stateLeaf(provider: string, hostKey: string): string {
+  return `${provider}-${createHash('sha256').update(hostKey).digest('hex').slice(0, 8)}`
+}
+
 /** A fresh, empty directory of one host's own for a provider CLI's state, under `home`: a confined session's goes with its directory. */
 export function freshCliStateDir(home: string, provider: string, hostKey: string): string {
   const root = join(home, CLI_STATE_DIR)
   realDirectory(home)
   realDirectory(root)
-  const dir = join(root, `${provider}-${createHash('sha256').update(hostKey).digest('hex').slice(0, 8)}`)
+  const dir = join(root, stateLeaf(provider, hostKey))
   // A link left at the leaf is removed itself, never followed.
   rmSync(dir, { recursive: true, force: true })
   mkdirSync(dir, { mode: 0o700 })
@@ -58,6 +62,30 @@ export function reclaimCliStateDirs(home: string): void {
   } catch {
     // The next start empties its own directory anyway.
   }
+}
+
+/** A remote CLI's environment and state directories, prepared through the launch's existing materialize channel. */
+export function codeHostCliLaunch(opts: {
+  providers: Iterable<string>
+  placeholder: string
+  root: string
+  hostKey: string
+  own: (name: string) => boolean
+}): { env: Record<string, string>; clearDirs: string[] } {
+  const env: Record<string, string> = {}
+  const clearDirs: string[] = []
+  for (const provider of new Set(opts.providers)) {
+    const cli = codeHostCredentials(provider)?.cli
+    if (!cli) continue
+    const stateDir = posix.join(opts.root, CLI_STATE_DIR, stateLeaf(provider, opts.hostKey))
+    clearDirs.push(stateDir)
+    const vars = cli.env({
+      placeholder: opts.placeholder,
+      stateDir
+    })
+    for (const [name, value] of Object.entries(vars)) if (!opts.own(name)) env[name] = value
+  }
+  return { env, clearDirs }
 }
 
 /** The CLI variables of each of `providers` that has a CLI, a fresh state directory each; one the session's own env sets is left to it. */

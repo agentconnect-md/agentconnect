@@ -13,6 +13,7 @@ import {
 import {
   CLI_STATE_DIR,
   codeHostCliEnv,
+  codeHostCliLaunch,
   codeHostCliReads,
   reclaimCliStateDirs
 } from '../src/credential-proxy/cli-env.js'
@@ -146,9 +147,6 @@ describe('where a host of an agent with Azure DevOps repositories may start', ()
   const reached: ProxyOnlyReach = {
     proxyRunning: true,
     managedCredential: true,
-    cluster: false,
-    placedOnExecutor: false,
-    strategy: 'host',
     served: () => true
   }
   const REFUSAL =
@@ -166,19 +164,11 @@ describe('where a host of an agent with Azure DevOps repositories may start', ()
     expect(proxyOnlyProvidersOf({ gitCredential: 'gitlab', additionalRepos: [row('gitea'), row()] })).toEqual([])
   })
 
-  it('starts on the host and in srt while the proxy serves the repositories, and is refused everywhere else', () => {
-    for (const strategy of ['host', 'srt']) {
-      expect(proxyOnlyHostRefusal(['azure-devops'], { ...reached, strategy })).toBeUndefined()
-    }
+  it('admits served credentials before each execution environment checks its current route', () => {
+    expect(proxyOnlyHostRefusal(['azure-devops'], reached)).toBeUndefined()
     const refusals = [
       [{ proxyRunning: false }, 'the credential proxy is not running on this daemon'],
       [{ managedCredential: false }, 'the agent holds no managed code-host credential'],
-      [{ cluster: true }, "a pool pod's own Git does not reach the proxy yet"],
-      [
-        { placedOnExecutor: true },
-        "a session placed on another daemon's executor does not reach it with that daemon's Git yet"
-      ],
-      [{ strategy: 'microsandbox' }, "the microsandbox strategy's own Git does not reach it yet"],
       [{ served: () => false }, 'the proxy serves none of those repositories, whose routing the spec does not carry']
     ] as const
     for (const [unreached, reason] of refusals) {
@@ -187,7 +177,7 @@ describe('where a host of an agent with Azure DevOps repositories may start', ()
       expect(refusal?.endsWith(reason)).toBe(true)
     }
     // An agent with no proxy-only repositories starts wherever it did, a proxy or none.
-    expect(proxyOnlyHostRefusal([], { ...reached, proxyRunning: false, strategy: 'microsandbox' })).toBeUndefined()
+    expect(proxyOnlyHostRefusal([], { ...reached, proxyRunning: false })).toBeUndefined()
   })
 })
 
@@ -216,8 +206,10 @@ describe('the Azure CLI in a proxied session', () => {
     expect(first).toEqual({
       AZURE_DEVOPS_EXT_PAT: PLACEHOLDER,
       AZURE_CONFIG_DIR: expect.stringContaining(join(root, 'home', CLI_STATE_DIR)),
+      AZURE_EXTENSION_DIR: expect.stringContaining(join(root, 'home', CLI_STATE_DIR)),
       AZURE_CORE_COLLECT_TELEMETRY: 'false'
     })
+    expect(first.AZURE_EXTENSION_DIR).toBe(`${first.AZURE_CONFIG_DIR}/cliextensions`)
     // A sign-in the last start left is gone on the next.
     writeFileSync(join(first.AZURE_CONFIG_DIR!, 'azureProfile.json'), '{}')
     mkdirSync(join(root, 'cliextensions'))
@@ -256,5 +248,34 @@ describe('the Azure CLI in a proxied session', () => {
       paths: [root]
     })
     expect(codeHostCliReads(['github', 'gitlab', 'gitea'], {})).toEqual({ commands: [], paths: [] })
+  })
+
+  it('plans remote CLI state in the target filesystem without reading or creating holder paths', () => {
+    const opts = {
+      providers: ['github', 'azure-devops', 'azure-devops'],
+      placeholder: PLACEHOLDER,
+      root: '/run/agentconnect',
+      hostKey: AGENT,
+      own: () => false
+    }
+    const planned = codeHostCliLaunch(opts)
+    expect(planned.env).toEqual({
+      AZURE_DEVOPS_EXT_PAT: PLACEHOLDER,
+      AZURE_CONFIG_DIR: expect.stringMatching(/^\/run\/agentconnect\/\.agentconnect-cli\/azure-devops-/),
+      AZURE_EXTENSION_DIR: expect.stringMatching(
+        /^\/run\/agentconnect\/\.agentconnect-cli\/azure-devops-.*\/cliextensions$/
+      ),
+      AZURE_CORE_COLLECT_TELEMETRY: 'false'
+    })
+    expect(planned.env.AZURE_EXTENSION_DIR).toBe(`${planned.env.AZURE_CONFIG_DIR}/cliextensions`)
+    expect(planned.clearDirs).toEqual([planned.env.AZURE_CONFIG_DIR])
+    expect(codeHostCliLaunch({ ...opts, providers: ['github'] })).toEqual({ env: {}, clearDirs: [] })
+    expect(codeHostCliLaunch({ ...opts, hostKey: `${AGENT}\u0000session-1` }).clearDirs).not.toEqual(planned.clearDirs)
+    const supplied = codeHostCliLaunch({
+      ...opts,
+      own: (name) => name === 'AZURE_DEVOPS_EXT_PAT' || name === 'AZURE_EXTENSION_DIR'
+    })
+    expect(supplied.env).not.toHaveProperty('AZURE_EXTENSION_DIR')
+    expect(supplied.env).not.toHaveProperty('AZURE_DEVOPS_EXT_PAT')
   })
 })

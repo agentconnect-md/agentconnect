@@ -68,6 +68,7 @@ export const WINDOWS_EXCLUDED = [
   'test/k8s-runtime-plane.test.ts',
   'test/k8s-isolated-session-one-pod.test.ts',
   'test/gitlab-self-managed-git.test.ts',
+  'test/azure-devops-git-proxy.test.ts',
   // Every case stands up a second daemon on one root, which EADDRINUSEs on Windows: `start()` clears
   // a stale UDS before listening and a named pipe has no equivalent. Restore once that is fixed.
   'test/schedule-catchup.test.ts',

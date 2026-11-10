@@ -20,12 +20,13 @@ import { clusterMetrics } from '../metrics/cluster-metrics.js'
 import { ShimDialer } from '../shim/dialer.js'
 import { spawnSubject } from '../shim/binding.js'
 import { ShimAutoMergeClient, askArmed } from '../shim/auto-merge-client.js'
-import { ShimGitRunner } from '../shim/git-exec.js'
+import { ShimGitRunner, type GitExecPayload } from '../shim/git-exec.js'
 import { ShimFileSink } from '../shim/channels.js'
 import type { ShimSession } from '../shim/session.js'
 import { ClusterSkillClient } from '../shim/skill-client.js'
 import { ChannelLossWatcher } from '../remote/channel-loss-watcher.js'
 import { TunnelBinder } from '../remote/tunnel-binder.js'
+import { codehostProxyUrl, type CodehostListener } from '../remote/codehost-spawn.js'
 import { ShimWorkspaceFiles } from '../shim/workspace-files-channel.js'
 import { ShimMemoryFs } from '../shim/memory-fs-channel.js'
 import { ShimWorkspaceFs } from '../shim/workspace-fs-channel.js'
@@ -39,6 +40,7 @@ import type { TunnelListenOptions, TunnelName } from '../shim/tunnel.js'
 import { K8sRuntimeTableSchema, type K8sRuntimeTable } from '../runtimes/k8s-runtimes.js'
 import type { GitRunner } from '../workspace/git-runner.js'
 import { deferredGitRunner } from '../workspace/git-runner.js'
+import type { DaemonGitProxyRoute } from '../workspace/git-injection.js'
 import type { ExecutionPlane } from '../execution/plane.js'
 import { ShimBundleClient } from '../shim/bundle-client.js'
 
@@ -97,6 +99,8 @@ export interface K8sRuntimePlaneOptions {
   tunnelGreeting?: (subject: string, tunnel: TunnelName) => Buffer | undefined
   /** What a `listen` carries beside the name: `codehost`'s routes and the proxy CA, its certificate alone. */
   tunnelListenOptions?: (agentId: string, tunnel: TunnelName) => TunnelListenOptions | undefined
+  /** Prepare a managed Git invocation using its pod's current code-host route. */
+  mapGitEnv?: (agentId: string, env: Record<string, string>, route?: DaemonGitProxyRoute) => Record<string, string>
   /** Lifetime of an issued session credential. The shim renews at half of it, so a test that has
    *  to cross a renewal shortens it rather than waiting out the default. */
   credentialTtlMs?: number
@@ -361,6 +365,37 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     if (!session) throw unboundRefusal(subject)
     return session
   }
+  const codehostProxyFor = (subject: string): CodehostListener | undefined =>
+    boundSession(subject) ? tunnels.listeningAt(subject, 'codehost')?.proxy : undefined
+
+  function podGitRunner(subject: SandboxSubject, session: ShimSession, cwd?: string, abort?: AbortSignal): GitRunner {
+    return new ShimGitRunner(
+      {
+        request: async (capability, payload, requestOptions) => {
+          if (boundSession(subject) !== session) throw unboundRefusal(subject)
+          const release = driver.retainLaunched(subject)
+          if (!release) throw unboundRefusal(subject)
+          try {
+            const git = payload as GitExecPayload
+            const listener = codehostProxyFor(subject)
+            const route = listener
+              ? { proxyUrl: codehostProxyUrl(listener), trustBundle: listener.trustBundle }
+              : undefined
+            const env =
+              git.env === undefined
+                ? undefined
+                : (options.mapGitEnv?.(sandboxSubjectAgentId(subject), git.env, route) ?? git.env)
+            return await session.request(capability, env === undefined ? payload : { ...git, env }, requestOptions)
+          } finally {
+            release()
+          }
+        }
+      },
+      cwd,
+      undefined,
+      abort
+    )
+  }
 
   const runtimeProbeAgentId = probeAgentId(settings.memberId)
   const driver = new K8sDriver({
@@ -383,8 +418,8 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
           }
         : undefined,
     onChannelReady: (subject, session) => tunnels.ensure(subject, session),
-    // A pod whose image's shim predates `codehost` reports no listener, so its sessions keep the helper path.
-    codehostFor: (subject) => tunnels.listeningAt(subject, 'codehost')?.proxy,
+    // The listener belongs to the current bound pod, including preparation before runtime spawn.
+    codehostFor: codehostProxyFor,
     // Asked again at spawn, since the launch registers its slots after the pod bound; a shim that predates `provider` reports none.
     providerFor: async (subject) => {
       const session = driver.sessionFor(subject)
@@ -393,7 +428,10 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     },
     connectChannel: (record, podIp, timeoutMs) =>
       dialer.connect(shimEndpoint(podIp, settings.shimPort), record, timeoutMs),
-    revokeChannel: (subject) => dialer.revoke(subject),
+    revokeChannel: (subject) => {
+      dialer.revoke(subject)
+      tunnels.release(subject, 'sandbox channel revoked')
+    },
     metrics: clusterMetrics,
     ...(options.readyTimeoutMs === undefined ? {} : { readyTimeoutMs: options.readyTimeoutMs }),
     log: options.log ?? SILENT
@@ -488,19 +526,17 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     spawnFor: ({ hostKey, confined }) => ({ driver, ...(confined() ? { hostKey } : {}) }),
     podGitRunner: (subject, abort) => {
       const session = boundSession(subject)
-      return session ? new ShimGitRunner(session, undefined, undefined, abort) : undefined
+      return session ? podGitRunner(subject as SandboxSubject, session, undefined, abort) : undefined
     },
     gitRunnerFor: (agentId, cwd, abort) => {
       // No channel to the owning pod of a non-session path answers undefined, which the workspace manager refuses as `sandbox-unavailable`.
       const subject = subjectForPath(agentId, cwd)
       const session = boundSession(subject)
-      if (session) return new ShimGitRunner(session, cwd, undefined, abort)
+      if (session) return podGitRunner(subject, session, cwd, abort)
       if (cwd === undefined || sandboxSubjectSessionLeaf(subject) === undefined) return undefined
       // A session directory whose pod is asleep, beside a bound agent pod: the runner is routed on first use as the path's read is, so a removed claim refuses as such, and it wakes nothing.
       if (boundSession(agentSandboxSubject(agentId))) {
-        return deferredGitRunner(
-          async () => new ShimGitRunner(await sessionForPath(agentId, cwd), cwd, undefined, abort)
-        )
+        return deferredGitRunner(async () => podGitRunner(subject, await sessionForPath(agentId, cwd), cwd, abort))
       }
       // With the agent pod down too it still runs nothing, as before: it only asks the claim, so a removed session reads as removed rather than asleep, as a file read does.
       return deferredGitRunner(async () => {

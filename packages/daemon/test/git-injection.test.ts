@@ -1190,6 +1190,22 @@ describe("git in a session's runtime", () => {
 })
 
 describe('an Azure DevOps repository beside the workspace', () => {
+  const azureUrl = 'https://dev.azure.com/example-org/Example%20Project/_git/Example%20Repo'
+  const azureAlias = 'https://example-org.visualstudio.com/Example%20Project/_git/Example%20Repo'
+  const githubUrl = 'https://github.com/example-org/example-repo.git'
+  const azureScope = managedCredentialScope('azure-devops')
+  const githubScope = managedCredentialScope('github', undefined, false, {}, true)
+  const servedHosts = [
+    githubScope.host,
+    azureScope.host,
+    { provider: 'azure-devops', baseUrl: 'https://example-org.visualstudio.com' }
+  ]
+  const route = {
+    proxyUrl: 'http://codehost:listener-token-example@127.0.0.1:41234',
+    trustBundle: '/session/codehost-trust.pem'
+  }
+  const placeholder = 'acph1_example.tag'
+
   it('pins Azure DevOps’s fixed host beside the workspace’s, as a GitLab or Gitea repository pins its instance', () => {
     const azure = { provider: 'azure-devops', baseUrl: 'https://dev.azure.com' }
     expect(sessionCredentialHosts(managedCredentialScope('github', undefined, false, {}, true))).toEqual([
@@ -1235,9 +1251,8 @@ describe('an Azure DevOps repository beside the workspace', () => {
 
   // POSIX only: the stand-in helper is a shell script.
   it.skipIf(process.platform === 'win32')(
-    'hands the daemon’s own Git inside a boundary the placeholder for Azure DevOps, and the real helper only elsewhere',
+    'selects the operation target in a mixed agent and removes every real helper from a migrated invocation',
     () => {
-      // The daemon target's helper, standing in for the real one: whatever it answers is the real token.
       const helper = join(tmpRun, 'helper.sh')
       writeFileSync(
         helper,
@@ -1257,22 +1272,25 @@ describe('an Azure DevOps repository beside the workspace', () => {
           }
         }).toString()
       try {
-        const azure = cloneGitEnv('agent-azure', undefined, managedCredentialScope('azure-devops'))
-        // On the host, outside every boundary, the daemon's Git presents the real token as before.
+        const azure = cloneGitEnv('agent-azure', azureUrl, azureScope)
         expect(fill(azure, 'dev.azure.com')).toContain('password=REAL-TOKEN')
-        const proxied = proxiedDaemonGitEnv(azure, ['https://dev.azure.com'], 'acph1_example.tag')
-        expect(proxied[CODE_HOST_CREDENTIAL_ENV]).toBe('acph1_example.tag')
+        const github = cloneGitEnv('agent-azure', githubUrl, githubScope)
+        const both = { ...azure, ...mergeGitConfigEnv(azure, github) }
+        const proxied = proxiedDaemonGitEnv(both, servedHosts, route, placeholder)
+        expect(proxied).not.toHaveProperty(AGENT_CHANNEL_CAPABILITY_ENV)
         expect(fill(proxied, 'dev.azure.com')).toContain('password=acph1_example.tag')
-        expect(fill(proxied, 'dev.azure.com')).not.toContain('REAL-TOKEN')
-        // Only the helper changes: the reset before it and every other pair stay as they were.
-        expect(configPairs(proxied).map(([key]) => key)).toEqual(configPairs(azure).map(([key]) => key))
-        expect(configPairs(proxied).filter(([key]) => key === 'credential.https://dev.azure.com.helper')).toEqual([
-          ['credential.https://dev.azure.com.helper', ''],
-          ['credential.https://dev.azure.com.helper', checkoutHelper()]
-        ])
-        // A host that is not proxy-only keeps its real helper.
-        const github = proxiedDaemonGitEnv(cloneGitEnv('agent-azure'), ['https://dev.azure.com'], 'acph1_example.tag')
+        expect(fill(proxied, 'example-org.visualstudio.com')).toContain('password=acph1_example.tag')
+        expect(fill(proxied, 'github.com')).toContain('password=acph1_example.tag')
+        expect(JSON.stringify(proxied)).not.toContain(helper)
+        // An Azure additional repository selects the proxy even when the injected scope starts with GitHub.
+        const additional = cloneGitEnv('agent-azure', azureUrl, githubScope)
+        expect(fill(proxiedDaemonGitEnv(additional, servedHosts, route, placeholder), 'dev.azure.com')).toContain(
+          'password=acph1_example.tag'
+        )
+        expect(proxiedDaemonGitEnv(github, servedHosts, undefined, undefined)).toBe(github)
         expect(fill(github, 'github.com')).toContain('password=REAL-TOKEN')
+        const local = workspaceGitLocalEnv()
+        expect(proxiedDaemonGitEnv(local, servedHosts, undefined, undefined)).toBe(local)
       } finally {
         rmSync(helper, { force: true })
         rmSync(home, { recursive: true, force: true })
@@ -1280,19 +1298,59 @@ describe('an Azure DevOps repository beside the workspace', () => {
     }
   )
 
-  it('keeps the daemon’s capability out of the boundary where no real helper is left, and where one is', () => {
-    const bases = ['https://dev.azure.com']
-    const azure = cloneGitEnv('agent-azure', undefined, managedCredentialScope('azure-devops'))
-    expect(azure[AGENT_CHANNEL_CAPABILITY_ENV]).toBe('daemon-cap-agent-azure')
-    expect(proxiedDaemonGitEnv(azure, bases, 'acph1_example.tag')).not.toHaveProperty(AGENT_CHANNEL_CAPABILITY_ENV)
-    // GitHub's helper in the same session still presents it, alone or beside Azure DevOps's.
-    const github = cloneGitEnv('agent-azure')
-    expect(proxiedDaemonGitEnv(github, bases, 'acph1_example.tag')[AGENT_CHANNEL_CAPABILITY_ENV]).toBe(
-      'daemon-cap-agent-azure'
+  it('pins the canonical remote to its proxy while bundle storage stays direct and inherited bypasses disappear', () => {
+    const home = mkdtempSync(join(tmpdir(), 'acp-proxied-git-route-'))
+    try {
+      execFileSync('git', ['init', '-q', home], { env: workspaceGitLocalEnv() })
+      const target = workspaceGitRemoteTarget(azureAlias, 'agent-azure', azureScope)
+      const proxied = proxiedDaemonGitEnv(
+        {
+          ...target.env,
+          NO_PROXY: 'dev.azure.com',
+          no_proxy: '*',
+          HTTPS_PROXY: 'http://unrelated.example.test:8080'
+        },
+        servedHosts,
+        route,
+        placeholder
+      )
+      const read = (args: string[]) =>
+        execFileSync('git', args, {
+          cwd: home,
+          env: { ...proxied, HOME: home, GIT_CONFIG_GLOBAL: join(home, 'empty.gitconfig') }
+        })
+          .toString()
+          .trim()
+      expect(read(['ls-remote', '--get-url', target.remote])).toBe(azureUrl)
+      expect(read(['config', '--get', `remote.${target.remote}.proxy`])).toBe(route.proxyUrl)
+      expect(read(['config', '--get-urlmatch', 'http.proxy', azureUrl])).toBe(route.proxyUrl)
+      expect(read(['config', '--get-urlmatch', 'http.proxy', 'https://objects.example.test/clone.bundle'])).toBe('')
+      expect(read(['config', '--get-urlmatch', 'http.sslVerify', azureUrl])).toBe('true')
+      expect(proxied.GIT_SSL_CAINFO).toBe(route.trustBundle)
+      expect(proxied).not.toHaveProperty(AGENT_CHANNEL_CAPABILITY_ENV)
+      for (const name of ['NO_PROXY', 'no_proxy', 'HTTPS_PROXY']) expect(proxied).not.toHaveProperty(name)
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it('requires a ready route covering every target, including the domains reported by SRT', () => {
+    const azure = cloneGitEnv('agent-azure', azureUrl, azureScope)
+    expect(() => proxiedDaemonGitEnv(azure, servedHosts, undefined, placeholder)).toThrow('ready credential proxy')
+    expect(() => proxiedDaemonGitEnv(azure, servedHosts, route, undefined)).toThrow('ready credential proxy')
+    const uncovered = workspaceGitEnvBase('https://unserved.example.test/example-repo.git')
+    const multiple = { ...azure, ...mergeGitConfigEnv(azure, uncovered) }
+    expect(() => proxiedDaemonGitEnv(multiple, servedHosts, route, placeholder)).toThrow('not covered')
+    expect(() =>
+      proxiedDaemonGitEnv(azure, servedHosts, { trustBundle: route.trustBundle, domains: ['github.com'] }, placeholder)
+    ).toThrow('not covered')
+    const transparent = proxiedDaemonGitEnv(
+      azure,
+      servedHosts,
+      { trustBundle: route.trustBundle, domains: ['dev.azure.com'] },
+      placeholder
     )
-    const both = { ...azure, ...mergeGitConfigEnv(azure, github) }
-    expect(proxiedDaemonGitEnv(both, bases, 'acph1_example.tag')[AGENT_CHANNEL_CAPABILITY_ENV]).toBe(
-      'daemon-cap-agent-azure'
-    )
+    expect(transparent[CODE_HOST_CREDENTIAL_ENV]).toBe(placeholder)
+    expect(transparent).not.toHaveProperty(AGENT_CHANNEL_CAPABILITY_ENV)
   })
 })

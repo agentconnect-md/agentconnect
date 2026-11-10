@@ -7,23 +7,23 @@ file and the design record disagree, the design record wins.
 ## What this project does
 
 AgentConnect connects chat platforms (Slack, Telegram, Discord, Lark/Feishu, Google Chat), code hosts
-(GitHub, GitLab, Gitea), Linear, generic webhooks and a browser webchat to AI coding agents (Claude,
+(GitHub, GitLab, Gitea, Azure DevOps), Linear, generic webhooks and a browser webchat to AI coding agents (Claude,
 Codex and other ACP runtimes). An organization enrols its own bots and apps, picks which agents answer
 where, and the agents run code on machines the organization chooses. It is a pnpm monorepo under
 `/src/packages/`; every package is TypeScript on Node 26.
 
 ## Components
 
-| Package                                                                                         | Role                                                                                                                                                                                                                 |
-| ----------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `control-plane` (CP)                                                                            | Fastify + Prisma/Postgres. Orchestration, registry, human auth, the REST/SSE surface behind the console (`src/http/`), the daemon and relay WebSocket endpoints (`src/ws/`).                                         |
-| `daemon`                                                                                        | The execution unit. Owns direct platform connections, routing, provider egress, workspaces, and the agent runtime over ACP; dials out to the CP over one WebSocket.                                                  |
-| `relay`                                                                                         | Optional public ingress. Terminates Slack/Feishu/Google Chat/Linear HTTP callbacks, GitHub/GitLab/Gitea webhooks, generic webhooks, the MCP proxy, and webchat; forwards to the owning daemon. Stores nothing.       |
-| `setup`                                                                                         | Loopback-bound Setup Server for self-hosting: Logto and provider-app administration against the deployment database.                                                                                                 |
-| `web`                                                                                           | Next.js console. A pure client of the CP's REST surface; no server-side secrets.                                                                                                                                     |
-| `protocol`, `message`, `connection`                                                             | The wire contract (zod frames, org-scoping rules in `frame-scope.ts`), pure platform normalization, and the WS primitives shared by the three services.                                                              |
-| `cli`, `k8s-client`, `object-store`, `observability`, `memory-plugin-mem0`, `activation-policy` | The `agentconnect` bin, the bare-REST Kubernetes client the pool driver uses, the S3 signing and lifecycle-check primitives, OTel bootstrap with span-name hygiene, the Mem0 MCP wrapper, trigger-policy evaluation. |
-| `daemon/src/shim/`                                                                              | The in-sandbox shim: the half-trusted process inside a sandbox pod or VM that executes what the daemon asks over a bound channel (`cluster-spawn-and-shim.md`).                                                      |
+| Package                                                                                         | Role                                                                                                                                                                                                                        |
+| ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `control-plane` (CP)                                                                            | Fastify + Prisma/Postgres. Orchestration, registry, human auth, the REST/SSE surface behind the console (`src/http/`), the daemon and relay WebSocket endpoints (`src/ws/`).                                                |
+| `daemon`                                                                                        | The execution unit. Owns direct platform connections, routing, provider egress, workspaces, and the agent runtime over ACP; dials out to the CP over one WebSocket.                                                         |
+| `relay`                                                                                         | Optional public ingress. Terminates Slack/Feishu/Google Chat/Linear HTTP callbacks, GitHub/GitLab/Gitea/Azure DevOps webhooks, generic webhooks, the MCP proxy, and webchat; forwards to the owning daemon. Stores nothing. |
+| `setup`                                                                                         | Loopback-bound Setup Server for self-hosting: Logto and provider-app administration against the deployment database.                                                                                                        |
+| `web`                                                                                           | Next.js console. A pure client of the CP's REST surface; no server-side secrets.                                                                                                                                            |
+| `protocol`, `message`, `connection`                                                             | The wire contract (zod frames, org-scoping rules in `frame-scope.ts`), pure platform normalization, and the WS primitives shared by the three services.                                                                     |
+| `cli`, `k8s-client`, `object-store`, `observability`, `memory-plugin-mem0`, `activation-policy` | The `agentconnect` bin, the bare-REST Kubernetes client the pool driver uses, the S3 signing and lifecycle-check primitives, OTel bootstrap with span-name hygiene, the Mem0 MCP wrapper, trigger-policy evaluation.        |
+| `daemon/src/shim/`                                                                              | The in-sandbox shim: the half-trusted process inside a sandbox pod or VM that executes what the daemon asks over a bound channel (`cluster-spawn-and-shim.md`).                                                             |
 
 The ACP adapters (`claude-agent-acp`, `codex-acp`) and the model runtimes are separate projects.
 
@@ -35,7 +35,9 @@ The ACP adapters (`claude-agent-acp`, `codex-acp`) and the model runtimes are se
   That is by design; the operator chooses it per agent, or forbids it with `--require-sandbox`.
 - **Managed daemon pool** (Kubernetes): no operator sits at the host, no agent is trusted, and the
   sandbox pod is the boundary. The daemon authenticates with a projected ServiceAccount token, the shim
-  proves its pod through TokenReview, and no org-scoped credential ever lives in the sandbox.
+  proves its pod through TokenReview. Credential exposure depends on the caller: proxied runtime
+  requests and migrated Azure workspace Git carry placeholders, while unmigrated daemon Git,
+  scoped source operations and the auto-merge watcher retain the contracts described below.
 
 Sandbox tiers, in increasing strength (`session-executors.md` section 5, `daemon-sandbox-backends.md`):
 
@@ -54,7 +56,8 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
 1. **Relay HTTP ingress** (`relay/src/platforms/*`, `relay/src/hooks/`): unauthenticated internet.
    Slack HMAC over raw bytes with a replay window and timing-safe compare; Feishu verification token /
    encrypt key; GitHub `X-Hub-Signature-256` is mandatory; GitLab uses Standard Webhooks signatures
-   (`hooks/standard-webhooks.ts`); Gitea a hex HMAC header; the generic webhook an unguessable capability
+   (`hooks/standard-webhooks.ts`); Gitea a hex HMAC header; Azure DevOps verifies subscription-bound
+   Basic credentials before decoding the delivery; the generic webhook an unguessable capability
    URL plus `X-AC-Signature` (`hooks/signature.ts`); `hooks/rate-limit.ts` throttles. A verified event is
    demuxed to the owning bot and forwarded as `rd/*` frames to the owning daemon.
 2. **Webchat, the agent chat API and AHP** (`relay/src/relay-browser-server.ts`, `agent-chat-route.ts`, `ahp-server.ts`):
@@ -108,10 +111,29 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
 - **Credentials never enter logs, telemetry, span names, error responses or transcripts**
   (`high-availability.md`, `observability` package). Plaintext keys are shown exactly once when minted.
 - **Credential confinement**: the Slack signing secret never reaches a daemon; the Feishu app secret
-  never reaches a relay; a daemon receives credentials only for what is placed on it; a sandboxed
-  runtime sees a placeholder and the VM's TLS proxy substitutes the real provider key for allowed hosts
-  only; the git credential helper in a pod is root-owned and dials a tunnel the daemon authorizes per
-  grant.
+  never reaches a relay; a daemon receives credentials only for what is placed on it. Code-host
+  runtime requests use the daemon's credential proxy, reached through the environment's existing
+  route; provider-key substitution has its own proxy contract. A placeholder is agent-bound, and
+  the proxy checks the requested repository and access tier before presenting an upstream token.
+- **Azure Git inside execution environments**: `workspace/git-injection.ts` selects migrated
+  daemon operations from their trusted target and the provider's `proxyOnly` capability. It removes
+  real helpers and the daemon minting capability, pins managed targets to the current proxy route,
+  and uses the environment's trust bundle. The owning daemon's host-side Git still uses
+  `consumer: 'daemon'`. Azure token retrieval through a shim's helper tunnel remains refused even
+  with a daemon-holder capability. Test mixed providers, two organizations on one authority,
+  supported aliases, redirects, read-only push refusal, and missing or stale bindings.
+- **Remaining credential exposure**: non-Azure daemon Git and scoped source operations still use
+  their existing helpers and credential windows. The in-pod auto-merge watcher holds a daemon
+  minting capability in its environment. These processes share the runtime's OS user; labeling
+  a capability as daemon-held does not isolate it from a sibling process. Azure's migration is
+  not a claim that every pod or VM is free of minting capabilities. Unconfined host execution
+  remains operator-trusted.
+- **Preparation lifecycle and transport**: workspace Git must acquire the current environment
+  binding before a cold clone, release its operation hold on every exit path, and reject retired
+  bindings even when no runtime ever launched. Shared valid holders retain their listeners.
+  Source Cache bundle bytes bypass the codehost tunnel; managed-remote top-up fetches use it.
+  Wider provider migration requires the measured ACP/renewal capacity gate in
+  `github-app-git-credentials.md`; a per-shim stream cap is not a daemon-member admission bound.
 - **Tenant fence** (`ingress-tenant-fence.md`): a delivery that provably names another tenant is refused.
 - **Loop breaker** (`loop-breaker-design.md`): bot-to-bot and agent-to-agent chains must terminate.
 - **Decisions and triggers** (`decisions.md`, `webhook-triggers-and-github-events.md`): who may summon

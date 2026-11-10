@@ -143,7 +143,7 @@ function azureDevOpsUserInfoAllowed(url: URL, repo: AzureDevOpsRepoAddress): boo
 
 function azureDevOpsCloneUrl(repo: AzureDevOpsRepoAddress): string {
   const { organization, project, repository } = repo
-  return `https://${AZURE_DEVOPS_HOST}/${organization}/${encodeURIComponent(project)}/_git/${encodeURIComponent(repository)}`
+  return `https://${AZURE_DEVOPS_HOST}/${organization.toLowerCase()}/${encodeURIComponent(project)}/_git/${encodeURIComponent(repository)}`
 }
 
 /** The Azure DevOps repository a clone address names, in any accepted form; undefined for any other address. */

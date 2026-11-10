@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, normalize, resolve, sep } from 'node:path'
 import { z } from 'zod'
 
@@ -67,6 +67,10 @@ export class LocalFileSink implements FileSink {
   async clear(root: string): Promise<string | undefined> {
     const dir = resolve(root)
     try {
+      // A planted state directory or parent must not redirect a launch's cleanup into another directory.
+      for (const path of [dirname(dir), dir]) {
+        if (!lstatSync(path).isDirectory()) throw new Error('config directory is not a real directory')
+      }
       for (const entry of readdirSync(dir)) rmSync(join(dir, entry), { recursive: true, force: true })
     } catch (err) {
       const code = (err as { code?: string }).code

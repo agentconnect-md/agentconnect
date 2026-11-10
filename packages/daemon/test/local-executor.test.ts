@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { SpawnedRuntime } from '../src/acp/spawn-driver.js'
 import { microsandboxLauncher } from '../src/execution/executor-vm.js'
 import { LocalExecutor } from '../src/execution/local-executor.js'
-import type { EnvironmentDescriptor } from '../src/execution/strategies.js'
+import type { EnvironmentDescriptor, StrategyLauncher } from '../src/execution/strategies.js'
 import { RemoteShimDriver } from '../src/remote/shim-driver.js'
 import { daemonSocket, fakeVm, fakeVmManager } from './fixtures/microsandbox-vm.js'
 
@@ -21,31 +21,58 @@ afterEach(async () => {
   for (const close of closers.splice(0).reverse()) await close()
 })
 
-async function fixture(runtimeEnv?: Record<string, string>) {
+async function fixture(runtimeEnv?: Record<string, string>, servesAgent?: (agentId: string) => boolean) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'local-executor-')))
   const sockets = { mcp: join(root, 'mcp.sock'), agent: join(root, 'agent.sock') }
   const servers: Server[] = [await daemonSocket(sockets.mcp, 'mcp'), await daemonSocket(sockets.agent, 'agent')]
-  const vm = fakeVm({ mcp: join(root, 'guest', 'mcp.sock'), agent: join(root, 'guest', 'agent.sock') })
-  const fake = fakeVmManager({ vm, ...(runtimeEnv ? { runtimeEnv } : {}) })
+  const environment: EnvironmentDescriptor = { id: 'agent/session-example', mounts: [], workspaceRoot: root }
+  const instances = new Map<string, { vm: ReturnType<typeof fakeVm>; fake: ReturnType<typeof fakeVmManager> }>()
+  let incarnation = 0
+  closers.push(() => rm(root, { recursive: true, force: true }), ...servers.map((server) => () => server.close()))
+  const instanceFor = (id: string) => {
+    let instance = instances.get(id)
+    if (!instance) {
+      const guest = join(root, `guest-${++incarnation}`)
+      const vm = fakeVm({ mcp: join(guest, 'mcp.sock'), agent: join(guest, 'agent.sock') })
+      const fake = fakeVmManager({ vm, ...(runtimeEnv ? { runtimeEnv } : {}) })
+      instance = { vm, fake }
+      instances.set(id, instance)
+      closers.push(
+        () => vm.close(),
+        () => fake.stop()
+      )
+    }
+    return instance
+  }
+  const { vm, fake } = instanceFor(environment.id)
+  const stopped = vi.fn(async (id: string, instance: ReturnType<typeof instanceFor>) => {
+    await instance.fake.stop()
+    await instance.vm.close()
+    if (instances.get(id) === instance) instances.delete(id)
+  })
+  const start = vi.fn<StrategyLauncher['start']>(async (input) => {
+    const instance = instanceFor(input.environment.id)
+    const running = await microsandboxLauncher({ manager: () => instance.fake.manager }).start(input)
+    return { ...running, stop: () => stopped(input.environment.id, instance) }
+  })
+  const launcher: StrategyLauncher = {
+    start,
+    hold: (environment) => instanceFor(environment.id).fake.manager.hold(environment),
+    sameEnvironment: (a, b) => instanceFor(a.id).fake.manager.sameEnvironment(a, b)
+  }
   let generation = 0
   const allocated = vi.fn(async (_subject: string) => ++generation)
   const local = new LocalExecutor({
-    launcher: microsandboxLauncher({ manager: () => fake.manager }),
+    launcher,
     generations: { nextSandboxGeneration: allocated },
+    ...(servesAgent ? { servesAgent } : {}),
     tunnelSocketPath: (tunnel) => (tunnel === 'agent' || tunnel === 'mcp' ? sockets[tunnel] : undefined),
     log: quiet
   })
-  const environment: EnvironmentDescriptor = { id: 'agent/session-example', mounts: [], workspaceRoot: root }
-  closers.push(
-    () => rm(root, { recursive: true, force: true }),
-    ...servers.map((server) => () => server.close()),
-    () => vm.close(),
-    () => fake.stop(),
-    () => local.stop()
-  )
+  closers.push(() => local.stop())
   const launch = (request: { command: string; args: string[]; env?: Record<string, string> }, target = environment) =>
     local.driverFor(target).launch({ ...request, env: { AC_AGENT_ID: 'agent', ...request.env } })
-  return { ...fake, vm, local, environment, allocated, launch, root }
+  return { ...fake, vm, local, environment, allocated, launch, root, start, stopped, instanceFor }
 }
 
 async function firstLine(runtime: SpawnedRuntime): Promise<{ cwd: string; env: Record<string, string> }> {
@@ -100,6 +127,113 @@ describe('a local session through the in-process executor entry', () => {
     ])
     expect(first).toBe(second)
     expect(allocated).toHaveBeenCalledOnce()
+  })
+
+  it('releases a canceled preparation without a runtime, keeps another agent held, and permits fresh admission', async () => {
+    let served = true
+    const { local, environment, manager, released, stopped, instanceFor } = await fixture(
+      undefined,
+      (agentId) => agentId !== 'agent' || served
+    )
+    const before = await local.withEnvironment(environment, async (session) => session)
+    const driver = local.driverFor(environment)
+    await expect(
+      local.withEnvironment(environment, async () => {
+        throw new Error('preparation canceled')
+      })
+    ).rejects.toThrow('preparation canceled')
+    const unrelated = { ...environment, id: 'other/session-example' }
+    let finish!: () => void
+    const held = new Promise<void>((resolve) => (finish = resolve))
+    closers.push(finish)
+    let entered!: () => void
+    const working = new Promise<void>((resolve) => (entered = resolve))
+    const operation = local.withEnvironment(unrelated, async (session) => {
+      entered()
+      await held
+      return session
+    })
+    await working
+    const other = instanceFor(unrelated.id).fake
+    served = false
+    const stopping = local.releaseAgent('agent')
+    expect(local.sessionFor(environment.id)).toBeUndefined()
+    expect(before.isAttached()).toBe(false)
+    expect(local.sessionFor(unrelated.id)?.isAttached()).toBe(true)
+    await stopping
+    expect(stopped.mock.calls.map(([id]) => id)).toEqual([environment.id])
+    expect(manager.hold.mock.calls.length).toBe(released.mock.calls.length)
+    await expect(driver.launch({ command: 'cat', args: [], env: { AC_AGENT_ID: 'agent' } })).rejects.toThrow(
+      'left this member'
+    )
+    served = true
+    const after = await local.withEnvironment(environment, async (session) => session)
+    expect(after.generation).toBeGreaterThan(before.generation)
+    expect(other.manager.hold.mock.calls.length - other.released.mock.calls.length).toBe(1)
+    expect(local.sessionFor(unrelated.id)?.isAttached()).toBe(true)
+    finish()
+    await operation
+  })
+
+  it('fences both the pending generation allocation and callers waiting behind it', async () => {
+    const { local, environment, allocated, start } = await fixture()
+    let allocate!: () => void
+    const allocation = new Promise<void>((resolve) => (allocate = resolve))
+    closers.push(allocate)
+    const nextGeneration = allocated.getMockImplementation()!
+    allocated.mockImplementationOnce(async (subject) => {
+      await allocation
+      return nextGeneration(subject)
+    })
+    const work = vi.fn(async () => undefined)
+    const first = local.withEnvironment(environment, work)
+    const second = local.withEnvironment(environment, work)
+    const rejected = Promise.all([
+      expect(first).rejects.toThrow('left this member'),
+      expect(second).rejects.toThrow('left this member')
+    ])
+    const stopping = local.releaseAgent('agent')
+    allocate()
+    await stopping
+    await rejected
+    expect(start).not.toHaveBeenCalled()
+    expect(work).not.toHaveBeenCalled()
+    expect(local.sessionFor(environment.id)).toBeUndefined()
+    await local.withEnvironment(environment, async () => undefined)
+    expect(allocated).toHaveBeenCalledTimes(2)
+    expect(start).toHaveBeenCalledOnce()
+  })
+
+  it('stops an in-flight start before a fresh acquisition can use the same environment', async () => {
+    const { local, environment, start, stopped, manager, released } = await fixture()
+    let finishStart!: () => void
+    const starting = new Promise<void>((resolve) => (finishStart = resolve))
+    closers.push(finishStart)
+    let reached!: () => void
+    const ready = new Promise<void>((resolve) => (reached = resolve))
+    const startEnvironment = start.getMockImplementation()!
+    start.mockImplementationOnce(async (input) => {
+      const running = await startEnvironment(input)
+      reached()
+      await starting
+      return running
+    })
+    const work = vi.fn(async () => undefined)
+    const preparation = local.withEnvironment(environment, work)
+    const rejected = expect(preparation).rejects.toThrow('no longer launched')
+    await ready
+    const stopping = local.releaseAgent('agent')
+    const fresh = local.withEnvironment(environment, async (session) => session)
+    expect(start).toHaveBeenCalledOnce()
+    expect(manager.hold.mock.calls.length).toBe(released.mock.calls.length)
+    finishStart()
+    await stopping
+    await rejected
+    const session = await fresh
+    expect(stopped).toHaveBeenCalledOnce()
+    expect(start).toHaveBeenCalledTimes(2)
+    expect(work).not.toHaveBeenCalled()
+    expect(session.isAttached()).toBe(true)
   })
 
   it('starts a new launch for a changed environment nothing holds, and refuses one while something does', async () => {

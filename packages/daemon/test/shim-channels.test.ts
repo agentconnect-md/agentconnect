@@ -1,5 +1,15 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { clearSpawnDirs } from '../src/acp/spawn-driver.js'
@@ -113,6 +123,26 @@ describe('file sink', () => {
     const refusing = { clear: async () => 'config files could not be cleared (read-only filesystem)' }
     await expect(clearSpawnDirs(refusing, ['/rt/config-files'])).rejects.toThrow(/read-only filesystem/)
   })
+
+  it.skipIf(process.platform === 'win32')(
+    'refuses linked state directories and their parent without clearing the target',
+    async () => {
+      const root = agentDir()
+      try {
+        const outside = join(root, 'outside')
+        mkdirSync(outside)
+        writeFileSync(join(outside, 'kept'), 'kept')
+        const leaf = join(root, 'linked-state')
+        symlinkSync(outside, leaf)
+        const sink = new LocalFileSink()
+        await expect(clearSpawnDirs(sink, [leaf])).rejects.toThrow(/not a real directory/)
+        await expect(clearSpawnDirs(sink, [join(leaf, 'nested')])).rejects.toThrow(/not a real directory/)
+        expect(readFileSync(join(outside, 'kept'), 'utf8')).toBe('kept')
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    }
+  )
 
   it('refuses a path that would escape its root, on whichever side runs it', () => {
     expect(() => resolveSinkPath('/tmp/root', ['ok', 'file'])).not.toThrow()
