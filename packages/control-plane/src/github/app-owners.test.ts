@@ -12,7 +12,7 @@ describe('GitHub App owner discovery', () => {
     const request = vi.fn(async (url: string, init?: RequestInit) => {
       if (url.endsWith('/access_token')) {
         expect(new URLSearchParams(init?.body as URLSearchParams).get('code_verifier')).toBe('example-verifier')
-        return Response.json({ access_token: 'example-token' })
+        return Response.json({ access_token: 'example-token', scope: 'read:org' })
       }
       if (url.endsWith('/token')) return new Response(null, { status: 204 })
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer example-token')
@@ -32,6 +32,8 @@ describe('GitHub App owner discovery', () => {
     expect(authorization.searchParams.get('code_challenge')).toBe('example-challenge')
     expect(authorization.searchParams.get('code_challenge_method')).toBe('S256')
     expect(authorization.searchParams.get('redirect_uri')).toBe(oauth.redirectUri)
+    expect(authorization.searchParams.get('scope')).toBe('read:org')
+    expect(authorization.searchParams.get('client_id')).toBe(oauth.clientId)
     await expect(service.list('example-code', 'example-verifier')).resolves.toEqual({
       personal: 'example-user',
       organizations: ['another-org', 'example-org']
@@ -44,13 +46,27 @@ describe('GitHub App owner discovery', () => {
 
   it('revokes the token when discovery fails and never exposes upstream credentials', async () => {
     const request = vi.fn(async (url: string) => {
-      if (url.endsWith('/access_token')) return Response.json({ access_token: 'example-token' })
+      if (url.endsWith('/access_token')) return Response.json({ access_token: 'example-token', scope: 'read:org' })
       if (url.endsWith('/token')) return new Response(null, { status: 204 })
       throw new Error('sensitive upstream content')
     })
     await expect(new GithubAppOwnersService(oauth, request).list('code', 'verifier')).rejects.toThrow(
       'Could not load GitHub accounts'
     )
+    expect(request.mock.lastCall?.[0]).toBe('https://api.github.com/applications/example-client/token')
+  })
+
+  it('rejects a token without organization scope instead of reporting an empty organization list', async () => {
+    const request = vi.fn(async (url: string) =>
+      url.endsWith('/access_token')
+        ? Response.json({ access_token: 'example-token', scope: '' })
+        : new Response(null, { status: 204 })
+    )
+    await expect(new GithubAppOwnersService(oauth, request).list('code', 'verifier')).rejects.toMatchObject({
+      status: 502,
+      message: expect.stringContaining('Organization access was not granted')
+    })
+    expect(request).toHaveBeenCalledTimes(2)
     expect(request.mock.lastCall?.[0]).toBe('https://api.github.com/applications/example-client/token')
   })
 })

@@ -349,14 +349,30 @@ after a person confirms it. The console asks the CP for a manifest for an
 agent (`POST /agents/:id/github-app/manifest`, agent editors only) and posts it
 to GitHub's create page. The user chooses their personal GitHub account or loads
 their organizations through a GitHub authorization popup and selects one from
-the owner dropdown. The popup uses state and PKCE; the authenticated, agent-editor-only
+the owner dropdown. Organization discovery uses a **dedicated OAuth App** requesting
+only `read:org`, not the integration GitHub App's user token. The popup uses state
+and PKCE; the authenticated, agent-editor-only
 owner endpoints exchange the code, read `/user` and every page of active
 `/user/memberships/orgs`, and revoke the temporary token without persisting it or
-changing a linked identity. The list includes members as well as owners because
+changing a linked identity. Tokens without organization scope are rejected, not
+interpreted as an empty membership list. OAuth restrictions and SSO may limit the
+organizations returned; the console offers manual entry and explains that organization
+approval may be required. The list includes members as well as owners because
 members may have permission to manage all Apps; GitHub checks creation permission.
 Manual organization entry remains available when authorization is unavailable or
-the desired organization is not returned. The
-request carries `organization: null` for the signed-in personal account or the
+the desired organization is not returned.
+
+Setup Server's GitHub section configures this separate OAuth App. Register it at
+GitHub **Settings → Developer settings → OAuth Apps** with the console's
+`/auth/social/callback` URL (shown by Setup), then save its client ID and secret
+under **Organization selection** and restart the Control Plane. The typed deployment
+document stores `githubOwnerOAuth.clientId`; the write-only secret is
+`githubOwnerOAuth.clientSecret`. Without a deployment document, the equivalent
+environment variables are `GITHUB_OWNER_OAUTH_CLIENT_ID` and
+`GITHUB_OWNER_OAUTH_CLIENT_SECRET`. Do not reuse the repository App or login client.
+Missing configuration leaves personal creation and manual organization entry usable.
+
+The request carries `organization: null` for the signed-in personal account or the
 organization login. Creation does not require an existing repository. New Apps
 are public so they can be installed on additional accounts later; repository
 access is still granted separately at installation. Existing private Apps keep

@@ -277,6 +277,16 @@ export const SETUP_HTML = String.raw`<!doctype html>
           <button id="clear-github" class="danger" hidden>Clear configuration</button>
           <a id="github-settings" class="button" target="_blank" rel="noopener" hidden>Open GitHub settings</a>
         </div>
+        <div class="subsection">
+          <h4>Organization selection</h4>
+          <p class="muted">Register a separate OAuth App to let users choose an organization when creating a GitHub App. This requests read:org only; repository access and sign-in use the existing GitHub App. Organizations may require approval for OAuth access.</p>
+          <p>Authorization callback URL:</p><ul id="github-owner-oauth-callbacks" class="uris"></ul>
+          <a class="button" href="https://github.com/settings/applications/new" target="_blank" rel="noopener">Register OAuth App</a>
+          <label class="field">OAuth Client ID<input id="github-owner-oauth-id" autocomplete="off"></label>
+          <p>Client secret: <span id="github-owner-oauth-secret-display" class="redacted">Not configured</span></p>
+          <label class="field">New client secret<input id="github-owner-oauth-secret" type="password" autocomplete="new-password" placeholder="Leave empty to keep the saved secret"></label>
+          <div class="row"><button id="save-github-owner-oauth">Save organization OAuth App</button><button id="clear-github-owner-oauth" class="danger" hidden>Clear organization OAuth App</button></div>
+        </div>
       </section>
 
       <section id="gitlab-section" class="panel setup-section" aria-labelledby="gitlab-heading">
@@ -887,6 +897,11 @@ export const SETUP_HTML = String.raw`<!doctype html>
       el('max-orgs-per-non-admin-user').value = String(values.features.maxOrgsPerNonAdminUser);
 
       const github = values.github;
+      el('github-owner-oauth-id').value = values.githubOwnerOAuth?.clientId || '';
+      el('github-owner-oauth-secret').value = '';
+      text('github-owner-oauth-secret-display', configured(byKey, 'githubOwnerOAuth.clientSecret') ? '***' : null);
+      renderUriList('github-owner-oauth-callbacks', expected.githubOwnerOAuth ? [expected.githubOwnerOAuth.callbackUrl] : []);
+      el('clear-github-owner-oauth').hidden = !values.githubOwnerOAuth;
       const webhookStored = byKey.get('github.webhookSecret') && byKey.get('github.webhookSecret').configured;
       const webhookInactive = github && github.webhookEnabled === false;
       text('github-app-id', github && github.appId);
@@ -1357,6 +1372,20 @@ export const SETUP_HTML = String.raw`<!doctype html>
         await reconcileLogto(true);
         await load();
       }
+    }
+
+    async function saveGithubOwnerOAuth(clear = false) {
+      if (!currentStatus) throw new Error('Deployment configuration is not loaded');
+      if (clear && !window.confirm('Clear organization OAuth configuration?')) return;
+      const clientId = clear ? null : requiredInput('github-owner-oauth-id', 'the OAuth Client ID');
+      const secret = el('github-owner-oauth-secret').value;
+      if (clientId && clientId !== currentStatus.values.githubOwnerOAuth?.clientId && !secret) {
+        throw new Error('Enter the client secret for the new OAuth App');
+      }
+      await replaceConfiguration(
+        { ...currentStatus.values, githubOwnerOAuth: clientId ? { clientId } : null },
+        clear ? { 'githubOwnerOAuth.clientSecret': null } : secret ? { 'githubOwnerOAuth.clientSecret': secret } : undefined
+      );
     }
 
     async function saveSlackConfiguration() {
@@ -2106,6 +2135,8 @@ export const SETUP_HTML = String.raw`<!doctype html>
     el('save-logto-configuration').onclick = () => saveLogtoConfiguration().catch((error) => message(error.message, true));
     el('cancel-logto-configuration').onclick = cancelConfigurationEdit;
     el('save-github-configuration').onclick = () => saveGithubConfiguration().catch((error) => message(error.message, true));
+    el('save-github-owner-oauth').onclick = () => saveGithubOwnerOAuth().catch((error) => message(error.message, true));
+    el('clear-github-owner-oauth').onclick = () => saveGithubOwnerOAuth(true).catch((error) => message(error.message, true));
     el('cancel-github-configuration').onclick = cancelConfigurationEdit;
     el('clear-github').onclick = () => clearProvider('github').catch((error) => message(error.message, true));
     el('connect-github-login').onclick = () => connectGithubLogin().catch((error) => message(error.message, true));

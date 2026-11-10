@@ -125,6 +125,17 @@ describe('DeploymentConfigValuesV1Schema', () => {
 })
 
 describe('deploymentSecretsRequiringRefresh', () => {
+  it('binds the organization OAuth secret to its own client, independently of the GitHub App', () => {
+    const configured = { ...base, githubOwnerOAuth: { clientId: 'owner-client' } }
+    expect(deploymentSecretsRequiringRefresh(base, configured)).toEqual(['githubOwnerOAuth.clientSecret'])
+    expect(deploymentSecretsRequiringRefresh(configured, configured)).toEqual([])
+    expect(
+      deploymentSecretsRequiringRefresh(configured, {
+        ...configured,
+        githubOwnerOAuth: { clientId: 'replacement-client' }
+      })
+    ).toEqual(['githubOwnerOAuth.clientSecret'])
+  })
   it('binds the SSO client secret to its issuer and client ID', () => {
     const withOidc = (issuer: string, clientId: string) =>
       DeploymentConfigValuesV1Schema.parse({

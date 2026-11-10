@@ -725,6 +725,7 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
     }
     return {
       github,
+      githubOwnerOAuth: { callbackUrl: new URL('/auth/social/callback', localAuthBootstrap.services.web).toString() },
       gitlab,
       gitlabSignIn: {
         redirects: values.logto?.browser

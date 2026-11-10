@@ -3,7 +3,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { GithubAppCoverageItem } from '@/lib/api'
+import { ApiError, type GithubAppCoverageItem } from '@/lib/api'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
@@ -127,10 +127,20 @@ describe('GithubAppDialog', () => {
     mocks.selectGithubAppOwners.mockRejectedValueOnce(new Error('cancelled'))
     await render('agent-retry', vi.fn(), vi.fn(), 'create')
     await act(async () => button('Choose from my GitHub organizations')?.click())
-    expect(document.querySelector('[role="alert"]')?.textContent).toContain('Could not load GitHub accounts')
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain('Could not complete GitHub authorization')
     await act(async () => button('Choose from my GitHub organizations')?.click())
     expect(document.querySelector('[role="alert"]')).toBeNull()
     expect(document.body.textContent).toContain('example-user')
+  })
+
+  it.each([
+    [new Error('popup-blocked'), 'Allow popups for this site'],
+    [new ApiError('GitHub authorization is not configured', 503), 'GitHub authorization is not configured']
+  ])('shows the actionable cause of an account lookup failure', async (error, message) => {
+    mocks.selectGithubAppOwners.mockRejectedValueOnce(error)
+    await render('agent-failure', vi.fn(), vi.fn(), 'create')
+    await act(async () => button('Choose from my GitHub organizations')?.click())
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain(message)
   })
 
   it('keeps validated manual entry available when an organization cannot be loaded', async () => {

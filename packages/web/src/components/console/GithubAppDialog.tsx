@@ -161,8 +161,9 @@ export function GithubAppDialog({
         const result = await selectGithubAppOwners(agent.id, orgId, ownerAuthorization.current.signal)
         setOwners(result)
         setOwner('')
-      } catch {
-        throw new Error(t('accountsFailed'))
+      } catch (e) {
+        if (e instanceof ApiError) throw e
+        throw new Error(t(e instanceof Error && e.message === 'popup-blocked' ? 'popupBlocked' : 'accountsFailed'))
       } finally {
         setLoadingOwners(false)
       }
