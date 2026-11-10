@@ -264,10 +264,6 @@ export const DeploymentConfigValuesV1Schema = z
   .strictObject({
     auth: AuthSchema,
     github: GithubAppSchema.nullable(),
-    githubOwnerOAuth: z
-      .strictObject({ clientId: z.string().trim().min(1) })
-      .nullable()
-      .optional(),
     gitlab: GitlabAppSchema.nullable().optional(),
     gitea: GiteaInstanceSchema.nullable().optional(),
     slack: SlackAppSchema.nullable(),
@@ -393,7 +389,6 @@ export const DEPLOYMENT_SECRET_KEYS = [
   'github.webhookSecret',
   // GitHub returns this once; retain it for integration OAuth and optional Logto setup.
   'github.clientSecret',
-  'githubOwnerOAuth.clientSecret',
   'gitlab.clientSecret',
   'slack.clientSecret',
   'slack.signingSecret',
@@ -637,9 +632,6 @@ export function deploymentSecretsRequiringRefresh(
     ...(githubAppChanged ? (['github.privateKeyB64'] as const) : []),
     ...(next.github && githubWebhookEnabled && githubAppChanged ? (['github.webhookSecret'] as const) : []),
     ...(githubClientChanged ? (['github.clientSecret'] as const) : []),
-    ...(next.githubOwnerOAuth && previous?.githubOwnerOAuth?.clientId !== next.githubOwnerOAuth.clientId
-      ? (['githubOwnerOAuth.clientSecret'] as const)
-      : []),
     ...(gitlabClientChanged ? (['gitlab.clientSecret'] as const) : []),
     ...(slackIdentityChanged ? (['slack.clientSecret', 'slack.signingSecret'] as const) : []),
     ...(linearIdentityChanged ? (['linear.clientSecret', 'linear.signingSecret'] as const) : []),
@@ -664,7 +656,6 @@ function requiredSecrets(values: DeploymentConfigValuesV1): DeploymentSecretKey[
     ...(values.github ? (['github.privateKeyB64'] as const) : []),
     ...(values.github && values.github.webhookEnabled !== false ? (['github.webhookSecret'] as const) : []),
     ...(values.gitlab ? (['gitlab.clientSecret'] as const) : []),
-    ...(values.githubOwnerOAuth ? (['githubOwnerOAuth.clientSecret'] as const) : []),
     ...(values.slack ? (['slack.clientSecret', 'slack.signingSecret'] as const) : []),
     ...(values.linear ? (['linear.clientSecret', 'linear.signingSecret'] as const) : []),
     ...(values.googleChat ? (['googleChat.serviceAccountKey'] as const) : []),

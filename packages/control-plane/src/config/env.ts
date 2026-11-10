@@ -279,9 +279,6 @@ const CoreConfigShape = {
   // recommendation). Unset ⇒ iss=GITHUB_APP_ID (still supported).
   GITHUB_APP_CLIENT_ID: z.string().optional(),
   GITHUB_APP_CLIENT_SECRET: z.string().optional(),
-  // Dedicated OAuth App for organization discovery, separate from repository and login Apps.
-  GITHUB_OWNER_OAUTH_CLIENT_ID: z.string().min(1).optional(),
-  GITHUB_OWNER_OAUTH_CLIENT_SECRET: z.string().min(1).optional(),
   // ── GitLab OAuth application (gitlab-com-integration.md §18.3, §24.1) ──
   // Both must be set to enable the GitLab integration; either unset ⇒ the
   // gitlab module is not assembled and its routes 404. Plain env is the

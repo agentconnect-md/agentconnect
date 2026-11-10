@@ -55,8 +55,6 @@ describe('applyDeploymentEnvironment', () => {
           OIDC_ISSUER: 'https://old-login.example.test/oidc',
           GITHUB_APP_ID: '123',
           GITHUB_APP_CLIENT_SECRET: 'old-client-secret',
-          GITHUB_OWNER_OAUTH_CLIENT_ID: 'old-owner-client',
-          GITHUB_OWNER_OAUTH_CLIENT_SECRET: 'old-owner-secret',
           GITHUB_APP_SLUG: 'old-app',
           GITHUB_APP_PRIVATE_KEY_B64: 'old-key',
           SLACK_PLATFORM_APP_ID: 'AOLD'
@@ -76,8 +74,6 @@ describe('applyDeploymentEnvironment', () => {
     expect(config.OIDC_ISSUER).toBe('https://old-login.example.test/oidc')
     expect(config.GITHUB_APP_ID).toBeUndefined()
     expect(config.GITHUB_APP_CLIENT_SECRET).toBeUndefined()
-    expect(config.GITHUB_OWNER_OAUTH_CLIENT_ID).toBeUndefined()
-    expect(config.GITHUB_OWNER_OAUTH_CLIENT_SECRET).toBeUndefined()
     expect(config.SLACK_PLATFORM_APP_ID).toBeUndefined()
   })
 
@@ -104,7 +100,6 @@ describe('applyDeploymentEnvironment', () => {
               sso: null
             },
             github: { appId: 123, slug: 'agentconnect-example', clientId: 'Iv1.example' },
-            githubOwnerOAuth: { clientId: 'owner-oauth-client' },
             slack: { appId: 'A123', clientId: '123.456' },
             feishu: { loginAppId: 'cli_feishu' },
             lark: { loginAppId: 'cli_lark' },
@@ -120,7 +115,6 @@ describe('applyDeploymentEnvironment', () => {
             'github.privateKeyB64': 'github-key',
             'github.webhookSecret': 'relay-only',
             'github.clientSecret': 'connector-only',
-            'githubOwnerOAuth.clientSecret': 'owner-oauth-secret',
             'slack.clientSecret': 'slack-client-secret',
             'slack.signingSecret': 'slack-signing-secret',
             'feishu.loginAppSecret': 'feishu-secret',
@@ -137,8 +131,6 @@ describe('applyDeploymentEnvironment', () => {
       GITHUB_APP_ID: 123,
       GITHUB_APP_PRIVATE_KEY_B64: 'github-key',
       GITHUB_APP_CLIENT_SECRET: 'connector-only',
-      GITHUB_OWNER_OAUTH_CLIENT_ID: 'owner-oauth-client',
-      GITHUB_OWNER_OAUTH_CLIENT_SECRET: 'owner-oauth-secret',
       SLACK_PLATFORM_CLIENT_SECRET: 'slack-client-secret',
       FEISHU_PLATFORM_APP_ID: 'cli_feishu',
       FEISHU_PLATFORM_APP_SECRET: 'feishu-secret',

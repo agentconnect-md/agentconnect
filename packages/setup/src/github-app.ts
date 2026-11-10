@@ -43,7 +43,8 @@ export const GITHUB_APP_PERMISSIONS = {
   checks: 'write',
   workflows: 'write',
   deployments: 'read',
-  emails: 'read'
+  emails: 'read',
+  members: 'read'
 } as const
 
 export const GITHUB_APP_EVENTS = [
@@ -257,7 +258,7 @@ export async function auditGithubApp(
   }
   const expectedPermissions = GITHUB_APP_PERMISSIONS
   if (!sameRecord(app.permissions, expectedPermissions)) {
-    addDiff('permissions', 'Repository permissions', asRecord(app.permissions), expectedPermissions)
+    addDiff('permissions', 'App permissions', asRecord(app.permissions), expectedPermissions)
   }
   const expectedEvents = Array.isArray(expectedManifest.default_events)
     ? expectedManifest.default_events.filter((event): event is string => typeof event === 'string')

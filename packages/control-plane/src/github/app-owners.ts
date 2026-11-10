@@ -17,7 +17,6 @@ export class GithubAppOwnersService {
       client_id: this.oauth.clientId,
       redirect_uri: this.oauth.redirectUri,
       state,
-      scope: 'read:org',
       code_challenge: challenge,
       code_challenge_method: 'S256'
     }).toString()
@@ -35,20 +34,10 @@ export class GithubAppOwnersService {
         code_verifier: verifier
       })
     })
-    const token = z
-      .object({ access_token: z.string().min(1), scope: z.string().optional() })
-      .safeParse(await this.json(response))
+    const token = z.object({ access_token: z.string().min(1) }).safeParse(await this.json(response))
     if (!token.success) throw this.failure()
     const accessToken = token.data.access_token
     try {
-      if (!token.data.scope?.split(/[ ,]+/).some((scope) => ['read:org', 'write:org', 'admin:org'].includes(scope))) {
-        throw new GithubApiError(
-          'Organization access was not granted. Authorize organization read access and try again.',
-          502,
-          'INTERNAL',
-          false
-        )
-      }
       const headers = { Authorization: `Bearer ${accessToken}` }
       const user = Account.safeParse(await this.json(await this.request('https://api.github.com/user', { headers })))
       if (!user.success) throw this.failure()

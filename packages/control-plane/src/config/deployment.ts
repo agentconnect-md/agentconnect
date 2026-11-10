@@ -24,8 +24,6 @@ const MANAGED_KEYS = [
   'GITHUB_APP_CLIENT_ID',
   'GITHUB_APP_CLIENT_SECRET',
   'GITHUB_APP_PRIVATE_KEY_B64',
-  'GITHUB_OWNER_OAUTH_CLIENT_ID',
-  'GITHUB_OWNER_OAUTH_CLIENT_SECRET',
   'GITLAB_CLIENT_ID',
   'GITLAB_CLIENT_SECRET',
   'GITLAB_BASE_URL',
@@ -84,11 +82,6 @@ export function applyDeploymentEnvironment(
     set('GITLAB_CLIENT_ID', values.gitlab.clientId)
     set('GITLAB_CLIENT_SECRET', secrets['gitlab.clientSecret'])
     set('GITLAB_BASE_URL', values.gitlab.baseUrl)
-  }
-
-  if (values.githubOwnerOAuth) {
-    set('GITHUB_OWNER_OAUTH_CLIENT_ID', values.githubOwnerOAuth.clientId)
-    set('GITHUB_OWNER_OAUTH_CLIENT_SECRET', secrets['githubOwnerOAuth.clientSecret'])
   }
 
   // Gitea carries the instance address alone (gitea-integration.md §3); a document with no gitea

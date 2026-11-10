@@ -2364,11 +2364,11 @@ export function buildContainer(
     : undefined
 
   const githubAppOwners =
-    config.GITHUB_OWNER_OAUTH_CLIENT_ID && config.GITHUB_OWNER_OAUTH_CLIENT_SECRET && webAppUrl
+    config.GITHUB_APP_CLIENT_ID && config.GITHUB_APP_CLIENT_SECRET && webAppUrl
       ? new GithubAppOwnersService(
           {
-            clientId: config.GITHUB_OWNER_OAUTH_CLIENT_ID,
-            clientSecret: config.GITHUB_OWNER_OAUTH_CLIENT_SECRET,
+            clientId: config.GITHUB_APP_CLIENT_ID,
+            clientSecret: config.GITHUB_APP_CLIENT_SECRET,
             redirectUri: new URL('/auth/social/callback', webAppUrl).toString()
           },
           opts.githubFetch

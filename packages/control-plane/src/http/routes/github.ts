@@ -687,12 +687,9 @@ export function githubRoutes(deps: HttpDeps) {
         async (req, reply) => {
           if (!(await agentFor(req, reply, true))) return reply
           if (!deps.githubAppOwners) {
-            return reply.code(503).send({
-              error: 'Unavailable',
-              statusCode: 503,
-              message:
-                'GitHub organization selection is not configured. Ask an administrator to configure the organization OAuth App, or enter an organization manually.'
-            })
+            return reply
+              .code(503)
+              .send({ error: 'Unavailable', statusCode: 503, message: 'GitHub authorization is not configured' })
           }
           return deps.githubAppOwners.authorize(req.body.state, req.body.challenge)
         }
@@ -722,12 +719,9 @@ export function githubRoutes(deps: HttpDeps) {
         async (req, reply) => {
           if (!(await agentFor(req, reply, true))) return reply
           if (!deps.githubAppOwners) {
-            return reply.code(503).send({
-              error: 'Unavailable',
-              statusCode: 503,
-              message:
-                'GitHub organization selection is not configured. Ask an administrator to configure the organization OAuth App, or enter an organization manually.'
-            })
+            return reply
+              .code(503)
+              .send({ error: 'Unavailable', statusCode: 503, message: 'GitHub authorization is not configured' })
           }
           try {
             return await deps.githubAppOwners.list(req.body.code, req.body.verifier)

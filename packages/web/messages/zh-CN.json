@@ -393,8 +393,8 @@
       "loadingAccounts": "正在加载 GitHub 账号…",
       "accountsFailed": "未能完成 GitHub 授权。请重试，或手动输入组织名。",
       "popupBlocked": "无法打开 GitHub 授权窗口。请允许此站点打开弹窗后重试。",
-      "noOrganizations": "此次授权未能读取到组织。你的组织可能需要批准此 OAuth App，你也可以手动输入组织名。",
-      "organizationPermission": "请选择你有权管理 GitHub App 的组织。未列出的组织可能需要批准此 OAuth App，也可以手动输入组织名。继续时 GitHub 会确认创建权限。",
+      "noOrganizations": "此 GitHub App 无法读取任何组织。组织所有者可能需要批准安装中的成员读取权限。你仍可手动输入组织名称。",
+      "organizationPermission": "请选择你有权管理 GitHub App 的组织。这里只显示此 App 可访问的组织；未列出的组织可手动输入。GitHub 会在继续时检查创建权限。",
       "publicApp": "新 App 默认为 public，之后可以安装到其他账号或组织。仓库访问权限在安装时单独授权。",
       "checking": "正在检查此 App 能访问的范围…",
       "kinds": {

@@ -393,8 +393,8 @@
       "loadingAccounts": "Loading GitHub accounts…",
       "accountsFailed": "Could not complete GitHub authorization. Try again, or enter an organization manually.",
       "popupBlocked": "The GitHub authorization window could not open. Allow popups for this site and try again.",
-      "noOrganizations": "No organizations are visible to this authorization. Your organization may require OAuth App approval. You can still enter its name manually.",
-      "organizationPermission": "Choose an organization where you can manage GitHub Apps. Missing organizations may require OAuth App approval; you can also enter their names manually. GitHub checks creation permission when you continue.",
+      "noOrganizations": "No organizations are visible to this GitHub App. An organization owner may need to approve Members read access on its installation. You can still enter its name manually.",
+      "organizationPermission": "Choose an organization where you can manage GitHub Apps. Only organizations accessible to this App appear; enter a missing organization manually. GitHub checks creation permission when you continue.",
       "publicApp": "Created as a public App so you can install it on other accounts later. Repository access is granted separately during installation.",
       "checking": "Checking what this App can reach…",
       "kinds": {
