@@ -38,11 +38,6 @@ import type { FmtStep } from '@/components/console/transcript-steps'
 import { ElicitationCard, PlanBlock } from '@/components/console/TranscriptCards'
 import { HOVER_TOOL_BUTTON, HOVER_TOOL_ICON, HoverToolbar } from '@/components/console/HoverToolbar'
 
-/** Whether a user turn prints a sender line (it is not you), which the avatar's alignment follows. */
-function showsSenderLabel(turn: { isCron: boolean; sp: { handle: string } }): boolean {
-  return turn.isCron || turn.sp.handle !== '@you'
-}
-
 function ParticipantAvatar({
   agent,
   avatarUrl,
@@ -50,8 +45,7 @@ function ParticipantAvatar({
   platformMark,
   sp,
   isCron,
-  href,
-  className = ''
+  href
 }: {
   agent: Agent | null
   /** The agent's page; an agent's mark opens it. */
@@ -61,12 +55,10 @@ function ParticipantAvatar({
   platformMark?: string
   sp: ReturnType<typeof speaker>
   isCron: boolean
-  /** Caller-side box tweaks — today only the transcript's vertical nudge. */
-  className?: string
 }) {
   const boxClass = `av flex h-[26px] w-[26px] flex-none items-center justify-center overflow-hidden rounded-md font-sans text-[9.5px] font-semibold leading-normal ${
     !agent && !isCron ? 'bg-transparent' : ''
-  } ${className}`
+  }`
   if (agent && href)
     return (
       <Link href={href} className={boxClass} title={sp.name} aria-label={sp.name}>
@@ -103,7 +95,6 @@ function ParticipantAvatar({
 type UserTurn = Extract<Turn, { kind: 'user' }>
 type BotTurn = Extract<Turn, { kind: 'bot' }>
 
-/** A person's (or a schedule's) message: a right-aligned bubble, its sender line when it is not you, and its avatar. */
 /** A message's hover menu, a person's or an agent's alike: Reply in its thread where the reader may, and Copy of its text. */
 function MessageMenu({
   text,
@@ -173,17 +164,15 @@ export function UserTurnView({
         onReply={() => onReply?.()}
         className="relative flex min-w-0 max-w-[86%] flex-col items-end gap-[3px]"
       >
-        {showsSenderLabel(turn) && (
-          <span className="flex items-center gap-[6px] pr-1 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)">
-            {turn.isCron && turn.cronId ? (
-              <Link className="lnk text-inherit" href={orgPath(`/crons/${turn.cronId}`)}>
-                {turn.sp.name}
-              </Link>
-            ) : (
-              <span>{turn.sp.name}</span>
-            )}
-          </span>
-        )}
+        <span className="flex items-center gap-[6px] pr-1 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)">
+          {turn.isCron && turn.cronId ? (
+            <Link className="lnk text-inherit" href={orgPath(`/crons/${turn.cronId}`)}>
+              {turn.sp.name}
+            </Link>
+          ) : (
+            <span>{turn.sp.name}</span>
+          )}
+        </span>
         {lead}
         {turn.steer && (
           // A glyph and one word; the full meaning sits in the tooltip.
@@ -225,8 +214,6 @@ export function UserTurnView({
         platformMark={platformMark}
         sp={turn.sp}
         isCron={turn.isCron}
-        // Centre the 26px mark on the bubble's first line; a labelled row keeps it level with the label.
-        className={showsSenderLabel(turn) ? '' : 'mt-[6px]'}
       />
     </div>
   )
