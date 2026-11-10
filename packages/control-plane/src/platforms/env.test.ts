@@ -157,9 +157,7 @@ describe('composed AppConfigSchema', () => {
   })
 
   it('blocks every native integration in the connector catalog by default', () => {
-    // The convention the key's own comment states: a native integration adds its upstream service
-    // id to this default in the same change, so the catalog never offers a connector the product
-    // owns. Pinned as a set, because the order in the string is not the contract.
+    // Native integrations block their upstream service IDs; catalog order is not part of the contract.
     const blocklist = loadConfig(MINIMAL_ENV).OPEN_CONNECTOR_PROVIDER_BLOCKLIST.split(',')
     expect(new Set(blocklist)).toEqual(
       new Set([
@@ -179,7 +177,8 @@ describe('composed AppConfigSchema', () => {
         'googlechat',
         'dingtalk_bot',
         'dingtalk_mcp',
-        'microsoft_teams'
+        'microsoft_teams',
+        'microsoft_teams_bot'
       ])
     )
     for (const provider of CODE_HOST_PROVIDERS) expect(blocklist, provider).toContain(provider)
