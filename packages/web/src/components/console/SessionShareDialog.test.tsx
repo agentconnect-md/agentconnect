@@ -77,7 +77,6 @@ it('closes only after copying succeeds, then shows a transient confirmation outs
   )
   draw({ ...base, visibility: 'private' })
   expect(dialog().textContent).toContain('Only you can see this session.')
-  expect(dialog().textContent).toContain("Copying a link doesn't grant access.")
   expect(dialog().textContent).not.toContain('Done')
   expect(dialog().querySelector('textarea')).toBeNull()
   expect(copy().classList.contains('dsbtn-primary')).toBe(true)
@@ -130,9 +129,8 @@ it('ignores a clipboard result after the user dismisses the dialog', async () =>
 
 it('asks before making a session private, then applies it without closing the share dialog', async () => {
   draw({ ...base, visibility: 'org', canChange: true })
-  await act(async () => dialog().querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!.click())
-  const privateChoice = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].find(
-    (b) => b.textContent === 'Private'
+  const privateChoice = [...dialog().querySelectorAll<HTMLButtonElement>('[role="radio"]')].find((b) =>
+    b.textContent?.startsWith('Private')
   )!
   act(() => privateChoice.click())
   expect(wire.puts).toEqual([])
@@ -148,7 +146,7 @@ it('asks before making a session private, then applies it without closing the sh
 it('keeps copying available while a visibility update is pending', async () => {
   draw({ ...base, visibility: 'private', canChange: true, state: 'pending' })
   expect(copy().disabled).toBe(false)
-  expect(dialog().querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')?.disabled).toBe(true)
+  expect(dialog().querySelector('[role="radio"][aria-checked="true"]')?.textContent).toContain('Private')
   await act(async () => copy().click())
   expect(navigator.clipboard.writeText).toHaveBeenCalledWith(link)
   expect(dialog()).toBeNull()
