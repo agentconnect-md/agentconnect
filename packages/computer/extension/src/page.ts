@@ -364,7 +364,11 @@ export function fillInPage(args: PageFillArgs): PageFillResult {
             : [input]
       const radios = group.filter(
         (other): other is HTMLInputElement =>
-          other instanceof HTMLInputElement && other.type === 'radio' && other.name === input.name
+          // Only the discovered group: a loose radio's name also matches same-named radios inside other forms.
+          other instanceof HTMLInputElement &&
+          other.type === 'radio' &&
+          other.name === input.name &&
+          other.form === input.form
       )
       const choice = entry.value === undefined ? undefined : radios.find((radio) => radio.value === entry.value)
       if (!choice || choice.disabled) {

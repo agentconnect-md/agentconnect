@@ -207,6 +207,20 @@ describe('fillInPage', () => {
     expect(fill({ formId: form.id, frameOrigin: ORIGIN, values: [{ field: plan, value: 'gold' }] }).status).toBe('done')
   })
 
+  it('selects a loose radio only within its own group, never a same-named radio of another form', () => {
+    page(`<form><input type="radio" name="plan" value="pro"></form>
+      <input type="radio" name="plan" value="free"><input type="radio" name="plan" value="pro">`)
+    const loose = discover().forms.find((form) => form.id === 'page')!
+    const plan = loose.fields[0]!.id
+    expect(fill({ formId: loose.id, frameOrigin: ORIGIN, values: [{ field: plan, value: 'pro' }] })).toEqual({
+      status: 'done',
+      fields: [{ field: plan, status: 'filled' }]
+    })
+    const [inForm, , looseChoice] = Array.from(document.querySelectorAll<HTMLInputElement>('input[name="plan"]'))
+    expect(inForm!.checked).toBe(false)
+    expect(looseChoice!.checked).toBe(true)
+  })
+
   it('needs a discovery in this document first', () => {
     page(`<form><input name="a"></form>`)
     expect(fill({ formId: 'page', frameOrigin: ORIGIN, values: [{ field: 'f1', value: 'x' }] }).status).toBe(
