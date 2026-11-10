@@ -14,7 +14,8 @@ export interface WeChatPollerDeps {
   api: Pick<WeChatApi, 'getUpdates' | 'notify'>
   state: WeChatStatePort
   botId: string
-  onMessage(msg: WeChatInboundMessage): void
+  /** Settles once the message is handed to core or dropped; the batch's cursor waits for it. */
+  onMessage(msg: WeChatInboundMessage): void | Promise<void>
   /** The token was refused; called once per refusal episode, before the hourly retry. */
   onStaleToken(): void
   log: Logger
@@ -85,7 +86,8 @@ export class WeChatPoller {
         this.stale = false
         delay = BACKOFF_INITIAL_MS
         holdMs = updates.holdMs
-        for (const msg of updates.msgs) this.deliver(msg)
+        // The cursor moves only after the whole batch is handed on, so a crash before then replays it.
+        for (const msg of updates.msgs) await this.deliver(msg)
         if (updates.cursor && updates.cursor !== this.cursor) {
           this.cursor = updates.cursor
           await this.deps.state.saveCursor(this.deps.botId, updates.cursor).catch(() => {
@@ -112,7 +114,7 @@ export class WeChatPoller {
   }
 
   // A message id already delivered is dropped, from a bounded memory of the last 2,000 (§3.3).
-  private deliver(msg: WeChatInboundMessage): void {
+  private async deliver(msg: WeChatInboundMessage): Promise<void> {
     const id = messageIdOf(msg)
     if (id) {
       if (this.seen.has(id)) return
@@ -120,7 +122,7 @@ export class WeChatPoller {
       while (this.seen.size > SEEN_LIMIT) this.seen.delete(this.seen.values().next().value!)
     }
     try {
-      this.deps.onMessage(msg)
+      await this.deps.onMessage(msg)
     } catch (error) {
       this.deps.log.warn(`wechat: dropped a message (${error instanceof Error ? error.message : 'unknown error'})`)
     }

@@ -21,6 +21,9 @@ export interface WeChatTurnState {
 /** The core turn as this applier sees it; `Pending` satisfies it structurally. */
 export interface WeChatTurn {
   plan: { transcriptChannel: string; statusThread: string; agentId: string; sessionKey: string }
+  /** Set when core cuts the turn's output; the remaining parts of an answer then stay unsent. */
+  outputSuppressed?: unknown
+  entry?: { cancelledReason?: unknown }
 }
 
 export interface WeChatTurnHost {
@@ -67,5 +70,6 @@ export async function applyWeChatAction(
     return
   }
   // An unsent part is still recorded: the transcript keeps the whole answer (§4.4).
-  for (const part of await state.conn.sendText(state.channel, action.text)) await record(part.text)
+  const stopped = () => turn.outputSuppressed !== undefined || turn.entry?.cancelledReason !== undefined
+  for (const part of await state.conn.sendText(state.channel, action.text, { stopped })) await record(part.text)
 }

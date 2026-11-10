@@ -71,10 +71,18 @@ export interface WeChatSentPart {
   error?: unknown
 }
 
+/** A turn's way to cut its own sends short once it is stopped; the shared connection stays open. */
+export interface WeChatSendOptions {
+  stopped?(): boolean
+}
+
 /** The sends a turn makes through the connection it leased. */
 export interface WeChatReplyPort {
-  sendText(channel: string, text: string): Promise<WeChatSentPart[]>
+  sendText(channel: string, text: string, options?: WeChatSendOptions): Promise<WeChatSentPart[]>
 }
+
+/** The error a part carries when its turn was stopped before it went out. */
+export const WECHAT_SEND_STOPPED = new Error('wechat: turn stopped; not sent')
 
 const MEDIA_LIMIT = 2_000
 const DEFAULT_MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
@@ -148,8 +156,8 @@ export class WeChatConnection implements PlatformConnection, WeChatReplyPort {
   }
 
   // Serialized, so a quote lookup never lets a later message of the same batch overtake this one.
-  private onPayload(payload: WeChatInboundMessage): void {
-    this.inbound = this.inbound
+  private onPayload(payload: WeChatInboundMessage): Promise<void> {
+    return (this.inbound = this.inbound
       .then(async () => {
         if (this.abort.signal.aborted) return
         const prepared = this.prepare(payload)
@@ -162,7 +170,7 @@ export class WeChatConnection implements PlatformConnection, WeChatReplyPort {
       })
       .catch((error: unknown) => {
         this.deps.log.warn(`wechat: dropped a message (${error instanceof Error ? error.message : 'unknown error'})`)
-      })
+      }))
   }
 
   // A quote naming only an id reads its text from this bot's record; an aged-out one says so, never guesses (§4.3).
@@ -255,19 +263,21 @@ export class WeChatConnection implements PlatformConnection, WeChatReplyPort {
   }
 
   /** Send an answer as plain-text messages, one at a time and never resent; a failure leaves the rest unsent (§4.4). */
-  sendText(channel: string, text: string): Promise<WeChatSentPart[]> {
-    const run = this.sends.then(() => this.sendParts(channel, text))
+  sendText(channel: string, text: string, options: WeChatSendOptions = {}): Promise<WeChatSentPart[]> {
+    const run = this.sends.then(() => this.sendParts(channel, text, options))
     this.sends = run.catch(() => undefined)
     return run
   }
 
-  private async sendParts(channel: string, text: string): Promise<WeChatSentPart[]> {
+  private async sendParts(channel: string, text: string, options: WeChatSendOptions): Promise<WeChatSentPart[]> {
     const parts = splitWeChatText(text)
     // The bot has one counterpart; any other address is a routing error, never a send.
     if (channel !== this.channel) return parts.map((part) => ({ text: part, error: new Error('wechat: unknown chat') }))
     const sent: WeChatSentPart[] = []
     let failed: unknown
     for (const part of parts) {
+      // Checked when a queued send starts and before each part, so a stop leaves the rest unsent and its receipt waits on one part at most.
+      if (failed === undefined && options.stopped?.()) failed = WECHAT_SEND_STOPPED
       if (failed !== undefined) {
         sent.push({ text: part, error: failed })
         continue

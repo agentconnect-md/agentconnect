@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { decryptWeChatMedia, downloadWeChatMedia, weChatMediaKey } from '../src/platforms/wechat/media.js'
 import { splitWeChatText, weChatPlainText, WECHAT_TEXT_MAX_CHARS } from '../src/platforms/wechat/text.js'
 import { applyWeChatAction, WeChatConverger, type WeChatTurnHost } from '../src/platforms/wechat/turn-output.js'
-import type { WeChatReplyPort, WeChatSentPart } from '../src/platforms/wechat/connection.js'
+import type { WeChatReplyPort, WeChatSendOptions, WeChatSentPart } from '../src/platforms/wechat/connection.js'
 import { weChatPlatformModule } from '../src/platforms/wechat/module.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { CDN, encryptMedia } from './fakes/ilink-server.js'
@@ -42,6 +42,22 @@ describe('plain-text rendering', () => {
     expect(parts.map((part) => part.length)).toEqual([2000, 2000, 10])
     expect(parts.join('')).toBe(huge)
     expect(splitWeChatText('   ')).toEqual([])
+  })
+
+  it('renders reference-style links and images like inline ones', () => {
+    const markdown = [
+      'See [the run][r] and ![build badge][b].',
+      '[r]: https://ci.example.test/run/1',
+      '[b]: https://ci.example.test/badge.svg'
+    ].join('\n\n')
+    expect(weChatPlainText(markdown)).toBe('See the run (https://ci.example.test/run/1) and build badge.')
+  })
+
+  it('never splits a surrogate pair across two parts', () => {
+    const parts = splitWeChatText(`${'a'.repeat(WECHAT_TEXT_MAX_CHARS - 1)}😀b`)
+    expect(parts).toEqual(['a'.repeat(WECHAT_TEXT_MAX_CHARS - 1), '😀b'])
+    for (const part of parts)
+      expect(part).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/)
   })
 })
 
@@ -104,7 +120,9 @@ describe('WeChat turn output', () => {
       appendTranscript: async (row) => void rows.push({ text: row.text, thread: row.thread }),
       monotonicTs: () => `local-${++local}`
     }
-    const conn = { sendText: vi.fn(async () => sent) } satisfies WeChatReplyPort
+    const conn = {
+      sendText: vi.fn(async (_channel: string, _text: string, _options?: WeChatSendOptions) => sent)
+    } satisfies WeChatReplyPort
     return { rows, host, conn }
   }
 
@@ -125,7 +143,7 @@ describe('WeChat turn output', () => {
       { text: 'part two', error: new Error('x') }
     ])
     await applyWeChatAction(host, turn, { conn, channel: 'dm:u' }, { kind: 'post', text: 'whole' })
-    expect(conn.sendText).toHaveBeenCalledWith('dm:u', 'whole')
+    expect(conn.sendText).toHaveBeenCalledWith('dm:u', 'whole', { stopped: expect.any(Function) })
     expect(rows).toEqual([
       { text: 'part one', thread: 'dm' },
       { text: 'part two', thread: 'dm' }
@@ -133,6 +151,22 @@ describe('WeChat turn output', () => {
     await applyWeChatAction(host, turn, { conn, channel: 'dm:u' }, { kind: 'notice', text: 'Stopped.' })
     expect(conn.sendText).toHaveBeenLastCalledWith('dm:u', 'Stopped.')
     expect(rows).toHaveLength(2)
+  })
+
+  it('hands its sends a stop check that turns true once core cuts the turn', async () => {
+    const { host, conn } = setup([])
+    const live: typeof turn & { entry: { cancelledReason?: string }; outputSuppressed?: string } = {
+      ...turn,
+      entry: {}
+    }
+    await applyWeChatAction(host, live, { conn, channel: 'dm:u' }, { kind: 'post', text: 'whole' })
+    const stopped = conn.sendText.mock.calls[0]![2]!.stopped!
+    expect(stopped()).toBe(false)
+    live.entry.cancelledReason = 'stop'
+    expect(stopped()).toBe(true)
+    live.entry.cancelledReason = undefined
+    live.outputSuppressed = 'cut'
+    expect(stopped()).toBe(true)
   })
 
   it('records without sending when headless or record-only', async () => {

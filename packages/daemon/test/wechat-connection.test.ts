@@ -2,8 +2,13 @@ import { createHash } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import type { WeChatInboundMessage } from '@agentconnect.md/message'
 import { parseWeChatJson, weChatClientVersion, WeChatApi, WeChatApiError } from '../src/platforms/wechat/api.js'
-import { consolidateWeChat, WeChatConnection, type WeChatConnectionGroup } from '../src/platforms/wechat/connection.js'
-import { WECHAT_STALE_RETRY_MS } from '../src/platforms/wechat/poller.js'
+import {
+  consolidateWeChat,
+  WECHAT_SEND_STOPPED,
+  WeChatConnection,
+  type WeChatConnectionGroup
+} from '../src/platforms/wechat/connection.js'
+import { WECHAT_STALE_RETRY_MS, WeChatPoller } from '../src/platforms/wechat/poller.js'
 import { resolveWeChatPartial, WECHAT_QUOTE_UNAVAILABLE } from '../src/platforms/wechat/quote.js'
 import { memoryWeChatState } from '../src/platforms/wechat/state.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
@@ -271,6 +276,42 @@ describe('the connection', () => {
     expect(await ctx.conn.downloadFile(`${CDN}/download?encrypted_query_param=file-ref`)).toBeNull()
     expect(await ctx.conn.downloadFile('wechat-media:999:0')).toBeNull()
     expect(ctx.warnings.join('\n')).not.toMatch(new RegExp(`${aesKey}|file-ref`))
+  })
+})
+
+describe('durability and stops', () => {
+  it('stores a batch cursor only after every message of the batch is handed on', async () => {
+    const state = memoryWeChatState()
+    let release!: () => void
+    const handed = new Promise<void>((resolve) => (release = resolve))
+    let calls = 0
+    const api = {
+      notify: async () => undefined,
+      getUpdates: vi.fn(async (_cursor: string, _hold?: number, signal?: AbortSignal) => {
+        if (++calls === 1) return { msgs: [inbound('901', 'x')], cursor: 'c-901' }
+        return await new Promise<never>((_resolve, reject) =>
+          signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+        )
+      })
+    }
+    const log = { trace() {}, debug() {}, info() {}, warn() {}, error() {} }
+    const poller = new WeChatPoller({ api, state, botId: BOT, onMessage: () => handed, onStaleToken: () => {}, log })
+    await poller.start()
+    await vi.waitFor(() => expect(api.getUpdates).toHaveBeenCalledTimes(1))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(state.rows.get(BOT)?.cursor).toBeUndefined()
+    release()
+    await vi.waitFor(() => expect(state.rows.get(BOT)?.cursor).toBe('c-901'))
+    await poller.stop()
+  })
+
+  it('leaves the rest of an answer unsent once its turn is stopped', async () => {
+    const ctx = setup()
+    const text = `${'a'.repeat(1500)}\n\n${'b'.repeat(1500)}`
+    const parts = await ctx.conn.sendText(`dm:${USER}`, text, { stopped: () => ctx.ilink.sendCalls().length >= 1 })
+    expect(ctx.ilink.sendCalls()).toHaveLength(1)
+    expect(parts[0]).toMatchObject({ text: 'a'.repeat(1500) })
+    expect(parts[1]).toEqual({ text: 'b'.repeat(1500), error: WECHAT_SEND_STOPPED })
   })
 })
 
