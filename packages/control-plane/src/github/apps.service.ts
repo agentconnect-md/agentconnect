@@ -105,7 +105,7 @@ export interface GithubAppsServiceDeps {
   states: GithubInstallStateStore
   registry: Pick<GithubAppRegistry, 'invalidate'>
   botUserId: (slug: string) => Promise<number>
-  /** What the agent works on through GitHub; the coverage check and the App's owner read it. */
+  /** What the agent works on through GitHub, used by the coverage check. */
   agentScope: (agent: AgentRecord) => Promise<AgentGithubScope>
   /** Whether a live installation reaches one repository (selected installations are asked). */
   covers: (installation: GithubInstallationRecord, owner: string, repo: string) => Promise<boolean>
@@ -148,42 +148,32 @@ export class GithubAppsService {
     return this.deps.apps.get(orgId, id)
   }
 
-  /** The form GitHub's "create App from manifest" page accepts, owned by the account the agent's repositories live on. */
+  // Create under the selected organization, or the personal account signed in on GitHub.
   async startManifest(
     orgId: OrgId,
-    agent: AgentRecord
+    agent: AgentRecord,
+    organization: string | null
   ): Promise<{ action: string; manifest: Record<string, unknown> }> {
-    const scope = await this.deps.agentScope(agent)
-    const accounts = [
-      ...new Set(
-        [...scope.repositories.map((r) => r.fullName.split('/')[0]!), ...scope.accounts.map((a) => a.login)].map((l) =>
-          l.toLowerCase()
-        )
-      )
-    ]
-    const owner = accounts[0]
-    if (!owner) throw new GithubAppRegistrationError('this agent works on no GitHub repository yet')
     const githubAppId = randomUUID()
     const minted = mintManifestState(this.stateKey, { orgId, agentId: agent.id, githubAppId }, this.deps.clock)
     await this.deps.states.put(minted.nonce, orgId, minted.expiresAt)
-    // An organization owner's page; a personal account's page when that is where the repositories live.
     const action = new URL(
-      (await this.isOrganization(orgId, owner))
-        ? `https://github.com/organizations/${owner}/settings/apps/new`
+      organization !== null
+        ? `https://github.com/organizations/${encodeURIComponent(organization)}/settings/apps/new`
         : 'https://github.com/settings/apps/new'
     )
     action.searchParams.set('state', minted.state)
     const cp = this.deps.publicCpUrl.replace(/\/$/, '')
     const relay = this.deps.publicRelayUrl?.replace(/\/$/, '')
     const manifest = {
-      name: appName(agent.name, owner),
+      name: (organization === null ? agent.name : `${agent.name}-${organization}`).slice(0, APP_NAME_MAX),
       url: this.deps.webAppUrl ?? cp,
       redirect_url: `${cp}/v1/github/apps/manifest/callback`,
       // The agent rides as a path segment, which GitHub keeps when it appends its own query, so the browser returns to it.
       setup_url: `${cp}/v1/github/apps/${githubAppId}/setup/callback/${agent.id}`,
       setup_on_update: true,
-      // A private App installs only on its owner, so an agent working across accounts needs a public one.
-      public: accounts.length > 1,
+      // Allow installing on additional accounts later, regardless of the current repository scope.
+      public: true,
       // GitHub delivers only to HTTPS; the same URL as the built-in App, told apart by the App id header.
       ...(relay && new URL(relay).protocol === 'https:'
         ? { hook_attributes: { url: `${relay}/webhooks/github`, active: true }, default_events: [...ORG_APP_EVENTS] }
@@ -369,11 +359,6 @@ export class GithubAppsService {
     this.trailingSync.clear()
   }
 
-  private async isOrganization(orgId: OrgId, login: string): Promise<boolean> {
-    const installed = await this.deps.installations.liveByOrgAndAccount(orgId, login, null)
-    return installed ? installed.accountType === 'Organization' : true
-  }
-
   private async syncInstallations(app: GithubAppRecord, cfg: GithubAppConfig): Promise<GithubInstallationRecord[]> {
     const live: GithubInstallationRecord[] = []
     const seen = new Set<bigint>()
@@ -402,11 +387,6 @@ export class GithubAppsService {
     }
     return live
   }
-}
-
-/** `<agent>-<owner>`, trimmed to GitHub's name limit; GitHub lets the user edit it before creating. */
-function appName(agentName: string, owner: string): string {
-  return `${agentName}-${owner}`.slice(0, APP_NAME_MAX)
 }
 
 function toFacts(ins: GhInstallation): GithubInstallationFacts {

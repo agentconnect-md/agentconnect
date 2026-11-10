@@ -383,6 +383,11 @@
       "builtInFallback": "Built-in GitHub App",
       "free": "free",
       "create": "Create a new GitHub App…",
+      "owner": "App owner",
+      "personalAccount": "My personal GitHub account",
+      "organization": "GitHub organization",
+      "organizationName": "GitHub organization name",
+      "publicApp": "Created as a public App so you can install it on other accounts later. Repository access is granted separately during installation.",
       "checking": "Checking what this App can reach…",
       "kinds": {
         "workspace": "workspace",

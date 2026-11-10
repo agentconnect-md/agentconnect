@@ -10,6 +10,10 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 const mocks = vi.hoisted(() => ({
   coverage: [] as GithubAppCoverageItem[],
   switchAgentGithubApp: vi.fn(async () => undefined),
+  startGithubAppManifest: vi.fn(async () => ({
+    action: 'https://github.com/settings/apps/new?state=example-state',
+    manifest: { name: 'example-app', public: true }
+  })),
   refresh: vi.fn()
 }))
 
@@ -39,7 +43,8 @@ vi.mock('@/lib/api', async (importOriginal) => ({
     }
   ]),
   fetchGithubAppCoverage: vi.fn(async () => mocks.coverage),
-  switchAgentGithubApp: mocks.switchAgentGithubApp
+  switchAgentGithubApp: mocks.switchAgentGithubApp,
+  startGithubAppManifest: mocks.startGithubAppManifest
 }))
 
 const { GithubAppDialog } = await import('./GithubAppDialog')
@@ -47,7 +52,7 @@ const { GithubAppDialog } = await import('./GithubAppDialog')
 let root: Root | undefined
 let host: HTMLDivElement | undefined
 
-async function render(agentId: string, onClose = vi.fn(), onSwitched = vi.fn()) {
+async function render(agentId: string, onClose = vi.fn(), onSwitched = vi.fn(), initialAppId = 'app-free') {
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
@@ -55,7 +60,7 @@ async function render(agentId: string, onClose = vi.fn(), onSwitched = vi.fn()) 
     root?.render(
       <GithubAppDialog
         agent={{ id: agentId, githubAppId: null }}
-        initialAppId="app-free"
+        initialAppId={initialAppId}
         onClose={onClose}
         onSwitched={onSwitched}
       />
@@ -76,9 +81,51 @@ afterEach(async () => {
   host = undefined
   mocks.switchAgentGithubApp.mockClear()
   mocks.refresh.mockClear()
+  mocks.startGithubAppManifest.mockClear()
+  vi.restoreAllMocks()
+  document.querySelectorAll('form').forEach((form) => form.remove())
 })
 
 describe('GithubAppDialog', () => {
+  it('creates for the signed-in personal account and posts the returned manifest to GitHub', async () => {
+    const submit = vi.spyOn(HTMLFormElement.prototype, 'submit').mockImplementation(() => {})
+    await render('agent-personal', vi.fn(), vi.fn(), 'create')
+    expect(document.body.textContent).toContain('My personal GitHub account')
+    expect(document.body.textContent).toContain('Created as a public App')
+    await act(async () => button('Continue on GitHub')?.click())
+    expect(mocks.startGithubAppManifest).toHaveBeenCalledWith('agent-personal', null)
+    expect(submit).toHaveBeenCalledOnce()
+    const form = document.querySelector('form')!
+    expect(form.action).toBe('https://github.com/settings/apps/new?state=example-state')
+    expect(form.method).toBe('post')
+    expect(JSON.parse((form.elements.namedItem('manifest') as HTMLInputElement).value)).toEqual({
+      name: 'example-app',
+      public: true
+    })
+  })
+
+  it('requires a valid organization name and sends the selected organization', async () => {
+    vi.spyOn(HTMLFormElement.prototype, 'submit').mockImplementation(() => {})
+    await render('agent-organization', vi.fn(), vi.fn(), 'create')
+    await act(async () => (document.querySelector('button[aria-label="App owner"]') as HTMLButtonElement).click())
+    await act(async () => button('GitHub organization')?.click())
+    expect(button('Continue on GitHub')?.disabled).toBe(true)
+    const input = document.querySelector('input[placeholder="example-org"]') as HTMLInputElement
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+    for (const [value, disabled] of [
+      ['../other', true],
+      [' example-org ', false]
+    ] as const) {
+      await act(async () => {
+        setValue.call(input, value)
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      expect(button('Continue on GitHub')?.disabled).toBe(disabled)
+    }
+    await act(async () => button('Continue on GitHub')?.click())
+    expect(mocks.startGithubAppManifest).toHaveBeenCalledWith('agent-organization', 'example-org')
+  })
+
   it('lists what the picked App misses, links to install it, and holds the switch', async () => {
     mocks.coverage = [
       { target: 'example-org/api', kind: 'review', covered: true },

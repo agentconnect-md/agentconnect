@@ -6858,9 +6858,10 @@ export async function switchAgentGithubApp(agentId: string, githubAppId: string 
 
 /** The form to post to GitHub's create-App-from-manifest page for this agent. */
 export async function startGithubAppManifest(
-  agentId: string
+  agentId: string,
+  organization: string | null
 ): Promise<{ action: string; manifest: Record<string, unknown> }> {
-  return apiPost(`${orgBase()}/agents/${encodeURIComponent(agentId)}/github-app/manifest`, {})
+  return apiPost(`${orgBase()}/agents/${encodeURIComponent(agentId)}/github-app/manifest`, { organization })
 }
 
 /** A GitHub App's own logo (GitHub's generated pattern when none is uploaded), sized for a `px` box at 2x. */

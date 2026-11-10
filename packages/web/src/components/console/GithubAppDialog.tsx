@@ -3,7 +3,7 @@
 // The GitHub App an agent works through: the built-in one, a free organization App, or a new one created on GitHub.
 // A switch goes through only once the App reaches everything the agent works on; the check runs as soon as an App is picked.
 
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import useSWR from 'swr'
 import { Button, Icon } from '@/components/ui'
@@ -81,6 +81,9 @@ export function GithubAppDialog({
   const orgId = activeOrg?.id
   const current = agent.githubAppId ?? BUILT_IN
   const [choice, setChoice] = useState(initialAppId ?? current)
+  const [ownerType, setOwnerType] = useState<'personal' | 'organization'>('personal')
+  const [organization, setOrganization] = useState('')
+  const organizationInputId = useId()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -122,7 +125,7 @@ export function GithubAppDialog({
   const proceed = () =>
     run(async () => {
       if (choice === CREATE) {
-        const form = await startGithubAppManifest(agent.id)
+        const form = await startGithubAppManifest(agent.id, ownerType === 'personal' ? null : organization.trim())
         submitToGithub(form.action, form.manifest)
         return
       }
@@ -156,6 +159,43 @@ export function GithubAppDialog({
         </div>
         <div className="modalbody flex flex-col gap-3">
           <FieldSelect ariaLabel={t('title')} value={choice} options={options} onChange={setChoice} disabled={busy} />
+          {choice === CREATE && (
+            <>
+              <div className="flex flex-col gap-2">
+                <span className="font-sans text-[12px] font-medium leading-normal">{t('owner')}</span>
+                <FieldSelect
+                  ariaLabel={t('owner')}
+                  value={ownerType}
+                  options={[
+                    { value: 'personal', label: t('personalAccount') },
+                    { value: 'organization', label: t('organization') }
+                  ]}
+                  onChange={setOwnerType}
+                  disabled={busy}
+                />
+              </div>
+              {ownerType === 'organization' && (
+                <div className="flex flex-col gap-2">
+                  <label htmlFor={organizationInputId} className="font-sans text-[12px] font-medium leading-normal">
+                    {t('organizationName')}
+                  </label>
+                  <input
+                    id={organizationInputId}
+                    className="inp w-full"
+                    value={organization}
+                    onChange={(event) => setOrganization(event.target.value)}
+                    placeholder="example-org"
+                    autoCapitalize="none"
+                    spellCheck={false}
+                    disabled={busy}
+                  />
+                </div>
+              )}
+              <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                {t('publicApp')}
+              </span>
+            </>
+          )}
           {checking && (
             <div className="flex flex-col gap-[6px]">
               {coverage === undefined && !coverageError ? (
@@ -211,7 +251,13 @@ export function GithubAppDialog({
             {t('cancel')}
           </Button>
           {choice === CREATE ? (
-            <Button onClick={() => void proceed()} className={busy ? 'pointer-events-none opacity-50' : undefined}>
+            <Button
+              onClick={() => void proceed()}
+              disabled={
+                busy ||
+                (ownerType === 'organization' && !/^[a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38}$/i.test(organization.trim()))
+              }
+            >
               {busy ? t('opening') : t('continueOnGithub')}
             </Button>
           ) : (
