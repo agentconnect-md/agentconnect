@@ -124,7 +124,7 @@ function ShareDialogContent({
           ? tv('channelAccess')
           : tv('conversationAccess')
     : current.title
-  const saving = change.busy || visibility?.state === 'pending'
+  const pending = visibility?.state === 'pending'
 
   const onCopy = async () => {
     setCopying(true)
@@ -182,7 +182,7 @@ function ShareDialogContent({
                         options={choices}
                         onChange={change.pick}
                         ariaLabel={t('whoCanSee')}
-                        disabled={saving}
+                        disabled={change.busy || pending}
                       />
                     </div>
                   ) : (
@@ -194,7 +194,7 @@ function ShareDialogContent({
                     {description}
                   </p>
                 </div>
-                {saving || visibility.loading ? <Spinner size={12} /> : null}
+                {change.busy || pending || visibility.loading ? <Spinner size={12} /> : null}
               </div>
               {effective === 'private' ? (
                 <p className="font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
@@ -229,7 +229,7 @@ function ShareDialogContent({
           <Button
             variant="primary"
             className="max-desktop:w-full"
-            disabled={copying || saving || change.confirming}
+            disabled={copying || change.busy || change.confirming}
             onClick={() => void onCopy()}
           >
             {copying ? <Spinner size={15} /> : <Icon name="link" size={15} />}

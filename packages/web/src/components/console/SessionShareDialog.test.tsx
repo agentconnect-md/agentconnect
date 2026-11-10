@@ -145,8 +145,12 @@ it('asks before making a session private, then applies it without closing the sh
   expect(dialog()).not.toBeNull()
 })
 
-it('waits for an outstanding visibility update before allowing the link to be copied', () => {
+it('keeps copying available while a visibility update is pending', async () => {
   draw({ ...base, visibility: 'private', canChange: true, state: 'pending' })
-  expect(copy().disabled).toBe(true)
+  expect(copy().disabled).toBe(false)
   expect(dialog().querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')?.disabled).toBe(true)
+  await act(async () => copy().click())
+  expect(navigator.clipboard.writeText).toHaveBeenCalledWith(link)
+  expect(dialog()).toBeNull()
+  expect(document.querySelector('[role="status"]')?.textContent).toBe('Link copied')
 })
