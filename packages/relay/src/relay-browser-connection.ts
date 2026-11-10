@@ -247,6 +247,20 @@ export function parseBrowserFrame(
         ...(m.cancel === true ? { cancel: true } : {}),
         user,
         ...(userId ? { userId } : {}),
+        ...(userIdentities?.length ? { userIdentities } : {}),
+        ...(typeof m.agentId === 'string' ? { agentId: m.agentId.toLowerCase() } : {})
+      })
+      return parsed.success ? { op: parsed.data } : null
+    }
+    case 'fill_open': {
+      // Opens a chat-asked Fill card in the console; the daemon answers only the person who asked.
+      if (m.agentId !== undefined && !(typeof m.agentId === 'string' && UUID_RE.test(m.agentId))) return null
+      const parsed = RelayWebchatOp.safeParse({
+        op: 'fill_open',
+        requestId: m.requestId,
+        user,
+        ...(userId ? { userId } : {}),
+        ...(userIdentities?.length ? { userIdentities } : {}),
         ...(typeof m.agentId === 'string' ? { agentId: m.agentId.toLowerCase() } : {})
       })
       return parsed.success ? { op: parsed.data } : null
@@ -419,7 +433,8 @@ export class RelayBrowserConnection implements ChatSink {
       op.op === 'elicitation_choice' ||
       op.op === 'app_rpc' ||
       op.op === 'app_close' ||
-      op.op === 'fill_submit'
+      op.op === 'fill_submit' ||
+      op.op === 'fill_open'
         ? (op.agentId ?? this.deps.agentId)
         : this.deps.agentId
     await this.sendToParticipant(targetAgent, op, op.op)

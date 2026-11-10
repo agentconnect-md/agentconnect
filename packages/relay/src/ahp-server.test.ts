@@ -41,7 +41,7 @@ async function fixture(
   let lost = () => {}
   const conn = {
     state: 'READY',
-    supports: vi.fn(() => true),
+    supports: vi.fn((_feature: string) => true),
     authorizeAhp: vi.fn(async (_payload: unknown, _initial?: boolean) => true),
     sendAhp: vi.fn(),
     listenAhp: (_id: string, next: typeof listener) => {
@@ -170,6 +170,20 @@ it('selects only static ahp and forwards opaque frames with a conversation-bound
   host.emit('{"jsonrpc":"2.0","id":1,"result":{}}')
   expect(String((await reply)[0])).toContain('result')
 })
+it('passes linked chat identities only to a daemon that advertises it takes them', async () => {
+  for (const takes of [true, false]) {
+    const host = await fixture()
+    host.conn.supports.mockImplementation((feature: string) => takes || feature !== 'api-ahp-identities-v1')
+    host.verify.mockImplementation(async () => ({ ...allow(), userIdentities: ['slack:T1:U1'] }))
+    const socket = await dial(host.url)
+    await vi.waitFor(() => expect(host.conn.authorizeAhp).toHaveBeenCalled())
+    const sent = (host.conn.authorizeAhp.mock.calls[0]![0] as { authorization: Record<string, unknown> }).authorization
+    if (takes) expect(sent.userIdentities).toEqual(['slack:T1:U1'])
+    else expect(sent).not.toHaveProperty('userIdentities')
+    socket.close()
+  }
+})
+
 it('cleans up lost open receipts and refuses a placement changed during the await', async () => {
   const host = await fixture()
   host.conn.authorizeAhp.mockRejectedValueOnce(new Error('lost receipt'))

@@ -9,6 +9,7 @@ import {
   AhpAttachmentAuthorization,
   AhpMessageText,
   API_AHP_HANDSHAKE_V1_FEATURE,
+  API_AHP_IDENTITIES_V1_FEATURE,
   API_AHP_V1_FEATURE,
   AHP_GRANT_MAX_AGE_MS,
   AHP_MAX_MESSAGE_BYTES,
@@ -122,6 +123,16 @@ function resourceOf(req: IncomingMessage, pathname: string): string | undefined 
   return host && HOST.test(host) ? `https://${host.toLowerCase()}${pathname}` : undefined
 }
 
+// A daemon without `api-ahp-identities-v1` refuses an authorization it cannot parse, so it never gets the identities.
+function forDaemon(
+  conn: { supports(feature: string): boolean },
+  authorization: AhpAttachmentAuthorization
+): AhpAttachmentAuthorization {
+  if (conn.supports(API_AHP_IDENTITIES_V1_FEATURE) || !authorization.userIdentities) return authorization
+  const { userIdentities: _identities, ...rest } = authorization
+  return rest
+}
+
 function authorizationOf(result: RcVerifyResult, agentId: string, kind: CredentialKind, started: number, now: number) {
   if (!result.ok || result.agentId !== agentId || !result.daemonId || !result.apiProtocols?.includes('ahp')) return
   if (kind === 'webchat-token' && !result.conversationId) return
@@ -134,6 +145,7 @@ function authorizationOf(result: RcVerifyResult, agentId: string, kind: Credenti
     callerApproves: result.callerApproves,
     ...(result.conversationId ? { conversationId: result.conversationId } : {}),
     ...(result.targetSessionId ? { targetSessionId: result.targetSessionId } : {}),
+    ...(result.userIdentities?.length ? { userIdentities: result.userIdentities.slice(0, 8) } : {}),
     grant: result.ahpGrant
   })
   if (!parsed.success) return
@@ -223,7 +235,11 @@ export function createAhpServer(app: FastifyInstance, deps: AhpServerDeps) {
         if (held.length < MAX_HELD_EVENTS) held.push(event)
         else overflow = true
       })
-      const payload = { attachmentId, authorization: verdict.authorization, ...(handshake ? { handshake } : {}) }
+      const payload = {
+        attachmentId,
+        authorization: forDaemon(conn!, verdict.authorization),
+        ...(handshake ? { handshake } : {})
+      }
       if (!(await conn!.authorizeAhp(payload, true))) return fail(503)
       if (!alive() || !current() || overflow) return fail(503)
       if (verdict.authorization.grant.expiresAtMs <= now()) return fail(401)
@@ -304,7 +320,7 @@ export function createAhpServer(app: FastifyInstance, deps: AhpServerDeps) {
         )
       )
         return false
-      if (!(await conn.authorizeAhp({ attachmentId, authorization: next.authorization }))) return false
+      if (!(await conn.authorizeAhp({ attachmentId, authorization: forDaemon(conn, next.authorization) }))) return false
       if (!valid()) return false
       authorization = next.authorization
       credential = candidate

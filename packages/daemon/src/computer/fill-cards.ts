@@ -23,18 +23,27 @@ export type FillCardAnswer =
   | { kind: 'expired' }
   | { kind: 'stopped' }
 
-/** Who may answer a card: its conversation, and the person whose turn asked when the turn names one. */
+/** Who asked: a console user (webchat), or a member of the session's own chat tenant (`platform:tenant:member`). */
+export type FillCardRequester = { userId: string } | { identity: string }
+
+/** Where a card may be answered and by whom: its conversation or its session, and only the person who asked. */
 export interface FillCardScope {
-  conversationId: string
   agentId: string
-  // The asking turn's console user; a card from a turn with no known person cannot be answered here.
-  requesterUserId: string | undefined
+  // The conversation the card was shown in; absent for a card asked on a chat platform.
+  conversationId?: string
+  // The asking session, by its outward id: the console answers a chat-asked card through a continuation of it.
+  sessionId: string
+  requester: FillCardRequester | undefined
 }
 
 export interface FillCardSubmit {
   requestId: string
-  conversationId: string
+  conversationId?: string
+  // The session a console continuation is attached to.
+  targetSessionId?: string
   userId: string | undefined
+  // The answering person's linked chat identities, as the relay verified them.
+  userIdentities?: readonly string[]
   values?: ComputerFormValue[]
   cancel?: boolean
 }
@@ -73,13 +82,18 @@ export class PendingFillCards {
     })
   }
 
-  /** A person's answer from a browser; accepted only from the card's own conversation and person, with its own fields. */
+  /** The card for its person, as the console opens a chat-asked one; never another person's card or its fields. */
+  open(submit: Omit<FillCardSubmit, 'values' | 'cancel'>): { card: ComputerFillCard } | { refused: string } {
+    const entry = this.pending.get(submit.requestId)
+    const refusal = entry ? this.refusal(entry, submit) : 'this Fill card is no longer waiting'
+    return refusal || !entry ? { refused: refusal ?? 'this Fill card is no longer waiting' } : { card: entry.card }
+  }
+
+  /** A person's answer from a browser; accepted only from the card's own place and person, with its own fields. */
   answer(submit: FillCardSubmit): { accepted: true } | { accepted: false; reason: string } {
     const entry = this.pending.get(submit.requestId)
-    if (!entry || entry.scope.conversationId !== submit.conversationId)
-      return { accepted: false, reason: 'this Fill card is no longer waiting' }
-    if (!submit.userId || entry.scope.requesterUserId !== submit.userId)
-      return { accepted: false, reason: 'only the person who asked can answer this Fill card' }
+    const refusal = entry ? this.refusal(entry, submit) : 'this Fill card is no longer waiting'
+    if (!entry || refusal) return { accepted: false, reason: refusal ?? 'this Fill card is no longer waiting' }
     if (submit.cancel) {
       entry.settle({ kind: 'cancel' })
       return { accepted: true }
@@ -93,14 +107,31 @@ export class PendingFillCards {
       seen.add(value.field)
     }
     if (values.length === 0) return { accepted: false, reason: 'the answer fills no field' }
-    entry.settle({ kind: 'submit', values, responder: submit.userId })
+    entry.settle({ kind: 'submit', values, responder: submit.userId ?? '' })
     return { accepted: true }
+  }
+
+  private refusal(entry: Entry, submit: Omit<FillCardSubmit, 'values' | 'cancel'>): string | undefined {
+    const { scope } = entry
+    const place =
+      (scope.conversationId !== undefined && submit.conversationId === scope.conversationId) ||
+      (submit.targetSessionId !== undefined && submit.targetSessionId === scope.sessionId)
+    if (!place) return 'this Fill card is no longer waiting'
+    const requester = scope.requester
+    const person =
+      requester !== undefined &&
+      submit.userId !== undefined &&
+      ('userId' in requester
+        ? requester.userId === submit.userId
+        : (submit.userIdentities ?? []).includes(requester.identity))
+    return person ? undefined : 'only the person who asked can answer this Fill card'
   }
 
   /** Settles every card of a conversation as stopped, as when its page closes for good. */
   stopConversation(conversationId: string): void {
     for (const entry of [...this.pending.values()])
-      if (entry.scope.conversationId === conversationId) entry.settle({ kind: 'stopped' })
+      if (entry.scope.conversationId !== undefined && entry.scope.conversationId === conversationId)
+        entry.settle({ kind: 'stopped' })
   }
 
   size(): number {

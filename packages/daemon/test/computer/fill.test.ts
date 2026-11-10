@@ -277,7 +277,7 @@ describe('PendingFillCards', () => {
     fields: fields as ComputerFillCard['fields'],
     expiresAt
   })
-  const scope = { conversationId: 'conv-1', agentId: AGENT, requesterUserId: 'user_1' }
+  const scope = { conversationId: 'conv-1', sessionId: 'out-1', agentId: AGENT, requester: { userId: 'user_1' } }
   const id = '7f9d6c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f'
 
   it('takes an answer only from the asking person in the card’s conversation, with the card’s own fields', async () => {
@@ -325,9 +325,26 @@ describe('PendingFillCards', () => {
     expect(pending.size()).toBe(0)
   })
 
+  it('lets a console continuation of the session open and answer a chat-asked card, only for the member who asked', async () => {
+    const pending = new PendingFillCards()
+    const chat = { sessionId: 'out-7', agentId: AGENT, requester: { identity: 'slack:T1:U1' } }
+    const shown = card(id)
+    const waiting = pending.wait(shown, chat, () => true)
+    const base = { requestId: id, conversationId: 'console-conv', targetSessionId: 'out-7', userId: 'user_9' }
+    expect(pending.open({ ...base, userIdentities: ['slack:T1:U2'] })).toEqual({
+      refused: 'only the person who asked can answer this Fill card'
+    })
+    expect(pending.open({ ...base, targetSessionId: 'out-8', userIdentities: ['slack:T1:U1'] })).toMatchObject({
+      refused: expect.any(String)
+    })
+    expect(pending.open({ ...base, userIdentities: ['slack:T1:U1'] })).toEqual({ card: shown })
+    expect(pending.answer({ ...base, userIdentities: ['slack:T1:U1'], cancel: true })).toEqual({ accepted: true })
+    expect(await waiting).toEqual({ kind: 'cancel' })
+  })
+
   it('refuses a card from a turn with no known person', async () => {
     const pending = new PendingFillCards()
-    void pending.wait(card(id), { ...scope, requesterUserId: undefined }, () => true)
+    void pending.wait(card(id), { ...scope, requester: undefined }, () => true)
     expect(pending.answer({ requestId: id, conversationId: 'conv-1', userId: undefined, cancel: true })).toMatchObject({
       accepted: false
     })

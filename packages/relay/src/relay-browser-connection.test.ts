@@ -375,8 +375,28 @@ describe('parseBrowserFrame', () => {
         agentId: AGENT
       }
     })
-    expect(parseBrowserFrame({ type: 'fill_submit', requestId, cancel: true }, USER, 'principal-1')).toEqual({
-      op: { op: 'fill_submit', requestId, cancel: true, user: USER, userId: 'principal-1' }
+    expect(
+      parseBrowserFrame(
+        { type: 'fill_submit', requestId, cancel: true, userIdentities: ['forged'] },
+        USER,
+        'principal-1',
+        undefined,
+        ['slack:T1:U1']
+      )
+    ).toEqual({
+      op: {
+        op: 'fill_submit',
+        requestId,
+        cancel: true,
+        user: USER,
+        userId: 'principal-1',
+        userIdentities: ['slack:T1:U1']
+      }
+    })
+    expect(
+      parseBrowserFrame({ type: 'fill_open', requestId }, USER, 'principal-1', undefined, ['slack:T1:U1'])
+    ).toEqual({
+      op: { op: 'fill_open', requestId, user: USER, userId: 'principal-1', userIdentities: ['slack:T1:U1'] }
     })
     expect(parseBrowserFrame({ type: 'fill_submit', requestId: 'not-a-uuid', cancel: true }, USER)).toBeNull()
     expect(

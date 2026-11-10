@@ -25,6 +25,7 @@ import {
   API_AG_UI_V1_FEATURE,
   API_AHP_V1_FEATURE,
   API_AHP_HANDSHAKE_V1_FEATURE,
+  API_AHP_IDENTITIES_V1_FEATURE,
   type RelayDaemonFrame,
   type RdHelloOk,
   type RdMsg,
@@ -345,7 +346,9 @@ export class RelayClient {
         capabilities: [
           ...DAEMON_RD_CAPABILITIES,
           ...(this.deps.capabilities?.() ?? []),
-          ...(ahpAvailable(this.deps) ? [API_AHP_V1_FEATURE, API_AHP_HANDSHAKE_V1_FEATURE] : [])
+          ...(ahpAvailable(this.deps)
+            ? [API_AHP_V1_FEATURE, API_AHP_HANDSHAKE_V1_FEATURE, API_AHP_IDENTITIES_V1_FEATURE]
+            : [])
         ]
       })
     )

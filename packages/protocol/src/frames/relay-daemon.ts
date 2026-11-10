@@ -367,6 +367,18 @@ export const RelayWebchatOp = z.discriminatedUnion('op', [
     cancel: z.literal(true).optional(),
     user: z.string().optional(),
     userId: z.string().optional(),
+    // Stamped by the relay: the answering person's linked chat identities, matched against a chat requester.
+    userIdentities: z.array(z.string().min(1).max(512)).max(8).optional(),
+    agentId: z.string().uuid().optional()
+  }),
+  // The console's request to show a Fill card asked on a chat platform (§6): the daemon answers on this op's stream
+  // with the card only for the person who asked, matched through the relay-stamped linked identities.
+  z.object({
+    op: z.literal('fill_open'),
+    requestId: z.string().uuid(),
+    user: z.string().optional(),
+    userId: z.string().optional(),
+    userIdentities: z.array(z.string().min(1).max(512)).max(8).optional(),
     agentId: z.string().uuid().optional()
   }),
   // One MCP App view's request to the daemon (webchat-mcp-apps.md §5). `callId` is browser-minted

@@ -318,7 +318,8 @@ export class AhpHostConnection {
       }
       case 'agentconnect/appRpc':
       case 'agentconnect/appClose':
-      case 'agentconnect/fillSubmit': {
+      case 'agentconnect/fillSubmit':
+      case 'agentconnect/fillOpen': {
         if (!this.port.customRequest) throw new AhpProtocolError(JsonRpcErrorCodes.MethodNotFound, 'Unknown method')
         await this.prepare(parse(subscription, message.params).channel)
         return this.port.customRequest(message.method, message.params)
