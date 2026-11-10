@@ -785,6 +785,45 @@ describe('ThreadPanel on a thread’s record (webchat-threads.md §6.2)', () => 
     expect(marked[0]!.textContent).toContain('Will it rain tomorrow?')
   })
 
+  it('shares a message by the holding task’s page, else by this thread’s address, with the message’s anchor', async () => {
+    const written: string[] = []
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: (text: string) => (written.push(text), Promise.resolve()) }
+    })
+    const copyFirstMessage = async () => {
+      await act(async () =>
+        container.querySelector<HTMLButtonElement>('[data-msg-seq="1"] [data-message-share]')!.click()
+      )
+      const copy = [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(
+        (b) => b.textContent === 'Copy link'
+      )!
+      await act(async () => copy.click())
+    }
+    // An unowned thread: the conversation with the thread open.
+    wire.record = recordPage()
+    withTask = false
+    props = { record: ref }
+    await render()
+    await copyFirstMessage()
+    expect(written.at(-1)).toBe(`${location.origin}${location.pathname}?thread=post-root#msg=1`)
+    act(() => root.unmount())
+    root = createRoot(container)
+    // A thread a task holds: the task's own page.
+    wire.record = recordPage({
+      summary: {
+        rootId: 'post-root',
+        replies: 2,
+        participants: [],
+        task: { sessionId: 'ses_task', title: 'Find what blocks api 1.5', state: 'open' },
+        readable: true
+      }
+    })
+    await render()
+    await copyFirstMessage()
+    expect(written.at(-1)).toBe(`${location.origin}/acme/sessions/ses_task#msg=1`)
+  })
+
   it('draws no divider over a page that starts after the root', async () => {
     wire.record = recordPage({
       messages: [reply(3, 'user_lee', 'Can you fix it?', { senderName: 'Lee Park' }), reply(4, 'agent_1', 'On it.')],

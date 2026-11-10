@@ -36,7 +36,7 @@ import { CopyTurnButton, StepExtras, McpAppRow, turnWork, WorkStepList } from '@
 import { type Turn } from '@/components/console/session-turns'
 import type { FmtStep } from '@/components/console/transcript-steps'
 import { ElicitationCard, PlanBlock } from '@/components/console/TranscriptCards'
-import { HOVER_TOOL_BUTTON, HoverToolbar } from '@/components/console/HoverToolbar'
+import { HOVER_TOOL_BUTTON, HOVER_TOOL_ICON, HoverToolbar } from '@/components/console/HoverToolbar'
 
 /** Whether a user turn prints a sender line (it is not you), which the avatar's alignment follows. */
 function showsSenderLabel(turn: { isCron: boolean; sp: { handle: string } }): boolean {
@@ -108,20 +108,36 @@ type BotTurn = Extract<Turn, { kind: 'bot' }>
 function MessageMenu({
   text,
   onReply,
+  onShare,
   className,
   ...attrs
 }: {
   text?: string | undefined
   onReply?: (() => void) | undefined
+  /** Shares the message: its session's Share dialog with a link to this message. */
+  onShare?: (() => void) | undefined
   /** Where the menu floats on its message. */
   className: string
 } & Record<`data-${string}`, string>) {
   const tt = useTranslations('Common.taskThread')
-  if (!text && !onReply) return null
+  const tShare = useTranslations('Sessions.share')
+  if (!text && !onReply && !onShare) return null
   return (
     <HoverToolbar group="turn" label={tt('messageActions')} className={className} {...attrs}>
       {onReply ? <ReplyInThreadButton onReply={onReply} /> : null}
       {text ? <CopyTurnButton text={text} className={HOVER_TOOL_BUTTON} /> : null}
+      {onShare ? (
+        <button
+          type="button"
+          data-message-share=""
+          aria-label={tShare('share')}
+          title={tShare('share')}
+          onClick={onShare}
+          className={HOVER_TOOL_BUTTON}
+        >
+          <Icon name="share" size={HOVER_TOOL_ICON} />
+        </button>
+      ) : null}
     </HoverToolbar>
   )
 }
@@ -132,7 +148,8 @@ export function UserTurnView({
   footer,
   onReply,
   pressToReply = false,
-  lead
+  lead,
+  onShare
 }: {
   turn: UserTurn
   /** The integration whose mark stands in for a sender with no picture. */
@@ -145,6 +162,8 @@ export function UserTurnView({
   pressToReply?: boolean
   /** Above the bubble: the thread a handed message joined, which it opens. */
   lead?: ReactNode
+  /** Shares this message: its Share dialog with a link to it. */
+  onShare?: (() => void) | undefined
 }) {
   const { orgPath } = useOrgs()
   return (
@@ -186,12 +205,17 @@ export function UserTurnView({
               {turn.body && <UserTurnDetails body={turn.body} platform={turn.platform} />}
             </div>
             {/* Its hover menu on the bubble's top edge at the side facing the timeline: a message on the right keeps its menu on the left. */}
-            <MessageMenu text={turn.text} onReply={onReply} className="left-[8px] bottom-full -mb-[6px]" />
+            <MessageMenu
+              text={turn.text}
+              onReply={onReply}
+              onShare={onShare}
+              className="left-[8px] bottom-full -mb-[6px]"
+            />
           </div>
         )}
         {footer}
         {/* A message of attachments alone has no bubble: its menu sits on the column's top edge instead. */}
-        {turn.text || turn.body ? null : <MessageMenu onReply={onReply} className="top-0 left-0" />}
+        {turn.text || turn.body ? null : <MessageMenu onReply={onReply} onShare={onShare} className="top-0 left-0" />}
       </ThreadRootPress>
       <ParticipantAvatar
         agent={turn.agent}
@@ -253,7 +277,8 @@ export function BotTurnView({
   answerElicitation,
   appRpc,
   appReport,
-  closeApp
+  closeApp,
+  onShare
 }: {
   turn: BotTurn
   agentById: ReadonlyMap<string, Agent>
@@ -287,6 +312,8 @@ export function BotTurnView({
     | undefined
   appReport?: ((agentId: string | undefined, text: string) => boolean) | undefined
   closeApp?: ((agentId: string | undefined, appId: string) => void) | undefined
+  /** Shares this message: its Share dialog with a link to it. */
+  onShare?: (() => void) | undefined
 }) {
   const { orgPath } = useOrgs()
   // The answer reads as prose, work folds under the header line, and a daemon notice stands on its own line.
@@ -331,7 +358,9 @@ export function BotTurnView({
       )}
       <div className="relative min-w-0 flex-1" style={{ '--agent-accent': turnTone } as CSSProperties}>
         {/* A finished answer's hover menu, at the right of its header row. */}
-        {streaming ? null : <MessageMenu text={answerText} className="-top-[3px] right-0" data-turn-toolbar="" />}
+        {streaming ? null : (
+          <MessageMenu text={answerText} onShare={onShare} className="-top-[3px] right-0" data-turn-toolbar="" />
+        )}
         <AgentTurnHeader
           name={turn.agentName}
           {...(workSteps.length > 0

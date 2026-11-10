@@ -498,6 +498,22 @@ describe('a webchat coordinator’s main timeline (webchat-threads.md §6.1)', (
 })
 
 describe('writing in a thread (webchat-threads.md §6.3)', () => {
+  it('shares a message on the main timeline by the conversation’s address with the message’s anchor', async () => {
+    const written: string[] = []
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: (text: string) => (written.push(text), Promise.resolve()) }
+    })
+    conversation()
+    await open()
+    await click('[data-msg-seq="1"] [data-message-share]')
+    const copy = [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(
+      (b) => b.textContent === 'Copy link'
+    )!
+    await act(async () => copy.click())
+    expect(written.at(-1)).toBe(`${location.origin}/acme/sessions/session-1#msg=1`)
+  })
+
   it('offers the owner Reply in thread on every root, in its hover menu, which opens it with a composer that takes the caret', async () => {
     conversation()
     wire.messages = [...wire.messages, row(6, 'sam', 'Ship the notes', { postId: LATER })]
@@ -509,7 +525,7 @@ describe('writing in a thread (webchat-threads.md §6.3)', () => {
       [...(q('[data-reply-in-thread]')?.parentElement?.querySelectorAll('button') ?? [])].map((b) =>
         b.getAttribute('aria-label')
       )
-    ).toEqual(['Reply in thread', 'Copy message'])
+    ).toEqual(['Reply in thread', 'Copy message', 'Share'])
     expect(q('[data-reply-in-thread]')?.closest('[role="toolbar"]')).not.toBeNull()
     expect(q('[data-turn-toolbar] [title="Copy message"]')).not.toBeNull()
     act(() => container!.querySelectorAll<HTMLButtonElement>('[data-reply-in-thread]')[1]!.click())

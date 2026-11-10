@@ -172,8 +172,7 @@ async function render() {
 // The steer mark on the bubble: a glyph plus one word, with the full meaning in its tooltip.
 const steerMark = () => container?.querySelector('span[title^="Steer"]')
 // One transcript turn per `gap-[5px]` column: a user bubble or an agent block, in reading order.
-const turnColumns = () =>
-  [...(container?.querySelectorAll('div') ?? [])].filter((d) => d.className === 'flex flex-col gap-[5px]')
+const turnColumns = () => [...(container?.querySelectorAll<HTMLElement>('[data-turn-anchor]') ?? [])]
 
 beforeEach(() => {
   window.matchMedia = ((query: string) => ({

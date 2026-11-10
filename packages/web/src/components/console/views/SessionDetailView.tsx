@@ -105,6 +105,8 @@ import { socialLoginProviders } from '@/lib/social-login-providers'
 import { isAuthConfigured } from '@/lib/auth'
 import { clipboardFiles, prepareWebchatImage } from '@/lib/webchat-image'
 import { copyLink } from '@/lib/copy-link'
+import { messageLink, useLocateMessage } from '@/lib/message-link'
+import { SessionShareDialogFor } from '@/components/console/SessionShare'
 import {
   AttachmentCards,
   FileDropOverlay,
@@ -1026,6 +1028,8 @@ export default function SessionDetailView() {
   const [copied, setCopied] = useState(false)
   // The header's Share dialog: who can see the session, and its link.
   const [shareOpen, setShareOpen] = useState(false)
+  // A message's Share: the page's Share dialog, its Copy link pointing at that message.
+  const [messageShare, setMessageShare] = useState<string | null>(null)
   const detailTooltipId = useId()
   const requestsTooltipId = useId()
   const {
@@ -2162,6 +2166,8 @@ export default function SessionDetailView() {
     release: releaseFollow,
     awayFromBottom
   } = useStickToBottom(conversationKey ?? sid ?? null)
+  // A message link lands on its message once drawn.
+  useLocateMessage(releaseFollow)
   // What this browser last read here, for the NEW line; it advances only while the reader looks at the end.
   const seen = useSeenMarker(MOCK_MODE ? null : (conversationKey ?? sid ?? null), !awayFromBottom)
   // The transcript scroller's scrollbar width, which the composer below it insets by to stay in line with the column.
@@ -2821,6 +2827,14 @@ export default function SessionDetailView() {
   const taskOwnerHref = taskOwner
     ? orgPath(`/sessions/${encodeURIComponent(taskOwner.id)}${flatView ? '?view=flat' : ''}`)
     : null
+  const shareMessage = (turn: Turn): (() => void) | undefined => {
+    const seq = turn.rowSeq
+    if (seq === undefined) return undefined
+    const page = orgPath(
+      `/sessions/${encodeURIComponent(session.realSessionId ?? session.id)}${flatView ? '?view=flat' : ''}`
+    )
+    return () => setMessageShare(messageLink(page, seq))
+  }
   const onCopyLink = async () => {
     const canonicalId = session.realSessionId ?? session.id
     const link =
@@ -3489,6 +3503,14 @@ export default function SessionDetailView() {
     // grows with the transcript, so the page itself never scrolls. The transcript column and the
     // dock are each their own overflow region and scroll independently.
     <div className="relative flex h-full min-h-0 items-stretch">
+      {messageShare ? (
+        <SessionShareDialogFor
+          sessionId={session.realSessionId ?? session.id}
+          fallbackTitle={session.title}
+          link={messageShare}
+          onClose={() => setMessageShare(null)}
+        />
+      ) : null}
       {shareOpen ? (
         <SessionShareDialog
           title={session.title}
@@ -3996,7 +4018,12 @@ export default function SessionDetailView() {
                     >
                       {turns.map((turn, ti) => (
                         // The turn's clock time is its own centred line above the message, a separator shared by both sides.
-                        <div key={turn.key} data-turn-anchor={turn.key} className="flex flex-col gap-[5px]">
+                        <div
+                          key={turn.key}
+                          data-turn-anchor={turn.key}
+                          {...(turn.rowSeq !== undefined ? { 'data-msg-seq': turn.rowSeq } : {})}
+                          className="-mx-2 flex flex-col gap-[5px] rounded-lg px-2 transition-colors data-[message-located]:bg-(--amber-50)"
+                        >
                           {ti === newDividerAt ? <NewDivider /> : null}
                           {turn.time && (
                             <div className="mono text-center text-[11px] leading-normal text-(--text-tertiary)">
@@ -4015,6 +4042,7 @@ export default function SessionDetailView() {
                                   return root ? () => replyInThread(root) : undefined
                                 })()}
                                 pressToReply={isMobile}
+                                onShare={shareMessage(turn)}
                               />
                               {rootFooter(turn, 'card')}
                             </>
@@ -4062,6 +4090,7 @@ export default function SessionDetailView() {
                                   answerElicitation={answerElicitation}
                                   appRpc={appRpc}
                                   appReport={appReport}
+                                  onShare={shareMessage(turn)}
                                   closeApp={closeApp}
                                 />
                               )
