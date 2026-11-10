@@ -7748,6 +7748,14 @@ export function startAzureDevOpsConnect(connectionId?: string, orgId?: string): 
   )
 }
 
+export function startAzureDevOpsUserIdentity(connectionId: string): Promise<{ authorizeUrl: string }> {
+  return apiPost(`${orgBase()}/azure-devops/identity/authorization`, { connectionId })
+}
+
+export function finishAzureDevOpsUserIdentity(orgId: string, state: string, code: string): Promise<void> {
+  return apiPost(`${orgBase(orgId)}/azure-devops/identity/callback`, { state, code })
+}
+
 /** The connect page posts what Microsoft returned, a code or an error, with the state. */
 export function finishAzureDevOpsSignIn(
   orgId: string,

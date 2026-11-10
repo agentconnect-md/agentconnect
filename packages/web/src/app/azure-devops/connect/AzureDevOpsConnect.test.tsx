@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => {
   return {
     FakeApiError,
     finish: vi.fn(),
+    finishIdentity: vi.fn(),
     organizations: vi.fn(),
     choose: vi.fn(),
     apply: vi.fn(),
@@ -38,6 +39,7 @@ vi.mock('@/lib/api', () => ({
   ApiError: mocks.FakeApiError,
   fetchOrgs: mocks.fetchOrgs,
   finishAzureDevOpsSignIn: mocks.finish,
+  finishAzureDevOpsUserIdentity: mocks.finishIdentity,
   listAzureDevOpsConnectOrganizations: mocks.organizations,
   chooseAzureDevOpsConnectOrganization: mocks.choose,
   applyAzureDevOpsConnectProjects: mocks.apply,
@@ -147,6 +149,28 @@ async function chooseProjects() {
 const refusal = () => host.querySelector('[data-azure-devops-refusal]')
 
 describe('AzureDevOpsConnect', () => {
+  it('finishes tenant verification once without starting organization setup', async () => {
+    mocks.finishIdentity.mockResolvedValue(undefined)
+    window.history.replaceState(
+      {},
+      '',
+      '/azure-devops/connect?state=azure-verify.org-a.example-nonce&code=example-code'
+    )
+    await act(async () =>
+      root.render(
+        <StrictMode>
+          <AzureDevOpsConnect />
+        </StrictMode>
+      )
+    )
+    await settle()
+    expect(mocks.finishIdentity).toHaveBeenCalledTimes(1)
+    expect(mocks.finishIdentity).toHaveBeenCalledWith('org-a', 'azure-verify.org-a.example-nonce', 'example-code')
+    expect(mocks.finish).not.toHaveBeenCalled()
+    expect(host.textContent).toContain('Access verified')
+    expect(window.location.search).toBe('')
+  })
+
   it('reads the organization and the managed connection out of the signed state, and nothing out of a malformed one', () => {
     expect(azureDevOpsConnectState(STATE)).toEqual({ orgId: 'org-a', connectionId: null })
     expect(azureDevOpsConnectState(MANAGE_STATE)).toEqual({ orgId: 'org-a', connectionId: CONNECTION_ID })

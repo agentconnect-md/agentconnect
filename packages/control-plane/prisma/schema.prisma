@@ -224,6 +224,8 @@ model User {
   gitlabConnections                GitlabConnection[]         @relation("GitlabConnectionUser")
   githubRepoIdentity               GithubRepoIdentity?
   githubRepoIdentityState          GithubRepoIdentityState?
+  azureDevOpsUserIdentities         AzureDevOpsUserIdentity[]
+  azureDevOpsUserIdentityState      AzureDevOpsUserIdentityState?
   giteaConnections                 GiteaConnection[]          @relation("GiteaConnectionCreatedBy")
   azureDevOpsConnections           AzureDevOpsConnection[]    @relation("AzureDevOpsConnectionCreatedBy")
   slackConfigs                     SlackUserConfig[]
@@ -263,6 +265,37 @@ model GithubRepoIdentityState {
 
   @@index([expiresAt])
   @@map("github_repo_identity_state")
+}
+
+// A tenant verification is tied to the current Microsoft link; personal tokens never leave the CP.
+model AzureDevOpsUserIdentity {
+  userId         String
+  tenantId       String @db.Uuid
+  linkedObjectId String @db.Uuid
+  objectId       String @db.Uuid
+  clientId       String @db.Uuid
+  refreshToken   String
+  user           User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, tenantId])
+  @@map("azure_devops_user_identity")
+}
+
+// A single-use PKCE flow, also cancelled when the Microsoft sign-in method is removed.
+model AzureDevOpsUserIdentityState {
+  nonce          String   @id
+  userId         String   @unique
+  orgId          String
+  connectionId   String   @db.Uuid
+  tenantId       String   @db.Uuid
+  linkedObjectId String   @db.Uuid
+  clientId       String   @db.Uuid
+  verifier       String
+  expiresAt      DateTime @db.Timestamptz(6)
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+  @@map("azure_devops_user_identity_state")
 }
 
 // A deleted account's identity boundary: tokens issued at or before `cutoffAt` are

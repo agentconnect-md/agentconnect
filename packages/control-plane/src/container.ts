@@ -71,6 +71,8 @@ import { AzureDevOpsHookService } from './azure-devops/hook.service.js'
 import { azureDevOpsReviewPublisher } from './azure-devops/review-publisher.js'
 import { AzureDevOpsHookSweeper } from './azure-devops/hook-sweeper.js'
 import { AzureDevOpsMembershipAuthzService } from './azure-devops/membership-authz.service.js'
+import { AzureDevOpsUserIdentityService } from './azure-devops/user-identity.js'
+import { PgAzureDevOpsUserIdentityStore } from './persistence/repositories/azure-devops-user-identity.repo.js'
 import { azureDevOpsConnectKeys } from './azure-devops/connect.js'
 import { GiteaStatusCoordinator, GiteaStatusReporter } from './gitea/status-projection.js'
 import { AzureDevOpsStatusCoordinator, AzureDevOpsStatusReporter } from './azure-devops/status-projection.js'
@@ -1903,19 +1905,40 @@ export function buildContainer(
     clock,
     log: { warn: (obj, msg) => http.log.warn(obj, msg) }
   })
+  const socialIdentityMutations = new PgSocialIdentityMutationGate(prisma)
+  const azureDevOpsUserIdentityStore = new PgAzureDevOpsUserIdentityStore(prisma)
+  const microsoftIdentityFor = async (userId: string) => {
+    const sub = await repos.user.getOidcSubject(userId)
+    return sub && logtoIdentity ? logtoIdentity.microsoftIdentityFor(sub, 0) : null
+  }
+  const azureDevOpsUserIdentity = new AzureDevOpsUserIdentityService({
+    api: azureDevOpsApi,
+    clock,
+    cipher: secretCipher,
+    store: azureDevOpsUserIdentityStore,
+    mutations: socialIdentityMutations,
+    connections: repos.azureDevOpsConnection,
+    subjectFor: (userId) => repos.user.getOidcSubject(userId),
+    microsoftIdentityFor,
+    ...(azureDevOpsDeploymentApp && webAppUrl
+      ? {
+          application: {
+            clientId: azureDevOpsDeploymentApp.appId,
+            clientSecret: azureDevOpsDeploymentApp.clientSecret,
+            webAppUrl
+          }
+        }
+      : {})
+  })
   const azureDevOps = {
+    userIdentity: azureDevOpsUserIdentity,
     connections: azureDevOpsConnectionService,
     userAuthz: new AzureDevOpsUserAuthzService({
       api: azureDevOpsApi,
       service: azureDevOpsConnectionService,
-      microsoftIdentityFor: async (userId) => {
-        const sub = await repos.user.getOidcSubject(userId)
-        return sub && logtoIdentity ? logtoIdentity.microsoftIdentityFor(sub, 0) : null
-      },
-      microsoftTenantIdentityFor: async (userId, linked, tenantId) => {
-        const sub = await repos.user.getOidcSubject(userId)
-        return sub && logtoIdentity ? logtoIdentity.microsoftTenantIdentityFor(sub, linked, tenantId) : null
-      }
+      microsoftIdentityFor,
+      microsoftTenantIdentityFor: (userId, linked, tenantId) =>
+        azureDevOpsUserIdentity.identityFor(userId, linked, tenantId)
     }),
     hooks: azureDevOpsHooks,
     bindings: new AzureDevOpsBindingService({
@@ -2332,7 +2355,6 @@ export function buildContainer(
     : undefined
 
   const logtoMgmtCfg = resolveLogtoMgmtConfig(config)
-  const socialIdentityMutations = new PgSocialIdentityMutationGate(prisma)
   const githubRepoIdentity =
     github && logtoMgmtCfg && config.OIDC_ISSUER
       ? new GithubRepoIdentityService({
@@ -2368,7 +2390,8 @@ export function buildContainer(
           },
           {
             identityTtlMs: config.SESSION_ACCESS_IDENTITY_TTL_SEC * 1000,
-            ...(githubRepoIdentity ? { githubRepoIdentity } : {})
+            ...(githubRepoIdentity ? { githubRepoIdentity } : {}),
+            clearMicrosoftTenantIdentities: (sub) => azureDevOpsUserIdentityStore.clearBySubject(sub)
           }
         )
       : undefined

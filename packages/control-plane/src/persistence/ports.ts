@@ -159,6 +159,36 @@ export interface GithubRepoIdentityStore {
   completeState(nonce: string, identity: GithubRepoIdentityRecord, now: Date): Promise<boolean>
 }
 
+export interface AzureDevOpsUserIdentityRecord {
+  userId: string
+  tenantId: string
+  linkedObjectId: string
+  objectId: string
+  clientId: string
+  refreshToken: string
+}
+
+export interface AzureDevOpsUserIdentityState {
+  nonce: string
+  userId: string
+  orgId: string
+  connectionId: string
+  tenantId: string
+  linkedObjectId: string
+  clientId: string
+  verifier: string
+  expiresAt: Date
+}
+
+export interface AzureDevOpsUserIdentityStore {
+  find(userId: string, tenantId: string): Promise<AzureDevOpsUserIdentityRecord | null>
+  clearBySubject(sub: string): Promise<void>
+  createState(state: AzureDevOpsUserIdentityState, now: Date): Promise<void>
+  findState(userId: string, nonce: string, now: Date): Promise<AzureDevOpsUserIdentityState | null>
+  completeState(nonce: string, identity: AzureDevOpsUserIdentityRecord, now: Date): Promise<boolean>
+  refresh(previous: AzureDevOpsUserIdentityRecord, sealedToken: string): Promise<boolean>
+}
+
 /** The caller identity the OSS authorization policy needs: their id + org role.
  *  Built from `req.orgCtx` by `http/rbac.ts#ctxOf`. */
 export interface ViewCtx {

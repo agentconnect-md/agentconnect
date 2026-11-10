@@ -2656,8 +2656,8 @@ does not replace the current review verdict.
 
 Selecting a managed Azure DevOps repository requires the person's existing
 linked Microsoft account to have the requested repository access. The
-application verifies that account's effective permissions and access level;
-there is no additional personal Azure DevOps authorization step. Repository
+application verifies that account's effective permissions and access level.
+A directly matching Microsoft identity needs no additional authorization. Repository
 pickers hide repositories the person cannot read, and saving a workspace,
 adding a repository, or raising its access checks again. Inferred workspace
 access is the common ceiling of the person and application. An unverified
@@ -2668,11 +2668,16 @@ cannot create or increase managed Azure repository authority.
 The Integrations management list retains existing bindings and their health
 without personal repository access or a live Azure request.
 
-For cross-tenant Microsoft guests, the login service verifies the same account's
-identity in the repository's tenant without changing its console link or adding
-an Azure authorization step. Guests who signed in before token storage was
-enabled need one normal Microsoft sign-in after the upgrade. A tenant policy
-that prevents silent verification may require administrator assistance.
+For cross-tenant Microsoft guests, the repository picker offers **Verify Microsoft
+access** in a separate window. The person authenticates in the repository tenant;
+this supplemental verification does not replace their console sign-in identity.
+The Control Plane retains a refresh token through its secret cipher and refreshes
+that tenant identity for background permission checks, even while the person is
+offline. Removing or replacing the Microsoft link invalidates its verifications.
+Expired consent or tenant policy may require verification again. Same-tenant
+users, including people linked before an Azure organization was connected, keep
+the direct path. Official Logto is sufficient; no custom identity endpoint or
+Microsoft connector token storage is required.
 
 Azure repository leases recheck the recorded authorizer's current Microsoft
 identity and full authorized tier on every issuance and renewal. Lost access
@@ -2682,8 +2687,8 @@ workspace records the person who last saved its repository and access; an
 additional grant records its creator, replaced by the person who raises its
 tier. Older Azure workspaces without a recorded authorizer require a member
 with that access to save them again. The existing workspace editor permits
-saving an unchanged Azure workspace for this purpose, without replacing its
-checkout or adding a personal authorization step.
+saving an unchanged Azure workspace for this purpose without replacing its
+checkout.
 
 The workspace options live in the agent's Workspace tab, above the files they
 configure — not in Configuration, and not behind a summary row that navigates

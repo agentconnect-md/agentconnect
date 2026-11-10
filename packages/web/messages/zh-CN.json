@@ -1621,6 +1621,12 @@
       "triggersMissedTitle": "还有项目未允许触发器",
       "triggersRefused": "{project}：你的账号无法修改它的服务挂钩权限。",
       "triggersFailed": "{project}：Azure DevOps 没有响应。请稍后再次管理项目访问。"
+    },
+    "azureDevOpsVerify": {
+      "title": "验证 Microsoft 访问权限",
+      "done": "验证成功，请返回仓库选择页面。",
+      "cancelled": "验证已取消或过期，请返回重试。",
+      "close": "关闭"
     }
   },
   "Home": {
@@ -2261,7 +2267,10 @@
         "githubConnectedWith": "已通过 <slug></slug> 连接",
         "more": "更多",
         "useOwnGithubApp": "使用独立的 GitHub App…",
-        "changeGithubApp": "更换 GitHub App…"
+        "changeGithubApp": "更换 GitHub App…",
+        "azureVerifyAccess": "验证 Microsoft 访问权限",
+        "azureVerifyDescription": "请验证你在此 Azure DevOps 组织所属租户中的 Microsoft 账号。",
+        "azureVerifyPopupBlocked": "请允许弹出窗口以验证 Microsoft 访问权限。"
       },
       "listenFor": "监听对象",
       "alreadyWatched": "已监听",

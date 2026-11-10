@@ -22,6 +22,7 @@ import {
 } from '@/lib/api'
 import { getUser, isAuthConfigured, login } from '@/lib/auth'
 import { writeFlowState } from '@/lib/flow-state'
+import AzureDevOpsVerify from './AzureDevOpsVerify'
 
 /** The organization and, for Manage project access, the connection a signed state names; the Control Plane re-checks the signature. */
 export function azureDevOpsConnectState(state: string | null): { orgId: string; connectionId: string | null } | null {
@@ -122,7 +123,7 @@ function refusalOf(e: unknown): Refusal {
   }
 }
 
-export default function AzureDevOpsConnect() {
+function OrganizationConnect() {
   const t = useTranslations('Auth.azureDevOpsConnect')
   const [step, setStep] = useState<Step>({ kind: 'loading' })
   const [busy, setBusy] = useState(false)
@@ -466,6 +467,15 @@ export default function AzureDevOpsConnect() {
       <TooltipLayer />
     </div>
   )
+}
+
+export default function AzureDevOpsConnect() {
+  const [verification, setVerification] = useState<boolean | null>(null)
+  useEffect(() => {
+    setVerification(new URLSearchParams(window.location.search).get('state')?.startsWith('azure-verify.') ?? false)
+  }, [])
+  if (verification === null) return null
+  return verification ? <AzureDevOpsVerify /> : <OrganizationConnect />
 }
 
 /** Projects where Allow triggers did not take (§11.1), with what is left to do by hand; silent when every grant took. */
