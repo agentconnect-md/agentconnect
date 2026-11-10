@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { build } from 'esbuild'
+import { buildExtension } from './build-extension.mjs'
 
 const { values } = parseArgs({ options: { dist: { type: 'boolean' } } })
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -11,6 +12,8 @@ const out = join(root, values.dist ? 'dist' : 'bundle')
 // The release flow writes the release version into package.json before building, as for the agent daemon.
 const version =
   process.env.AGENTCONNECT_RELEASE_VERSION || JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version
+// The form-fill extension this daemon accepts: its build id is compiled into both (computer-form-fill-and-vault.md §10).
+const extension = await buildExtension({ version })
 rmSync(out, { recursive: true, force: true })
 mkdirSync(out, { recursive: true })
 
@@ -26,6 +29,7 @@ const result = await build({
   conditions: ['development'],
   define: {
     __AGENTCONNECT_COMPUTER_VERSION__: JSON.stringify(version),
+    __AGENTCONNECT_FORM_FILL_EXTENSION__: JSON.stringify(extension),
     // The Windows service and its helpers, compiled on the machine at `service install` (src/service-windows.ts).
     __AGENTCONNECT_COMPUTER_WINDOWS_SOURCES__: JSON.stringify(
       Object.fromEntries(

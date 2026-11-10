@@ -10,10 +10,19 @@ import {
   type ComputerFilesMode,
   type ComputerShellMode
 } from '@agentconnect.md/protocol/computer'
+import {
+  COMPUTER_FORM_DISCOVER_TOOL,
+  COMPUTER_FORM_FILL_TOOL,
+  COMPUTER_FORM_STATUS_TOOL,
+  ComputerFormDiscoverArgs,
+  ComputerFormFillArgs,
+  ComputerFormStatusArgs
+} from '@agentconnect.md/protocol/computer-form-fill'
 import { currentCallContext, withCallContext, type CallContext } from './audit.js'
 import type { CommandLine } from './command-line.js'
 import { ComputerError, type Computer, type ToolOutput } from './computer.js'
 import type { DriverTool } from './driver/client.js'
+import type { FormFillService } from './form-fill/service.js'
 import { COMPUTER_DAEMON_VERSION } from './version.js'
 
 export const SERVER_INSTRUCTIONS = [
@@ -106,6 +115,8 @@ export function createComputerMcpServer(options: {
   adminPrompts?: boolean
   // An agent session's command-line tier, when its token and the policy allow one (§5.7).
   commandLine?: CommandLineAccess
+  // The browser extension's form operations, for agent daemons only (computer-form-fill-and-vault.md §5.2).
+  formFill?: { service: FormFillService; target: () => Promise<{ computer: Computer; desktop: string }> }
 }): McpServer {
   const { client, agent } = options
   const target = options.computer
@@ -315,6 +326,7 @@ export function createComputerMcpServer(options: {
     )
 
   if (options.commandLine) registerCommandLine(server, options.commandLine, client, scoped)
+  if (options.formFill && agent) registerFormFill(server, options.formFill, client, viewOnly, scoped)
 
   for (const tool of options.driverTools ?? []) {
     const readOnlyTool = isReadOnlyDriverTool(tool.name)
@@ -339,6 +351,51 @@ export function createComputerMcpServer(options: {
 }
 
 type Scoped = <A extends unknown[], R>(handler: (...args: A) => Promise<R>) => (...args: A) => Promise<R>
+
+// Internal to agent daemons, which offer the model computer_fill_form instead; values arrive only in a fill's arguments.
+function registerFormFill(
+  server: McpServer,
+  formFill: NonNullable<Parameters<typeof createComputerMcpServer>[0]['formFill']>,
+  client: string,
+  viewOnly: boolean,
+  scoped: Scoped
+): void {
+  const internal = { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
+  server.registerTool(
+    COMPUTER_FORM_DISCOVER_TOOL,
+    {
+      description: 'Internal: describe the forms in the active browser tab, without values.',
+      inputSchema: ComputerFormDiscoverArgs,
+      annotations: internal
+    },
+    scoped(async (args) => {
+      const { computer, desktop } = await formFill.target()
+      return asResult(await formFill.service.discover(computer, desktop, client, args))
+    })
+  )
+  if (!viewOnly)
+    server.registerTool(
+      COMPUTER_FORM_FILL_TOOL,
+      {
+        description: 'Internal: fill one discovered form with values a person supplied. Takes the control lease.',
+        inputSchema: ComputerFormFillArgs,
+        annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true }
+      },
+      scoped(async (args, ctx) => {
+        const { computer, desktop } = await formFill.target()
+        return asResult(await formFill.service.fill(computer, desktop, client, args, ctx.mcpReq.signal))
+      })
+    )
+  server.registerTool(
+    COMPUTER_FORM_STATUS_TOOL,
+    {
+      description: 'Internal: the outcome of an earlier fill by its requestId.',
+      inputSchema: ComputerFormStatusArgs,
+      annotations: internal
+    },
+    scoped(async (args) => asResult(formFill.service.status(args)))
+  )
+}
 
 const refused = (code: string, message: string) => ({
   isError: true,

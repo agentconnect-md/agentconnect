@@ -820,6 +820,38 @@ export class Computer {
     )
   }
 
+  // A read of the browser's page (form discovery): audited, refused without authority, no lease (computer-form-fill-and-vault.md §5).
+  observe(
+    client: string,
+    tool: string,
+    args: Record<string, unknown>,
+    run: () => Promise<ToolOutput>
+  ): Promise<ToolOutput> {
+    return this.audited(client, tool, args, run)
+  }
+
+  // A browser write (a form fill) under the same lease, pause and human arbitration as input, with no screenshot (§8).
+  formAction(
+    client: string,
+    tool: string,
+    args: Record<string, unknown>,
+    run: () => Promise<ToolOutput>
+  ): Promise<ToolOutput> {
+    return this.audited(client, tool, args, async () => {
+      this.acquire(client)
+      this.assertHumanIdle()
+      this.assertNoAdminPrompt()
+      return this.exclusive(async () => {
+        // Pause, release or a person's input may have happened while this call waited in the queue.
+        this.assertHumanIdle()
+        this.acquire(client)
+        const output = await run()
+        if (this.lease) this.lease.lastUsedAt = this.now()
+        return output
+      })
+    })
+  }
+
   // Lease-gated pass-through for raw Cua Driver tools (window-scoped background input, AX tokens, ...).
   driverTool(client: string, name: string, args: Record<string, unknown>, readOnly: boolean, signal?: AbortSignal) {
     if (readOnly) {

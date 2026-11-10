@@ -8,6 +8,8 @@ import { DEFAULT_STOP_HOTKEY } from './linux/x11-local.js'
 
 export const DEFAULT_HOST = '127.0.0.1'
 export const DEFAULT_PORT = 7681
+// The form-fill extension's loopback endpoint in the container image (computer-form-fill-and-vault.md §8).
+export const DEFAULT_FORM_FILL_PORT = 7682
 
 // Whether a listen address only accepts connections from this machine.
 export const isLoopbackHost = (host: string): boolean =>
@@ -74,6 +76,8 @@ export const DaemonConfig = z.object({
   streamFps: z.number().int().min(1).max(60).default(30),
   streamMaxWidth: z.number().int().min(320).max(3840).default(1920),
   streamBitrateKbps: z.number().int().min(200).max(50_000).default(2500),
+  // Linux: the loopback port the form-fill browser extension dials (computer-form-fill-and-vault.md §8); absent, off.
+  formFillPort: z.number().int().min(1024).max(65_535).optional(),
   // Where clients reach this daemon from outside (a published port or a proxy); printed instead of the local addresses.
   publicUrl: z.string().url().optional(),
   // Behind NAT (e.g. Docker bridge): the only ICE host address offered to viewers, instead of the one they connected to.
