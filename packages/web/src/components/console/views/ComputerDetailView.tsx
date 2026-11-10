@@ -327,7 +327,7 @@ function ComputerDetail({
       </div>
 
       <div
-        className="mb-4 flex items-end overflow-x-auto border-b border-(--border-subtle) desktop:mb-[18px]"
+        className="mb-4 flex items-end overflow-x-auto border-b border-(--border-subtle) desktop:mb-[18px] desktop:overflow-x-visible"
         role="tablist"
       >
         {tabs.map((item) => (
