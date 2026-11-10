@@ -634,6 +634,7 @@ export class AcpHost {
   private mcpCaps: McpTransportCapabilities | null = null
   private agentAuthMethods: AuthMethod[] = []
   private canUseCustomInstructions = false
+  private canUseCodexSessionProfiles = false
   // The ACP agent's self-reported identity from the `initialize` response
   // (`agentInfo`: name/title/version) — the ACTUAL running adapter version (e.g.
   // claude-agent-acp 0.59.0), as opposed to the registry's declared version.
@@ -721,6 +722,7 @@ export class AcpHost {
       sandbox?: AcpSandboxLaunch
       /** Native tool policy applied inside either an SRT wrapper or a VM. */
       toolSandbox?: AcpToolSandbox
+      codexSessionPermissionProfiles?: (directories: readonly string[]) => Promise<Record<string, unknown> | undefined>
       /** Called once when the owned adapter process reaches terminal exit. The
        *  delegated host manager uses this to tear down its fenced cell. */
       onTerminal?: () => void
@@ -960,6 +962,8 @@ export class AcpHost {
     this.canLoad = init.agentCapabilities?.loadSession ?? false
     this.canUseAdditionalDirectories = init.agentCapabilities?.sessionCapabilities?.additionalDirectories != null
     this.canUseCustomInstructions = customInstructionsSupported(init._meta)
+    this.canUseCodexSessionProfiles =
+      (init._meta?.codex as { sessionPermissionProfiles?: unknown } | undefined)?.sessionPermissionProfiles === true
     this.canDelete = init.agentCapabilities?.sessionCapabilities?.delete != null
     this.canClose = init.agentCapabilities?.sessionCapabilities?.close != null
     this.promptCaps = init.agentCapabilities?.promptCapabilities ?? {}
@@ -998,11 +1002,12 @@ export class AcpHost {
     return this.isClaudeRuntime()
   }
 
-  private sessionMeta(
+  private async sessionMeta(
     effortOverride?: string,
     systemPrompt?: string,
     systemAppend?: string,
-    extraDisallowedTools: readonly string[] = []
+    extraDisallowedTools: readonly string[] = [],
+    directories: readonly string[] = []
   ) {
     const claudeMeta = claudeSessionMeta(
       effortOverride ?? this.opts.configPrefs?.reasoningEffort,
@@ -1017,9 +1022,13 @@ export class AcpHost {
       this.opts.toolSandbox?.readOnlyStateRoots,
       this.opts.configPrefs?.model
     )
-    return (
+    const meta =
       claudeMeta ?? (this.canUseCustomInstructions ? customInstructionsMeta(systemPrompt, systemAppend) : undefined)
-    )
+    const permissionProfiles = await this.opts.codexSessionPermissionProfiles?.(directories)
+    if (!permissionProfiles) return meta
+    if (!this.canUseCodexSessionProfiles)
+      throw new Error('Codex adapter must support session permission profiles; update the runtime')
+    return { ...meta, codex: { permissionProfiles } }
   }
 
   /** A runtime that rejects non-empty session mcpServers gets [] instead of a failed session — covers every creator. */
@@ -1039,11 +1048,12 @@ export class AcpHost {
     announce?: (sessionId: string) => void,
     extraDisallowedTools: readonly string[] = []
   ): Promise<string> {
-    const _meta = this.sessionMeta(
+    const _meta = await this.sessionMeta(
       effortOverride,
       this.opts.configPrefs?.systemPrompt,
       systemAppend,
-      extraDisallowedTools
+      extraDisallowedTools,
+      [cwd, ...additionalDirectories]
     )
     const activeAdditionalDirectories = this.canUseAdditionalDirectories ? additionalDirectories : []
     const res = await this.conn!.agent.request(methods.agent.session.new, {
@@ -1303,11 +1313,12 @@ export class AcpHost {
     this.loadingSessions.add(sessionId)
     try {
       await this.closing.get(sessionId)
-      const _meta = this.sessionMeta(
+      const _meta = await this.sessionMeta(
         effortOverride,
         systemAppend ?? this.opts.configPrefs?.systemPrompt,
         undefined,
-        extraDisallowedTools
+        extraDisallowedTools,
+        [cwd, ...additionalDirectories]
       )
       const activeAdditionalDirectories = this.canUseAdditionalDirectories ? additionalDirectories : []
       const res = await this.conn!.agent.request(methods.agent.session.load, {
