@@ -13,6 +13,7 @@ import {
 import type { AzureDevOpsConnectionRecord } from '../persistence/ports.js'
 import { LogtoApiError, type MicrosoftIdentity } from '../github/logto-identity.js'
 import { AzureDevOpsUserAuthzService } from './user-authz.js'
+import { azureIdentityVerificationRequired } from './user-identity.js'
 import { readEffectivePermissionBits } from './user-access-api.js'
 import { GIT_REPOSITORIES_NAMESPACE } from './api.js'
 
@@ -116,11 +117,9 @@ describe('Azure repository authority from the existing Microsoft identity', () =
       code: 'UNAVAILABLE',
       retryable: true
     })
-    tenantIdentity.mockRejectedValue(
-      new LogtoApiError('refresh login', 422, false, 'MICROSOFT_IDENTITY_REFRESH_REQUIRED')
-    )
+    tenantIdentity.mockRejectedValue(azureIdentityVerificationRequired())
     await expect(authz.attestAccess('user', located, 'read')).rejects.toMatchObject({
-      code: 'MICROSOFT_IDENTITY_REFRESH_REQUIRED'
+      code: 'AZURE_DEVOPS_IDENTITY_VERIFICATION_REQUIRED'
     })
   })
 

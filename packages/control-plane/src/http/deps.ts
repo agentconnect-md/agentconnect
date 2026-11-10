@@ -1,3 +1,4 @@
+import type { AzureDevOpsUserIdentityService } from '../azure-devops/user-identity.js'
 import type { FileTransferService } from '../file-transfer/service.js'
 import type { CapabilityRequestService } from '../capability/capability-request.service.js'
 import type { SharedImageService } from '../file-transfer/shared-image.js'
@@ -565,6 +566,7 @@ export interface HttpDeps {
     connections: AzureDevOpsConnectionService
     bindings: AzureDevOpsBindingService
     userAuthz: AzureDevOpsUserAuthzService
+    userIdentity?: AzureDevOpsUserIdentityService
     /** Connect with Microsoft and Manage project access (§3.2); absent ⇒ the connect routes refuse. */
     connect?: AzureDevOpsConnectFlowService
     /** Service hook subscriptions (§11.2); absent ⇒ no Azure DevOps trigger can be saved. */

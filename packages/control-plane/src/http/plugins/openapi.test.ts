@@ -356,6 +356,8 @@ describe('openapi plane', () => {
           'POST /api/v1/orgs/:orgId/azure-devops/connections/:id/secret',
           'DELETE /api/v1/orgs/:orgId/azure-devops/connections/:id',
           'POST /api/v1/orgs/:orgId/azure-devops/connect',
+          'POST /api/v1/orgs/:orgId/azure-devops/identity/authorization',
+          'POST /api/v1/orgs/:orgId/azure-devops/identity/callback',
           'POST /api/v1/orgs/:orgId/azure-devops/connect/callback',
           'GET /api/v1/orgs/:orgId/azure-devops/connect/:flow/organizations',
           'POST /api/v1/orgs/:orgId/azure-devops/connect/:flow/organization',

@@ -386,5 +386,31 @@ export async function rewrapAllSecrets(
     done('computer_org_settings', rows, rows, skipped)
   }
 
+  {
+    let rows = 0
+    let skipped = 0
+    for (const r of await prisma.azureDevOpsUserIdentity.findMany()) {
+      const res = await prisma.azureDevOpsUserIdentity.updateMany({
+        where: r,
+        data: { refreshToken: await reseal(r.refreshToken, DEPLOYMENT_SCOPE) }
+      })
+      if (res.count === 0) skipped += 1
+      else rows += 1
+    }
+    done('azure_devops_user_identity', rows, rows, skipped)
+  }
+  {
+    let rows = 0
+    let skipped = 0
+    for (const r of await prisma.azureDevOpsUserIdentityState.findMany()) {
+      const res = await prisma.azureDevOpsUserIdentityState.updateMany({
+        where: { nonce: r.nonce, verifier: r.verifier },
+        data: { verifier: await reseal(r.verifier, DEPLOYMENT_SCOPE) }
+      })
+      if (res.count === 0) skipped += 1
+      else rows += 1
+    }
+    done('azure_devops_user_identity_state', rows, rows, skipped)
+  }
   return stats
 }

@@ -270,7 +270,11 @@ export class LogtoIdentityService {
     private readonly mutations: SocialIdentityMutationGate,
     private readonly fetchImpl: FetchLike = fetch as FetchLike,
     private readonly log?: { debug(obj: object, msg: string): void; info(obj: object, msg: string): void },
-    private readonly opts?: { identityTtlMs?: number; githubRepoIdentity?: GithubRepoIdentityLookup }
+    private readonly opts?: {
+      identityTtlMs?: number
+      githubRepoIdentity?: GithubRepoIdentityLookup
+      clearMicrosoftTenantIdentities?: (sub: string) => Promise<void>
+    }
   ) {
     this.identityTtlMs = opts?.identityTtlMs ?? PROVIDER_IDENTITY_TTL_MS
     this.positiveTtlMs = Math.max(LOGIN_TTL_MS, this.identityTtlMs)
@@ -397,43 +401,6 @@ export class LogtoIdentityService {
     const objectId = typeof identity?.userId === 'string' ? identity.userId : undefined
     const email = firstString(identity?.details?.email, identity?.details?.rawData?.mail)?.trim()
     return objectId && ENTRA_OBJECT_ID.test(objectId.toLowerCase()) && email ? { objectId, email } : null
-  }
-
-  // Logto keeps the login tokens; this endpoint returns only the same account's verified tenant identity.
-  async microsoftTenantIdentityFor(
-    sub: string,
-    linked: MicrosoftIdentity,
-    tenantId: string
-  ): Promise<MicrosoftIdentity | null> {
-    const res = await this.request(`/api/users/${encodeURIComponent(sub)}/identities/azuread/tenant-identity`, {
-      method: 'POST',
-      body: JSON.stringify({ tenantId, expectedIdentityId: linked.objectId })
-    })
-    if (res.status === 404) return null
-    if (!res.ok) {
-      const error = await this.responseError('Microsoft tenant identity verification', res)
-      if (res.status === 422 && error.code === 'user.identity_not_exists_in_current_user') return null
-      if (
-        res.status === 422 &&
-        ['secrets.third_party_token_set.token_not_found', 'connector.social_invalid_access_token'].includes(
-          error.code ?? ''
-        )
-      ) {
-        throw new LogtoApiError('Microsoft sign-in needs refreshing', 422, false, 'MICROSOFT_IDENTITY_REFRESH_REQUIRED')
-      }
-      throw error
-    }
-    const resolved = (await res.json().catch(() => null)) as { userId?: unknown; tenantId?: unknown } | null
-    if (
-      !resolved ||
-      typeof resolved.userId !== 'string' ||
-      !ENTRA_OBJECT_ID.test(resolved.userId.toLowerCase()) ||
-      typeof resolved.tenantId !== 'string' ||
-      resolved.tenantId.toLowerCase() !== tenantId.toLowerCase()
-    ) {
-      throw new LogtoApiError('invalid Microsoft tenant identity response', 502, true)
-    }
-    return { objectId: resolved.userId, email: linked.email }
   }
 
   // Cached sign-in methods narrowed for Profile display, without exposing raw provider data.
@@ -638,6 +605,7 @@ export class LogtoIdentityService {
       }
       // Retire hidden repository bindings and pending callbacks before the social identity can disappear.
       if (target === 'github') await this.opts?.githubRepoIdentity?.clearBySubject(sub)
+      if (target === 'azuread') await this.opts?.clearMicrosoftTenantIdentities?.(sub)
       const res = await this.request(`/api/users/${encodeURIComponent(sub)}/identities/${encodeURIComponent(target)}`, {
         method: 'DELETE'
       })

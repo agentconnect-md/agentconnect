@@ -121,6 +121,7 @@ import { matchGiteaRepositories, type GiteaRepositoryChoice } from '@/lib/gitea-
 import { matchGitlabProjects, type GitlabProjectChoice } from '@/lib/gitlab-projects'
 import { gitRepoUrlTileHint } from '@/lib/git-url-tile'
 import { useAzureDevOpsRepositories } from '@/lib/use-azure-devops-repositories'
+import { AzureDevOpsRepositoryError } from '../AzureDevOpsRepositoryError'
 import { useGiteaRepositories } from '@/lib/use-gitea-repositories'
 import { useGitlabProjects } from '@/lib/use-gitlab-projects'
 import { useDaemonDetail } from '@/lib/use-daemon-detail'
@@ -1511,9 +1512,7 @@ export default function AddAgentModal({
 
               {wsMode === 'azure-devops' &&
                 (az.error ? (
-                  <div className="font-sans text-[12px] font-normal leading-[1.5] text-(--status-error) desktop:col-span-2">
-                    {t('errors.azureDevOpsRepositories', { error: az.error })}
-                  </div>
+                  <AzureDevOpsRepositoryError picker={az} />
                 ) : az.loading ? (
                   <div className="desktop:col-span-2">
                     <LoadingState size={20} padding={16} />

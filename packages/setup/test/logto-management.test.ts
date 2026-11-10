@@ -307,7 +307,6 @@ describe('Logto setup reconciliation', () => {
       id: 'agentconnect-azuread',
       connectorId: 'azuread-universal',
       target: 'azuread',
-      enableTokenStorage: true,
       syncProfile: true,
       config: {
         clientId: '00000000-0000-4000-8000-0000000000c1',
@@ -319,11 +318,8 @@ describe('Logto setup reconciliation', () => {
     })
     const telegramConfig = telegram.config as Record<string, unknown>
     const microsoft = connectors.find((connector) => connector.target === 'azuread')!
-    microsoft.enableTokenStorage = false
-    expect((await client.inspectSetup(desired)).connectors.find((item) => item.target === 'azuread')?.matches).toBe(
-      false
-    )
-    expect((await client.reconcileSetup(desired)).changed).toBe(true)
+    // Official native Azure AD connectors do not implement token storage.
+    expect(microsoft.enableTokenStorage).toBeUndefined()
     expect((await client.inspectSetup(desired)).connectors.find((item) => item.target === 'azuread')?.matches).toBe(
       true
     )

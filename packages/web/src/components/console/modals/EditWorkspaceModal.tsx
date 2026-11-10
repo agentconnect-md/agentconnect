@@ -22,6 +22,7 @@ import { matchGiteaRepositories, type GiteaRepositoryChoice } from '@/lib/gitea-
 import { matchGitlabProjects, type GitlabProjectChoice } from '@/lib/gitlab-projects'
 import { gitRepoUrlTileHint } from '@/lib/git-url-tile'
 import { useAzureDevOpsRepositories } from '@/lib/use-azure-devops-repositories'
+import { AzureDevOpsRepositoryError } from '../AzureDevOpsRepositoryError'
 import { useGiteaRepositories } from '@/lib/use-gitea-repositories'
 import { useGitlabProjects } from '@/lib/use-gitlab-projects'
 import {
@@ -1015,9 +1016,7 @@ export default function EditWorkspaceModal({
           {mode === 'azure-devops' && (
             <div className="mb-4 grid grid-cols-1 gap-[14px] desktop:grid-cols-2 desktop:gap-x-7">
               {az.error ? (
-                <div className="font-sans text-[12px] font-normal leading-[1.5] text-(--status-error) desktop:col-span-2">
-                  {t('azureDevOpsLoadError', { error: az.error })}
-                </div>
+                <AzureDevOpsRepositoryError picker={az} />
               ) : az.loading ? (
                 <div className="desktop:col-span-2">
                   <LoadingState size={20} padding={16} />

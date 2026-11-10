@@ -149,13 +149,6 @@ export class AzureDevOpsUserAuthzService {
       })
     } catch (error) {
       if (!(error instanceof LogtoApiError)) throw error
-      if (error.code === 'MICROSOFT_IDENTITY_REFRESH_REQUIRED') {
-        throw new AzureDevOpsConnectDenied(
-          'sign in with your linked Microsoft account again to verify access in this Azure DevOps tenant; tenant policy may require administrator assistance',
-          403,
-          error.code
-        )
-      }
       throw new AzureDevOpsApiError(
         'could not verify your linked Microsoft account — try again',
         502,

@@ -137,6 +137,7 @@ import {
 } from '@/lib/azure-devops-events'
 import { matchAzureDevOpsRepositories, type AzureDevOpsRepositoryChoice } from '@/lib/azure-devops-repositories'
 import { useAzureDevOpsRepositories } from '@/lib/use-azure-devops-repositories'
+import { AzureDevOpsRepositoryError } from '../AzureDevOpsRepositoryError'
 import { matchGitlabProjects, type GitlabProjectChoice } from '@/lib/gitlab-projects'
 import { useGiteaRepositories } from '@/lib/use-gitea-repositories'
 import { useGitlabProjects } from '@/lib/use-gitlab-projects'
@@ -2574,9 +2575,7 @@ export default function AddIntegrationModal({
         {platform === 'azure-devops' && (
           <>
             {az.error ? (
-              <div className="mb-4 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
-                {t('azureDevOpsLoadError', { error: az.error })}
-              </div>
+              <AzureDevOpsRepositoryError picker={az} />
             ) : az.loading ? (
               <LoadingState size={20} padding={16} />
             ) : !az.enabled || !az.connected ? (

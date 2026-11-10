@@ -320,8 +320,8 @@ refused.
 Agents act as the application. A person selecting a managed repository needs
 both the agent's edit rights and the corresponding access in Azure DevOps.
 The check uses the Microsoft account already linked in Profile and the
-connection's application token; there is no additional personal authorization
-flow or retained personal Azure DevOps token.
+connection's application token. A direct identity match needs no additional
+authorization, including when the Azure organization is connected later.
 
 This is a prerequisite even for a self-hosted deployment: console sign-in must
 be configured through Logto with Microsoft account linking (`azuread`) enabled.
@@ -334,27 +334,41 @@ rules; its credentials do not prove the administrator's personal repository acce
 The linked Entra object ID must match one active human identity in the
 connection's tenant. Email locates candidates but never establishes identity.
 A guest can have different home-tenant and resource-tenant object IDs. When the
-linked object does not match directly, Logto uses the existing Microsoft login
-cache to acquire a target-tenant `User.Read` token silently. Microsoft must return
-the same home account, the requested tenant, and a local object ID matching Graph
-`/me`. Only that verified object ID is used for the Azure identity and entitlement
-checks; email alone never authorizes a match. The linked console identity stays
-unchanged, and repository permissions still come from the connection's application.
+linked object does not match directly, the picker offers **Verify Microsoft
+access**. This is a separate authorization-code flow against the connection's
+fixed Entra tenant, using the deployment Microsoft application and its existing
+`/azure-devops/connect` redirect URI. It requests only `openid profile
+offline_access User.Read`, not delegated Azure DevOps repository permissions.
+The person proves control of the tenant account; its identity supplements the
+current Microsoft link without modifying any Logto sign-in method.
 
-This requires the tenant-identity Management API and native Azure AD token storage
-in Logto. Setup enables token storage on the Microsoft connector; Logto must have
-its secret-vault encryption key configured before reconciliation. The MSAL cache
-is encrypted in that vault and never reaches CP, the browser, or a user profile.
-The Management API returns only tenant and object IDs to an authenticated M2M
-client, and fences its result against unlinking or replacement of the vault entry.
-Existing guests without a stored login cache need one normal Microsoft sign-in
-after the upgrade. Direct identity matches need no cache. No Azure DevOps delegated
-scope or additional personal authorization flow is introduced. Target-tenant
-consent or conditional-access policy can still prevent silent resolution; the
-request is refused and asks for sign-in refresh or administrator assistance.
-Missing or expired stored login state and provider outages do not persist an
-access-loss verdict for an existing grant. A login service without the
-tenant-identity endpoint retains the existing denial for unmatched identities.
+The state is single-use, expires after ten minutes, and binds the caller,
+organization, connection, tenant, client and current linked object ID. PKCE and
+an ID-token nonce bind the code exchange. The CP validates the token signature,
+issuer, audience, lifetime and tenant, and requires Graph `/me` to agree with its
+object ID. Email locates Azure candidates but never proves their identity.
+Only the verified object ID is used for entitlement and effective ACL checks.
+
+`azure_devops_user_identity` stores the caller, linked object ID, target tenant,
+verified object ID, application ID and refresh token. The refresh token and
+pending PKCE verifier pass through `SecretCipher` under deployment scope because
+the verification belongs to a person across organizations. Tokens never reach
+the browser, daemon, logs or Logto. On each fallback authorization the CP checks
+the current Microsoft link, refreshes the tenant token, checks the same tenant
+and object again, then reads current Azure permissions with the application.
+This works while the person is offline and after a CP restart. Refresh-token
+replacement uses a conditional write; a late refresh cannot recreate a deleted
+verification. Social unlinking serializes with verification, clears both stored
+verifications and pending callbacks, and prevents them from restoring the link.
+
+Official Logto's existing identity API is sufficient. Setup keeps the native
+Microsoft connector and does not require token storage or a custom Management
+API. Existing directly matched users need no migration; guests verify once in
+the picker after the upgrade. Consent withdrawal, expired refresh tokens and
+conditional access prompt verification again and block new repository authority.
+Provider failures remain retryable errors, not persisted access-loss verdicts.
+A deployment without the Microsoft application can still use directly matched
+identities; supplementary tenant verification requires that application.
 
 The application reads the person's repository and project ACLs with their
 descriptor and `includeExtendedInfo=true`. Azure's `effectiveAllow` and

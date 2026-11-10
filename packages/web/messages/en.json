@@ -1621,6 +1621,12 @@
       "triggersMissedTitle": "Triggers are not allowed on every project yet",
       "triggersRefused": "{project}: your account cannot change its service hook permissions.",
       "triggersFailed": "{project}: Azure DevOps did not answer. Manage project access again later."
+    },
+    "azureDevOpsVerify": {
+      "title": "Verify Microsoft access",
+      "done": "Access verified. Return to your repository selection.",
+      "cancelled": "Verification was cancelled or expired. Return and try again.",
+      "close": "Close"
     }
   },
   "Home": {
@@ -2261,7 +2267,10 @@
         "githubConnectedWith": "Connected with <slug></slug>",
         "more": "More",
         "useOwnGithubApp": "Use its own GitHub App…",
-        "changeGithubApp": "Change GitHub App…"
+        "changeGithubApp": "Change GitHub App…",
+        "azureVerifyAccess": "Verify Microsoft access",
+        "azureVerifyDescription": "Verify your Microsoft account in this Azure DevOps organization’s tenant.",
+        "azureVerifyPopupBlocked": "Allow popups to verify Microsoft access."
       },
       "listenFor": "Listen for",
       "alreadyWatched": "already watched",

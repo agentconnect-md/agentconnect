@@ -39,6 +39,32 @@ const BOT = 'b071b071-2222-4222-8222-b071b071b071'
 const MEM_CONNECTION = 'ec111e11-3333-4333-8333-ec111e11ec11'
 
 async function seedAllSecretTables(): Promise<void> {
+  const tenantId = '00000000-0000-4000-8000-000000000001'
+  const linkedObjectId = '00000000-0000-4000-8000-000000000002'
+  const clientId = '00000000-0000-4000-8000-000000000003'
+  await prisma.azureDevOpsUserIdentity.create({
+    data: {
+      userId: DEFAULT_OWNER_ID,
+      tenantId,
+      linkedObjectId,
+      clientId,
+      objectId: '00000000-0000-4000-8000-000000000004',
+      refreshToken: 'refresh-plain'
+    }
+  })
+  await prisma.azureDevOpsUserIdentityState.create({
+    data: {
+      nonce: 'example-pending-state',
+      userId: DEFAULT_OWNER_ID,
+      orgId: DEFAULT_ORG_ID,
+      tenantId,
+      linkedObjectId,
+      clientId,
+      connectionId: '00000000-0000-4000-8000-000000000005',
+      verifier: 'verifier-plain',
+      expiresAt: new Date('2026-01-01T01:00:00Z')
+    }
+  })
   await prisma.deploymentConfig.create({
     data: {
       id: 1,
@@ -195,6 +221,8 @@ describe('rewrapAllSecrets — converge lazy migration / post-rotation rewrap (r
     expect((await prisma.providerKeyHeader.findFirstOrThrow()).value).toBe('sealed:example-header-value')
     expect(stats.map((s) => s.table).sort()).toEqual([
       'agent_secret',
+      'azure_devops_user_identity',
+      'azure_devops_user_identity_state',
       'bot_secret',
       'computer_org_settings',
       'deployment_secret',
@@ -215,6 +243,8 @@ describe('rewrapAllSecrets — converge lazy migration / post-rotation rewrap (r
     // resealed 2 values (null signingSecret stays null), the external-memory
     // connection secret both entries of its JSONB values map.
     expect(stats.every((s) => s.rows === 1 && s.skipped === 0)).toBe(true)
+    expect((await prisma.azureDevOpsUserIdentity.findFirstOrThrow()).refreshToken).toBe('sealed:refresh-plain')
+    expect((await prisma.azureDevOpsUserIdentityState.findFirstOrThrow()).verifier).toBe('sealed:verifier-plain')
     expect(stats.find((s) => s.table === 'bot_secret')!.values).toBe(2)
     // Both nullable columns were populated on the seeded registration row.
     expect(stats.find((s) => s.table === 'feishu_app_registration')!.values).toBe(2)

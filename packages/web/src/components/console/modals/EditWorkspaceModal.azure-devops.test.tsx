@@ -4,6 +4,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Agent } from '@/lib/data'
+import { ApiError } from '@/lib/api'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
@@ -11,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   fetchConnections: vi.fn(),
   fetchRepositories: vi.fn(),
   fetchVisible: vi.fn(),
+  startIdentity: vi.fn(),
   setAgentWorkspace: vi.fn(async () => ({}) as Agent)
 }))
 
@@ -25,6 +27,7 @@ vi.mock('@/lib/api', async (importOriginal) => ({
   fetchAzureDevOpsConnections: mocks.fetchConnections,
   fetchAzureDevOpsRepositories: mocks.fetchRepositories,
   fetchAzureDevOpsConnectionRepositories: mocks.fetchVisible,
+  startAzureDevOpsUserIdentity: mocks.startIdentity,
   setAgentWorkspace: mocks.setAgentWorkspace
 }))
 
@@ -62,6 +65,46 @@ afterEach(async () => {
 })
 
 describe('EditWorkspaceModal, Azure DevOps workspace', () => {
+  it.each(['message', 'focus'] as const)(
+    'reloads the verified catalog on %s without saving the form',
+    async (returned) => {
+      mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [{ id: CONNECTION_ID }] })
+      mocks.fetchRepositories.mockResolvedValue([])
+      mocks.fetchVisible.mockRejectedValueOnce(
+        new ApiError('verification required', 403, 'AZURE_DEVOPS_IDENTITY_VERIFICATION_REQUIRED')
+      )
+      mocks.startIdentity.mockResolvedValue({ authorizeUrl: 'https://login.microsoftonline.com/example' })
+      const popup = { location: { href: '' }, close: vi.fn() } as unknown as Window
+      const opened = vi.spyOn(window, 'open').mockReturnValue(popup)
+      try {
+        await render()
+        await act(async () => buttonsNamed('Azure DevOps')[0]?.click())
+        expect(buttonsNamed('Verify Microsoft access')).toHaveLength(1)
+        await act(async () => buttonsNamed('Verify Microsoft access')[0]!.click())
+        expect(mocks.startIdentity).toHaveBeenCalledWith(CONNECTION_ID)
+        expect(popup.location.href).toBe('https://login.microsoftonline.com/example')
+        mocks.fetchVisible.mockResolvedValue([])
+        await act(async () =>
+          window.dispatchEvent(
+            returned === 'focus'
+              ? new Event('focus')
+              : new MessageEvent('message', {
+                  origin: window.location.origin,
+                  source: popup,
+                  data: { type: 'azure-devops-identity-verified' }
+                })
+          )
+        )
+        expect(mocks.fetchVisible).toHaveBeenCalledTimes(2)
+        await act(async () => window.dispatchEvent(new Event('focus')))
+        expect(mocks.fetchVisible).toHaveBeenCalledTimes(2)
+        expect(mocks.setAgentWorkspace).not.toHaveBeenCalled()
+      } finally {
+        opened.mockRestore()
+      }
+    }
+  )
+
   it('can save an unchanged Azure workspace to reauthorize it', async () => {
     mocks.fetchConnections.mockResolvedValue({
       enabled: true,
