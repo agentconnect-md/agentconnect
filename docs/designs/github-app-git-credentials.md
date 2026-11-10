@@ -19,7 +19,9 @@
 > supplied by startup topology.
 >
 > Credential-degradation telemetry and the corresponding web warnings remain
-> planned; the rest of this document states the current security contract.
+> planned. [Unified managed Git network operations](#unified-managed-git-network-operations)
+> is a proposed extension, with Azure DevOps delivered first; it is not implemented
+> by this document. The remaining sections describe the existing contract.
 >
 > The workspace _shape_ this document assumes (a per-host `github` mode) is
 > being re-modeled into a host-neutral `git` mode with a credential union —
@@ -1058,6 +1060,356 @@ Not covered yet:
   response reaches the client event by event.
 - **Not supported.** A key in the query string, a key in the request body, and
   any Authorization scheme other than Bearer, which is refused with 400.
+
+### Unified managed Git network operations
+
+**Status: proposed, implementation pending.** This extends Phase 2 from runtime
+commands to every Git network operation using an AgentConnect-managed repository
+credential. The first delivery enables Azure DevOps in Cloud, local VMs and remote
+executors through the shared path; other providers can migrate afterwards. Until
+that delivery passes the acceptance checks below, the current Azure environment
+restrictions in [Azure DevOps §6.1](azure-devops-integration.md#61-proxy-only) remain.
+
+#### Decision and scope
+
+Deliveries 1–3 use the existing daemon credential proxy for managed `ls-remote`,
+clone, fetch, pull and push running inside an execution environment: local SRT,
+local VM, Cloud pod, or remote executor host/SRT/VM. This includes daemon-authored
+workspace preparation there, primary and additional repositories, review refs,
+lazy fetches and supported submodule network operations. Scoped skill/source Git
+follows with its narrower authorization intact.
+
+Git running on the owning daemon's own machine outside those environments keeps
+its current path, including Azure, canonical clones and local host-strategy
+preparation. Its migration is a final, measurement-dependent decision, not part
+of deliveries 1–3. Agent runtime Git keeps its existing Phase 2 proxy behavior.
+The shared rule is the target for migrated operations, not a claim that all Git
+callers change in the first delivery.
+
+The migrated Git process receives a placeholder, the route to its owning daemon's proxy,
+and the trust bundle for that route. Real upstream tokens stay in trusted service
+memory and are attached by the proxy. Migrated Git subprocesses receive neither a real
+upstream token nor an agent-channel capability that can retrieve one. The Control
+Plane still obtains credentials from the provider; for GitHub it requests the
+installation access token from GitHub. Token issuance, provider-specific request
+parsing, repository grants and read/write tiers keep their existing owners.
+
+Local-only Git operations keep working without a proxy or Control Plane connection.
+Unmanaged SSH credentials and anonymous repository access are outside this managed
+credential migration. Managed cleartext HTTP is not a direct-token escape hatch:
+it must be rejected with a requirement to configure HTTPS. This change does not
+introduce an SSH proxy, a second proxy service, new OS users, or a user-facing switch.
+Non-Git REST brokers and watcher API calls are not migrated by changing Git's helper.
+In particular, the in-pod auto-merge watcher retains a minting capability until its
+separate follow-up; migrating Git does not eliminate same-user credential exposure
+from that process.
+
+#### Execution identity and the boundary being protected
+
+The daemon is trusted. The reason to change daemon-authored Git is where that Git
+executes, not distrust of the daemon that requested it:
+
+| Execution location | Git and runtime identity today                                                                                   | Existing route to reuse                                                  |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| Owning daemon host | Processes of the daemon's OS user; no same-user security boundary                                                | Keep current daemon Git path; consider loopback proxy in the final step  |
+| Local SRT          | Git and runtime are children of the same confined shim                                                           | SRT's code-host route to the daemon socket                               |
+| Cloud              | The chart runs the daemon as UID 10002; workspace Git and runtime share UID 10001 in the runtime container       | Pod shim's loopback listener and `codehost` tunnel                       |
+| Local VM           | Git and runtime share the shim's image-configured user; canonical preparation outside the VM stays on the daemon | VM shim's loopback listener and `codehost` tunnel                        |
+| Remote executor    | Host uses the executor's shim user; SRT and VM put both children inside that strategy's environment              | Executor shim's existing host, SRT or VM route back to the owning daemon |
+
+`shim/exec-handler.ts` runs Git and `shim/acp-runner.ts` runs the runtime without
+switching UID between them. `workspace/git-injection.ts` currently supplies the
+daemon-holder capability to workspace Git, and `cp/agent-channel-server.ts` keeps
+that capability per agent until revocation. A same-user process can potentially
+read another process's environment; a daemon label on a bearer capability does not
+prove which process is presenting it. Initial preparation before runtime launch
+also does not establish isolation for later fetches in a retained environment.
+
+Azure currently refuses token retrieval through a sandbox's helper tunnel even
+with a daemon capability. Keep that refusal. Do not enable Azure by relaxing it.
+Proxying Git reduces credential exposure; it does not turn unsandboxed host mode
+into a boundary against its operator or every same-user process. The trust model
+above still applies. During migration, credentials retained by unmigrated callers
+remain a documented limitation, not proof that the entire environment is token-free.
+
+A prepared checkout and a successfully configured runtime are different from a
+cold start: Phase 2 already supplies runtime Git with the proxy route in these
+environments. There is no separate Azure runtime-Git transport to build. However,
+the current Azure host-start check rejects Cloud, VMs and remote executors even
+when the checkout already exists. Runtime Git working after a prepared checkout
+therefore does not prove that startup, daemon fetches or recovery work. Verify the
+runtime path with Azure, and remove the blanket check only with readiness coverage;
+a pre-existing checkout is not a bypass for missing proxy readiness.
+
+#### One operation, one target, one route
+
+Keep authorization and transport separate. The workspace root already carries its
+managed provider, repository identity, clone URL and access context. Resolve those
+from trusted configuration, not a checkout-controlled `origin` or the agent's main
+repository. Resolve the execution location from the same scope/path that selects
+the Git runner, including a remote executor's subject and runtime/helper roots.
+
+At the common managed-Git preparation seam, combine that operation's target with
+the execution plane's current proxy route. Reuse `proxiedDaemonGitEnv`, the existing
+placeholder helper, proxy trust utilities and tunnel listener metadata. Generalize
+their inputs as needed; do not add separate Azure Git runners or duplicate token
+logic in the Cloud, VM and executor implementations. Provider contracts own address
+normalization and authorization; execution planes own listener addresses and paths.
+Make this concrete at the existing in-environment Git mapping, including `srtGit`
+and `proxyOnlyBases(agentId)`: the new preparation must take the operation's managed
+target rather than use an agent-wide list of proxy-only origins as the decision.
+The existing scope includes additional repository hosts; preserve that coverage
+while checking GitHub-primary/Azure-additional and its inverse explicitly.
+
+The prepared environment must:
+
+- Pin the placeholder helper for the authorized HTTPS origin and supported aliases,
+  retaining path-aware provider resolution, including Azure organization/project
+  paths and self-managed instance prefixes and ports.
+- Replace command-scope pins that currently force a direct connection, including
+  `http.proxy` and `remote.<name>.proxy`, with the selected route. Setting only
+  `HTTPS_PROXY` cannot override Git's explicit empty proxy settings. Ensure inherited
+  `NO_PROXY` entries cannot bypass that route for the managed target.
+- Preserve Source Cache routing: `--bundle-uri` downloads its presigned bundle
+  from the object-store URL, outside the `codehost` tunnel; only the managed
+  remote's top-up fetch crosses it. Use target-scoped Git proxy configuration or
+  the existing shim's direct route for non-code-host authorities. A broad proxy
+  environment must not send bundle bytes through the pool member. Keep object-store
+  authorization, TLS verification and redaction of signed URLs unchanged.
+- Preserve TLS verification and the execution environment's required trust roots.
+  A pod or executor uses the bundle path its shim reports, never a daemon-local path.
+  Preserve existing credential-helper resets and workspace Git hardening.
+- Remove token-minting capabilities from migrated Git environments. Do not leave
+  a real helper for an unrelated provider in an Azure operation's environment.
+  A multi-target operation must have every managed target covered before it starts;
+  do not quietly retain a real-token helper to make a partial conversion work.
+- Keep configuration per invocation. Concurrent operations must not mutate shared
+  process environment or replace the session's Git configuration with one provider's
+  credentials. Redact placeholders and proxy authentication from diagnostics too.
+
+The runtime keeps its existing multi-provider proxy configuration. The proxy still
+resolves the repository from each request and applies that repository's grant. A
+shared listener or placeholder is not a union of all repositories' write permissions.
+
+#### Mixed repositories and an Azure-first delivery
+
+An agent is never classified as an Azure agent or a GitHub agent for routing. A
+GitHub primary workspace can have an Azure additional repository, and vice versa.
+Scratch workspaces with only additional repositories follow the same rule.
+
+| Operation in the same agent                                 | First delivery                                                                 | Final state                                                           |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------ | --------------------------------------------------------------------- |
+| In-environment daemon Git targeting Azure                   | Shared proxy preparation                                                       | Same path                                                             |
+| In-environment daemon Git targeting GitHub, GitLab or Gitea | Existing helper path, unchanged                                                | Shared proxy preparation after capacity gate                          |
+| Git on the owning daemon's own machine, including Azure     | Existing helper path, unchanged                                                | Separate final decision after full-clone measurement                  |
+| Agent runtime Git targeting either repository               | Existing multi-provider proxy path, verified in the newly enabled environments | Same path                                                             |
+| In-environment private managed skill/source Git             | Existing scoped credential-window path                                         | Proxy path preserving the window's subject, repository set and access |
+
+The first delivery can select proxy preparation at the common operation seam using
+the target provider's existing `proxyOnly` contract. Do not inspect whether the
+agent has _any_ Azure repository, branch on provider names in execution planes, or
+add a second provider rollout flag. The selector is temporary: once ordinary
+managed workspace Git inside execution environments is migrated, every such target
+takes the shared path. The owning daemon's host-side path remains deferred.
+The provider's token-release restrictions remain a separate contract.
+
+A GitHub operation may still carry its existing daemon capability during this
+stage. That is transitional exposure for that operation, not permission to retrieve
+Azure credentials: retain Azure's refusal on tunneled helper requests and keep the
+runtime capability unable to mint. Host mode retains its documented same-user trust
+assumption. Do not claim that a mixed agent is entirely free of minting capabilities
+until its remaining callers have migrated.
+
+This staging is acceptable only if it needs one selection at the existing target
+seam. If implementation requires two session environments, provider-specific tunnel
+lifecycles, or mixed real/placeholder helpers inside one Git invocation, migrate the
+ordinary in-environment workspace Git callers together instead, subject to the same
+capacity gate required for delivery 2. Keep skill/source-window migration as a
+separate delivery. The goal is a small shared implementation, not a permanent
+provider split merely to make the first PR Azure-only.
+
+#### Readiness, recovery and Azure availability
+
+Prepare/bind the execution environment and its `codehost` listener before the first
+managed network operation, without requiring an ACP runtime to be running. The
+existing bind path already establishes tunnels. Workspace preparation must await
+that readiness and use its reported route; it must not wait for runtime spawn to
+inject the proxy environment after the clone has already needed credentials.
+
+Read the route from the current binding for each operation. A reconnect or pool
+member change can replace the listener, CA and placeholder owner. Reject stale
+bindings; terminate or fail in-flight operations through the existing Git runner
+semantics. Preserve the rule that mutations are not automatically replayed after
+an ambiguous channel loss. Prewarming may warm the proxy's token cache, but must
+not put a token or minting capability in the child environment.
+
+Preparation owns its environment hold and tunnel binding even if no runtime is ever
+launched. Release the operation hold in `finally` on success, cancellation or failure;
+a prepared environment retained for reuse remains subject to the existing idle policy.
+Agent move/retirement or binding replacement must fence the old subject, close its
+streams and release its tunnel listeners through the existing lifecycle, without
+waiting for an ACP process to exit. Do not close a shared listener still held by
+another valid operation or runtime. A retired binding cannot carry later Git requests;
+any resumed preparation must acquire the current binding and route again.
+
+A missing proxy, unsupported listener, incomplete trust bundle or uncovered target
+fails the network operation with an actionable reason. There is no retry through a
+real-token helper or anonymous fallback for a managed operation. Existing callers
+that deliberately tolerate an offline fetch may retain their checkout; required
+clone/exact-review preparation must not report success with missing content. Local
+Git operations and credential-free research/dream hosts remain available.
+
+Replace Azure's blanket Cloud/VM/executor refusal with the same route-readiness
+check. A capable pool daemon can advertise Azure support while its proxy is running;
+the specific pod/executor must still pass preparation. Existing protocol feature
+advertisement cannot prove that an old shim supports a changed request. Prefer the
+existing `codehost` contract and runner-side environment mapping; if a shim payload
+must change, negotiate that capability and fail explicitly on unsupported peers.
+Do not add a compatibility path that hands them real tokens.
+
+Azure CLI setup must also use the existing provider `cli` contract with paths in
+the execution environment: the placeholder, fresh CLI state directory and trust
+bundle belong there. Do not send a local host's Azure configuration/extension path
+into a pod or VM. Validate `az` where the image or executor supplies it; absence of
+that optional executable is distinct from Git credential support. Supporting Azure
+Git must not silently claim that the Azure CLI is installed in every image.
+
+#### Remaining migration and implementation ownership
+
+1. **Shared route plus Azure:** common managed-operation preparation inside execution
+   environments, all their transports, Azure primary/additional repositories and
+   hooks/review checkout;
+   preserve other providers' helper behavior and all owning-daemon host-side Git.
+   Remove the environment bans only after
+   the mixed-repository and readiness checks pass. This delivery also updates
+   `.oss-scanner/threat_model.md` to record credential-proxy and Azure trust boundaries,
+   the changed Git credential path, and the remaining exposure of unmigrated callers.
+   Reconcile Azure §6.1 and `proxiedDaemonGitEnv` together: replace the current exception
+   that retains a daemon capability when another provider's real helper is present
+   with the new rule that every managed target in a migrated invocation uses the
+   proxy. A banner alone does not update that contract. Include cleanup of environments
+   prepared without launching a runtime in the implementation and its verification.
+2. **Other ordinary managed repositories:** after the measured capacity gate below,
+   move GitHub, GitLab and Gitea in-environment workspace/review and supported
+   nested-repository network calls to that same path. Host-side canonical clones
+   stay unchanged.
+   Remove the temporary selector, audit direct Git call sites, and remove obsolete
+   Git token-helper injection from migrated callers, not the helper still needed
+   by deferred callers. Keep real tokens available to authorized daemon-side service
+   code. Any migrated cleartext managed instance needs HTTPS.
+3. **In-environment scoped skill/source operations:** preserve the authorization windows
+   in [Source Cache §8](source-cache.md#8-skill-flow), including enabled
+   source checks, exact repository set, read/write authority, subject binding,
+   closure in `finally` and expiry. An ordinary workspace placeholder must not gain
+   permanent access to a private skill repository. Reuse the window lifecycle for
+   proxy authorization, carried by a purpose-bound placeholder rather than a helper
+   credential that returns a token. This needs a scoped proxy authorization extension;
+   a plain environment rewrite is insufficient. Bundle storage authorization and
+   non-Git ref-resolution APIs keep their separate contracts. Host-side acquisition
+   stays on its current path. Unsupported migrated Git fails without a token fallback.
+4. **Owning-daemon host-side Git, last:** after deliveries 1–3, decide whether to
+   migrate canonical clones, other host-side preparation and local host-strategy
+   daemon Git at all. Extend the capacity measurement to full canonical clones
+   through the loopback proxy. These bytes all cross the in-process proxy, while
+   this location has no same-user isolation gain; the benefits are consistency and
+   eventual helper removal. Retaining the existing trusted-host path is a valid
+   measured outcome. Removing the token-returning Git helper waits for this decision
+   and migration of every remaining caller that needs it.
+
+**Separate open item: in-pod auto-merge watcher.**
+`github/auto-merge/watcher.ts` arms one watcher process per pull request in the runtime
+container; `shim/auto-merge-handler.ts` puts the daemon-holder capability in its
+environment, and each tick obtains a token through the `agent` tunnel. It can be
+long-lived and shares the runtime's OS user. Deliveries 1–3 do not remove this
+minting capability. A dedicated follow-up must decide how to broker the watcher
+without that capability, preserve its merge authorization and lifecycle, and fix
+the stale `AutoMergePayloadSchema.capability` comment that calls it runtime-only.
+Do not claim the environment contains no minting capability until this follow-up
+and any other credential-bearing callers have been addressed.
+
+The first delivery primarily touches `workspace/git-injection.ts`, common Git runner
+preparation, the execution planes' route accessors, and daemon readiness/advertisement.
+It should reuse `credential-proxy/`, `remote/codehost-spawn.ts`, `remote/tunnel-binder.ts`
+and the existing provider registry. No database migration is expected. Later scoped
+source authorization work is explicitly outside the Azure-first acceptance claim.
+
+#### Acceptance and evidence
+
+Use real Git against controlled HTTPS remotes with fake upstream credentials for
+repeatable transport tests, then verify each newly enabled environment against an
+Azure test connection. Never place live identifiers or credentials in fixtures.
+Extend existing end-to-end transport tests rather than duplicating the implementation
+with a large matrix of mocked predicates. Each implementation PR records which rows
+it actually exercised; source inspection alone is not a successful environment test.
+
+**Capacity gate, required before delivery 2 (or any earlier expansion to all
+providers).** The `codehost` tunnel uses 32 KiB chunks encoded as base64 in JSON,
+eight unacknowledged frames per stream, and sixteen simultaneous code-host streams
+per shim (`shim/tunnel.ts`). Additional-repository and submodule fetches share that
+per-shim ceiling; it is not a pool-member-wide load limit. TLS termination and tunnel
+processing share the member's event loop with ACP delivery and duty renewal. Load
+that delays renewal can self-fence all its duties at `T_fence` under D7 in
+[the pool design](k8s-daemon-pool.md#5-the-duty-ledger-and-lease-service-d6-d7).
+
+Measure concurrent cold session clones of a representative large repository on one
+member while existing sessions stream ACP updates and duty renewals continue. Before
+the run, record the member's CPU/memory limits, repository pack bytes/object count,
+clone filters, intended maximum concurrent clones and active sessions, renewal cadence
+`R`, and configured `T_fence`. Compare the current direct route with the proposed
+route under the same load, including increasing concurrency up to that intended
+maximum and parallel fetches within a shim. State numeric limits for every run;
+do not treat sixteen streams per pod as proof that the whole member is bounded.
+
+The proposed acceptance budgets are: added p99 ACP forwarding latency no more than
+100 ms against the same-load direct-route baseline; maximum renewal scheduling delay
+less than `R`; maximum age of the last CP-confirmed renewal less than `T_fence / 2`;
+and zero load-induced self-fences, dropped ACP updates or out-of-memory failures.
+Record p50/p95/p99/max latency, renewal send/ack delays, event-loop delay, CPU, peak
+memory, tunnel bytes and clone throughput. These are requirements to measure, not
+results claimed by this document. A failing budget blocks delivery 2; reduce and
+enforce the admitted concurrency or improve the shared transport and remeasure,
+rather than increasing the lease deadline to hide contention.
+
+Measure Source Cache hit and miss separately. On a hit, verify bundle bytes travel
+from the bundle URI directly to the execution environment and that tunnel bytes
+contain only managed-remote negotiation and top-up fetches. On a miss, measure the
+full session fetch that actually crosses the tunnel. For the final host-side decision,
+repeat with a full canonical clone through the loopback proxy as well as concurrent
+session traffic. Run capacity experiments in a controlled environment with explicit
+resource/concurrency bounds; this documentation change launches no load test.
+
+- Azure primary plus GitHub additional, GitHub primary plus Azure additional, and
+  scratch plus both: clone, fetch and authorized push on local SRT, local VM, Cloud,
+  and remote executor host/SRT/VM. Include concurrent operations, two Azure
+  organizations on the same authority, and different tiers on different repositories.
+  Verify owning-daemon host-side preparation remains unchanged through deliveries
+  1–3, including Azure canonical clones and host-strategy Git.
+- Azure read grants reject receive-pack discovery and push; an unauthorized repository,
+  alternate supported hostname, crafted path or redirect cannot escape the grant.
+  In the first delivery, non-Azure daemon Git retains its existing authorization.
+- Captured migrated Git argv/env/config and helper output contain no upstream token
+  or token-minting capability. The fake remote receives the token only after proxy
+  authorization. A concurrent same-user probe sees at most the scoped placeholder
+  for that migrated Git process. This is not an assertion about the entire host.
+- Cold preparation works before runtime spawn. Missing listener/proxy, stale binding,
+  revoked access, token expiry and reconnect fail or recover through existing bounded
+  semantics without direct-token fallback or mutation replay. Local Git stays usable.
+  Cancel preparation before runtime launch, then move or retire the agent: the old
+  binding must reject requests and release its resources, while unrelated live
+  operations retain their listeners. Also verify idle cleanup of an unused prepared
+  environment and successful preparation on a newly acquired binding.
+- Source-cache hit/miss and fallback behavior, exact review refs, approved submodules
+  and lazy fetches preserve their own authorization. During later source migration,
+  a closed/expired/wrong-subject skill window must deny even with a previously issued
+  placeholder, and an ordinary runtime placeholder must not acquire source-only access.
+
+Completion of the first delivery means Azure works in the newly enabled environments;
+completion of deliveries 1–3 means managed Git inside execution environments uses
+the proxy. It does not cover owning-daemon host-side Git or eliminate the auto-merge
+watcher's minting capability. The final host-side decision determines whether all
+managed Git operations can share the rule and the old Git helper can be removed.
+Update Azure's §6.1 and this document's helper/trust sections with the implementation that changes
+them, and keep the distinction explicit in PRs and release notes.
 
 ## Protocol Contract (`packages/protocol`)
 

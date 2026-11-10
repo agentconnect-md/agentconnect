@@ -73,7 +73,7 @@ the picture it draws.
 ### Code hosts and triggers
 
 - [webhook-triggers-and-github-events.md](designs/webhook-triggers-and-github-events.md) — General webhook triggers: mapping one inbound delivery to one agent turn.
-- [github-app-git-credentials.md](designs/github-app-git-credentials.md) — GitHub App repository selection and credential-free git on daemons.
+- [github-app-git-credentials.md](designs/github-app-git-credentials.md) — GitHub App repository selection, credential-free Git, and the proposed unified managed Git proxy path with an Azure-first rollout.
 - [codehost-pr-feedback.md](designs/codehost-pr-feedback.md) — Continuing the author session after GitHub, GitLab or Gitea review and CI feedback.
 - [github-pr-review-checks.md](designs/github-pr-review-checks.md) — Formal GitHub PR reviews and durable informational Checks.
 - [gitlab-com-integration.md](designs/gitlab-com-integration.md) — The GitLab integration end to end.
