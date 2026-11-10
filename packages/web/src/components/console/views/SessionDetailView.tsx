@@ -2166,8 +2166,12 @@ export default function SessionDetailView() {
     release: releaseFollow,
     awayFromBottom
   } = useStickToBottom(conversationKey ?? sid ?? null)
-  // A message link lands on its message once drawn.
-  useLocateMessage(releaseFollow)
+  // A message link lands on its message once drawn, reading earlier pages back to it.
+  useLocateMessage('page', releaseFollow, {
+    has: visibleHasEarlier,
+    loading: pagingEarlier,
+    load: loadEarlierConversation
+  })
   // What this browser last read here, for the NEW line; it advances only while the reader looks at the end.
   const seen = useSeenMarker(MOCK_MODE ? null : (conversationKey ?? sid ?? null), !awayFromBottom)
   // The transcript scroller's scrollbar width, which the composer below it insets by to stay in line with the column.

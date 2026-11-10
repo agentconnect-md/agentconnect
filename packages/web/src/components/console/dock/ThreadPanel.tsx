@@ -51,7 +51,7 @@ import { CONSOLE_SWR_CONFIG, readOnceRegistered } from '@/lib/console-swr'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { useOrgs } from '@/lib/org-context'
 import { SessionShareButton, SessionShareDialogFor } from '@/components/console/SessionShare'
-import { messageLink } from '@/lib/message-link'
+import { messageLink, useLocateMessage } from '@/lib/message-link'
 import { approvalNotice, raisedIn, WebchatMcpApprovalCard } from '@/components/console/WebchatMcpApprovalCard'
 
 const HEADER_BTN =
@@ -60,6 +60,8 @@ const HEADER_BTN =
 const EMPTY: readonly never[] = []
 const NO_AGENTS: ReadonlyMap<string, Agent> = new Map()
 // A thread's rows come from one session, so no row names another source.
+/** The panel follows no bottom, so a jump has nothing to let go of. */
+const noRelease = () => {}
 const NO_SOURCE = { session: new WeakMap(), turn: new WeakMap(), platform: new WeakMap(), agent: new WeakMap() }
 
 export function ThreadPanel({
@@ -248,6 +250,12 @@ export function ThreadPanel({
   const threadReplies = turns.slice(threadRoot.length)
   // A message's link: the holding task's own page, else this thread's address on the conversation, each with the message's anchor.
   const [messageShare, setMessageShare] = useState<{ sessionId: string; link: string } | null>(null)
+  // A link to a message of this thread lands on it, reading the thread's earlier messages back to it.
+  useLocateMessage(
+    'thread',
+    noRelease,
+    fromRecord ? { has: thread.hasEarlier, loading: thread.loadingEarlier, load: thread.loadEarlier } : undefined
+  )
   const shareMessage = (turn: Turn): (() => void) | undefined => {
     const seq = turn.rowSeq
     const sessionId = holderId ?? record?.sessionId
