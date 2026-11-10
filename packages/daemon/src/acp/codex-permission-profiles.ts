@@ -1,4 +1,4 @@
-import { lstat, readFile, realpath } from 'node:fs/promises'
+import { lstat, mkdir, readFile, realpath } from 'node:fs/promises'
 import { dirname, isAbsolute, join, normalize, resolve } from 'node:path'
 import { parse } from 'smol-toml'
 
@@ -43,6 +43,8 @@ export async function codexSessionPermissionProfiles(
     if (!target) continue
     const root = gitRoots.find((candidate) => dirname(target) === join(candidate, 'worktrees'))
     if (!root) throw new Error('Session worktree points outside the authorized Git metadata roots')
+    // Codex can protect a missing file, but a read-only directory must exist before sandbox setup.
+    for (const gitDir of [root, target]) await mkdir(join(gitDir, 'hooks'), { recursive: true })
     for (const id of writableProfiles) {
       const filesystem = profiles[id]?.filesystem
       if (filesystem?.[root] !== 'write' || filesystem[`${join(root, 'worktrees')}/**`] !== 'write') continue

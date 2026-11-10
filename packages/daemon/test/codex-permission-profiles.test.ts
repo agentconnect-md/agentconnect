@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { join, resolve } from 'node:path'
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { mkdtempSync, realpathSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { codexPermissionProfileConfig, codexSessionPermissionProfiles } from '../src/acp/codex-permission-profiles.js'
@@ -29,6 +29,7 @@ describe('Codex session Git grants', () => {
         )
       }
       const roots = owners.map((owner) => join(owner, '.git'))
+      for (const root of roots) rmSync(join(root, 'hooks'), { recursive: true, force: true })
       const config = codexPermissionProfileConfig({
         protectedRoots: [join(base, 'credentials')],
         writableGitMetadataRoots: roots
@@ -49,9 +50,13 @@ describe('Codex session Git grants', () => {
           for (const directory of directories) {
             const admin = resolve(git('-C', directory, 'rev-parse', '--absolute-git-dir'))
             expect(fs[admin]).toBe('write')
+            expect(statSync(join(admin, 'hooks')).isDirectory()).toBe(true)
             for (const name of ['hooks', 'config', 'config.worktree']) expect(fs[join(admin, name)]).toBe('read')
           }
-          for (const root of roots) expect(fs[join(root, 'config')]).toBe('read')
+          for (const root of roots) {
+            expect(fs[join(root, 'config')]).toBe('read')
+            expect(statSync(join(root, 'hooks')).isDirectory()).toBe(true)
+          }
           if (label === 'warm')
             expect(Object.keys(fs).some((path) => path.endsWith(join('worktrees', 'primary-cold')))).toBe(false)
         }

@@ -266,7 +266,9 @@ stored flag alone.
 On a local `host` runtime, Codex session setup refreshes the permission profiles
 after workspace preparation. It adds each primary and secondary worktree's exact
 Git admin directory beneath an already authorized owner checkout, keeping hooks,
-config, worktree config and credential protections. The daemon sends the profiles
+config, worktree config and credential protections. It creates missing hooks
+directories before sandbox setup so the directory protections take effect.
+The daemon sends the profiles
 on both new and load; the adapter applies them to the native thread, so a shared
 process also supports worktrees created after startup. This requires an adapter
 advertising session permission profiles; an older adapter is rejected before the
