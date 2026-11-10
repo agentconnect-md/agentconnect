@@ -776,6 +776,7 @@ export default function EditWorkspaceModal({
         <div className="modalbody">
           <WorkspaceModeField
             className="mb-4"
+            label={null}
             value={mode}
             onChange={(value) => {
               setMode(value)
