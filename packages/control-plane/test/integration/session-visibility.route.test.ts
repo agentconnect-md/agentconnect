@@ -1040,6 +1040,134 @@ describe('session visibility — external conversation audiences', () => {
   )
 })
 
+describe('session visibility — shared conversation credentials', () => {
+  async function sharedConversation() {
+    const viewer = await makeUser(`sv-shared-bots-${randomUUID()}`, 'collaborator')
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const repo = new PgSessionRepo(prisma)
+    const reporters: Array<{ agentId: AgentId; botId: string; integrationId: string; sessionId: SessionId }> = []
+    for (let index = 0; index < 2; index++) {
+      const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+      const botId = randomUUID()
+      const integrationId = randomUUID()
+      await prisma.bot.create({
+        data: {
+          id: botId,
+          orgId: DEFAULT_ORG_ID,
+          name: `checker-${index}`,
+          platform: 'slack',
+          workspaceId: 'T_EXAMPLE',
+          secret: { create: { botToken: 'test-token' } }
+        }
+      })
+      await prisma.integration.create({
+        data: {
+          id: integrationId,
+          orgId: DEFAULT_ORG_ID,
+          agentId,
+          botId,
+          name: `reporter-${index}`,
+          channels: { create: { channelId: 'C_SHARED' } }
+        }
+      })
+      reporters.push({ agentId, botId, integrationId, sessionId: SessionId(randomUUID()) })
+    }
+    const record = (index: number) => {
+      const reporter = reporters[index]!
+      return repo.recordMilestone({
+        sessionId: reporter.sessionId,
+        agentId: reporter.agentId,
+        phase: 'start',
+        platform: 'slack',
+        channel: 'C_SHARED',
+        thread: 'shared-thread',
+        at: new Date(),
+        classification: { visibility: 'org', ownerIdentity: null, source: 'default' },
+        externalCandidate: {
+          provider: 'slack',
+          resolution: 'settled',
+          scope: {
+            realmKey: 'T_EXAMPLE',
+            resourceKind: 'conversation',
+            resourceKey: 'C_SHARED',
+            credentialKind: 'bot',
+            credentialId: reporter.botId
+          }
+        }
+      })
+    }
+    await record(0)
+    await record(1)
+    await repo.setExternalAccessEnabled(OrgId(DEFAULT_ORG_ID), 'slack', true)
+    const scopeId = (await repo.getUnscoped(reporters[0]!.sessionId))!.externalScopeId!
+    const scope = async () => (await repo.getExternalScopes([scopeId]))[0]!
+    const checkDuring = async (report?: () => Promise<unknown>) => {
+      const response = await appAs(viewer, {
+        sessionAccessPlugins: [
+          {
+            provider: 'slack',
+            available: true,
+            resolve: async (scopes) => {
+              await report?.()
+              return {
+                allowedScopes: scopes.map(({ id, aclRevision }) => ({ id, aclRevision })),
+                degraded: false
+              }
+            }
+          }
+        ]
+      }).app.inject({ method: 'GET', url: `${ORG}/sessions?view=flat` })
+      expect(response.statusCode).toBe(200)
+      return response.json()
+    }
+    return { reporters, record, scope, checkDuring }
+  }
+
+  it('keeps successful access checks valid while different bots replay the same conversation', async () => {
+    const { reporters, record, scope, checkDuring } = await sharedConversation()
+    const initial = await scope()
+    expect(initial).toMatchObject({ credentialId: reporters[0]!.botId, aclRevision: 0n })
+
+    for (const index of [1, 0, 1]) {
+      const result = await checkDuring(() => record(index))
+      expect(result).toMatchObject({ accessSyncDegraded: false, accessIssues: [] })
+      expect(sessionIds(result).sort()).toEqual(reporters.map(({ sessionId }) => sessionId).sort())
+      expect(await scope()).toMatchObject({ credentialId: initial.credentialId, aclRevision: initial.aclRevision })
+    }
+  })
+
+  it.each(['revoked', 'removed', 'uninstalled', 'missing-secret'])(
+    'replaces a %s checker and rejects grants made before the handover',
+    async (reason) => {
+      const { reporters, record, scope, checkDuring } = await sharedConversation()
+      const original = reporters[0]!
+      const initial = await scope()
+      const result = await checkDuring(async () => {
+        if (reason === 'revoked') {
+          await prisma.bot.update({ where: { id: original.botId }, data: { revokedAt: new Date() } })
+        } else if (reason === 'removed') {
+          await prisma.integrationChannel.deleteMany({ where: { integrationId: original.integrationId } })
+        } else if (reason === 'uninstalled') {
+          await prisma.integration.delete({ where: { id: original.integrationId } })
+        } else {
+          await prisma.botSecret.delete({ where: { botId: original.botId } })
+        }
+        await record(1)
+      })
+      expect(await scope()).toMatchObject({
+        credentialId: reporters[1]!.botId,
+        aclRevision: initial.aclRevision + 1n
+      })
+      expect(result).toMatchObject({ accessSyncDegraded: true, sessions: [] })
+      const recovered = await checkDuring()
+      expect(recovered).toMatchObject({ accessSyncDegraded: false, accessIssues: [] })
+      expect(sessionIds(recovered).sort()).toEqual(reporters.map(({ sessionId }) => sessionId).sort())
+      await record(0)
+      expect(await scope()).toMatchObject({ credentialId: reporters[1]!.botId, aclRevision: initial.aclRevision + 1n })
+    }
+  )
+})
+
 describe('session visibility — membership across an agent filter', () => {
   it('resolves the scopes of members the filter excluded, so membership does not lose them', async () => {
     // A conversation where A is org-visible and B is visible ONLY through the
