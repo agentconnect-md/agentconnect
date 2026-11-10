@@ -362,7 +362,7 @@ function SubsessionLine({
       >
         {name}
       </Link>
-    ) : row.visible && followUp ? (
+    ) : row.visible && (followUp || row.state !== 'open') ? (
       <span title={name} className="min-w-0 truncate">
         {name}
       </span>

@@ -15218,9 +15218,18 @@ export class Daemon {
   /** A threaded task's turn ended: it is idle until its threads speak again (auto-session-mode.md §6.2); a run it ended in a room it holds reports (§6.8). */
   private async settleThreadedTaskTurn(entry: QueueEntry, key: string, ended: TurnAcknowledgementEnd): Promise<void> {
     if (isAppendCoordinate(sessionThreadOf(entry.msg))) return
-    await this.store.assistantSubsessions
-      .finish(entry.agentId, key, 'done')
-      .catch((err) => this.log.warn(`task ${key}: settling its turn failed: ${formatErr(err)}`))
+    try {
+      const settled = await this.store.assistantSubsessions.finish(
+        entry.agentId,
+        key,
+        ended === 'failed' ? 'failed' : 'done'
+      )
+      // A task that never acquired a session must not hold its thread unreadable or prevent a retry.
+      if (settled && ended === 'failed' && !(await this.store.getSession(key)))
+        await this.store.assistantSubsessions.detachThreads(entry.agentId, key)
+    } catch (err) {
+      this.log.warn(`task ${key}: settling its turn failed: ${formatErr(err)}`)
+    }
     if (entry.msg.sessionChannel === undefined || !wholeRoomThread(entry.msg)) return
     // Taken whether or not this turn reports, so a later run never carries this turn's output.
     const output = this.collab.takeFinalOutput(key)
@@ -19357,18 +19366,12 @@ export class Daemon {
     return [...out]
   }
 
-  /**
-   * Surface a turn that failed before producing a reply (agent couldn't start,
-   * ACP handshake/prompt rejected) to whichever transport owns it. Without this
-   * the failure is invisible: Slack keeps its "is thinking…" status with no
-   * message, and a webchat client never receives a terminal relay `done` item so
-   * its UI spins forever. Best-effort — a dead platform or relay connection just
-   * means the (already logged) error goes unshown, never a second throw.
-   */
+  /** End a failed turn visibly through its transport, with a durable notice for post-only webchat. */
   private async surfaceTurnFailure(
     err: unknown,
     ctx: {
       agentId: string
+      message: NormalizedMessage
       agentName: string
       iconUrl?: string
       platform: string
@@ -19388,20 +19391,24 @@ export class Daemon {
       acknowledgement?: TurnAcknowledgement
     }
   ): Promise<void> {
-    // turnFailureReason digs the runtime's own message out of an ACP RequestError's
-    // `data` — codex-acp reports quota exhaustion / auth expiry as a bare
-    // "Internal error" with the actionable text buried there.
-    const reason = turnFailureReason(err)
+    // Unwrap ACP error data so quota and authentication failures retain their actionable cause.
+    const reason = this.maskAgentSecrets(ctx.agentId, turnFailureReason(err))
+    const notice = `⚠️ Agent failed to respond: ${reason}`
     if (ctx.webchat) {
+      ctx.webchat.doneSent = true
       ctx.webchat.sink.done({
         conversationId: ctx.webchat.conversationId,
         turnId: ctx.webchat.turnId,
         error: reason
       })
+      // A task with no browser turn needs a durable post; its stream sink has no listener.
+      if (ctx.webchat.initiator === 'agent' && !ctx.webchat.continuation)
+        await this.postWebchatAgentMessage(ctx.agentId, ctx.message, notice).catch((postError: unknown) =>
+          this.log.warn(`webchat: failure notice failed: ${formatErr(postError)}`)
+        )
       // A continuation turn also surfaces the failure on the origin platform (§5.2).
       if (!ctx.webchat.continuation) return
     }
-    const notice = `⚠️ Agent failed to respond: ${reason}`
     // A showing acknowledgement becomes the notice, so it is not posted a second time.
     const replaced = (await ctx.acknowledgement?.replace(notice).catch(() => false)) === true
     if (ctx.replyConn) {
@@ -19420,9 +19427,7 @@ export class Daemon {
       await this.platformFailureSinks
         .get(ctx.platform)?.({ reason, integrationId: ctx.integrationId, thread: ctx.thread, channel: ctx.channel })
         .catch((err2: unknown) => this.log.warn(`${ctx.platform}: failure notice failed: ${formatErr(err2)}`))
-    // Record the failure in the transcript too — the direct post above bypasses the
-    // recorded apply path, which previously left the console session view showing an
-    // empty reply for a failed turn.
+    // Direct posts bypass the recorded apply path, so persist the notice for console readers too.
     if (ctx.statusThread) {
       await this.store.appendTranscript({
         channel: ctx.transcriptChannel,
@@ -21626,23 +21631,27 @@ export class Daemon {
           this.terminateQueuedSink(entry, interrupted)
           this.clearTurnActivity(run)
         } else
-          await this.surfaceTurnFailure(err, {
-            agentId,
-            agentName: plan.agentName,
-            ...(plan.iconUrl ? { iconUrl: plan.iconUrl } : {}),
-            platform: msg.platform,
-            isDm: msg.isDm,
-            webchat,
-            replyConn,
-            ...(plan.integrationId !== undefined ? { integrationId: plan.integrationId } : {}),
-            channel: msg.channel,
-            sessionKey: plan.sessionKey,
-            transcriptChannel: plan.transcriptChannel,
-            thread: plan.thread,
-            statusThread: plan.statusThread,
-            sessionThread: plan.sessionThread,
-            ...(entry.acknowledgement ? { acknowledgement: entry.acknowledgement.handle } : {})
-          })
+          await this.surfaceTurnFailure(
+            new Error(startFailureDetail(this.maskAgentSecrets(agentId, turnFailureReason(err)))),
+            {
+              agentId,
+              message: msg,
+              agentName: plan.agentName,
+              ...(plan.iconUrl ? { iconUrl: plan.iconUrl } : {}),
+              platform: msg.platform,
+              isDm: msg.isDm,
+              webchat,
+              replyConn,
+              ...(plan.integrationId !== undefined ? { integrationId: plan.integrationId } : {}),
+              channel: msg.channel,
+              sessionKey: plan.sessionKey,
+              transcriptChannel: plan.transcriptChannel,
+              thread: plan.thread,
+              statusThread: plan.statusThread,
+              sessionThread: plan.sessionThread,
+              ...(entry.acknowledgement ? { acknowledgement: entry.acknowledgement.handle } : {})
+            }
+          )
       } finally {
         releaseReplyConn()
       }
@@ -23539,9 +23548,13 @@ export class Daemon {
       const trimmedPartialReply = p.webchat.replyText.trim()
       if (trimmedPartialReply && !isNoResponseBody(trimmedPartialReply)) {
         chatTurnOutput.flushHeldChatText(p.webchat, p.resolveFileLink)
+        await this.publishWebchatReply(p, run, false).catch((postError: unknown) =>
+          this.log.warn(`webchat: partial reply failed: ${formatErr(postError)}`)
+        )
       }
       await this.surfaceTurnFailure(err, {
         agentId,
+        message: msg,
         agentName: plan.agentName,
         ...(plan.iconUrl ? { iconUrl: plan.iconUrl } : {}),
         platform: msg.platform,
@@ -23556,8 +23569,6 @@ export class Daemon {
         statusThread: plan.statusThread,
         sessionThread: plan.sessionThread
       })
-      if (p.webchat.replyText.trim() && !isNoResponseBody(p.webchat.replyText.trim()))
-        await this.publishWebchatReply(p, run, false)
     }
     if (!p.webchat || p.webchat.continuation) {
       // Some runtimes narrate their terminal error into the message stream just
@@ -29498,6 +29509,7 @@ export class Daemon {
     // Notice I/O only after the fence stands: the platform post, failure sinks, and the transcript row.
     await this.surfaceTurnFailure(err, {
       agentId,
+      message: msg,
       agentName: p.plan.agentName,
       ...(p.plan.iconUrl ? { iconUrl: p.plan.iconUrl } : {}),
       platform: msg.platform,
