@@ -84,6 +84,7 @@ export function ThreadPanel({
   focusComposer = false,
   onSummary,
   fromMain = EMPTY,
+  onShowInConversation,
   threadUrl
 }: {
   /** The coordinator's agent, which runs the task. */
@@ -127,6 +128,8 @@ export function ThreadPanel({
   onSummary?: (summary: SessionThreadSummaryDto) => void
   /** The coordinator's turns in this thread from the main timeline: its tool calls on the root, drawn above the replies. */
   fromMain?: readonly Turn[]
+  /** Scrolls the conversation's main timeline to a message by its transcript seq, as a redirected message's label does. */
+  onShowInConversation?: (seq: number) => void
   /** The thread's page on its platform, which the header links. */
   threadUrl?: string
 }) {
@@ -284,10 +287,17 @@ export function ThreadPanel({
       {turn.kind === 'user' && turn.handedTo ? (
         // A message the coordinator redirected here from the conversation, marked across the panel as Slack marks one sent to two places.
         <div data-thread-redirected="" className="-mx-4 flex flex-col gap-[5px] bg-(--amber-50) px-4 py-[8px]">
-          <span className="flex items-center gap-[6px] font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary)">
+          {/* Opens the message where it was said, on the conversation's main timeline. */}
+          <button
+            type="button"
+            data-thread-redirected-from=""
+            disabled={!onShowInConversation || turn.rowSeq === undefined}
+            onClick={() => turn.rowSeq !== undefined && onShowInConversation?.(turn.rowSeq)}
+            className="flex w-fit cursor-pointer items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary) enabled:hover:underline disabled:cursor-default"
+          >
             <Icon name="corner-up-right" size={12} color="var(--amber-500)" className="flex-none" />
             {t('redirectedFromCoordinator')}
-          </span>
+          </button>
           <UserTurnView turn={turn} onShare={shareMessage(turn)} />
         </div>
       ) : turn.kind === 'user' ? (

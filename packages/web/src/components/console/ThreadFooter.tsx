@@ -13,8 +13,8 @@ import { useTaskRow } from '@/components/console/task-thread'
 import type { TaskLink } from '@/components/console/task-link'
 import type { AssistantSubsessionDto, SessionThreadAuthorDto, SessionThreadSummaryDto } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
-import { SessionShareButton } from '@/components/console/SessionShare'
-import { HOVER_TOOL_BUTTON, HOVER_TOOL_ICON, HoverToolbar } from '@/components/console/HoverToolbar'
+import { SessionShareDialogFor } from '@/components/console/SessionShare'
+import { MessageMenu } from '@/components/console/MessageMenu'
 import { shortAgo } from '@/components/console/session-work'
 
 /** How often "· 39s" redraws: every second while it counts seconds, else every 30s; arithmetic, no request. */
@@ -136,6 +136,7 @@ export function ThreadFooter({
   const t = useTranslations('Common.taskThread')
   const tl = useTranslations('Common.taskList')
   const [now, setNow] = useState(() => Date.now())
+  const [shareOpen, setShareOpen] = useState(false)
   const tick = tickMs(footer.lastReplyAt, now)
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), tick)
@@ -246,40 +247,26 @@ export function ThreadFooter({
     </span>
   ) : null
 
-  // The card's hover menu above it, over its border and padding only: Reply, then the task session's Share.
-  const reply = onReply ?? open
-  const share = readable ? task?.sessionId : undefined
-  const toolbar =
-    reply || share ? (
-      <HoverToolbar
-        group="card"
-        label={t('cardActions')}
-        className="right-[10px] bottom-full -mb-[6px]"
-        data-task-card-toolbar=""
-      >
-        {reply ? (
-          <button
-            type="button"
-            data-task-card-reply=""
-            aria-label={t('replyInThread')}
-            title={t('replyInThread')}
-            onClick={reply}
-            className={HOVER_TOOL_BUTTON}
-          >
-            <Icon name="message-square" size={HOVER_TOOL_ICON} />
-          </button>
-        ) : null}
-        {share ? (
-          <SessionShareButton
-            sessionId={share}
-            title={title}
-            className={HOVER_TOOL_BUTTON}
-            iconSize={HOVER_TOOL_ICON}
-            data-task-card-share=""
-          />
-        ) : null}
-      </HoverToolbar>
-    ) : null
+  // The card's hover menu above it, over its border and padding only: the menu every message shares, with Reply and the task session's Share.
+  const shareSession = readable ? task?.sessionId : undefined
+  const toolbar = (
+    <MessageMenu
+      group="card"
+      label={t('cardActions')}
+      onReply={onReply ?? open}
+      onShare={shareSession ? () => setShareOpen(true) : undefined}
+      className="right-[10px] bottom-full -mb-[6px]"
+      data-task-card-toolbar=""
+    />
+  )
+  const shareDialog = shareSession ? (
+    <SessionShareDialogFor
+      open={shareOpen}
+      sessionId={shareSession}
+      fallbackTitle={title}
+      onClose={() => setShareOpen(false)}
+    />
+  ) : null
 
   // Every thread, held or not, shows its replies the same way under its root: "people 3 replies · 1m", which opens it.
   const line = (
@@ -342,6 +329,7 @@ export function ThreadFooter({
     >
       {part !== 'card' ? line : null}
       {part !== 'line' ? message : null}
+      {shareDialog}
     </div>
   )
 }

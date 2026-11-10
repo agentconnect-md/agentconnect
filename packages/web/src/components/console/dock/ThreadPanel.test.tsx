@@ -788,12 +788,16 @@ describe('ThreadPanel on a thread’s record (webchat-threads.md §6.2)', () => 
       ]
     })
     withTask = false
-    props = { record: ref }
+    const shown: number[] = []
+    props = { record: ref, onShowInConversation: (seq: number) => shown.push(seq) }
     await render()
     const marked = [...container.querySelectorAll('[data-thread-redirected]')]
     expect(marked).toHaveLength(1)
     expect(marked[0]!.textContent).toContain('Redirected from coordinator')
     expect(marked[0]!.textContent).toContain('Will it rain tomorrow?')
+    // Its label opens the message where it was said, on the main timeline.
+    act(() => marked[0]!.querySelector<HTMLButtonElement>('[data-thread-redirected-from]')!.click())
+    expect(shown).toEqual([3])
   })
 
   it('shares a message by the holding task’s page, else by this thread’s address, with the message’s anchor', async () => {
