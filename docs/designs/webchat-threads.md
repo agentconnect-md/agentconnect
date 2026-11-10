@@ -372,6 +372,8 @@ As implemented (PR 11):
   other agents) and the holding task's turns with their work folded as today, then a thread
   composer. Under the root, the coordinator's work on the thread from the main timeline (§6.1); a
   "Replies" divider then separates what came from the main timeline from the replies below it.
+- A message the coordinator redirected into the thread from the conversation (`handedTo`) is
+  highlighted in the panel with "Redirected from coordinator" above it.
 - A thread a task holds shows the task's header as today: state, title, Stop, the task's runtime
   picker, its approvals, and a link to the task's own page. An unowned thread shows a plain header;
   the console offers no "make this a task" control, since opening a task is the coordinator's call.

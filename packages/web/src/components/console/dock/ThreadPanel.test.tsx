@@ -768,6 +768,23 @@ describe('ThreadPanel on a thread’s record (webchat-threads.md §6.2)', () => 
     expect(panel.querySelector('[data-thread-replies-divider]')?.textContent).toBe('Replies')
   })
 
+  it('marks a message the coordinator redirected here from the conversation', async () => {
+    wire.record = recordPage({
+      messages: [
+        reply(1, 'user_dana', 'Why is the deploy slow?', { senderName: 'Dana Reyes', postId: 'post-root' }),
+        reply(2, 'agent_1', 'The cache misses on every build.'),
+        reply(3, 'user_dana', 'Will it rain tomorrow?', { senderName: 'Dana Reyes', handedTo: 'post-root' })
+      ]
+    })
+    withTask = false
+    props = { record: ref }
+    await render()
+    const marked = [...container.querySelectorAll('[data-thread-redirected]')]
+    expect(marked).toHaveLength(1)
+    expect(marked[0]!.textContent).toContain('Redirected from coordinator')
+    expect(marked[0]!.textContent).toContain('Will it rain tomorrow?')
+  })
+
   it('draws no divider over a page that starts after the root', async () => {
     wire.record = recordPage({
       messages: [reply(3, 'user_lee', 'Can you fix it?', { senderName: 'Lee Park' }), reply(4, 'agent_1', 'On it.')],

@@ -372,7 +372,7 @@ export function buildTurns(input: BuildTurnsInput): { turns: Turn[]; speakers: M
           body: parseUserTurnBody(m.body),
           // Seqs are per daemon store, so only the owner's own rows can match its gate's verdicts.
           ...(ownsDecisionSeq(m) ? { seq: m.seq } : {}),
-          ...(threadsView && m.handedTo ? { handedTo: m.handedTo } : {})
+          ...(m.handedTo ? { handedTo: m.handedTo } : {})
         })
       }
     }

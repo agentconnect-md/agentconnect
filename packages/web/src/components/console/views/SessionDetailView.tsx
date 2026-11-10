@@ -2938,7 +2938,7 @@ export default function SessionDetailView() {
   }
   // A message the coordinator handed into a task's thread says so above its bubble, as Slack's "replied to a thread", and opens it.
   const handedLead = (turn: Turn) => {
-    if (turn.kind !== 'user' || !turn.handedTo) return null
+    if (!threadsView || turn.kind !== 'user' || !turn.handedTo) return null
     const rootId = turn.handedTo
     const summary = threadSummaries.get(rootId)
     const name = summary?.task?.title ?? summary?.rootExcerpt ?? rootTextOf.get(rootId)

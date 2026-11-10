@@ -260,7 +260,16 @@ export function ThreadPanel({
           {turnTimeLabel(turn.time, turnTimeMs(turn))}
         </div>
       ) : null}
-      {turn.kind === 'user' ? (
+      {turn.kind === 'user' && turn.handedTo ? (
+        // A message the coordinator redirected here from the conversation, marked across the panel as Slack marks one sent to two places.
+        <div data-thread-redirected="" className="-mx-4 flex flex-col gap-[5px] bg-(--amber-50) px-4 py-[8px]">
+          <span className="flex items-center gap-[6px] font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary)">
+            <Icon name="corner-up-right" size={12} color="var(--amber-500)" className="flex-none" />
+            {t('redirectedFromCoordinator')}
+          </span>
+          <UserTurnView turn={turn} />
+        </div>
+      ) : turn.kind === 'user' ? (
         <UserTurnView turn={turn} />
       ) : (
         <BotTurnView
