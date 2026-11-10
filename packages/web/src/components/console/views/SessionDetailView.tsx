@@ -2907,8 +2907,11 @@ export default function SessionDetailView() {
   const threadAuthorMark = (author: SessionThreadAuthorDto) => {
     const agent = agentById.get(author.sender)
     if (agent) return <AgentIconView icon={agent.icon} runtime={agent.runtime} size={16} />
-    const picture = isSelf(author.sender) ? viewer.picture : memberPictureByIdentity.get(author.sender)
-    return picture ? <img src={picture} alt="" className="h-full w-full object-cover" /> : null
+    const picture =
+      author.senderAvatarUrl ?? (isSelf(author.sender) ? viewer.picture : memberPictureByIdentity.get(author.sender))
+    return picture ? (
+      <img src={picture} alt="" referrerPolicy="no-referrer" className="h-full w-full object-cover" />
+    ) : null
   }
   // The conversation with the thread open, which a modified click on its footer opens in a new tab.
   const threadHref = (rootId: string): string =>

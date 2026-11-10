@@ -26,7 +26,8 @@ import {
   slackEnvelopeExternallyShared,
   slackExternalReason,
   slackFullMember,
-  slackMemberExternalReason
+  slackMemberExternalReason,
+  slackMessageSender
 } from '@agentconnect.md/message'
 import type { Agent, Integration } from '../agents/agent-schema.js'
 import { integrationCore, platformIntegrationConfig } from '../platforms/integration-config.js'
@@ -709,7 +710,8 @@ export type AppLike = {
           user?: string
           bot_id?: string
           app_id?: string
-          bot_profile?: { app_id?: string }
+          bot_profile?: { app_id?: string; name?: string; icons?: { image_72?: string } }
+          user_profile?: { image_72?: string }
           ts?: string
           text?: string
           subtype?: string
@@ -727,7 +729,8 @@ export type AppLike = {
           user?: string
           bot_id?: string
           app_id?: string
-          bot_profile?: { app_id?: string }
+          bot_profile?: { app_id?: string; name?: string; icons?: { image_72?: string } }
+          user_profile?: { image_72?: string }
           ts?: string
           text?: string
           subtype?: string
@@ -2457,13 +2460,7 @@ export class SlackConnection implements PlatformConnection {
     }
   }
 
-  /**
-   * Pull a Slack thread's full history (conversations.replies, cursor-paginated)
-   * for §8.4/§9.2 mid-thread context. Returns root + replies in Slack ts order;
-   * best-effort (returns what it fetched, [] on error) unless a final-fence caller
-   * requests `throwOnError`. Bot/system frames keep their bot_id as the sender so
-   * the caller can attribute them.
-   */
+  // Read root and replies in Slack order; return partial history on failure unless `throwOnError` is requested.
   async getThreadReplies(
     channel: string,
     threadTs: string,
@@ -2477,6 +2474,8 @@ export class SlackConnection implements PlatformConnection {
   ): Promise<
     {
       sender: string
+      senderName?: string
+      senderAvatarUrl?: string
       agentAuthorId?: string
       chromeOwnerAgentId?: string
       appId?: string
@@ -2490,6 +2489,8 @@ export class SlackConnection implements PlatformConnection {
   > {
     const out: {
       sender: string
+      senderName?: string
+      senderAvatarUrl?: string
       agentAuthorId?: string
       chromeOwnerAgentId?: string
       appId?: string
@@ -2525,7 +2526,7 @@ export class SlackConnection implements PlatformConnection {
         for (let index = 0; index < messages.length; index += 1) {
           const m = messages[index]!
           if (!m.ts) continue
-          const appId = m.app_id ?? m.bot_profile?.app_id
+          const sender = slackMessageSender(m)
           const metadataAuthor =
             m.metadata?.event_type === 'agentconnect_thread_event' &&
             typeof m.metadata.event_payload?.author_agent_id === 'string'
@@ -2538,12 +2539,12 @@ export class SlackConnection implements PlatformConnection {
               : ''
           const link = slackMessageUrl(this.workspaceUrl, channel, m.ts, threadTs)
           out.push({
-            // Some Slack bot rows expose both `user` and `bot_id`. Keep the stable bot
-            // identity as sender so legacy rows from the same app reconcile consistently.
-            sender: m.bot_id ?? m.user ?? 'unknown',
+            sender: sender.id,
+            ...(sender.name ? { senderName: sender.name } : {}),
+            ...(sender.avatarUrl ? { senderAvatarUrl: sender.avatarUrl } : {}),
             ...(metadataAuthor ? { agentAuthorId: metadataAuthor } : {}),
             ...(chromeOwnerAgentId ? { chromeOwnerAgentId } : {}),
-            ...(appId ? { appId } : {}),
+            ...(sender.appId ? { appId: sender.appId } : {}),
             ts: m.ts,
             text: extractSlackMessageText(m),
             isBot: isSlackBotPost(m),

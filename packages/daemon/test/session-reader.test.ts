@@ -1288,6 +1288,50 @@ const screenshotContent = (imageChars: number) => [
 ]
 
 describe('the roots view and session/thread (webchat-threads.md §8)', () => {
+  it('uses the same scoped provider avatar in a thread summary and its messages', async () => {
+    const s = await store()
+    const transportScope = 'slack:one'
+    const key = sessionKey('slack', 'C1', 'append:c', AGENT, transportScope)
+    await s.upsertSession({
+      key,
+      agentId: AGENT,
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'append:c',
+      transportScope,
+      acpSessionId: 'acp-coord',
+      sessionId: 'sid-coord',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1
+    })
+    for (const [ts, sender] of [
+      ['100.1', 'U1'],
+      ['100.2', 'U2']
+    ] as const) {
+      await s.appendTranscript({
+        channel: transcriptChannelKey('C1', transportScope),
+        thread: '100.1',
+        ts,
+        sender,
+        kind: 'text',
+        text: 'hello',
+        admission: { agentId: AGENT, sessionKey: key }
+      })
+    }
+    await s.setDisplayName('U2', 'Dana Reyes', 1)
+    await s.setProfileAvatar(transportScope, 'U2', 'https://avatars.example.test/dana.png', 1)
+    await s.setProfileAvatar('slack:other', 'U2', 'https://avatars.example.test/other.png', 1)
+    const reader = createSessionReader(s)
+    const roots = await reader.history({ agentId: AGENT, sessionId: 'sid-coord', limit: 50, view: 'roots' })
+    const thread = await reader.thread({ agentId: AGENT, sessionId: 'sid-coord', rootId: '100.1', limit: 50 })
+    const author = { sender: 'U2', senderName: 'Dana Reyes', senderAvatarUrl: 'https://avatars.example.test/dana.png' }
+    expect(roots.threads?.[0]?.participants).toEqual([author])
+    expect(thread.summary?.participants).toEqual([author])
+    expect(thread.messages.find((m) => m.sender === 'U2')).toMatchObject(author)
+    await s.close()
+  })
+
   const CONV = '5a0e8c4d-2b7f-4e19-9c3a-6d8b1f2e4a70'
   const R1 = '0f9c2b1e-5d4a-4c3b-9a8f-7e6d5c4b3a21'
   const R2 = '6b1d7e2f-3a4c-4d5e-8f90-a1b2c3d4e5f6'

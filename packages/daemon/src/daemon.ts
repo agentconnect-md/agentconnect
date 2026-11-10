@@ -18309,9 +18309,7 @@ export class Daemon {
     readState?: { truncated: boolean }
   ): Promise<{ sender: string; ts: string; text: string; trustedAgentBot?: boolean }[]> {
     const conn = this.replyConnFor(agentId, integrationId) as Partial<SlackConnection> | undefined
-    // Only Slack can pull thread history (conversations.replies). Telegram long-poll
-    // has no arbitrary-history API, so a cold mid-thread mention just starts fresh.
-    // Duck-typed (method presence) so test fakes work as well as a real SlackConnection.
+    // Only connections with a thread-history read can backfill a cold thread.
     if (typeof conn?.getThreadReplies !== 'function') return []
     const ours = new Set([conn.botUserId, conn.botId].filter(Boolean))
     const replies = await conn.getThreadReplies(channel, threadTs, 200, {
@@ -18320,34 +18318,27 @@ export class Daemon {
       ...(strict ? { throwOnError: true } : {}),
       ...(readState ? { readState } : {})
     })
+    const transportScope = this.transportScopeForIntegrationIds(this.srcIntegrationIds(conn))
+    for (const reply of replies) {
+      if (reply.senderName) await this.store.setDisplayName(reply.sender, reply.senderName, this.clock.now())
+      if (reply.senderAvatarUrl && transportScope)
+        await this.store.setProfileAvatar(transportScope, reply.sender, reply.senderAvatarUrl, this.clock.now())
+    }
     return (
       replies
         .map((reply) => ({
           reply,
-          // Slack metadata event names and payloads are app-defined. Trust AgentConnect
-          // authorship/chrome only when the provider identity belongs to one of our local
-          // bots or to a CP-advertised AgentConnect app in this channel. The platform is
-          // `'slack'` by construction — the `getThreadReplies` duck-type above is the
-          // Slack-only gate, so this literal is Slack-gated flow code (§9.2 file-move
-          // class), not a core branch.
+          // This Slack-only read trusts authorship and chrome only from local or CP-advertised bots in the channel.
           trustedAgentBot: reply.isBot && this.isManagedAgentBotIdentity('slack', channel, reply.sender, reply.appId)
         }))
-        // Skip daemon CHROME (status bar, progress/plan/reasoning, notices, cards). It is not
-        // conversation and must not be re-ingested as a transcript text row. The legacy
-        // status-bar text fallback is provenance-gated too, so another app or a human cannot
-        // make ordinary conversation disappear by copying AgentConnect's marker or text.
+        // Only a trusted bot's chrome is omitted; an unrelated app cannot hide content by copying its markers.
         .filter(
           ({ reply, trustedAgentBot }) => !trustedAgentBot || (!reply.chrome && !isSlackStatusBarText(reply.text))
         )
         .map(({ reply: r, trustedAgentBot }) => {
           const mention = attachmentMention(r.attachments)
           return {
-            // A shareable Slack app gives every agent-authored message the same bot_id.
-            // Prefer stable per-message metadata only after verifying the producing app,
-            // so an unrelated app cannot impersonate this or a peer Agent and trip the
-            // SessionManager own-author filter. A row under this bot's own user is this
-            // agent's even when it is no bot post: Slack writes its notices of what the bot
-            // did there, such as a Code channel's "added view", which are not conversation.
+            // Verified metadata names the Agent; its own bot identities also cover Slack's non-bot notices.
             sender: (trustedAgentBot ? r.agentAuthorId : undefined) ?? (ours.has(r.sender) ? agentId : r.sender),
             ts: r.ts,
             text: mention ? `${r.text}\n${mention}`.trim() : r.text,

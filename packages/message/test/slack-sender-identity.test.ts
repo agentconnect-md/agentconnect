@@ -13,7 +13,7 @@ describe('Slack sender identity', () => {
 
   it('keeps a post made as a bot identity a bot’s', () => {
     const botPost = { ...base, user: 'U0BOTUSER', bot_id: 'B0EXAMPLE', app_id: 'A0EXAMPLE' }
-    expect(normalizeSlackMessage(botPost)?.sender).toEqual({ id: 'U0BOTUSER', isBot: true, appId: 'A0EXAMPLE' })
+    expect(normalizeSlackMessage(botPost)?.sender).toEqual({ id: 'B0EXAMPLE', isBot: true, appId: 'A0EXAMPLE' })
     expect(normalizeSlackMessage({ ...base, subtype: 'bot_message' })?.sender.isBot).toBe(true)
     expect(isSlackBotPost({ bot_id: 'B0EXAMPLE' })).toBe(true)
     expect(isSlackBotPost({ subtype: 'bot_message' })).toBe(true)
