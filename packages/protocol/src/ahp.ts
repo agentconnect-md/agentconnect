@@ -39,6 +39,8 @@ export const AhpAttachmentAuthorization = z.strictObject({
   callerApproves: z.boolean(),
   conversationId: z.string().uuid().optional(),
   targetSessionId: z.string().min(1).max(256).optional(),
+  // Behind `api-ahp-identities-v1`: the person's linked chat identities (`<platform>:<tenant>:<memberId>`), from the CP verdict.
+  userIdentities: z.array(z.string().min(1).max(512)).max(8).optional(),
   grant: AhpGrant
 })
 export type AhpAttachmentAuthorization = z.infer<typeof AhpAttachmentAuthorization>

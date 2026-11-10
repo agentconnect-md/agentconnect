@@ -1222,6 +1222,8 @@ import { feishuApprovalCards } from './platforms/feishu/approval-card.js'
 import { feishuPlatformModule } from './platforms/feishu/module.js'
 import { slackApprovalCards } from './platforms/slack/approval-card.js'
 import { slackCapabilityCards } from './platforms/slack/capability-card.js'
+import type { FillCardHandle, FillCardFacet, FillCardModel } from './platforms/fill-card.js'
+import type { ElicitCardHost } from './platforms/elicit-card.js'
 import { discordCapabilityCards } from './platforms/discord/capability-card.js'
 import { feishuCapabilityCards } from './platforms/feishu/capability-card.js'
 import { parseGoogleChatCapabilityClick } from './platforms/googlechat/capability-card.js'
@@ -2399,6 +2401,11 @@ export class Daemon {
   private readonly fillCardWaits = new PendingFillCards()
   /** Where each shown Fill card settles: the turn stream it was shown on. */
   private readonly fillCardStreams = new Map<string, ChatTurnOutput>()
+  /** Where each chat-platform Fill card was posted, so its settlement rewrites it. */
+  private readonly fillCardPosts = new Map<
+    string,
+    { facet: FillCardFacet; model: FillCardModel; handle: FillCardHandle }
+  >()
   private appSurface!: AppSurface
   /** CP-owned, daemon-private external-memory definitions + verified clients. */
   private memoryConnections?: CpMemoryConnectionRegistry
@@ -3569,8 +3576,8 @@ export class Daemon {
         return body === undefined ? undefined : this.maskAgentSecrets(auth.agentId, body)
       },
       customRequest: (method, params, context, isCurrent) =>
-        method === 'agentconnect/fillSubmit'
-          ? this.answerAhpFillCard(params, context, isCurrent)
+        method === 'agentconnect/fillSubmit' || method === 'agentconnect/fillOpen'
+          ? this.answerAhpFillCard(method, params, context, isCurrent)
           : dispatchAhpAppRequest(
               method,
               params,
@@ -5924,8 +5931,9 @@ export class Daemon {
         // The command-line tier (computer-use.md §5.7) needs a CP whose tokens name it; each Computer's policy decides per call.
         const commandLine = computers && this.cpClient?.supportsServerFeature(COMPUTER_COMMAND_LINE_FEATURE) === true
         if (commandLine) tools.push(...COMPUTER_COMMAND_LINE_TOOLS)
-        // Form filling needs a surface that shows Fill cards: the console's webchat (computer-form-fill-and-vault.md §6).
-        const fills = computers && platform === 'webchat'
+        // Form filling needs a surface that shows Fill cards: webchat inline, a chat platform as a console link (§6).
+        const fills =
+          computers && (platform === 'webchat' || this.turnSurfaces.exact(platform)?.fillCards !== undefined)
         if (fills) tools.push(...COMPUTER_FILL_TOOLS)
         if (!this.mcpToolServerReachable()) tools = []
         const instructions =
@@ -18145,13 +18153,33 @@ export class Daemon {
         const answered = this.fillCardWaits.answer({
           requestId: op.requestId,
           conversationId: msg.chatId,
+          ...(msg.targetSessionId ? { targetSessionId: msg.targetSessionId } : {}),
           userId: op.userId,
+          ...(op.userIdentities ? { userIdentities: op.userIdentities } : {}),
           ...(op.values ? { values: op.values } : {}),
           ...(op.cancel ? { cancel: true } : {})
         })
         return answered.accepted
           ? { msgId: msg.msgId, accepted: true }
           : { msgId: msg.msgId, accepted: false, reason: answered.reason }
+      }
+      case 'fill_open': {
+        // A chat-asked card shown in the console: only its person gets it, on this op's own stream.
+        const opened = this.fillCardWaits.open({
+          requestId: op.requestId,
+          conversationId: msg.chatId,
+          ...(msg.targetSessionId ? { targetSessionId: msg.targetSessionId } : {}),
+          userId: op.userId,
+          ...(op.userIdentities ? { userIdentities: op.userIdentities } : {})
+        })
+        if ('refused' in opened) return { msgId: msg.msgId, accepted: false, reason: opened.refused }
+        sink.output({
+          conversationId: msg.chatId,
+          turnId: `fill:${op.requestId}`,
+          index: 0,
+          event: { kind: 'fill_request', card: opened.card }
+        })
+        return { msgId: msg.msgId, accepted: true }
       }
       case 'app_close': {
         // The conversation confines the close to a card this browser was actually shown, exactly
@@ -32150,6 +32178,7 @@ export class Daemon {
     const key = this.sessionKeyOf(ctx)
     const live = [...this.pending.values()].find((pending) => pending.plan.sessionKey === key)
     const stream = live?.webchat
+    if (live && !stream) return await this.askChatFillCard(ctx, live, card)
     if (!live || !stream) return undefined
     try {
       stream.sink.output({
@@ -32165,31 +32194,104 @@ export class Daemon {
     this.fillCardStreams.set(card.requestId, stream)
     return await this.fillCardWaits.wait(
       card,
-      { conversationId: stream.conversationId, agentId: ctx.agentId, requesterUserId: live.plan.requesterId },
+      {
+        agentId: ctx.agentId,
+        conversationId: stream.conversationId,
+        sessionId: live.outwardSessionId,
+        requester: { userId: live.plan.requesterId }
+      },
       () => this.toolTurnRunnable(ctx)
     )
   }
 
-  /** AHP's answer to a Fill card: the attachment's verified user and conversation, never the request's claim. */
+  /** AHP's Fill card requests: open a chat-asked card, or answer one, as the attachment's own user, identities and place. */
   private async answerAhpFillCard(
+    method: 'agentconnect/fillSubmit' | 'agentconnect/fillOpen',
     params: unknown,
-    context: { authorization: { userId?: string }; binding: { conversationId: string } },
+    context: {
+      authorization: { userId?: string; userIdentities?: string[] }
+      binding: { conversationId: string; sessionId: string }
+    },
     isCurrent: () => boolean
-  ): Promise<{ accepted: boolean; reason?: string }> {
+  ): Promise<{ accepted: boolean; reason?: string; card?: ComputerFillCard }> {
     const parsed = AhpFillSubmit.safeParse(params)
-    if (!parsed.success) throw new AhpProtocolError(JsonRpcErrorCodes.InvalidParams, 'Invalid Fill card answer')
+    if (!parsed.success) throw new AhpProtocolError(JsonRpcErrorCodes.InvalidParams, 'Invalid Fill card request')
     if (!isCurrent()) throw new AhpProtocolError(AhpErrorCodes.PermissionDenied, 'Fill card access expired')
-    const answered = this.fillCardWaits.answer({
+    const who = {
       requestId: parsed.data.requestId,
       conversationId: context.binding.conversationId,
+      targetSessionId: context.binding.sessionId,
       userId: context.authorization.userId,
+      ...(context.authorization.userIdentities ? { userIdentities: context.authorization.userIdentities } : {})
+    }
+    if (method === 'agentconnect/fillOpen') {
+      const opened = this.fillCardWaits.open(who)
+      return 'card' in opened ? { accepted: true, card: opened.card } : { accepted: false, reason: opened.refused }
+    }
+    const answered = this.fillCardWaits.answer({
+      ...who,
       ...(parsed.data.values ? { values: parsed.data.values } : {}),
       ...(parsed.data.cancel ? { cancel: true } : {})
     })
     return answered.accepted ? { accepted: true } : { accepted: false, reason: answered.reason }
   }
 
+  /** A chat platform's card: a link to the console form, answerable only by the member who asked once linked there. */
+  private async askChatFillCard(
+    ctx: SessionContext,
+    live: Pending,
+    card: ComputerFillCard
+  ): Promise<FillCardAnswer | undefined> {
+    const facet = this.turnSurfaces.exact(live.plan.platform)?.fillCards
+    const tenant = live.entry.msg.transportScope
+    if (!facet || !tenant || !live.conn) return undefined
+    const model: FillCardModel = {
+      requestId: card.requestId,
+      agentName: live.plan.agentName,
+      computerName: card.computerName,
+      origin: card.website.origin,
+      fieldCount: card.fields.length,
+      ...(card.reason ? { reason: card.reason } : {}),
+      link: `${this.sessionLink(live.outwardSessionId)}?fill=${encodeURIComponent(card.requestId)}`
+    }
+    const ts = await facet.send(this.fillCardHost(), live, facet.build(model)).catch((err: unknown) => {
+      this.log.warn(`computer: Fill card not posted for "${live.plan.sessionKey}": ${formatErr(err)}`)
+      return undefined
+    })
+    if (!ts) return undefined
+    const handle: FillCardHandle = {
+      conn: live.conn,
+      channel: live.plan.channel,
+      ...(live.plan.thread ? { thread: live.plan.thread } : {}),
+      ts
+    }
+    this.fillCardPosts.set(card.requestId, { facet, model, handle })
+    return await this.fillCardWaits.wait(
+      card,
+      {
+        agentId: ctx.agentId,
+        sessionId: live.outwardSessionId,
+        requester: { identity: `${live.plan.platform}:${tenant}:${live.plan.requesterId}` }
+      },
+      () => this.toolTurnRunnable(ctx)
+    )
+  }
+
+  private fillCardHost(): ElicitCardHost {
+    return {
+      postCardSerialized: (turn, post) => this.postCardSerialized(turn as Pending, post),
+      sessionTarget: (turn) => this.httpSlackSessionTarget(turn as Pending),
+      turnState: (turn) => turnState(turn as Pending)
+    }
+  }
+
   private settleFillCard(requestId: string, outcome: ComputerFillCardOutcome): void {
+    const post = this.fillCardPosts.get(requestId)
+    this.fillCardPosts.delete(requestId)
+    if (post)
+      void post.facet
+        .rewrite(post.handle, post.facet.settled(post.model, outcome))
+        .catch((err: unknown) => this.log.debug(`computer: Fill card settlement not posted: ${formatErr(err)}`))
     const stream = this.fillCardStreams.get(requestId)
     this.fillCardStreams.delete(requestId)
     if (!stream) return
