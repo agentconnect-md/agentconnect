@@ -319,8 +319,7 @@ export function WorkspaceModeField({
   value,
   onChange,
   className,
-  // Add-agent renders this under a "Workspace" section heading, so it passes `null`
-  // to drop the label rather than say "Workspace" twice.
+  // Omit the label where a section or dialog heading already names the workspace.
   label
 }: {
   value: WorkspaceMode
@@ -330,8 +329,7 @@ export function WorkspaceModeField({
 }) {
   const t = useTranslations('Integrations.dialog.workspaceFields')
   const fieldClassName = className ? `fld ${className}` : 'fld'
-  // Fixed at mount: a workspace already on a git URL keeps its tile even where the flag is off
-  // (live state stays representable — and reversible while the modal is open), new picks don't.
+  // Keep an existing Git URL workspace selectable even when the flag is off.
   const [withGitUrl] = useState(() => featureFlagEnabled('git-url') || value === 'giturl')
   const options = [
     {
@@ -359,8 +357,7 @@ export function WorkspaceModeField({
   return (
     <div className={fieldClassName}>
       {label !== null && <span className="fldlbl">{label ?? t('workspace')}</span>}
-      {/* One row on desktop however many tiles the flags leave; mobile still wraps. */}
-      <div className="flex flex-wrap gap-[10px] desktop:flex-nowrap desktop:gap-2">
+      <div className="grid grid-cols-2 gap-2 desktop:grid-cols-5">
         {options.map((option) => {
           const selected = value === option.value
           return (
@@ -371,13 +368,13 @@ export function WorkspaceModeField({
               aria-pressed={selected}
               className={
                 selected
-                  ? 'ptile on flex-1 justify-center px-[13px] py-[9px] desktop:min-w-0 desktop:basis-auto desktop:gap-[7px] desktop:px-2'
-                  : 'ptile flex-1 justify-center px-[13px] py-[9px] desktop:min-w-0 desktop:basis-auto desktop:gap-[7px] desktop:px-2'
+                  ? 'ptile on min-h-[46px] min-w-0 justify-center gap-[7px] px-2 py-[7px]'
+                  : 'ptile min-h-[46px] min-w-0 justify-center gap-[7px] px-2 py-[7px]'
               }
               onClick={() => onChange(option.value)}
             >
               {option.mark(selected)}
-              <span className="font-sans text-[13px] font-semibold leading-normal min-w-0 truncate whitespace-nowrap">
+              <span className="min-w-0 whitespace-normal text-left font-sans text-[13px] font-semibold leading-[15px]">
                 {option.label}
               </span>
             </button>
