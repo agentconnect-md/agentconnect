@@ -340,8 +340,8 @@ As implemented (PR 6):
   drawn in that thread's panel, not in the main timeline; the answer's text is only in the thread.
 - Nothing is posted to the main timeline on a thread's behalf: there is no "also send to the
   conversation".
-- A root's replies line opens its thread; a root with no thread yet offers **Reply in thread** on
-  hover. On a phone, a tap on the footer or a long-press menu does.
+- A person's message offers **Reply in thread** in its hover menu: in its own thread, or in the
+  thread a redirected message joined. On a phone, a tap on the footer or a long-press menu does.
 
 As implemented (PR 11):
 
@@ -372,6 +372,8 @@ As implemented (PR 11):
   other agents) and the holding task's turns with their work folded as today, then a thread
   composer. Under the root, the coordinator's work on the thread from the main timeline (§6.1); a
   "Replies" divider then separates what came from the main timeline from the replies below it.
+- A message the coordinator redirected into the thread from the conversation (`handedTo`) is
+  highlighted in the panel with "Redirected from coordinator" above it.
 - A thread a task holds shows the task's header as today: state, title, Stop, the task's runtime
   picker, its approvals, and a link to the task's own page. An unowned thread shows a plain header;
   the console offers no "make this a task" control, since opening a task is the coordinator's call.

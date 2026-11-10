@@ -2886,7 +2886,9 @@ export default function SessionDetailView() {
   const rootOf = (turn: Turn): string | undefined =>
     threadsView && turn.kind === 'user' && namesThread(threadShape, turn.messageId) ? turn.messageId : undefined
   // A root the reader may reply under.
-  const replyRootOf = (turn: Turn): string | undefined => (threadWriter ? rootOf(turn) : undefined)
+  // The thread a reader replies in from a person's message: the one a redirected message joined, else the root's own.
+  const replyRootOf = (turn: Turn): string | undefined =>
+    !threadWriter ? undefined : turn.kind === 'user' && turn.handedTo && threadsView ? turn.handedTo : rootOf(turn)
   const replyInThread = (rootId: string) => openRootThread(rootId, { focus: true })
   const rootTextOf = new Map(
     turns.flatMap((turn) => (turn.kind === 'user' && turn.messageId ? [[turn.messageId, turn.text]] : []))
@@ -2940,7 +2942,7 @@ export default function SessionDetailView() {
   }
   // A message the coordinator handed into a task's thread says so above its bubble, as Slack's "replied to a thread", and opens it.
   const handedLead = (turn: Turn) => {
-    if (turn.kind !== 'user' || !turn.handedTo) return null
+    if (!threadsView || turn.kind !== 'user' || !turn.handedTo) return null
     const rootId = turn.handedTo
     const summary = threadSummaries.get(rootId)
     const name = summary?.task?.title ?? summary?.rootExcerpt ?? rootTextOf.get(rootId)
@@ -4013,7 +4015,6 @@ export default function SessionDetailView() {
                                   return root ? () => replyInThread(root) : undefined
                                 })()}
                                 pressToReply={isMobile}
-                                replyButton={!threadSummaries.has(rootOf(turn) ?? '')}
                               />
                               {rootFooter(turn, 'card')}
                             </>

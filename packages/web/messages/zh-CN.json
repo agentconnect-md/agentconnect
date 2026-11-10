@@ -368,6 +368,7 @@
       "inThread": "在会话串中：{root}",
       "inThreadBare": "在会话串中",
       "repliedToThread": "回复了会话串：",
+      "redirectedFromCoordinator": "由协调会话转来",
       "answeredInThread": "已在会话串中回答",
       "messageActions": "消息操作",
       "openOnPlatform": "在 {platform} 中打开",

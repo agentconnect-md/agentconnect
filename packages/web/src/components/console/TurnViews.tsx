@@ -2,6 +2,7 @@
 
 import { type CSSProperties, type ReactNode } from 'react'
 import Link from 'next/link'
+import { useTranslations } from 'next-intl'
 import { speaker, type Agent, type ElicitAnswerValue } from '@/lib/data'
 import { agentToneColor } from '@/lib/agent-tone'
 import { AGENT_PROSE, SELF_BUBBLE } from '@/components/console/transcript-bubbles'
@@ -35,6 +36,7 @@ import { CopyTurnButton, StepExtras, McpAppRow, turnWork, WorkStepList } from '@
 import { type Turn } from '@/components/console/session-turns'
 import type { FmtStep } from '@/components/console/transcript-steps'
 import { ElicitationCard, PlanBlock } from '@/components/console/TranscriptCards'
+import { HOVER_TOOL_BUTTON, HoverToolbar } from '@/components/console/HoverToolbar'
 
 /** Whether a user turn prints a sender line (it is not you), which the avatar's alignment follows. */
 function showsSenderLabel(turn: { isCron: boolean; sp: { handle: string } }): boolean {
@@ -108,7 +110,6 @@ export function UserTurnView({
   footer,
   onReply,
   pressToReply = false,
-  replyButton = true,
   lead
 }: {
   turn: UserTurn
@@ -120,11 +121,10 @@ export function UserTurnView({
   onReply?: (() => void) | undefined
   /** A long press replies too, as a phone reader has no hover. */
   pressToReply?: boolean
-  /** The hover Reply in thread; off where the root's replies line already opens its thread. */
-  replyButton?: boolean
   /** Above the bubble: the thread a handed message joined, which it opens. */
   lead?: ReactNode
 }) {
+  const tt = useTranslations('Common.taskThread')
   const { orgPath } = useOrgs()
   return (
     <div className="group/turn flex items-start justify-end gap-[9px]">
@@ -166,10 +166,11 @@ export function UserTurnView({
         )}
         {footer}
         {/* A sent bubble's hover action sits in the inter-turn gap, so revealing it never shifts the row; a person's message has no Copy. */}
-        {onReply && replyButton && (
-          <span className="absolute right-0 top-full flex items-center gap-1">
+        {onReply && (
+          // Its hover menu, beside the bubble's top.
+          <HoverToolbar group="turn" label={tt('messageActions')} className="top-0 right-full mr-[6px]">
             <ReplyInThreadButton onReply={onReply} />
-          </span>
+          </HoverToolbar>
         )}
       </ThreadRootPress>
       <ParticipantAvatar
@@ -267,6 +268,7 @@ export function BotTurnView({
   appReport?: ((agentId: string | undefined, text: string) => boolean) | undefined
   closeApp?: ((agentId: string | undefined, appId: string) => void) | undefined
 }) {
+  const tt = useTranslations('Common.taskThread')
   const { orgPath } = useOrgs()
   // The answer reads as prose, work folds under the header line, and a daemon notice stands on its own line.
   const noticeSteps = turn.steps.filter((s) => s.lane === NOTICE_LANE)
@@ -309,6 +311,12 @@ export function BotTurnView({
         <span className="av h-[26px] w-[26px] flex-none rounded-md">{mark}</span>
       )}
       <div className="relative min-w-0 flex-1" style={{ '--agent-accent': turnTone } as CSSProperties}>
+        {/* A finished answer's hover menu, at the right of its header row. */}
+        {!streaming && answerText ? (
+          <HoverToolbar group="turn" label={tt('messageActions')} className="-top-[3px] right-0" data-turn-toolbar="">
+            <CopyTurnButton text={answerText} className={HOVER_TOOL_BUTTON} />
+          </HoverToolbar>
+        ) : null}
         <AgentTurnHeader
           name={turn.agentName}
           {...(workSteps.length > 0
@@ -425,9 +433,9 @@ export function BotTurnView({
             : null}
           {/* A tool call's approval closes the turn that asked it, after what the agent said before asking. */}
           <TurnApprovals turnKey={turn.key} asked={askedApprovalIds(turn.steps)} />
-          {/* A finished turn's hover copy button sits in the inter-turn gap, so it takes no line of its own. */}
+          {/* A phone has no hover: its Copy stays under the answer, in the inter-turn gap. */}
           {!streaming && answerText && (
-            <span className="absolute left-0 top-full">
+            <span className="absolute left-0 top-full desktop:hidden">
               <CopyTurnButton text={answerText} />
             </span>
           )}

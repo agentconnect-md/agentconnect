@@ -368,6 +368,7 @@
       "inThread": "In thread: {root}",
       "inThreadBare": "In thread",
       "repliedToThread": "Replied to a thread:",
+      "redirectedFromCoordinator": "Redirected from coordinator",
       "answeredInThread": "Answered in the thread",
       "messageActions": "Message actions",
       "openOnPlatform": "Open in {platform}",
