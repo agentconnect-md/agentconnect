@@ -580,6 +580,11 @@ SSH addresses are not managed: a service principal cannot register SSH keys.
 
 ### 6.1 Proxy Only
 
+> **Planned extension:** [Unified managed Git network operations](github-app-git-credentials.md#unified-managed-git-network-operations)
+> defines a shared proxy path with an Azure-first rollout, including mixed-provider
+> agents. The environment restrictions below describe the current implementation
+> and remain until that rollout is implemented and verified.
+
 The token carries the identity's full rights in the organization. Handed to an
 environment, it would reach every repository the identity can see at the
 identity's highest permission; no helper, wrapper, or label could take that
