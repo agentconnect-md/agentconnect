@@ -20,9 +20,10 @@ import {
   workSummary
 } from '@/components/console/session-work'
 import type { FmtStep } from '@/components/console/transcript-steps'
+import { HOVER_TOOL_ICON } from '@/components/console/HoverToolbar'
 
-// Hover-revealed copy button for a finished turn's answer, shown on the turn's `group/turn` hover or keyboard focus.
-export function CopyTurnButton({ text }: { text: string }) {
+// Copy for a finished turn's answer: inline under it on a phone, or as an action in its hover menu.
+export function CopyTurnButton({ text, className }: { text: string; className?: string }) {
   const t = useTranslations('Sessions.detail')
   const [copied, setCopied] = useState(false)
   return (
@@ -34,9 +35,13 @@ export function CopyTurnButton({ text }: { text: string }) {
         setTimeout(() => setCopied(false), 1600)
       }}
       title={copied ? t('copied') : t('copyMessage')}
-      className="inline-flex h-[20px] w-[20px] flex-none items-center justify-center rounded-sm border-0 bg-transparent p-0 text-(--text-tertiary) opacity-0 transition-opacity hover:text-(--text-secondary) focus-visible:opacity-100 group-hover/turn:opacity-100 max-desktop:opacity-100"
+      aria-label={copied ? t('copied') : t('copyMessage')}
+      className={
+        className ??
+        'inline-flex h-[20px] w-[20px] flex-none items-center justify-center rounded-sm border-0 bg-transparent p-0 text-(--text-tertiary) opacity-0 transition-opacity hover:text-(--text-secondary) focus-visible:opacity-100 group-hover/turn:opacity-100 max-desktop:opacity-100'
+      }
     >
-      <Icon name={copied ? 'check' : 'copy'} size={12} />
+      <Icon name={copied ? 'check' : 'copy'} size={className ? HOVER_TOOL_ICON : 12} />
     </button>
   )
 }

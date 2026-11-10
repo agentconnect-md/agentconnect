@@ -5,10 +5,11 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
+import { HOVER_TOOL_BUTTON, HOVER_TOOL_ICON } from '@/components/console/HoverToolbar'
 
 const LONG_PRESS_MS = 500
 
-/** A root's hover action; a phone reaches the same action by a long press instead. */
+/** A root's hover menu action; a phone reaches the same action by a long press instead. */
 export function ReplyInThreadButton({ onReply }: { onReply: () => void }) {
   const t = useTranslations('Common.taskThread')
   return (
@@ -18,9 +19,9 @@ export function ReplyInThreadButton({ onReply }: { onReply: () => void }) {
       onClick={onReply}
       title={t('replyInThread')}
       aria-label={t('replyInThread')}
-      className="hidden h-[20px] w-[20px] flex-none items-center justify-center rounded-sm border-0 bg-transparent p-0 text-(--text-tertiary) opacity-0 transition-opacity hover:text-(--text-secondary) focus-visible:opacity-100 group-hover/turn:opacity-100 desktop:inline-flex"
+      className={HOVER_TOOL_BUTTON}
     >
-      <Icon name="reply" size={12} />
+      <Icon name="message-square" size={HOVER_TOOL_ICON} />
     </button>
   )
 }

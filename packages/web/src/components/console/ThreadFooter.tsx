@@ -14,6 +14,7 @@ import type { TaskLink } from '@/components/console/task-link'
 import type { AssistantSubsessionDto, SessionThreadAuthorDto, SessionThreadSummaryDto } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
 import { SessionShareButton } from '@/components/console/SessionShare'
+import { HOVER_TOOL_BUTTON, HOVER_TOOL_ICON, HoverToolbar } from '@/components/console/HoverToolbar'
 import { shortAgo } from '@/components/console/session-work'
 
 /** How often "· 39s" redraws: every second while it counts seconds, else every 30s; arithmetic, no request. */
@@ -245,18 +246,16 @@ export function ThreadFooter({
     </span>
   ) : null
 
-  // Slack's message toolbar above a hovered card, over its border and padding only: Reply, then the task session's Share.
+  // The card's hover menu above it, over its border and padding only: Reply, then the task session's Share.
   const reply = onReply ?? open
   const share = readable ? task?.sessionId : undefined
-  const toolButton =
-    'flex h-7 w-7 cursor-pointer items-center justify-center rounded-[6px] border-0 bg-transparent p-0 text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)'
   const toolbar =
     reply || share ? (
-      <div
-        role="toolbar"
+      <HoverToolbar
+        group="card"
+        label={t('cardActions')}
+        className="right-[10px] bottom-full -mb-[6px]"
         data-task-card-toolbar=""
-        aria-label={t('cardActions')}
-        className="absolute right-[10px] bottom-full z-[5] -mb-[8px] hidden items-center gap-[2px] rounded-[8px] border border-(--border-default) bg-(--surface-card) p-[2px] shadow-(--shadow-md) group-hover/card:flex group-focus-within/card:flex"
       >
         {reply ? (
           <button
@@ -265,15 +264,21 @@ export function ThreadFooter({
             aria-label={t('replyInThread')}
             title={t('replyInThread')}
             onClick={reply}
-            className={toolButton}
+            className={HOVER_TOOL_BUTTON}
           >
-            <Icon name="message-square" size={15} />
+            <Icon name="message-square" size={HOVER_TOOL_ICON} />
           </button>
         ) : null}
         {share ? (
-          <SessionShareButton sessionId={share} title={title} className={toolButton} data-task-card-share="" />
+          <SessionShareButton
+            sessionId={share}
+            title={title}
+            className={HOVER_TOOL_BUTTON}
+            iconSize={HOVER_TOOL_ICON}
+            data-task-card-share=""
+          />
         ) : null}
-      </div>
+      </HoverToolbar>
     ) : null
 
   // Every thread, held or not, shows its replies the same way under its root: "people 3 replies · 1m", which opens it.

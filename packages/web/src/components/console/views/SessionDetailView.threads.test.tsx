@@ -493,8 +493,10 @@ describe('writing in a thread (webchat-threads.md §6.3)', () => {
     expect(
       q(`[data-thread-footer="${ROOT}"]`)?.closest('.group\\/turn')?.querySelector('[data-reply-in-thread]')
     ).toBeNull()
-    // A person's message offers no Copy.
+    // A person's message offers no Copy; its Reply is in its hover menu, as an agent's Copy is in theirs.
     expect(q('[data-reply-in-thread]')?.parentElement?.querySelectorAll('button')).toHaveLength(1)
+    expect(q('[data-reply-in-thread]')?.closest('[role="toolbar"]')).not.toBeNull()
+    expect(q('[data-turn-toolbar] [title="Copy message"]')).not.toBeNull()
     await click('[data-reply-in-thread]')
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0))
