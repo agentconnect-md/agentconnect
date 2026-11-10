@@ -126,6 +126,7 @@ export function UserTurnView({
 }) {
   const tt = useTranslations('Common.taskThread')
   const { orgPath } = useOrgs()
+  const menu = onReply ? <ReplyInThreadButton onReply={onReply} /> : null
   return (
     <div className="group/turn flex items-start justify-end gap-[9px]">
       <ThreadRootPress
@@ -158,20 +159,27 @@ export function UserTurnView({
         {/* A sent message wraps its cards right-aligned so none hides off-screen; the composer keeps one scrolling row. */}
         <AttachmentCards className="mb-[3px] flex-wrap justify-end" cards={messageCards(turn.images, turn.files)} />
         {(turn.text || turn.body) && (
-          <div className={SELF_BUBBLE}>
-            {turn.body?.sessionMessage && <SessionMessageCaption facts={turn.body.sessionMessage} />}
-            {turn.text && <MessageText text={turn.text} platform={turn.platform} />}
-            {turn.body && <UserTurnDetails body={turn.body} platform={turn.platform} />}
+          <div className="relative max-w-full">
+            <div className={SELF_BUBBLE}>
+              {turn.body?.sessionMessage && <SessionMessageCaption facts={turn.body.sessionMessage} />}
+              {turn.text && <MessageText text={turn.text} platform={turn.platform} />}
+              {turn.body && <UserTurnDetails body={turn.body} platform={turn.platform} />}
+            </div>
+            {/* Its hover menu on the bubble's top edge, over its border and padding only; a person's message has no Copy. */}
+            {menu ? (
+              <HoverToolbar group="turn" label={tt('messageActions')} className="right-[8px] bottom-full -mb-[6px]">
+                {menu}
+              </HoverToolbar>
+            ) : null}
           </div>
         )}
         {footer}
-        {/* A sent bubble's hover action sits in the inter-turn gap, so revealing it never shifts the row; a person's message has no Copy. */}
-        {onReply && (
-          // Its hover menu, beside the bubble's top.
-          <HoverToolbar group="turn" label={tt('messageActions')} className="top-0 right-full mr-[6px]">
-            <ReplyInThreadButton onReply={onReply} />
+        {/* A message of attachments alone has no bubble: its menu sits on the column's top edge instead. */}
+        {menu && !(turn.text || turn.body) ? (
+          <HoverToolbar group="turn" label={tt('messageActions')} className="top-0 right-0">
+            {menu}
           </HoverToolbar>
-        )}
+        ) : null}
       </ThreadRootPress>
       <ParticipantAvatar
         agent={turn.agent}
