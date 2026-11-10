@@ -690,6 +690,29 @@ describe('SessionReader', () => {
     await s.close()
   })
 
+  it('reads a Fill card row with its descriptors, settled in place, and no value', async () => {
+    const s = await store()
+    await seedHistorySession(s)
+    const card = {
+      requestId: '7f9d6c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f',
+      computerName: 'Desk',
+      website: { origin: 'https://login.example.test' },
+      kind: 'login',
+      fields: [
+        { id: 'f1', control: 'password', purpose: 'current-password', required: true, secret: true, empty: true }
+      ],
+      expiresAt: '2026-11-10T10:10:00.000Z'
+    }
+    const text = 'Fill form on https://login.example.test'
+    const row = { channel: 'C1', thread: 'T1', ts: '1', sender: AGENT, requestId: card.requestId, text }
+    await s.upsertFillCard(admitted({ ...row, body: JSON.stringify(card) }))
+    const settled = JSON.stringify({ ...card, resolved: 'filled' })
+    await s.upsertFillCard(admitted({ ...row, body: settled }))
+    const { messages } = await createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })
+    expect(messages).toEqual([expect.objectContaining({ kind: 'fill', text, body: settled })])
+    await s.close()
+  })
+
   it('drops only the TEMPLATE from an oversized app card, leaving the card fetchable whole', async () => {
     const s = await store()
     await seedHistorySession(s)

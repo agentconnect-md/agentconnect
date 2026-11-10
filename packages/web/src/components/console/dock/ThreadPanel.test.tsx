@@ -134,6 +134,10 @@ vi.mock('@/components/console/PlaygroundProvider', () => {
       wire.calls.push(`attach:${id}:${agentId}:${conversationId}`),
     pgAnswerElicitation: (id: string, agentId: string, requestId: string, value: unknown, conversationId?: string) =>
       wire.calls.push(`answer:${id}:${agentId}:${requestId}:${String(value)}:${conversationId}`),
+    pgAnswerFill: async (id: string, agentId: string, requestId: string, answer: unknown, conversationId?: string) => {
+      wire.calls.push(`fill:${id}:${agentId}:${requestId}:${JSON.stringify(answer)}:${conversationId}`)
+      return { accepted: true }
+    },
     pgNotice: (id: string, agentId: string, text: string) => {
       wire.calls.push(`notice:${id}:${agentId}:${text}`)
       return true
@@ -375,6 +379,49 @@ describe('ThreadPanel', () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     })
     expect(wire.calls).toEqual(['target:ses_task', 'send:ses_task:agent_1:does 1.5 include the orders migration?'])
+  })
+
+  it('draws the task’s Fill card and answers it on the conversation’s own socket and channel', async () => {
+    wire.live = [
+      {
+        kind: 'fill',
+        turnId: 't1',
+        text: 'https://login.example.test',
+        fill: {
+          requestId: '7f9d6c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f',
+          computerName: 'Desk',
+          website: { origin: 'https://login.example.test' },
+          kind: 'login',
+          fields: [
+            {
+              id: 'f1',
+              control: 'password',
+              purpose: 'current-password',
+              label: 'Password',
+              required: true,
+              secret: true,
+              empty: true
+            }
+          ],
+          expiresAt: new Date(Date.now() + 600_000).toISOString()
+        }
+      }
+    ]
+    await render()
+    const card = container.querySelector('[data-fill-card]')!
+    expect(card.textContent).toContain('https://login.example.test')
+    const input = card.querySelector<HTMLInputElement>('input[aria-label="Password"]')!
+    expect(input.type).toBe('password')
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+    act(() => {
+      setter.call(input, 'canary-thread-pass')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => card.querySelector<HTMLButtonElement>('button[type="submit"]')!.click())
+    expect(wire.calls).toEqual([
+      'fill:ses_coordinator:agent_1:7f9d6c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f:{"values":[{"field":"f1","value":"canary-thread-pass"}]}:conv-task'
+    ])
+    expect(container.innerHTML).not.toContain('canary-thread-pass')
   })
 
   it('draws the agent’s open question as the session page does, and answers it on the task’s session', async () => {

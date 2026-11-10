@@ -492,7 +492,7 @@ export interface SessionListRow extends SessionRecord {
  * output mode only gates what reaches the platform, never the transcript.
  * Only `text` and `tool` rows ever rebuild model context; the rest are read-only history.
  */
-export type TranscriptKind = 'text' | 'tool' | 'reasoning' | 'plan' | 'elicit' | 'app' | 'capability'
+export type TranscriptKind = 'text' | 'tool' | 'reasoning' | 'plan' | 'elicit' | 'app' | 'capability' | 'fill'
 
 /** One elicitation card's row identity in the shared `tool_call_id` column, namespaced so it
  *  cannot be an ACP tool id. Keyed by the card's minted `ts`, not its request id: request ids
@@ -511,6 +511,23 @@ function appRowId(appId: string): string {
 /** A webchat capability card's row, keyed by its request (capability-requests.md §4.4.2): one per request in a conversation. */
 function capabilityRowId(requestId: string): string {
   return `capability:${requestId}`
+}
+
+/** A Fill card's row (computer-form-fill-and-vault.md §6), keyed by its request: descriptors and an outcome, never a value. */
+function fillRowId(requestId: string): string {
+  return `fill:${requestId}`
+}
+
+/** A card row keyed by its request: where it sits, who wrote it, and what it shows. */
+export interface KeyedCardRow {
+  channel: string
+  thread: string
+  ts: string
+  sender: string
+  requestId: string
+  text: string
+  body: string
+  admission: TranscriptAdmission
 }
 
 /** The session a row is admitted into (message-intake.md §4.2). Absent ⇒ the row is an observation. */
@@ -7224,18 +7241,18 @@ export class LocalStore {
   }
 
   /** Write (or rewrite) a webchat capability card's row, so a reloaded conversation shows it and how it settled. */
-  async upsertCapabilityCard(e: {
-    channel: string
-    thread: string
-    ts: string
-    sender: string
-    requestId: string
-    text: string
-    body: string
-    admission: TranscriptAdmission
-  }): Promise<void> {
+  async upsertCapabilityCard(e: KeyedCardRow): Promise<void> {
+    await this.upsertKeyedCard('capability', capabilityRowId(e.requestId), e)
+  }
+
+  /** Write (or rewrite) a Fill card's row, so a task's thread and a reloaded page show it and how it settled. */
+  async upsertFillCard(e: KeyedCardRow): Promise<void> {
+    await this.upsertKeyedCard('fill', fillRowId(e.requestId), e)
+  }
+
+  // One card per request id in a thread: inserted once, rewritten in place when its text or body changes.
+  private async upsertKeyedCard(kind: 'capability' | 'fill', cardId: string, e: KeyedCardRow): Promise<void> {
     const orgId = this.orgFor(e.sender)
-    const cardId = capabilityRowId(e.requestId)
     await this.transcriptMutex.run(async () => {
       const revision = this.transcriptRevision + 1
       const written = await this.writeTranscriptRows(orgId, e.channel, [
@@ -7243,7 +7260,7 @@ export class LocalStore {
           kind: 'run',
           sql: `INSERT OR IGNORE INTO transcript
              (orgId, channel, thread, ts, sender, kind, text, tool_call_id, body, eventTimeUs, revision)
-           VALUES (@orgId, @channel, @thread, @ts, @sender, 'capability', @text, @cardId, @body, @eventTimeUs, @revision)`,
+           VALUES (@orgId, @channel, @thread, @ts, @sender, @kind, @text, @cardId, @body, @eventTimeUs, @revision)`,
           params: [
             {
               orgId,
@@ -7251,6 +7268,7 @@ export class LocalStore {
               thread: e.thread,
               ts: e.ts,
               sender: e.sender,
+              kind,
               text: e.text,
               cardId,
               body: e.body,
@@ -7262,11 +7280,11 @@ export class LocalStore {
         {
           kind: 'run',
           sql: `UPDATE transcript SET text = ?, body = ?, revision = ?
-           WHERE orgId = ? AND channel = ? AND thread = ? AND sender = ? AND tool_call_id = ? AND kind = 'capability'
+           WHERE orgId = ? AND channel = ? AND thread = ? AND sender = ? AND tool_call_id = ? AND kind = ?
              AND (text IS NOT ? OR body IS NOT ?)`,
-          params: [e.text, e.body, revision, orgId, e.channel, e.thread, e.sender, cardId, e.text, e.body]
+          params: [e.text, e.body, revision, orgId, e.channel, e.thread, e.sender, cardId, kind, e.text, e.body]
         },
-        this.cardAdmissionStatement(e, orgId, 'capability', cardId, e.admission)
+        this.cardAdmissionStatement(e, orgId, kind, cardId, e.admission)
       ])
       if (written.changes.some((changed) => changed > 0)) {
         this.transcriptRevision = written.revision

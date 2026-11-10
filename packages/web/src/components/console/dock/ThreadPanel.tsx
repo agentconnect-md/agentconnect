@@ -43,7 +43,14 @@ import { clipboardFiles, prepareWebchatImage } from '@/lib/webchat-image'
 import { RunningCommandsDock } from '@/components/console/RunningCommandsDock'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
 import { agentToneColor } from '@/lib/agent-tone'
-import { MOCK_MODE, platName, type Agent, type DaemonRow, type ElicitAnswerValue } from '@/lib/data'
+import {
+  MOCK_MODE,
+  platName,
+  type Agent,
+  type DaemonRow,
+  type ElicitAnswerValue,
+  type FillCardAnswer
+} from '@/lib/data'
 import { threadShapeOf } from '@/components/console/coordinator-threads'
 import { TaskRuntimePicker } from '@/components/console/dock/TaskRuntimePicker'
 import { sessionAttributionAgentAuthors, sessionAttributionAgentId } from '@/lib/session-trigger'
@@ -152,6 +159,7 @@ export function ThreadPanel({
     setPgInput,
     reconcileLiveSteps,
     pgAnswerElicitation,
+    pgAnswerFill,
     pgAttach,
     pgCancel
   } = usePlayground()
@@ -318,6 +326,7 @@ export function ThreadPanel({
           }
           promptMs={exchangePromptMs(list, i)}
           answerElicitation={answerElicitation}
+          answerFill={answerFill}
           onShare={shareMessage(turn)}
         />
       )}
@@ -406,6 +415,11 @@ export function ThreadPanel({
         if (!requestId) return
         pgAnswerElicitation(parentSessionId ?? holderId, turnAgent ?? agentId, requestId, value, taskConversation)
       }
+    : undefined
+  // A Fill card in the thread is the task's, answered like its questions: on the conversation's own socket and channel.
+  const answerFill = holderId
+    ? (turnAgent: string | undefined, requestId: string, answer: FillCardAnswer) =>
+        pgAnswerFill(parentSessionId ?? holderId, turnAgent ?? agentId, requestId, answer, taskConversation)
     : undefined
   // A turn a person's message follows answered an earlier exchange.
   const lastExchangeAt = turns.reduce((at, turn, i) => (turn.kind === 'user' && !turn.steer ? i : at), -1)

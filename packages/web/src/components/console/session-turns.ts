@@ -15,6 +15,8 @@ import {
   elicitStepKey,
   liveAppKeys,
   liveCapabilityIds,
+  liveFillIds,
+  fillCardBody,
   liveElicitKeys,
   mcpAppCard
 } from '@/components/console/session-work'
@@ -254,6 +256,8 @@ export function buildTurns(input: BuildTurnsInput): { turns: Turn[]; speakers: M
   const liveApps = liveAppKeys(liveSteps, session.agentId)
   // A capability card has the same two copies on a reload; the live one is what `capability_request_resolved` settles.
   const liveCapabilities = liveCapabilityIds(liveSteps)
+  // A Fill card too: the live copy is what `fill_resolved` settles.
+  const liveFills = liveFillIds(liveSteps)
   if (rows) {
     // The roots view's thread message the coordinator received: no bubble here, a label on the turn that answers it.
     let answeringThread: string | undefined
@@ -269,6 +273,10 @@ export function buildTurns(input: BuildTurnsInput): { turns: Turn[]; speakers: M
       if (liveCapabilities.size > 0 && (m.kind || '').toLowerCase() === 'capability') {
         const persisted = capabilityCard(m.body)
         if (persisted && liveCapabilities.has(persisted.requestId)) continue
+      }
+      if (liveFills.size > 0 && (m.kind || '').toLowerCase() === 'fill') {
+        const persisted = fillCardBody(m.body)
+        if (persisted && liveFills.has(persisted.requestId)) continue
       }
       if (liveApps.size > 0 && (m.kind || '').toLowerCase() === 'app') {
         const persisted = mcpAppCard(m.body)

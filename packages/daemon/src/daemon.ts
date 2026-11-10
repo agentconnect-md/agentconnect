@@ -2416,6 +2416,11 @@ export class Daemon {
   private readonly fillCardWaits = new PendingFillCards()
   /** Where each shown Fill card settles: the turn stream it was shown on. */
   private readonly fillCardStreams = new Map<string, ChatTurnOutput>()
+  /** Each shown Fill card's transcript row, so its settlement rewrites that row in place. */
+  private readonly fillCardRows = new Map<
+    string,
+    { channel: string; thread: string; ts: string; sender: string; sessionKey: string; card: ComputerFillCard }
+  >()
   /** Where each chat-platform Fill card was posted, so its settlement rewrites it. */
   private readonly fillCardPosts = new Map<
     string,
@@ -32217,6 +32222,8 @@ export class Daemon {
     const stream = live?.webchat
     if (live && !stream) return await this.askChatFillCard(ctx, live, card)
     if (!live || !stream) return undefined
+    // The row is what a task's thread and a reloaded page show; the stream reaches a reader already watching this turn.
+    this.recordFillCard(live, card)
     try {
       stream.sink.output({
         conversationId: stream.conversationId,
@@ -32296,6 +32303,7 @@ export class Daemon {
       return undefined
     })
     if (!ts) return undefined
+    this.recordFillCard(live, card)
     const handle: FillCardHandle = {
       conn: live.conn,
       channel: live.plan.channel,
@@ -32322,7 +32330,42 @@ export class Daemon {
     }
   }
 
+  /** Write a Fill card's transcript row with its descriptors; its settlement rewrites the same row, never with a value. */
+  private recordFillCard(live: Pending, card: ComputerFillCard): void {
+    const row = {
+      channel: live.plan.transcriptChannel,
+      thread: live.plan.statusThread,
+      ts: monotonicTs(),
+      sender: live.plan.agentId,
+      sessionKey: live.plan.sessionKey,
+      card
+    }
+    this.fillCardRows.set(card.requestId, row)
+    this.writeFillCardRow(row)
+  }
+
+  private writeFillCardRow(
+    row: { channel: string; thread: string; ts: string; sender: string; sessionKey: string; card: ComputerFillCard },
+    resolved?: ComputerFillCardOutcome
+  ): void {
+    void this.store
+      .upsertFillCard({
+        channel: row.channel,
+        thread: row.thread,
+        ts: row.ts,
+        sender: row.sender,
+        requestId: row.card.requestId,
+        text: `Fill form on ${row.card.website.origin}`,
+        body: JSON.stringify(resolved ? { ...row.card, resolved } : row.card),
+        admission: { agentId: row.sender, sessionKey: row.sessionKey }
+      })
+      .catch((err: unknown) => this.log.warn(`computer: Fill card row not recorded: ${formatErr(err)}`))
+  }
+
   private settleFillCard(requestId: string, outcome: ComputerFillCardOutcome): void {
+    const row = this.fillCardRows.get(requestId)
+    this.fillCardRows.delete(requestId)
+    if (row) this.writeFillCardRow(row, outcome)
     const post = this.fillCardPosts.get(requestId)
     this.fillCardPosts.delete(requestId)
     if (post)

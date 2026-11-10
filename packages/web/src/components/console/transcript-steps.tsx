@@ -12,6 +12,8 @@ import {
   elicitCard,
   capabilityCard,
   CAPABILITY_LANE,
+  FILL_LANE,
+  fillCardBody,
   mcpAppCard,
   APP_LANE,
   ELICIT_LANE,
@@ -67,6 +69,24 @@ export function msgStepBody(m: SessionMessageDto, toolSessionId?: string, platfo
         code: '',
         files: [],
         capability: card,
+        time: formatTranscriptRowTime(m),
+        ...(platform ? { platform } : {})
+      }
+  }
+  if (k === 'fill') {
+    const card = fillCardBody(m.body)
+    if (card)
+      return {
+        lane: FILL_LANE,
+        laneColor: 'var(--text-tertiary)',
+        dot: 'var(--text-disabled)',
+        weight: 400,
+        textColor: 'var(--text-primary)',
+        codeColor: 'var(--text-secondary)',
+        text: m.text,
+        code: '',
+        files: [],
+        fill: card,
         time: formatTranscriptRowTime(m),
         ...(platform ? { platform } : {})
       }
