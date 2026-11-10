@@ -736,6 +736,25 @@ jobs:
           cache-to: type=gha,scope=computer-image-${{ matrix.arch }},mode=max
       - name: Smoke test
         run: packages/computer/docker/smoke.sh agentconnect-computer:ci
+      - uses: pnpm/action-setup@v6
+        with:
+          # Pinned so the action installs this once; `scripts/pnpm-version.test.mjs` fails if this drifts from package.json.
+          version: 11.19.0
+          cache: true
+          cache_dependency_path: |
+            pnpm-lock.yaml
+            packages/computer/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      - name: Install
+        run: pnpm install --frozen-lockfile --filter "@agentconnect.md/computer..."
+      # The image's Chromium, form-fill extension and daemon end to end against fixture sites (form-fill design §11 S1).
+      - name: Form fill end to end
+        env:
+          VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
+          COMPUTER_IMAGE: agentconnect-computer:ci
+        run: pnpm --filter @agentconnect.md/computer test:image
 
   # The ruleset's only CI check must need every job; `always()` keeps failed needs from skipping it.
   ci-ok:

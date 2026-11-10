@@ -50,7 +50,8 @@ function seedable(path: string): boolean {
   const name = basename(path)
   return !(
     name.startsWith('Singleton') ||
-    /cache$/i.test(name) ||
+    // Service workers' scripts stay: their registrations are copied, and a worker without its script never starts.
+    (/cache$/i.test(name) && name !== 'ScriptCache') ||
     name === 'Crash Reports' ||
     name === 'Sessions' ||
     name === 'Session Storage' ||

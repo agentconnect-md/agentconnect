@@ -685,7 +685,7 @@ same `--user-data-dir` hands its window to the running one, on that one's displa
 then starts the browser. No extension and no DevTools protocol are involved.
 
 - **Profiles.** The main desktop's profile is the master (`~/.config/chromium`). An agent desktop's profile lives in its
-  desktop directory and starts as a copy of the master without locks and caches, so it shares the master's
+  desktop directory and starts as a copy of the master without locks and caches (service workers' `ScriptCache` stays, since their registrations are copied), so it shares the master's
   `Local State` and with it the cookie encryption key: `v10` in the container (`--password-store=basic`), `v11` from
   the keyring or the xdg portal on a person's desktop, which therefore needs the same user on the same session bus.
 - **Sources.** Every other profile, running or not. A running source is read by copying its files (the SQLite file with

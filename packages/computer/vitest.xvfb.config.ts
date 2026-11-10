@@ -5,7 +5,7 @@ import { githubActionsReporters } from '../../scripts/vitest-github-reporters.js
 export default defineConfig({
   test: {
     environment: 'node',
-    include: ['test/**/*.test.ts'],
+    include: ['test/xvfb.test.ts'],
     testTimeout: 120_000,
     hookTimeout: 600_000,
     fileParallelism: false,
