@@ -170,6 +170,11 @@ enum VisibilitySource {
   share-by-link (§8) covers the near-term "share this session" ask.
 - `ExternalScope` stores only the stable provider resource identity and the
   credential locator needed to ask the provider. It never stores provider ACLs.
+  Session reports retain a bot locator while that bot has credentials, is not
+  revoked, and has an active integration in the conversation. Reports from other
+  bots in that conversation do not change its ACL revision. When the recorded
+  bot no longer meets those conditions, a report from another bot replaces the
+  locator and advances the revision, invalidating grants made before the handover.
   Slack/Feishu/Lark conversation-access and GitHub repository-access decisions are bounded
   in-process cache entries, leased by verdict (session-access-cold-visit.md §2): per-user
   decisions stay short-lived (`SESSION_ACCESS_RECHECK_SEC`, default 2 minutes), while a

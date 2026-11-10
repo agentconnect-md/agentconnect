@@ -577,6 +577,7 @@ export class PgSessionRepo implements SessionRepo {
       let resolution = candidate.resolution
       if (candidate.resolution === 'settled' && candidate.scope) {
         const scope = candidate.scope
+        // Keep a bot that still serves this conversation; replaying another bot's sessions is not an ACL change.
         const rows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
           INSERT INTO "external_scope" (
             "orgId", "provider", "realmKey", "resourceKind", "resourceKey",
@@ -584,7 +585,23 @@ export class PgSessionRepo implements SessionRepo {
           ) VALUES (
             ${orgId}, ${candidate.provider}, ${scope.realmKey}, ${scope.resourceKind},
             ${scope.resourceKey}, ${scope.credentialKind ?? null},
-            ${scope.credentialId ?? null}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+            COALESCE((
+              SELECT saved."credentialId"
+              FROM "external_scope" saved
+              JOIN "bot" b ON b."id"::text = saved."credentialId" AND b."orgId" = saved."orgId"
+              JOIN "bot_secret" secret ON secret."botId" = b."id"
+              WHERE saved."orgId" = ${orgId} AND saved."provider" = ${candidate.provider}
+                AND saved."realmKey" = ${scope.realmKey} AND saved."resourceKind" = ${scope.resourceKind}
+                AND saved."resourceKey" = ${scope.resourceKey} AND saved."revokedAt" IS NULL
+                AND saved."credentialKind" = 'bot' AND ${scope.credentialKind ?? null} = 'bot'
+                AND b."platform"::text = saved."provider" AND b."revokedAt" IS NULL
+                AND EXISTS (
+                  SELECT 1 FROM "integration" i
+                  JOIN "integration_channel" c ON c."integrationId" = i."id"
+                  WHERE i."botId" = b."id" AND i."orgId" = saved."orgId" AND i."status" = 'active'
+                    AND c."channelId" = saved."resourceKey"
+                )
+            ), ${scope.credentialId ?? null}), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
           )
           ON CONFLICT ("orgId", "provider", "realmKey", "resourceKind", "resourceKey")
           DO UPDATE SET
