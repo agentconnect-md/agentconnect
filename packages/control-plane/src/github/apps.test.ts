@@ -7,7 +7,7 @@ import { OrgId } from '../domain/ids.js'
 import type { AgentRecord, GithubAppRecord, GithubInstallationRecord } from '../persistence/ports.js'
 import { githubAppConfigFromParts, type GithubAppConfig } from './config.js'
 import { GithubAppRegistry } from './app-registry.js'
-import { GithubAppRegistrationError, GithubAppsService, type AgentGithubScope } from './apps.service.js'
+import { GithubAppsService, type AgentGithubScope } from './apps.service.js'
 import { InstallationTokenService } from './installation-token.service.js'
 
 const deploymentKey = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey
@@ -196,15 +196,15 @@ describe('GithubAppsService', () => {
     return { svc, rows, secrets, invalidate, appsChanged, agentAppChanged, switches }
   }
 
-  it("starts a manifest owned by the account the agent's repositories live on, with the built-in App's webhook URL", async () => {
+  it('starts a public manifest for the selected organization, independent of repository ownership', async () => {
     const h = harness()
-    const form = await h.svc.startManifest(ORG, AGENT)
+    const form = await h.svc.startManifest(ORG, AGENT, 'example-org')
     const action = new URL(form.action)
-    expect(`${action.origin}${action.pathname}`).toBe('https://github.com/organizations/acme/settings/apps/new')
+    expect(`${action.origin}${action.pathname}`).toBe('https://github.com/organizations/example-org/settings/apps/new')
     expect(form.manifest).toMatchObject({
-      name: 'reviewer-acme',
+      name: 'reviewer-example-org',
       redirect_url: 'https://api.example.test/v1/github/apps/manifest/callback',
-      public: false,
+      public: true,
       hook_attributes: { url: 'https://relay.example.test/webhooks/github', active: true }
     })
     expect(form.manifest.default_events).toContain('pull_request')
@@ -213,21 +213,19 @@ describe('GithubAppsService', () => {
     )
   })
 
-  it('makes the App public when the agent works across accounts, and refuses an agent on no repository', async () => {
-    const across = harness({
-      scope: {
-        repositories: [{ fullName: 'acme/tools', kind: 'workspace' }],
-        accounts: [{ login: 'other', kind: 'review' }]
-      }
-    })
-    expect((await across.svc.startManifest(ORG, AGENT)).manifest.public).toBe(true)
-    const none = harness({ scope: { repositories: [], accounts: [] } })
-    await expect(none.svc.startManifest(ORG, AGENT)).rejects.toBeInstanceOf(GithubAppRegistrationError)
+  it('creates a public App under a personal account or organization without any repositories', async () => {
+    const h = harness({ scope: { repositories: [], accounts: [] }, installations: [] })
+    const personal = await h.svc.startManifest(ORG, AGENT, null)
+    expect(new URL(personal.action).pathname).toBe('/settings/apps/new')
+    expect(personal.manifest).toMatchObject({ name: 'reviewer', public: true })
+    const organization = await h.svc.startManifest(ORG, AGENT, 'example-org')
+    expect(new URL(organization.action).pathname).toBe('/organizations/example-org/settings/apps/new')
+    expect(organization.manifest.public).toBe(true)
   })
 
   it('converts the code once into a free App of the org and seals its key', async () => {
     const h = harness()
-    const state = new URL((await h.svc.startManifest(ORG, AGENT)).action).searchParams.get('state')!
+    const state = new URL((await h.svc.startManifest(ORG, AGENT, 'example-org')).action).searchParams.get('state')!
     const done = await h.svc.completeManifest(state, 'code-1')
     expect(done).toMatchObject({
       agentId: 'agent-1',

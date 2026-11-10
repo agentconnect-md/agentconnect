@@ -383,6 +383,11 @@
       "builtInFallback": "内置 GitHub App",
       "free": "空闲",
       "create": "新建 GitHub App…",
+      "owner": "App 归属",
+      "personalAccount": "我的 GitHub 个人账号",
+      "organization": "GitHub 组织",
+      "organizationName": "GitHub 组织名",
+      "publicApp": "新 App 默认为 public，之后可以安装到其他账号或组织。仓库访问权限在安装时单独授权。",
       "checking": "正在检查此 App 能访问的范围…",
       "kinds": {
         "workspace": "工作区",

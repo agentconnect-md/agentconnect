@@ -345,9 +345,13 @@ until it expires (up to an hour).
 **Creation** uses GitHub's manifest flow, because GitHub creates an App only
 after a person confirms it. The console asks the CP for a manifest for an
 agent (`POST /agents/:id/github-app/manifest`, agent editors only) and posts it
-to GitHub's create page. The owner is the account the agent's repositories
-live on; the App is private when they all live on one account and public
-otherwise, since a private App installs only on its owner. The manifest asks
+to GitHub's create page. The user chooses their personal GitHub account or enters
+a GitHub organization name; GitHub checks their permission to create there. The
+request carries `organization: null` for the signed-in personal account or the
+organization login. Creation does not require an existing repository. New Apps
+are public so they can be installed on additional accounts later; repository
+access is still granted separately at installation. Existing private Apps keep
+their visibility and can be made public in GitHub's App settings. The manifest asks
 for the agent-facing subset of the built-in App's permissions and the built-in
 App's events, a webhook at the relay's `/webhooks/github` when its public
 origin is HTTPS, and a setup URL naming a pre-allocated App row and the agent

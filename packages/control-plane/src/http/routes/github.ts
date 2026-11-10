@@ -674,21 +674,23 @@ export function githubRoutes(deps: HttpDeps) {
             tags: [Tag.GitHub],
             summary: 'Start creating a GitHub App',
             description:
-              "Returns the form the console posts to GitHub's create-App-from-manifest page, under the account the agent's repositories live on. GitHub then redirects back here, the App is added to the organization (free), and the browser continues to its install page and back to the agent.",
+              "Returns the form the console posts to GitHub's create-App-from-manifest page under the selected organization or the personal account signed in on GitHub. New Apps are public so they can be installed on additional accounts later. GitHub then redirects back here, the App is added to the organization (free), and the browser continues to its install page and back to the agent.",
             operationId: 'startGithubAppManifest',
             params: IdParam,
-            response: { 200: GithubAppManifestDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
+            body: z.object({
+              organization: z
+                .string()
+                .trim()
+                .regex(/^[a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38}$/i)
+                .nullable()
+            }),
+            response: { 200: GithubAppManifestDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto }
           }
         },
         async (req, reply) => {
           const agent = await agentFor(req, reply, true)
           if (!agent) return reply
-          try {
-            return await apps.startManifest(orgOf(req), agent)
-          } catch (e) {
-            if (e instanceof GithubAppRegistrationError) return conflict(reply, e.message)
-            throw e
-          }
+          return apps.startManifest(orgOf(req), agent, req.body.organization)
         }
       )
     }
