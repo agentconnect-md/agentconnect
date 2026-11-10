@@ -1,6 +1,6 @@
 // Per-agent desktops on Linux: one Xvfb + Xfce + driver + Computer per agent, started on demand (computer-use.md §3.9).
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { closeBrowser, waitForWindowManager } from '../browser/close.js'
@@ -217,6 +217,25 @@ export class DesktopManager {
   async byId(id: string): Promise<RunningDesktop | undefined> {
     const record = Object.values(this.state.desktops).find((candidate) => candidate.id === id)
     return record ? this.forKey(record.key, record.label) : undefined
+  }
+
+  /** Each desktop's browser profile, resolved: `main` runs the master, an agent desktop its own (form fill, §8). */
+  profiles(): { desktop: string; profile: string }[] {
+    const real = (path: string): string | undefined => {
+      try {
+        return realpathSync(path)
+      } catch {
+        return undefined
+      }
+    }
+    const entries = [
+      { desktop: 'main', profile: real(this.state.master) },
+      ...Object.values(this.state.desktops).map((record) => ({
+        desktop: record.id,
+        profile: real(desktopProfile(this.deps.dataDir, record.id))
+      }))
+    ]
+    return entries.filter((entry): entry is { desktop: string; profile: string } => entry.profile !== undefined)
   }
 
   /** A viewer watching a desktop keeps it, and its browser, from the idle sweep. */

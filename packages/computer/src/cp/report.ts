@@ -96,6 +96,7 @@ export function capabilitiesFrom(
     keyboardActivity?: boolean
     egress?: boolean
     commandLine?: boolean
+    formFill?: boolean
   } = {}
 ): ComputerCapabilities {
   const platform = options.platform ?? process.platform
@@ -126,6 +127,7 @@ export function capabilitiesFrom(
     viewerStun: true,
     ...(options.egress ? { egress: true } : {}),
     ...(options.commandLine ? { exec: true, files: true } : {}),
+    ...(options.formFill ? { formFill: true } : {}),
     displays:
       display && display.screenWidth > 0 && display.screenHeight > 0
         ? [

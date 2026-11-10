@@ -3,7 +3,7 @@
 > Status: Design, implementation in progress. Product decisions agreed on 2026-11-09.
 > Scope: Linux Chromium/Chrome; container Computers first, Linux desktops second.
 > Delivery stages and acceptance: §11; S1 is in progress (#3849).
-> A throwaway Linux Chromium spike ran on 2026-11-09; its results are in §8.1.
+> A throwaway Linux Chromium spike ran on 2026-11-09; its results are in §8.2.
 
 ## 1. Purpose and boundary
 
@@ -365,7 +365,26 @@ request status when available; retrying requires a fresh decision. Partial fills
 report individual field outcomes without values. Cancellation, navigation,
 expired authority and human takeover end the operation and clear temporary values.
 
-### 8.1 Spike evidence
+### 8.1 Local transport threats
+
+The project has no standalone threat model yet; this records the extension link's.
+
+| Threat                                              | Handling                                                                                                                   |
+| --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| A web page opens a WebSocket to the endpoint        | Refused before attribution: its Origin is the page's, not `chrome-extension://<id>`.                                       |
+| A local process forges the extension's Origin       | Refused: `/proc` attributes the socket to its owner, which is not a Chromium browser holding a known desktop profile open. |
+| One agent's fill lands in another desktop's browser | Each link is keyed by the desktop its browser's profile belongs to; a fill goes only to the caller's desktop link.         |
+| A stale or other extension build answers            | Refused with `4426` unless the hello's protocol and compiled build ID match the daemon's.                                  |
+| A local client token (Claude Code direct) fills     | The internal `computer_form_*` tools exist only for channel-token callers, i.e. agent daemons.                             |
+| A link drop or slow page after a fill was sent      | `uncertain`; a request ID is spent once and never resent.                                                                  |
+| Values reach logs or the audit                      | The audit records request ID, origin and field count; replies and results carry statuses, not values.                      |
+
+Out of scope, as in §1: a hostile agent with shell access as the same user can
+read `/proc`, the profile and the page DOM, or install its own extension.
+Attribution trusts what this user can see in `/proc`; another user's browser is
+never attributed.
+
+### 8.2 Spike evidence
 
 A throwaway harness exercised S1 and the Vault rules on Debian 13 arm64 with
 Chromium 156. It used one Xvfb display and Chromium profile per desktop, a
@@ -459,7 +478,7 @@ extension with the image does not eliminate skew: persistent browsers, rolling
 upgrades and old runtimes exist. The extension's hello reports a build ID
 compiled into the service-worker script, not only `manifest.version`, because
 Chromium can keep running cached worker code across a restart. Do not rely on
-in-place extension updates in a persistent profile (§8.1); a mismatched build is
+in-place extension updates in a persistent profile (§8.2); a mismatched build is
 unsupported until the browser is restarted with a fresh install. Unsupported
 versions fail clearly. There is no fallback that types secret values blindly
 through coordinates or the active OS focus.
@@ -493,7 +512,7 @@ validation and cannot be a deterministic CI acceptance gate.
 These are engineering proposals or unfinished details, not missing product approval:
 
 - Transport, profile attribution, permissions, endpoint authentication and
-  policy packaging are demonstrated on Linux Chromium (§8.1). Still open: why
+  policy packaging are demonstrated on Linux Chromium (§8.2). Still open: why
   forced-install updates did not apply in place, and the managed-pod proxy
   exemption versus forwarder-side attribution (§8).
 - Define fill/consent timeouts and bounded in-memory lifetimes using existing

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { hostname, networkInterfaces } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -18,7 +18,12 @@ import { browserCloseCommand, browserCommand } from './browser/command.js'
 import { CommandLine, commandLineSupported, narrowedCommandLine } from './command-line.js'
 import { installable, offerDesktopInstall } from './linux/desktops-install.js'
 import { describeDesktops, desktopsNotice, probeDesktopSupport, type DesktopSupport } from './linux/desktops-support.js'
-import { DesktopManager } from './linux/desktops.js'
+import { attributeSocket, realProc } from './form-fill/attribution.js'
+import { FORM_FILL_EXTENSION } from './form-fill/build.js'
+import { FormFillEndpoint } from './form-fill/endpoint.js'
+import { extensionId, extensionKey, installExtension } from './form-fill/package.js'
+import { FormFillService } from './form-fill/service.js'
+import { DesktopManager, loadDesktopState } from './linux/desktops.js'
 import { AuditReporter } from './cp/audit-report.js'
 import { ScreenshotStore } from './cp/screenshot-store.js'
 import { disableAutostart, enableAutostart, startAutostartNow } from './autostart.js'
@@ -29,6 +34,7 @@ import {
   controlBaseUrl,
   dataDir,
   DaemonConfig,
+  DEFAULT_FORM_FILL_PORT,
   isLoopbackHost,
   isWildcardHost,
   issueClientToken,
@@ -183,6 +189,8 @@ async function main(): Promise<void> {
       'public-url': { type: 'string' },
       'rtc-address': { type: 'string' },
       'rtc-ports': { type: 'string' },
+      'form-fill-port': { type: 'string' },
+      'policy-dir': { type: 'string' },
       client: { type: 'string', default: 'claude' },
       'expose-driver-tools': { type: 'boolean' },
       json: { type: 'boolean' },
@@ -240,7 +248,10 @@ async function main(): Promise<void> {
     ...(values['expose-driver-tools'] ? { exposeDriverTools: true } : {}),
     ...(values['public-url'] ? { publicUrl: DaemonConfig.shape.publicUrl.parse(values['public-url']) } : {}),
     ...(values['rtc-address'] ? { rtcAddress: values['rtc-address'] } : {}),
-    ...(values['rtc-ports'] ? { rtcPortRange: parsePortRange(values['rtc-ports']) } : {})
+    ...(values['rtc-ports'] ? { rtcPortRange: parsePortRange(values['rtc-ports']) } : {}),
+    ...(values['form-fill-port']
+      ? { formFillPort: DaemonConfig.shape.formFillPort.parse(Number(values['form-fill-port'])) }
+      : {})
   })
 
   switch (command) {
@@ -278,6 +289,18 @@ async function main(): Promise<void> {
     case 'install-driver':
       await installDriver(dir)
       return
+    case 'install-extension': {
+      // Image build (root): the CRX, its update manifest and the force-install policy (computer-form-fill-and-vault.md §8).
+      if (!FORM_FILL_EXTENSION) throw new Error('this build ships no form-fill extension')
+      const installed = installExtension({
+        build: FORM_FILL_EXTENSION,
+        dir: rest[0] ?? '/opt/agentconnect/extension',
+        policyDir: values['policy-dir'] ?? '/etc/chromium/policies/managed',
+        port: DaemonConfig.shape.formFillPort.parse(Number(values['form-fill-port'] ?? DEFAULT_FORM_FILL_PORT))!
+      })
+      console.log(`form-fill extension ${installed.id} ${installed.version} (build ${FORM_FILL_EXTENSION.buildId})`)
+      return
+    }
     case 'install-ffmpeg':
       console.log(`ffmpeg: ${await installFfmpeg(dir)}`)
       return
@@ -498,6 +521,48 @@ function desktopReports(manager: DesktopManager | undefined): ComputerDesktopRep
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
+// Serves the extension only where it can be trusted to be ours: Linux, a shipped build, a port and its extension ids (§8).
+async function startFormFill(
+  dir: string,
+  config: DaemonConfig,
+  desktops: DesktopManager | undefined,
+  log: (line: string) => void
+): Promise<{ endpoint: FormFillEndpoint; service: FormFillService } | undefined> {
+  if (process.platform !== 'linux' || config.formFillPort === undefined) return undefined
+  if (!FORM_FILL_EXTENSION) {
+    log('form fill: off, this build ships no extension')
+    return undefined
+  }
+  // The profiles a socket may come from, read per connection: an agent desktop's profile appears on its first start.
+  const profiles = (): { desktop: string; profile: string }[] => {
+    if (desktops) return desktops.profiles()
+    const master = loadDesktopState(dir).master
+    return existsSync(master) ? [{ desktop: 'main', profile: realpathSync(master) }] : []
+  }
+  const endpoint = new FormFillEndpoint({
+    port: config.formFillPort,
+    extensionIds: [extensionId(extensionKey(FORM_FILL_EXTENSION.buildId))],
+    buildId: FORM_FILL_EXTENSION.buildId,
+    desktopFor: (profile) => profiles().find((entry) => entry.profile === profile)?.desktop,
+    attribute: (clientPort, serverPort) =>
+      attributeSocket(
+        realProc,
+        clientPort,
+        serverPort,
+        profiles().map((entry) => entry.profile)
+      ),
+    log
+  })
+  try {
+    await endpoint.start()
+  } catch (error) {
+    log(`form fill: off, port ${config.formFillPort} is not available: ${(error as Error).message}`)
+    return undefined
+  }
+  log(`form fill: extension endpoint on 127.0.0.1:${config.formFillPort}`)
+  return { endpoint, service: new FormFillService(endpoint) }
+}
+
 function startCpChannel(options: {
   dir: string
   config: DaemonConfig
@@ -512,6 +577,8 @@ function startCpChannel(options: {
   egress?: EgressForwarder | undefined
   // The command-line tier runs here (§5.7).
   commandLine?: boolean
+  // The form-fill extension's endpoint is up (computer-form-fill-and-vault.md §8).
+  formFill?: boolean
   onPolicy?: (policy: ComputerPolicy) => void
   // Linux: the per-agent desktops, whose status the heartbeat reports and whose leases the CP pushes (§3.9).
   desktops?: () => DesktopManager | undefined
@@ -572,7 +639,8 @@ function startCpChannel(options: {
                   webrtc: config.webrtc,
                   keyboardActivity: local?.keyboard() ?? false,
                   egress: options.egress !== undefined,
-                  commandLine: options.commandLine === true
+                  commandLine: options.commandLine === true,
+                  formFill: options.formFill === true
                 }),
                 doctor: doctorReport([...checks, ...(local?.checks() ?? [])], doctorAt)
               }
@@ -1128,6 +1196,8 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
         : {}),
     log
   })
+  // Linux: the form-fill extension's endpoint, when this install ships the extension and names its port (§8).
+  const formFill = await startFormFill(dir, config, live.desktops, log)
   // A token's tier, narrowed by the policy pushed since it was signed.
   const commandLineFor = (granted: McpPrincipal['commandLineGrant']): CommandLineAccess | undefined =>
     commandLine && granted
@@ -1153,12 +1223,17 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
           env: () => (mine && desktops?.enabled() ? mine().then((desktop) => desktop.env) : Promise.resolve(undefined))
         }
       : undefined
+    const formTarget = async (): Promise<{ computer: Computer; desktop: string }> =>
+      mine && desktops?.enabled()
+        ? mine().then((desktop) => ({ computer: desktop.computer, desktop: desktop.record.id }))
+        : { computer, desktop: 'main' }
     return createComputerMcpServer({
       computer: routed,
       client,
       driverTools,
       viewOnly,
       ...(agent ? { agent } : {}),
+      ...(formFill ? { formFill: { service: formFill.service, target: formTarget } } : {}),
       ...(adminPromptHelper ? { adminPrompts: true } : {}),
       ...(access ? { commandLine: access } : {})
     })
@@ -1205,6 +1280,7 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     local: () => live.local,
     egress,
     commandLine: commandLine !== undefined,
+    formFill: formFill !== undefined,
     onPolicy: (policy) => {
       live.policy = policy
       keepAdminPrompts(policy.approvals.adminPrompts)
@@ -1263,7 +1339,7 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     authority.close()
     releaseDisplay()
     await live.desktops?.close().catch(() => undefined)
-    await Promise.allSettled([server.close(), driver.close(), egress?.stop()])
+    await Promise.allSettled([server.close(), driver.close(), egress?.stop(), formFill?.endpoint.close()])
     process.exit(exitCode)
   }
   process.once('SIGINT', () => void shutdown())
