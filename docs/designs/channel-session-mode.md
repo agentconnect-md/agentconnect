@@ -13,19 +13,23 @@
 
 ## 1. Summary
 
-A conversation row carries a **session mode**, which decides which session an admitted
-message joins, alongside its trigger, which decides when the agent responds:
+A conversation row starts with a **session mode**, which decides how the agent organizes
+work in that conversation:
 
 | Mode        | Meaning                                                                                                                                                                                  |
 | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `auto`      | A coordinator decides where each root message goes ([auto-session-mode.md](auto-session-mode.md)); the default for supported new rooms and group DMs unless the agent chooses otherwise. |
 | `createNew` | Per thread, and the fallback where `auto` is not used. A new admitted root message opens a new session; a reply inside an owned thread continues that thread's session.                  |
 | `append`    | Every admitted message in this conversation — top-level or inside a thread — joins **one** long-lived session belonging to the conversation.                                             |
-| `auto`      | A coordinator decides where each root message goes ([auto-session-mode.md](auto-session-mode.md)); the default for supported new rooms and group DMs unless the agent chooses otherwise. |
 
-For Per thread and Single session, the trigger and session mode are independent. Auto
-admits every root message while the conversation is on, and the coordinator decides which
-ones need a response; the console hides Respond to and keeps Off separate. Auto cannot
-combine with By decision or shared-bot routing ([auto-session-mode.md](auto-session-mode.md) §3.3).
+Auto needs no further response trigger: while the conversation is on, every root message
+reaches the coordinator, which decides what needs a response. The console hides Respond to.
+Auto cannot combine with By decision or shared-bot routing
+([auto-session-mode.md](auto-session-mode.md) §3.3).
+
+Only Per thread and Single session then ask **Respond to**: their trigger decides which
+messages activate the agent, independently of their session mode. Off remains a separate
+way to silence the conversation in every mode.
 
 `!new` means "start over here": in `append` it mints a new coordinate, and in `createNew`
 it clears the current thread's session in place (§7). In Auto, it restarts the task when
