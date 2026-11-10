@@ -12,6 +12,7 @@ import {
   refreshMySocialIdentities
 } from '@/lib/api'
 import { forgetOwnershipProof } from '@/lib/ownership-proof'
+import { completeGithubAppOwnerAuthorization } from '@/lib/github-app-owners'
 import {
   LogtoAccountError,
   accountErrorMessage,
@@ -51,6 +52,8 @@ export default function SocialAccountCallback() {
   useEffect(() => {
     if (started.current) return
     started.current = true
+
+    if (completeGithubAppOwnerAuthorization()) return
 
     const flow = takeSocialLinkFlow()
     if (!flow) {

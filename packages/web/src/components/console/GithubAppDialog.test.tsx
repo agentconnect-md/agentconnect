@@ -10,6 +10,10 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 const mocks = vi.hoisted(() => ({
   coverage: [] as GithubAppCoverageItem[],
   switchAgentGithubApp: vi.fn(async () => undefined),
+  selectGithubAppOwners: vi.fn(async () => ({
+    personal: 'example-user',
+    organizations: ['example-org', 'another-org']
+  })),
   startGithubAppManifest: vi.fn(async () => ({
     action: 'https://github.com/settings/apps/new?state=example-state',
     manifest: { name: 'example-app', public: true }
@@ -19,6 +23,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ activeOrg: { id: 'org-1' } }) }))
 vi.mock('@/lib/data-context', () => ({ useConsoleData: () => ({ refresh: mocks.refresh }) }))
+vi.mock('@/lib/github-app-owners', () => ({ selectGithubAppOwners: mocks.selectGithubAppOwners }))
 vi.mock('@/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api')>()),
   fetchBuiltinGithubApp: vi.fn(async () => ({ slug: 'example-connect', appId: 1000 })),
@@ -82,6 +87,7 @@ afterEach(async () => {
   mocks.switchAgentGithubApp.mockClear()
   mocks.refresh.mockClear()
   mocks.startGithubAppManifest.mockClear()
+  mocks.selectGithubAppOwners.mockClear()
   vi.restoreAllMocks()
   document.querySelectorAll('form').forEach((form) => form.remove())
 })
@@ -104,11 +110,34 @@ describe('GithubAppDialog', () => {
     })
   })
 
-  it('requires a valid organization name and sends the selected organization', async () => {
+  it('loads the user’s organizations and sends the picked owner without free-text input', async () => {
     vi.spyOn(HTMLFormElement.prototype, 'submit').mockImplementation(() => {})
     await render('agent-organization', vi.fn(), vi.fn(), 'create')
+    await act(async () => button('Choose from my GitHub organizations')?.click())
+    expect(mocks.selectGithubAppOwners).toHaveBeenCalledWith('agent-organization', 'org-1', expect.any(AbortSignal))
     await act(async () => (document.querySelector('button[aria-label="App owner"]') as HTMLButtonElement).click())
-    await act(async () => button('GitHub organization')?.click())
+    expect(document.body.textContent).toContain('another-org')
+    await act(async () => button('example-orgGitHub organization')?.click())
+    expect(document.querySelector('input[placeholder="example-org"]')).toBeNull()
+    await act(async () => button('Continue on GitHub')?.click())
+    expect(mocks.startGithubAppManifest).toHaveBeenCalledWith('agent-organization', 'example-org')
+  })
+
+  it('shows an authorization failure and lets the user retry', async () => {
+    mocks.selectGithubAppOwners.mockRejectedValueOnce(new Error('cancelled'))
+    await render('agent-retry', vi.fn(), vi.fn(), 'create')
+    await act(async () => button('Choose from my GitHub organizations')?.click())
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain('Could not load GitHub accounts')
+    await act(async () => button('Choose from my GitHub organizations')?.click())
+    expect(document.querySelector('[role="alert"]')).toBeNull()
+    expect(document.body.textContent).toContain('example-user')
+  })
+
+  it('keeps validated manual entry available when an organization cannot be loaded', async () => {
+    vi.spyOn(HTMLFormElement.prototype, 'submit').mockImplementation(() => {})
+    await render('agent-manual', vi.fn(), vi.fn(), 'create')
+    await act(async () => (document.querySelector('button[aria-label="App owner"]') as HTMLButtonElement).click())
+    await act(async () => button('Enter an organization manually…')?.click())
     expect(button('Continue on GitHub')?.disabled).toBe(true)
     const input = document.querySelector('input[placeholder="example-org"]') as HTMLInputElement
     const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
@@ -123,7 +152,7 @@ describe('GithubAppDialog', () => {
       expect(button('Continue on GitHub')?.disabled).toBe(disabled)
     }
     await act(async () => button('Continue on GitHub')?.click())
-    expect(mocks.startGithubAppManifest).toHaveBeenCalledWith('agent-organization', 'example-org')
+    expect(mocks.startGithubAppManifest).toHaveBeenCalledWith('agent-manual', 'example-org')
   })
 
   it('lists what the picked App misses, links to install it, and holds the switch', async () => {

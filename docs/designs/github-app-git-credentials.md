@@ -347,8 +347,15 @@ until it expires (up to an hour).
 **Creation** uses GitHub's manifest flow, because GitHub creates an App only
 after a person confirms it. The console asks the CP for a manifest for an
 agent (`POST /agents/:id/github-app/manifest`, agent editors only) and posts it
-to GitHub's create page. The user chooses their personal GitHub account or enters
-a GitHub organization name; GitHub checks their permission to create there. The
+to GitHub's create page. The user chooses their personal GitHub account or loads
+their organizations through a GitHub authorization popup and selects one from
+the owner dropdown. The popup uses state and PKCE; the authenticated, agent-editor-only
+owner endpoints exchange the code, read `/user` and every page of active
+`/user/memberships/orgs`, and revoke the temporary token without persisting it or
+changing a linked identity. The list includes members as well as owners because
+members may have permission to manage all Apps; GitHub checks creation permission.
+Manual organization entry remains available when authorization is unavailable or
+the desired organization is not returned. The
 request carries `organization: null` for the signed-in personal account or the
 organization login. Creation does not require an existing repository. New Apps
 are public so they can be installed on additional accounts later; repository

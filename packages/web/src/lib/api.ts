@@ -6858,6 +6858,25 @@ export async function fetchGithubApps(orgId?: string): Promise<GithubOrgAppDto[]
   }
 }
 
+export interface GithubAppOwners {
+  personal: string
+  organizations: string[]
+}
+
+export function authorizeGithubAppOwners(agentId: string, state: string, challenge: string, orgId?: string) {
+  return apiPost<{ authorizationUri: string }>(
+    `${orgBase(orgId)}/agents/${encodeURIComponent(agentId)}/github-app/owners/authorize`,
+    { state, challenge }
+  )
+}
+
+export function fetchGithubAppOwners(agentId: string, code: string, verifier: string, orgId?: string) {
+  return apiPost<GithubAppOwners>(`${orgBase(orgId)}/agents/${encodeURIComponent(agentId)}/github-app/owners`, {
+    code,
+    verifier
+  })
+}
+
 /** Re-pulls an organization App's installations from GitHub. */
 export async function syncGithubApp(appId: string): Promise<void> {
   await apiPost(`${orgBase()}/github/apps/${encodeURIComponent(appId)}/sync`, {})

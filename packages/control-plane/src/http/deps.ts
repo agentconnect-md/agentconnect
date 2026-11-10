@@ -93,6 +93,7 @@ import type { ComputerPlan } from '../registry/computerPlan.js'
 import type { ComputerScreenshots } from '../registry/computerScreenshots.js'
 import type { GithubService } from '../github/service.js'
 import type { GithubAppsService } from '../github/apps.service.js'
+import type { GithubAppOwnersService } from '../github/app-owners.js'
 import type { CodeHostTrustedActorService } from '../codehost/trusted-actor.service.js'
 import type { McpProviderOauthService } from '../mcp-oauth/service.js'
 import type { McpTokenResolver } from '../orchestrator/mcpUpstreamHeaders.js'
@@ -535,6 +536,7 @@ export interface HttpDeps {
   github?: GithubService
   /** Organization GitHub Apps; absent with `github`. */
   githubApps?: GithubAppsService
+  githubAppOwners?: GithubAppOwnersService
   /** Resolves a typed login to the host's numeric user id for the "Trusted users" list; per-provider arms
    *  are present only where that host is configured, so an unconfigured host answers 409 rather than 404. */
   trustedActors: CodeHostTrustedActorService
