@@ -696,6 +696,33 @@ describe('Daemon in-conversation commands', () => {
     await daemon.stop()
   })
 
+  it('!stop only interrupts where the platform keeps no latch, and a leftover latch drops nothing', async () => {
+    const blocked = blockingHost()
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => blocked.host as any
+    })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+    ;(daemon as any).commandChrome.stopLatchesMute = () => false
+
+    const turn = (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
+    await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true), WAIT)
+    await (daemon as any).onInboundOutcome(dm('200', '!stop'))
+    expect(blocked.host.cancel).toHaveBeenCalledWith('acp-1')
+    expect(await (daemon as any).commands.isSessionMuted(SESSION_KEY)).toBe(false)
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('nothing is muted'), 'T1', CHROME_REPLY)
+    blocked.release()
+    await turn
+
+    // A latch written before the platform stopped latching must not swallow the next message.
+    await (daemon as any).store.setSessionMuted(SESSION_KEY, true)
+    await (daemon as any).onInboundOutcome(dm('300', 'still there?'))
+    await vi.waitFor(() => expect(blocked.prompts.some((p) => p.includes('still there?'))).toBe(true), WAIT)
+    await daemon.stop()
+  })
+
   it('!stop latches mute for a cold head before its session row exists', async () => {
     let releaseSession!: () => void
     const sessionBlocked = new Promise<void>((resolve) => (releaseSession = resolve))

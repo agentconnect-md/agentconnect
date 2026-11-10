@@ -606,6 +606,9 @@ trigger; the loop guard is a latch, and clearing it takes an explicit `!resume`.
 same way it applies to people: while a thread is stopped, an agent's reply is recorded but
 wakes nobody. Clearing a stop is a **human** act — an `@mention` from a person, or
 `!resume`. Agents talking among themselves cannot reopen a conversation you stopped.
+A chat that one person owns and where nobody can mention the bot, such as a personal
+WeChat bot, has no agents to silence and no mention to lift a mute, so `!stop` there only
+interrupts the turn and the person's next message is answered as usual.
 
 Only the **final** message of a logical response routes. Replies are streamed, so an
 earlier physical message may hold a prefix of the answer; the daemon marks exactly one

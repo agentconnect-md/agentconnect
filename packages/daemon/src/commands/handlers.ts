@@ -881,8 +881,8 @@ export class CommandHandlers {
     const { target, key, thread, rec, acpSessionId, inflight, reply } = ctx
     // decisions.md §8.3: a stop never waits on Jev, so pending verdicts go first.
     const canceled = (await this.host.cancelDecisionVerdicts?.(target.agentId, ctx.msg, 'stop')) ?? 0
-    // Where the conversation appends, a mute would silence its one session for the whole room, so `!stop` only interrupts (§6.3).
-    const mutes = !isAppendCoordinate(thread)
+    // Where the conversation appends (§6.3) or its platform keeps no latch, `!stop` only interrupts.
+    const mutes = !isAppendCoordinate(thread) && this.host.commandChrome().stopLatchesMute(ctx.msg.platform)
     const coordinator = isCoordinatorCoordinate(thread)
     // A thread stays muted, running turn or not, until someone @mentions the agent there (onInbound clears it).
     if (mutes && (rec || inflight)) await this.setSessionMuted(key, true)

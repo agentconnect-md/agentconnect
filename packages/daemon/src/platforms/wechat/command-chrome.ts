@@ -8,6 +8,8 @@ export const weChatCommandChrome: CommandChromeSurface<NormalizedMessage, unknow
   platform: WECHAT_PLATFORM,
   // The one chat's thread is constant, so commands resolve through the chat's latest session.
   threadIdentifiesSession: false,
+  // Only the bound person writes here and nobody can @mention the bot, so a mute would just swallow their next message.
+  stopLatchesMute: false,
   reply(conn, msg, _ctx, text) {
     void (conn as WeChatReplyPort | undefined)?.sendText(msg.channel, text).catch(() => undefined)
   },

@@ -15657,8 +15657,12 @@ export class Daemon {
       agentId,
       targetMsg.transportScope
     )
-    // An append conversation is never muted (§6.3): a leftover latch must not silence the room's one session.
-    if (!isAppendCoordinate(targetThread) && (await this.commands.isSessionMuted(muteKey))) {
+    // An append conversation (§6.3) or a platform whose `!stop` keeps no latch is never muted, so a leftover latch cannot silence it.
+    if (
+      !isAppendCoordinate(targetThread) &&
+      this.commandChrome.stopLatchesMute(targetMsg.platform) &&
+      (await this.commands.isSessionMuted(muteKey))
+    ) {
       if (via !== 'mention') {
         this.log.debug(
           `routing: dropping ${targetMsg.msgId} for agent "${agentId}" (muted by !stop; awaiting @mention)`
