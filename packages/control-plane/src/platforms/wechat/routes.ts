@@ -10,7 +10,7 @@ import { canEdit, canView } from '../../authorization/policy.js'
 import { integrationPlatformAvailability, noInstallDaemonMessage } from '../../http/daemon-platform-capability.js'
 import { installNewBot } from '../../http/install-bot.js'
 import { integrationToSpec } from '../../orchestrator/placement.js'
-import { AgentId, BotId, type IntegrationId, type OrgId } from '../../domain/ids.js'
+import { AgentId, BotId, IntegrationId, type OrgId } from '../../domain/ids.js'
 import type { AgentRecord, BotRecord, BotSecretMaterial } from '../../persistence/ports.js'
 import {
   WeChatLoginConflictError,
@@ -120,19 +120,12 @@ function finalizer(deps: HttpDeps, req: FastifyRequest) {
         if (current) await republish(deps, req, orgId, current)
         return { integrationId: integration.id, botId: bot.id }
       }
-      // A retried install whose rows already landed finds them by the bot id this login issued, and publishes them again.
-      for (const bot of await deps.repos.bot.listForOrg(orgId)) {
-        if (bot.platform !== WECHAT_PLATFORM_ID || bot.platformConfig?.wechatBotId !== login.ilinkBotId) continue
-        const integration = (await deps.repos.integration.listForBot(bot.id)).find((i) => i.agentId === agent.id)
-        if (!integration) continue
-        await republish(deps, req, orgId, bot)
-        return { integrationId: integration.id, botId: bot.id }
-      }
       const placed = await installable(deps, req, agent)
       if (!placed.ok) throw new WeChatLoginSetupError('agent_unavailable')
       const { integration, bot } = await installNewBot(deps, req.log, {
         orgId,
         agent,
+        reservedIds: { botId: BotId(login.id), integrationId: IntegrationId(login.id) },
         platform: WECHAT_PLATFORM_ID,
         name: login.requestedName || `${agent.name} · WeChat`,
         bot: { platformConfig: identity },

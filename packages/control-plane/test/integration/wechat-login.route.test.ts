@@ -1,6 +1,6 @@
 /** The personal-WeChat QR login against real Postgres (wechat-integration.md §2.2, §2.3): install, code refresh, reconnect, and refusals. */
 import { randomUUID } from 'node:crypto'
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
@@ -18,6 +18,7 @@ let running: HttpApp[] = []
 afterEach(async () => {
   for (const app of running) await app.close()
   running = []
+  vi.restoreAllMocks()
 })
 
 class SpyControl {
@@ -117,6 +118,24 @@ describe('WeChat QR login', () => {
     expect((await poll(app, login.id)).json()).toMatchObject({ status: 'completed', integrationId: dto.integrationId })
   })
 
+  it.each(['credentials', 'integration', 'publication'] as const)(
+    'resumes an interrupted %s write without duplicating the bot',
+    async (stage) => {
+      const agentId = await placedAgent()
+      const { app, control } = harness([confirmed('example@im.bot')])
+      const login = (await start(app, { agentId })).json() as { id: string }
+      const error = new Error('temporary interruption')
+      if (stage === 'credentials') vi.spyOn(app.deps.repos.botSecret, 'put').mockRejectedValueOnce(error)
+      if (stage === 'integration') vi.spyOn(app.deps.repos.integration, 'create').mockRejectedValueOnce(error)
+      if (stage === 'publication') vi.spyOn(control, 'integrationUpsert').mockRejectedValueOnce(error)
+      expect((await poll(app, login.id)).json()).toMatchObject({ status: 'scanned' })
+      expect((await poll(app, login.id)).json()).toMatchObject({ status: 'completed' })
+      expect(await prisma.bot.count({ where: { platform: 'wechat' } })).toBe(1)
+      expect(await prisma.integration.count({ where: { agentId } })).toBe(1)
+      expect(control.upserts).toHaveLength(1)
+    }
+  )
+
   it('ends an expired code, and a new login offers a fresh one', async () => {
     const agentId = await placedAgent()
     const { app } = harness([{ status: 'expired' }])
@@ -204,6 +223,43 @@ describe('WeChat QR login', () => {
     expect(await prisma.bot.count({ where: { platform: 'wechat' } })).toBe(1)
     expect(await prisma.integration.count({ where: { agentId } })).toBe(1)
     expect((await poll(app, login.id)).json()).toMatchObject({ status: 'completed' })
+  })
+
+  it('installs once when an expired claim is taken over by another replica', async () => {
+    const agentId = await placedAgent()
+    const first = harness([confirmed('example@im.bot')])
+    const second = harness([])
+    const login = (await start(first.app, { agentId })).json() as { id: string }
+    let firstReady!: () => void
+    let release!: () => void
+    const ready = new Promise<void>((resolve) => {
+      firstReady = resolve
+    })
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const create = first.app.deps.repos.bot.create.bind(first.app.deps.repos.bot)
+    vi.spyOn(first.app.deps.repos.bot, 'create').mockImplementationOnce(async (input) => {
+      firstReady()
+      await barrier
+      return create(input)
+    })
+    const oldPoll = Promise.resolve(poll(first.app, login.id))
+    await ready
+    try {
+      await prisma.wechatPendingLogin.update({ where: { id: login.id }, data: { claimedUntil: new Date(0) } })
+      expect((await poll(second.app, login.id)).json()).toMatchObject({ status: 'completed' })
+    } finally {
+      release()
+      await oldPoll
+    }
+    expect(await prisma.bot.count({ where: { platform: 'wechat' } })).toBe(1)
+    expect(await prisma.integration.count({ where: { agentId } })).toBe(1)
+    expect((await poll(first.app, login.id)).json()).toMatchObject({
+      status: 'completed',
+      botId: login.id,
+      integrationId: login.id
+    })
   })
 
   it('refuses an API key on both login routes', async () => {
