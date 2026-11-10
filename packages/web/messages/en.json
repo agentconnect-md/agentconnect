@@ -2522,6 +2522,7 @@
       "platformHints": {
         "listen": "invite the bot to any {target} in {platform} and it starts listening there.",
         "mention": "invite the bot to any {target} in {platform} and @-mention it to start.",
+        "direct": "message the bot directly in {platform} to start; it can't join a {target}.",
         "targets": {
           "channel": "channel",
           "group": "group",
@@ -2569,6 +2570,10 @@
         "msteams": {
           "create": "Register a bot for Microsoft Teams",
           "existing": "An unused Microsoft Teams bot"
+        },
+        "wechat": {
+          "create": "Scan a QR code with your WeChat",
+          "existing": "An unused WeChat bot"
         }
       },
       "api": {
@@ -6987,6 +6992,59 @@
         "connecting": "Opening Microsoft…",
         "next": "A Teams or Global administrator of your Microsoft 365 organization signs in and approves. The app is then added to your organization’s apps and to the teams you choose.",
         "useOwn": "Register your own bot instead"
+      }
+    },
+    "wechat": {
+      "brand": "WeChat",
+      "intro": {
+        "title": "Connect your own WeChat",
+        "body": "Scanning adds a contact to your WeChat, under the ClawBot plugin, that reaches {agent}. Only you can talk to it: it joins no groups and no one else can message it.",
+        "experimental": "WeChat offers this as an experimental feature, so it may change or stop working on WeChat's side.",
+        "counterpart": "Whoever scans this code becomes the bot's only counterpart. Scan it with your own WeChat and don't share it."
+      },
+      "start": "Show QR code",
+      "starting": "Preparing the QR code…",
+      "retry": "Try again",
+      "qr": {
+        "alt": "WeChat login QR code",
+        "scan": "Scan this code with WeChat on your phone.",
+        "expiresIn": "This code expires in {time}.",
+        "expired": "QR code expired",
+        "expiredHint": "Codes last about two minutes. Refresh for a new one and scan it with your own WeChat.",
+        "refreshCode": "Refresh QR code",
+        "openOnPhone": "On this phone already? Open in WeChat"
+      },
+      "scanned": {
+        "title": "Scanned — confirm on your phone",
+        "body": "Tap Confirm in WeChat to finish connecting."
+      },
+      "verify": {
+        "body": "WeChat shows a number on your phone. Enter it here to confirm it's you.",
+        "label": "Verification number",
+        "submit": "Confirm",
+        "sending": "Checking…",
+        "rejected": "That number didn't match. Check your phone and enter it again."
+      },
+      "completed": {
+        "title": "Connected to WeChat user …{tail}",
+        "body": "Open WeChat, find the bot under ClawBot, and send it a message to start."
+      },
+      "failed": {
+        "expired": "The login ran out of time before WeChat confirmed it.",
+        "verifyCodeBlocked": "WeChat blocked the login after too many wrong numbers. Try again later.",
+        "agentUnavailable": "This agent can no longer take WeChat: its daemon is gone or lacks WeChat support.",
+        "setupFailed": "WeChat confirmed the login, but installing the bot failed.",
+        "gone": "This login is no longer available."
+      },
+      "footer": {
+        "done": "Done"
+      },
+      "settings": {
+        "wechatUser": "WeChat user",
+        "scannedBy": "Scanned by",
+        "reconnect": "Reconnect",
+        "reconnectHint": "Scan again with the same WeChat, for example after WeChat logged the bot out. The bot keeps its integration; its current conversation closes and the next message starts a new one.",
+        "close": "Close"
       }
     }
   },

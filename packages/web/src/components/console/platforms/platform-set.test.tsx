@@ -135,11 +135,15 @@ describe('platform set', () => {
     it('is offered only where its flag is on; ungated modules and trigger kinds always are', () => {
       vi.stubEnv('FEATURE_FLAGS', '')
       expect(platformOffered('qq')).toBe(false)
+      expect(platformOffered('wechat')).toBe(false)
       expect(platformOffered('slack')).toBe(true)
       expect(platformOffered('googlechat')).toBe(true)
       expect(platformOffered('webhook')).toBe(true)
       vi.stubEnv('FEATURE_FLAGS', 'git-url,qq')
       expect(platformOffered('qq')).toBe(true)
+      expect(platformOffered('wechat')).toBe(false)
+      vi.stubEnv('FEATURE_FLAGS', 'wechat')
+      expect(platformOffered('wechat')).toBe(true)
     })
 
     it('keeps its Bots tab for an org that already has a bot there, flag or not', () => {
@@ -147,7 +151,7 @@ describe('platform set', () => {
       const shown = (bots: { platform: string }[]) => visibleBotPlatformTabs(bots).map((tab) => tab.platform)
       expect(shown([])).not.toContain('qq')
       expect(shown([{ platform: 'qq' }])).toContain('qq')
-      vi.stubEnv('FEATURE_FLAGS', 'qq')
+      vi.stubEnv('FEATURE_FLAGS', 'qq,wechat')
       expect(visibleBotPlatformTabs([])).toEqual(BOT_PLATFORM_TABS)
     })
   })
@@ -174,6 +178,7 @@ describe('platform set', () => {
       'Feishu',
       'DingTalk',
       'QQ',
+      'WeChat',
       'Linear'
     ])
   })

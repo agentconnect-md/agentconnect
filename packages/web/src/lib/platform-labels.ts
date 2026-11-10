@@ -56,6 +56,8 @@ const LABELS = new Map<string, PlatformLabel>([
   ['dingtalk', { name: 'DingTalk', picker: 'DingTalk', sigil: '' }],
   // A Teams channel or group chat is named without a "#".
   ['msteams', { name: 'Microsoft Teams', picker: 'Microsoft Teams', sigil: '' }],
+  // A WeChat bot has one chat, the member's own, and no rooms to name.
+  ['wechat', { name: 'WeChat', picker: 'WeChat', sigil: '' }],
   // Nothing routes a bare 'lark' id today (the cloud rides on its own `region`
   // field), but the substring chains this replaces accepted it.
   ['lark', { name: 'Lark', picker: 'Lark/Feishu', sigil: '' }]

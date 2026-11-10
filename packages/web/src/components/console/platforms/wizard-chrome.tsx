@@ -38,11 +38,23 @@ export type IdentityCardKey =
   | 'Integrations.dialog.identityCards.dingtalk.existing'
   | 'Integrations.dialog.identityCards.msteams.create'
   | 'Integrations.dialog.identityCards.msteams.existing'
+  | 'Integrations.dialog.identityCards.wechat.create'
+  | 'Integrations.dialog.identityCards.wechat.existing'
 
 /** The mode-card pair for a module with one brand. */
 export function identityCards(
   platform:
-    'slack' | 'telegram' | 'discord' | 'linear' | 'lark' | 'feishu' | 'qq' | 'googlechat' | 'dingtalk' | 'msteams'
+    | 'slack'
+    | 'telegram'
+    | 'discord'
+    | 'linear'
+    | 'lark'
+    | 'feishu'
+    | 'qq'
+    | 'googlechat'
+    | 'dingtalk'
+    | 'msteams'
+    | 'wechat'
 ): {
   create: IdentityCardKey
   existing: IdentityCardKey
@@ -73,10 +85,14 @@ export type InviteHintBrandKey =
   | 'Platforms.googlechat.brand'
   | 'Platforms.dingtalk.brand'
   | 'Platforms.msteams.brand'
+  | 'Platforms.wechat.brand'
 
 /** The host messages an invite hint can name — the two arms of its hint row — and the keys of its two values. */
 export type InviteHint = {
-  key: 'Integrations.dialog.platformHints.listen' | 'Integrations.dialog.platformHints.mention'
+  key:
+    | 'Integrations.dialog.platformHints.listen'
+    | 'Integrations.dialog.platformHints.mention'
+    | 'Integrations.dialog.platformHints.direct'
   values: { target: `Integrations.dialog.platformHints.targets.${InviteHintTarget}`; platform: InviteHintBrandKey }
 }
 
@@ -84,6 +100,14 @@ export type InviteHint = {
 export function inviteBotHint(target: InviteHintTarget, brand: InviteHintBrandKey, mention = false): InviteHint {
   return {
     key: mention ? 'Integrations.dialog.platformHints.mention' : 'Integrations.dialog.platformHints.listen',
+    values: { target: `Integrations.dialog.platformHints.targets.${target}`, platform: brand }
+  }
+}
+
+/** The hint for a bot that only takes direct messages: write to it, and it never joins `target`. */
+export function directBotHint(target: InviteHintTarget, brand: InviteHintBrandKey): InviteHint {
+  return {
+    key: 'Integrations.dialog.platformHints.direct',
     values: { target: `Integrations.dialog.platformHints.targets.${target}`, platform: brand }
   }
 }

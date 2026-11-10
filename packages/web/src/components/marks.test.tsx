@@ -176,7 +176,8 @@ describe('PlatformMark', () => {
       'feishu',
       'qq',
       'dingtalk',
-      'msteams'
+      'msteams',
+      'wechat'
     ]) {
       // Slack and webhook belong here too, but render without `ssr`, so SSR gives them an empty <span>.
       const markup = renderToStaticMarkup(<PlatformMark platform={platform} fillPct={100} />)

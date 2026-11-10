@@ -41,8 +41,19 @@ const wizardOf = (id: string) => {
 }
 
 describe('platform registry', () => {
-  it('registers exactly the nine chat platforms, in picker order', () => {
-    const ids = ['slack', 'msteams', 'googlechat', 'discord', 'telegram', 'feishu', 'dingtalk', 'qq', 'linear']
+  it('registers exactly the ten chat platforms, in picker order', () => {
+    const ids = [
+      'slack',
+      'msteams',
+      'googlechat',
+      'discord',
+      'telegram',
+      'feishu',
+      'dingtalk',
+      'qq',
+      'wechat',
+      'linear'
+    ]
     expect(platformRegistry.ids()).toEqual(ids)
     expect(platformRegistry.all().map((m) => m.platformId)).toEqual(ids)
   })
@@ -99,6 +110,12 @@ describe('freeBotFilter', () => {
     expect(linear.freeBotFilter(bot({ platform: 'linear', transport: 'http', agentIds: ['a', 'b'] }), ctx())).toBe(true)
     // Not even the Slack-shaped disqualifier: `teamId` is a Slack platform-app column.
     expect(linear.freeBotFilter(bot({ platform: 'linear', teamId: 'T0EXAMPLE1' }), ctx())).toBe(true)
+  })
+
+  it('wechat never offers a bot for reuse: each is one member’s chat with one agent', () => {
+    const wechat = wizardOf('wechat')
+    expect(wechat.freeBotFilter(bot({ platform: 'wechat' }), ctx())).toBe(false)
+    expect(wechat.freeBotFilter(bot({ platform: 'wechat', agentIds: [], freedFromAgent: 'old' }), ctx())).toBe(false)
   })
 
   it('telegram and discord add nothing to the chassis predicate', () => {
@@ -308,6 +325,12 @@ describe('invite hint copy', () => {
       undefined,
       'invite the bot to any group in QQ and @-mention it to start.',
       '把机器人拉进QQ的任意群，并 @ 它即可开始使用。'
+    ],
+    [
+      'wechat',
+      undefined,
+      "message the bot directly in WeChat to start; it can't join a group.",
+      '在微信里直接给机器人发消息即可开始；它不能加入群。'
     ],
     [
       'googlechat',
