@@ -6,7 +6,10 @@
 // Everything here reads the image's filesystem or runs its executables. The image's USER and ENV reach this stage as its
 // own uid and environment; the ENTRYPOINT does not, so scripts/verify-runtime-image.mjs reads the pinned base's config.
 import { execFileSync } from 'node:child_process'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { builtinModules } from 'node:module'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import { honorsNoLazyFetch, NO_LAZY_FETCH_FLOOR, parseGitVersion, SOURCE_CACHE_GIT_PROBE } from './source-cache-git.mjs'
 
@@ -154,6 +157,35 @@ check('login shells resolve gh to the pinned binary', () => {
   const out = sh(`gh --version 2>&1 | head -1`)
   if (!/^gh version /.test(out)) throw new Error(`gh did not run: ${out}`)
   return out
+})
+
+check('Azure CLI and DevOps commands work with empty session state and no extension downloads', () => {
+  assertImmutable('Azure CLI', '/usr/bin/az')
+  const state = mkdtempSync(join(tmpdir(), 'ac-azure-image-'))
+  try {
+    const env = {
+      ...process.env,
+      AZURE_CONFIG_DIR: join(state, 'config'),
+      AZURE_EXTENSION_DIR: join(state, 'extensions'),
+      AZURE_EXTENSION_USE_DYNAMIC_INSTALL: 'no',
+      AZURE_CORE_COLLECT_TELEMETRY: 'false'
+    }
+    const az = (...args) => execFileSync('az', args, { env, encoding: 'utf8', timeout: 30_000 }).trim()
+    const version = JSON.parse(az('version', '--output', 'json'))
+    if (!version['azure-cli'] || !version.extensions?.['azure-devops']) {
+      throw new Error('Azure CLI or the azure-devops extension is missing')
+    }
+    const extension = az('extension', 'show', '--name', 'azure-devops', '--query', 'path', '--output', 'tsv')
+    if (!extension.startsWith('/opt/az/') || !extension.endsWith('/azure-cli-extensions/azure-devops')) {
+      throw new Error(`azure-devops is not installed in the CLI's system directory: ${extension}`)
+    }
+    assertImmutable('Azure DevOps extension', join(extension, 'azext_devops', '__init__.py'))
+    az('repos', 'show', '--help')
+    az('repos', 'pr', 'list', '--help')
+    return `Azure CLI ${version['azure-cli']}, azure-devops ${version.extensions['azure-devops']}`
+  } finally {
+    rmSync(state, { recursive: true, force: true })
+  }
 })
 
 // Live secrets are loaded at use time through this helper, so a pod agent without it could not load one.

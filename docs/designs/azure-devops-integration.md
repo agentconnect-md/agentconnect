@@ -884,11 +884,11 @@ the daemon:
   `~/.azure/cliextensions` of the daemon's user. A pod, VM or remote executor
   preserves an explicitly configured target-side `AZURE_EXTENSION_DIR`;
   otherwise it points at `cliextensions` beneath the fresh state directory,
-  replacing any inherited extension path from the owning daemon. Without an
-  explicit installed extension path, an empty configuration directory hides
-  the installed `azure-devops` extension, and the CLI installs it again from
-  Microsoft's download hosts on every session's
-  first command;
+  replacing any inherited extension path from the owning daemon. The bundled
+  runtime images install `azure-devops` in the CLI's system extension directory,
+  which stays visible alongside an empty per-session extension directory.
+  A host installation that puts the extension only under a user's HOME needs
+  the explicit installed extension path to avoid downloading it again;
 - `AZURE_CORE_COLLECT_TELEMETRY=false`; and
 - the proxy and trust variables of the credential proxy design, including
   `REQUESTS_CA_BUNDLE`, which names the merged trust bundle on every strategy
@@ -903,9 +903,11 @@ and the CLI writes no credential into the session directory.
 The CLI only accepts `dev.azure.com` and `*.visualstudio.com` as organization
 hosts, which the proxy preserves, since it terminates TLS for those names
 rather than rewriting them. Its organization and project detection reads the
-four-segment canonical remote of §5. AgentConnect does not install the CLI or
-its extension. Azure Git support therefore does not imply that every runtime
-image or executor has the optional `az` executable installed.
+four-segment canonical remote of §5. Both `runtime-sandbox` (Cloud) and
+`runtime-sandbox-full` (VM) include pinned Azure CLI and `azure-devops` packages,
+with a shared installation layer and a non-root check using empty session state.
+Host and SRT executors use the CLI installed on their execution machine; Git
+support does not require that executable.
 
 ### 6.5 Rate Limits
 
