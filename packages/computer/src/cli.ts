@@ -402,14 +402,15 @@ async function formFillCommand(dir: string, action: string | undefined, yes: boo
   const asRoot = process.getuid?.() === 0
   const run = async (commands: string[][], what: string): Promise<boolean> => {
     const lines = commands.map((command) => (asRoot ? command : ['sudo', ...command]))
-    console.log(`${what} needs root:\n${lines.map((line) => `  ${line.join(' ')}`).join('\n')}`)
-    if (!yes) {
-      if (!process.stdin.isTTY) {
-        console.log('Run these commands as root (or pass --yes), then run this command again to check.')
-        return false
-      }
-      if (!(await askYes('Run them now? [Y/n] '))) return false
+    // Without a terminal the commands are not printed: they read staged files deleted on return, and skip the daemon's config.
+    if (!yes && !process.stdin.isTTY) {
+      console.log(
+        `${what} needs root: run \`${selfCommand()} form-fill ${action} --yes\`${asRoot ? '' : ' (it runs sudo)'}, or run it in a terminal.`
+      )
+      return false
     }
+    console.log(`${what} needs root:\n${lines.map((line) => `  ${line.join(' ')}`).join('\n')}`)
+    if (!yes && !(await askYes('Run them now? [Y/n] '))) return false
     return lines.every((line) => runInherited(line) === 0)
   }
   if (action === 'uninstall') {
