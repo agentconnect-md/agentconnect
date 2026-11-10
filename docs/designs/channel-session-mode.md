@@ -2,7 +2,8 @@
 
 > Status: Implemented on the daemon, the Control Plane and the console (§8); the unbounded
 > read §10 once called for does not exist. `auto` is implemented in [auto-session-mode.md](auto-session-mode.md)
-> (§12), and new rooms and group DMs start on it where the bot's daemon reads it.
+> (§12). New rooms and group DMs use the agent's new-conversation default; unset means
+> Auto where the platform and daemon support it ([auto-session-mode.md](auto-session-mode.md) §3.2).
 > The transcript layout of §6.2 and the retention question of §12.2 are superseded by
 > [message-intake.md](message-intake.md); the sections say so inline.
 > Scope: chat conversations that are channels, on every platform that has them, over
@@ -12,26 +13,26 @@
 
 ## 1. Summary
 
-A conversation row in the console carries one operator choice today: **when** the agent
-responds (`off` / `@-mention` / `any message`). It carries no choice about **which
-session** an activation joins — that is hardcoded by the session key.
+A conversation row carries a **session mode**, which decides which session an admitted
+message joins, alongside its trigger, which decides when the agent responds:
 
-This design adds a second per-conversation setting, the **session mode**:
+| Mode        | Meaning                                                                                                                                                                                  |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `createNew` | Per thread, and the fallback where `auto` is not used. A new admitted root message opens a new session; a reply inside an owned thread continues that thread's session.                  |
+| `append`    | Every admitted message in this conversation — top-level or inside a thread — joins **one** long-lived session belonging to the conversation.                                             |
+| `auto`      | A coordinator decides where each root message goes ([auto-session-mode.md](auto-session-mode.md)); the default for supported new rooms and group DMs unless the agent chooses otherwise. |
 
-| Mode        | Meaning                                                                                                                                                                   |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `createNew` | Today's behavior, and the default where `auto` is not. A new message opens a new session; a reply inside a thread the agent already owns continues that thread's session. |
-| `append`    | Every admitted message in this conversation — top-level or inside a thread — joins **one** long-lived session belonging to the conversation.                              |
-| `auto`      | A coordinator session decides where each root message goes ([auto-session-mode.md](auto-session-mode.md)); the default for a new room or group DM.                        |
+For Per thread and Single session, the trigger and session mode are independent. Auto
+admits every root message while the conversation is on, and the coordinator decides which
+ones need a response; the console hides Respond to and keeps Off separate. Auto cannot
+combine with By decision or shared-bot routing ([auto-session-mode.md](auto-session-mode.md) §3.3).
 
-The trigger and the session mode are orthogonal: the trigger decides whether a message
-activates the agent at all, the session mode decides which session the activation joins.
+`!new` means "start over here": in `append` it mints a new coordinate, and in `createNew`
+it clears the current thread's session in place (§7). In Auto, it restarts the task when
+sent in an owned thread, or rotates the coordinator while keeping its open tasks at the
+conversation root ([auto-session-mode.md](auto-session-mode.md) §8).
 
-Both modes get `!new`, and it means the same thing to a user in both — "start over
-here" — while doing something different underneath (§7): in `append` it mints a new
-coordinate, in `createNew` it clears the current thread's session in place.
-
-## 2. What exists today
+## 2. Baseline before per-conversation session modes
 
 ### 2.1 The setting that is already there
 
@@ -250,30 +251,33 @@ never consults the sessions table. That is also what keeps the coordinate resolv
 beside `mutedChannels`:
 
 ```ts
-/** Per-conversation session mode; absent ⇒ `createNew`. Only conversations that
- *  depart from the default are listed. */
+// Per-conversation session modes; absent ⇒ `createNew` outside assistant-mode places.
 sessionModes: z.array(z.object({ channel: z.string(), mode: ChannelSessionMode })).default([])
 ```
 
-with `ChannelSessionMode = z.enum(['createNew', 'append'])`.
+with `ChannelSessionMode = z.enum(['createNew', 'append', 'auto'])`.
 
 - **Not a `bindRule`.** A relay-managed shared bot ships an empty `bindRules` array unless
   the owning agent is gated (`httpIntegrationToSpec()`), because the relay arbitrates
   activation. Session keying stays on the daemon in every mode, so this setting rides a
   field populated unconditionally — like `mutedChannels`, which ships for the same reason.
-- **Sparse.** Only departures from the default are listed, so a large conversation list
-  adds nothing to the common spec.
-- **Old daemons ignore it, by design.** `IntegrationCoreEnvelope` is a non-strict
-  `z.object`, so a daemon that predates the field strips it and keeps today's behavior,
-  which is exactly `createNew`. No capability advertisement and no daemon-side feature
-  flag: the default is inert, and the console offers the control unconditionally.
+- **Sparse.** Ordinary projections list departures from `createNew`. Assistant-mode
+  projections include every known row where the platform supports one session per place,
+  so the daemon's default for an unseen place cannot override a known row.
+- **Capability-aware.** A daemon predating `sessionModes` ignores the field and keeps
+  Per thread. A daemon that understands the field but not the `auto` enum value would
+  reject the frame, so the Control Plane sends it `createNew` for stored Auto rows.
+  Assistant-mode places receive `auto` when the daemon advertises `session-mode-auto-v1`,
+  otherwise `append` ([auto-session-mode.md](auto-session-mode.md) §3.1, §3.4).
 
 ## 5. Control plane
 
-- **Schema.** `enum ChannelSessionMode { createNew, append }` and
+- **Schema.** `enum ChannelSessionMode { createNew, append, auto }` and
   `sessionMode ChannelSessionMode @default(createNew)` on `model IntegrationChannel`, plus
-  a migration. Like `trigger`, it is replicated across a shared bot's sibling integration
-  rows so deleting the canonical owner does not discard it.
+  migrations. Row creation applies the agent's new-conversation default and the daemon's
+  capabilities ([auto-session-mode.md](auto-session-mode.md) §3.2). Like `trigger`, it is
+  replicated across a shared bot's sibling integration rows so deleting the canonical
+  owner does not discard it.
 - **Read path.** The channel DTO in `http/routes/integrations.ts` carries `sessionMode`
   beside `trigger`.
 - **Write path.** The existing per-conversation `PATCH` accepts `sessionMode` under the
@@ -337,8 +341,8 @@ per-agent coordinate buys is that `!new` stays a per-agent command like every ot
   the session's catch-up would never see them.
 - **One serial queue per conversation.** Admission is serialized per session key, so the
   whole conversation shares one queue: a long turn delays every other message in that
-  conversation rather than only its thread. This is inherent to the mode and is the main
-  reason `createNew` stays the default.
+  conversation rather than only its thread. Per thread keeps separate queues for separate
+  threads; Auto lets the coordinator delegate work into separate task sessions.
 - **`!stop` does not mute in `append`.** With one session per conversation, the `!stop`
   mute latch would silence the whole room until someone `@`-mentions. In `append`, `!stop`
   interrupts the in-flight turn and nothing else — behaviorally `!cancel`, with reply copy
@@ -512,38 +516,44 @@ and `/new` on Telegram and Discord, and it joins the advertised menus — `BOT_C
 ## 8. Web console
 
 The session mode shares one control with the trigger. After the row's ⚡, a single button
-(`ChannelSettingsPopover.tsx`, rendered by `IntegrationChannelList.tsx`) reads both choices —
-`@-mentions · Per thread` — and opens a popover holding a **Respond to** group and a
-**Session mode** group. A pick saves at once and leaves the popover open. The footer
-describes the hovered option, else the chosen one:
+(`ChannelSettingsPopover.tsx`, rendered by `IntegrationChannelList.tsx`) reads `Auto`,
+`Per thread · @-mentions`, or `Single session · All messages`. Its popover leads with
+**Session mode**, then shows **Respond to** for a non-Auto mode where there is a trigger
+choice. **Off** stands alone below a divider. A pick saves at once and leaves the popover
+open; the footer describes the hovered option, otherwise the selected one, for each
+selected group.
 
-- `Per thread` — "Each thread has its own session. Replies continue that session."
-- `Single session` — "One session for this channel, shared across threads. Send `!new` to
-  start a fresh one."
+- `Per thread` — each thread has its own session; replies continue it.
+- `Single session` — one session for the conversation, shared across threads; `!new` starts
+  a fresh one.
+- `Auto` — reads each root message, answers quick questions, takes larger requests into
+  tasks, and stays quiet on the rest ([auto-session-mode.md](auto-session-mode.md) §4).
 
-An Off row starts no session, so its button reads `Off` alone; the popover still offers the
-mode for when the row is back on. The labels name the OUTCOME rather than the mechanism, so
-the row reads as a choice about this conversation instead of a term from this document.
+Auto hides Respond to: there is no "Decided by the coordinator" option. An Off row's button
+reads `Off` alone and no session mode is checked; picking a mode turns the conversation
+back on. A row whose Decision owns the trigger leaves that gate through its own × control;
+**+ Decision** is the separate entry into a gate. Auto is not offered behind a Decision
+or shared-bot routing, or before the consuming daemon supports it.
 
-**Scope: channel rows, on every platform that has channels.** A direct conversation is not
-a channel and does not get the control. Per-platform narrowing uses the same mechanism as
-the trigger's — `WebPlatformModule`'s `channelListSemantics`
-(`packages/web/src/components/console/platforms/contract.ts`) gains an optional
-`sessionModes` list — so a platform opts out by omitting it rather than having core branch
-on a platform name.
+**Scope follows the platform's conversation semantics.** `channelListSemantics` in
+`WebPlatformModule` narrows room, DM and group-DM choices through `sessionModes`,
+`dmSessionModes` and `groupDmSessionModes`. A place with no meaningful mode choice shows
+only Respond to. A 1:1 DM uses On / Off for its trigger: Telegram, Discord and Feishu
+already keep one continuous DM session, while Slack offers Per thread and Single session.
+In assistant mode, a supported place is fixed on Auto where the daemon supports it,
+otherwise Single session; this includes Slack 1:1 DMs.
 
-**A 1:1 DM row gets the control where its platform's DMs are not continuous already.**
-Telegram, Discord and Feishu key a DM as one session (`thread-keys.ts`); Slack keys a session
-per top-level message, like a channel. A module opts its DM rows in with `dmSessionModes`,
-which Slack declares ([assistant-mode.md](assistant-mode.md) §5.2). Nothing on the daemon or
-the CP branches on the conversation kind: an `append` DM keys on its reservation exactly as a
-channel does, and each answer still posts into the physical thread its question came from.
 Slack's Assistant "new chat" (`assistant_thread_started`) rotates an `append` DM's
-reservation as `!new` would (§7.1), over both the Socket Mode and the relay ingress; a
-`createNew` DM ignores it, since its new thread is a new session already. A group DM row takes a
-room's modes where its module declares `groupDmSessionModes`, which Slack does: a group DM is a
-small private room, and a new one starts on `auto` ([auto-session-mode.md](auto-session-mode.md)
-§3.2).
+reservation as `!new` would (§7.1), over both Socket Mode and relay ingress; a `createNew`
+DM ignores it because the new thread already keys a new session. In Auto it rotates the
+coordinator ([auto-session-mode.md](auto-session-mode.md) §8). Slack group DMs take a room's
+modes and new-conversation defaults.
+
+**New channels start on** is a separate selector at the bottom of the agent's Integrations
+card. It offers Auto, @-mentions · Per thread, and Off, backed by `newConversationMode`.
+It applies to newly discovered rooms and group DMs, not existing rows or 1:1 DMs. The
+platform, daemon capability, and restricted/external-place defaults still apply
+([auto-session-mode.md](auto-session-mode.md) §3.2).
 
 **An `append` session is labelled by its room, not by a person.** The session list and
 detail header render a session's `user` column from `triggeredBy`/`triggeredByName`, which

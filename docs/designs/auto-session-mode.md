@@ -3,11 +3,12 @@
 > Status: Implemented on the daemon, the Control Plane and the console. A daemon runs `auto` with
 > its `features.autoSessionMode` switch, which is on by default and advertises
 > `session-mode-auto-v1` (§3.1); with the switch off it routes `auto` as Per thread and keeps P1's
-> task tools for every session (§5.1, §6.3). New rooms and group DMs start on Auto where the bot's
-> daemon reads it (§3.2), and assistant mode's places run through the coordinator (§3.4). On Slack a
-> task moves into a code channel only when it makes one for its work (§6.8). The
+> task tools for every session (§5.1, §6.3). New rooms and group DMs use the agent's default,
+> with Auto as the default where the platform and daemon support it (§3.2). Assistant mode's
+> places run through the coordinator (§3.4). On Slack a task moves into a code channel only
+> when it makes one for its work (§6.8). The
 > coordinator's prompt and tool surface are the ones the local runtime matrix validates (§12).
-> Builds on: [channel-session-mode.md](channel-session-mode.md) (the reserved `auto` value),
+> Builds on: [channel-session-mode.md](channel-session-mode.md) (the per-conversation setting),
 > [assistant-mode.md](assistant-mode.md) §5.6 (delegated tasks),
 > [send-message-guide.md](send-message-guide.md) (the `sendMessage` actions).
 > Compatibility with today's task tools is not kept: the task actions change shape (§4).
@@ -52,10 +53,11 @@ Approved proposals stay a kind of their own.
 
 ### 3.2 Defaults
 
-- New **channel and group-DM** rows default to `auto`. When the bot's daemon does not support it, a
-  new row still defaults to `createNew`.
+- Unless the agent chooses another new-conversation default below, new **channel and group-DM**
+  rows default to `auto` where the platform and daemon support it. Otherwise they start on `createNew`.
 - Existing rows, `createNew` and `append` alike, are not changed.
-- DMs are unaffected.
+- This new-conversation default does not change 1:1 DMs. Assistant mode can still force a supported
+  DM, including a Slack 1:1 DM, onto its coordinator (§3.4).
 - The Control Plane decides when it creates the row: from a daemon's conversation report, by the
   reporting daemon's features, or from the relay, by the features of the daemon the relay addresses
   the install's agent on. A new row starts on `auto` where that daemon advertises
@@ -71,10 +73,10 @@ Approved proposals stay a kind of their own.
   group-DM rows a room's modes (`groupDmSessionModes`). Assistant mode therefore runs a Slack group
   DM through its coordinator too (§3.4).
 - The daemon's `features.autoSessionMode` switch is on by default.
-- An agent can set what its new rooms and group DMs start at (`newConversationMode`, in the agent's
-  settings and `PATCH /agents/:id`), since the coordinator turn runs on its runtime and model:
-  `auto` or unset is the default above; `mention` starts them on @-mentions, Per thread, even where
-  the daemon reads Auto; `off` starts them Off. It applies to rows created after it is set; 1:1 DMs
+- The **New channels start on** selector at the bottom of the agent's Integrations card sets what
+  new rooms and group DMs start at (`newConversationMode`, also in `PATCH /agents/:id`):
+  `auto` or unset is the default above; `mention` is labelled **@-mentions · Per thread** and
+  selects that pair even where the daemon reads Auto; `off` starts them Off. It applies to rows created after it is set; 1:1 DMs
   keep their own default, and a restricted agent's or an external place's Off still wins. On a shared
   bot the install that seeds a room decides, as for the restricted Off.
 
@@ -82,8 +84,10 @@ Approved proposals stay a kind of their own.
 
 - Under `auto` every root message goes to the coordinator, so @-mentions and Any message behave the
   same.
-- With `auto` selected, the trigger menu offers only Off; the other choices read "Decided by the
-  coordinator".
+- The conversation popover leads with Session mode. With `auto` selected it hides Respond to;
+  Off stands alone below a divider. Per thread and Single session show Respond to where there is
+  a trigger choice. There is no "Decided by the coordinator" option. A Decision is added through
+  the row's separate + Decision control ([channel-session-mode.md](channel-session-mode.md) §8).
 - By decision and shared-bot routing are mutually exclusive with `auto` for now.
 - The Control Plane refuses `auto` on a By decision or routed row, By decision on an `auto` row, and
   adding an `auto` conversation to a shared bot's routing, all with 409 `SESSION_MODE_CONFLICT`. A
