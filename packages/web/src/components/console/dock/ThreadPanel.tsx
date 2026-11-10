@@ -251,11 +251,13 @@ export function ThreadPanel({
   const awaitsAnswer = turns.some(
     (turn) => turn.kind === 'bot' && turn.steps.some((step) => step.elicit && !step.elicit.outcome)
   )
+  // The task's own webchat conversation, where the daemon takes its answers; the coordinator's conversation does not.
+  const taskConversation = detail?.channel ?? undefined
   useEffect(() => {
-    if (!holderId || !awaitsAnswer) return
+    if (!holderId || !awaitsAnswer || !taskConversation) return
     markSessionTarget(holderId)
-    pgAttach(holderId, agentId, '')
-  }, [holderId, awaitsAnswer, agentId, markSessionTarget, pgAttach])
+    pgAttach(holderId, agentId, taskConversation)
+  }, [holderId, awaitsAnswer, agentId, taskConversation, markSessionTarget, pgAttach])
   // The root leads the thread; the coordinator's work on it from the main timeline sits under it, ahead of the replies.
   const earlierUnread = fromRecord ? thread.hasEarlier : Boolean(session.page?.nextCursor)
   const threadRoot = turns[0]?.kind === 'user' && !earlierUnread ? turns.slice(0, 1) : []
@@ -412,7 +414,7 @@ export function ThreadPanel({
     ? (turnAgent: string | undefined, requestId: string | undefined, value: ElicitAnswerValue): void => {
         if (!requestId) return
         markSessionTarget(holderId)
-        pgAnswerElicitation(holderId, turnAgent ?? agentId, requestId, value)
+        pgAnswerElicitation(holderId, turnAgent ?? agentId, requestId, value, taskConversation)
       }
     : undefined
   // A turn a person's message follows answered an earlier exchange.

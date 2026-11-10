@@ -86,7 +86,9 @@ vi.mock(import('@/lib/api'), async (importOriginal) => {
         status: 'completed'
       } as never)
     ),
-    fetchSessionDetail: vi.fn(() => Promise.resolve({ id: 'ses_task', canContinue: wire.canContinue } as never)),
+    fetchSessionDetail: vi.fn(() =>
+      Promise.resolve({ id: 'ses_task', channel: 'conv-task', canContinue: wire.canContinue } as never)
+    ),
     fetchSessionMessages: vi.fn(() =>
       Promise.resolve({
         sessionId: 'ses_task',
@@ -128,9 +130,10 @@ vi.mock('@/components/console/PlaygroundProvider', () => {
     reconcileLiveSteps: () => {},
     markSessionTarget: (id: string, target?: string, threads?: boolean) =>
       wire.calls.push(`target:${id}${target ? `:${target}` : ''}${threads ? ':threads' : ''}`),
-    pgAttach: (id: string, agentId: string) => wire.calls.push(`attach:${id}:${agentId}`),
-    pgAnswerElicitation: (id: string, agentId: string, requestId: string, value: unknown) =>
-      wire.calls.push(`answer:${id}:${agentId}:${requestId}:${String(value)}`),
+    pgAttach: (id: string, agentId: string, conversationId: string) =>
+      wire.calls.push(`attach:${id}:${agentId}:${conversationId}`),
+    pgAnswerElicitation: (id: string, agentId: string, requestId: string, value: unknown, conversationId?: string) =>
+      wire.calls.push(`answer:${id}:${agentId}:${requestId}:${String(value)}:${conversationId}`),
     pgNotice: (id: string, agentId: string, text: string) => {
       wire.calls.push(`notice:${id}:${agentId}:${text}`)
       return true
@@ -397,12 +400,12 @@ describe('ThreadPanel', () => {
         .find((button) => button.textContent === 'Merge')!
         .click()
     )
-    // The task's own session is opened while its question waits, so the answer has a connection to ride.
+    // The task's own conversation is opened while its question waits, and the answer rides it, never the coordinator's.
     expect(wire.calls).toEqual([
       'target:ses_task',
-      'attach:ses_task:agent_1',
+      'attach:ses_task:agent_1:conv-task',
       'target:ses_task',
-      'answer:ses_task:agent_1:q-1:yes'
+      'answer:ses_task:agent_1:q-1:yes:conv-task'
     ])
   })
 
@@ -431,9 +434,9 @@ describe('ThreadPanel', () => {
     act(() => submit().click())
     expect(wire.calls).toEqual([
       'target:ses_task',
-      'attach:ses_task:agent_1',
+      'attach:ses_task:agent_1:conv-task',
       'target:ses_task',
-      'answer:ses_task:agent_1:q-3:v1.5.0'
+      'answer:ses_task:agent_1:q-3:v1.5.0:conv-task'
     ])
   })
 
