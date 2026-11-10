@@ -96,3 +96,12 @@ it('keeps its time when a regenerated answer drops the turn work for a render', 
   show(work(false))
   expect(fold().textContent).toBe('10s')
 })
+
+it('links the agent’s name to its page where the agent is known, as its icon does', () => {
+  act(() => root.render(renderWithIntl(<AgentTurnHeader name="Mobile Developer" href="/acme/agents/agent-1" />)))
+  const name = container.querySelector('a')
+  expect(name?.textContent).toBe('Mobile Developer')
+  expect(name?.getAttribute('href')).toBe('/acme/agents/agent-1')
+  act(() => root.render(renderWithIntl(<AgentTurnHeader name="Mobile Developer" />)))
+  expect(container.querySelector('a')).toBeNull()
+})

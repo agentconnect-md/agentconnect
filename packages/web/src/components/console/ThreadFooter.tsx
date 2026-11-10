@@ -127,7 +127,7 @@ export function ThreadFooter({
   /** Only the replies line, or only the holding task's card; absent draws both. */
   part?: 'line' | 'card'
   /** Draws the card as this agent's message: its mark and name above a card showing the task's summary. */
-  from?: { name: string; mark: ReactNode }
+  from?: { name: string; mark: ReactNode; href?: string }
   /** A replier's picture or agent icon for their mark; null falls back to their initials. */
   markOf?: (author: SessionThreadAuthorDto) => ReactNode | null
   /** The card's hover toolbar Reply: opens the thread ready to write in; absent, Reply opens it to read. */
@@ -304,11 +304,22 @@ export function ThreadFooter({
   const message =
     from && cardBlock && task ? (
       <div data-task-card-message="" className="flex w-full min-w-0 items-start gap-2 desktop:gap-[10px]">
-        <span className="av flex h-[26px] w-[26px] flex-none items-center justify-center overflow-hidden rounded-md">
-          {from.mark}
-        </span>
+        {from.href ? (
+          <Link
+            href={from.href}
+            title={from.name}
+            aria-label={from.name}
+            className="av flex h-[26px] w-[26px] flex-none items-center justify-center overflow-hidden rounded-md"
+          >
+            {from.mark}
+          </Link>
+        ) : (
+          <span className="av flex h-[26px] w-[26px] flex-none items-center justify-center overflow-hidden rounded-md">
+            {from.mark}
+          </span>
+        )}
         <div className="min-w-0 flex-1">
-          <AgentTurnHeader name={from.name}>
+          <AgentTurnHeader name={from.name} {...(from.href ? { href: from.href } : {})}>
             {task.tone !== 'idle' && task.tone !== 'done' ? (
               <StateIcon state={task.tone} label={tl(task.stateKey)} />
             ) : null}

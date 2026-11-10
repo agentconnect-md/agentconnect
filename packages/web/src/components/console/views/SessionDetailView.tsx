@@ -2962,7 +2962,8 @@ export default function SessionDetailView() {
             ? {
                 from: {
                   name: agentLabel(owner),
-                  mark: <AgentIconView icon={owner.icon} runtime={owner.runtime} size={26} />
+                  mark: <AgentIconView icon={owner.icon} runtime={owner.runtime} size={26} />,
+                  href: orgPath(`/agents/${encodeURIComponent(owner.id)}`)
                 }
               }
             : {})}
