@@ -1708,12 +1708,14 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
       { sender: 'U2', ts: '100.1', text: 'human asks', isBot: false, attachments: [] },
       // the agent's own prior reply, tagged with the bot's Slack user id
       { sender: 'UBOT', ts: '100.2', text: 'bot replied', isBot: true, attachments: [] },
-      // a human message that shared a file (empty text is common for file_share)
+      // A foreign bot's file share retains its provider profile without gaining Agent authorship.
       {
-        sender: 'U2',
+        sender: 'BOTHER',
+        senderName: 'example-bot',
+        senderAvatarUrl: 'https://avatars.example.test/bot.png',
         ts: '100.3',
         text: '',
-        isBot: false,
+        isBot: true,
         attachments: [{ id: 'F1', name: 'shot.png', mimeType: 'image/png', sourceUrl: 'u' }]
       }
     ])
@@ -1722,8 +1724,13 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
     expect(out).toEqual([
       { sender: 'U2', ts: '100.1', text: 'human asks' },
       { sender: 'bot-a', ts: '100.2', text: 'bot replied', trustedAgentBot: true }, // own bot frame → agentId
-      { sender: 'U2', ts: '100.3', text: '[attached: shot.png (image/png)]' } // mention synthesized
+      { sender: 'BOTHER', ts: '100.3', text: '[attached: shot.png (image/png)]' } // mention synthesized
     ])
+    const store = (daemon as any).store as LocalStore
+    expect((await store.getDisplayNames(['BOTHER'])).get('BOTHER')).toBe('example-bot')
+    expect((await store.getProfileAvatars(TRANSPORT_SCOPE, ['BOTHER'])).get('BOTHER')).toBe(
+      'https://avatars.example.test/bot.png'
+    )
 
     await daemon.stop()
   })

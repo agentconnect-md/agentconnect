@@ -130,6 +130,7 @@ export interface PlatformThreadMessage {
   sender: string
   /** The sender's display name, where the platform's read carries one. */
   senderName?: string
+  senderAvatarUrl?: string
   ts: string
   text: string
   isBot: boolean

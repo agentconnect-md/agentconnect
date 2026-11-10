@@ -789,6 +789,7 @@ export interface SessionMessageDto {
 export interface SessionThreadAuthorDto {
   sender: string
   senderName?: string
+  senderAvatarUrl?: string
 }
 
 /** One thread's footer (webchat-threads.md §5.3); `readable` false leaves out its excerpts and task title (§7.1). */

@@ -233,7 +233,8 @@ export const SESSION_THREAD_EXCERPT_MAX = 200
 /** Who wrote in a thread: a platform handle or an agent id, and the daemon-resolved name when one is known. */
 export const SessionThreadAuthor = z.object({
   sender: z.string(),
-  senderName: z.string().optional()
+  senderName: z.string().optional(),
+  senderAvatarUrl: z.string().optional()
 })
 export type SessionThreadAuthor = z.infer<typeof SessionThreadAuthor>
 

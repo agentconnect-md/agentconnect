@@ -347,9 +347,16 @@ async function threadSummaries(
       ]
     })
   )
+  const avatars = rec.transportScope
+    ? await store.getProfileAvatars(
+        rec.transportScope,
+        shown.flatMap((id) => stats.get(id)?.participants ?? [])
+      )
+    : new Map<string, string>()
   const author = (sender: string) => {
     const senderName = names.get(sender)
-    return { sender, ...(senderName ? { senderName } : {}) }
+    const senderAvatarUrl = avatars.get(sender)
+    return { sender, ...(senderName ? { senderName } : {}), ...(senderAvatarUrl ? { senderAvatarUrl } : {}) }
   }
   for (const id of shown) {
     const stat = stats.get(id)

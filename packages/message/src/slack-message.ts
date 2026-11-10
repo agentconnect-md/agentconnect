@@ -159,6 +159,22 @@ export function isSlackBotPost(message: { bot_id?: string; subtype?: string }): 
   return Boolean(message.bot_id) || message.subtype === 'bot_message'
 }
 
+// Live ingress and history use the same bot identity and provider profile.
+export function slackMessageSender(
+  message: Pick<SlackMessageLike, 'user' | 'bot_id' | 'subtype' | 'app_id' | 'bot_profile' | 'user_profile'>
+): NormalizedPlatformMessage['sender'] {
+  const appId = message.app_id ?? message.bot_profile?.app_id
+  const avatarUrl = message.user_profile?.image_72 ?? message.bot_profile?.icons?.image_72
+  const name = isSlackBotPost(message) ? message.bot_profile?.name?.trim() : undefined
+  return {
+    id: message.bot_id ?? message.user ?? 'unknown',
+    isBot: isSlackBotPost(message),
+    ...(name ? { name } : {}),
+    ...(appId ? { appId } : {}),
+    ...(avatarUrl ? { avatarUrl } : {})
+  }
+}
+
 export function normalizeSlackMessage(message: SlackMessage, context: { traceId: string }): NormalizedPlatformMessage
 export function normalizeSlackMessage(
   message: SlackMessageLike,
@@ -175,9 +191,6 @@ export function normalizeSlackMessage(
   const attachments = (message.files ?? [])
     .map(toSlackAttachment)
     .filter((attachment): attachment is PlatformAttachment => attachment !== null)
-  const appId = message.app_id ?? message.bot_profile?.app_id
-  const avatarUrl = message.user_profile?.image_72 ?? message.bot_profile?.icons?.image_72
-  const botName = isSlackBotPost(message) ? message.bot_profile?.name?.trim() : undefined
   const msgId = `slack:${message.channel}:${message.ts}`
   const agentAuthorship = readAgentAuthorshipClaim(message)
 
@@ -189,13 +202,7 @@ export function normalizeSlackMessage(
     channel: message.channel,
     thread: message.thread_ts ?? message.ts,
     ...(message.thread_ts && message.thread_ts !== message.ts ? { replyThread: message.thread_ts } : {}),
-    sender: {
-      id: message.user ?? message.bot_id ?? 'unknown',
-      isBot: isSlackBotPost(message),
-      ...(botName ? { name: botName } : {}),
-      ...(appId ? { appId } : {}),
-      ...(avatarUrl ? { avatarUrl } : {})
-    },
+    sender: slackMessageSender(message),
     text,
     mentionedBots,
     // Slack writes every mention as `<@id>`, so the people it names are the same ids; a bot among them is never a member.

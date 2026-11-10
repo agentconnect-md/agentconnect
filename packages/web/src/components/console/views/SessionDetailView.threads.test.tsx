@@ -632,6 +632,24 @@ describe('a Slack coordinator’s page in Slack’s shape (webchat-threads.md §
   const slackRow = (seq: number, sender: string, body: string, over: Partial<SessionMessageDto> = {}) =>
     row(seq, sender, body, { ts: at(seq), ...over })
 
+  it('shows a Slack participant’s same photo in the footer and the open thread', async () => {
+    const author = {
+      sender: 'U0LEE',
+      senderName: 'Lee',
+      senderAvatarUrl: 'https://avatars.example.test/lee.png'
+    }
+    wire.messages = [slackRow(1, 'U0SAM', 'Why is the deploy slow?')]
+    wire.threads = [{ rootId: ROOT_TS, replies: 1, participants: [author], readable: true }]
+    wire.threadReplies = [slackRow(2, author.sender, 'and the cache?', author)]
+    const { list, detail: read } = slack('slack')
+    await open(list, read)
+    expect(q('[data-thread-participant="U0LEE"] img')?.getAttribute('src')).toBe(author.senderAvatarUrl)
+    await click(`[data-thread-footer="${ROOT_TS}"] [data-task-card-replies]`)
+    expect(q(`[data-thread-panel="${ROOT_TS}"] [data-thread-message="person"] img`)?.getAttribute('src')).toBe(
+      author.senderAvatarUrl
+    )
+  })
+
   function channel() {
     wire.messages = [
       slackRow(1, 'U0SAM', 'Why is the deploy slow?'),
