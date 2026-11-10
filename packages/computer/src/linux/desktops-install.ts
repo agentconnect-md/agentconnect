@@ -65,7 +65,7 @@ export interface OfferDeps {
   asRoot?: boolean
 }
 
-async function askYes(question: string): Promise<boolean> {
+export async function askYes(question: string): Promise<boolean> {
   const rl = createInterface({ input: process.stdin, output: process.stdout })
   try {
     const answer = await new Promise<string>((resolve) => rl.question(question, resolve))
@@ -75,7 +75,7 @@ async function askYes(question: string): Promise<boolean> {
   }
 }
 
-function runInherited(command: string[]): number {
+export function runInherited(command: string[]): number {
   return spawnSync(command[0]!, command.slice(1), { stdio: 'inherit' }).status ?? 1
 }
 

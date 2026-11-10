@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { existsSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { hostname, networkInterfaces } from 'node:os'
+import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { homedir, hostname, networkInterfaces, tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { parseArgs } from 'node:util'
@@ -16,11 +16,17 @@ import { AdminPromptHelper } from './admin-prompts.js'
 import { auditSinks, fileAuditSink, type AuditSink } from './audit.js'
 import { browserCloseCommand, browserCommand } from './browser/command.js'
 import { CommandLine, commandLineSupported, narrowedCommandLine } from './command-line.js'
-import { installable, offerDesktopInstall } from './linux/desktops-install.js'
+import { askYes, installable, offerDesktopInstall, runInherited } from './linux/desktops-install.js'
 import { describeDesktops, desktopsNotice, probeDesktopSupport, type DesktopSupport } from './linux/desktops-support.js'
 import { attributeSocket, realProc } from './form-fill/attribution.js'
 import { FORM_FILL_EXTENSION } from './form-fill/build.js'
 import { FormFillEndpoint } from './form-fill/endpoint.js'
+import {
+  desktopInstallPlan,
+  desktopUninstallCommands,
+  detectBrowsers,
+  formFillCheck
+} from './form-fill/desktop-install.js'
 import { extensionId, extensionKey, installExtension } from './form-fill/package.js'
 import { FormFillService } from './form-fill/service.js'
 import { DesktopManager, loadDesktopState } from './linux/desktops.js'
@@ -164,6 +170,8 @@ Commands:
   browser-close --profile DIR [--display :N]   close that browser the way a person would, so it saves its cookies
   desktops [on | off | status]                 Linux: give each agent its own desktop (the default where the
                                                machine can: Xvfb, D-Bus and Xfce), or let agents share this one
+  form-fill [install | uninstall | status] [-y] Linux: let agents fill website forms in Chromium or Google Chrome
+                                               through a Fill card (asks for root once to write browser policy)
   service install | uninstall [--purge] | start | stop | restart | status
                                                background service: macOS .app LaunchAgent (the app holds
                                                the permissions), Linux systemd user unit (graphical session),
@@ -210,6 +218,7 @@ async function main(): Promise<void> {
       browser: { type: 'string' },
       display: { type: 'string' },
       'skip-path': { type: 'string', multiple: true },
+      yes: { type: 'boolean', short: 'y' },
       help: { type: 'boolean', short: 'h' }
     }
   })
@@ -360,6 +369,8 @@ async function main(): Promise<void> {
       return browserCloseCommand(values, log)
     case 'desktops':
       return desktopsCommand(dir, rest[0])
+    case 'form-fill':
+      return formFillCommand(dir, rest[0], values.yes === true)
     case 'autostart': {
       const action = rest[0]
       if (action === 'enable') enableAutostart(dir, serviceEntry())
@@ -370,6 +381,71 @@ async function main(): Promise<void> {
     }
     default:
       throw new Error(`unknown command "${command}"\n\n${help()}`)
+  }
+}
+
+// Form filling on this Linux desktop (computer-form-fill-and-vault.md §8): the policy install needs root once, through sudo.
+async function formFillCommand(dir: string, action: string | undefined, yes: boolean): Promise<void> {
+  if (process.platform !== 'linux') throw new Error('form filling is available on Linux only')
+  const config = loadConfig(dir)
+  const browsers = detectBrowsers()
+  if (action === 'status' || action === undefined) {
+    const check = formFillCheck({
+      build: FORM_FILL_EXTENSION,
+      port: config.formFillPort,
+      browsers,
+      command: selfCommand()
+    })
+    console.log(`form fill: ${check.status}: ${check.detail}${check.fix ? `\n  fix: ${check.fix}` : ''}`)
+    return
+  }
+  const asRoot = process.getuid?.() === 0
+  const run = async (commands: string[][], what: string): Promise<boolean> => {
+    const lines = commands.map((command) => (asRoot ? command : ['sudo', ...command]))
+    // Without a terminal the commands are not printed: they read staged files deleted on return, and skip the daemon's config.
+    if (!yes && !process.stdin.isTTY) {
+      console.log(
+        `${what} needs root: run \`${selfCommand()} form-fill ${action} --yes\`${asRoot ? '' : ' (it runs sudo)'}, or run it in a terminal.`
+      )
+      return false
+    }
+    console.log(`${what} needs root:\n${lines.map((line) => `  ${line.join(' ')}`).join('\n')}`)
+    if (!yes && !(await askYes('Run them now? [Y/n] '))) return false
+    return lines.every((line) => runInherited(line) === 0)
+  }
+  if (action === 'uninstall') {
+    if (await run(desktopUninstallCommands(browsers), 'Removing the form-fill extension')) {
+      const { formFillPort: _port, ...rest } = config
+      saveConfig(DaemonConfig.parse(rest), dir)
+      console.log('Removed. Restart the browser and the daemon so both stop using it.')
+    }
+    return
+  }
+  if (action !== 'install') throw new Error('usage: form-fill install | uninstall | status')
+  if (!FORM_FILL_EXTENSION) throw new Error('this build ships no form-fill extension')
+  const usable = browsers.filter((browser) => browser.policyDir)
+  for (const browser of browsers.filter((candidate) => candidate.unsupported))
+    console.log(`${browser.name} (${browser.binary}): ${browser.unsupported}`)
+  if (usable.length === 0) throw new Error('no Chromium or Google Chrome from the distribution or Google is installed')
+  const port = config.formFillPort ?? DEFAULT_FORM_FILL_PORT
+  const stageDir = mkdtempSync(join(tmpdir(), 'ac-form-fill-'))
+  try {
+    const plan = desktopInstallPlan({ build: FORM_FILL_EXTENSION, port, browsers: usable, stageDir })
+    for (const file of plan.files) writeFileSync(join(stageDir, file.name), file.content, { mode: 0o644 })
+    if (
+      !(await run(
+        plan.commands,
+        `Installing the form-fill extension ${plan.id} for ${usable.map((b) => b.name).join(' and ')}`
+      ))
+    )
+      return
+    config.formFillPort = port
+    saveConfig(config, dir)
+    console.log(
+      `Installed. Restart the daemon (it serves the extension on 127.0.0.1:${port}) and quit and reopen ${usable.map((b) => b.name).join(' and ')}.`
+    )
+  } finally {
+    rmSync(stageDir, { recursive: true, force: true })
   }
 }
 
@@ -535,9 +611,15 @@ async function startFormFill(
   }
   // The profiles a socket may come from, read per connection: an agent desktop's profile appears on its first start.
   const profiles = (): { desktop: string; profile: string }[] => {
-    if (desktops) return desktops.profiles()
-    const master = loadDesktopState(dir).master
-    return existsSync(master) ? [{ desktop: 'main', profile: realpathSync(master) }] : []
+    const known = desktops ? desktops.profiles() : []
+    // The person's own browsers run the default profiles, which are the main desktop's: Chromium's master, and Google Chrome's.
+    const defaults = [loadDesktopState(dir).master, join(homedir(), '.config', 'google-chrome')]
+    for (const path of defaults) {
+      if (!existsSync(path)) continue
+      const profile = realpathSync(path)
+      if (!known.some((entry) => entry.profile === profile)) known.push({ desktop: 'main', profile })
+    }
+    return known
   }
   const endpoint = new FormFillEndpoint({
     port: config.formFillPort,

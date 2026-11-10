@@ -97,6 +97,25 @@ failure comes with its fix. It checks:
 `SetThreadExecutionState`). A sleeping display cannot be captured: macOS even removes its capture
 devices.
 
+## Form filling on a Linux desktop
+
+Agents fill website forms through a Fill card (`computer_fill_form`; design: `docs/designs/computer-form-fill-and-vault.md`).
+On a person's Linux desktop the browser extension is installed once, with root:
+
+```sh
+agentconnect-computer form-fill install # asks before running sudo; --yes for unattended provisioning
+agentconnect-computer form-fill status  # also a doctor check
+agentconnect-computer form-fill uninstall
+```
+
+It writes the extension's CRX and update manifest to `/opt/agentconnect/form-fill` and a managed policy that
+force-installs it to `/etc/chromium/policies/managed` (Chromium from Debian, Ubuntu's deb-based derivatives or Fedora)
+and `/etc/opt/chrome/policies/managed` (Google Chrome deb or rpm), then saves port 7682 in the daemon's config.
+Restart the daemon and the browser afterwards. The snap and Flatpak browsers are reported as unsupported. Each
+release ships a new extension build under a new id, so after an upgrade `doctor` says to run `form-fill install`
+again and restart the browser. `scripts/form-fill-browser-check.sh` repeats the install against a distribution's
+real browser package in a container.
+
 ## Run on Windows
 
 Requirements: Windows 10/11 x64 or arm64, a logged-in desktop session, Node.js ≥ 24.12
