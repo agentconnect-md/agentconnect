@@ -26,12 +26,12 @@ export function localShimGitRunner(options: {
   return new ShimGitRunner(
     {
       request: async (capability, payload, requestOptions) => {
-        const { env } = payload as GitExecPayload
-        const mapped =
-          env === undefined ? payload : { ...(payload as GitExecPayload), env: { ...mapEnv(env), ...owned } }
         let reached = false
         try {
           return await options.run((session) => {
+            const { env } = payload as GitExecPayload
+            const mapped =
+              env === undefined ? payload : { ...(payload as GitExecPayload), env: { ...mapEnv(env), ...owned } }
             reached = true
             return session.request(capability, mapped, requestOptions)
           })

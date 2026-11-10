@@ -11,7 +11,8 @@ import { applySessionTrust } from '../credential-proxy/trust-bundle.js'
 import { AcpStreamPayloadSchema, type AcpOpen } from './acp-stream.js'
 import { seedDshPreset } from './dsh-preset.js'
 import { SANDBOX_BROWSER_EXECUTABLE_ENV, SANDBOX_PATHBIN_DIR } from './sandbox-paths.js'
-import { SHIM_RUNTIME_MARK_ENV, SHIM_SEED_ENV, type ShimEvent } from './protocol.js'
+import { SHIM_RUNTIME_MARK_ENV, type ShimEvent } from './protocol.js'
+import { seedEnv } from './seed-env.js'
 import { applySrtProxyEnv } from './srt-route.js'
 
 /** How the runner reports back: many events per opened stream, not one response. */
@@ -43,19 +44,6 @@ function podBaseEnv(podEnv: Record<string, string | undefined>): Record<string, 
     if (value) env[name] = value
   }
   return env
-}
-
-/** A hosted session's seed (`SHIM_SEED_ENV`): its executor's own sign-in pointers and keys, or a VM's placeholders and proxy trust; string entries only, unreadable ⇒ none. */
-function seedEnv(podEnv: Record<string, string | undefined>): Record<string, string> {
-  try {
-    const parsed: unknown = JSON.parse(podEnv[SHIM_SEED_ENV] ?? '{}')
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
-    return Object.fromEntries(
-      Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
-    )
-  } catch {
-    return {}
-  }
 }
 
 /** PATH with the image's wrapper dir first, else the host launcher's, or unchanged when neither exists on THIS machine. */

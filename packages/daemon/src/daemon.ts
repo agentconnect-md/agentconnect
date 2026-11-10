@@ -234,6 +234,7 @@ import { MicrosandboxWorkspaceFs } from './microsandbox/workspace-fs.js'
 import { microsandboxSupportMounts } from './microsandbox/support.js'
 import { IMPLICIT_CREDENTIAL_PROVIDER } from './gitcred/managed-hosts.js'
 import {
+  codeHostCredentialModules,
   codeHostCredentials,
   credentialProviderOf,
   isProxyOnlyProvider,
@@ -413,12 +414,14 @@ import {
   sessionCredentialHosts,
   proxiedDaemonGitEnv,
   CODE_HOST_CREDENTIAL_ENV,
+  type DaemonGitProxyRoute,
   type ManagedCredentialHost,
   type ManagedCredentialScope
 } from './workspace/git-injection.js'
 import { CredentialProxy, type MintAsk, type MintedCredential } from './credential-proxy/proxy.js'
-import { codeHostCliEnv, codeHostCliReads, reclaimCliStateDirs } from './credential-proxy/cli-env.js'
+import { codeHostCliEnv, codeHostCliLaunch, codeHostCliReads, reclaimCliStateDirs } from './credential-proxy/cli-env.js'
 import { proxyOnlyHostRefusal } from './credential-proxy/proxy-only.js'
+import { codehostProxyUrl } from './remote/codehost-spawn.js'
 import { loadProxyCa, proxyTrustEnv, upstreamAuthorities, type ProxyCa } from './credential-proxy/ca.js'
 import {
   CODEX_CA_ENV,
@@ -4002,6 +4005,7 @@ export class Daemon {
     this.localExecutor = new LocalExecutor({
       launcher: this.vmLauncher,
       generations: { nextSandboxGeneration: (subject) => this.store.nextSandboxGeneration(subject) },
+      servesAgent: (agentId) => this.agents.has(agentId) && this.servesAgent(agentId),
       tunnelSocketPath: (tunnel, agentId) => this.tunnelSocketPath(root, tunnel, agentId),
       tunnelGreeting: (subject, tunnel) => this.agentTunnelGreeting(subject, tunnel),
       // A VM's sessions reach the credential proxy through its shim, which keeps microsandbox's own authority in their bundle at spawn.
@@ -4020,6 +4024,7 @@ export class Daemon {
     this.localSrtExecutor = new LocalExecutor({
       launcher: this.localSrt,
       generations: { nextSandboxGeneration: (subject) => this.store.nextSandboxGeneration(subject) },
+      servesAgent: (agentId) => this.agents.has(agentId) && this.servesAgent(agentId),
       tunnelSocketPath: (tunnel, agentId) => this.tunnelSocketPath(root, tunnel, agentId),
       tunnelGreeting: (subject, tunnel) => this.agentTunnelGreeting(subject, tunnel),
       log: this.log,
@@ -4185,6 +4190,7 @@ export class Daemon {
           tunnelSocketPath: (tunnel, agentId) => this.tunnelSocketPath(root, tunnel, agentId),
           tunnelGreeting: (subject, tunnel) => this.agentTunnelGreeting(subject, tunnel),
           tunnelListenOptions: (agentId, tunnel) => this.tunnelListenOptions(agentId, tunnel),
+          mapGitEnv: (agentId, env, route) => this.workspaceProxyGitEnv(agentId, env, route),
           // A bound sandbox is a reachable memory tree: drain any managed capture that waited for it.
           onSandboxBound: () => this.memoryOutbox?.wake(),
           log: {
@@ -6177,6 +6183,7 @@ export class Daemon {
       tunnelSocketPath: (tunnel, agentId) => this.tunnelSocketPath(root, tunnel, agentId),
       tunnelGreeting: (subject, tunnel) => this.agentTunnelGreeting(subject, tunnel),
       tunnelListenOptions: (agentId, tunnel) => this.tunnelListenOptions(agentId, tunnel),
+      mapGitEnv: (agentId, env, route) => this.workspaceProxyGitEnv(agentId, env, route),
       log: {
         info: (m) => this.log.info(m),
         warn: (m) => this.log.warn(m),
@@ -6823,6 +6830,7 @@ export class Daemon {
       // Use the one generation-safe teardown path: it evicts the host synchronously,
       // publishes hostStopping, and fences every older startup/retry generation.
       await this.stopHost(id)
+      await this.releaseLocalEnvironments(id)
       this.providerSlots.delete(id)
       this.hostKeyReaders.delete(id)
       this.credentialProxy?.proxy.release(id)
@@ -7159,7 +7167,7 @@ export class Daemon {
 
   /** azure-devops-integration.md §6.1, §11.9: the provider and its hooks, advertised together exactly while the credential proxy carries them. */
   private azureDevOpsFeatures(): string[] {
-    return this.credentialProxy && !this.k8s ? [AZURE_DEVOPS_V1_FEATURE, AZURE_DEVOPS_HOOKS_V1_FEATURE] : []
+    return this.credentialProxy ? [AZURE_DEVOPS_V1_FEATURE, AZURE_DEVOPS_HOOKS_V1_FEATURE] : []
   }
 
   /** A proxy-only provider's lease (azure-devops-integration.md §6.1): named by the repository's numeric id, a read one for a read, and dropped on a 401 so the next asks the CP to refresh. */
@@ -7214,14 +7222,11 @@ export class Daemon {
   }
 
   /** azure-devops-integration.md §6.1: a host of an agent with a proxy-only provider's repositories starts only where the credential proxy carries it, never without its credential. */
-  private assertProxyOnlyReach(agent: LoadedAgent, hostKey: HostKey, strategy: string, credentialless: boolean): void {
+  private assertProxyOnlyReach(agent: LoadedAgent, credentialless: boolean): void {
     const providers = credentialless ? [] : proxyOnlyProvidersOf(agent.workspace)
     const refusal = proxyOnlyHostRefusal(providers, {
       proxyRunning: this.credentialProxy !== undefined,
       managedCredential: credentialProviderOf(agent.workspace.gitCredential) !== undefined,
-      cluster: this.k8s,
-      placedOnExecutor: this.placedSession(hostKeySessionKey(hostKey)) !== undefined,
-      strategy,
       served: () => {
         const hosts = this.credentialProxyHosts(agent.id)
         return providers.every((provider) => hosts.some((host) => host.provider === provider))
@@ -7516,12 +7521,14 @@ export class Daemon {
     const url = remote ? remote.url : route === 'host' ? proxy.proxy.loopbackUrl() : undefined
     if (url) {
       // This machine's own NO_PROXY means nothing on an executor; here it keeps no entry that would route a proxied host around the proxy.
-      const noProxy = remote
-        ? ['localhost', '127.0.0.1', '::1', env.NO_PROXY].filter((entry) => entry).join(',')
-        : proxy.proxy.sessionNoProxy(
-            agentId,
-            env.NO_PROXY ?? env.no_proxy ?? process.env.NO_PROXY ?? process.env.no_proxy
-          )
+      const noProxy = proxy.proxy.sessionNoProxy(
+        agentId,
+        env.NO_PROXY ??
+          env.no_proxy ??
+          runtimeEnv.NO_PROXY ??
+          runtimeEnv.no_proxy ??
+          (remote ? undefined : (process.env.NO_PROXY ?? process.env.no_proxy))
+      )
       Object.assign(out, {
         HTTPS_PROXY: url,
         https_proxy: url,
@@ -7558,8 +7565,14 @@ export class Daemon {
     if (this.credentialProxy) roots.add(this.credentialProxy.ca.trustDir)
     // This daemon's own helpers, which Git run through the shim needs before any runtime is launched: code, never state.
     try {
-      const executables = ['gh', 'glab'].flatMap((name) => resolveCommandPath(name, process.env) ?? [])
-      const helpers = [gitcredShimPath(this.root), this.secretsBinDir].filter(
+      const providerClis = codeHostCliReads(
+        codeHostCredentialModules().map((module) => module.provider),
+        this.cfg
+      )
+      const executables = ['gh', 'glab', ...providerClis.commands].flatMap(
+        (name) => resolveCommandPath(name, process.env) ?? []
+      )
+      const helpers = [gitcredShimPath(this.root), this.secretsBinDir, ...providerClis.paths].filter(
         (path): path is string => path !== undefined && existsSync(path)
       )
       for (const path of trustedRuntimeReadRoots({
@@ -7675,6 +7688,14 @@ export class Daemon {
       run: (work) => local.withEnvironment(environment, work),
       cwd,
       env: launch.env,
+      mapEnv: (env) => {
+        const listener = local.codehostFor(environment.id)
+        return this.workspaceProxyGitEnv(
+          agentId,
+          env,
+          listener ? { proxyUrl: codehostProxyUrl(listener), trustBundle: listener.trustBundle } : undefined
+        )
+      },
       abort
     })
   }
@@ -7820,14 +7841,18 @@ export class Daemon {
     // The daemon's own clone and fetch cross the credential proxy where SRT intercepts, so they trust its CA too, over any env they send.
     const proxied = this.credentialProxy && !session.environment.hosted && this.credentialProxyIntercepts(agentId)
     if (proxied) Object.assign(owned, proxyTrustEnv(this.credentialProxy!.ca))
-    // A proxy-only host is reached through that route with the placeholder: its token never enters the boundary (azure-devops-integration.md §6.1).
-    const bases = proxied ? this.proxyOnlyBases(agentId) : []
-    const placeholder = bases.length > 0 ? this.credentialProxy!.proxy.placeholderFor(agentId) : undefined
     return localShimGitRunner({
       run: (work) => this.localSrtExecutor!.withEnvironment(session.environment, work),
       cwd: cwd!,
       owned,
-      ...(placeholder ? { mapEnv: (env: Record<string, string>) => proxiedDaemonGitEnv(env, bases, placeholder) } : {}),
+      mapEnv: (env) =>
+        this.workspaceProxyGitEnv(
+          agentId,
+          env,
+          proxied
+            ? { trustBundle: this.credentialProxy!.ca.bundlePath, domains: this.codehostDomainsFor(agentId) }
+            : undefined
+        ),
       ...(abort ? { abort } : {})
     })
   }
@@ -7842,14 +7867,18 @@ export class Daemon {
     return [...new Set(origins)]
   }
 
-  /** The base URLs of the proxy-only providers an agent's repositories are on, as its daemon Git pins their helpers. */
-  private proxyOnlyBases(agentId: string): string[] {
-    const agent = this.agents.get(agentId)
-    const provider = agent ? credentialProviderOf(agent.workspace.gitCredential) : undefined
-    if (!agent || provider === undefined) return []
-    return sessionCredentialHosts(this.workspaces.credentialScopeOf(agent, provider))
-      .filter((host) => isProxyOnlyProvider(host.provider))
-      .map((host) => host.baseUrl)
+  // All execution planes use the operation's target and their current route at the same credential seam.
+  private workspaceProxyGitEnv(
+    agentId: string,
+    env: Record<string, string>,
+    route?: DaemonGitProxyRoute
+  ): Record<string, string> {
+    return proxiedDaemonGitEnv(
+      env,
+      this.credentialProxyHosts(agentId),
+      route,
+      this.credentialProxy?.proxy.placeholderFor(agentId)
+    )
   }
 
   private srtWorkspaceFs(agentId: string, sessionKey?: string): SrtWorkspaceFs {
@@ -9246,7 +9275,7 @@ export class Daemon {
     // A dream or research host carries no code-host credential, so nothing it does needs the proxy.
     const credentialless =
       opts.excludeAgentToolCredentials === true || isResearchSessionKey(hostKeySessionKey(opts.hostKey))
-    this.assertProxyOnlyReach(agent, opts.hostKey, opts.strategy, credentialless)
+    this.assertProxyOnlyReach(agent, credentialless)
     if (this.opts.hostFactory) {
       return { host: this.opts.hostFactory(agent, onUpdate), configFileState }
     }
@@ -9368,6 +9397,7 @@ export class Daemon {
       this.credentialProxy !== undefined &&
       managedCredentials &&
       this.credentialProxyCodeHosts(agent.id)
+    const codehostRequired = !excludeAgentToolCredentials && proxyOnlyProvidersOf(agent.workspace).length > 0
     // A managed session the proxy cannot reach holds no code-host credential at all.
     const noCodeHostCredential =
       !managedCredentials || proxied || guestCodehost
@@ -9382,6 +9412,8 @@ export class Daemon {
                 ? `a ${remoteSession.strategy} session placed on an executor does not reach the credential proxy`
                 : 'none of its code hosts is served over HTTPS'
     if (noCodeHostCredential) {
+      if (codehostRequired)
+        throw new Error(`managed code-host credential proxy is unavailable: ${noCodeHostCredential}`)
       const logged = `${agent.id}\n${hostKeySessionKey(opts.hostKey) ?? ''}`
       if (!this.noCodeHostCredentialLogged.has(logged)) {
         this.noCodeHostCredentialLogged.add(logged)
@@ -9508,6 +9540,7 @@ export class Daemon {
       guestCodehost && this.credentialProxy
         ? {
             env: this.credentialProxyEnv(this.credentialProxy, agent.id, 'shim', env, runtimeEnv, gitlabCredentials),
+            ...(codehostRequired ? { required: true } : {}),
             // Its executor seeded the VM's trust variables (microsandbox's CA and the guest bundle), so its shim names them.
             ...(hostedVm ? { guestTrust: true } : {})
           }
@@ -9522,6 +9555,7 @@ export class Daemon {
     // The variables a shim-routed launch swaps in for its real key once its shim serves a provider listener.
     const providerSpawn: Partial<ProviderSpawn> = {}
     let launchConfigFiles: { dir: string; files: SpawnFile[] } | undefined
+    let cliStateDirs: string[] = []
     // Writable roots come from the trusted agent dir, never agent.json's workspace.path, and an un-sandboxable layout (SandboxError) refuses rather than runs unconfined.
     let launch: ReturnType<typeof prepareRuntimeLaunch>
     let launchRuntime = runtime
@@ -9656,6 +9690,21 @@ export class Daemon {
       }
       launch = assembled.launch
       launchRuntime = assembled.runtime
+      if (this.credentialProxy && !localProxyRoute && (proxied || guestCodehost)) {
+        const cli = codeHostCliLaunch({
+          providers: this.credentialProxyHosts(agent.id).map((host) => host.provider),
+          placeholder: this.credentialProxy.proxy.placeholderFor(agent.id),
+          root: remoteRoots?.runtimeRoot ?? DEFAULT_SHIM_RUNTIME_ROOT,
+          hostKey: opts.hostKey,
+          own: (name) => env[name] !== undefined || runtimeEnv[name] !== undefined
+        })
+        Object.assign(codehostSpawn?.env ?? launch.env, cli.env)
+        cliStateDirs = cli.clearDirs
+      }
+      if (codehostSpawn && this.credentialProxy) {
+        const noProxy = this.credentialProxy.proxy.sessionNoProxy(agent.id, launch.env.NO_PROXY ?? launch.env.no_proxy)
+        Object.assign(codehostSpawn.env, { NO_PROXY: noProxy, no_proxy: noProxy })
+      }
       // The grant is computed once per host and lives only in the child's argv; name it here so a
       // session that later fails a Git write can be matched against what its host was given.
       const reopened = launch.gitMetadataWriteRoots.length > 0 ? launch.gitMetadataWriteRoots.join(', ') : 'none'
@@ -9715,7 +9764,7 @@ export class Daemon {
           : []),
         ...(launchConfigFiles?.files ?? [])
       ],
-      ...(launchConfigFiles ? { clearDirs: [launchConfigFiles.dir] } : {}),
+      clearDirs: [...(launchConfigFiles ? [launchConfigFiles.dir] : []), ...cliStateDirs],
       ...(codehostSpawn ? { codehost: codehostSpawn } : {}),
       ...(providerSpawn.env ? { provider: { env: providerSpawn.env } } : {}),
       inheritProcessEnv: launch.inheritProcessEnv,
@@ -26608,12 +26657,7 @@ export class Daemon {
       }
       const boundKey = bound && hostKeySessionKey(key)
       // Refused before any preparation runs Git that the proxy would not carry (azure-devops-integration.md §6.1).
-      this.assertProxyOnlyReach(
-        agent,
-        key,
-        this.sessionStrategy(agent, hostKeySessionKey(key)),
-        isResearchSessionKey(boundKey || undefined)
-      )
+      this.assertProxyOnlyReach(agent, isResearchSessionKey(boundKey || undefined))
       // Organization research reads no checkout: on a local launch it starts in an empty directory of its own (assistant-mode.md §5.15).
       const researchDir = isResearchSessionKey(boundKey || undefined) ? await this.researchCwd(agent, key) : undefined
       // The cold gate, before every fresh spawn: a failed child had write authority, so its replacement re-verifies the skill receipts; a review in its own pod needs only that, its cwd already prepared.
@@ -30069,12 +30113,19 @@ export class Daemon {
       })
   }
 
-  /** Cluster only: the sandbox half of "no longer served here"; the claim and volume stay. */
+  // Drop execution bindings when an agent leaves, including environments prepared without an ACP host.
   private releaseClusterSandbox(agentId: string): void {
     this.k8sAdoptions.delete(agentId)
     this.k8sPlane?.releaseAgent(agentId)
     // The same for a spread session: this holder drops its launches, and the successor attaches to the environments they left (§7).
     this.executorPlane?.releaseAgent(agentId)
+    void this.releaseLocalEnvironments(agentId).catch((error) =>
+      this.log.warn(`execution: could not stop a departing agent's environments (${formatErr(error)})`)
+    )
+  }
+
+  private async releaseLocalEnvironments(agentId: string): Promise<void> {
+    await Promise.all([this.localExecutor?.releaseAgent(agentId), this.localSrtExecutor?.releaseAgent(agentId)])
   }
 
   /**

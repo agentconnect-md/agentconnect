@@ -613,7 +613,8 @@ export class WorkspaceManager {
       agent.gitlabHost,
       bearing && this.gitlabRepoBearing(agent),
       { host: agent.giteaHost, repoBearing: bearing && this.repoBearing(agent, 'gitea') },
-      bearing && this.repoBearing(agent, 'azure-devops')
+      bearing && this.repoBearing(agent, 'azure-devops'),
+      bearing && this.repoBearing(agent, 'github')
     )
   }
 

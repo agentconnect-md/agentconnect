@@ -580,10 +580,9 @@ SSH addresses are not managed: a service principal cannot register SSH keys.
 
 ### 6.1 Proxy Only
 
-> **Planned extension:** [Unified managed Git network operations](github-app-git-credentials.md#unified-managed-git-network-operations)
-> defines a shared proxy path with an Azure-first rollout, including mixed-provider
-> agents. The environment restrictions below describe the current implementation
-> and remain until that rollout is implemented and verified.
+The Azure-first delivery of [Unified managed Git network operations](github-app-git-credentials.md#unified-managed-git-network-operations)
+uses one managed-operation preparation path in local SRT and VMs, Cloud pods,
+and remote executor host/SRT/VM environments, including mixed-provider agents.
 
 The token carries the identity's full rights in the organization. Handed to an
 environment, it would reach every repository the identity can see at the
@@ -601,13 +600,14 @@ exists for Azure DevOps in the first version.
 
 The daemon's credential module carries the same `proxyOnly` capability. Its
 agent channel refuses such a credential to every capability but the daemon's
-own, by the provider the agent's spec resolves the ask to, and before the
-runtime capability's general refusal, so the rule holds even where a runtime
-capability may otherwise mint. Daemon-run Git names `consumer: 'daemon'` and
-the proxy names `proxy`. The daemon's credential cache refuses an Azure DevOps
-ask that names neither, without asking the Control Plane, since a grant it
+own, by the provider the agent's spec resolves the ask to, before the runtime
+capability's general mint refusal. Git on the owning daemon's own machine names
+`consumer: 'daemon'` and the proxy names `proxy`. The daemon's credential cache
+refuses an Azure DevOps ask that names neither, without asking the Control Plane, since a grant it
 already holds would otherwise answer it. A request for any other provider names
-no consumer, as before.
+no consumer, as before. The trusted-host `daemon` consumer remains a supported
+contract: host-side canonical clones and local host-strategy preparation retain
+their existing helper path.
 
 The real token is therefore presented only by the proxy and by the daemon's own
 Git on the daemon's machine, outside every sandbox. Where the daemon runs Git
@@ -617,26 +617,39 @@ inside a sandbox, that Git must not hold the token either:
   tunnel carries, whatever capability it presents, so daemon Git inside a
   confined `srt` session, a VM, a pool pod or an executor's environment is
   never handed the token.
-- In a confined `srt` session the daemon's Git runs in the session's shim and
-  reaches Azure DevOps over `srt`'s route to the proxy: its helper for the
-  organization's host answers the session's placeholder instead of asking the
-  agent channel, and the proxy presents the token. The daemon's capability
-  stays out of that Git's environment unless another code host's real helper
-  in the same command needs it.
-- In a VM, in a pool pod and on another daemon's executor, the daemon's Git has
-  no such route to the proxy yet, so those sessions are refused (below).
+- In each execution environment, daemon-authored Azure workspace Git uses
+  the existing credential proxy and `codehost` tunnel. SRT uses its intercepted
+  domains; the other environments use their shim's authenticated loopback
+  listener. The helper returns only the placeholder, and TLS verifies against
+  the current environment's trust bundle.
+- Selection follows the operation's trusted target URL and provider capability,
+  not the agent's primary repository. A migrated invocation removes all real
+  credential helpers and the daemon minting capability. Every managed target
+  of that invocation must be covered by the route before Git starts.
+- Non-Azure daemon Git retains its existing helper path in this delivery.
+  Scoped source acquisition and the in-pod auto-merge watcher also retain
+  their existing credential contracts. Their remaining capabilities mean a
+  mixed environment is not entirely free of token-minting authority.
 
-The proxy reaches every strategy's sessions (github-app-git-credentials.md,
-Phase 2), but an Azure DevOps agent's host starts only in the `host` and `srt`
-strategies on the daemon itself. Its start is refused with
-`azure_devops_requires_proxy: …`, naming the reason, before any preparation
-runs Git, when:
+The proxy already carries agent runtime Git. Workspace preparation now binds
+the execution environment and waits for its route before the first clone or
+fetch, independently of whether an ACP runtime has started. Each Git request
+reads the current binding's listener and trust; a missing or stale route fails
+without a real-token fallback. Cancellation releases the preparation hold,
+unused environments retain their idle cleanup policy, and retirement or a new
+binding fences the previous one. Ambiguous mutations are not replayed.
+
+Azure's start is refused with `azure_devops_requires_proxy: …`, naming the
+reason, when:
 
 - the daemon's credential proxy did not start;
 - the agent holds no managed code-host credential, or the proxy serves none of
-  its Azure DevOps repositories;
-- the daemon is a pool member, the strategy is a VM, or the session was placed
-  on another daemon's executor, whose own Git does not reach the proxy yet.
+  its Azure DevOps repositories.
+
+The selected execution environment must additionally provide its usable route
+before a managed Git operation or a credentialed runtime launches. Its actual
+listener, trust bundle and SRT domain coverage decide readiness; Cloud, VM and
+remote placement are not blanket refusals.
 
 The refusal fails the turn as any other start failure does, and the agent is
 never started without credentials. A dream or a research host, which carries
@@ -649,9 +662,9 @@ and ask for the token, as the
 host. Because this token is organization-wide, that costs more here than on a
 repository-scoped host.
 
-A daemon advertises `azure-devops-v1` only while its credential proxy runs and
-it is not a pool member, and placement requires it, so the Cloud pool cannot
-place an agent with an Azure DevOps workspace or additional repository yet.
+A daemon, including a pool member, advertises `azure-devops-v1` and
+`azure-devops-hooks-v1` while its credential proxy runs. Placement requires
+the advertised capability; preparation still checks the particular environment.
 
 ### 6.2 Instance and Routes
 
@@ -859,15 +872,22 @@ the daemon:
   password, which the proxy already reads;
 - `AZURE_CONFIG_DIR`, set to an empty directory of the host's own, emptied again
   at each start, because the CLI prefers a cached sign-in over
-  `AZURE_DEVOPS_EXT_PAT`. It lies under the host's private HOME: a confined
-  session's goes with the session's directory, and another host's is under the
-  agent directory, where the daemon reclaims it at boot;
+  `AZURE_DEVOPS_EXT_PAT`. For local host/SRT launches it lies under the private
+  HOME: a confined session's goes with the session's directory, and another host's is under the
+  agent directory, where the daemon reclaims it at boot. A pod, VM or remote
+  executor uses a host-keyed directory under its own shim runtime root,
+  cleared through the existing launch materialization channel. No state
+  directory is created on the owning daemon for a remote launch;
 - `AZURE_EXTENSION_DIR`, set to the host's installed extension directory, when
-  that directory exists, and readable from `srt`. It is the daemon
-  configuration's `azureDevOps.cliExtensionDir`, else
-  `~/.azure/cliextensions` of the daemon's user. Without it, an empty
-  configuration directory hides the installed `azure-devops` extension, and
-  the CLI installs it again from Microsoft's download hosts on every session's
+  that directory exists, and readable from local `srt`. For a local launch it is
+  the daemon configuration's `azureDevOps.cliExtensionDir`, else
+  `~/.azure/cliextensions` of the daemon's user. A pod, VM or remote executor
+  preserves an explicitly configured target-side `AZURE_EXTENSION_DIR`;
+  otherwise it points at `cliextensions` beneath the fresh state directory,
+  replacing any inherited extension path from the owning daemon. Without an
+  explicit installed extension path, an empty configuration directory hides
+  the installed `azure-devops` extension, and the CLI installs it again from
+  Microsoft's download hosts on every session's
   first command;
 - `AZURE_CORE_COLLECT_TELEMETRY=false`; and
 - the proxy and trust variables of the credential proxy design, including
@@ -884,7 +904,8 @@ The CLI only accepts `dev.azure.com` and `*.visualstudio.com` as organization
 hosts, which the proxy preserves, since it terminates TLS for those names
 rather than rewriting them. Its organization and project detection reads the
 four-segment canonical remote of §5. AgentConnect does not install the CLI or
-its extension.
+its extension. Azure Git support therefore does not imply that every runtime
+image or executor has the optional `az` executable installed.
 
 ### 6.5 Rate Limits
 
@@ -1688,9 +1709,11 @@ live organization before A2.
   and a pull-request write at `write` is forwarded. A real daemon with its
   proxy runs `git ls-remote` against a fake Azure DevOps through the proxy,
   is refused a push at `read`, an unauthorized repository and the runtime's
-  own ask, and advertises `azure-devops-v1` only while the proxy runs. Daemon
-  Git for VM, pool-pod and executor sessions through the proxy is future work;
-  until it lands those sessions are refused (§6.1).
+  own ask, and advertises `azure-devops-v1` only while the proxy runs. The
+  Azure-first shared managed-Git path extends daemon workspace preparation to
+  local VMs, pool pods and remote executors, with per-operation route checks
+  replacing the environment bans (§6.1). Validation records distinguish real
+  Git transport fixtures from live execution-environment tests.
 - **A4 — Console, Setup, and documentation.** _Landed, except the setup page
   on the documentation site._ The card and the connect page, the pickers, and
   the Microsoft section's redirect URI and wording.

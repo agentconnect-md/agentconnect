@@ -656,6 +656,41 @@ describe('a proxied host session end to end', () => {
 })
 
 describe('an Azure DevOps agent behind the credential proxy', () => {
+  // POSIX only: Git evaluates the session's shell credential helpers.
+  it.skipIf(process.platform === 'win32')(
+    'serves GitHub additional repositories beside an Azure workspace through the same runtime proxy',
+    async () => {
+      const { d } = await startDaemon()
+      const spec = azureSpec()
+      spec.workspace!.additionalRepos = [
+        {
+          provider: 'github',
+          repoId: '43',
+          repoFullName: 'example-org/additional-repo',
+          materialize: 'on-demand'
+        }
+      ]
+      const agent = await admit(d, AZURE_AGENT, spec)
+      const cwd = await checkout(d, agent)
+      const { own, child } = sessionEnv(d, AZURE_AGENT)
+      const placeholder = own.AC_CODEHOST_CREDENTIAL!
+      expect(placeholder).toMatch(/^acph1_/)
+      expect(own.GH_TOKEN).toBe(placeholder)
+      expect(own.AZURE_DEVOPS_EXT_PAT).toBe(placeholder)
+      const gitEnv = { ...child, GIT_TERMINAL_PROMPT: '0' }
+      expect(fill(cwd, gitEnv, 'github.com', 'example-org/additional-repo.git')).toBe(placeholder)
+      expect(fill(cwd, gitEnv, 'dev.azure.com', 'example-org/Example Project/_git/Example Repo')).toBe(placeholder)
+      expect(d.credentialProxy.proxy.tunnelRoutes(AZURE_AGENT)).toEqual([
+        'dev.azure.com:443',
+        'example-org.visualstudio.com:443',
+        'github.com:443',
+        'api.github.com:443',
+        'uploads.github.com:443',
+        'codeload.github.com:443'
+      ])
+    }
+  )
+
   it('holds the placeholder for git and the Azure CLI, and the daemon advertises Azure DevOps', async () => {
     const { d } = await startDaemon()
     const extensions = shortDir()
@@ -684,12 +719,11 @@ describe('an Azure DevOps agent behind the credential proxy', () => {
     expect(config).toContain('[credential "https://dev.azure.com"]')
     expect(config).toContain('[credential "https://example-org.visualstudio.com"]')
     expect(JSON.stringify(own)).not.toContain(MINTED_AZURE)
-    // A strategy whose own Git does not reach the proxy is refused before anything is built.
-    d.hosts.delete(agentHostKey(AZURE_AGENT))
-    d.agents.get(AZURE_AGENT).execution = 'microsandbox'
-    expect(() => d.ensureHost(agentHostKey(AZURE_AGENT), d.cfg)).toThrow(
-      /^azure_devops_requires_proxy: .* the microsandbox strategy's own Git does not reach it yet$/
-    )
+    // Pool members advertise the provider too; each operation and launch checks its bound environment's route.
+    d.k8s = true
+    expect(d.azureDevOpsFeatures()).toEqual([AZURE_DEVOPS_V1_FEATURE, AZURE_DEVOPS_HOOKS_V1_FEATURE])
+    expect(() => d.assertProxyOnlyReach(agent, false)).not.toThrow()
+    d.k8s = false
   })
 
   it('is refused a host before any preparation where the proxy did not start, which advertises no Azure DevOps', async () => {
@@ -728,14 +762,14 @@ describe('an Azure DevOps agent behind the credential proxy', () => {
           })
       }
       const scope = d.workspaces.managedScopeOf(agent)
-      const env = cloneGitEnv(AZURE_AGENT, undefined, scope, clone)
+      const env = cloneGitEnv(AZURE_AGENT, AZURE_REPO, scope, clone)
       expect(env[AGENT_CHANNEL_CAPABILITY_ENV]).toBeDefined()
       await d.workspaces.runnerFor(AZURE_AGENT, clone).withEnv(env).raw(['ls-remote', AZURE_REPO])
       const sent = seen.at(-1)!.env!
       expect(sent.AC_CODEHOST_CREDENTIAL).toBe(d.credentialProxy.proxy.placeholderFor(AZURE_AGENT))
       expect(sent).not.toHaveProperty(AGENT_CHANNEL_CAPABILITY_ENV)
       const helpers = Object.entries(sent)
-        .filter(([name, value]) => name.startsWith('GIT_CONFIG_KEY_') && value.endsWith('dev.azure.com.helper'))
+        .filter(([name, value]) => name.startsWith('GIT_CONFIG_KEY_') && value === `credential.${AZURE_REPO}.helper`)
         .map(([name]) => sent[name.replace('KEY', 'VALUE')])
       expect(helpers).toEqual(['', checkoutHelper()])
       // It crosses the proxy, so it trusts the proxy's authority.

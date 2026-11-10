@@ -10,7 +10,9 @@ import { connect as dialTcp, createServer, type AddressInfo, type Server, type S
 import { dirname, join } from 'node:path'
 import { getCACertificates } from 'node:tls'
 import { stripHopByHop } from '@anthropic-ai/sandbox-runtime/dist/sandbox/parent-proxy.js'
+import { CODEX_CA_ENV, mergedTrustBundle, sessionAuthorityFiles } from '../credential-proxy/trust-bundle.js'
 import type { ShimEvent } from './protocol.js'
+import { seedEnv } from './seed-env.js'
 import {
   isProxyTunnel,
   MAX_CODEHOST_STREAMS,
@@ -99,15 +101,34 @@ export function codehostTrustBundleBeside(codehostSocketPath: string): string {
   return join(dirname(codehostSocketPath), 'codehost-trust.pem')
 }
 
-/** This machine's roots plus `authorities`, written atomically: SSL_CERT_FILE replaces a client's roots, so a CA alone would break every other host. */
-export function writeCodehostTrustBundle(path: string, authorities: string[]): void {
+/** Preserve this environment's TLS roots before workspace Git runs, without waiting for an ACP launch. */
+export function writeCodehostTrustBundle(
+  path: string,
+  authorities: string[],
+  env: Record<string, string | undefined> = process.env,
+  warn: (message: string) => void = () => undefined
+): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
   const roots = [...getCACertificates('default'), ...getCACertificates('system'), ...authorities].map((pem) =>
     pem.trim()
   )
+  const own = Object.fromEntries(
+    Object.entries(env).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+  )
+  const files = [own, seedEnv(env)].flatMap((source) => [
+    ...sessionAuthorityFiles(source, {}),
+    ...(source[CODEX_CA_ENV] ? [source[CODEX_CA_ENV]] : [])
+  ])
   const temporary = `${path}.${randomBytes(6).toString('hex')}.tmp`
   writeFileSync(temporary, `${[...new Set(roots)].join('\n')}\n`, { mode: 0o600 })
-  renameSync(temporary, path)
+  let merged = temporary
+  try {
+    merged = mergedTrustBundle(temporary, [...new Set(files)], warn)
+    renameSync(merged, path)
+  } finally {
+    rmSync(temporary, { force: true })
+    if (merged !== temporary) rmSync(merged, { force: true })
+  }
 }
 
 function refuseConnect(socket: Socket, status: number, reason: string): void {
@@ -311,7 +332,9 @@ export class TunnelHost {
   /** Every CA a proxy tunnel's listen carried, beside the shim's runtime files. */
   private writeTrustBundle(): string {
     const path = codehostTrustBundleBeside(this.socketPathFor('codehost'))
-    writeCodehostTrustBundle(path, [...this.authorities.values()])
+    writeCodehostTrustBundle(path, [...this.authorities.values()], process.env, (message) =>
+      this.deps.log?.warn(message)
+    )
     return path
   }
 

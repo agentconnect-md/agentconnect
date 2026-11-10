@@ -337,6 +337,8 @@ describe('Daemon session lifecycle (#118)', () => {
         })
         d.executorPlane = plane
         d.wirePlaneResolver()
+        // An attached executor session has a current launch for each Git operation to retain.
+        await (plane as any).ensureLaunch(subject)
         // Its pipe up: the executor's shim runs git in that machine's clone, which is on a branch of its own.
         const asked: Array<{ cwd?: string; args: string[] }> = []
         const pipe = {

@@ -69,7 +69,7 @@ export const azureDevOpsCredentials: CodeHostCredentialModule = {
     env: ({ placeholder, stateDir, extensionDir }) => ({
       AZURE_DEVOPS_EXT_PAT: placeholder,
       AZURE_CONFIG_DIR: stateDir,
-      ...(extensionDir !== undefined ? { AZURE_EXTENSION_DIR: extensionDir } : {}),
+      AZURE_EXTENSION_DIR: extensionDir ?? `${stateDir}/cliextensions`,
       AZURE_CORE_COLLECT_TELEMETRY: 'false'
     })
   }

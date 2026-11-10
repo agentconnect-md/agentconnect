@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from 'vitest'
 import { FakeClock } from '@agentconnect.md/connection'
 import type { ExecutorPrepareReq, ExecutorPrepareResult, ExecutorReleaseResult } from '@agentconnect.md/protocol'
 import { sessionKeyDirName } from '../src/acp/host-key.js'
-import { EXECUTOR_GRANTS, executorMount, ExecutorPlane } from '../src/execution/executor-plane.js'
+import {
+  EXECUTOR_GRANTS,
+  executorMount,
+  ExecutorPlane,
+  type ExecutorPlaneDeps
+} from '../src/execution/executor-plane.js'
 import type { PlacementChoice } from '../src/execution/executor-placement.js'
 import { sessionSandboxSubject } from '../src/remote/sandbox-subject.js'
 import { cwdWorkspaceIncarnation } from '../src/skills/workspace-incarnation.js'
@@ -34,7 +39,11 @@ function ready(generation: number, over: Partial<Extract<ExecutorPrepareResult, 
 
 function plane(
   answers: ExecutorPrepareResult[],
-  over: { replace?: () => Promise<PlacementChoice | undefined>; release?: () => Promise<ExecutorReleaseResult> } = {}
+  over: {
+    replace?: () => Promise<PlacementChoice | undefined>
+    release?: () => Promise<ExecutorReleaseResult>
+    mapGitEnv?: ExecutorPlaneDeps['mapGitEnv']
+  } = {}
 ) {
   const sent: ExecutorPrepareReq[] = []
   const released: Array<{ sessionKey: string; launchId: string; executorDaemonId: string }> = []
@@ -65,6 +74,7 @@ function plane(
       return await (over.release?.() ?? Promise.resolve({ status: 'released' as const }))
     },
     replace: over.replace ?? (async () => undefined),
+    ...(over.mapGitEnv ? { mapGitEnv: over.mapGitEnv } : {}),
     log: quiet,
     clock: new FakeClock(Date.parse('2026-09-21T12:00:00.000Z'))
   })
@@ -301,9 +311,9 @@ describe('the skills a placed session installs', () => {
 describe("a placed session's Git", () => {
   const CWD = `/var/lib/agentconnect/sessions/${LEAF}/workspace`
 
-  async function placed() {
-    const { executor } = plane([ready(4)])
-    await executor.prepareAt(AGENT, KEY, [HOST])
+  async function placed(mapGitEnv?: ExecutorPlaneDeps['mapGitEnv'], strategy = 'host') {
+    const { executor } = plane([ready(4)], mapGitEnv ? { mapGitEnv } : {})
+    await executor.prepareAt(AGENT, KEY, [{ ...HOST, strategy }])
     const request = vi.fn(async () => ({ code: 0, stdout: 'abc\n', stderr: '' }))
     const session = { isAttached: () => true, hasCapability: () => true, request }
     ;(executor as unknown as { binder: { sessionFor: () => unknown } }).binder.sessionFor = () => session
@@ -352,6 +362,65 @@ describe("a placed session's Git", () => {
       .raw(['ls-remote', 'origin'])
     const env = (request.mock.calls[0] as unknown as [string, { env: Record<string, string> }])[1].env
     expect(env).toMatchObject({ SSL_CERT_FILE: bundle, GIT_SSL_CAINFO: bundle, NODE_EXTRA_CA_CERTS: bundle })
+  })
+
+  it('reads the current route per invocation and releases its hold even when preparation fails', async () => {
+    const mapGitEnv = vi.fn<NonNullable<ExecutorPlaneDeps['mapGitEnv']>>((_agentId, env) => env)
+    const { executor, request } = await placed(mapGitEnv)
+    let proxy = { port: 41234, token: 'listener-token-example', trustBundle: '/session/first-ca.pem' }
+    const tunnels = (executor as unknown as { tunnels: { listeningAt: () => unknown } }).tunnels
+    tunnels.listeningAt = () => ({ proxy })
+    request.mockImplementation(async () => {
+      expect(await executor.suspendIdle(SUBJECT)).toBe('busy')
+      return { code: 0, stdout: 'abc\n', stderr: '' }
+    })
+    const env = { PATH: '/usr/bin' }
+    const runner = executor.gitRunnerFor(AGENT, CWD, undefined, KEY)!.withEnv(env)
+    await runner.raw(['ls-remote', 'origin'])
+    expect(mapGitEnv).toHaveBeenLastCalledWith(AGENT, env, {
+      proxyUrl: 'http://codehost:listener-token-example@127.0.0.1:41234',
+      trustBundle: '/session/first-ca.pem'
+    })
+    proxy = { port: 41235, token: 'next-token-example', trustBundle: '/session/next-ca.pem' }
+    await runner.raw(['fetch', 'origin'])
+    expect(mapGitEnv).toHaveBeenLastCalledWith(AGENT, env, {
+      proxyUrl: 'http://codehost:next-token-example@127.0.0.1:41235',
+      trustBundle: '/session/next-ca.pem'
+    })
+    mapGitEnv.mockImplementationOnce(() => {
+      throw new Error('the credential proxy route is unavailable')
+    })
+    await expect(runner.raw(['fetch', 'origin'])).rejects.toThrow('credential proxy route is unavailable')
+    expect(request).toHaveBeenCalledTimes(2)
+    executor.place({ agentId: AGENT, sessionKey: KEY, executorDaemonId: OTHER.daemonId, strategy: 'host' })
+    await expect(runner.raw(['fetch', 'origin'])).rejects.toThrow('binding is no longer current')
+    expect(await executor.suspendIdle(SUBJECT)).toBe('suspended')
+    await expect(runner.raw(['fetch', 'origin'])).rejects.toThrow('binding is no longer current')
+    expect(request).toHaveBeenCalledTimes(2)
+  })
+
+  it('uses only the reported SRT route and requires guest trust for a VM route', async () => {
+    const proxy = { port: 41234, token: 'listener-token-example', trustBundle: '/session/ca.pem' }
+    for (const strategy of ['srt', 'microsandbox']) {
+      const mapGitEnv = vi.fn<NonNullable<ExecutorPlaneDeps['mapGitEnv']>>((_agentId, env) => env)
+      const { executor } = await placed(mapGitEnv, strategy)
+      const listening: { proxy: typeof proxy; srt?: { domains: string[] }; guestTrust?: boolean } = { proxy }
+      const tunnels = (executor as unknown as { tunnels: { listeningAt: () => unknown } }).tunnels
+      tunnels.listeningAt = () => listening
+      const env = { PATH: '/usr/bin' }
+      const runner = executor.gitRunnerFor(AGENT, CWD, undefined, KEY)!.withEnv(env)
+      await runner.raw(['ls-remote', 'origin'])
+      expect(mapGitEnv).toHaveBeenLastCalledWith(AGENT, env, undefined)
+      if (strategy === 'srt') listening.srt = { domains: ['dev.azure.com'] }
+      else listening.guestTrust = true
+      await runner.raw(['ls-remote', 'origin'])
+      expect(mapGitEnv).toHaveBeenLastCalledWith(AGENT, env, {
+        ...(strategy === 'srt'
+          ? { domains: ['dev.azure.com'] }
+          : { proxyUrl: 'http://codehost:listener-token-example@127.0.0.1:41234' }),
+        trustBundle: '/session/ca.pem'
+      })
+    }
   })
 })
 

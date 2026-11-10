@@ -6,7 +6,9 @@ import type { SpawnDriver, SpawnRequest, SpawnedRuntime } from '../acp/spawn-dri
 import type { Logger } from '../log.js'
 import { noopClusterMetrics } from '../metrics/cluster-metrics.js'
 import { ChannelBinder } from '../remote/channel-binder.js'
+import type { CodehostListener } from '../remote/codehost-spawn.js'
 import { LaunchRegistry, type Launch, type LaunchGenerations } from '../remote/launch-registry.js'
+import { sandboxSubjectAgentId } from '../remote/sandbox-subject.js'
 import { RemoteShimDriver } from '../remote/shim-driver.js'
 import type { ShimEndpoint, ShimEndpointProvider } from '../remote/shim-endpoint.js'
 import { TunnelBinder } from '../remote/tunnel-binder.js'
@@ -42,6 +44,8 @@ export interface LocalExecutorDeps {
   launcher: StrategyLauncher
   /** This daemon's own allocator, the store's: a local environment's generation never goes backwards across restarts. */
   generations: LaunchGenerations
+  // Refuse work for an agent this daemon no longer serves, including closures created before its departure.
+  servesAgent?: (agentId: string) => boolean
   /** Where this daemon's own sockets are; a local VM reaches every one of them through its shim. */
   tunnelSocketPath: (tunnel: TunnelName, agentId: string) => string | undefined
   /** Tags a subject's daemon-socket connection with that subject (the agent channel binds a pod window to its pod). */
@@ -65,14 +69,18 @@ export class LocalExecutor {
   private readonly driver: RemoteShimDriver<LocalLaunch>
   /** The descriptor each environment was last asked for, which a launch the driver re-derives starts from. */
   private readonly latest = new Map<string, EnvironmentDescriptor>()
-  /** One launch recorded at a time per environment, so two first uses bind one generation. */
-  private readonly recording = new Map<string, Promise<LocalLaunch>>()
+  // Serialize acquisitions with pending records and release cleanup for the same environment.
+  private readonly recording = new Map<string, Promise<unknown>>()
   private readonly operations = new Set<Promise<unknown>>()
   private closed = false
 
   constructor(private readonly deps: LocalExecutorDeps) {
     const clock = deps.clock ?? systemClock
-    this.registry = new LaunchRegistry<LocalLaunch>({ generations: deps.generations, clock })
+    this.registry = new LaunchRegistry<LocalLaunch>({
+      generations: deps.generations,
+      clock,
+      ...(deps.servesAgent ? { servesAgent: deps.servesAgent } : {})
+    })
     this.endpoints = {
       resolve: (launch) => this.resolve(launch),
       retain: (launch) => this.retain(launch),
@@ -135,12 +143,14 @@ export class LocalExecutor {
     if (this.closed) throw new Error('this daemon is shutting down')
     const operation = (async () => {
       const launch = await this.ensureLaunch(environment)
+      this.assertCurrent(launch)
       this.endpoints.retain(launch)
       let done!: () => void
       const held = new Promise<void>((resolve) => (done = resolve))
       launch.operations.add(held)
       try {
         await this.driver.ensureBoundChannel(environment.id)
+        this.assertCurrent(launch)
         const session = this.sessionFor(environment.id)
         if (!session) throw new Error(`environment ${environment.id} has no bound shim`)
         return await work(session)
@@ -162,6 +172,35 @@ export class LocalExecutor {
   sessionFor(id: string): ShimSession | undefined {
     const session = this.binder.sessionFor(id)
     return session?.isAttached() ? session : undefined
+  }
+
+  /** The code-host listener reported by this environment's current attached shim. */
+  codehostFor(id: string): CodehostListener | undefined {
+    return this.sessionFor(id) ? this.tunnels.listeningAt(id, 'codehost')?.proxy : undefined
+  }
+
+  // Fence every preparation immediately, then stop only this agent's environments, including pending starts.
+  releaseAgent(agentId: string): Promise<void> {
+    this.registry.bumpRelease(agentId)
+    const subjects = new Set([
+      ...this.registry.subjectsOf(agentId),
+      ...[...this.latest.keys(), ...this.recording.keys()].filter((id) => sandboxSubjectAgentId(id) === agentId)
+    ])
+    const stopping = [...subjects].map((subject) => {
+      const launch = this.registry.currentLaunch(subject)
+      const pending = this.recording.get(subject)
+      this.forget(subject, 'the agent is no longer served here')
+      const stopped = (async () => {
+        await pending?.catch(() => undefined)
+        const running = await launch?.started?.catch(() => undefined)
+        await running?.stop()
+      })().finally(() => {
+        if (this.recording.get(subject) === stopped) this.recording.delete(subject)
+      })
+      this.recording.set(subject, stopped)
+      return stopped
+    })
+    return Promise.all(stopping).then(() => undefined)
   }
 
   /** Shutdown: no new operation, the ones in flight finish, and every launch goes; the environments are their owner's to stop (§9). */
@@ -186,12 +225,14 @@ export class LocalExecutor {
     let runtime: SpawnedRuntime
     try {
       local = (await this.start(launch)).local
+      this.assertCurrent(launch)
       quiet = request.suppressChildStderr ? local?.quiet() : undefined
       // A complete-env shim takes nothing but what it is sent, so the environment's own base goes beneath the launch's.
       runtime = await this.driver.launch(
         { ...request, env: { ...local?.runtimeEnv, ...request.env } },
         { subject: environment.id, cwd: environment.cwd ?? environment.workspaceRoot }
       )
+      this.assertCurrent(launch)
     } catch (error) {
       quiet?.()
       uncount()
@@ -220,38 +261,51 @@ export class LocalExecutor {
   }
 
   /** The environment's current launch, or a new one: when there is none, or the descriptor now starts a different environment and no runtime holds the old one. */
-  private ensureLaunch(environment: EnvironmentDescriptor): Promise<LocalLaunch> {
-    if (this.closed) return Promise.reject(new Error('this daemon is shutting down'))
+  private async ensureLaunch(
+    environment: EnvironmentDescriptor,
+    releasedAt = this.registry.releaseFence(environment.id)
+  ): Promise<LocalLaunch> {
+    if (this.closed) throw new Error('this daemon is shutting down')
+    this.registry.assertStillServed(environment.id, releasedAt)
     const pending = this.recording.get(environment.id)
-    if (pending) return pending.catch(() => undefined).then(() => this.ensureLaunch(environment))
+    if (pending) {
+      await pending.catch(() => undefined)
+      return this.ensureLaunch(environment, releasedAt)
+    }
     const current = this.registry.currentLaunch(environment.id)
     const same = current && (this.deps.launcher.sameEnvironment?.(current.environment, environment) ?? true)
     if (current && !same) {
       // A runtime holds its launch until it exits, but an operation (Git, a file) ends by itself, so the new descriptor waits for it.
-      if (current.runtimes)
-        return Promise.reject(new Error(`environment ${environment.id} configuration changed while active`))
-      if (current.operations.size)
-        return Promise.allSettled([...current.operations]).then(() => this.ensureLaunch(environment))
+      if (current.runtimes) throw new Error(`environment ${environment.id} configuration changed while active`)
+      if (current.operations.size) {
+        await Promise.allSettled([...current.operations])
+        return this.ensureLaunch(environment, releasedAt)
+      }
       this.forget(environment.id, 'its configuration changed')
     }
     // A launch that serves a narrower request keeps the descriptor it started from, which is what a re-derived launch must start again.
-    if (current && same) return Promise.resolve(current)
+    if (current && same) return current
     this.latest.set(environment.id, environment)
     const recording = this.registry
       .recordLaunch(environment.id, randomUUID(), { environment, holds: [], runtimes: 0, operations: new Set() })
-      .finally(() => this.recording.delete(environment.id))
+      .finally(() => {
+        if (this.recording.get(environment.id) === recording) this.recording.delete(environment.id)
+      })
     this.recording.set(environment.id, recording)
     return recording
   }
 
   private async resolve(launch: LocalLaunch): Promise<ShimEndpoint> {
-    launch.running = await this.start(launch)
+    const running = await this.start(launch)
+    this.assertCurrent(launch)
+    launch.running = running
     // The address names nothing: the dial opens the environment's own stream, and the shim proves itself with its token.
     return { address: `ws://127.0.0.1:${DEFAULT_SHIM_LISTEN_PORT}`, peer: { name: launch.subject, proof: 'pod' } }
   }
 
   /** Start the launch's environment once; the launch lives exactly as long as it does. */
   private start(launch: LocalLaunch): Promise<SessionEnvironment> {
+    this.assertCurrent(launch)
     if (!launch.started) {
       const started = this.deps.launcher.start({ environment: launch.environment, log: this.deps.log })
       launch.started = started
@@ -270,6 +324,12 @@ export class LocalExecutor {
       )
     }
     return launch.started
+  }
+
+  private assertCurrent(launch: LocalLaunch): void {
+    this.registry.assertStillServed(launch.subject, this.registry.releaseFence(launch.subject))
+    if (this.registry.currentLaunch(launch.subject) !== launch)
+      throw new Error(`environment ${launch.subject} is no longer launched on this machine`)
   }
 
   private retain(launch: LocalLaunch): void {
@@ -317,11 +377,12 @@ export class LocalExecutor {
 
   /** Give up a launch: the dial stops, the session ends with every runtime on it, and the next use records a new one. */
   private forget(subject: string, reason: string): void {
+    const launch = this.registry.forgetLaunch(subject)
+    this.latest.delete(subject)
     this.dialer.revoke(subject)
     this.binder.loseChannel(subject, reason)
     this.binder.forget(subject)
     this.tunnels.release(subject, reason)
-    this.registry.forgetLaunch(subject)
-    this.latest.delete(subject)
+    for (const release of launch?.holds.splice(0) ?? []) release()
   }
 }

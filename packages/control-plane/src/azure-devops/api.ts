@@ -422,7 +422,7 @@ export function azureDevOpsCanonicalCloneUrl(
       // A remoteUrl the codec refuses falls back to the composed canonical form.
     }
   }
-  return `https://dev.azure.com/${organization}/${encodeURIComponent(projectName)}/_git/${encodeURIComponent(name)}`
+  return `https://dev.azure.com/${organization.toLowerCase()}/${encodeURIComponent(projectName)}/_git/${encodeURIComponent(name)}`
 }
 
 /** Every Git repository in the organization the identity can see, without disabled or in-maintenance ones (§5). */

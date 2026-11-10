@@ -14,6 +14,7 @@ import { GuardedResumeRejectedError, OperatingModeRejectedError } from '../src/k
 import { K8sApiError } from '@agentconnect.md/k8s-client'
 import type { SpawnRecord } from '../src/shim/binding.js'
 import type { ShimConnection } from '../src/shim/connection.js'
+import type { SpawnRequest } from '../src/acp/spawn-driver.js'
 
 /** A SandboxApi stand-in whose object state a test drives directly. */
 function fakeApi(options: { ready?: boolean; mode?: 'Running' | 'Suspended'; templateImage?: string } = {}) {
@@ -816,40 +817,78 @@ describe('cluster spawn driver', () => {
   })
 
   // A pod session's credential-proxy env is decided after the bind, by whether the pod's own shim reported a codehost listener.
-  const codehostLaunch = {
-    ...(launchRequest as object),
+  const codehostLaunch: SpawnRequest = {
+    command: 'x',
+    args: [],
     env: { AC_AGENT_ID: 'agent-a', GIT_CONFIG_GLOBAL: '/run/agentconnect/git/agent-a.gitconfig' },
     files: [{ root: '/run/agentconnect/git', relPath: ['agent-a.gitconfig'], content: '[credential]\n' }],
     codehost: {
       env: { AC_CODEHOST_CREDENTIAL: 'placeholder-example' }
     }
-  } as never
+  }
 
-  it("applies a launch's codehost env only beside the pod shim's codehost listener", async () => {
-    const served: Array<{ capability: string; payload: unknown }> = []
-    const { api } = fakeApi()
-    const listener = {
-      port: 41_234,
-      token: 'listener-token-example',
-      trustBundle: '/run/agentconnect/codehost-trust.pem'
+  it.each([false, true])(
+    'applies a launch codehost env beside the current listener (required=%s)',
+    async (required) => {
+      const served: Array<{ capability: string; payload: unknown }> = []
+      const { api } = fakeApi()
+      const listener = {
+        port: 41_234,
+        token: 'listener-token-example',
+        trustBundle: '/run/agentconnect/codehost-trust.pem'
+      }
+      const { instance } = driver(api, {
+        connectChannel: async () => answeringConnection(served),
+        codehostFor: () => listener
+      })
+      await instance.launch({ ...codehostLaunch, codehost: { ...codehostLaunch.codehost!, required } })
+      const writes = served.filter((request) => request.capability === 'materialize').map((request) => request.payload)
+      expect(writes).toEqual([expect.objectContaining({ relPath: ['agent-a.gitconfig'] })])
+      // The pod builds its own bundle from the CA certificate its listen carried, so no certificate travels in a launch file.
+      expect(JSON.stringify(writes)).not.toContain('BEGIN CERTIFICATE')
+      const acp = served.find((request) => request.capability === 'acp')!.payload as { env: Record<string, string> }
+      expect(acp.env).toMatchObject({
+        AC_CODEHOST_CREDENTIAL: 'placeholder-example',
+        GIT_CONFIG_GLOBAL: '/run/agentconnect/git/agent-a.gitconfig',
+        HTTPS_PROXY: 'http://codehost:listener-token-example@127.0.0.1:41234',
+        SSL_CERT_FILE: listener.trustBundle
+      })
+      expect(acp).not.toHaveProperty('codehost')
     }
-    const { instance } = driver(api, {
-      connectChannel: async () => answeringConnection(served),
-      codehostFor: () => listener
-    })
-    await instance.launch(codehostLaunch)
-    const writes = served.filter((request) => request.capability === 'materialize').map((request) => request.payload)
-    expect(writes).toEqual([expect.objectContaining({ relPath: ['agent-a.gitconfig'] })])
-    // The pod builds its own bundle from the CA certificate its listen carried, so no certificate travels in a launch file.
-    expect(JSON.stringify(writes)).not.toContain('BEGIN CERTIFICATE')
-    const acp = served.find((request) => request.capability === 'acp')!.payload as { env: Record<string, string> }
-    expect(acp.env).toMatchObject({
-      AC_CODEHOST_CREDENTIAL: 'placeholder-example',
-      GIT_CONFIG_GLOBAL: '/run/agentconnect/git/agent-a.gitconfig',
-      HTTPS_PROXY: 'http://codehost:listener-token-example@127.0.0.1:41234',
-      SSL_CERT_FILE: listener.trustBundle
-    })
-  })
+  )
+
+  it.each(['missing', 'conflicting', 'conflicting lowercase'])(
+    'refuses a required codehost route before materialization or ACP when %s, releasing the hold',
+    async (failure) => {
+      const served: Array<{ capability: string; payload: unknown }> = []
+      const { api } = fakeApi()
+      const listener = { port: 41234, token: 'listener-token-example', trustBundle: '/pod/codehost-trust.pem' }
+      const { instance } = driver(api, {
+        connectChannel: async () => answeringConnection(served),
+        codehostFor: () => (failure === 'missing' ? undefined : listener)
+      })
+      const env = {
+        ...codehostLaunch.env,
+        ...(failure === 'conflicting' ? { HTTPS_PROXY: 'http://egress.example.test:3128' } : {}),
+        ...(failure === 'conflicting lowercase'
+          ? {
+              HTTPS_PROXY: 'http://codehost:listener-token-example@127.0.0.1:41234',
+              https_proxy: 'http://egress.example.test:3128'
+            }
+          : {})
+      }
+      await expect(
+        instance.launch({
+          ...codehostLaunch,
+          env,
+          clearDirs: ['/run/agentconnect/git'],
+          codehost: { ...codehostLaunch.codehost!, required: true }
+        })
+      ).rejects.toThrow('code-host proxy required')
+      expect(served).toEqual([])
+      expect(await instance.suspendIfIdle('agent-a')).toBe('suspended')
+    }
+  )
 
   it('holds no placeholder on a pod whose image shim serves no codehost listener', async () => {
     const served: Array<{ capability: string; payload: unknown }> = []

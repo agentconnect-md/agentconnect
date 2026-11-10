@@ -4,6 +4,7 @@ import {
   k8sPlaneSettings,
   startK8sRuntimePlane,
   type K8sRuntimePlane,
+  type K8sRuntimePlaneOptions,
   sandboxMemoryRoot
 } from '../src/k8s/runtime-plane.js'
 import { PROBE_CLAIM_EXPIRES_ANNOTATION, PROBE_CLAIM_LABEL, probeAgentId } from '../src/k8s/probe-claim.js'
@@ -26,6 +27,7 @@ import { hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
 import { ShimClient, type ShimTransport } from '../src/shim/client.js'
 import { ShimBundleClient } from '../src/shim/bundle-client.js'
 import { ShimServer } from '../src/shim/server.js'
+import type { GitExecPayload } from '../src/shim/git-exec.js'
 import type { ShimFeature } from '../src/shim/protocol.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
 import type { Sandbox, SandboxClaim, SandboxFence } from '../src/k8s/sandbox-api.js'
@@ -105,7 +107,8 @@ function fakeApi(options: { podName?: string; adopt?: boolean } = {}) {
 async function planeUnderTest(
   api: ReturnType<typeof fakeApi>,
   readyTimeoutMs = 15_000,
-  servesAgent?: (agentId: string) => boolean
+  servesAgent?: (agentId: string) => boolean,
+  options: Partial<K8sRuntimePlaneOptions> = {}
 ): Promise<K8sRuntimePlane> {
   const server = new ShimServer()
   const port = await server.start(0, '127.0.0.1')
@@ -121,6 +124,7 @@ async function planeUnderTest(
     shimPort: port,
     readyTimeoutMs,
     api: api.api as never,
+    ...options,
     log: { info: () => {}, warn: () => {}, debug: () => {} }
   })
   planes.push(plane)
@@ -322,6 +326,85 @@ describe('k8s runtime plane assembly', () => {
     expect(plane.memoryFsFor('agent-b')).toBeUndefined()
     expect(sandboxMemoryRoot(undefined)).toBe('/agent/.agentconnect/memory')
     expect(sandboxMemoryRoot('/mnt/vol/')).toBe('/mnt/vol/.agentconnect/memory')
+  })
+
+  it.each(['complete', 'cancel'] as const)(
+    'maps cold workspace Git through the pod listener and releases its hold on %s',
+    async (outcome) => {
+      const listener = { port: 41234, token: 'example-listener-token', trustBundle: '/pod/codehost-trust.pem' }
+      const mapGitEnv = vi.fn<NonNullable<K8sRuntimePlaneOptions['mapGitEnv']>>((_agentId, env, route) => ({
+        ...env,
+        GIT_SSL_CAINFO: route!.trustBundle
+      }))
+      const plane = await planeUnderTest(fakeApi(), 15_000, undefined, {
+        mapGitEnv,
+        tunnelsFor: () => ['codehost'],
+        tunnelSocketPath: () => '/daemon/codehost.sock',
+        tunnelListenOptions: () => ({ routes: ['dev.azure.com:443'], ca: 'example certificate' })
+      })
+      let received!: (payload: GitExecPayload) => void
+      const executed = new Promise<GitExecPayload>((resolve) => (received = resolve))
+      let finish!: () => void
+      const pending = new Promise<void>((resolve) => (finish = resolve))
+      const ensuring = plane.ensureChannel('agent-a')
+      shimAgainst(shimPort(plane), {
+        workspaceRoot: '/pod',
+        handle: async (capability, payload) => {
+          if (capability === 'tunnel') return { socketPath: '/pod/codehost.sock', proxy: listener }
+          if (capability !== 'exec') throw new Error(`unexpected capability ${capability}`)
+          received(payload as GitExecPayload)
+          await pending
+          return { code: 0, stdout: '', stderr: '' }
+        }
+      })
+      await ensuring
+      expect(plane.servesTunnel!('agent-a', 'codehost')).toBe(true)
+
+      const abort = new AbortController()
+      const runner = plane.gitRunnerFor('agent-a', '/pod/checkout', abort.signal)!
+      const git = runner.withEnv({ GIT_TERMINAL_PROMPT: '0' }).raw(['fetch', 'origin'])
+      const result = git.then(
+        () => undefined,
+        (error: unknown) => error
+      )
+      const payload = await executed
+      expect(mapGitEnv).toHaveBeenCalledWith(
+        'agent-a',
+        { GIT_TERMINAL_PROMPT: '0' },
+        { proxyUrl: 'http://codehost:example-listener-token@127.0.0.1:41234', trustBundle: listener.trustBundle }
+      )
+      expect(payload.env?.GIT_SSL_CAINFO).toBe(listener.trustBundle)
+      expect(await plane.suspendIdle('agent-a')).toBe('busy')
+      if (outcome === 'cancel') abort.abort()
+      else finish()
+      const error = await result
+      finish()
+      if (outcome === 'cancel') expect(error).toBeInstanceOf(Error)
+      else expect(error).toBeUndefined()
+      expect(await plane.suspendIdle('agent-a')).toBe('suspended')
+      expect(plane.servesTunnel!('agent-a', 'codehost')).toBe(false)
+      await expect(runner.raw(['status'])).rejects.toMatchObject({ reason: 'sandbox-unavailable' })
+    }
+  )
+
+  it('refuses managed Git without a listener before exec while local Git remains usable', async () => {
+    const mapped = vi.fn<NonNullable<K8sRuntimePlaneOptions['mapGitEnv']>>((_agentId, env, route) => {
+      if (!route) throw new Error('managed Git requires the code-host proxy')
+      return env
+    })
+    const plane = await planeUnderTest(fakeApi(), 15_000, undefined, { mapGitEnv: mapped })
+    const exec = vi.fn(async () => ({ code: 0, stdout: 'local status', stderr: '' }))
+    const ensuring = plane.ensureChannel('agent-a')
+    shimAgainst(shimPort(plane), { handle: exec })
+    await ensuring
+
+    const runner = plane.podGitRunner!('agent-a')!
+    await expect(runner.withEnv({ GIT_TERMINAL_PROMPT: '0' }).raw(['fetch', 'origin'])).rejects.toThrow(
+      'managed Git requires the code-host proxy'
+    )
+    expect(exec).not.toHaveBeenCalled()
+    expect(await runner.raw(['status'])).toBe('local status')
+    expect(await plane.suspendIdle('agent-a')).toBe('suspended')
   })
 
   it.each([

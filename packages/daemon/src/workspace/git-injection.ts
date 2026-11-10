@@ -36,6 +36,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { tlsTrustEnv } from '../config/tls-trust-env.js'
+import { proxyTrustEnv } from '../credential-proxy/ca.js'
 import type { GitPullSummary, GitRunner } from './git-runner.js'
 import { simpleGit, type SimpleGit } from 'simple-git'
 import { normalizeGitCloneUrl, type CodeHostProvider, type GitCommitIdentity } from '@agentconnect.md/protocol'
@@ -48,11 +49,13 @@ import {
 import {
   codeHostCredentialModules,
   codeHostCredentials,
+  isProxyOnlyProvider,
   managedHostTable,
   type CodeHostSpecHosts
 } from '../codehost/credentials.js'
 import {
   encodeManagedHostTable,
+  decodeManagedHostTable,
   gitlabManagedHost,
   AGENT_CHANNEL_HOSTS_ENV,
   GITHUB_MANAGED_HOST,
@@ -410,34 +413,26 @@ export async function syncWorkspaceRef(git: GitRunner, remote: string, branch: s
   }
 }
 
-/**
- * How one agent's git reaches its managed hosts (§13.2, §24.4). Resolved from the REPLICATED SPEC —
- * the provider decides which host the credential config block pins, and `gitlabHost` decides that
- * host's address. A clone URL is checked against the result, never the source of it.
- */
+/** Managed hosts resolved from the replicated spec; clone URLs are checked against this scope. */
 export interface ManagedCredentialScope {
   /** The host the `credential.<base>` block pins for this operation. */
   host: ManagedCredentialHost
   /** The GitLab instance this spec's GitLab consumers address, for the injected classifier table. */
   gitlabHost?: string
-  /**
-   * The spec carries a REPO-BEARING GitLab consumer — a gitlab workspace, or at least one gitlab
-   * additional-repository authorization (§24.4). Such an agent already accepts that the managed
-   * identity owns that instance's credential path, so the session config pins the helper there too.
-   * A hook-only host does NOT set this: a hook holds no repository authorization, so pinning would
-   * cut the agent's ambient credentials with nothing to serve in their place.
-   */
+  /** A GitLab workspace or authorized additional repository pins its helper; hook-only consumers do not. */
   gitlabRepoBearing?: boolean
   /** The Gitea twins (gitea-integration.md §9, §13): the spec's instance, and whether a repo-bearing Gitea consumer rides beside the workspace. */
   giteaHost?: string
   giteaRepoBearing?: boolean
   /** Whether an Azure DevOps repository rides beside the workspace; its host is fixed, so there is no host field. */
   azureDevOpsRepoBearing?: boolean
+  /** Whether a GitHub repository rides beside another provider's workspace. */
+  githubRepoBearing?: boolean
   /** Further base URLs the session pins its placeholder for, where the proxy serves the same repositories under another name (an Azure DevOps organization's own host). */
   proxyNames?: readonly string[]
 }
 
-/** Anonymous and github-app operations both pin github.com; only a gitlab or gitea consumer moves the axis. */
+/** The default managed host when no provider-specific scope is selected. */
 export const GITHUB_CREDENTIAL_SCOPE: ManagedCredentialScope = { host: GITHUB_MANAGED_HOST }
 
 export { GITHUB_MANAGED_HOST, gitlabManagedHost }
@@ -474,24 +469,26 @@ export function managedCredentialScope(
   gitlabHost?: string,
   gitlabRepoBearing = false,
   gitea: GiteaScopeAxis = {},
-  azureDevOpsRepoBearing = false
+  azureDevOpsRepoBearing = false,
+  githubRepoBearing = false
 ): ManagedCredentialScope {
   const spec = scopeSpecHosts({ gitlabHost, giteaHost: gitea.host })
   const host = codeHostCredentials(provider)?.managedHost(spec) ?? GITHUB_MANAGED_HOST
   return {
     host,
     ...spec,
-    // A gitlab or gitea workspace is repo-bearing by construction; the flag only adds the other consumer.
-    // Each names its provider because the field is that provider's host axis itself (gitea-integration.md §13).
+    // Each provider's flag adds its authorized repositories beside the operation's own host.
     ...(gitlabRepoBearing || provider === 'gitlab' ? { gitlabRepoBearing: true } : {}),
     ...(gitea.repoBearing || provider === 'gitea' ? { giteaRepoBearing: true } : {}),
-    ...(azureDevOpsRepoBearing || provider === 'azure-devops' ? { azureDevOpsRepoBearing: true } : {})
+    ...(azureDevOpsRepoBearing || provider === 'azure-devops' ? { azureDevOpsRepoBearing: true } : {}),
+    ...(githubRepoBearing ? { githubRepoBearing: true } : {})
   }
 }
 
-/** Which providers a scope bears a repository on beside the workspace, by provider; GitHub never rides here. */
+/** Which providers a scope bears a repository on beside the workspace, by provider. */
 function repoBearingHosts(scope: ManagedCredentialScope): Partial<Record<CodeHostProvider, boolean | undefined>> {
   return {
+    github: scope.githubRepoBearing,
     gitlab: scope.gitlabRepoBearing,
     gitea: scope.giteaRepoBearing,
     'azure-devops': scope.azureDevOpsRepoBearing
@@ -701,26 +698,65 @@ export function checkoutHelper(): string {
   return PLACEHOLDER_HELPER_COMMAND
 }
 
-/** Daemon Git inside an agent's boundary, behind the credential proxy: each of `bases`' helpers answers `placeholder`, never a real token, and the daemon's capability goes where no real helper is left (azure-devops-integration.md §6.1). */
+// The current execution environment's route; SRT intercepts the reported domains without an explicit proxy URL.
+export interface DaemonGitProxyRoute {
+  proxyUrl?: string
+  trustBundle: string
+  domains?: readonly string[]
+}
+
+// Select the operation from its daemon-authored URL pins, never from checkout config or the agent's primary provider.
 export function proxiedDaemonGitEnv(
   env: Record<string, string>,
-  bases: readonly string[],
-  placeholder: string
+  hosts: readonly ManagedCredentialHost[],
+  route: DaemonGitProxyRoute | undefined,
+  placeholder: string | undefined
 ): Record<string, string> {
-  const helpers = new Set(bases.map((base) => `credential.${base}.helper`))
-  const pairs = gitConfigPairsOf(env).map(([key, value]): [string, string] =>
-    helpers.has(key) && value !== '' ? [key, PLACEHOLDER_HELPER_COMMAND] : [key, value]
+  if (!env[AGENT_CHANNEL_HOSTS_ENV]) return env
+  const original = gitConfigPairsOf(env)
+  const targets = original.flatMap(([key, value]) => (key === `url.${value}.insteadOf` ? [value] : []))
+  const managed = decodeManagedHostTable(env[AGENT_CHANNEL_HOSTS_ENV])
+  const migrated = targets.some((target) =>
+    managed.some((host) => isProxyOnlyProvider(host.provider) && originOnManagedHost(target, host))
   )
+  if (!migrated) return env
+  if (!route?.trustBundle || !placeholder) throw new Error('managed Git requires a ready credential proxy route')
+  for (const target of targets) {
+    if (
+      !target.startsWith('https://') ||
+      !hosts.some((host) => originOnManagedHost(target, host)) ||
+      (route.domains && !route.domains.includes(new URL(target).hostname))
+    ) {
+      throw new Error('managed Git target is not covered by the execution environment credential proxy')
+    }
+  }
+  const proxy = route.proxyUrl ?? ''
+  const pairs = original
+    .filter(([key]) => !/^credential\.(?:.*\.)?helper$/i.test(key))
+    .map(([key, value]): [string, string] =>
+      /^(?:http(?:\..+)?|remote\..+)\.proxy$/i.test(key) ? [key, proxy] : [key, value]
+    )
+  // Bundle storage stays direct; only the managed authorities and explicitly pinned remotes use this route.
+  pairs.push(['http.proxy', ''], ['http.proxyAuthMethod', 'basic'], ['credential.helper', ''])
+  for (const base of new Set([...hosts.map((host) => host.baseUrl), ...targets])) {
+    pairs.push(
+      [`credential.${base}.helper`, ''],
+      [`credential.${base}.helper`, PLACEHOLDER_HELPER_COMMAND],
+      [`credential.${base}.useHttpPath`, 'true'],
+      [`http.${base}.proxy`, proxy],
+      [`http.${base}.sslVerify`, 'true']
+    )
+  }
+  if (route.proxyUrl) pairs.push([`credential.${new URL(route.proxyUrl).origin}.helper`, ''])
   const proxied: Record<string, string> = {
     ...env,
-    ...(pairs.length > 0 ? gitConfigEnv(pairs) : {}),
-    [CODE_HOST_CREDENTIAL_ENV]: placeholder
+    ...gitConfigEnv(pairs),
+    ...proxyTrustEnv({ bundlePath: route.trustBundle }),
+    [CODE_HOST_CREDENTIAL_ENV]: placeholder,
+    GIT_SSL_NO_VERIFY: 'false'
   }
-  // The daemon's capability serves only a real helper, so with none left it stays outside the boundary.
-  const realHelper = pairs.some(
-    ([key, value]) => /^credential\.(?:.*\.)?helper$/i.test(key) && value !== '' && value !== PLACEHOLDER_HELPER_COMMAND
-  )
-  if (!realHelper) delete proxied[AGENT_CHANNEL_CAPABILITY_ENV]
+  delete proxied[AGENT_CHANNEL_CAPABILITY_ENV]
+  for (const key of Object.keys(proxied)) if (WORKSPACE_GIT_PROXY_ENV.test(key)) delete proxied[key]
   return proxied
 }
 

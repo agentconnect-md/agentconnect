@@ -97,6 +97,19 @@ describe('applying a launch codehost env at spawn', () => {
     expect(applyProxySpawn({ ...own, codehost: OVERLAY }, { codehost: listener })).toEqual(own)
   })
 
+  it('uses the filtered codehost bypass list over the inherited wildcard and retains loopback', () => {
+    const launch = applyProxySpawn(
+      {
+        ...base,
+        env: { ...base.env, NO_PROXY: '*', no_proxy: '*' },
+        codehost: { ...OVERLAY, env: { ...OVERLAY.env, NO_PROXY: '' } }
+      },
+      { codehost: listener }
+    )
+    expect(launch.env.NO_PROXY).toBe('localhost,127.0.0.1,::1')
+    expect(launch.env.no_proxy).toBe(launch.env.NO_PROXY)
+  })
+
   it("appends the codehost's command-scope helper after the pairs the launch already carries", () => {
     const env = { ...base.env, GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'safe.directory', GIT_CONFIG_VALUE_0: '*' }
     const codehost = {

@@ -302,13 +302,14 @@ describe('Azure DevOps clone addresses (azure-devops-integration.md §5)', () =>
 
   it.each([
     ['the canonical form', CANONICAL],
+    ['a mixed-case organization', 'https://dev.azure.com/Example-Org/Example%20Project/_git/Example%20Repo'],
     [
       'the organization as user-info',
       'https://example-org@dev.azure.com/example-org/Example%20Project/_git/Example%20Repo'
     ],
     [
       'user-info in another case',
-      'https://Example-Org@dev.azure.com/example-org/Example%20Project/_git/Example%20Repo'
+      'https://EXAMPLE-ORG@dev.azure.com/Example-Org/Example%20Project/_git/Example%20Repo'
     ],
     ['a .git suffix', `${CANONICAL}.git`],
     ['a trailing slash', `${CANONICAL}/`],
