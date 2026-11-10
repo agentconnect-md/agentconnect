@@ -2884,7 +2884,9 @@ export default function SessionDetailView() {
   const rootOf = (turn: Turn): string | undefined =>
     threadsView && turn.kind === 'user' && namesThread(threadShape, turn.messageId) ? turn.messageId : undefined
   // A root the reader may reply under.
-  const replyRootOf = (turn: Turn): string | undefined => (threadWriter ? rootOf(turn) : undefined)
+  // The thread a reader replies in from a person's message: the one a redirected message joined, else the root's own.
+  const replyRootOf = (turn: Turn): string | undefined =>
+    !threadWriter ? undefined : turn.kind === 'user' && turn.handedTo && threadsView ? turn.handedTo : rootOf(turn)
   const replyInThread = (rootId: string) => openRootThread(rootId, { focus: true })
   const rootTextOf = new Map(
     turns.flatMap((turn) => (turn.kind === 'user' && turn.messageId ? [[turn.messageId, turn.text]] : []))
@@ -4011,7 +4013,6 @@ export default function SessionDetailView() {
                                   return root ? () => replyInThread(root) : undefined
                                 })()}
                                 pressToReply={isMobile}
-                                replyButton={!threadSummaries.has(rootOf(turn) ?? '')}
                               />
                               {rootFooter(turn, 'card')}
                             </>

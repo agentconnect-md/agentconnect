@@ -340,8 +340,8 @@ As implemented (PR 6):
   drawn in that thread's panel, not in the main timeline; the answer's text is only in the thread.
 - Nothing is posted to the main timeline on a thread's behalf: there is no "also send to the
   conversation".
-- A root's replies line opens its thread; a root with no thread yet offers **Reply in thread** on
-  hover. On a phone, a tap on the footer or a long-press menu does.
+- A person's message offers **Reply in thread** in its hover menu: in its own thread, or in the
+  thread a redirected message joined. On a phone, a tap on the footer or a long-press menu does.
 
 As implemented (PR 11):
 

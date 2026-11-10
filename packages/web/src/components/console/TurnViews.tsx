@@ -110,7 +110,6 @@ export function UserTurnView({
   footer,
   onReply,
   pressToReply = false,
-  replyButton = true,
   lead
 }: {
   turn: UserTurn
@@ -122,8 +121,6 @@ export function UserTurnView({
   onReply?: (() => void) | undefined
   /** A long press replies too, as a phone reader has no hover. */
   pressToReply?: boolean
-  /** The hover Reply in thread; off where the root's replies line already opens its thread. */
-  replyButton?: boolean
   /** Above the bubble: the thread a handed message joined, which it opens. */
   lead?: ReactNode
 }) {
@@ -169,7 +166,7 @@ export function UserTurnView({
         )}
         {footer}
         {/* A sent bubble's hover action sits in the inter-turn gap, so revealing it never shifts the row; a person's message has no Copy. */}
-        {onReply && replyButton && (
+        {onReply && (
           // Its hover menu, beside the bubble's top.
           <HoverToolbar group="turn" label={tt('messageActions')} className="top-0 right-full mr-[6px]">
             <ReplyInThreadButton onReply={onReply} />
