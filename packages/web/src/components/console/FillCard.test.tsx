@@ -75,6 +75,7 @@ describe('FillCard (computer-form-fill-and-vault.md §6)', () => {
     )
     expect(host.textContent).toContain('https://login.example.test')
     expect(host.textContent).toContain('Sign in to open the report')
+    expect(host.textContent).toContain('stays signed in')
     expect(host.querySelector<HTMLInputElement>('input[aria-label="Email"]')!.type).toBe('password')
     expect(host.textContent).toContain('later screenshots')
     const textarea = render(

@@ -22,6 +22,7 @@ import { attributeSocket, realProc } from './form-fill/attribution.js'
 import { FORM_FILL_EXTENSION } from './form-fill/build.js'
 import { FormFillEndpoint } from './form-fill/endpoint.js'
 import {
+  configuredFormFillPort,
   desktopInstallPlan,
   desktopUninstallCommands,
   detectBrowsers,
@@ -392,7 +393,7 @@ async function formFillCommand(dir: string, action: string | undefined, yes: boo
   if (action === 'status' || action === undefined) {
     const check = formFillCheck({
       build: FORM_FILL_EXTENSION,
-      port: config.formFillPort,
+      port: configuredFormFillPort(config.formFillPort),
       browsers,
       command: selfCommand()
     })
@@ -656,6 +657,8 @@ function startCpChannel(options: {
   createMcpServer: (principal: McpPrincipal) => McpServer
   viewer: Viewer
   local: () => LocalControls | undefined
+  // Checks only the running daemon can answer beyond the local controls', such as its form-fill browsers.
+  liveChecks?: () => Check[]
   egress?: EgressForwarder | undefined
   // The command-line tier runs here (§5.7).
   commandLine?: boolean
@@ -724,7 +727,10 @@ function startCpChannel(options: {
                   commandLine: options.commandLine === true,
                   formFill: options.formFill === true
                 }),
-                doctor: doctorReport([...checks, ...(local?.checks() ?? [])], doctorAt)
+                doctor: doctorReport(
+                  [...checks, ...(local?.checks() ?? []), ...(options.liveChecks?.() ?? [])],
+                  doctorAt
+                )
               }
             : {})
         }
@@ -1334,7 +1340,7 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     createMcpServer,
     log,
     viewer,
-    localChecks: () => live.local?.checks() ?? [],
+    localChecks: () => [...(live.local?.checks() ?? []), ...(formFill ? [formFill.endpoint.check()] : [])],
     ...(live.desktops
       ? {
           desktops: {
@@ -1363,6 +1369,7 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     egress,
     commandLine: commandLine !== undefined,
     formFill: formFill !== undefined,
+    ...(formFill ? { liveChecks: () => [formFill.endpoint.check()] } : {}),
     onPolicy: (policy) => {
       live.policy = policy
       keepAdminPrompts(policy.approvals.adminPrompts)

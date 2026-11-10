@@ -127,6 +127,16 @@ export function installedExtensionId(policyDir: string, fs: ProbeFs = realFs): s
   }
 }
 
+/** The port the daemon serves the extension on: its config, else the container's FORM_FILL_PORT its entrypoint passes. */
+export function configuredFormFillPort(
+  configured: number | undefined,
+  env: NodeJS.ProcessEnv = process.env
+): number | undefined {
+  if (configured !== undefined) return configured
+  const port = Number(env.FORM_FILL_PORT)
+  return Number.isInteger(port) && port > 0 ? port : undefined
+}
+
 /** doctor's `form fill`: installed for this build, an older one, nowhere, or on a browser it cannot reach. */
 export function formFillCheck(options: {
   build: ExtensionBuild | undefined

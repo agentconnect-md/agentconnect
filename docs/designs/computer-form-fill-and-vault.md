@@ -525,6 +525,14 @@ unsupported until the browser is restarted with a fresh install. Unsupported
 versions fail clearly. There is no fallback that types secret values blindly
 through coordinates or the active OS focus.
 
+The running daemon reports `form fill browsers` in doctor and in its heartbeat:
+which desktops' browsers are connected, and which were refused for another build,
+whose agents are then told to restart the browser instead of "not connected". A
+restarted Computer's extension reconnects to the new daemon and fills again on the
+kept profile (image suite). Pending Fill cards live only in the agent daemon's
+memory: after its restart an answer finds no card, and nothing typed is replayed.
+A login card says that the browser stays signed in for later users of the Computer.
+
 ## 11. Delivery plan and acceptance
 
 | Stage | Deliverable                                          | Completion evidence                                                                                                                                                       |

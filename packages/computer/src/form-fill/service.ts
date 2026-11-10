@@ -50,7 +50,7 @@ export class FormFillService {
   private readonly now: () => number
 
   constructor(
-    private readonly endpoint: Pick<FormFillEndpoint, 'request' | 'connected'>,
+    private readonly endpoint: Pick<FormFillEndpoint, 'request' | 'connected' | 'unavailableReason'>,
     options: { now?: () => number } = {}
   ) {
     this.now = options.now ?? Date.now
@@ -116,7 +116,7 @@ export class FormFillService {
       let result: ComputerFormFillResult
       if (signal?.aborted) result = outcome('cancelled', 'cancelled before anything was sent to the browser')
       else if (!this.endpoint.connected(desktop))
-        result = outcome('unsupported', "this desktop's browser extension is not connected; nothing was sent")
+        result = outcome('unsupported', `${this.endpoint.unavailableReason(desktop)}; nothing was sent`)
       else {
         try {
           const reply = await this.endpoint.request(

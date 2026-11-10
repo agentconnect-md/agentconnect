@@ -96,6 +96,9 @@ class Agent {
   /** Opens a page in this agent's own desktop browser the way an agent does: address bar, type, Return. */
   async open(path: string, origin = fixtures.origins[0]): Promise<void> {
     const url = `${origin}${path}${path.includes('?') ? '&' : '?'}desk=${this.desk}`
+    // The page before may still answer discovery while the new one loads: wait for another document.
+    const before = await this.discover().catch(() => undefined)
+    const previous = new Set((before?.forms ?? []).map((form) => form.documentId))
     await this.call('computer_key', { keys: ['escape'] })
     await this.call('computer_key', { keys: ['ctrl', 'l'] })
     await this.call('computer_type', { text: url })
@@ -103,9 +106,8 @@ class Agent {
     const title = new URL(url).pathname
     await until(`${this.desk} to load ${title}`, 30_000, async () => {
       const discovery = await this.discover()
-      return discovery.status !== 'unsupported' &&
-        discovery.tab &&
-        (discovery.forms.length > 0 || path.startsWith('/done'))
+      const fresh = discovery.forms.length > 0 && discovery.forms.every((form) => !previous.has(form.documentId))
+      return discovery.status !== 'unsupported' && discovery.tab && (fresh || path.startsWith('/done'))
         ? true
         : undefined
     })
@@ -304,6 +306,32 @@ describe.skipIf(!image)('form fill in the computer image (computer-form-fill-and
     await sleep(2000)
     expect(reported('slow', 'a')).toEqual([{ code: CANARY.slow }])
   }, 90_000)
+
+  it('reconnects after the computer restarts: the daemon reports the browser, and a fill works on the kept profile', async () => {
+    const before = (logs().match(/form fill: extension .* connected on desktop main/g) ?? []).length
+    docker('restart', '-t', '20', name)
+    // A restarted container publishes the daemon on a new host port.
+    base = `http://${docker('port', name, '7681/tcp').trim().split('\n')[0]}`
+    await until('the extension to reconnect to the restarted daemon', 120_000, () =>
+      (logs().match(/form fill: extension .* connected on desktop main/g) ?? []).length > before ? true : undefined
+    )
+    const doctor = JSON.parse(docker('exec', name, 'agentconnect-computer', 'doctor', '--json', '--daemon')) as {
+      checks?: Array<{ name: string; status: string; detail: string }>
+    }
+    const checks = doctor.checks ?? (doctor as unknown as Array<{ name: string; status: string; detail: string }>)
+    expect(checks.filter((check) => check.name.startsWith('form fill'))).toEqual([
+      expect.objectContaining({ name: 'form fill', status: 'ok' }),
+      expect.objectContaining({ name: 'form fill browsers', status: 'ok' })
+    ])
+    // The agent's desktop starts again on its next call, and its browser keeps the extension it installed before.
+    await a.start()
+    await a.open('/vanilla.html')
+    const result = await a.fill(await a.discover(), { username: 'after-restart' })
+    expect(result.status).toBe('filled')
+    await until('the plain form report after the restart', 10_000, () =>
+      lastReport('vanilla', 'a')?.username === 'after-restart' ? true : undefined
+    )
+  }, 300_000)
 
   it('keeps every value out of results, the daemon log and the audit log', () => {
     const audit = docker('exec', name, 'cat', '/home/computer/.agentconnect/computer/audit.log')

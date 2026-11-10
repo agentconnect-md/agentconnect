@@ -33,6 +33,7 @@ function setup(reply: (body: { type: string; requestId?: string }) => Promise<Fo
   const sent: unknown[] = []
   const service = new FormFillService({
     connected: () => connected,
+    unavailableReason: () => "this desktop's browser runs another extension build; restart the browser",
     request: async (_desktop, body) => {
       sent.push(body)
       return reply(body as { type: string; requestId?: string })
@@ -109,7 +110,8 @@ describe('FormFillService (computer-form-fill-and-vault.md §5.2, §8)', () => {
     expect(String(uncertain.reason)).toMatch(/not retried/)
     const offline = setup(filled, false)
     expect(json(await offline.service.fill(offline.computer, 'main', 'agent-1', fillArgs(6)))).toMatchObject({
-      status: 'unsupported'
+      status: 'unsupported',
+      reason: expect.stringMatching(/restart the browser; nothing was sent/)
     })
     expect(offline.sent).toEqual([])
   })

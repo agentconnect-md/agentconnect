@@ -7566,6 +7566,7 @@
     "noSubmit": "只填写，由 agent 提交",
     "privacyNote": "这些值会发送到电脑上的网站，不会发给 agent。",
     "unmaskedNote": "这些值会发送到电脑上的网站，不会发给 agent。网站可能以明文显示某个字段，之后的截图可能会包含它。",
+    "sessionNote": "登录后，这台电脑的浏览器会保持登录状态，之后使用它的 agent 或人都可以使用这个会话。",
     "notAccepted": "这个回答未被接受。",
     "outcome": {
       "sending": "已发送到网站…",

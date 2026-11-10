@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { extensionId, extensionKey } from './package.js'
 import {
+  configuredFormFillPort,
   DESKTOP_EXTENSION_DIR,
   desktopInstallPlan,
   desktopUninstallCommands,
@@ -140,5 +141,13 @@ describe('formFillCheck', () => {
         fs({ '/etc/chromium/policies/managed/agentconnect-form-fill.json': '{' })
       )
     ).toBeUndefined()
+  })
+})
+
+describe('configuredFormFillPort', () => {
+  it('takes the config, else the container entrypoint’s FORM_FILL_PORT', () => {
+    expect(configuredFormFillPort(7700, { FORM_FILL_PORT: '7682' })).toBe(7700)
+    expect(configuredFormFillPort(undefined, { FORM_FILL_PORT: '7682' })).toBe(7682)
+    expect(configuredFormFillPort(undefined, { FORM_FILL_PORT: '' })).toBeUndefined()
   })
 })

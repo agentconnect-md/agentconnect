@@ -7566,6 +7566,7 @@
     "noSubmit": "Fills only; the agent submits",
     "privacyNote": "These values go to the website on the computer, never to the agent.",
     "unmaskedNote": "These values go to the website on the computer, never to the agent. A website may show a field as you typed it, so later screenshots can include it.",
+    "sessionNote": "After you sign in, this computer's browser stays signed in, and later agents or people using it can use that session.",
     "notAccepted": "This answer was not accepted.",
     "outcome": {
       "sending": "Sent to the website…",
