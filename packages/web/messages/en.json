@@ -1129,8 +1129,9 @@
       "whoCanSee": "Who can see it",
       "placeMembers": "{place} members in {provider}",
       "copyLink": "Copy link",
-      "copied": "Copied",
-      "done": "Done"
+      "linkCopied": "Link copied",
+      "copyDoesNotGrantAccess": "Copying a link doesn't grant access.",
+      "copyFailed": "Couldn't copy. Select the link and copy it manually."
     }
   },
   "Shell": {

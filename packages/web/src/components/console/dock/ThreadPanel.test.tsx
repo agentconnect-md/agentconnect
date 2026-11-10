@@ -221,6 +221,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount())
   container.remove()
+  vi.restoreAllMocks()
 })
 
 async function render() {
@@ -297,12 +298,22 @@ describe('ThreadPanel', () => {
   })
 
   it('shares the task’s own session from its header, as the session page does', async () => {
+    vi.spyOn(window.location, 'href', 'get').mockReturnValue('https://console.example.test/acme/sessions/owner')
+    const write = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue()
     await render()
     const share = container.querySelector<HTMLButtonElement>('[data-task-thread-share]')!
     expect(share.getAttribute('aria-label')).toBe('Share')
     await act(async () => share.click())
-    const dialog = document.querySelector('[role="dialog"]')
+    const dialog = document.querySelector('[data-share-dialog]')!
     expect(dialog?.textContent).toContain('Copy link')
+    await act(async () =>
+      [...dialog.querySelectorAll<HTMLButtonElement>('button')]
+        .find((button) => button.textContent === 'Copy link')!
+        .click()
+    )
+    expect(write).toHaveBeenCalledWith('https://console.example.test/acme/sessions/ses_task')
+    expect(document.querySelector('[data-share-dialog]')).toBeNull()
+    expect(document.querySelector('[role="status"]')?.textContent).toBe('Link copied')
   })
 
   it('draws the task’s own approval in its thread, at the turn that asked', async () => {
