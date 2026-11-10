@@ -12,10 +12,14 @@ export interface Report {
   values: Record<string, unknown>
 }
 
-// Every page posts its state to its own origin's /report.
+// Every page posts its state to its own origin's /report, one after another so the last report is the latest state.
 const REPORT = `<script>
 const desk = new URLSearchParams(location.search).get('desk') || ''
-window.report = (page, values) => fetch('/report', { method: 'POST', body: JSON.stringify({ page, desk, values }) })
+let sent = Promise.resolve()
+window.report = (page, values) => {
+  const body = JSON.stringify({ page, desk, values })
+  sent = sent.then(() => fetch('/report', { method: 'POST', body })).catch(() => undefined)
+}
 </script>`
 
 const page = (title: string, body: string) =>
