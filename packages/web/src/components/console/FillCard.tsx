@@ -216,7 +216,8 @@ function FieldControl({
         ))}
       </select>
     )
-  if (field.control === 'textarea')
+  // A secret is a masked input whatever the website renders it with, a textarea included.
+  if (field.control === 'textarea' && !field.secret)
     return (
       <textarea
         className={`${INPUT} min-h-16`}

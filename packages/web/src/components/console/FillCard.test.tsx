@@ -77,6 +77,23 @@ describe('FillCard (computer-form-fill-and-vault.md §6)', () => {
     expect(host.textContent).toContain('Sign in to open the report')
     expect(host.querySelector<HTMLInputElement>('input[aria-label="Email"]')!.type).toBe('password')
     expect(host.textContent).toContain('later screenshots')
+    const textarea = render(
+      card({
+        fields: [
+          {
+            ...card().fields[0]!,
+            id: 'key',
+            control: 'textarea',
+            purpose: 'unknown',
+            label: 'Recovery key',
+            secret: true
+          }
+        ]
+      }),
+      async () => ({ accepted: true })
+    )
+    expect(textarea.querySelector('textarea')).toBeNull()
+    expect(textarea.querySelector<HTMLInputElement>('input[aria-label="Recovery key"]')!.type).toBe('password')
   })
 
   it('sends only what the person entered, then drops it from the page', async () => {

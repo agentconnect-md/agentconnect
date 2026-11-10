@@ -4,12 +4,18 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { COMPUTER_CHANNEL_FEATURE, COMPUTER_LEASE_FEATURE, agentComputerUseOf } from '@agentconnect.md/protocol'
-import { COMPUTER_TOOLS, COMPUTER_USE_GUIDANCE } from '../src/computer/tools.js'
+import {
+  COMPUTER_FILL_GUIDANCE,
+  COMPUTER_FILL_TOOLS,
+  COMPUTER_TOOLS,
+  COMPUTER_USE_GUIDANCE
+} from '../src/computer/tools.js'
 import { Daemon } from '../src/daemon.js'
 import { checkCoordinate, gettingToKnowCoordinate, researchCoordinate } from '../src/session/subsession-coordinate.js'
 
 const COMPUTER = '00000000-0000-4000-8000-000000000001'
-const COMPUTER_NAMES = COMPUTER_TOOLS.map((tool) => tool.name)
+// A webchat session also gets form filling, whose Fill card it can show (computer-form-fill-and-vault.md §6).
+const COMPUTER_NAMES = [...COMPUTER_TOOLS, ...COMPUTER_FILL_TOOLS].map((tool) => tool.name)
 
 function scaffold(runtimes: string[]): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-computer-d-'))
@@ -57,10 +63,10 @@ async function boot(features: readonly string[], runtimes = ['claude-acp', 'open
   d.cpClient = new Proxy(answers, { get: (target, name) => (name in target ? target[name] : () => undefined) })
   const agent = d.agents.get('bot-a')
   agent.computerUse = { enabled: true, computers: [COMPUTER] }
-  const context = (thread = 'append:1') => {
+  const context = (thread = 'append:1', platform = 'webchat') => {
     const result = d.sessions.deps.toolContextFor({
       agent,
-      platform: 'webchat',
+      platform,
       channel: 'c1',
       thread,
       deliveryThread: thread,
@@ -83,6 +89,11 @@ describe('toolContextFor and computer use', () => {
       const ordinary = context()
       expect(ordinary.computers).toEqual(COMPUTER_NAMES)
       expect(ordinary.instructions).toContain(COMPUTER_USE_GUIDANCE)
+      expect(ordinary.instructions).toContain(COMPUTER_FILL_GUIDANCE)
+      // A surface that cannot show a Fill card is not offered the tool or its guidance.
+      const elsewhere = context('append:1', 'telegram')
+      expect(elsewhere.computers).toEqual(COMPUTER_TOOLS.map((tool) => tool.name))
+      expect(elsewhere.instructions).not.toContain(COMPUTER_FILL_GUIDANCE)
     } finally {
       await daemon.stop()
     }
