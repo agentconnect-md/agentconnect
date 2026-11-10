@@ -259,8 +259,8 @@ describe.skipIf(process.platform === 'win32')('Azure daemon Git through an execu
     if (root) rmSync(root, { recursive: true, force: true })
   })
 
-  function runner(cwd: string, env: Record<string, string>) {
-    const mapped = proxiedDaemonGitEnv(env, HOSTS, { proxyUrl, trustBundle }, proxy.placeholderFor(AGENT))
+  function runner(cwd: string, env: Record<string, string>, bundle = trustBundle) {
+    const mapped = proxiedDaemonGitEnv(env, HOSTS, { proxyUrl, trustBundle: bundle }, proxy.placeholderFor(AGENT))
     expect(mapped).not.toHaveProperty(AGENT_CHANNEL_CAPABILITY_ENV)
     expect(JSON.stringify(mapped)).not.toContain(TOKEN)
     expect(JSON.stringify(mapped)).not.toContain('/unavailable-real-token-helper')
@@ -268,6 +268,16 @@ describe.skipIf(process.platform === 'win32')('Azure daemon Git through an execu
     const request: ShimRequester['request'] = (capability, payload, opts) => handler(capability, payload, opts?.abort)
     return new ShimGitRunner({ request }, cwd, mapped)
   }
+
+  it('rejects untrusted TLS even when the input disables verification', async () => {
+    const untrusted = loadProxyCa(join(root, 'untrusted-ca')).bundlePath
+    const before = seen.length
+    const env = { ...workspaceGitEnvBase(REMOTE), ...cloneGitEnv(AGENT, REMOTE, scope), GIT_SSL_NO_VERIFY: 'false' }
+    await expect(runner(root, env, untrusted).raw(['ls-remote', REMOTE])).rejects.toThrow(/certificate/i)
+    await expect(runner(root, env, untrusted).raw(['ls-remote', bundleUrl])).rejects.toThrow(/certificate/i)
+    expect(seen).toHaveLength(before)
+    expect(bundleReads).toBe(0)
+  })
 
   it('clones from a bundle directly, then fetches and pushes packs through the authenticated tunnel', async () => {
     const checkout = join(root, 'checkout')

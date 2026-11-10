@@ -752,10 +752,11 @@ export function proxiedDaemonGitEnv(
     ...env,
     ...gitConfigEnv(pairs),
     ...proxyTrustEnv({ bundlePath: route.trustBundle }),
-    [CODE_HOST_CREDENTIAL_ENV]: placeholder,
-    GIT_SSL_NO_VERIFY: 'false'
+    [CODE_HOST_CREDENTIAL_ENV]: placeholder
   }
   delete proxied[AGENT_CHANNEL_CAPABILITY_ENV]
+  // Git disables verification whenever this variable is present, even with the value "false".
+  delete proxied.GIT_SSL_NO_VERIFY
   for (const key of Object.keys(proxied)) if (WORKSPACE_GIT_PROXY_ENV.test(key)) delete proxied[key]
   return proxied
 }

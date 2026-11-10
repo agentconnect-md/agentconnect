@@ -30119,13 +30119,16 @@ export class Daemon {
     this.k8sPlane?.releaseAgent(agentId)
     // The same for a spread session: this holder drops its launches, and the successor attaches to the environments they left (§7).
     this.executorPlane?.releaseAgent(agentId)
-    void this.releaseLocalEnvironments(agentId).catch((error) =>
-      this.log.warn(`execution: could not stop a departing agent's environments (${formatErr(error)})`)
-    )
+    void this.releaseLocalEnvironments(agentId)
   }
 
   private async releaseLocalEnvironments(agentId: string): Promise<void> {
-    await Promise.all([this.localExecutor?.releaseAgent(agentId), this.localSrtExecutor?.releaseAgent(agentId)])
+    const results = await Promise.allSettled(
+      [this.localExecutor, this.localSrtExecutor].map(async (executor) => executor?.releaseAgent(agentId))
+    )
+    for (const result of results)
+      if (result.status === 'rejected')
+        this.log.warn(`execution: could not stop a departing agent's environments (${formatErr(result.reason)})`)
   }
 
   /**

@@ -204,6 +204,43 @@ function pendingFor(daemon: Daemon, acpSessionId: string): any {
 }
 
 describe('Daemon session lifecycle (#118)', () => {
+  it('finishes credential cleanup after a local environment release fails and the other release settles', async () => {
+    const root = scaffold()
+    const daemon = new Daemon({ root, hostFactory: () => quietHost() as never })
+    let finishRelease!: () => void
+    const releasing = new Promise<void>((resolve) => (finishRelease = resolve))
+    try {
+      await daemon.start()
+      const d = daemon as any
+      const warn = vi.spyOn(d.log, 'warn').mockImplementation(() => {})
+      vi.spyOn(d.localExecutor, 'releaseAgent').mockImplementation(() => {
+        throw new Error('environment stop failed')
+      })
+      const releaseSrt = vi.spyOn(d.localSrtExecutor, 'releaseAgent').mockReturnValue(releasing)
+      const releaseProxy = vi.spyOn(d.credentialProxy.proxy, 'release')
+      const releaseModels = vi.spyOn(d.modelSessions, 'releaseForAgent')
+      const revokeGrants = vi.spyOn(d.webchatMcpRevocations, 'revokeRemoteWebchatGrantsForAgent')
+      d.providerSlots.set('bot-a', new Map())
+      d.hostKeyReaders.set('bot-a', new Map())
+      rmSync(join(root, 'agents', 'bot-a', 'agent.json'))
+      const reconciling = daemon.reconcile()
+      await vi.waitFor(() => expect(releaseSrt).toHaveBeenCalledWith('bot-a'))
+      expect(releaseProxy).not.toHaveBeenCalled()
+      finishRelease()
+      await expect(reconciling).resolves.toBeUndefined()
+      expect(d.providerSlots.has('bot-a')).toBe(false)
+      expect(d.hostKeyReaders.has('bot-a')).toBe(false)
+      expect(releaseProxy).toHaveBeenCalledWith('bot-a')
+      expect(releaseModels).toHaveBeenCalledWith('bot-a')
+      expect(revokeGrants).toHaveBeenCalledWith('bot-a', 'agent_detached')
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('environment stop failed'))
+    } finally {
+      finishRelease()
+      vi.restoreAllMocks()
+      await daemon.stop()
+    }
+  })
+
   it.each(['from-scratch', 'git-repo'])('reopens a suspended primary %s workspace through its VM', async (mode) => {
     const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as never })
     try {
