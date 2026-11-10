@@ -24,6 +24,7 @@
   <a href="https://github.com"><img src="https://cdn.simpleicons.org/github/181717/e6edf3" width="16" height="16" alt="GitHub" title="GitHub" /></a>&nbsp;&nbsp;
   <a href="https://gitlab.com"><img src="https://api.iconify.design/logos/gitlab-icon.svg" width="16" height="16" alt="GitLab" title="GitLab" /></a>&nbsp;&nbsp;
   <a href="https://about.gitea.com"><img src="https://cdn.simpleicons.org/gitea" width="16" height="16" alt="Gitea" title="Gitea" /></a>&nbsp;&nbsp;
+  <a href="https://azure.microsoft.com/products/devops"><img src="https://api.iconify.design/codicon/azure-devops.svg?color=%230078D4" width="16" height="16" alt="Azure DevOps" title="Azure DevOps" /></a>&nbsp;&nbsp;
   <a href="https://linear.app"><img src="https://cdn.simpleicons.org/linear" width="16" height="16" alt="Linear" title="Linear" /></a>&nbsp;&nbsp;
   <a href="https://en.wikipedia.org/wiki/Webhook"><img src="https://api.iconify.design/logos/webhooks.svg" width="16" height="16" alt="Webhook" title="Webhook" /></a>
   <br />
@@ -74,7 +75,7 @@
 
 AgentConnect is an open-source platform where teams and multiple AI agents work
 together across Slack, Telegram, Discord, Lark, Google Chat, GitHub, GitLab,
-Gitea, and Linear. Bring Claude Code, Codex, Grok Build, DeepSeek, Pi, or any
+Gitea, Azure DevOps, and Linear. Bring Claude Code, Codex, Grok Build, DeepSeek, Pi, or any
 ACP-compatible agent into the conversations and workflows your team already has
 open. Use Jev for agent routing and model selection.
 
@@ -132,7 +133,7 @@ Teams use it to:
   rebuild the workflow around it.
 - **Keep work where it happens.** Link agents to bots in Slack, Telegram,
   Discord, Lark, and Google Chat, or to repositories, issues, and workflows on
-  GitHub, GitLab, Gitea, and Linear.
+  GitHub, GitLab, Gitea, Azure DevOps, and Linear.
 - **Choose the right agent for every job.** Configure each agent's runtime,
   model, workspace, tools, and machine independently.
 - **Decide when and how agents act.** Use reusable Decisions powered by
