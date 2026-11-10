@@ -2715,6 +2715,23 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     [connect]
   )
 
+  /** Ask the daemon for a chat-asked Fill card; it arrives as a `fill_request` event on this socket, or not at all. */
+  const pgOpenFill = useCallback(
+    (
+      id: string,
+      agentForId: string,
+      requestId: string,
+      conversationId?: string
+    ): Promise<{ ok: boolean; reason?: string }> =>
+      connect(id, agentForId, conversationId)
+        .ready.then((ws) => {
+          ws.send(JSON.stringify({ type: 'fill_open', requestId, agentId: agentForId }))
+          return { ok: true }
+        })
+        .catch(() => ({ ok: false, reason: 'this conversation is not connected' })),
+    [connect]
+  )
+
   // Cancel an unsent dial locally; a running turn clears busy when the daemon confirms cancellation.
   const pgCancel = useCallback(
     (id: string, agentForId: string, conversationId?: string) => {
@@ -2863,6 +2880,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       pgAppRpc,
       pgCloseApp,
       pgAnswerFill,
+      pgOpenFill,
       pgCancel,
       getPgSession,
       getPgSuggestion,
@@ -2905,6 +2923,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       pgAppRpc,
       pgCloseApp,
       pgAnswerFill,
+      pgOpenFill,
       pgCancel,
       getPgSession,
       getPgSuggestion,

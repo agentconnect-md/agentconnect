@@ -145,6 +145,13 @@ export interface PlaygroundData {
     answer: FillCardAnswer,
     conversationId?: string
   ) => Promise<{ accepted: boolean; reason?: string }>
+  /** Show a Fill card asked on a chat platform to the person who asked; the daemon refuses anyone else. */
+  pgOpenFill: (
+    id: string,
+    agentId: string,
+    requestId: string,
+    conversationId?: string
+  ) => Promise<{ ok: boolean; reason?: string }>
   getPgSession: (id: string) => Session | undefined
   /** The runtime's predicted next prompt for this session's empty composer, if it sent one. */
   getPgSuggestion: (id: string) => string | undefined

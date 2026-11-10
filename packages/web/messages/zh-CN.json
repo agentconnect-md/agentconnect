@@ -1120,7 +1120,8 @@
         "map": "对话中的各轮"
       },
       "jumpToLatest": "跳到最新",
-      "attachFailed": "无法处理这张图片。"
+      "attachFailed": "无法处理这张图片。",
+      "fillOpenFailed": "无法在这里打开这张填写卡片：{reason}"
     },
     "share": {
       "share": "分享",

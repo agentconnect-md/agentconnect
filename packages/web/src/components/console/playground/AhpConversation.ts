@@ -1,3 +1,4 @@
+import type { FillCardBody, SessionStep } from '@/lib/data'
 import {
   MessageKind,
   type ActionType,
@@ -18,7 +19,6 @@ import { fitAhpImage } from '@/lib/ahp/image'
 import { typedMentionIds } from '@/lib/conversation-addressing'
 import { leadingCommandToken } from '@/components/console/runtime-command-menu'
 import { randomUuid } from '@/lib/random-uuid'
-import type { SessionStep } from '@/lib/data'
 import type { QueuedTurn, WebchatRuntimeConfig } from './contract'
 
 export type AhpRoster = Array<{ agentId: string; name: string; primary?: boolean }>
@@ -71,6 +71,18 @@ export class AhpConversation {
       this.notices.push({ kind: 'notice', turnId, text, standing: true })
     } else if (this.notices.at(-1)?.text !== text)
       this.notices.push({ kind: 'notice', turnId: `local:${randomUuid()}`, text, standing: true })
+    this.onChange()
+  }
+  /** A chat-asked Fill card the daemon handed this person, shown beside the turns as a local step. */
+  showFill(agentId: string, card: FillCardBody): void {
+    if (this.closed || this.notices.some((step) => step.fill?.requestId === card.requestId)) return
+    this.notices.push({
+      kind: 'fill',
+      turnId: `fill:${card.requestId}`,
+      agentId,
+      text: card.website.origin,
+      fill: card
+    })
     this.onChange()
   }
   private changed(): void {

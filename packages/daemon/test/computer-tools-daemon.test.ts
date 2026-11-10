@@ -90,7 +90,8 @@ describe('toolContextFor and computer use', () => {
       expect(ordinary.computers).toEqual(COMPUTER_NAMES)
       expect(ordinary.instructions).toContain(COMPUTER_USE_GUIDANCE)
       expect(ordinary.instructions).toContain(COMPUTER_FILL_GUIDANCE)
-      // A surface that cannot show a Fill card is not offered the tool or its guidance.
+      // Slack links its Fill card to the console; a surface that cannot show one gets neither the tool nor its guidance.
+      expect(context('append:1', 'slack').computers).toEqual(COMPUTER_NAMES)
       const elsewhere = context('append:1', 'telegram')
       expect(elsewhere.computers).toEqual(COMPUTER_TOOLS.map((tool) => tool.name))
       expect(elsewhere.instructions).not.toContain(COMPUTER_FILL_GUIDANCE)
