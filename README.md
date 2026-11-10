@@ -21,7 +21,6 @@
   <a href="https://www.dingtalk.com"><img src="https://api.iconify.design/ant-design/dingtalk-circle-filled.svg?color=%23007FFF" width="16" height="16" alt="DingTalk" title="DingTalk" /></a>&nbsp;&nbsp;
   <a href="https://workspace.google.com/products/chat/"><img src="https://api.iconify.design/thesvg-color/google-chat-2026.svg" width="16" height="16" alt="Google Chat" title="Google Chat" /></a>&nbsp;&nbsp;
   <a href="https://im.qq.com"><img src="packages/web/public/brands/qq.svg" width="16" height="16" alt="QQ" title="QQ" /></a>&nbsp;&nbsp;
-  <a href="https://www.wechat.com"><img src="https://cdn.simpleicons.org/wechat" width="16" height="16" alt="WeChat" title="WeChat" /></a>&nbsp;&nbsp;
   <a href="https://github.com"><img src="https://cdn.simpleicons.org/github/181717/e6edf3" width="16" height="16" alt="GitHub" title="GitHub" /></a>&nbsp;&nbsp;
   <a href="https://gitlab.com"><img src="https://api.iconify.design/logos/gitlab-icon.svg" width="16" height="16" alt="GitLab" title="GitLab" /></a>&nbsp;&nbsp;
   <a href="https://about.gitea.com"><img src="https://cdn.simpleicons.org/gitea" width="16" height="16" alt="Gitea" title="Gitea" /></a>&nbsp;&nbsp;
@@ -76,7 +75,7 @@
 
 AgentConnect is an open-source platform where teams and multiple AI agents work
 together across Slack, Microsoft Teams, Google Chat, Lark, Discord, Telegram,
-WeChat, and more, with integrations for GitHub, GitLab, Gitea, Azure DevOps, and
+and more, with integrations for GitHub, GitLab, Gitea, Azure DevOps, and
 Linear. Bring Claude Code, Codex, Grok Build, DeepSeek, Pi, or any ACP-compatible
 agent into the conversations and workflows your team already has open. Use Jev
 for agent routing and model selection.
@@ -134,7 +133,7 @@ Teams use it to:
   other ACP-compatible runtime run side by side, and changing one does not
   rebuild the workflow around it.
 - **Keep work where it happens.** Link agents to bots in Slack, Microsoft Teams,
-  Google Chat, Lark, Discord, Telegram, WeChat, and more, or to repositories,
+  Google Chat, Lark, Discord, Telegram, and more, or to repositories,
   issues, and workflows on GitHub, GitLab, Gitea, Azure DevOps, and Linear.
 - **Choose the right agent for every job.** Configure each agent's runtime,
   model, workspace, tools, and machine independently.
