@@ -26,10 +26,6 @@ export const SLACK_CODE_CHANNEL_CONTEXT =
   'let automatic task diff updates maintain the Code view when the platform announces them; otherwise use ' +
   'setSlackCodeView with type diff only for authorized changes, including baseBranch and headBranch. Publish a ' +
   'pull_request view when you open a PR, and an html view when a self-contained preview helps review the result. ' +
-  'For a plan the team can comment on, reuse the native Plan canvas. If none exists and no runtime plan ' +
-  'has created it, use createCanvas and attach its canvasId with setSlackCodeView type canvas, viewKey plan, ' +
-  'name Plan. An HTML page is not a commentable Plan. Canvas comments reach you when the user continues ' +
-  'the conversation; they do not start a turn themselves. ' +
   'Use actual changes and verified links, stable view keys, and update existing views. A chat message or ' +
   'pasted diff does not populate these surfaces. Archive only when the user requests it. ' +
   REPORTS

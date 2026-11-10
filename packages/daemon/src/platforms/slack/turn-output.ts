@@ -1,16 +1,8 @@
 // Slack owns native task views, chrome and reply rendering; core callers retain their platform guards.
-import type { AgentsConversationsGetCanvasResponse, AgentsConversationsListViewsResponse } from '@slack/web-api'
-import {
-  SLACK_PLAN_VIEW_KEY,
-  type SlackConnection,
-  type SlackPostOptions,
-  type SlackStatusOptions,
-  type SlackTurnStream
-} from '../../slack/connection.js'
+import type { SlackConnection, SlackPostOptions, SlackStatusOptions, SlackTurnStream } from '../../slack/connection.js'
 import type { SlackAction } from '../../slack/render.js'
 import { startCodeDiff, type CodeDiffHost, type CodeDiffOutput } from './code-diff.js'
 import { TaskDiffUnavailable, type TaskDiff } from '../../workspace/task-diff.js'
-import { slackPlanFeedback, SLACK_PLAN_FEEDBACK_UNAVAILABLE } from './plan-feedback.js'
 
 // Slack owns its task diff, native chrome stream and pending footer edits.
 export interface SlackTurnState {
@@ -29,7 +21,7 @@ export interface SlackTurnState {
   recipient?: string
 }
 
-export async function startSlackCodeTurn(
+export async function startSlackCodeDiff(
   turn: SlackTurn,
   state: SlackTurnState,
   host: Pick<CodeDiffHost, 'open' | 'authorize' | 'active' | 'mask' | 'notice' | 'debug'> & {
@@ -44,45 +36,22 @@ export async function startSlackCodeTurn(
     await host.keepStart?.().catch(() => {})
     return undefined
   }
-  if (!host.active()) return undefined
   const conn = turn.conn as SlackConnection
   let hasPublished = false
-  let planCanvasId: string | undefined
-  let owned = false
   try {
     const channel = await conn.codeChannel(turn.plan.channel)
     if (!channel.code || !channel.owners.includes(conn.botUserId)) return undefined
-    owned = true
-    const existing = (await conn.codeChannelApi('listViews', {
-      channel_id: turn.plan.channel
-    })) as AgentsConversationsListViewsResponse
+    const existing = (await conn.codeChannelApi('listViews', { channel_id: turn.plan.channel })) as {
+      views?: { view_id?: string }[]
+    }
     hasPublished = existing.views?.some((view) => view.view_id === 'code') === true
-    planCanvasId = existing.views?.find((view) => view.view_key === SLACK_PLAN_VIEW_KEY)?.file_id
   } catch {
     if (host.active())
       await host
         .notice('Code diff is not updating. Slack could not confirm this code channel and its views.')
         .catch(() => {})
-    return owned && host.active() ? SLACK_PLAN_FEEDBACK_UNAVAILABLE : undefined
+    return undefined
   }
-  if (!host.active()) return undefined
-  let feedback: string | undefined
-  if (planCanvasId) {
-    try {
-      const canvas = (await conn.codeChannelApi('getCanvas', {
-        channel: turn.plan.channel,
-        canvas_id: planCanvasId,
-        content_format: 'markdown',
-        include_resolved: false
-      })) as AgentsConversationsGetCanvasResponse
-      if (canvas.ok === false) throw new Error('Slack rejected the Plan feedback read')
-      feedback = slackPlanFeedback(canvas, host.mask)
-    } catch {
-      host.debug('slack: Plan feedback read unavailable')
-      feedback = SLACK_PLAN_FEEDBACK_UNAVAILABLE
-    }
-  }
-  if (!host.active()) return undefined
   let source: TaskDiff | undefined
   state.codeDiff = await startCodeDiff({
     ...host,
@@ -123,16 +92,11 @@ export async function startSlackCodeTurn(
       }
     }
   })
-  if (!state.codeDiff || !source) return feedback
+  if (!state.codeDiff || !source) return undefined
   const repositories = new Intl.ListFormat('en').format(
     source.repositories.map(({ title, base }) => `${title} (against ${base ?? 'where this task started'})`)
   )
-  return [
-    `The platform maintains the Code diff of ${repositories}, including uncommitted changes and commits. Work there: changes anywhere else, including a repository you clone yourself, do not appear in it. Do not call setSlackCodeView(type: diff) for this task or overwrite its Code view. Canvas, HTML and PR views remain available.`,
-    feedback
-  ]
-    .filter(Boolean)
-    .join('\n\n')
+  return `The platform maintains the Code diff of ${repositories}, including uncommitted changes and commits. Work there: changes anywhere else, including a repository you clone yourself, do not appear in it. Do not call setSlackCodeView(type: diff) for this task or overwrite its Code view. HTML and PR views remain available.`
 }
 
 /** The core turn, as Slack's applier sees it. `Pending` satisfies it structurally.

@@ -1214,8 +1214,8 @@ export class SlackConnection implements PlatformConnection {
     if (info.owners.includes(this.botUserId)) msg.conversationBotId = this.botUserId
   }
 
-  // Each code channel's newest unwritten plan and the writer draining it.
-  private readonly planCanvases = new Map<string, { pending?: string; running?: Promise<void> }>()
+  // A code channel's Plan canvas, newest unwritten plan and writer.
+  private readonly planCanvases = new Map<string, { canvasId?: string; pending?: string; running?: Promise<void> }>()
 
   private readonly taskViews = new CodeTasksViews({
     read: async (channel, key) => {
@@ -1249,45 +1249,47 @@ export class SlackConnection implements PlatformConnection {
   }
 
   // Only the newest plan is written: updates that arrive during a write collapse into the next one.
-  private async drainPlanCanvas(channel: string, slot: { pending?: string }): Promise<void> {
+  private async drainPlanCanvas(channel: string, slot: { canvasId?: string; pending?: string }): Promise<void> {
     while (slot.pending !== undefined) {
       const markdown = slot.pending
       slot.pending = undefined
       try {
-        await this.putPlanCanvas(channel, markdown)
+        await this.putPlanCanvas(channel, slot, markdown)
       } catch (err) {
+        slot.canvasId = undefined
         this.deps.log?.debug(`slack: plan canvas write failed (ch=${channel}): ${(err as Error).message}`)
       }
     }
   }
 
-  private async putPlanCanvas(channel: string, markdown: string): Promise<void> {
+  private async putPlanCanvas(channel: string, slot: { canvasId?: string }, markdown: string): Promise<void> {
     const api = this.app.client.agents.conversations
     const info = await this.codeChannel(channel)
     if (!api || !info.code || !info.owners.includes(this.botUserId)) return
-    // Rediscover the current Plan after a restart or a tool replaces its canvas.
-    const existing = (await this.codeChannelApi('listViews', {
-      channel_id: channel
-    })) as AgentsConversationsListViewsResponse
-    const canvasId = existing.views?.find((view) => view.view_key === SLACK_PLAN_VIEW_KEY)?.file_id
-    if (canvasId) {
+    // A restarted daemon finds the canvas it attached earlier through the channel's views.
+    slot.canvasId ??= (
+      (await this.codeChannelApi('listViews', { channel_id: channel })) as AgentsConversationsListViewsResponse
+    ).views?.find((view) => view.view_key === SLACK_PLAN_VIEW_KEY)?.file_id
+    if (slot.canvasId) {
+      const canvasId = slot.canvasId
       await this.queue.enqueue(() => api.setCanvasContent({ channel, canvas_id: canvasId, content: markdown }))
       return
     }
     const document_content = { type: 'markdown' as const, markdown }
     const created = await this.queue.enqueue(() => this.app.client.canvases.create({ title: 'Plan', document_content }))
-    const createdCanvasId = created.canvas_id
-    if (!createdCanvasId) throw new Error('Slack canvas creation returned no canvas_id')
+    if (!created.canvas_id) throw new Error('Slack canvas creation returned no canvas_id')
+    const canvasId = created.canvas_id
     await this.queue.enqueue(() =>
       api.setView({
         channel_id: channel,
         type: 'canvas',
         view_key: SLACK_PLAN_VIEW_KEY,
         name: 'Plan',
-        canvas_id: createdCanvasId,
+        canvas_id: canvasId,
         access_level: 'comment'
       })
     )
+    slot.canvasId = canvasId
   }
 
   async codeChannelApi<

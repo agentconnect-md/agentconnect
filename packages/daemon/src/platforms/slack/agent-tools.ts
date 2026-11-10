@@ -120,7 +120,9 @@ const viewArgs = z
 const manageArgs = z
   .object({
     channelId: text.optional(),
-    action: z.enum(['context', 'listViews', 'removeView', 'archive']),
+    action: z.enum(['context', 'listViews', 'getCanvas', 'removeView', 'archive']),
+    canvasId: text.optional(),
+    includeResolved: z.boolean().optional(),
     items: z
       .array(
         z
@@ -172,6 +174,7 @@ const manageArgs = z
     if (a.action === 'context' && !a.items)
       ctx.addIssue({ code: 'custom', message: 'context needs items (an empty array clears informational items)' })
     if (a.action === 'removeView' && !a.viewId) ctx.addIssue({ code: 'custom', message: 'removeView needs viewId' })
+    if (a.action === 'getCanvas' && !a.canvasId) ctx.addIssue({ code: 'custom', message: 'getCanvas needs canvasId' })
   })
 
 const codeTools: ToolDescriptor[] = [
@@ -184,7 +187,7 @@ const codeTools: ToolDescriptor[] = [
   {
     name: 'setSlackCodeView',
     description:
-      'Publish a PR tab when a PR opens or a self-contained HTML preview when it helps review the result. Attach an existing Slack canvas with type canvas and canvasId to let the team comment; use viewKey plan and name Plan for the task plan, whose unresolved comments reach the agent on the next conversation turn. Create the canvas with createCanvas if needed. The platform maintains the task diff when automatic updates are active; do not overwrite that Code view. Otherwise this tool can publish an authorized unified diff with diff --git headers and baseBranch/headBranch labels. channelId defaults to this conversation. HTML and canvas need a stable viewKey. Content is limited to 1000000 UTF-8 bytes. No external HTML resources are enabled.',
+      'Publish a PR tab when a PR opens or a self-contained HTML preview when it helps review the result. The platform maintains the task diff when automatic updates are active; do not overwrite that Code view. Otherwise this tool can publish an authorized unified diff with diff --git headers and baseBranch/headBranch labels. channelId defaults to this conversation. HTML needs a stable viewKey. Content is limited to 1000000 UTF-8 bytes. No external HTML resources are enabled.',
     inputSchema: z.toJSONSchema(viewArgs) as ToolDescriptor['inputSchema']
   },
   {
@@ -248,6 +251,13 @@ async function execute(
         head_branch: a.headBranch
       })
     }
+    if (a.action === 'getCanvas')
+      return conn.codeChannelApi('getCanvas', {
+        channel,
+        canvas_id: a.canvasId!,
+        content_format: 'markdown',
+        include_resolved: a.includeResolved ?? false
+      })
     if (a.action === 'context') {
       const symbols = { pending: '◷', passed: '✓', failed: '✕' }
       const updated = await conn.updateCodeContext(channel, {
