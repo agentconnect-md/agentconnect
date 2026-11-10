@@ -5,7 +5,7 @@ import { githubActionsReporters } from '../../scripts/vitest-github-reporters.js
 export default defineConfig({
   test: {
     environment: 'node',
-    include: ['src/**/*.test.ts', 'scripts/**/*.test.ts'],
+    include: ['src/**/*.test.ts', 'scripts/**/*.test.ts', 'extension/**/*.test.ts'],
     reporters: githubActionsReporters('computer.md')
   }
 })

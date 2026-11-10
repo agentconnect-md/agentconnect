@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "AgentConnect Form Fill",
+  "description": "Fills website forms on an AgentConnect Computer with values a person supplied. Installed by the Computer; it never fills on its own.",
+  "version": "0.0.0",
+  "minimum_chrome_version": "116",
+  "background": { "service_worker": "worker.js" },
+  "permissions": ["scripting", "tabs", "webNavigation", "storage", "alarms"],
+  "host_permissions": ["<all_urls>"],
+  "storage": { "managed_schema": "managed-schema.json" }
+}

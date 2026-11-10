@@ -1,0 +1,10 @@
+{
+  "type": "object",
+  "properties": {
+    "endpoint": {
+      "title": "Desktop daemon endpoint",
+      "description": "The loopback WebSocket the extension dials, e.g. ws://127.0.0.1:7682/",
+      "type": "string"
+    }
+  }
+}
