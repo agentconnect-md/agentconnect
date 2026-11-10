@@ -165,4 +165,12 @@ describe('AddIntegrationModal, flag-gated platform tiles', () => {
     expect(tileStates()).not.toHaveProperty('More')
     expect(document.querySelector('.ptile.on')?.textContent).toContain('Slack')
   })
+
+  it('reveals an overflow platform selected after placement loads', async () => {
+    window.__AC_ENV = { FEATURE_FLAGS: 'qq' }
+    mocks.daemons = [daemon({ caps: { platforms: ['qq'], runtimes: [], acp: true, features: [] } })]
+    await render({ daemon: 'd1', placementKind: 'daemon' })
+    expect(document.querySelector('.ptile.on')?.textContent).toBe('QQ')
+    expect(tileStates()).not.toHaveProperty('More')
+  })
 })

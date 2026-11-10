@@ -24,12 +24,9 @@ export function IntegrationPlatformGroups({
       return (module ? (module.integrationGroup ?? 'chat') : 'workflow') === group
     })
   }))
-  const [expanded, setExpanded] = useState(() =>
-    groups
-      .find((entry) => entry.group === 'chat')!
-      .tiles.slice(6)
-      .some((tile) => tile.key === selectedPlatform)
-  )
+  const [expanded, setExpanded] = useState(false)
+  const overflow = groups.find((entry) => entry.group === 'chat')!.tiles.slice(6)
+  if (!expanded && overflow.some((tile) => tile.key === selectedPlatform)) setExpanded(true)
   const cols = Math.min(7, Math.max(...groups.map((entry) => entry.tiles.length)))
 
   return (
