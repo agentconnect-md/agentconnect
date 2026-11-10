@@ -19,9 +19,12 @@ export function SessionShareDialogFor({
   sessionId,
   fallbackTitle,
   nativeMemory = false,
+  link,
   onClose
 }: {
   sessionId: string
+  /** The link Copy link copies, such as one message's; absent, the session's page. */
+  link?: string
   /** The title shown until the session's row is read. */
   fallbackTitle: string
   /** Its agent keeps native memory, which a visibility change warns about. */
@@ -59,7 +62,7 @@ export function SessionShareDialogFor({
     setCopied(false)
     if (
       !(await copyLink(
-        window.location.origin + orgPath(`/sessions/${encodeURIComponent(sessionId)}`),
+        link ?? window.location.origin + orgPath(`/sessions/${encodeURIComponent(sessionId)}`),
         tShare('copyLink')
       ))
     )

@@ -374,6 +374,11 @@ As implemented (PR 11):
   "Replies" divider then separates what came from the main timeline from the replies below it.
 - A message the coordinator redirected into the thread from the conversation (`handedTo`) is
   highlighted in the panel with "Redirected from coordinator" above it.
+- Every message's hover menu offers **Share**: the Share dialog of the session it is read in, whose
+  Copy link names the message (`#msg=<transcript seq>`). A message in a thread a task holds links to
+  the task's own page, one in an unowned thread to the conversation's `?thread=` address, and one on
+  the main timeline to the conversation. Arriving by such a link scrolls to the message and marks it
+  briefly (`useLocateMessage`).
 - A thread a task holds shows the task's header as today: state, title, Stop, the task's runtime
   picker, its approvals, and a link to the task's own page. An unowned thread shows a plain header;
   the console offers no "make this a task" control, since opening a task is the coordinator's call.

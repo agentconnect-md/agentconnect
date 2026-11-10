@@ -61,6 +61,8 @@ export type Turn =
       messageId?: string
       /** A root-level message the coordinator handed into a task's thread: that thread's root. */
       handedTo?: string
+      /** The transcript seq of its row, which a link to the message names. */
+      rowSeq?: number
     }
   // `wake`: opened by a background-task wake no reply has merged into yet; the run that follows clears it.
   | {
@@ -75,6 +77,8 @@ export type Turn =
       wake?: boolean
       /** A coordinator turn that answered a message in a thread: that thread's root (webchat-threads.md §6.1). */
       inThread?: string
+      /** The transcript seq of its first row, which a link to the message names. */
+      rowSeq?: number
     }
 
 /** When a turn happened, for its time line: a person's message's own time, else its agent's first timed step. */
@@ -145,6 +149,11 @@ export function buildTurns(input: BuildTurnsInput): { turns: Turn[]; speakers: M
   const turns: Turn[] = []
   // A row's immutable anchor (source session + `seq`): a turn's identity when no turn key groups it.
   const rowAnchor = (m: SessionMessageDto): string => `${source.session.get(m) ?? session.id}#${m.seq}`
+  // The transcript seq a row anchor names, which a message link points at the same in every view of it.
+  const anchorSeq = (anchor: string): { rowSeq: number } | Record<string, never> => {
+    const seq = /#(\d+)$/.exec(anchor)?.[1]
+    return seq ? { rowSeq: Number(seq) } : {}
+  }
   // A live step's identity is its `turnId`, which `stampStep` mints for every live step.
   const liveAnchor = (stp: SessionStep): string => `live:${stp.turnId}`
   const speakers = new Map<string, SessionParticipant>()
@@ -184,6 +193,7 @@ export function buildTurns(input: BuildTurnsInput): { turns: Turn[]; speakers: M
       last = {
         kind: 'bot',
         key: `b:${turnKey ?? anchor}`,
+        ...anchorSeq(anchor),
         agentName: name,
         agentId: agent.id,
         model: '',
@@ -210,6 +220,7 @@ export function buildTurns(input: BuildTurnsInput): { turns: Turn[]; speakers: M
         kind: 'bot',
         // `wake` stays out of the key, so the block keeps its work panel when the reply binds.
         key: `b:${turnKey ?? anchor}`,
+        ...anchorSeq(anchor),
         wake: true,
         agentName: name,
         ...(agentId ? { agentId } : {}),
@@ -278,6 +289,7 @@ export function buildTurns(input: BuildTurnsInput): { turns: Turn[]; speakers: M
           last = {
             kind: 'bot',
             key: `b:${sourceTurnKey ?? rowAnchor(m)}`,
+            rowSeq: m.seq,
             agentName: ownerName,
             agentId: m.sender,
             model: session.model ?? '',
@@ -356,6 +368,7 @@ export function buildTurns(input: BuildTurnsInput): { turns: Turn[]; speakers: M
         pushUserTurn(senderAgent?.id ?? m.sender, {
           kind: 'user',
           key: `u:${rowAnchor(m)}`,
+          rowSeq: m.seq,
           messageId: m.postId ?? m.ts,
           sp: participant,
           agent: senderAgent ?? null,
