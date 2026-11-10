@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { MCP_APP_CONTEXT_MAX_CHARS, NativeMcpUi } from '../mcp-app.js'
+import { COMPUTER_FILL_CARD_OUTCOMES, ComputerFillCard } from '../computer-form-fill.js'
 import { MESSAGE_ATTACHMENTS_MAX, TaskLinkFacts } from '../user-turn-body.js'
 
 // The MCP Apps constants live in the `./mcp-app` leaf so the console can value-import them; the barrel still re-exports them.
@@ -605,6 +606,14 @@ export const WebchatEvent = z.discriminatedUnion('kind', [
     requestId: z.string().uuid(),
     status: z.enum(['completed', 'declined', 'expired', 'withdrawn']),
     text: z.string().max(300)
+  }),
+  // A Fill card (computer-form-fill-and-vault.md §6): the website and field descriptors only; answered by `fill_submit`.
+  z.object({ kind: z.literal('fill_request'), card: ComputerFillCard }),
+  // The same card, settled — append-only, keyed by `requestId`; the outcome never carries a value.
+  z.object({
+    kind: z.literal('fill_resolved'),
+    requestId: z.string().uuid(),
+    outcome: z.enum(COMPUTER_FILL_CARD_OUTCOMES)
   }),
   // A runtime approval handed to an API caller first (shared-bot-relay.md §10.4), answered by `permission_choice`.
   z.object({

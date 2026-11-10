@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { COMPUTER_FORM_FIELDS_MAX, ComputerFormValue } from '../computer-form-fill.js'
 import { TaskInitiator } from '../initiator.js'
 import { GOOGLE_CHAT_MARKUP } from '../consts.js'
 import { RdAhpOpen, RdAhpOpened, RdAhpAuthorize, RdAhpAuthorized, RdAhpMessage, RdAhpClose } from '../ahp.js'
@@ -353,6 +354,17 @@ export const RelayWebchatOp = z.discriminatedUnion('op', [
     allow: z.boolean(),
     // False ⇒ an allow waits for an Agent editor instead; a refusal is always the caller's to make.
     mayAllow: z.boolean(),
+    user: z.string().optional(),
+    userId: z.string().optional(),
+    agentId: z.string().uuid().optional()
+  }),
+  // A person's answer to a Fill card (computer-form-fill-and-vault.md §6): the values go to the desktop, never to the
+  // model, the transcript or the CP. The relay stamps the author from its verified verdict; `cancel` declines.
+  z.object({
+    op: z.literal('fill_submit'),
+    requestId: z.string().uuid(),
+    values: z.array(ComputerFormValue).max(COMPUTER_FORM_FIELDS_MAX).optional(),
+    cancel: z.literal(true).optional(),
     user: z.string().optional(),
     userId: z.string().optional(),
     agentId: z.string().uuid().optional()

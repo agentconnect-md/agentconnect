@@ -133,9 +133,12 @@ export interface AhpAppsCallbacks {
   ): Promise<void>
   close(scope: AhpAppsScope, input: { appId: string }): Promise<void>
 }
+/** The agentconnect JSON-RPC requests an attachment may send beside AHP's own, never journaled as actions. */
+export type AhpCustomMethod = 'agentconnect/appRpc' | 'agentconnect/appClose' | 'agentconnect/fillSubmit'
+
 // The connection prepares the channel through the registry before supplying this verified scope.
 export async function dispatchAhpAppRequest(
-  method: 'agentconnect/appRpc' | 'agentconnect/appClose',
+  method: AhpCustomMethod,
   params: unknown,
   scope: AhpAppsScope,
   callbacks: AhpAppsCallbacks

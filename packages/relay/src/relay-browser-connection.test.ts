@@ -345,6 +345,45 @@ describe('parseBrowserFrame', () => {
     expect(parseBrowserFrame({ type: 'app_rpc', appId: 'a', callId: 'c' }, USER)).toBeNull()
   })
 
+  it('stamps a Fill card answer with the relay’s verified author and passes only well-formed values', () => {
+    const requestId = '7f9d6c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f'
+    expect(
+      parseBrowserFrame(
+        {
+          type: 'fill_submit',
+          requestId,
+          values: [
+            { field: 'f1', value: 'ada' },
+            { field: 'f2', checked: true }
+          ],
+          userId: 'forged',
+          agentId: AGENT.toUpperCase()
+        },
+        USER,
+        'principal-1'
+      )
+    ).toEqual({
+      op: {
+        op: 'fill_submit',
+        requestId,
+        values: [
+          { field: 'f1', value: 'ada' },
+          { field: 'f2', checked: true }
+        ],
+        user: USER,
+        userId: 'principal-1',
+        agentId: AGENT
+      }
+    })
+    expect(parseBrowserFrame({ type: 'fill_submit', requestId, cancel: true }, USER, 'principal-1')).toEqual({
+      op: { op: 'fill_submit', requestId, cancel: true, user: USER, userId: 'principal-1' }
+    })
+    expect(parseBrowserFrame({ type: 'fill_submit', requestId: 'not-a-uuid', cancel: true }, USER)).toBeNull()
+    expect(
+      parseBrowserFrame({ type: 'fill_submit', requestId, values: [{ field: 'f1', value: 'x', checked: true }] }, USER)
+    ).toBeNull()
+  })
+
   it('takes a frame close, addressed to the participant that owns the card', () => {
     expect(parseBrowserFrame({ type: 'app_close', appId: 'app-1', agentId: AGENT.toUpperCase() }, USER)).toEqual({
       op: { op: 'app_close', appId: 'app-1', agentId: AGENT }

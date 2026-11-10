@@ -236,6 +236,21 @@ export function parseBrowserFrame(
       })
       return parsed.success ? { op: parsed.data } : null
     }
+    case 'fill_submit': {
+      // A Fill card's answer (computer-form-fill-and-vault.md §6): values pass through to the daemon and are never logged here.
+      // The author comes from the relay's verified verdict, so the daemon can check who answered the card.
+      if (m.agentId !== undefined && !(typeof m.agentId === 'string' && UUID_RE.test(m.agentId))) return null
+      const parsed = RelayWebchatOp.safeParse({
+        op: 'fill_submit',
+        requestId: m.requestId,
+        ...(m.values !== undefined ? { values: m.values } : {}),
+        ...(m.cancel === true ? { cancel: true } : {}),
+        user,
+        ...(userId ? { userId } : {}),
+        ...(typeof m.agentId === 'string' ? { agentId: m.agentId.toLowerCase() } : {})
+      })
+      return parsed.success ? { op: parsed.data } : null
+    }
     case 'app_close': {
       if (typeof m.appId !== 'string') return null
       if (m.agentId !== undefined && !(typeof m.agentId === 'string' && UUID_RE.test(m.agentId))) return null
@@ -394,7 +409,7 @@ export class RelayBrowserConnection implements ChatSink {
       for (const p of this.byAgentId.values()) void this.sendToParticipant(p.agentId, { op: 'cancel' }, 'cancel')
       return
     }
-    // Single-daemon ops: resume/attach/cancel/elicitation_choice/app_* go to the named
+    // Single-daemon ops: resume/attach/cancel/elicitation_choice/app_*/fill_submit go to the named
     // participant, everything else (set_*) to the primary — multi-agent conversations
     // expose no runtime override (webchat-multi-agents.md §9.3), so set_* is single-agent.
     const targetAgent =
@@ -403,7 +418,8 @@ export class RelayBrowserConnection implements ChatSink {
       op.op === 'cancel' ||
       op.op === 'elicitation_choice' ||
       op.op === 'app_rpc' ||
-      op.op === 'app_close'
+      op.op === 'app_close' ||
+      op.op === 'fill_submit'
         ? (op.agentId ?? this.deps.agentId)
         : this.deps.agentId
     await this.sendToParticipant(targetAgent, op, op.op)

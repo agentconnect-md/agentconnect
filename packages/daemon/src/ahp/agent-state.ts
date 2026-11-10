@@ -60,6 +60,27 @@ function capabilityCards(previous: unknown, turnId: string, event: CapabilityEve
   return cards
 }
 
+const MAX_FILL_CARDS = 8
+
+type FillEvent = Extract<ChatEvent, { kind: 'fill_request' | 'fill_resolved' }>
+type FillCardMeta = Extract<ChatEvent, { kind: 'fill_request' }>['card'] & { turnId: string; resolved?: string }
+
+// Fill cards ride session metadata like capability cards: descriptors and an outcome, answered by agentconnect/fillSubmit.
+function fillCards(previous: unknown, turnId: string, event: FillEvent): FillCardMeta[] {
+  const cards = Array.isArray(previous) ? (structuredClone(previous) as FillCardMeta[]) : []
+  if (event.kind === 'fill_resolved') {
+    const card = cards.find((item) => item.requestId === event.requestId)
+    if (card) card.resolved = event.outcome
+    return cards
+  }
+  cards.push({ ...event.card, turnId })
+  while (cards.length > MAX_FILL_CARDS) {
+    const settled = cards.findIndex((item) => item.resolved)
+    cards.splice(settled >= 0 ? settled : 0, 1)
+  }
+  return cards
+}
+
 export class AhpStateCapacityError extends Error {
   constructor() {
     super('AHP state exceeds the wire capacity')
@@ -311,6 +332,9 @@ export class AhpAgentState {
       changed = true
     } else if (output.event?.kind === 'capability_request' || output.event?.kind === 'capability_request_resolved') {
       fields.capabilities = capabilityCards(fields.capabilities, output.turnId, output.event)
+      changed = true
+    } else if (output.event?.kind === 'fill_request' || output.event?.kind === 'fill_resolved') {
+      fields.fills = fillCards(fields.fills, output.turnId, output.event)
       changed = true
     } else if (output.event) {
       entry.apps ??= new AhpAppsProjection()
