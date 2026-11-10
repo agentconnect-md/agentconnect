@@ -1124,6 +1124,15 @@ into a boundary against its operator or every same-user process. The trust model
 above still applies. During migration, credentials retained by unmigrated callers
 remain a documented limitation, not proof that the entire environment is token-free.
 
+A prepared checkout and a successfully configured runtime are different from a
+cold start: Phase 2 already supplies runtime Git with the proxy route in these
+environments. There is no separate Azure runtime-Git transport to build. However,
+the current Azure host-start check rejects Cloud, VMs and remote executors even
+when the checkout already exists. Runtime Git working after a prepared checkout
+therefore does not prove that startup, daemon fetches or recovery work. Verify the
+runtime path with Azure, and remove the blanket check only with readiness coverage;
+a pre-existing checkout is not a bypass for missing proxy readiness.
+
 #### One operation, one target, one route
 
 Keep authorization and transport separate. The workspace root already carries its
