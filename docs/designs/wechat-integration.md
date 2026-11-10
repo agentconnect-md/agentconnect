@@ -202,12 +202,9 @@ fence, and the adapter stops polling the moment it loses the duty.
 
 ### 3.3 The cursor and redelivery
 
-The cursor is an opaque string, kept in the daemon's local store per bot. An empty cursor
-starts from the present and does not replay history (**observed**). A daemon restart
-resumes from its stored cursor, and that delivers the messages sent while nothing was
-polling (**observed**: a message sent while the daemon was stopped, and one sent while
-`features.wechat` was off, both arrived once polling resumed). The official plugin persists
-the cursor for the same reason (`storage/sync-buf.ts`, **documented**).
+The daemon persists an opaque poll cursor per bot in its local store and resumes polling
+from that cursor after a restart. It advances the cursor only after handing off every
+message in the batch, so interrupted delivery can resume without skipping the batch.
 
 A duty handover to another daemon starts that daemon from an empty cursor, so messages
 sent during the gap are lost. The user documentation says so, as it does for DingTalk. The cursor is not message content, so the Control Plane could carry it across a
@@ -418,20 +415,14 @@ mainland China are **unverified**. The daemon reads `AGENTCONNECT_WECHAT_API_URL
 `AGENTCONNECT_WECHAT_CDN_URL`, and the Control Plane reads `WECHAT_API_URL`, to override
 the endpoints. All default to the public ones.
 
-WeChat is off by default, because iLink is experimental and its terms for clients other
-than OpenClaw are unconfirmed (§1.1). One switch per layer turns it on:
+The `wechat` Console feature flag controls only new-install entry points and is off by
+default. The chart's `features.wechat` adds it to the Web `FEATURE_FLAGS` list. Hiding
+those entry points does not stop existing integrations or remove their settings.
 
-| Layer         | Switch                                                                        | Off                                                                                                                          |
-| ------------- | ----------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| Daemon        | `features.wechat` in config.json; `AGENTCONNECT_WECHAT=true` when it is unset | No WeChat connection opens, and a live one is pruned on the next reconcile. A WeChat integration is logged once and ignored. |
-| Console       | The `wechat` feature flag in `FEATURE_FLAGS`                                  | No install entry point, as for the `qq` flag.                                                                                |
-| Control Plane | `WECHAT_ENABLED=true`, read by the WeChat provider                            | QR-login routes answer 404, and no WeChat integration is projected to a daemon.                                              |
-| Chart         | `features.wechat`                                                             | Drives the Console flag, the Control Plane's `WECHAT_ENABLED`, and the pool members' `AGENTCONNECT_WECHAT` together.         |
-
-A daemon with `features.wechat` off also leaves `wechat` out of the platforms it registers,
-so the Control Plane refuses to start a WeChat login for an agent it serves. The generic
-`POST /integrations` route never creates a WeChat integration: only a QR login proves who
-the counterpart is.
+The Control Plane always serves the authorized QR-login routes and projects complete
+WeChat integrations. The daemon always advertises its WeChat capability and connects
+assigned integrations, with no separate feature switch. The generic `POST /integrations`
+route never creates a WeChat integration: only a QR login proves who the counterpart is.
 
 ## 7. Open decisions
 

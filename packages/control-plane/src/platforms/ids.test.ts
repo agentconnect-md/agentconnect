@@ -46,7 +46,7 @@ const productionRegistry = buildCpPlatformRegistry([
   createGoogleChatCpProvider(),
   createDingTalkCpProvider(),
   createMsTeamsCpProvider(),
-  createWeChatCpProvider({ enabled: false })
+  createWeChatCpProvider({})
 ])
 
 const sorted = [...CP_PLATFORM_IDS].sort()

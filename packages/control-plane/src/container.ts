@@ -3298,9 +3298,7 @@ export function buildContainer(
       credentialReconciler: msTeamsCredentialReconciler,
       ...(relayPublicBase ? { publicRelayUrl: relayPublicBase } : {})
     }),
-    // Registered unconditionally so the platform set is stable; `WECHAT_ENABLED` turns its routes and projection on (§6).
     createWeChatCpProvider({
-      enabled: config.WECHAT_ENABLED,
       ...(config.WECHAT_API_URL ? { apiUrl: config.WECHAT_API_URL } : {}),
       routes: [weChatLoginRoutes(httpDeps, weChatLogins)],
       logins: repos.wechatPendingLogin,

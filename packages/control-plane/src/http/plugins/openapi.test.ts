@@ -38,7 +38,7 @@ function stubDeps(): HttpDeps {
       createDiscordCpProvider({ ensureMessageContentIntent: async () => 'ready' }),
       createSlackCpProvider({}),
       createFeishuCpProvider({}),
-      createWeChatCpProvider({ enabled: true, routes: [weChatLoginRoutes({} as HttpDeps, {} as WeChatLoginService)] })
+      createWeChatCpProvider({ routes: [weChatLoginRoutes({} as HttpDeps, {} as WeChatLoginService)] })
     ])
   } as unknown as HttpDeps
 }

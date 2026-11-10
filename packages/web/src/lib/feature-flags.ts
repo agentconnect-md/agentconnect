@@ -11,7 +11,7 @@ export type FeatureFlagId =
   | 'git-url'
   // The QQ integration's install entry points; existing QQ bots keep their Bots tab.
   | 'qq'
-  // The personal WeChat integration's install entry points; daemons connect only with features.wechat on.
+  // The personal WeChat integration's console install entry points.
   | 'wechat'
   // The built-in agent offers the deployment's Google Chat app first, through its Marketplace listing; otherwise it connects its own app.
   | 'google-chat-deployment-app'

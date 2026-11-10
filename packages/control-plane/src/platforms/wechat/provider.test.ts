@@ -11,14 +11,13 @@ const secrets = { botToken: 'example-token', appToken: 'abc@im.bot', signingSecr
 const route: FastifyPluginAsync = async () => {}
 
 describe('WeChat Control Plane provider', () => {
-  it('serves its login routes only while the deployment turns WeChat on', () => {
-    expect(createWeChatCpProvider({ enabled: true, routes: [route] }).installRoutes('org')).toEqual([route])
-    expect(createWeChatCpProvider({ enabled: false, routes: [route] }).installRoutes('org')).toEqual([])
-    expect(createWeChatCpProvider({ enabled: true, routes: [route] }).installRoutes('public-callback')).toEqual([])
+  it('serves its login routes at the organization scope', () => {
+    expect(createWeChatCpProvider({ routes: [route] }).installRoutes('org')).toEqual([route])
+    expect(createWeChatCpProvider({ routes: [route] }).installRoutes('public-callback')).toEqual([])
   })
 
   it('projects the token, the iLink bot id and the bound WeChat user', async () => {
-    const provider = createWeChatCpProvider({ enabled: true })
+    const provider = createWeChatCpProvider({})
     await expect(
       provider.projectIntegrationConfig(integration, bot({ wechatUserId: 'u@im.wechat' }), core, secrets)
     ).resolves.toEqual({ botId: 'abc@im.bot', botToken: 'example-token', boundUserId: 'u@im.wechat' })
@@ -32,15 +31,11 @@ describe('WeChat Control Plane provider', () => {
     ).resolves.toMatchObject({ apiUrl: 'https://sz.ilinkai.weixin.qq.com' })
   })
 
-  it('withholds the payload when WeChat is off or the binding is incomplete', async () => {
-    const off = createWeChatCpProvider({ enabled: false })
+  it('withholds the payload when the binding is incomplete', async () => {
+    const provider = createWeChatCpProvider({})
+    await expect(provider.projectIntegrationConfig(integration, bot(null), core, secrets)).resolves.toBeUndefined()
     await expect(
-      off.projectIntegrationConfig(integration, bot({ wechatUserId: 'u@im.wechat' }), core, secrets)
-    ).resolves.toBeUndefined()
-    const on = createWeChatCpProvider({ enabled: true })
-    await expect(on.projectIntegrationConfig(integration, bot(null), core, secrets)).resolves.toBeUndefined()
-    await expect(
-      on.projectIntegrationConfig(integration, bot({ wechatUserId: 'u@im.wechat' }), core, {
+      provider.projectIntegrationConfig(integration, bot({ wechatUserId: 'u@im.wechat' }), core, {
         ...secrets,
         appToken: null
       })
@@ -48,7 +43,7 @@ describe('WeChat Control Plane provider', () => {
   })
 
   it('refuses pasted credentials and frees no bot for reuse', async () => {
-    const provider = createWeChatCpProvider({ enabled: true })
+    const provider = createWeChatCpProvider({})
     await expect(provider.validateConfig({}, 'socket')).resolves.toMatchObject({
       ok: false,
       status: 400,

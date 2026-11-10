@@ -12,11 +12,6 @@ export const WECHAT_PLATFORM_ID = 'wechat'
 export const WECHAT_LOGIN_REAP_AFTER_MS = 30 * 60 * 1000
 
 export const WeChatCpEnvSchema = {
-  // Experimental (§6): off, the login routes answer 404 and no WeChat integration reaches a daemon.
-  WECHAT_ENABLED: z
-    .enum(['true', 'false'])
-    .default('false')
-    .transform((v) => v === 'true'),
   WECHAT_API_URL: z.string().url().optional()
 } satisfies ZodRawShape
 
@@ -37,7 +32,6 @@ export function weChatBotIdentity(login: WeChatConfirmedLogin): Record<string, s
 const text = (value: unknown): string | undefined => (typeof value === 'string' && value ? value : undefined)
 
 export interface WeChatCpProviderDeps {
-  enabled: boolean
   apiUrl?: string
   routes?: FastifyPluginAsync[]
   logins?: { reapExpired(staleBefore: Date): Promise<number> }
@@ -48,7 +42,7 @@ export function createWeChatCpProvider(deps: WeChatCpProviderDeps): CpPlatformPr
   return {
     platformId: WECHAT_PLATFORM_ID,
     envSchema: WeChatCpEnvSchema,
-    installRoutes: (scope) => (scope === 'org' && deps.enabled ? (deps.routes ?? []) : []),
+    installRoutes: (scope) => (scope === 'org' ? (deps.routes ?? []) : []),
     credentialBodySchema: WeChatCreateCredentials,
     validateConfig: async () => ({
       ok: false,
@@ -77,7 +71,7 @@ export function createWeChatCpProvider(deps: WeChatCpProviderDeps): CpPlatformPr
       : {}),
     async projectIntegrationConfig(_integration, bot, _core, secrets): Promise<IntegrationWeChatConfig | undefined> {
       const boundUserId = text(bot.platformConfig?.wechatUserId)
-      if (!deps.enabled || !secrets.botToken || !secrets.appToken || !boundUserId) return undefined
+      if (!secrets.botToken || !secrets.appToken || !boundUserId) return undefined
       const apiUrl = deps.apiUrl ?? text(bot.platformConfig?.wechatApiUrl)
       return {
         botId: secrets.appToken,
