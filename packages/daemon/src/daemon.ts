@@ -701,7 +701,7 @@ import {
   slackAgentIdentityOptions,
   slackAgentPostOptions,
   slackStreamRecipient,
-  startSlackCodeDiff,
+  startSlackCodeTurn,
   type SlackTurnState
 } from './platforms/slack/turn-output.js'
 import { slackElicitCards } from './platforms/slack/elicit-card.js'
@@ -1948,7 +1948,7 @@ export class Daemon {
         },
         apply: (p, action) => this.applySlackAction(p, action as SlackAction),
         onStart: (p, created) =>
-          startSlackCodeDiff(p, turnState<SlackTurnState>(p), {
+          startSlackCodeTurn(p, turnState<SlackTurnState>(p), {
             open: () => this.turnTaskDiff(p, created),
             // A coordinator's task saves its starting point on its first turn, where it opened, for a code channel it makes later.
             keepStart: async () => {
