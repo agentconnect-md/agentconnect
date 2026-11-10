@@ -3,7 +3,7 @@
 // The GitHub App an agent works through: the built-in one, a free organization App, or a new one created on GitHub.
 // A switch goes through only once the App reaches everything the agent works on; the check runs as soon as an App is picked.
 
-import { useId, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import useSWR from 'swr'
 import { Button, Icon } from '@/components/ui'
@@ -16,8 +16,10 @@ import {
   fetchGithubApps,
   startGithubAppManifest,
   switchAgentGithubApp,
-  type GithubAppCoverageItem
+  type GithubAppCoverageItem,
+  type GithubAppOwners
 } from '@/lib/api'
+import { selectGithubAppOwners } from '@/lib/github-app-owners'
 import type { Agent } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
@@ -25,6 +27,7 @@ import { consoleKeys } from '@/lib/swr-keys'
 
 const BUILT_IN = 'built-in'
 const CREATE = 'create'
+const MANUAL_OWNER = '__manual__'
 
 /** Posts the manifest to GitHub as a top-level form, the only way GitHub accepts one. */
 function submitToGithub(action: string, manifest: Record<string, unknown>): void {
@@ -81,9 +84,14 @@ export function GithubAppDialog({
   const orgId = activeOrg?.id
   const current = agent.githubAppId ?? BUILT_IN
   const [choice, setChoice] = useState(initialAppId ?? current)
-  const [ownerType, setOwnerType] = useState<'personal' | 'organization'>('personal')
-  const [organization, setOrganization] = useState('')
+  const [owner, setOwner] = useState('')
+  const [manualOrganization, setManualOrganization] = useState('')
   const organizationInputId = useId()
+  const organization = owner === MANUAL_OWNER ? manualOrganization.trim() : owner || null
+  const [owners, setOwners] = useState<GithubAppOwners>()
+  const [loadingOwners, setLoadingOwners] = useState(false)
+  const ownerAuthorization = useRef<AbortController | null>(null)
+  useEffect(() => () => ownerAuthorization.current?.abort(), [])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -125,7 +133,7 @@ export function GithubAppDialog({
   const proceed = () =>
     run(async () => {
       if (choice === CREATE) {
-        const form = await startGithubAppManifest(agent.id, ownerType === 'personal' ? null : organization.trim())
+        const form = await startGithubAppManifest(agent.id, organization)
         submitToGithub(form.action, form.manifest)
         return
       }
@@ -143,6 +151,21 @@ export function GithubAppDialog({
       refresh()
       onSwitched?.(next)
       onClose()
+    })
+
+  const loadOwners = () =>
+    run(async () => {
+      ownerAuthorization.current = new AbortController()
+      setLoadingOwners(true)
+      try {
+        const result = await selectGithubAppOwners(agent.id, orgId, ownerAuthorization.current.signal)
+        setOwners(result)
+        setOwner('')
+      } catch {
+        throw new Error(t('accountsFailed'))
+      } finally {
+        setLoadingOwners(false)
+      }
     })
 
   const kindLabel = (item: GithubAppCoverageItem) => t(`kinds.${item.kind}`)
@@ -165,16 +188,25 @@ export function GithubAppDialog({
                 <span className="font-sans text-[12px] font-medium leading-normal">{t('owner')}</span>
                 <FieldSelect
                   ariaLabel={t('owner')}
-                  value={ownerType}
+                  value={owner}
                   options={[
-                    { value: 'personal', label: t('personalAccount') },
-                    { value: 'organization', label: t('organization') }
+                    {
+                      value: '',
+                      label: owners?.personal ?? t('personalAccount'),
+                      ...(owners ? { tag: t('personalAccount') } : {})
+                    },
+                    ...(owners?.organizations ?? []).map((login) => ({
+                      value: login,
+                      label: login,
+                      tag: t('organization')
+                    })),
+                    { value: MANUAL_OWNER, label: t('manualOrganization') }
                   ]}
-                  onChange={setOwnerType}
+                  onChange={setOwner}
                   disabled={busy}
                 />
               </div>
-              {ownerType === 'organization' && (
+              {owner === MANUAL_OWNER && (
                 <div className="flex flex-col gap-2">
                   <label htmlFor={organizationInputId} className="font-sans text-[12px] font-medium leading-normal">
                     {t('organizationName')}
@@ -182,14 +214,22 @@ export function GithubAppDialog({
                   <input
                     id={organizationInputId}
                     className="inp w-full"
-                    value={organization}
-                    onChange={(event) => setOrganization(event.target.value)}
+                    value={manualOrganization}
+                    onChange={(event) => setManualOrganization(event.target.value)}
                     placeholder="example-org"
                     autoCapitalize="none"
                     spellCheck={false}
                     disabled={busy}
                   />
                 </div>
+              )}
+              <Button variant="secondary" disabled={busy} onClick={() => void loadOwners()}>
+                {loadingOwners ? t('loadingAccounts') : owners ? t('reloadAccounts') : t('loadAccounts')}
+              </Button>
+              {owners && (
+                <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                  {owners.organizations.length === 0 ? t('noOrganizations') : t('organizationPermission')}
+                </span>
               )}
               <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
                 {t('publicApp')}
@@ -254,8 +294,7 @@ export function GithubAppDialog({
             <Button
               onClick={() => void proceed()}
               disabled={
-                busy ||
-                (ownerType === 'organization' && !/^[a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38}$/i.test(organization.trim()))
+                busy || (organization !== null && !/^[a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38}$/i.test(organization))
               }
             >
               {busy ? t('opening') : t('continueOnGithub')}

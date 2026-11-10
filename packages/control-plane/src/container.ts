@@ -88,6 +88,7 @@ import { ConnectorsClient, parseBlocklist, parseWhitelist } from './connectors/i
 import { GithubService } from './github/service.js'
 import { GithubAppRegistry } from './github/app-registry.js'
 import { GithubAppsService } from './github/apps.service.js'
+import { GithubAppOwnersService } from './github/app-owners.js'
 import { agentGithubScope } from './github/agent-scope.js'
 import { RepoCandidatesService } from './github/repo-candidates.js'
 import { GithubInstallationDoorbell } from './github/installation-doorbell.service.js'
@@ -2362,6 +2363,17 @@ export function buildContainer(
       })
     : undefined
 
+  const githubAppOwners =
+    config.GITHUB_APP_CLIENT_ID && config.GITHUB_APP_CLIENT_SECRET && webAppUrl
+      ? new GithubAppOwnersService(
+          {
+            clientId: config.GITHUB_APP_CLIENT_ID,
+            clientSecret: config.GITHUB_APP_CLIENT_SECRET,
+            redirectUri: new URL('/auth/social/callback', webAppUrl).toString()
+          },
+          opts.githubFetch
+        )
+      : undefined
   const logtoMgmtCfg = resolveLogtoMgmtConfig(config)
   const githubRepoIdentity =
     github && logtoMgmtCfg && config.OIDC_ISSUER
@@ -2706,6 +2718,7 @@ export function buildContainer(
     trustedActors,
     ...(github ? { github } : {}),
     ...(githubApps ? { githubApps } : {}),
+    ...(githubAppOwners ? { githubAppOwners } : {}),
     ...(gitlab ? { gitlab } : {}),
     gitea,
     azureDevOps,

@@ -31,6 +31,8 @@ function stubDeps(): HttpDeps {
     capabilityRequests: {},
     // Mounted only with the surface; its handlers are never reached here.
     azureDevOps: {},
+    github: {},
+    githubApps: {},
     platforms: buildCpPlatformRegistry([
       createTelegramCpProvider({ verifyBot: async () => ({ status: 'unreachable' }) }),
       createDiscordCpProvider({ ensureMessageContentIntent: async () => 'ready' }),
@@ -368,7 +370,9 @@ describe('openapi plane', () => {
           'GET /api/v1/orgs/:orgId/azure-devops/connect/:flow/organizations',
           'POST /api/v1/orgs/:orgId/azure-devops/connect/:flow/organization',
           'POST /api/v1/orgs/:orgId/azure-devops/connect/:flow/projects',
-          'POST /api/v1/orgs/:orgId/azure-devops/connect/:flow/verify'
+          'POST /api/v1/orgs/:orgId/azure-devops/connect/:flow/verify',
+          'POST /api/v1/orgs/:orgId/agents/:id/github-app/owners/authorize',
+          'POST /api/v1/orgs/:orgId/agents/:id/github-app/owners'
         ].sort()
       )
       const doc = (await app.inject({ method: 'GET', url: '/api/v1/openapi.json' })).json() as Record<string, any>

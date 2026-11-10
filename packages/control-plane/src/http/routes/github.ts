@@ -668,6 +668,70 @@ export function githubRoutes(deps: HttpDeps) {
       )
 
       r.post(
+        '/agents/:id/github-app/owners/authorize',
+        {
+          config: { interactiveOnly: true },
+          schema: {
+            tags: [Tag.GitHub],
+            summary: 'Authorize GitHub account selection',
+            description: 'Starts a PKCE authorization to read the current GitHub account and organization memberships.',
+            operationId: 'authorizeGithubAppOwners',
+            params: IdParam,
+            body: z.object({
+              state: z.string().min(32).max(200),
+              challenge: z.string().regex(/^[A-Za-z0-9_-]{43}$/)
+            }),
+            response: { 200: z.object({ authorizationUri: z.string() }), 403: ErrorDto, 404: ErrorDto, 503: ErrorDto }
+          }
+        },
+        async (req, reply) => {
+          if (!(await agentFor(req, reply, true))) return reply
+          if (!deps.githubAppOwners) {
+            return reply
+              .code(503)
+              .send({ error: 'Unavailable', statusCode: 503, message: 'GitHub authorization is not configured' })
+          }
+          return deps.githubAppOwners.authorize(req.body.state, req.body.challenge)
+        }
+      )
+
+      r.post(
+        '/agents/:id/github-app/owners',
+        {
+          config: { interactiveOnly: true },
+          schema: {
+            tags: [Tag.GitHub],
+            summary: 'List GitHub App owner choices',
+            description:
+              'Exchanges a one-use authorization code, reads account choices, and revokes the temporary token. GitHub checks permission to create an App in the selected account.',
+            operationId: 'listGithubAppOwners',
+            params: IdParam,
+            body: z.object({ code: z.string().min(1).max(512), verifier: z.string().regex(/^[A-Za-z0-9_-]{43,128}$/) }),
+            response: {
+              200: z.object({ personal: z.string(), organizations: z.array(z.string()) }),
+              403: ErrorDto,
+              404: ErrorDto,
+              502: ErrorDto,
+              503: ErrorDto
+            }
+          }
+        },
+        async (req, reply) => {
+          if (!(await agentFor(req, reply, true))) return reply
+          if (!deps.githubAppOwners) {
+            return reply
+              .code(503)
+              .send({ error: 'Unavailable', statusCode: 503, message: 'GitHub authorization is not configured' })
+          }
+          try {
+            return await deps.githubAppOwners.list(req.body.code, req.body.verifier)
+          } catch (e) {
+            return githubUpstreamFailure(reply, e)
+          }
+        }
+      )
+
+      r.post(
         '/agents/:id/github-app/manifest',
         {
           schema: {
