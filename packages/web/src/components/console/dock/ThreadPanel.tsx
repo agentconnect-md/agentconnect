@@ -247,6 +247,15 @@ export function ThreadPanel({
       : turn
   )
   const [workOverride, setWorkOverride] = useState<ReadonlyMap<string, boolean>>(() => new Map())
+  // A question the holding task asks is answered on the task's own session, which the panel opens while one waits: no browser turn opened it.
+  const awaitsAnswer = turns.some(
+    (turn) => turn.kind === 'bot' && turn.steps.some((step) => step.elicit && !step.elicit.outcome)
+  )
+  useEffect(() => {
+    if (!holderId || !awaitsAnswer) return
+    markSessionTarget(holderId)
+    pgAttach(holderId, agentId, '')
+  }, [holderId, awaitsAnswer, agentId, markSessionTarget, pgAttach])
   // The root leads the thread; the coordinator's work on it from the main timeline sits under it, ahead of the replies.
   const earlierUnread = fromRecord ? thread.hasEarlier : Boolean(session.page?.nextCursor)
   const threadRoot = turns[0]?.kind === 'user' && !earlierUnread ? turns.slice(0, 1) : []
