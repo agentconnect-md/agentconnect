@@ -144,7 +144,6 @@ const EXPECTED_KEYS = [
   'WAITLIST_MODE',
   'WEBCHAT_PROTOCOL',
   'WECHAT_API_URL',
-  'WECHAT_ENABLED',
   'WS_PATH'
 ] as const
 
@@ -244,7 +243,7 @@ describe('platform env declarations', () => {
       createLinearCpProvider({}),
       createGoogleChatCpProvider(),
       createMsTeamsCpProvider(),
-      createWeChatCpProvider({ enabled: false })
+      createWeChatCpProvider({})
     ])
     const fromProviders = registry
       .all()

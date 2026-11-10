@@ -981,7 +981,6 @@ export function buildHttpApp(
       ...(msTeamsRelayBase ? { publicRelayUrl: msTeamsRelayBase } : {})
     }),
     createWeChatCpProvider({
-      enabled: true,
       routes: [
         weChatLoginRoutes(
           deps,

@@ -211,7 +211,7 @@ function productionPlatforms(deps: HttpDeps): CpPlatformRegistry {
     }),
     createDingTalkCpProvider({ installRoutes: [dingTalkCredentialRoutes(deps)] }),
     createMsTeamsCpProvider({ installRoutes: [msTeamsRoutes(deps)] }),
-    createWeChatCpProvider({ enabled: true, routes: [weChatLoginRoutes(deps, {} as WeChatLoginService)] })
+    createWeChatCpProvider({ routes: [weChatLoginRoutes(deps, {} as WeChatLoginService)] })
   ])
 }
 

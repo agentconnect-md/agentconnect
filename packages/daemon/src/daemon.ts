@@ -197,7 +197,6 @@ import {
   MAX_WORKSPACE_DOWNLOAD_BYTES,
   isDelegatedTaskCoordinate,
   WebchatPromptSuggestion,
-  WECHAT_PLATFORM,
   type TaskInitiator,
   type TaskLinkFacts,
   type UserTurnBody
@@ -3173,7 +3172,6 @@ export class Daemon {
       orgSlug: () => this.cpOrgSlug,
       googleChatWriteBudgets: () =>
         (this.googleChatBudgets ??= new GoogleChatWriteBudgets(googleChatWriteBudgetSettings(this.cfg.googleChat))),
-      weChatEnabled: () => this.cfg.features.wechat,
       agents: () => this.agents,
       transportAgents: (agents) => this.transportAgents(agents),
       evaluationIntegrationIds: () => this.evaluationIntegrationIds,
@@ -9819,23 +9817,9 @@ export class Daemon {
     )
   }
 
-  /**
-   * The platform half of the CP registration capability set — DERIVED from this
-   * daemon's platform registry, never hand-listed.
-   *
-   * It is load-bearing rather than diagnostic: the CP's pre-install gate
-   * (`integrationPlatformAvailability`) and the console's tile gating both read it, so
-   * a platform this daemon can serve but forgot to advertise is silently uninstallable.
-   * Derivation removes the forgetting.
-   *
-   * Order is the registry's, so the advertised value is unchanged from the hand list it
-   * replaces. Extracted as its own method so the drift test can read exactly what the
-   * handshake sends (see test/platform-registry-drift.test.ts).
-   */
+  // Derive the CP/console installation capabilities from the daemon's platform registry.
   private registrationPlatforms(): string[] {
-    // WeChat is offered to the Control Plane only where `features.wechat` turns it on (wechat-integration.md §6).
-    const weChat = (this.cfg as ReturnType<typeof loadConfig> | undefined)?.features.wechat === true
-    return platformIds().filter((id) => id !== WECHAT_PLATFORM || weChat)
+    return platformIds()
   }
 
   private strategyOffered(strategy: SandboxStrategy): boolean {

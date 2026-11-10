@@ -182,7 +182,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     createLinearCpProvider({ app: TEST_LINEAR_APP, tokens: linearTokenStore, tokenService: linearTokens }),
     createDingTalkCpProvider(),
     createMsTeamsCpProvider(opts.msTeamsApp ? { app: opts.msTeamsApp } : {}),
-    createWeChatCpProvider({ enabled: true })
+    createWeChatCpProvider({})
   ])
   const repos = {
     daemonAdmission: new PgDaemonAdmissionRepo(prisma),

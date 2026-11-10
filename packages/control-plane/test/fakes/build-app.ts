@@ -85,7 +85,7 @@ const PLATFORMS = buildCpPlatformRegistry([
   createLinearCpProvider({}),
   createDingTalkCpProvider(),
   createMsTeamsCpProvider(),
-  createWeChatCpProvider({ enabled: true })
+  createWeChatCpProvider({})
 ])
 
 export function buildDaemonApp(prisma: PrismaClient, opts: { wsConfig?: Partial<WsConfig> } = {}): DaemonApp {

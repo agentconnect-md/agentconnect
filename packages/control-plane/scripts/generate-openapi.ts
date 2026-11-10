@@ -64,7 +64,7 @@ function stubDeps(): HttpDeps {
       createFeishuCpProvider({}),
       createDingTalkCpProvider(),
       createMsTeamsCpProvider(),
-      createWeChatCpProvider({ enabled: true })
+      createWeChatCpProvider({})
     ])
   } as unknown as HttpDeps
 }
