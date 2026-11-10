@@ -349,7 +349,16 @@ after a person confirms it. The console asks the CP for a manifest for an
 agent (`POST /agents/:id/github-app/manifest`, agent editors only) and posts it
 to GitHub's create page. The user chooses their personal GitHub account or loads
 their organizations through a GitHub authorization popup and selects one from
-the owner dropdown. The popup uses state and PKCE; the authenticated, agent-editor-only
+the owner dropdown. Discovery reuses the built-in GitHub App and requires its
+organization **Members: read-only** permission to be approved on each organization
+installation. Setup includes this permission in the built-in manifest and audits
+existing Apps for it. Updating the manifest does not update existing installations:
+an administrator must add the permission in GitHub App settings and organization
+owners must approve the change, then refresh the account list. The picker is limited
+to organizations accessible to the App, not every organization the user belongs to.
+Until the update is approved, existing installations retain their previous permissions
+and repository features continue to work; organization discovery remains limited.
+The popup uses state and PKCE; the authenticated, agent-editor-only
 owner endpoints exchange the code, read `/user` and every page of active
 `/user/memberships/orgs`, and revoke the temporary token without persisting it or
 changing a linked identity. The list includes members as well as owners because

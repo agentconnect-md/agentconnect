@@ -387,8 +387,7 @@ export const DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1: DeploymentConfigValuesV1 = {
 export const DEPLOYMENT_SECRET_KEYS = [
   'github.privateKeyB64',
   'github.webhookSecret',
-  // GitHub returns this only once during App creation. The CP does not consume
-  // it today, but Logto's GitHub connector setup does, so it must not be lost.
+  // GitHub returns this once; retain it for integration OAuth and optional Logto setup.
   'github.clientSecret',
   'gitlab.clientSecret',
   'slack.clientSecret',

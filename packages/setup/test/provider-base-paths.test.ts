@@ -67,6 +67,7 @@ describe('provider service base paths', () => {
       'https://setup.example.test/api/v1/create/github/callback'
     )
     expect(githubManifest).toMatchObject({
+      default_permissions: { members: 'read' },
       callback_urls: ['https://gateway.example.test/auth/social/callback'],
       setup_url: 'https://gateway.example.test/cp/v1/github/setup/callback',
       hook_attributes: {
