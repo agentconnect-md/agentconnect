@@ -167,6 +167,20 @@ async function seedAllSecretTables(): Promise<void> {
     }
   })
 
+  await prisma.wechatPendingLogin.create({
+    data: {
+      id: randomUUID(),
+      orgId: DEFAULT_ORG_ID,
+      agentId: AGENT,
+      createdByUserId: DEFAULT_OWNER_ID,
+      qrcode: 'wechat-qrcode-plain',
+      botToken: 'wechat-bot-token-plain',
+      pollHost: 'https://ilinkai.example.test',
+      status: 'authorized',
+      expiresAt: new Date('2026-01-01T01:00:00Z')
+    }
+  })
+
   await prisma.slackUserConfig.create({
     data: {
       orgId: DEFAULT_ORG_ID,
@@ -237,7 +251,8 @@ describe('rewrapAllSecrets — converge lazy migration / post-rotation rewrap (r
       'provider_key_header',
       'slack_install',
       'slack_user_config',
-      'slack_workspace_install'
+      'slack_workspace_install',
+      'wechat_pending_login'
     ])
     // Every table saw its seeded row with no concurrent-write skips; bot_secret
     // resealed 2 values (null signingSecret stays null), the external-memory
@@ -248,6 +263,11 @@ describe('rewrapAllSecrets — converge lazy migration / post-rotation rewrap (r
     expect(stats.find((s) => s.table === 'bot_secret')!.values).toBe(2)
     // Both nullable columns were populated on the seeded registration row.
     expect(stats.find((s) => s.table === 'feishu_app_registration')!.values).toBe(2)
+    expect(stats.find((s) => s.table === 'wechat_pending_login')!.values).toBe(2)
+    expect(await prisma.wechatPendingLogin.findFirstOrThrow()).toMatchObject({
+      qrcode: 'sealed:wechat-qrcode-plain',
+      botToken: 'sealed:wechat-bot-token-plain'
+    })
     expect(stats.find((s) => s.table === 'external_memory_connection_secret')!.values).toBe(2)
 
     // At rest: sealed everywhere; nullable columns stay null; header NAMES readable.

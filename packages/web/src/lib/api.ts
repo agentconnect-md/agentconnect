@@ -943,6 +943,8 @@ export type CreateIntegrationInput =
       transport: 'http'
       msteams?: { appId: string; tenantId: string; clientSecret: string }
     })
+  // WeChat installs only through the CP's QR login, so the console's one create shape is a reuse by bot id.
+  | (CreateIntegrationBase & { platform: 'wechat'; botId: string })
 
 export interface TelegramBotCheckDto {
   status: 'ready' | 'privacy_enabled' | 'invalid' | 'unreachable'
@@ -5007,6 +5009,39 @@ export async function startFeishuRegistration(
 }
 export async function getFeishuRegistration(id: string): Promise<FeishuRegistrationStatusDto> {
   return apiGet<FeishuRegistrationStatusDto>(`${orgBase()}/integrations/feishu/app/${encodeURIComponent(id)}`)
+}
+
+// ── WeChat QR login ──
+/** `POST /integrations/wechat/login`: start a QR login for an agent; `botId` re-scans that bot in place. */
+export interface StartWeChatLoginInput {
+  agentId: string
+  botId?: string
+  name?: string
+}
+/** One WeChat QR login; the CP runs it and installs the bot itself, so no token reaches the browser. */
+export interface WeChatLoginDto {
+  id: string
+  status: 'waiting' | 'scanned' | 'verify_code' | 'completed' | 'failed'
+  qrUrl: string | null
+  expiresAt: string
+  failureReason: 'expired' | 'verify_code_blocked' | 'agent_unavailable' | 'setup_failed' | null
+  integrationId: string | null
+  botId: string | null
+  wechatUserTail: string | null
+}
+export async function startWeChatLogin(input: StartWeChatLoginInput): Promise<WeChatLoginDto> {
+  return apiPost<WeChatLoginDto>(`${orgBase()}/integrations/wechat/login`, input)
+}
+/** The CP holds this request for WeChat's long poll (up to ~25 s), so callers poll back-to-back. */
+export async function getWeChatLogin(
+  id: string,
+  options: { verifyCode?: string; signal?: AbortSignal } = {}
+): Promise<WeChatLoginDto> {
+  const query = options.verifyCode ? `?verifyCode=${encodeURIComponent(options.verifyCode)}` : ''
+  return apiGet<WeChatLoginDto>(
+    `${orgBase()}/integrations/wechat/login/${encodeURIComponent(id)}${query}`,
+    options.signal ? { signal: options.signal } : undefined
+  )
 }
 
 // ── Slack auto-install funnel ──

@@ -158,6 +158,9 @@ services:
       - CORS_ORIGIN=${AGENTCONNECT_PUBLIC_WEB_URL:-http://localhost:${AGENTCONNECT_WEB_PORT:-3000}}
       - PRESET_AGENTS_ENABLED
       - CAPABILITY_REQUESTS_ENABLED
+      # Opt-in personal WeChat QR login (docs/designs/wechat-integration.md §6); pair it with the console's wechat flag.
+      - WECHAT_ENABLED
+      - WECHAT_API_URL
       - OIDC_ISSUER
       - OIDC_AUDIENCE
       - SLACK_PLATFORM_APP_ID

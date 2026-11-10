@@ -110,6 +110,7 @@ export const INTEGRATION_BLURB: Record<string, string> = {
   googlechat: 'Reply in spaces & DMs',
   dingtalk: 'Reply in groups & chats',
   msteams: 'Reply in channels & chats',
+  wechat: 'Reply in your own chat',
   // One row per code host the picker offers, read from the total table above.
   ...Object.fromEntries(TRIGGER_CODE_HOST_PROVIDERS.map((provider) => [provider, CODE_HOST_BLURB[provider]])),
   webhook: 'Trigger by posting a URL',

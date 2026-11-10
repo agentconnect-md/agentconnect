@@ -197,6 +197,7 @@ import {
   MAX_WORKSPACE_DOWNLOAD_BYTES,
   isDelegatedTaskCoordinate,
   WebchatPromptSuggestion,
+  WECHAT_PLATFORM,
   type TaskInitiator,
   type TaskLinkFacts,
   type UserTurnBody
@@ -9832,7 +9833,9 @@ export class Daemon {
    * handshake sends (see test/platform-registry-drift.test.ts).
    */
   private registrationPlatforms(): string[] {
-    return platformIds()
+    // WeChat is offered to the Control Plane only where `features.wechat` turns it on (wechat-integration.md §6).
+    const weChat = (this.cfg as ReturnType<typeof loadConfig> | undefined)?.features.wechat === true
+    return platformIds().filter((id) => id !== WECHAT_PLATFORM || weChat)
   }
 
   private strategyOffered(strategy: SandboxStrategy): boolean {

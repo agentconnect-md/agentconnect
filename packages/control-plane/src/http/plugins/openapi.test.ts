@@ -14,6 +14,9 @@ import { buildCpPlatformRegistry } from '../../platforms/registry.js'
 import { createTelegramCpProvider } from '../../platforms/telegram/provider.js'
 import { createDiscordCpProvider } from '../../platforms/discord/provider.js'
 import { createSlackCpProvider } from '../../platforms/slack/provider.js'
+import { createWeChatCpProvider } from '../../platforms/wechat/provider.js'
+import { weChatLoginRoutes } from '../../platforms/wechat/routes.js'
+import type { WeChatLoginService } from '../../platforms/wechat/login.js'
 import { createFeishuCpProvider } from '../../platforms/feishu/provider.js'
 
 /** Minimal stub deps: `config` plus the platform registry, which the create
@@ -32,7 +35,8 @@ function stubDeps(): HttpDeps {
       createTelegramCpProvider({ verifyBot: async () => ({ status: 'unreachable' }) }),
       createDiscordCpProvider({ ensureMessageContentIntent: async () => 'ready' }),
       createSlackCpProvider({}),
-      createFeishuCpProvider({})
+      createFeishuCpProvider({}),
+      createWeChatCpProvider({ enabled: true, routes: [weChatLoginRoutes({} as HttpDeps, {} as WeChatLoginService)] })
     ])
   } as unknown as HttpDeps
 }
@@ -318,6 +322,8 @@ describe('openapi plane', () => {
       expect(marked.sort()).toEqual(
         [
           'DELETE /api/v1/me/keys/:id',
+          'GET /api/v1/orgs/:orgId/integrations/wechat/login/:id',
+          'POST /api/v1/orgs/:orgId/integrations/wechat/login',
           'DELETE /api/v1/orgs/:orgId/daemons/:id/keys/:keyId',
           'GET /api/v1/orgs/:orgId/daemons/:id/keys',
           'POST /api/v1/orgs/:orgId/daemons/:id/keys',

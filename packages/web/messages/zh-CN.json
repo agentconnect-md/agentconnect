@@ -2527,6 +2527,7 @@
       "platformHints": {
         "listen": "把机器人拉进{platform}的任意{target}，它就会开始接收消息。",
         "mention": "把机器人拉进{platform}的任意{target}，并 @ 它即可开始使用。",
+        "direct": "在{platform}里直接给机器人发消息即可开始；它不能加入{target}。",
         "targets": {
           "channel": "频道",
           "group": "群",
@@ -2574,6 +2575,10 @@
         "msteams": {
           "create": "为 Microsoft Teams 注册机器人",
           "existing": "未使用的 Microsoft Teams 机器人"
+        },
+        "wechat": {
+          "create": "用你的微信扫描二维码",
+          "existing": "未使用的微信机器人"
         }
       },
       "api": {
@@ -6992,6 +6997,59 @@
         "connecting": "正在打开 Microsoft…",
         "next": "由你所在 Microsoft 365 组织的 Teams 管理员或全局管理员登录并批准。之后应用会加入组织的应用目录，并添加到你选择的团队。",
         "useOwn": "改为注册自己的 Bot"
+      }
+    },
+    "wechat": {
+      "brand": "微信",
+      "intro": {
+        "title": "连接你自己的微信",
+        "body": "扫码后，你的微信里会在 ClawBot 插件下新增一个联系人，消息直达 {agent}。只有你能和它对话：它不进任何群，其他人也无法给它发消息。",
+        "experimental": "该功能在微信侧仍属实验性质，可能随时变化或停止工作。",
+        "counterpart": "谁扫描此二维码，谁就成为这个机器人唯一的对话对象。请用你自己的微信扫码，不要分享给他人。"
+      },
+      "start": "显示二维码",
+      "starting": "正在准备二维码…",
+      "retry": "重试",
+      "qr": {
+        "alt": "微信登录二维码",
+        "scan": "用手机微信扫描此二维码。",
+        "expiresIn": "二维码 {time} 后过期。",
+        "expired": "二维码已过期",
+        "expiredHint": "二维码约两分钟有效。刷新后用你自己的微信重新扫码。",
+        "refreshCode": "刷新二维码",
+        "openOnPhone": "已经在这台手机上？在微信中打开"
+      },
+      "scanned": {
+        "title": "已扫码，请在手机上确认",
+        "body": "在微信中点击确认，即可完成连接。"
+      },
+      "verify": {
+        "body": "微信会在你的手机上显示一个数字。请在此输入，以确认是你本人。",
+        "label": "验证数字",
+        "submit": "确认",
+        "sending": "正在检查…",
+        "rejected": "数字不匹配。请查看手机后重新输入。"
+      },
+      "completed": {
+        "title": "已连接到微信用户 …{tail}",
+        "body": "打开微信，在 ClawBot 下找到这个机器人，给它发一条消息即可开始。"
+      },
+      "failed": {
+        "expired": "微信确认之前，登录已超时。",
+        "verifyCodeBlocked": "输错数字次数过多，微信已阻止本次登录。请稍后重试。",
+        "agentUnavailable": "该 Agent 已无法接入微信：它的 Daemon 已不存在或不支持微信。",
+        "setupFailed": "微信已确认登录，但安装机器人失败。",
+        "gone": "本次登录已失效。"
+      },
+      "footer": {
+        "done": "完成"
+      },
+      "settings": {
+        "wechatUser": "微信用户",
+        "scannedBy": "扫码成员",
+        "reconnect": "重新连接",
+        "reconnectHint": "用同一个微信重新扫码，例如微信让机器人下线之后。机器人保留其集成；当前对话会关闭，下一条消息将开启新对话。",
+        "close": "关闭"
       }
     }
   },
