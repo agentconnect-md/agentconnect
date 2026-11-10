@@ -186,6 +186,23 @@ during a write collapse into the newest one. After a restart the canvas is found
 through `agents.conversations.listViews`. The in-conversation plan message is
 unchanged.
 
+At each admitted turn in an owned code channel, the daemon finds the current Plan
+view and reads its unresolved comments through `agents.conversations.getCanvas`.
+The turn prompt receives a bounded snapshot with the quoted plan text, author IDs,
+timestamps and replies, fenced as external feedback rather than a new instruction
+or permission approval. The snapshot prefers recent threads, marks omitted content,
+and does not include the entire canvas. This also works for replies inside a code
+channel and for tasks whose session lives elsewhere. It does not require an
+eligible Git checkout or a working Code diff.
+
+A comment alone does not wake the agent: continue the conversation to have it
+consider the feedback. Unresolved comments are read again on later turns; the agent
+is told not to repeat already addressed work. The daemon neither resolves comments
+nor stores a separate copy. If Slack cannot provide the snapshot, the prompt says
+feedback is unavailable instead of treating the failure as an empty list. Missing
+Plan views and resolved-only comments add no prompt context. This uses the existing
+`code_channels:manage` scope.
+
 ### Automatic task diffs
 
 The daemon maintains the Code view for a task with isolated, assigned Git repositories.
@@ -231,4 +248,5 @@ The Control Plane continues to hold control metadata only.
 - [Layout block](https://docs.slack.dev/reference/block-kit/blocks/layout-block/)
 - [Data Table block](https://docs.slack.dev/reference/block-kit/blocks/data-table-block/)
 - [Canvas content](https://docs.slack.dev/reference/methods/canvases.getContent/)
+- [Plan Canvas comments](https://docs.slack.dev/reference/methods/agents.conversations.getCanvas/)
 - [Code channel views](https://docs.slack.dev/reference/methods/agents.conversations.setView/)

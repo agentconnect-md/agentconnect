@@ -793,7 +793,14 @@ export type AppLike = {
     agents: {
       conversations?: Pick<
         WebClient['agents']['conversations'],
-        'create' | 'setView' | 'setProperties' | 'archive' | 'listViews' | 'removeView' | 'setCanvasContent'
+        | 'create'
+        | 'setView'
+        | 'setProperties'
+        | 'archive'
+        | 'listViews'
+        | 'removeView'
+        | 'setCanvasContent'
+        | 'getCanvas'
       >
       sessions: {
         setStatus: (a: unknown) => Promise<unknown>
@@ -1280,11 +1287,9 @@ export class SlackConnection implements PlatformConnection {
     slot.canvasId = canvasId
   }
 
-  async codeChannelApi<K extends 'create' | 'setView' | 'setProperties' | 'archive' | 'listViews' | 'removeView'>(
-    method: K,
-    args: Parameters<WebClient['agents']['conversations'][K]>[0],
-    signal?: AbortSignal
-  ): Promise<unknown> {
+  async codeChannelApi<
+    K extends 'create' | 'setView' | 'setProperties' | 'archive' | 'listViews' | 'removeView' | 'getCanvas'
+  >(method: K, args: Parameters<WebClient['agents']['conversations'][K]>[0], signal?: AbortSignal): Promise<unknown> {
     const api = this.app.client.agents.conversations
     if (!api) throw new Error('This Slack client does not support code channels')
     try {
