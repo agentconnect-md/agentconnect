@@ -2340,6 +2340,7 @@
       "platform": "平台",
       "chat": "聊天",
       "workflow": "工作流",
+      "more": "更多",
       "setupGuide": "设置指南",
       "notSupportedByDaemon": "此 Daemon 不支持",
       "name": "名称",

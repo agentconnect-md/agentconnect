@@ -1696,6 +1696,7 @@ export default function AddIntegrationModal({
         )}
         <div className="mb-[18px]">
           <IntegrationPlatformGroups
+            selectedPlatform={platform}
             renderTile={(candidate) => {
               const available = isPlatformAvailable(candidate.key)
               const on = available && platform === candidate.key

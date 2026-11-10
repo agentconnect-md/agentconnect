@@ -2340,6 +2340,7 @@
       "platform": "Platform",
       "chat": "Chat",
       "workflow": "Workflow",
+      "more": "More",
       "setupGuide": "Setup guide",
       "notSupportedByDaemon": "Not supported by this daemon",
       "name": "Name",
