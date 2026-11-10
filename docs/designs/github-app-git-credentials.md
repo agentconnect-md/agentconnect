@@ -1221,6 +1221,15 @@ semantics. Preserve the rule that mutations are not automatically replayed after
 an ambiguous channel loss. Prewarming may warm the proxy's token cache, but must
 not put a token or minting capability in the child environment.
 
+Preparation owns its environment hold and tunnel binding even if no runtime is ever
+launched. Release the operation hold in `finally` on success, cancellation or failure;
+a prepared environment retained for reuse remains subject to the existing idle policy.
+Agent move/retirement or binding replacement must fence the old subject, close its
+streams and release its tunnel listeners through the existing lifecycle, without
+waiting for an ACP process to exit. Do not close a shared listener still held by
+another valid operation or runtime. A retired binding cannot carry later Git requests;
+any resumed preparation must acquire the current binding and route again.
+
 A missing proxy, unsupported listener, incomplete trust bundle or uncovered target
 fails the network operation with an actionable reason. There is no retry through a
 real-token helper or anonymous fallback for a managed operation. Existing callers
@@ -1248,7 +1257,14 @@ Git must not silently claim that the Azure CLI is installed in every image.
 1. **Shared route plus Azure:** common managed-operation preparation, all execution
    transports, Azure primary/additional repositories and hooks/review checkout;
    preserve other providers' helper behavior. Remove the environment bans only after
-   the mixed-repository and readiness checks pass.
+   the mixed-repository and readiness checks pass. This delivery also updates
+   `.oss-scanner/threat_model.md` to record credential-proxy and Azure trust boundaries,
+   the changed Git credential path, and the remaining exposure of unmigrated callers.
+   Reconcile Azure §6.1 and `proxiedDaemonGitEnv` together: replace the current exception
+   that retains a daemon capability when another provider's real helper is present
+   with the new rule that every managed target in a migrated invocation uses the
+   proxy. A banner alone does not update that contract. Include cleanup of environments
+   prepared without launching a runtime in the implementation and its verification.
 2. **Other ordinary managed repositories:** move GitHub, GitLab and Gitea workspace,
    canonical/review and supported nested-repository network calls to that same path.
    Remove the temporary selector, audit direct Git call sites, and remove obsolete
@@ -1295,6 +1311,10 @@ it actually exercised; source inspection alone is not a successful environment t
 - Cold preparation works before runtime spawn. Missing listener/proxy, stale binding,
   revoked access, token expiry and reconnect fail or recover through existing bounded
   semantics without direct-token fallback or mutation replay. Local Git stays usable.
+  Cancel preparation before runtime launch, then move or retire the agent: the old
+  binding must reject requests and release its resources, while unrelated live
+  operations retain their listeners. Also verify idle cleanup of an unused prepared
+  environment and successful preparation on a newly acquired binding.
 - Source-cache hit/miss and fallback behavior, exact review refs, approved submodules
   and lazy fetches preserve their own authorization. During later source migration,
   a closed/expired/wrong-subject skill window must deny even with a previously issued
