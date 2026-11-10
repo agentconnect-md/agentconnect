@@ -83,6 +83,12 @@ describe('the coordinator prompt and batch', () => {
     expect(prompt).toContain('Never write a plan or ask for approval')
   })
 
+  it('tells the model an attachment is only a label to it and belongs to a task', () => {
+    const prompt = coordinatorPrompt({ agentName: 'bot-a', platform: 'Slack', channelId: 'C1', peers: [] })
+    expect(prompt).toContain('[attached: chart.png (image/png)] is all you see of a file')
+    expect(prompt).toContain('A task handed the message receives the file itself')
+  })
+
   // webchat-threads.md §4.2: a webchat coordinator reads of one person's conversation with threads, and text that is shown.
   it('names a webchat conversation with threads where tasks and replies answer, never a channel or a page', () => {
     const prompt = coordinatorPrompt({
@@ -444,6 +450,38 @@ describe('the coordinator’s outcomes', () => {
     await expect(
       sessions.decide(ctx, { action: 'replyToMessage', messageId: 'msg-1.1', message: 'hi' })
     ).rejects.toThrow(/already has an outcome/)
+  })
+
+  it('refuses its own reply to a message whose attachment it cannot see, and a task can still take it', async () => {
+    const { sessions, ctx, dispatched, posted } = await setup()
+    const attachments = [
+      { id: 'F1', name: 'chart.png', mimeType: 'image/png', sourceUrl: 'https://files.example.test/F1' }
+    ]
+    begin(sessions, slack('1.1', { text: 'what is this?', attachments }))
+    await expect(
+      sessions.decide(ctx, { action: 'replyToMessage', messageId: 'msg-1.1', message: 'I cannot open that.' })
+    ).rejects.toThrow(/msg-1\.1 has an attachment you cannot see/)
+    expect(posted).toEqual([])
+    await sessions.decide(ctx, { action: 'delegateTask', messageId: 'msg-1.1', title: 'Explain the chart' })
+    expect(dispatched.map(({ msg }) => msg.attachments)).toEqual([attachments])
+  })
+
+  it('still answers a report with an attachment, which no task can take', async () => {
+    const { sessions, ctx, posted } = await setup()
+    const report = {
+      ...slack('9.9'),
+      msgId: 'agentcall:C1:assistant-report:1',
+      source: 'agent',
+      transcriptTs: '9.9',
+      thread: undefined,
+      text: '[follow-up] the chart is ready',
+      attachments: [{ id: 'F2', name: 'chart.png', mimeType: 'image/png', sourceUrl: 'https://files.example.test/F2' }]
+    } as NormalizedMessage
+    sessions.beginTurn(coordinatorKey, 'bot-a', [
+      deliveredMessage({ ...report, sessionThread: COORDINATOR, headless: true }, 'int-bot-a')
+    ])
+    await sessions.decide(ctx, { action: 'replyToMessage', messageId: 'msg-9.9', message: 'The chart is ready.' })
+    expect(posted.map((post) => post.text)).toEqual(['The chart is ready.'])
   })
 
   it('posts and calls agents as any session does, and decides on delivered messages', async () => {

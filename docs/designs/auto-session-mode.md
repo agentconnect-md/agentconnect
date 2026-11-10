@@ -249,7 +249,9 @@ The existing names stay, with `messageId` added (`SEND_MESSAGE_ACTIONS` in
   task and attaches its thread (§6.4), or moves it into the task's own conversation (§6.8).
 - `stopTask {taskId}`: stops a task's current turn, either kind. The coordinator is not offered it
   yet; `!stop` in a task's thread stops a threaded task (§8), and the console stops either kind.
-- `replyToMessage {messageId, message}`: the coordinator's own reply, in the message's thread.
+- `replyToMessage {messageId, message}`: the coordinator's own reply, in the message's thread. The
+  coordinator reads only an attachment's name, so the daemon refuses this for a channel message that
+  has one; a task receives the file itself. A report is exempt, since no task can take one.
 
 `messageId` names a platform message the coordinator received, so calls carrying it, and
 `replyToMessage`, are the coordinator's alone.

@@ -220,6 +220,12 @@ export class CoordinatorSessions {
           `sendMessage: ${call.messageId} is a report, not a channel message: answer it with action "replyToMessage", or ` +
             'leave it; no task was opened or messaged'
         )
+      // The coordinator reads only an attachment's name (§5.1); a report is exempt because no task can take one.
+      if (call.action === 'replyToMessage' && !held.message.report && held.message.msg.attachments?.length)
+        throw new Error(
+          `sendMessage: ${call.messageId} has an attachment you cannot see: hand it to a task with action ` +
+            '"delegateTask" or "messageTask", which receives the file itself; nothing was posted'
+        )
       switch (call.action) {
         case 'delegateTask': {
           const owner = await this.taskOwner(ctx.agentId, ctx, key)
