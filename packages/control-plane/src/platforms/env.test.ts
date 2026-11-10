@@ -178,7 +178,8 @@ describe('composed AppConfigSchema', () => {
         'dingtalk_bot',
         'dingtalk_mcp',
         'microsoft_teams',
-        'microsoft_teams_bot'
+        'microsoft_teams_bot',
+        'weixin_bot'
       ])
     )
     for (const provider of CODE_HOST_PROVIDERS) expect(blocklist, provider).toContain(provider)
