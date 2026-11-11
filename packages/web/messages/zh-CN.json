@@ -1936,6 +1936,7 @@
       "discordCannotLeaveRowHint": "Discord Bot属于服务器，而不是单个频道——请使用上方服务器标题中的“离开”操作将其移出。如果它仍在服务器中，该行会重新出现。",
       "googlechatMentionHint": "被@提及时回复。Google Chat 只投递提及了该应用的空间消息，话题里的回复也一样。",
       "dingtalkMentionHint": "被@提及时回复。钉钉只投递@了机器人的群消息。",
+      "wecomMentionHint": "被@提及时回复。企业微信只投递@了机器人的群消息。",
       "space": {
         "thisServer": "此服务器",
         "leaveTitle": "离开{space}——Bot会离开整个服务器及其中的所有{noun}",
@@ -2587,6 +2588,10 @@
         "wechat": {
           "create": "用你的微信扫描二维码",
           "existing": "未使用的微信机器人"
+        },
+        "wecom": {
+          "create": "在企业微信中创建智能机器人",
+          "existing": "未使用的企业微信机器人"
         }
       },
       "api": {
@@ -7059,6 +7064,29 @@
         "reconnectHint": "用同一个微信重新扫码，例如微信让机器人下线之后。机器人保留其集成；当前对话会关闭，下一条消息将开启新对话。",
         "close": "关闭"
       }
+    },
+    "wecom": {
+      "checking": "正在检查凭据…",
+      "connect": "连接",
+      "openConsole": "打开企业微信管理后台",
+      "step1": "在企业微信管理后台创建智能机器人，将其 API 模式设为长连接，然后复制其 BotID 和 Secret。",
+      "step2": "粘贴 BotID 和 Secret——连接所必需",
+      "errors": {
+        "invalidCredentials": "企业微信拒绝了此 BotID 或 Secret。请从企业微信中的智能机器人重新复制两者，然后重新连接。",
+        "longConnectionDisabled": "此智能机器人未使用长连接。请在企业微信中将其 API 模式设为长连接，然后重新连接。",
+        "checkUnavailable": "AgentConnect 无法连接企业微信来检查此机器人，因此未保存任何内容。请稍后重试。",
+        "alreadyInstalled": "此企业微信机器人已连接到 AgentConnect。请复用它，而不是再次添加：先从仍在使用它的 Agent 断开，再选择“未使用的企业微信机器人”。若它连接在其他组织中，须先在那里移除。"
+      },
+      "settings": {
+        "replace": "更换密钥",
+        "untested": "AgentConnect 不会测试新的 Secret，因为测试会断开正在运行的机器人。机器人会使用新的 Secret 重新连接；如果它不再响应，说明 Secret 可能有误，请从企业微信重新复制。",
+        "newSecret": "新的 Secret",
+        "save": "保存",
+        "saving": "正在保存…",
+        "close": "关闭",
+        "updated": "Secret 已保存，机器人会使用它重新连接。"
+      },
+      "brand": "企业微信"
     }
   },
   "Computers": {

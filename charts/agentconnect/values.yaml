@@ -150,6 +150,8 @@ features:
   qq: true
   # The personal WeChat integration's console install entry points; existing integrations keep working when hidden.
   wechat: false
+  # The WeCom integration's console install entry points; off hides them (an existing WeCom bot keeps its Bots tab).
+  wecom: false
   # The built-in agent offers the deployment's Google Chat app first, through its Marketplace listing; turn it on once that listing is live.
   googleChatDeploymentApp: false
   # The By decision checkout for additional repositories; off hides it for new choices, existing ones stay shown.

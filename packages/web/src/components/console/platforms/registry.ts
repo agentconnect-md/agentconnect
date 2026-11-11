@@ -21,6 +21,7 @@ import { slackModule } from './slack'
 import { QQModule } from './qq'
 import { telegramModule } from './telegram'
 import { weChatModule } from './wechat'
+import { weComModule } from './wecom'
 
 /**
  * The console's platform registry (§10) — the single platform-set authority
@@ -42,6 +43,7 @@ const MODULES: readonly WebPlatformModule[] = [
   telegramModule,
   feishuModule,
   dingTalkModule,
+  weComModule,
   QQModule,
   weChatModule,
   linearModule

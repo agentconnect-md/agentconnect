@@ -40,6 +40,8 @@ export type IdentityCardKey =
   | 'Integrations.dialog.identityCards.msteams.existing'
   | 'Integrations.dialog.identityCards.wechat.create'
   | 'Integrations.dialog.identityCards.wechat.existing'
+  | 'Integrations.dialog.identityCards.wecom.create'
+  | 'Integrations.dialog.identityCards.wecom.existing'
 
 /** The mode-card pair for a module with one brand. */
 export function identityCards(
@@ -55,6 +57,7 @@ export function identityCards(
     | 'dingtalk'
     | 'msteams'
     | 'wechat'
+    | 'wecom'
 ): {
   create: IdentityCardKey
   existing: IdentityCardKey
@@ -86,6 +89,7 @@ export type InviteHintBrandKey =
   | 'Platforms.dingtalk.brand'
   | 'Platforms.msteams.brand'
   | 'Platforms.wechat.brand'
+  | 'Platforms.wecom.brand'
 
 /** The host messages an invite hint can name — the two arms of its hint row — and the keys of its two values. */
 export type InviteHint = {

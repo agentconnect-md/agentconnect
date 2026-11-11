@@ -142,8 +142,12 @@ describe('platform set', () => {
       vi.stubEnv('FEATURE_FLAGS', 'git-url,qq')
       expect(platformOffered('qq')).toBe(true)
       expect(platformOffered('wechat')).toBe(false)
+      expect(platformOffered('wecom')).toBe(false)
       vi.stubEnv('FEATURE_FLAGS', 'wechat')
       expect(platformOffered('wechat')).toBe(true)
+      expect(platformOffered('wecom')).toBe(false)
+      vi.stubEnv('FEATURE_FLAGS', 'wecom')
+      expect(platformOffered('wecom')).toBe(true)
     })
 
     it('keeps its Bots tab for an org that already has a bot there, flag or not', () => {
@@ -151,7 +155,9 @@ describe('platform set', () => {
       const shown = (bots: { platform: string }[]) => visibleBotPlatformTabs(bots).map((tab) => tab.platform)
       expect(shown([])).not.toContain('qq')
       expect(shown([{ platform: 'qq' }])).toContain('qq')
-      vi.stubEnv('FEATURE_FLAGS', 'qq,wechat')
+      expect(shown([])).not.toContain('wecom')
+      expect(shown([{ platform: 'wecom' }])).toContain('wecom')
+      vi.stubEnv('FEATURE_FLAGS', 'qq,wechat,wecom')
       expect(visibleBotPlatformTabs([])).toEqual(BOT_PLATFORM_TABS)
     })
   })
@@ -177,6 +183,7 @@ describe('platform set', () => {
       'Lark',
       'Feishu',
       'DingTalk',
+      'WeCom',
       'QQ',
       'WeChat',
       'Linear'
