@@ -10,13 +10,13 @@ import {
 import type { BotRecord, BotSecretMaterial } from '../../persistence/ports.js'
 import { isMsTeamsConversationId, msTeamsSessionRealm } from './session-access.js'
 import {
-  MSTEAMS_AGENT_BOT_KEY,
   MSTEAMS_DEPLOYMENT_OWNER,
   MSTEAMS_DEPLOYMENT_SECRET_MARKER,
   MSTEAMS_ROW_OWNER_KEY,
   MsTeamsCpEnvSchema,
   isMsTeamsCustomerRow,
   isMsTeamsDeploymentRow,
+  msTeamsAgentBotEntries,
   msTeamsAgentBotOf,
   servesMsTeamsDeploymentRow,
   type MsTeamsAgentBots,
@@ -249,11 +249,11 @@ export function createMsTeamsCpProvider(
       const owner = input.platformConfig?.[MSTEAMS_ROW_OWNER_KEY]
       if (!input.externalAppId || !tenantId) return {}
       // An agent bot's row keeps what names its blueprint and its Azure resource (§8.6.4).
-      const agentBot = msTeamsAgentBotOf({ platformConfig: input.platformConfig ?? null })
+      const agentBot = msTeamsAgentBotOf(input)
       const kept = {
         ...(tokenTenantId ? { tokenTenantId } : {}),
         ...(owner === MSTEAMS_DEPLOYMENT_OWNER ? { [MSTEAMS_ROW_OWNER_KEY]: owner } : {}),
-        ...(agentBot ? { [MSTEAMS_AGENT_BOT_KEY]: agentBot } : {})
+        ...(agentBot ? msTeamsAgentBotEntries(agentBot) : {})
       }
       return {
         externalAppId: input.externalAppId,

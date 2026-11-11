@@ -232,8 +232,8 @@ describe('Teams installation', () => {
     const IDENTITY = '88888888-8888-4888-8888-888888888888'
     const BLUEPRINT = '99999999-9999-4999-8999-999999999999'
     const app = { appId: APP_ID, tenantId: HOME, clientSecret: 'deployment-secret-example' }
-    const agentBot = { blueprintId: BLUEPRINT, resourceName: 'agentconnect-example' }
-    const stored = { tenantId: TENANT_ID, tokenTenantId: TENANT_ID, appOwner: 'deployment', agentBot }
+    const agentBot = { agentBotBlueprintId: BLUEPRINT, agentBotResourceName: 'agentconnect-example' }
+    const stored = { tenantId: TENANT_ID, tokenTenantId: TENANT_ID, appOwner: 'deployment', ...agentBot }
     const row = {
       id: BOT_ROW,
       externalAppId: IDENTITY,
@@ -267,13 +267,13 @@ describe('Teams installation', () => {
     ).toEqual({
       externalAppId: IDENTITY,
       externalTenantId: TENANT_ID,
-      platformConfig: { tokenTenantId: TENANT_ID, appOwner: 'deployment', agentBot }
+      platformConfig: { tokenTenantId: TENANT_ID, appOwner: 'deployment', ...agentBot }
     })
     expect(configured.releasesFreedBot!(row)).toBe(true)
     // A malformed entry is not an agent bot.
     const malformed = {
       ...row,
-      platformConfig: { ...stored, agentBot: { blueprintId: BLUEPRINT } }
+      platformConfig: { ...stored, agentBotResourceName: '' }
     } as unknown as BotRecord
     expect((await configured.projectBotAssign!(malformed, marker)).ingress).not.toHaveProperty('agentBot')
   })

@@ -93,22 +93,34 @@ export function isMsTeamsDeploymentRow(
   )
 }
 
-/** The `platformConfig` entry of an agent bot's row (§8.6.4): the blueprint that made its identity, and its Azure Bot resource. */
-export const MSTEAMS_AGENT_BOT_KEY = 'agentBot'
-const AgentBotEntry = z.object({ blueprintId: z.string().min(1), resourceName: z.string().min(1) })
-export type MsTeamsAgentBotEntry = z.infer<typeof AgentBotEntry>
+/** The two `platformConfig` entries of an agent bot's row (§8.6.4): the blueprint that made its identity, and its Azure Bot resource. */
+export const MSTEAMS_AGENT_BOT_BLUEPRINT_KEY = 'agentBotBlueprintId'
+export const MSTEAMS_AGENT_BOT_RESOURCE_KEY = 'agentBotResourceName'
+export interface MsTeamsAgentBotEntry {
+  blueprintId: string
+  resourceName: string
+}
 
 /** The agent bot a row is, by what it stores; undefined for the app's own row and for an organization's own bot. */
 export function msTeamsAgentBotOf(bot: {
-  platformConfig: Record<string, unknown> | null
+  platformConfig?: Record<string, unknown> | null
 }): MsTeamsAgentBotEntry | undefined {
-  const parsed = AgentBotEntry.safeParse(bot.platformConfig?.[MSTEAMS_AGENT_BOT_KEY])
-  return parsed.success ? parsed.data : undefined
+  const blueprintId = bot.platformConfig?.[MSTEAMS_AGENT_BOT_BLUEPRINT_KEY]
+  const resourceName = bot.platformConfig?.[MSTEAMS_AGENT_BOT_RESOURCE_KEY]
+  return typeof blueprintId === 'string' && blueprintId && typeof resourceName === 'string' && resourceName
+    ? { blueprintId, resourceName }
+    : undefined
 }
+
+/** The entries a new agent bot's row is written with. */
+export const msTeamsAgentBotEntries = (entry: MsTeamsAgentBotEntry): Record<string, string> => ({
+  [MSTEAMS_AGENT_BOT_BLUEPRINT_KEY]: entry.blueprintId,
+  [MSTEAMS_AGENT_BOT_RESOURCE_KEY]: entry.resourceName
+})
 
 /** A deployment row the configured deployment can send for: the app's own row, or an agent bot of the configured blueprint. */
 export function servesMsTeamsDeploymentRow(
-  bot: { externalAppId: string | null; platformConfig: Record<string, unknown> | null },
+  bot: { externalAppId: string | null; platformConfig?: Record<string, unknown> | null },
   app: Pick<MsTeamsPlatformApp, 'appId'> | undefined,
   agentBots?: Pick<MsTeamsAgentBots, 'blueprintId'>
 ): boolean {
