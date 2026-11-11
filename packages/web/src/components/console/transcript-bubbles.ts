@@ -16,6 +16,6 @@ export const TURN_FOLD =
 export const SELF_BUBBLE =
   'max-w-full rounded-[12px_12px_4px_12px] border border-(--bubble-self-edge) bg-(--bubble-self) px-3 py-[9px] font-sans text-[13.5px] font-normal leading-[1.55] text-(--text-primary)'
 
-/** A message delivered into an agent's session, in its own turn: a person's bubble on the agent's side, its tail corner mirrored. */
+/** A person's bubble on the left, its tail corner there: someone else's message, or one delivered into an agent's session. */
 export const DELIVERED_BUBBLE =
   'w-fit max-w-full rounded-[12px_12px_12px_4px] border border-(--bubble-self-edge) bg-(--bubble-self) px-3 py-[9px] font-sans text-[13.5px] font-normal leading-[1.55] text-(--text-primary)'

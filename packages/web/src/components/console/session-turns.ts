@@ -65,6 +65,8 @@ export type Turn =
       handedTo?: string
       /** The transcript seq of its row, which a link to the message names. */
       rowSeq?: number
+      /** Known to be the signed-in reader's own message, drawn on the right; anyone else's is on the left. */
+      self?: boolean
     }
   // `wake`: opened by a background-task wake no reply has merged into yet; the run that follows clears it.
   | {
@@ -386,6 +388,7 @@ export function buildTurns(input: BuildTurnsInput): { turns: Turn[]; speakers: M
           agent: senderAgent ?? null,
           avatarUrl: m.senderAvatarUrl ?? (self ? viewer.picture : pictureOf(m.sender)),
           avatarInitials: self ? viewer.initials : undefined,
+          ...(self ? { self: true } : {}),
           sourceLabel: sourceLabel,
           time: formatTranscriptRowTime(m),
           ...timeMsField(transcriptRowTimeMs(m)),
@@ -447,6 +450,7 @@ export function buildTurns(input: BuildTurnsInput): { turns: Turn[]; speakers: M
           agent: senderAgent ?? null,
           avatarUrl: self ? viewer.picture : pictureOf(who),
           avatarInitials: self ? viewer.initials : undefined,
+          ...(self ? { self: true } : {}),
           sourceLabel: sourceLabel,
           time: stp.time ?? (firstMsg ? session.time : ''),
           ...(stp.observedAtMs !== undefined ? { timeMs: stp.observedAtMs } : {}),
@@ -543,6 +547,7 @@ export function buildTurns(input: BuildTurnsInput): { turns: Turn[]; speakers: M
           agent: senderAgent ?? null,
           avatarUrl: self ? viewer.picture : pictureOf(who),
           avatarInitials: self ? viewer.initials : undefined,
+          ...(self ? { self: true } : {}),
           sourceLabel: sourceLabel,
           time: stp.time ?? '',
           ...(stp.observedAtMs !== undefined ? { timeMs: stp.observedAtMs } : {}),
