@@ -7,7 +7,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import type { GitCredGrant } from '@agentconnect.md/protocol'
-import { GitCredentialCache, GitCredUnavailableError } from '../../src/cp/git-credential.js'
+import { GitCredentialCache, GitCredUnavailableError, proxyOnlyRefusal } from '../../src/cp/git-credential.js'
 import { projectFromPath, repoFromPath } from '../../src/gitcred/helper.js'
 import {
   GITHUB_CREDENTIAL_SCOPE,
@@ -63,37 +63,58 @@ const githubGrant: GitCredGrant = {
 describe('GitCredentialCache — gitlab provider (§17.1)', () => {
   it('keys gitlab apart from github and forwards provider + requestedAccess', async () => {
     const h = build({ v2: true, respond: (payload) => (payload.provider === 'gitlab' ? gitlabGrant : githubGrant) })
-    const gitlab = await h.cache.get(AGENT, 'clone', { provider: 'gitlab', requestedAccess: 'read' })
+    const gitlab = await h.cache.get(AGENT, 'clone', {
+      provider: 'gitlab',
+      consumer: 'daemon',
+      requestedAccess: 'read'
+    })
     expect(gitlab.username).toBe('agentconnect-p4455667')
     const github = await h.cache.get(AGENT, 'clone')
     expect(github.username).toBe('x-access-token')
     expect(h.calls()).toBe(2) // distinct cache keys, no cross-provider reuse
-    expect(h.seen[0]).toMatchObject({ provider: 'gitlab', requestedAccess: 'read' })
+    expect(h.seen[0]).toMatchObject({ provider: 'gitlab', requestedAccess: 'read', consumer: 'daemon' })
     expect(h.seen[1]?.provider).toBeUndefined()
+  })
+
+  it('refuses a gitlab credential to an ask naming neither the proxy nor the daemon’s own Git', async () => {
+    const h = build({ v2: true, respond: () => gitlabGrant })
+    await expect(h.cache.get(AGENT, 'clone', { provider: 'gitlab' })).rejects.toThrow(proxyOnlyRefusal('gitlab'))
+    await expect(h.cache.get(AGENT, 'clone', { provider: 'gitlab', consumer: 'helper' })).rejects.toThrow(
+      GitCredUnavailableError
+    )
+    expect(h.calls()).toBe(0)
   })
 
   it('refuses to name a provider before the CP advertises gitcred-provider-v2', async () => {
     const h = build({ v2: false, respond: () => gitlabGrant })
-    await expect(h.cache.get(AGENT, 'clone', { provider: 'gitlab' })).rejects.toThrow(GitCredUnavailableError)
+    await expect(h.cache.get(AGENT, 'clone', { provider: 'gitlab', consumer: 'daemon' })).rejects.toThrow(
+      GitCredUnavailableError
+    )
     expect(h.calls()).toBe(0) // never even asked — the frame would be misread
   })
 
   it('rejects a stripped provider echo: an old CP answered the wrong workspace grant', async () => {
     const h = build({ v2: true, respond: () => githubGrant })
-    await expect(h.cache.get(AGENT, 'clone', { provider: 'gitlab' })).rejects.toThrow(/provider github/)
+    await expect(h.cache.get(AGENT, 'clone', { provider: 'gitlab', consumer: 'daemon' })).rejects.toThrow(
+      /provider github/
+    )
   })
 
   it('rejects a wrong-project numeric echo (§17.1) and evicts by the provider-qualified key on erase', async () => {
     const h = build({ v2: true, respond: () => gitlabGrant })
-    await expect(h.cache.get(AGENT, 'clone', { provider: 'gitlab', externalRepoId: '999' })).rejects.toThrow(
-      /project 4455667 for project 999/
-    )
+    await expect(
+      h.cache.get(AGENT, 'clone', { provider: 'gitlab', consumer: 'daemon', externalRepoId: '999' })
+    ).rejects.toThrow(/project 4455667 for project 999/)
 
     // Erase must hit the SAME provider-qualified key the get stored under.
-    const cached = await h.cache.get(AGENT, 'clone', { provider: 'gitlab', externalRepoId: '4455667' })
+    const cached = await h.cache.get(AGENT, 'clone', {
+      provider: 'gitlab',
+      consumer: 'daemon',
+      externalRepoId: '4455667'
+    })
     expect(cached.token).toBe('glpat-1')
     h.cache.invalidate(AGENT, 'glpat-1', { provider: 'gitlab' })
-    await h.cache.get(AGENT, 'clone', { provider: 'gitlab', externalRepoId: '4455667' })
+    await h.cache.get(AGENT, 'clone', { provider: 'gitlab', consumer: 'daemon', externalRepoId: '4455667' })
     expect(h.calls()).toBe(3) // eviction forced a fresh CP ask
   })
 })

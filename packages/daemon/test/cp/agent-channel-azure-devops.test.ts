@@ -92,7 +92,7 @@ describe('the helper channel', () => {
     expect(gets).toEqual([])
   })
 
-  it('serves the daemon’s own Git, naming it as the consumer, and the proxy, naming the proxy', async () => {
+  it('serves the daemon’s own Git, naming it as the consumer', async () => {
     const { sockPath, gets, daemon } = await boot()
     // What the helper parses from git's path on dev.azure.com, lower-cased.
     expect(
@@ -101,7 +101,6 @@ describe('the helper channel', () => {
     expect(
       await ask(sockPath, { capability: daemon, provider: 'azure-devops', repoFullName: SECOND.toLowerCase() })
     ).toMatchObject({ ok: true })
-    await server!.agentCredential(AGENT, { plane: 'git', provider: 'azure-devops' })
     expect(gets).toEqual([
       { agentId: AGENT, opts: { plane: 'git', provider: 'azure-devops', externalRepoId: '42', consumer: 'daemon' } },
       {
@@ -113,8 +112,7 @@ describe('the helper channel', () => {
           externalRepoId: '43',
           consumer: 'daemon'
         }
-      },
-      { agentId: AGENT, opts: { plane: 'git', provider: 'azure-devops', externalRepoId: '42', consumer: 'proxy' } }
+      }
     ])
   })
 
@@ -131,20 +129,16 @@ describe('the helper channel', () => {
       )
     ).toEqual(refusal)
     expect(gets).toEqual([])
-    // GitLab's credential reaches the daemon's Git in a pod or a VM as before.
-    expect(
-      await ask(
-        sockPath,
-        { capability: daemon, provider: 'gitlab', repoFullName: 'example-group/example-project' },
-        greeting
-      )
-    ).toMatchObject({ ok: true })
+    // A GitHub repository's credential reaches the daemon's Git in a pod or a VM as before.
+    expect(await ask(sockPath, { capability: daemon, repoFullName: 'acme/tools' }, greeting)).toMatchObject({
+      ok: true
+    })
     expect(gets).toHaveLength(1)
   })
 
   it('names no consumer for a provider that is not proxy-only', async () => {
     const { sockPath, gets, daemon } = await boot()
-    await ask(sockPath, { capability: daemon, provider: 'gitlab', repoFullName: 'example-group/example-project' })
+    await ask(sockPath, { capability: daemon, repoFullName: 'acme/tools' })
     expect(gets.at(-1)?.opts).not.toHaveProperty('consumer')
   })
 })
@@ -274,11 +268,8 @@ describe('the credential cache', () => {
     ).rejects.toThrow(GitCredUnavailableError)
   })
 
-  it('leases nothing for a provider that is not proxy-only, or from a control plane without provider-qualified grants', async () => {
-    const { credentials, seen } = cache(() => grant())
-    await expect(credentials.getProxyLease(AGENT, { provider: 'gitlab', externalRepoId: '7' })).rejects.toThrow(
-      GitCredUnavailableError
-    )
+  it('leases nothing from a control plane without provider-qualified grants', async () => {
+    const { seen } = cache(() => grant())
     const older = new GitCredentialCache({
       request: async () => grant(),
       log: { warn: () => {} },

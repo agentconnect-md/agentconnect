@@ -1189,10 +1189,20 @@ describe("git in a session's runtime", () => {
   )
 })
 
-describe('a Gitea repository in an execution environment', () => {
-  const instance = 'https://gitea.example.test:8443/gitea'
-  const giteaUrl = `${instance}/example-org/example-repo.git`
-  const giteaScope = managedCredentialScope('gitea', undefined, false, { host: instance })
+describe.each([
+  {
+    name: 'Gitea',
+    url: 'https://gitea.example.test:8443/gitea/example-org/example-repo.git',
+    path: 'gitea/example-org/example-repo.git',
+    scope: managedCredentialScope('gitea', undefined, false, { host: 'https://gitea.example.test:8443/gitea' })
+  },
+  {
+    name: 'GitLab',
+    url: 'https://gitea.example.test:8443/gitlab/example-group/sub/example-project.git',
+    path: 'gitlab/example-group/sub/example-project.git',
+    scope: managedCredentialScope('gitlab', 'https://gitea.example.test:8443/gitlab')
+  }
+])('a $name repository in an execution environment', ({ url: giteaUrl, path, scope: giteaScope }) => {
   const route = {
     proxyUrl: 'http://codehost:listener-token-example@127.0.0.1:41234',
     trustBundle: '/session/codehost-trust.pem'
@@ -1225,11 +1235,7 @@ describe('a Gitea repository in an execution environment', () => {
           .toString()
           .trim()
       const fill = (env: Record<string, string>) =>
-        git(
-          env,
-          ['credential', 'fill'],
-          'protocol=https\nhost=gitea.example.test:8443\npath=gitea/example-org/example-repo.git\n\n'
-        )
+        git(env, ['credential', 'fill'], `protocol=https\nhost=gitea.example.test:8443\npath=${path}\n\n`)
       try {
         const direct = cloneGitEnv('agent-gitea', giteaUrl, giteaScope)
         expect(fill(direct)).toContain('password=REAL-TOKEN')

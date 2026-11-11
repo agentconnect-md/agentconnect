@@ -577,8 +577,13 @@ async function nodeRequest(
 
 describe("the proxy's mint and its invalidate", () => {
   it.each([
-    { provider: 'github', agentId: GITHUB_AGENT, spec: githubSpec },
-    { provider: 'gitlab', agentId: GITLAB_AGENT, spec: () => gitlabSpec('https://gitlab.example.test/gitlab') }
+    { provider: 'github', agentId: GITHUB_AGENT, spec: githubSpec, ask: {} },
+    {
+      provider: 'gitlab',
+      agentId: GITLAB_AGENT,
+      spec: () => gitlabSpec('https://gitlab.example.test/gitlab'),
+      ask: { repo: 'group/project' }
+    }
   ])('drops exactly the $provider cache entry it minted, so the next request mints afresh', async (c) => {
     const { d } = await startDaemon()
     await admit(d, c.agentId, c.spec())
@@ -589,7 +594,7 @@ describe("the proxy's mint and its invalidate", () => {
       ...(await request(payload)),
       token: `token-${asked.length + 1}`
     })
-    const ask = { provider: c.provider, plane: 'git', readOnly: false }
+    const ask = { provider: c.provider, plane: 'git', readOnly: false, ...c.ask }
     const first = await d.credentialProxyMint(c.agentId, ask)
     expect((await d.credentialProxyMint(c.agentId, ask)).token).toBe(first.token)
     expect(asked).toHaveLength(1)

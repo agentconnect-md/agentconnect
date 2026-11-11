@@ -18,7 +18,8 @@ import {
   instanceHost,
   instanceHostnames,
   instanceRoute,
-  proxyInstance
+  proxyInstance,
+  type ProxyRepository
 } from '../src/credential-proxy/instance-route.js'
 import {
   loadPlaceholderKey,
@@ -183,6 +184,7 @@ function proxyFor(
     known?: boolean
     workspace?: string
     instances?: Record<string, ManagedCredentialHost[]>
+    repositoriesOf?: (agentId: string, provider: string) => readonly ProxyRepository[]
   } = {}
 ) {
   const dir = scratch()
@@ -197,6 +199,7 @@ function proxyFor(
     instancesOf: (agentId) => instances[agentId] ?? [],
     runningAgents: () => Object.keys(instances),
     knownAgent: () => overrides.known ?? true,
+    ...(overrides.repositoriesOf ? { repositoriesOf: overrides.repositoriesOf } : {}),
     log: { info: () => {}, warn: () => {} }
   })
   return { proxy, mint, key, placeholder: proxy.placeholderFor(AGENT) }
@@ -604,8 +607,12 @@ describe('routing a GitLab or Gitea request', () => {
       plane: 'api',
       repoId: '42'
     })
-    expect(instanceRoute(gitlab, 'GET', '/gitlab/api/v4/user')).toEqual({ kind: 'workspace' })
-    expect(instanceRoute(gitlab, 'GET', '/gitlab/api/v4/projects')).toEqual({ kind: 'workspace' })
+    // A read naming no project takes the workspace project's read lease, and is refused without one.
+    const context = { repositories: [{ repoId: '42', repoFullName: 'group/sub/project', workspace: true as const }] }
+    for (const target of ['/gitlab/api/v4/user', '/gitlab/api/v4/projects', '/gitlab/api/v4/merge_requests']) {
+      expect(instanceRoute(gitlab, 'GET', target, context)).toEqual({ kind: 'repository', plane: 'api', repoId: '42' })
+      expect(instanceRoute(gitlab, 'GET', target)).toMatchObject({ kind: 'deny', status: 403 })
+    }
     expect(instanceRoute(gitlab, 'GET', '/gitlab/api/v4/projects/group%2F..%2Fx')).toMatchObject({ kind: 'deny' })
     expect(instanceRoute(gitlab, 'GET', '/gitlab/api/v4/projects/project')).toMatchObject({ kind: 'deny' })
     expect(instanceRoute(gitlab, 'GET', '/gitlab/api/v3/user')).toMatchObject({ kind: 'deny', status: 400 })
@@ -805,7 +812,9 @@ describe('the decision on a self-managed instance', () => {
   const setup = () =>
     proxyFor({
       mint: vi.fn(async () => minted),
-      instances: { [AGENT]: [GITHUB_MANAGED_HOST, GITLAB, GITEA], [OTHER]: [GITHUB_MANAGED_HOST] }
+      instances: { [AGENT]: [GITHUB_MANAGED_HOST, GITLAB, GITEA], [OTHER]: [GITHUB_MANAGED_HOST] },
+      repositoriesOf: (_agentId, provider) =>
+        provider === 'gitlab' ? [{ repoId: '7', repoFullName: 'group/sub/project', workspace: true }] : []
     })
   const at = (port: number) => ({ ...HTTPS, target: { host: 'gitlab.example.test', port } })
 
@@ -854,7 +863,7 @@ describe('the decision on a self-managed instance', () => {
       action: 'allow',
       setHeaders: [['authorization', 'Bearer glpat_minted']]
     })
-    expect(mint).toHaveBeenLastCalledWith(AGENT, { provider: 'gitlab', plane: 'api', readOnly: true })
+    expect(mint).toHaveBeenLastCalledWith(AGENT, { provider: 'gitlab', repoId: '7', plane: 'api', readOnly: true })
     const gitea = new Request('https://gitea.example.test/forge/api/v1/repos/owner/repo', {
       headers: { authorization: `token ${placeholder}` }
     })
