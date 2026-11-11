@@ -15,6 +15,7 @@ import {
 } from '@/lib/api'
 import { followUpOf, taskRunning, taskStopKey } from '@/components/console/follow-up'
 import {
+  PlaceMark,
   StopNote,
   taskFinished,
   taskStateKey,
@@ -238,12 +239,16 @@ export function SubsessionsPanel({
 
   // Running first, then by the latest word from each, so live work never falls past a group's fold.
   const sorted = runningFirst(rows, taskRunning, latestAt)
-  const followUps = sorted.filter((row) => followUpOf(row) !== null)
-  const threaded = sorted.filter((row) => followUpOf(row) === null && row.threaded)
-  const tasks = sorted.filter((row) => followUpOf(row) === null && !row.threaded)
+  // One Tasks group, with or without a thread (auto-session-mode.md §6.9.5); a getting-to-know task follows nothing, so it is listed there too.
+  const watches = (row: AssistantSubsessionDto) => {
+    const followUp = followUpOf(row)
+    return followUp !== null && !followUp.gettingToKnow
+  }
+  const followUps = sorted.filter(watches)
+  const tasks = sorted.filter((row) => !watches(row))
   const group = (id: string, title: string, members: AssistantSubsessionDto[]) => {
     if (members.length === 0) return null
-    // A threaded task never finishes, so only background tasks and follow-ups fold their ended rows away.
+    // A task with a thread never finishes, so only the others and follow-ups fold their ended rows away.
     const live = members.filter((row) => !taskFinished(row))
     const rest = members.filter(taskFinished)
     const folded = foldRows(live, rest, members.filter(taskRunning).length, foldOpen.has(`${scope}\n${id}`))
@@ -286,8 +291,7 @@ export function SubsessionsPanel({
           warn={current.error.status !== 503}
         />
       ) : null}
-      {group('threaded', tl('groups.threaded'), threaded)}
-      {group('tasks', threaded.length > 0 ? tl('groups.background') : tl('groups.tasks'), tasks)}
+      {group('tasks', tl('groups.tasks'), tasks)}
       {group('follow-ups', tl('groups.followUps'), followUps)}
       {/* Pages run by start time, so an older page can still hold open work. */}
       {current?.cursor ? (
@@ -371,6 +375,8 @@ function SubsessionLine({
     ) : (
       <span className="min-w-0 truncate font-normal text-(--text-tertiary)">{t('hidden')}</span>
     )
+  // A task with a thread wears its platform's mark: its people read it and write to it there.
+  const home = row.threaded ? (row.parent?.platform ?? row.place?.platform ?? null) : null
   const at = latestAt(row)
   const ago =
     now - new Date(at).getTime() < 60_000 ? t('now') : format.relativeTime(new Date(at), { now, style: 'narrow' })
@@ -388,7 +394,18 @@ function SubsessionLine({
     <LineRow
       state={taskTone(row, followUp)}
       stateLabel={followUp ? tf(`status.${followUp.status}`) : t(taskStateKey(row))}
-      title={title}
+      title={
+        home ? (
+          <>
+            {title}
+            <span data-task-home={home} className="ml-[6px] flex flex-none">
+              <PlaceMark platform={home} />
+            </span>
+          </>
+        ) : (
+          title
+        )
+      }
       time={time}
       timeTip={timeTip}
       done={finished}

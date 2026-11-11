@@ -436,14 +436,21 @@ describe('SubsessionsPanel', () => {
     expect(last()).toEqual({ settled: true, count: 1, running: 1, finished: 0, failed: false })
   })
 
-  // assistant-mode.md §5.13: a getting-to-know task is a follow-up row, listed with the follow-ups by its title.
-  it('lists a getting-to-know task with the follow-ups', async () => {
+  // auto-session-mode.md §6.9.5: a getting-to-know task is stored as a follow-up but follows nothing, so it is listed among Tasks.
+  it('lists a getting-to-know task among the tasks, by its title', async () => {
     wire.pages = [
-      page([followUp('waiting', { title: 'The release channel' }, { gettingToKnow: true, nextCheck: null })])
+      page([
+        followUp('waiting', { title: 'The release channel' }, { gettingToKnow: true, nextCheck: null }),
+        followUp('waiting', { sessionId: 'fu-1', title: 'The 2.6 release date' })
+      ])
     ]
     await render()
-    expect(followUpRows()[0]?.textContent).toContain('The release channel')
-    expect(stateOf(followUpRows()[0])).toBe('Waiting')
+    expect(headings()).toEqual(['Tasks', 'Follow-ups'])
+    const titled = (title: string) => rows().find((r) => r.textContent?.includes(title))
+    const groupOf = (title: string) => titled(title)?.closest('[data-task-group]')?.getAttribute('data-task-group')
+    expect(groupOf('The release channel')).toBe('tasks')
+    expect(groupOf('The 2.6 release date')).toBe('follow-ups')
+    expect(stateOf(titled('The release channel'))).toBe('Waiting')
   })
 
   it('draws a follow-up in each state, and counts only a check as running', async () => {
@@ -549,8 +556,8 @@ describe('SubsessionsPanel', () => {
     expect(stateOf(rows()[0])).toBe('Stopped')
   })
 
-  // auto-session-mode.md §11: threaded and background tasks are grouped apart.
-  it('groups threaded tasks apart from background ones, one line each', async () => {
+  // auto-session-mode.md §6.9.5: one Tasks group, and a task with a thread wears its platform's mark.
+  it('lists tasks with and without a thread in one group, one line each, marking the ones with a thread', async () => {
     wire.pages = [
       page([
         row({
@@ -566,9 +573,11 @@ describe('SubsessionsPanel', () => {
       ])
     ]
     await render()
-    expect(headings()).toEqual(['Threaded tasks', 'Background tasks'])
+    expect(headings()).toEqual(['Tasks'])
     const threaded = rowOf('threaded-1')!
-    expect(threaded.closest('[data-task-group]')?.getAttribute('data-task-group')).toBe('threaded')
+    expect(threaded.closest('[data-task-group]')?.getAttribute('data-task-group')).toBe('tasks')
+    expect(threaded.querySelector('[data-task-home]')?.getAttribute('data-task-home')).toBe('slack')
+    expect(rowOf('background-1')!.querySelector('[data-task-home]')).toBeNull()
     // A threaded task lives on between its turns: idle, never behind the fold.
     expect(stateOf(threaded)).toBe('Idle')
     expect(threaded.querySelector('[data-state-icon]')?.getAttribute('data-state-icon')).toBe('idle')
@@ -579,7 +588,7 @@ describe('SubsessionsPanel', () => {
     expect(last()).toMatchObject({ count: 3, running: 1, finished: 1 })
   })
 
-  it('keeps the plain Tasks name with no threaded task, and shows no summary of a task the reader may not see', async () => {
+  it('shows no summary of a task the reader may not see', async () => {
     wire.pages = [page([row({ sessionId: null, visible: false, title: null, background: 'not for this reader' })])]
     await render()
     expect(headings()).toEqual(['Tasks'])

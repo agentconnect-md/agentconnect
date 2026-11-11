@@ -289,8 +289,6 @@
     "taskList": {
       "groups": {
         "tasks": "任务",
-        "threaded": "话题任务",
-        "background": "后台任务",
         "followUps": "跟进",
         "subagents": "子 Agent",
         "commands": "后台命令",
@@ -670,9 +668,7 @@
       "notes": "Agent 收到的提示",
       "messageCaption": {
         "call": "来自 {agent} 的消息",
-        "reply": "{agent} 的回复",
-        "report": "后台任务的报告",
-        "taskInput": "给这个后台任务的指示"
+        "reply": "{agent} 的回复"
       }
     },
     "panel": {

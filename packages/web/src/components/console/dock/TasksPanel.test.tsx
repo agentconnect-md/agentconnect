@@ -654,7 +654,7 @@ describe('TasksPanel groups', () => {
     wire.delegated = { subsessions: [delegatedRow({ threaded: true })], truncated: false, nextCursor: null }
     await render({ delegated: true, coordinator: true })
     expect(wire.calls).toEqual([])
-    expect(groups()).toEqual(['threaded'])
+    expect(groups()).toEqual(['tasks'])
     expect(rows()).toHaveLength(0)
     expect(last()).toEqual({ settled: true, running: 1, shown: true })
   })
