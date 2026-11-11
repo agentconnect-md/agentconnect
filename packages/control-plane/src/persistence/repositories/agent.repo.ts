@@ -17,6 +17,7 @@ import {
   type CoordinatorModel,
   type AgentModelProvider,
   type AgentRepositorySelector,
+  type AgentCoordinatorFilter,
   type ChatActions,
   isCodeHostProvider,
   redactGitUrlSecrets,
@@ -255,6 +256,8 @@ type RuntimeOverrides = {
   coordinatorModel?: CoordinatorModel
   // The coordinator is off (auto-session-mode.md §3.6); absent means on.
   coordinatorDisabled?: true
+  // The evaluator that screens messages before the coordinator (auto-session-mode.md §4.7).
+  coordinatorFilter?: AgentCoordinatorFilter
   // The Decision gate on each chat API the agent added (shared-bot-relay.md §10.4).
   apiGates?: AgentApiGates
   // Which memory backend the agent uses (managed | native | external). Stored in
@@ -424,6 +427,7 @@ function toRecord(a: AgentWithUsers): AgentRecord {
     ...(ov.modelSelection ? { modelSelection: ov.modelSelection } : {}),
     ...(ov.coordinatorModel ? { coordinatorModel: ov.coordinatorModel } : {}),
     ...(ov.coordinatorDisabled ? { coordinatorDisabled: true as const } : {}),
+    ...(ov.coordinatorFilter ? { coordinatorFilter: ov.coordinatorFilter } : {}),
     apiGates: ov.apiGates ?? {},
     ...repositorySelectorOf(a),
     managedSkills: a.managedSkills,
@@ -561,6 +565,7 @@ export class PgAgentRepo implements AgentRepo {
             ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
             ...(input.coordinatorModel ? { coordinatorModel: input.coordinatorModel } : {}),
             ...(input.coordinatorDisabled ? { coordinatorDisabled: true } : {}),
+            ...(input.coordinatorFilter ? { coordinatorFilter: input.coordinatorFilter } : {}),
             ...(input.memory ? { memory: input.memory } : {}),
             ...(input.computerUse ? { computerUse: input.computerUse } : {})
           },
@@ -701,6 +706,7 @@ export class PgAgentRepo implements AgentRepo {
       patch.modelSelection !== undefined ||
       patch.coordinatorModel !== undefined ||
       patch.coordinatorDisabled !== undefined ||
+      patch.coordinatorFilter !== undefined ||
       patch.apiGates !== undefined ||
       patch.memory !== undefined ||
       patch.computerUse !== undefined ||
@@ -808,6 +814,10 @@ export class PgAgentRepo implements AgentRepo {
       if (patch.coordinatorDisabled !== undefined) {
         if (patch.coordinatorDisabled) next.coordinatorDisabled = true
         else delete next.coordinatorDisabled
+      }
+      if (patch.coordinatorFilter !== undefined) {
+        if (patch.coordinatorFilter === null) delete next.coordinatorFilter
+        else next.coordinatorFilter = patch.coordinatorFilter
       }
       if (patch.apiGates !== undefined) {
         if (patch.apiGates === null || Object.keys(patch.apiGates).length === 0) delete next.apiGates

@@ -8,6 +8,7 @@ import {
   AgentModelSelection,
   CoordinatorModel,
   AgentRepositorySelector,
+  AgentCoordinatorFilter,
   AgentMemoryBinding,
   AssistantModePolicy,
   AssistantOnboarding,
@@ -208,6 +209,8 @@ export const AgentSchema = z.object({
   coordinatorModel: CoordinatorModel.optional(),
   // The coordinator is off (auto-session-mode.md §3.6): `auto` runs as `append`; absent is on. CP-owned.
   coordinatorDisabled: z.literal(true).optional(),
+  // The evaluator that screens a message before the coordinator (auto-session-mode.md §4.7); CP-owned.
+  coordinatorFilter: AgentCoordinatorFilter.optional(),
   // The Decision gate each chat API turn must pass before admission (shared-bot-relay.md §10.4); CP-owned.
   apiGates: AgentApiGateProjections.optional(),
   // The evaluator the per-session repository selector asks (multi-repository-workspaces.md decision 15); CP-owned.

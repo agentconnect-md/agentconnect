@@ -139,6 +139,7 @@ import {
   CONVERSATION_PERMISSION_REQUESTS_FEATURE,
   ACTIVITY_EVERY_AGENT_V1_FEATURE,
   SESSION_MODE_AUTO_V1_FEATURE,
+  COORDINATOR_FILTER_V1_FEATURE,
   WEBCHAT_THREADS_FEATURE,
   CONTINUATION_THREADS_FEATURE,
   SESSION_THREAD_READS_FEATURE,
@@ -578,6 +579,11 @@ import {
 import { DREAM_TOPIC_RE } from './dream/dreamer.js'
 import { MEMORY_DISTILLATION_SYSTEM_PROMPT, readOnlyExtractionMode } from './memory/distill.js'
 import { coordinatorPermissionMode, coordinatorTarget } from './auto-session/coordinator-model.js'
+import {
+  COORDINATOR_FILTER_QUESTION,
+  coordinatorFilterAdmits,
+  screensCoordinatorMessage
+} from './auto-session/coordinator-filter.js'
 import { webchatCoordinatorTask } from './auto-session/webchat-task.js'
 import { CLAUDE_HEADLESS_DISALLOWED_TOOLS } from './runtime-defs/claude-runtime.js'
 import { applyOpenCodeReadOnlyMode } from './runtime-defs/opencode-runtime.js'
@@ -9963,7 +9969,7 @@ export class Daemon {
       // Serves Activity's permission requests, sub-sessions and drafts for an agent outside assistant mode too; static.
       ACTIVITY_EVERY_AGENT_V1_FEATURE,
       // Reads the `auto` session mode; until the coordinator lands it routes as Per thread, so only an opted-in daemon says so.
-      ...(this.cfg.features.autoSessionMode ? [SESSION_MODE_AUTO_V1_FEATURE] : []),
+      ...(this.cfg.features.autoSessionMode ? [SESSION_MODE_AUTO_V1_FEATURE, COORDINATOR_FILTER_V1_FEATURE] : []),
       // Continues a delegated task from its console page (auto-session-mode.md §10); Auto's switch keeps the composer hidden until it ships.
       ...(this.cfg.features.autoSessionMode ? [TASK_PAGE_MESSAGES_FEATURE] : []),
       // Answers a webchat coordinator's messages in their threads (webchat-threads.md §8); it rides the same switch.
@@ -20593,6 +20599,7 @@ export class Daemon {
           resolve,
           reject
         }
+        this.screenForCoordinator(entry)
         let batchLeader = this.reviewBatchLeader(entry)
         let revisionPlan = this.revisionAdmissionPlan(key, entry)
         // ── atomic claim-or-enqueue (single synchronous tick, no await before add) ──
@@ -22047,6 +22054,48 @@ export class Daemon {
       permissionMode: selected.permissionMode,
       fastMode: selected.fastMode ?? false
     })
+  }
+
+  /** Screen an unaddressed message before its coordinator reads it (auto-session-mode.md §4.7): the verdict holds the entry, and a skip settles it silently, as an ignored message is. */
+  private screenForCoordinator(entry: QueueEntry): void {
+    const agent = this.agents.get(entry.agentId)
+    const filter = agent?.coordinatorFilter
+    if (!agent || !filter || !isCoordinatorCoordinate(sessionThreadOf(entry.msg))) return
+    if (!screensCoordinatorMessage(entry)) return
+    const verdict = this.coordinatorFilterVerdict(entry, agent, filter)
+    const prior = entry.admissionWait
+    entry.admissionWait = prior ? Promise.all([prior, verdict]).then(([held, admits]) => held && admits) : verdict
+  }
+
+  /** Ask the filter's model about one message; a failure of any kind lets it through (decisions.md §5). */
+  private async coordinatorFilterVerdict(
+    entry: QueueEntry,
+    agent: LoadedAgent,
+    filter: { providerId: string; model: string }
+  ): Promise<boolean> {
+    const decision = { ...filter, question: COORDINATOR_FILTER_QUESTION }
+    try {
+      const state = await this.sessionDecisionState(entry, agent, decision)
+      if (!state) return true
+      const evaluation = await this.decisionEvaluator.evaluate(
+        { agentId: agent.id, evaluationId: randomUUID(), decision, state },
+        entry.initAbort.signal
+      )
+      const admits = coordinatorFilterAdmits(evaluation)
+      const outcome =
+        evaluation.status === 'answered' && evaluation.answer.type === 'boolean'
+          ? `p=${evaluation.answer.probability.toFixed(2)}`
+          : evaluation.status === 'unavailable'
+            ? `unavailable: ${evaluation.reason}`
+            : 'unexpected answer'
+      this.log.info(
+        `coordinator filter: ${entry.msg.msgId} for ${agent.id} ${admits ? 'passed' : 'skipped'} (${outcome})`
+      )
+      return admits
+    } catch (err) {
+      this.log.warn(`coordinator filter: ${entry.msg.msgId} for ${agent.id} passed after an error: ${formatErr(err)}`)
+      return true
+    }
   }
 
   // Collect a session's code-host snapshot once, then build it against each consumer's request budget.
@@ -31447,7 +31496,10 @@ export class Daemon {
           postAttempted = true
           const ts = await this.postIntoConfiguredTarget(conn, target.channel, label, () =>
             options
-              ? (conn as SlackConnection).postMessage(target.channel!, anchorText, undefined, options)
+              ? (conn as SlackConnection).postMessage(target.channel!, anchorText, undefined, {
+                  ...options,
+                  ...(msg.sourceRepository ? { sourceRepository: msg.sourceRepository } : {})
+                })
               : conn.postMessage(target.channel!, anchorText)
           )
           if (ts) {
@@ -31479,7 +31531,14 @@ export class Daemon {
             // transcript/read cursor. Keep the synthetic msgId as the durable turn id.
             // The session is created only after any required provider thread exists,
             // so every follow-up resolves to these exact coordinates.
-            msg = { ...msg, channel: target.channel, thread, transcriptTs: ts }
+            const targetThreadUrl = sessionThreadUrlFor({ ...msg, channel: target.channel, thread }, conn)
+            msg = {
+              ...msg,
+              channel: target.channel,
+              thread,
+              transcriptTs: ts,
+              ...(targetThreadUrl ? { threadUrl: targetThreadUrl } : {})
+            }
           }
         } catch (err) {
           this.log.warn(

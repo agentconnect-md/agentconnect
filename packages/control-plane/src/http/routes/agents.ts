@@ -162,7 +162,7 @@ import { servesAhpWebchat } from '../webchat-attachment.js'
 import { makeMemorySources, type MemorySource } from '../memory-source.js'
 import { resolveShareSet } from '../sharing.js'
 import { resolveAgentIconUrl, type IconUrlBases } from '../../agents/agent-icon.js'
-import { repositorySelectorRefusal } from '../../agents/repository-selector.js'
+import { coordinatorFilterRefusal, repositorySelectorRefusal } from '../../agents/repository-selector.js'
 import {
   ASSISTANT_MODE_NOT_ADMITTED,
   AssistantModeAdmissionRefused,
@@ -437,6 +437,7 @@ function toDto(
     modelSelection: a.modelSelection ?? null,
     coordinatorModel: a.coordinatorModel ?? null,
     coordinatorDisabled: a.coordinatorDisabled === true,
+    coordinatorFilter: a.coordinatorFilter ?? null,
     repositorySelector: a.repositorySelector ?? null,
     managedSkills: a.managedSkills,
     memory: a.memory,
@@ -2077,7 +2078,8 @@ export function agentRoutes(deps: HttpDeps) {
         ) {
           return conflict('upgrade the selected daemon before using a provider API key')
         }
-        const selectorRefusal = repositorySelectorRefusal(req.body.repositorySelector)
+        const selectorRefusal =
+          repositorySelectorRefusal(req.body.repositorySelector) ?? coordinatorFilterRefusal(req.body.coordinatorFilter)
         if (selectorRefusal) return badRequest(reply, selectorRefusal)
         const executionChoice = resolveExecution(
           placementStrategies((wantsSet ? setMembers : placedDaemon ? [placedDaemon] : []).map((d) => d.capabilities)),
@@ -2257,6 +2259,9 @@ export function agentRoutes(deps: HttpDeps) {
                   ...(req.body.coordinatorModel !== undefined ? { coordinatorModel: req.body.coordinatorModel } : {}),
                   ...(req.body.coordinatorDisabled !== undefined
                     ? { coordinatorDisabled: req.body.coordinatorDisabled }
+                    : {}),
+                  ...(req.body.coordinatorFilter !== undefined
+                    ? { coordinatorFilter: req.body.coordinatorFilter }
                     : {}),
                   ...(req.body.repositorySelector !== undefined
                     ? { repositorySelector: req.body.repositorySelector }
@@ -2769,7 +2774,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Update an agent',
           description:
-            'Edit the agent spec or widen an existing GitHub workspace from read to write access; the change hot-syncs the owning daemon’s replica and rides the next register/launch. A managed memory binding without a home keeps the current one. Switching the home from daemon to control-plane is accepted and flags a migration the owning daemon completes; the reverse is refused with 409 unless force is set, and then drops every memory file and change-log record the Control Plane holds for the agent. An agent placed on a group or the managed pool cannot name the daemon home, nor can an agent in assistant mode: turning assistant mode on switches a daemon home to control-plane in the same write and flags the migration, and while it is on the memory must stay managed and the forced return is refused with 409. A new `execution` is checked against the strategies the placement reports and refused with 409 when it cannot run there; it reaches only sessions created afterwards. `repositorySelector` names the Decision provider and model the per-session repository selector asks, must answer Choice questions (400 otherwise), and null clears it (409 while any repository authorization or installation grant is marked `decision`). `coordinatorDisabled: true` turns the `auto` coordinator off: the agent’s conversations can no longer be set to Auto, new rooms start Per thread, and its Auto conversations run Single session until it is turned back on, which their stored mode then resumes. `liveSecrets` merges key by key like `secrets` (an object `{ value, description? }` sets one, null deletes it): a live secret is fetched by the agent’s own shell when a command needs it, never placed in its environment, and saving one restarts nothing; a name already used by an environment variable or secret of the agent or its organization answers 409.',
+            'Edit the agent spec or widen an existing GitHub workspace from read to write access; the change hot-syncs the owning daemon’s replica and rides the next register/launch. A managed memory binding without a home keeps the current one. Switching the home from daemon to control-plane is accepted and flags a migration the owning daemon completes; the reverse is refused with 409 unless force is set, and then drops every memory file and change-log record the Control Plane holds for the agent. An agent placed on a group or the managed pool cannot name the daemon home, nor can an agent in assistant mode: turning assistant mode on switches a daemon home to control-plane in the same write and flags the migration, and while it is on the memory must stay managed and the forced return is refused with 409. A new `execution` is checked against the strategies the placement reports and refused with 409 when it cannot run there; it reaches only sessions created afterwards. `repositorySelector` names the Decision provider and model the per-session repository selector asks, must answer Choice questions (400 otherwise), and null clears it (409 while any repository authorization or installation grant is marked `decision`). `coordinatorDisabled: true` turns the `auto` coordinator off: the agent’s conversations can no longer be set to Auto, new rooms start Per thread, and its Auto conversations run Single session until it is turned back on, which their stored mode then resumes. `coordinatorFilter` names the Decision provider and model that screen each unaddressed message before the coordinator, must answer Boolean questions (400 otherwise), and null removes it. `liveSecrets` merges key by key like `secrets` (an object `{ value, description? }` sets one, null deletes it): a live secret is fetched by the agent’s own shell when a command needs it, never placed in its environment, and saving one restarts nothing; a name already used by an environment variable or secret of the agent or its organization answers 409.',
           operationId: 'updateAgent',
           params: IdParam,
           body: UpdateAgentBody,
@@ -2840,7 +2845,9 @@ export function agentRoutes(deps: HttpDeps) {
               })
             }
           }
-          const selectorRefusal = repositorySelectorRefusal(req.body.repositorySelector)
+          const selectorRefusal =
+            repositorySelectorRefusal(req.body.repositorySelector) ??
+            coordinatorFilterRefusal(req.body.coordinatorFilter)
           if (selectorRefusal) return badRequest(reply, selectorRefusal)
           if (req.body.repositorySelector === null && (await usesDecisionMaterialize(deps, existing.id))) {
             return reply.code(409).send({

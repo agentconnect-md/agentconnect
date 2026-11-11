@@ -640,6 +640,15 @@ describe('the prompt (§11.5, §11.8)', () => {
     expect(msg.initialSessionTitle).toBe(`PR ${REPO_PATH}!7`)
   })
 
+  it('keeps the source repository linked when the session anchors into Slack', () => {
+    expect(buildHookMessage(fire({ target: { platform: 'slack', channel: 'C1' } }), 'trace')).toMatchObject({
+      sourceRepository: {
+        label: REPO_PATH,
+        url: `https://dev.azure.com/${ORG}/Example%20Project/_git/Example%20Repo`
+      }
+    })
+  })
+
   it('stands on a `# Azure DevOps` block naming the tools before the CLI', () => {
     const standing = buildHookMessage(fire(), 'trace').standingContext!
     expect(standing.startsWith('# Azure DevOps')).toBe(true)

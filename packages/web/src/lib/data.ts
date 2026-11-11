@@ -6,6 +6,7 @@ import type { AgentIcon } from '@/lib/agent-icon'
 import type {
   AgentModelSelection,
   AgentRepositorySelector,
+  AgentCoordinatorFilter,
   ChannelDecisionBinding
 } from '@agentconnect.md/protocol/decision'
 import type { NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
@@ -593,6 +594,8 @@ export interface Agent {
   coordinatorModel?: CoordinatorModel | null
   /** The coordinator is off: Auto is unavailable and Auto conversations run Single session. */
   coordinatorDisabled?: boolean
+  /** The Decision model that screens messages before the coordinator; null ⇒ none. */
+  coordinatorFilter?: AgentCoordinatorFilter | null
   /** The evaluator that chooses which `decision` repositories a new session checks out. */
   repositorySelector?: AgentRepositorySelector | null
   /** Authoritative runtime id (e.g. 'claude' | 'codex' | 'opencode' | 'claude-acp').

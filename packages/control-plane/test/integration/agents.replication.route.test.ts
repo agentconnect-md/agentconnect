@@ -211,6 +211,7 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
         modelSelection,
         coordinatorModel: null, // always shipped value-or-null so a return to Default replicates
         coordinatorDisabled: false, // always shipped so turning the coordinator back on replicates
+        coordinatorFilter: null, // always shipped value-or-null so removing the filter replicates
         modelProvider: null,
         apiGates: {}, // always shipped so removing the last chat API gate replicates
         repositorySelector: null, // always shipped value-or-null so clearing the evaluator replicates
@@ -286,6 +287,27 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
     expect(clear.statusCode).toBe(200)
     expect(clear.json()).toMatchObject({ coordinatorModel: null })
     expect(spy.upserts.at(-1)!.u.spec.coordinatorModel).toBeNull()
+  })
+
+  // auto-session-mode.md §4.7: the filter replicates, a model that cannot answer Boolean questions is refused, and null removes it.
+  it('replicates the coordinator filter and refuses one that cannot answer a Boolean question', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON })
+    const { app, spy } = withSpy()
+    const patch = (payload: Record<string, unknown>) =>
+      app.app.inject({ method: 'PATCH', url: `${ORG}/agents/${agentId}`, payload })
+    const coordinatorFilter = { providerId: 'typesafe', model: 'jev-1.13.0' }
+    const set = await patch({ coordinatorFilter })
+    expect(set.statusCode).toBe(200)
+    expect(set.json()).toMatchObject({ coordinatorFilter })
+    expect(spy.upserts.at(-1)!.u.spec.coordinatorFilter).toEqual(coordinatorFilter)
+    const unknown = await patch({ coordinatorFilter: { providerId: 'typesafe', model: 'jev-0.0.0' } })
+    expect(unknown.statusCode).toBe(400)
+    expect(unknown.json().message).toContain('Boolean')
+    const cleared = await patch({ coordinatorFilter: null })
+    expect(cleared.json()).toMatchObject({ coordinatorFilter: null })
+    expect(spy.upserts.at(-1)!.u.spec.coordinatorFilter).toBeNull()
   })
 
   // auto-session-mode.md §3.6: the coordinator switch replicates both ways and keeps the chosen coordinator model.

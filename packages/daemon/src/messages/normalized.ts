@@ -79,6 +79,8 @@ export interface NormalizedMessage extends Omit<
   /** Ingress-derived title applied only when this message creates a logical
    *  session. A later runtime title remains authoritative and replaces it. */
   initialSessionTitle?: string
+  /** Trusted code-host repository behind a hook delivery, linked separately from its target session. */
+  sourceRepository?: { label: string; url: string }
   /** Platform-resolved standing context for the session this message opens or resumes: session-stable
    *  coordinates and working conventions the model reads once on the system-prompt channel (or the
    *  first prompt block), never a transcript row. Ignored on a follow-up into an open session. */

@@ -259,6 +259,8 @@ export interface SlackPostOptions {
    *  Requires `agentAuthorId` — a response block without an exact author proves nothing
    *  and would be discarded at ingress anyway. */
   response?: SlackResponseMetadata
+  /** The trusted repository that opened a hook session, shown beside its target conversation. */
+  sourceRepository?: { label: string; url: string }
 }
 
 /**
@@ -1973,19 +1975,28 @@ export class SlackConnection implements PlatformConnection {
     return this.queue.enqueue(async () => {
       const body = markdownBlock(text)
       const trailing = options?.trailingBlocks
+      const source = options?.sourceRepository
+      const sourceBlock = source
+        ? [
+            {
+              type: 'context',
+              elements: [{ type: 'mrkdwn', text: `<${source.url}|${source.label.replace(/[&<>]/g, '')}>` }]
+            }
+          ]
+        : []
       const res = await this.postChatMessage(
         channel,
         threadTs,
         {
           channel,
           thread_ts: threadTs,
-          ...body,
+          ...(sourceBlock.length ? { text, blocks: [...body.blocks, ...sourceBlock] } : body),
           // A conversational agent message carries its author id; chrome carries a distinct
           // marker so a peer daemon's backfill can skip it. The two are mutually exclusive.
           ...slackMessageMetadata(options),
           ...(trailing?.length
             ? {
-                blocks: [...body.blocks, ...trailing],
+                blocks: [...body.blocks, ...sourceBlock, ...trailing],
                 unfurl_links: false,
                 unfurl_media: false
               }

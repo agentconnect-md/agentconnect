@@ -917,8 +917,10 @@ export class AssistantDrafts {
 
   private viewOf(draft: AssistantDraft): AssistantDraftCardView {
     const sessionId = draft.source?.sessionId
+    const agent = this.host.agent(draft.agentId)
     return {
-      agentName: this.host.agent(draft.agentId)?.name ?? 'The agent',
+      agentName: agent?.name ?? 'The agent',
+      ...(agent?.iconUrl ? { iconUrl: agent.iconUrl } : {}),
       kind: draft.kind,
       ...(draft.proposal
         ? {

@@ -88,6 +88,12 @@ describe('gitea hook normalization (§8)', () => {
     expect(msg.thread).toBe(`gitea:${REPO}:issue:42`)
   })
 
+  it('keeps the source repository linked when the session anchors into Slack', () => {
+    expect(buildHookMessage(fire({ target: { platform: 'slack', channel: 'C1' } }), 'trace')).toMatchObject({
+      sourceRepository: { label: PATH, url: `https://gitea.com/${PATH}` }
+    })
+  })
+
   it('keeps issue 7 and pull request 7 apart — one index space, so the subject kind is part of the key', () => {
     const issue = giteaSessionThread({ repoId: REPO, repoPath: PATH, target: { kind: 'issue', index: 7 } })
     const pr = giteaSessionThread({ repoId: REPO, repoPath: PATH, target: { kind: 'pull', index: 7 } })
