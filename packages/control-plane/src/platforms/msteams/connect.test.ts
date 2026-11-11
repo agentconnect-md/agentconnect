@@ -220,6 +220,18 @@ describe('Teams Graph calls', () => {
     )
   })
 
+  it('keeps Graph’s own reason for a refused publish in the log detail', async () => {
+    const refusing = async (url: string | URL | Request) =>
+      String(url).includes('$filter')
+        ? Response.json({ value: [] })
+        : Response.json({ error: { code: 'Conflict', message: 'The app exists.' } }, { status: 409 })
+    const error = await publishMsTeamsPackage(refusing, 't', 'ext-1', new Uint8Array([1])).catch((e: unknown) => e)
+    expect((error as MsTeamsConnectError).code).toBe('MSTEAMS_CONNECT_UNAVAILABLE')
+    expect((error as MsTeamsConnectError).detail).toBe(
+      'POST /appCatalogs/teamsApps answered 409 (Conflict: The app exists.)'
+    )
+  })
+
   it('names a refused Graph call as a missing administrator', async () => {
     const error = await listMsTeamsTeams(async () => new Response(null, { status: 403 }), 't').catch((e: unknown) => e)
     expect((error as MsTeamsConnectError).code).toBe('MSTEAMS_CONNECT_NOT_ADMIN')
