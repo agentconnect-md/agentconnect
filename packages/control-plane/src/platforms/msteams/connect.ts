@@ -448,9 +448,28 @@ export async function publishMsTeamsPackage(
     ? `/appCatalogs/teamsApps/${encodeURIComponent(existing.id)}/appDefinitions`
     : '/appCatalogs/teamsApps?requiresReview=false'
   const published = await graph(fetchImpl, token, 'POST', path, { zip })
-  if (!published.ok) throw await refusedWithReason(published)
-  if (existing) return existing.id
-  return CatalogApp.parse(await published.json()).id
+  if (published.ok) return existing ? existing.id : CatalogApp.parse(await published.json()).id
+  if (existing || published.status !== 409) throw await refusedWithReason(published)
+  // Measured: the lookup by manifest ID can miss an app the catalog holds, and the create then conflicts; the organization's own list is read instead.
+  const conflict = await refusedWithReason(published)
+  const own = encodeURIComponent(`distributionMethod eq 'organization'`)
+  const all = await graph(fetchImpl, token, 'GET', `/appCatalogs/teamsApps?$filter=${own}`)
+  if (!all.ok) throw refused(all)
+  const apps = CatalogList.parse(await all.json()).value
+  const held = apps.find((app) => app.externalId === externalId)
+  if (!held) {
+    const detail = `${conflict.detail}; not among the organization’s ${apps.length} apps either`
+    throw new MsTeamsConnectError(conflict.code, conflict.message, detail)
+  }
+  const added = await graph(
+    fetchImpl,
+    token,
+    'POST',
+    `/appCatalogs/teamsApps/${encodeURIComponent(held.id)}/appDefinitions`,
+    { zip }
+  )
+  if (!added.ok) throw await refusedWithReason(added)
+  return held.id
 }
 
 const GraphError = z.object({ error: z.object({ code: z.string().nullish(), message: z.string().nullish() }) })
@@ -603,20 +622,21 @@ export async function installMsTeamsApp(
   throw refused(response)
 }
 
-/** Adds the catalog app for one person, so their Teams client lists the agent at once: its mention, its card and a 1:1 chat. Best effort: false when Microsoft refuses or cannot be reached, which leaves the team installs as they are. */
+/** Adds the catalog app for one person, so their Teams client lists the agent at once: its mention, its card and a 1:1 chat. Best effort: answers null when added, or what Microsoft refused for the log, which leaves the team installs as they are. */
 export async function installMsTeamsAppForUser(
   fetchImpl: typeof fetch,
   token: string,
   input: { userId: string; catalogAppId: string }
-): Promise<boolean> {
+): Promise<string | null> {
   try {
     const path = `/users/${encodeURIComponent(input.userId)}/teamwork/installedApps`
     const response = await graph(fetchImpl, token, 'POST', path, {
       json: { 'teamsApp@odata.bind': `${GRAPH}/appCatalogs/teamsApps/${input.catalogAppId}` }
     })
-    return response.ok || response.status === 409
-  } catch {
-    return false
+    if (response.ok || response.status === 409) return null
+    return (await refusedWithReason(response)).detail ?? 'refused'
+  } catch (err) {
+    return err instanceof MsTeamsConnectError ? (err.detail ?? err.message) : 'failed'
   }
 }
 
