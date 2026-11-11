@@ -1034,6 +1034,19 @@ describe('ThreadPanel on a Slack thread’s record (webchat-threads.md §7)', ()
     ])
   })
 
+  it('keeps a mirrored Slack thread text-only when its daemon cannot continue attachments', async () => {
+    wire.record = recordPage()
+    withTask = false
+    props = {
+      record: ref,
+      platform: 'slack',
+      writer: { sessionId: 'ses_coordinator', continues: 'ses_coordinator' },
+      attachments: false
+    }
+    await render()
+    expect(container.querySelector('[data-task-thread-attach]')).toBeNull()
+  })
+
   it('continues the holding task in a held Slack thread even where the reader may write to its coordinator', async () => {
     wire.record = recordPage({ summary: held })
     withTask = false

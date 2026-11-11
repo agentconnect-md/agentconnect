@@ -92,7 +92,8 @@ export function ThreadPanel({
   onSummary,
   fromMain = EMPTY,
   onShowInConversation,
-  threadUrl
+  threadUrl,
+  attachments = true
 }: {
   /** The coordinator's agent, which runs the task. */
   agentId: string
@@ -127,6 +128,8 @@ export function ThreadPanel({
   }
   /** A person's console photo by sender, as the session page draws it; undefined asks for this visit's own sends. */
   personPicture?: (sender: string | undefined) => string | undefined
+  /** Whether the daemon continuing this conversation accepts thread attachments. */
+  attachments?: boolean
   /** The socket a message in this record's thread goes out on: the owner's coordinator conversation, or a continued platform coordinator (`continues` its session); absent for another member, who writes through the holding task. */
   writer?: { sessionId: string; conversationId?: string; continues?: string }
   /** Focus the composer when it first shows, as Reply in thread asks. */
@@ -628,7 +631,7 @@ export function ThreadPanel({
           canReply={ownThread ? true : canReply}
           checking={ownThread ? false : detail === undefined}
           placeholder={ownThread || mirrored ? t('threadPlaceholder') : t('replyPlaceholder')}
-          attach={{ agentId, transfer: mirrored ? false : fileTransfer }}
+          {...(attachments ? { attach: { agentId, transfer: mirrored ? false : fileTransfer } } : {})}
           sendLabel={t('send')}
           onSend={send}
           autoFocus={focusComposer}

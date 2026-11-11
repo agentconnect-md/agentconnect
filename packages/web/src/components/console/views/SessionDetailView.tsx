@@ -4783,6 +4783,7 @@ export default function SessionDetailView() {
                 sender === undefined || isSelf(sender) ? viewer.picture : memberPictureByIdentity.get(sender)
               }
               fileTransfer={composerTransfer}
+              attachments={attachmentsEnabled}
             />
           ) : null}
           {/* Mounted under an open thread too, so its verdict keeps the tab's badge and the reader comes back to the same lists. */}

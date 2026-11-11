@@ -716,7 +716,12 @@ describe('a Slack coordinator’s page in Slack’s shape (webchat-threads.md §
     channel()
     daemonFeatures.push('continuation-threads-v1')
     const { list, detail: read } = slack('slack')
-    await open(list, { ...read, canContinue: true, continuationUnavailableReason: null } as SessionDetailDto)
+    await open(list, {
+      ...read,
+      canContinue: true,
+      continuationUnavailableReason: null,
+      continuationAttachments: 'images'
+    } as SessionDetailDto)
     expect(container?.querySelectorAll('[data-reply-in-thread]')).toHaveLength(1)
     await click('[data-reply-in-thread]')
     const panel = q(`[data-thread-panel="${ROOT_TS}"]`)
