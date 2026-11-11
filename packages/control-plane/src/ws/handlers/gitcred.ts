@@ -67,6 +67,12 @@ function azureDevOpsHookAuthorizes(
   )
 }
 
+/** Why a proxy-only host's Git token is refused: to the agent-facing helper, or to a daemon too old to name its consumer. */
+function proxyOnlyRefusal(provider: string, consumer: string | undefined): string {
+  const served = `${provider} credentials are served only to the daemon's credential proxy and its own Git`
+  return consumer === undefined ? `${served}; upgrade this daemon, which names neither` : served
+}
+
 export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
   if (!isFrame('gitcred/request')(frame)) return
   const {
@@ -87,14 +93,15 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
     conn.sendError(frame.id, 'SCOPE_DENIED', `unknown git credential provider ${provider}`, false)
     return
   }
-  // azure-devops-integration.md §6.1: a proxy-only host's token never reaches the agent-facing helper; an older daemon names no consumer.
+  // azure-devops-integration.md §6.1: a proxy-only host's Git token never reaches the agent-facing helper; a purpose lease is the daemon's own writer's, whose arm checks its authority.
   if (
     provider !== undefined &&
     codeHostProviders[provider].proxyOnly === true &&
+    purpose === undefined &&
     consumer !== 'proxy' &&
     consumer !== 'daemon'
   ) {
-    conn.sendError(frame.id, 'SCOPE_DENIED', `${provider} credentials are served to the credential proxy only`, false)
+    conn.sendError(frame.id, 'SCOPE_DENIED', proxyOnlyRefusal(provider, consumer), false)
     return
   }
   const gitlabRequest = provider === 'gitlab'
@@ -226,6 +233,10 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
           'gitcred/grant',
           await deps.giteaGitcred!.grantForBrokerEffect(agent, repoId, hookAuthorized)
         )
+        return
+      }
+      if (purpose !== undefined) {
+        conn.sendError(frame.id, 'SCOPE_DENIED', `gitea has no ${purpose} credential`, false)
         return
       }
       const grant = await deps.giteaGitcred!.grantForAgent(

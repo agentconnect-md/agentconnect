@@ -1189,6 +1189,67 @@ describe("git in a session's runtime", () => {
   )
 })
 
+describe('a Gitea repository in an execution environment', () => {
+  const instance = 'https://gitea.example.test:8443/gitea'
+  const giteaUrl = `${instance}/example-org/example-repo.git`
+  const giteaScope = managedCredentialScope('gitea', undefined, false, { host: instance })
+  const route = {
+    proxyUrl: 'http://codehost:listener-token-example@127.0.0.1:41234',
+    trustBundle: '/session/codehost-trust.pem'
+  }
+  const placeholder = 'acph1_example.tag'
+
+  // POSIX only: the stand-in helper is a shell script.
+  it.skipIf(process.platform === 'win32')(
+    'takes the proxy route with the placeholder, keeping no real helper or minting capability',
+    () => {
+      const helper = join(tmpRun, 'helper.sh')
+      writeFileSync(
+        helper,
+        '#!/bin/sh\ntest "$2" = get || exit 0\necho username=example-bot\necho password=REAL-TOKEN\n'
+      )
+      chmodSync(helper, 0o755)
+      const home = mkdtempSync(join(tmpdir(), 'acp-proxied-gitea-git-'))
+      const git = (env: Record<string, string>, args: string[], input?: string) =>
+        execFileSync('git', args, {
+          cwd: home,
+          ...(input !== undefined ? { input } : {}),
+          env: {
+            PATH: process.env.PATH ?? '',
+            HOME: home,
+            GIT_CONFIG_GLOBAL: join(home, 'empty.gitconfig'),
+            GIT_CONFIG_NOSYSTEM: '1',
+            ...env
+          }
+        })
+          .toString()
+          .trim()
+      const fill = (env: Record<string, string>) =>
+        git(
+          env,
+          ['credential', 'fill'],
+          'protocol=https\nhost=gitea.example.test:8443\npath=gitea/example-org/example-repo.git\n\n'
+        )
+      try {
+        const direct = cloneGitEnv('agent-gitea', giteaUrl, giteaScope)
+        expect(fill(direct)).toContain('password=REAL-TOKEN')
+        const proxied = proxiedDaemonGitEnv(direct, [giteaScope.host], route, placeholder)
+        expect(proxied).not.toHaveProperty(AGENT_CHANNEL_CAPABILITY_ENV)
+        expect(JSON.stringify(proxied)).not.toContain(helper)
+        expect(fill(proxied)).toContain('password=acph1_example.tag')
+        expect(git(proxied, ['config', '--get-urlmatch', 'http.proxy', giteaUrl])).toBe(route.proxyUrl)
+        expect(proxied.GIT_SSL_CAINFO).toBe(route.trustBundle)
+        expect(() => proxiedDaemonGitEnv(direct, [giteaScope.host], undefined, placeholder)).toThrow(
+          'ready credential proxy'
+        )
+      } finally {
+        rmSync(helper, { force: true })
+        rmSync(home, { recursive: true, force: true })
+      }
+    }
+  )
+})
+
 describe('an Azure DevOps repository beside the workspace', () => {
   const azureUrl = 'https://dev.azure.com/example-org/Example%20Project/_git/Example%20Repo'
   const azureAlias = 'https://example-org.visualstudio.com/Example%20Project/_git/Example%20Repo'

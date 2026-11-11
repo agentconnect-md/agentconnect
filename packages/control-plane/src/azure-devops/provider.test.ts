@@ -18,9 +18,9 @@ const ROUTING = {
 }
 
 describe('the azure-devops code-host entry', () => {
-  it('is the one proxy-only host (§6.1)', () => {
+  it('is proxy-only (§6.1), as Gitea is and GitHub and GitLab are not', () => {
     const proxyOnly = Object.values(codeHostProviders).filter((entry) => entry.proxyOnly === true)
-    expect(proxyOnly.map((entry) => entry.provider)).toEqual(['azure-devops'])
+    expect(proxyOnly.map((entry) => entry.provider).sort()).toEqual(['azure-devops', 'gitea'])
   })
 
   it('leaves an address anonymous when the deployment wires no Azure DevOps surface, and ignores other hosts', async () => {

@@ -115,18 +115,18 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
   runtime requests use the daemon's credential proxy, reached through the environment's existing
   route; provider-key substitution has its own proxy contract. A placeholder is agent-bound, and
   the proxy checks the requested repository and access tier before presenting an upstream token.
-- **Azure Git inside execution environments**: `workspace/git-injection.ts` selects migrated
-  daemon operations from their trusted target and the provider's `proxyOnly` capability. It removes
-  real helpers and the daemon minting capability, pins managed targets to the current proxy route,
-  and uses the environment's trust bundle. The owning daemon's host-side Git still uses
-  `consumer: 'daemon'`. Azure token retrieval through a shim's helper tunnel remains refused even
-  with a daemon-holder capability. Test mixed providers, two organizations on one authority,
+- **Azure DevOps and Gitea Git inside execution environments**: `workspace/git-injection.ts`
+  selects migrated daemon operations from their trusted target and the provider's `proxyOnly`
+  capability. It removes real helpers and the daemon minting capability, pins managed targets to
+  the current proxy route, and uses the environment's trust bundle. The owning daemon's host-side
+  Git still uses `consumer: 'daemon'`. Azure and Gitea token retrieval through a shim's helper
+  tunnel remains refused even with a daemon-holder capability. Test mixed providers, two organizations on one authority,
   supported aliases, redirects, read-only push refusal, and missing or stale bindings.
-- **Remaining credential exposure**: non-Azure daemon Git and scoped source operations still use
-  their existing helpers and credential windows. The in-pod auto-merge watcher holds a daemon
-  minting capability in its environment. These processes share the runtime's OS user; labeling
-  a capability as daemon-held does not isolate it from a sibling process. Azure's migration is
-  not a claim that every pod or VM is free of minting capabilities. Unconfined host execution
+- **Remaining credential exposure**: GitHub and GitLab daemon Git and scoped source operations
+  still use their existing helpers and credential windows. The in-pod auto-merge watcher holds a
+  daemon minting capability in its environment. These processes share the runtime's OS user;
+  labeling a capability as daemon-held does not isolate it from a sibling process. The Azure and
+  Gitea migration is not a claim that every pod or VM is free of minting capabilities. Unconfined host execution
   remains operator-trusted.
 - **Preparation lifecycle and transport**: workspace Git must acquire the current environment
   binding before a cold clone, release its operation hold on every exit path, and reject retired

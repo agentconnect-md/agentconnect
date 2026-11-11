@@ -129,6 +129,8 @@ export const giteaCodeHostProvider: CodeHostProviderModule = {
   provider: 'gitea',
   displayName: 'Gitea',
   repositorySubject: 'repository',
+  // gitea-integration.md §9: the bot token reaches every repository the bot can, so only the proxy may hold it.
+  proxyOnly: true,
   features: {
     deploymentHost: (deps) => deps.gitea?.api.baseUrl,
     specHost: (spec) => spec.giteaHost,

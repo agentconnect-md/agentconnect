@@ -1,7 +1,7 @@
 // Gitea's entry in the daemon's code-host credential seam (codehost/credentials.ts): the one instance
 // the spec names (gitea-integration.md §3, §9), `owner/repo` addresses measured from that instance's
-// root, and per-repository grants the CP resolves live. One bot token serves the helper and both
-// effect leases (§4.2), so there is no helper/broker token split to keep apart here.
+// root, and per-repository grants the CP resolves live. One bot token serves the proxy, the daemon's
+// own Git and both effect leases (§4.2); the agent-facing helper never receives it (§9).
 import { normalizeGitCloneUrl } from '@agentconnect.md/protocol'
 import { giteaManagedHost } from '../gitcred/managed-hosts.js'
 import { repoFromPath } from '../gitcred/repo-path.js'
@@ -25,6 +25,8 @@ export const giteaCredentials: CodeHostCredentialModule = {
   liveCredentialPurposes: ['gitea_hook_reply', 'gitea_effect'],
   workspaceRepoId: (workspace) => workspace.giteaRepoId,
   resolvesByName: false,
+  // §9: the bot token reaches every repository the bot can, whatever the agent's grant, so only the proxy and the daemon's own Git present it.
+  proxyOnly: true,
   placeSecondaryRoot: (row): SecondaryRootPlacement | undefined => {
     // `repos/_gitea/<repository id>` — the id, because a rename or a transfer moves the path.
     const [owner, repo, ...rest] = row.repoFullName.split('/')

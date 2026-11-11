@@ -316,9 +316,15 @@ describe('AgentChannelServer routing (agent.sock)', () => {
         repoFullName: 'acme/infra',
         provider: workspaceProvider
       })
+      // Gitea is proxy-only, so its ask names the daemon's own Git as the consumer.
       expect(gets[2]).toEqual({
         agentId: 'a1',
-        opts: { plane: 'git', repo: 'acme/infra', provider: workspaceProvider }
+        opts: {
+          plane: 'git',
+          repo: 'acme/infra',
+          provider: workspaceProvider,
+          ...(workspaceProvider === 'gitea' ? { consumer: 'daemon' } : {})
+        }
       })
 
       // Erase from the GitHub helper reaches the key its get used.

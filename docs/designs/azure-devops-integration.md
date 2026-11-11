@@ -795,10 +795,12 @@ GraphQL bodies. The Azure DevOps descriptor differs from the others in two
 places. It reads the agent's authorized repositories from its spec, the
 workspace's and the additional ones with their GUIDs, and resolves every request
 among them.
-And where the other providers map a read that names no repository to the
+And where GitHub and GitLab map a read that names no repository to the
 workspace's credential, because their tokens are scoped by the provider, the
 Azure DevOps descriptor maps such a read to `deny` unless it is on the
-allowlist above, rather than borrowing the workspace's authority. Beside it
+allowlist above, rather than borrowing the workspace's authority. Gitea's
+descriptor does the same for its bot token
+([Gitea §9](gitea-integration.md#9-git-access)). Beside it
 the proxy gained three provider-neutral members that Azure DevOps is the first
 to use: a write gate beside the push gate (§6.3), a lookup route the proxy
 answers by asking the upstream itself, on the target the descriptor names and

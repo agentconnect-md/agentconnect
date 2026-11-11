@@ -331,7 +331,17 @@ describe('the grant echo (§9)', () => {
   }
 
   const ask = (instance: GitCredentialCache) =>
-    instance.get(AGENT, 'clone', { provider: 'gitea', externalRepoId: REPO_ID })
+    instance.get(AGENT, 'clone', { provider: 'gitea', externalRepoId: REPO_ID, consumer: 'daemon' })
+
+  it('serves the token to the daemon’s own Git and the proxy, never the agent-facing helper', async () => {
+    const { instance, request } = cache({})
+    await expect(instance.get(AGENT, 'clone', { provider: 'gitea', externalRepoId: REPO_ID })).rejects.toThrow(
+      /Gitea credentials are presented only by the daemon's credential proxy/
+    )
+    expect(request).not.toHaveBeenCalled()
+    await ask(instance)
+    expect(request.mock.calls[0]?.[0]).toMatchObject({ provider: 'gitea', consumer: 'daemon' })
+  })
 
   it('accepts the instance the spec names and keeps every echoed field', async () => {
     await expect(ask(cache({ host: INSTANCE }, { giteaHost: INSTANCE }).instance)).resolves.toMatchObject({

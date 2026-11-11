@@ -50,9 +50,9 @@ function turnFinalHost() {
 describe('the credential seam', () => {
   const module = codeHostCredentials('azure-devops')!
 
-  it('is presented only by the proxy and the daemon’s own Git, and is the only provider that is', () => {
+  it('is presented only by the proxy and the daemon’s own Git, as Gitea is and GitHub and GitLab are not', () => {
     expect(module.proxyOnly).toBe(true)
-    expect(['github', 'gitlab', 'gitea'].map(isProxyOnlyProvider)).toEqual([false, false, false])
+    expect(['github', 'gitlab', 'gitea'].map(isProxyOnlyProvider)).toEqual([false, false, true])
     expect(isProxyOnlyProvider('azure-devops')).toBe(true)
     expect(module.liveCredentialPurposes).toEqual(['azure_devops_hook_reply'])
     expect(module.workspaceRepoId({ azureDevOpsRepoId: '42', giteaRepoId: '7' })).toBe('42')
@@ -161,7 +161,8 @@ describe('where a host of an agent with Azure DevOps repositories may start', ()
         additionalRepos: [row(), row('azure-devops'), row('gitlab')]
       })
     ).toEqual(['azure-devops'])
-    expect(proxyOnlyProvidersOf({ gitCredential: 'gitlab', additionalRepos: [row('gitea'), row()] })).toEqual([])
+    expect(proxyOnlyProvidersOf({ gitCredential: 'gitlab', additionalRepos: [row('gitea'), row()] })).toEqual(['gitea'])
+    expect(proxyOnlyProvidersOf({ gitCredential: 'gitlab', additionalRepos: [row()] })).toEqual([])
   })
 
   it('admits served credentials before each execution environment checks its current route', () => {
