@@ -3948,8 +3948,11 @@ people:
 - its kind (task, follow-up, approved proposal);
 - its title, cut to the board's 80 characters, with Markdown in it shown as text, linking the task's
   own session in the console, which opens for whoever may see that session;
-- who asked, as a mention;
 - a link to the thread it was last asked in (`replyThread`).
+
+No line names who asked: Slack notifies everyone mentioned in a canvas, and the page is
+rewritten whenever its work changes, so a mention would ping people for a page they never asked
+for. The thread link shows who asked.
 
 At most 40 lines are listed; the rest are counted, with the console a link away. Under
 **Scheduled**, the page lists the agent's enabled crons whose target is this channel on this bot.
@@ -4040,7 +4043,7 @@ both on the page's next write.
 
 **The seam.** Core composes a structured page (`WorkPage`: tasks, schedules, a count past the
 limit, the console link) and decides when to write. `PlatformConnection.putWorkPage` and
-`removeWorkPage` render it and attach it, so the canvas Markdown, the mention syntax, the
+`removeWorkPage` render it and attach it, so the canvas Markdown, the
 permalinks and the bookmark stay in the Slack module. A platform name never becomes core knowledge.
 
 **Writes and permissions.** This is the daemon's own effect, like the Plan canvas, not an agent
@@ -4057,7 +4060,7 @@ that becomes private keeps its page, whose read access follows the private chann
 (`feat`), shipped together with this text. (2) A check on the test deployment against a live
 workspace, which unit tests cannot settle: both attachment shapes on a paid and a free workspace,
 the error a deleted canvas returns (`canvas_not_found`, `canvas_deleted`, `file_not_found` and
-`file_deleted` are read as "deleted"), and whether a canvas renders the `![](@U…)` mention.
+`file_deleted` are read as "deleted").
 (3) An entry in [product-conventions.md](../product-conventions.md) once (2) holds.
 
 **Not done.** DMs and group DMs; external places; other places' work; summaries or a "last saw"

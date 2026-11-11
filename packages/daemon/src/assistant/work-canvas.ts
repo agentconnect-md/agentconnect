@@ -35,8 +35,6 @@ export interface WorkCanvasDeps {
   connection(integrationId: string): Pick<PlatformConnection, 'putWorkPage' | 'removeWorkPage'> | undefined
   /** A conversation shared with another organization, which follow-ups never reach (§5.3). */
   external(agentId: string, place: WorkPlace): boolean
-  /** The platform user a task works for, when one is known. */
-  askerOf(row: PlacedSubsession): Promise<string | undefined>
   /** A task's own page in the console, by its session, when it has one. */
   taskLink(row: PlacedSubsession, place: WorkPlace): string | undefined
   consoleUrl(agentId: string): string | undefined
@@ -77,7 +75,7 @@ interface Composed {
 
 /** Every channel's page content for one agent, keyed by place: its open tasks in board order, then its targeted crons. */
 export async function composeWorkPages(
-  deps: Pick<WorkCanvasDeps, 'stores' | 'resolve' | 'askerOf' | 'taskLink'>,
+  deps: Pick<WorkCanvasDeps, 'stores' | 'resolve' | 'taskLink'>,
   agent: Pick<Agent, 'id' | 'crons'>,
   now: Date
 ): Promise<Map<string, Composed>> {
@@ -99,7 +97,6 @@ export async function composeWorkPages(
       page.more += 1
       continue
     }
-    const askerId = task.row ? await deps.askerOf(task.row).catch(() => undefined) : undefined
     const thread = task.row?.replyThread
     const consoleUrl = task.row ? deps.taskLink(task.row, place) : undefined
     page.tasks.push({
@@ -107,7 +104,6 @@ export async function composeWorkPages(
       status: task.status,
       ...(task.nextCheck !== undefined ? { nextCheck: task.nextCheck } : {}),
       title: titleOf(task.title),
-      ...(askerId ? { askerId } : {}),
       ...(thread ? { thread } : {}),
       ...(consoleUrl ? { consoleUrl } : {})
     })

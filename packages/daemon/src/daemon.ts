@@ -13220,7 +13220,6 @@ export class Daemon {
         const agent = this.agents.get(agentId)
         return agent ? sharedWithOutsiders(agent, place) : false
       },
-      askerOf: (row) => this.taskOwnerId(row),
       taskLink: (row, place) =>
         row.sessionId
           ? this.sessionLink(row.sessionId, this.sessionLinkSource(place.platform, place.integrationId))
