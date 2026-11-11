@@ -40,6 +40,8 @@ interface Script {
   /** Graph's status for an install into a team. */
   install?: Record<string, number>
   withdraw?: number
+  /** The organization that holds the tenant's app row; null ⇒ no organization does. */
+  holder?: string | null
   unreachable?: boolean
 }
 
@@ -96,7 +98,23 @@ function harness(script: Script = {}) {
     repos: {
       msTeamsAgentBotRequest: store,
       agent: { get: async () => ({ id: AGENT, orgId: ORG, name: 'helper', displayName: 'Helper', visibility: 'org' }) },
-      bot: { create, mergeBotIdentity, getByExternalIdentity: async () => null },
+      bot: {
+        create,
+        mergeBotIdentity,
+        getByExternalIdentity: async () => null,
+        listForPlatform: async () =>
+          script.holder === null
+            ? []
+            : [
+                {
+                  platform: 'msteams',
+                  orgId: script.holder ?? ORG,
+                  externalAppId: APP.appId,
+                  externalTenantId: TENANT,
+                  platformConfig: { appOwner: 'deployment' }
+                }
+              ]
+      },
       botSecret: { put },
       integration: {
         create: vi.fn(async (input: Record<string, unknown>) => ({ ...input, status: 'active' })),
@@ -242,6 +260,17 @@ describe('MsTeamsAgentBotRequests', () => {
     await h.store.claim(ORG, 'request-1', 'someone-else', new Date(NOW), new Date(NOW + 60_000))
     expect(await h.requests.check(ORG, 'request-1')).toEqual({ outcome: 'busy' })
     expect(h.calls).toEqual([])
+  })
+
+  it('ends a request whose tenant another organization recovered: nothing is installed and the bot goes', async () => {
+    for (const holder of ['99999999-9999-4999-8999-000000000000', null]) {
+      const h = harness({ definitions: ['published'], holder })
+      await h.open()
+      expect(await h.requests.check(ORG, 'request-1')).toEqual({ outcome: 'gone' })
+      expect(h.calls).toEqual(['DELETE registration', 'DELETE identity'])
+      expect(h.create).not.toHaveBeenCalled()
+      expect(h.rows.size).toBe(0)
+    }
   })
 
   it('cancels by withdrawing the submission, deleting the registration and the identity, and forgetting the request', async () => {

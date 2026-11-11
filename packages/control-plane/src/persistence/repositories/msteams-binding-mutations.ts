@@ -61,6 +61,8 @@ export class PgMsTeamsBindingMutations implements MsTeamsBindingMutations {
           details: { botId: row.id, action: 'released' }
         })
       }
+      // The previous organization's waiting requests end with its binding, and their sealed member tokens with them.
+      await tx.msTeamsAgentBotRequest.deleteMany({ where: { tenantId, orgId: { not: replacement.orgId } } })
       const bot = await bots.create(replacement)
       await new PgAuditRepo(tx).append({
         kind: 'integration_recovery',
