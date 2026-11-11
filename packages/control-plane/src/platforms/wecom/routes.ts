@@ -18,6 +18,7 @@ export function weComCredentialRoutes(deps: HttpDeps) {
     app.withTypeProvider<ZodTypeProvider>().put(
       '/bots/:id/wecom/credentials',
       {
+        config: { interactiveOnly: true },
         schema: {
           tags: [Tag.Bots],
           summary: 'Replace a WeCom smart bot secret',

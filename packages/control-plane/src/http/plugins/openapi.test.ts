@@ -18,6 +18,8 @@ import { createWeChatCpProvider } from '../../platforms/wechat/provider.js'
 import { weChatLoginRoutes } from '../../platforms/wechat/routes.js'
 import type { WeChatLoginService } from '../../platforms/wechat/login.js'
 import { createFeishuCpProvider } from '../../platforms/feishu/provider.js'
+import { createWeComCpProvider } from '../../platforms/wecom/provider.js'
+import { weComCredentialRoutes } from '../../platforms/wecom/routes.js'
 
 /** Minimal stub deps: `config` plus the platform registry, which the create
  *  route folds into its documented request body at registration time. Repos
@@ -38,7 +40,8 @@ function stubDeps(): HttpDeps {
       createDiscordCpProvider({ ensureMessageContentIntent: async () => 'ready' }),
       createSlackCpProvider({}),
       createFeishuCpProvider({}),
-      createWeChatCpProvider({ routes: [weChatLoginRoutes({} as HttpDeps, {} as WeChatLoginService)] })
+      createWeChatCpProvider({ routes: [weChatLoginRoutes({} as HttpDeps, {} as WeChatLoginService)] }),
+      createWeComCpProvider({ installRoutes: [weComCredentialRoutes({} as HttpDeps)] })
     ])
   } as unknown as HttpDeps
 }
@@ -326,6 +329,7 @@ describe('openapi plane', () => {
           'DELETE /api/v1/me/keys/:id',
           'GET /api/v1/orgs/:orgId/integrations/wechat/login/:id',
           'POST /api/v1/orgs/:orgId/integrations/wechat/login',
+          'PUT /api/v1/orgs/:orgId/bots/:id/wecom/credentials',
           'DELETE /api/v1/orgs/:orgId/daemons/:id/keys/:keyId',
           'GET /api/v1/orgs/:orgId/daemons/:id/keys',
           'POST /api/v1/orgs/:orgId/daemons/:id/keys',
