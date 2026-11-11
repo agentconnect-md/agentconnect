@@ -573,6 +573,9 @@ last message. If streaming, retries, or later output change which message is las
 or re-anchor the footer so it remains attached to the latest response message without
 leaving a stale footer on an earlier message.
 
+A coordinator's reply to a message or a report, by its turn's text or by `replyToMessage`, is its
+response to that message and carries the footer, linking the coordinator's session.
+
 ## Slack multi-agent mention routing
 
 An explicit Slack mention wakes only the AgentConnect agent represented by that bot.
@@ -1621,6 +1624,8 @@ process its runtime started in the background may keep running. The task then re
 conversation that it ended, its transcript names who stopped it, and the row says whether a turn
 was stopped or nothing was running. A follow-up's Stop ends it after a confirmation; one whose first
 check has not run has no session yet, and whoever may continue its conversation may end it. A
+follow-up's row says on hover, over its name and its time alike, its name, its next check or else
+its state, and what counts as done, so one with no page yet can still be read. A
 follow-up that watches a pull request, merge request or issue names it under its meta line, linked,
 with the time and events of its latest check when a change woke that check; one that cannot be
 watched, or no longer is, says why instead. It shows to the same people as its title, in Activity
@@ -1702,7 +1707,9 @@ and then sets the next check, at least five minutes ahead, ends the follow-up wh
 holds, or leaves it waiting until it is messaged. It has three outcomes. When something should be
 done, it asks for approval to do it (see "Assistant-mode proposals"). Otherwise, only when something
 changed since the latest observation, or a message asked for an answer, does it report, and only
-into the conversation the follow-up belongs to, whose long session then speaks for it. Otherwise it
+into the conversation the follow-up belongs to, whose long session then speaks for it. A report
+never says the follow-up can be closed: when its check ended it, the conversation is told that it
+has ended and nothing is left to close. Otherwise it
 stays silent. The check records what it saw either way, and one that records nothing counts as
 failed. When that conversation has no long session a scheduled check is skipped, and the follow-up
 records why. A follow-up's own next check, its messages and changes on what it watches wake it:

@@ -352,12 +352,20 @@ function SubsessionLine({
   const finished = taskFinished(row)
   const stoppable = row.state === 'open' && row.canStop && taskStopKey(row) !== null
   const name = row.title ?? t('untitled')
+  const nextCheck =
+    followUp?.status === 'waiting' && followUp.nextCheck
+      ? tf('nextCheck', { time: shortTime(followUp.nextCheck) })
+      : null
+  // A follow-up's hover is the same wherever the pointer rests on its row: its name, its next check or state, and what counts as done.
+  const tip = followUp
+    ? [name, nextCheck ?? tf(`status.${followUp.status}`), followUp.doneWhen].filter(Boolean).join('\n')
+    : name
   const title =
     row.sessionId && onOpen ? (
       <button
         type="button"
         data-task-open-thread=""
-        title={name}
+        title={tip}
         className="min-w-0 cursor-pointer truncate border-0 bg-transparent p-0 text-left font-[inherit] text-inherit after:absolute after:-inset-x-2 after:-inset-y-[6px] after:z-10"
         onClick={onOpen}
       >
@@ -365,14 +373,14 @@ function SubsessionLine({
       </button>
     ) : row.sessionId ? (
       <Link
-        title={name}
+        title={tip}
         className="min-w-0 cursor-pointer truncate text-inherit no-underline after:absolute after:-inset-x-2 after:-inset-y-[6px] after:z-10"
         href={orgPath(`/sessions/${encodeURIComponent(row.sessionId)}`)}
       >
         {name}
       </Link>
     ) : row.visible && (followUp || row.state !== 'open') ? (
-      <span title={name} className="min-w-0 truncate">
+      <span title={tip} className="min-w-0 truncate after:absolute after:-inset-x-2 after:-inset-y-[6px] after:z-10">
         {name}
       </span>
     ) : row.visible ? (
@@ -385,16 +393,15 @@ function SubsessionLine({
   const at = latestAt(row)
   const ago =
     now - new Date(at).getTime() < 60_000 ? t('now') : format.relativeTime(new Date(at), { now, style: 'narrow' })
-  // A finished row says when it ended; a live one how fresh its latest word is, and a waiting follow-up when it checks next.
+  // A finished row says when it ended, a live one how fresh its latest word is; a follow-up's time carries its row's hover.
   const time = finished ? shortTime(at) : ago
-  const timeTip =
-    followUp?.status === 'waiting' && followUp.nextCheck
-      ? tf('nextCheck', { time: shortTime(followUp.nextCheck) })
-      : finished
-        ? t('finishedAt', { time: shortTime(at) })
-        : ago === t('now')
-          ? t('updatedNow')
-          : t('lastUpdate', { time: ago })
+  const timeTip = followUp
+    ? tip
+    : finished
+      ? t('finishedAt', { time: shortTime(at) })
+      : ago === t('now')
+        ? t('updatedNow')
+        : t('lastUpdate', { time: ago })
   return (
     <LineRow
       state={taskTone(row, followUp)}

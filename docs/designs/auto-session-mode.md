@@ -190,6 +190,8 @@ Approved proposals stay a kind of their own.
 | (d) Reply directly       | The turn's final text, or `replyToMessage {messageId, message}` in a turn of several messages, posted in the message's thread. The thread stays unowned, so replies come back to the coordinator |
 
 (d) is for what needs no session of its own: greetings, thanks, a question about a task's status.
+The reply is the coordinator's response, so on Slack it carries the attribution footer a turn's
+reply does, linking the coordinator's session.
 
 ### 4.3 Batching
 

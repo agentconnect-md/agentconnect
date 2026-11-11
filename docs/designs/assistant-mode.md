@@ -5262,3 +5262,11 @@ the reply.
 message's thread, and prose that ends in `AC_NO_RESPONSE` is silence as in any session. The prompt
 says the text is posted, where the ninetieth revision's prompt said it was shown to nobody. A
 getting-to-know report answered in text is the round's reply as one answered by `replyToMessage` is.
+
+**Hundredth revision (2026-11-11)**: a report from the check that ended a follow-up tells its
+conversation that the follow-up has ended and nothing is left to close (§5.12), and a check's rules
+keep "can be closed" out of the report itself; before, the conversation's session had to guess the
+end from the task list and passed the phrase on. A coordinator's reply on Slack carries the
+attribution footer a turn's reply does ([auto-session-mode.md](auto-session-mode.md) §4.2). In the
+session page's Tasks tab a follow-up's row says its next check or state and what counts as done on
+hover, so one whose first check has not run, which has no page, can still be read.

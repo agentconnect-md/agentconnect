@@ -15709,8 +15709,17 @@ export class Daemon {
       integrationId === undefined ? undefined : this.gatewayForIntegration(integrationId)
     if (!gateway) throw new Error('the conversation is not connected right now; nothing was posted')
     const thread = answerThreadOf(msg)
-    const posted = await gateway.postMessage(msg.channel, text, thread, this.agentPostIdentity(agentId))
     const key = sessionKey(msg.platform, sessionChannelOf(msg), sessionThreadOf(msg), agentId, msg.transportScope)
+    // This post is the coordinator's response, so it carries the attribution footer a turn's reply does.
+    const rec = await this.store.getSession(key)
+    const footer = rec ? await this.sessionAttributionBlocks(agentId, rec, integrationId) : undefined
+    const identity = this.agentPostIdentity(agentId)
+    const posted = footer
+      ? await (gateway as SlackConnection).postMessage(msg.channel, text, thread, {
+          ...identity,
+          trailingBlocks: footer.blocks
+        })
+      : await gateway.postMessage(msg.channel, text, thread, identity)
     await this.recordAgentPost(
       agentId,
       { channel: msg.channel, transportScope: msg.transportScope, key },
@@ -28969,7 +28978,7 @@ export class Daemon {
         // Footer migration: the narration is the response's newest words, so its last section
         // is born with the attribution footer and the previous holder's footer is cleared —
         // exactly what a new in-turn reply section does, carried over the turn boundary.
-        const footer = await this.drainAttributionBlocks(agentId, rec, integrationId)
+        const footer = await this.sessionAttributionBlocks(agentId, rec, integrationId)
         const previous = footer ? this.lastFooterReply.get(rec.key) : undefined
         const sections = splitIntoSections(text)
         let lastTs: string | undefined
@@ -29044,10 +29053,8 @@ export class Daemon {
     })
   }
 
-  /** Attribution footer for a drain narration — the turn builder without a Pending: agent
-   *  identity, runtime display name, the session's last observed model, and the console
-   *  session link. Undefined when footers are off for the agent or absent on the platform. */
-  private async drainAttributionBlocks(
+  /** Attribution footer for a session's post made outside a turn's reply (a drain narration, a coordinator's reply); undefined when the agent's footers are off or the platform has none. */
+  private async sessionAttributionBlocks(
     agentId: string,
     rec: SessionRecord,
     integrationId: string | undefined

@@ -329,7 +329,8 @@ export function checkPrompt(
       'either way. Write `report` and `propose`’s sentence in the language the people in its conversation use; ' +
       'without a message of theirs to go by, use the language of its title and summary.',
     '4. A report says what you found and promises nothing: no later message, no time anyone will hear back, no next ' +
-      'check. When it should be looked at again, set `nextCheck`; the people in its conversation are not told about it.',
+      'check. When it should be looked at again, set `nextCheck`; the people in its conversation are not told about it. ' +
+      'It never says the follow-up can be closed either: `done: true` ends it, and nobody has to close it.',
     '5. This session runs under a read-only or plan permission mode, which restricts your native tools only. ' +
       'recordCheck is how this check records its result, not an edit the mode forbids: call it directly, no one is ' +
       'here to approve a plan. Then end your turn.'
@@ -1027,7 +1028,9 @@ export class FollowUpChecks {
     }
     let reported = false
     if (report !== null && row && caller) {
-      const text = `[follow-up] The check of ${name} found a change. Pass it on to the people here:\n\n${report}`
+      // The conversation cannot tell an ended follow-up from one still checking, so the report says when it ended.
+      const ended = item && !checkedTaskOpen(item) ? ' The follow-up has ended, so nothing is left to close.' : ''
+      const text = `[follow-up] The check of ${name} found a change.${ended} Pass it on to the people here:\n\n${report}`
       const reportId = `check:${key}:${check}:report`
       const delivered = await this.deliver(agentId, taskKey, caller, row.parentSessionId, reportId, text, thread)
       if (delivered === 'draining') return

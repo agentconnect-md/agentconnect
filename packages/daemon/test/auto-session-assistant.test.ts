@@ -320,10 +320,14 @@ describe('assistant mode under auto (auto-session-mode.md §3.4)', () => {
       tools: coordinatorSessionTools([])
     } as SessionContext
     const posts: { thread?: string; text: string }[] = []
+    const footers: string[] = []
     vi.spyOn(d, 'gatewayForIntegration').mockReturnValue({
-      postMessage: vi.fn(async (_channel: string, text: string, thread?: string) => {
-        posts.push({ thread, text })
-      })
+      postMessage: vi.fn(
+        async (_channel: string, text: string, thread?: string, options?: { trailingBlocks?: unknown[] }) => {
+          posts.push({ thread, text })
+          footers.push(JSON.stringify(options?.trailingBlocks ?? []))
+        }
+      )
     })
     const react = vi.fn(async () => {})
     vi.spyOn(d, 'replyConnFor').mockReturnValue({ react, setStatus: vi.fn(async () => true) })
@@ -345,6 +349,9 @@ describe('assistant mode under auto (auto-session-mode.md §3.4)', () => {
     expect(outcomes[1]).toMatchObject({ ok: true, posted: { at: 'root' } })
     // The answer goes to the place's root, where the report belongs; no 🤔 shows on a report.
     expect(posts).toEqual([{ thread: undefined, text: 'The PR merged.' }])
+    // The reply is the coordinator's response, so it carries the attribution footer a turn's reply does.
+    expect(footers[0]).toContain('sent by')
+    expect(footers[0]).toContain('sessions/sid-coordinator?source=slack|open in session')
     expect(react).not.toHaveBeenCalled()
     await daemon.stop()
   })
