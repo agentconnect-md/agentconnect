@@ -1,4 +1,5 @@
 import type { MemoryWriteSource } from '../../memory/store.js'
+import type { ReplyAttributionInfo } from '../../messages/attribution.js'
 import type { MemoryLayerChoice, MemoryScope } from '../../memory/types.js'
 import type { ToolDescriptor } from '../../tool-schema/descriptor.js'
 import type { NormalizedMessage } from '../../messages/normalized.js'
@@ -33,6 +34,7 @@ import type {
  *  the name/avatar (via `chat:write.customize`) and persist the stable AgentConnect
  *  author id in message metadata; other platforms ignore these fields. */
 export interface SendIdentity {
+  attribution?: ReplyAttributionInfo
   username?: string
   /** Public https image URL for the message avatar (the agent's icon). */
   icon_url?: string

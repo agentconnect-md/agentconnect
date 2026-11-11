@@ -256,6 +256,7 @@ export async function shareFile(
   }
 
   const identity: SendIdentity = {
+    attribution: await deps.sessionToolAttributionFor?.(ctx),
     ...(ctx.agentName ? { username: ctx.agentName } : {}),
     ...(ctx.iconUrl ? { icon_url: ctx.iconUrl } : {}),
     agentAuthorId: ctx.agentId

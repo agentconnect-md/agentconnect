@@ -10,9 +10,58 @@ import type { PlatformSessionTools, PlatformSessionToolEnv } from '../read-ports
 import { createCodeChannel } from './code-channel.js'
 
 const text = z.string().trim().min(1)
+const chartLabel = text.max(20)
+const chartPoint = z.object({ label: chartLabel, value: z.number().finite() }).strict()
+const reportChart = z.discriminatedUnion('type', [
+  z
+    .object({
+      type: z.literal('pie'),
+      segments: z
+        .array(chartPoint.extend({ value: z.number().positive().finite() }))
+        .min(1)
+        .max(12)
+    })
+    .strict(),
+  z
+    .object({
+      type: z.enum(['line', 'bar', 'area']),
+      series: z
+        .array(z.object({ name: chartLabel, data: z.array(chartPoint).min(1).max(20) }).strict())
+        .min(1)
+        .max(12),
+      axis_config: z
+        .object({
+          categories: z.array(chartLabel).min(1).max(20),
+          x_label: text.max(50).optional(),
+          y_label: text.max(50).optional()
+        })
+        .strict()
+    })
+    .strict()
+    .superRefine((chart, ctx) => {
+      const categories = new Set(chart.axis_config.categories)
+      if (categories.size !== chart.axis_config.categories.length)
+        ctx.addIssue({ code: 'custom', message: 'Chart categories must be unique' })
+      if (new Set(chart.series.map((series) => series.name)).size !== chart.series.length)
+        ctx.addIssue({ code: 'custom', message: 'Chart series names must be unique' })
+      for (const series of chart.series) {
+        if (
+          series.data.length !== categories.size ||
+          new Set(series.data.map((point) => point.label)).size !== categories.size ||
+          series.data.some((point) => !categories.has(point.label))
+        )
+          ctx.addIssue({ code: 'custom', message: 'Each series must contain exactly one point per category' })
+      }
+    })
+])
 const reportArgs = z
   .object({
     title: text.max(150),
+    charts: z
+      .array(z.object({ title: text.max(50), chart: reportChart }).strict())
+      .min(1)
+      .max(2)
+      .optional(),
     summary: z.array(text.max(1000)).min(1).max(6).optional(),
     sections: z
       .array(z.object({ title: text.max(150), text: text.max(3000), collapsed: z.boolean().optional() }))
@@ -36,7 +85,10 @@ const reportArgs = z
       .optional()
   })
   .strict()
-  .refine((a) => a.summary?.length || a.sections?.length || a.table, 'Supply a summary, section or table')
+  .refine(
+    (a) => a.summary?.length || a.sections?.length || a.table || a.charts?.length,
+    'Supply a summary, section, table or chart'
+  )
 
 // Slack's table limit includes every cell, including column headings.
 export function slackReport(args: z.infer<typeof reportArgs>): { blocks: unknown[]; text: string } {
@@ -49,6 +101,18 @@ export function slackReport(args: z.infer<typeof reportArgs>): { blocks: unknown
       rows.push({ items: summary.slice(i, i + 3).map((block) => ({ block })) })
     blocks.push({ type: 'layout', label: args.title, rows, fallback: summary })
     fallback.push(...args.summary)
+  }
+  for (const visualization of args.charts ?? []) {
+    blocks.push({ type: 'data_visualization', ...visualization })
+    const chart = visualization.chart
+    const points = (data: { label: string; value: number }[]) =>
+      data.map((point) => `${point.label}: ${point.value}`).join(', ')
+    fallback.push(
+      visualization.title,
+      ...(chart.type === 'pie'
+        ? [points(chart.segments)]
+        : chart.series.map((series) => `${series.name}: ${points(series.data)}`))
+    )
   }
   for (const section of args.sections ?? []) {
     blocks.push({
@@ -91,7 +155,7 @@ export function slackReport(args: z.infer<typeof reportArgs>): { blocks: unknown
 const descriptor: ToolDescriptor = {
   name: 'presentSlackReport',
   description:
-    'Publish substantial findings or multi-row comparisons in this Slack conversation with a multi-column summary, collapsible details and a sortable, paginated data table. Choose this when parallel facts, expandable details or sorting help the reader, even if the user did not request a format. Use optional summary for up to six short facts or metrics and sections for longer details; both accept Slack mrkdwn. String table cells are plain text; numeric cells sort numerically. Keep short answers and small tables in ordinary replies. This posts immediately; do not repeat the report in your final reply.',
+    'Publish findings in this Slack conversation with summary metrics, native charts, collapsible sections and a sortable table. Use charts for trends and comparisons: up to two {title, chart} entries; pie uses positive-valued segments, line/bar/area use named series and axis_config.categories with one point per category. Summary (up to six facts) and sections accept Slack mrkdwn; table strings are plain text, numbers sort numerically. Choose this when the content benefits, without waiting for a format request. Keep short answers in ordinary replies. Posts immediately; do not repeat it in your final reply.',
   inputSchema: z.toJSONSchema(reportArgs, { unrepresentable: 'any' }) as ToolDescriptor['inputSchema']
 }
 

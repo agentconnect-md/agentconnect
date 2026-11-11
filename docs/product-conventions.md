@@ -685,6 +685,12 @@ best-effort edge: a target on another daemon whose call policy terminally reject
 caller can still leave a visible post, because that policy verdict is only known on the
 target's daemon after the post is made.
 
+### Native Slack reports
+
+Slack reports can combine summary metrics, native line, bar, area or pie charts,
+details and a table in one message through `presentSlackReport`. Each report supports
+up to two charts; their labels and values also appear in the transcript and text fallback.
+
 ### Sharing a produced file into the current conversation
 
 `shareFile` posts a file from the agent's workspace into the conversation the agent is
@@ -694,6 +700,11 @@ optional plain-text caption; every coordinate comes from the trusted active turn
 file lands in the thread that asked, threaded the way that platform threads (Slack
 `thread_ts`, Telegram reply placement, Discord thread channel, Feishu topic root — which is
 refused rather than repurposed when it cannot be honored).
+
+Slack file messages carry the agent's name and avatar when customization is available.
+When the agent enables attribution, the file caption includes the sender, runtime, model
+and session link, including when Slack refuses the customized identity. A failed byte
+upload reports that nothing was shared; it never falls back to a senderless SDK publication.
 
 Any file type. A PNG, JPEG, WEBP or GIF — decided from the file bytes, never the file name —
 posts as a picture (a GIF as an animation that plays), and its posted filename and type come

@@ -27,7 +27,6 @@ import {
 import { z, type ZodType } from 'zod'
 import type { AskDeps } from './ask.js'
 import type { InterceptedPost } from '../assistant/drafts.js'
-import type { ReplyAttributionInfo } from '../messages/attribution.js'
 import {
   allAttachmentReadTools,
   isAttachmentReadTool,
@@ -234,9 +233,6 @@ export interface OpsDeps
    *  through — ANY platform's, unlike `gatewayFor`, whose reply-surface registry deliberately
    *  omits a platform with no free-text surface (Linear). Absent ⇒ those tools cannot run. */
   sessionToolConnectionFor?: (integrationId: string) => unknown
-  /** This turn's footer identity for a session tool that publishes agent-authored text
-   *  (Linear's `createIssueComment`). Undefined when the agent's footer chrome is off. */
-  sessionToolAttributionFor?: (ctx: SessionContext) => Promise<ReplyAttributionInfo | undefined>
   /** Make a room for the session's work, which a task holds as one more thread (auto-session-mode.md §6.8). */
   sessionToolRoomFor?: (ctx: SessionContext) => PlatformSessionToolEnv['makeRoom']
   /** Collaboration Arena §6: resolve + execute an evaluation-registry tool.

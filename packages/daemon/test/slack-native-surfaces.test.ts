@@ -682,6 +682,74 @@ describe('Slack native surfaces', () => {
     await f.conn.stop()
   })
 
+  it('publishes native charts with summary metrics and records their values for transcript readers', async () => {
+    const f = await fixture()
+    const charts = [
+      {
+        title: 'Visitors',
+        chart: {
+          type: 'line',
+          series: [
+            {
+              name: 'Visits',
+              data: [
+                { label: 'Mon', value: 3 },
+                { label: 'Tue', value: 5 }
+              ]
+            }
+          ],
+          axis_config: { categories: ['Mon', 'Tue'] }
+        }
+      },
+      {
+        title: 'Sources',
+        chart: {
+          type: 'pie',
+          segments: [
+            { label: 'Direct', value: 4 },
+            { label: 'Search', value: 2 }
+          ]
+        }
+      }
+    ]
+    await SLACK_SESSION_TOOLS.execute(
+      'presentSlackReport',
+      ctx,
+      { title: 'Report', summary: ['Total: 8'], charts },
+      f.env
+    )
+    expect(f.post.mock.calls[0]![0]).toMatchObject({
+      blocks: expect.arrayContaining(charts.map((chart) => ({ type: 'data_visualization', ...chart }))),
+      thread_ts: '1.001'
+    })
+    expect(f.env.recordPost).toHaveBeenCalledWith(expect.stringContaining('Visits: Mon: 3, Tue: 5'), expect.any(String))
+    await f.conn.stop()
+  })
+
+  it('rejects invalid chart categories, series and pie weights before publishing', async () => {
+    const f = await fixture()
+    const series = { name: 'Visits', data: [{ label: 'Mon', value: 3 }] }
+    const chart = { type: 'bar', series: [series], axis_config: { categories: ['Mon'] } }
+    for (const invalid of [
+      { ...chart, axis_config: { categories: ['Mon', 'Tue'] } },
+      { ...chart, axis_config: { categories: ['Mon', 'Mon'] } },
+      { ...chart, series: [series, series] },
+      { ...chart, series: [{ ...series, data: [{ label: 'Tue', value: 1 }] }] },
+      { type: 'pie', segments: [{ label: 'Empty', value: 0 }] }
+    ]) {
+      await expect(
+        SLACK_SESSION_TOOLS.execute(
+          'presentSlackReport',
+          ctx,
+          { title: 'Bad', charts: [{ title: 'Chart', chart: invalid }] },
+          f.env
+        )
+      ).rejects.toThrow()
+    }
+    expect(f.post).not.toHaveBeenCalled()
+    await f.conn.stop()
+  })
+
   it('refuses malformed table dimensions before posting and preserves write refusals', async () => {
     const f = await fixture(false)
     await expect(
