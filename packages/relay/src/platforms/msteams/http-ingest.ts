@@ -180,7 +180,9 @@ export class MsTeamsHttpIngest {
     /** The generation THIS ingest was built from. */
     readonly credentialRevision?: number,
     /** Present only on the deployment app's anchor, which answers an unconnected tenant itself (§8.4). */
-    readonly anchor?: MsTeamsAnchorEgress
+    readonly anchor?: MsTeamsAnchorEgress,
+    /** A bot the deployment created for one agent, whose `appId` is its agent identity (§8.6.7). */
+    readonly agentBot = false
   ) {}
 
   /** §8 RelayBotIngress: a pure decoder has nothing to release. */

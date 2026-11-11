@@ -1,7 +1,7 @@
 // The deployment Teams app's relay egress (teams-integration.md §8.5): tickets, the host fence, the fixed operations, and Graph tokens for one tenant.
 import { describe, expect, it, vi } from 'vitest'
 import { WireMsTeamsCall, type RcMsTeamsDeploymentApp, type WireMsTeamsCallResult } from '@agentconnect.md/protocol'
-import { MSTEAMS_BOT_SCOPE, MSTEAMS_GRAPH_SCOPE, MsTeamsRelayEgress } from './egress.js'
+import { MSTEAMS_BOT_SCOPE, MSTEAMS_GRAPH_SCOPE, MSTEAMS_TOKEN_EXCHANGE_SCOPE, MsTeamsRelayEgress } from './egress.js'
 import { allowedMsTeamsServiceUrl, mintMsTeamsTicket, openMsTeamsTicket } from './ticket.js'
 import { createMsTeamsIngressPlugin } from './ingress-plugin.js'
 import type { RelayAdmission, RelayIngressHost } from '../contract.js'
@@ -31,6 +31,10 @@ const APP: RcMsTeamsDeploymentApp = {
   ticketKey: KEY_TEXT
 }
 const BINDING = { botId: BOT_ROW, tenantId: TENANT }
+const BLUEPRINT = { appId: '66666666-6666-4666-8666-666666666666', clientSecret: 'blueprint-secret-example' }
+const IDENTITY = '77777777-7777-4777-8777-777777777777'
+const AGENT_APP: RcMsTeamsDeploymentApp = { ...APP, blueprint: BLUEPRINT }
+const AGENT_ROW = { ...BINDING, agentBotId: IDENTITY }
 const THREAD = `${CHANNEL};messageid=1767225600000`
 
 describe('conversation tickets', () => {
@@ -83,12 +87,14 @@ interface Sent {
 function microsoft(answers: { status: number; body?: unknown }[] = [], tokenStatus = 200) {
   const sent: Sent[] = []
   const tokens: { tenant: string; scope: string }[] = []
+  const tokenRequests: Record<string, string>[] = []
   let minted = 0
   const fetchImpl = (async (url: unknown, init?: RequestInit) => {
     const target = String(url)
     const token = /^https:\/\/login\.microsoftonline\.com\/([^/]+)\/oauth2\/v2\.0\/token$/.exec(target)
     if (token) {
       const scope = new URLSearchParams(String(init?.body)).get('scope')!
+      tokenRequests.push(Object.fromEntries(new URLSearchParams(String(init?.body))))
       tokens.push({ tenant: decodeURIComponent(token[1]!), scope })
       minted += 1
       return Response.json(
@@ -106,7 +112,7 @@ function microsoft(answers: { status: number; body?: unknown }[] = [], tokenStat
     const next = answers.shift() ?? { status: 200, body: {} }
     return Response.json(next.body ?? {}, { status: next.status })
   }) as typeof fetch
-  return { fetchImpl, sent, tokens }
+  return { fetchImpl, sent, tokens, tokenRequests }
 }
 
 const resultOf = (reply: Awaited<ReturnType<MsTeamsRelayEgress['call']>>) => {
@@ -235,6 +241,74 @@ describe('MsTeamsRelayEgress', () => {
     expect(WireMsTeamsCall.safeParse({ op: 'get-team', ticket, teamId: '.' }).success).toBe(false)
   })
 
+  it('sends an agent bot’s call as its identity, with a token its own tenant issues for the blueprint', async () => {
+    const ms = microsoft([
+      { status: 201, body: { id: 'act-1' } },
+      { status: 201, body: { id: 'a:new-chat' } }
+    ])
+    const egress = new MsTeamsRelayEgress(AGENT_APP, ms.fetchImpl, () => NOW)
+    resultOf(await egress.call(AGENT_ROW, { op: 'post-activity', ticket, conversationId: THREAD, activity: {} }))
+    expect(ms.tokenRequests).toEqual([
+      {
+        grant_type: 'client_credentials',
+        client_id: BLUEPRINT.appId,
+        client_secret: BLUEPRINT.clientSecret,
+        scope: MSTEAMS_TOKEN_EXCHANGE_SCOPE,
+        fmi_path: IDENTITY
+      },
+      {
+        grant_type: 'client_credentials',
+        client_id: IDENTITY,
+        client_assertion_type: 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer',
+        client_assertion: 'tok-1',
+        scope: MSTEAMS_BOT_SCOPE
+      }
+    ])
+    expect(ms.tokens.map((t) => t.tenant)).toEqual([TENANT, TENANT])
+    expect(ms.sent[0]!.authorization).toBe('Bearer tok-2')
+
+    // The identity's token is cached; a 1:1 chat names the row's bot, and its ticket holds for the same row.
+    const opened = resultOf(await egress.call(AGENT_ROW, { op: 'create-conversation', ticket, memberId: '29:member' }))
+    expect(ms.tokenRequests).toHaveLength(2)
+    expect((ms.sent[1]!.body as { bot: unknown }).bot).toEqual({ id: `28:${IDENTITY}` })
+    expect(openMsTeamsTicket(KEY, BINDING, opened.tickets!['a:new-chat']!)?.conversationId).toBe('a:new-chat')
+
+    // Graph stays the deployment app's, in the row's tenant.
+    resultOf(await egress.call(AGENT_ROW, { op: 'graph-token' }))
+    expect(ms.tokenRequests[2]).toMatchObject({ client_id: APP_ID, scope: MSTEAMS_GRAPH_SCOPE })
+  })
+
+  it('renews an agent bot’s token after a 401, and drops them all when the blueprint changes', async () => {
+    const ms = microsoft([{ status: 401 }, { status: 200, body: {} }])
+    const egress = new MsTeamsRelayEgress(AGENT_APP, ms.fetchImpl, () => NOW)
+    const call: WireMsTeamsCall = { op: 'get-member', ticket, conversationId: CHANNEL, memberId: 'm' }
+    expect(resultOf(await egress.call(AGENT_ROW, call)).status).toBe(200)
+    expect(ms.sent.map((s) => s.authorization)).toEqual(['Bearer tok-2', 'Bearer tok-4'])
+
+    egress.update({ ...AGENT_APP, blueprint: { ...BLUEPRINT, clientSecret: 'rotated-secret-example' } })
+    await egress.call(AGENT_ROW, call)
+    expect(ms.tokenRequests.at(-2)).toMatchObject({ client_secret: 'rotated-secret-example' })
+  })
+
+  it('refuses an agent bot’s call without a blueprint, and reads Entra’s refusal as the credential’s', async () => {
+    const ms = microsoft()
+    const plain = new MsTeamsRelayEgress(APP, ms.fetchImpl, () => NOW)
+    const call: WireMsTeamsCall = { op: 'post-activity', ticket, conversationId: CHANNEL, activity: {} }
+    expect(plain.servesAgentBots).toBe(false)
+    expect(await plain.call(AGENT_ROW, call)).toEqual({ outcome: 'refused', reason: 'no_blueprint' })
+    plain.update(AGENT_APP)
+    expect(plain.servesAgentBots).toBe(true)
+    plain.update(APP)
+    expect(plain.servesAgentBots).toBe(false)
+    expect(ms.tokens).toEqual([])
+
+    // A disabled or deleted identity: Entra refuses the exchange and nothing is sent.
+    const refusing = microsoft([], 400)
+    const denied = new MsTeamsRelayEgress(AGENT_APP, refusing.fetchImpl, () => NOW)
+    expect(resultOf(await denied.call(AGENT_ROW, call)).status).toBe(401)
+    expect(refusing.sent).toEqual([])
+  })
+
   it('answers within its budget: a slow token sends nothing, and a slow send reads as one that may have landed', async () => {
     const BUDGET = 150
     const hang = new Promise<Response>(() => {})
@@ -332,6 +406,25 @@ describe('the Teams plugin for a deployment app’s rows', () => {
     const ext = vi.mocked(h.forwardStrict).mock.calls[0]![1].adapterExt!.msteams as Record<string, unknown>
     expect(ext.ticket).toBeUndefined()
     expect(ext.teamTicket).toBeUndefined()
+  })
+
+  it('tickets and answers an agent bot’s row only while the snapshot carries the blueprint', async () => {
+    const ms = microsoft([{ status: 201, body: { id: 'act-1' } }])
+    const plugin = createMsTeamsIngressPlugin({ fetch: ms.fetchImpl })
+    const row = assignment({ apiAppId: IDENTITY.toUpperCase(), agentBot: true })
+    const ticket = mintMsTeamsTicket(KEY, BINDING, { conversationId: CHANNEL, serviceUrl: SERVICE_URL })!
+    const post = { op: 'post-activity', ticket, conversationId: CHANNEL, activity: {} }
+    const trailing = { outcome: 'refused', reason: 'not_deployment_app', retryable: true }
+
+    plugin.deploymentAssignments!({ revision: 0, msTeamsApp: APP })
+    expect(await plugin.daemonRequest!(row, post)).toEqual(trailing)
+    // The marker, not the app ID, makes the row an agent bot's.
+    plugin.deploymentAssignments!({ revision: 1, msTeamsApp: AGENT_APP })
+    expect(await plugin.daemonRequest!(assignment({ apiAppId: IDENTITY }), post)).toEqual(trailing)
+    expect((await plugin.daemonRequest!(row, post)).outcome).toBe('ok')
+    expect(ms.tokenRequests.map((r) => r.client_id)).toEqual([BLUEPRINT.appId, IDENTITY])
+    expect(plugin.buildIngest(row, host())).toMatchObject({ appId: IDENTITY, agentBot: true })
+    expect(plugin.buildIngest(assignment(), host())).toMatchObject({ agentBot: false })
   })
 
   it('answers a daemon’s call only for a deployment app’s row, and only a known operation', async () => {

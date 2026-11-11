@@ -392,6 +392,14 @@ describe('toBotAssignment (§6.7 open secrets reader)', () => {
     expect(toBotAssignment({ ...base, secrets: { apiKey: 'k-1' }, ingress: { apiAppId: 'A1' } } as never)).toBeNull()
   })
 
+  it('reads the agent-bot marker only when it is exactly true', () => {
+    const row = (agentBot: unknown) =>
+      toBotAssignment({ ...base, platform: 'msteams', secrets: {}, ingress: { apiAppId: 'A1', agentBot } } as never)
+    expect(row(true)?.agentBot).toBe(true)
+    // Anything else leaves an ordinary row, which is sent nothing on the deployment's credential.
+    for (const other of [undefined, false, 'true', 1]) expect(row(other)).not.toHaveProperty('agentBot')
+  })
+
   it('refuses a HALF-FILLED Slack bag rather than promoting it to the signing-secret shape', () => {
     // A present-but-unusable botToken means the projector meant the Slack pair and lost half of
     // it. Falling through to the third shape would install an ingest that can never post.

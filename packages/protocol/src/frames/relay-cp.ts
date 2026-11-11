@@ -91,6 +91,14 @@ export const RcMsTeamsAnchor = z.object({
 })
 export type RcMsTeamsAnchor = z.infer<typeof RcMsTeamsAnchor>
 
+/** The agent identity blueprint whose secret obtains every agent bot's Bot Connector token (teams-integration.md §8.6.7). */
+export const RcMsTeamsBlueprint = z.object({
+  appId: z.string().uuid(),
+  /** Secret material, never logged. */
+  clientSecret: z.string().min(1)
+})
+export type RcMsTeamsBlueprint = z.infer<typeof RcMsTeamsBlueprint>
+
 /** The deployment Teams app the relay sends its customer rows' Bot Connector calls and mints their Graph tokens with (teams-integration.md §8.5). */
 export const RcMsTeamsDeploymentApp = z.object({
   appId: z.string().uuid(),
@@ -99,7 +107,9 @@ export const RcMsTeamsDeploymentApp = z.object({
   /** Secret material, never logged. */
   clientSecret: z.string().min(1),
   /** The base64url key every relay signs and checks conversation tickets with; derived from the CP's pepper, never logged. */
-  ticketKey: z.string().min(43)
+  ticketKey: z.string().min(43),
+  /** Present when the deployment configures agent bots; absent, the relay serves none. */
+  blueprint: RcMsTeamsBlueprint.optional()
 })
 export type RcMsTeamsDeploymentApp = z.infer<typeof RcMsTeamsDeploymentApp>
 
