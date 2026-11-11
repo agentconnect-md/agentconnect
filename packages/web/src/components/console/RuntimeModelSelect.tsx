@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 import { HoverCardRows, useHoverCard } from '@/components/ui/HoverCard'
 import { useTranslations } from 'next-intl'
-import { AgentMark, MarkSlot } from '@/components/marks'
+import { AgentMark, MarkSlot, ModelMark } from '@/components/marks'
 import { Icon, Toggle } from '@/components/ui'
 import { ModelOption, ProviderModelMenu } from '@/components/console/ProviderModelMenu'
 import {
@@ -30,7 +30,8 @@ import {
   type DaemonRow
 } from '@/lib/data'
 import { localizedPermissionChoices } from '@/lib/permission-mode-i18n'
-import type { DecisionRuntimeTarget } from '@agentconnect.md/protocol/decision'
+import type { AgentCoordinatorFilter, DecisionRuntimeTarget } from '@agentconnect.md/protocol/decision'
+import type { DecisionProviderOption } from '@agentconnect.md/protocol/decision-api'
 import { COORDINATOR_DEFAULT_EFFORT, type CoordinatorModel } from '@agentconnect.md/protocol/coordinator-model'
 
 export type RuntimeModelSource = Pick<DaemonRow, 'runtimeModels'>
@@ -66,7 +67,19 @@ export interface CoordinatorModelChoice {
   disabled?: boolean
   /** Offers Disable coordinator; choosing a model turns it back on. */
   onDisabledChange?(disabled: boolean): void
+  /** The Decision model that screens messages before the coordinator (auto-session-mode.md §4.7); absent hides the FILTER group. */
+  filter?: CoordinatorFilterChoice
 }
+
+/** The coordinator filter's value and the Decision providers able to answer its Boolean question. */
+export interface CoordinatorFilterChoice {
+  value: AgentCoordinatorFilter | null
+  providers: readonly Pick<DecisionProviderOption, 'id' | 'name' | 'models' | 'readiness'>[]
+  onChange(value: AgentCoordinatorFilter | null): void
+}
+
+// A filter provider's column id, apart from every runtime id.
+const FILTER_PREFIX = 'filter:'
 
 /** The agent Decision a composer can defer to, with what its hover card summarizes. */
 export interface RuntimeDecisionChoice extends DecisionModelSummary {
@@ -277,7 +290,16 @@ export function RuntimeModelSelect({
       ...(co.fastMode && fastModeAvailableFor(runtime, capability) ? { fastMode: true } : {})
     })
   }
-  const footer = onCoordinator ? coControls : showSettings ? controls : undefined
+  const filter = onCoordinator && !coOff ? coordinator?.filter : undefined
+  const filterProvider =
+    filter && !search && provider.startsWith(FILTER_PREFIX)
+      ? filter.providers.find((option) => FILTER_PREFIX + option.id === provider)
+      : undefined
+  const filterName = (choice: AgentCoordinatorFilter) => {
+    const option = coordinator?.filter?.providers.find((one) => one.id === choice.providerId)
+    return option?.models.find((model) => model.id === choice.model)?.label ?? choice.model
+  }
+  const footer = filterProvider ? undefined : onCoordinator ? coControls : showSettings ? controls : undefined
   const coOnly = !!coordinator?.only && !!co
   const fastOn = coOnly ? !!co?.fastMode : !decision?.selected && !!controls?.fast?.value
   const triggerName = coOnly
@@ -343,6 +365,9 @@ export function RuntimeModelSelect({
                 string
               ]
             ]
+          : []),
+        ...(co && !coordinator?.only && !coOff && coordinator?.filter?.value
+          ? [[t('filter'), filterName(coordinator.filter.value)] as [string, string]]
           : [])
       ]}
     />
@@ -486,6 +511,21 @@ export function RuntimeModelSelect({
                 setProvider(runtime)
                 setSearch('')
               }}
+              section={
+                filter
+                  ? {
+                      title: t('filter'),
+                      hint: t('filterHint'),
+                      providers: filter.providers.map((option) => ({
+                        id: FILTER_PREFIX + option.id,
+                        label: option.name,
+                        mark: <ModelMark model={`${option.id}/`} fallbackRuntime="" fillPct={100} />,
+                        count: option.models.length,
+                        warning: option.readiness.status === 'ready' ? undefined : t('filterNotReady')
+                      }))
+                    }
+                  : undefined
+              }
               search={{ value: search, placeholder: t('search'), onChange: setSearch }}
               header={
                 coordinator &&
@@ -511,6 +551,22 @@ export function RuntimeModelSelect({
                 )
               }
             >
+              {filterProvider && filter && (
+                <>
+                  {filterProvider.models.map((model) => (
+                    <ModelOption
+                      key={model.id}
+                      label={model.label}
+                      ariaLabel={`${filterProvider.name} · ${model.label}`}
+                      selected={filter.value?.providerId === filterProvider.id && filter.value.model === model.id}
+                      onClick={() => filter.onChange({ providerId: filterProvider.id, model: model.id })}
+                    />
+                  ))}
+                  <div className="mt-1 border-t border-(--border-subtle) pt-1">
+                    <ModelOption label={t('noFilter')} selected={!filter.value} onClick={() => filter.onChange(null)} />
+                  </div>
+                </>
+              )}
               {matching.map(
                 (item) =>
                   item.options.length > 0 && (
@@ -547,12 +603,12 @@ export function RuntimeModelSelect({
                   }}
                 />
               )}
-              {(!runtimeOnly || onCoordinator) && matching.every((item) => !item.options.length) && (
+              {!filterProvider && (!runtimeOnly || onCoordinator) && matching.every((item) => !item.options.length) && (
                 <div className="px-2 py-[14px] font-sans text-[12px] leading-normal text-(--text-tertiary)">
                   {t('empty')}
                 </div>
               )}
-              {onCoordinator && coordinator?.onDisabledChange && !search && (
+              {onCoordinator && coordinator?.onDisabledChange && !search && !filterProvider && (
                 <div className="mt-1 border-t border-(--border-subtle) pt-1">
                   <button
                     type="button"

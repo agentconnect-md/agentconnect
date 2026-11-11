@@ -13,10 +13,38 @@ export interface ProviderColumnItem {
   warning?: string
 }
 
+/** A second titled group in the provider column, such as the coordinator's filter models. */
+export interface ProviderColumnSection {
+  title: string
+  /** Explains the group on hover of the info mark beside its title. */
+  hint?: string
+  providers: readonly ProviderColumnItem[]
+}
+
+function ProviderButton({ item, active, onPick }: { item: ProviderColumnItem; active: boolean; onPick(): void }) {
+  return (
+    <button type="button" aria-pressed={active} className={`fopt min-h-8 ${active ? 'on' : ''}`} onClick={onPick}>
+      <MarkSlot>{item.mark}</MarkSlot>
+      <span className="min-w-0 flex-1 truncate text-left">{item.label}</span>
+      {item.warning && (
+        <span className="flex flex-none" title={item.warning}>
+          <Icon name="triangle-alert" size={12} color="var(--status-paused)" />
+        </span>
+      )}
+      {item.count !== undefined && (
+        <span className="flex-none font-mono text-[11px] font-normal leading-normal text-(--text-tertiary)">
+          {item.count}
+        </span>
+      )}
+    </button>
+  )
+}
+
 // The provider · model menu body: providers on the left, the caller's model options on the right.
 export function ProviderModelMenu({
   title,
   providers,
+  section,
   active,
   onPick,
   search,
@@ -27,6 +55,8 @@ export function ProviderModelMenu({
   /** Shown above the provider column's title, for what the whole menu edits. */
   header?: ReactNode
   providers: readonly ProviderColumnItem[]
+  /** A second group below the providers; its ids share `active` and `onPick` with them. */
+  section?: ProviderColumnSection
   /** The highlighted provider; null while a search spans every provider. */
   active: string | null
   onPick(id: string): void
@@ -39,27 +69,23 @@ export function ProviderModelMenu({
         {header}
         <div className="fhdr">{title}</div>
         {providers.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            aria-pressed={active === item.id}
-            className={`fopt min-h-8 ${active === item.id ? 'on' : ''}`}
-            onClick={() => onPick(item.id)}
-          >
-            <MarkSlot>{item.mark}</MarkSlot>
-            <span className="min-w-0 flex-1 truncate text-left">{item.label}</span>
-            {item.warning && (
-              <span className="flex flex-none" title={item.warning}>
-                <Icon name="triangle-alert" size={12} color="var(--status-paused)" />
-              </span>
-            )}
-            {item.count !== undefined && (
-              <span className="flex-none font-mono text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                {item.count}
-              </span>
-            )}
-          </button>
+          <ProviderButton key={item.id} item={item} active={active === item.id} onPick={() => onPick(item.id)} />
         ))}
+        {section && section.providers.length > 0 && (
+          <>
+            <div className="fhdr mt-1 flex items-center gap-1">
+              {section.title}
+              {section.hint && (
+                <span className="flex" title={section.hint} aria-label={section.hint}>
+                  <Icon name="info" size={12} />
+                </span>
+              )}
+            </div>
+            {section.providers.map((item) => (
+              <ProviderButton key={item.id} item={item} active={active === item.id} onPick={() => onPick(item.id)} />
+            ))}
+          </>
+        )}
       </div>
       <div className="flex min-w-0 flex-1 flex-col p-[6px]">
         {search && (

@@ -8,6 +8,7 @@ import type { AgentModelSelection, DecisionRuntimeTarget } from '@agentconnect.m
 vi.mock('@/lib/acp-registry', () => ({ useAcpRegistry: () => ({}), acpRuntime: () => undefined }))
 vi.mock('@/components/marks', () => ({
   AgentMark: () => <span />,
+  ModelMark: () => <span />,
   MarkSlot: ({ children }: { children: React.ReactNode }) => <span>{children}</span>
 }))
 
@@ -446,6 +447,79 @@ it('turns the coordinator off from its tab, and back on with a model', async () 
   await act(async () => dialog.querySelector<HTMLButtonElement>('button[aria-label$="· model-small"]')!.click())
   expect(onDisabledChange).toHaveBeenLastCalledWith(false)
   expect(onCoordinator).toHaveBeenLastCalledWith(expect.objectContaining({ runtime: 'claude', model: 'model-small' }))
+})
+
+// auto-session-mode.md §4.7: the Coordinator tab lists the filter's providers under FILTER, with their models and No filter.
+it('picks and removes the coordinator filter from its own group, hidden while the coordinator is off', async () => {
+  const onFilter = vi.fn()
+  container = document.createElement('div')
+  document.body.appendChild(container)
+  root = createRoot(container)
+  const render = async (filter: { providerId: string; model: string } | null, disabled = false) =>
+    await act(async () =>
+      root.render(
+        <RuntimeModelSelect
+          runSettings
+          value={{ runtime: 'claude', model: 'model-standard', effort: 'medium' }}
+          onChange={vi.fn()}
+          source={{ runtimeModels: [{ runtime: 'claude', version: '', models: ['model-standard', 'model-small'] }] }}
+          coordinator={{
+            value: { runtime: 'claude', model: 'model-small', effort: 'low' },
+            onChange: vi.fn(),
+            disabled,
+            onDisabledChange: vi.fn(),
+            filter: {
+              value: filter,
+              onChange: onFilter,
+              providers: [
+                {
+                  id: 'typesafe',
+                  name: 'TypeSafe',
+                  readiness: { status: 'ready' },
+                  models: [
+                    { id: 'jev-1.13.0', label: 'Jev 1.13', questionTypes: ['boolean'] },
+                    { id: 'jev-latest', label: 'Jev latest', questionTypes: ['boolean'] }
+                  ]
+                }
+              ]
+            }
+          }}
+        />
+      )
+    )
+  await render(null)
+  const trigger = container.querySelector('button')!
+  await act(async () => trigger.click())
+  const dialog = () => document.querySelector('[role="dialog"]')!
+  const buttons = () => [...dialog().querySelectorAll<HTMLButtonElement>('button')]
+  const tab = (name: string) =>
+    [...dialog().querySelectorAll<HTMLButtonElement>('[role="group"] button')].find((b) => b.textContent === name)!
+  // The task tab has no filter.
+  expect(dialog().textContent).not.toContain('Filter')
+  await act(async () => tab('Coordinator').click())
+  expect(dialog().textContent).toContain('Filter')
+  const provider = buttons().find((b) => b.textContent === 'TypeSafe2')!
+  await act(async () => provider.click())
+  expect(
+    buttons()
+      .find((b) => b.textContent === 'No filter')!
+      .getAttribute('aria-pressed')
+  ).toBe('true')
+  expect(buttons().some((b) => b.textContent === 'Disable coordinator')).toBe(false)
+  await act(async () => dialog().querySelector<HTMLButtonElement>('button[aria-label="TypeSafe · Jev 1.13"]')!.click())
+  expect(onFilter).toHaveBeenLastCalledWith({ providerId: 'typesafe', model: 'jev-1.13.0' })
+
+  await render({ providerId: 'typesafe', model: 'jev-1.13.0' })
+  expect(dialog().querySelector('button[aria-label="TypeSafe · Jev 1.13"]')!.getAttribute('aria-pressed')).toBe('true')
+  await act(async () =>
+    buttons()
+      .find((b) => b.textContent === 'No filter')!
+      .click()
+  )
+  expect(onFilter).toHaveBeenLastCalledWith(null)
+
+  await render({ providerId: 'typesafe', model: 'jev-1.13.0' }, true)
+  expect(dialog().textContent).not.toContain('Filter')
 })
 
 it('shows the coordinator alone on its own field', async () => {
