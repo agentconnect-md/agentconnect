@@ -448,9 +448,20 @@ export async function publishMsTeamsPackage(
     ? `/appCatalogs/teamsApps/${encodeURIComponent(existing.id)}/appDefinitions`
     : '/appCatalogs/teamsApps?requiresReview=false'
   const published = await graph(fetchImpl, token, 'POST', path, { zip })
-  if (!published.ok) throw refused(published)
+  if (!published.ok) throw await refusedWithReason(published)
   if (existing) return existing.id
   return CatalogApp.parse(await published.json()).id
+}
+
+const GraphError = z.object({ error: z.object({ code: z.string().nullish(), message: z.string().nullish() }) })
+
+// A refused publish adds Graph's own error code and message to the log detail: the status alone does not say what the catalog objected to.
+async function refusedWithReason(response: Response): Promise<MsTeamsConnectError> {
+  const error = refused(response)
+  const body = GraphError.safeParse(await response.json().catch(() => null))
+  if (!body.success) return error
+  const reason = `${body.data.error.code ?? ''}: ${(body.data.error.message ?? '').slice(0, 300)}`
+  return new MsTeamsConnectError(error.code, error.message, `${error.detail} (${reason})`)
 }
 
 /** Submits the package for the administrator's review, which a member may do (§8.6.6): it is never published by this call; answers the catalog app ID. */
