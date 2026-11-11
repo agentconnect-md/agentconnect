@@ -11,7 +11,13 @@ import {
   renderCoordinatorBatch
 } from '../src/auto-session/coordinator-prompt.js'
 import { CoordinatorSessions, deliveredMessage, messageForTask } from '../src/auto-session/coordinator-sessions.js'
-import { batchCut, CoordinatorTurns, reportAboutOf, reportJoinsBatch } from '../src/auto-session/coordinator-turns.js'
+import {
+  batchCut,
+  CoordinatorTurns,
+  reportAboutOf,
+  reportJoinsBatch,
+  type DeliveredMessage
+} from '../src/auto-session/coordinator-turns.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import {
   CLAUDE_COORDINATOR_DISALLOWED_TOOLS,
@@ -21,7 +27,7 @@ import { executeTool } from '../src/mcp/ops.js'
 import type { SessionContext } from '../src/mcp/ops/context.js'
 import type { ToolDescriptor } from '../src/tool-schema/descriptor.js'
 import { coordinatorCoordinate, isAppendCoordinate, isCoordinatorCoordinate } from '../src/session/append-coordinate.js'
-import { isNoResponsePrefix } from '../src/session/no-response.js'
+import { isNoResponseBody } from '../src/session/no-response.js'
 import { sessionKey, type LocalStore } from '../src/store/local-store.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { openTestStore } from './store-support.js'
@@ -105,9 +111,11 @@ describe('the coordinator prompt and batch', () => {
       'The task answers in its own thread: a message at the conversation root joins that thread, and a message in ' +
         'another thread brings that thread to the task.'
     )
-    expect(prompt).toContain("which posts a visible reply in the message's thread")
+    expect(prompt).toContain(
+      "write your reply as the text that ends your turn, which is posted in the message's thread"
+    )
     expect(prompt).toContain('- No other agent is in this conversation.')
-    expect(prompt).toContain('The person reads your text as you write it, so write nothing but your calls.')
+    expect(prompt).toContain('The person reads your text as you write it: it is your reply')
     expect(prompt).not.toMatch(/channel|own page/i)
     const batch = renderCoordinatorBatch(
       [{ id: 'msg-p2', from: 'user-1', mentionsYou: true, text: 'and 429?', thread: 'msg-p1' }],
@@ -174,8 +182,8 @@ describe('a coordinator turn', () => {
     turns.settle('k', 'msg-1.1', 'reply')
     turns.noteText('k', 'final words')
     // A batch's final text is never posted.
-    expect(turns.end('k', isNoResponsePrefix)).toMatchObject({ undecided: [{ id: 'msg-1.2' }] })
-    expect(turns.end('k', isNoResponsePrefix)).toBeUndefined()
+    expect(turns.end('k')).toMatchObject({ undecided: [{ id: 'msg-1.2' }] })
+    expect(turns.end('k')).toBeUndefined()
   })
 
   it('takes back its messages’ feedback once, when it ends or a later turn replaces it', () => {
@@ -184,21 +192,54 @@ describe('a coordinator turn', () => {
     turns.begin('k', [delivered('1.1')], () => cleared.push('first'))
     turns.begin('k', [delivered('1.2')], () => cleared.push('second'))
     expect(cleared).toEqual(['first'])
-    turns.end('k', isNoResponsePrefix)
-    turns.end('k', isNoResponsePrefix)
+    turns.end('k')
+    turns.end('k')
     expect(cleared).toEqual(['first', 'second'])
   })
 
-  it('counts a one-message turn’s text after its last call as the reply, and AC_NO_RESPONSE as none', () => {
+  it('counts a turn’s text after its last call as the reply to its message, and a text ending in AC_NO_RESPONSE as none', () => {
     const turns = new CoordinatorTurns()
     turns.begin('k', [delivered('1.1')])
     turns.noteText('k', 'let me look')
     turns.noteToolCall('k')
     turns.noteText('k', ' Good morning! ')
-    expect(turns.end('k', isNoResponsePrefix)?.reply).toBe('Good morning!')
+    expect(turns.takeSpoken('k', isNoResponseBody)).toMatchObject({ to: { id: 'msg-1.1' }, text: 'Good morning!' })
+    // The text is taken once, so a second settlement posts nothing more.
+    expect(turns.takeSpoken('k', isNoResponseBody)).toBeUndefined()
+    for (const silent of ['AC_NO_RESPONSE', 'This one is not for me.\n\nAC_NO_RESPONSE']) {
+      turns.begin('k', [delivered('1.1')])
+      turns.noteText('k', silent)
+      expect(turns.takeSpoken('k', isNoResponseBody)).toBeUndefined()
+    }
+    // A message a call decided has its outcome, so the text after it answers nothing.
     turns.begin('k', [delivered('1.1')])
-    turns.noteText('k', 'AC_NO_RESPONSE')
-    expect(turns.end('k', isNoResponsePrefix)?.reply).toBeUndefined()
+    turns.reserve('k', 'msg-1.1')
+    turns.settle('k', 'msg-1.1', 'delegate')
+    turns.noteText('k', 'Delegated.')
+    expect(turns.takeSpoken('k', isNoResponseBody)).toBeUndefined()
+  })
+
+  it('ties a batch’s text to the one person’s message left without a call, else to the one that mentions the agent', () => {
+    const turns = new CoordinatorTurns()
+    const report = { ...delivered('9.9'), report: true as const }
+    const mention = delivered('1.3', true)
+    const spoken = (messages: DeliveredMessage[], decided: string[] = []) => {
+      turns.begin('k', messages)
+      for (const id of decided) {
+        turns.reserve('k', id)
+        turns.settle('k', id, 'route')
+      }
+      turns.noteText('k', 'Good morning!')
+      return turns.takeSpoken('k', isNoResponseBody)?.to.id
+    }
+    expect(spoken([delivered('1.1'), delivered('1.2')], ['msg-1.1'])).toBe('msg-1.2')
+    // A report left beside it is never what a batch's text answers.
+    expect(spoken([delivered('1.1'), report])).toBe('msg-1.1')
+    expect(spoken([delivered('1.1'), report], ['msg-1.1'])).toBeUndefined()
+    expect(spoken([delivered('1.1'), delivered('1.2'), mention])).toBe('msg-1.3')
+    expect(spoken([delivered('1.1'), delivered('1.2')])).toBeUndefined()
+    // A report that is all the turn delivers is answered by its text.
+    expect(spoken([report])).toBe('msg-9.9')
   })
 })
 
@@ -699,15 +740,16 @@ describe('the coordinator’s outcomes', () => {
     expect(posted).toHaveLength(1)
   })
 
-  it('never posts a turn’s final text, sentinel or not, and opens a task for a mention left without an outcome', async () => {
-    const { store, sessions, dispatched, posted } = await setup()
+  it('posts a turn’s final text where its message is answered, and opens a task for a mention left without an outcome', async () => {
+    const { store, sessions, ctx, dispatched, posted } = await setup()
     begin(sessions, slack('1.1'))
     sessions.turns.noteText(coordinatorKey, 'Good morning!')
     await sessions.settleTurn(coordinatorKey, 'bot-a', 'answered')
+    // Prose that ends in the sentinel is silence, as in any session.
     begin(sessions, slack('1.2'))
     sessions.turns.noteText(coordinatorKey, 'This one is not for me.\n\nAC_NO_RESPONSE')
     await sessions.settleTurn(coordinatorKey, 'bot-a', 'answered')
-    // A report turn's prose stays in the coordinator's transcript as well.
+    // A report turn's text is its answer, posted where the report belongs.
     const report = {
       ...slack('9.9'),
       msgId: 'agentcall:C1:assistant-report:9',
@@ -720,23 +762,38 @@ describe('the coordinator’s outcomes', () => {
     sessions.beginTurn(coordinatorKey, 'bot-a', [
       deliveredMessage({ ...report, sessionThread: COORDINATOR, headless: true }, 'int-bot-a')
     ])
-    sessions.turns.noteText(coordinatorKey, 'The task already told the thread, so I am not posting anything more.')
+    sessions.turns.noteText(coordinatorKey, 'The flaky test is fixed.')
     await sessions.settleTurn(coordinatorKey, 'bot-a', 'answered')
-    expect(posted).toEqual([])
+    // A mention answered in text has its reply, so no task opens for it.
+    begin(sessions, slack('3.1', { trigger: 'mention', text: '<@UBOT> thanks!' }))
+    sessions.turns.noteText(coordinatorKey, 'You are welcome!')
+    await sessions.settleTurn(coordinatorKey, 'bot-a', 'answered')
+    // The text after a call that decided the message answers nothing more.
+    begin(sessions, slack('4.1'))
+    await sessions.decide(ctx, { action: 'replyToMessage', messageId: 'msg-4.1', message: 'Noted.' })
+    sessions.turns.noteText(coordinatorKey, 'I replied to the message.')
+    await sessions.settleTurn(coordinatorKey, 'bot-a', 'answered')
+    expect(posted.map((post) => [post.msg.msgId, post.text])).toEqual([
+      ['slack:C1:1.1', 'Good morning!'],
+      ['agentcall:C1:assistant-report:9', 'The flaky test is fixed.'],
+      ['slack:C1:3.1', 'You are welcome!'],
+      ['slack:C1:4.1', 'Noted.']
+    ])
     expect(dispatched).toEqual([])
 
     begin(sessions, slack('2.1', { trigger: 'mention', text: '<@UBOT> thoughts?' }))
     sessions.turns.noteText(coordinatorKey, 'AC_NO_RESPONSE')
     await sessions.settleTurn(coordinatorKey, 'bot-a', 'answered')
-    // A mention answered in text alone has no outcome either, so a task answers it.
-    begin(sessions, slack('3.1', { trigger: 'mention', text: '<@UBOT> thanks!' }))
-    sessions.turns.noteText(coordinatorKey, 'You are welcome!')
+    // The coordinator sees only a file's name, so a task answers a mention with one whatever the text says.
+    const chart = { id: 'F5', name: 'chart.png', mimeType: 'image/png', sourceUrl: 'https://files.example.test/F5' }
+    begin(sessions, slack('5.1', { trigger: 'mention', attachments: [chart] }))
+    sessions.turns.noteText(coordinatorKey, 'Nice chart!')
     await sessions.settleTurn(coordinatorKey, 'bot-a', 'answered')
-    expect(dispatched.map((one) => one.msg.msgId)).toEqual(['slack:C1:2.1', 'slack:C1:3.1'])
+    expect(dispatched.map((one) => one.msg.msgId)).toEqual(['slack:C1:2.1', 'slack:C1:5.1'])
     expect(await store.assistantSubsessions.get('bot-a', sessionKey('slack', 'C1', '2.1', 'bot-a'))).toMatchObject({
       title: '<@UBOT> thoughts?'
     })
-    expect(posted).toEqual([])
+    expect(posted).toHaveLength(4)
   })
 
   it('on a failed turn opens tasks for its mentions only, and acts on nothing a stop left', async () => {
@@ -1331,7 +1388,7 @@ describe('auto conversations route to the coordinator', () => {
 })
 
 describe('a coordinator driven through every outcome (auto-session-mode.md §4.2, §4.5)', () => {
-  it('opens a task, hands it a thread, replies by call, posts no final text, and falls back for a mention', async () => {
+  it('opens a task, hands it a thread, replies by call and by its final text, and falls back for a mention', async () => {
     // The coordinator's tool context, set once the daemon is up.
     const live: { d?: any; ctx?: SessionContext } = {}
     let taskId = ''
@@ -1416,7 +1473,7 @@ describe('a coordinator driven through every outcome (auto-session-mode.md §4.2
     await send('5.1', { ...mention, text: '<@U_FAKE_BOT> thoughts?' })
     await vi.waitFor(() => expect(taskPosts).toHaveLength(3), WAIT)
     await send('6.1', { text: 'thanks, that helped' })
-    await vi.waitFor(() => expect(coordinatorPosts).toHaveLength(1), WAIT)
+    await vi.waitFor(() => expect(coordinatorPosts).toHaveLength(2), WAIT)
     await idle()
 
     const firstTask = sessionKey('slack', 'C1', '1.1', 'bot-a', scope)
@@ -1426,8 +1483,11 @@ describe('a coordinator driven through every outcome (auto-session-mode.md §4.2
     expect(tasks[0]).toContain('fix the flaky test')
     expect(tasks[1]).toContain('is the flaky test fixed yet?')
     expect(tasks[2]).toContain('thoughts?')
-    // The final texts of 3.1 and 4.1, plain or ending in the sentinel, stayed in the coordinator's transcript.
-    expect(coordinatorPosts).toEqual([{ thread: '6.1', text: 'Glad it helped.' }])
+    // The final text of 3.1 is its reply; that of 4.1, ending in the sentinel, stayed in the coordinator's transcript.
+    expect(coordinatorPosts).toEqual([
+      { thread: '3.1', text: 'Good morning!' },
+      { thread: '6.1', text: 'Glad it helped.' }
+    ])
     const index = d.store.assistantSubsessions
     expect((await index.threadsOf('bot-a', firstTask)).map((one: { thread: string }) => one.thread)).toEqual([
       '1.1',

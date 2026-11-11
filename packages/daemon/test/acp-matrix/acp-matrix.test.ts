@@ -883,6 +883,12 @@ function runCoordinatorRuntime(
         reps,
         updates,
         support: { withTimeout, providerUnavailable, errorReason: turnFailureReason },
+        ...(process.env.AC_RUNTIME_MATRIX_COORDINATOR_MODEL?.trim()
+          ? { model: process.env.AC_RUNTIME_MATRIX_COORDINATOR_MODEL.trim() }
+          : {}),
+        ...(process.env.AC_RUNTIME_MATRIX_COORDINATOR_EFFORT?.trim()
+          ? { effort: process.env.AC_RUNTIME_MATRIX_COORDINATOR_EFFORT.trim() }
+          : {}),
         onRun
       }),
     skipped: (note) =>

@@ -13,7 +13,8 @@ import {
 } from '../../src/auto-session/coordinator-prompt.js'
 import { readOnlyExtractionMode } from '../../src/memory/distill.js'
 import { CLAUDE_HEADLESS_DISALLOWED_TOOLS } from '../../src/runtime-defs/claude-runtime.js'
-import { NO_RESPONSE_SENTINEL } from '../../src/session/no-response.js'
+import { spokenTo } from '../../src/auto-session/coordinator-turns.js'
+import { isNoResponseBody } from '../../src/session/no-response.js'
 import type { ToolDescriptor } from '../../src/tool-schema/descriptor.js'
 import type { ProbeSupport, SendMessageVerdict } from './send-message-probe.js'
 
@@ -819,10 +820,10 @@ export const CO_SCENARIOS: CoordinatorScenario[] = [
   }
 ]
 
-/** A turn's final text, unless it is the silence sentinel: a webchat browser shows it, a channel never posts it (auto-session-mode.md §4.3). */
+/** A turn's final text, unless it is silence: the reply to the message no call decided (auto-session-mode.md §4.3). */
 const textReply = (finalText: string): string | undefined => {
   const trimmed = finalText.trim()
-  return trimmed === '' || trimmed.startsWith(NO_RESPONSE_SENTINEL) ? undefined : trimmed
+  return trimmed === '' || isNoResponseBody(trimmed) ? undefined : trimmed
 }
 
 /** PASS when every message got its expected outcome and no call was refused; DEGRADED on an alternative or a refusal; FAIL otherwise. */
@@ -836,11 +837,19 @@ export function judgeCoordinator(
   const notes: string[] = []
   let degraded = false
   let failed = false
+  const spoken = textReply(finalText)
+  // The daemon posts the text where it ties it to one message, so the judge ties it the same way.
+  const answered =
+    spoken !== undefined
+      ? spokenTo(
+          scenario.messages,
+          scenario.messages.filter((message) => !outcomes.has(message.id))
+        )
+      : undefined
   for (const message of scenario.messages) {
     const expected = scenario.expect[message.id]!
     let outcome = outcomes.get(message.id)
-    const spoken = scenario.messages.length === 1 && scenario.webchat ? textReply(finalText) : undefined
-    if (!outcome && spoken !== undefined) outcome = { kind: 'reply', messageId: message.id, text: spoken }
+    if (!outcome && message === answered) outcome = { kind: 'reply', messageId: message.id, text: spoken! }
     const got = outcome?.kind ?? 'ignore'
     if (expected.kind === 'any' ? got !== 'ignore' : got === expected.kind) {
       if (outcome?.kind === 'route' && expected.taskId && outcome.taskId !== expected.taskId) {
@@ -920,6 +929,9 @@ export async function runCoordinatorScenarios(input: {
   reps: number
   updates: Array<{ sessionId: string; update: any }>
   support: ProbeSupport
+  /** The coordinator setting's model, a substring of an offered id, and its effort, where the runtime's own default is not what runs it. */
+  model?: string
+  effort?: string
   onRun?: (run: CoordinatorRun) => void
 }): Promise<CoordinatorRun[]> {
   const { runtime, host, cwd, fixture, support } = input
@@ -956,6 +968,9 @@ export async function runCoordinatorScenarios(input: {
         // As the daemon runs a coordinator: in the runtime's read-only mode, without the tools that wait for an approver.
         const readOnly = readOnlyExtractionMode(host.permissionModeOptions(sessionId)?.modes ?? [])
         if (readOnly) await host.setSessionPermissionMode(sessionId, readOnly)
+        const model = input.model ? host.modelOptions()?.models.find((id) => id.includes(input.model!)) : undefined
+        if (model) await host.setSessionModel(sessionId, model)
+        if (input.effort) await host.setSessionEffort(sessionId, input.effort)
         // As the daemon opens a coordinator turn: its standing instructions, the work board, then the batch.
         const board = boardFor(scenario)
         const blocks = [
@@ -971,7 +986,9 @@ export async function runCoordinatorScenarios(input: {
       const ms = Date.now() - started
       const calls = fixture.calls(key)
       const sessionUpdates = input.updates.filter((entry) => entry.sessionId === sessionId)
-      const finalText = sessionUpdates
+      // A channel posts the text after the turn's last call, as the daemon keeps it; a webchat browser shows all of it (§4.3).
+      const lastCall = sessionUpdates.map((entry) => entry.update?.sessionUpdate).lastIndexOf('tool_call')
+      const finalText = (scenario.webchat ? sessionUpdates : sessionUpdates.slice(lastCall + 1))
         .filter(
           (entry) => entry.update?.sessionUpdate === 'agent_message_chunk' && entry.update?.content?.type === 'text'
         )

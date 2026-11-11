@@ -182,12 +182,12 @@ Approved proposals stay a kind of their own.
 
 ### 4.2 Four outcomes
 
-| Outcome                  | How                                                                                                                                               |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| (a) Hand to an open task | `messageTask {taskId, messageId}`: the message's thread is attached to that task, which answers there                                             |
-| (b) Open a new task      | `delegateTask {messageId, title}`: a new task opens for the message, with its thread attached                                                     |
-| (c) Ignore               | No call for the message                                                                                                                           |
-| (d) Reply directly       | `replyToMessage {messageId, message}`, posted in the message's thread as today. The thread stays unowned, so replies come back to the coordinator |
+| Outcome                  | How                                                                                                                                                                                              |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| (a) Hand to an open task | `messageTask {taskId, messageId}`: the message's thread is attached to that task, which answers there                                                                                            |
+| (b) Open a new task      | `delegateTask {messageId, title}`: a new task opens for the message, with its thread attached                                                                                                    |
+| (c) Ignore               | No call for the message, and no reply in the turn's text                                                                                                                                         |
+| (d) Reply directly       | The turn's final text, or `replyToMessage {messageId, message}` in a turn of several messages, posted in the message's thread. The thread stays unowned, so replies come back to the coordinator |
 
 (d) is for what needs no session of its own: greetings, thanks, a question about a task's status.
 
@@ -202,18 +202,25 @@ A batch holds one permission class, so the queue is cut in arrival order where t
 class differs, and every sender of a batch is asked on its turn
 ([assistant-mode.md](assistant-mode.md) §5.18 ③).
 
-Every outcome is a call that names its message, in a turn of one message as in a batch, whose final
-text could not be tied to one of its messages:
+A task outcome is a call that names its message; the coordinator's own reply is the turn's final
+text, or a call where the text could not be tied to one message:
 
-- (a) `messageTask`, (b) `delegateTask`, (d) `replyToMessage`, at most one per message.
-- A message with no call is ignored (c); no `AC_NO_RESPONSE` is needed.
-- The turn's final text is not posted; it is kept only in the coordinator's transcript. The prompt
-  says so, and the delivery boundary enforces it whatever the text says: prose, the sentinel, or
-  prose that ends in the sentinel. A report turn and a channel message turn alike post only through
-  their calls. A one-message turn once answered with its text; a model told its text is never shown
-  wrote its reasons there, and they were posted.
-- Webchat is the exception (§10): its browser shows the text as it streams, so there a one-message
-  turn's text is its reply.
+- (a) `messageTask`, (b) `delegateTask`, (d) `replyToMessage`, at most one call per message.
+- The final text, the text after the turn's last call, answers the message no call decided: the
+  turn's only message, a report included; in a batch the one person's message left without a call,
+  else the one of those that mentions the agent. It is posted where that message is answered. Text
+  the daemon cannot tie to one message is not posted, and neither is text after every message got
+  its call.
+- Text that is `AC_NO_RESPONSE`, or prose that ends in it on a line of its own, is silence, as in
+  any session (`packages/daemon/src/session/no-response.ts`). A message with no call and no reply
+  is ignored (c).
+- The coordinator reads only an attachment's name (§5.1), so its text never answers a person's
+  message that carries one; a mention among them takes the fallback of §4.5.
+- The prompt says the text is posted and asks for a reply, never reasons. The first prompt said the
+  text was shown to nobody while a one-message turn's text was posted, so a model wrote its reasons
+  there; for a time the daemon then posted no channel turn's text. A reply lands in its message's
+  thread, never at the channel root, so the text is posted again.
+- In webchat (§10) the browser shows the text as it streams and commits it with its turn.
 
 Ignoring is silent. The prompt forbids a reply that only says a message is not for the agent; the
 runtime matrix caught one model posting exactly that (§12).
@@ -233,8 +240,8 @@ morning all
 The id is the platform message id behind a `msg-` prefix. A bare Slack timestamp reads as a number,
 and some models pass it as one, which drops its trailing zeros (§12).
 
-A message that mentions the agent and has no outcome when the turn ends (a turn that answers it in
-text alone included) takes the fallback of §4.5: a task opens for it.
+A message that mentions the agent and has neither a call nor a reply in text when the turn ends
+takes the fallback of §4.5: a task opens for it.
 
 ### 4.4 Feedback
 
@@ -777,8 +784,8 @@ in the approved card's thread.
 
 - **Which places.** Where an approved proposal gets a home: a coordinator's room that is not one
   person's direct conversation. Every other place keeps §5.13's thread under the reply.
-- **What the daemon reads the reply for.** The `replyToMessage` that answers a getting-to-know
-  report is the round's reply, since a coordinator's turn text is never posted (§4.3). The cards
+- **What the daemon reads the reply for.** The post that answers a getting-to-know report, by the
+  turn's text or by `replyToMessage` (§4.3), is the round's reply. The cards
   still wait for it, so the introduction comes first, and its thread is still what the task's row
   shows (below).
 - **The card as a root in the console.** A card is no row of the conversation. When it becomes a
@@ -994,7 +1001,7 @@ already running takes the change on its next turn, with no `!new`.
     in the message's thread.
   - The coordinator's prompt names the place a console conversation its owner may share, with threads: a
     task answers in the message's thread, and the text the coordinator writes is shown as it writes
-    it, so it writes nothing but its calls and replies with `replyToMessage`.
+    it, so that text is its reply and holds nothing else.
   - It runs over the legacy webchat protocol; an AHP conversation stays an ordinary one for now.
 - New session opens an **ordinary webchat session** without the coordinator, as today.
 - Every task's page accepts messages (today it is read-only), for whoever may continue the parent,
@@ -1194,9 +1201,27 @@ without calling `listTasks` first. Over the 57 runs `claude-acp` called `listTas
 `codex-acp` 42 times, and each called `readTask` only in `elsewhere-read-task`; neither used a tool
 besides the coordinator tools other than `claude-acp`'s `ToolSearch`.
 
-The candidate prompt asks the coordinator to express every outcome as a call and to end its turn
-with `AC_NO_RESPONSE`. The runs above judged a one-message turn's text as its reply; since the daemon
-posts no channel turn's text (§4.3), the judge counts it for a webchat turn only.
+The candidate prompt asked the coordinator to express every outcome as a call and to end its turn
+with `AC_NO_RESPONSE`, and the runs above judged a one-message turn's text as its reply. The prompt
+now asks for the coordinator's own reply as the turn's text, and the judge ties the text after the
+turn's last call to a message as the daemon does (§4.3).
+
+On 2026-11-11 that prompt ran on `claude-acp` with Claude Haiku at low effort, a coordinator setting
+of §5.4 rather than the runtime's default (`AC_RUNTIME_MATRIX_COORDINATOR_MODEL` and
+`AC_RUNTIME_MATRIX_COORDINATOR_EFFORT`), 3 repetitions of every scenario; no other runtime was
+rerun. The prompt before it passed 60 / 63 there, and the new one 60 / 63: in both, the three
+degraded runs were `elsewhere-read-task`, answered from the task's summary without `readTask`. No
+turn posted its reasons: the 24 turns that ended in text other than the sentinel were replies to
+their one message (greetings, status answers, a relayed report), `ignore-chatter` and `ignore-peer`
+ended in the sentinel alone 6 / 6, and the batches replied by `replyToMessage`. A first wording
+passed 57 / 63: answering in text, the model skipped `listTasks` in `webchat-elsewhere-status` and
+answered from the board, without the pull request its summary names. The prompt now says the board
+only names tasks and a status answer comes from `listTasks`, after which that scenario passed 3 / 3.
+A one-message reply takes one call fewer, so a turn averaged 6.4 s where it took 8.0 s. Those runs
+had the role lines of #3978 and its `role-alert` scenario, since reverted; on the prompt without
+them the new form passed 58 / 60 (20 scenarios), the two degraded runs again `elsewhere-read-task`,
+`ignore-chatter` and `ignore-peer` silent 6 / 6, and a vague mention answered in text with a
+question back rather than a task.
 
 Two findings changed the design. A bare Slack timestamp as the message id was passed as a number by
 `qoder`, losing its trailing zeros, so ids carry a `msg-` prefix (§4.3). `github-copilot-cli` posted

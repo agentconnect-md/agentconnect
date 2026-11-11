@@ -2217,7 +2217,7 @@ export class Daemon {
     post: (agentId, integrationId, msg, text, taskLink) =>
       this.postCoordinatorReply(agentId, integrationId, msg, text, taskLink),
     reportAnswered: (key, thread) => {
-      // A coordinator's turn text is never posted, so this reply is the one its round's held cards go under.
+      // The coordinator's own answer to a getting-to-know report, by a call or its turn's text, is the reply its round's held cards go under.
       if (this.activeTurnCallMeta.get(key)?.gettingToKnowReport !== undefined && !this.roundReplies.has(key))
         this.roundReplies.set(key, thread)
     },
@@ -24212,6 +24212,9 @@ export class Daemon {
     // notice. Release before local metadata cleanup so even a cleanup exception
     // cannot strand the connection lease forever.
     releaseReplyConn()
+    // A coordinator's final text is its reply (auto-session-mode.md §4.3), posted before its round's cards so that they follow it; a turn startup replays posts nothing.
+    if (entry.coordinatorEnded === 'answered' && !this.retainsInboxRow(entry, false))
+      await this.coordinators.speak(key, agentId)
     // A getting-to-know task's report round: its held cards go under the reply it posted, else where the place's cards go (§5.13).
     if (callMeta?.gettingToKnowReport !== undefined) {
       const replyThread = p.reply.firstResponse ?? this.roundReplies.get(key)
@@ -26886,7 +26889,7 @@ export class Daemon {
       return
     }
     const isAnswerChunk = update?.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text'
-    // A coordinator turn's text after its last call, which only a browser that streamed it shows (auto-session-mode.md §4.3).
+    // A coordinator turn's text after its last call is its own reply to the message no call decided (auto-session-mode.md §4.3).
     if (isCoordinatorCoordinate(p.plan.sessionThread)) {
       if (isAnswerChunk) this.coordinators.turns.noteText(p.plan.sessionKey, String(update.content.text ?? ''))
       else if (update?.sessionUpdate === 'tool_call') this.coordinators.turns.noteToolCall(p.plan.sessionKey)
