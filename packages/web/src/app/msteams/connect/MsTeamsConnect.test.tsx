@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => {
     proceed: vi.fn(),
     agentBot: vi.fn(),
     request: vi.fn(),
+    start: vi.fn(),
     checkRequest: vi.fn(),
     fetchOrgs: vi.fn(),
     login: vi.fn(),
@@ -41,6 +42,7 @@ vi.mock('@/lib/api', () => ({
   continueMsTeamsConnect: mocks.proceed,
   createMsTeamsAgentBot: mocks.agentBot,
   requestMsTeamsAgentBot: mocks.request,
+  startMsTeamsConnect: mocks.start,
   checkMsTeamsAgentBotRequest: mocks.checkRequest,
   startMsTeamsRecovery: mocks.startRecovery
 }))
@@ -292,6 +294,19 @@ describe('MsTeamsConnect', () => {
     mocks.finish.mockRejectedValue(new mocks.FakeApiError('no', 409, 'MSTEAMS_TENANT_NOT_CONNECTED'))
     await land(`code=c&state=${STATE}`)
     expect(host.textContent).toContain('is not connected here yet')
+  })
+
+  it('starts again through the consent page when the tenant signed in to has not recorded it', async () => {
+    mocks.finish.mockRejectedValue(new mocks.FakeApiError('consent', 409, 'MSTEAMS_CONSENT_NEEDED'))
+    mocks.start.mockResolvedValue({ authorizeUrl: 'https://login.microsoftonline.com/organizations/v2.0/adminconsent' })
+    const assign = vi.spyOn(window.location, 'assign').mockImplementation(() => undefined)
+    try {
+      await land(`code=c&state=${STATE}`)
+      expect(mocks.start).toHaveBeenCalledWith('org-a', 'agent-a', undefined, false, true)
+      expect(assign).toHaveBeenCalledWith('https://login.microsoftonline.com/organizations/v2.0/adminconsent')
+    } finally {
+      assign.mockRestore()
+    }
   })
 
   it('names why a further agent’s bot was not created', async () => {

@@ -5738,12 +5738,15 @@ export async function startMsTeamsConnect(
   orgId: string,
   agentId: string,
   tenantId?: string,
-  member?: boolean
+  member?: boolean,
+  /** Ask the tenant-wide consent even where the organization's tenant recorded it. */
+  consent?: boolean
 ): Promise<{ authorizeUrl: string }> {
   return apiPost<{ authorizeUrl: string }>(`${orgBase(orgId)}/integrations/msteams/connect`, {
     agentId,
     ...(tenantId ? { tenantId } : {}),
-    ...(member ? { member: true } : {})
+    ...(member ? { member: true } : {}),
+    ...(consent ? { consent: true } : {})
   })
 }
 /** A member's request for an agent's own Teams bot, waiting for a Teams administrator to approve its package. */

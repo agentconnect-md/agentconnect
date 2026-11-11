@@ -15,6 +15,7 @@ import {
   finishMsTeamsConnect,
   installMsTeamsTeams,
   requestMsTeamsAgentBot,
+  startMsTeamsConnect,
   startMsTeamsRecovery,
   type MsTeamsAgentBotRequestDto,
   type MsTeamsConnectResultDto
@@ -31,6 +32,16 @@ export function msTeamsConnectOrgId(state: string | null): string | null {
   try {
     const parsed = JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/'))) as { orgId?: unknown }
     return typeof parsed.orgId === 'string' && parsed.orgId ? parsed.orgId : null
+  } catch {
+    return null
+  }
+}
+
+// The agent a signed state names, for a connect that has to start again.
+function msTeamsConnectAgentId(state: string): string | null {
+  try {
+    const parsed = JSON.parse(atob(state.split('.')[0]!.replace(/-/g, '+').replace(/_/g, '/'))) as { agentId?: unknown }
+    return typeof parsed.agentId === 'string' && parsed.agentId ? parsed.agentId : null
   } catch {
     return null
   }
@@ -165,7 +176,19 @@ export default function MsTeamsConnect() {
             })
         }
       } catch (e) {
-        if (!cancelled) fail(e)
+        if (cancelled) return
+        // The sign-in skipped the consent page, but this tenant has not recorded it: start again through it.
+        const agentId = msTeamsConnectAgentId(state)
+        if (e instanceof ApiError && e.code === 'MSTEAMS_CONSENT_NEEDED' && agentId) {
+          try {
+            window.location.assign((await startMsTeamsConnect(org, agentId, undefined, false, true)).authorizeUrl)
+            return
+          } catch (again) {
+            fail(again)
+            return
+          }
+        }
+        fail(e)
       }
     })()
     return () => {
