@@ -141,7 +141,12 @@ async function world(
     ledger: () => s.assistantDrafts,
     now: () => now,
     log: { info: vi.fn(), warn: vi.fn() },
-    agent: () => ({ name: 'Butler', assistantMode: policy, integrations: [{ id: INT }] }),
+    agent: () => ({
+      name: 'Butler',
+      iconUrl: 'https://cdn.example.test/butler.png',
+      assistantMode: policy,
+      integrations: [{ id: INT }]
+    }),
     gatewayFor: (id) => (id === INT ? (gateway as unknown as MessageGateway) : undefined),
     placeExternal: (_agent, _id, channel) => external.has(channel),
     cardPortFor: (id) => (id === INT ? (over.cardPort ?? port) : undefined),
@@ -542,6 +547,29 @@ describe('the membership lookup behind the approver', () => {
         })
       }
       expect(info.mock.calls).toEqual([[{ user: 'U0ALICE' }]])
+    } finally {
+      await conn.stop()
+    }
+  })
+})
+
+describe('the draft card identity', () => {
+  it('posts with the agent avatar', async () => {
+    const postMessage = vi.fn(async () => ({ ts: '1700000000.000100' }))
+    const conn = new SlackConnection(
+      { group: { appToken: 'xapp-1', botToken: 'xoxb-a', integrations: [] }, onMessage: () => {} } as never,
+      (opts) => {
+        const app = fakeSlackAppFactory({ teamId: 'T0EXAMPLE' })(opts)
+        return { ...app, client: { ...app.client, chat: { ...app.client.chat, postMessage } } } as never
+      }
+    )
+    await conn.start()
+    try {
+      const w = await world({ cardPort: slackDraftCardPort(conn, INT) })
+      await w.post()
+      expect(postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ username: 'Butler', icon_url: 'https://cdn.example.test/butler.png' })
+      )
     } finally {
       await conn.stop()
     }
