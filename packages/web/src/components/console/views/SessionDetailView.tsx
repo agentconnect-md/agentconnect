@@ -2987,13 +2987,14 @@ export default function SessionDetailView() {
       </div>
     )
   }
-  // The thread under the agent's own post at the root: its task's card and its replies line, on the agent's side.
-  const ownRootFooter = (rootId: string) => {
+  // The thread under the agent's own post at the root: its task's card inside the post's bubble, its replies line under it.
+  const ownRootFooter = (rootId: string, part: 'line' | 'card') => {
     const summary = threadSummaries.get(rootId)
-    if (!summary) return null
+    if (!summary || (part === 'card' && !summary.task)) return null
     return (
-      <div className="mt-[6px] flex w-full">
+      <div className={part === 'line' ? '-mt-[6px] flex w-full' : 'flex w-full'}>
         <RootThreadFooter
+          part={part}
           agentId={session.agentId ?? ''}
           parentSessionId={session.id}
           summary={summary}

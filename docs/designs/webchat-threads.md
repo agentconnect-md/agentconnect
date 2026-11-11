@@ -346,6 +346,10 @@ As implemented (PR 6):
 As implemented (PR 11):
 
 - **Time lines** between turns lead with the date for a turn not from today (`turnTimeLabel`).
+- **Every message has a bubble.** An agent's posts sit in the same neutral bubble as anyone else's
+  message on the left (`AGENT_BUBBLE`), under its name line and above any open work panel; its
+  cards and task cards sit inside the bubble at the bottom, and a thread's replies line sits under
+  the bubble, outside it. Which side a message is drawn on does not change.
 - **The roots view.** A webchat coordinator's page reads `session/history` with `view: 'roots'`
   (`useSessionTranscript`'s `rootsView`) and keeps each page's `threads` by root, the newest read
   winning; an open thread panel's own read updates its footer too. A 409 `DAEMON_FEATURE_MISSING`
@@ -408,7 +412,9 @@ As implemented (PR 10):
   text), then the holding task's card: its state, its title and, beneath in a
   lighter face, the task's own summary where it wrote one. On a root (`part`), the line stays under
   the person's bubble and the card is drawn on the left as the coordinator's message (`from`): its
-  mark, name and the task's state, over a card showing the task's summary alone. Hovering the
+  mark, name and the task's state, over a bubble holding a card showing the task's summary alone.
+  On the agent's own post at the root, the card sits at the bottom inside the post's bubble and
+  the line sits under the bubble, outside it. Hovering the
   card shows a toolbar on its top edge with Reply (opens the thread at its composer) and the task
   session's Share, the dialog its own page's header opens (`SessionShareButton`); a held thread's
   panel header offers the same Share. `footerOfSummary` builds it from a `SessionThreadSummaryDto`, and

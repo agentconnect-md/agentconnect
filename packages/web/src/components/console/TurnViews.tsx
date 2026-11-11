@@ -1,10 +1,10 @@
 'use client'
 
-import { type CSSProperties, type ReactNode } from 'react'
+import { Fragment, type CSSProperties, type ReactNode } from 'react'
 import Link from 'next/link'
 import { speaker, type Agent, type ElicitAnswerValue, type FillCardAnswer } from '@/lib/data'
 import { agentToneColor } from '@/lib/agent-tone'
-import { AGENT_PROSE, DELIVERED_BUBBLE, SELF_BUBBLE } from '@/components/console/transcript-bubbles'
+import { AGENT_BUBBLE, AGENT_PROSE, DELIVERED_BUBBLE, SELF_BUBBLE } from '@/components/console/transcript-bubbles'
 import { AgentTurnHeader } from '@/components/console/AgentTurnHeader'
 import { TurnApprovals } from '@/components/console/TurnApprovals'
 import { askedApprovalIds } from '@/components/console/approval-placement'
@@ -283,8 +283,8 @@ export function BotTurnView({
   openedTasks?: readonly TaskLink[]
   /** A task's card; without it a step linking a task reads as prose. */
   taskFooter?: (link: TaskLink, opened: boolean) => ReactNode
-  /** The footer of the thread under the agent's own post at the root; null where it has none. */
-  rootFooter?: (rootId: string) => ReactNode
+  /** The thread under the agent's own post at the root: its task's card inside the bubble, its replies line under it; null where it has none. */
+  rootFooter?: (rootId: string, part: 'line' | 'card') => ReactNode
   answerElicitation?:
     ((agentId: string | undefined, requestId: string | undefined, value: ElicitAnswerValue) => void) | undefined
   appRpc?:
@@ -335,6 +335,44 @@ export function BotTurnView({
       size={26}
     />
   )
+  // What the turn said fills one bubble; a post at a thread's root closes its bubble with the task's card, its replies line under it.
+  const bubbles: { key: string; items: ReactNode[]; after?: ReactNode }[] = []
+  let items: ReactNode[] = []
+  saidSteps.forEach((st, si) => {
+    items.push(
+      <SaidStep
+        key={`s:${si}`}
+        st={st}
+        si={si}
+        turn={turn}
+        sessionId={sessionId}
+        taskLink={taskLinks[si] ?? null}
+        taskFooter={taskFooter}
+        answerElicitation={answerElicitation}
+        appRpc={appRpc}
+        appReport={appReport}
+        closeApp={closeApp}
+        answerFill={answerFill}
+      />
+    )
+    const prose =
+      st.lane !== APP_LANE &&
+      !(st.lane === CAPABILITY_LANE && st.capability) &&
+      !(st.lane === FILL_LANE && st.fill) &&
+      st.lane !== ELICIT_LANE &&
+      !(taskLinks[si] && turn.agentId && taskFooter)
+    if (!prose || !st.rootId || !rootFooter) return
+    const card = rootFooter(st.rootId, 'card')
+    if (card) items.push(<Fragment key={`k:${si}`}>{card}</Fragment>)
+    bubbles.push({ key: `b:${si}`, items, after: rootFooter(st.rootId, 'line') })
+    items = []
+  })
+  // Tasks opened for the messages this turn answers sit at the bottom of its last bubble.
+  if (taskFooter)
+    for (const link of openedTasks ?? [])
+      if (!taskLinks.some((shown) => shown?.sessionId === link.sessionId))
+        items.push(<div key={`o:${link.sessionId}`}>{taskFooter(link, true)}</div>)
+  if (items.length > 0) bubbles.push({ key: 'b:end', items })
   return (
     <div className="group/turn flex items-start gap-2 desktop:gap-[10px]">
       {/* Only a turn whose agent is known links, never the owner fallback the icon may borrow. */}
@@ -392,101 +430,15 @@ export function BotTurnView({
           {planSteps.map((st, si) => (
             <PlanBlock key={`p:${si}`} step={st} />
           ))}
-          {/* One prose block per text step: a turn that answers in two chunks delivered two messages, so they stay apart. */}
-          {saidSteps.map((st, si) =>
-            st.lane === APP_LANE ? (
-              <div key={`a:${st.app?.appId ?? si}`}>
-                <McpAppRow
-                  step={st}
-                  sessionId={st.toolSessionId ?? sessionId}
-                  {...(appRpc ? { onRpc: (appId, rpc) => appRpc(turn.agentId, appId, rpc) } : {})}
-                  {...(appReport ? { onReport: (text: string) => appReport(turn.agentId, text) } : {})}
-                  {...(closeApp ? { onClose: (appId) => closeApp(turn.agentId, appId) } : {})}
-                />
+          {bubbles.map((bubble) => (
+            <Fragment key={bubble.key}>
+              <div className={AGENT_BUBBLE} data-agent-bubble="">
+                {bubble.items}
               </div>
-            ) : st.lane === CAPABILITY_LANE && st.capability ? (
-              <div key={`c:${st.capability.requestId}`}>
-                <CapabilityRequestCard body={st.capability} />
-              </div>
-            ) : st.lane === FILL_LANE && st.fill ? (
-              <div key={`f:${st.fill.requestId}`}>
-                <FillCard
-                  body={st.fill}
-                  {...(answerFill
-                    ? { onAnswer: (answer) => answerFill(turn.agentId, st.fill!.requestId, answer) }
-                    : {})}
-                />
-              </div>
-            ) : st.lane === ELICIT_LANE ? (
-              <div key={`e:${st.elicit?.requestId ?? si}`}>
-                <ElicitationCard
-                  step={st}
-                  {...(answerElicitation
-                    ? {
-                        onAnswer: (value: ElicitAnswerValue) =>
-                          answerElicitation(turn.agentId, st.elicit?.requestId, value)
-                      }
-                    : {})}
-                />
-              </div>
-            ) : taskLinks[si] && turn.agentId && taskFooter ? (
-              <div key={`t:${si}`}>{taskFooter(taskLinks[si], false)}</div>
-            ) : (
-              <div key={si} className={AGENT_PROSE} data-agent-prose="">
-                {st.sharedImage ? (
-                  <SharedImageCard
-                    {...(st.postId ? { postId: st.postId } : {})}
-                    image={st.sharedImage}
-                    {...(st.text ? { caption: st.text } : {})}
-                    {...(st.file ? { file: st.file } : {})}
-                    {...(turn.agentId ? { agentId: turn.agentId } : {})}
-                    {...(st.peerCopy ? {} : { sessionId: st.toolSessionId ?? sessionId })}
-                  />
-                ) : (
-                  <>
-                    {st.sessionMessage && <SessionMessageCaption facts={st.sessionMessage} />}
-                    {st.sessionMessage && st.text && (
-                      <DeliveredMessage facts={st.sessionMessage}>
-                        <div className="whitespace-pre-wrap">
-                          <MessageText text={st.text} platform={st.platform} />
-                        </div>
-                      </DeliveredMessage>
-                    )}
-                    {st.image && (
-                      <img
-                        src={`data:${st.image.mimeType};base64,${st.image.data}`}
-                        alt={st.image.name}
-                        className={`max-h-[360px] max-w-full rounded-md object-contain ${st.text ? 'mb-[10px]' : ''}`}
-                      />
-                    )}
-                    {st.text && !st.sessionMessage && (
-                      <div className="whitespace-pre-wrap">
-                        <MessageText text={st.text} platform={st.platform} />
-                      </div>
-                    )}
-                    {st.file && (
-                      <div className={st.text ? 'mt-2' : ''}>
-                        <SharedFileChip
-                          file={st.file}
-                          agentId={turn.agentId}
-                          sessionId={st.toolSessionId ?? sessionId}
-                        />
-                      </div>
-                    )}
-                    {st.sessionMessage && !st.text && <UserTurnDetails body={{ sessionMessage: st.sessionMessage }} />}
-                  </>
-                )}
-                <StepExtras step={st} sessionId={sessionId} />
-                {st.rootId && rootFooter ? rootFooter(st.rootId) : null}
-              </div>
-            )
-          )}
+              {bubble.after}
+            </Fragment>
+          ))}
           {trail}
-          {taskFooter
-            ? (openedTasks ?? [])
-                .filter((link) => !taskLinks.some((shown) => shown?.sessionId === link.sessionId))
-                .map((link) => <div key={`o:${link.sessionId}`}>{taskFooter(link, true)}</div>)
-            : null}
           {/* A tool call's approval closes the turn that asked it, after what the agent said before asking. */}
           <TurnApprovals turnKey={turn.key} asked={askedApprovalIds(turn.steps)} />
           {/* A phone has no hover: its Copy stays under the answer, in the inter-turn gap. */}
@@ -497,6 +449,112 @@ export function BotTurnView({
           )}
         </div>
       </div>
+    </div>
+  )
+}
+
+/** One said step as its block in the bubble: a card where it is one, else its prose. */
+function SaidStep({
+  st,
+  si,
+  turn,
+  sessionId,
+  taskLink,
+  taskFooter,
+  answerElicitation,
+  appRpc,
+  appReport,
+  closeApp,
+  answerFill
+}: {
+  st: FmtStep
+  si: number
+  turn: BotTurn
+  sessionId: string | undefined
+  taskLink: TaskLink | null
+  taskFooter: ((link: TaskLink, opened: boolean) => ReactNode) | undefined
+  answerElicitation: Parameters<typeof BotTurnView>[0]['answerElicitation']
+  appRpc: Parameters<typeof BotTurnView>[0]['appRpc']
+  appReport: Parameters<typeof BotTurnView>[0]['appReport']
+  closeApp: Parameters<typeof BotTurnView>[0]['closeApp']
+  answerFill: Parameters<typeof BotTurnView>[0]['answerFill']
+}) {
+  return st.lane === APP_LANE ? (
+    <div key={`a:${st.app?.appId ?? si}`}>
+      <McpAppRow
+        step={st}
+        sessionId={st.toolSessionId ?? sessionId}
+        {...(appRpc ? { onRpc: (appId, rpc) => appRpc(turn.agentId, appId, rpc) } : {})}
+        {...(appReport ? { onReport: (text: string) => appReport(turn.agentId, text) } : {})}
+        {...(closeApp ? { onClose: (appId) => closeApp(turn.agentId, appId) } : {})}
+      />
+    </div>
+  ) : st.lane === CAPABILITY_LANE && st.capability ? (
+    <div key={`c:${st.capability.requestId}`}>
+      <CapabilityRequestCard body={st.capability} />
+    </div>
+  ) : st.lane === FILL_LANE && st.fill ? (
+    <div key={`f:${st.fill.requestId}`}>
+      <FillCard
+        body={st.fill}
+        {...(answerFill ? { onAnswer: (answer) => answerFill(turn.agentId, st.fill!.requestId, answer) } : {})}
+      />
+    </div>
+  ) : st.lane === ELICIT_LANE ? (
+    <div key={`e:${st.elicit?.requestId ?? si}`}>
+      <ElicitationCard
+        step={st}
+        {...(answerElicitation
+          ? {
+              onAnswer: (value: ElicitAnswerValue) => answerElicitation(turn.agentId, st.elicit?.requestId, value)
+            }
+          : {})}
+      />
+    </div>
+  ) : taskLink && turn.agentId && taskFooter ? (
+    <div key={`t:${si}`}>{taskFooter(taskLink, false)}</div>
+  ) : (
+    <div key={si} className={AGENT_PROSE} data-agent-prose="">
+      {st.sharedImage ? (
+        <SharedImageCard
+          {...(st.postId ? { postId: st.postId } : {})}
+          image={st.sharedImage}
+          {...(st.text ? { caption: st.text } : {})}
+          {...(st.file ? { file: st.file } : {})}
+          {...(turn.agentId ? { agentId: turn.agentId } : {})}
+          {...(st.peerCopy ? {} : { sessionId: st.toolSessionId ?? sessionId })}
+        />
+      ) : (
+        <>
+          {st.sessionMessage && <SessionMessageCaption facts={st.sessionMessage} />}
+          {st.sessionMessage && st.text && (
+            <DeliveredMessage facts={st.sessionMessage}>
+              <div className="whitespace-pre-wrap">
+                <MessageText text={st.text} platform={st.platform} />
+              </div>
+            </DeliveredMessage>
+          )}
+          {st.image && (
+            <img
+              src={`data:${st.image.mimeType};base64,${st.image.data}`}
+              alt={st.image.name}
+              className={`max-h-[360px] max-w-full rounded-md object-contain ${st.text ? 'mb-[10px]' : ''}`}
+            />
+          )}
+          {st.text && !st.sessionMessage && (
+            <div className="whitespace-pre-wrap">
+              <MessageText text={st.text} platform={st.platform} />
+            </div>
+          )}
+          {st.file && (
+            <div className={st.text ? 'mt-2' : ''}>
+              <SharedFileChip file={st.file} agentId={turn.agentId} sessionId={st.toolSessionId ?? sessionId} />
+            </div>
+          )}
+          {st.sessionMessage && !st.text && <UserTurnDetails body={{ sessionMessage: st.sessionMessage }} />}
+        </>
+      )}
+      <StepExtras step={st} sessionId={sessionId} />
     </div>
   )
 }

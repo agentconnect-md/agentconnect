@@ -489,7 +489,13 @@ describe('a webchat coordinator’s main timeline (webchat-threads.md §6.1)', (
     await open()
     const footer = q(`[data-thread-footer="${LATER}"]`)
     expect(footer?.textContent).toContain('1 reply')
-    expect(footer?.querySelector('[data-task-card-open]')?.textContent).toContain('Check the findings')
+    // The task's card sits at the bottom of the post's bubble; the replies line is under the bubble, outside it.
+    const card = q(`[data-thread-card="${LATER}"]`)
+    expect(card?.querySelector('[data-task-card-open]')?.textContent).toContain('Check the findings')
+    const bubble = card?.closest('[data-agent-bubble]')
+    expect(bubble?.textContent).toContain('I will check the findings.')
+    expect(bubble?.contains(footer!)).toBe(false)
+    expect(bubble?.nextElementSibling?.contains(footer!)).toBe(true)
     // A post of the agent that holds no thread has no footer.
     expect(container?.querySelectorAll('[data-thread-footer]')).toHaveLength(1)
     await click(`[data-thread-footer="${LATER}"] [data-task-card-replies]`)
