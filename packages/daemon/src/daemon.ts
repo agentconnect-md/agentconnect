@@ -63,6 +63,7 @@ import {
   API_AHP_V1_FEATURE,
   API_DECISION_GATE_V1_FEATURE,
   API_GATE_EVALUATIONS_V1_FEATURE,
+  COORDINATOR_FILTER_EVALUATIONS_V1_FEATURE,
   AgentApiProtocol,
   MEMORY_ENTRIES_SEARCH_V1_FEATURE,
   MEMORY_ENTRIES_HISTORY_V1_FEATURE,
@@ -581,6 +582,10 @@ import {
 import { DREAM_TOPIC_RE } from './dream/dreamer.js'
 import { MEMORY_DISTILLATION_SYSTEM_PROMPT, readOnlyExtractionMode } from './memory/distill.js'
 import { coordinatorPermissionMode, coordinatorTarget } from './auto-session/coordinator-model.js'
+import {
+  CoordinatorFilterEvaluationReader,
+  coordinatorFilterEvaluationRecord
+} from './auto-session/coordinator-filter-evaluations.js'
 import {
   COORDINATOR_FILTER_QUESTION,
   coordinatorFilterAdmits,
@@ -2328,6 +2333,7 @@ export class Daemon {
   private readonly decisionEvaluations: DecisionEvaluationReader
   private readonly decisionModelEvaluations: DecisionModelEvaluationReader
   private readonly decisionApiGateEvaluations: DecisionApiGateEvaluationReader
+  private readonly coordinatorFilterEvaluations: CoordinatorFilterEvaluationReader
   private readonly decisionGate: DecisionGate
   /** The shared-bot router (message-intake.md §6), sharing the gate's lanes and provider budget. */
   private readonly decisionRouter: DecisionRouter
@@ -2924,6 +2930,10 @@ export class Daemon {
       servesAgent: (orgId, agentId) => this.servesAgent(agentId) && this.orgForAgent(agentId) === orgId
     })
     this.decisionApiGateEvaluations = new DecisionApiGateEvaluationReader({
+      store: () => this.store,
+      servesAgent: (orgId, agentId) => this.servesAgent(agentId) && this.orgForAgent(agentId) === orgId
+    })
+    this.coordinatorFilterEvaluations = new CoordinatorFilterEvaluationReader({
       store: () => this.store,
       servesAgent: (orgId, agentId) => this.servesAgent(agentId) && this.orgForAgent(agentId) === orgId
     })
@@ -9948,6 +9958,8 @@ export class Daemon {
       ...(this.cfg.features.ahp.mode === 'on' && this.ahp ? [API_AHP_V1_FEATURE] : []),
       // It records each API gate verdict and answers decision/api-gate-evaluations for the API row's Recent evaluations.
       API_GATE_EVALUATIONS_V1_FEATURE,
+      // It records each coordinator filter verdict and answers decision/coordinator-filter-evaluations.
+      ...(this.cfg.features.autoSessionMode ? [COORDINATOR_FILTER_EVALUATIONS_V1_FEATURE] : []),
       ...(this.opts.agentName ? [] : ['agent-move-v1', 'workspace-convert-v1', 'workspace-edit-v2']),
       'workspace-file-edit-v1',
       'workspace-file-delete-v1',
@@ -22213,11 +22225,39 @@ export class Daemon {
     try {
       const state = await this.sessionDecisionState(entry, agent, decision)
       if (!state) return true
+      const started = this.clock.now()
+      let rawRequest: string | undefined
+      let rawResponse: string | undefined
       const evaluation = await this.decisionEvaluator.evaluate(
-        { agentId: agent.id, evaluationId: randomUUID(), decision, state },
+        {
+          agentId: agent.id,
+          evaluationId: randomUUID(),
+          decision,
+          state,
+          onRawRequest: (text) => (rawRequest = text),
+          onRawResponse: (text) => (rawResponse = text)
+        },
         entry.initAbort.signal
       )
       const admits = coordinatorFilterAdmits(evaluation)
+      const at = this.clock.now()
+      // The console's Recent evaluations reads this record (§4.7); failing to write it never changes the verdict.
+      const record = coordinatorFilterEvaluationRecord({
+        filter,
+        messageId: entry.msg.msgId,
+        text: entry.msg.text,
+        sender: entry.msg.sender.id,
+        state,
+        evaluation,
+        admits,
+        latencyMs: Math.max(0, Math.round(at - started)),
+        ...(rawRequest !== undefined ? { rawRequest } : {}),
+        ...(rawResponse !== undefined ? { rawResponse } : {}),
+        at
+      })
+      await this.store
+        .saveCoordinatorFilterEvaluation(agent.id, entry.msg.msgId, record.summary, record.detail, at)
+        .catch((err) => this.log.warn(`coordinator filter: recording ${entry.msg.msgId} failed: ${formatErr(err)}`))
       const outcome =
         evaluation.status === 'answered' && evaluation.answer.type === 'boolean'
           ? `p=${evaluation.answer.probability.toFixed(2)}`
@@ -28447,6 +28487,7 @@ export class Daemon {
       await this.store.stripDecisionVerdictBodies(this.clock.now()).catch(() => undefined)
       await this.store.stripDecisionModelEvaluationBodies(this.clock.now()).catch(() => undefined)
       await this.store.stripDecisionApiGateEvaluationBodies(this.clock.now()).catch(() => undefined)
+      await this.store.stripCoordinatorFilterEvaluationBodies(this.clock.now()).catch(() => undefined)
       // Expiry is enforced at the click; this pass retires the expired drafts' cards (assistant-mode.md §5.5).
       await this.drafts.sweep([...this.agents.keys()]).catch(() => undefined)
       if (!this.draining) this.armStoreRetentionSweep()
@@ -31509,6 +31550,7 @@ export class Daemon {
       decisionEvaluations: () => this.decisionEvaluations,
       decisionModelEvaluations: () => this.decisionModelEvaluations,
       decisionApiGateEvaluations: () => this.decisionApiGateEvaluations,
+      coordinatorFilterEvaluations: () => this.coordinatorFilterEvaluations,
       runtimeCommands: () => this.runtimeCommands,
       memoryHomePortsFor: (agentId) => this.memoryHomePortsFor(agentId),
       wakeMemoryOutbox: () => this.memoryOutbox?.wake(),

@@ -201,6 +201,35 @@ export const DecisionModelEvaluationReply = z
   })
 export type DecisionModelEvaluationReply = z.infer<typeof DecisionModelEvaluationReply>
 
+// The peer records each coordinator filter verdict and answers decision/coordinator-filter-evaluation(s) (auto-session-mode.md §4.7).
+export const COORDINATOR_FILTER_EVALUATIONS_V1_FEATURE = 'coordinator-filter-evaluations-v1'
+// A filter verdict's `decisionId`: the filter asks the daemon's own question, not a saved Decision.
+export const COORDINATOR_FILTER_DECISION_ID = 'coordinator-filter'
+
+export const CoordinatorFilterEvaluationsRequest = z.strictObject({
+  agentId: z.string().uuid(),
+  cursor: z.number().int().positive().optional(),
+  limit: z.number().int().min(1).max(50).default(20)
+})
+export type CoordinatorFilterEvaluationsRequest = z.infer<typeof CoordinatorFilterEvaluationsRequest>
+export type CoordinatorFilterEvaluationsRequestInput = z.input<typeof CoordinatorFilterEvaluationsRequest>
+export const CoordinatorFilterEvaluationsReply = DecisionEvaluationRecordPage.refine(
+  (page) => encodedBytes(page) <= DECISION_LIST_MAX_BYTES,
+  { message: 'The evaluation page must fit within 32 KiB.' }
+)
+export type CoordinatorFilterEvaluationsReply = z.infer<typeof CoordinatorFilterEvaluationsReply>
+export const CoordinatorFilterEvaluationRequest = z.strictObject({
+  agentId: z.string().uuid(),
+  seq: z.number().int().positive()
+})
+export type CoordinatorFilterEvaluationRequest = z.infer<typeof CoordinatorFilterEvaluationRequest>
+export const CoordinatorFilterEvaluationReply = z
+  .strictObject({ evaluation: DecisionEvaluationRecordDetail.nullable() })
+  .refine((reply) => encodedBytes(reply) <= DECISION_EVALUATION_DETAIL_MAX_BYTES, {
+    message: 'The evaluation detail must fit within 64 KiB.'
+  })
+export type CoordinatorFilterEvaluationReply = z.infer<typeof CoordinatorFilterEvaluationReply>
+
 // A bot's router verdicts across the channels the CP may read; the lane is the served member, the subject `router:<botId>`.
 const RoutingLane = {
   agentId: z.string().uuid(),

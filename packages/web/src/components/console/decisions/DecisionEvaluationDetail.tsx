@@ -72,8 +72,10 @@ export function DecisionEvaluationDetail({
   const detail = data ?? null
   const expired = record?.detailsExpired === true
   const snapshot = detail?.snapshot ?? null
+  // A lane with a fixed question states its own condition, and its outcome says whether the message went through.
+  const fixed = source.fixedDecision
   const rootMatch =
-    snapshot && detail?.fullAnswer
+    !fixed && snapshot && detail?.fullAnswer
       ? matchDecisionCondition(snapshot.question, snapshot.condition, detail.fullAnswer)
       : null
   const { index: stepIndex, step, selector } = useChainStep(seq, detail?.chain, detail?.steps)
@@ -119,7 +121,13 @@ export function DecisionEvaluationDetail({
           <Row label={t('evaluations.detail.outcome')} value={<OutcomeBadge record={record} />} />
           <Row
             label={t('evaluations.detail.triggerWhen')}
-            value={snapshot ? conditionSummary(snapshot.question, snapshot.condition, words) : '—'}
+            value={
+              fixed
+                ? fixed.triggerWhen
+                : snapshot
+                  ? conditionSummary(snapshot.question, snapshot.condition, words)
+                  : '—'
+            }
           />
           <Row label={t('evaluations.detail.model')} value={modelLine(record.requestedModel, record.actualModel)} />
           <Row label={t('evaluations.columns.latency')} value={latencyText(record.latencyMs) ?? '—'} />
@@ -136,7 +144,7 @@ export function DecisionEvaluationDetail({
           question={snapshot?.question ?? null}
           answer={detail?.fullAnswer ?? null}
           summary={record.answer}
-          condition={snapshot?.condition ?? null}
+          condition={fixed ? null : (snapshot?.condition ?? null)}
           matchedKeys={rootMatch?.matchedKeys ?? record.matchedKeys}
           matched={rootMatch?.matched ?? record.outcome === 'triggered'}
           requestedModel={record.requestedModel}

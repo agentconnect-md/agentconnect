@@ -150,7 +150,11 @@ import {
   DecisionRoutingEvaluationsRequest,
   DecisionRoutingEvaluationsReply,
   DecisionRoutingEvaluationRequest,
-  DecisionRoutingEvaluationReply
+  DecisionRoutingEvaluationReply,
+  CoordinatorFilterEvaluationsRequest,
+  CoordinatorFilterEvaluationsReply,
+  CoordinatorFilterEvaluationRequest,
+  CoordinatorFilterEvaluationReply
 } from './frames/decision.js'
 import {
   ApiGateEvaluationsRequest,
@@ -513,6 +517,10 @@ export const FRAME_SCHEMAS = {
   'decision/api-gate-evaluations/page': ApiGateEvaluationsReply,
   'decision/api-gate-evaluation': ApiGateEvaluationRequest,
   'decision/api-gate-evaluation/result': ApiGateEvaluationReply,
+  'decision/coordinator-filter-evaluations': CoordinatorFilterEvaluationsRequest,
+  'decision/coordinator-filter-evaluations/page': CoordinatorFilterEvaluationsReply,
+  'decision/coordinator-filter-evaluation': CoordinatorFilterEvaluationRequest,
+  'decision/coordinator-filter-evaluation/result': CoordinatorFilterEvaluationReply,
   'decision/routing-evaluations': DecisionRoutingEvaluationsRequest,
   'decision/routing-evaluations/page': DecisionRoutingEvaluationsReply,
   'decision/routing-evaluation': DecisionRoutingEvaluationRequest,

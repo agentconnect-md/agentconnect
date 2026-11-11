@@ -373,4 +373,66 @@ describe('DecisionEvaluationsDrawer', () => {
     await render(api, () => {}, undefined, offline)
     expect(drawer().textContent).toContain("evaluates this repository's routing is not connected")
   })
+
+  // auto-session-mode.md §4.7: the coordinator filter asks its own question, so the lane names it and states its threshold.
+  it('names the coordinator filter and its threshold rather than a saved Decision', async () => {
+    const api = decisionMock.createDecisionMockApi()
+    const record = {
+      seq: 3,
+      at: '2026-11-11T08:00:00.000Z',
+      messageId: 'slack:C1:1.1',
+      title: 'lunch anyone?',
+      decisionId: 'coordinator-filter',
+      outcome: 'skipped' as const,
+      reason: null,
+      answer: { type: 'boolean' as const, value: false, probability: 0.05 },
+      matchedKeys: [],
+      latencyMs: 42,
+      requestedModel: 'jev-1.13.0',
+      actualModel: 'jev-1.13.0',
+      usage: { inputTokens: 1, outputTokens: 1 },
+      detailsExpired: false
+    }
+    const source: DecisionEvaluationSource = {
+      lane: 'coordinator_filter',
+      key: ['test', 'org-test', 'coordinator-filter', 'a1'],
+      list: async () => ({ items: [record], nextCursor: null }),
+      get: async () => ({
+        ...record,
+        snapshot: {
+          decisionId: 'coordinator-filter',
+          providerId: 'typesafe',
+          model: 'jev-1.13.0',
+          question: {
+            type: 'boolean',
+            instructions: 'Should the agent get involved?',
+            criteria: { true: 'Yes', false: 'No' }
+          },
+          condition: { type: 'boolean', values: [true] },
+          sessionMode: 'auto'
+        },
+        input: null,
+        fullAnswer: { type: 'boolean', value: false, probability: 0.05 },
+        evidence: null
+      }),
+      fixedDecision: { name: 'Coordinator filter', triggerWhen: 'Reaches the coordinator unless Yes is below 25%' }
+    }
+    await render(api, () => {}, undefined, source)
+    expect(rows()).toHaveLength(1)
+    expect(rows()[0]!.textContent).toContain('lunch anyone?')
+    expect(rows()[0]!.textContent).toContain('Coordinator filter')
+    expect(drawer().textContent).toContain('20 most recent evaluations of this agent')
+    await click(rows()[0])
+    expect(detail()!.textContent).toContain('Reaches the coordinator unless Yes is below 25%')
+    expect(detail()!.textContent).toContain('Should the agent get involved?')
+    await act(async () => root?.unmount())
+    container?.remove()
+
+    await render(api, () => {}, undefined, {
+      ...source,
+      key: ['test', 'org-test', 'coordinator-filter', 'a2'],
+      list: async () => ({ items: [], nextCursor: null })
+    })
+    expect(drawer().textContent).toContain('Messages the filter judged appear here')
+  })
 })

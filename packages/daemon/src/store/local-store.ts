@@ -800,6 +800,7 @@ export interface DecisionModelEvaluationRow {
 }
 
 export type DecisionApiGateEvaluationRow = DecisionModelEvaluationRow
+export type CoordinatorFilterEvaluationRow = DecisionModelEvaluationRow
 
 /** The step-1 row a delivery was recorded at (message-intake.md §3): the verdict's position. */
 export interface ChannelRecordRef {
@@ -1367,6 +1368,18 @@ const DECISION_SCHEMA = `
       );
       CREATE INDEX IF NOT EXISTS decision_api_gate_evaluation_lane ON decision_api_gate_evaluation (orgId, agentId, protocol, seq);
       CREATE INDEX IF NOT EXISTS decision_api_gate_evaluation_decision ON decision_api_gate_evaluation (orgId, agentId, protocol, decisionId, seq);
+      CREATE TABLE IF NOT EXISTS coordinator_filter_evaluation (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        orgId TEXT NOT NULL,
+        agentId TEXT NOT NULL,
+        messageId TEXT NOT NULL,
+        createdAt INTEGER NOT NULL,
+        summaryJson TEXT NOT NULL,
+        detailJson TEXT,
+        bodiesStrippedAt INTEGER,
+        UNIQUE (agentId, messageId)
+      );
+      CREATE INDEX IF NOT EXISTS coordinator_filter_evaluation_agent ON coordinator_filter_evaluation (orgId, agentId, seq);
       CREATE TABLE IF NOT EXISTS decision_release (
         orgId TEXT NOT NULL,
         channel TEXT NOT NULL,
@@ -1413,7 +1426,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 79
+export const SCHEMA_VERSION = 80
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -2185,7 +2198,21 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
   async (db, store) => {
     await addColumn(db, store.postgres, 'assistant_draft', 'cardThread', 'TEXT')
     await addColumn(db, store.postgres, 'assistant_subsession', 'shownThread', 'TEXT')
-  }
+  },
+  // v80 records each coordinator filter verdict (auto-session-mode.md §4.7).
+  async (db) =>
+    await db.exec(`CREATE TABLE IF NOT EXISTS coordinator_filter_evaluation (
+      seq INTEGER PRIMARY KEY AUTOINCREMENT,
+      orgId TEXT NOT NULL,
+      agentId TEXT NOT NULL,
+      messageId TEXT NOT NULL,
+      createdAt INTEGER NOT NULL,
+      summaryJson TEXT NOT NULL,
+      detailJson TEXT,
+      bodiesStrippedAt INTEGER,
+      UNIQUE (agentId, messageId)
+    );
+    CREATE INDEX IF NOT EXISTS coordinator_filter_evaluation_agent ON coordinator_filter_evaluation (orgId, agentId, seq);`)
 ]
 
 /** Tasks gain when they closed, the message they were opened for, what they opened and a getting-to-know task's marker; an ended watch task counts as closed when it last changed. */
@@ -8448,6 +8475,83 @@ export class LocalStore {
           WHERE newer.orgId = decision_model_evaluation.orgId
             AND newer.agentId = decision_model_evaluation.agentId
             AND newer.seq > decision_model_evaluation.seq) >= @kept)`
+      )
+      .run({
+        now,
+        cutoff: now - DECISION_BODY_RETENTION_MS,
+        kept: DECISION_BODY_RETAINED_VERDICTS
+      })
+    return Number(result.changes)
+  }
+
+  /** One coordinator filter verdict on a message (auto-session-mode.md §4.7); a replayed message keeps its first record. */
+  async saveCoordinatorFilterEvaluation(
+    agentId: string,
+    messageId: string,
+    summary: Omit<DecisionEvaluationRecord, 'seq' | 'title' | 'detailsExpired'>,
+    detail: Pick<DecisionEvaluationRecordDetail, 'snapshot' | 'input' | 'fullAnswer' | 'rawRequest' | 'rawResponse'>,
+    now: number
+  ): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT OR IGNORE INTO coordinator_filter_evaluation
+      (orgId, agentId, messageId, createdAt, summaryJson, detailJson)
+      VALUES (?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        this.orgForRead(agentId, undefined),
+        agentId,
+        messageId,
+        now,
+        JSON.stringify(summary),
+        JSON.stringify(detail)
+      )
+  }
+
+  async listCoordinatorFilterEvaluations(
+    orgId: string,
+    agentId: string,
+    before: number | undefined,
+    limit: number
+  ): Promise<CoordinatorFilterEvaluationRow[]> {
+    return (await this.db
+      .prepare(
+        `SELECT seq, summaryJson, detailJson, bodiesStrippedAt
+      FROM coordinator_filter_evaluation WHERE orgId = ? AND agentId = ? AND seq < ?
+      ORDER BY seq DESC LIMIT ?`
+      )
+      .all(
+        this.orgForRead(agentId, orgId),
+        agentId,
+        before ?? Number.MAX_SAFE_INTEGER,
+        limit
+      )) as CoordinatorFilterEvaluationRow[]
+  }
+
+  async getCoordinatorFilterEvaluation(
+    orgId: string,
+    agentId: string,
+    seq: number
+  ): Promise<CoordinatorFilterEvaluationRow | undefined> {
+    return (await this.db
+      .prepare(
+        `SELECT seq, summaryJson, detailJson, bodiesStrippedAt
+      FROM coordinator_filter_evaluation WHERE orgId = ? AND agentId = ? AND seq = ?`
+      )
+      .get(this.orgForRead(agentId, orgId), agentId, seq)) as CoordinatorFilterEvaluationRow | undefined
+  }
+
+  /** A verdict's input and provider bodies go after a day or 20 newer verdicts of the same agent; its summary stays for retention. */
+  async stripCoordinatorFilterEvaluationBodies(now: number): Promise<number> {
+    const result = await this.db
+      .prepare(
+        `UPDATE coordinator_filter_evaluation
+      SET detailJson = NULL, bodiesStrippedAt = @now
+      WHERE detailJson IS NOT NULL AND (createdAt < @cutoff OR
+        (SELECT COUNT(*) FROM coordinator_filter_evaluation newer
+          WHERE newer.orgId = coordinator_filter_evaluation.orgId
+            AND newer.agentId = coordinator_filter_evaluation.agentId
+            AND newer.seq > coordinator_filter_evaluation.seq) >= @kept)`
       )
       .run({
         now,

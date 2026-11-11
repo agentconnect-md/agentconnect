@@ -1,4 +1,4 @@
-// Where a Recent evaluations drawer reads from: a gated conversation, a code-host routing scope (code-host-decisions.md §7), or an agent's chat API gate.
+// Where a Recent evaluations drawer reads from: a gated conversation, a code-host routing scope (code-host-decisions.md §7), an agent's chat API gate, or its coordinator filter.
 
 import type { DecisionEvaluationRecordDetail, DecisionEvaluationRecordPage } from '@agentconnect.md/protocol/decision'
 import type { DecisionApi, DecisionConversationRef } from '@agentconnect.md/protocol/decision-api'
@@ -7,17 +7,21 @@ import {
   fetchAgentApiGateEvaluations,
   fetchCodeHostRoutingEvaluation,
   fetchCodeHostRoutingEvaluations,
+  fetchCoordinatorFilterEvaluation,
+  fetchCoordinatorFilterEvaluations,
   type AgentApiProtocol,
   type CodeHostRoutingKey
 } from '@/lib/api'
 
 export interface DecisionEvaluationSource {
   /** Which surface the lane belongs to, so the drawer words its empty and unavailable states. */
-  lane: 'conversation' | 'code_host' | 'api'
+  lane: 'conversation' | 'code_host' | 'api' | 'coordinator_filter'
   /** SWR identity of the lane, organization and API mode included. */
   key: readonly string[]
   list(page: { cursor?: number; limit?: number; decisionId?: string }): Promise<DecisionEvaluationRecordPage>
   get(seq: number): Promise<DecisionEvaluationRecordDetail>
+  /** A lane that asks the daemon's own question rather than a saved Decision names it and its condition itself. */
+  fixedDecision?: { name: string; triggerWhen: string }
 }
 
 export function conversationEvaluations(
@@ -82,5 +86,27 @@ export function tryEvaluation(
     key: ['try', lane, detail.at, String(detail.latencyMs)],
     list: async () => ({ items: [], nextCursor: null }),
     get: async () => detail
+  }
+}
+
+// The mock API has no coordinator filter, so its lane is empty there.
+export function coordinatorFilterEvaluations(
+  api: DecisionApi,
+  orgId: string,
+  agentId: string,
+  fixedDecision: { name: string; triggerWhen: string }
+): DecisionEvaluationSource {
+  return {
+    lane: 'coordinator_filter',
+    key: [api.mode, orgId, 'coordinator-filter', agentId],
+    list: (page) =>
+      api.mode === 'mock'
+        ? Promise.resolve({ items: [], nextCursor: null })
+        : fetchCoordinatorFilterEvaluations(agentId, { cursor: page.cursor, limit: page.limit }, orgId),
+    get: (seq) =>
+      api.mode === 'mock'
+        ? Promise.reject(new Error('evaluation not found'))
+        : fetchCoordinatorFilterEvaluation(agentId, seq, orgId),
+    fixedDecision
   }
 }

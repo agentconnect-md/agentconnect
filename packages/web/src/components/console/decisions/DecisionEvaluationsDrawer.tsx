@@ -54,11 +54,18 @@ export function DecisionEvaluationsDrawer({
     [givenSource, api, orgId, integrationId, channelId]
   )
   const copy =
-    source.lane === 'code_host' ? 'evaluations.codeHost' : source.lane === 'api' ? 'evaluations.api' : 'evaluations'
+    source.lane === 'code_host'
+      ? 'evaluations.codeHost'
+      : source.lane === 'api'
+        ? 'evaluations.api'
+        : source.lane === 'coordinator_filter'
+          ? 'evaluations.coordinatorFilter'
+          : 'evaluations'
   const words = { yes: t('condition.yes'), no: t('condition.no') }
+  const fixedName = source.fixedDecision?.name
   const decisionName = useCallback(
-    (id: string) => decisions.find((entry) => entry.id === id)?.name ?? t('binding.hiddenDecision'),
-    [decisions, t]
+    (id: string) => fixedName ?? decisions.find((entry) => entry.id === id)?.name ?? t('binding.hiddenDecision'),
+    [fixedName, decisions, t]
   )
   const { data, error, isLoading, mutate } = useSWR(['decision-evaluations', ...source.key, decisionId], () =>
     source.list({ limit: PAGE, ...(decisionId ? { decisionId } : {}) })
@@ -178,7 +185,13 @@ export function DecisionEvaluationsDrawer({
         )}
         <div className="px-[18px] py-3">
           <span className="font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-            {t(source.lane === 'api' ? 'evaluations.api.retention' : 'evaluations.retention')}
+            {t(
+              source.lane === 'api'
+                ? 'evaluations.api.retention'
+                : source.lane === 'coordinator_filter'
+                  ? 'evaluations.coordinatorFilter.retention'
+                  : 'evaluations.retention'
+            )}
           </span>
         </div>
       </>

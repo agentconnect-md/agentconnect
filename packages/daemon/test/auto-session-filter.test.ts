@@ -154,6 +154,29 @@ describe('a coordinator with a filter', () => {
     expect(batch()).toContain('id="msg-1.4"')
     expect(prompts.some((prompt) => prompt.includes('msg-1.2') || prompt.includes('chatter about lunch'))).toBe(false)
     expect(asked).toEqual(['can someone look at the deploy', 'chatter about lunch', 'outage while asking'])
+    // Each verdict is recorded for the console's Recent evaluations, newest first; the mention was never asked.
+    const rows = await d.store.listCoordinatorFilterEvaluations('', 'bot-a', undefined, 10)
+    const summaries = rows.map((row: { summaryJson: string }) => JSON.parse(row.summaryJson))
+    expect(
+      summaries.map((one: { messageId: string; outcome: string; title: string }) => [
+        one.messageId,
+        one.outcome,
+        one.title
+      ])
+    ).toEqual([
+      ['slack:C1:1.4', 'unavailable', 'outage while asking'],
+      ['slack:C1:1.2', 'skipped', 'chatter about lunch'],
+      ['slack:C1:1.1', 'triggered', 'can someone look at the deploy']
+    ])
+    expect(summaries[1]).toMatchObject({ decisionId: 'coordinator-filter', answer: { type: 'boolean', value: false } })
+    expect(summaries[0]).toMatchObject({ reason: 'provider', answer: null })
+    const detail = JSON.parse(rows[1].detailJson)
+    expect(detail.snapshot).toMatchObject({
+      providerId: 'typesafe',
+      model: 'jev-1.13.0',
+      question: COORDINATOR_FILTER_QUESTION
+    })
+    expect(detail.input.currentMessage.text).toBe('chatter about lunch')
     await daemon.stop()
   })
 

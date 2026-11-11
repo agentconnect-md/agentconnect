@@ -2,6 +2,7 @@ import type { DecisionEvaluationReader } from '../decisions/evaluations.js'
 import type { ComputerPool } from '../k8s/computer-pool.js'
 import type { DecisionModelEvaluationReader } from '../decisions/model-evaluations.js'
 import type { DecisionApiGateEvaluationReader } from '../decisions/api-gate-evaluations.js'
+import type { CoordinatorFilterEvaluationReader } from '../auto-session/coordinator-filter-evaluations.js'
 import type { DecisionEvaluator } from '../decisions/evaluator.js'
 import { createMemoryEntriesWriter, createMemoryEntriesReader } from './memory-entries.js'
 import type { MemoryProvider } from '../memory/provider.js'
@@ -177,6 +178,7 @@ export interface CpClientSeamHost {
   decisionEvaluations(): DecisionEvaluationReader
   decisionModelEvaluations(): DecisionModelEvaluationReader
   decisionApiGateEvaluations(): DecisionApiGateEvaluationReader
+  coordinatorFilterEvaluations(): CoordinatorFilterEvaluationReader
   configApply(): ConfigApply
   store(): LocalStore
   agents(): ReadonlyMap<string, LoadedAgent>
@@ -544,6 +546,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     decisionEvaluations: host.decisionEvaluations(),
     decisionModelEvaluations: host.decisionModelEvaluations(),
     decisionApiGateEvaluations: host.decisionApiGateEvaluations(),
+    coordinatorFilterEvaluations: host.coordinatorFilterEvaluations(),
     localSkillsReader: createLocalSkillsReader(
       host.workspaces(),
       // The workspace root in EXECUTION coordinates, like the file reader's: the skill roots the

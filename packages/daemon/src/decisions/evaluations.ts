@@ -182,7 +182,12 @@ function entryOf(value: unknown): DecisionEvaluationEntry | undefined {
 }
 
 function inputOf(row: DecisionVerdictRow): DecisionEvaluationRecordDetail['input'] {
-  const state = record(parseJson(row.inputJson))
+  return evaluationInputOf(parseJson(row.inputJson))
+}
+
+/** The state a Decision was asked about, in the shape Recent evaluations shows; null when it names no current message. */
+export function evaluationInputOf(value: unknown): DecisionEvaluationRecordDetail['input'] {
+  const state = record(value)
   const currentMessage = entryOf(state?.currentMessage)
   if (!currentMessage) return null
   const all = (Array.isArray(state?.history) ? state.history : []).flatMap((entry) => entryOf(entry) ?? [])
