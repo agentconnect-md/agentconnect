@@ -2440,7 +2440,10 @@ function AgentDetail() {
                       entries={apiEntries}
                       mobile
                       divided={agentInts.length + agentHooks.length > 0}
-                      onChanged={() => void mutateApiEntries()}
+                      onChanged={() => {
+                        void mutateApiEntries()
+                        void refresh()
+                      }}
                     />
                   )}
                 </div>
@@ -3203,7 +3206,10 @@ function AgentDetail() {
                       agent={da}
                       entries={apiEntries}
                       mobile={false}
-                      onChanged={() => void mutateApiEntries()}
+                      onChanged={() => {
+                        void mutateApiEntries()
+                        void refresh()
+                      }}
                     />
                   )}
                 </div>

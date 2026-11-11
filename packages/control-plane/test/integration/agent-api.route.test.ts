@@ -67,6 +67,24 @@ describe('agent chat APIs', () => {
     }
   )
 
+  it('the agents list and a single read carry each agent’s API marks', async () => {
+    const bare = 'b7b7b7b7-bbbb-4bbb-8bbb-b7b7b7b7b7b7'
+    await seedAgent(prisma, AGENT)
+    await seedAgent(prisma, bare)
+    const a = open()
+    await add(a, 'ai-sdk-ui')
+    await add(a, 'ahp')
+
+    const rows = (await a.app.inject({ method: 'GET', url: `${ORG}/agents` })).json() as Array<{
+      id: string
+      apiProtocols: string[]
+    }>
+    expect(rows.find((r) => r.id === AGENT)?.apiProtocols).toEqual(['ai-sdk-ui', 'ahp'])
+    expect(rows.find((r) => r.id === bare)?.apiProtocols).toEqual([])
+    const one = await a.app.inject({ method: 'GET', url: `${ORG}/agents/${AGENT}` })
+    expect((one.json() as { apiProtocols: string[] }).apiProtocols).toEqual(['ai-sdk-ui', 'ahp'])
+  })
+
   it('rejects an unknown protocol and an unknown agent', async () => {
     await seedAgent(prisma, AGENT)
     const a = open()

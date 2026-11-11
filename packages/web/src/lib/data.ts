@@ -32,6 +32,7 @@ import {
 } from '@agentconnect.md/protocol/code-host'
 import { CODE_HOST_PROJECTION } from './code-hosts'
 import type {
+  AgentApiProtocol,
   AssistantModePolicy,
   ChatActions,
   DaemonLifecyclePhase,
@@ -716,6 +717,8 @@ export interface Agent {
   integrations: Integration[]
   /** Distinct kinds of enabled inbound triggers (hooks) — list-view marks. */
   hookKinds?: HookKind[]
+  /** The chat APIs it accepts calls on — one API mark in the list. */
+  apiProtocols?: AgentApiProtocol[]
   workspace: Workspace
 }
 

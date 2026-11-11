@@ -391,7 +391,7 @@ function toDto(
   a: AgentRecord,
   ctx: ViewCtx,
   secretKeys: string[],
-  hookKinds: AgentDtoT['hookKinds'],
+  marks: IntegrationMarks,
   iconBases: IconUrlBases,
   placementView: PlacementView,
   // Organization entries assigned to THIS agent. Metadata only: variable values
@@ -475,8 +475,15 @@ function toDto(
     githubAppId: a.githubAppId ?? null,
     execution: a.execution,
     strategies: placementView.strategies,
-    hookKinds
+    hookKinds: marks.hookKinds,
+    apiProtocols: marks.apiProtocols
   }
+}
+
+/** What the list's integrations cell marks beside the agent's bot integrations. */
+interface IntegrationMarks {
+  hookKinds: AgentDtoT['hookKinds']
+  apiProtocols: AgentDtoT['apiProtocols']
 }
 
 /** One placement resolution supplies its display name, strategy table, and readiness. */
@@ -559,10 +566,16 @@ async function placementViewFor(deps: HttpDeps, a: AgentRecord, setMembers?: Dae
   return { ...view, holderDaemonId: await deps.placementResolver.routableDaemon(a) }
 }
 
-/** The dto's hook-kind marks for ONE agent (single-agent reads/writes). */
-async function hookKindsOf(deps: HttpDeps, agentId: string): Promise<AgentDtoT['hookKinds']> {
-  const hooks = await deps.repos.hook.listForAgent(AgentId(agentId))
-  return [...new Set(hooks.filter((h) => h.enabled).map((h) => h.kind))]
+/** The dto's hook-kind and API marks for ONE agent (single-agent reads/writes). */
+async function integrationMarksOf(deps: HttpDeps, agentId: string): Promise<IntegrationMarks> {
+  const [hooks, apis] = await Promise.all([
+    deps.repos.hook.listForAgent(AgentId(agentId)),
+    deps.repos.agentApiEntry.listForAgent(AgentId(agentId))
+  ])
+  return {
+    hookKinds: [...new Set(hooks.filter((h) => h.enabled).map((h) => h.kind))],
+    apiProtocols: apis.map((e) => e.protocol)
+  }
 }
 
 /** Wire REP → HTTP body: null-coalesce optional fields (the zod response schema
@@ -2381,7 +2394,7 @@ export function agentRoutes(deps: HttpDeps) {
               agent,
               ctxOf(req),
               await secretKeysOf(agent.orgId, agent.id),
-              await hookKindsOf(deps, agent.id),
+              await integrationMarksOf(deps, agent.id),
               iconBasesOf(deps),
               await placementViewFor(deps, agent),
               // Create already enrolled the agent into the org's `all` entries in
@@ -2432,6 +2445,7 @@ export function agentRoutes(deps: HttpDeps) {
         const ctx = ctxOf(req)
         const rows = await deps.repos.agent.list(orgOf(req), ctx)
         const hookKinds = await deps.repos.hook.kindsByAgent(orgOf(req))
+        const apiProtocols = await deps.repos.agentApiEntry.protocolsByAgent(orgOf(req))
         const secretKeys = await deps.repos.agentSecret.keys(
           orgOf(req),
           rows.map((a) => a.id)
@@ -2477,7 +2491,7 @@ export function agentRoutes(deps: HttpDeps) {
             a,
             ctx,
             secretKeys.get(a.id) ?? [],
-            hookKinds.get(a.id) ?? [],
+            { hookKinds: hookKinds.get(a.id) ?? [], apiProtocols: apiProtocols.get(a.id) ?? [] },
             iconBasesOf(deps),
             viewFor(a),
             organizationEnvironment.get(a.id) ?? NO_ORGANIZATION_ENVIRONMENT,
@@ -2507,7 +2521,7 @@ export function agentRoutes(deps: HttpDeps) {
             agent,
             ctxOf(req),
             await secretKeysOf(agent.orgId, agent.id),
-            await hookKindsOf(deps, agent.id),
+            await integrationMarksOf(deps, agent.id),
             iconBasesOf(deps),
             await placementViewFor(deps, agent),
             await organizationEnvironmentOf(agent),
@@ -3160,7 +3174,7 @@ export function agentRoutes(deps: HttpDeps) {
               agent,
               ctxOf(req),
               await secretKeysOf(agent.orgId, agent.id),
-              await hookKindsOf(deps, agent.id),
+              await integrationMarksOf(deps, agent.id),
               iconBasesOf(deps),
               placementView,
               // A PATCH may also have enrolled the agent into `all` entries added
@@ -3365,7 +3379,7 @@ export function agentRoutes(deps: HttpDeps) {
             converted,
             ctxOf(req),
             await secretKeysOf(converted.orgId, converted.id),
-            await hookKindsOf(deps, converted.id),
+            await integrationMarksOf(deps, converted.id),
             iconBasesOf(deps),
             await placementViewFor(deps, converted),
             await organizationEnvironmentOf(converted),
@@ -3620,7 +3634,7 @@ export function agentRoutes(deps: HttpDeps) {
                 repaired,
                 ctxOf(req),
                 await secretKeysOf(repaired.orgId, repaired.id),
-                await hookKindsOf(deps, repaired.id),
+                await integrationMarksOf(deps, repaired.id),
                 iconBasesOf(deps),
                 placementViewOf(deps, target),
                 await organizationEnvironmentOf(repaired),
@@ -3664,7 +3678,7 @@ export function agentRoutes(deps: HttpDeps) {
             moved,
             ctxOf(req),
             await secretKeysOf(moved.orgId, moved.id),
-            await hookKindsOf(deps, moved.id),
+            await integrationMarksOf(deps, moved.id),
             iconBasesOf(deps),
             placementViewOf(deps, target),
             await organizationEnvironmentOf(moved),
@@ -3875,7 +3889,7 @@ export function agentRoutes(deps: HttpDeps) {
             agent,
             ctxOf(req),
             await secretKeysOf(agent.orgId, agent.id),
-            await hookKindsOf(deps, agent.id),
+            await integrationMarksOf(deps, agent.id),
             iconBasesOf(deps),
             await placementViewFor(deps, agent),
             await organizationEnvironmentOf(agent),
@@ -3957,7 +3971,7 @@ export function agentRoutes(deps: HttpDeps) {
             agent,
             ctxOf(req),
             await secretKeysOf(agent.orgId, agent.id),
-            await hookKindsOf(deps, agent.id),
+            await integrationMarksOf(deps, agent.id),
             iconBasesOf(deps),
             await placementViewFor(deps, agent),
             await organizationEnvironmentOf(agent),

@@ -441,6 +441,7 @@ export interface AgentDto {
   execution?: string // the strategy slug sessions run in (session-executors.md §5); absent only on an older CP
   strategies?: StrategyTable // what the placement offers `execution`, host alone for an unplaced agent; absent only on an older CP
   hookKinds: HookKind[] // distinct kinds of enabled inbound triggers (list-view marks)
+  apiProtocols: AgentApiProtocol[] // the chat APIs it accepts calls on (list-view mark)
 }
 
 /** The `PUT /{agents,daemons,crons}/:id/sharing` request body. */
@@ -2270,6 +2271,7 @@ export function agentFromDto(d: AgentDto): Agent {
     execution: d.execution ?? HOST_STRATEGY,
     strategies: d.strategies ?? HOST_ONLY_TABLE,
     hookKinds: d.hookKinds ?? [],
+    apiProtocols: d.apiProtocols ?? [],
     integrations: [],
     workspace: ws
   }
