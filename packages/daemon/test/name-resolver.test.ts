@@ -3,9 +3,13 @@ import { SlackNameResolver } from '../src/slack/name-resolver.js'
 import type { SlackConnection } from '../src/slack/connection.js'
 import { ChannelNameResolver, type ChannelInfoSource } from '../src/messages/channel-name-resolver.js'
 
-// The resolver only touches getChannelInfo/getUserProfile.
-function fakeConn(over: Partial<Pick<SlackConnection, 'getChannelInfo' | 'getUserProfile'>> = {}) {
+// The resolver only touches getChannelInfo/getUserProfile/getBotProfile.
+function fakeConn(over: Partial<Pick<SlackConnection, 'getChannelInfo' | 'getUserProfile' | 'getBotProfile'>> = {}) {
   return {
+    getBotProfile: vi.fn(async () => ({
+      name: 'release-notes',
+      avatarUrl: 'https://avatars.example.test/release-notes.png'
+    })),
     getChannelInfo: vi.fn(async (id: string) => ({ id, name: 'deploys' })),
     getUserProfile: vi.fn(async (id: string) => ({
       id,
@@ -17,6 +21,7 @@ function fakeConn(over: Partial<Pick<SlackConnection, 'getChannelInfo' | 'getUse
   } as unknown as SlackConnection & {
     getChannelInfo: ReturnType<typeof vi.fn>
     getUserProfile: ReturnType<typeof vi.fn>
+    getBotProfile: ReturnType<typeof vi.fn>
   }
 }
 
@@ -45,7 +50,7 @@ describe('SlackNameResolver', () => {
     expect(conn.getUserProfile).toHaveBeenCalledTimes(1)
   })
 
-  it('skips bot senders and non-user ids, still resolving the channel', async () => {
+  it('never asks users.info about a bot sender or a non-user id, still resolving the channel', async () => {
     const conn = fakeConn()
     const r = new SlackNameResolver(() => {})
     r.noteMessage(conn, msg('C1', 'B99', true)) // bot frame
@@ -53,6 +58,44 @@ describe('SlackNameResolver', () => {
     await flush()
     expect(conn.getUserProfile).not.toHaveBeenCalled()
     expect(conn.getChannelInfo).toHaveBeenCalledTimes(1)
+  })
+
+  it('looks up a bot whose post carried no name, saving its name and icon once per TTL', async () => {
+    const saved = new Map<string, string>()
+    const avatars = new Map<string, string>()
+    const conn = fakeConn()
+    const r = new SlackNameResolver(
+      (id, name) => void saved.set(id, name),
+      undefined,
+      Date.now,
+      (_conn, id, avatarUrl) => void avatars.set(id, avatarUrl)
+    )
+    r.noteMessage(conn, msg('C1', 'B99', true))
+    r.noteMessage(conn, msg('C1', 'B99', true))
+    await flush()
+    expect(saved.get('B99')).toBe('release-notes')
+    expect(avatars.get('B99')).toBe('https://avatars.example.test/release-notes.png')
+    expect(conn.getBotProfile).toHaveBeenCalledTimes(1)
+    expect(conn.getBotProfile).toHaveBeenCalledWith('B99')
+  })
+
+  it('asks again for a bot after a failed lookup’s TTL, and saves nothing for one Slack cannot name', async () => {
+    let now = 0
+    const saved = vi.fn()
+    const getBotProfile = vi.fn().mockRejectedValueOnce(new Error('ratelimited')).mockResolvedValueOnce({})
+    const conn = fakeConn({ getBotProfile: getBotProfile as never })
+    const r = new SlackNameResolver(saved, undefined, () => now)
+    r.noteMessage(conn, msg('C1', 'B99', true))
+    await flush()
+    now = 5 * 60 * 1000 // inside the failure TTL
+    r.noteMessage(conn, msg('C1', 'B99', true))
+    await flush()
+    expect(getBotProfile).toHaveBeenCalledTimes(1)
+    now = 11 * 60 * 1000
+    r.noteMessage(conn, msg('C1', 'B99', true))
+    await flush()
+    expect(getBotProfile).toHaveBeenCalledTimes(2)
+    expect(saved.mock.calls.filter(([id]) => id === 'B99')).toEqual([])
   })
 
   it('names a bot sender from its post’s bot profile without a lookup, once per TTL', async () => {
@@ -64,6 +107,7 @@ describe('SlackNameResolver', () => {
     await flush()
     expect(saved.mock.calls.filter(([id]) => id === 'B99')).toEqual([['B99', 'example-bot']])
     expect(conn.getUserProfile).not.toHaveBeenCalled()
+    expect(conn.getBotProfile).not.toHaveBeenCalled()
   })
 
   it('labels a DM channel by its counterpart user, "@"-prefixed, once', async () => {

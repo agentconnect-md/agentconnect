@@ -18777,6 +18777,9 @@ export class Daemon {
     const transportScope = this.transportScopeForIntegrationIds(this.srcIntegrationIds(conn))
     for (const reply of replies) {
       if (reply.senderName) await this.store.setDisplayName(reply.sender, reply.senderName, this.clock.now())
+      // A bot whose post names none is looked up off this path, as live ingress does.
+      else if (reply.isBot && typeof conn.getBotProfile === 'function')
+        this.nameResolver?.noteMessage(conn as SlackConnection, { channel, sender: { id: reply.sender, isBot: true } })
       if (reply.senderAvatarUrl && transportScope)
         await this.store.setProfileAvatar(transportScope, reply.sender, reply.senderAvatarUrl, this.clock.now())
     }
