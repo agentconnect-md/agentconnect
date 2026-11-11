@@ -64,7 +64,7 @@ describe('Teams recovery confirmation', () => {
     expect(mocks.verify).toHaveBeenCalledExactlyOnceWith('example-org', 'signed-state', 'one-use-code')
     expect(mocks.confirm).not.toHaveBeenCalled()
     expect(host.textContent).toContain('Connect this Microsoft 365 tenant to Example Org?')
-    expect(host.textContent).toContain('Its agents, history and settings stay there.')
+    expect(host.textContent).toContain("Its agents and history stay there; connection settings aren't transferred.")
     expect(window.location.search).toBe('')
     expect(sessionStorage.getItem('ac.msTeamsRecovery')).toBeNull()
     await act(async () => button('Recover connection').click())

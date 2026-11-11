@@ -1571,7 +1571,7 @@
         "verify": "验证管理员身份",
         "title": "恢复 Teams 连接",
         "confirm": "将此 Microsoft 365 租户连接到 {organization}？",
-        "effect": "原组织中使用我们应用的所有 Teams 连接将被解除。原有 agent、历史和设置保留在原组织。",
+        "effect": "原组织中使用我们应用的 Teams 连接将全部解除。原有 agent 和历史保留，连接设置不会迁移。",
         "recover": "恢复连接",
         "cancel": "取消",
         "support": "联系支持",

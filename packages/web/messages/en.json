@@ -1571,7 +1571,7 @@
         "verify": "Verify administrator access",
         "title": "Recover Teams connection",
         "confirm": "Connect this Microsoft 365 tenant to {organization}?",
-        "effect": "All Teams connections using our app in the previous organization will be removed. Its agents, history and settings stay there.",
+        "effect": "All Teams connections using our app in the previous organization will be removed. Its agents and history stay there; connection settings aren't transferred.",
         "recover": "Recover connection",
         "cancel": "Cancel",
         "support": "Contact support",
