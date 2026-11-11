@@ -4,7 +4,7 @@ import { mentionedUserIds } from './mentions.js'
 import { TIME_ZONE_LOOKUP_WAIT_MS, within } from '../messages/time-zone.js'
 
 /**
- * Resolves Slack ids (channel "C…", user "U…/W…") to human display names off the
+ * Resolves Slack ids (channel "C…", user "U…/W…", bot "B…") to human display names off the
  * inbound-message path and caches the results into the LocalStore `display_names`
  * table, so session read-back (`session/list` / `session/history`) can label ids
  * without ever calling Slack at read time.
@@ -52,9 +52,11 @@ export class SlackNameResolver {
     msg: { channel: string; sender: { id: string; isBot: boolean; name?: string }; text?: string }
   ): void {
     void this.resolveChannel(conn, msg.channel)
-    // users.info can't resolve a bot's "B…" id, so a bot sender keeps the name its post's bot profile carried.
+    // users.info can't resolve a bot's "B…" id: a bot sender keeps the name its post carried, else bots.info is asked for it.
     if (msg.sender.isBot) {
-      if (msg.sender.name && this.claim(msg.sender.id)) this.persist(this.save(msg.sender.id, msg.sender.name))
+      if (msg.sender.name) {
+        if (this.claim(msg.sender.id)) this.persist(this.save(msg.sender.id, msg.sender.name))
+      } else if (msg.sender.id.startsWith('B')) void this.resolveBot(conn, msg.sender.id)
     } else if (/^[UW]/.test(msg.sender.id)) void this.resolveUser(conn, msg.sender.id)
     for (const id of mentionedUserIds(msg.text)) void this.resolveUser(conn, id)
   }
@@ -105,6 +107,19 @@ export class SlackNameResolver {
     } catch (err) {
       this.nextAttemptAt.set(channel, this.now() + FAIL_TTL_MS)
       this.log?.debug(`slack: name lookup failed for channel ${channel}: ${(err as Error).message}`)
+    }
+  }
+
+  // A webhook's or an older integration's post names no bot profile, so its bot is looked up once per TTL.
+  private async resolveBot(conn: SlackConnection, bot: string): Promise<void> {
+    if (!this.claim(bot)) return
+    try {
+      const profile = await conn.getBotProfile(bot)
+      if (profile.name) this.persist(this.save(bot, profile.name))
+      if (profile.avatarUrl) this.persist(this.saveAvatar?.(conn, bot, profile.avatarUrl))
+    } catch (err) {
+      this.nextAttemptAt.set(bot, this.now() + FAIL_TTL_MS)
+      this.log?.debug(`slack: name lookup failed for bot ${bot}: ${(err as Error).message}`)
     }
   }
 

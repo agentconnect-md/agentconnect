@@ -779,6 +779,10 @@ export type AppLike = {
         response_metadata?: { next_cursor?: string }
       }>
     }
+    // bots.info reads a bot by its `B…` id under users:read, which users.info cannot.
+    bots: {
+      info: (a: unknown) => Promise<{ bot?: { name?: string; icons?: { image_48?: string; image_72?: string } } }>
+    }
     reactions: {
       add: (a: unknown) => Promise<unknown>
       remove: (a: unknown) => Promise<unknown>
@@ -3167,6 +3171,14 @@ export class SlackConnection implements PlatformConnection {
       avatarUrl: u.profile?.image_72 ?? u.profile?.image_48,
       ...(timeZone ? { timeZone } : {})
     }
+  }
+
+  /** A bot's name and icon by its `B…` id, which `users.info` cannot read. */
+  async getBotProfile(bot: string): Promise<{ name?: string; avatarUrl?: string }> {
+    const res = await this.app.client.bots.info({ bot })
+    const name = res.bot?.name?.trim()
+    const avatarUrl = res.bot?.icons?.image_72 ?? res.bot?.icons?.image_48
+    return { ...(name ? { name } : {}), ...(avatarUrl ? { avatarUrl } : {}) }
   }
 
   /** A member's display name, real name else handle, for a click that carried none; undefined when Slack cannot say. */
