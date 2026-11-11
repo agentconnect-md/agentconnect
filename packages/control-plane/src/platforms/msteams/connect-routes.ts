@@ -856,10 +856,10 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
           return refuse(reply, 409, 'MSTEAMS_AGENT_BOTS_UNAVAILABLE', AGENT_BOTS_UNAVAILABLE_MESSAGE(reason))
         }
         try {
-          // The package names the identity as its bot and keeps the deployment app as its consent app (§8.6.1).
+          // The package names the identity as its bot and the blueprint as its consent app (§8.6.1).
           const packageInput = {
             appId: identity,
-            consentAppId: live.app.appId,
+            consentAppId: seams.agentBots.blueprintId,
             relayHost: new URL(relayBase).host,
             agentName,
             nameLabel: deps.config.MSTEAMS_APP_LABEL,
@@ -983,7 +983,8 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
         if (denyViewerWrite(req, reply)) return
         const live = usable()
         const requests = seams.requests
-        if (!live || !requests || !req.principal)
+        const blueprintId = seams.agentBots?.blueprintId
+        if (!live || !requests || !blueprintId || !req.principal)
           return refuse(reply, 404, 'MSTEAMS_CONNECT_UNAVAILABLE', 'This deployment makes no bots for further agents.')
         const orgId = orgOf(req)
         const ticket = openMsTeamsTicket(seams.keys, req.body.ticket, deps.clock)
@@ -1042,7 +1043,7 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
         try {
           const packageInput = {
             appId: identity,
-            consentAppId: live.app.appId,
+            consentAppId: blueprintId,
             relayHost: new URL(relayBase).host,
             agentName,
             nameLabel: deps.config.MSTEAMS_APP_LABEL,

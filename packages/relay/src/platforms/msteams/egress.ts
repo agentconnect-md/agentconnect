@@ -288,6 +288,8 @@ const answered = (result: WireMsTeamsCallResult): RdPlatformReply => ({ outcome:
 export class MsTeamsRelayEgress {
   private readonly tokens: MsTeamsAppTokens
   private agentBots: MsTeamsAgentBotTokens | undefined
+  // The blueprint's own app tokens: an agent bot's package grants its resource-specific consent to the blueprint (§8.6.1).
+  private blueprintTokens: MsTeamsAppTokens | undefined
   private key: Buffer
 
   constructor(
@@ -310,9 +312,15 @@ export class MsTeamsRelayEgress {
   }
 
   private takeBlueprint(blueprint: RcMsTeamsBlueprint | undefined): void {
-    if (!blueprint) this.agentBots = undefined
-    else if (this.agentBots) this.agentBots.update(blueprint)
+    if (!blueprint) {
+      this.agentBots = undefined
+      this.blueprintTokens = undefined
+      return
+    }
+    if (this.agentBots) this.agentBots.update(blueprint)
     else this.agentBots = new MsTeamsAgentBotTokens(blueprint, this.fetchImpl, this.now)
+    if (this.blueprintTokens) this.blueprintTokens.update(blueprint)
+    else this.blueprintTokens = new MsTeamsAppTokens(blueprint, this.fetchImpl, this.now)
   }
 
   get appId(): string {
@@ -354,7 +362,9 @@ export class MsTeamsRelayEgress {
         }
     const started = this.clock()
     const left = () => this.budgetMs - (this.clock() - started)
-    if (call.op === 'graph-token') return await this.graphToken(binding.tenantId, left)
+    // An agent bot's row reads Graph as the blueprint, which holds its package's consent; the app's row as the app.
+    if (call.op === 'graph-token')
+      return await this.graphToken(row.agentBotId ? this.blueprintTokens! : this.tokens, binding.tenantId, left)
     const ticketed = openMsTeamsTicket(this.key, binding, call.ticket)
     if (!ticketed) return refused('ticket')
     const request = requestOf(call, ticketed, { ...binding, appId: row.agentBotId ?? this.app.appId })
@@ -438,13 +448,13 @@ export class MsTeamsRelayEgress {
   }
 
   // An app-only Graph token minted in the row's own tenant, which carries only that tenant's consent.
-  private async graphToken(tenantId: string, left: () => number): Promise<RdPlatformReply> {
+  private async graphToken(tokens: MsTeamsAppTokens, tenantId: string, left: () => number): Promise<RdPlatformReply> {
     try {
-      let token = await within(this.tokens.get(tenantId, MSTEAMS_GRAPH_SCOPE), left())
+      let token = await within(tokens.get(tenantId, MSTEAMS_GRAPH_SCOPE), left())
       // The daemon renews five minutes early, so a token near its end is replaced rather than handed out again.
       if (token && token.until - this.now() < GRAPH_HANDOUT_MIN_MS) {
-        this.tokens.drop(tenantId, MSTEAMS_GRAPH_SCOPE)
-        token = await within(this.tokens.get(tenantId, MSTEAMS_GRAPH_SCOPE), left())
+        tokens.drop(tenantId, MSTEAMS_GRAPH_SCOPE)
+        token = await within(tokens.get(tenantId, MSTEAMS_GRAPH_SCOPE), left())
       }
       if (!token) return unavailable('deadline')
       const expiresIn = Math.max(0, Math.floor((token.until - this.now()) / 1000))

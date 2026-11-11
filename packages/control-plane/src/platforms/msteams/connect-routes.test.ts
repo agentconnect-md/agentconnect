@@ -1,5 +1,6 @@
 /** Connecting a Microsoft 365 tenant to the deployment's Teams app (teams-integration.md §8.3), against fakes. */
 import Fastify, { type FastifyInstance } from 'fastify'
+import { strFromU8, unzipSync } from 'fflate'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MSTEAMS_RELAY_EGRESS_V1_FEATURE } from '@agentconnect.md/protocol'
 import type { HttpDeps } from '../../http/deps.js'
@@ -704,6 +705,16 @@ describe('a deployment that makes agent bots (§8.6)', () => {
     expect(
       h.graph.some((call) => decodeURIComponent(call.url).includes(`externalId eq '${msTeamsPackageId(IDENTITY)}'`))
     ).toBe(true)
+    // The published package names the identity as its bot and the blueprint as its consent app (§8.6.1).
+    const published = h.graph.find(
+      (call) => call.method === 'POST' && call.url.split('?')[0]!.endsWith('/appCatalogs/teamsApps')
+    )!
+    const manifest = JSON.parse(strFromU8(unzipSync(published.body as Uint8Array)['manifest.json']!)) as {
+      bots: { botId: string }[]
+      webApplicationInfo: { id: string }
+    }
+    expect(manifest.bots[0]!.botId).toBe(IDENTITY)
+    expect(manifest.webApplicationInfo.id).toBe(AGENT_BOTS.blueprintId)
 
     const install = await h.post('/install', { ticket: made.json<{ ticket: string }>().ticket, teamIds: ['team-2'] })
     expect(install.json()).toEqual({ installed: 1 })

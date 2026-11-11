@@ -65,7 +65,7 @@ function clip(text: string, max: number): string {
 export interface MsTeamsManifestInput {
   /** The bot's ID, which also names the package. */
   appId: string
-  /** The application the package's resource-specific permissions are granted to: the deployment app for an agent bot (§8.6.1), else the bot itself. */
+  /** The application the package's resource-specific permissions are granted to: the blueprint for an agent bot (§8.6.1), else the bot itself. */
   consentAppId?: string
   /** The relay's public host, the bot's only web domain. */
   relayHost: string
