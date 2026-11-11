@@ -5216,7 +5216,8 @@ export class Daemon {
         this.connForIntegration(integrationId) ??
         this.QQConnByIntegration.get(integrationId) ??
         this.dingTalkConnByIntegration.get(integrationId) ??
-        this.weChatConnByIntegration.get(integrationId),
+        this.weChatConnByIntegration.get(integrationId) ??
+        this.weComConnByIntegration.get(integrationId),
       // The live turn's own delivery thread, which `activeTurnShare` already records per
       // turn from `plan.thread`. The bridge context froze the opening turn's value at
       // registration, and a session that spans several threads outgrows it immediately.
