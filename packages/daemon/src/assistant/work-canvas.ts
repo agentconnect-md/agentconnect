@@ -10,6 +10,8 @@ import { BOARD_TITLE_CHARS, readOpenWork, type BoardStores, type BoardTask } fro
 /** At most this many tasks are listed; the rest are counted, with the console a link away. */
 export const WORK_PAGE_TASKS = 40
 
+type WorkAgent = Pick<Agent, 'id' | 'name' | 'displayName' | 'assistantMode' | 'integrations' | 'crons'>
+
 /** A conversation the page is kept in, under the bot that reaches it. */
 export interface WorkPlace {
   platform: string
@@ -20,7 +22,7 @@ export interface WorkPlace {
 
 export interface WorkCanvasDeps {
   stores: BoardStores & { workCanvases: Pick<WorkCanvases, 'list' | 'put' | 'remove' | 'anchors'> }
-  agents(): Iterable<Pick<Agent, 'id' | 'assistantMode' | 'integrations' | 'crons'>>
+  agents(): Iterable<WorkAgent>
   /** Whether this member holds the agent's duty, so only one member writes its pages. */
   serves(agentId: string): boolean
   /** The bot a stored conversation or a cron target is reached through, with its canonical scope. */
@@ -33,6 +35,8 @@ export interface WorkCanvasDeps {
   external(agentId: string, place: WorkPlace): boolean
   /** The platform user a task works for, when one is known. */
   askerOf(row: PlacedSubsession): Promise<string | undefined>
+  /** A task's own page in the console, by its session, when it has one. */
+  taskLink(row: PlacedSubsession, place: WorkPlace): string | undefined
   consoleUrl(agentId: string): string | undefined
   now(): number
   warn(message: string): void
@@ -71,7 +75,7 @@ interface Composed {
 
 /** Every channel's page content for one agent, keyed by place: its open tasks in board order, then its targeted crons. */
 export async function composeWorkPages(
-  deps: Pick<WorkCanvasDeps, 'stores' | 'resolve' | 'askerOf'>,
+  deps: Pick<WorkCanvasDeps, 'stores' | 'resolve' | 'askerOf' | 'taskLink'>,
   agent: Pick<Agent, 'id' | 'crons'>,
   now: Date
 ): Promise<Map<string, Composed>> {
@@ -87,20 +91,23 @@ export async function composeWorkPages(
     if (!kind) continue
     const bot = deps.resolve(agent.id, task.place)
     if (!bot) continue
-    const page = pageFor({ platform: task.place.platform, channel: task.place.channel, ...bot })
+    const place = { platform: task.place.platform, channel: task.place.channel, ...bot }
+    const page = pageFor(place)
     if (page.tasks.length >= WORK_PAGE_TASKS) {
       page.more += 1
       continue
     }
     const askerId = task.row ? await deps.askerOf(task.row).catch(() => undefined) : undefined
     const thread = task.row?.replyThread
+    const consoleUrl = task.row ? deps.taskLink(task.row, place) : undefined
     page.tasks.push({
       kind,
       status: task.status,
       ...(task.nextCheck !== undefined ? { nextCheck: task.nextCheck } : {}),
       title: titleOf(task.title),
       ...(askerId ? { askerId } : {}),
-      ...(thread ? { thread } : {})
+      ...(thread ? { thread } : {}),
+      ...(consoleUrl ? { consoleUrl } : {})
     })
   }
   const anchors = new Map((await deps.stores.workCanvases.anchors(agent.id)).map((a) => [a.cronId, a]))
@@ -153,10 +160,7 @@ async function takeDown(deps: WorkCanvasDeps, row: WorkCanvasRow, integrationId:
   await deps.stores.workCanvases.remove(row.agentId, row)
 }
 
-async function sweepAgent(
-  deps: WorkCanvasDeps,
-  agent: Pick<Agent, 'id' | 'assistantMode' | 'integrations' | 'crons'>
-): Promise<void> {
+async function sweepAgent(deps: WorkCanvasDeps, agent: WorkAgent): Promise<void> {
   const rows = await deps.stores.workCanvases.list(agent.id)
   const rowBot = (row: WorkCanvasRow) => deps.resolve(agent.id, row)
   if (agent.assistantMode?.enabled !== true) {
@@ -182,6 +186,7 @@ async function sweepAgent(
     }
     if (row?.state === 'deleted') continue
     const page: WorkPage = {
+      agentName: agent.displayName?.trim() || agent.name,
       tasks: composed?.tasks ?? [],
       schedules: composed?.schedules ?? [],
       ...(composed?.more ? { more: composed.more } : {}),

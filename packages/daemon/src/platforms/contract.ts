@@ -312,6 +312,8 @@ export interface WorkPageTask {
   askerId?: string
   /** The thread it was asked or last discussed in. */
   thread?: string
+  /** Its own page in the console. */
+  consoleUrl?: string
 }
 
 /** One scheduled task that posts into the channel. */
@@ -325,6 +327,8 @@ export interface WorkPageSchedule {
 
 /** A channel's Work page as core composes it; the platform renders and attaches it. */
 export interface WorkPage {
+  /** The agent's name as people see it, which the page's title carries. */
+  agentName: string
   tasks: WorkPageTask[]
   schedules: WorkPageSchedule[]
   /** Tasks past the page's limit, counted. */

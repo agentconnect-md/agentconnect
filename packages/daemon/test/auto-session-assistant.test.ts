@@ -348,4 +348,62 @@ describe('assistant mode under auto (auto-session-mode.md §3.4)', () => {
     expect(react).not.toHaveBeenCalled()
     await daemon.stop()
   })
+
+  it('releases a getting-to-know round’s held cards into the thread of the coordinator’s first reply', async () => {
+    const live: { d?: any; ctx?: SessionContext } = {}
+    const { daemon, d, scope } = await boot(async (blocks) => {
+      const prompt = blocks.map((block) => block.text ?? '').join('\n')
+      const id = /<report id="(msg-[^"]+)">/.exec(prompt)?.[1]
+      if (!id) return
+      await live.d.coordinators.decide(live.ctx, {
+        action: 'replyToMessage',
+        messageId: id,
+        message: 'Hello, I read this channel.'
+      })
+    })
+    live.d = d
+    const coordinator = await d.store.resolveAppendCoordinate('bot-a', 'C1', scope, 1, 'coordinator')
+    await d.store.upsertSession({
+      key: sessionKey('slack', 'C1', coordinator, 'bot-a', scope),
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: coordinator,
+      transportScope: scope,
+      acpSessionId: 'acp-coordinator',
+      sessionId: 'sid-coordinator',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    live.ctx = {
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: coordinator,
+      transportScope: scope,
+      isDm: false,
+      tools: coordinatorSessionTools([])
+    } as SessionContext
+    vi.spyOn(d, 'gatewayForIntegration').mockReturnValue({ postMessage: vi.fn(async () => '1700000400.000001') })
+    vi.spyOn(d, 'replyConnFor').mockReturnValue({ react: vi.fn(async () => {}), setStatus: vi.fn(async () => true) })
+    const released = vi.spyOn(d, 'releaseRoundCards').mockResolvedValue(undefined)
+
+    const result = await d.collab.deliverDaemonReport({
+      agentId: 'bot-a',
+      caller: { platform: 'slack', channel: 'C1', thread: checkCoordinate('look-1'), transportScope: scope },
+      place: { platform: 'slack', channel: 'C1', transportScope: scope },
+      parentSessionId: 'sid-coordinator',
+      text: '[getting to know] the report',
+      reportId: 'follow-up:look-1',
+      gettingToKnow: 'look-1'
+    })
+    expect(result).toEqual({ admitted: true })
+    await vi.waitFor(() => expect(released).toHaveBeenCalledTimes(1), WAIT)
+    await vi.waitFor(() => expect(d.pending.size + d.inflight.size).toBe(0), WAIT)
+    // The turn's own text is never posted, so the first reply it made is the one the cards go under.
+    expect(released.mock.calls[0]).toEqual(['bot-a', expect.any(String), '1700000400.000001'])
+    expect(d.roundReplies.size).toBe(0)
+    await daemon.stop()
+  })
 })

@@ -47,7 +47,7 @@ import type { Logger } from '../log.js'
 import { isSendQueueTimeout, PlatformSendQueue } from '../platforms/send-queue.js'
 import { markNotJoined } from '../platforms/not-joined.js'
 import { slackMessageUrl, slackThreadUrl } from '../platforms/slack/permalink.js'
-import { renderWorkPage, WORK_PAGE_TITLE, workPageThreads } from '../platforms/slack/work-page.js'
+import { renderWorkPage, workBookmarkTitle, workPageThreads, workPageTitle } from '../platforms/slack/work-page.js'
 import { SLACK_CODE_CHANNEL_CONTEXT, SLACK_CONVERSATION_CONTEXT } from '../platforms/slack/standing-context.js'
 import { CodeTasksViews, SLACK_TASKS_VIEW_KEY, type CodeTasksSnapshot } from '../platforms/slack/code-tasks.js'
 import type {
@@ -798,6 +798,7 @@ export type AppLike = {
     bookmarks: {
       list: (a: unknown) => Promise<{ bookmarks?: { id?: string; title?: string; link?: string; emoji?: string }[] }>
       add: (a: unknown) => Promise<{ bookmark?: { id?: string; title?: string; link?: string; emoji?: string } }>
+      edit: (a: unknown) => Promise<unknown>
       remove: (a: unknown) => Promise<unknown>
     }
     slackLists: {
@@ -3602,6 +3603,8 @@ export class SlackConnection implements PlatformConnection {
       if (url) links.set(thread, url)
     }
     const document_content = { type: 'markdown' as const, markdown: renderWorkPage(page, links) }
+    const info = await this.getChannelInfo(channel)
+    const title = workPageTitle(page, info.name)
     if (stored) {
       try {
         await this.queue.enqueue(() =>
@@ -3610,31 +3613,48 @@ export class SlackConnection implements PlatformConnection {
             changes: [{ operation: 'replace', document_content }]
           })
         )
-        return { state: 'live', ...stored }
       } catch (err) {
         if (WORK_PAGE_GONE.has(slackApiErrorCode(err) ?? '')) return { state: 'deleted' }
         throw err
       }
+      // A page made under an older agent or channel name is renamed; a failed rename is tried again on the next write.
+      const bookmarkTitle = workBookmarkTitle(page)
+      try {
+        if (this.workPageTitles.get(stored.canvasId) !== title) {
+          await this.queue.enqueue(() =>
+            this.app.client.canvases.edit({
+              canvas_id: stored.canvasId,
+              changes: [{ operation: 'rename', title_content: { type: 'markdown', markdown: title } }]
+            })
+          )
+          this.workPageTitles.set(stored.canvasId, title)
+        }
+        if (stored.bookmarkId && this.workPageTitles.get(stored.bookmarkId) !== bookmarkTitle) {
+          await this.app.client.bookmarks.edit({
+            channel_id: channel,
+            bookmark_id: stored.bookmarkId,
+            title: bookmarkTitle
+          })
+          this.workPageTitles.set(stored.bookmarkId, bookmarkTitle)
+        }
+      } catch (err) {
+        this.deps.log?.debug(`slack: work page rename failed (ch=${channel}): ${(err as Error).message}`)
+      }
+      return { state: 'live', ...stored }
     }
     // Only an internal channel gets one; a code channel's Tasks view already shows its work.
-    const info = await this.getChannelInfo(channel)
     if (info.isIm || info.isMpim || info.externalReason || (await this.codeChannel(channel)).code)
       return { state: 'skipped' }
     let canvasId: string | undefined
     try {
-      canvasId = (
-        await this.queue.enqueue(() => this.app.client.canvases.create({ title: WORK_PAGE_TITLE, document_content }))
-      ).canvas_id
+      canvasId = (await this.queue.enqueue(() => this.app.client.canvases.create({ title, document_content })))
+        .canvas_id
     } catch (err) {
       // A free workspace creates only a channel's own canvas; one the channel already has stays the people's.
       try {
         canvasId = (
           await this.queue.enqueue(() =>
-            this.app.client.conversations.canvases.create({
-              channel_id: channel,
-              title: WORK_PAGE_TITLE,
-              document_content
-            })
+            this.app.client.conversations.canvases.create({ channel_id: channel, title, document_content })
           )
         ).canvas_id
       } catch (inner) {
@@ -3642,6 +3662,7 @@ export class SlackConnection implements PlatformConnection {
         throw err
       }
       if (!canvasId) throw new Error('Slack channel canvas creation returned no canvas_id')
+      this.workPageTitles.set(canvasId, title)
       return { state: 'live', canvasId }
     }
     if (!canvasId) throw new Error('Slack canvas creation returned no canvas_id')
@@ -3650,13 +3671,16 @@ export class SlackConnection implements PlatformConnection {
       await this.app.client.canvases.access.set({ canvas_id: created, access_level: 'read', channel_ids: [channel] })
       const link = (await this.canvasLink(created)).url
       if (!link) throw new Error('Slack returned no link for the Work canvas')
+      const bookmarkTitle = workBookmarkTitle(page)
       const res = await this.app.client.bookmarks.add({
         channel_id: channel,
-        title: WORK_PAGE_TITLE,
+        title: bookmarkTitle,
         type: 'link',
         link,
         emoji: ':clipboard:'
       })
+      this.workPageTitles.set(created, title)
+      if (res.bookmark?.id) this.workPageTitles.set(res.bookmark.id, bookmarkTitle)
       return { state: 'live', canvasId: created, ...(res.bookmark?.id ? { bookmarkId: res.bookmark.id } : {}) }
     } catch (err) {
       // A canvas nobody can reach is no page; the next change tries again from the start.
@@ -3664,6 +3688,9 @@ export class SlackConnection implements PlatformConnection {
       throw err
     }
   }
+
+  // The titles each Work canvas and bookmark was last given, so a write renames only what changed; a restart renames once.
+  private readonly workPageTitles = new Map<string, string>()
 
   /** Take a Work page down: its bookmark, then the canvas; each is best effort. */
   async removeWorkPage(channel: string, stored: WorkPageRef): Promise<void> {

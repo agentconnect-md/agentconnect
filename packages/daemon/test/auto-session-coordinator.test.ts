@@ -382,7 +382,9 @@ describe('the coordinator’s outcomes', () => {
       dispatch: (_agentId, msg, integrationId) => dispatched.push({ msg, ...(integrationId ? { integrationId } : {}) }),
       post: async (_agentId, _integrationId, msg, text) => {
         posted.push({ msg, text })
+        return undefined
       },
+      reportAnswered: () => {},
       showTriaging: (_agentId, message) => {
         triaging.push(`+${message.id}`)
         return () => triaging.push(`-${message.id}`)

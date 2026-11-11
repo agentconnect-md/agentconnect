@@ -1823,8 +1823,9 @@ under the introduction works. For a getting-to-know task, `propose` changes in f
   the first reply message the round posted, else where the place's cards go otherwise (its top
   level for an appending long session). A held card a restart left behind is posted the same way by
   the minute sweep once nothing runs the round; one decided in the console while held gets none.
-  Under a coordinator the round's reply is a `replyToMessage` post, which this hold does not see,
-  so its cards post at the top level; auto-session-mode.md §6.9.2 records the fix.
+  Under a coordinator the round's reply is the `replyToMessage` post that answers the report, since
+  a coordinator's turn text is never posted; the cards go in that post's thread
+  (auto-session-mode.md §6.9.2).
 - **An HTTP bot's place.** The relay routes an HTTP-mode bot, so the daemon holds no routing rules
   for it and cannot replay its ladder. Where such a bot serves one agent, a person's mention reaches
   the agent wherever the conversation is open to it, so the place's people approve there, for every
@@ -3941,7 +3942,8 @@ people:
 
 - its status (running, idle, waiting, or its next check in UTC);
 - its kind (task, follow-up, approved proposal);
-- its title, cut to the board's 80 characters, with Markdown in it shown as text;
+- its title, cut to the board's 80 characters, with Markdown in it shown as text, linking the task's
+  own session in the console, which opens for whoever may see that session;
 - who asked, as a mention;
 - a link to the thread it was last asked in (`replyThread`).
 
@@ -4022,7 +4024,10 @@ and pinned as a channel bookmark (`bookmarks.add`). A canvas that cannot be shar
 deleted again, and the next change starts over. Where a standalone canvas cannot be made (a free
 workspace creates only a channel's own canvas), the page uses the channel canvas when the channel
 has none, and the channel gets no page otherwise. The installation already holds
-`canvases:write` and `bookmarks:write`.
+`canvases:write` and `bookmarks:write`. The canvas is titled "<agent> · #<channel>", since Slack
+also lists it in Files and search, away from its channel; the bookmark is "<agent>'s work", since
+inside the channel only whose work it is needs saying. An agent or channel renamed later renames
+both on the page's next write.
 
 **The seam.** Core composes a structured page (`WorkPage`: tasks, schedules, a count past the
 limit, the console link) and decides when to write. `PlatformConnection.putWorkPage` and

@@ -6,7 +6,7 @@
 // through the registry; a code-host row uses the host's own, since GitHub and GitLab are
 // not platform modules. The raw prompt is never shown — it is the model's, not the reader's.
 
-import { useState, type ComponentType } from 'react'
+import { useEffect, useRef, useState, type ComponentType, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import type {
   CodehostTurnFacts as CodehostFacts,
@@ -77,10 +77,11 @@ export function CodehostTurnFacts({ facts }: { facts: CodehostFacts }) {
   )
 }
 
-/** The one line above a delivered session message's body: who sent it, and as what. */
+/** The one line above another agent's message or reply, naming that agent; a task's report or instruction has none, and neither does a sender with no name. */
 export function SessionMessageCaption({ facts }: { facts: MessageFacts }) {
   const t = useTranslations('Sessions.userTurnDetails')
-  const agent = facts.source.label ?? facts.source.agentId
+  const agent = facts.source.label
+  if (!agent || (facts.kind !== 'call' && facts.kind !== 'reply')) return null
   return (
     <p className="mb-1 font-sans text-[11.5px] leading-normal text-(--text-tertiary)">
       {t(`messageCaption.${facts.kind}`, { agent })}
@@ -143,26 +144,82 @@ function CodehostFold({ body }: { body: UserTurnBody }) {
  * when no formatter claims the body, so a row from a platform with facts but no formatter
  * stays exactly the bubble it was.
  */
-export function UserTurnDetails({ body, platform }: { body: UserTurnBody; platform?: string }) {
+export function UserTurnDetails({
+  body,
+  platform,
+  children
+}: {
+  body: UserTurnBody
+  platform?: string
+  /** The bubble's text, which a session message folds with its facts. */
+  children?: ReactNode
+}) {
   const t = useTranslations('Sessions.userTurnDetails')
   const [open, setOpen] = useState(false)
   const Facts = factsRenderer(body, platform)
-  if (!Facts) return null
+  // A report or an instruction can run to pages, so "more" sits under its first lines (auto-session-mode.md §6.9.5).
+  const text = children ? (
+    <FoldedText folded={body.sessionMessage !== undefined && Facts !== undefined && !open}>{children}</FoldedText>
+  ) : null
+  if (!Facts) return text
+  return (
+    <>
+      {text}
+      <TurnFactsFold open={open} onToggle={() => setOpen((v) => !v)} label={open ? t('less') : t('more')}>
+        <Facts body={body} />
+      </TurnFactsFold>
+    </>
+  )
+}
+
+/** Six lines of the bubble's text, at its 13.5px on a 1.55 line. */
+const FOLDED_TEXT = 'max-h-[126px] overflow-hidden'
+
+/** A bubble's text, cut to its first lines while folded and faded out where it was cut. */
+function FoldedText({ folded, children }: { folded: boolean; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [cut, setCut] = useState(false)
+  useEffect(() => {
+    const el = ref.current
+    setCut(folded && el !== null && el.scrollHeight > el.clientHeight + 1)
+  }, [folded, children])
+  return (
+    <div
+      ref={ref}
+      data-folded-text={folded ? (cut ? 'cut' : 'whole') : undefined}
+      className={
+        folded
+          ? `${FOLDED_TEXT} ${cut ? '[mask-image:linear-gradient(to_bottom,black_60%,transparent)]' : ''}`
+          : undefined
+      }
+    >
+      {children}
+    </div>
+  )
+}
+
+function TurnFactsFold({
+  open,
+  onToggle,
+  label,
+  children
+}: {
+  open: boolean
+  onToggle: () => void
+  label: string
+  children: ReactNode
+}) {
   return (
     <div data-turn-details>
       <button
         type="button"
         className="mt-[6px] cursor-pointer font-sans text-[12px] font-normal leading-normal text-(--text-tertiary) hover:text-(--text-secondary)"
         aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
+        onClick={onToggle}
       >
-        {open ? t('less') : t('more')}
+        {label}
       </button>
-      {open && (
-        <div className="mt-[10px] border-t border-(--border-subtle) pt-[10px]">
-          <Facts body={body} />
-        </div>
-      )}
+      {open && <div className="mt-[10px] border-t border-(--border-subtle) pt-[10px]">{children}</div>}
     </div>
   )
 }

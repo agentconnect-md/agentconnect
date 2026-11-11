@@ -55,6 +55,7 @@ describe('a coordinator task and the channel it makes', () => {
       now: () => 1_000,
       dispatch: (_agentId, msg) => void dispatched.push(msg),
       post: async (_agentId, _integrationId, msg, text) => void posted.push({ thread: msg.thread, text }),
+      reportAnswered: () => {},
       showTriaging: () => () => {},
       sessionLink: (sessionId) => `https://console.example.test/sessions/${sessionId}`,
       reportTaskOwners: async () => {},

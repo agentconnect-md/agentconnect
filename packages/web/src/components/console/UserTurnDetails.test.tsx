@@ -105,6 +105,17 @@ describe('UserTurnDetails', () => {
     expect(caption.textContent).toBe('Reply from reviewer')
     await act(async () => root?.unmount())
     host?.remove()
+    // A report or an instruction has no caption, and neither does a sender known only by its id.
+    for (const facts of [
+      { ...sessionMessage, kind: 'report' as const },
+      { ...sessionMessage, kind: 'taskInput' as const },
+      { ...sessionMessage, source: { agentId: 'agent-b' } }
+    ]) {
+      const none = await render(<SessionMessageCaption facts={facts} />)
+      expect(none.textContent).toBe('')
+      await act(async () => root?.unmount())
+      host?.remove()
+    }
 
     const el = await render(<UserTurnDetails body={{ sessionMessage, prompt: 'THE PROMPT' }} platform="webchat" />)
     const toggle = el.querySelector('button')!
@@ -117,6 +128,49 @@ describe('UserTurnDetails', () => {
     expect(text).toContain('Guidance the agent received')
     expect(text).toContain('To give it more work, call messageTask.')
     expect(text).not.toContain('THE PROMPT')
+  })
+
+  // auto-session-mode.md §6.9.5: a report can run to pages, so its text folds and "more" sits right under its first lines.
+  it('folds a session message’s text with its facts, and leaves any other bubble’s text whole', async () => {
+    const sessionMessage: NonNullable<UserTurnBody['sessionMessage']> = {
+      messageId: 'msg-2',
+      kind: 'report',
+      source: { agentId: 'agent-a', sessionId: 'sid-a' }
+    }
+    const heights = {
+      scrollHeight: Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight'),
+      clientHeight: Object.getOwnPropertyDescriptor(Element.prototype, 'clientHeight')
+    }
+    Object.defineProperty(Element.prototype, 'scrollHeight', { configurable: true, get: () => 900 })
+    Object.defineProperty(Element.prototype, 'clientHeight', { configurable: true, get: () => 132 })
+    try {
+      const el = await render(
+        <UserTurnDetails body={{ sessionMessage }} platform="slack">
+          <p>A long report.</p>
+        </UserTurnDetails>
+      )
+      const folded = () => el.querySelector('[data-folded-text]')
+      expect(folded()?.getAttribute('data-folded-text')).toBe('cut')
+      expect(folded()?.textContent).toBe('A long report.')
+      // The toggle follows the text directly: nothing sits between the first lines and "more".
+      expect(folded()?.nextElementSibling?.querySelector('button')?.textContent).toBe('more')
+      await click(el.querySelector('button')!)
+      expect(folded()).toBeNull()
+      expect(el.textContent).toContain('A long report.')
+      await act(async () => root?.unmount())
+      host?.remove()
+
+      const other = await render(
+        <UserTurnDetails body={codehost} platform="hook">
+          <p>A pull request opened.</p>
+        </UserTurnDetails>
+      )
+      expect(other.querySelector('[data-folded-text]')).toBeNull()
+      expect(other.textContent).toContain('A pull request opened.')
+    } finally {
+      for (const [name, descriptor] of Object.entries(heights))
+        if (descriptor) Object.defineProperty(Element.prototype, name, descriptor)
+    }
   })
 
   it('renders the Linear module’s formatter for a Linear row', async () => {
