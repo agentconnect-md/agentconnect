@@ -382,8 +382,8 @@ jobs:
   sandbox-linux:
     name: Sandbox (Linux)
     needs: scope
-    # TEMPORARILY OFF: the runner cannot reach the upstream apt archive, so the install step times out; restore `needs.scope.outputs.code == 'true'`.
-    if: ${{ false }}
+    # The repository variable CI_SKIP_APT_JOBS set to `true` skips every apt-installing job while apt is unreachable.
+    if: ${{ needs.scope.outputs.code == 'true' && vars.CI_SKIP_APT_JOBS != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -414,22 +414,11 @@ jobs:
       # and `pnpm -r` would now reach a control plane this install deliberately left out.
       - name: Install
         run: pnpm install --frozen-lockfile --filter "@agentconnect.md/daemon..."
-      # The only apt on the critical path. A runner's regional mirror can black-hole a fetch for
-      # hours, and the acquire timeouts below do NOT rescue that: apt falls through to upstream,
-      # but per index file, so the step cap expires before the fallbacks finish. Drop the mirror
-      # list to upstream first and the timeouts go back to covering the ordinary case.
+      # The only apt on the critical path: the script survives either the runner's mirror or upstream being unreachable.
       - name: Install and enable the Linux kernel sandbox
         timeout-minutes: 5
-        env:
-          APT_OPTS: -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 -o Acquire::Retries=2
         run: |
-          # One package set on one job: reaching upstream directly is not a bandwidth decision.
-          # An `if` and not `[ … ] &&`, which under this shell's -e fails the step when absent.
-          if [ -f /etc/apt/apt-mirrors.txt ]; then
-            echo 'https://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
-          fi
-          sudo apt-get $APT_OPTS update
-          sudo apt-get $APT_OPTS install -y --no-install-recommends bubblewrap ripgrep socat
+          sh scripts/ci-apt-install.sh bubblewrap ripgrep socat
           # Ubuntu 24.04 runners restrict unprivileged userns via AppArmor; bwrap (so the SRT sandbox) needs them.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           # Fail loudly rather than letting sandbox-dependent suites silently skip if bwrap cannot start.
@@ -617,7 +606,8 @@ jobs:
   computer-xvfb:
     name: Computer (Xvfb)
     needs: scope
-    if: ${{ needs.scope.outputs.computer == 'true' }}
+    # Skipped by CI_SKIP_APT_JOBS, for the reason the Sandbox (Linux) job gives.
+    if: ${{ needs.scope.outputs.computer == 'true' && vars.CI_SKIP_APT_JOBS != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -642,15 +632,7 @@ jobs:
       # Xvfb is the display; xterm is the window the suite types into and xdotool reads X's own pointer.
       - name: Install Xvfb
         timeout-minutes: 5
-        env:
-          APT_OPTS: -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 -o Acquire::Retries=2
-        run: |
-          # Upstream instead of the runner's regional mirror, for the reason the sandbox job gives.
-          if [ -f /etc/apt/apt-mirrors.txt ]; then
-            echo 'https://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
-          fi
-          sudo apt-get $APT_OPTS update
-          sudo apt-get $APT_OPTS install -y --no-install-recommends xvfb xauth xterm xdotool xfonts-base
+        run: sh scripts/ci-apt-install.sh xvfb xauth xterm xdotool xfonts-base
       - name: Xvfb integration suite
         env:
           VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
