@@ -15,7 +15,7 @@ export class PgMsTeamsBindingMutations implements MsTeamsBindingMutations {
     private readonly projectIdentity: BotIdentityProjector
   ) {}
 
-  // Only local binding writes run under this lock; OAuth, Graph verification and package publication run before it.
+  // Serialize binding writes and relay/daemon notices; OAuth, Graph checks and package publication finish first.
   runExclusive<T>(tenantId: string, mutation: () => Promise<T>): Promise<T> {
     return this.prisma.$transaction(
       async (tx) => {

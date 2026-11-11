@@ -119,7 +119,7 @@ export default function MsTeamsRecovery() {
               {t(busy ? 'connecting' : 'recovery.recover')}
             </Button>
             <Button variant="secondary" disabled={busy} onClick={() => window.location.assign(recovery.agentHref)}>
-              {t('recovery.cancel')}
+              {t(error ? 'backToAgent' : 'recovery.cancel')}
             </Button>
           </>
         ) : !error ? (
@@ -135,6 +135,11 @@ export default function MsTeamsRecovery() {
             <a className="text-[13px] text-(--brand)" href="mailto:contact@agentconnect.md">
               {t('recovery.support')}
             </a>
+            {!recovery && (
+              <a className="dsbtn dsbtn-secondary" href="/">
+                {t('goToAgentConnect')}
+              </a>
+            )}
           </>
         )}
       </div>

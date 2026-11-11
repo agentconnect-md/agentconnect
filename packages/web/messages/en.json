@@ -1578,7 +1578,7 @@
         "done": "Connection recovered",
         "doneBody": "Your selected agent is connected. Open its Teams integration to update the app name and icon if needed.",
         "notAdmin": "Sign in as an active Teams Administrator or Global Administrator of this tenant, or contact support.",
-        "failed": "Recovery could not be completed. Start connecting again, or contact support."
+        "failed": "Recovery could not be completed. Open your agent's integrations and start Connect Teams again, or contact support."
       }
     },
     "msTeamsStoreConnect": {

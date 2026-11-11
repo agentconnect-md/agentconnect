@@ -1578,7 +1578,7 @@
         "done": "连接已恢复",
         "doneBody": "所选 agent 已连接。如需更新应用名称和图标，请打开其 Teams 集成。",
         "notAdmin": "请使用此租户当前有效的 Teams 管理员或全局管理员身份登录，或联系支持。",
-        "failed": "未能完成恢复。请重新开始连接，或联系支持。"
+        "failed": "未能完成恢复。请回到 agent 的集成页，重新点击「连接 Teams」，或联系支持。"
       }
     },
     "msTeamsStoreConnect": {
