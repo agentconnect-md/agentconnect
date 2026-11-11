@@ -8,7 +8,7 @@ import { Daemon } from '../src/daemon.js'
 import { sessionHostKey } from '../src/acp/host-key.js'
 import { coordinatorSessionTools } from '../src/auto-session/coordinator-prompt.js'
 import { isCoordinatorCoordinate } from '../src/session/append-coordinate.js'
-import { subsessionCoordinate } from '../src/session/subsession-coordinate.js'
+import { checkCoordinate, subsessionCoordinate } from '../src/session/subsession-coordinate.js'
 import { sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import type { SessionContext } from '../src/mcp/ops/context.js'
 import { WAIT } from './wait-support.js'
@@ -778,6 +778,99 @@ describe("a member's coordinator conversation in webchat (auto-session-mode.md �
     await vi.waitFor(() => expect(d.pending.size + d.inflight.size).toBe(0), WAIT)
     // Its answer stays on its page: nothing of it is posted in the conversation.
     expect(posts.some((post) => post.text === 'page answer')).toBe(false)
+    await booted.daemon.stop()
+  })
+
+  // auto-session-mode.md §6.9.1: an approved proposal has no card here, so its root is the agent's own post.
+  it('gives an approved proposal a root in the conversation, answers in its thread, and takes the thread’s replies', async () => {
+    const taskPrompts: string[] = []
+    const live: { d?: any } = {}
+    const booted = await boot(async (_id, text, say) => {
+      const id = /<message id="(msg-[^"]+)"/.exec(text)?.[1]
+      if (id === undefined) {
+        taskPrompts.push(text)
+        say(`task answer ${taskPrompts.length}`)
+        return
+      }
+      // The coordinator answers its member itself, so no task opens for the greeting.
+      const { ctx } = await booted.coordinator()
+      await live.d.coordinators.decide(ctx, { action: 'replyToMessage', messageId: id, message: 'Hi.' })
+      say('AC_NO_RESPONSE')
+    })
+    const { d, posts, send } = booted
+    live.d = d
+    const index = d.store.assistantSubsessions
+    // A proposal comes from a follow-up's check, which only an assistant-mode agent runs.
+    await booted.updateAgent({ assistantMode: { enabled: true } })
+    // The conversation's coordinator exists once its member wrote there.
+    await send('hello')
+    const { key: coordinatorKey } = await booted.coordinator()
+    const coordinatorSession = await d.store.ensureOutwardSessionId(coordinatorKey, AGENT)
+    const origin = { platform: 'webchat', channel: CONV }
+    const followUp = await d.followUpChecks.take({
+      agentId: AGENT,
+      origin,
+      caller: { sessionId: coordinatorSession, key: coordinatorKey },
+      title: 'The nightly check',
+      doneWhen: 'Each finding has an owner.',
+      asker: `user:${OWNER}`
+    })
+    const sentence = 'I want to check the nightly findings because nobody owns them.'
+    const draft = await d.store.assistantDrafts.createTask({
+      agentId: AGENT,
+      target: { platform: 'webchat', integrationId: '', channel: CONV, thread: null },
+      task: 'Check each finding and name an owner.',
+      sentence,
+      why: 'Three reports in a row.',
+      itemId: followUp.taskKey,
+      itemVersion: followUp.version,
+      source: {
+        platform: 'webchat',
+        integrationId: '',
+        channel: CONV,
+        thread: checkCoordinate('1'),
+        transportScope: null,
+        sessionKey: sessionKey('webchat', CONV, checkCoordinate('1'), AGENT),
+        sessionId: 'sid-check-1',
+        place: false
+      }
+    })
+    posts.length = 0
+    const sent = d.relays.sendWebchatPost.mock.calls.length
+    const decision = await d.drafts.decideFromConsole({
+      agentId: AGENT,
+      draftId: draft.id,
+      choice: 'approve',
+      decider: { userId: OWNER, name: 'Grace' }
+    })
+    expect(decision).toMatchObject({ result: 'decided', status: 'executing', failure: null })
+    await vi.waitFor(() => expect(posts).toHaveLength(2), WAIT)
+    await vi.waitFor(() => expect(d.pending.size + d.inflight.size).toBe(0), WAIT)
+
+    // The root is one post of the agent at the conversation's root; its id names the thread the task holds.
+    const rootId: string = d.relays.sendWebchatPost.mock.calls[sent][0].post.postId
+    expect(posts[0]).toEqual({ text: `**${sentence}**\n\nApproved by Grace.`, initiator: 'agent' })
+    expect(posts[1]).toEqual({ text: 'task answer 1', initiator: 'agent', thread: rootId })
+    const taskKey = sessionKey('webchat', CONV, rootId, AGENT)
+    expect(await index.threadsOf(AGENT, taskKey)).toMatchObject([{ channel: CONV, thread: rootId }])
+    expect(await index.get(AGENT, taskKey)).toMatchObject({ parentSessionKey: coordinatorKey, state: 'done' })
+    expect(await d.store.assistantDrafts.get(draft.id)).toMatchObject({ status: 'succeeded', subsessionKey: taskKey })
+    expect(taskPrompts[0]).toContain('[approved proposal]')
+    expect(taskPrompts[0]).toContain('Your reply posts in this thread')
+    // Its people read the work that was approved, never the framed prompt.
+    const inThread = await d.store.transcriptPage(transcriptChannelKey(CONV), rootId, null, 50, AGENT)
+    const shown = inThread.rows.map((row: { text: string }) => row.text).join('\n')
+    expect(shown).toContain('Check each finding and name an owner.')
+    expect(shown).not.toContain('[approved proposal]')
+
+    // A reply in the thread is the task's next turn, not the coordinator's and not a new task's.
+    await send('and the third one?', OWNER, CONV, undefined, rootId)
+    await vi.waitFor(() => expect(taskPrompts).toHaveLength(2), WAIT)
+    expect(taskPrompts[1]).toContain('and the third one?')
+    expect(posts.at(-1)).toMatchObject({ text: 'task answer 2', thread: rootId })
+    expect((await index.list(AGENT, 10, { delegationsOnly: true })).map((row: any) => row.childSessionKey)).toEqual([
+      taskKey
+    ])
     await booted.daemon.stop()
   })
 })

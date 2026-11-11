@@ -1128,9 +1128,9 @@ a schedule fires / a watched object's event (§5.14) / a follow-up's nextCheck i
   see §5.7 step 1.
 - The card reuses `OrganizationSuggestion`'s component, not its review route.
 
-In an internal room a coordinator runs, on a platform with approval cards, an approved proposal
-runs as a threaded task in a thread of its place and reports nothing
-([auto-session-mode.md](auto-session-mode.md) §6.9.1). What follows describes it everywhere else. A
+In an internal room a coordinator runs, on a platform with approval cards, and in a member's
+webchat coordinator conversation, an approved proposal runs as a threaded task in a thread of its
+place and reports nothing ([auto-session-mode.md](auto-session-mode.md) §6.9.1). What follows describes it everywhere else. A
 read-only form is proposed there and not built.
 
 **P1 ships `propose` for patrols only** (#2895): `propose({ sentence, why, task })`, at most once
@@ -5233,3 +5233,10 @@ run is known by its turn's metadata, so a replay never runs it again and no repl
 approval cut before its root posted starts with no thread. A getting-to-know task's row records the
 thread its introduction landed in, which the console shows it with. Local store version 79. §5.10
 says where the old run still holds.
+
+**Ninety-sixth revision (2026-11-11)**: the same for a member's webchat coordinator conversation
+([auto-session-mode.md](auto-session-mode.md) §6.9.1 "Webchat"). A proposal approved from its
+pending requests gets a root, the agent's own post at the conversation's root, and its task
+answers in that root's thread, where a reply reaches it. Without it the person who came back to
+the conversation found the work on a page nothing in the conversation led to. The first turn's
+message, in either place, shows the approved work and not the framing the model reads.
