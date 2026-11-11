@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { COORDINATOR_FILTER_V1_FEATURE } from '@agentconnect.md/protocol'
 import type { DecisionProviderOption } from '@agentconnect.md/protocol/decision-api'
 import {
+  agentFilterPlacement,
   COORDINATOR_FILTER_FEATURE,
   coordinatorFilterLabel,
   coordinatorFilterProviders,
@@ -41,15 +42,51 @@ describe('coordinator filter providers', () => {
         models: [{ id: 'gpt-x', label: 'Unknown', questionTypes: ['boolean'] }]
       })
     ])
-    expect(providers.map((p) => [p.id, p.daemonId, p.models.map((m) => m.id)])).toEqual([
-      ['typesafe', 'daemon-1', ['jev-1.13.0', 'jev-latest']]
+    expect(providers.map((p) => [p.id, p.name, p.daemonId, p.models.map((m) => m.id)])).toEqual([
+      ['typesafe', 'Jev', 'daemon-1', ['jev-1.13.0', 'jev-latest']]
     ])
+  })
+
+  it('keeps only the providers of the placement: one machine, a group, or the pool', () => {
+    const catalog = [
+      option({ daemonId: 'daemon-1' }),
+      option({
+        id: 'openai',
+        name: 'OpenAI',
+        kind: 'openai',
+        daemonId: 'member-1',
+        memberSetId: 'set-1',
+        models: [{ id: 'gpt-6-luna', label: 'GPT-6 Luna', questionTypes: ['boolean'] }]
+      }),
+      option({
+        daemonId: 'pool-1',
+        pool: true,
+        models: [{ id: 'jev-preview', label: 'Jev preview', questionTypes: ['boolean'] }]
+      })
+    ]
+    const ids = (placement: Parameters<typeof coordinatorFilterProviders>[1]) =>
+      coordinatorFilterProviders(catalog, placement).map((p) => `${p.id}@${p.daemonId}`)
+    expect(ids({ kind: 'daemon', daemonId: 'daemon-1' })).toEqual(['typesafe@daemon-1'])
+    expect(ids({ kind: 'set', setId: 'set-1' })).toEqual(['openai@member-1'])
+    expect(ids({ kind: 'pool' })).toEqual(['typesafe@pool-1'])
+    expect(agentFilterPlacement({ placementKind: 'pool', setId: 'x', daemon: '' })).toEqual({ kind: 'pool' })
+    expect(agentFilterPlacement({ placementKind: 'set', setId: 'set-1', daemon: '' })).toEqual({
+      kind: 'set',
+      setId: 'set-1'
+    })
+    expect(agentFilterPlacement({ placementKind: 'daemon', setId: null, daemon: 'daemon-1' })).toEqual({
+      kind: 'daemon',
+      daemonId: 'daemon-1'
+    })
   })
 
   it('names a filter by its catalog labels, else by its ids', () => {
     expect(coordinatorFilterLabel({ providerId: 'typesafe', model: 'jev-1.13.0' }, [option({})])).toBe(
       'TypeSafe · Jev 1.13'
     )
+    // Once the filter names the provider Jev, the model's label says it all.
+    const named = coordinatorFilterProviders([option({})])
+    expect(coordinatorFilterLabel({ providerId: 'typesafe', model: 'jev-1.13.0' }, named)).toBe('Jev 1.13')
     expect(coordinatorFilterLabel({ providerId: 'openai', model: 'gpt-6-luna' }, [])).toBe('openai · gpt-6-luna')
   })
 })
