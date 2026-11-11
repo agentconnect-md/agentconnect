@@ -46,6 +46,20 @@ export class TunnelRefusedError extends Error {
   }
 }
 
+/** How many CONNECTs may wait for a proxy tunnel's stream, as a multiple of its cap; past that one is refused with 503. */
+const CONNECT_QUEUE_FACTOR = 4
+
+/** How long a waiting CONNECT keeps its place before it is refused with 503. */
+export const CONNECT_QUEUE_WAIT_MS = 120_000
+
+/** A CONNECT waiting for a stream on its full tunnel. */
+interface QueuedConnect {
+  authority: ConnectAuthority
+  socket: Socket
+  head: Buffer
+  timer: NodeJS.Timeout
+}
+
 /** The one loopback proxy a shim serves for both proxy tunnels, so a session needs a single `HTTPS_PROXY`. */
 interface ProxyListener {
   server: Server
@@ -144,6 +158,8 @@ export interface TunnelHostDeps {
   socketPathFor?: (tunnel: TunnelName) => string
   /** The helper tunnels' (`agent`, `mcp`) shared cap. */
   maxStreams?: number
+  /** How long a CONNECT waits at a full proxy tunnel (a test seam). */
+  connectQueueWaitMs?: number
   maxCodehostStreams?: number
   maxProviderStreams?: number
   /** Under `srt`: the code-host names the boundary routes to the codehost socket, which a `codehost` listen then serves. */
@@ -176,6 +192,8 @@ export class TunnelHost {
   private readonly authorities = new Map<ProxyTunnelName, string>()
   /** Connections the proxy listener sent straight out, which never touch the channel. */
   private readonly direct = new Set<Socket>()
+  /** CONNECTs waiting at each full proxy tunnel, oldest first. */
+  private readonly waiting: Record<ProxyTunnelName, QueuedConnect[]> = { codehost: [], provider: [] }
   private closed = false
 
   constructor(private readonly deps: TunnelHostDeps) {
@@ -228,6 +246,12 @@ export class TunnelHost {
     }
     for (const socket of [...this.direct]) socket.destroy()
     this.direct.clear()
+    for (const queue of Object.values(this.waiting)) {
+      for (const entry of queue.splice(0)) {
+        clearTimeout(entry.timer)
+        refuseConnect(entry.socket, 503, 'Service Unavailable')
+      }
+    }
     for (const [tunnel, server] of [...this.servers]) {
       this.servers.delete(tunnel)
       server.close()
@@ -415,13 +439,55 @@ export class TunnelHost {
     this.tunnelConnect(tunnel, authority, socket, head)
   }
 
-  /** A routed CONNECT into its tunnel, within that tunnel's stream cap. */
+  /** A routed CONNECT into its tunnel; at the stream cap it waits for a stream to end, and is refused only when the queue is full or its wait runs out. */
   private tunnelConnect(tunnel: ProxyTunnelName, authority: ConnectAuthority, socket: Socket, head: Buffer): void {
     const cap = this.maxProxyStreams[tunnel]
-    if (this.streamCount(tunnel) >= cap) {
-      this.deps.log?.warn(`shim: refusing a ${tunnel} connection — ${cap} streams already open`)
+    const queue = this.waiting[tunnel]
+    if (this.streamCount(tunnel) < cap && queue.length === 0) return this.openConnect(tunnel, authority, socket, head)
+    if (queue.length >= cap * CONNECT_QUEUE_FACTOR) {
+      this.deps.log?.warn(`shim: refusing a ${tunnel} connection — ${cap} streams open and ${queue.length} waiting`)
       return refuseConnect(socket, 503, 'Service Unavailable')
     }
+    const wait = this.deps.connectQueueWaitMs ?? CONNECT_QUEUE_WAIT_MS
+    const entry: QueuedConnect = {
+      authority,
+      socket,
+      head,
+      timer: setTimeout(() => {
+        if (!this.unqueue(tunnel, entry)) return
+        this.deps.log?.warn(`shim: refusing a ${tunnel} connection — no stream freed within ${wait} ms`)
+        refuseConnect(socket, 503, 'Service Unavailable')
+      }, wait)
+    }
+    queue.push(entry)
+    // A client that gives up while waiting leaves the queue rather than taking a stream later.
+    socket.once('close', () => {
+      if (this.unqueue(tunnel, entry)) clearTimeout(entry.timer)
+    })
+  }
+
+  /** Remove one waiting CONNECT; false when it already left the queue. */
+  private unqueue(tunnel: ProxyTunnelName, entry: QueuedConnect): boolean {
+    const queue = this.waiting[tunnel]
+    const at = queue.indexOf(entry)
+    if (at < 0) return false
+    queue.splice(at, 1)
+    return true
+  }
+
+  /** Open waiting CONNECTs, oldest first, while their tunnel has a free stream. */
+  private drain(tunnel: TunnelName): void {
+    if (!isProxyTunnel(tunnel) || this.closed) return
+    const queue = this.waiting[tunnel]
+    while (queue.length > 0 && this.streamCount(tunnel) < this.maxProxyStreams[tunnel]) {
+      const entry = queue.shift()!
+      clearTimeout(entry.timer)
+      if (entry.socket.destroyed) continue
+      this.openConnect(tunnel, entry.authority, entry.socket, entry.head)
+    }
+  }
+
+  private openConnect(tunnel: ProxyTunnelName, authority: ConnectAuthority, socket: Socket, head: Buffer): void {
     // A clean CONNECT for the daemon's proxy, so no client header (this listener's credential among them) leaves the machine.
     const connect = Buffer.from(`CONNECT ${authority.key} HTTP/1.1\r\nHost: ${authority.key}\r\n\r\n`)
     this.open(tunnel, socket, head.length > 0 ? Buffer.concat([connect, head]) : connect)
@@ -518,16 +584,20 @@ export class TunnelHost {
   }
 
   private finish(streamId: string, socket: Socket, error?: string): void {
-    if (this.streams.get(streamId)?.socket !== socket) return
+    const stream = this.streams.get(streamId)
+    if (stream?.socket !== socket) return
     this.streams.delete(streamId)
     socket.destroy()
     this.deps.emit(streamId, { kind: 'exit', code: error ? 1 : 0, signal: null, ...(error ? { error } : {}) })
+    this.drain(stream.tunnel)
   }
 
   // Unregistered first so its `close` reports no exit; `end` keeps the daemon's EOF, and resuming discards a paused client's unsent bytes so it can close.
   private end(streamId: string, socket: Socket): void {
+    const tunnel = this.streams.get(streamId)?.tunnel
     this.streams.delete(streamId)
     socket.end()
     socket.resume()
+    if (tunnel) this.drain(tunnel)
   }
 }
