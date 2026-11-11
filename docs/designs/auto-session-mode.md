@@ -892,8 +892,12 @@ Built.
   ahead of the report itself. People read the report; that guidance folds with the message's facts,
   where before it filled the six lines shown.
 - **A thread whose task is starting is re-read as often as a running one.** Its panel says the task
-  is starting until the task's session exists, which is seconds; on the idle interval that notice
-  stayed up to half a minute after the task had answered.
+  is starting until the task's session exists, which is seconds. Two things kept the notice up far
+  longer. The read was on the idle interval. And the console's polls gave their interval as a
+  function, which the polling library takes for a new interval on every render and restarts its
+  timer for; a conversation with a live turn re-renders more often than any interval, so the thread
+  was not re-read until the conversation went quiet. The thread's record, a task's row and a
+  conversation's task list now poll on an interval that changes only when what they poll does.
 
 #### 6.9.6 What still runs without a home
 

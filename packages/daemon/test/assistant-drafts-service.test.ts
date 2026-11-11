@@ -1134,6 +1134,25 @@ describe('a proposal in the conversation its item belongs to', () => {
     )
   })
 
+  it('says where an approved task answered: here on a card that is its root, there on any other', async () => {
+    const w = await world()
+    const ledger = w.store.assistantDrafts
+    const answered = async (thread: string): Promise<string> => {
+      const key = `slack:C0GENERAL:${thread}:bot-a`
+      // The world's clock is fixed, so the claim and the outcome are stamped with the proposal's own time.
+      w.startTask.mockImplementationOnce(async (draft, by) =>
+        (await ledger.beginTask(draft.id, by, key, draft.createdAt)) ? { kind: 'started' } : { kind: 'lost' }
+      )
+      const { draft } = await w.propose(GENERAL)
+      await w.click(draft.id, 'approve', 'U0BOB')
+      await w.drafts.taskSettled((await ledger.settleTask(draft.agentId, key, 'succeeded', null, draft.createdAt))!)
+      return (w.port.updateCard.mock.calls.at(-1)![2] as { outcome?: string }).outcome ?? ''
+    }
+    // The world's cards are all posted as `card-1`.
+    expect(await answered('card-1')).toContain('It answered in this thread; reply here to go on.')
+    expect(await answered('1700000000.000900')).toContain('the follow-up belongs to; reply there to go on.')
+  })
+
   it('in a direct message, is approved by that person only', async () => {
     const w = await world()
     const { draft } = await w.propose(ALICES_DM)

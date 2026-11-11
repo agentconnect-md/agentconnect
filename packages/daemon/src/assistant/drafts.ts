@@ -1004,12 +1004,11 @@ function taskOutcomeOf(draft: AssistantDraft, by: string): string {
   // A task with a home answers in a thread of its place and reports nothing (auto-session-mode.md §6.9.1).
   const key = draft.subsessionKey
   if (key !== null && !isSubsessionKey(key)) {
-    const where =
-      draft.cardTs !== null && key.includes(`:${draft.cardTs}:`)
-        ? 'this thread'
-        : 'a thread of the conversation the follow-up belongs to'
+    const here = draft.cardTs !== null && key.includes(`:${draft.cardTs}:`)
+    const where = here ? 'this thread' : 'a thread of the conversation the follow-up belongs to'
     if (draft.status === 'executing') return `▶️ Approved${by}. It answers in ${where}.`
-    if (draft.status === 'succeeded') return `✅ Approved${by}. It answered in ${where}; reply there to go on.`
+    if (draft.status === 'succeeded')
+      return `✅ Approved${by}. It answered in ${where}; reply ${here ? 'here' : 'there'} to go on.`
     if (draft.status === 'failed') return `⚠️ Approved${by}. It ended without finishing; see ${where}.`
   }
   if (draft.status === 'executing' && key === null) return `▶️ Approved${by}. Starting.`
