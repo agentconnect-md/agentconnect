@@ -118,8 +118,12 @@ export function msTeamsAdminConsentUrl(input: { clientId: string; redirectUri: s
   const params = new URLSearchParams({
     client_id: input.clientId,
     redirect_uri: input.redirectUri,
-    // The delegated Graph scopes by name; `openid` is not a Graph scope and is consented with the sign-in that follows.
-    scope: [...MSTEAMS_CONNECT_SCOPES, ...MSTEAMS_AGENT_BOT_SCOPES].filter((scope) => scope !== 'openid').join(' '),
+    // The delegated Graph scopes by name, and `offline_access` so a member's later sign-in is issued a refresh token unprompted (§8.6.6); `openid` is consented with the sign-in that follows.
+    scope: [
+      ...MSTEAMS_CONNECT_SCOPES.filter((scope) => scope !== 'openid'),
+      ...MSTEAMS_AGENT_BOT_SCOPES,
+      'offline_access'
+    ].join(' '),
     state: input.state
   })
   return `https://login.microsoftonline.com/organizations/v2.0/adminconsent?${params.toString()}`

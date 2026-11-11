@@ -497,7 +497,10 @@ describe('a deployment that makes agent bots (§8.6)', () => {
     expect(next.statusCode).toBe(200)
     const signIn = new URL(next.json<{ authorizeUrl: string }>().authorizeUrl)
     expect(signIn.pathname).toBe('/organizations/oauth2/v2.0/authorize')
-    expect(signIn.searchParams.get('scope')!.split(' ')).toEqual(expect.arrayContaining([...asked, 'openid']))
+    expect(asked).toContain('offline_access')
+    expect(signIn.searchParams.get('scope')!.split(' ')).toEqual(
+      expect.arrayContaining([...asked.filter((scope) => scope !== 'offline_access'), 'openid'])
+    )
     expect(signIn.searchParams.has('prompt')).toBe(false)
     // The consent's state redeems no code, and a sign-in's state continues no consent.
     expect((await h.callback(consentState)).statusCode).toBe(400)

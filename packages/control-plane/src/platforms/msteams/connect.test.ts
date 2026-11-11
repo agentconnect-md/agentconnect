@@ -132,7 +132,8 @@ describe('Teams connect for a deployment with agent bots (§8.6.5)', () => {
     expect(Object.fromEntries(url.searchParams)).toMatchObject({ client_id: CLIENT, redirect_uri: redirectUri, state })
     const scopes = url.searchParams.get('scope')!.split(' ')
     expect(scopes).toEqual(expect.arrayContaining([SUBMIT, PRINCIPAL, 'https://graph.microsoft.com/User.Read']))
-    expect(scopes.every((scope) => scope.startsWith('https://graph.microsoft.com/'))).toBe(true)
+    // Graph scopes by name, and offline_access so a member is later issued a refresh token without a prompt.
+    expect(scopes.filter((scope) => !scope.startsWith('https://graph.microsoft.com/'))).toEqual(['offline_access'])
   })
 
   it('signs in and redeems with the same scopes, and names the signed-in person as the sponsor', async () => {
