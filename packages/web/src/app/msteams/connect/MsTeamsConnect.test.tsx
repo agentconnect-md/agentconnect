@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act } from 'react'
+import { act, StrictMode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -8,7 +8,8 @@ const mocks = vi.hoisted(() => {
     constructor(
       message: string,
       readonly status: number,
-      readonly code?: string
+      readonly code?: string,
+      readonly details?: Record<string, unknown>
     ) {
       super(message)
     }
@@ -20,7 +21,8 @@ const mocks = vi.hoisted(() => {
     proceed: vi.fn(),
     agentBot: vi.fn(),
     fetchOrgs: vi.fn(),
-    login: vi.fn()
+    login: vi.fn(),
+    startRecovery: vi.fn()
   }
 })
 
@@ -35,7 +37,8 @@ vi.mock('@/lib/api', () => ({
   finishMsTeamsConnect: mocks.finish,
   installMsTeamsTeams: mocks.install,
   continueMsTeamsConnect: mocks.proceed,
-  createMsTeamsAgentBot: mocks.agentBot
+  createMsTeamsAgentBot: mocks.agentBot,
+  startMsTeamsRecovery: mocks.startRecovery
 }))
 
 import MsTeamsConnect, { msTeamsConnectOrgId } from './MsTeamsConnect'
@@ -62,7 +65,13 @@ afterEach(async () => {
 
 async function land(query: string) {
   window.history.replaceState({}, '', `/msteams/connect?${query}`)
-  await act(async () => root.render(<MsTeamsConnect />))
+  await act(async () =>
+    root.render(
+      <StrictMode>
+        <MsTeamsConnect />
+      </StrictMode>
+    )
+  )
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
   })
@@ -71,6 +80,33 @@ async function land(query: string) {
 const button = (label: string) => [...host.querySelectorAll('button')].find((b) => b.textContent === label)!
 
 describe('MsTeamsConnect', () => {
+  it('offers recovery only for a verified conflict and records the exact browser attempt', async () => {
+    mocks.finish.mockRejectedValue(
+      new mocks.FakeApiError('taken', 409, 'MSTEAMS_TENANT_TAKEN', {
+        recovery: { tenantId: 'example-tenant', agentId: 'agent-a' }
+      })
+    )
+    mocks.startRecovery.mockResolvedValue({
+      authorizeUrl: 'https://login.microsoftonline.com/example',
+      state: 'signed-recovery-state'
+    })
+    const assign = vi.spyOn(window.location, 'assign').mockImplementation(() => undefined)
+    try {
+      await land(`code=c&state=${STATE}`)
+      expect(mocks.finish).toHaveBeenCalledTimes(1)
+      await act(async () => button('Verify administrator access').click())
+      expect(mocks.startRecovery).toHaveBeenCalledWith('org-a', 'example-tenant', 'agent-a')
+      expect(JSON.parse(sessionStorage.getItem('ac.msTeamsRecovery')!)).toEqual({
+        orgId: 'org-a',
+        agentId: 'agent-a',
+        state: 'signed-recovery-state'
+      })
+      expect(assign).toHaveBeenCalledWith('https://login.microsoftonline.com/example')
+    } finally {
+      assign.mockRestore()
+      sessionStorage.clear()
+    }
+  })
   it('reads the organization out of the signed state, and nothing out of a malformed one', () => {
     expect(msTeamsConnectOrgId(STATE)).toBe('org-a')
     expect(msTeamsConnectOrgId('not-json.sig')).toBeNull()
@@ -204,7 +240,7 @@ describe('MsTeamsConnect', () => {
   it('names a refusal, and a sign-in Microsoft sent back without a code', async () => {
     mocks.finish.mockRejectedValue(new mocks.FakeApiError('taken', 409, 'MSTEAMS_TENANT_TAKEN'))
     await land(`code=c&state=${STATE}`)
-    expect(host.textContent).toContain('already connected to another organization')
+    expect(host.textContent).toContain('already connected elsewhere')
     await act(async () => root.unmount())
     root = createRoot(host)
     await land('error=access_denied&state=x')

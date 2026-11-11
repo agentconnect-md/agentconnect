@@ -4314,6 +4314,17 @@ export interface GoogleChatBindingMutations {
   }): Promise<{ bot: BotRecord; removed: IntegrationRecord[] }>
 }
 
+// Connect and recovery serialize per Teams tenant, across every deployment-owned bot.
+export interface MsTeamsBindingMutations {
+  runExclusive<T>(tenantId: string, mutation: () => Promise<T>): Promise<T>
+  replace(input: {
+    held: BotRecord[]
+    replacement: CreateBotInput
+    userId: string
+    agentId: AgentId
+  }): Promise<{ bot: BotRecord; removed: IntegrationRecord[] }>
+}
+
 /** A bot row's public identity as {@link BotRepo.mergeBotIdentity} reads it under the row lock. */
 export interface BotIdentitySnapshot {
   platformConfig: Record<string, unknown>

@@ -486,7 +486,8 @@ export async function createMsTeamsBlueprint(
   try {
     const principalUrl = `${GRAPH}/servicePrincipals/microsoft.graph.agentIdentityBlueprintPrincipal`
     await settled('POST', principalUrl, { appId: blueprintId }, 201)
-    const passwordUrl = `${GRAPH}/applications/${blueprintId}/addPassword`
+    // Graph addresses an application by object ID, or by its client ID as an alternate key.
+    const passwordUrl = `${GRAPH}/applications(appId='${blueprintId}')/addPassword`
     const secret = await settled('POST', passwordUrl, { passwordCredential: { displayName: 'AgentConnect' } }, 200)
     const clientSecret = typeof secret.body?.secretText === 'string' ? secret.body.secretText : ''
     if (!clientSecret) throw new MsTeamsAgentBotError('blueprint', secret.status, undefined)

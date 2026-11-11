@@ -5,6 +5,7 @@
 import { useEffect, useState } from 'react'
 import MsTeamsConnect from './MsTeamsConnect'
 import MsTeamsStoreConnect from './MsTeamsStoreConnect'
+import MsTeamsRecovery from './MsTeamsRecovery'
 
 /** Whether this landing starts a Store connect rather than finishing a sign-in. */
 export function isMsTeamsStoreStart(search: string): boolean {
@@ -14,8 +15,17 @@ export function isMsTeamsStoreStart(search: string): boolean {
 }
 
 export default function MsTeamsConnectEntry() {
-  const [store, setStore] = useState<boolean | null>(null)
-  useEffect(() => setStore(isMsTeamsStoreStart(window.location.search)), [])
-  if (store === null) return null
-  return store ? <MsTeamsStoreConnect /> : <MsTeamsConnect />
+  const [kind, setKind] = useState<'store' | 'recovery' | 'connect' | null>(null)
+  useEffect(() => {
+    const query = new URLSearchParams(window.location.search)
+    setKind(
+      isMsTeamsStoreStart(window.location.search)
+        ? 'store'
+        : query.get('state')?.split('.').length === 3
+          ? 'recovery'
+          : 'connect'
+    )
+  }, [])
+  if (kind === null) return null
+  return kind === 'store' ? <MsTeamsStoreConnect /> : kind === 'recovery' ? <MsTeamsRecovery /> : <MsTeamsConnect />
 }

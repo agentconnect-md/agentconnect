@@ -400,7 +400,10 @@ import { weChatLoginRoutes } from './platforms/wechat/routes.js'
 import { WeChatLoginService } from './platforms/wechat/login.js'
 import { createWeChatLoginClient, WECHAT_DEFAULT_API_URL, type WeChatLoginClient } from './platforms/wechat/ilink.js'
 import { msTeamsRoutes } from './platforms/msteams/routes.js'
-import { msTeamsConnectRoutes } from './platforms/msteams/connect-routes.js'
+import { msTeamsConnectRoutes, type MsTeamsConnectSeams } from './platforms/msteams/connect-routes.js'
+import { msTeamsRecoveryRoutes } from './platforms/msteams/recovery-routes.js'
+import { MsTeamsRecoveryOAuth } from './platforms/msteams/recovery.js'
+import { PgMsTeamsBindingMutations } from './persistence/repositories/msteams-binding-mutations.js'
 import { msTeamsConnectKeys } from './platforms/msteams/connect.js'
 import { MsTeamsCredentialReconciler } from './platforms/msteams/credential-reconciler.js'
 import {
@@ -3200,6 +3203,24 @@ export function buildContainer(
     log: http.log
   })
 
+  const msTeamsSeams: MsTeamsConnectSeams = {
+    ...(msTeamsPlatformApp ? { app: msTeamsPlatformApp } : {}),
+    ...(msTeamsAgentBots ? { agentBots: msTeamsAgentBots } : {}),
+    keys: msTeamsConnectKeys(config.API_KEY_PEPPER),
+    bindingMutations: new PgMsTeamsBindingMutations(prisma, (input) => botIdentityProjector(platforms)(input)),
+    ...(webAppUrl ? { webAppUrl } : {}),
+    ...(msTeamsPlatformApp && webAppUrl
+      ? {
+          recovery: new MsTeamsRecoveryOAuth(
+            msTeamsPlatformApp,
+            webAppUrl,
+            config.API_KEY_PEPPER,
+            clock,
+            (input, init) => fetch(input, init)
+          )
+        }
+      : {})
+  }
   // Removes the deployment app's secret from any of its rows an older build stamped (teams-integration.md §8.5).
   const msTeamsCredentialReconciler = new MsTeamsCredentialReconciler({
     bots: repos.bot,
@@ -3324,12 +3345,8 @@ export function buildContainer(
     createMsTeamsCpProvider({
       installRoutes: [
         msTeamsRoutes(httpDeps, fetch, msTeamsPlatformApp),
-        msTeamsConnectRoutes(httpDeps, {
-          ...(msTeamsPlatformApp ? { app: msTeamsPlatformApp } : {}),
-          ...(msTeamsAgentBots ? { agentBots: msTeamsAgentBots } : {}),
-          keys: msTeamsConnectKeys(config.API_KEY_PEPPER),
-          ...(webAppUrl ? { webAppUrl } : {})
-        })
+        msTeamsConnectRoutes(httpDeps, msTeamsSeams),
+        msTeamsRecoveryRoutes(httpDeps, msTeamsSeams)
       ],
       ...(msTeamsPlatformApp ? { app: msTeamsPlatformApp } : {}),
       ...(msTeamsAgentBots ? { agentBots: msTeamsAgentBots } : {}),

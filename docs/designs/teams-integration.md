@@ -1004,9 +1004,11 @@ tenant acting on a second; the product change is not built.
 The deployment app's bot serves one agent per tenant (§8.2). This section gives
 each further agent in that tenant a bot of its own, with its own name, icon,
 mention and 1:1 chat, which the deployment creates and the organization never
-registers. The first agent an organization connects, a Store install (§8.4)
-and every existing row stay as they are, and a deployment that does not
-configure agent bots (§8.6.3) keeps the limit of §8.2.
+registers. The first agent keeps the deployment app's shared bot; Store
+installs (§8.4) and existing rows retain their identities. The additional
+administrator consent proposed in §8.6.5 is separate from that unchanged bot
+identity. A deployment that does not configure agent bots (§8.6.3) keeps the
+limit of §8.2.
 
 #### 8.6.1 The objects
 
@@ -1333,12 +1335,71 @@ The daemon needs no change: its spec already names `egress: relay` and a
   and shared channels (§4.1).
 - A team whose settings stop members from adding apps.
 
-### 8.7 Open
+### 8.7 Administrator recovery
+
+First claims keep their existing checks. When a connection answers
+`MSTEAMS_TENANT_TAKEN`, the Console offers **Verify administrator access** and
+**Contact support** without disclosing the other organization's name or agents.
+The original installer does not need to participate.
+
+1. An editor selects the destination organization and agent through the normal
+   connect flow. Recovery starts only while another organization holds the tenant.
+2. Microsoft sign-in is pinned to that tenant and returns to the existing
+   `/msteams/connect` redirect URI. Recovery requests only `openid`, `profile`
+   and delegated `User.Read`; it does not request a refresh token or change the
+   normal connection scopes, including the separate proposal in §8.6.5.
+3. The Control Plane verifies the ID token's signature, issuer, audience,
+   expiration, tenant and nonce, and matches `oid` to Graph `/me`. It calls
+   [`/me/checkMemberObjects`](https://learn.microsoft.com/en-us/graph/api/directoryobject-checkmemberobjects?view=graph-rest-1.0)
+   with the built-in Global Administrator and Teams Administrator role template
+   IDs. This API accepts role template IDs and requires only `User.Read` for
+   the signed-in user. Directory role membership is separate from the
+   [`scopedMembers`](https://learn.microsoft.com/en-us/graph/api/resources/directoryrole?view=graph-rest-1.0)
+   relationship; a Team owner, application installer, scoped administrator or
+   merely eligible PIM administrator does not supply this tenant-wide role proof.
+4. Verification returns an encrypted confirmation ticket that expires ten minutes
+   after recovery starts. The page names the destination organization and explains
+   that all deployment-owned
+   Teams connections in the previous organization will be removed. Verification
+   alone changes nothing; **Cancel** leaves the old connections in place.
+5. **Recover connection** rechecks the administrator through Graph and the
+   caller's current destination membership and agent edit permission. A changed
+   binding or expired ticket requires a new attempt. Connect and recovery
+   serialize per tenant across Control Plane replicas. One database transaction
+   releases the exact old binding set, reserves the replacement shared-bot row,
+   and records recovery in both organizations' audit logs. New bot identity IDs
+   make confirmation replay fail.
+6. Old relay assignments and integration specs are removed, provider teardown
+   runs for each deleted bot, and the shared bot is installed on the selected
+   agent with the deployment credential marker. Original agents and session
+   history remain in their original organization; settings and organization-owned
+   apps are not transferred. An interrupted publication can be retried through
+   normal connect in the destination organization. A custom catalog package can
+   then be updated to the new agent's name and icon through **Update in Teams**.
+
+**Contract with §8.6.** Ownership and recovery cover all deployment-owned rows
+in the tenant, regardless of their external app ID. Further-agent provisioning,
+pending publication and completion must use the same tenant mutation boundary
+and recheck the tenant's current organization before writing or installing.
+Recovery must cancel old pending requests and discard their sealed member
+tokens; old requests must never recreate a deleted bot or finish after ownership
+changes. Additional-bot teardown must use the provider's `onBotDelete` hook for
+the Azure registration and agent identity, with the proposed reaper as backstop.
+Those pending-request and upstream-resource implementations remain part of
+§8.6, which is still proposed. An already accepted external API request cannot
+be recalled, but it cannot restore a deleted local binding.
+
+Removing the app from one chat, Team or group chat never releases tenant-wide
+ownership. Uninstall events do not establish that the entire tenant removed
+the app. If administrator verification is unavailable or the case needs manual
+review, support checks current tenant authority before releasing a binding.
+
+### 8.8 Open
 
 - Whether members of a tenant that connected through §8.3 can sign in with
   Microsoft without their own consent prompt (§4.5).
-- What the bot receives when the tenant's admin removes the catalog app or the
-  team removes the bot, and whether the row should then be released.
+- What the bot receives when the tenant's admin removes the catalog app;
+  conversation-scoped removal never releases tenant ownership (§8.7).
 
 ## 9. Later
 

@@ -23,6 +23,7 @@ import {
   WATCH_TASK_COLUMN_TYPES
 } from './assistant-watch-tasks.js'
 import { PLACE_TIME_ZONE_SCHEMA, PlaceTimeZones } from './place-time-zones.js'
+import { WORK_CANVAS_SCHEMA, WorkCanvases } from './work-canvases.js'
 import { newSessionMessageId, SESSION_MESSAGE_SCHEMA, SessionMessages } from './session-messages.js'
 import { CAPABILITY_CARD_SCHEMA, CapabilityCardLedger } from './capability-cards.js'
 import {
@@ -2935,6 +2936,8 @@ export class LocalStore {
   readonly assistantOnboarding: AssistantOnboardingLedger
   /** The time zone last seen from a person in each place, for every agent (product-conventions.md "Local time"). */
   readonly placeTimeZones: PlaceTimeZones
+  /** Each channel's Work page and each targeted cron's latest anchor (assistant-mode.md §5.19). */
+  readonly workCanvases: WorkCanvases
   /** The messages each session received and sent, with their reply obligations (send-message-guide.md §9.3). */
   readonly sessionMessages: SessionMessages
   /** The capability cards this daemon posted, for their rewrite on settlement (capability-requests.md §4.4.6). */
@@ -2983,6 +2986,7 @@ export class LocalStore {
     this.assistantReminders = new AssistantReminderLedger({ query: (sql, params) => this.db.query(sql, params) })
     this.assistantOnboarding = new AssistantOnboardingLedger({ query: (sql, params) => this.db.query(sql, params) })
     this.placeTimeZones = new PlaceTimeZones({ query: (sql, params) => this.db.query(sql, params) })
+    this.workCanvases = new WorkCanvases({ query: (sql, params) => this.db.query(sql, params) })
     this.sessionMessages = new SessionMessages({ query: (sql, params) => this.db.query(sql, params) })
     this.capabilityCards = new CapabilityCardLedger({ query: (sql, params) => this.db.query(sql, params) })
     this.ahpState = new AhpStateStore({
@@ -3078,6 +3082,7 @@ export class LocalStore {
       ${ASSISTANT_REMINDER_SCHEMA}
       ${ASSISTANT_ONBOARDING_SCHEMA}
       ${PLACE_TIME_ZONE_SCHEMA}
+      ${WORK_CANVAS_SCHEMA}
       ${SESSION_MESSAGE_SCHEMA}
       ${CAPABILITY_CARD_SCHEMA}
       ${AHP_STATE_SCHEMA}

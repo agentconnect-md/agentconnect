@@ -1,0 +1,62 @@
+// A channel's Work page as canvas Markdown (assistant-mode.md §5.19).
+import type { WorkPage, WorkPageTask } from '../contract.js'
+
+export const WORK_PAGE_TITLE = 'Work'
+
+// Titles and labels are written by people or the model, so Markdown in them is shown as text.
+const plain = (text: string): string => text.replace(/[\\`*_[\]#<>~|]/g, (c) => `\\${c}`)
+
+const minute = (at: number): string => `${new Date(at).toISOString().slice(0, 16).replace('T', ' ')} UTC`
+
+function statusText(task: WorkPageTask): string {
+  if (task.status === 'next') return task.nextCheck !== undefined ? `Next check ${minute(task.nextCheck)}` : 'Waiting'
+  return task.status === 'running' ? 'Running' : task.status === 'idle' ? 'Idle' : 'Waiting'
+}
+
+const KIND_TEXT: Record<WorkPageTask['kind'], string> = {
+  task: 'Task',
+  'follow-up': 'Follow-up',
+  'approved proposal': 'Approved proposal'
+}
+
+// A Slack user id renders as a mention; anything else is no one the page can name.
+const mention = (id: string): string | undefined => (/^[UW][A-Z0-9]+$/.test(id) ? `![](@${id})` : undefined)
+
+/** The page's Markdown; `links` maps a thread to its permalink, and a thread without one is not linked. */
+export function renderWorkPage(page: WorkPage, links: ReadonlyMap<string, string> = new Map()): string {
+  const lines: string[] = ['## Open work', '']
+  if (page.tasks.length === 0) lines.push('Nothing is open.')
+  for (const task of page.tasks) {
+    const parts = [`**${statusText(task)}**`, KIND_TEXT[task.kind], plain(task.title)]
+    const asker = task.askerId ? mention(task.askerId) : undefined
+    if (asker) parts.push(`asked by ${asker}`)
+    const link = task.thread ? links.get(task.thread) : undefined
+    if (link) parts.push(`[thread](${link})`)
+    lines.push(`- ${parts.join(' · ')}`)
+  }
+  if (page.more) lines.push('', `And ${page.more} more in the console.`)
+  if (page.schedules.length > 0) {
+    lines.push('', '## Scheduled', '')
+    for (const schedule of page.schedules) {
+      const parts = [plain(schedule.label), schedule.nextRun ? `next ${schedule.nextRun}` : 'no run due']
+      const link = schedule.thread ? links.get(schedule.thread) : undefined
+      if (link) parts.push(`[latest run](${link})`)
+      lines.push(`- ${parts.join(' · ')}`)
+    }
+  }
+  const footer = [`Updated ${minute(page.updatedAt)}`]
+  if (page.consoleUrl) footer.push(`[Open in the console](${page.consoleUrl})`)
+  lines.push('', '---', '', footer.join(' · '))
+  return lines.join('\n')
+}
+
+/** The threads a page links to, for their permalinks. */
+export function workPageThreads(page: WorkPage): string[] {
+  return [
+    ...new Set(
+      [...page.tasks.map((task) => task.thread), ...page.schedules.map((s) => s.thread)].filter(
+        (thread): thread is string => !!thread
+      )
+    )
+  ]
+}
