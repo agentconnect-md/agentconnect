@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-/** The trigger menu's People group: one row per member, listed first, with the viewer's own identities on top. */
+/** The trigger menu's People group: one row per member, listed first, with the viewer on top. */
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -13,24 +13,17 @@ const members = [
   { userId: 'usr-me', email: 'me@example.test', name: 'Mia', picture: null, role: 'owner', isCurrentUser: true },
   { userId: 'usr-li', email: 'li@example.test', name: 'li', picture: null, role: 'collaborator', isCurrentUser: false }
 ]
-const trigger = (value: string, platform: string, name?: string) => ({ value, platform, ...(name ? { name } : {}) })
+const trigger = (value: string, platform: string, name?: string, userId?: string) => ({
+  value,
+  platform,
+  ...(name ? { name } : {}),
+  ...(userId ? { userId } : {})
+})
 
 vi.mock('next/link', () => ({ default: ({ children }: { children: React.ReactNode }) => <a>{children}</a> }))
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ replace: mocks.replace }),
   useSearchParams: () => new URLSearchParams(mocks.search)
-}))
-vi.mock('swr', () => ({
-  default: (key: string | null) => ({
-    data:
-      key === 'logto-account-sign-in-methods'
-        ? { identities: [{ target: 'slack', userId: 'U-ME' }], hasSecurityVerificationMethod: false }
-        : undefined
-  })
-}))
-vi.mock('@/lib/auth', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/lib/auth')>()),
-  isAuthConfigured: () => true
 }))
 vi.mock('@/lib/org-context', () => ({
   useOrgs: () => ({ activeOrg: { id: 'org-1' }, orgPath: (path: string) => `/acme${path}` })
@@ -71,7 +64,8 @@ vi.mock('@/lib/use-session-facets', () => ({
         trigger('li@example.test', 'webchat'),
         trigger('usr-li', 'webchat'),
         trigger('U-OTHER', 'slack', 'Avery'),
-        trigger('U-ME', 'slack', 'Mia Slack'),
+        trigger('U-ME', 'slack', 'Mia Slack', 'usr-me'),
+        trigger('U-LI', 'msteams', 'Li on Teams', 'usr-li'),
         trigger('usr-me', 'webchat')
       ]
     }
@@ -123,8 +117,8 @@ describe('SessionsView, People triggers', () => {
 
     const headers = Array.from(document.querySelectorAll('.fhdr')).map((node) => node.textContent)
     expect(headers.slice(0, 2)).toEqual(['People', 'Agents'])
-    // A member's email and user id are one person; the viewer's console and Slack identities lead.
-    expect(groupLabels('People')).toEqual(['Mia (me)', 'Mia Slack (me)', 'Avery', 'li'])
+    // A member's email, user id and each chat account they linked are one person; the viewer leads.
+    expect(groupLabels('People')).toEqual(['Mia (me)', 'Avery', 'li'])
   })
 
   it("selects a member's row from a link that names them by their email", async () => {

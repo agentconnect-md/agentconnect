@@ -177,6 +177,11 @@ export function appendSessionLabel(startedAt: Date, now = new Date()): string {
   return `Since ${startedAt.toLocaleDateString(undefined, opts)}`
 }
 
+/** The identity a sender is known by: the agent its bot speaks for, the console member who linked the account, else the platform's own id. */
+export function senderIdentity(row: { sender: string; senderUserId?: string; senderAgentId?: string }): string {
+  return row.senderAgentId ?? row.senderUserId ?? row.sender
+}
+
 export function sessionSenderLabel(
   sender: string | null | undefined,
   fallback: string | undefined,

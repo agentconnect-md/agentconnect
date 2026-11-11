@@ -1,7 +1,16 @@
 import type { UserTurnBody } from '@agentconnect.md/protocol'
 import type { SessionMessageDto } from '@/lib/api'
 import { liveBotTurnKey, sameBotSpeaker } from '@/lib/bot-turn-grouping'
-import { agentLabel, speaker, type Agent, type Session, type SessionImage, type SessionStep } from '@/lib/data'
+import {
+  agentLabel,
+  platName,
+  speaker,
+  type Agent,
+  type Session,
+  type SessionImage,
+  type SessionStep
+} from '@/lib/data'
+import { senderIdentity } from '@/lib/session-trigger'
 import { formatTranscriptRowTime, transcriptRowTimeMs } from '@/lib/transcript-time'
 import { parseUserTurnBody } from '@/lib/user-turn-body'
 import { splitFilesMarker, type MarkedFile } from '@/lib/webchat-file'
@@ -176,7 +185,8 @@ export function buildTurns(input: BuildTurnsInput): { turns: Turn[]; speakers: M
   }
   const pushUserTurn = (id: string, turn: Extract<Turn, { kind: 'user' }>): void => {
     rememberParticipant(id, {
-      sp: turn.sp,
+      // The reader is one participant, however a turn names the account they wrote from.
+      sp: turn.self ? speaker('@you') : turn.sp,
       agent: turn.agent,
       avatarUrl: turn.avatarUrl,
       avatarInitials: turn.avatarInitials,
@@ -346,12 +356,13 @@ export function buildTurns(input: BuildTurnsInput): { turns: Turn[]; speakers: M
           )
           continue
         }
-        // Count participants by stable sender id — two people can share a display name.
+        // Who wrote it, as the organization knows them: a bot is its agent, a linked chat account its member; two people can share a display name.
+        const who = senderIdentity(m)
         const cron = asCron(m.sender)
-        const senderAgent = participantAgent(m.sender, m.text, m.trustedAgentBot)
+        const senderAgent = participantAgent(who, m.text, m.trustedAgentBot)
         const senderAgentName = senderAgent ? agentLabel(senderAgent) : undefined
         const hookFallback = session.platform === 'hook' && m.sender?.startsWith('hook:') ? session.user : undefined
-        const self = isSelf(m.sender)
+        const self = isSelf(who)
         if (senderAgent && !self) {
           pushAgentTurn(
             senderAgent,
@@ -367,26 +378,25 @@ export function buildTurns(input: BuildTurnsInput): { turns: Turn[]; speakers: M
           continue
         }
         const participant = self
-          ? speaker('@you')
+          ? // Written from a linked chat account rather than the console: the turn says which.
+            speaker('@you', who !== m.sender ? `You (${platName(rowPlatform)})` : undefined)
           : speaker(
-              senderAgentName ?? m.sender,
+              senderAgentName ?? who,
               cron?.name ??
                 (cron
                   ? 'Schedule'
-                  : senderLabel(
-                      m.sender,
-                      m.senderName ?? hookFallback ?? platformSenderFallback(rowPlatform, m.sender)
-                    ))
+                  : senderLabel(who, m.senderName ?? hookFallback ?? platformSenderFallback(rowPlatform, m.sender)))
             )
         answeringThread = undefined
-        pushUserTurn(senderAgent?.id ?? m.sender, {
+        pushUserTurn(senderAgent?.id ?? who, {
           kind: 'user',
           key: `u:${rowAnchor(m)}`,
           rowSeq: m.seq,
           messageId: m.postId ?? m.ts,
           sp: participant,
           agent: senderAgent ?? null,
-          avatarUrl: m.senderAvatarUrl ?? (self ? viewer.picture : pictureOf(m.sender)),
+          // The reader keeps one face across the accounts they write from.
+          avatarUrl: self ? (viewer.picture ?? m.senderAvatarUrl) : (m.senderAvatarUrl ?? pictureOf(who)),
           avatarInitials: self ? viewer.initials : undefined,
           ...(self ? { self: true } : {}),
           sourceLabel: sourceLabel,

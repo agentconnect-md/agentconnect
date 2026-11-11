@@ -519,6 +519,8 @@ export interface SessionDto {
   // Daemon-resolved display names; null until the daemon has resolved them.
   channelName: string | null
   triggeredByName: string | null
+  /** The console member who linked the triggering chat account. */
+  triggeredByUserId?: string
   // Platform-native deep link back to the source message/thread, captured or
   // derived by the daemon; null when unavailable.
   threadUrl: string | null
@@ -560,6 +562,8 @@ export interface SessionFacetsDto {
     name: string | null
     hookKind: HookKind | null
     githubRepoId: string | null
+    /** The console member who linked the triggering chat account. */
+    userId?: string
   }>
 }
 
@@ -631,6 +635,7 @@ export interface SessionFacets {
     platform: string
     hookKind?: HookKind
     githubRepoId?: string
+    userId?: string
   }>
 }
 
@@ -677,6 +682,7 @@ export interface SessionDetailDto {
   hookKind?: HookKind | null
   channelName: string | null
   triggeredByName: string | null
+  triggeredByUserId?: string
   threadUrl: string | null
   runtime: string | null
   model: string | null
@@ -763,6 +769,10 @@ export interface SessionMessageDto {
   sender: string
   senderName?: string // daemon-resolved display name; absent if unknown
   senderAvatarUrl?: string // public provider-hosted profile image
+  /** The console member who linked this sender's chat account, as the Control Plane resolved it. */
+  senderUserId?: string
+  /** The agent this sender's bot speaks for, as the Control Plane resolved it. */
+  senderAgentId?: string
   trustedAgentBot?: boolean // daemon-verified AgentConnect Slack bot provenance
   ts: string
   /** Normalized chronological coordinate (epoch µs) from the daemon's event-time
@@ -793,6 +803,8 @@ export interface SessionThreadAuthorDto {
   sender: string
   senderName?: string
   senderAvatarUrl?: string
+  senderUserId?: string
+  senderAgentId?: string
 }
 
 /** One thread's footer (webchat-threads.md §5.3); `readable` false leaves out its excerpts and task title (§7.1). */
@@ -2374,6 +2386,7 @@ export function sessionFromDto(d: SessionDto): Session {
     ...(isCoordinatorCoordinate(d.sessionKey.thread) ? { coordinator: true as const } : {}),
     user,
     ...(d.triggeredBy ? { triggeredBy: d.triggeredBy } : {}),
+    ...(d.triggeredByUserId ? { triggeredByUserId: d.triggeredByUserId } : {}),
     ...(d.hookKind ? { hookKind: d.hookKind } : {}),
     // Absent on legacy/pre-feature rows — the views treat undefined as 'org'.
     ...(d.visibility != null ? { visibility: d.visibility } : {}),
@@ -2438,6 +2451,7 @@ export function sessionFromDetailDto(d: SessionDetailDto): Session {
     ...(d.hookKind !== undefined ? { hookKind: d.hookKind } : {}),
     channelName: d.channelName,
     triggeredByName: d.triggeredByName,
+    ...(d.triggeredByUserId ? { triggeredByUserId: d.triggeredByUserId } : {}),
     threadUrl: d.threadUrl,
     ...(d.visibility != null ? { visibility: d.visibility } : {}),
     runtime: d.runtime,
@@ -2806,7 +2820,8 @@ export async function fetchSessionFacets(orgId?: string, filters: SessionListFil
       ...(trigger.name ? { name: trigger.name } : {}),
       platform: trigger.integration,
       ...(trigger.hookKind ? { hookKind: trigger.hookKind } : {}),
-      ...(trigger.githubRepoId ? { githubRepoId: trigger.githubRepoId } : {})
+      ...(trigger.githubRepoId ? { githubRepoId: trigger.githubRepoId } : {}),
+      ...(trigger.userId ? { userId: trigger.userId } : {})
     }))
   }
 }

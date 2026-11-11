@@ -645,14 +645,17 @@ describe('ThreadPanel', () => {
     expect(avatars.map((img) => img.getAttribute('src'))).toEqual(['https://avatars.example/sam.png'])
   })
 
+  // The session page's reading of who a sender is, with the reader signed in as `me`.
+  const peopleAs = (me: string) => ({
+    isSelf: (sender?: string | null) => sender === me,
+    label: (sender: string | null | undefined, fallback?: string) =>
+      sender === me ? 'You' : sender === 'user_dana' ? 'Dana Reyes' : (fallback ?? sender ?? ''),
+    pictureOf: (sender: string) => (sender === 'user_dana' ? 'https://avatars.example/dana.png' : undefined),
+    viewer: { picture: 'https://avatars.example/me.png' }
+  })
+
   it('shows a member’s console photo where the platform supplied none, and the reader’s own for this visit’s sends', async () => {
-    const asked: (string | undefined)[] = []
-    props = {
-      personPicture: (sender) => {
-        asked.push(sender)
-        return sender === 'user_dana' ? 'https://avatars.example/dana.png' : 'https://avatars.example/me.png'
-      }
-    }
+    props = { people: peopleAs('user_me') }
     wire.live = [{ kind: 'msg', text: 'and the sixth?' } as SessionStep]
     await render()
     const avatars = Array.from(container.querySelectorAll<HTMLImageElement>('[data-thread-message="person"] img'))
@@ -660,7 +663,33 @@ describe('ThreadPanel', () => {
       'https://avatars.example/dana.png',
       'https://avatars.example/me.png'
     ])
-    expect(asked).toContain(undefined)
+  })
+
+  it('reads a recorded message of the reader’s own as theirs, as the session page does', async () => {
+    props = { people: peopleAs('user_dana') }
+    await render()
+    const own = container.querySelector('[data-thread-message="person"]')!
+    expect(own.textContent).toContain('You')
+    expect(own.querySelector('img')?.getAttribute('src')).toBe('https://avatars.example/me.png')
+  })
+
+  it('reads a message from the chat account the reader linked as theirs, naming the platform', async () => {
+    props = { people: peopleAs('user_me'), platform: 'slack' }
+    wire.extra = [
+      {
+        seq: 4,
+        sender: 'U0ME',
+        senderName: 'Morgan',
+        senderUserId: 'user_me',
+        ts: '2026-11-03T09:03:00.000Z',
+        kind: 'text',
+        text: 'Rerun it.'
+      }
+    ]
+    await render()
+    const own = Array.from(container.querySelectorAll('[data-thread-message="person"]')).at(-1)!
+    expect(own.textContent).toContain('You (Slack)')
+    expect(own.querySelector('img')?.getAttribute('src')).toBe('https://avatars.example/me.png')
   })
 
   it('opens the agent’s page from its mark', async () => {

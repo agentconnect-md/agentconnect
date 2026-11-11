@@ -528,6 +528,35 @@ The console's transcript marks what is new and lets a reader move through it:
   column; clicking a tick jumps to its turn. A long conversation's map is
   sampled to forty ticks, always keeping the newest.
 
+## Who a message is from
+
+A conversation's messages carry the platform's own id for whoever sent them. The
+console reads that id one way everywhere it shows a sender: the session page, a
+thread's panel and footer, the participants list, and the sessions list with its
+trigger filter.
+
+- **You.** A message is yours when you sent it from the console, or when it came
+  from a chat account you linked on your Profile. Your messages sit on the right
+  with your console photo. One you wrote from a linked account says which, as in
+  `You (Slack)`. You are one participant, however many accounts you wrote from.
+- **Another member.** A message from a chat account another member linked reads
+  with that member's console name, and their console photo where the platform
+  supplied none.
+- **An agent.** A message from a bot that speaks for exactly one agent reads as that
+  agent. A bot several agents share names none of them by itself.
+- **Anyone else** keeps the name the platform gave them, on the left.
+
+The Control Plane does the matching, with the same linked accounts that decide who
+may open a conversation, and adds the answer to the rows it serves: the platform's
+id stays as it was. An account is matched only under the workspace or tenant the
+organization's own bot is in, an account two members linked names neither, and a bot
+never names an agent the reader may not see. An organization with more than 200
+members matches only the reader. Nothing is shown differently for a person who has
+linked no account.
+
+In the trigger filter one member is one row, and picking it lists the sessions they
+started from the console and from every chat account they linked.
+
 ## Slack message attribution footer
 
 The attribution footer for an agent response must be attached to the final Slack
