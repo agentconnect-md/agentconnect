@@ -647,8 +647,8 @@ place; a channel is a workspace the task earns.
 ### 6.9 A home for every task (proposed)
 
 > Status: Proposed (2026-11-11), not built. Until it ships, §6.2, §6.6, §11 and
-> [assistant-mode.md](assistant-mode.md) §5.10 and §5.13 describe what runs. Whether a threaded task
-> counts against `maxConcurrentSubsessions` is not decided here (#3970).
+> [assistant-mode.md](assistant-mode.md) §5.6, §5.10, §5.13 and §5.18 describe what runs. Whether a
+> threaded task counts against `maxConcurrentSubsessions` is not decided here (#3970).
 
 **Why.** In one coordinator's channel, a getting-to-know report and one approved proposal left five
 top-level messages within four minutes: the introduction, two proposal cards, the approved
@@ -685,6 +685,15 @@ session is a coordinator. The follow-up form runs no task and is unchanged.
   `delegateTask` with that `messageId` opens one (§5.1): keyed on the root's thread, titled with the
   proposal's sentence, owned by the approver. Its record stays an approved proposal: the hash,
   approvers, expiry and settled states of assistant-mode.md §5.10 are unchanged.
+- **Its kind.** Until its first turn settles it is an approved proposal, as `listTasks`, the board
+  and the Work canvas name one today, and the coordinator neither messages nor stops it
+  (assistant-mode.md §5.6). Once the record has settled it is a task like any other the
+  coordinator holds: listed as a task with its thread, open on the board while it is indexed,
+  `running` or `idle`, and addressed by `messageTask`. This replaces "open only until its one run
+  settles" of assistant-mode.md §5.18 for a proposal with a home; one without keeps that rule.
+- **Who asks.** The approver owns the session, as the sender of the message a task opened for
+  does (§6.2). The first turn's reads are still judged by the follow-up's askers, as an approved
+  run's are today; a later turn's by its own sender.
 - **Its first turn** takes the approved proposal's prompt, which now says its reply posts in this
   thread. The record settles from that turn as it settles from a report today: completed is
   `succeeded`, failed is `failed`, cut short is `outcome_unknown`.
@@ -711,10 +720,21 @@ session is a coordinator. The follow-up form runs no task and is unchanged.
   longer refuses the approval. #3970 decides whether threaded tasks should count.
 - **The card** settles as "Approved by …" with where the task answers: this thread, or a link to
   the root.
-- **Order of writes.** The approval transaction records the task's session key (assistant-mode.md
-  §5.10), so the root exists first. A posted root's handle is kept on the proposal's record, as its
-  card's is, and a retried approval reuses it. An approval that then loses to another decision edits
-  the root to say the proposal did not run.
+- **Order of writes.** The decision is won before anything is posted, so a root never announces
+  work that does not run.
+  1. One transaction moves the record to `executing`, which is what serializes two decisions: the
+     second finds it decided. Where the card is a free root, the same transaction opens the task on
+     the card's thread and writes its first turn's row, as an approval does today. Otherwise it
+     marks the record as waiting for a root.
+  2. The daemon posts the root, once. A second transaction then opens the task: on the root's
+     thread where the post returned and no task took that thread meanwhile, else on a
+     `subsession:` coordinate with no home (the table's last row). A post that failed or timed out
+     takes the second branch. A timed-out post may still land, as a card's may
+     (assistant-mode.md §5.10); it then stands as an agent message whose thread is unowned, and
+     its text, the sentence and who approved it, stays true.
+  3. A record left `executing` and waiting for a root, by a crash between the two transactions,
+     has started no work. The recovery sweep that already catches an approval cut before its row
+     exists opens it with no home.
 - **Webchat.** The root is an agent post at the conversation's root, and the task is keyed
   `webchat:<conv>:<rootPostId>:<agent>` (webchat-threads.md §5.2), drawn as that root's thread
   footer. A daemon without `webchat-threads-v1` runs the proposal as today.
@@ -738,7 +758,9 @@ task's row, for display only: the introduction's own thread for a join, the aske
 requested one. The console then draws the task as one with a home (§6.9.5), and its row opens that
 thread: the introduction, the cards and the replies. The thread is not attached to the task, which
 ended with its one check and takes no message. It stays unowned, so a reply there reaches the
-coordinator (§7), which holds the report. A round that posted no reply, as in an external place,
+coordinator (§7), which holds the report. The row keeps it in a field apart from its attached
+threads, so routing, `listTasks`' "thread attached", `taskParentSessionId` and the 7-day close
+never read it. A round that posted no reply, as in an external place,
 records none.
 
 #### 6.9.3 Read-only tasks
@@ -767,11 +789,18 @@ records none.
   section's layer (b) would close that and is not part of this change.
 - **What it still writes.** Its replies in the threads it holds, `updateTask`, and `propose`, as a
   check has: a read-only task that finds work to do offers it as a card in its thread, and the
-  approved work is a new task with a home of its own (§6.9.1).
+  approved work is a new task with a home of its own (§6.9.1). It proposes at most once a turn,
+  as a check does at most once a check. Where the place has no card surface the proposal waits in
+  the console (assistant-mode.md §5.10), and the tool's answer tells the task to say so in its
+  reply.
 - **Where the flag lives.** On the task's row. A check's profile is chosen by its `subsession:`
   coordinate, and a threaded task's coordinate is its thread. The row's flag is applied on every
   turn, whoever sent the message, for the task's whole life. A reply in the thread cannot lift it;
   work that needs to write is another task.
+- **Fail closed across versions.** Both layers read the row, so a daemon that does not know the
+  flag would enforce neither. The daemon advertises a capability for it; `readOnly` is offered and
+  accepted only where the agent's daemon, and every member of its set, advertises it; and a daemon
+  refuses to run a turn of a row whose flag it cannot read, rather than run it writable.
 - **Shown.** `listTasks`, the work board and the console's task row say read-only. A proposal's
   card says it, and the proposal's hash binds it with the rest of its arguments.
 - **Limit.** The check profile refuses the agent's own MCP servers and any native tool that asks
@@ -780,7 +809,8 @@ records none.
   `readOnlyHint` is open (below).
 - **Validation.** The coordinator's prompt gains one sentence on when to pass `readOnly`, and the
   runtime matrix (§12) a scenario: a request only to look is delegated read-only. Tool description
-  sizes are measured in the change that adds the field.
+  sizes are measured in the change that adds the field, which also adds read-only tasks to the
+  repository's threat model: the label is a security claim people will rely on.
 
 #### 6.9.4 `getToKnow` stays
 
@@ -800,7 +830,8 @@ short trigger for machinery that exists either way.
 - **A getting-to-know task is listed among Tasks**, not Follow-ups: it follows nothing, and is a
   follow-up only in how it is stored. While it reads it has no mark and opens its page. Once its
   introduction has posted it carries the mark and opens that thread (§6.9.2). A task's row may
-  open a thread the task cannot be written to in, as this one does.
+  open a thread the task cannot be written to in, as this one does. The grouping reads the row's
+  getting-to-know marker, since its mode is still watch.
 - **No "background task" in the product.** The transcript's captions read "Report from a task" and
   "Instruction for this task". This document keeps the term for the rules of §6.2.
 - **Long session messages fold.** A report, a task's instruction or another agent's message shows
@@ -823,10 +854,12 @@ Auto switch is off (§6.3).
 
 Open:
 
-- Whether threaded tasks count against `maxConcurrentSubsessions` (#3970).
+- Whether threaded tasks count against `maxConcurrentSubsessions` (#3970). An approved proposal
+  starts from the agent's own check, not from a person's message, so outside the cap its approvals
+  are its only bound.
 - Whether a read-only task may call a user MCP server's tools that declare `readOnlyHint`. The
-  hint is the server's own claim, so the answer depends on how far an organization's configured
-  servers are trusted.
+  hint is the server's own claim, so it is not enough alone; the likelier form is an
+  organization's allow per server.
 - Whether an approved proposal with a home may make a code channel, with the approver in the
   author's place.
 - How often `getToKnow` is called. If almost never, the tool's description is a cost every
