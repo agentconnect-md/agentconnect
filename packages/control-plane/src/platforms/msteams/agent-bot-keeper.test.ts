@@ -3,7 +3,7 @@ import type { HttpDeps } from '../../http/deps.js'
 import type { BotRecord } from '../../persistence/ports.js'
 import { memoryMsTeamsAgentBotRequestStore } from '../../../test/fakes/msteams-agent-bot-request-store.js'
 import { MSTEAMS_AGENT_BOT_NAME_KEY, MsTeamsAgentBotKeeper } from './agent-bot-keeper.js'
-import { msTeamsAgentBotKey, msTeamsAgentBotResourceName } from './agent-bots.js'
+import { MsTeamsAgentBotError, msTeamsAgentBotKey, msTeamsAgentBotResourceName } from './agent-bots.js'
 import { msTeamsAgentBotEntries } from './deployment-app.js'
 
 const BLUEPRINT = '11111111-1111-4111-8111-111111111111'
@@ -142,6 +142,30 @@ describe('MsTeamsAgentBotKeeper', () => {
       [TENANT, 'identity-c']
     ])
     expect(client.listIdentities).toHaveBeenCalledWith(TENANT)
+  })
+
+  it('keeps the registration that points at an identity until the identity is gone, so a failed removal is found again', async () => {
+    const { keeper, client } = harness([])
+    const unreachable = new MsTeamsAgentBotError('identity', undefined, undefined)
+    client.deleteIdentity.mockRejectedValueOnce(unreachable)
+    await expect(keeper.remove(row())).rejects.toBe(unreachable)
+    expect(client.deleteRegistration).not.toHaveBeenCalled()
+
+    // The tenant has no row left: the registration is the only thing that names the identity.
+    client.listRegistrations.mockResolvedValue([{ key: KEY_A, identity: 'identity-a', tenantId: TENANT }])
+    await keeper.sweep()
+    client.deleteIdentity.mockRejectedValueOnce(unreachable)
+    await keeper.sweep()
+    expect(client.deleteRegistration).not.toHaveBeenCalled()
+    await keeper.sweep()
+    expect(client.deleteIdentity).toHaveBeenLastCalledWith(TENANT, 'identity-a')
+    expect(client.deleteRegistration.mock.calls).toEqual([[KEY_A]])
+
+    // A tenant whose principal is gone has nothing left to delete with, so the registration goes alone.
+    client.deleteRegistration.mockClear()
+    client.deleteIdentity.mockRejectedValueOnce(new MsTeamsAgentBotError('token', 400, '7000229'))
+    await keeper.remove(row())
+    expect(client.deleteRegistration.mock.calls).toEqual([[KEY_A]])
   })
 
   it('spares an orphan that got its row between two sweeps, and goes on when a tenant cannot be listed', async () => {

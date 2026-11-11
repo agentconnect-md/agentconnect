@@ -3,7 +3,7 @@
 import { MSTEAMS_PLATFORM } from '@agentconnect.md/protocol'
 import type { HttpDeps } from '../../http/deps.js'
 import type { BotRecord } from '../../persistence/ports.js'
-import { msTeamsAgentBotKey, type MsTeamsAgentBotClient } from './agent-bots.js'
+import { MsTeamsAgentBotError, msTeamsAgentBotKey, type MsTeamsAgentBotClient } from './agent-bots.js'
 import { msTeamsAgentBotOf, type MsTeamsAgentBots } from './deployment-app.js'
 
 /** The row's record of the name its bot was last given. */
@@ -52,10 +52,20 @@ export class MsTeamsAgentBotKeeper {
   /** A deleted row's bot: its registration and its identity go, which needs no administrator of the tenant. */
   async remove(bot: BotRecord): Promise<void> {
     const key = this.keyOf(bot)
-    if (!key) return
+    if (key) await this.removeBot(key, bot.externalTenantId, bot.externalAppId)
+  }
+
+  // The identity goes first: the registration is what still points at it, so it stays until the identity is gone and a failed attempt is found again.
+  private async removeBot(key: string, tenantId: string | null, identity: string | null): Promise<void> {
+    if (tenantId && identity) {
+      try {
+        await this.deps.client.deleteIdentity(tenantId, identity)
+      } catch (err) {
+        // A tenant whose principal is gone has nothing left to delete with; Microsoft unreachable is tried again.
+        if (!(err instanceof MsTeamsAgentBotError) || err.transient) throw err
+      }
+    }
     await this.deps.client.deleteRegistration(key)
-    if (bot.externalAppId && bot.externalTenantId)
-      await this.deps.client.deleteIdentity(bot.externalTenantId, bot.externalAppId)
   }
 
   /** Gives each bot its agent's current name, where the row does not record that name yet. */
@@ -104,11 +114,10 @@ export class MsTeamsAgentBotKeeper {
     const found = new Map<string, () => Promise<void>>()
     for (const registration of await this.deps.client.listRegistrations()) {
       if (named.has(registration.key)) continue
-      found.set(`registration ${registration.key}`, () => this.deps.client.deleteRegistration(registration.key))
-      const { identity, tenantId } = registration
       // A tenant with no row left is reached only through the registration that still points into it.
-      if (identity && tenantId)
-        found.set(`identity ${tenantId} ${identity}`, () => this.deps.client.deleteIdentity(tenantId, identity))
+      found.set(`registration ${registration.key}`, () =>
+        this.removeBot(registration.key, registration.tenantId, registration.identity)
+      )
     }
     for (const tenantId of tenants) {
       try {

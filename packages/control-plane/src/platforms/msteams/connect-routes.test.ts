@@ -874,8 +874,8 @@ describe('a member who is not an administrator (§8.6.6)', () => {
     expect(cancelled.statusCode).toBe(204)
     expect(h.order.filter((step) => step === 'withdraw' || step.startsWith('delete'))).toEqual([
       'withdraw',
-      'delete registration',
-      'delete identity'
+      'delete identity',
+      'delete registration'
     ])
     expect(h.requestRows.size).toBe(0)
     expect((await h.app.inject({ method: 'DELETE', url: `/integrations/msteams/requests/${id}` })).statusCode).toBe(404)
