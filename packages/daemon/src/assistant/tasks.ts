@@ -99,6 +99,8 @@ export interface AssistantTasksHost {
     nextCheck?: number
     summary?: string
     asker: string
+    /** The platform thread its reports reply in, as the offering turn's would (§5.10). */
+    replyThread?: string
   }): Promise<CheckedTask>
   /** Watch a taken follow-up's object (assistant-mode.md §5.14); why it is not watched, or undefined when it is or will be. */
   watchFollowUp?(agentId: string, taskKey: string, url: string): Promise<string | undefined>
@@ -178,6 +180,7 @@ export class AssistantTasks {
     const fail = async (reason: string): Promise<TaskStart> =>
       (await ledger.failTask(draft.id, by, reason, now)) ? { kind: 'failed', reason } : { kind: 'lost' }
     if (!proposal) return await fail('the proposal has no follow-up')
+    if (proposal.itemId === null) return await fail('an offered follow-up runs no task')
     // Left waiting: the duty holder runs it, and a click that reached another daemon is tried again there.
     if (!this.host.servesAgent(draft.agentId) || this.host.draining())
       return { kind: 'busy', reason: 'the agent is not running here right now; approve again in a moment' }
@@ -539,19 +542,23 @@ export class AssistantTasks {
     // Left waiting: the duty holder takes it, and a click that reached another daemon is tried again there.
     if (!this.host.servesAgent(draft.agentId) || this.host.draining())
       return { kind: 'busy', reason: 'the agent is not running here right now; approve again in a moment' }
-    const item = await this.host.items.get(draft.agentId, proposal.itemId)
-    if (!item) return await fail('its follow-up is gone')
-    if (!actsOn(item)) return await fail('its follow-up has ended')
-    const parent = await this.host.parentFor(draft.agentId, item.origin)
+    // An offer from an ordinary turn acts on no task: its record names the conversation and the session that offered it.
+    const offered = proposal.itemId === null ? offerOf(draft) : undefined
+    const item = proposal.itemId === null ? undefined : await this.host.items.get(draft.agentId, proposal.itemId)
+    if (!offered && !item) return await fail('its follow-up is gone')
+    if (item && !actsOn(item)) return await fail('its follow-up has ended')
+    const origin = item?.origin ?? offered!.origin
+    const parent = (await this.host.parentFor(draft.agentId, origin)) ?? offered?.caller
     if (!parent) return await fail('the conversation its follow-up belongs to has no ongoing session to report to')
-    const taskKey = followUpTaskKey(draft.agentId, item.origin)
+    const taskKey = followUpTaskKey(draft.agentId, origin)
     if (!(await ledger.beginFollowUp(draft.id, by, taskKey, now))) return { kind: 'lost' }
     try {
       await this.host.takeFollowUp({
         taskKey,
         agentId: draft.agentId,
-        origin: item.origin,
-        caller: { sessionId: parent.sessionId, key: parent.key },
+        origin,
+        caller: offered?.caller ?? { sessionId: parent.sessionId, key: parent.key },
+        ...(offered?.replyThread ? { replyThread: offered.replyThread } : {}),
         title: form.title,
         doneWhen: form.doneWhen,
         ...(form.nextCheck !== null ? { nextCheck: form.nextCheck } : {}),
@@ -658,7 +665,7 @@ export class AssistantTasks {
     const proposal = draft.proposal
     const at = caller ?? callerOf(draft, key)
     if (!at || !proposal) return
-    const item = await this.host.items.get(agentId, proposal.itemId)
+    const item = proposal.itemId === null ? undefined : await this.host.items.get(agentId, proposal.itemId)
     const delivered = await this.host
       .reportToParent(
         agentId,
@@ -695,7 +702,7 @@ export class AssistantTasks {
     if (this.host.draining()) return
     try {
       const proposal = draft.proposal
-      const item = proposal ? await this.host.items.get(draft.agentId, proposal.itemId) : undefined
+      const item = proposal?.itemId ? await this.host.items.get(draft.agentId, proposal.itemId) : undefined
       const parent = item ? await this.host.parentFor(draft.agentId, item.origin) : undefined
       if (!item || !parent) {
         const ledger = this.host.ledger()
@@ -731,6 +738,24 @@ function endReason(end: SubsessionTurnEnd): string {
   if (end.outcome === 'refused') return `it did not start: ${end.reason ?? 'refused'}`
   if (end.outcome === 'failed') return 'it failed'
   return `it was stopped (${end.reason ?? 'interrupted'})`
+}
+
+/** An offer's conversation, the session that offered it, and the thread that session's reply landed in (§5.10); undefined without its session. */
+function offerOf(
+  draft: AssistantDraft
+): { origin: AssistantPlace; caller: { sessionId: string; key: string }; replyThread: string | undefined } | undefined {
+  const source = draft.source
+  if (!source?.sessionId || !source.sessionKey) return undefined
+  const origin = {
+    platform: draft.target.platform,
+    channel: draft.target.channel,
+    transportScope: source.transportScope
+  }
+  return {
+    origin,
+    caller: { sessionId: source.sessionId, key: source.sessionKey },
+    replyThread: draft.target.thread ?? undefined
+  }
 }
 
 /** The task sub-session's coordinates, from its key and the place it shares with the follow-up that proposed it. */

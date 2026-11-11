@@ -298,6 +298,10 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
         conn.replyTo(frame, 'gitcred/grant', grant)
         return
       }
+      if (purpose !== undefined) {
+        conn.sendError(frame.id, 'SCOPE_DENIED', `gitlab has no ${purpose} credential`, false)
+        return
+      }
       // The binding's PAT under the workspace access clamp (§13.1).
       const grant = await deps.gitlabGitcred!.grantForAgent(
         agent,

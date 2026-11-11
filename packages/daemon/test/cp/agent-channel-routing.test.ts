@@ -16,7 +16,7 @@ import {
   RUNTIME_NO_MINT_ERROR,
   type AgentChannelServerDeps
 } from '../../src/cp/agent-channel-server.js'
-import { GitCredUnavailableError, type GitCredentialCache } from '../../src/cp/git-credential.js'
+import { GitCredUnavailableError, proxyOnlyRefusal, type GitCredentialCache } from '../../src/cp/git-credential.js'
 import { MAX_SKILL_WINDOW_TTL_MS, SkillCredentialWindows } from '../../src/cp/skill-credential-window.js'
 import { TunnelBinder, type TunnelSession } from '../../src/remote/tunnel-binder.js'
 import type { ShimEvent } from '../../src/shim/protocol.js'
@@ -63,6 +63,7 @@ describe('AgentChannelServer routing (agent.sock)', () => {
     provider?: string
     externalRepoId?: string
     requestedAccess?: string
+    consumer?: string
   }
   interface GetCall {
     agentId: string
@@ -197,59 +198,25 @@ describe('AgentChannelServer routing (agent.sock)', () => {
     expect(gets).toEqual([
       {
         agentId: 'a1',
-        opts: { plane: 'git', repo: 'example-group/example-second', provider: 'gitlab', externalRepoId: '4455668' }
+        opts: {
+          plane: 'git',
+          repo: 'example-group/example-second',
+          provider: 'gitlab',
+          externalRepoId: '4455668',
+          consumer: 'daemon'
+        }
       }
     ])
   })
 
-  it('serves the credential proxy exactly the ask the helper and the glab wrapper make', async () => {
-    const { sockPath, gets, capability } = await boot('example-group/example-project', {
-      providerOf: () => 'gitlab',
-      workspaceRepoIdOf: () => '4455667',
-      qualifiedRepoOf: (_agentId: string, repoFullName: string) =>
-        repoFullName === 'example-group/example-second'
-          ? ({ provider: 'gitlab', externalId: '4455668' } as const)
-          : undefined
+  it('refuses a gitlab credential to the runtime’s helper', async () => {
+    const { sockPath, gets, runtimeCapability } = await boot('example-group/example-project', {
+      providerOf: () => 'gitlab'
     })
-    const helper = await roundtrip(sockPath, {
-      op: 'get',
-      agentId: 'a1',
-      capability,
-      repoFullName: 'example-group/example-second',
-      provider: 'gitlab'
-    })
-    const proxied = await server!.agentCredential('a1', {
-      plane: 'git',
-      provider: 'gitlab',
-      repoFullName: 'example-group/example-second'
-    })
-    expect(proxied).toEqual({ username: 'x-access-token', token: helper.password, access: 'write' })
-    // The grant's tier is for the proxy alone; the helper's reply stays as it was.
-    expect(helper).not.toHaveProperty('access')
-    expect(gets[1]).toEqual(gets[0])
-    // The workspace by path folds onto its repo-less key, and the API read takes glab's read clamp.
-    await server!.agentCredential('a1', {
-      plane: 'glab',
-      provider: 'gitlab',
-      repoFullName: 'example-group/example-project'
-    })
-    expect(gets[2]).toEqual({
-      agentId: 'a1',
-      opts: { plane: 'glab', provider: 'gitlab', externalRepoId: '4455667', requestedAccess: 'read' }
-    })
-    await expect(server!.agentCredential('a1', { plane: 'git', provider: 'gitea' })).rejects.toThrow(
-      'no managed gitea credential'
-    )
-  })
-
-  it.each(['read', 'comment'] as const)('hands the credential proxy a %s grant’s tier', async (access) => {
-    await boot('example-owner/example-repo', { providerOf: () => 'gitea' }, undefined, access)
-    const proxied = await server!.agentCredential('a1', {
-      plane: 'git',
-      provider: 'gitea',
-      repoFullName: 'example-owner/example-repo'
-    })
-    expect(proxied).toMatchObject({ token: 'ghs_test', access })
+    expect(
+      await roundtrip(sockPath, { op: 'get', agentId: 'a1', capability: runtimeCapability, provider: 'gitlab' })
+    ).toEqual({ ok: false, error: proxyOnlyRefusal('gitlab'), denied: 'agent' })
+    expect(gets).toEqual([])
   })
 
   it('routes a private GitHub skill source to GitHub even when the workspace credential is gitlab', async () => {
@@ -282,7 +249,10 @@ describe('AgentChannelServer routing (agent.sock)', () => {
       repoFullName: 'example-group/other'
     })
     expect(other.ok).toBe(true)
-    expect(gets[1]).toEqual({ agentId: 'a1', opts: { plane: 'git', repo: 'example-group/other', provider: 'gitlab' } })
+    expect(gets[1]).toEqual({
+      agentId: 'a1',
+      opts: { plane: 'git', repo: 'example-group/other', provider: 'gitlab', consumer: 'daemon' }
+    })
   })
 
   it.each(['gitlab', 'gitea'] as const)(
@@ -316,15 +286,10 @@ describe('AgentChannelServer routing (agent.sock)', () => {
         repoFullName: 'acme/infra',
         provider: workspaceProvider
       })
-      // Gitea is proxy-only, so its ask names the daemon's own Git as the consumer.
+      // Both are proxy-only, so the ask names the daemon's own Git as the consumer.
       expect(gets[2]).toEqual({
         agentId: 'a1',
-        opts: {
-          plane: 'git',
-          repo: 'acme/infra',
-          provider: workspaceProvider,
-          ...(workspaceProvider === 'gitea' ? { consumer: 'daemon' } : {})
-        }
+        opts: { plane: 'git', repo: 'acme/infra', provider: workspaceProvider, consumer: 'daemon' }
       })
 
       // Erase from the GitHub helper reaches the key its get used.
@@ -361,7 +326,10 @@ describe('AgentChannelServer routing (agent.sock)', () => {
       provider: 'gitlab'
     })
     expect(ws.ok).toBe(true)
-    expect(gets[1]).toEqual({ agentId: 'a1', opts: { plane: 'git', provider: 'gitlab', externalRepoId: '4455668' } })
+    expect(gets[1]).toEqual({
+      agentId: 'a1',
+      opts: { plane: 'git', provider: 'gitlab', externalRepoId: '4455668', consumer: 'daemon' }
+    })
 
     // Erase from the GitHub helper reaches the key the GitHub get used, not the workspace's.
     await roundtrip(sockPath, { op: 'erase', agentId: 'a1', capability, repoFullName: 'acme/tools', password: 'x' })
@@ -382,7 +350,10 @@ describe('AgentChannelServer routing (agent.sock)', () => {
     })
     expect(res.ok).toBe(true)
     expect(gets).toEqual([
-      { agentId: 'a1', opts: { plane: 'git', repo: 'example-org/example-skills', provider: 'gitlab' } }
+      {
+        agentId: 'a1',
+        opts: { plane: 'git', repo: 'example-org/example-skills', provider: 'gitlab', consumer: 'daemon' }
+      }
     ])
   })
 
@@ -719,7 +690,14 @@ describe('AgentChannelServer routing (agent.sock)', () => {
       expect(await askVia(sockPath, greeting, window.capability, gitlab)).toMatchObject({ ok: true })
       expect(gets.at(-1)).toEqual({
         agentId: 'a1',
-        opts: { plane: 'glab', repo: PROJECT, provider: 'gitlab', externalRepoId: '77', requestedAccess: 'read' }
+        opts: {
+          plane: 'glab',
+          repo: PROJECT,
+          provider: 'gitlab',
+          externalRepoId: '77',
+          requestedAccess: 'read',
+          consumer: 'daemon'
+        }
       })
     })
 

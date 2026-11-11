@@ -471,8 +471,8 @@ export async function executeTool(
     // Its question to another agent always asks for the answer, which comes back to it as a report.
     if (name === 'sendMessage' && args.action === 'callAgent')
       args = { ...args, toAgent: askingForAnswer(args.toAgent) }
-    // A place tool that acts for a person names their message, whose sender and thread it acts on.
-    if (COORDINATOR_MESSAGE_TOOLS.has(name)) {
+    // A place tool that acts for a person names their message, whose sender and thread it acts on; an offer may name the one it answers.
+    if (COORDINATOR_MESSAGE_TOOLS.has(name) || (name === 'propose' && args.messageId != null)) {
       const { messageId, ...rest } = args
       const found = deps.coordinatorMessage?.(ctx, messageId) ?? { error: 'is not available on this daemon' }
       if ('error' in found) throw new Error(`${name}: ${found.error}`)

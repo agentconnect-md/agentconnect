@@ -459,11 +459,11 @@ accounts.
 
 ### 7.3 Three Credential Purposes
 
-| Purpose     | Service-account PAT scopes    | Consumer                                                                                               | Agent-visible                       |
-| ----------- | ----------------------------- | ------------------------------------------------------------------------------------------------------ | ----------------------------------- |
-| `read`      | `read_api`, `read_repository` | Git helper for clone/fetch and read-only provider wrapper                                              | Only per invocation/helper response |
-| `git_write` | `write_repository`            | Git helper for push                                                                                    | Only per Git operation              |
-| `effect`    | `api`                         | Trusted daemon broker for external effects; Control Plane broker for allowlisted metadata/policy reads | Never                               |
+| Purpose     | Service-account PAT scopes    | Consumer                                                                                                    | Agent-visible                                              |
+| ----------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `read`      | `read_api`, `read_repository` | Credential proxy for clone/fetch and the read-only provider CLI; the daemon's own Git and reads on its host | Never; a private skill source's credential window excepted |
+| `git_write` | `write_repository`            | Credential proxy for push; the daemon's own Git on its host                                                 | Never                                                      |
+| `effect`    | `api`                         | Trusted daemon broker for external effects; Control Plane broker for allowlisted metadata/policy reads      | Never                                                      |
 
 The separation matters because a service-account personal access token with
 `api` can perform broad API operations within the project and can also access
@@ -1169,6 +1169,19 @@ checkout's pin hand git the credential proxy's placeholder, which the proxy
 exchanges for this credential per request (github-app-git-credentials.md,
 Phase 2).
 
+The `read` and `git_write` tokens are proxy-only, as Azure DevOps's are
+([Azure DevOps §6.1](azure-devops-integration.md#61-proxy-only)). They last
+months and reach every project the service account is a member of, so the
+Control Plane serves them to the credential proxy and the daemon's own Git
+alone, and refuses the agent-facing helper and a request that names no
+consumer, so a daemon that predates the rule loses GitLab Git until it is
+upgraded and its refusal says so. Daemon Git inside a local SRT or VM, a Cloud pod or a remote
+executor takes the proxy route with the placeholder, as the agent's own Git
+does. The one remaining exception is a private GitLab skill source's
+acquisition inside a pod, whose credential window still returns a `read`
+token until scoped source operations move to the proxy
+(github-app-git-credentials.md, delivery 3).
+
 The managed feature allows only the exact `https://gitlab.com` origin. An
 operator-supplied `workspaceGitAllowedOrigins` remains authoritative; the
 feature readiness check must explain when that explicit policy excludes
@@ -1184,7 +1197,10 @@ When `glab` is installed, a session runs it directly: `GITLAB_HOST` names
 the spec's instance and `GITLAB_TOKEN` carries the credential proxy's
 placeholder. The proxy resolves the project each API request names, serves a
 read with the binding's `read` credential, and refuses an unbound or
-unauthorized project (github-app-git-credentials.md, Phase 2).
+unauthorized project (github-app-git-credentials.md, Phase 2). A read that
+names no project, such as the account's own profile or its merge-request list,
+is served with the workspace project's `read` credential and is refused for an
+agent with no workspace project.
 
 Mutating API requests are refused at the proxy with an error naming the
 effect tools. Supported mutations use structured broker tools, so prompt

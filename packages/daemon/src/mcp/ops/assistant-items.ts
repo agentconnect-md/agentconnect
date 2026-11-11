@@ -11,7 +11,7 @@ import type { CheckedTask, CheckedTasks } from '../../assistant/checked-tasks.js
 import { ASSISTANT_ITEM_LIMITS, type AssistantPlace } from '../../store/assistant-items.js'
 import type { WatchTaskStatus } from '../../store/assistant-watch-tasks.js'
 import { obj, type JsonValue, type ObjectToolSchema, type ToolDescriptor } from '../../tool-schema/descriptor.js'
-import { isCheckCoordinate } from '../../session/subsession-coordinate.js'
+import { isCheckCoordinate, isSubsessionCoordinate } from '../../session/subsession-coordinate.js'
 import type { SessionContext, ToolHandler } from './context.js'
 import { parseArgs, requiredString } from './args.js'
 
@@ -56,8 +56,8 @@ export interface AssistantItemDeps {
     take?(ctx: SessionContext, input: FollowUpInput): Promise<CheckedTask>
     /** Start a getting-to-know task of the session's place, as its long session asked (assistant-mode.md §5.13). */
     gettingToKnow?(ctx: SessionContext): Promise<GettingToKnowRequest>
-    /** A proposal of the place's long session on the round a getting-to-know task reports back (§5.13); refused on any other. */
-    proposeAfterGettingToKnow?(ctx: SessionContext, input: ProposeInput): Promise<Record<string, unknown>>
+    /** A conversation turn's proposal: a getting-to-know task report round's suggestions (§5.13), else an offered follow-up (§5.10). */
+    proposeFromTurn?(ctx: SessionContext, input: ProposeInput): Promise<Record<string, unknown>>
     /** The follow-ups' watches; absent when the Control Plane takes none, so `watch` is refused. */
     watches?(): FollowUpWatchToolPort | undefined
     /** A check's side, in the follow-up's own session. */
@@ -224,7 +224,8 @@ export const FOLLOW_UP_TOOL: ToolDescriptor = {
     'listed with listTasks, given new instructions with messageTask and ended with stopTask, by the `taskId` this ' +
     'returns. That id is for those calls alone: never show it to people, who know the follow-up by its title. ' +
     'Taken in a public channel, its title is also listed in your other internal conversations, so name it ' +
-    'plainly.',
+    'plainly. When you are the one offering a follow-up nobody asked for and `propose` is offered, propose it ' +
+    'instead of asking in prose.',
   inputSchema: obj(
     {
       title: {
@@ -350,21 +351,93 @@ export const PROPOSE_TOOL: ToolDescriptor = {
   )
 }
 
+const OFFER_DESCRIPTION =
+  'Offer to follow something up when you think it is worth it and nobody asked: instead of ending your reply with a ' +
+  'question such as "shall I check again at 15:30?", call this, and do not also ask in prose. A card with Approve and ' +
+  'Deny is posted in the thread you reply in, after your reply. Approving it takes the follow-up of this ' +
+  'conversation with the approver as its asker, reporting in that thread as one taken with followUp here would; ' +
+  'nothing runs, you get no turn for it, and it expires after 24 hours. `sentence` is the one plain sentence people ' +
+  'read first ("I can check the deploy again at 15:30 and tell you here"); `why` is the reason; `followUp` is what ' +
+  'is followed up. At most once per turn. When someone asked you to follow something up, restate it and use ' +
+  'followUp once they confirm instead.'
+
+const checkProposal = PROPOSE_TOOL.inputSchema as ObjectToolSchema
+const checkFollowUpForm = checkProposal.properties.followUp as ObjectToolSchema
+
+const OFFER_FOLLOW_UP: JsonValue = obj(
+  {
+    title: checkFollowUpForm.properties.title!,
+    doneWhen: checkFollowUpForm.properties.doneWhen!,
+    nextCheck: {
+      type: 'string',
+      description: `Optional. When to check first: ${NEXT_CHECK} Without it, it waits until messaged.`
+    }
+  },
+  ['title', 'doneWhen']
+)
+
+/** An ordinary conversation turn's `propose` (assistant-mode.md §5.10): the follow-up form only, where the conversation has approval cards. */
+export const PROPOSE_OFFER_TOOL: ToolDescriptor = {
+  name: 'propose',
+  description: OFFER_DESCRIPTION,
+  inputSchema: obj(
+    {
+      sentence: {
+        type: 'string',
+        minLength: 1,
+        maxLength: ASSISTANT_PROPOSAL_SENTENCE_MAX,
+        description: 'The one plain sentence people read first, in their language.'
+      },
+      why: {
+        type: 'string',
+        minLength: 1,
+        maxLength: ASSISTANT_PROPOSAL_WHY_MAX,
+        description: 'Why it is worth following up.'
+      },
+      followUp: OFFER_FOLLOW_UP
+    },
+    ['sentence', 'why', 'followUp']
+  )
+}
+
+/** The same for a place's long session that may get to know it (§5.13): its report's round may also propose a task. */
+export const PROPOSE_PLACE_TOOL: ToolDescriptor = {
+  name: 'propose',
+  description:
+    OFFER_DESCRIPTION +
+    ' On the round a getting-to-know report arrives, propose its suggestions here instead, at most three, as that ' +
+    'report says; there `task` may replace `followUp`: what a background session with your normal permissions does ' +
+    'once approved.',
+  inputSchema: obj(
+    {
+      ...(PROPOSE_OFFER_TOOL.inputSchema as ObjectToolSchema).properties,
+      task: checkProposal.properties.task!
+    },
+    ['sentence', 'why']
+  )
+}
+
 /** The tools with `watch`, offered only toward a Control Plane that takes watches (§5.14). */
 export const FOLLOW_UP_WATCH_TOOL = withWatch(FOLLOW_UP_TOOL, WATCH_PROPERTY)
 export const RECORD_CHECK_WATCH_TOOL = withWatch(RECORD_CHECK_TOOL, RECORD_CHECK_WATCH_PROPERTY)
-const proposeSchema = PROPOSE_TOOL.inputSchema as ObjectToolSchema
-const followUpForm = proposeSchema.properties.followUp as ObjectToolSchema
-export const PROPOSE_WATCH_TOOL: ToolDescriptor = {
-  ...PROPOSE_TOOL,
-  inputSchema: {
-    ...proposeSchema,
-    properties: {
-      ...proposeSchema.properties,
-      followUp: { ...followUpForm, properties: { ...followUpForm.properties, watch: WATCH_PROPERTY } }
+/** A `propose` descriptor whose follow-up form also takes `watch`. */
+function proposeWithWatch(tool: ToolDescriptor): ToolDescriptor {
+  const schema = tool.inputSchema as ObjectToolSchema
+  const form = schema.properties.followUp as ObjectToolSchema
+  return {
+    ...tool,
+    inputSchema: {
+      ...schema,
+      properties: {
+        ...schema.properties,
+        followUp: { ...form, properties: { ...form.properties, watch: WATCH_PROPERTY } }
+      }
     }
   }
 }
+export const PROPOSE_WATCH_TOOL = proposeWithWatch(PROPOSE_TOOL)
+export const PROPOSE_OFFER_WATCH_TOOL = proposeWithWatch(PROPOSE_OFFER_TOOL)
+export const PROPOSE_PLACE_WATCH_TOOL = proposeWithWatch(PROPOSE_PLACE_TOOL)
 
 /** The follow-up tools a conversation is offered: `followUp` in assistant mode, none otherwise; with `watch` toward a Control Plane that takes it. */
 export function followUpToolsFor(
@@ -372,6 +445,16 @@ export function followUpToolsFor(
   opts: { watch?: boolean } = {}
 ): ToolDescriptor[] {
   return assistantModeOn(agent) ? [opts.watch ? FOLLOW_UP_WATCH_TOOL : FOLLOW_UP_TOOL] : []
+}
+
+/** `propose` for an ordinary turn's offer (§5.10): an assistant-mode conversation with approval cards, never a background session's. */
+export function followUpOfferToolsFor(
+  agent: Pick<Agent, 'assistantMode'>,
+  at: { thread: string },
+  opts: { cards: boolean; watch?: boolean }
+): ToolDescriptor[] {
+  if (!assistantModeOn(agent) || !opts.cards || isSubsessionCoordinate(at.thread)) return []
+  return [opts.watch ? PROPOSE_OFFER_WATCH_TOOL : PROPOSE_OFFER_TOOL]
 }
 
 function watchesOf(deps: AssistantItemDeps): FollowUpWatchToolPort {
@@ -504,16 +587,16 @@ async function handBackGettingToKnow(
   return { ok: true, report: 'passed on when this task ends; end your turn now' }
 }
 
-/** A check asks for approval to act (assistant-mode.md §5.10), as does a place's long session after a getting-to-know task (§5.13); it runs nothing itself. */
+/** A check asks for approval to act (assistant-mode.md §5.10), as does a conversation turn: a getting-to-know task's suggestions (§5.13) or an offered follow-up; it runs nothing itself. */
 export const propose: ToolHandler<AssistantItemDeps> = async (ctx, args, deps) => {
-  const afterGettingToKnow = deps.assistantItems?.proposeAfterGettingToKnow
+  const fromTurn = deps.assistantItems?.proposeFromTurn
   const check = isCheckCoordinate(ctx.thread)
-  if (!check && (!afterGettingToKnow || !ctx.tools.some((tool) => tool.name === 'propose')))
+  if (!check && (!fromTurn || !ctx.tools.some((tool) => tool.name === 'propose')))
     throw new Error('propose is available only in a follow-up’s check')
   const input = parseArgs(PROPOSE_ARGS, args)
   ledgerOf(ctx, deps)
   if (input.followUp?.watch !== undefined) watchesOf(deps).check(input.followUp.watch)
-  if (!check) return await afterGettingToKnow!(ctx, input)
+  if (!check) return await fromTurn!(ctx, input)
   const port = deps.assistantItems?.check
   if (!port?.propose) throw new Error('this check has ended; nothing was proposed')
   return await port.propose(ctx, input)

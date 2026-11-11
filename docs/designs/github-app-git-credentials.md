@@ -20,10 +20,11 @@
 >
 > Credential-degradation telemetry and the corresponding web warnings remain
 > planned. [Unified managed Git network operations](#unified-managed-git-network-operations)
-> has an implemented path for Azure DevOps and Gitea inside execution environments.
-> GitHub and GitLab, scoped source operations and the final host-side decision remain
-> later deliveries. Controlled transport tests exercise real Git; they do not
-> establish live Cloud/VM/executor validation or the required capacity results.
+> has an implemented path for Azure DevOps, Gitea and GitLab inside execution
+> environments. GitHub, scoped source operations and the final host-side decision
+> remain later deliveries. Controlled transport tests exercise real Git; they do not
+> establish live Cloud/VM/executor validation. The capacity gate is measured on one
+> pod only.
 >
 > The workspace _shape_ this document assumes (a per-host `github` mode) is
 > being re-modeled into a host-neutral `git` mode with a credential union —
@@ -1092,9 +1093,9 @@ route readiness replaces the blanket environment bans in
 [Azure DevOps §6.1](azure-devops-integration.md#61-proxy-only). Controlled transport
 tests exercise real Git clone, fetch and push through the shim listener and
 codehost tunnel, including a direct bundle download and authorization refusals.
-These fixtures do not establish the live environment matrix below. Gitea takes the
-same path through the same `proxyOnly` selector. GitHub and GitLab remain on their
-existing daemon-Git path, and the capacity gate has not been measured.
+These fixtures do not establish the live environment matrix below. Gitea and GitLab
+take the same path through the same `proxyOnly` selector. GitHub remains on its
+existing daemon-Git path, and the capacity gate is measured on one pod only.
 
 #### Decision and scope
 
@@ -1222,13 +1223,13 @@ An agent is never classified as an Azure agent or a GitHub agent for routing. A
 GitHub primary workspace can have an Azure additional repository, and vice versa.
 Scratch workspaces with only additional repositories follow the same rule.
 
-| Operation in the same agent                             | First delivery                                                                 | Final state                                                           |
-| ------------------------------------------------------- | ------------------------------------------------------------------------------ | --------------------------------------------------------------------- |
-| In-environment daemon Git targeting Azure or Gitea      | Shared proxy preparation                                                       | Same path                                                             |
-| In-environment daemon Git targeting GitHub or GitLab    | Existing helper path, unchanged                                                | Shared proxy preparation after capacity gate                          |
-| Git on the owning daemon's own machine, including Azure | Existing helper path, unchanged                                                | Separate final decision after full-clone measurement                  |
-| Agent runtime Git targeting either repository           | Existing multi-provider proxy path, verified in the newly enabled environments | Same path                                                             |
-| In-environment private managed skill/source Git         | Existing scoped credential-window path                                         | Proxy path preserving the window's subject, repository set and access |
+| Operation in the same agent                                | First delivery                                                                 | Final state                                                           |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------ | --------------------------------------------------------------------- |
+| In-environment daemon Git targeting Azure, Gitea or GitLab | Shared proxy preparation                                                       | Same path                                                             |
+| In-environment daemon Git targeting GitHub                 | Existing helper path, unchanged                                                | Shared proxy preparation after capacity gate                          |
+| Git on the owning daemon's own machine, including Azure    | Existing helper path, unchanged                                                | Separate final decision after full-clone measurement                  |
+| Agent runtime Git targeting either repository              | Existing multi-provider proxy path, verified in the newly enabled environments | Same path                                                             |
+| In-environment private managed skill/source Git            | Existing scoped credential-window path                                         | Proxy path preserving the window's subject, repository set and access |
 
 The first delivery can select proxy preparation at the common operation seam using
 the target provider's existing `proxyOnly` contract. Do not inspect whether the
@@ -1243,11 +1244,19 @@ is the organization's bot token, which reaches every repository the bot administ
 whatever the agent's grant, and its tiers are an AgentConnect clamp rather than a
 provider role ([Gitea §5](gitea-integration.md#5-resource-model)). A GitHub token is
 one repository for an hour, and a GitLab token is the agent's own account. The gate
-still applies before GitHub and GitLab move, and its measurement includes Gitea's clones.
+still applies before GitHub moves, and its measurement includes Gitea's clones.
 Until it is measured, a pool member's Gitea cold clones cross its event loop
 unmeasured, as Azure's do. An operator who sees renewal delay approach `T_fence`
 under that load moves those agents to a self-hosted daemon's host strategy, whose
 Git keeps its direct path, until the measurement exists.
+
+GitLab follows after the single-pod measurement below. Its tokens are the service
+account's personal access tokens, which last months and reach every project the
+account is a member of
+([GitLab §13.2](gitlab-com-integration.md#132-https-credential-helper)), so like
+Gitea's they are a standing credential rather than a short-lived one. A member with
+several pods cloning at once is still unmeasured, and the same operator fallback
+applies to GitLab's cold clones.
 
 A GitHub operation may still carry its existing daemon capability during this
 stage. That is transitional exposure for that operation, not permission to retrieve
@@ -1326,8 +1335,8 @@ Git must not silently claim that the Azure CLI is installed in every image.
    proxy. A banner alone does not update that contract. Include cleanup of environments
    prepared without launching a runtime in the implementation and its verification.
 2. **Other ordinary managed repositories:** after the measured capacity gate below,
-   move GitHub, GitLab and Gitea in-environment workspace/review and supported
-   nested-repository network calls to that same path. Host-side canonical clones
+   move GitHub in-environment workspace/review and supported nested-repository
+   network calls to that same path; Gitea and GitLab moved earlier. Host-side canonical clones
    stay unchanged.
    Remove the temporary selector, audit direct Git call sites, and remove obsolete
    Git token-helper injection from migrated callers, not the helper still needed
@@ -1409,6 +1418,17 @@ results claimed by this document. A failing budget blocks delivery 2; reduce and
 enforce the admitted concurrency or improve the shared transport and remeasure,
 rather than increasing the lease deadline to hide contention.
 
+**Single-pod result.** Concurrent full clones of a large repository through one
+pod's shim on one pool member, from 1 to 16 at once, with that member's other
+sessions live: its health endpoint's p99 rose by at most about 24 ms, the last
+confirmed renewal was never older than one 5-second heartbeat (the sampling
+resolution), no duty self-fenced, peak memory rose from 256 MiB to 549 MiB under a
+2 GiB limit, and CPU peaked near 1.7 cores. Sixteen concurrent clones took 25.1 s
+through the proxy against 22.2 s direct. At 32, half were refused at the stream
+ceiling, which the queue above now holds instead. Not yet measured: several pods
+cloning on one member, ACP forwarding latency itself, a Source Cache hit, and a full
+clone through the loopback proxy.
+
 Measure Source Cache hit and miss separately. On a hit, verify bundle bytes travel
 from the bundle URI directly to the execution environment and that tunnel bytes
 contain only managed-remote negotiation and top-up fetches. On a miss, measure the
@@ -1425,8 +1445,8 @@ resource/concurrency bounds; this documentation change launches no load test.
   1–3, including Azure canonical clones and host-strategy Git.
 - Azure read grants reject receive-pack discovery and push; an unauthorized repository,
   alternate supported hostname, crafted path or redirect cannot escape the grant.
-  Gitea read grants are refused the same way. In the first delivery, GitHub and
-  GitLab daemon Git retain their existing authorization.
+  Gitea and GitLab read grants are refused the same way. In the first delivery,
+  GitHub daemon Git retains its existing authorization.
 - Captured migrated Git argv/env/config and helper output contain no upstream token
   or token-minting capability. The fake remote receives the token only after proxy
   authorization. A concurrent same-user probe sees at most the scoped placeholder

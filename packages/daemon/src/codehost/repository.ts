@@ -3,7 +3,7 @@ import type { CodeHostProvider } from '@agentconnect.md/protocol'
 import type { CredPlane, GitCredentialCache } from '../cp/git-credential.js'
 import { githubRepository } from '../github/repository.js'
 import { gitlabRepository } from '../gitlab/repository.js'
-import type { CodeHostSpecHosts, QualifiedCodeHostProvider } from './credentials.js'
+import { proxyOnlyConsumer, type CodeHostSpecHosts, type QualifiedCodeHostProvider } from './credentials.js'
 import type { RepositoryRefSpec } from './ref-spec.js'
 
 /** A credentialed repository as resolution addresses it: provider-qualified numeric id plus its current path. */
@@ -85,7 +85,8 @@ export function gitCredReadTokens(cache: Pick<GitCredentialCache, 'get' | 'inval
         ...(ask.provider !== undefined ? { provider: ask.provider } : {}),
         ...(ask.repoFullName !== undefined ? { repo: ask.repoFullName } : {}),
         ...(ask.externalRepoId !== undefined ? { externalRepoId: ask.externalRepoId } : {}),
-        ...(ask.requestedAccess !== undefined ? { requestedAccess: ask.requestedAccess } : {})
+        ...(ask.requestedAccess !== undefined ? { requestedAccess: ask.requestedAccess } : {}),
+        ...proxyOnlyConsumer(ask.provider, 'daemon')
       })
       return {
         token: entry.token,

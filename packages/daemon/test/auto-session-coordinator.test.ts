@@ -24,6 +24,7 @@ import {
   CLAUDE_HEADLESS_DISALLOWED_TOOLS
 } from '../src/runtime-defs/claude-runtime.js'
 import { executeTool } from '../src/mcp/ops.js'
+import { PROPOSE_OFFER_TOOL } from '../src/mcp/ops/assistant-items.js'
 import type { SessionContext } from '../src/mcp/ops/context.js'
 import type { ToolDescriptor } from '../src/tool-schema/descriptor.js'
 import { coordinatorCoordinate, isAppendCoordinate, isCoordinatorCoordinate } from '../src/session/append-coordinate.js'
@@ -146,6 +147,48 @@ describe('the coordinator prompt and batch', () => {
     ])
     // send-message-guide.md goal 3: one flat object, no top-level oneOf for runtimes that ignore it.
     expect(tools[0]?.inputSchema).not.toHaveProperty('oneOf')
+  })
+
+  // assistant-mode.md §5.10: an offer answers one message, whose thread its card goes in; a report round's proposals answer none.
+  it('lets its propose name the message an offered follow-up answers, without requiring one', async () => {
+    const offer = coordinatorSessionTools([PROPOSE_OFFER_TOOL]).find((one) => one.name === 'propose')!
+    const schema = offer.inputSchema as { properties: Record<string, unknown>; required: string[] }
+    expect(schema.properties).toHaveProperty('messageId')
+    expect(schema.required).toEqual(['sentence', 'why', 'followUp'])
+    const asked = slack('1.1')
+    const seen: (NormalizedMessage | undefined)[] = []
+    const deps = {
+      coordinatorMessage: (_ctx: SessionContext, id: string) =>
+        id === 'msg-1.1' ? { msg: asked } : { error: 'no delivered message has that id' },
+      assistantItems: {
+        ledgerFor: () => ({}),
+        askerFor: async () => undefined,
+        proposeFromTurn: async (ctx: SessionContext) => {
+          seen.push(ctx.forMessage)
+          return { proposed: true }
+        }
+      }
+    } as never
+    const ctx: SessionContext = {
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: coordinatorCoordinate(1),
+      deliveryThread: '1.1',
+      isDm: false,
+      tools: [offer]
+    }
+    const args = {
+      sentence: 'I can check the deploy at 15:30.',
+      why: 'It is rolling out.',
+      followUp: { title: 'Deploy', doneWhen: 'It is out.' }
+    }
+    await executeTool(ctx, 'propose', { ...args, messageId: 'msg-1.1' }, deps)
+    await executeTool(ctx, 'propose', args, deps)
+    expect(seen).toEqual([asked, undefined])
+    await expect(executeTool(ctx, 'propose', { ...args, messageId: 'msg-9.9' }, deps)).rejects.toThrow(
+      'propose: no delivered message has that id'
+    )
   })
 
   // auto-session-mode.md §3.4: a report reaches the coordinator beside channel messages, framed apart from them.

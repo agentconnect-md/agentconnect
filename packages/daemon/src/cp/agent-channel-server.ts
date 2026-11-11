@@ -498,49 +498,6 @@ export class AgentChannelServer {
     }
   }
 
-  /** The credential the helper would be served for this ask under the agent's own capability, for the daemon's credential proxy; throws on a refusal. */
-  async agentCredential(
-    agentId: string,
-    ask: { plane: CredPlane; provider?: string; repoFullName?: string }
-  ): Promise<{ username: string; token: string; access: GitCredGrant['access'] }> {
-    if (this.credentialedOf && !this.credentialedOf(agentId)) {
-      throw new GitCredUnavailableError('this agent has no managed git credential', false, 'agent')
-    }
-    const answer = await this.agentAnswer('get', agentId, ask)
-    if (!answer.ok || !answer.password || !answer.access)
-      throw new GitCredUnavailableError(answer.error ?? 'refused', false, answer.denied)
-    return { username: answer.username ?? '', token: answer.password, access: answer.access }
-  }
-
-  /** The helper's `erase` for a token the credential proxy minted with {@link agentCredential} and the upstream rejected. */
-  async agentErase(
-    agentId: string,
-    ask: { plane: CredPlane; provider?: string; repoFullName?: string },
-    token: string
-  ): Promise<void> {
-    await this.agentAnswer('erase', agentId, ask, token)
-  }
-
-  private agentAnswer(
-    op: 'get' | 'erase',
-    agentId: string,
-    ask: { plane: CredPlane; provider?: string; repoFullName?: string },
-    password?: string
-  ): Promise<GitCredAnswer> {
-    const repo = ask.repoFullName?.includes('/') ? ask.repoFullName : undefined
-    const githubAsk = ask.provider === undefined || ask.provider === IMPLICIT_CREDENTIAL_PROVIDER
-    const privateSkill = repo !== undefined && githubAsk && this.privateGithubSkillRepoOf?.(agentId, repo) === true
-    const request: AgentChannelRequest = {
-      op,
-      agentId,
-      plane: ask.plane,
-      ...(repo !== undefined ? { repoFullName: repo } : {}),
-      ...(ask.provider !== undefined ? { provider: ask.provider } : {}),
-      ...(password !== undefined ? { password } : {})
-    }
-    return this.answer(request, ask.plane, repo, privateSkill, undefined, 'proxy')
-  }
-
   /** The agent's live secrets, named ones only when `names` is given; unknown names are simply absent and values are never logged. */
   private serveLiveSecrets(
     req: AgentChannelRequest,
@@ -598,7 +555,8 @@ export class AgentChannelServer {
       const cred = await this.cache.get(req.agentId, 'helper', {
         ...key,
         externalRepoId: projectId,
-        requestedAccess: 'read'
+        requestedAccess: 'read',
+        consumer: 'daemon'
       })
       this.audit('served', req.agentId, 'git', repo)
       return reply({ ok: true, username: cred.username, password: cred.token, repoFullName: cred.repoFullName })

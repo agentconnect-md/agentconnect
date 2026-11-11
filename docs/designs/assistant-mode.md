@@ -1173,6 +1173,45 @@ approval is the confirmation `followUp` requires. It runs no task and counts aga
 getting-to-know task's report round also offers `propose`, at most three times, and its proposals point at the
 getting-to-know task, whose having ended refuses none of them.
 
+**Offers from an ordinary turn** (_decided_ by the owner, 2026-11-11). An agent that ends a reply
+with "shall I check again at 15:30? Confirm and I will take a follow-up" makes the person type a
+confirmation, and a second model turn then calls `followUp`. On Slack the agent proposes it
+instead, and approving the card takes it, with no model turn. A person who asks for a follow-up
+still gets today's restate-and-confirm flow, and every other platform keeps the question in prose.
+
+- **Who may offer.** Any conversation turn of an agent in assistant mode: a place's long session,
+  a coordinator, or a thread's task session; never a check, a task's background session or a
+  getting-to-know task. The session is offered `propose` where its integration has a card
+  surface. The follow-up form only, at most once a turn: a second call is refused, and so is the
+  `task` form, which only a getting-to-know report round may propose. A conversation that is not
+  confirmed internal, or has no card surface at the call, is refused, and the agent asks in its
+  reply instead. A coordinator answers several messages in one turn, so its `propose` takes an
+  optional `messageId`, required for an offer, naming the message whose thread the offer answers;
+  a getting-to-know round's proposals name none.
+- **The record.** A proposal with no source task: `itemId` null and `itemVersion` 0. Its target
+  is the conversation and the thread the turn replies in, the same thread a `followUp` taken in
+  that turn would keep for its reports (null at the top level), and its hash binds the agent, that
+  target and the follow-up form (`['offer', …]`), so a changed record is refused as any proposal's
+  is. A daemon from before this change reads such a record as a changed one and refuses it.
+- **Holding the card.** The getting-to-know round's hold, reused. The turn's first offer mints a
+  round of its own (`offer:` and a fresh id), the record is held under it, and the turn's
+  settlement releases it after the turn's reply, a coordinator's included, has posted: in the
+  recorded thread, at the top level when that is null. A turn that ended without a reply releases
+  it the same way, and one a restart cut is posted by the sweep of stranded rounds once nothing
+  runs that session.
+- **Approval.** Whoever could ask the agent there, by the rule above; the approver is the
+  follow-up's asker. The place comes from the record, not a task. The follow-up is owned by the
+  place's long session, else the session that offered it, and keeps the recorded thread for its
+  reports, as one taken with `followUp` from that turn would. Deny, the 24-hour expiry and the
+  in-place rewrite are unchanged. Nothing is observed on a source task, since there is none.
+- **Activity.** The wire still requires a non-empty `itemId`, and older Control Planes validate
+  it, so the daemon sends the proposal's own id there with `itemTitle` null; the console then
+  shows no follow-up name, which it already does for a follow-up that is gone. Nothing changes in
+  the protocol, the Control Plane or the console.
+- **Tools.** A session that may get to know its place is offered one `propose` for both its
+  report round and its offers; any other is offered the follow-up form alone, with a description
+  of its own. `followUp` gains one sentence pointing at it.
+
 **The card** (Slack; _decided_ by the owner, 2026-10-17). It reads as the agent talking, since the
 bot is already its sender.
 
@@ -1292,7 +1331,9 @@ The word "patrol" leaves visible text; a round of a follow-up is a check.
   - restate what will be watched, what counts as done and when to look next, and call it only after
     the person confirms;
   - check `listTasks` first, and when an open follow-up of this conversation already covers the
-    request, offer `messageTask` to it instead of a second one.
+    request, offer `messageTask` to it instead of a second one;
+  - when the agent itself offers a follow-up nobody asked for and `propose` is offered, propose it
+    instead of asking in prose (§5.10 "Offers from an ordinary turn").
   - It is a tool of its own, not a `delegateTask` option. A follow-up is a commitment to a person,
     which needs that confirmation, and it is read-only by construction, so nothing changes outside
     the workspace while nobody is around. `sendMessage` and its guide are unchanged.
@@ -5263,7 +5304,15 @@ message's thread, and prose that ends in `AC_NO_RESPONSE` is silence as in any s
 says the text is posted, where the ninetieth revision's prompt said it was shown to nobody. A
 getting-to-know report answered in text is the round's reply as one answered by `replyToMessage` is.
 
-**Hundredth revision (2026-11-11)**: threaded tasks stay outside `maxConcurrentSubsessions`
+**Hundredth revision (2026-11-11)**: an ordinary turn offers a follow-up nobody asked for as a
+proposal card instead of a question in prose (§5.10 "Offers from an ordinary turn"), on Slack where
+the conversation is internal. The card follows the turn's reply in the thread it replied in, held
+and released as a getting-to-know round's are, and approving it takes the follow-up with the
+approver as its asker and no model turn. A proposal may now have no source task: its record binds
+the conversation and thread instead, and Activity names it by its own id. §5.12's `followUp` rules
+point there.
+
+**Hundred-and-first revision (2026-11-11)**: threaded tasks stay outside `maxConcurrentSubsessions`
 ([auto-session-mode.md](auto-session-mode.md) §6.2, #3970). The cap bounds the tasks an agent opens
 by its own decision. A threaded task opens only for a person's message or approval, one each, as a
 Per thread session did. Nothing in the code changes.
