@@ -308,8 +308,6 @@ export interface WorkPageTask {
   /** A follow-up's next check, while one is scheduled. */
   nextCheck?: number
   title: string
-  /** The platform user who asked, when one is known. */
-  askerId?: string
   /** The thread it was asked or last discussed in. */
   thread?: string
   /** Its own page in the console. */

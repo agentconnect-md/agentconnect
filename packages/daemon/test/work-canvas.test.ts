@@ -95,7 +95,6 @@ async function fake(rows: PlacedSubsession[] = [], crons: unknown[] = []): Promi
         at.platform === 'slack' ? { integrationId: 'int-slack', transportScope: 'T0EXAMPLE' } : undefined,
       connection: () => ({ putWorkPage: put, removeWorkPage: remove }),
       external: () => external.value,
-      askerOf: async (row) => (row.mode === 'watch' ? 'U0ALICE' : 'U0DAVE'),
       taskLink: (row) => (row.sessionId ? `https://console.example.test/sessions/${row.sessionId}` : undefined),
       consoleUrl: () => 'https://console.example.test/agents/bot-a',
       now: () => NOW,
@@ -165,13 +164,12 @@ describe('what a Work page lists', () => {
       {
         place: { platform: 'slack', channel: 'C0ENG', integrationId: 'int-slack', transportScope: 'T0EXAMPLE' },
         tasks: [
-          { kind: 'task', status: 'running', title: 'Add retry with backoff to the webhook sender', askerId: 'U0DAVE' },
+          { kind: 'task', status: 'running', title: 'Add retry with backoff to the webhook sender' },
           {
             kind: 'follow-up',
             status: 'next',
             nextCheck: NOW + 3_600_000,
             title: 'Tell Alice when PR #412 merges',
-            askerId: 'U0ALICE',
             thread: '1761980000.000100',
             consoleUrl: 'https://console.example.test/sessions/sess-check-1'
           }
@@ -183,7 +181,7 @@ describe('what a Work page lists', () => {
     expect(JSON.stringify([...pages.values()])).not.toMatch(/private|secret prompt/)
   })
 
-  it('renders as Markdown, with titles shown as text linking the console, people as mentions and threads as links', () => {
+  it('renders as Markdown, with titles shown as text linking the console, threads as links and no one mentioned', () => {
     const markdown = renderWorkPage(
       {
         agentName: 'Butler',
@@ -193,14 +191,12 @@ describe('what a Work page lists', () => {
             status: 'next',
             nextCheck: NOW,
             title: 'Fix *all* [the] things',
-            askerId: 'U0ALICE',
             thread: '1.000'
           },
           {
             kind: 'task',
             status: 'idle',
             title: 'Draft the FAQ',
-            askerId: 'user:console-1',
             consoleUrl: 'https://console.example.test/sessions/sess-2'
           }
         ],
@@ -215,7 +211,7 @@ describe('what a Work page lists', () => {
       [
         '## Open work',
         '',
-        '- **Next check 2026-11-10 08:00 UTC** · Follow-up · Fix \\*all\\* \\[the\\] things · asked by ![](@U0ALICE) · [thread](https://example.slack.com/archives/C0ENG/p1000)',
+        '- **Next check 2026-11-10 08:00 UTC** · Follow-up · Fix \\*all\\* \\[the\\] things · [thread](https://example.slack.com/archives/C0ENG/p1000)',
         '- **Idle** · Task · [Draft the FAQ](https://console.example.test/sessions/sess-2)',
         '',
         'And 2 more in the console.',

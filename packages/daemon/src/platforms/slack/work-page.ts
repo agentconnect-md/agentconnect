@@ -25,9 +25,6 @@ const KIND_TEXT: Record<WorkPageTask['kind'], string> = {
   'approved proposal': 'Approved proposal'
 }
 
-// A Slack user id renders as a mention; anything else is no one the page can name.
-const mention = (id: string): string | undefined => (/^[UW][A-Z0-9]+$/.test(id) ? `![](@${id})` : undefined)
-
 /** The page's Markdown; `links` maps a thread to its permalink, and a thread without one is not linked. */
 export function renderWorkPage(page: WorkPage, links: ReadonlyMap<string, string> = new Map()): string {
   const lines: string[] = []
@@ -42,8 +39,6 @@ export function renderWorkPage(page: WorkPage, links: ReadonlyMap<string, string
   for (const task of page.tasks) {
     const title = task.consoleUrl ? `[${plain(task.title)}](${task.consoleUrl})` : plain(task.title)
     const parts = [`**${statusText(task)}**`, KIND_TEXT[task.kind], title]
-    const asker = task.askerId ? mention(task.askerId) : undefined
-    if (asker) parts.push(`asked by ${asker}`)
     const link = task.thread ? links.get(task.thread) : undefined
     if (link) parts.push(`[thread](${link})`)
     lines.push(`- ${parts.join(' · ')}`)
