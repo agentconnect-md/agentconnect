@@ -98,7 +98,9 @@ const provider = (): string => `llm.example.test:${port}`
 const gitlab = (): string => `gitlab.example.test:${port}`
 
 /** The holder's proxy, and a shim's tunnel host bound to it over an in-process channel, serving both proxy tunnels. */
-async function placedSession(options: { maxProviderStreams?: number; maxCodehostStreams?: number } = {}) {
+async function placedSession(
+  options: { maxProviderStreams?: number; maxCodehostStreams?: number; connectQueueWaitMs?: number } = {}
+) {
   const dir = shortDir()
   const ca = loadProxyCa(join(dir, 'ca'))
   const slot = (id: string): ProviderSlot => ({
@@ -140,7 +142,8 @@ async function placedSession(options: { maxProviderStreams?: number; maxCodehost
     },
     socketPathFor: (tunnel) => join(dir, 'rt', `${tunnel}.sock`),
     ...(options.maxProviderStreams === undefined ? {} : { maxProviderStreams: options.maxProviderStreams }),
-    ...(options.maxCodehostStreams === undefined ? {} : { maxCodehostStreams: options.maxCodehostStreams })
+    ...(options.maxCodehostStreams === undefined ? {} : { maxCodehostStreams: options.maxCodehostStreams }),
+    ...(options.connectQueueWaitMs === undefined ? {} : { connectQueueWaitMs: options.connectQueueWaitMs })
   })
   cleanups.push(() => host.close())
   const tunnel = new TunnelProxy({
@@ -350,7 +353,11 @@ describe.skipIf(process.platform === 'win32')('an executor or VM session’s pro
   })
 
   it('caps provider streams on their own budget, apart from codehost’s', async () => {
-    const { listening, tunnel } = await placedSession({ maxProviderStreams: 1, maxCodehostStreams: 1 })
+    const { listening, tunnel } = await placedSession({
+      maxProviderStreams: 1,
+      maxCodehostStreams: 1,
+      connectQueueWaitMs: 100
+    })
     const held = await connectThrough(shimDial(listening), provider(), (socket) =>
       cleanups.push(() => void socket.destroy())
     )

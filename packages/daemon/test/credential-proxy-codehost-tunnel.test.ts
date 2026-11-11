@@ -78,7 +78,7 @@ afterAll(async () => {
 })
 
 /** The holder's proxy, and an executor shim's tunnel host bound to it over an in-process channel, as one placed session sees them. */
-async function placedSession(options: { maxCodehostStreams?: number } = {}) {
+async function placedSession(options: { maxCodehostStreams?: number; connectQueueWaitMs?: number } = {}) {
   const dir = shortDir()
   const ca = loadProxyCa(join(dir, 'ca'))
   const instances: Record<string, ManagedCredentialHost[]> = {
@@ -107,7 +107,8 @@ async function placedSession(options: { maxCodehostStreams?: number } = {}) {
       for (const listener of listeners) listener({ type: 'shim/event', streamId, event })
     },
     socketPathFor: (tunnel) => join(dir, 'rt', `${tunnel}.sock`),
-    ...(options.maxCodehostStreams === undefined ? {} : { maxCodehostStreams: options.maxCodehostStreams })
+    ...(options.maxCodehostStreams === undefined ? {} : { maxCodehostStreams: options.maxCodehostStreams }),
+    ...(options.connectQueueWaitMs === undefined ? {} : { connectQueueWaitMs: options.connectQueueWaitMs })
   })
   cleanups.push(() => host.close())
   const tunnel = new TunnelProxy({
@@ -401,15 +402,49 @@ describe.skipIf(process.platform === 'win32')('an executor-placed session’s co
     await vi.waitFor(() => expect(closed).toBe(true))
   })
 
-  it('caps the shim’s concurrent codehost connections', async () => {
+  it('holds a codehost connection past the cap until a stream ends, rather than refusing it', async () => {
     const { listening, tunnel } = await placedSession({ maxCodehostStreams: 1 })
-    const held = await connectThrough(shimDial(listening), gitlab(), (socket) =>
+    let first: Socket | undefined
+    expect(await connectThrough(shimDial(listening), gitlab(), (socket) => (first = socket))).toBe(200)
+    expect(tunnel.streamCount('codehost')).toBe(1)
+    let waited: number | undefined
+    const second = connectThrough(shimDial(listening), gitlab(), (socket) =>
       cleanups.push(() => void socket.destroy())
-    )
-    expect(held).toBe(200)
+    ).then((status) => (waited = status))
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(waited).toBeUndefined()
     expect(tunnel.streamCount('codehost')).toBe(1)
+    // A reset ends the stream at once; a bare FIN waits on the daemon's TLS handshake timeout, since the shim keeps half-open sockets.
+    first!.resetAndDestroy()
+    expect(await second).toBe(200)
+    await vi.waitFor(() => expect(tunnel.streamCount('codehost')).toBe(1))
+  })
+
+  it('refuses a codehost connection once the queue is full or its wait runs out, and drops one whose client gave up', async () => {
+    const { listening } = await placedSession({ maxCodehostStreams: 1, connectQueueWaitMs: 300 })
+    expect(
+      await connectThrough(shimDial(listening), gitlab(), (socket) => cleanups.push(() => void socket.destroy()))
+    ).toBe(200)
+    // Four wait for the one stream; the client of the first gives up, so a fifth still fits and a sixth does not.
+    const abandoned = httpRequest({
+      host: '127.0.0.1',
+      port: listening.port,
+      method: 'CONNECT',
+      path: gitlab(),
+      headers: { 'proxy-authorization': `Basic ${Buffer.from(`codehost:${listening.token}`).toString('base64')}` }
+    })
+    abandoned.on('error', () => {})
+    abandoned.end()
+    const queued = [1, 2, 3].map(() => connectThrough(shimDial(listening), gitlab()))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    abandoned.destroy()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    queued.push(connectThrough(shimDial(listening), gitlab()))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    const started = Date.now()
     expect(await connectThrough(shimDial(listening), gitlab())).toBe(503)
-    expect(tunnel.streamCount('codehost')).toBe(1)
+    expect(Date.now() - started).toBeLessThan(250)
+    expect(await Promise.all(queued)).toEqual([503, 503, 503, 503])
   })
 })
 
