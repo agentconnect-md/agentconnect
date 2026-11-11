@@ -396,6 +396,22 @@ export async function rewrapAllSecrets(
   }
 
   {
+    // A member's refresh token on a pending Teams agent-bot request; null once Entra refused it.
+    let rows = 0
+    let skipped = 0
+    for (const r of await prisma.msTeamsAgentBotRequest.findMany()) {
+      if (r.refreshToken === null) continue
+      const res = await prisma.msTeamsAgentBotRequest.updateMany({
+        where: { id: r.id, refreshToken: r.refreshToken },
+        data: { refreshToken: await resealNullable(r.refreshToken, orgScope(OrgId(r.orgId))) }
+      })
+      if (res.count === 0) skipped += 1
+      else rows += 1
+    }
+    done('msteams_agent_bot_request', rows, rows, skipped)
+  }
+
+  {
     // A managed computer egress proxy's password (computer-use.md §15.4); most organizations store none.
     let rows = 0
     let skipped = 0

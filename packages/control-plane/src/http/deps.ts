@@ -59,6 +59,7 @@ import type {
   SlackWorkspaceInstallStore,
   FeishuAppRegistrationStore,
   WechatPendingLoginStore,
+  MsTeamsAgentBotRequestStore,
   SlackUserConfigStore,
   LinearTokenStore,
   LinearInstallStateStore,
@@ -325,6 +326,8 @@ export interface HttpDeps {
     feishuAppRegistration: FeishuAppRegistrationStore
     /** Durable, encrypted personal-WeChat QR logins (wechat-integration.md §2.2). */
     wechatPendingLogin: WechatPendingLoginStore
+    /** Members' pending requests for an agent's own Teams bot (teams-integration.md §8.6.6); holds a sealed refresh token, never DTO'd. */
+    msTeamsAgentBotRequest: MsTeamsAgentBotRequestStore
     /** One org's stored Slack App Configuration token (§Tier B); holds secret material, never DTO'd. */
     slackUserConfig: SlackUserConfigStore
     /** Connected Linear workspaces' rotating OAuth grants, keyed by connection identity; secret material. */

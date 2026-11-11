@@ -167,6 +167,25 @@ async function seedAllSecretTables(): Promise<void> {
     }
   })
 
+  await prisma.msTeamsAgentBotRequest.create({
+    data: {
+      id: randomUUID(),
+      orgId: DEFAULT_ORG_ID,
+      agentId: AGENT,
+      tenantId: '00000000-0000-4000-8000-0000000000e1',
+      createdByUserId: DEFAULT_OWNER_ID,
+      sponsorId: '00000000-0000-4000-8000-0000000000e2',
+      identity: '00000000-0000-4000-8000-0000000000e3',
+      catalogAppId: 'catalog-app',
+      teamIds: ['team-1'],
+      appPackage: 'fingerprint',
+      botName: 'Microsoft Teams · Example',
+      refreshToken: 'msteams-refresh-plain',
+      status: 'pending',
+      nextCheckAt: new Date('2026-01-01T00:00:00Z')
+    }
+  })
+
   await prisma.wechatPendingLogin.create({
     data: {
       id: randomUUID(),
@@ -246,6 +265,7 @@ describe('rewrapAllSecrets — converge lazy migration / post-rotation rewrap (r
       'hook_secret',
       'mcp_grant',
       'mcp_provider_secret',
+      'msteams_agent_bot_request',
       'organization_environment_secret',
       'provider_key',
       'provider_key_header',

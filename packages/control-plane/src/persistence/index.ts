@@ -109,6 +109,7 @@ export { PgSlackPlatformInstallStore } from './repositories/slack-platform-insta
 export { PgSlackWorkspaceInstallStore } from './repositories/slack-workspace-install.repo.js'
 export { PgFeishuAppRegistrationStore } from './repositories/feishu-app-registration.repo.js'
 export { PgWechatPendingLoginStore } from './repositories/wechat-pending-login.repo.js'
+export { PgMsTeamsAgentBotRequestStore } from './repositories/msteams-agent-bot-request.repo.js'
 export { PgSlackUserConfigStore } from './repositories/slack-user-config.repo.js'
 export { PgLinearTokenStore, PgLinearInstallStateStore } from './repositories/linear.repo.js'
 export {
