@@ -45,12 +45,22 @@ export async function removeIntegrationRow(
 ): Promise<void> {
   const { orgId, integration, agent } = args
   await deps.repos.integration.delete(orgId, integration.id)
-  deps.recomputeDuties?.(orgId)
   // "Freed" means NO active install remains — a shareable bot may still serve others.
   const remaining = await deps.repos.integration.listForBot(integration.botId)
   if (remaining.length === 0) {
     await deps.repos.bot.markFreed(orgId, integration.botId, new Date(), agent?.name ?? null)
   }
+  await notifyIntegrationRemoved(deps, log, integration, agent)
+}
+
+// Also used after an atomic binding recovery has already removed the integration rows.
+export async function notifyIntegrationRemoved(
+  deps: HttpDeps,
+  log: TeardownLog,
+  integration: IntegrationRecord,
+  agent: AgentRecord | null
+): Promise<void> {
+  deps.recomputeDuties?.(integration.orgId)
   if (!agent) return
   // The row's own org rides the send: `integration/remove` carries only an id, so a
   // holder that never registered this integration has nothing to resolve.

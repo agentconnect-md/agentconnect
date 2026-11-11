@@ -1364,6 +1364,19 @@
       "connectError": "Could not connect this workspace. Please try again."
     },
     "googleChatClaim": {
+      "recovery": {
+        "description": "A Google Workspace super administrator can recover this connection.",
+        "verify": "Verify Workspace administrator",
+        "support": "Contact support",
+        "unavailable": "Administrator recovery is unavailable. Contact support or your deployment administrator.",
+        "title": "Recover Google Chat",
+        "confirm": "Connect this Workspace to {organization}?",
+        "effect": "The existing connection will stop working. Session history stays in the original organization; connection settings are not transferred.",
+        "recover": "Recover connection",
+        "cancel": "Cancel",
+        "notAdmin": "Recovery requires the current Google Workspace super administrator. Use that account or contact support.",
+        "failed": "Verification expired, the connection changed, or Google could not verify access. Start again from Google Chat."
+      },
       "preparing": "Preparing…",
       "returning": "Returning to Google Chat…",
       "unavailable": "Link unavailable",

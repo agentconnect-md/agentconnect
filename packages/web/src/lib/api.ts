@@ -5761,6 +5761,20 @@ export async function claimGoogleChatCustomer(orgId: string, state: string): Pro
   return apiPost<{ redirect?: string }>(`${orgBase(orgId)}/integrations/googlechat/claim`, { state })
 }
 
+export function startGoogleChatRecovery(orgId: string, state: string) {
+  return apiPost<{ authorizeUrl: string; state: string }>(`${orgBase(orgId)}/integrations/googlechat/recovery/start`, {
+    state
+  })
+}
+
+export function verifyGoogleChatRecovery(orgId: string, state: string, code: string) {
+  return apiPost<{ ticket: string }>(`${orgBase(orgId)}/integrations/googlechat/recovery/verify`, { state, code })
+}
+
+export function confirmGoogleChatRecovery(orgId: string, ticket: string) {
+  return apiPost<{ redirect?: string }>(`${orgBase(orgId)}/integrations/googlechat/recovery/confirm`, { ticket })
+}
+
 // ── members ───────────────────────────────────────────────────────────────────
 // The active org's members for the Settings page (GET /members).
 export async function fetchMembers(orgId?: string): Promise<MemberDto[]> {

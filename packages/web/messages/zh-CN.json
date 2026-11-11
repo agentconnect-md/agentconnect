@@ -1364,6 +1364,19 @@
       "connectError": "无法连接此工作区，请重试。"
     },
     "googleChatClaim": {
+      "recovery": {
+        "description": "Google Workspace 超级管理员可以恢复此连接。",
+        "verify": "验证 Workspace 管理员",
+        "support": "联系支持",
+        "unavailable": "管理员恢复暂不可用，请联系支持或部署管理员。",
+        "title": "恢复 Google Chat",
+        "confirm": "将此 Workspace 连接到 {organization}？",
+        "effect": "现有连接将停止工作。历史会话保留在原组织中，连接设置不会转移。",
+        "recover": "恢复连接",
+        "cancel": "取消",
+        "notAdmin": "恢复需要当前 Google Workspace 超级管理员。请使用该账号，或联系支持。",
+        "failed": "验证已过期、连接已变化，或 Google 无法验证权限。请从 Google Chat 重新开始。"
+      },
       "preparing": "正在准备…",
       "returning": "正在返回 Google Chat…",
       "unavailable": "链接不可用",

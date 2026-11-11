@@ -30,8 +30,11 @@ export function googleChatWelcomeText(isDm: boolean): string {
 }
 
 /** The `/help` answer as a created message. */
-export function googleChatHelp(opts: { unclaimed?: boolean } = {}): unknown {
-  return googleChatCreatedMessage({ text: googleChatHelpText(opts) })
+export function googleChatHelp(opts: { unclaimed?: boolean; connectionUrl?: string } = {}): unknown {
+  const text = googleChatHelpText(opts)
+  return googleChatCreatedMessage({
+    text: opts.connectionUrl ? `${text}\n\n<${opts.connectionUrl}|Manage Workspace connection>` : text
+  })
 }
 
 /** The welcome as a created message. */

@@ -402,6 +402,23 @@ describe('googlechat ingress plugin — observed membership (§4)', () => {
 })
 
 describe('googlechat ingress plugin — the welcome and /help answers (§10.7, §11.4)', () => {
+  it('lets the current member open connection management for a claimed deployment app', async () => {
+    const s = setup({ tenantIds: [CUSTOMER, DOMAIN] })
+    s.plugin.deploymentAssignments!({
+      revision: 1,
+      googleChatAnchor: { projectNumber: PROJECT_NUMBER, claimUrl: CLAIM_URL }
+    })
+    const text = createdText((await deliver(s, dmHelp)).handled?.syncResponse)
+    expect(text).toContain('Manage Workspace connection')
+    const link = text.match(/<(https:\/\/[^|]+)\|Manage Workspace connection>/)![1]!
+    const state = JSON.parse(Buffer.from(new URL(link).searchParams.get('state')!, 'base64url').toString())
+    expect(state).toMatchObject({ app: PROJECT_NUMBER, space: DM, kind: 'dm' })
+    expect(state.user).toBe(dmHelp.chat?.user?.name)
+    expect(s.h.forwardStrict).not.toHaveBeenCalled()
+    s.plugin.deploymentAssignments!(undefined)
+    expect(createdText((await deliver(s, dmHelp)).handled?.syncResponse)).not.toContain('Manage Workspace connection')
+  })
+
   it('answers /help in the body for an own app’s row and a customer row, forwarding, reporting, and marking nothing', async () => {
     for (const s of [setup(), setup({ tenantIds: [CUSTOMER, DOMAIN] })]) {
       expect(createdText((await deliver(s, spaceHelp)).handled?.syncResponse)).toBe(googleChatHelpText())

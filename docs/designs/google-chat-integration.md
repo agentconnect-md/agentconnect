@@ -1100,6 +1100,47 @@ welcome message (§10.7) points people at the claim before they write anything,
 but the claim also works from a person's first message, which is what an
 administrator-installed DM produces.
 
+#### Administrator recovery
+
+First-time claims keep the membership proof above. A conflicting claim offers
+**Verify Workspace administrator**. The deployment app's `/help` reply links to
+connection management, so a current administrator can start without the original
+installer's account or old connection card. Conversation uninstall events never
+release a Workspace binding.
+
+Recovery uses the Google sign-in OAuth client with `openid` and
+`admin.directory.user.readonly`, returning to `/googlechat/recover`. The operator
+enables Admin SDK API and registers that redirect in Google Auth Platform. Only
+recovery requests this additional consent; normal sign-in and first connection
+do not. Google `users.get` must identify the linked Google account as an active
+Workspace super administrator. Delegated administrator status alone is
+insufficient; unsupported administrators can use manual support.
+
+The state is signed, expires after ten minutes, and binds the requesting user,
+destination organization, app, linked Google account, originating conversation
+and current conflicting bindings. PKCE and nonce protect the OAuth exchange;
+Google's signed ID token and Directory user ID must agree. A Space customer must
+match the Directory customer; a DM proves the same account's domain. Verification
+does not change the connection. It returns an encrypted confirmation ticket with
+the delegated access token and the original expiry; no refresh token is requested.
+
+Confirmation rechecks the linked account, current super-administrator status,
+conversation proof, target-agent permission and binding snapshot. Claims and
+recovery serialize by deployment app across CP replicas. A transaction locks and
+rechecks the old bindings, current destination membership, target-agent access and linked account,
+deletes their integrations and identities, and reserves a fresh destination bot.
+It writes an audit record for each released binding and the replacement. The
+ordinary install path completes that reserved bot and publishes it. If publication
+is interrupted, a normal claim by the destination organization resumes its empty
+binding. The old bot IDs no longer exist, so confirmation cannot be replayed to
+take a later binding. Unrelated apps and customers are untouched.
+
+Known domain aliases of the verified customer remain bound to the recovered connection.
+Existing agents and session history remain with their original organization.
+Routing and integration settings are removed with the old binding and are not copied. External
+administrator recovery changes the Workspace connection, not membership or roles
+in either AgentConnect organization.
+
 ### 10.6 Identity: nothing extra to bind
 
 Because a Chat user id is the Google account's `sub`, a console user who signed

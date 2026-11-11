@@ -418,6 +418,9 @@ import { createGoogleChatCpProvider, googleChatClaimAnchor } from './platforms/g
 import { GoogleChatCredentialReconciler } from './platforms/googlechat/credential-reconciler.js'
 import { googleChatAppRoutes, googleChatKeyRoutes } from './platforms/googlechat/routes.js'
 import { googleChatClaimRoutes } from './platforms/googlechat/claim.js'
+import { googleChatRecoveryRoutes } from './platforms/googlechat/recovery-routes.js'
+import { GoogleChatRecoveryOAuth } from './platforms/googlechat/recovery.js'
+import { PgGoogleChatBindingMutations } from './persistence/repositories/googlechat-binding-mutations.js'
 import { googleChatRelayApp } from './platforms/googlechat/deployment-app.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from './http/routes/slack-install.js'
 import { slackPlatformInstallRoutes, slackPlatformCallbackRoutes } from './http/routes/slack-platform-install.js'
@@ -3150,7 +3153,24 @@ export function buildContainer(
   })
 
   // The Google Chat key and claim routes read the deployment app, Google, and the caller's Google identity from here.
+  const googleClient = opts.deploymentConfig?.values.logto?.googleConnector
+  const googleClientSecret = opts.deploymentConfig?.secrets['logto.googleConnectorClientSecret']
   const googleChatSeams: GoogleChatRouteSeams = {
+    bindingMutations: new PgGoogleChatBindingMutations(prisma, (input) => botIdentityProjector(platforms)(input)),
+    ...(googleClient && googleClientSecret && webAppUrl
+      ? {
+          recovery: new GoogleChatRecoveryOAuth(
+            {
+              clientId: googleClient.clientId,
+              clientSecret: googleClientSecret,
+              webAppUrl
+            },
+            config.API_KEY_PEPPER,
+            clock,
+            (input, init) => fetch(input, init)
+          )
+        }
+      : {}),
     ...(googleChatPlatformApp ? { app: googleChatPlatformApp } : {}),
     fetch: (input, init) => fetch(input, init),
     ...(logtoIdentity ? { identity: logtoIdentity } : {})
@@ -3284,7 +3304,8 @@ export function buildContainer(
           // The console offers the listing only where a claim can complete, so only with the anchor.
           googleChatAppRoutes(googleChatAnchor && googleChatPlatformApp ? { app: googleChatPlatformApp } : {}),
           googleChatKeyRoutes(httpDeps, googleChatSeams),
-          googleChatClaimRoutes(httpDeps, googleChatSeams)
+          googleChatClaimRoutes(httpDeps, googleChatSeams),
+          googleChatRecoveryRoutes(httpDeps, googleChatSeams)
         ],
         publicCallback: []
       },
