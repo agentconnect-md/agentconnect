@@ -511,6 +511,12 @@ export class VirtualSlackConnection implements PlatformConnection {
     return this.world.profile(user) ?? { id: user }
   }
 
+  /** A bot's name by its id, as the real connection reads it from bots.info; the world keeps no icons. */
+  async getBotProfile(bot: string): Promise<{ name?: string; avatarUrl?: string }> {
+    const name = this.world.profile(bot)?.name?.trim()
+    return name ? { name } : {}
+  }
+
   /** A member's display name, as the real connection reads it from their profile. */
   async memberName(user: string): Promise<string | undefined> {
     const profile = this.world.profile(user)
