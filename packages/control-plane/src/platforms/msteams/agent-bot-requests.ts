@@ -9,9 +9,9 @@ import { BotExternalIdentityTaken } from '../../persistence/errors.js'
 import { msTeamsRecoveryRows } from './recovery.js'
 import {
   MsTeamsAgentBotClient,
-  MsTeamsAgentBotError,
   msTeamsAgentBotKey,
-  msTeamsAgentBotResourceName
+  msTeamsAgentBotResourceName,
+  msTeamsPrincipalAbsent
 } from './agent-bots.js'
 import { MSTEAMS_RSC_PERMISSIONS } from './app-package.js'
 import {
@@ -309,13 +309,14 @@ export class MsTeamsAgentBotRequests {
 
   // The registration and the identity of a request that will not be installed.
   private async removeBot(request: MsTeamsAgentBotRequestRecord): Promise<void> {
-    await this.client.deleteRegistration(msTeamsAgentBotKey(request.agentId, request.tenantId))
+    // The identity goes first: the registration still points at it, so the reaper finds what a failed attempt left.
     try {
       await this.client.deleteIdentity(request.tenantId, request.identity)
     } catch (err) {
-      // A tenant whose principal is gone has nothing left to delete with; Microsoft unreachable is tried again.
-      if (!(err instanceof MsTeamsAgentBotError) || err.transient) throw err
+      // Only a tenant with no principal left has nothing to delete; any other refusal is tried again.
+      if (!msTeamsPrincipalAbsent(err)) throw err
     }
+    await this.client.deleteRegistration(msTeamsAgentBotKey(request.agentId, request.tenantId))
   }
 
   /** One pass: every due request is checked, and every request older than the limit is cancelled. */

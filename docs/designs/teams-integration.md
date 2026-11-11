@@ -1157,7 +1157,10 @@ agent's row has the agent identity as `externalAppId` and the customer tenant
 as `externalTenantId`. It is prebuilt, keeps `platformConfig.appOwner:
 deployment`, holds the marker in its secret slot, and sends through the relay.
 Two things differ: its `tokenTenantId` is **the customer tenant**, and it adds
-`platformConfig.agentBot` with the blueprint's ID and the Azure resource name.
+the blueprint's ID and the Azure resource name as two entries,
+`platformConfig.agentBotBlueprintId` and `platformConfig.agentBotResourceName`,
+since the bag holds strings. `platformConfig.agentBotName` records the name the
+bot was last given.
 
 A tenant still belongs to one organization (`MSTEAMS_TENANT_TAKEN`).
 `MSTEAMS_TENANT_IN_USE` goes away where agent bots are configured: an
@@ -1179,7 +1182,10 @@ The administrator's flow of §8.3 with these differences:
    `AgentIdentityBlueprintPrincipal.Create`, and the consent is asked
    **tenant-wide**, so that members can add agents later (§8.6.6). Every
    administrator connect asks this way, the tenant's first included; a tenant
-   connected before this change sees Entra's consent page once more.
+   connected before this change sees Entra's consent page once more. Entra's
+   tenant-wide consent endpoint names the scopes, `offline_access` among them,
+   and returns no code, so the connect page goes on to the sign-in at once: two
+   redirects, of which the second asks nothing.
 2. **The blueprint's principal** is created with the administrator's token if
    the tenant has none. The first connect creates it too.
 3. **The agent identity** is created by the blueprint with the agent's name
@@ -1206,14 +1212,21 @@ the tenant already hold.
   needs the customer's administrator; the bot then neither receives nor sends.
   The catalog app and its installs in teams stay as a dead entry until the
   administrator removes them or connects again, when the flow removes them. A
-  reaper deletes registrations and identities no row names.
+  reaper lists the registrations and each connected tenant's identities every
+  hour and deletes those that neither a row nor a waiting request names, once
+  two passes in a row found them so; a connect in flight has its row by then.
 - **Disabled by the customer.** The token request then fails with a code that
-  names the cause (§8.6.2). The relay answers the daemon's call as refused,
-  and the Control Plane marks the row's credential rejected with that reason,
+  names the cause (§8.6.2): `AADSTS7000112` for a disabled identity or
+  principal, `AADSTS700016` for a deleted one. The relay answers the daemon's
+  call as refused and reports a credential check with that code; the next
+  token that is issued clears it. Any other refusal, a wrong blueprint secret
+  included, is the deployment's and marks no row. The Control Plane marks the
+  row's credential rejected with that reason,
   which the Console shows with the way back: enable the agent in the Entra
   admin center, or connect it again.
-- **Renaming** updates the registration and the identity's display name at
-  once and marks the package out of date (§5.1).
+- **Renaming** updates the registration and the identity's display name
+  within a minute, on a pass that compares each row's recorded name with its
+  agent's, and marks the package out of date (§5.1).
 - **Another tenant.** An agent bot has no anchor (§8.4): its package is in one
   tenant's catalog, and an activity that names it from another tenant matches
   no row and answers 401 (§3).
@@ -1223,7 +1236,10 @@ the tenant already hold.
 Once an administrator has connected the tenant, a member who is not one can
 add a further agent. Before that, Entra refuses the member's sign-in (§8.6.2)
 and the connect page says, as today, that an administrator has to connect
-first.
+first. A member cannot publish: Graph answers a catalog publish from a person
+without the administrator role with 403 even where `AppCatalog.ReadWrite.All`
+is consented tenant-wide (**measured**), so the member's package is submitted
+for review.
 
 1. **Sign-in**, with no consent page: `AppCatalog.Submit`,
    `TeamsAppInstallation.ReadWriteAndConsentSelfForTeam`, `Team.ReadBasic.All`,
@@ -1322,8 +1338,6 @@ The daemon needs no change: its spec already names `egress: relay` and a
 
 #### 8.6.9 Unverified
 
-- That Graph refuses a catalog publish from a person without the
-  administrator role once `AppCatalog.ReadWrite.All` is consented tenant-wide.
 - An administrator installing into a team they do not belong to.
 - The stored-token chain of §8.6.6 end to end: its parts are measured, a
   redemption after days is not.
@@ -1384,10 +1398,13 @@ and recheck the tenant's current organization before writing or installing.
 Recovery must cancel old pending requests and discard their sealed member
 tokens; old requests must never recreate a deleted bot or finish after ownership
 changes. Additional-bot teardown must use the provider's `onBotDelete` hook for
-the Azure registration and agent identity, with the proposed reaper as backstop.
-Those pending-request and upstream-resource implementations remain part of
-§8.6, which is still proposed. An already accepted external API request cannot
-be recalled, but it cannot restore a deleted local binding.
+the Azure registration and agent identity, with the reaper as backstop.
+§8.6 meets these: the agent bot's row and a member's request are written under
+the tenant's lock after rereading the tenant's rows, recovery deletes the
+previous organization's waiting requests in its transaction, and a check that
+finds its tenant held elsewhere installs nothing and removes its bot. An
+already accepted external API request cannot be recalled, but it cannot
+restore a deleted local binding.
 
 Removing the app from one chat, Team or group chat never releases tenant-wide
 ownership. Uninstall events do not establish that the entire tenant removed

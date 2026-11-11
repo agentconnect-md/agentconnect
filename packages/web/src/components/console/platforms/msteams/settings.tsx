@@ -113,5 +113,10 @@ function Value({ label, children }: { label: string; children: ReactNode }) {
 }
 
 export const msTeamsSettingsFragments: WebBotSettingsFragments = {
-  botCard: { RowSettings: MsTeamsBotSettings }
+  botCard: { RowSettings: MsTeamsBotSettings },
+  // Host-rendered row copy; still English source data, like every module's (docs/i18n.md).
+  copy: {
+    rejectedHint:
+      'Your Microsoft 365 organization disabled or removed this agent’s bot — enable it in the Entra admin center, or connect the agent again'
+  }
 }

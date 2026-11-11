@@ -408,6 +408,8 @@ import { PgMsTeamsBindingMutations } from './persistence/repositories/msteams-bi
 import { msTeamsConnectKeys } from './platforms/msteams/connect.js'
 import { MsTeamsCredentialReconciler } from './platforms/msteams/credential-reconciler.js'
 import { MsTeamsAgentBotRequests } from './platforms/msteams/agent-bot-requests.js'
+import { MsTeamsAgentBotKeeper } from './platforms/msteams/agent-bot-keeper.js'
+import { MsTeamsAgentBotClient } from './platforms/msteams/agent-bots.js'
 import {
   msTeamsConnectAnchor,
   msTeamsRelayApp,
@@ -3221,6 +3223,16 @@ export function buildContainer(
           log: http.log
         })
       : undefined
+  // Removes, renames and reaps the bots this deployment made for agents (teams-integration.md §8.6.5).
+  const msTeamsAgentBotKeeper =
+    msTeamsPlatformApp && msTeamsAgentBots
+      ? new MsTeamsAgentBotKeeper({
+          http: httpDeps,
+          client: new MsTeamsAgentBotClient({ app: msTeamsPlatformApp, agentBots: msTeamsAgentBots }),
+          agentBots: msTeamsAgentBots,
+          log: http.log
+        })
+      : undefined
   const msTeamsSeams: MsTeamsConnectSeams = {
     ...(msTeamsPlatformApp ? { app: msTeamsPlatformApp } : {}),
     ...(msTeamsAgentBots ? { agentBots: msTeamsAgentBots } : {}),
@@ -3370,6 +3382,7 @@ export function buildContainer(
       ...(msTeamsPlatformApp ? { app: msTeamsPlatformApp } : {}),
       ...(msTeamsAgentBots ? { agentBots: msTeamsAgentBots } : {}),
       ...(msTeamsAgentBotRequests ? { agentBotRequests: msTeamsAgentBotRequests } : {}),
+      ...(msTeamsAgentBotKeeper ? { agentBotKeeper: msTeamsAgentBotKeeper } : {}),
       credentialReconciler: msTeamsCredentialReconciler,
       ...(relayPublicBase ? { publicRelayUrl: relayPublicBase } : {})
     }),

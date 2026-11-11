@@ -39,6 +39,13 @@ export class MsTeamsAgentBotError extends Error {
 /** Entra's codes for an identity or blueprint principal an administrator disabled, and for one that is gone (§8.6.2). */
 export const MSTEAMS_AGENT_BOT_DISABLED_CODE = '7000112'
 export const MSTEAMS_AGENT_BOT_DELETED_CODE = '700016'
+/** Entra's code for a tenant that holds no principal of the blueprint (**measured**): nothing there can be reached with its token. */
+export const MSTEAMS_NO_PRINCIPAL_CODE = '7000229'
+
+/** Whether a failed call shows the tenant has no principal of the blueprint, so no identity of it is left to delete; a wrong secret, a disabled principal or a refused permission is not that. */
+export function msTeamsPrincipalAbsent(err: unknown): boolean {
+  return err instanceof MsTeamsAgentBotError && err.step === 'token' && err.providerCode === MSTEAMS_NO_PRINCIPAL_CODE
+}
 
 type Json = Record<string, unknown>
 const obj = (value: unknown): Json | undefined =>

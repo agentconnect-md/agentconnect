@@ -84,7 +84,7 @@ interface Sent {
 }
 
 /** Entra and the Bot Connector, scripted: tokens by tenant and scope, connector answers in order. */
-function microsoft(answers: { status: number; body?: unknown }[] = [], tokenStatus = 200) {
+function microsoft(answers: { status: number; body?: unknown }[] = [], tokenStatus = 200, errorCodes?: number[]) {
   const sent: Sent[] = []
   const tokens: { tenant: string; scope: string }[] = []
   const tokenRequests: Record<string, string>[] = []
@@ -98,7 +98,9 @@ function microsoft(answers: { status: number; body?: unknown }[] = [], tokenStat
       tokens.push({ tenant: decodeURIComponent(token[1]!), scope })
       minted += 1
       return Response.json(
-        tokenStatus === 200 ? { access_token: `tok-${minted}`, expires_in: 3600 } : { error: 'invalid_client' },
+        tokenStatus === 200
+          ? { access_token: `tok-${minted}`, expires_in: 3600 }
+          : { error: 'invalid_client', ...(errorCodes ? { error_codes: errorCodes } : {}) },
         { status: tokenStatus }
       )
     }
@@ -309,6 +311,25 @@ describe('MsTeamsRelayEgress', () => {
     expect(refusing.sent).toEqual([])
   })
 
+  it('tells what an agent bot’s token request showed: stopped by the customer, working, or nothing it can name', async () => {
+    const call: WireMsTeamsCall = { op: 'post-activity', ticket, conversationId: CHANNEL, activity: {} }
+    const checks = async (
+      ms: ReturnType<typeof microsoft>,
+      row: typeof BINDING & { agentBotId?: string } = AGENT_ROW
+    ) => {
+      const seen: unknown[] = []
+      await new MsTeamsRelayEgress(AGENT_APP, ms.fetchImpl, () => NOW).call(row, call, (check) => seen.push(check))
+      return seen
+    }
+    expect(await checks(microsoft([], 400, [7000112]))).toEqual([{ result: 'rejected', code: 'AADSTS7000112' }])
+    expect(await checks(microsoft([], 400, [700016]))).toEqual([{ result: 'rejected', code: 'AADSTS700016' }])
+    // A wrong blueprint secret is the deployment's fault, not the row's.
+    expect(await checks(microsoft([], 401, [7000215]))).toEqual([])
+    expect(await checks(microsoft([{ status: 201, body: { id: 'a' } }]))).toEqual([{ result: 'ok' }])
+    // The app's own bot is never an agent bot's check.
+    expect(await checks(microsoft([], 400, [7000112]), BINDING)).toEqual([])
+  })
+
   it('answers within its budget: a slow token sends nothing, and a slow send reads as one that may have landed', async () => {
     const BUDGET = 150
     const hang = new Promise<Response>(() => {})
@@ -425,6 +446,22 @@ describe('the Teams plugin for a deployment app’s rows', () => {
     expect(ms.tokenRequests.map((r) => r.client_id)).toEqual([BLUEPRINT.appId, IDENTITY])
     expect(plugin.buildIngest(row, host())).toMatchObject({ appId: IDENTITY, agentBot: true })
     expect(plugin.buildIngest(assignment(), host())).toMatchObject({ agentBot: false })
+  })
+
+  it('reports an agent bot the customer stopped as a rejected credential of the probed revision', async () => {
+    const ms = microsoft([], 400, [7000112])
+    const plugin = createMsTeamsIngressPlugin({ fetch: ms.fetchImpl })
+    plugin.deploymentAssignments!({ revision: 0, msTeamsApp: AGENT_APP })
+    const row = assignment({ apiAppId: IDENTITY, agentBot: true, credentialRevision: 4 })
+    const reportCredentialCheck = vi.fn()
+    plugin.buildIngest(row, { ...host(), reportCredentialCheck, clock: { now: () => NOW } } as RelayIngressHost)
+    const ticket = mintMsTeamsTicket(KEY, BINDING, { conversationId: CHANNEL, serviceUrl: SERVICE_URL })!
+    await plugin.daemonRequest!(row, { op: 'post-activity', ticket, conversationId: CHANNEL, activity: {} })
+    expect(reportCredentialCheck).toHaveBeenCalledWith(
+      BOT_ROW,
+      { result: 'rejected', code: 'AADSTS7000112', observedAtMs: NOW },
+      4
+    )
   })
 
   it('answers a daemon’s call only for a deployment app’s row, and only a known operation', async () => {

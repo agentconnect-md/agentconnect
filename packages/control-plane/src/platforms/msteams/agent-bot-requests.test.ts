@@ -298,7 +298,7 @@ describe('MsTeamsAgentBotRequests', () => {
       const h = harness({ definitions: ['published'], holder })
       await h.open()
       expect(await h.requests.check(ORG, 'request-1')).toEqual({ outcome: 'gone' })
-      expect(h.calls).toEqual(['DELETE registration', 'DELETE identity'])
+      expect(h.calls).toEqual(['DELETE identity', 'DELETE registration'])
       expect(h.create).not.toHaveBeenCalled()
       expect(h.rows.size).toBe(0)
     }
@@ -308,7 +308,7 @@ describe('MsTeamsAgentBotRequests', () => {
     const h = harness()
     await h.open()
     expect(await h.requests.cancel(ORG, 'request-1')).toBe(true)
-    expect(h.calls).toEqual(['refresh stored-token', 'withdraw def-0', 'DELETE registration', 'DELETE identity'])
+    expect(h.calls).toEqual(['refresh stored-token', 'withdraw def-0', 'DELETE identity', 'DELETE registration'])
     expect(h.rows.size).toBe(0)
     expect(await h.requests.cancel(ORG, 'request-1')).toBe(false)
 
@@ -316,7 +316,7 @@ describe('MsTeamsAgentBotRequests', () => {
     const expired = harness({ refresh: 400 })
     await expired.open()
     await expired.requests.cancel(ORG, 'request-1')
-    expect(expired.calls).toEqual(['refresh stored-token', 'DELETE registration', 'DELETE identity'])
+    expect(expired.calls).toEqual(['refresh stored-token', 'DELETE identity', 'DELETE registration'])
     expect(expired.rows.size).toBe(0)
 
     // A check in flight holds the request: the cancel waits its turn and removes nothing.
