@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionHistoryDto, SessionMessageDto } from '@/lib/api'
 import type { SessionStep } from '@/lib/data'
-import { threadMessages, threadRows, unsavedLive, withoutAttribution } from './task-thread'
+import { threadMessages, threadPollMs, threadRows, unsavedLive, withoutAttribution } from './task-thread'
 
 const row = (seq: number, sender: string, text: string, kind = 'text'): SessionMessageDto => ({
   seq,
@@ -76,5 +76,18 @@ describe('withoutAttribution', () => {
     expect(
       withoutAttribution('I only handle support.\n\nsent by <https://console.example.test/acme/agents/a1|support>')
     ).toBe('I only handle support.')
+  })
+})
+
+describe('threadPollMs', () => {
+  const idle = () => false
+  it('re-reads a thread whose task is starting or running as often as a running one, so its starting notice clears', () => {
+    const quick = threadPollMs({ running: true }, idle)
+    const slow = threadPollMs({}, idle)
+    expect(quick).toBeLessThan(slow)
+    expect(threadPollMs({ task: { sessionId: 'ses_task', state: 'open', starting: true } }, idle)).toBe(quick)
+    expect(threadPollMs({ task: { sessionId: 'ses_task', state: 'done' } }, idle)).toBe(slow)
+    expect(threadPollMs({ task: { sessionId: 'ses_task', state: 'done' } }, (id) => id === 'ses_task')).toBe(quick)
+    expect(threadPollMs(undefined, idle)).toBe(slow)
   })
 })

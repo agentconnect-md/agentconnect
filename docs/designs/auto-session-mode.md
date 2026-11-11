@@ -877,6 +877,12 @@ Built.
   gave the post, as its webchat posts already were; one at the top level is the root of its own
   thread. Before, the page showed neither until something read the thread back from the platform,
   and a getting-to-know row opened a thread the conversation did not have.
+- **A getting-to-know report shows the report.** The long session reads what to do with the report
+  ahead of the report itself. People read the report; that guidance folds with the message's facts,
+  where before it filled the six lines shown.
+- **A thread whose task is starting is re-read as often as a running one.** Its panel says the task
+  is starting until the task's session exists, which is seconds; on the idle interval that notice
+  stayed up to half a minute after the task had answered.
 
 #### 6.9.6 What still runs without a home
 

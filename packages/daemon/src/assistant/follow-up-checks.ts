@@ -1,6 +1,6 @@
 // Follow-ups (assistant-mode.md §5.12), watch tasks of a place (§5.18): read-only, checked in one retained session of their own when a next check falls due, their conversation messages them, or what they watch changes (§5.14).
 import type { AssistantFollowUpWake, AssistantFollowUpWakeResult, FollowUpEventKind } from '@agentconnect.md/protocol'
-import { renderedSessionMessageInput } from '../collab/session-message.js'
+import { renderedSessionMessageInput, type ShownInput } from '../collab/session-message.js'
 import { newSessionMessageId } from '../store/session-messages.js'
 import type { Agent } from '../agents/agent-schema.js'
 import type { CallMeta } from '../daemon/turn-types.js'
@@ -35,7 +35,7 @@ import {
   gettingToKnowFailedText,
   gettingToKnowHandling,
   gettingToKnowPrompt,
-  gettingToKnowReportText
+  gettingToKnowReport
 } from './getting-to-know.js'
 import type { ReadAsker } from './place-access.js'
 import { checkedTaskOpen, followUpTaskKey, type CheckedTask, type CheckedTasks } from './checked-tasks.js'
@@ -199,7 +199,7 @@ export interface FollowUpChecksHost {
     callMeta: CallMeta,
     onAdmission: (result: { accepted: boolean; reason?: string }) => void
   ): Promise<unknown>
-  /** One report into the place's current long session, else the recorded parent, else one it `opens` at that coordinate; in `replyThread` else the place's latest reply thread; true once admitted, at most once per `reportId`. A getting-to-know task's report names its follow-up in `gettingToKnow`. */
+  /** One report into the place's current long session, else the recorded parent, else one it `opens` at that coordinate; in `replyThread` else the place's latest reply thread; true once admitted, at most once per `reportId`. A getting-to-know task's report names its follow-up in `gettingToKnow` and what people read of it in `shown`. */
   reportToParent(
     agentId: string,
     caller: TaskCaller,
@@ -208,7 +208,8 @@ export interface FollowUpChecksHost {
     reportId: string,
     replyThread?: string | null,
     opens?: string,
-    gettingToKnow?: string
+    gettingToKnow?: string,
+    shown?: ShownInput
   ): Promise<boolean>
   /** Where a check's session sits once its turn neither runs nor awaits replay here; `missing` when it never started, undefined while it runs. */
   endedSession(agentId: string, key: string): Promise<TaskCaller | 'missing' | undefined>
@@ -1090,7 +1091,7 @@ export class FollowUpChecks {
         external: known?.external ?? false,
         cards: known?.cards ?? false
       })
-      const text = gettingToKnowReportText(place, handling, report)
+      const { text, shown } = gettingToKnowReport(place, handling, report)
       const reportId = `check:${key}:${check}:report`
       // Its round may propose, where the place has cards (§5.13).
       const delivered = await this.deliver(
@@ -1102,7 +1103,8 @@ export class FollowUpChecks {
         text,
         undefined,
         opens,
-        item.itemId
+        item.itemId,
+        shown
       )
       if (delivered === 'draining') return
       reported = delivered === 'delivered'
@@ -1205,7 +1207,8 @@ export class FollowUpChecks {
     // Undefined posts at the place's top level, as a getting-to-know task's report does.
     replyThread?: string | null,
     opens?: string,
-    gettingToKnow?: string
+    gettingToKnow?: string,
+    shown?: ShownInput
   ): Promise<'delivered' | 'refused' | 'draining'> {
     if (this.host.draining()) return 'draining'
     let delivered = false
@@ -1218,7 +1221,8 @@ export class FollowUpChecks {
         reportId,
         replyThread,
         opens,
-        gettingToKnow
+        gettingToKnow,
+        shown
       )
     } catch (err) {
       this.host.log.warn(`follow-up report for ${taskKey} failed: ${(err as Error).message}`)

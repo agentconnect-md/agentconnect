@@ -232,6 +232,11 @@ describe('a getting-to-know task someone asks for', () => {
     // Slack has approval cards, so its suggestions are offered with propose (§5.13).
     expect(text).toContain('2. Under it, offer each "Where I could help" item with propose.')
     expect(text).toContain(`Its report:\n\n${REPORT}`)
+    // People read the report; what the long session is told to do with it folds with the message's facts.
+    expect(report.text).toBe(REPORT)
+    const notes = report.turnBody?.sessionMessage?.notes ?? []
+    expect(notes[0]).toBe('[getting to know] Your task getting to know "fake" reported back.')
+    expect(notes[1]).toContain('When your getting-to-know task reports back')
 
     // One check ends it as done; it is listed as a getting-to-know task and takes no messages.
     const item = await d.store.assistantItems.byTaskKey('bot-a', started.taskId)
