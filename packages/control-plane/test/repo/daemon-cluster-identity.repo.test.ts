@@ -5,6 +5,7 @@ import { poolSetId } from '../fakes/member-set.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { seedAgent } from '../fixtures/seed.js'
 import { PgDaemonRepo } from '../../src/persistence/repositories/daemon.repo.js'
+import { PgDaemonAdmissionRepo } from '../../src/persistence/repositories/daemon-admission.repo.js'
 import { AgentId, DaemonId, OrgId } from '../../src/domain/ids.js'
 
 const INSTALL_IDENTITY = 'system:serviceaccount:agentconnect:ac-cloud-daemon'
@@ -13,6 +14,36 @@ const POD_UID_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 const DEF_ORG = OrgId(DEFAULT_ORG_ID)
 
 describe('DaemonRepo.resolvePoolClusterIdentity', () => {
+  it('approves a verified pool identity inserted by an older CP after the approval migration', async () => {
+    const legacy = await prisma.daemon.create({
+      data: { id: crypto.randomUUID(), orgId: null, clusterIdentity: INSTALL_IDENTITY, clusterPodUid: POD_UID_A }
+    })
+    expect(legacy.approvalStatus).toBe('pending')
+    const repo = new PgDaemonRepo(prisma)
+
+    const resolved = await repo.resolvePoolClusterIdentity(INSTALL_IDENTITY, POD_UID_A)
+    const repeated = await repo.resolvePoolClusterIdentity(INSTALL_IDENTITY, POD_UID_A)
+
+    expect(resolved.id).toBe(legacy.id)
+    expect(resolved.approval).toMatchObject({ status: 'approved', source: 'system', revision: 1 })
+    expect(repeated.approval).toEqual(resolved.approval)
+    expect(await new PgDaemonAdmissionRepo(prisma).allowed([resolved.id])).toEqual([resolved.id])
+  })
+
+  it('preserves a revoked pool identity when it authenticates again', async () => {
+    const repo = new PgDaemonRepo(prisma)
+    const member = await repo.resolvePoolClusterIdentity(INSTALL_IDENTITY, POD_UID_A)
+    await prisma.daemon.update({
+      where: { id: member.id },
+      data: { approvalStatus: 'revoked', approvalSource: 'owner', approvalRevision: 1 }
+    })
+
+    const resolved = await repo.resolvePoolClusterIdentity(INSTALL_IDENTITY, POD_UID_A)
+
+    expect(resolved.approval).toMatchObject({ status: 'revoked', source: 'owner', revision: 1 })
+    expect(await new PgDaemonAdmissionRepo(prisma).allowed([resolved.id])).toEqual([])
+  })
+
   it('keeps pool member Pods out of owned reads while exposing them to availability reads', async () => {
     const repo = new PgDaemonRepo(prisma)
     const other = await prisma.org.create({ data: { slug: 'install-daemon-other-org' } })

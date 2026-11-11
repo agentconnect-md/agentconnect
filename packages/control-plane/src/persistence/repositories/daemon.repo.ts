@@ -132,7 +132,7 @@ export class PgDaemonRepo implements DaemonRepo {
   async resolvePoolClusterIdentity(clusterIdentity: string, clusterPodUid: string): Promise<DaemonRecord> {
     const where = { clusterIdentity_clusterPodUid: { clusterIdentity, clusterPodUid } }
     const existing = await this.db.daemon.findUnique({ where, include: withUsers })
-    if (existing) return toRecord(existing)
+    if (existing) return this.approveVerifiedPoolMember(existing)
     try {
       const daemon = await this.db.daemon.create({
         data: {
@@ -153,8 +153,31 @@ export class PgDaemonRepo implements DaemonRepo {
       if ((error as { code?: string }).code !== 'P2002') throw error
       const raced = await this.db.daemon.findUnique({ where, include: withUsers })
       if (!raced) throw error
-      return toRecord(raced)
+      return this.approveVerifiedPoolMember(raced)
     }
+  }
+
+  private async approveVerifiedPoolMember(daemon: DaemonWithUsers): Promise<DaemonRecord> {
+    if (daemon.approvalStatus !== 'pending' || daemon.orgId !== null) return toRecord(daemon)
+    // An older CP can insert a verified pool member after the approval migration changes the default.
+    await this.db.daemon.updateMany({
+      where: {
+        id: daemon.id,
+        orgId: null,
+        approvalStatus: 'pending',
+        approvalRevision: 0,
+        approvalSource: null,
+        clusterIdentity: { not: null },
+        clusterPodUid: { not: null }
+      },
+      data: {
+        approvalStatus: 'approved',
+        approvalSource: 'system',
+        approvalChangedAt: new Date(),
+        approvalRevision: { increment: 1 }
+      }
+    })
+    return toRecord(await this.db.daemon.findUniqueOrThrow({ where: { id: daemon.id }, include: withUsers }))
   }
 
   async upsertOnAuth(input: AuthReqInput): Promise<{ daemon: DaemonRecord; sessionEpoch: bigint }> {
