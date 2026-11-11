@@ -160,11 +160,13 @@ export function createMsTeamsIngressPlugin(deps: MsTeamsIngressPluginDeps = {}):
   // The latest snapshot's anchor, which carries the secret the anchor's ingest sends with; an assignment never does.
   let anchor: MsTeamsAnchorEgress | undefined
   let egress: MsTeamsRelayEgress | undefined
-  // The egress and ticket binding of a deployment app's customer row; undefined for an organization's own bot.
-  const deploymentRow = (botId: string, appId: string | undefined, tenantId: string | undefined) =>
-    egress && appId && tenantId && appId.toLowerCase() === egress.appId && botId !== MSTEAMS_ANCHOR_BOT_ID
-      ? { egress, binding: { botId, tenantId: tenantId.toLowerCase() } }
-      : undefined
+  // The egress and row of a deployment's own bot: the app's customer row, or an agent bot's while the snapshot carries the blueprint; undefined for an organization's own bot.
+  const deploymentRow = (botId: string, appId: string | undefined, tenantId: string | undefined, agentBot = false) => {
+    if (!egress || !appId || !tenantId || botId === MSTEAMS_ANCHOR_BOT_ID) return undefined
+    const id = appId.toLowerCase()
+    if (agentBot ? !egress.servesAgentBots : id !== egress.appId) return undefined
+    return { egress, binding: { botId, tenantId: tenantId.toLowerCase(), ...(agentBot ? { agentBotId: id } : {}) } }
+  }
   return {
     platformId: MSTEAMS_PLATFORM,
     verifier,
@@ -217,13 +219,15 @@ export function createMsTeamsIngressPlugin(deps: MsTeamsIngressPluginDeps = {}):
         a.apiAppId.toLowerCase(),
         a.teamId.toLowerCase(),
         verifier,
-        a.credentialRevision
+        a.credentialRevision,
+        undefined,
+        a.agentBot === true
       )
     },
 
-    // A deployment app's customer row's Bot Connector call or Graph token (§8.5); core checked the daemon serves the row.
+    // A deployment row's Bot Connector call or Graph token (§8.5, §8.6.7); core checked the daemon serves the row.
     async daemonRequest(a: BotAssignment, payload: unknown): Promise<RdPlatformReply> {
-      const row = deploymentRow(a.botId, a.apiAppId, a.teamId)
+      const row = deploymentRow(a.botId, a.apiAppId, a.teamId, a.agentBot)
       // Only a deployment row's daemon asks, so a mismatch is this relay's snapshot trailing another's; nothing was called yet.
       if (!row) return { outcome: 'refused', reason: 'not_deployment_app', retryable: true }
       const call = WireMsTeamsCall.safeParse(payload)
@@ -256,7 +260,7 @@ export function createMsTeamsIngressPlugin(deps: MsTeamsIngressPluginDeps = {}):
         return {}
       }
       // A deployment app's row sends through the relay, so what the verified activity names is ticketed for it (§8.5).
-      const row = deploymentRow(botId, ingest.appId, ingest.tenantId)
+      const row = deploymentRow(botId, ingest.appId, ingest.tenantId, ingest.agentBot)
       const tickets = (conversationId: string, serviceUrl: string, teamId?: string) => {
         if (!row) return {}
         const ticket = row.egress.ticket(row.binding, { conversationId, serviceUrl })

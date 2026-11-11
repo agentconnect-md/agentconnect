@@ -72,6 +72,8 @@ export interface BotAssignment {
   installerUserId?: string
   /** A single-tenant row's own tenant keys, recorded from its traffic (§10.3): the plugin fences with them by its platform's rules; core neither indexes nor fences on them. */
   ownTenantIds?: string[]
+  /** A bot the deployment created for one agent (teams-integration.md §8.6.7): its credential is derived for the row, never the app's own. */
+  agentBot?: boolean
   /** Install GENERATION of `secrets` (CP-assigned). Echoed back on `rc/bot-revoked`
    *  so the CP can refuse a revocation that was observed under a credential a
    *  re-install has since replaced — Slack does not order lifecycle events. */
@@ -872,6 +874,7 @@ export function toBotAssignment(a: RcBotAssign): BotAssignment | null {
     claimUrl?: unknown
     installerUserId?: unknown
     ownTenantIds?: unknown
+    agentBot?: unknown
   }
   const apiAppId = typeof ingress.apiAppId === 'string' ? ingress.apiAppId : undefined
   // A multi-tenant app's rows: a malformed tenant list or claim page refuses the assignment outright, since reading
@@ -927,6 +930,7 @@ export function toBotAssignment(a: RcBotAssign): BotAssignment | null {
     ...(claimUrl ? { claimUrl } : {}),
     ...(typeof ingress.installerUserId === 'string' ? { installerUserId: ingress.installerUserId } : {}),
     ...(ownTenantIds ? { ownTenantIds } : {}),
+    ...(ingress.agentBot === true ? { agentBot: true } : {}),
     ...(a.credentialRevision !== undefined ? { credentialRevision: a.credentialRevision } : {}),
     ...(botUserId ? { botUserId } : {}),
     members: a.members,

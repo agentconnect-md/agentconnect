@@ -1,6 +1,7 @@
 // The deployment Teams app's egress on the relay (teams-integration.md §8.5): its customer rows' Bot Connector calls and Graph tokens, so its secret never reaches a daemon.
 import {
   RD_PLATFORM_REQUEST_BUDGET_MS,
+  type RcMsTeamsBlueprint,
   type RcMsTeamsDeploymentApp,
   type RdPlatformReply,
   type WireMsTeamsCall,
@@ -42,16 +43,76 @@ export class MsTeamsTokenError extends Error {
   }
 }
 
-/** Client-credentials tokens of one app, per tenant and scope, cached until shortly before they expire; a request in flight is shared. */
+type Token = { value: string; until: number }
+
+// One client-credentials request to a tenant's token endpoint; rejects with {@link MsTeamsTokenError}.
+async function requestToken(
+  fetchImpl: typeof fetch,
+  now: () => number,
+  tenantId: string,
+  params: Record<string, string>
+): Promise<Token> {
+  let response: Response
+  try {
+    response = await fetchImpl(`https://login.microsoftonline.com/${encodeURIComponent(tenantId)}/oauth2/v2.0/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'client_credentials', ...params }).toString(),
+      signal: AbortSignal.timeout(TOKEN_TIMEOUT_MS)
+    })
+  } catch {
+    throw new MsTeamsTokenError('Entra did not answer')
+  }
+  const body = obj(await response.json().catch(() => undefined))
+  const value = typeof body?.access_token === 'string' && body.access_token ? body.access_token : undefined
+  if (!response.ok || !value)
+    throw new MsTeamsTokenError(`Entra answered ${response.status} without a token`, response.status)
+  const expiresIn = typeof body?.expires_in === 'number' ? body.expires_in * 1000 : 0
+  return { value, until: now() + Math.max(0, expiresIn - TOKEN_MARGIN_MS) }
+}
+
+// Tokens by key, kept until shortly before they expire; a request in flight is shared.
+class TokenCache {
+  private readonly cache = new Map<string, Token>()
+  private readonly minting = new Map<string, Promise<Token>>()
+
+  constructor(private readonly now: () => number) {}
+
+  clear(): void {
+    this.cache.clear()
+  }
+
+  drop(key: string): void {
+    this.cache.delete(key)
+  }
+
+  async get(key: string, mint: () => Promise<Token>): Promise<Token> {
+    const hit = this.cache.get(key)
+    if (hit && hit.until > this.now()) return hit
+    let pending = this.minting.get(key)
+    if (!pending) {
+      pending = mint().finally(() => this.minting.delete(key))
+      this.minting.set(key, pending)
+    }
+    const token = await pending
+    this.cache.delete(key)
+    this.cache.set(key, token)
+    while (this.cache.size > TOKENS_MAX) this.cache.delete(this.cache.keys().next().value!)
+    return token
+  }
+}
+
+/** Client-credentials tokens of one app, per tenant and scope, cached until shortly before they expire. */
 export class MsTeamsAppTokens {
-  private readonly cache = new Map<string, { value: string; until: number }>()
-  private readonly minting = new Map<string, Promise<{ value: string; until: number }>>()
+  private readonly cache: TokenCache
 
   constructor(
     private credential: { appId: string; clientSecret: string },
     private readonly fetchImpl: typeof fetch,
     private readonly now: () => number = Date.now
-  ) {}
+  ) {
+    this.cache = new TokenCache(now)
+  }
 
   /** Take a new credential; a changed one drops every cached token. */
   update(credential: { appId: string; clientSecret: string }): void {
@@ -61,53 +122,68 @@ export class MsTeamsAppTokens {
   }
 
   drop(tenantId: string, scope: string): void {
-    this.cache.delete(`${tenantId}\0${scope}`)
+    this.cache.drop(`${tenantId}\0${scope}`)
   }
 
   /** A live token and when it stops being used; rejects with {@link MsTeamsTokenError}. */
-  async get(tenantId: string, scope: string): Promise<{ value: string; until: number }> {
-    const key = `${tenantId}\0${scope}`
-    const hit = this.cache.get(key)
-    if (hit && hit.until > this.now()) return hit
-    let pending = this.minting.get(key)
-    if (!pending) {
-      pending = this.mint(tenantId, scope).finally(() => this.minting.delete(key))
-      this.minting.set(key, pending)
-    }
-    const token = await pending
-    this.cache.delete(key)
-    this.cache.set(key, token)
-    while (this.cache.size > TOKENS_MAX) this.cache.delete(this.cache.keys().next().value!)
-    return token
+  async get(tenantId: string, scope: string): Promise<Token> {
+    const { appId, clientSecret } = this.credential
+    return await this.cache.get(`${tenantId}\0${scope}`, () =>
+      requestToken(this.fetchImpl, this.now, tenantId, { client_id: appId, client_secret: clientSecret, scope })
+    )
+  }
+}
+
+/** The scope a blueprint asks for to act as one of its agent identities. */
+export const MSTEAMS_TOKEN_EXCHANGE_SCOPE = 'api://AzureADTokenExchange/.default'
+
+/** Bot Connector tokens of the blueprint's agent identities, issued by each identity's own tenant (teams-integration.md §8.6.2). */
+export class MsTeamsAgentBotTokens {
+  private readonly cache: TokenCache
+
+  constructor(
+    private blueprint: RcMsTeamsBlueprint,
+    private readonly fetchImpl: typeof fetch,
+    private readonly now: () => number = Date.now
+  ) {
+    this.cache = new TokenCache(now)
   }
 
-  private async mint(tenantId: string, scope: string): Promise<{ value: string; until: number }> {
-    let response: Response
-    try {
-      response = await this.fetchImpl(
-        `https://login.microsoftonline.com/${encodeURIComponent(tenantId)}/oauth2/v2.0/token`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/x-www-form-urlencoded' },
-          body: new URLSearchParams({
-            grant_type: 'client_credentials',
-            client_id: this.credential.appId,
-            client_secret: this.credential.clientSecret,
-            scope
-          }).toString(),
-          signal: AbortSignal.timeout(TOKEN_TIMEOUT_MS)
-        }
-      )
-    } catch {
-      throw new MsTeamsTokenError('Entra did not answer')
-    }
-    const body = obj(await response.json().catch(() => undefined))
-    const value = typeof body?.access_token === 'string' && body.access_token ? body.access_token : undefined
-    if (!response.ok || !value)
-      throw new MsTeamsTokenError(`Entra answered ${response.status} without a token`, response.status)
-    const expiresIn = typeof body?.expires_in === 'number' ? body.expires_in * 1000 : 0
-    return { value, until: this.now() + Math.max(0, expiresIn - TOKEN_MARGIN_MS) }
+  /** Take a new blueprint; a changed one drops every cached token. */
+  update(blueprint: RcMsTeamsBlueprint): void {
+    if (blueprint.appId !== this.blueprint.appId || blueprint.clientSecret !== this.blueprint.clientSecret)
+      this.cache.clear()
+    this.blueprint = blueprint
   }
+
+  drop(tenantId: string, identity: string): void {
+    this.cache.drop(`${tenantId}\0${identity}`)
+  }
+
+  /** A live token for one identity; rejects with {@link MsTeamsTokenError}. */
+  async get(tenantId: string, identity: string): Promise<Token> {
+    const { appId, clientSecret } = this.blueprint
+    return await this.cache.get(`${tenantId}\0${identity}`, async () => {
+      // The blueprint vouches for the identity, which then presents that token as its own client assertion.
+      const assertion = await requestToken(this.fetchImpl, this.now, tenantId, {
+        client_id: appId,
+        client_secret: clientSecret,
+        scope: MSTEAMS_TOKEN_EXCHANGE_SCOPE,
+        fmi_path: identity
+      })
+      return await requestToken(this.fetchImpl, this.now, tenantId, {
+        client_id: identity,
+        client_assertion_type: 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer',
+        client_assertion: assertion.value,
+        scope: MSTEAMS_BOT_SCOPE
+      })
+    })
+  }
+}
+
+/** The row a call is for: its ticket binding, and its agent identity when the bot is one the deployment made for an agent. */
+export interface MsTeamsEgressRow extends MsTeamsTicketBinding {
+  agentBotId?: string
 }
 
 /** One Bot Connector request the relay builds from a call; never a path the daemon named. */
@@ -194,9 +270,10 @@ const refused = (reason: string): RdPlatformReply => ({ outcome: 'refused', reas
 const unavailable = (reason: string): RdPlatformReply => ({ outcome: 'unavailable', reason })
 const answered = (result: WireMsTeamsCallResult): RdPlatformReply => ({ outcome: 'ok', payload: result })
 
-/** The deployment app's sender for its customer rows: home-tenant Bot Connector tokens, Graph tokens for a row's own tenant, and tickets. */
+/** The deployment's sender for its rows: Bot Connector tokens (the app's from the home tenant, an agent bot's from its own), Graph tokens for a row's own tenant, and tickets. */
 export class MsTeamsRelayEgress {
   private readonly tokens: MsTeamsAppTokens
+  private agentBots: MsTeamsAgentBotTokens | undefined
   private key: Buffer
 
   constructor(
@@ -210,6 +287,18 @@ export class MsTeamsRelayEgress {
   ) {
     this.tokens = new MsTeamsAppTokens(app, fetchImpl, now)
     this.key = Buffer.from(app.ticketKey, 'base64url')
+    this.takeBlueprint(app.blueprint)
+  }
+
+  /** Whether the snapshot carries the blueprint an agent bot's row is sent with. */
+  get servesAgentBots(): boolean {
+    return this.agentBots !== undefined
+  }
+
+  private takeBlueprint(blueprint: RcMsTeamsBlueprint | undefined): void {
+    if (!blueprint) this.agentBots = undefined
+    else if (this.agentBots) this.agentBots.update(blueprint)
+    else this.agentBots = new MsTeamsAgentBotTokens(blueprint, this.fetchImpl, this.now)
   }
 
   get appId(): string {
@@ -219,6 +308,7 @@ export class MsTeamsRelayEgress {
   /** Take a new snapshot's app in place; a changed credential drops every token. */
   update(app: RcMsTeamsDeploymentApp): void {
     this.tokens.update(app)
+    this.takeBlueprint(app.blueprint)
     this.app = app
     this.key = Buffer.from(app.ticketKey, 'base64url')
   }
@@ -228,14 +318,27 @@ export class MsTeamsRelayEgress {
     return mintMsTeamsTicket(this.key, binding, raw)
   }
 
-  /** Perform one call for a row of tenant `binding.tenantId` within the request budget; the caller has checked the daemon serves the row. */
-  async call(binding: MsTeamsTicketBinding, call: WireMsTeamsCall): Promise<RdPlatformReply> {
+  /** Perform one call for a row of tenant `row.tenantId` within the request budget; the caller has checked the daemon serves the row. */
+  async call(row: MsTeamsEgressRow, call: WireMsTeamsCall): Promise<RdPlatformReply> {
+    const binding: MsTeamsTicketBinding = { botId: row.botId, tenantId: row.tenantId }
+    // An agent bot sends as its own identity with a token of its own tenant; the app's bot with the home tenant's.
+    const agentBots = row.agentBotId ? this.agentBots : undefined
+    if (row.agentBotId && !agentBots) return refused('no_blueprint')
+    const botToken = agentBots
+      ? {
+          get: () => agentBots.get(row.tenantId, row.agentBotId!),
+          drop: () => agentBots.drop(row.tenantId, row.agentBotId!)
+        }
+      : {
+          get: () => this.tokens.get(this.app.tenantId, MSTEAMS_BOT_SCOPE),
+          drop: () => this.tokens.drop(this.app.tenantId, MSTEAMS_BOT_SCOPE)
+        }
     const started = this.clock()
     const left = () => this.budgetMs - (this.clock() - started)
     if (call.op === 'graph-token') return await this.graphToken(binding.tenantId, left)
     const ticketed = openMsTeamsTicket(this.key, binding, call.ticket)
     if (!ticketed) return refused('ticket')
-    const request = requestOf(call, ticketed, { ...binding, appId: this.app.appId })
+    const request = requestOf(call, ticketed, { ...binding, appId: row.agentBotId ?? this.app.appId })
     if (!request) return refused('ticket_mismatch')
     const base = new URL(ticketed.serviceUrl.endsWith('/') ? ticketed.serviceUrl : `${ticketed.serviceUrl}/`)
     const url = new URL(request.path, base)
@@ -247,7 +350,7 @@ export class MsTeamsRelayEgress {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       let token: { value: string } | undefined
       try {
-        token = await within(this.tokens.get(this.app.tenantId, MSTEAMS_BOT_SCOPE), left())
+        token = await within(botToken.get(), left())
       } catch (err) {
         return result ? answered(result) : this.tokenRefusal(err)
       }
@@ -255,7 +358,7 @@ export class MsTeamsRelayEgress {
       if (!token || left() < MIN_SEND_MS) return result ? answered(result) : unavailable('deadline')
       result = await this.send(url, request, token.value, left())
       if (result.status !== 401) break
-      this.tokens.drop(this.app.tenantId, MSTEAMS_BOT_SCOPE)
+      botToken.drop()
     }
     if (!result || result.status < 200 || result.status >= 300) return answered(result!)
     const tickets = this.answerTickets(call, binding, ticketed, result.body)
