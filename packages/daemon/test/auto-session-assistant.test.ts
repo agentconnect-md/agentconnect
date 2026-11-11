@@ -406,4 +406,58 @@ describe('assistant mode under auto (auto-session-mode.md §3.4)', () => {
     expect(d.roundReplies.size).toBe(0)
     await daemon.stop()
   })
+
+  it('offers an approved proposal a thread only in an internal room its coordinator runs (§6.9.1)', async () => {
+    const { daemon, d, scope } = await boot()
+    const coordinator = await d.store.resolveAppendCoordinate('bot-a', 'C1', scope, 1, 'coordinator')
+    const parent = {
+      key: sessionKey('slack', 'C1', coordinator, 'bot-a', scope),
+      sessionId: 'sid-coordinator',
+      platform: 'slack',
+      channel: 'C1',
+      thread: coordinator,
+      transportScope: scope,
+      integrationId: 'int-bot-a',
+      inherited: {}
+    }
+    const posts: { thread?: string; text: string }[] = []
+    vi.spyOn(d, 'gatewayForIntegration').mockReturnValue({
+      postMessage: vi.fn(async (_channel: string, text: string, thread?: string) => {
+        posts.push({ thread, text })
+        return '1700000500.000001'
+      })
+    })
+    const internal = vi.spyOn(d, 'placeConfirmedInternal').mockResolvedValue(true)
+    const draft = {
+      agentId: 'bot-a',
+      text: 'Check each finding.',
+      proposal: { sentence: 'I want to check  the findings.' },
+      approver: { kind: 'place', channel: 'C1' },
+      cardTs: '1700000100.000100',
+      cardThread: ''
+    }
+    // A card at the top level is the root itself.
+    expect(await d.taskHomeFor(draft, parent)).toMatchObject({ card: '1700000100.000100' })
+    // One in a thread, one from before its thread was recorded, and one sent to a member's DM are not.
+    for (const other of [
+      { cardThread: '1700000050.000050' },
+      { cardThread: null },
+      { approver: { kind: 'member', channel: 'D1' } }
+    ]) {
+      const home = await d.taskHomeFor({ ...draft, ...other }, parent)
+      expect(home).toBeDefined()
+      expect(home.card).toBeUndefined()
+    }
+    const home = await d.taskHomeFor({ ...draft, cardThread: '1700000050.000050' }, parent)
+    expect(await home.postRoot({ name: 'Grace' })).toBe('1700000500.000001')
+    expect(posts).toHaveLength(1)
+    expect(posts[0]?.thread).toBeUndefined()
+    expect(posts[0]?.text).toContain('**I want to check the findings.**')
+    expect(posts[0]?.text).toContain('Approved by Grace.')
+    // No coordinator, or guests in the room: it runs with no thread, as before.
+    expect(await d.taskHomeFor(draft, { ...parent, thread: 'append:1' })).toBeUndefined()
+    internal.mockResolvedValue(false)
+    expect(await d.taskHomeFor(draft, parent)).toBeUndefined()
+    await daemon.stop()
+  })
 })

@@ -369,6 +369,7 @@ import { AhpFillSubmit, PendingFillCards, type FillCardAnswer } from './computer
 import type { ComputerFillCard, ComputerFillCardOutcome } from '@agentconnect.md/protocol/computer-form-fill'
 import { ADMIN_MCP_SERVER_NAME, RemoteWebchatGrantManager } from './mcp/remote-webchat-grant.js'
 import type { CodeHostEffectReq, MessageGateway, SessionContext } from './mcp/ops.js'
+import type { SendIdentity } from './mcp/ops/context.js'
 import { notJoinedChannel } from './platforms/not-joined.js'
 import { GitCredentialCache, type ProxyLeaseAsk } from './cp/git-credential.js'
 import { GitlabBroker } from './gitlab/broker.js'
@@ -553,7 +554,7 @@ import {
 } from './assistant/getting-to-know.js'
 import { gettingToKnowToolsFor } from './mcp/ops/getting-to-know.js'
 import type { ToolDescriptor } from './tool-schema/descriptor.js'
-import { AssistantTasks, callerOfMessage, type TaskCaller } from './assistant/tasks.js'
+import { AssistantTasks, callerOfMessage, type TaskCaller, type TaskHome } from './assistant/tasks.js'
 import type { AssistantPlace } from './store/assistant-items.js'
 import type {
   AssistantDraft,
@@ -2204,8 +2205,17 @@ export class Daemon {
       this.postCoordinatorReply(agentId, integrationId, msg, text, taskLink),
     reportAnswered: (key, thread) => {
       // A coordinator's turn text is never posted, so this reply is the one its round's held cards go under.
-      if (this.activeTurnCallMeta.get(key)?.gettingToKnowReport !== undefined && !this.roundReplies.has(key))
-        this.roundReplies.set(key, thread)
+      const meta = this.activeTurnCallMeta.get(key)
+      if (meta?.gettingToKnowReport === undefined || this.roundReplies.has(key)) return
+      this.roundReplies.set(key, thread)
+      // The same thread is what the console shows the getting-to-know task with (§6.9.2); it is never attached to it.
+      void this.store.assistantSubsessions
+        .setShownThread(meta.callFrom, meta.gettingToKnowReport, thread)
+        .catch((err) =>
+          this.log.warn(
+            `getting-to-know task ${meta.gettingToKnowReport}: its thread was not recorded: ${formatErr(err)}`
+          )
+        )
     },
     showTriaging: (agentId, message) => this.showTriaging(agentId, message),
     sessionLink: (sessionId) => this.sessionLink(sessionId),
@@ -11002,6 +11012,14 @@ export class Daemon {
       reportToParent: (agentId, caller, parentSessionId, text, reportId) =>
         this.reportIntoParent(agentId, caller, parentSessionId, text, reportId),
       settled: (draft) => this.drafts.taskSettled(draft),
+      homeFor: (draft, parent) => this.taskHomeFor(draft, parent),
+      say: async (agentId, at, text) => {
+        const integrationId = this.integrationIdForSessionTransport(agentId, at.platform, at.transportScope)
+        const gateway: MessageGateway | undefined =
+          integrationId === undefined ? undefined : this.gatewayForIntegration(integrationId)
+        await gateway?.postMessage(at.channel, text, at.thread, this.agentPostIdentity(agentId))
+      },
+      reportTaskOwners: (agentId, keys) => this.reportTaskOwners(agentId, keys),
       takeFollowUp: (input) => this.followUpChecks.take(input),
       watchFollowUp: async (agentId, taskKey, url) => {
         const outcome = await this.followUpWatches.set(agentId, taskKey, url)
@@ -11010,6 +11028,53 @@ export class Daemon {
       draining: () => this.draining
     })
     return this.assistantTaskService
+  }
+
+  /** How the agent's own posts are signed on a platform that takes a name and an icon. */
+  private agentPostIdentity(agentId: string): SendIdentity {
+    const agent = this.agents.get(agentId)
+    const name = agent?.displayName?.trim() || agent?.name
+    return {
+      ...(name ? { username: name } : {}),
+      ...(agent?.iconUrl ? { icon_url: agent.iconUrl } : {}),
+      agentAuthorId: agentId
+    }
+  }
+
+  /** Where an approved proposal of this place answers in a thread (auto-session-mode.md §6.9.1): an internal room whose long session is a coordinator, on a platform the daemon posts to; undefined elsewhere. */
+  private async taskHomeFor(draft: AssistantDraft, parent: CheckParent): Promise<TaskHome | undefined> {
+    if (!this.cfg.features.autoSessionMode || !isCoordinatorCoordinate(parent.thread)) return undefined
+    const { integrationId } = parent
+    const gateway: MessageGateway | undefined =
+      integrationId === undefined ? undefined : this.gatewayForIntegration(integrationId)
+    if (integrationId === undefined || !gateway) return undefined
+    const { agentId } = draft
+    const dm = (await this.store.getSession(parent.key))?.conversationKind === 'dm'
+    // A root in an external place would show its guests work that was approved elsewhere.
+    if (dm || !(await this.placeConfirmedInternal(agentId, integrationId, parent.channel, { dm: false })))
+      return undefined
+    const inPlace = draft.approver?.kind === 'place' && draft.approver.channel === parent.channel
+    const card = inPlace && draft.cardTs !== null && draft.cardThread === '' ? draft.cardTs : undefined
+    // The card in a thread is linked from the root; a card nobody in the place can open is not.
+    const cardLink =
+      inPlace && draft.cardThread
+        ? sessionThreadUrlFor(
+            { platform: parent.platform, channel: parent.channel, thread: draft.cardThread },
+            this.connForIntegration(integrationId)
+          )
+        : undefined
+    const sentence = (draft.proposal?.sentence ?? draft.text).replace(/\s+/g, ' ').trim()
+    return {
+      ...(card !== undefined ? { card } : {}),
+      postRoot: async (by) =>
+        await gateway.postMessage(
+          parent.channel,
+          `**${sentence}**\n\nApproved by ${by.name ?? 'an approver'}.` +
+            (cardLink ? ` [The proposal](${cardLink})` : ''),
+          undefined,
+          this.agentPostIdentity(agentId)
+        )
+    }
   }
 
   /** Organization research (assistant-mode.md §5.15), built on first use over the live store. */
@@ -12910,6 +12975,14 @@ export class Daemon {
     }
     if (isTaskCoordinate(thread)) {
       const task = await this.store.assistantDrafts.taskBySubsession(agentId, key).catch(() => undefined)
+      const taskKey = task?.proposal?.itemId
+      const item = taskKey ? await this.checkedTasks.get(agentId, taskKey).catch(() => undefined) : undefined
+      return await this.itemAskers(agentId, item)
+    }
+    // An approved proposal's run in a thread it holds reads as its follow-up's asker, as one in a sub-session does (§6.9.1).
+    const approved = this.activeTurnCallMeta.get(key)?.approvedProposal
+    if (approved !== undefined) {
+      const task = await this.store.assistantDrafts.get(approved).catch(() => undefined)
       const taskKey = task?.proposal?.itemId
       const item = taskKey ? await this.checkedTasks.get(agentId, taskKey).catch(() => undefined) : undefined
       return await this.itemAskers(agentId, item)
@@ -15438,6 +15511,15 @@ export class Daemon {
     } catch (err) {
       this.log.warn(`task ${key}: settling its turn failed: ${formatErr(err)}`)
     }
+    // An approved proposal's one run in the thread it holds: its record takes the turn's outcome (§6.9.1).
+    if (entry.callMeta?.approvedProposal !== undefined)
+      await this.tasks.homeTurnEnded({
+        agentId: entry.agentId,
+        key,
+        outcome: ended === 'rerun' ? 'interrupted' : ended,
+        reason: entry.cancelledReason,
+        replayed: ended === 'rerun' || this.retainsInboxRow(entry, ended === 'failed')
+      })
     if (entry.msg.sessionChannel === undefined || !wholeRoomThread(entry.msg)) return
     // Taken whether or not this turn reports, so a later run never carries this turn's output.
     const output = this.collab.takeFinalOutput(key)
@@ -18806,6 +18888,8 @@ export class Daemon {
     if (!this.cfg.features.sessionSteering || !steerEligibleEntry(entry)) return false
     const target = selectSteerTarget(this.pending.values(), key, MAX_STEERS_PER_TURN, entry.msg.channel)
     if (!target) return false
+    // An approved run does the work its hash binds, so nobody's message joins it (auto-session-mode.md §6.9.1).
+    if (target.entry.callMeta?.approvedProposal !== undefined) return false
     const host = target.selectedHost?.host ?? this.hostForOwner(target.hostKey)
     if (!host?.steeringSupported?.()) return false
     // Attempts, not successes: a runtime that keeps declining is not asked without bound.
@@ -31030,8 +31114,8 @@ export class Daemon {
         this.log.warn(`durable inbox: skipping corrupt row ${row.id}: ${(err as Error).message}`)
         continue
       }
-      // assistant-mode.md §5.7 step 1: an approved task is never re-run; it is reported as uncertain instead.
-      if (isTaskCoordinate(sessionThreadOf(msg))) {
+      // assistant-mode.md §5.7 step 1: an approved task is never re-run; it is reported as uncertain instead. One in a thread it holds is known by its turn's metadata (§6.9.1).
+      if (isTaskCoordinate(sessionThreadOf(msg)) || callMeta?.approvedProposal !== undefined) {
         await this.store.removeInbox(row.id)
         const key = sessionKey(
           msg.platform,

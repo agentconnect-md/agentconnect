@@ -280,6 +280,8 @@ export const canonicalColumns = [
   'approverTeamId',
   'approverConsoleUserId',
   'cardTs',
+  'cardThread',
+  'shownThread',
   'cardShows',
   'followUpTitle',
   'followUpDoneWhen',

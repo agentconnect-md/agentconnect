@@ -1413,7 +1413,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 78
+export const SCHEMA_VERSION = 79
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -2180,7 +2180,12 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
   // v77 pins the initiator independently of the session's routing identity.
   async (db, store) => await addColumn(db, store.postgres, 'sessions', 'initiator', 'TEXT'),
   // v78 records the thread a webchat root was handed into, where its task answers (webchat-threads.md §5.1).
-  async (db, store) => await addColumn(db, store.postgres, 'transcript', 'handedTo', 'TEXT')
+  async (db, store) => await addColumn(db, store.postgres, 'transcript', 'handedTo', 'TEXT'),
+  // v79 records the thread a proposal's card went in and the thread a getting-to-know task is shown with (auto-session-mode.md §6.9).
+  async (db, store) => {
+    await addColumn(db, store.postgres, 'assistant_draft', 'cardThread', 'TEXT')
+    await addColumn(db, store.postgres, 'assistant_subsession', 'shownThread', 'TEXT')
+  }
 ]
 
 /** Tasks gain when they closed, the message they were opened for, what they opened and a getting-to-know task's marker; an ended watch task counts as closed when it last changed. */

@@ -123,6 +123,8 @@ export interface AssistantDraft {
   source: AssistantDraftSource | null
   approver: AssistantDraftApprover | null
   cardTs: string | null
+  /** The thread the card was posted in: '' at its conversation's top level, where its own thread can be a task's home (auto-session-mode.md §6.9.1); null for a card from before it was recorded. */
+  cardThread: string | null
   /** The status the card was posted or last rewritten with; null for a card from before it was recorded. */
   cardShows: AssistantDraftStatus | null
   status: AssistantDraftStatus
@@ -136,7 +138,7 @@ export interface AssistantDraft {
   settledAt: number | null
   messageId: string | null
   failure: string | null
-  /** The sub-session an approved task runs in, recorded with the move to `executing`. */
+  /** The session an approved task runs in: recorded with the move to `executing`, or once its root has posted (auto-session-mode.md §6.9.1). */
   subsessionKey: string | null
 }
 
@@ -236,7 +238,8 @@ export const ASSISTANT_DRAFT_SCHEMA = `
         reportRound TEXT,
         reportSeq INTEGER,
         heldForReply INTEGER NOT NULL DEFAULT 0,
-        tookItemId TEXT
+        tookItemId TEXT,
+        cardThread TEXT
       );
       CREATE INDEX IF NOT EXISTS assistant_draft_by_status ON assistant_draft (agentId, status, expiresAt);
       CREATE INDEX IF NOT EXISTS assistant_draft_by_subsession ON assistant_draft (agentId, subsessionKey);
@@ -349,6 +352,7 @@ function draftOf(row: Row): AssistantDraft {
           }
         : null,
     cardTs: str(row.cardTs),
+    cardThread: str(row.cardThread),
     cardShows: (str(row.cardShows) as AssistantDraftStatus | null) ?? null,
     status: row.status as AssistantDraftStatus,
     hash: String(row.hash),
@@ -587,10 +591,10 @@ export class AssistantDraftLedger {
     return row ? draftOf(row) : undefined
   }
 
-  /** Records the posted card, so a later settlement can rewrite it. */
-  async setCard(id: string, ts: string): Promise<boolean> {
-    const sql = "UPDATE assistant_draft SET cardTs = ?, cardShows = 'awaiting_review' WHERE id = ?"
-    return (await this.db.query(sql, [ts, id])).changes > 0
+  /** Records the posted card and the thread it went in, so a later settlement can rewrite it. */
+  async setCard(id: string, ts: string, thread = ''): Promise<boolean> {
+    const sql = "UPDATE assistant_draft SET cardTs = ?, cardThread = ?, cardShows = 'awaiting_review' WHERE id = ?"
+    return (await this.db.query(sql, [ts, thread, id])).changes > 0
   }
 
   /** Hand a card nobody could post to another approver; false once decided or carded. */
@@ -641,11 +645,11 @@ export class AssistantDraftLedger {
     return changes > 0
   }
 
-  /** Approve a task: → executing with the sub-session it runs in, in one statement; `db` is the caller's transaction. */
+  /** Approve a task: → executing with the session it runs in, in one statement, or with none while its root is still to post; `db` is the caller's transaction. */
   async beginTask(
     id: string,
     by: { id: string | null; name: string | null },
-    subsessionKey: string,
+    subsessionKey: string | null,
     now = Date.now(),
     db: AssistantDraftDatabase = this.db
   ): Promise<boolean> {
@@ -653,6 +657,26 @@ export class AssistantDraftLedger {
       `UPDATE assistant_draft SET status = 'executing', decidedAt = ?, decidedBy = ?, decidedByName = ?, subsessionKey = ?
        WHERE id = ? AND action = 'task' AND status = 'awaiting_review' AND expiresAt > ?`,
       [now, by.id, by.name, subsessionKey, id, now]
+    )
+    return changes > 0
+  }
+
+  /** An approved task that waited for its root and can no longer start: executing with no session → failed. */
+  async settleUnstarted(id: string, failure: string, now = Date.now()): Promise<boolean> {
+    const { changes } = await this.db.query(
+      `UPDATE assistant_draft SET status = 'failed', settledAt = ?, failure = ?
+       WHERE id = ? AND action = 'task' AND status = 'executing' AND subsessionKey IS NULL`,
+      [now, failure, id]
+    )
+    return changes > 0
+  }
+
+  /** Name the session of an approved task that waited for its root (auto-session-mode.md §6.9.1); false once it has one or is no longer executing. */
+  async setTaskSession(id: string, subsessionKey: string, db: AssistantDraftDatabase = this.db): Promise<boolean> {
+    const { changes } = await db.query(
+      `UPDATE assistant_draft SET subsessionKey = ?
+       WHERE id = ? AND action = 'task' AND status = 'executing' AND subsessionKey IS NULL`,
+      [subsessionKey, id]
     )
     return changes > 0
   }

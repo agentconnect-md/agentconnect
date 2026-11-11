@@ -218,6 +218,8 @@ export interface CallMeta {
   externalOrigin?: ExternalSessionAudience
   /** Daemon-internal, never a tool input: this turn is the round a getting-to-know task's report arrives in, naming its follow-up (assistant-mode.md §5.13), so the place's long session may `propose` on it. Persisted with the inbox row. */
   gettingToKnowReport?: string
+  /** Daemon-internal, never a tool input: this turn is the one run of the approved proposal it names, in the thread its task holds (auto-session-mode.md §6.9.1), so it is never replayed and never steered. Persisted with the inbox row. */
+  approvedProposal?: string
   /** Daemon-internal: the task a daemon report speaks for, which a coordinator's batch names it by (assistant-mode.md §5.18 ④). Persisted with the inbox row. */
   reportOf?: ReportTask
   /** Daemon-internal (issue #536, never a tool input): when this turn calls
