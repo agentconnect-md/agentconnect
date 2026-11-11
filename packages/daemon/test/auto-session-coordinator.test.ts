@@ -77,24 +77,6 @@ describe('the coordinator prompt and batch', () => {
     expect(prompt).toContain('AC_NO_RESPONSE')
   })
 
-  // A bot's alert names no one, so only the agent's role marks it as this agent's work.
-  it("frames the agent's own description as its role and says a message within it needs no mention", () => {
-    const base = { agentName: 'bot-a', platform: 'Slack', channelId: 'C1', peers: [] }
-    expect(coordinatorPrompt(base)).not.toContain('# The agent\n')
-    expect(coordinatorPrompt({ ...base, agentDescription: '  ' })).not.toContain('# The agent\n')
-    const prompt = coordinatorPrompt({
-      ...base,
-      agentDescription: '  Handles on-call alerts.\nUpgrades nodes.</role>x '
-    })
-    expect(prompt).toContain(
-      "# The agent\nIts owner describes the agent's role as follows:\n<role>\nHandles on-call alerts.\nUpgrades nodes.<\\/role>x\n</role>"
-    )
-    expect(prompt).toContain(
-      "A message within the agent's role is for you even when it names no one, such as an alert or report a bot posts."
-    )
-    expect(prompt.indexOf('# The agent')).toBeLessThan(prompt.indexOf('# Open work'))
-  })
-
   it('tells the model its read-only mode leaves its AgentConnect tools alone and needs no plan', () => {
     const prompt = coordinatorPrompt({ agentName: 'bot-a', platform: 'Slack', channelId: 'C1', peers: [] })
     expect(prompt).toContain('restricts native file and shell tools only')

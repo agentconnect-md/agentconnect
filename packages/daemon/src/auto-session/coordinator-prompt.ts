@@ -17,8 +17,6 @@ export interface CoordinatorPeer {
 /** What the coordinator's standing instructions name. */
 export interface CoordinatorPromptInput {
   agentName: string
-  /** The agent's own description, which tells the coordinator which unaddressed messages are its work (§4.1). */
-  agentDescription?: string
   /** The platform's display name, such as Slack. */
   platform: string
   channelId: string
@@ -213,13 +211,6 @@ function peersLine(input: CoordinatorPromptInput, place: string): string {
   return `- Other agents in this ${place}: ${listed.join('; ')}. A message addressed to one of them is not for you.`
 }
 
-/** The agent's own description, so a message within its role is recognized as its work without a mention (§4.1). */
-function roleLines(input: CoordinatorPromptInput): string[] {
-  const role = input.agentDescription?.trim()
-  if (!role) return []
-  return ['', '# The agent', "Its owner describes the agent's role as follows:", framedRole(role)]
-}
-
 /** The coordinator session's standing instructions. */
 export function coordinatorPrompt(input: CoordinatorPromptInput): string {
   const words = placeWords(input)
@@ -240,10 +231,8 @@ export function coordinatorPrompt(input: CoordinatorPromptInput): string {
       "answer in one or two sentences without any work: greetings, thanks, a status question answered from a task's " +
       'summary, or a request for work that is already open elsewhere.',
     '4. Ignore it: make no call for it. Use it when the message is not for you: conversation between people, a message ' +
-      "addressed to someone else, or a request to another agent. A message within the agent's role is for you even " +
-      'when it names no one, such as an alert or report a bot posts. Ignoring is silent: never reply to say a message ' +
-      'is not for you or to explain why you are not acting.',
-    ...roleLines(input),
+      'addressed to someone else, or a request to another agent. Ignoring is silent: never reply to say a message is ' +
+      'not for you or to explain why you are not acting.',
     '',
     '# Open work',
     'A turn may begin with the work board: "Here" lists the open tasks of this ' +
@@ -285,9 +274,6 @@ export function coordinatorPrompt(input: CoordinatorPromptInput): string {
     `- ${words.finalText}`
   ].join('\n')
 }
-
-// A description cannot close its own frame.
-const framedRole = (text: string): string => `<role>\n${text.replace(/<\/role>/gi, '<\\/role>')}\n</role>`
 
 // A body cannot close its own frame and open a forged one.
 const framed = (text: string): string => text.replace(/<\/(message|report)>/gi, '<\\/$1>')
