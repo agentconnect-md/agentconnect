@@ -78,7 +78,15 @@ afterAll(async () => {
 })
 
 /** The holder's proxy, and an executor shim's tunnel host bound to it over an in-process channel, as one placed session sees them. */
-async function placedSession(options: { maxCodehostStreams?: number; connectQueueWaitMs?: number } = {}) {
+async function placedSession(
+  options: {
+    maxCodehostStreams?: number
+    connectQueueWaitMs?: number
+    connectAnswerMs?: number
+    /** False while the shim has no daemon end to deliver to, as with no bound channel. */
+    delivered?: () => boolean
+  } = {}
+) {
   const dir = shortDir()
   const ca = loadProxyCa(join(dir, 'ca'))
   const instances: Record<string, ManagedCredentialHost[]> = {
@@ -104,11 +112,13 @@ async function placedSession(options: { maxCodehostStreams?: number; connectQueu
   const host = new TunnelHost({
     // Delivered in order, as the shim client's event stream is.
     emit: (streamId, event) => {
+      if (options.delivered?.() === false) return
       for (const listener of listeners) listener({ type: 'shim/event', streamId, event })
     },
     socketPathFor: (tunnel) => join(dir, 'rt', `${tunnel}.sock`),
     ...(options.maxCodehostStreams === undefined ? {} : { maxCodehostStreams: options.maxCodehostStreams }),
-    ...(options.connectQueueWaitMs === undefined ? {} : { connectQueueWaitMs: options.connectQueueWaitMs })
+    ...(options.connectQueueWaitMs === undefined ? {} : { connectQueueWaitMs: options.connectQueueWaitMs }),
+    ...(options.connectAnswerMs === undefined ? {} : { connectAnswerMs: options.connectAnswerMs })
   })
   cleanups.push(() => host.close())
   const tunnel = new TunnelProxy({
@@ -418,6 +428,28 @@ describe.skipIf(process.platform === 'win32')('an executor-placed session’s co
     first!.resetAndDestroy()
     expect(await second).toBe(200)
     await vi.waitFor(() => expect(tunnel.streamCount('codehost')).toBe(1))
+  })
+
+  it('refuses with 503 a codehost connection no daemon answers, freeing its stream, and leaves an answered one open', async () => {
+    let delivered = false
+    const { listening } = await placedSession({
+      maxCodehostStreams: 1,
+      connectAnswerMs: 200,
+      delivered: () => delivered
+    })
+    // No daemon end, as after a takeover before the new member binds: refused at the deadline rather than at Git's own timeout.
+    const started = Date.now()
+    expect(await connectThrough(shimDial(listening), gitlab())).toBe(503)
+    expect(Date.now() - started).toBeLessThan(2_000)
+    // Its stream is free again, and an answered connection outlives the deadline.
+    delivered = true
+    let answered: Socket | undefined
+    expect(await connectThrough(shimDial(listening), gitlab(), (socket) => (answered = socket))).toBe(200)
+    cleanups.push(() => void answered?.destroy())
+    let closed = false
+    answered!.once('close', () => (closed = true))
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    expect(closed).toBe(false)
   })
 
   it('refuses a codehost connection once the queue is full or its wait runs out, and drops one whose client gave up', async () => {

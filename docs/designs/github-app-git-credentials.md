@@ -1393,8 +1393,11 @@ eight unacknowledged frames per stream, and sixteen simultaneous code-host strea
 per shim (`shim/tunnel.ts`). Additional-repository and submodule fetches share that
 per-shim ceiling; it is not a pool-member-wide load limit. A CONNECT past the ceiling
 waits for a stream to end rather than being refused, since Git does not retry a
-refused CONNECT. It is refused with 503 only when four times the ceiling are already
-waiting, or after 120 seconds without a free stream. TLS termination and tunnel
+refused CONNECT. At the ceiling it is refused with 503 only when four times the ceiling are already
+waiting, or after 120 seconds without a free stream. An opened CONNECT the daemon has not
+answered within 30 seconds is refused with 503 too: after a member takes a sandbox over,
+its shim has no bound channel until the next session binds one, and Git would otherwise
+wait out its own timeout. TLS termination and tunnel
 processing share the member's event loop with ACP delivery and duty renewal. Load
 that delays renewal can self-fence all its duties at `T_fence` under D7 in
 [the pool design](k8s-daemon-pool.md#5-the-duty-ledger-and-lease-service-d6-d7).
