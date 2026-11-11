@@ -220,6 +220,18 @@ function roleLines(input: CoordinatorPromptInput): string[] {
   return ['', '# The agent', "Its owner describes the agent's role as follows:", framedRole(role)]
 }
 
+/** Which unaddressed messages are the agent's: those within its described role, or, with no description, none (§4.1). */
+function unaddressedRule(input: CoordinatorPromptInput): string {
+  if (input.agentDescription?.trim())
+    return " A message within the agent's role is for you even when it names no one, such as an alert or report a bot posts."
+  if (input.webchat) return ''
+  return (
+    ` The agent's owner has not described its role, so a ${input.platform} message is for you only when it mentions ` +
+    `you, names you ("${input.agentName}"), or continues a thread you replied in; ignore every other one, including ` +
+    'requests and alerts that name no one.'
+  )
+}
+
 /** The coordinator session's standing instructions. */
 export function coordinatorPrompt(input: CoordinatorPromptInput): string {
   const words = placeWords(input)
@@ -240,9 +252,8 @@ export function coordinatorPrompt(input: CoordinatorPromptInput): string {
       "answer in one or two sentences without any work: greetings, thanks, a status question answered from a task's " +
       'summary, or a request for work that is already open elsewhere.',
     '4. Ignore it: make no call for it. Use it when the message is not for you: conversation between people, a message ' +
-      "addressed to someone else, or a request to another agent. A message within the agent's role is for you even " +
-      'when it names no one, such as an alert or report a bot posts. Ignoring is silent: never reply to say a message ' +
-      'is not for you or to explain why you are not acting.',
+      `addressed to someone else, or a request to another agent.${unaddressedRule(input)} Ignoring is silent: never ` +
+      'reply to say a message is not for you or to explain why you are not acting.',
     ...roleLines(input),
     '',
     '# Open work',

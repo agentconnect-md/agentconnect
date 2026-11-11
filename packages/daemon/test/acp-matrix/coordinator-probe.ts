@@ -233,31 +233,56 @@ export function coordinatorTools(): ToolDescriptor[] {
   return shippedCoordinatorTools()
 }
 
-/** The coordinator session's standing instructions, as the daemon ships them, for the scenarios' channel or webchat conversation. */
-export function coordinatorPrompt(webchat = false): string {
-  if (webchat)
-    return shippedCoordinatorPrompt({
-      agentName: CO_IDS.self,
-      platform: 'webchat',
-      channelId: CO_IDS.conversation,
-      peers: [],
-      webchat: true
-    })
-  return shippedCoordinatorPrompt({
-    agentName: CO_IDS.self,
-    agentDescription: "Platform engineering for eng-platform: CI, deploys, and the platform's monitoring alerts.",
-    platform: 'Slack',
-    channelId: CO_IDS.channel,
-    channelName: CO_IDS.channelName,
-    selfAddress: `<@${CO_IDS.selfBot}>`,
-    peers: [
-      {
-        name: CO_IDS.peer,
-        address: `<@${CO_IDS.peerBot}>`,
-        description: 'owns billing, credentials, and infrastructure access'
-      }
-    ]
-  })
+/** The probe agent's description, which an `undescribed` scenario leaves out. */
+const PROBE_ROLE = "Platform engineering for eng-platform: CI, deploys, and the platform's monitoring alerts."
+
+/** The standing `# Agent` block a coordinator also receives, which carries the description (standing-context.ts). */
+function agentMeta(webchat: boolean, described: boolean): string {
+  return [
+    '# Agent',
+    `- Name: ${CO_IDS.self}`,
+    '- ID: 00000000-0000-4000-8000-000000000001',
+    `- Source: ${webchat ? 'webchat' : 'slack'}`,
+    ...(webchat
+      ? [`- Channel: ${CO_IDS.conversation}`]
+      : [
+          `- Slack identity: bot user <@${CO_IDS.selfBot}> is YOU — a message mentioning this ID is addressed to you`,
+          `- Channel: ${CO_IDS.channel}`,
+          `- Channel name: ${CO_IDS.channelName}`
+        ]),
+    '- Thread: append:coordinator-1700000000000',
+    ...(described ? ['', PROBE_ROLE] : [])
+  ].join('\n')
+}
+
+/** The coordinator session's standing instructions and agent block, as the daemon ships them, for the scenario's place. */
+export function coordinatorPrompt(webchat = false, described = true): string {
+  const role = described ? { agentDescription: PROBE_ROLE } : {}
+  const instructions = webchat
+    ? shippedCoordinatorPrompt({
+        agentName: CO_IDS.self,
+        ...role,
+        platform: 'webchat',
+        channelId: CO_IDS.conversation,
+        peers: [],
+        webchat: true
+      })
+    : shippedCoordinatorPrompt({
+        agentName: CO_IDS.self,
+        ...role,
+        platform: 'Slack',
+        channelId: CO_IDS.channel,
+        channelName: CO_IDS.channelName,
+        selfAddress: `<@${CO_IDS.selfBot}>`,
+        peers: [
+          {
+            name: CO_IDS.peer,
+            address: `<@${CO_IDS.peerBot}>`,
+            description: 'owns billing, credentials, and infrastructure access'
+          }
+        ]
+      })
+  return `${instructions}\n\n${agentMeta(webchat, described)}`
 }
 
 /** One coordinator turn's input: the delivered channel-root messages, rendered as the daemon renders them. */
@@ -491,6 +516,10 @@ export type CoScenarioId =
   | 'ignore-chatter'
   | 'ignore-peer'
   | 'role-alert'
+  | 'undescribed-unaddressed'
+  | 'undescribed-alert'
+  | 'undescribed-named'
+  | 'undescribed-mention'
   | 'mention-vague'
   | 'no-self-work'
   | 'batch-mixed'
@@ -517,6 +546,8 @@ export interface CoordinatorScenario {
   expect: Record<string, Expectation>
   /** A member's webchat conversation: the person reads every text the turn writes (auto-session-mode.md §10). */
   webchat?: true
+  /** The agent has no description, so its coordinator acts only on what addresses it (auto-session-mode.md §4.1). */
+  undescribed?: true
 }
 
 /** A webchat message: one person, always addressed to the agent. */
@@ -604,6 +635,62 @@ export const CO_SCENARIOS: CoordinatorScenario[] = [
       )
     ],
     expect: { 'msg-1700001500.000100': { kind: 'delegate' } }
+  },
+  {
+    id: 'undescribed-unaddressed',
+    undescribed: true,
+    tasks: [],
+    messages: [
+      msg(
+        'msg-1700001600.000100',
+        CO_IDS.alice,
+        false,
+        'staging deploys keep failing on the api pod, can someone look?'
+      )
+    ],
+    expect: { 'msg-1700001600.000100': { kind: 'ignore' } }
+  },
+  {
+    id: 'undescribed-alert',
+    undescribed: true,
+    tasks: [],
+    messages: [
+      msg(
+        'msg-1700001700.000100',
+        CO_IDS.alertBot,
+        false,
+        '[FIRING:1] ApiHighErrorRate: api 5xx ratio 7.2% > 5% for 10m. Runbook: https://runbooks.example.test/api-5xx'
+      )
+    ],
+    expect: { 'msg-1700001700.000100': { kind: 'ignore' } }
+  },
+  {
+    id: 'undescribed-named',
+    undescribed: true,
+    tasks: [],
+    messages: [
+      msg(
+        'msg-1700001800.000100',
+        CO_IDS.alice,
+        false,
+        `${CO_IDS.self}, can you find out why staging deploys keep failing on the api pod?`
+      )
+    ],
+    expect: { 'msg-1700001800.000100': { kind: 'delegate' } }
+  },
+  {
+    id: 'undescribed-mention',
+    undescribed: true,
+    tasks: [],
+    messages: [
+      msg(
+        'msg-1700001900.000100',
+        CO_IDS.alice,
+        true,
+        'can you find out why staging deploys keep failing on the api pod?'
+      )
+    ],
+    expect: { 'msg-1700001900.000100': { kind: 'delegate' } }
   },
   {
     id: 'mention-vague',
@@ -945,7 +1032,7 @@ export async function runCoordinatorScenarios(input: {
   for (let rep = 1; rep <= input.reps; rep++) {
     for (const scenario of input.scenarios) {
       const key = `${runtime}/co/${scenario.id}/${rep}`
-      const prompt = coordinatorPrompt(scenario.webchat === true)
+      const prompt = coordinatorPrompt(scenario.webchat === true, scenario.undescribed !== true)
       const scope: CoScope = {
         messages: scenario.messages.map((message) => message.id),
         reports: scenario.messages.filter((message) => message.report).map((message) => message.id),
