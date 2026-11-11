@@ -5262,3 +5262,8 @@ the reply.
 message's thread, and prose that ends in `AC_NO_RESPONSE` is silence as in any session. The prompt
 says the text is posted, where the ninetieth revision's prompt said it was shown to nobody. A
 getting-to-know report answered in text is the round's reply as one answered by `replyToMessage` is.
+
+**Hundredth revision (2026-11-11)**: threaded tasks stay outside `maxConcurrentSubsessions`
+([auto-session-mode.md](auto-session-mode.md) §6.2, #3970). The cap bounds the tasks an agent opens
+by its own decision. A threaded task opens only for a person's message or approval, one each, as a
+Per thread session did. Nothing in the code changes.
