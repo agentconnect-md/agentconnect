@@ -5311,3 +5311,8 @@ and released as a getting-to-know round's are, and approving it takes the follow
 approver as its asker and no model turn. A proposal may now have no source task: its record binds
 the conversation and thread instead, and Activity names it by its own id. §5.12's `followUp` rules
 point there.
+
+**Hundred-and-first revision (2026-11-11)**: threaded tasks stay outside `maxConcurrentSubsessions`
+([auto-session-mode.md](auto-session-mode.md) §6.2, #3970). The cap bounds the tasks an agent opens
+by its own decision. A threaded task opens only for a person's message or approval, one each, as a
+Per thread session did. Nothing in the code changes.
