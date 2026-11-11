@@ -5316,3 +5316,11 @@ point there.
 ([auto-session-mode.md](auto-session-mode.md) §6.2, #3970). The cap bounds the tasks an agent opens
 by its own decision. A threaded task opens only for a person's message or approval, one each, as a
 Per thread session did. Nothing in the code changes.
+
+**Hundred-and-second revision (2026-11-11)**: a report from the check that ended a follow-up tells
+its conversation that the follow-up has ended and nothing is left to close (§5.12), and a check's
+rules keep "can be closed" out of the report itself; before, the conversation's session had to guess
+the end from the task list and passed the phrase on. A coordinator's reply on Slack carries the
+attribution footer a turn's reply does ([auto-session-mode.md](auto-session-mode.md) §4.2). In the
+session page's Tasks tab a follow-up's row says its next check or state and what counts as done on
+hover, so one whose first check has not run, which has no page, can still be read.

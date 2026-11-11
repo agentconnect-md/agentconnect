@@ -492,10 +492,12 @@ describe('SubsessionsPanel', () => {
     await unfold()
     expect(followUpRows().map((r) => r.dataset.followUp)).toEqual(['checking', 'waiting', 'paused', 'done', 'stopped'])
     expect(followUpRows().map(stateOf)).toEqual(['Checking', 'Waiting', 'Paused', 'Done', 'Stopped'])
-    // A waiting one says when it checks next on hover over its time.
-    expect(followUpRows()[1]?.querySelector('span[title^="Next check"]')?.getAttribute('title')).toBe(
-      'Next check Oct 16, 9:00 AM'
-    )
+    // A follow-up's hover reads the same over its name and its time: its name, its next check or state, and what counts as done.
+    const tips = (r: HTMLElement | undefined) =>
+      [...(r?.querySelectorAll('[title^="Watch"]') ?? [])].map((el) => el.getAttribute('title'))
+    const waitingTip = 'Watch the waiting release\nNext check Oct 16, 9:00 AM\nThe release is published'
+    expect(tips(followUpRows()[1])).toContain(waitingTip)
+    expect(tips(followUpRows()[2])).toContain('Watch the paused release\nPaused\nThe release is published')
     expect(followUpRows()[1]?.querySelector('[data-state-icon]')?.getAttribute('data-state-icon')).toBe('waiting')
     expect(followUpRows()[0]?.querySelector('[data-state-icon]')?.getAttribute('data-state-icon')).toBe('running')
     expect(followUpRows()[1]?.querySelector('a')?.getAttribute('href')).toBe('/acme/sessions/fu-waiting')
@@ -569,6 +571,10 @@ describe('SubsessionsPanel', () => {
     await render()
     // Without an id from its daemon, a follow-up with no session has nothing to end it by.
     expect(actions('End')).toHaveLength(1)
+    // It has no page to open yet, so its hover is where its next check and what counts as done are read.
+    expect(followUpRows()[0]?.querySelector('span[title^="Watch"]')?.getAttribute('title')).toBe(
+      'Watch the waiting release\nNext check Oct 16, 9:00 AM\nThe release is published'
+    )
     await click(actions('End')[0])
     await click(container?.querySelector('[role="group"]')?.querySelector('button'))
     expect(wire.followUpStops).toEqual([{ agentId: 'agent-a', followUpId: 'item-1', parentSessionId: 'session-1' }])

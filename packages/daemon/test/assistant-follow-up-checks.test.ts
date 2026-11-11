@@ -359,6 +359,8 @@ describe('a due next check wakes one check', () => {
     const [report] = reports()
     expect(report!.msg).toMatchObject({ channel: 'C1', sessionThread: place.coordinate, source: 'agent' })
     expect(modelText(report!.msg)).toContain('The check of the follow-up "Watch the release build" found a change')
+    // This check ended the follow-up, and the conversation is told so that it asks no one to close it.
+    expect(modelText(report!.msg)).toContain('The follow-up has ended, so nothing is left to close.')
     // People read the report in the console, so it never names the follow-up by its key.
     expect(modelText(report!.msg)).not.toContain(item.taskKey)
     expect(modelText(report!.msg).endsWith(`The release is out.\n\n${ANSWER_LANGUAGE}`)).toBe(true)
@@ -747,7 +749,9 @@ describe('a follow-up owned by its place', () => {
   })
 
   it('says it handed back a result only while its latest check reported', async () => {
-    const { daemon, d, behavior, checks, settled, deps } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
+    const { daemon, d, behavior, checks, reports, settled, deps } = await boot(
+      scaffold([{ id: 'bot-a', assistantMode: ON }])
+    )
     const place = await seedPlace(d)
     const item = await takeFollowUp(d)
     const handedBack = async () =>
@@ -766,6 +770,8 @@ describe('a follow-up owned by its place', () => {
     await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
     await settled()
     expect(await handedBack()).toBe(true)
+    // A report from a follow-up that keeps checking says nothing of an end.
+    expect(modelText(reports()[0]!.msg)).not.toContain('has ended')
 
     behavior.check = quiet(deps)
     await message(d, place, item.taskKey, 'Look again.')
@@ -1266,6 +1272,8 @@ describe('follow-up tool text', () => {
         'next check. When it should be looked at again, set `nextCheck`; the people in its conversation are not ' +
         'told about it.'
     )
+    // Ending a follow-up is the check's own `done`, so its report asks no one to close it.
+    expect(prompt).toContain('It never says the follow-up can be closed either: `done: true` ends it')
     // The report-only-on-a-change rule is unchanged.
     expect(prompt).toContain('Otherwise leave `report` out: nothing is said.')
     const report = JSON.stringify((RECORD_CHECK_TOOL.inputSchema as ObjectToolSchema).properties.report)
