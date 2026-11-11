@@ -121,6 +121,7 @@ function server(options: { teams?: boolean; microsoft?: Microsoft } = {}) {
           : Response.json({ error: 'invalid_client', error_codes: [7000215] }, { status: 401 })
       }
       if (url.host === 'graph.microsoft.com') {
+        if (url.pathname.endsWith('/addPassword')) return Response.json({ secretText: 'created-secret' })
         if (url.pathname.startsWith('/v1.0/applications(')) {
           return Response.json({ signInAudience: ms.audience ?? 'AzureADMultipleOrgs' })
         }
@@ -130,7 +131,6 @@ function server(options: { teams?: boolean; microsoft?: Microsoft } = {}) {
             : Response.json({ appId: CREATED }, { status: 201 })
         }
         if (url.pathname.endsWith('agentIdentityBlueprintPrincipal')) return Response.json({ id: 'p' }, { status: 201 })
-        if (url.pathname.endsWith('/addPassword')) return Response.json({ secretText: 'created-secret' })
       }
       if (url.host === 'management.azure.com') {
         if (url.pathname.includes('/resourcegroups/')) return Response.json({}, { status: ms.group ?? 200 })
@@ -210,7 +210,7 @@ describe('the agent bots a deployment configures in Setup', () => {
       expect.stringContaining('/providers/Microsoft.BotService'),
       'POST graph.microsoft.com/v1.0/applications',
       'POST graph.microsoft.com/v1.0/servicePrincipals/microsoft.graph.agentIdentityBlueprintPrincipal',
-      `POST graph.microsoft.com/v1.0/applications/${CREATED}/addPassword`
+      `POST graph.microsoft.com/v1.0/applications(appId='${CREATED}')/addPassword`
     ])
     // A saved blueprint is cleared before another is made.
     expect((await create({ operator: 'operator@example.test', ...AZURE })).statusCode).toBe(409)
