@@ -68,7 +68,12 @@ export function msTeamsAgentBotKey(agentId: string, tenantId: string): string {
 }
 
 /** The Azure Bot resource of a key; resource names are global, so the key is all of it. */
-export const msTeamsAgentBotResourceName = (key: string) => `agentconnect-${key}`
+// Azure takes a bot name of 4 to 42 characters (**measured**), so the prefix is short: with the key's 32 it makes 38.
+const RESOURCE_PREFIX = 'acbot-'
+export const msTeamsAgentBotResourceName = (key: string) => `${RESOURCE_PREFIX}${key}`
+/** The key a resource name carries; undefined for a resource this module did not name. */
+export const msTeamsAgentBotKeyOfResource = (name: string): string | undefined =>
+  /^acbot-([0-9a-f]{32})$/.exec(name)?.[1]
 const TAG_PREFIX = 'agentconnect-agent-bot:'
 /** The tag an agent identity is created with and found again by. */
 export const msTeamsAgentBotTag = (key: string) => `${TAG_PREFIX}${key}`
@@ -355,7 +360,7 @@ export class MsTeamsAgentBotClient {
       if (page.status !== 200) throw new MsTeamsAgentBotError('registration', page.status, page.code)
       const parsed = BotResources.parse(page.body)
       for (const bot of parsed.value) {
-        const key = /^agentconnect-([0-9a-f]{32})$/.exec(bot.name)?.[1]
+        const key = msTeamsAgentBotKeyOfResource(bot.name)
         if (key)
           out.push({
             key,

@@ -672,7 +672,7 @@ describe('a deployment that makes agent bots (§8.6)', () => {
           tokenTenantId: CUSTOMER,
           appOwner: 'deployment',
           agentBotBlueprintId: AGENT_BOTS.blueprintId,
-          agentBotResourceName: `agentconnect-${key}`
+          agentBotResourceName: `acbot-${key}`
         }
       })
     )
