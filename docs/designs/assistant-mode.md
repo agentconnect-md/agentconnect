@@ -1128,6 +1128,9 @@ a schedule fires / a watched object's event (§5.14) / a follow-up's nextCheck i
   see §5.7 step 1.
 - The card reuses `OrganizationSuggestion`'s component, not its review route.
 
+[auto-session-mode.md](auto-session-mode.md) §6.9 proposes running an approved proposal as a threaded
+task in a thread of its place, and a read-only form of it; neither is built.
+
 **P1 ships `propose` for patrols only** (#2895): `propose({ sentence, why, task })`, at most once
 per patrol run; an approved proposal runs as a task with the agent's own permission mode in
 the item's origin place, counted against `maxConcurrentSubsessions` (a full cap refuses the
@@ -1820,6 +1823,8 @@ under the introduction works. For a getting-to-know task, `propose` changes in f
   the first reply message the round posted, else where the place's cards go otherwise (its top
   level for an appending long session). A held card a restart left behind is posted the same way by
   the minute sweep once nothing runs the round; one decided in the console while held gets none.
+  Under a coordinator the round's reply is a `replyToMessage` post, which this hold does not see,
+  so its cards post at the top level; auto-session-mode.md §6.9.2 records the fix.
 - **An HTTP bot's place.** The relay routes an HTTP-mode bot, so the daemon holds no routing rules
   for it and cannot replay its ladder. Where such a bot serves one agent, a person's mention reaches
   the agent wherever the conversation is open to it, so the place's people approve there, for every
@@ -5200,3 +5205,10 @@ askers and status, and the crons that post there, with their labels and next run
 sweep writes a page only when its content changed, so no task or cron write path calls it. §1.3's
 "Nothing extra appears on the platform" is narrowed to the conversation itself, as the product
 owner decided the same day.
+
+**Ninety-fourth revision (2026-11-11)**: a proposal, not built. An approved proposal ran where
+nobody in its place could answer it, so its result was posted twice and the replies under it opened
+a second task. [auto-session-mode.md](auto-session-mode.md) §6.9 proposes a thread of the place for
+it, a read-only form of `delegateTask` and `propose`, and one Tasks group in the console; it also
+records why a getting-to-know round's cards post at the top level under a coordinator (§5.13
+"Holding the cards"). §5.10 and §5.13 point there and are otherwise unchanged.
