@@ -48,6 +48,7 @@ import {
   localAuthLogtoPut,
   logtoGoogleConnectorPut,
   logtoLoginAppPut,
+  msTeamsAgentBotsPut,
   logtoGithubConnectorPut,
   logtoGitlabSignInPut,
   logtoSsoConnectorCreatedPut,
@@ -70,6 +71,14 @@ import { googleChatConfiguredUrls } from '../google-chat-app.js'
 import { msTeamsConfiguredUrls } from '../msteams-app.js'
 import { azureDevOpsConfiguredUrls } from '../azure-devops-app.js'
 import { verifyMsTeamsApp } from '@agentconnect.md/control-plane/msteams-credential'
+import {
+  MsTeamsAgentBotClient,
+  MsTeamsAgentBotError,
+  MsTeamsBlueprintIncomplete,
+  checkMsTeamsAgentBotsAzure,
+  createMsTeamsBlueprint,
+  type MsTeamsAgentBotsCheck
+} from '@agentconnect.md/control-plane/msteams-agent-bots'
 import {
   auditSlackManifest,
   buildSlackDeploymentManifest,
@@ -236,6 +245,44 @@ const ConfigureLoginAppBody = z.strictObject({
     .optional()
 })
 
+const Guid = z
+  .string()
+  .trim()
+  .regex(/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/, 'must be a GUID')
+  .transform((value) => value.toLowerCase())
+const AzureBotsTarget = {
+  subscriptionId: Guid,
+  resourceGroup: z
+    .string()
+    .trim()
+    .regex(/^[-\w.()]{0,89}[-\w()]$/, 'must be an Azure resource group name')
+}
+const ConfigureMsTeamsAgentBotsBody = z.strictObject({
+  agentBots: z
+    .strictObject({ blueprintId: Guid, clientSecret: z.string().min(1).optional(), ...AzureBotsTarget })
+    .nullable()
+})
+const CreateMsTeamsBlueprintBody = z.strictObject({
+  /** The operator's Microsoft Entra user, as a user principal name or object ID: the blueprint's owner and sponsor. */
+  operator: z.string().trim().min(1).max(256),
+  ...AzureBotsTarget
+})
+
+/** What each failed check tells the operator to do; Microsoft's own text is never relayed. */
+const MSTEAMS_AGENT_BOTS_PROBLEMS: Record<Exclude<MsTeamsAgentBotsCheck, { ok: true }>['reason'], string> = {
+  blueprint_credentials:
+    'Microsoft Entra refused the blueprint ID with this secret, or its home tenant has no principal for it. Check the blueprint’s Application (client) ID and paste a current client secret Value.',
+  blueprint_single_tenant:
+    'This blueprint is open to one organization only. Set its supported account types to accounts in any organizational directory, then save again.',
+  azure_credentials:
+    'Microsoft Entra issued the Teams application no Azure token. Check the application’s client secret in the Microsoft sign-in settings above.',
+  resource_group:
+    'Azure does not show this resource group to the Teams application. Check the subscription ID and the group’s name, and assign the application’s service principal the Contributor role on the group.',
+  provider_unregistered:
+    'The Microsoft.BotService resource provider is not registered on this subscription. Register it, then save again.',
+  unavailable: 'AgentConnect could not reach Microsoft to check these settings. Try again in a moment.'
+}
+
 const RegionalLoginAppBody = z
   .strictObject({
     appId: z.string().trim().min(1).max(500),
@@ -270,6 +317,8 @@ export interface SetupServerDeps {
   store: DeploymentConfigStore
   publicUrl: string
   fetch?: typeof fetch
+  /** The wait between tries while a new blueprint settles; tests pass one that does not sleep. */
+  msTeamsBlueprintWait?: (ms: number) => Promise<void>
   verifyOidcToken?: VerifyOidcToken
   makeLogtoClaimClient?: (config: LogtoManagementConfig) => Pick<LogtoAdminClaimClient, 'assignAdmin'>
   makeLogtoCheckClient?: (
@@ -1318,6 +1367,135 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
         const saved = await deps.store.replace({ expectedRevision: current.revision, ...put })
         return { revision: saved.revision, restartRequired: true as const, ...(teamsUrls ?? {}) }
       })
+    }
+  )
+
+  // The Teams app the agent bots sit beside: the Microsoft sign-in application, its home tenant and its sealed secret.
+  const msTeamsApp = async () => {
+    const runtime = await deps.store.getRuntime(['logto.azureadConnectorClientSecret', 'msTeams.blueprintClientSecret'])
+    const appId = runtime?.values.logto?.azureadConnector?.clientId
+    const tenantId = runtime?.values.msTeams?.tenantId
+    const clientSecret = runtime?.secrets['logto.azureadConnectorClientSecret']
+    if (!runtime || !appId || !tenantId || !clientSecret) return undefined
+    return {
+      app: { appId: appId.toLowerCase(), tenantId, clientSecret },
+      stored: runtime.values.msTeams?.agentBots ?? undefined,
+      storedSecret: runtime.secrets['msTeams.blueprintClientSecret']
+    }
+  }
+  const agentBotsProblem = (reply: FastifyReply, check: Exclude<MsTeamsAgentBotsCheck, { ok: true }>) =>
+    problem(
+      reply,
+      check.reason === 'unavailable' ? 502 : 400,
+      MSTEAMS_AGENT_BOTS_PROBLEMS[check.reason],
+      `MSTEAMS_AGENT_BOTS_${check.reason.toUpperCase()}`
+    )
+  const storeAgentBots = (agentBots: Parameters<typeof msTeamsAgentBotsPut>[1]) =>
+    serializeMutation(async () => {
+      const current = await deps.store.getAdmin()
+      if (!current?.values.msTeams)
+        return { refused: { status: 409, message: 'configure the Teams app before its agent bots' } }
+      let put: ReturnType<typeof msTeamsAgentBotsPut>
+      try {
+        put = msTeamsAgentBotsPut(current, agentBots)
+      } catch (error) {
+        return {
+          refused: { status: 400, message: error instanceof Error ? error.message : 'invalid agent bots configuration' }
+        }
+      }
+      const saved = await deps.store.replace({ expectedRevision: current.revision, ...put })
+      return {
+        revision: saved.revision,
+        restartRequired: true as const,
+        ...(agentBots ? { blueprintId: agentBots.blueprintId } : {})
+      }
+    })
+  const saveAgentBots = async (reply: FastifyReply, agentBots: Parameters<typeof msTeamsAgentBotsPut>[1]) => {
+    const saved = await storeAgentBots(agentBots)
+    return saved.refused ? problem(reply, saved.refused.status, saved.refused.message) : saved
+  }
+
+  // Agent bots (teams-integration.md §8.6.3): a blueprint entered by its ID and a secret, checked before it is saved.
+  app.post(
+    '/api/v1/configure/msteams-agent-bots',
+    { preHandler: requireConfigurationAccess },
+    async (request, reply) => {
+      const parsed = ConfigureMsTeamsAgentBotsBody.safeParse(request.body)
+      if (!parsed.success)
+        return problem(reply, 400, 'a blueprint ID, an Azure subscription ID and a resource group name are required')
+      const agentBots = parsed.data.agentBots
+      if (!agentBots) return saveAgentBots(reply, null)
+      const teams = await msTeamsApp()
+      if (!teams) return problem(reply, 409, 'configure the Teams app before its agent bots')
+      // Only the same blueprint keeps its sealed secret, and that secret is checked like a new one.
+      const clientSecret =
+        agentBots.clientSecret ?? (teams.stored?.blueprintId === agentBots.blueprintId ? teams.storedSecret : undefined)
+      if (!clientSecret) return problem(reply, 400, 'paste a client secret for this blueprint')
+      const check = await new MsTeamsAgentBotClient({
+        app: teams.app,
+        agentBots: { ...agentBots, clientSecret },
+        fetch: fetchImpl
+      }).check()
+      if (!check.ok) return agentBotsProblem(reply, check)
+      return saveAgentBots(reply, agentBots)
+    }
+  )
+
+  // Create blueprint: made through Graph with the Teams application's own permissions, its secret sealed and never shown.
+  app.post(
+    '/api/v1/configure/msteams-agent-bots/blueprint',
+    { preHandler: requireConfigurationAccess },
+    async (request, reply) => {
+      const parsed = CreateMsTeamsBlueprintBody.safeParse(request.body)
+      if (!parsed.success)
+        return problem(
+          reply,
+          400,
+          'your Microsoft Entra user, an Azure subscription ID and a resource group name are required'
+        )
+      const { operator, ...azure } = parsed.data
+      const teams = await msTeamsApp()
+      if (!teams) return problem(reply, 409, 'configure the Teams app before its agent bots')
+      if (teams.stored) return problem(reply, 409, 'clear the saved blueprint before creating another')
+      // Azure is checked first, so no blueprint is made that could not be saved.
+      const ready = await checkMsTeamsAgentBotsAzure(teams.app, azure, fetchImpl)
+      if (!ready.ok) return agentBotsProblem(reply, ready)
+      let created: Awaited<ReturnType<typeof createMsTeamsBlueprint>>
+      try {
+        created = await createMsTeamsBlueprint(
+          teams.app,
+          { displayName: 'AgentConnect agents', operator },
+          fetchImpl,
+          deps.msTeamsBlueprintWait
+        )
+      } catch (error) {
+        if (error instanceof MsTeamsBlueprintIncomplete)
+          return problem(
+            reply,
+            502,
+            `Microsoft created blueprint ${error.blueprintId} but did not finish it. Add a client secret to it in the Microsoft Entra admin center and enter its ID here, or delete it and try again.`,
+            'MSTEAMS_BLUEPRINT_INCOMPLETE'
+          )
+        if (error instanceof MsTeamsAgentBotError && !error.transient)
+          return problem(
+            reply,
+            400,
+            'Microsoft Graph refused to create the blueprint. Grant the Teams application the three application permissions listed here with administrator consent, and check that your Microsoft Entra user exists in its home tenant.',
+            'MSTEAMS_BLUEPRINT_REFUSED'
+          )
+        return problem(reply, 502, MSTEAMS_AGENT_BOTS_PROBLEMS.unavailable, 'MSTEAMS_AGENT_BOTS_UNAVAILABLE')
+      }
+      const agentBots = { blueprintId: created.blueprintId, clientSecret: created.clientSecret, ...azure }
+      // The secret is sealed before the last check, which only waits for it to take effect: a failure there leaves a saved blueprint to check again.
+      const saved = await storeAgentBots(agentBots)
+      if (saved.refused) return problem(reply, saved.refused.status, saved.refused.message)
+      const check = await new MsTeamsAgentBotClient({
+        app: teams.app,
+        agentBots,
+        fetch: fetchImpl,
+        ...(deps.msTeamsBlueprintWait ? { wait: deps.msTeamsBlueprintWait } : {})
+      }).check({ settle: true })
+      return { ...saved, check: check.ok ? 'ok' : check.reason }
     }
   )
 

@@ -427,17 +427,68 @@ export function logtoLoginAppPut(
   const secret = credentials ? credentials.clientSecret : null
   // Clearing Microsoft sign-in also stops the Teams app it is.
   const teams = provider !== 'azuread' ? undefined : credentials ? teamsTenantId : null
+  // Agent bots belong to one app in one home tenant: they stay while both do, and go with either.
+  const previous = current.values.msTeams
+  const sameApp = Boolean(credentials) && logto[key]?.clientId === credentials?.clientId
+  const agentBots = teams && sameApp && previous?.tenantId === teams.toLowerCase() ? previous.agentBots : undefined
+  const dropsAgentBots = teams !== undefined && Boolean(previous?.agentBots) && !agentBots
   return DeploymentConfigPutSchema.parse({
     values: {
       ...current.values,
-      ...(teams === undefined ? {} : { msTeams: teams ? { tenantId: teams } : null }),
+      ...(teams === undefined
+        ? {}
+        : { msTeams: teams ? { tenantId: teams, ...(agentBots ? { agentBots } : {}) } : null }),
       logto: {
         ...logto,
         browser: { ...logto.browser, socialProviders },
         [key]: credentials ? { clientId: credentials.clientId } : null
       }
     },
-    ...(secret === undefined ? {} : { secrets: { [`logto.${provider}ConnectorClientSecret`]: secret } })
+    ...(secret === undefined && !dropsAgentBots
+      ? {}
+      : {
+          secrets: {
+            ...(secret === undefined ? {} : { [`logto.${provider}ConnectorClientSecret`]: secret }),
+            ...(dropsAgentBots ? { 'msTeams.blueprintClientSecret': null } : {})
+          }
+        })
+  })
+}
+
+export interface MsTeamsAgentBotsInput {
+  blueprintId: string
+  subscriptionId: string
+  resourceGroup: string
+  /** Omitted keeps the stored secret, which only the same blueprint may. */
+  clientSecret?: string
+}
+
+/** Null turns agent bots off and clears the blueprint's secret; they exist only beside the Teams app (teams-integration.md §8.6.3). */
+export function msTeamsAgentBotsPut(
+  current: CurrentDeploymentConfig,
+  agentBots: MsTeamsAgentBotsInput | null
+): DeploymentConfigPut {
+  const teams = current.values.msTeams
+  if (!teams) throw new Error('configure the Teams app before its agent bots')
+  if (agentBots && !agentBots.clientSecret && teams.agentBots?.blueprintId !== agentBots.blueprintId.toLowerCase()) {
+    throw new Error('a new blueprint requires its client secret')
+  }
+  const secret = agentBots ? agentBots.clientSecret : null
+  return DeploymentConfigPutSchema.parse({
+    values: {
+      ...current.values,
+      msTeams: {
+        tenantId: teams.tenantId,
+        agentBots: agentBots
+          ? {
+              blueprintId: agentBots.blueprintId,
+              subscriptionId: agentBots.subscriptionId,
+              resourceGroup: agentBots.resourceGroup
+            }
+          : null
+      }
+    },
+    ...(secret === undefined ? {} : { secrets: { 'msTeams.blueprintClientSecret': secret } })
   })
 }
 

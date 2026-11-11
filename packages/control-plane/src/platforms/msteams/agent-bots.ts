@@ -74,6 +74,63 @@ const BotResource = z.object({
 })
 const BotResources = z.object({ value: z.array(BotResource), nextLink: z.string().nullish() })
 
+interface MsCallResult {
+  status: number
+  body: Json | undefined
+  code: string | undefined
+}
+
+// One client-credentials request; the refusal carries Entra's first error number.
+async function entraToken(fetchImpl: typeof fetch, tenantId: string, params: Record<string, string>): Promise<string> {
+  let response: Response
+  let body: Json | undefined
+  try {
+    response = await fetchImpl(msTeamsTokenUrl(tenantId), {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'client_credentials', ...params }).toString(),
+      signal: AbortSignal.timeout(TIMEOUT_MS)
+    })
+    body = obj(await response.json().catch(() => undefined))
+  } catch {
+    throw new MsTeamsAgentBotError('token', undefined, undefined)
+  }
+  const value = typeof body?.access_token === 'string' ? body.access_token : ''
+  if (response.ok && value) return value
+  const codes = Array.isArray(body?.error_codes) ? body.error_codes : []
+  throw new MsTeamsAgentBotError('token', response.status, codes.length > 0 ? String(codes[0]) : undefined)
+}
+
+// One Graph or Azure request; a refusal is returned with the provider's error code, no answer throws.
+async function msCall(
+  fetchImpl: typeof fetch,
+  step: MsTeamsAgentBotError['step'],
+  method: string,
+  url: string,
+  token: string,
+  body?: Json
+): Promise<MsCallResult> {
+  let response: Response
+  try {
+    response = await fetchImpl(url, {
+      method,
+      headers: {
+        authorization: `Bearer ${token}`,
+        accept: 'application/json',
+        'OData-Version': '4.0',
+        ...(body ? { 'content-type': 'application/json' } : {})
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+      signal: AbortSignal.timeout(TIMEOUT_MS)
+    })
+  } catch {
+    throw new MsTeamsAgentBotError(step, undefined, undefined)
+  }
+  const parsed = obj(await response.json().catch(() => undefined))
+  const code = obj(parsed?.error)?.code
+  return { status: response.status, body: parsed, code: typeof code === 'string' ? code : undefined }
+}
+
 export class MsTeamsAgentBotClient {
   private readonly fetchImpl: typeof fetch
   private readonly wait: (ms: number) => Promise<void>
@@ -83,25 +140,8 @@ export class MsTeamsAgentBotClient {
     this.wait = deps.wait ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)))
   }
 
-  // One client-credentials request; the refusal carries Entra's first error number.
-  private async token(tenantId: string, params: Record<string, string>): Promise<string> {
-    let response: Response
-    let body: Json | undefined
-    try {
-      response = await this.fetchImpl(msTeamsTokenUrl(tenantId), {
-        method: 'POST',
-        headers: { 'content-type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ grant_type: 'client_credentials', ...params }).toString(),
-        signal: AbortSignal.timeout(TIMEOUT_MS)
-      })
-      body = obj(await response.json().catch(() => undefined))
-    } catch {
-      throw new MsTeamsAgentBotError('token', undefined, undefined)
-    }
-    const value = typeof body?.access_token === 'string' ? body.access_token : ''
-    if (response.ok && value) return value
-    const codes = Array.isArray(body?.error_codes) ? body.error_codes : []
-    throw new MsTeamsAgentBotError('token', response.status, codes.length > 0 ? String(codes[0]) : undefined)
+  private token(tenantId: string, params: Record<string, string>): Promise<string> {
+    return entraToken(this.fetchImpl, tenantId, params)
   }
 
   /** The blueprint's own token in a tenant where its principal exists. */
@@ -126,32 +166,14 @@ export class MsTeamsAgentBotClient {
     return await this.token(tenantId, { client_id: appId, client_secret: clientSecret, scope: ARM_SCOPE })
   }
 
-  private async call(
+  private call(
     step: MsTeamsAgentBotError['step'],
     method: string,
     url: string,
     token: string,
     body?: Json
-  ): Promise<{ status: number; body: Json | undefined; code: string | undefined }> {
-    let response: Response
-    try {
-      response = await this.fetchImpl(url, {
-        method,
-        headers: {
-          authorization: `Bearer ${token}`,
-          accept: 'application/json',
-          'OData-Version': '4.0',
-          ...(body ? { 'content-type': 'application/json' } : {})
-        },
-        ...(body ? { body: JSON.stringify(body) } : {}),
-        signal: AbortSignal.timeout(TIMEOUT_MS)
-      })
-    } catch {
-      throw new MsTeamsAgentBotError(step, undefined, undefined)
-    }
-    const parsed = obj(await response.json().catch(() => undefined))
-    const code = obj(parsed?.error)?.code
-    return { status: response.status, body: parsed, code: typeof code === 'string' ? code : undefined }
+  ): Promise<MsCallResult> {
+    return msCall(this.fetchImpl, step, method, url, token, body)
   }
 
   /** The blueprint's principal in a customer tenant, created with the administrator's delegated token if the tenant has none (§8.6.5 step 2). */
@@ -362,51 +384,116 @@ export class MsTeamsAgentBotClient {
   }
 
   /** What Setup checks before it saves agent bots (§8.6.3): the blueprint's secret, that other organizations may use it, the resource group, and the provider's registration. */
-  async check(): Promise<MsTeamsAgentBotsCheck> {
+  async check(options: { settle?: boolean } = {}): Promise<MsTeamsAgentBotsCheck> {
     const { blueprintId, subscriptionId, resourceGroup } = this.deps.agentBots
-    let graph: string
     try {
-      graph = await this.blueprintToken(this.deps.app.tenantId)
+      // A secret added seconds ago is refused like a wrong one, so a just-made blueprint is given time.
+      const graph = options.settle
+        ? await this.settledBlueprintToken(this.deps.app.tenantId)
+        : await this.blueprintToken(this.deps.app.tenantId)
+      // The blueprint reads its own application with no permission granted to it.
+      const url = `${GRAPH}/applications(appId='${blueprintId}')?$select=signInAudience`
+      const app = await this.call('blueprint', 'GET', url, graph)
+      if (app.status >= 500 || app.status === 429) return { ok: false, reason: 'unavailable' }
+      if (app.status !== 200) return { ok: false, reason: 'blueprint_credentials' }
+      if (app.body?.signInAudience !== 'AzureADMultipleOrgs') return { ok: false, reason: 'blueprint_single_tenant' }
     } catch (err) {
       if (err instanceof MsTeamsAgentBotError && !err.transient) return { ok: false, reason: 'blueprint_credentials' }
       return { ok: false, reason: 'unavailable' }
     }
-    try {
-      // The blueprint reads its own application with no permission granted to it.
-      const app = await this.call(
-        'blueprint',
-        'GET',
-        `${GRAPH}/applications(appId='${blueprintId}')?$select=signInAudience`,
-        graph
-      )
-      if (app.status !== 200) return { ok: false, reason: app.status >= 500 ? 'unavailable' : 'blueprint_credentials' }
-      if (app.body?.signInAudience !== 'AzureADMultipleOrgs') return { ok: false, reason: 'blueprint_single_tenant' }
-      const arm = await this.armToken()
-      const base = `${ARM}/subscriptions/${subscriptionId}`
-      const group = await this.call(
-        'azure',
-        'GET',
-        `${base}/resourcegroups/${encodeURIComponent(resourceGroup)}?api-version=${RESOURCES_API_VERSION}`,
-        arm
-      )
-      if (group.status >= 500 || group.status === 429) return { ok: false, reason: 'unavailable' }
-      // Azure answers a missing group and a group the app has no role on alike.
-      if (group.status !== 200) return { ok: false, reason: 'resource_group' }
-      const provider = await this.call(
-        'azure',
-        'GET',
-        `${base}/providers/Microsoft.BotService?api-version=${RESOURCES_API_VERSION}`,
-        arm
-      )
-      if (provider.status >= 500 || provider.status === 429) return { ok: false, reason: 'unavailable' }
-      if (provider.status !== 200 || provider.body?.registrationState !== 'Registered')
-        return { ok: false, reason: 'provider_unregistered' }
-      return { ok: true }
-    } catch (err) {
-      if (err instanceof MsTeamsAgentBotError && !err.transient && err.step === 'token')
-        return { ok: false, reason: 'azure_credentials' }
-      return { ok: false, reason: 'unavailable' }
+    return await checkMsTeamsAgentBotsAzure(this.deps.app, { subscriptionId, resourceGroup }, this.fetchImpl)
+  }
+}
+
+/** Azure's half of the check, which needs no blueprint: the app's Azure token, the resource group, and the bot provider's registration. */
+export async function checkMsTeamsAgentBotsAzure(
+  app: MsTeamsPlatformApp,
+  azure: Pick<MsTeamsAgentBots, 'subscriptionId' | 'resourceGroup'>,
+  fetchImpl: typeof fetch = fetch
+): Promise<MsTeamsAgentBotsCheck> {
+  const unsettled = (status: number) => status >= 500 || status === 429
+  try {
+    const arm = await entraToken(fetchImpl, app.tenantId, {
+      client_id: app.appId,
+      client_secret: app.clientSecret,
+      scope: ARM_SCOPE
+    })
+    const base = `${ARM}/subscriptions/${azure.subscriptionId}`
+    const groupUrl = `${base}/resourcegroups/${encodeURIComponent(azure.resourceGroup)}?api-version=${RESOURCES_API_VERSION}`
+    const group = await msCall(fetchImpl, 'azure', 'GET', groupUrl, arm)
+    if (unsettled(group.status)) return { ok: false, reason: 'unavailable' }
+    // Azure answers a missing group and a group the app has no role on alike.
+    if (group.status !== 200) return { ok: false, reason: 'resource_group' }
+    const providerUrl = `${base}/providers/Microsoft.BotService?api-version=${RESOURCES_API_VERSION}`
+    const provider = await msCall(fetchImpl, 'azure', 'GET', providerUrl, arm)
+    if (unsettled(provider.status)) return { ok: false, reason: 'unavailable' }
+    if (provider.status !== 200 || provider.body?.registrationState !== 'Registered')
+      return { ok: false, reason: 'provider_unregistered' }
+    return { ok: true }
+  } catch (err) {
+    if (err instanceof MsTeamsAgentBotError && !err.transient) return { ok: false, reason: 'azure_credentials' }
+    return { ok: false, reason: 'unavailable' }
+  }
+}
+
+/** A blueprint that was made but could not be finished; its ID lets the operator enter it by hand or delete it. */
+export class MsTeamsBlueprintIncomplete extends MsTeamsAgentBotError {
+  constructor(
+    readonly blueprintId: string,
+    cause: MsTeamsAgentBotError
+  ) {
+    super(cause.step, cause.status, cause.providerCode)
+    this.name = 'MsTeamsBlueprintIncomplete'
+  }
+}
+
+const BLUEPRINT_TRIES = 8
+const BLUEPRINT_WAIT_MS = 3_000
+
+/** Setup's "Create blueprint" (§8.6.3): the blueprint, open to other organizations, with the operator as owner and sponsor; its principal in the home tenant; and a client secret, returned once to be sealed. */
+export async function createMsTeamsBlueprint(
+  app: MsTeamsPlatformApp,
+  input: { displayName: string; operator: string },
+  fetchImpl: typeof fetch = fetch,
+  wait: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+): Promise<{ blueprintId: string; clientSecret: string }> {
+  const graph = await entraToken(fetchImpl, app.tenantId, {
+    client_id: app.appId,
+    client_secret: app.clientSecret,
+    scope: GRAPH_SCOPE
+  })
+  const operator = `${GRAPH}/users/${encodeURIComponent(input.operator)}`
+  const made = await msCall(fetchImpl, 'blueprint', 'POST', `${GRAPH}/applications`, graph, {
+    '@odata.type': 'Microsoft.Graph.AgentIdentityBlueprint',
+    displayName: input.displayName,
+    signInAudience: 'AzureADMultipleOrgs',
+    'sponsors@odata.bind': [operator],
+    'owners@odata.bind': [operator]
+  })
+  const blueprintId = typeof made.body?.appId === 'string' ? made.body.appId.toLowerCase() : ''
+  if (made.status !== 201 || !blueprintId) throw new MsTeamsAgentBotError('blueprint', made.status, made.code)
+  // Graph does not see a new blueprint at once: each step is tried again while it answers that the application is not there.
+  const settled = async (method: string, url: string, body: Json, done: number): Promise<MsCallResult> => {
+    for (let attempt = 1; ; attempt += 1) {
+      const result = await msCall(fetchImpl, 'blueprint', method, url, graph, body)
+      if (result.status === done) return result
+      const waiting = result.status === 400 || result.status === 404 || result.status >= 500 || result.status === 429
+      if (!waiting || attempt >= BLUEPRINT_TRIES)
+        throw new MsTeamsAgentBotError('blueprint', result.status, result.code)
+      await wait(BLUEPRINT_WAIT_MS)
     }
+  }
+  try {
+    const principalUrl = `${GRAPH}/servicePrincipals/microsoft.graph.agentIdentityBlueprintPrincipal`
+    await settled('POST', principalUrl, { appId: blueprintId }, 201)
+    const passwordUrl = `${GRAPH}/applications/${blueprintId}/addPassword`
+    const secret = await settled('POST', passwordUrl, { passwordCredential: { displayName: 'AgentConnect' } }, 200)
+    const clientSecret = typeof secret.body?.secretText === 'string' ? secret.body.secretText : ''
+    if (!clientSecret) throw new MsTeamsAgentBotError('blueprint', secret.status, undefined)
+    return { blueprintId, clientSecret }
+  } catch (err) {
+    if (err instanceof MsTeamsAgentBotError) throw new MsTeamsBlueprintIncomplete(blueprintId, err)
+    throw err
   }
 }
 
