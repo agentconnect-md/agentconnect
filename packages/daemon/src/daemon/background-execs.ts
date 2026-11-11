@@ -76,6 +76,13 @@ export class BackgroundExecs {
     return false
   }
 
+  /** The lease keys of the sessions one host owns that still run one. */
+  ownerLiveKeys(owner: HostKey): string[] {
+    return [...this.byLease]
+      .filter(([key, entry]) => pendingTurnOwner(key) === owner && this.running(entry.calls))
+      .map(([key]) => key)
+  }
+
   drop(leaseKey: string): void {
     this.byLease.delete(leaseKey)
   }

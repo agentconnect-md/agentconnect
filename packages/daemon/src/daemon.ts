@@ -1588,6 +1588,12 @@ const CONFIG_CHANGE_NOTICE: TurnCutNotice = {
   lost: '⚠️ The agent restarted to apply its new configuration — this turn was stopped; send your message again.'
 }
 
+/** A session whose background work a config respawn stopped: what ran and the thread its turn replied in. */
+type StrandedBackgroundWork = { rec: SessionRecord; tasks: string[]; thread?: string }
+
+/** How often a respawn waiting on background work checks whether it has settled. */
+const BACKGROUND_QUIET_POLL_MS = 1_000
+
 const SHUTDOWN_NOTICE: TurnCutNotice = {
   replayed: '⚠️ The agent is restarting — this message will be picked up again.',
   lost: '⚠️ The agent is restarting — this turn was stopped; send your message again once it is back.'
@@ -6928,9 +6934,11 @@ export class Daemon {
       // host-spawn or workspace change → evict the cached host (once) so the next
       // session lazily re-spawns it with fresh env and/or re-materializes cwd via
       // prepareWorkspace. Soft-only and integration-only changes never touch the host.
-      // A runtime-only change with turns in flight waits for them instead of cutting them.
+      // A runtime-only change with turns or background work in flight waits for them instead of cutting them.
       const deferRespawn =
-        change.hostRespawn && !workspaceNeedsColdRecovery && (this.activeDispatchesByAgent.get(a.id)?.size ?? 0) > 0
+        change.hostRespawn &&
+        !workspaceNeedsColdRecovery &&
+        ((this.activeDispatchesByAgent.get(a.id)?.size ?? 0) > 0 || this.agentHasLiveSdkWork(a.id))
       if (deferRespawn) {
         this.runtimeCommands.forget(a.id)
         void this.store.deleteRuntimeCommands(a.id).catch(() => undefined)
@@ -24494,7 +24502,7 @@ export class Daemon {
     }
   }
 
-  /** A runtime config change with turns in flight: idle processes stop now, busy ones once their turns settle. */
+  /** A runtime config change with work in flight: idle processes stop now, busy ones once their turns and background work settle. */
   private async respawnHostsWhenIdle(agentId: string): Promise<void> {
     const busy = new Map<HostKey, Map<string, { entry: QueueEntry; done: Promise<void> }>>()
     const starting: string[] = []
@@ -24511,8 +24519,13 @@ export class Daemon {
       busy.set(owner, turns)
       if (!prompting.has(key)) starting.push(key)
     }
+    // A process whose only work is in the background would take that work down with it if stopped now.
+    const background = this.hostKeysForAgent(agentId).filter(
+      (owner) => !busy.has(owner) && !this.retiringHosts.has(owner) && this.hostHasLiveSdkWork(owner)
+    )
+    for (const owner of background) busy.set(owner, new Map())
     this.log.info(
-      `reconcile: agent "${agentId}" respawns once its turns settle — ${busy.size} busy runtime process(es)`
+      `reconcile: agent "${agentId}" respawns once its turns settle — ${busy.size} busy runtime process(es), ${background.length} with background work only`
     )
     // Fence every busy process before the first await, so a turn settling meanwhile cannot start a follow-up on it.
     const retirements = [...busy].map(([owner, turns]) => this.retireHostWhenIdle(agentId, owner, turns))
@@ -24582,7 +24595,7 @@ export class Daemon {
     )
   }
 
-  /** Stop `owner` once `turns` settle, cutting them for replay at the drain limit. Resolves whether it cut any. */
+  /** Stop `owner` once `turns` and its background work settle, cutting both at the drain limit. Resolves whether it cut any turn. */
   private retireHostWhenIdle(
     agentId: string,
     owner: HostKey,
@@ -24590,12 +24603,21 @@ export class Daemon {
   ): Promise<boolean> {
     let cut = false
     const settled = Promise.all([...turns.values()].map((turn) => turn.done))
+    const quiet = { stop: false }
     const retire = async (): Promise<void> => {
-      if ((await this.raceDeadline(settled, this.cfg.limits.configRespawnDrainMs)) === 'timeout' && !this.draining) {
-        cut = true
-        this.log.warn(`reconcile: turns of agent "${agentId}" outlived the respawn drain window — cutting for replay`)
-        for (const [key, turn] of turns) {
-          if (this.activeGateEntries.get(key) !== turn.entry) continue
+      const drained = settled.then(() => this.untilBackgroundQuiet(owner, quiet))
+      const outcome = await this.raceDeadline(drained, this.cfg.limits.configRespawnDrainMs)
+      quiet.stop = true
+      // Background work the cut takes down, so its sessions can be told once the new process is up.
+      let stranded: StrandedBackgroundWork[] = []
+      if (outcome === 'timeout' && !this.draining) {
+        stranded = await this.strandedBackgroundWork(owner)
+        const live = [...turns].filter(([key, turn]) => this.activeGateEntries.get(key) === turn.entry)
+        cut = live.length > 0
+        this.log.warn(
+          `reconcile: agent "${agentId}" outlived the respawn drain window — cutting ${live.length} turn(s) for replay, stopping background work of ${stranded.length} session(s)`
+        )
+        for (const [key] of live) {
           await this.interruptTurn(agentId, key, 'stop', undefined, {
             dropQueued: true,
             handoffInbox: true,
@@ -24618,6 +24640,8 @@ export class Daemon {
       await this.webchatMcpRevocations.revokeRemoteWebchatConversations(conversations, 'agent_detached')
       // A task's grant is its conversation's to revoke; its successor process installs a fresh one instead.
       this.remoteWebchatGrants?.forgetSessions(agentId, (key) => this.sessionOwnerKey(agentId, key) === owner)
+      // Each wake waits for this retirement to settle, then runs on the successor.
+      for (const work of stranded) void this.wakeStrandedBackgroundWork(agentId, work)
     }
     const record: HostRetirement = {
       entries: new Set([...turns.values()].map((turn) => turn.entry)),
@@ -24630,6 +24654,84 @@ export class Daemon {
     }
     this.retiringHosts.set(owner, record)
     return record.retired.then(() => cut)
+  }
+
+  /** Background work on `owner` a stop would take down; a wake already being delivered waits for the successor instead. */
+  private hostHasBackgroundWork(owner: HostKey): boolean {
+    for (const [leaseKey, l] of this.sdkLease)
+      if (pendingTurnOwner(leaseKey) === owner && (l.tasks.size > 0 || l.armedWakes > 0 || l.sdkState === 'running'))
+        return true
+    return this.backgroundExecs.ownerLive(owner)
+  }
+
+  /** Resolves once `owner` runs no background work, or once `quiet.stop` is set. */
+  private async untilBackgroundQuiet(owner: HostKey, quiet: { stop: boolean }): Promise<void> {
+    while (!quiet.stop && this.hostHasBackgroundWork(owner)) await this.sleep(BACKGROUND_QUIET_POLL_MS)
+  }
+
+  /** The sessions on `owner` whose background tasks or terminals a stop is about to take down. */
+  private async strandedBackgroundWork(owner: HostKey): Promise<StrandedBackgroundWork[]> {
+    const leaseKeys = new Set(this.backgroundExecs.ownerLiveKeys(owner))
+    for (const [leaseKey, l] of this.sdkLease)
+      if (pendingTurnOwner(leaseKey) === owner && l.tasks.size > 0) leaseKeys.add(leaseKey)
+    const stranded: StrandedBackgroundWork[] = []
+    for (const leaseKey of leaseKeys) {
+      const live = [...(this.sdkLease.get(leaseKey)?.tasks.values() ?? [])]
+      const tasks = live.map((task) => task.description?.trim() || 'a background task')
+      if (this.backgroundExecs.live(leaseKey)) tasks.push('a background command')
+      const rec = await this.sessionForAcp(owner, pendingTurnAcpSessionId(leaseKey))
+      if (rec) stranded.push({ rec, tasks, ...(live.at(-1)?.thread ? { thread: live.at(-1)!.thread } : {}) })
+    }
+    return stranded
+  }
+
+  /** Tell a session its background work was stopped by a config respawn, as a turn on the new process. */
+  private async wakeStrandedBackgroundWork(agentId: string, work: StrandedBackgroundWork): Promise<void> {
+    const { rec } = work
+    const integrationId = this.integrationIdForSessionTransport(agentId, rec.platform, rec.transportScope)
+    if (rec.transportScope && !integrationId) return
+    const msg = this.sessionNotification(rec, integrationId, {
+      msgId: `respawn:${rec.channel}:${rec.acpSessionId}:${this.clock.now()}`,
+      traceId: `respawn:${rec.acpSessionId}`,
+      senderId: `config-respawn:${rec.acpSessionId}`,
+      thread: work.thread,
+      text:
+        `[background work stopped] The agent's configuration changed and its runtime restarted, which stopped ` +
+        `the background work this session had left running: ${work.tasks.join('; ')}.\n\n` +
+        `This is a daemon notification, not a message from anyone. Nothing will report on that work any more, ` +
+        `so no completion notice is coming. Check where it got to, restart whatever you were still waiting on, ` +
+        `and tell the conversation where things stand. If nothing was still needed, stay silent.`
+    })
+    this.log.info(`respawn wake: ${work.tasks.length} stopped background item(s) → agent "${agentId}" (${rec.key})`)
+    try {
+      await this.dispatch(agentId, msg, integrationId)
+    } catch (err) {
+      this.log.error(`respawn wake dispatch failed for "${agentId}": ${formatErr(err)}`)
+    }
+  }
+
+  /** A daemon notification to a session, delivered as a turn that replies where `thread` did. */
+  private sessionNotification(
+    rec: SessionRecord,
+    integrationId: string | undefined,
+    n: { msgId: string; traceId: string; senderId: string; thread: string | undefined; text: string }
+  ): NormalizedMessage {
+    return {
+      msgId: n.msgId,
+      // A monotonic "now" so the notification orders as new content in the session (see replyToSession).
+      transcriptTs: monotonicTs(),
+      traceId: n.traceId,
+      source: 'agent',
+      platform: rec.platform,
+      channel: rec.channel,
+      ...wakeThreadFields(rec.thread, n.thread),
+      ...(rec.transportScope ? { transportScope: rec.transportScope } : {}),
+      sender: { id: n.senderId, isBot: true },
+      text: n.text,
+      mentionedBots: integrationId && this.botUserIds[integrationId] ? [this.botUserIds[integrationId]!] : [],
+      isDm: rec.conversationKind === 'dm',
+      ...(rec.conversationKind === 'group_dm' ? { isGroupDm: true } : {})
+    }
   }
 
   /** The retirement a turn of `key` waits for; a released model session's hold stays under its own session key. */
@@ -29027,19 +29129,13 @@ export class Daemon {
     // like one. A child woken this way still reaches its parent — `replyToSession` falls back
     // to the origin PERSISTED on the session for exactly this kind of turn (§5.3), and the
     // report-back obligation is sticky on `needsParentReply`.
-    const msg: NormalizedMessage = {
+    const msg = this.sessionNotification(rec, integrationId, {
       // Stable in the task id so a duplicated settle edge cannot dispatch twice.
       msgId: `bgtask:${rec.channel}:${taskId}`,
-      // A monotonic "now" so the wake orders as new content in the session (see replyToSession).
-      transcriptTs: monotonicTs(),
       traceId: `bgtask:${taskId}`,
-      source: 'agent',
-      platform,
-      channel: rec.channel,
+      senderId: `background-task:${taskId}`,
       // It replies where the turn that started the task did.
-      ...wakeThreadFields(rec.thread, settledRec?.thread),
-      ...(rec.transportScope ? { transportScope: rec.transportScope } : {}),
-      sender: { id: `background-task:${taskId}`, isBot: true },
+      thread: settledRec?.thread,
       text:
         `[background task finished] ${what}${status ? ` — ${status}` : ''}\n\n` +
         (summary ? `Task summary: ${summary}\n\n` : '') +
@@ -29048,11 +29144,8 @@ export class Daemon {
         `output now (its task id is \`${taskId}\`) and finish what you were waiting on it for — this turn ` +
         `is the one that is actually delivered. If you owe a report to another session, send it, unless ` +
         `you already sent it after the task finished; do not report the same result twice. If the result ` +
-        `needs no action at all, stay silent.`,
-      mentionedBots: integrationId && this.botUserIds[integrationId] ? [this.botUserIds[integrationId]!] : [],
-      isDm: rec.conversationKind === 'dm',
-      ...(rec.conversationKind === 'group_dm' ? { isGroupDm: true } : {})
-    }
+        `needs no action at all, stay silent.`
+    })
     lease.bgWakes += 1
     this.log.info(`bg-task wake: "${what}" → agent "${agentId}" session ${acpSessionId} (${rec.key})`)
     // Hand this attempt's fence slot over to `deliveringWakes` before releasing it, so the

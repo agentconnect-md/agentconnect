@@ -6,6 +6,7 @@ import { sessionHostKey } from '../src/acp/host-key.js'
 import { Daemon } from '../src/daemon.js'
 import { LocalStore } from '../src/store/local-store.js'
 import { statePath } from '../src/paths.js'
+import { FakeClock } from './cp/fake-clock.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
 
@@ -102,9 +103,14 @@ function answeringHost(name: string) {
   return { host, prompts }
 }
 
-async function boot(root: string, hosts: unknown[]): Promise<Daemon> {
+async function boot(root: string, hosts: unknown[], clock?: FakeClock): Promise<Daemon> {
   const queue = [...hosts]
-  const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => queue.shift() as any })
+  const daemon = new Daemon({
+    slackAppFactory: fakeSlackAppFactory(),
+    root,
+    hostFactory: () => queue.shift() as any,
+    ...(clock ? { clock } : {})
+  })
   await daemon.start()
   // Reconcile only when the test says so.
   await (daemon as any).watcher.close()
@@ -379,6 +385,79 @@ describe('config change respawn', () => {
     } finally {
       old.release()
       await Promise.allSettled([running])
+      await daemon.stop()
+    }
+  })
+
+  it('keeps an idle process running background work until it settles, then restarts', async () => {
+    const clock = new FakeClock()
+    const old = answeringHost('old')
+    const fresh = answeringHost('new')
+    const root = scaffold()
+    const daemon = await boot(root, [old.host, fresh.host], clock)
+    const lifecycle = (subtype: string, extra: Record<string, unknown>) =>
+      (daemon as any).onSdkLifecycle(AGENT_ID, 'acp-old', { type: 'system', subtype, ...extra })
+
+    try {
+      await expect((daemon as any).dispatch(AGENT_ID, msg('100', 'watch the migration', 'T1'), 'int-a')).resolves.toBe(
+        'acp-old'
+      )
+      await lifecycle('task_started', { task_id: 't1', description: 'Watch the migration' })
+
+      updateAgent(root, { description: 'be terse' })
+      await daemon.reconcile()
+      clock.advance(10_000)
+      await (daemon as any).sweepIdle()
+      expect(old.host.stop).not.toHaveBeenCalled()
+
+      // The task finishes: the process goes, and its completion reaches the session on the new one.
+      await lifecycle('task_notification', { task_id: 't1', status: 'completed' })
+      await vi.waitFor(() => {
+        clock.advance(1_000)
+        expect(old.host.stop).toHaveBeenCalledTimes(1)
+      }, WAIT)
+      await vi.waitFor(
+        () => expect(fresh.prompts).toEqual([expect.stringContaining('[background task finished]')]),
+        WAIT
+      )
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it('stops background work that outlives the drain window and tells its session on the new process', async () => {
+    const clock = new FakeClock()
+    const old = answeringHost('old')
+    const fresh = answeringHost('new')
+    const root = scaffold()
+    const daemon = await boot(root, [old.host, fresh.host], clock)
+    ;(daemon as any).cfg.limits.configRespawnDrainMs = 5_000
+
+    try {
+      await (daemon as any).dispatch(AGENT_ID, msg('100', 'watch the migration', 'T1'), 'int-a')
+      await (daemon as any).onSdkLifecycle(AGENT_ID, 'acp-old', {
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 't1',
+        description: 'Watch the migration'
+      })
+
+      updateAgent(root, { description: 'be terse' })
+      await daemon.reconcile()
+      expect(old.host.stop).not.toHaveBeenCalled()
+
+      await vi.waitFor(() => {
+        clock.advance(1_000)
+        expect(old.host.stop).toHaveBeenCalledTimes(1)
+      }, WAIT)
+      await vi.waitFor(
+        () =>
+          expect(fresh.prompts).toEqual([
+            expect.stringMatching(/\[background work stopped\][\s\S]*Watch the migration/)
+          ]),
+        WAIT
+      )
+    } finally {
       await daemon.stop()
     }
   })
