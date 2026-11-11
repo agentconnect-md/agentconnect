@@ -14,7 +14,12 @@ import { relayHttpBase } from '../../http/relay-ingress.js'
 import { agentIconBackgroundColor } from '../../agents/agent-icon.js'
 import { BotId, IntegrationId } from '../../domain/ids.js'
 import { MsTeamsCreateCredentials, msTeamsSecrets, verifyMsTeamsApp } from './provider.js'
-import { MSTEAMS_DEPLOYMENT_SECRET_MARKER, isMsTeamsDeploymentRow, type MsTeamsPlatformApp } from './deployment-app.js'
+import {
+  MSTEAMS_DEPLOYMENT_SECRET_MARKER,
+  isMsTeamsDeploymentRow,
+  msTeamsAgentBotOf,
+  type MsTeamsPlatformApp
+} from './deployment-app.js'
 import {
   MSTEAMS_APP_PACKAGE_FILENAME,
   msTeamsAppIcons,
@@ -46,7 +51,11 @@ const RELAY_ORIGIN_MISSING = {
 }
 
 // The integration's agent, bot and package inputs; a string names the refusal.
-async function packageSource(deps: HttpDeps, req: FastifyRequest<{ Params: { id: string } }>) {
+async function packageSource(
+  deps: HttpDeps,
+  req: FastifyRequest<{ Params: { id: string } }>,
+  deploymentApp?: Pick<MsTeamsPlatformApp, 'appId'>
+) {
   const integration = await deps.repos.integration.get(orgOf(req), IntegrationId(req.params.id))
   if (!integration || integration.platform !== MSTEAMS_PLATFORM) return 'not_found' as const
   const agent = await deps.repos.agent.get(orgOf(req), integration.agentId)
@@ -57,6 +66,8 @@ async function packageSource(deps: HttpDeps, req: FastifyRequest<{ Params: { id:
   if (!relayBase) return 'no_relay' as const
   const input = {
     appId: bot.externalAppId,
+    // An agent bot's package keeps the deployment app as its consent app (§8.6.1).
+    ...(deploymentApp && msTeamsAgentBotOf(bot) ? { consentAppId: deploymentApp.appId } : {}),
     relayHost: new URL(relayBase).host,
     agentName: agent.displayName ?? agent.name,
     nameLabel: deps.config.MSTEAMS_APP_LABEL,
@@ -141,7 +152,7 @@ export function msTeamsRoutes(
         }
       },
       async (req, reply) => {
-        const source = await packageSource(deps, req)
+        const source = await packageSource(deps, req, deploymentApp)
         if (source === 'not_found')
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'Teams integration not found.' })
         if (source === 'no_relay') return reply.code(409).send(RELAY_ORIGIN_MISSING)
@@ -177,7 +188,7 @@ export function msTeamsRoutes(
         }
       },
       async (req, reply) => {
-        const source = await packageSource(deps, req)
+        const source = await packageSource(deps, req, deploymentApp)
         if (source === 'not_found')
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'Teams integration not found.' })
         if (source === 'no_relay') return reply.code(409).send(RELAY_ORIGIN_MISSING)

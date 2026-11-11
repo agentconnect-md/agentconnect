@@ -226,6 +226,58 @@ describe('Teams installation', () => {
     expect(provider.requiredDaemonFeatures!({ appId: APP_ID, tenantId: TENANT_ID, clientSecret: SECRET })).toEqual([])
   })
 
+  it('treats an agent bot’s row as the deployment’s while its blueprint is the configured one (§8.6.4)', async () => {
+    const HOME = '66666666-6666-4666-8666-666666666666'
+    const BOT_ROW = '77777777-7777-4777-8777-777777777777'
+    const IDENTITY = '88888888-8888-4888-8888-888888888888'
+    const BLUEPRINT = '99999999-9999-4999-8999-999999999999'
+    const app = { appId: APP_ID, tenantId: HOME, clientSecret: 'deployment-secret-example' }
+    const agentBot = { agentBotBlueprintId: BLUEPRINT, agentBotResourceName: 'agentconnect-example' }
+    const stored = { tenantId: TENANT_ID, tokenTenantId: TENANT_ID, appOwner: 'deployment', ...agentBot }
+    const row = {
+      id: BOT_ROW,
+      externalAppId: IDENTITY,
+      externalTenantId: TENANT_ID,
+      prebuilt: true,
+      platformConfig: stored
+    } as unknown as BotRecord
+    const marker = { botToken: MSTEAMS_DEPLOYMENT_SECRET_MARKER, appToken: null, signingSecret: null }
+    const project = (provider: ReturnType<typeof createMsTeamsCpProvider>) =>
+      provider.projectIntegrationConfig({} as IntegrationRecord, row, {} as IntegrationCoreEnvelope, marker)
+
+    const configured = createMsTeamsCpProvider({ app, agentBots: { blueprintId: BLUEPRINT } })
+    expect(await project(configured)).toEqual({ appId: IDENTITY, tenantId: TENANT_ID, egress: 'relay', botId: BOT_ROW })
+    // With agent bots off, another blueprint, or no app, the row delivers nothing.
+    for (const other of [
+      createMsTeamsCpProvider({ app }),
+      createMsTeamsCpProvider({ app, agentBots: { blueprintId: APP_ID } }),
+      createMsTeamsCpProvider({ agentBots: { blueprintId: BLUEPRINT } })
+    ])
+      expect(await project(other)).toBeUndefined()
+
+    // The relay is told the row is an agent bot, the identity projection keeps what names it, and a freed row is released.
+    expect((await configured.projectBotAssign!(row, marker)).ingress).toEqual({
+      apiAppId: IDENTITY,
+      botUserId: `28:${IDENTITY}`,
+      teamId: TENANT_ID,
+      agentBot: true
+    })
+    expect(
+      configured.projectBotIdentity!({ externalAppId: IDENTITY, platformConfig: stored } as unknown as CreateBotInput)
+    ).toEqual({
+      externalAppId: IDENTITY,
+      externalTenantId: TENANT_ID,
+      platformConfig: { tokenTenantId: TENANT_ID, appOwner: 'deployment', ...agentBot }
+    })
+    expect(configured.releasesFreedBot!(row)).toBe(true)
+    // A malformed entry is not an agent bot.
+    const malformed = {
+      ...row,
+      platformConfig: { ...stored, agentBotResourceName: '' }
+    } as unknown as BotRecord
+    expect((await configured.projectBotAssign!(malformed, marker)).ingress).not.toHaveProperty('agentBot')
+  })
+
   it('exposes the credential block through the actual create schema, lower-casing both IDs', () => {
     const schema = buildCreateIntegrationBody(buildCpPlatformRegistry([createMsTeamsCpProvider()]))
     const agentId = '00000000-0000-4000-8000-000000000001'

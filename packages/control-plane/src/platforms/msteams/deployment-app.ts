@@ -8,6 +8,11 @@ export const MsTeamsCpEnvSchema = {
   MSTEAMS_PLATFORM_APP_ID: z.string().optional(),
   MSTEAMS_PLATFORM_TENANT_ID: z.string().optional(),
   MSTEAMS_PLATFORM_CLIENT_SECRET: z.string().optional(),
+  // Agent bots (§8.6.3): the blueprint and where their bot registrations are made; all four or none.
+  MSTEAMS_AGENT_BOTS_BLUEPRINT_ID: z.string().optional(),
+  MSTEAMS_AGENT_BOTS_BLUEPRINT_SECRET: z.string().optional(),
+  MSTEAMS_AGENT_BOTS_SUBSCRIPTION_ID: z.string().optional(),
+  MSTEAMS_AGENT_BOTS_RESOURCE_GROUP: z.string().optional(),
   // A non-production deployment's label, shown after every Teams app's name (§5); 26 characters leave its " (…)" room in the 30-character short name.
   MSTEAMS_APP_LABEL: z.string().trim().max(26).optional()
 } satisfies ZodRawShape
@@ -31,6 +36,35 @@ export function resolveMsTeamsPlatformApp(env: Env): MsTeamsPlatformApp | undefi
   if (set < 3 || !appId || !tenantId || !clientSecret)
     throw new Error('microsoft teams platform app config is partial (set all three MSTEAMS_PLATFORM_* keys or none)')
   return { appId: appId.toLowerCase(), tenantId: tenantId.toLowerCase(), clientSecret }
+}
+
+export interface MsTeamsAgentBots {
+  /** The agent identity blueprint in the app's home tenant, which holds the only credential the agent bots have. */
+  blueprintId: string
+  /** Secret material, never logged or returned; it reaches the relay and never a daemon (§8.6.3). */
+  clientSecret: string
+  /** The Azure subscription and resource group the bot registrations are made in. */
+  subscriptionId: string
+  resourceGroup: string
+}
+
+/** Undefined ⇒ agent bots are off, as they are without the Teams app. Throws on a partial set. */
+export function resolveMsTeamsAgentBots(env: Env, app: MsTeamsPlatformApp | undefined): MsTeamsAgentBots | undefined {
+  const blueprintId = env.MSTEAMS_AGENT_BOTS_BLUEPRINT_ID
+  const clientSecret = env.MSTEAMS_AGENT_BOTS_BLUEPRINT_SECRET
+  const subscriptionId = env.MSTEAMS_AGENT_BOTS_SUBSCRIPTION_ID
+  const resourceGroup = env.MSTEAMS_AGENT_BOTS_RESOURCE_GROUP
+  const set = [blueprintId, clientSecret, subscriptionId, resourceGroup].filter((value) => value !== undefined).length
+  if (set === 0) return undefined
+  if (set < 4 || !blueprintId || !clientSecret || !subscriptionId || !resourceGroup)
+    throw new Error('microsoft teams agent bots config is partial (set all four MSTEAMS_AGENT_BOTS_* keys or none)')
+  if (!app) throw new Error('microsoft teams agent bots need the platform app (set the MSTEAMS_PLATFORM_* keys)')
+  return {
+    blueprintId: blueprintId.toLowerCase(),
+    clientSecret,
+    subscriptionId: subscriptionId.toLowerCase(),
+    resourceGroup
+  }
 }
 
 /** A row named as the configured deployment app's by its app ID. */
@@ -59,6 +93,42 @@ export function isMsTeamsDeploymentRow(
   )
 }
 
+/** The two `platformConfig` entries of an agent bot's row (§8.6.4): the blueprint that made its identity, and its Azure Bot resource. */
+export const MSTEAMS_AGENT_BOT_BLUEPRINT_KEY = 'agentBotBlueprintId'
+export const MSTEAMS_AGENT_BOT_RESOURCE_KEY = 'agentBotResourceName'
+export interface MsTeamsAgentBotEntry {
+  blueprintId: string
+  resourceName: string
+}
+
+/** The agent bot a row is, by what it stores; undefined for the app's own row and for an organization's own bot. */
+export function msTeamsAgentBotOf(bot: {
+  platformConfig?: Record<string, unknown> | null
+}): MsTeamsAgentBotEntry | undefined {
+  const blueprintId = bot.platformConfig?.[MSTEAMS_AGENT_BOT_BLUEPRINT_KEY]
+  const resourceName = bot.platformConfig?.[MSTEAMS_AGENT_BOT_RESOURCE_KEY]
+  return typeof blueprintId === 'string' && blueprintId && typeof resourceName === 'string' && resourceName
+    ? { blueprintId, resourceName }
+    : undefined
+}
+
+/** The entries a new agent bot's row is written with. */
+export const msTeamsAgentBotEntries = (entry: MsTeamsAgentBotEntry): Record<string, string> => ({
+  [MSTEAMS_AGENT_BOT_BLUEPRINT_KEY]: entry.blueprintId,
+  [MSTEAMS_AGENT_BOT_RESOURCE_KEY]: entry.resourceName
+})
+
+/** A deployment row the configured deployment can send for: the app's own row, or an agent bot of the configured blueprint. */
+export function servesMsTeamsDeploymentRow(
+  bot: { externalAppId: string | null; platformConfig?: Record<string, unknown> | null },
+  app: Pick<MsTeamsPlatformApp, 'appId'> | undefined,
+  agentBots?: Pick<MsTeamsAgentBots, 'blueprintId'>
+): boolean {
+  const agentBot = msTeamsAgentBotOf(bot)
+  if (agentBot) return !!app && agentBots?.blueprintId === agentBot.blueprintId
+  return usesMsTeamsDeploymentApp(bot, app)
+}
+
 /** What a deployment app's row stores in its secret slot: a marker, not a secret, since the app's secret never leaves the deployment (§8.5). */
 export const MSTEAMS_DEPLOYMENT_SECRET_MARKER = 'msteams-deployment-app:no-secret'
 
@@ -71,17 +141,19 @@ export function msTeamsRelayTicketKey(pepper: string): string {
   return createHmac('sha256', pepper).update('msteams-relay-ticket-v1').digest('base64url')
 }
 
-/** The deployment app as the relay sends its rows' egress with (§8.5); none without an app. */
+/** The deployment app as the relay sends its rows' egress with (§8.5), and the blueprint for its agent bots' (§8.6.7); none without an app. */
 export function msTeamsRelayApp(
   app: MsTeamsPlatformApp | undefined,
-  pepper: string
+  pepper: string,
+  agentBots?: MsTeamsAgentBots
 ): RcMsTeamsDeploymentApp | undefined {
   if (!app) return undefined
   const parsed = RcMsTeamsDeploymentApp.safeParse({
     appId: app.appId,
     tenantId: app.tenantId,
     clientSecret: app.clientSecret,
-    ticketKey: msTeamsRelayTicketKey(pepper)
+    ticketKey: msTeamsRelayTicketKey(pepper),
+    ...(agentBots ? { blueprint: { appId: agentBots.blueprintId, clientSecret: agentBots.clientSecret } } : {})
   })
   return parsed.success ? parsed.data : undefined
 }

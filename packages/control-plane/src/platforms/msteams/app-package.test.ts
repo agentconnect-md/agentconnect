@@ -100,6 +100,18 @@ describe('Teams manifest', () => {
     })
   })
 
+  it('grants an agent bot’s resource-specific permissions to its consent app, and still names the package by the bot', () => {
+    const CONSENT = '00000000-0000-4000-8000-0000000000c3'
+    const manifest = msTeamsManifest({ ...manifestInput, consentAppId: CONSENT }) as {
+      id: string
+      bots: { botId: string }[]
+      webApplicationInfo: unknown
+    }
+    expect(manifest.id).toBe(msTeamsPackageId(APP_ID))
+    expect(manifest.bots[0]!.botId).toBe(APP_ID)
+    expect(manifest.webApplicationInfo).toEqual({ id: CONSENT, resource: `api://relay.example.test/${CONSENT}` })
+  })
+
   it('fits a long agent name into the short and full name limits', () => {
     const manifest = msTeamsManifest({ ...manifestInput, agentName: 'x'.repeat(120) }) as {
       name: { short: string; full: string }

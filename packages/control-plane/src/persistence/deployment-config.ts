@@ -251,11 +251,23 @@ const GuidSchema = z
   .regex(/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/, 'must be a GUID')
   .transform((value) => value.toLowerCase())
 
+// Where the deployment makes a bot for each further agent of a tenant (teams-integration.md §8.6.3); the blueprint's secret is the write-only 'msTeams.blueprintClientSecret'.
+const MsTeamsAgentBotsSchema = z.strictObject({
+  blueprintId: GuidSchema,
+  subscriptionId: GuidSchema,
+  // An Azure resource group name: letters, digits, underscores, hyphens, periods and parentheses, not ending in a period.
+  resourceGroup: z
+    .string()
+    .trim()
+    .regex(/^[-\w.()]{0,89}[-\w()]$/, 'must be an Azure resource group name')
+})
+
 const MsTeamsAppSchema = z.preprocess(
   withoutProviderUrlSnapshot,
   z.strictObject({
     // The Microsoft sign-in app's home tenant: set, that app is also the deployment's Teams app (teams-integration.md §8.2).
-    tenantId: GuidSchema
+    tenantId: GuidSchema,
+    agentBots: MsTeamsAgentBotsSchema.nullable().optional()
   })
 )
 
@@ -403,7 +415,8 @@ export const DEPLOYMENT_SECRET_KEYS = [
   'logto.telegramConnectorClientSecret',
   'logto.discordConnectorClientSecret',
   'logto.azureadConnectorClientSecret',
-  'logto.ssoConnectorClientSecret'
+  'logto.ssoConnectorClientSecret',
+  'msTeams.blueprintClientSecret'
 ] as const
 
 export const DeploymentSecretKeySchema = z.enum(DEPLOYMENT_SECRET_KEYS)
@@ -628,6 +641,9 @@ export function deploymentSecretsRequiringRefresh(
   const logtoSsoClientChanged =
     nextSsoOidc &&
     (previousSsoOidc?.issuer !== nextSsoOidc.issuer || previousSsoOidc?.clientId !== nextSsoOidc.clientId)
+  // A secret belongs to one blueprint, so another blueprint needs its own.
+  const msTeamsBlueprintChanged =
+    next.msTeams?.agentBots && previous?.msTeams?.agentBots?.blueprintId !== next.msTeams.agentBots.blueprintId
   return [
     ...(githubAppChanged ? (['github.privateKeyB64'] as const) : []),
     ...(next.github && githubWebhookEnabled && githubAppChanged ? (['github.webhookSecret'] as const) : []),
@@ -636,6 +652,7 @@ export function deploymentSecretsRequiringRefresh(
     ...(slackIdentityChanged ? (['slack.clientSecret', 'slack.signingSecret'] as const) : []),
     ...(linearIdentityChanged ? (['linear.clientSecret', 'linear.signingSecret'] as const) : []),
     ...(googleChatProjectChanged ? (['googleChat.serviceAccountKey'] as const) : []),
+    ...(msTeamsBlueprintChanged ? (['msTeams.blueprintClientSecret'] as const) : []),
     ...(feishuIdentityChanged ? (['feishu.loginAppSecret'] as const) : []),
     ...(larkIdentityChanged ? (['lark.loginAppSecret'] as const) : []),
     ...(logtoIdentityChanged ? (['logto.managementAppSecret'] as const) : []),
@@ -660,6 +677,7 @@ function requiredSecrets(values: DeploymentConfigValuesV1): DeploymentSecretKey[
     ...(values.linear ? (['linear.clientSecret', 'linear.signingSecret'] as const) : []),
     ...(values.googleChat ? (['googleChat.serviceAccountKey'] as const) : []),
     ...(values.msTeams ? (['logto.azureadConnectorClientSecret'] as const) : []),
+    ...(values.msTeams?.agentBots ? (['msTeams.blueprintClientSecret'] as const) : []),
     ...(values.feishu ? (['feishu.loginAppSecret'] as const) : []),
     ...(values.lark ? (['lark.loginAppSecret'] as const) : []),
     ...(values.logto ? (['logto.managementAppSecret'] as const) : []),
