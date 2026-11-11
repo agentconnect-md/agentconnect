@@ -2202,6 +2202,11 @@ export class Daemon {
     },
     post: (agentId, integrationId, msg, text, taskLink) =>
       this.postCoordinatorReply(agentId, integrationId, msg, text, taskLink),
+    reportAnswered: (key, thread) => {
+      // A coordinator's turn text is never posted, so this reply is the one its round's held cards go under.
+      if (this.activeTurnCallMeta.get(key)?.gettingToKnowReport !== undefined && !this.roundReplies.has(key))
+        this.roundReplies.set(key, thread)
+    },
     showTriaging: (agentId, message) => this.showTriaging(agentId, message),
     sessionLink: (sessionId) => this.sessionLink(sessionId),
     reportTaskOwners: async (agentId, keys) => await this.reportTaskOwners(agentId, keys),
@@ -11359,6 +11364,8 @@ export class Daemon {
 
   /** One round's proposals at a time, so the cap of three and their order hold when calls overlap. */
   private readonly roundProposals = new Map<string, Promise<unknown>>()
+  /** The thread a getting-to-know report round's first `replyToMessage` landed in, by the round's session key (auto-session-mode.md §6.9.2). */
+  private readonly roundReplies = new Map<string, string>()
 
   /** The place's long session offers a getting-to-know task's suggestions (assistant-mode.md §5.13): on its report's round only, where the place has cards, at most three; each card waits for the round's reply. */
   private async proposeAfterGettingToKnow(ctx: SessionContext, input: ProposeInput): Promise<Record<string, unknown>> {
@@ -15555,14 +15562,17 @@ export class Daemon {
     msg: NormalizedMessage,
     text: string,
     taskLink?: TaskLinkFacts
-  ): Promise<void> {
-    if (msg.platform === 'webchat') return await this.postWebchatAgentMessage(agentId, msg, text, taskLink)
+  ): Promise<string | undefined> {
+    if (msg.platform === 'webchat') {
+      await this.postWebchatAgentMessage(agentId, msg, text, taskLink)
+      return undefined
+    }
     const gateway: MessageGateway | undefined =
       integrationId === undefined ? undefined : this.gatewayForIntegration(integrationId)
     if (!gateway) throw new Error('the conversation is not connected right now; nothing was posted')
     const agent = this.agents.get(agentId)
     const name = agent?.displayName?.trim() || agent?.name
-    await gateway.postMessage(msg.channel, text, answerThreadOf(msg), {
+    return await gateway.postMessage(msg.channel, text, answerThreadOf(msg), {
       ...(name ? { username: name } : {}),
       ...(agent?.iconUrl ? { icon_url: agent.iconUrl } : {}),
       agentAuthorId: agentId
@@ -23960,10 +23970,13 @@ export class Daemon {
     // cannot strand the connection lease forever.
     releaseReplyConn()
     // A getting-to-know task's report round: its held cards go under the reply it posted, else where the place's cards go (§5.13).
-    if (callMeta?.gettingToKnowReport !== undefined)
-      await this.releaseRoundCards(agentId, callMeta.deliveryId, p.reply.firstResponse).catch((err) =>
+    if (callMeta?.gettingToKnowReport !== undefined) {
+      const replyThread = p.reply.firstResponse ?? this.roundReplies.get(key)
+      this.roundReplies.delete(key)
+      await this.releaseRoundCards(agentId, callMeta.deliveryId, replyThread).catch((err) =>
         this.log.warn(`getting-to-know task cards of ${callMeta.deliveryId}: not posted: ${formatErr(err)}`)
       )
+    }
     this.clearIdle(p)
     this.clearFeishuStream(p)
     this.clearSlackStream(p)

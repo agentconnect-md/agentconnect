@@ -35,14 +35,16 @@ export interface CoordinatorSessionsHost {
   now(): number
   /** Admit a message into the session its coordinates key; the turn runs on its own. */
   dispatch(agentId: string, msg: NormalizedMessage, integrationId?: string): void
-  /** Post the agent's own text in a message's thread; `taskLink` marks a webchat post as a link to that task (§10). */
+  /** Post the agent's own text in a message's thread, answering the post's platform id where it has one; `taskLink` marks a webchat post as a link to that task (§10). */
   post(
     agentId: string,
     integrationId: string | undefined,
     msg: NormalizedMessage,
     text: string,
     taskLink?: TaskLinkFacts
-  ): Promise<void>
+  ): Promise<string | undefined>
+  /** A coordinator's turn answered a report with a reply that landed in `thread` (§6.9.2). */
+  reportAnswered(key: string, thread: string): void
   /** Show on a message that a turn is deciding it (🤔, §4.4); the returned call takes that back. */
   showTriaging(agentId: string, message: DeliveredMessage): () => void
   /** The console page of a session, by its outward id. */
@@ -251,9 +253,12 @@ export class CoordinatorSessions {
             : { ok: true, taskId: handed.taskKey, attachedThread: call.messageId }
         }
         case 'replyToMessage': {
-          await this.host.post(ctx.agentId, held.message.integrationId, held.message.msg, call.message)
+          const posted = await this.host.post(ctx.agentId, held.message.integrationId, held.message.msg, call.message)
           this.turns.settle(key, call.messageId, 'reply')
           const thread = answerThreadOf(held.message.msg)
+          // A reply at the root opens the thread its own id names; one in a thread stays in that thread.
+          const landed = thread ?? posted
+          if (held.message.report && landed !== undefined) this.host.reportAnswered(key, landed)
           return {
             ok: true,
             posted: { channel: ctx.channel, ...(thread ? { thread: coordinatorMessageId(thread) } : { at: 'root' }) }

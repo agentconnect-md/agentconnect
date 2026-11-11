@@ -744,10 +744,11 @@ session is a coordinator. The follow-up form runs no task and is unchanged.
 #### 6.9.2 Getting-to-know cards under a coordinator
 
 assistant-mode.md §5.13 holds a report round's cards for the thread of the round's first reply. The
-daemon reads that from the turn's own reply. A coordinator's turn text is never posted (§4.3): it
-answers the report with `replyToMessage`, which the hold does not see, so the cards post at the
-place's top level. The fix counts the round's first `replyToMessage` post as its reply. It is a
-defect in what shipped and does not wait for the rest of this section.
+daemon read that from the turn's own reply. A coordinator's turn text is never posted (§4.3): it
+answers the report with `replyToMessage`, which the hold did not see, so the cards posted at the
+place's top level. **Fixed, ahead of the rest of this section:** the `replyToMessage` that answers a
+getting-to-know report is the round's reply, and the cards go in the thread it landed in, its own
+at the root or the one it was posted in.
 
 With §6.9.1 and this fix, the channel above gets two top-level messages: the introduction, with
 the cards in its thread, and one root for the approved proposal, with its result and every reply
