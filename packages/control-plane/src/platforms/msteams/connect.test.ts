@@ -254,11 +254,25 @@ describe('Teams Graph calls', () => {
   })
 
   it('answers what Microsoft refused when the app is not added for a person', async () => {
-    const input = { userId: 'user-1', catalogAppId: 'catalog-1' }
-    const refusing = async () => Response.json({ error: { code: 'Forbidden', message: 'No.' } }, { status: 403 })
+    const input = {
+      userId: 'user-1',
+      catalogAppId: 'catalog-1',
+      permissions: [{ name: 'ChannelMessage.Read.Group', type: 'Application' }]
+    }
+    let sent: unknown
+    const refusing = async (_url: string | URL | Request, init?: RequestInit) => {
+      sent = JSON.parse(String(init?.body))
+      return Response.json({ error: { code: 'Forbidden', message: 'No.' } }, { status: 403 })
+    }
     expect(await installMsTeamsAppForUser(refusing, 't', input)).toBe(
       'POST /users/user-1/teamwork/installedApps answered 403 (Forbidden: No.)'
     )
+    // The install consents to the package's permissions, as a team's does.
+    expect(sent).toMatchObject({
+      consentedPermissionSet: {
+        resourceSpecificPermissions: [{ permissionValue: 'ChannelMessage.Read.Group', permissionType: 'application' }]
+      }
+    })
     expect(await installMsTeamsAppForUser(async () => new Response(null, { status: 409 }), 't', input)).toBeNull()
   })
 

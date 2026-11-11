@@ -947,7 +947,11 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
             await deps.repos.bot.mergeBotIdentity(orgId, botId, () => ({ platformConfig: { appPackage } }))
           }
           // The person who connects the agent gets its app themselves, so their Teams client lists it at once.
-          const detail = await installMsTeamsAppForUser(fetchImpl, accessToken, { userId: sponsorId, catalogAppId })
+          const detail = await installMsTeamsAppForUser(fetchImpl, accessToken, {
+            userId: sponsorId,
+            catalogAppId,
+            permissions: MSTEAMS_RSC_PERMISSIONS
+          })
           if (detail)
             req.log.warn({ integrationId, detail }, 'msteams: agent bot not added for the person who connected it')
           return {

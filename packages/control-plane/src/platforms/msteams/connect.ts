@@ -19,7 +19,7 @@ export const MSTEAMS_STORE_CONNECT_SCOPES = ['https://graph.microsoft.com/User.R
 export const MSTEAMS_AGENT_BOT_SCOPES = [
   'https://graph.microsoft.com/AppCatalog.Submit',
   'https://graph.microsoft.com/AgentIdentityBlueprintPrincipal.Create',
-  'https://graph.microsoft.com/TeamsAppInstallation.ReadWriteForUser'
+  'https://graph.microsoft.com/TeamsAppInstallation.ReadWriteAndConsentSelfForUser'
 ] as const
 
 const AUTHORITY = 'https://login.microsoftonline.com/organizations/oauth2/v2.0'
@@ -31,7 +31,7 @@ export const MSTEAMS_MEMBER_SCOPES = [
   'https://graph.microsoft.com/AppCatalog.Submit',
   'https://graph.microsoft.com/Team.ReadBasic.All',
   'https://graph.microsoft.com/TeamsAppInstallation.ReadWriteAndConsentSelfForTeam',
-  'https://graph.microsoft.com/TeamsAppInstallation.ReadWriteForUser',
+  'https://graph.microsoft.com/TeamsAppInstallation.ReadWriteAndConsentSelfForUser',
   'https://graph.microsoft.com/User.Read',
   'openid',
   'offline_access'
@@ -626,12 +626,16 @@ export async function installMsTeamsApp(
 export async function installMsTeamsAppForUser(
   fetchImpl: typeof fetch,
   token: string,
-  input: { userId: string; catalogAppId: string }
+  input: { userId: string; catalogAppId: string; permissions: readonly { name: string; type: string }[] }
 ): Promise<string | null> {
   try {
     const path = `/users/${encodeURIComponent(input.userId)}/teamwork/installedApps`
+    // Microsoft refuses the install unless it consents to the package's resource-specific permissions, as a team's does.
     const response = await graph(fetchImpl, token, 'POST', path, {
-      json: { 'teamsApp@odata.bind': `${GRAPH}/appCatalogs/teamsApps/${input.catalogAppId}` }
+      json: {
+        'teamsApp@odata.bind': `${GRAPH}/appCatalogs/teamsApps/${input.catalogAppId}`,
+        consentedPermissionSet: consentedPermissions(input.permissions)
+      }
     })
     if (response.ok || response.status === 409) return null
     return (await refusedWithReason(response)).detail ?? 'refused'

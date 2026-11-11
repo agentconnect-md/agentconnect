@@ -558,7 +558,7 @@ describe('a deployment that makes agent bots (§8.6)', () => {
     harness({ agentBots: true, held: HELD, agentNames: { [OTHER_AGENT]: 'Reviewer' }, ...over })
 
   it('skips the consent page for an organization whose tenant recorded it, and sends another tenant back through it', async () => {
-    const CONSENTED = { ...HELD, platformConfig: { appOwner: 'deployment', tenantConsent: '2' } } as Partial<BotRecord>
+    const CONSENTED = { ...HELD, platformConfig: { appOwner: 'deployment', tenantConsent: '3' } } as Partial<BotRecord>
     const h = await further({ held: CONSENTED })
     const direct = new URL((await h.post('', { agentId: AGENT })).json<{ authorizeUrl: string }>().authorizeUrl)
     expect(direct.pathname).toBe('/organizations/oauth2/v2.0/authorize')
@@ -646,7 +646,7 @@ describe('a deployment that makes agent bots (§8.6)', () => {
     expect(JSON.stringify(first.json())).not.toContain('delegated')
     // Nothing is made before the agent-bot step; the tenant's row only records the consent just accepted.
     expect(h.order).toEqual(['record'])
-    expect(h.recorded).toEqual([{ tenantConsent: '2' }])
+    expect(h.recorded).toEqual([{ tenantConsent: '3' }])
     expect(h.create).not.toHaveBeenCalled()
 
     const made = await h.post('/agent-bot', { ticket: first.json<{ ticket: string }>().ticket })
