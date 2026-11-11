@@ -43,7 +43,8 @@ const footer = (rootId: string, task?: SessionThreadSummary['task']): SessionThr
   replies: 2,
   lastReplyAt: '2026-11-06T10:00:00.000Z',
   lastReply: { sender: AGENT, senderName: 'Ada', excerpt: `reply in ${rootId}` },
-  participants: [{ sender: AGENT, senderName: 'Ada' }],
+  // The platform's picture rides a footer's author as its name does.
+  participants: [{ sender: AGENT, senderName: 'Ada', senderAvatarUrl: 'https://avatars.example.test/ada.png' }],
   ...(task ? { task } : {})
 })
 

@@ -54,6 +54,7 @@ import {
 import { threadShapeOf } from '@/components/console/coordinator-threads'
 import { TaskRuntimePicker } from '@/components/console/dock/TaskRuntimePicker'
 import { sessionAttributionAgentAuthors, sessionAttributionAgentId } from '@/lib/session-trigger'
+import type { SenderPeople } from '@/components/console/sender-people'
 import { CONSOLE_SWR_CONFIG, readOnceRegistered } from '@/lib/console-swr'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { useOrgs } from '@/lib/org-context'
@@ -85,7 +86,7 @@ export function ThreadPanel({
   onBack,
   taskApprovals,
   runtimeContext,
-  personPicture,
+  people,
   fileTransfer = false,
   writer,
   focusComposer = false,
@@ -126,8 +127,8 @@ export function ThreadPanel({
     agentRuntime: string
     editable: boolean
   }
-  /** A person's console photo by sender, as the session page draws it; undefined asks for this visit's own sends. */
-  personPicture?: (sender: string | undefined) => string | undefined
+  /** Who each sender is to the reader, as the session page reads them; absent knows only this visit's own sends. */
+  people?: SenderPeople
   /** Whether the daemon continuing this conversation accepts thread attachments. */
   attachments?: boolean
   /** The socket a message in this record's thread goes out on: the owner's coordinator conversation, or a continued platform coordinator (`continues` its session); absent for another member, who writes through the holding task. */
@@ -244,11 +245,11 @@ export function ThreadPanel({
         : (sessionAttributionAgentId(platform, { text, trustedAgentBot }, agents) ?? authors.get(sender))
       return peer ? agents.get(peer) : undefined
     },
-    isSelf: (sender) => sender === '@you',
-    senderLabel: (_sender, fallback) => fallback ?? t('person'),
+    isSelf: (sender) => sender === '@you' || people?.isSelf(sender) === true,
+    senderLabel: (sender, fallback) => people?.label(sender, fallback ?? t('person')) ?? fallback ?? t('person'),
     ownsDecisionSeq: () => false,
-    viewer: { picture: personPicture?.(undefined) ?? null },
-    pictureOf: (sender) => personPicture?.(sender),
+    viewer: people?.viewer ?? {},
+    pictureOf: (sender) => people?.pictureOf(sender),
     sourceLabel: platName(platform)
   }).turns
   // Another agent's post reads as that agent, so its "sent by" line goes.

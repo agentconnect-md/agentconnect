@@ -49,8 +49,14 @@ import {
 } from '@agentconnect.md/protocol'
 import type { ResolvableAgent } from '../../orchestrator/placementResolver.js'
 import { makeSessionAccessResolver } from '../session-access.js'
+import { makeSenderIdentityResolver, withSenderIdentity, type SenderIdentity } from '../sender-identity.js'
 import { continuationAudience, continuationParentId } from '../../domain/continuation-audience.js'
-import { threadSummaryFor, threadTaskSessionIds, type ThreadTaskAccess } from '../../domain/thread-read.js'
+import {
+  threadSummaryFor,
+  threadTaskSessionIds,
+  type ThreadSummaryView,
+  type ThreadTaskAccess
+} from '../../domain/thread-read.js'
 import {
   resolveContinuationHost,
   type ContinuationAttachments,
@@ -175,7 +181,7 @@ function requestedAgentIds(query: z.infer<typeof SessionFilterQueryDto>): string
 const HOOK_TRIGGER_PREFIX = 'hook:'
 const HookIdString = z.string().uuid()
 
-/** The `triggeredBy` values one filter pick stands for: a member's sessions are filed under their user id or, on older rows, their email. */
+/** The `triggeredBy` values one filter pick stands for: a member's sessions are filed under their user id, on older rows their email, and the chat accounts they linked. */
 async function triggeredByFilter(
   deps: HttpDeps,
   orgId: OrgId,
@@ -183,7 +189,9 @@ async function triggeredByFilter(
 ): Promise<string[] | undefined> {
   if (!value) return undefined
   const member = (await deps.repos.user.listMembers(orgId)).find((m) => m.userId === value || m.email === value)
-  return member ? [member.userId, ...(member.email ? [member.email] : [])] : [value]
+  if (!member) return [value]
+  const linked = await makeSenderIdentityResolver(deps).sendersOf(orgId, member.userId)
+  return [...new Set([member.userId, ...(member.email ? [member.email] : []), ...linked])]
 }
 
 /** Which code-host hook definitions this request has to resolve, keyed by provider. A
@@ -420,7 +428,8 @@ function sessionFacets(
   index: SessionFacetIndex,
   hookMetadata: Map<string, HookSessionMetadata>,
   agentNames: ReadonlyMap<string, string>,
-  channelNames: ReadonlyMap<string, string>
+  channelNames: ReadonlyMap<string, string>,
+  triggerUsers: ReadonlyMap<string, string>
 ) {
   const integrations = new Set<string>()
   const facetAgentNames: Record<string, string> = {}
@@ -436,6 +445,7 @@ function sessionFacets(
       name: string | null
       hookKind: HookKind | null
       githubRepoId: string | null
+      userId?: string
     }
   >()
 
@@ -470,12 +480,14 @@ function sessionFacets(
     const hook = hookMetadataForSession(hookMetadata, session)
     const display = sessionDisplayMetadata(session, hook, channelNames)
     const githubRepoId = hook?.kind === 'github' ? (hook.repoId?.toString() ?? null) : null
+    const userId = triggerUsers.get(session.id)
     triggers.set(triggeredBy, {
       value: triggeredBy,
       integration: sessionIntegration(session, hook),
       name: display.triggeredByName,
       hookKind: sessionHookKind(session, hook),
-      githubRepoId
+      githubRepoId,
+      ...(userId ? { userId } : {})
     })
   }
 
@@ -492,10 +504,12 @@ function sessionDto(
   s: SessionPageRow,
   hookMetadata: Map<string, HookSessionMetadata>,
   agentNames: ReadonlyMap<string, string>,
-  channelNames: ReadonlyMap<string, string>
+  channelNames: ReadonlyMap<string, string>,
+  triggerUsers: ReadonlyMap<string, string>
 ) {
   const hook = hookMetadataForSession(hookMetadata, s)
   const display = sessionDisplayMetadata(s, hook, channelNames)
+  const triggeredByUserId = triggerUsers.get(s.id)
   return {
     sessionId: s.id,
     sessionKey: {
@@ -513,6 +527,7 @@ function sessionDto(
     hookKind: sessionHookKind(s, hook),
     channelName: display.channelName,
     triggeredByName: display.triggeredByName,
+    ...(triggeredByUserId ? { triggeredByUserId } : {}),
     threadUrl: s.threadUrl ?? null,
     runtime: s.runtime ?? null,
     model: s.model ?? null,
@@ -644,6 +659,41 @@ export function sessionRoutes(deps: HttpDeps) {
     // of one rule — both come from `canViewSession`, fed the SAME identity set:
     // console identity plus provider-plugin contributions.
     const sessionAccess = makeSessionAccessResolver(deps)
+    const senderIdentity = makeSenderIdentityResolver(deps)
+    // Every sender a page names: its rows' and its thread footers' authors.
+    const pageSenders = (messages: readonly { sender: string }[], threads: readonly ThreadSummaryView[]): string[] => [
+      ...messages.map((m) => m.sender),
+      ...threads.flatMap((t) => [...t.participants.map((p) => p.sender), ...(t.lastReply ? [t.lastReply.sender] : [])])
+    ]
+    // The console member behind each session's trigger, by session id: one lookup per platform among the rows.
+    const triggerUsersOf = async (
+      req: FastifyRequest,
+      rows: readonly { id: string; platform: string | null; triggeredBy: string | null }[]
+    ): Promise<Map<string, string>> => {
+      const byPlatform = new Map<string, string[]>()
+      for (const row of rows) {
+        if (!row.platform || !row.triggeredBy) continue
+        byPlatform.set(row.platform, [...(byPlatform.get(row.platform) ?? []), row.triggeredBy])
+      }
+      const who = new Map(
+        await Promise.all(
+          [...byPlatform].map(
+            async ([platform, senders]) => [platform, await senderIdentity.resolve(req, platform, senders)] as const
+          )
+        )
+      )
+      const users = new Map<string, string>()
+      for (const row of rows) {
+        const userId = row.platform && row.triggeredBy ? who.get(row.platform)?.get(row.triggeredBy)?.userId : undefined
+        if (userId) users.set(row.id, userId)
+      }
+      return users
+    }
+    const threadWithIdentity = (t: ThreadSummaryView, who: ReadonlyMap<string, SenderIdentity>) => ({
+      ...t,
+      participants: t.participants.map((p) => withSenderIdentity(p, who)),
+      ...(t.lastReply ? { lastReply: withSenderIdentity(t.lastReply, who) } : {})
+    })
     const viewerForQuery = async (req: FastifyRequest, query: Parameters<typeof sessionAccess.forQuery>[1]) => {
       const access = await sessionAccess.forQuery(req, query)
       return {
@@ -912,11 +962,12 @@ export function sessionRoutes(deps: HttpDeps) {
         const { viewer } = await viewerForQuery(req, { agentIds: orgAgentIds.map(AgentId) })
         const index = await deps.repos.session.listFacets({ ...query, viewer })
         const metadataRows = [...index.integrations, ...index.channels, ...index.triggers]
-        const [hookMetadata, channelNames] = await Promise.all([
+        const [hookMetadata, channelNames, triggerUsers] = await Promise.all([
           hookMetadataForSessions(deps, metadataRows, orgOf(req)),
-          channelNamesForSessions(deps, metadataRows, orgOf(req))
+          channelNamesForSessions(deps, metadataRows, orgOf(req)),
+          triggerUsersOf(req, index.triggers)
         ])
-        return sessionFacets(index, hookMetadata, agentNames, channelNames)
+        return sessionFacets(index, hookMetadata, agentNames, channelNames, triggerUsers)
       }
     )
 
@@ -1034,10 +1085,11 @@ export function sessionRoutes(deps: HttpDeps) {
           )
           const selected = new Set<string>(selectedAgentIds)
           const rows = members.filter((session) => selected.has(session.agentId))
-          const [hookMetadata, channelNames, representativeSessionId] = await Promise.all([
+          const [hookMetadata, channelNames, representativeSessionId, triggerUsers] = await Promise.all([
             hookMetadataForSessions(deps, rows, orgOf(req)),
             channelNamesForSessions(deps, rows, orgOf(req)),
-            conversationRepresentativeId(deps, orgOf(req), conversationKey, rows)
+            conversationRepresentativeId(deps, orgOf(req), conversationKey, rows),
+            triggerUsersOf(req, rows)
           ])
           return {
             conversations:
@@ -1048,7 +1100,9 @@ export function sessionRoutes(deps: HttpDeps) {
                       platform: conversationKey.platform,
                       channel: conversationKey.channel,
                       thread: conversationKey.thread,
-                      sessions: rows.map((session) => sessionDto(session, hookMetadata, agentNames, channelNames)),
+                      sessions: rows.map((session) =>
+                        sessionDto(session, hookMetadata, agentNames, channelNames, triggerUsers)
+                      ),
                       memberSessionIds: members.map((session) => session.id),
                       ...(representativeSessionId ? { representativeSessionId } : {})
                     }
@@ -1063,13 +1117,16 @@ export function sessionRoutes(deps: HttpDeps) {
 
         if (!grouped) {
           const page = await deps.repos.session.listPage({ ...query, viewer })
-          const [hookMetadata, channelNames] = await Promise.all([
+          const [hookMetadata, channelNames, triggerUsers] = await Promise.all([
             hookMetadataForSessions(deps, page.sessions, orgOf(req)),
-            channelNamesForSessions(deps, page.sessions, orgOf(req))
+            channelNamesForSessions(deps, page.sessions, orgOf(req)),
+            triggerUsersOf(req, page.sessions)
           ])
           const nextCursor = page.hasMore ? encodeSessionCursor(page.sessions[page.sessions.length - 1]!) : null
           return {
-            sessions: page.sessions.map((session) => sessionDto(session, hookMetadata, agentNames, channelNames)),
+            sessions: page.sessions.map((session) =>
+              sessionDto(session, hookMetadata, agentNames, channelNames, triggerUsers)
+            ),
             total: page.total,
             nextCursor,
             accessSyncDegraded: access.degraded,
@@ -1080,9 +1137,10 @@ export function sessionRoutes(deps: HttpDeps) {
 
         const page = await deps.repos.session.listConversationPage({ ...query, viewer })
         const allRows = page.conversations.flatMap((c) => c.sessions)
-        const [hookMetadata, channelNames] = await Promise.all([
+        const [hookMetadata, channelNames, triggerUsers] = await Promise.all([
           hookMetadataForSessions(deps, allRows, orgOf(req)),
-          channelNamesForSessions(deps, allRows, orgOf(req))
+          channelNamesForSessions(deps, allRows, orgOf(req)),
+          triggerUsersOf(req, allRows)
         ])
         // The grouped cursor is the last conversation's REPRESENTATIVE row —
         // emit-at-max makes resumption stateless (§5.2).
@@ -1094,7 +1152,9 @@ export function sessionRoutes(deps: HttpDeps) {
             platform: c.key.platform,
             channel: c.key.channel,
             thread: c.key.thread,
-            sessions: c.sessions.map((session) => sessionDto(session, hookMetadata, agentNames, channelNames)),
+            sessions: c.sessions.map((session) =>
+              sessionDto(session, hookMetadata, agentNames, channelNames, triggerUsers)
+            ),
             memberSessionIds: c.memberSessionIds
           })),
           total: page.total,
@@ -1215,6 +1275,7 @@ export function sessionRoutes(deps: HttpDeps) {
             ])
           ).values()
         ]
+        const triggeredByUserId = (await triggerUsersOf(req, [s])).get(s.id)
         return {
           id: s.id,
           parentSession: parentVisible ? sessionRelation(parent, agentNames) : null,
@@ -1239,6 +1300,7 @@ export function sessionRoutes(deps: HttpDeps) {
           hookKind: sessionHookKind(s, hook),
           channelName: display.channelName,
           triggeredByName: display.triggeredByName,
+          ...(triggeredByUserId ? { triggeredByUserId } : {}),
           threadUrl: s.threadUrl,
           tenantScope: s.tenantScope ?? null,
           participants: reportRoster
@@ -1345,13 +1407,15 @@ export function sessionRoutes(deps: HttpDeps) {
         const page = read.value
         const threads = roots ? (page.threads ?? []) : undefined
         const taskAccess: ThreadTaskAccess = threads ? await threadTaskAccess(req, session.agentId, threads) : new Map()
+        const footers = threads?.map((t) => threadSummaryFor(t, taskAccess))
+        const who = await senderIdentity.resolve(req, session.platform, pageSenders(page.messages, footers ?? []))
         return {
           sessionId: page.sessionId,
-          messages: page.messages,
+          messages: page.messages.map((m) => withSenderIdentity(m, who)),
           nextCursor: page.nextCursor ?? null,
           liveCursor: page.liveCursor ?? null,
           liveMore: page.liveMore ?? false,
-          ...(threads ? { threads: threads.map((t) => threadSummaryFor(t, taskAccess)) } : {})
+          ...(footers ? { threads: footers.map((t) => threadWithIdentity(t, who)) } : {})
         }
       }
     )
@@ -1405,6 +1469,11 @@ export function sessionRoutes(deps: HttpDeps) {
         const page = read.value
         if (!page.summary) return reply.code(404).send(notFound)
         const summary = threadSummaryFor(page.summary, await threadTaskAccess(req, session.agentId, [page.summary]))
+        const who = await senderIdentity.resolve(
+          req,
+          session.platform,
+          pageSenders(summary.readable ? page.messages : [], [summary])
+        )
         if (!summary.readable) {
           return {
             sessionId: page.sessionId,
@@ -1413,17 +1482,17 @@ export function sessionRoutes(deps: HttpDeps) {
             nextCursor: null,
             liveCursor: null,
             liveMore: false,
-            summary
+            summary: threadWithIdentity(summary, who)
           }
         }
         return {
           sessionId: page.sessionId,
           rootId: page.rootId,
-          messages: page.messages,
+          messages: page.messages.map((m) => withSenderIdentity(m, who)),
           nextCursor: page.nextCursor ?? null,
           liveCursor: page.liveCursor ?? null,
           liveMore: page.liveMore ?? false,
-          summary
+          summary: threadWithIdentity(summary, who)
         }
       }
     )

@@ -1481,6 +1481,8 @@ export interface Session {
   /** Raw platform sender id behind `user` — e.g. `cron:<id>` for a scheduled
    *  fire. Lets the Sessions list link a run back to its schedule. */
   triggeredBy?: string
+  /** The console member who linked the triggering chat account. */
+  triggeredByUserId?: string
   /** Stable source kind for a `hook:<id>` trigger, enriched by the Control Plane. */
   hookKind?: HookKind
   /** Session-level visibility (lock badge / detail toggle). Absent on mock and

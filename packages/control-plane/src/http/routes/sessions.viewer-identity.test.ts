@@ -257,6 +257,38 @@ describe('session routes × viewer identity', () => {
     }
   })
 
+  it('names the console member behind the session’s trigger by the chat account they linked', async () => {
+    const { deps } = fakeDeps({
+      slackIdentityFor: async () => ({ teamId: 'T024BE7LD', userId: 'U0123ABCD' })
+    })
+    // What the sender resolver reads: the workspace's bot, the members, and each member's linked accounts.
+    Object.assign(deps.repos, {
+      bot: { listForOrg: async () => [{ id: 'bot-1', platform: 'slack', teamId: 'T024BE7LD', revokedAt: null }] },
+      integration: { listForOrg: async () => [] },
+      user: {
+        getOidcSubject: async (userId: string) => (userId === 'u-1' ? 'logto-sub' : null),
+        listMembers: async () => [{ userId: 'u-1', email: null, displayName: 'Morgan', role: 'collaborator' }]
+      }
+    })
+    Object.assign(deps, {
+      platforms: { get: () => ({ chatMemberTenant: (bot: { teamId: string | null }) => bot.teamId }) },
+      logtoIdentity: {
+        chatIdentitiesFor: async () => [{ platform: 'slack', tenant: 'T024BE7LD', memberId: 'U0123ABCD' }]
+      }
+    })
+    const app = await appAs(deps, { userId: 'u-1', oidcSubject: 'logto-sub' })
+    try {
+      const res = await app.inject({ method: 'GET', url: '/sessions/sess-1' })
+      expect(res.statusCode).toBe(200)
+      const body = res.json() as { triggeredBy: string; triggeredByUserId?: string }
+      // The platform's own id stays; the console member it belongs to rides beside it.
+      expect(body.triggeredBy).toBe('U0123ABCD')
+      expect(body.triggeredByUserId).toBe('u-1')
+    } finally {
+      await app.close()
+    }
+  })
+
   it('still 404s that session for a caller whose Slack identity differs', async () => {
     const { deps } = fakeDeps({
       slackIdentityFor: async () => ({ teamId: 'T024BE7LD', userId: 'U9OTHER' })

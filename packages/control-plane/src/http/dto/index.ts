@@ -3712,6 +3712,7 @@ export const SessionDto = z.object({
   // canonical; null when the daemon hasn't resolved them).
   channelName: z.string().nullable(),
   triggeredByName: z.string().nullable(),
+  triggeredByUserId: z.string().optional(), // the console member who linked the triggering chat account
   // Platform-native deep link back to the source message/thread, captured or
   // derived by the daemon; null when unavailable. Pure passthrough.
   threadUrl: z.string().nullable(),
@@ -3762,7 +3763,8 @@ export const SessionFacetsDto = z.object({
       integration: z.string(),
       name: z.string().nullable(),
       hookKind: z.enum(HOOK_KINDS).nullable(),
-      githubRepoId: z.string().nullable()
+      githubRepoId: z.string().nullable(),
+      userId: z.string().optional() // the console member who linked the triggering chat account
     })
   )
 })
@@ -3861,6 +3863,7 @@ export const SessionDetailDto = z.object({
   hookKind: z.enum(HOOK_KINDS).nullable(),
   channelName: z.string().nullable(),
   triggeredByName: z.string().nullable(),
+  triggeredByUserId: z.string().optional(), // the console member who linked the triggering chat account
   threadUrl: z.string().nullable(),
   runtime: z.string().nullable(),
   model: z.string().nullable(),
@@ -3968,6 +3971,8 @@ export const SessionMessageDto = z.object({
   sender: z.string(),
   senderName: z.string().optional(), // daemon-resolved display name; absent if unknown
   senderAvatarUrl: z.string().url().optional(), // public provider-hosted profile image
+  senderUserId: z.string().optional(), // the console member who linked this sender's chat account
+  senderAgentId: z.string().optional(), // the agent this sender's bot speaks for
   trustedAgentBot: z.boolean().optional(), // daemon-verified AgentConnect Slack bot provenance
   ts: z.string(),
   // Normalized chronological coordinate (epoch µs) from the daemon's
@@ -3995,7 +4000,13 @@ export const SessionMessageDto = z.object({
 /** `POST /sessions/:id/shared-images/:attachmentId/original` — the original's state and, when ready, a temporary GET. */
 export const SharedImageOriginalDto = SharedImageResolveOk
 
-const SessionThreadAuthorDto = z.object({ sender: z.string(), senderName: z.string().optional() })
+const SessionThreadAuthorDto = z.object({
+  sender: z.string(),
+  senderName: z.string().optional(),
+  senderAvatarUrl: z.string().optional(), // must be declared, or the response schema drops the platform's picture
+  senderUserId: z.string().optional(), // as on a message
+  senderAgentId: z.string().optional()
+})
 
 /** One thread footer (webchat-threads.md §5.3); `readable` false ⇒ a task the caller may not view holds it, or one still `starting`, so its excerpts and task title are left out (§7.1). */
 export const SessionThreadSummaryDto = z.object({

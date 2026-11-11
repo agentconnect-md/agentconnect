@@ -4,7 +4,6 @@ import { StateIcon, sessionState } from '@/components/console/StateIcon'
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
-import useSWR from 'swr'
 import { useTranslations } from 'next-intl'
 import {
   AGENTS,
@@ -24,15 +23,7 @@ import {
   type Agent,
   type Session
 } from '@/lib/data'
-import {
-  fetchMySocialAccount,
-  fmtDate,
-  memberDisplayName,
-  type HookKind,
-  type MemberDto,
-  type SessionListFilters
-} from '@/lib/api'
-import { isAuthConfigured } from '@/lib/auth'
+import { fmtDate, memberDisplayName, type HookKind, type MemberDto, type SessionListFilters } from '@/lib/api'
 import {
   githubRepoIdFromSessionTriggerFilter,
   sessionSenderLabel,
@@ -142,25 +133,10 @@ export default function SessionsView() {
   }, [members])
   // One member filed under several senders (user id, or the email older rows carry) is one trigger.
   const personKey = useCallback((sender: string) => memberByIdentity.get(sender)?.userId ?? sender, [memberByIdentity])
-  // The viewer's linked sign-in accounts, so their own Slack (and other platform) triggers read as theirs too.
-  const { data: socialAccount } = useSWR(
-    isAuthConfigured() && !MOCK_MODE ? 'logto-account-sign-in-methods' : null,
-    fetchMySocialAccount,
-    { revalidateOnFocus: false, revalidateOnReconnect: false, shouldRetryOnError: false }
-  )
-  const isMine = useCallback(
-    (sender: string, platform: string) =>
-      isSelfSender(sender, me) ||
-      (socialAccount?.identities.some(
-        (identity) =>
-          identity.userId === sender && (identity.target === 'lark' ? 'feishu' : identity.target) === platform
-      ) ??
-        false),
-    [me, socialAccount]
-  )
+  // A trigger from a linked chat account reads as its member, the reader's own as theirs.
   const triggerLabel = useCallback(
     (s: Session) => {
-      return sessionSenderLabel(s.triggeredBy, s.user, agentNameById, memberNameByIdentity, me)
+      return sessionSenderLabel(s.triggeredByUserId ?? s.triggeredBy, s.user, agentNameById, memberNameByIdentity, me)
     },
     [agentNameById, me, memberNameByIdentity]
   )
@@ -299,10 +275,13 @@ export default function SessionsView() {
         name: trigger.name,
         platform: trigger.platform,
         hookKind: trigger.hookKind,
-        filterValue: sessionTriggerFilterValue(trigger)
+        filterValue: sessionTriggerFilterValue(trigger),
+        userId: trigger.userId
       }
     ])
   )
+  // A link that names a member by a chat account they linked selects that member's row.
+  const fTriggerOption = fTrigger === 'all' ? 'all' : (triggerSources.get(fTrigger)?.userId ?? fTriggerKey)
   const facetAgentIds = new Set(sessionFacets.agentIds)
   const facetAgentNames = new Map(Object.entries(sessionFacets.agentNames))
   for (const session of localFacetSessions.agents) {
@@ -328,7 +307,8 @@ export default function SessionsView() {
         name: session.user,
         platform,
         hookKind: session.hookKind,
-        filterValue: session.triggeredBy
+        filterValue: session.triggeredBy,
+        userId: session.triggeredByUserId
       })
     }
   }
@@ -343,7 +323,7 @@ export default function SessionsView() {
   const hookSets = new Map<HookKind, Map<string, string>>(HOOK_TRIGGER_KINDS.map((kind) => [kind, new Map()]))
   const cronSet = new Map<string, string>()
   for (const [triggeredBy, source] of triggerSources) {
-    const label = sessionSenderLabel(triggeredBy, source.name, agentNameById, memberNameByIdentity, me)
+    const label = sessionSenderLabel(source.userId ?? triggeredBy, source.name, agentNameById, memberNameByIdentity, me)
     const kind = sessionTriggerKind({ triggeredBy, hookKind: source.hookKind }, agentById)
     switch (kind) {
       case null:
@@ -359,10 +339,11 @@ export default function SessionsView() {
         break
       }
       case 'person': {
-        const key = personKey(triggeredBy)
+        // A member's console account and each chat account they linked are one person, filtered by their user id.
+        const key = source.userId ?? personKey(triggeredBy)
         if (peopleSet.has(key)) break
-        const member = memberByIdentity.get(triggeredBy)
-        const mine = isMine(triggeredBy, source.platform)
+        const member = memberByIdentity.get(key)
+        const mine = isSelfSender(key, me)
         const name = member ? memberDisplayName(member) : label
         peopleSet.set(key, {
           label: mine ? t('mine', { name }) : label,
@@ -545,7 +526,7 @@ export default function SessionsView() {
     fAgent !== 'all' && { key: 'agent' as const, label: labelOf(agentOpts, fAgent) },
     fInt !== 'all' && { key: 'integration' as const, label: platName(fInt) },
     fChannel !== 'all' && { key: 'channel' as const, label: labelOf(channelOpts, fChannel) },
-    fTrigger !== 'all' && { key: 'trigger' as const, label: labelOf(triggerFlat, fTriggerKey) },
+    fTrigger !== 'all' && { key: 'trigger' as const, label: labelOf(triggerFlat, fTriggerOption) },
     showTasks && { key: 'tasks' as const, label: t('showTasks') }
   ].filter((c): c is { key: FilterKey | 'tasks'; label: string } => Boolean(c))
 
@@ -641,7 +622,7 @@ export default function SessionsView() {
           ariaLabel={t('filterChannelsLabel')}
         />
         <FilterSelect
-          value={fTriggerKey}
+          value={fTriggerOption}
           onChange={(v) => setFilter('trigger', v)}
           options={[triggerAll]}
           groups={triggerGroups}
@@ -884,7 +865,7 @@ export default function SessionsView() {
             <PillSection
               label={t('trigger')}
               options={triggerFlat}
-              value={fTriggerKey}
+              value={fTriggerOption}
               onPick={(v) => setFilter('trigger', v)}
             />
             <PillSection

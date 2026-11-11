@@ -60,7 +60,6 @@ import {
   fetchSessionDetail,
   fmtCountCompact,
   fmtDate,
-  memberDisplayName,
   mergeSessionDetailRunConfig,
   mergeSessionDetailUsage,
   sessionFromDto,
@@ -93,11 +92,12 @@ import { liveResumeMembers, sessionResumeMembers, sessionResumeState } from '@/l
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { consoleKeys } from '@/lib/swr-keys'
 import {
+  senderIdentity,
   sessionAttributionAgentAuthors,
   sessionAttributionAgentId,
-  sessionSenderLabel,
   sessionTranscriptAgentIds
 } from '@/lib/session-trigger'
+import { useSenderPeople } from '@/components/console/sender-people'
 import { useStickToBottom } from '@/lib/stick-to-bottom'
 import { newDividerIndex, useSeenMarker } from '@/lib/transcript-seen'
 import { NewDivider, SeenRecorder, TranscriptMap, type MapTurn } from '@/components/console/TranscriptNav'
@@ -2076,34 +2076,8 @@ export default function SessionDetailView() {
     seq: number
     repoName?: string
   } | null>(null)
-  const memberNameByIdentity = useMemo(() => {
-    const names = new Map<string, string>()
-    for (const m of members) {
-      const label = memberDisplayName(m)
-      names.set(m.userId, label)
-      if (m.email) names.set(m.email, label)
-    }
-    return names
-  }, [members])
-  const memberPictureByIdentity = useMemo(() => {
-    const pictures = new Map<string, string>()
-    for (const member of members) {
-      if (!member.picture) continue
-      pictures.set(member.userId, member.picture)
-      if (member.email) pictures.set(member.email, member.picture)
-    }
-    // Last resort, for webchat rows written while the sender was the author's DISPLAY NAME
-    // rather than their CP principal: key by that name too, so those sessions still show a
-    // photo. Strictly after the identity keys — a name is not an identity, and two members
-    // sharing one would otherwise hand the second member's photo to the first's rows, so
-    // the first writer wins and nothing here ever gates access.
-    for (const member of members) {
-      if (!member.picture) continue
-      const label = memberDisplayName(member)
-      if (!pictures.has(label)) pictures.set(label, member.picture)
-    }
-    return pictures
-  }, [members])
+  // Who each sender is to the reader: the same reading the thread panel and the sessions list take.
+  const people = useSenderPeople(agentNameById)
   const attributedAgentIdBySender = useMemo(
     () => sessionAttributionAgentAuthors(session?.platform ?? '', visibleMsgs ?? [], agentById),
     [session?.platform, visibleMsgs, agentById]
@@ -2115,11 +2089,8 @@ export default function SessionDetailView() {
         attributedAgentIdBySender.get(sender))
     return id ? agentById.get(id) : undefined
   }
-  // The viewer's own webchat messages render as "You" (like the live playground) instead
-  // of a raw id — see isSelfSender. Webchat-only: Slack senders never match /me.
-  const isSelf = (sender?: string | null): boolean => isSelfSender(sender, me)
-  const senderLabel = (sender: string | null | undefined, fallback?: string): string =>
-    sessionSenderLabel(sender, fallback, agentNameById, memberNameByIdentity, me)
+  const isSelf = people.isSelf
+  const senderLabel = people.label
   // The composer's Up/Down recall pool: the viewer's own prompts in transcript order, read from
   // whichever source the page renders — fetched rows, or the steps a playground session carries.
   const sessionSteps = session?.steps
@@ -2894,7 +2865,7 @@ export default function SessionDetailView() {
     senderLabel,
     ownsDecisionSeq,
     viewer,
-    pictureOf: (identity) => memberPictureByIdentity.get(identity),
+    pictureOf: people.pictureOf,
     sourceLabel: platName(sessionIntegration)
   })
   // In the roots view the coordinator's work in a thread is drawn in that thread's panel, not on the main timeline.
@@ -2929,16 +2900,19 @@ export default function SessionDetailView() {
     turns.flatMap((turn) => (turn.kind === 'user' && turn.messageId ? [[turn.messageId, turn.text]] : []))
   )
   const threadAuthorName = (author: SessionThreadAuthorDto): string => {
-    const agent = agentById.get(author.sender)
+    const who = senderIdentity(author)
+    const agent = agentById.get(who)
     if (agent) return agentLabel(agent)
-    return isSelf(author.sender) ? tt('you') : (author.senderName ?? author.sender)
+    return isSelf(who) ? tt('you') : senderLabel(who, author.senderName ?? author.sender)
   }
   // A replier's mark on a footer: an agent's icon, else the person's picture; initials where neither is known.
   const threadAuthorMark = (author: SessionThreadAuthorDto) => {
-    const agent = agentById.get(author.sender)
+    const who = senderIdentity(author)
+    const agent = agentById.get(who)
     if (agent) return <AgentIconView icon={agent.icon} runtime={agent.runtime} size={16} />
-    const picture =
-      author.senderAvatarUrl ?? (isSelf(author.sender) ? viewer.picture : memberPictureByIdentity.get(author.sender))
+    const picture = isSelf(who)
+      ? (viewer.picture ?? author.senderAvatarUrl)
+      : (author.senderAvatarUrl ?? people.pictureOf(who))
     return picture ? (
       <img src={picture} alt="" referrerPolicy="no-referrer" className="h-full w-full object-cover" />
     ) : null
@@ -4810,9 +4784,7 @@ export default function SessionDetailView() {
               onBack={closeThread}
               {...(taskApprovalScope ? { taskApprovals: taskApprovalScope } : {})}
               runtimeContext={taskRuntimeContext}
-              personPicture={(sender) =>
-                sender === undefined || isSelf(sender) ? viewer.picture : memberPictureByIdentity.get(sender)
-              }
+              people={people}
               fileTransfer={composerTransfer}
               attachments={attachmentsEnabled}
             />

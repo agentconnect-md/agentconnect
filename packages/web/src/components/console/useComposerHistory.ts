@@ -7,6 +7,7 @@
 // so Up at the oldest loaded entry pages earlier history in and keeps walking once it arrives.
 
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { senderIdentity } from '@/lib/session-trigger'
 
 export interface ComposerHistoryEntry {
   /** Stable row identity, so a page of earlier rows prepending does not move the recalled entry. */
@@ -170,15 +171,13 @@ export function useComposerHistory({
 }
 
 /** The viewer's own prompts from transcript rows, oldest first, without empty or repeated entries. */
-export function composerHistoryFromRows<Row extends { sender: string; text: string; postId?: string }>(
-  rows: ReadonlyArray<Row>,
-  isSelf: (sender: string) => boolean,
-  keyOf: (row: Row) => string
-): ComposerHistoryEntry[] {
+export function composerHistoryFromRows<
+  Row extends { sender: string; senderUserId?: string; senderAgentId?: string; text: string; postId?: string }
+>(rows: ReadonlyArray<Row>, isSelf: (sender: string) => boolean, keyOf: (row: Row) => string): ComposerHistoryEntry[] {
   const out: ComposerHistoryEntry[] = []
   const seenPosts = new Set<string>()
   for (const row of rows) {
-    if (!isSelf(row.sender)) continue
+    if (!isSelf(senderIdentity(row))) continue
     if (row.postId) {
       if (seenPosts.has(row.postId)) continue
       seenPosts.add(row.postId)
