@@ -3315,7 +3315,10 @@
         "filter": "Filter",
         "filterHint": "A Decision model reads each message nobody addressed to the agent before the coordinator does, and skips it when it is confident the agent has no part in it. Mentions, thread replies and console messages always reach the coordinator.",
         "filterNotReady": "Not ready on this agent’s daemon",
-        "noFilter": "No filter"
+        "noFilter": "No filter",
+        "currentChoice": "Selected",
+        "plusCoordinatorAndFilter": "+ coordinator {model} · filter {filter}",
+        "filterCaption": "Optional: screens each unaddressed message before the coordinator ({model}) reads it. The coordinator model stays as chosen."
       }
     },
     "detail": {
