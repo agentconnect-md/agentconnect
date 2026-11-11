@@ -36,7 +36,9 @@ const obj = (value: unknown): Obj | undefined =>
 export class MsTeamsTokenError extends Error {
   constructor(
     message: string,
-    readonly status?: number
+    readonly status?: number,
+    /** Entra's own code for the refusal, as `AADSTS<number>`. */
+    readonly code?: string
   ) {
     super(message)
     this.name = 'MsTeamsTokenError'
@@ -65,8 +67,14 @@ async function requestToken(
   }
   const body = obj(await response.json().catch(() => undefined))
   const value = typeof body?.access_token === 'string' && body.access_token ? body.access_token : undefined
-  if (!response.ok || !value)
-    throw new MsTeamsTokenError(`Entra answered ${response.status} without a token`, response.status)
+  if (!response.ok || !value) {
+    const first: unknown = Array.isArray(body?.error_codes) ? body.error_codes[0] : undefined
+    throw new MsTeamsTokenError(
+      `Entra answered ${response.status} without a token`,
+      response.status,
+      typeof first === 'number' ? `AADSTS${first}` : undefined
+    )
+  }
   const expiresIn = typeof body?.expires_in === 'number' ? body.expires_in * 1000 : 0
   return { value, until: now() + Math.max(0, expiresIn - TOKEN_MARGIN_MS) }
 }
@@ -180,6 +188,12 @@ export class MsTeamsAgentBotTokens {
     })
   }
 }
+
+/** Entra's codes for an identity, or the blueprint's principal, the customer disabled or deleted (teams-integration.md §8.6.5). */
+const AGENT_BOT_STOPPED_CODES = new Set(['AADSTS7000112', 'AADSTS700016'])
+
+/** What a token request for an agent bot showed about its credential: it works, or the customer stopped it. */
+export type MsTeamsAgentBotCheck = { result: 'ok' } | { result: 'rejected'; code: string }
 
 /** The row a call is for: its ticket binding, and its agent identity when the bot is one the deployment made for an agent. */
 export interface MsTeamsEgressRow extends MsTeamsTicketBinding {
@@ -319,7 +333,12 @@ export class MsTeamsRelayEgress {
   }
 
   /** Perform one call for a row of tenant `row.tenantId` within the request budget; the caller has checked the daemon serves the row. */
-  async call(row: MsTeamsEgressRow, call: WireMsTeamsCall): Promise<RdPlatformReply> {
+  async call(
+    row: MsTeamsEgressRow,
+    call: WireMsTeamsCall,
+    /** Told what each token request for an agent bot showed, so the row's credential can be marked. */
+    onAgentBotCheck?: (check: MsTeamsAgentBotCheck) => void
+  ): Promise<RdPlatformReply> {
     const binding: MsTeamsTicketBinding = { botId: row.botId, tenantId: row.tenantId }
     // An agent bot sends as its own identity with a token of its own tenant; the app's bot with the home tenant's.
     const agentBots = row.agentBotId ? this.agentBots : undefined
@@ -351,7 +370,10 @@ export class MsTeamsRelayEgress {
       let token: { value: string } | undefined
       try {
         token = await within(botToken.get(), left())
+        if (token && agentBots) onAgentBotCheck?.({ result: 'ok' })
       } catch (err) {
+        const code = err instanceof MsTeamsTokenError ? err.code : undefined
+        if (agentBots && code && AGENT_BOT_STOPPED_CODES.has(code)) onAgentBotCheck?.({ result: 'rejected', code })
         return result ? answered(result) : this.tokenRefusal(err)
       }
       // Out of time before sending: nothing reached Microsoft, or the first attempt's answer stands.

@@ -160,6 +160,8 @@ export function createMsTeamsIngressPlugin(deps: MsTeamsIngressPluginDeps = {}):
   // The latest snapshot's anchor, which carries the secret the anchor's ingest sends with; an assignment never does.
   let anchor: MsTeamsAnchorEgress | undefined
   let egress: MsTeamsRelayEgress | undefined
+  // The host an ingest was last built with, which carries an agent bot's credential checks to the Control Plane.
+  let reportTo: RelayIngressHost | undefined
   // The egress and row of a deployment's own bot: the app's customer row, or an agent bot's while the snapshot carries the blueprint; undefined for an organization's own bot.
   const deploymentRow = (botId: string, appId: string | undefined, tenantId: string | undefined, agentBot = false) => {
     if (!egress || !appId || !tenantId || botId === MSTEAMS_ANCHOR_BOT_ID) return undefined
@@ -214,6 +216,7 @@ export function createMsTeamsIngressPlugin(deps: MsTeamsIngressPluginDeps = {}):
         return undefined
       }
       verifier.log ??= host.log
+      reportTo = host
       return new MsTeamsHttpIngest(
         a.botId,
         a.apiAppId.toLowerCase(),
@@ -232,7 +235,12 @@ export function createMsTeamsIngressPlugin(deps: MsTeamsIngressPluginDeps = {}):
       if (!row) return { outcome: 'refused', reason: 'not_deployment_app', retryable: true }
       const call = WireMsTeamsCall.safeParse(payload)
       if (!call.success) return { outcome: 'refused', reason: 'invalid' }
-      return await row.egress.call(row.binding, call.data)
+      // An identity the customer disabled or deleted marks the row's credential rejected, and a later token clears it (§8.6.5).
+      return await row.egress.call(row.binding, call.data, (check) => {
+        const host = reportTo
+        if (!host) return
+        host.reportCredentialCheck(a.botId, { ...check, observedAtMs: host.clock.now() }, a.credentialRevision)
+      })
     },
 
     extractDemuxHints(_rawBody: Buffer, body: unknown, headers): DemuxHints {

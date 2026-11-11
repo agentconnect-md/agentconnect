@@ -11,7 +11,7 @@ const UNCLAIMED = ['zulip', 'hook', 'github', 'playground', 'webchat', 'lark', '
 
 /** The modules that declare copy of their own — every other registered platform
  *  falls all the way through to the provider-free defaults. */
-const DECLARES_COPY = ['slack', 'googlechat', 'wechat', 'linear']
+const DECLARES_COPY = ['slack', 'msteams', 'googlechat', 'wechat', 'linear']
 
 /** Captured from `SettingsView.tsx` before the member existed. */
 const SLACK_REVOKED = 'The Slack workspace uninstalled this app or revoked its tokens — re-install to reconnect'
@@ -51,6 +51,11 @@ describe('Settings → Bots row copy', () => {
     // A WeChat bot is installed by a QR login, so the default's "re-install" names a step the console does not offer.
     expect(botCardCopy('wechat').revokedHint).toContain('scan the code again')
     expect(botCardCopy('wechat').rejectedHint).toContain('scan the code again')
+  })
+
+  it('tells a Teams row whose agent bot the customer stopped how to bring it back', () => {
+    expect(botCardCopy('msteams').rejectedHint).toContain('Entra admin center')
+    expect(botCardCopy('msteams').revokedHint).toBe(DEFAULT_BOT_CARD_COPY.revokedHint)
   })
 
   it('gives every other registered platform the provider-free default', () => {
