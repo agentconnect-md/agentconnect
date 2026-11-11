@@ -1286,11 +1286,18 @@ for review.
    pending app (**Teams apps → Manage apps**), for the member to send or an
    administrator to follow. An administrator who is also an editor of the
    agent gets **Approve** there instead, which signs them in and publishes the
-   pending definition through Graph. **Check again** and **Cancel request**
-   sit beside it.
+   pending definition through Graph. Graph has answered that request with 500
+   and published the definition all the same (**measured**), so a failed
+   answer is checked against the catalog before it is reported. **Check
+   again** and **Cancel request** sit beside it.
 6. **Detecting the approval.** A background loop redeems the stored token and
    reads the package's state, on a backoff from seconds to minutes; the open
-   page and **Check again** read it at once.
+   page and **Check again** read it at once. The member's token reads only
+   their own pending submission: once the package is published, the same read
+   answers 404, as it does for a package that was removed (**measured**). The
+   two are told apart by adding the app for the member, which succeeds for a
+   published package and answers 404 for a removed one; any other answer
+   leaves the request waiting.
 7. **Install.** Once published, the Control Plane installs into the chosen
    teams with the member's token and the package's consent set, writes the
    row, and the entry turns into a connected integration.

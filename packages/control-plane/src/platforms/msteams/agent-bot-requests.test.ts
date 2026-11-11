@@ -41,6 +41,8 @@ interface Script {
   /** Graph's status for an install into a team. */
   install?: Record<string, number>
   withdraw?: number
+  /** Graph's status for adding the app for the member; 404 ⇒ the catalog no longer holds it. */
+  personal?: number
   /** The organization that holds the tenant's app row; null ⇒ no organization does. */
   holder?: string | null
   unreachable?: boolean
@@ -76,6 +78,10 @@ function harness(script: Script = {}) {
       if (script.definitions === null) return new Response(null, { status: 404 })
       const states = script.definitions ?? ['submitted']
       return Response.json({ appDefinitions: states.map((state, i) => ({ id: `def-${i}`, publishingState: state })) })
+    }
+    if (/\/users\/[^/]+\/teamwork\/installedApps/.test(url)) {
+      calls.push('personal')
+      return new Response(null, { status: script.personal ?? 201 })
     }
     const team = /\/teams\/([^/]+)\/installedApps/.exec(url)?.[1]
     if (team) {
@@ -248,7 +254,7 @@ describe('MsTeamsAgentBotRequests', () => {
       [['rejected'], 'package_rejected'],
       [null, 'package_removed']
     ] as const) {
-      const h = harness({ definitions: definitions as string[] | null })
+      const h = harness({ definitions: definitions as string[] | null, personal: 404 })
       await h.open()
       expect(await h.requests.check(ORG, 'request-1')).toEqual({ outcome: 'rejected' })
       expect(h.rows.get('request-1')).toMatchObject({ status: 'rejected', reason })
@@ -257,6 +263,18 @@ describe('MsTeamsAgentBotRequests', () => {
     await down.open()
     expect(await down.requests.check(ORG, 'request-1')).toEqual({ outcome: 'pending' })
     expect(down.rows.get('request-1')).toMatchObject({ status: 'pending', refreshToken: 'stored-token', checks: 1 })
+  })
+
+  it('takes a package its member can no longer read as approved when it can be added for them, and waits while that is undecided', async () => {
+    // An approved package: the member's token reads no catalog app, but the app is added for them.
+    const approved = harness({ definitions: null })
+    await approved.open()
+    expect(await approved.requests.check(ORG, 'request-1')).toMatchObject({ outcome: 'installed' })
+    // Microsoft neither adds it nor says it is gone: the request keeps waiting.
+    const undecided = harness({ definitions: null, personal: 403 })
+    await undecided.open()
+    expect(await undecided.requests.check(ORG, 'request-1')).toEqual({ outcome: 'pending' })
+    expect(undecided.rows.get('request-1')).toMatchObject({ status: 'pending' })
   })
 
   it('lets one check hold a request at a time', async () => {
