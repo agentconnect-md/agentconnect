@@ -565,6 +565,18 @@ Gitea through that environment's proxy route
 An agent's session holds the placeholder too, and the proxy presents this token
 per request after checking the repository and the agent's tier.
 
+Because the token is not scoped by Gitea, the proxy never lends it to a request
+that names none of the agent's repositories, unlike GitHub and GitLab, whose
+tokens are scoped by the provider. Git is served only on an authorized
+repository, a push only at `write`. On API v1 the proxy serves reads under
+`repos/{owner}/{repo}/…` of an authorized repository. Two other reads are
+allowlisted: `version`, which Gitea answers without a credential and is
+forwarded with none, and `user`, the bot's own profile, read under the workspace
+repository's lease. Every other read is refused, such as `user/repos`,
+`orgs/{org}/repos`, `repositories/{id}`, `notifications` and `repos/search`. So
+are the settings only an administrator reads on an authorized repository:
+webhooks, deploy keys, push mirrors, and Actions secrets, variables and runners.
+
 There is no CLI wrapper. The agent reads issues, pull requests, diffs, and
 statuses through the provider read tools and mutates through the effect
 broker (§10.2). A user-supplied Gitea token in the environment is outside the
@@ -770,6 +782,12 @@ the pull request, re-requesting the bot as reviewer, or an authorized mention.
   negotiated `gitea-v1`; what every consumer reads is the decode-time view §13
   derives from those members, so the new member also adds its arm there. The
   review frames already carry an open provider string and gain no member.
+- Gitea's Git credential is proxy-only (§9). A daemon older than that rule names
+  no consumer on its Git asks, and the Control Plane refuses them with a
+  message telling the operator to upgrade the daemon. The hook reply and
+  effect leases are admitted without a consumer, because only the daemon's own
+  poster and broker ask for them, so an older daemon keeps replying and
+  posting.
 
 ## 12. Console, REST, and Setup Server
 
@@ -888,10 +906,12 @@ sealed at rest, leaves the Control Plane only as a short lease over the
 authenticated daemon WebSocket, is never returned by an API or written to a
 diagnostic, and the daemon presents it only through its credential proxy, its
 own Git on its machine, and the broker (§9). No agent process or Git inside an
-execution environment holds it. A compromised agent process reaches only the
-repositories it is authorized for, at its tier, through the proxy. The Console
-states this trade-off on the connect card rather than implying a narrower
-posture. Whoever can enroll a daemon and place an agent on
+execution environment holds it. Through the proxy, a compromised agent process
+reaches only the repositories it is authorized for: Git at its tier, and API
+reads at every tier. The bot's `admin` role still answers those reads, so any
+read Gitea gives an administrator stays readable on an authorized repository,
+apart from the settings §9 refuses. The Console states this trade-off on the
+connect card rather than implying a narrower posture. Whoever can enroll a daemon and place an agent on
 it can obtain the bot token too
 ([placement trust](github-app-git-credentials.md#trust-model)), so what the
 bot can reach is the real bound.

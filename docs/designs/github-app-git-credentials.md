@@ -1244,6 +1244,10 @@ whatever the agent's grant, and its tiers are an AgentConnect clamp rather than 
 provider role ([Gitea §5](gitea-integration.md#5-resource-model)). A GitHub token is
 one repository for an hour, and a GitLab token is the agent's own account. The gate
 still applies before GitHub and GitLab move, and its measurement includes Gitea's clones.
+Until it is measured, a pool member's Gitea cold clones cross its event loop
+unmeasured, as Azure's do. An operator who sees renewal delay approach `T_fence`
+under that load moves those agents to a self-hosted daemon's host strategy, whose
+Git keeps its direct path, until the measurement exists.
 
 A GitHub operation may still carry its existing daemon capability during this
 stage. That is transitional exposure for that operation, not permission to retrieve

@@ -1,4 +1,4 @@
-// Gitea's routes in the credential proxy (github-app-git-credentials.md, Phase 2): git at `owner/repo`, and API v1 reads of `repos/{owner}/{repo}`.
+// Gitea's routes in the credential proxy (gitea-integration.md §9): the bot token reaches every repository the bot can, so a request is served only on one of the agent's own repositories or a short allowlist.
 import {
   gitServicePrefix,
   isGitPush,
@@ -10,10 +10,20 @@ import {
 
 const WRITE_REFUSAL =
   'Gitea API writes are not available with this agent’s credential. Use the giteaPullRequest, giteaIssue or giteaComment tool.'
+const NO_REPOSITORY_REFUSAL =
+  'a Gitea API read that names no repository is not available with this agent’s credential; name the repository as /api/v1/repos/{owner}/{repo}/…'
+const SETTINGS_REFUSAL = 'repository settings are not available with this agent’s credential'
+
+/** Repository subresources only an administrator reads, the bot always being one: webhooks, deploy keys, mirrors, Actions secrets, variables and runners. */
+function adminSetting(rest: readonly string[]): boolean {
+  const [first, second] = rest.map((segment) => segment.toLowerCase())
+  if (first === 'hooks' || first === 'keys' || first === 'push_mirrors') return true
+  return first === 'actions' && (second === 'secrets' || second === 'variables' || second === 'runners')
+}
 
 export const giteaProxyRoute: ProxyRouteDescriptor = {
   provider: 'gitea',
-  route: (instance, method, target) => {
+  route: (instance, method, target, { repositories }) => {
     const stripped = underInstance(instance, target)
     // Another application beside the instance on the same host is not the agent's code host.
     if (stripped === undefined) return { kind: 'anonymous' }
@@ -27,10 +37,21 @@ export const giteaProxyRoute: ProxyRouteDescriptor = {
     if (segments[0] !== 'api') return { kind: 'anonymous' }
     if (segments[1] !== 'v1') return { kind: 'deny', status: 400, reason: 'only API v1 is available' }
     if (!READS.has(method.toUpperCase())) return { kind: 'deny', status: 403, reason: WRITE_REFUSAL }
-    if (segments[2] !== 'repos' || segments.length < 4) return { kind: 'workspace' }
-    const named = segments.slice(3, 5)
+    const rest = segments.slice(2)
+    if (rest[0] !== 'repos') {
+      // The instance's version needs no credential; the bot's own profile shows no repository, so the workspace's lease reads it.
+      if (rest.length === 1 && rest[0] === 'version') return { kind: 'anonymous' }
+      const workspace = repositories.find((row) => row.workspace)
+      if (rest.length === 1 && rest[0] === 'user' && workspace) {
+        return { kind: 'repository', plane: 'api', repo: workspace.repoFullName.toLowerCase() }
+      }
+      return { kind: 'deny', status: 403, reason: NO_REPOSITORY_REFUSAL }
+    }
+    if (rest.length < 3) return { kind: 'deny', status: 403, reason: NO_REPOSITORY_REFUSAL }
+    const named = rest.slice(1, 3)
     const repo = /\.git$/i.test(named[1] ?? '') ? undefined : repositoryPath(named, false)
     if (!repo) return { kind: 'deny', status: 400, reason: 'the API path does not name a repository' }
+    if (adminSetting(rest.slice(3))) return { kind: 'deny', status: 403, reason: SETTINGS_REFUSAL }
     return { kind: 'repository', plane: 'api', repo }
   }
 }

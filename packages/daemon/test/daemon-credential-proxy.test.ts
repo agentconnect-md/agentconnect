@@ -607,11 +607,19 @@ describe("the proxy's mint and its invalidate", () => {
 })
 
 describe('a Gitea agent behind the credential proxy', () => {
-  it('leases the repository a request names by path, else the workspace, to the proxy alone', async () => {
+  it('leases the repository a request names by path to the proxy alone, and nothing for one that names none', async () => {
     const { d } = await startDaemon()
     await admit(d, GITEA_AGENT, giteaSpec())
     const asked = fakeControlPlane(d, 'write')
-    const workspace = await d.credentialProxyMint(GITEA_AGENT, { provider: 'gitea', plane: 'api', readOnly: true })
+    await expect(
+      d.credentialProxyMint(GITEA_AGENT, { provider: 'gitea', plane: 'api', readOnly: true })
+    ).rejects.toThrow(/not authorized for this agent/)
+    const workspace = await d.credentialProxyMint(GITEA_AGENT, {
+      provider: 'gitea',
+      repo: 'example-org/example-repo',
+      plane: 'api',
+      readOnly: true
+    })
     const named = await d.credentialProxyMint(GITEA_AGENT, {
       provider: 'gitea',
       repo: 'Example-Org/Other-Repo',

@@ -501,7 +501,9 @@ describe('handleGitCredRequest — repoFullName passthrough (issue #457)', () =>
       expect(conn.sendError).toHaveBeenCalledWith(
         expect.anything(),
         'SCOPE_DENIED',
-        'azure-devops credentials are served to the credential proxy only',
+        consumer === undefined
+          ? "azure-devops credentials are served only to the daemon's credential proxy and its own Git; upgrade this daemon, which names neither"
+          : "azure-devops credentials are served only to the daemon's credential proxy and its own Git",
         false
       )
       expect(conn.replyTo).not.toHaveBeenCalled()
@@ -862,7 +864,7 @@ describe('handleGitCredRequest — the gitea arm (gitea-integration.md §9, §10
       expect(conn.sendError).toHaveBeenCalledWith(
         expect.anything(),
         'SCOPE_DENIED',
-        'gitea credentials are served to the credential proxy only',
+        expect.stringContaining("gitea credentials are served only to the daemon's credential proxy and its own Git"),
         false
       )
       expect(conn.replyTo).not.toHaveBeenCalled()
@@ -874,6 +876,25 @@ describe('handleGitCredRequest — the gitea arm (gitea-integration.md §9, §10
       await handleGitCredRequest(frame, conn, deps)
       expect(conn.replyTo).toHaveBeenCalledWith(frame, 'gitcred/grant', GRANT)
     }
+  })
+
+  it('serves a daemon too old to name its consumer the hook reply lease, whose authority is the hook', async () => {
+    const grantForHookReply = vi.fn(async () => ({ ...GRANT, access: 'read' as const, ttlSec: 900 }))
+    const deps = {
+      agent: { get: async () => PLACED_AGENT },
+      hook: { get: async () => ({ agentId: AGENT_ID, kind: 'gitea', enabled: true, repoId: 556677n }) },
+      giteaGitcred: { grantForHookReply }
+    } as unknown as DaemonWsDeps
+    const conn = fakeConn()
+    const frame = gitcredFrame({
+      provider: 'gitea',
+      purpose: 'gitea_hook_reply',
+      hookId: HOOK_ID,
+      externalRepoId: '556677'
+    })
+    await handleGitCredRequest(frame, conn, deps)
+    expect(conn.sendError).not.toHaveBeenCalled()
+    expect(grantForHookReply).toHaveBeenCalledWith(ORG_ID, 556677n)
   })
 
   it('routes gitea_hook_reply and gitea_effect through the enabled gitea hook', async () => {

@@ -633,11 +633,58 @@ describe('routing a GitLab or Gitea request', () => {
       plane: 'api',
       repo: 'owner/repo'
     })
-    expect(instanceRoute(gitea, 'GET', '/forge/api/v1/user')).toEqual({ kind: 'workspace' })
     expect(instanceRoute(gitea, 'GET', '/forge/api/v1/repos/owner/..')).toMatchObject({ kind: 'deny' })
     const write = instanceRoute(gitea, 'PATCH', '/forge/api/v1/repos/owner/repo/issues/1')
     expect(write).toMatchObject({ kind: 'deny', status: 403 })
     expect((write as { reason: string }).reason).toContain('giteaPullRequest')
+  })
+})
+
+describe('a Gitea read that names no repository', () => {
+  const gitea = proxyInstance(GITEA)!
+  const context = {
+    repositories: [
+      { repoId: '556677', repoFullName: 'Example-Org/Example-Repo', workspace: true as const },
+      { repoId: '889900', repoFullName: 'example-org/other-repo' }
+    ]
+  }
+  const route = (target: string, method = 'GET') => instanceRoute(gitea, method, target, context)
+
+  it('is refused rather than borrowing the bot token, but for the version and the bot’s own profile', () => {
+    for (const target of [
+      '/forge/api/v1/user/repos',
+      '/forge/api/v1/orgs/example-org/repos',
+      '/forge/api/v1/repositories/42',
+      '/forge/api/v1/notifications',
+      '/forge/api/v1/repos/search?q=x',
+      '/forge/api/v1/users/someone'
+    ]) {
+      expect(route(target)).toMatchObject({ kind: 'deny', status: 403 })
+    }
+    expect((route('/forge/api/v1/user/repos') as { reason: string }).reason).toContain('/api/v1/repos/{owner}/{repo}')
+    expect(route('/forge/api/v1/version')).toEqual({ kind: 'anonymous' })
+    expect(route('/forge/api/v1/user')).toEqual({ kind: 'repository', plane: 'api', repo: 'example-org/example-repo' })
+    // Without a Gitea workspace there is no lease to read the profile with.
+    expect(instanceRoute(gitea, 'GET', '/forge/api/v1/user')).toMatchObject({ kind: 'deny', status: 403 })
+  })
+
+  it('refuses the repository settings only an administrator reads, at every tier', () => {
+    for (const rest of [
+      'hooks',
+      'hooks/1',
+      'keys',
+      'push_mirrors',
+      'actions/secrets',
+      'Actions/Variables',
+      'actions/runners'
+    ]) {
+      expect(route(`/forge/api/v1/repos/example-org/example-repo/${rest}`)).toMatchObject({ kind: 'deny', status: 403 })
+    }
+    expect(route('/forge/api/v1/repos/example-org/example-repo/actions/tasks')).toEqual({
+      kind: 'repository',
+      plane: 'api',
+      repo: 'example-org/example-repo'
+    })
   })
 })
 

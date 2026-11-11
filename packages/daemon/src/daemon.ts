@@ -7206,7 +7206,7 @@ export class Daemon {
     return this.credentialProxy ? [AZURE_DEVOPS_V1_FEATURE, AZURE_DEVOPS_HOOKS_V1_FEATURE] : []
   }
 
-  /** A proxy-only provider's lease (azure-devops-integration.md §6.1): the repository named by id, else by path, else the workspace's; a read one for a read, dropped on a 401 so the next asks the CP to refresh. */
+  /** A proxy-only provider's lease (azure-devops-integration.md §6.1): only for a repository the request names, by id or else by path; a read one for a read, dropped on a 401 so the next asks the CP to refresh. */
   private async proxyOnlyLease(agentId: string, ask: MintAsk): Promise<MintedCredential> {
     const provider = codeHostCredentials(ask.provider)?.provider
     const repositories = this.codeHostRepositories(agentId, ask.provider)
@@ -7215,7 +7215,7 @@ export class Daemon {
         ? repositories.find((row) => row.repoId === ask.repoId)
         : ask.repo !== undefined
           ? repositories.find((row) => row.repoFullName.toLowerCase() === ask.repo!.toLowerCase())
-          : repositories.find((row) => row.workspace)
+          : undefined
     if (!provider || provider === IMPLICIT_CREDENTIAL_PROVIDER || !repository) {
       throw new Error(`${ask.repo ?? `repository ${ask.repoId ?? '(none)'}`} is not authorized for this agent`)
     }
