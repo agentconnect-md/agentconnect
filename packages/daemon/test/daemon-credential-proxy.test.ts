@@ -57,6 +57,7 @@ const run = promisify(execFile)
 const GITHUB_AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const GITLAB_AGENT = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 const AZURE_AGENT = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+const GITEA_AGENT = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
 // What the daemon's own helper answers, standing in for the real one, and what the fake control plane mints.
 // Where the daemon once wrote its gh and glab token wrappers, which no session's PATH names anymore.
 const TOKEN_WRAPPER_DIR = (root: string) => join(root, 'run', 'bin')
@@ -64,6 +65,7 @@ const HELPER_TOKEN = 'ghs_repo-helper-example'
 const MINTED_GITHUB = 'ghs_minted-example'
 const MINTED_GITLAB = 'glpat_minted-example'
 const MINTED_AZURE = 'azure-minted-example'
+const MINTED_GITEA = 'gitea-minted-example'
 // The identity an Azure DevOps connection signs in as, which its grants name as the user.
 const AZURE_IDENTITY = '00000000-0000-4000-8000-0000000000a1'
 const AZURE_REPO = 'https://dev.azure.com/example-org/Example%20Project/_git/Example%20Repo'
@@ -184,6 +186,22 @@ const azureSpec = (): AgentSpec =>
     }
   }) as unknown as AgentSpec
 
+const giteaSpec = (): AgentSpec =>
+  ({
+    name: 'gt',
+    runtime: 'claude',
+    workspace: {
+      mode: 'git',
+      isolation: 'shared',
+      gitRepo: 'https://gitea.com/example-org/example-repo.git',
+      branch: 'main',
+      credential: { provider: 'gitea', repoId: '556677' },
+      additionalRepos: [
+        { provider: 'gitea', repoId: '889900', repoFullName: 'example-org/other-repo', access: 'write' }
+      ]
+    }
+  }) as unknown as AgentSpec
+
 /** Admit `spec` as the control plane would, and let its prefetch clone settle: with no control plane yet it fails before any network. */
 async function admit(d: any, agentId: string, spec: AgentSpec): Promise<any> {
   expect(await d.cpConfigApply().applyAgentUpsert({ agentId, spec })).toEqual({ ok: true })
@@ -196,7 +214,8 @@ async function admit(d: any, agentId: string, spec: AgentSpec): Promise<any> {
 const MINTS: Record<string, { username: string; token: string; repo: string }> = {
   github: { username: 'x-access-token', token: MINTED_GITHUB, repo: 'example-org/example-repo' },
   gitlab: { username: 'service-account', token: MINTED_GITLAB, repo: 'group/project' },
-  'azure-devops': { username: AZURE_IDENTITY, token: MINTED_AZURE, repo: 'example-org/Example Project/Example Repo' }
+  'azure-devops': { username: AZURE_IDENTITY, token: MINTED_AZURE, repo: 'example-org/Example Project/Example Repo' },
+  gitea: { username: 'example-bot', token: MINTED_GITEA, repo: 'example-org/example-repo' }
 }
 
 /** A control plane that mints every repository at `access`, echoing what a provider-qualified ask named. */
@@ -583,6 +602,50 @@ describe("the proxy's mint and its invalidate", () => {
     first.invalidate()
     await new Promise((resolve) => setImmediate(resolve))
     expect((await d.credentialProxyMint(c.agentId, ask)).token).toBe(second.token)
+    expect(asked).toHaveLength(2)
+  })
+})
+
+describe('a Gitea agent behind the credential proxy', () => {
+  it('leases the repository a request names by path, else the workspace, to the proxy alone', async () => {
+    const { d } = await startDaemon()
+    await admit(d, GITEA_AGENT, giteaSpec())
+    const asked = fakeControlPlane(d, 'write')
+    const workspace = await d.credentialProxyMint(GITEA_AGENT, { provider: 'gitea', plane: 'api', readOnly: true })
+    const named = await d.credentialProxyMint(GITEA_AGENT, {
+      provider: 'gitea',
+      repo: 'Example-Org/Other-Repo',
+      plane: 'git',
+      readOnly: false,
+      push: true
+    })
+    expect([workspace.token, workspace.access, named.access]).toEqual([MINTED_GITEA, 'read', 'write'])
+    expect(asked).toEqual([
+      {
+        agentId: GITEA_AGENT,
+        reason: 'helper',
+        provider: 'gitea',
+        externalRepoId: '556677',
+        consumer: 'proxy',
+        requestedAccess: 'read'
+      },
+      {
+        agentId: GITEA_AGENT,
+        reason: 'helper',
+        provider: 'gitea',
+        externalRepoId: '889900',
+        consumer: 'proxy',
+        repoFullName: 'example-org/other-repo'
+      }
+    ])
+    await expect(
+      d.credentialProxyMint(GITEA_AGENT, {
+        provider: 'gitea',
+        repo: 'example-org/unlisted',
+        plane: 'git',
+        readOnly: false
+      })
+    ).rejects.toThrow(/example-org\/unlisted is not authorized for this agent/)
     expect(asked).toHaveLength(2)
   })
 })

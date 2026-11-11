@@ -836,11 +836,44 @@ describe('handleGitCredRequest — the gitea arm (gitea-integration.md §9, §10
       giteaGitcred: { grantForAgent }
     } as unknown as DaemonWsDeps
     const conn = fakeConn()
-    const frame = gitcredFrame({ provider: 'gitea', externalRepoId: '556677', requestedAccess: 'read' })
+    const frame = gitcredFrame({
+      provider: 'gitea',
+      externalRepoId: '556677',
+      requestedAccess: 'read',
+      consumer: 'proxy'
+    })
     await handleGitCredRequest(frame, conn, deps)
     expect(grantForAgent).toHaveBeenCalledWith(PLACED_AGENT, 556677n, 'read')
     expect(mintForAgent).not.toHaveBeenCalled()
     expect(conn.replyTo).toHaveBeenCalledWith(frame, 'gitcred/grant', GRANT)
+  })
+
+  it('serves the bot token to the credential proxy and the daemon’s own Git only', async () => {
+    const grantForAgent = vi.fn(async () => GRANT)
+    const deps = {
+      agent: { get: async () => PLACED_AGENT },
+      giteaGitcred: { grantForAgent }
+    } as unknown as DaemonWsDeps
+    // An older daemon names no consumer, and the helper is the agent-facing channel: both are refused.
+    for (const consumer of [undefined, 'helper']) {
+      const conn = fakeConn()
+      const payload = { provider: 'gitea', externalRepoId: '556677', ...(consumer ? { consumer } : {}) }
+      await handleGitCredRequest(gitcredFrame(payload), conn, deps)
+      expect(conn.sendError).toHaveBeenCalledWith(
+        expect.anything(),
+        'SCOPE_DENIED',
+        'gitea credentials are served to the credential proxy only',
+        false
+      )
+      expect(conn.replyTo).not.toHaveBeenCalled()
+    }
+    expect(grantForAgent).not.toHaveBeenCalled()
+    for (const consumer of ['proxy', 'daemon']) {
+      const conn = fakeConn()
+      const frame = gitcredFrame({ provider: 'gitea', externalRepoId: '556677', consumer })
+      await handleGitCredRequest(frame, conn, deps)
+      expect(conn.replyTo).toHaveBeenCalledWith(frame, 'gitcred/grant', GRANT)
+    }
   })
 
   it('routes gitea_hook_reply and gitea_effect through the enabled gitea hook', async () => {
@@ -854,13 +887,25 @@ describe('handleGitCredRequest — the gitea arm (gitea-integration.md §9, §10
     } as unknown as DaemonWsDeps
     const conn = fakeConn()
     await handleGitCredRequest(
-      gitcredFrame({ provider: 'gitea', purpose: 'gitea_hook_reply', hookId: HOOK_ID, externalRepoId: '556677' }),
+      gitcredFrame({
+        provider: 'gitea',
+        purpose: 'gitea_hook_reply',
+        hookId: HOOK_ID,
+        externalRepoId: '556677',
+        consumer: 'daemon'
+      }),
       conn,
       deps
     )
     expect(grantForHookReply).toHaveBeenCalledWith(ORG_ID, 556677n)
     await handleGitCredRequest(
-      gitcredFrame({ provider: 'gitea', purpose: 'gitea_effect', hookId: HOOK_ID, externalRepoId: '556677' }),
+      gitcredFrame({
+        provider: 'gitea',
+        purpose: 'gitea_effect',
+        hookId: HOOK_ID,
+        externalRepoId: '556677',
+        consumer: 'daemon'
+      }),
       conn,
       deps
     )
@@ -868,7 +913,13 @@ describe('handleGitCredRequest — the gitea arm (gitea-integration.md §9, §10
     expect(conn.sendError).not.toHaveBeenCalled()
     // A hook on another repository, or of another kind, is a fence — refused rather than ignored.
     await handleGitCredRequest(
-      gitcredFrame({ provider: 'gitea', purpose: 'gitea_hook_reply', hookId: HOOK_ID, externalRepoId: '999' }),
+      gitcredFrame({
+        provider: 'gitea',
+        purpose: 'gitea_hook_reply',
+        hookId: HOOK_ID,
+        externalRepoId: '999',
+        consumer: 'daemon'
+      }),
       conn,
       deps
     )
@@ -883,7 +934,7 @@ describe('handleGitCredRequest — the gitea arm (gitea-integration.md §9, §10
   it('denies every gitea request on a control plane without the gitea arm', async () => {
     const deps = { agent: { get: async () => PLACED_AGENT }, github: {} } as unknown as DaemonWsDeps
     const conn = fakeConn()
-    await handleGitCredRequest(gitcredFrame({ provider: 'gitea' }), conn, deps)
+    await handleGitCredRequest(gitcredFrame({ provider: 'gitea', consumer: 'proxy' }), conn, deps)
     expect(conn.sendError).toHaveBeenCalledWith(
       expect.anything(),
       'SCOPE_DENIED',

@@ -426,6 +426,7 @@ export class GitCredentialCache {
       externalRepoId: repoId,
       purpose,
       ...(hookId !== undefined ? { hookId } : {}),
+      consumer: 'daemon',
       ...(forceRefresh ? { forceRefresh: true } : {})
     })
     if (forceRefresh) this.refreshPosts.delete(key)

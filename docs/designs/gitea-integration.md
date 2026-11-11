@@ -158,7 +158,7 @@ Every Gitea request the product makes uses the connection's token:
 | Control Plane provisioner              | repository refresh, webhook install/repair/test/delete   |
 | Control Plane membership authorization | `GET /repos/:owner/:repo/collaborators/:user/permission` |
 | Control Plane run projection           | `POST /repos/:owner/:repo/statuses/:sha`                 |
-| Daemon Git credential helper           | clone, fetch, push over HTTPS                            |
+| Daemon credential proxy and own Git    | clone, fetch, push over HTTPS                            |
 | Daemon final poster and effect broker  | comments, reviews, reactions, controlled mutations       |
 
 The daemon never stores the token. It receives it through the existing
@@ -166,9 +166,9 @@ gitcred v2 grant path as a short authorization lease, exactly as it receives a
 GitLab PAT today; the lease TTL, the per-invocation helper response, and the
 "never in argv, remote URL, `.git/config`, or a shell environment snapshot"
 rules of §13.2 apply unchanged. The GitLab split between a read token in the
-helper and an `api` token confined to the broker does not exist here: the
-helper and the broker are handed the same token, which is the GitHub App
-posture, not the GitLab one.
+helper and an `api` token confined to the broker does not exist here: the proxy,
+the daemon's own Git and the broker are handed the same token. The agent-facing
+helper is never handed it (§9).
 
 ### 4.3 Replacement and Failure
 
@@ -243,8 +243,7 @@ with provider `gitea` exactly as §8.3 describes for GitLab, including the
 tier is served by the same token, so a tier is an AgentConnect clamp only,
 never a provider role. The daemon's credential proxy enforces the git tier by
 service (github-app-git-credentials.md, Phase 2): a push below `write` is
-refused before it reaches Gitea. Only with the proxy off does a session hold
-the token itself, so a read or comment grant can push there; with it on, a
+refused before it reaches Gitea. No session holds the token itself, and a
 session that does not reach the proxy holds no Gitea credential at all.
 
 ## 6. Repository Selection and Provisioning
@@ -554,9 +553,17 @@ repository's grant from satisfying another. The grant echoes provider,
 numeric repository id, path, username, access, credential epoch, host, and
 lease TTL, and the consumer verifies every field. The token is presented as
 the HTTPS password with the bot's username; Gitea accepts either form.
-Only daemon-run git asks the helper for this token. An agent's session holds
-the credential proxy's placeholder, and the proxy presents this token per
-request (github-app-git-credentials.md, Phase 2).
+The token is proxy-only, as Azure DevOps's is
+([§6.1](azure-devops-integration.md#61-proxy-only)). The Control Plane serves it
+only to a request that names the credential proxy or the daemon's own Git, and
+the daemon never hands it to the agent-facing helper or through a shim's
+tunnel. Daemon-run Git on the owning daemon's own machine asks the helper under
+the daemon's capability. Daemon-run Git inside an execution environment (local
+SRT or VM, a Cloud pod, a remote executor) holds the placeholder and reaches
+Gitea through that environment's proxy route
+([Unified managed Git network operations](github-app-git-credentials.md#unified-managed-git-network-operations)).
+An agent's session holds the placeholder too, and the proxy presents this token
+per request after checking the repository and the agent's tier.
 
 There is no CLI wrapper. The agent reads issues, pull requests, diffs, and
 statuses through the provider read tools and mutates through the effect
@@ -879,11 +886,12 @@ The bot token is broad by construction — `admin` on every bound repository —
 and the design answers that with scope, not with splitting: the token is
 sealed at rest, leaves the Control Plane only as a short lease over the
 authenticated daemon WebSocket, is never returned by an API or written to a
-diagnostic, and the daemon presents it only through the credential helper and
-the broker. A compromised agent process therefore has what a GitHub App
-installation token would give it on the same repository, plus repository
-settings. The Console states this trade-off on the connect card rather than
-implying a narrower posture. Whoever can enroll a daemon and place an agent on
+diagnostic, and the daemon presents it only through its credential proxy, its
+own Git on its machine, and the broker (§9). No agent process or Git inside an
+execution environment holds it. A compromised agent process reaches only the
+repositories it is authorized for, at its tier, through the proxy. The Console
+states this trade-off on the connect card rather than implying a narrower
+posture. Whoever can enroll a daemon and place an agent on
 it can obtain the bot token too
 ([placement trust](github-app-git-credentials.md#trust-model)), so what the
 bot can reach is the real bound.

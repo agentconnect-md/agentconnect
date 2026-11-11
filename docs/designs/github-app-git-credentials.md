@@ -20,8 +20,8 @@
 >
 > Credential-degradation telemetry and the corresponding web warnings remain
 > planned. [Unified managed Git network operations](#unified-managed-git-network-operations)
-> has an implemented Azure-first path inside execution environments. Other
-> providers, scoped source operations and the final host-side decision remain
+> has an implemented path for Azure DevOps and Gitea inside execution environments.
+> GitHub and GitLab, scoped source operations and the final host-side decision remain
 > later deliveries. Controlled transport tests exercise real Git; they do not
 > establish live Cloud/VM/executor validation or the required capacity results.
 >
@@ -1092,8 +1092,9 @@ route readiness replaces the blanket environment bans in
 [Azure DevOps §6.1](azure-devops-integration.md#61-proxy-only). Controlled transport
 tests exercise real Git clone, fetch and push through the shim listener and
 codehost tunnel, including a direct bundle download and authorization refusals.
-These fixtures do not establish the live environment matrix below. Other providers
-remain on their existing daemon-Git path, and the capacity gate has not been measured.
+These fixtures do not establish the live environment matrix below. Gitea takes the
+same path through the same `proxyOnly` selector. GitHub and GitLab remain on their
+existing daemon-Git path, and the capacity gate has not been measured.
 
 #### Decision and scope
 
@@ -1221,13 +1222,13 @@ An agent is never classified as an Azure agent or a GitHub agent for routing. A
 GitHub primary workspace can have an Azure additional repository, and vice versa.
 Scratch workspaces with only additional repositories follow the same rule.
 
-| Operation in the same agent                                 | First delivery                                                                 | Final state                                                           |
-| ----------------------------------------------------------- | ------------------------------------------------------------------------------ | --------------------------------------------------------------------- |
-| In-environment daemon Git targeting Azure                   | Shared proxy preparation                                                       | Same path                                                             |
-| In-environment daemon Git targeting GitHub, GitLab or Gitea | Existing helper path, unchanged                                                | Shared proxy preparation after capacity gate                          |
-| Git on the owning daemon's own machine, including Azure     | Existing helper path, unchanged                                                | Separate final decision after full-clone measurement                  |
-| Agent runtime Git targeting either repository               | Existing multi-provider proxy path, verified in the newly enabled environments | Same path                                                             |
-| In-environment private managed skill/source Git             | Existing scoped credential-window path                                         | Proxy path preserving the window's subject, repository set and access |
+| Operation in the same agent                             | First delivery                                                                 | Final state                                                           |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------ | --------------------------------------------------------------------- |
+| In-environment daemon Git targeting Azure or Gitea      | Shared proxy preparation                                                       | Same path                                                             |
+| In-environment daemon Git targeting GitHub or GitLab    | Existing helper path, unchanged                                                | Shared proxy preparation after capacity gate                          |
+| Git on the owning daemon's own machine, including Azure | Existing helper path, unchanged                                                | Separate final decision after full-clone measurement                  |
+| Agent runtime Git targeting either repository           | Existing multi-provider proxy path, verified in the newly enabled environments | Same path                                                             |
+| In-environment private managed skill/source Git         | Existing scoped credential-window path                                         | Proxy path preserving the window's subject, repository set and access |
 
 The first delivery can select proxy preparation at the common operation seam using
 the target provider's existing `proxyOnly` contract. Do not inspect whether the
@@ -1236,6 +1237,13 @@ add a second provider rollout flag. The selector is temporary: once ordinary
 managed workspace Git inside execution environments is migrated, every such target
 takes the shared path. The owning daemon's host-side path remains deferred.
 The provider's token-release restrictions remain a separate contract.
+
+Gitea joins the first delivery instead of waiting for the capacity gate. Its one token
+is the organization's bot token, which reaches every repository the bot administers
+whatever the agent's grant, and its tiers are an AgentConnect clamp rather than a
+provider role ([Gitea §5](gitea-integration.md#5-resource-model)). A GitHub token is
+one repository for an hour, and a GitLab token is the agent's own account. The gate
+still applies before GitHub and GitLab move, and its measurement includes Gitea's clones.
 
 A GitHub operation may still carry its existing daemon capability during this
 stage. That is transitional exposure for that operation, not permission to retrieve
@@ -1410,7 +1418,8 @@ resource/concurrency bounds; this documentation change launches no load test.
   1–3, including Azure canonical clones and host-strategy Git.
 - Azure read grants reject receive-pack discovery and push; an unauthorized repository,
   alternate supported hostname, crafted path or redirect cannot escape the grant.
-  In the first delivery, non-Azure daemon Git retains its existing authorization.
+  Gitea read grants are refused the same way. In the first delivery, GitHub and
+  GitLab daemon Git retain their existing authorization.
 - Captured migrated Git argv/env/config and helper output contain no upstream token
   or token-minting capability. The fake remote receives the token only after proxy
   authorization. A concurrent same-user probe sees at most the scoped placeholder
