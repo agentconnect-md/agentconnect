@@ -301,6 +301,48 @@ export interface PlatformCanvasEdit {
   markdown?: string
 }
 
+/** One open task on a channel's Work page (assistant-mode.md §5.19): only what the channel was already told. */
+export interface WorkPageTask {
+  kind: 'task' | 'follow-up' | 'approved proposal'
+  status: 'running' | 'idle' | 'waiting' | 'next'
+  /** A follow-up's next check, while one is scheduled. */
+  nextCheck?: number
+  title: string
+  /** The platform user who asked, when one is known. */
+  askerId?: string
+  /** The thread it was asked or last discussed in. */
+  thread?: string
+}
+
+/** One scheduled task that posts into the channel. */
+export interface WorkPageSchedule {
+  label: string
+  /** Its next run on its own clock, as its anchor writes the time; absent when none is due. */
+  nextRun?: string
+  /** The thread of its latest anchor. */
+  thread?: string
+}
+
+/** A channel's Work page as core composes it; the platform renders and attaches it. */
+export interface WorkPage {
+  tasks: WorkPageTask[]
+  schedules: WorkPageSchedule[]
+  /** Tasks past the page's limit, counted. */
+  more?: number
+  /** The agent's console page. */
+  consoleUrl?: string
+  updatedAt: number
+}
+
+/** A page the platform keeps, by the ids it returned. */
+export interface WorkPageRef {
+  canvasId: string
+  bookmarkId?: string
+}
+
+/** How a write settled: kept, not kept in this conversation, or removed by a person. */
+export type WorkPageResult = ({ state: 'live' } & WorkPageRef) | { state: 'skipped' } | { state: 'deleted' }
+
 /**
  * The Layer-1 contract every chat-platform connection satisfies.
  *
@@ -427,6 +469,10 @@ export interface PlatformConnection {
   updateCanvas?(canvasId: string, edits: PlatformCanvasEdit[]): Promise<void>
   /** Who a canvas or a list reaches, so a write to it is judged by the conversations it is in. */
   documentReach?(documentId: string): Promise<PlatformDocumentReach>
+  /** Write a channel's read-only Work page (assistant-mode.md §5.19), in place when `stored` names one. */
+  putWorkPage?(channel: string, page: WorkPage, stored?: WorkPageRef): Promise<WorkPageResult>
+  /** Take a Work page down, best effort. */
+  removeWorkPage?(channel: string, stored: WorkPageRef): Promise<void>
 }
 
 /** §7.4 relay-ingress strategy: how one platform notes a relay-delivered `im` before core's gates and shapes it once they pass. */

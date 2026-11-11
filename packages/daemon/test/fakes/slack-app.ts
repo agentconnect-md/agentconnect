@@ -78,7 +78,9 @@ export function fakeSlackAppFactory(identity: FakeSlackIdentity = {}): SlackAppF
           create: async () => ({ canvas_id: 'F_FAKE_CANVAS' }),
           getContent: async () => ({ content: '' }),
           edit: ok,
-          sections: { lookup: async () => ({ sections: [] }) }
+          sections: { lookup: async () => ({ sections: [] }) },
+          access: { set: ok },
+          delete: ok
         },
         bookmarks: { list: async () => ({ bookmarks: [] }), add: async () => ({ bookmark: {} }), remove: ok },
         slackLists: {

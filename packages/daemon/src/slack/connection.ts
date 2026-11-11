@@ -46,7 +46,8 @@ import type { JoinedChannel } from '../messages/channel-intro.js'
 import type { Logger } from '../log.js'
 import { isSendQueueTimeout, PlatformSendQueue } from '../platforms/send-queue.js'
 import { markNotJoined } from '../platforms/not-joined.js'
-import { slackMessageUrl } from '../platforms/slack/permalink.js'
+import { slackMessageUrl, slackThreadUrl } from '../platforms/slack/permalink.js'
+import { renderWorkPage, WORK_PAGE_TITLE, workPageThreads } from '../platforms/slack/work-page.js'
 import { SLACK_CODE_CHANNEL_CONTEXT, SLACK_CONVERSATION_CONTEXT } from '../platforms/slack/standing-context.js'
 import { CodeTasksViews, SLACK_TASKS_VIEW_KEY, type CodeTasksSnapshot } from '../platforms/slack/code-tasks.js'
 import type {
@@ -81,6 +82,9 @@ import type {
   InteractionActor,
   PlatformCanvas,
   PlatformCanvasEdit,
+  WorkPage,
+  WorkPageRef,
+  WorkPageResult,
   PlatformDocumentReach,
   PlatformChannelHistoryOptions,
   PlatformChannelHistoryPage,
@@ -788,6 +792,8 @@ export type AppLike = {
       getContent: (a: unknown) => Promise<{ content?: string }>
       edit: (a: unknown) => Promise<unknown>
       sections: { lookup: (a: unknown) => Promise<{ sections?: { id?: string }[] }> }
+      access: { set: (a: unknown) => Promise<unknown> }
+      delete: (a: unknown) => Promise<unknown>
     }
     bookmarks: {
       list: (a: unknown) => Promise<{ bookmarks?: { id?: string; title?: string; link?: string; emoji?: string }[] }>
@@ -920,6 +926,9 @@ function missingScopesFrom(err: unknown): string[] {
 function isMissingCustomizeScope(err: unknown): boolean {
   return missingScopesFrom(err).includes('chat:write.customize')
 }
+
+/** The errors that say a canvas is gone, which a person deleting it leaves behind. */
+const WORK_PAGE_GONE = new Set(['canvas_not_found', 'canvas_deleted', 'file_not_found', 'file_deleted'])
 
 function slackApiErrorCode(err: unknown): string | undefined {
   if (!err || typeof err !== 'object') return undefined
@@ -3583,6 +3592,88 @@ export class SlackConnection implements PlatformConnection {
       workspace: file.org_or_workspace_access !== undefined && file.org_or_workspace_access !== 'none',
       complete: file.has_more_shares !== true && file.skipped_shares !== true && !unlisted
     }
+  }
+
+  /** Write a channel's read-only Work page (assistant-mode.md §5.19): a canvas shared read-only with the channel and pinned as a bookmark. */
+  async putWorkPage(channel: string, page: WorkPage, stored?: WorkPageRef): Promise<WorkPageResult> {
+    const links = new Map<string, string>()
+    for (const thread of workPageThreads(page)) {
+      const url = slackThreadUrl(this.workspaceUrl, channel, thread)
+      if (url) links.set(thread, url)
+    }
+    const document_content = { type: 'markdown' as const, markdown: renderWorkPage(page, links) }
+    if (stored) {
+      try {
+        await this.queue.enqueue(() =>
+          this.app.client.canvases.edit({
+            canvas_id: stored.canvasId,
+            changes: [{ operation: 'replace', document_content }]
+          })
+        )
+        return { state: 'live', ...stored }
+      } catch (err) {
+        if (WORK_PAGE_GONE.has(slackApiErrorCode(err) ?? '')) return { state: 'deleted' }
+        throw err
+      }
+    }
+    // Only an internal channel gets one; a code channel's Tasks view already shows its work.
+    const info = await this.getChannelInfo(channel)
+    if (info.isIm || info.isMpim || info.externalReason || (await this.codeChannel(channel)).code)
+      return { state: 'skipped' }
+    let canvasId: string | undefined
+    try {
+      canvasId = (
+        await this.queue.enqueue(() => this.app.client.canvases.create({ title: WORK_PAGE_TITLE, document_content }))
+      ).canvas_id
+    } catch (err) {
+      // A free workspace creates only a channel's own canvas; one the channel already has stays the people's.
+      try {
+        canvasId = (
+          await this.queue.enqueue(() =>
+            this.app.client.conversations.canvases.create({
+              channel_id: channel,
+              title: WORK_PAGE_TITLE,
+              document_content
+            })
+          )
+        ).canvas_id
+      } catch (inner) {
+        if (slackApiErrorCode(inner) === 'channel_canvas_already_exists') return { state: 'skipped' }
+        throw err
+      }
+      if (!canvasId) throw new Error('Slack channel canvas creation returned no canvas_id')
+      return { state: 'live', canvasId }
+    }
+    if (!canvasId) throw new Error('Slack canvas creation returned no canvas_id')
+    const created = canvasId
+    try {
+      await this.app.client.canvases.access.set({ canvas_id: created, access_level: 'read', channel_ids: [channel] })
+      const link = (await this.canvasLink(created)).url
+      if (!link) throw new Error('Slack returned no link for the Work canvas')
+      const res = await this.app.client.bookmarks.add({
+        channel_id: channel,
+        title: WORK_PAGE_TITLE,
+        type: 'link',
+        link,
+        emoji: ':clipboard:'
+      })
+      return { state: 'live', canvasId: created, ...(res.bookmark?.id ? { bookmarkId: res.bookmark.id } : {}) }
+    } catch (err) {
+      // A canvas nobody can reach is no page; the next change tries again from the start.
+      await this.app.client.canvases.delete({ canvas_id: created }).catch(() => undefined)
+      throw err
+    }
+  }
+
+  /** Take a Work page down: its bookmark, then the canvas; each is best effort. */
+  async removeWorkPage(channel: string, stored: WorkPageRef): Promise<void> {
+    if (stored.bookmarkId)
+      await this.app.client.bookmarks
+        .remove({ channel_id: channel, bookmark_id: stored.bookmarkId })
+        .catch((err) => this.deps.log?.debug(`slack: work page bookmark removal failed: ${(err as Error).message}`))
+    await this.app.client.canvases.delete({ canvas_id: stored.canvasId }).catch((err: unknown) => {
+      if (!WORK_PAGE_GONE.has(slackApiErrorCode(err) ?? '')) throw err
+    })
   }
 
   /** Apply edits to a canvas (`canvases.edit`, `canvases:write`). */
