@@ -109,6 +109,8 @@ export interface AssistantTasksHost {
 export interface TaskHome {
   /** The proposal's own card, when it sits at the place's top level: its thread is the home. */
   card?: string
+  /** The card became the task's root: record it in the place's conversation, which holds no row for a card. */
+  cardRooted?(by: { name: string | null }): Promise<void>
   /** Post the root a task with no card to hold starts under; undefined when it did not post or may not have. */
   postRoot(by: { name: string | null }): Promise<string | undefined>
   /** The place is one person's own conversation with the agent, as a member's webchat coordinator is. */
@@ -241,6 +243,9 @@ export class AssistantTasks {
       )
       if (opened.kind === 'refused') return { kind: 'lost' }
       if (opened.kind === 'opened') {
+        await home.cardRooted?.(by).catch((err: unknown) => {
+          this.host.log.warn(`assistant task ${draft.id}: its card's root was not recorded: ${(err as Error).message}`)
+        })
         this.runAtHome(draft, by, item, parent, home.card, opened.key, home.isDm === true)
         return { kind: 'started' }
       }

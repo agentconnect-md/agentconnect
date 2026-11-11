@@ -419,6 +419,49 @@ describe('assistant mode under auto (auto-session-mode.md §3.4)', () => {
     await daemon.stop()
   })
 
+  it('posts a getting-to-know round’s cards at the top level of a coordinator’s room, and under the reply elsewhere (§6.9.2)', async () => {
+    const { daemon, d, scope } = await boot()
+    const coordinator = await d.store.resolveAppendCoordinate('bot-a', 'C1', scope, 1, 'coordinator')
+    const key = sessionKey('slack', 'C1', coordinator, 'bot-a', scope)
+    const session = {
+      key,
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: coordinator,
+      transportScope: scope,
+      acpSessionId: 'acp-coordinator',
+      sessionId: 'sid-coordinator',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    }
+    await d.store.upsertSession(session)
+    const held = (thread: string) => [
+      {
+        target: { platform: 'slack', channel: 'C1' },
+        source: { platform: 'slack', channel: 'C1', thread, transportScope: scope, sessionKey: key }
+      }
+    ]
+    const heldInRound = vi.spyOn(d.store.assistantDrafts, 'heldInRound')
+    const released = vi.spyOn(d.drafts, 'releaseRound').mockResolvedValue(undefined)
+    vi.spyOn(d, 'proposalPlace').mockResolvedValue({ place: { integrationId: 'int-bot-a', channel: 'C1' } })
+    // A coordinator's room: each card is a top-level message, whose own thread its approved task holds.
+    heldInRound.mockResolvedValue(held(coordinator))
+    await d.releaseRoundCards('bot-a', 'round-1', '1700000400.000001')
+    expect(released.mock.calls.at(-1)).toEqual(['bot-a', 'round-1', undefined])
+    // A place with no coordinator keeps its cards under the round's reply.
+    heldInRound.mockResolvedValue(held('append:1'))
+    await d.releaseRoundCards('bot-a', 'round-2', '1700000400.000001')
+    expect(released.mock.calls.at(-1)).toEqual(['bot-a', 'round-2', '1700000400.000001'])
+    // So does one person's own conversation, where an approved proposal gets no thread.
+    await d.store.setSessionClassification(key, { conversationKind: 'dm' })
+    heldInRound.mockResolvedValue(held(coordinator))
+    await d.releaseRoundCards('bot-a', 'round-3', '1700000400.000001')
+    expect(released.mock.calls.at(-1)).toEqual(['bot-a', 'round-3', '1700000400.000001'])
+    await daemon.stop()
+  })
+
   it('offers an approved proposal a thread only in an internal room its coordinator runs (§6.9.1)', async () => {
     const { daemon, d, scope } = await boot()
     const coordinator = await d.store.resolveAppendCoordinate('bot-a', 'C1', scope, 1, 'coordinator')
@@ -449,8 +492,21 @@ describe('assistant mode under auto (auto-session-mode.md §3.4)', () => {
       cardTs: '1700000100.000100',
       cardThread: ''
     }
-    // A card at the top level is the root itself.
-    expect(await d.taskHomeFor(draft, parent)).toMatchObject({ card: '1700000100.000100' })
+    // A card at the top level is the root itself, recorded in the coordinator's conversation once it becomes one.
+    const carded = await d.taskHomeFor(draft, parent)
+    expect(carded).toMatchObject({ card: '1700000100.000100' })
+    await carded.cardRooted({ name: 'Grace' })
+    expect(
+      await d.store.threadRootInSession(
+        {
+          transcriptChannel: transcriptChannelKey('C1', scope),
+          agentId: 'bot-a',
+          coordinate: coordinator,
+          sessionKey: parent.key
+        },
+        '1700000100.000100'
+      )
+    ).toMatchObject({ sender: 'bot-a', text: '**I want to check the findings.**\n\nApproved by Grace.' })
     // One in a thread, one from before its thread was recorded, and one sent to a member's DM are not.
     for (const other of [
       { cardThread: '1700000050.000050' },

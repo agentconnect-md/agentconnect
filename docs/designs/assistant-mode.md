@@ -1735,7 +1735,9 @@ under the introduction works. For a getting-to-know task, `propose` changes in f
 2. **Under the introduction.** The round's reply posts at the place's top level. The daemon holds
    the round's cards until that reply has posted, then cards them in its thread in the order
    proposed; a round whose reply never posts has its cards posted where the place's cards go
-   otherwise.
+   otherwise. Under a coordinator the cards go at the place's top level after the reply instead,
+   so that an approved one answers in its own card's thread
+   ([auto-session-mode.md](auto-session-mode.md) §6.9.2).
 3. **A follow-up form.** `propose({ sentence, why, followUp: { title, doneWhen, nextCheck? } })`,
    in place of `task`. Approving it takes that follow-up of the place with the approver as its
    asker, the confirmation `followUp` requires; it runs no task and counts against no limit, and
@@ -5246,3 +5248,9 @@ message, in either place, shows the approved work and not the framing the model 
 root carries the footer of the thread under it, a message delivered into a session by its own agent
 is drawn as a delivered message and folded, and a coordinator's posts on a platform are recorded in
 its conversation, so its page shows an introduction and a root and their threads open.
+
+**Ninety-eighth revision (2026-11-11)**: under a coordinator, a getting-to-know round's proposal
+cards post at the place's top level after the introduction, not in its thread
+([auto-session-mode.md](auto-session-mode.md) §6.9.2). An approved one then answers in its own
+card's thread, with no separate root and no link back to a card. Other places keep the thread under
+the reply.

@@ -683,11 +683,11 @@ a coordinator: an internal room on a platform with approval cards, where a messa
 its thread, and a member's webchat coordinator conversation. A platform 1:1 DM and a platform
 without cards run it as before. The follow-up form runs no task and is unchanged.
 
-| Where the proposal's card is                                                                                                                                                                                  | The task's home                                                                 |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| At the place's top level, as a check's proposal is in a coordinator's conversation, with no task holding its thread                                                                                           | The card's thread: the card is the root                                         |
-| In a thread (under a getting-to-know introduction), at the top level with a task already holding its thread, or on no message of the place (webchat's pending requests, Activity, a DM the card fell back to) | A root the daemon posts at the place's top level when the task starts           |
-| An external place, a place with no coordinator, or a root that could not be posted                                                                                                                            | None: it runs as today, on a `subsession:` coordinate that reports to its place |
+| Where the proposal's card is                                                                                                                                                                                      | The task's home                                                                 |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| At the place's top level, as a check's proposal is in a coordinator's conversation, with no task holding its thread                                                                                               | The card's thread: the card is the root                                         |
+| In a thread (a place's long session that lives in one), at the top level with a task already holding its thread, or on no message of the place (webchat's pending requests, Activity, a DM the card fell back to) | A root the daemon posts at the place's top level when the task starts           |
+| An external place, a place with no coordinator, or a root that could not be posted                                                                                                                                | None: it runs as today, on a `subsession:` coordinate that reports to its place |
 
 - **The root the daemon posts** is one message as the agent: the proposal's sentence, who approved
   it, and a link to its card where the card is a message of the place. It is not a turn of the
@@ -764,21 +764,34 @@ without cards run it as before. The follow-up form runs no task and is unchanged
 
 #### 6.9.2 Getting-to-know cards under a coordinator
 
-assistant-mode.md §5.13 holds a report round's cards for the thread of the round's first reply. The
-daemon read that from the turn's own reply. A coordinator's turn text is never posted (§4.3): it
-answers the report with `replyToMessage`, which the hold did not see, so the cards posted at the
-place's top level. **Fixed, ahead of the rest of this section:** the `replyToMessage` that answers a
-getting-to-know report is the round's reply, and the cards go in the thread it landed in, its own
-at the root or the one it was posted in.
+assistant-mode.md §5.13 holds a report round's cards until the round's reply has posted, and then
+cards them in that reply's thread. Under a coordinator they go at the place's top level instead,
+after the introduction, in the order proposed. **Built.**
 
-With §6.9.1 and this fix, the channel above gets two top-level messages: the introduction, with
-the cards in its thread, and one root for the approved proposal, with its result and every reply
-in that thread.
+A card in the introduction's thread can never be a home (§6.9.1), so approving one posted a root
+elsewhere in the channel that linked back to the card, and the card could only say its task answers
+"in a thread of the conversation". A card at the top level is the root itself: approving it starts
+the task in the card's own thread, the card says so, and nothing else is posted. The cost is the
+channel's top level: a join shows the introduction and up to three cards where it showed one
+message, and a card that was denied or expired stays there as one line. Of the five messages the
+channel above saw, the introduction and the two cards remain; the result and every reply to it are
+in the approved card's thread.
+
+- **Which places.** Where an approved proposal gets a home: a coordinator's room that is not one
+  person's direct conversation. Every other place keeps §5.13's thread under the reply.
+- **What the daemon reads the reply for.** The `replyToMessage` that answers a getting-to-know
+  report is the round's reply, since a coordinator's turn text is never posted (§4.3). The cards
+  still wait for it, so the introduction comes first, and its thread is still what the task's row
+  shows (below).
+- **The card as a root in the console.** A card is no row of the conversation. When it becomes a
+  root, the daemon records one for it under the card's id, saying what a posted root says: the
+  proposal's sentence and who approved it. The coordinator's page then shows the root and its
+  thread (§6.9.5).
 
 **Shown with a home (built).** The thread of that first reply is also recorded on the
 getting-to-know task's row (`shownThread`, on the wire `shownThreadId`), for display only: the introduction's own thread for a join, the asker's thread for a
 requested one. The console then draws the task as one with a home (§6.9.5), and its row opens that
-thread: the introduction, the cards and the replies. The thread is not attached to the task, which
+thread: the introduction and its replies. The thread is not attached to the task, which
 ended with its one check and takes no message. It stays unowned, so a reply there reaches the
 coordinator (§7), which holds the report. The row keeps it in a field apart from its attached
 threads, so routing, `listTasks`' "thread attached", `taskParentSessionId` and the 7-day close

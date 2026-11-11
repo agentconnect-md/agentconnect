@@ -1742,8 +1742,10 @@ long session, which introduces the agent once and offers at most three ways it c
   would have opened it. One that became shared with another organization while the getting-to-know task ran
   is told to post nothing about it.
 - **Its offers.** On Slack each offer is a proposal card (see "Assistant-mode proposals"), at most
-  three, posted in the thread under the introduction in the order offered once the introduction has
-  posted; if no introduction posts, the cards go where the conversation's cards go otherwise. Only
+  three, posted in the order offered once the introduction has posted: in a channel in Auto
+  mode at the channel's top level, where approving one starts its work in that card's thread, and
+  elsewhere in the thread under the introduction. If no introduction posts, the cards go where the
+  conversation's cards go otherwise. Only
   the round that brings the report may offer cards. Something in flight, or something that recurs
   and is worth checking on a schedule, is offered as a follow-up to take, always with its first
   check, since nothing else would wake it; one offered without is refused. On a platform without
