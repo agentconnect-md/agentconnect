@@ -181,10 +181,16 @@ const READ_TOOLS = new Set(['recall'])
 /** The place tools that act for one person's request, so in a batch each call names that person's message by `messageId`. */
 export const COORDINATOR_MESSAGE_TOOLS: ReadonlySet<string> = new Set(['followUp', 'getToKnow', 'remind'])
 
-/** A place tool as the coordinator is offered it: one acting for a person names their message. */
+/** A place tool as the coordinator is offered it: one acting for a person names their message, and an offer may name the one it answers. */
 function placeTool(tool: ToolDescriptor): ToolDescriptor {
   const schema = tool.inputSchema
-  if (!COORDINATOR_MESSAGE_TOOLS.has(tool.name) || 'oneOf' in schema) return tool
+  if ('oneOf' in schema) return tool
+  // A getting-to-know report round's proposals answer no message, so only an offer names one (assistant-mode.md §5.10).
+  if (tool.name === 'propose') {
+    const messageId = str('For an offered follow-up: id of the delivered channel message it answers, copied exactly.')
+    return { ...tool, inputSchema: obj({ ...schema.properties, messageId }, schema.required) }
+  }
+  if (!COORDINATOR_MESSAGE_TOOLS.has(tool.name)) return tool
   const messageId = str('Id of the delivered channel message whose sender asked for this, copied exactly.')
   return {
     ...tool,

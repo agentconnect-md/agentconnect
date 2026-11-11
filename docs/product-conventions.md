@@ -1443,6 +1443,12 @@ check then, never an action. Before restating it lists its conversation's tasks,
 follow-up there already covers the request it offers to send that one the change instead of taking
 a second. The person who confirmed a follow-up is its asker.
 
+When the agent itself thinks something is worth following up and nobody asked, it does not end its
+reply with a question to confirm. On Slack, in a conversation confirmed internal, it offers the
+follow-up as a proposal card instead (see "Assistant-mode proposals"), and approving the card takes
+it, with whoever approved it as its asker, just as confirming it there would. Elsewhere it asks in
+its reply as above.
+
 A follow-up may also watch one pull request, merge request or issue, named by its URL when it is
 taken or later by one of its checks: one on GitHub, or one in a GitLab project the organization has
 bound. A change on it then wakes the follow-up early (see
@@ -1853,10 +1859,19 @@ as a task of that conversation.
 
 A check that finds something worth doing asks for approval with `propose`: one plain sentence
 ("I want to do X because Y"), the reason, and the work it would carry out once approved, such
-as "rebase PR #12 onto main and push". A check proposes at most once and runs nothing itself. The
-only other session offered `propose` is a conversation's long session on Slack, on the round a first
-look's report arrives in, at most three times (see "Assistant-mode getting-to-know task"); no agent outside
+as "rebase PR #12 onto main and push". A check proposes at most once and runs nothing itself. A
+conversation's long session on Slack is also offered `propose` on the round a first look's report
+arrives in, at most three times (see "Assistant-mode getting-to-know task"). No agent outside
 assistant mode is offered it.
+
+On Slack, any turn of a conversation, a coordinator's and a thread's task included, may also offer
+a follow-up nobody asked for, at most once a turn and only as a follow-up to take. Its card is
+posted after the turn's reply, in the thread the turn replied in, or at the conversation's top level
+when it replied there; a turn that ended without a reply, or that a restart cut short, still gets
+its card there. Approving it takes the follow-up of that conversation, reporting in that thread, as
+one taken with `followUp` in that turn would. In a conversation that is not confirmed internal, or
+has no approval cards, the offer is refused and the agent asks in its reply. Such an offer serves
+no other follow-up, so Activity names none for it.
 
 Instead of work to carry out, a proposal may offer a follow-up to take: what it would follow up,
 what counts as done and, optionally, when to check first and what it would watch. Approving it takes
@@ -1903,7 +1918,8 @@ refused and never runs. A getting-to-know task's proposals are the exception to 
 since a getting-to-know task ends after its one read by design. When a restart or handover cuts the approved proposal short before it reports, it is
 never run again: the conversation is told once that it is not sure this went through and should
 check, and the card says the same. Each step (approved, denied, expired, reported back, ended
-without reporting, uncertain) is recorded on the follow-up.
+without reporting, uncertain) is recorded on the follow-up that proposed it; an offer from a turn has
+none to record it on.
 
 ## Capability requests
 

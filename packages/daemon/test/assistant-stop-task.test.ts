@@ -573,7 +573,7 @@ describe('who is offered stopTask', () => {
     }
   })
 
-  it('offers the same tools in or out of assistant mode, but for followUp and one sentence of remind', async () => {
+  it('offers the same tools in or out of assistant mode, but for followUp, an offer’s propose and one sentence of remind', async () => {
     const h = await boot()
     try {
       const toolsOf = (agent: Record<string, unknown>, thread: string) => {
@@ -592,12 +592,15 @@ describe('who is offered stopTask', () => {
         const token = server!.env.find((entry: { name: string }) => entry.name === 'AC_MCP_TOKEN')!.value
         return h.d.mcp.sessions.get(token)!.tools as { name: string; description: string }[]
       }
-      const items = new Set([FOLLOW_UP_TOOL.name])
+      const items = new Set([FOLLOW_UP_TOOL.name, 'propose'])
       for (const thread of ['append:1', 'subsession:d-1']) {
         const on = toolsOf({ assistantMode: ON }, thread)
         const off = toolsOf({}, thread)
         expect(toolsOf({ assistantMode: { enabled: false } }, thread)).toEqual(off)
-        expect(on.filter((t) => items.has(t.name)).map((t) => t.name)).toEqual([FOLLOW_UP_TOOL.name])
+        // A conversation with cards may offer a follow-up (assistant-mode.md §5.10); a sub-session may not.
+        expect(on.filter((t) => items.has(t.name)).map((t) => t.name)).toEqual(
+          thread === 'append:1' ? [FOLLOW_UP_TOOL.name, 'propose'] : [FOLLOW_UP_TOOL.name]
+        )
         expect(off.filter((t) => items.has(t.name))).toEqual([])
         const shared = on.filter((t) => !items.has(t.name))
         expect(shared.map((t) => t.name)).toEqual(off.map((t) => t.name))

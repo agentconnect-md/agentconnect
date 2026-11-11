@@ -479,6 +479,7 @@ import { codeHostEffectGuidance, codeHostEffectToolsFor } from './codehost/effec
 import {
   askerIdentity,
   assistantModeOn,
+  followUpOfferToolsFor,
   followUpToolsFor,
   memberAskerIdentity,
   placeOfSession,
@@ -5481,8 +5482,8 @@ export class Daemon {
         askerFor: (ctx) => this.assistantAskerFor(ctx),
         // A getting-to-know task of the session's place, as its long session asked (§5.13).
         gettingToKnow: (ctx) => this.requestGettingToKnow(ctx),
-        // The place's long session offers a getting-to-know task's suggestions as cards, on its report's round (§5.13).
-        proposeAfterGettingToKnow: (ctx, input) => this.proposeAfterGettingToKnow(ctx, input),
+        // A conversation turn's cards: a getting-to-know task's suggestions on its report's round (§5.13), else an offered follow-up (§5.10).
+        proposeFromTurn: (ctx, input) => this.proposeFromTurn(ctx, input),
         // Its watches (§5.14), offered only toward a Control Plane that takes them.
         watches: () =>
           this.followUpWatches.offered()
@@ -5497,14 +5498,8 @@ export class Daemon {
         take: async (ctx, input) => {
           const key = this.sessionKeyOf(ctx)
           const sessionId = await this.store.ensureOutwardSessionId(key, ctx.agentId, this.clock.now())
-          // The thread the taking turn replies in, where the follow-up's reports reply too; a coordinator's, the asking message's.
-          const live = this.activeTurnShare.get(key)
-          // A turn in a channel a task holds takes it for the task's own place, in the task's thread there (auto-session-mode.md §6.8).
-          const replyThread = ctx.forMessage
-            ? answerThreadOf(ctx.forMessage)
-            : live && live.channel !== ctx.channel
-              ? ctx.thread
-              : live?.thread
+          // The thread the taking turn replies in, where the follow-up's reports reply too.
+          const replyThread = this.turnReplyThread(ctx)
           return await this.followUpChecks.take({
             agentId: ctx.agentId,
             origin: placeOfSession(ctx),
@@ -11467,6 +11462,98 @@ export class Daemon {
     }
   }
 
+  /** The thread a session's live turn replies in: a coordinator's, the message it names; in a channel a task holds, the task's own thread there (auto-session-mode.md §6.8). */
+  private turnReplyThread(ctx: SessionContext): string | undefined {
+    if (ctx.forMessage) return answerThreadOf(ctx.forMessage)
+    const live = this.activeTurnShare.get(this.sessionKeyOf(ctx))
+    return live && live.channel !== ctx.channel ? ctx.thread : live?.thread
+  }
+
+  /** A conversation turn's proposal: a getting-to-know task's suggestions on its report's round (§5.13), on any other an offered follow-up (§5.10). */
+  private async proposeFromTurn(ctx: SessionContext, input: ProposeInput): Promise<Record<string, unknown>> {
+    const meta = this.activeTurnCallMeta.get(this.sessionKeyOf(ctx))
+    if (meta?.gettingToKnowReport !== undefined) return await this.proposeAfterGettingToKnow(ctx, input)
+    return await this.offerFollowUp(ctx, input)
+  }
+
+  /** The round an offering turn's card is held under until the turn settles (§5.10), by session key. */
+  private readonly offerRounds = new Map<string, string>()
+
+  /** An ordinary turn offers a follow-up nobody asked for (§5.10): once a turn, carded in the thread the turn replies in once its reply has posted. */
+  private async offerFollowUp(ctx: SessionContext, input: ProposeInput): Promise<Record<string, unknown>> {
+    const { agentId } = ctx
+    const key = this.sessionKeyOf(ctx)
+    if (!input.followUp)
+      throw new Error(
+        '`task` is proposed only on the round a getting-to-know task reports back; here propose offers a follow-up ' +
+          'with `followUp`. Nothing was proposed.'
+      )
+    if (!ctx.integrationId || !this.hasCardSurface(ctx.integrationId))
+      throw new Error('this conversation has no approval cards; ask in your reply instead. Nothing was proposed.')
+    if (!this.activeTurnShare.has(key))
+      throw new Error('propose offers a follow-up only during a turn of this conversation; nothing was proposed')
+    // A coordinator answers several messages in one turn, so it names the one whose thread the card goes in.
+    if (isCoordinatorCoordinate(ctx.thread) && !ctx.forMessage)
+      throw new Error('name the message this offer answers with `messageId`; nothing was proposed')
+    const replyThread = this.turnReplyThread(ctx)
+    const round = this.offerRounds.get(key) ?? `offer:${randomUUID()}`
+    this.offerRounds.set(key, round)
+    const prior = this.roundProposals.get(round) ?? Promise.resolve()
+    const next = prior
+      .catch(() => undefined)
+      .then(async () => {
+        if ((await this.store.assistantDrafts.countInRound(agentId, round)) > 0)
+          throw new Error('a turn offers at most one follow-up, and this one already did; nothing was proposed')
+        const { integrationId, target, destination, place } = await this.proposalPlace(agentId, placeOfSession(ctx))
+        // Its card posts in the place with no event from it, so only a place confirmed internal gets one (§5.3).
+        if (!place)
+          throw new Error(
+            'this conversation is not one whose people can approve a card here; ask in your reply instead. Nothing was ' +
+              'proposed.'
+          )
+        const rec = await this.store.getSession(key)
+        const { draft, approver } = await this.drafts.propose({
+          agentId,
+          // Where the follow-up reports: the conversation, in the thread this turn replies in.
+          target: { ...target, thread: replyThread ?? null },
+          destination,
+          ...proposalWork(input),
+          sentence: input.sentence,
+          why: input.why,
+          itemId: null,
+          itemVersion: 0,
+          source: {
+            platform: ctx.platform,
+            integrationId: integrationId ?? null,
+            channel: ctx.channel,
+            thread: ctx.thread,
+            transportScope: ctx.transportScope ?? null,
+            sessionKey: key,
+            sessionId: rec?.sessionId ?? (await this.store.ensureOutwardSessionId(key, agentId, this.clock.now())),
+            place: false
+          },
+          place,
+          hold: { round, seq: 1 }
+        })
+        const expiresAt = new Date(draft.expiresAt).toISOString()
+        return {
+          proposed: true,
+          proposalId: draft.id,
+          expiresAt,
+          approver,
+          note:
+            'Its card is posted after your reply, in the thread you reply in. Approving it takes the follow-up; ' +
+            `nothing runs until then and it expires at ${expiresAt}. Do not also ask in your reply.`
+        }
+      })
+    this.roundProposals.set(round, next)
+    try {
+      return await next
+    } finally {
+      if (this.roundProposals.get(round) === next) this.roundProposals.delete(round)
+    }
+  }
+
   /** One round's proposals at a time, so the cap of three and their order hold when calls overlap. */
   private readonly roundProposals = new Map<string, Promise<unknown>>()
   /** The thread a getting-to-know report round's first `replyToMessage` landed in, by the round's session key (auto-session-mode.md §6.9.2). */
@@ -11552,6 +11639,9 @@ export class Daemon {
     const held = await this.store.assistantDrafts.heldInRound(agentId, round)
     const first = held[0]
     if (!first) return
+    // An offer goes in the thread its turn replied in, recorded on it: the top level when the turn replied there (§5.10).
+    if (first.proposal?.itemId === null)
+      return await this.drafts.releaseRound(agentId, round, first.target.thread ?? undefined)
     const origin = {
       platform: first.target.platform,
       channel: first.target.channel,
@@ -11800,13 +11890,12 @@ export class Daemon {
     // Recheck assistant-mode authority at execution as well as at each turn's tool snapshot.
     tools = [...tools, ...followUpToolsFor(agent, { watch: this.followUpWatches.offered() })]
     // A getting-to-know task on request (§5.13), only to a place's long session where one could run, with `propose` for its report round where the place has cards.
-    tools = [
-      ...tools,
-      ...gettingToKnowToolsFor(agent, at, {
-        cards: integrationId !== undefined && this.hasCardSurface(integrationId),
-        watch: this.followUpWatches.offered()
-      })
-    ]
+    const cards = integrationId !== undefined && this.hasCardSurface(integrationId)
+    const watch = this.followUpWatches.offered()
+    tools = [...tools, ...gettingToKnowToolsFor(agent, at, { cards, watch })]
+    // An offered follow-up (§5.10), where the conversation has cards; a long session that may get to know its place already has `propose`.
+    if (!tools.some((tool) => tool.name === 'propose'))
+      tools = [...tools, ...followUpOfferToolsFor(agent, { thread }, { cards, watch })]
     // Its reminders (§5.9), in a platform conversation of the session's own only.
     tools = [...tools, ...assistantReminderToolsFor(agent, { thread, integrationId })]
     // Listing and stopping its tasks (send-message-guide.md §8.7), where the session may.
@@ -24212,6 +24301,14 @@ export class Daemon {
       if (replyThread !== undefined) await this.showGettingToKnowIn(agentId, callMeta.gettingToKnowReport, replyThread)
       await this.releaseRoundCards(agentId, callMeta.deliveryId, replyThread).catch((err) =>
         this.log.warn(`getting-to-know task cards of ${callMeta.deliveryId}: not posted: ${formatErr(err)}`)
+      )
+    }
+    // An offered follow-up's card follows the turn's reply, posted or not (§5.10); a restart leaves it to the stranded sweep.
+    const offerRound = this.offerRounds.get(key)
+    if (offerRound !== undefined) {
+      this.offerRounds.delete(key)
+      await this.releaseRoundCards(agentId, offerRound, undefined).catch((err) =>
+        this.log.warn(`offered follow-up card of ${offerRound}: not posted: ${formatErr(err)}`)
       )
     }
     this.clearIdle(p)

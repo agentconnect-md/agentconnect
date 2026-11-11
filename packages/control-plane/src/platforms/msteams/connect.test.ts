@@ -10,6 +10,7 @@ import {
   msTeamsAuthorizeUrl,
   msTeamsConnectKeys,
   openMsTeamsTicket,
+  installMsTeamsAppForUser,
   publishMsTeamsPackage,
   redeemMsTeamsCode,
   sealMsTeamsTicket,
@@ -228,8 +229,37 @@ describe('Teams Graph calls', () => {
     const error = await publishMsTeamsPackage(refusing, 't', 'ext-1', new Uint8Array([1])).catch((e: unknown) => e)
     expect((error as MsTeamsConnectError).code).toBe('MSTEAMS_CONNECT_UNAVAILABLE')
     expect((error as MsTeamsConnectError).detail).toBe(
-      'POST /appCatalogs/teamsApps answered 409 (Conflict: The app exists.)'
+      'POST /appCatalogs/teamsApps answered 409 (Conflict: The app exists.); not among the organization’s 0 apps either'
     )
+  })
+
+  it('adds a definition to an app the lookup missed, found in the organization’s own list', async () => {
+    const calls: string[] = []
+    const missed = async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push(`${init?.method} ${decodeURIComponent(String(url).split('/v1.0')[1]!)}`)
+      if (String(url).includes('externalId')) return Response.json({ value: [] })
+      if (String(url).includes('distributionMethod'))
+        return Response.json({ value: [{ id: 'catalog-3', externalId: 'ext-1' }] })
+      return String(url).includes('requiresReview')
+        ? Response.json({ error: { code: 'Conflict', message: 'The app exists.' } }, { status: 409 })
+        : Response.json({}, { status: 201 })
+    }
+    expect(await publishMsTeamsPackage(missed, 't', 'ext-1', new Uint8Array([1]))).toBe('catalog-3')
+    expect(calls).toEqual([
+      "GET /appCatalogs/teamsApps?$filter=externalId eq 'ext-1'",
+      'POST /appCatalogs/teamsApps?requiresReview=false',
+      "GET /appCatalogs/teamsApps?$filter=distributionMethod eq 'organization'",
+      'POST /appCatalogs/teamsApps/catalog-3/appDefinitions'
+    ])
+  })
+
+  it('answers what Microsoft refused when the app is not added for a person', async () => {
+    const input = { userId: 'user-1', catalogAppId: 'catalog-1' }
+    const refusing = async () => Response.json({ error: { code: 'Forbidden', message: 'No.' } }, { status: 403 })
+    expect(await installMsTeamsAppForUser(refusing, 't', input)).toBe(
+      'POST /users/user-1/teamwork/installedApps answered 403 (Forbidden: No.)'
+    )
+    expect(await installMsTeamsAppForUser(async () => new Response(null, { status: 409 }), 't', input)).toBeNull()
   })
 
   it('names a refused Graph call as a missing administrator', async () => {

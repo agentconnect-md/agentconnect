@@ -5,7 +5,7 @@ import { gettingToKnowPlaceRefusal } from '../../assistant/getting-to-know.js'
 import { isAppendCoordinate } from '../../session/append-coordinate.js'
 import { obj, type ToolDescriptor } from '../../tool-schema/descriptor.js'
 import { parseArgs } from './args.js'
-import { PROPOSE_TOOL, PROPOSE_WATCH_TOOL, type AssistantItemDeps } from './assistant-items.js'
+import { PROPOSE_PLACE_TOOL, PROPOSE_PLACE_WATCH_TOOL, type AssistantItemDeps } from './assistant-items.js'
 import type { ToolHandler } from './context.js'
 
 export const GETTING_TO_KNOW_ARGS = z.object({})
@@ -21,7 +21,7 @@ export const GETTING_TO_KNOW_TOOL: ToolDescriptor = {
   inputSchema: obj({})
 }
 
-/** `getToKnow` for a place's long session where a getting-to-know task could run: assistant mode, not a 1:1 DM, history declared, internal; with `cards`, `propose` for its report's round. */
+/** `getToKnow` for a place's long session where a getting-to-know task could run: assistant mode, not a 1:1 DM, history declared, internal; with `cards`, `propose` for its report's round and its offers (§5.10). */
 export function gettingToKnowToolsFor(
   agent: Pick<Agent, 'assistantMode' | 'integrations'>,
   at: { channel: string; thread: string; integrationId?: string | undefined; isDm: boolean },
@@ -31,7 +31,9 @@ export function gettingToKnowToolsFor(
   const int = agent.integrations.find((candidate) => candidate.id === at.integrationId)
   if (!int) return []
   if (gettingToKnowPlaceRefusal(agent, int, { channel: at.channel, isDm: at.isDm }) !== undefined) return []
-  return opts.cards ? [GETTING_TO_KNOW_TOOL, opts.watch ? PROPOSE_WATCH_TOOL : PROPOSE_TOOL] : [GETTING_TO_KNOW_TOOL]
+  return opts.cards
+    ? [GETTING_TO_KNOW_TOOL, opts.watch ? PROPOSE_PLACE_WATCH_TOOL : PROPOSE_PLACE_TOOL]
+    : [GETTING_TO_KNOW_TOOL]
 }
 
 export const gettingToKnow: ToolHandler<AssistantItemDeps> = async (ctx, args, deps) => {
