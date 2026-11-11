@@ -11112,12 +11112,14 @@ export class Daemon {
             this.connForIntegration(integrationId)
           )
         : undefined
+    const rootText = (by: { name: string | null }) => `**${sentence}**\n\nApproved by ${by.name ?? 'an approver'}.`
     return {
-      ...(card !== undefined ? { card } : {}),
+      // A card is no row of the conversation, so the root it became is recorded as what a posted root says.
+      ...(card !== undefined
+        ? { card, cardRooted: async (by) => await this.recordAgentPost(agentId, parent, card, undefined, rootText(by)) }
+        : {}),
       postRoot: async (by) => {
-        const text =
-          `**${sentence}**\n\nApproved by ${by.name ?? 'an approver'}.` +
-          (cardLink ? ` [The proposal](${cardLink})` : '')
+        const text = rootText(by) + (cardLink ? ` [The proposal](${cardLink})` : '')
         const root = await gateway.postMessage(parent.channel, text, undefined, this.agentPostIdentity(agentId))
         await this.recordAgentPost(agentId, parent, root, undefined, text)
         return root
@@ -11544,7 +11546,7 @@ export class Daemon {
           expiresAt,
           approver,
           note:
-            'Its card is posted in the thread under your reply once your reply has posted, in the order proposed. ' +
+            `Its card is posted ${(await this.cardsAreRoots(draft)) ? 'in the place after your reply' : 'in the thread under your reply once your reply'} has posted, in the order proposed. ` +
             `Nothing runs until a person approves it, and it expires at ${expiresAt}.`
         }
       })
@@ -11556,7 +11558,7 @@ export class Daemon {
     }
   }
 
-  /** A getting-to-know task report round's held cards (§5.13): under its reply once that posted, else where the place's cards go. */
+  /** A getting-to-know task report round's held cards (§5.13), once its reply posted: at the top level where an approved one answers in its card's thread (auto-session-mode.md §6.9.2), else under that reply, else where the place's cards go. */
   private async releaseRoundCards(agentId: string, round: string, replyTs: string | undefined): Promise<void> {
     const held = await this.store.assistantDrafts.heldInRound(agentId, round)
     const first = held[0]
@@ -11566,8 +11568,16 @@ export class Daemon {
       channel: first.target.channel,
       transportScope: first.source?.transportScope ?? null
     }
+    if (await this.cardsAreRoots(first)) return await this.drafts.releaseRound(agentId, round, undefined)
     const thread = replyTs ?? (await this.proposalPlace(agentId, origin)).place?.thread
     await this.drafts.releaseRound(agentId, round, thread)
+  }
+
+  /** Whether a proposal of this session is carded at its place's top level, so that its approval's task holds the card's thread: a coordinator's room, as {@link taskHomeFor} offers a home. */
+  private async cardsAreRoots(draft: Pick<AssistantDraft, 'source'>): Promise<boolean> {
+    const source = draft.source
+    if (!this.cfg.features.autoSessionMode || !source || !isCoordinatorCoordinate(source.thread)) return false
+    return source.sessionKey !== null && (await this.store.getSession(source.sessionKey))?.conversationKind !== 'dm'
   }
 
   /** Held cards of a round nothing runs any more (a restart, or a round cut short) post where the place's cards go. */

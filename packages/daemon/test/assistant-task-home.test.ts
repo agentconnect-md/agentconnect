@@ -111,6 +111,9 @@ describe('an approved proposal with a home', () => {
     const roots: string[] = []
     const { s, agentId, tasks, dispatched, reported, settled, propose } = await boot((draft) => ({
       ...(draft.cardThread === '' && draft.cardTs ? { card: draft.cardTs } : {}),
+      cardRooted: async (by) => {
+        roots.push(`card rooted by ${by.name}`)
+      },
       postRoot: async () => {
         roots.push('posted')
         return ROOT
@@ -121,7 +124,8 @@ describe('an approved proposal with a home', () => {
     expect(await tasks.start(draft, BY)).toEqual({ kind: 'started' })
 
     const key = threadKey(agentId, CARD)
-    expect(roots).toEqual([])
+    // No root is posted: the card is the root, and its place hears that it became one.
+    expect(roots).toEqual([`card rooted by ${BY.name}`])
     expect(await s.assistantDrafts.get(draft.id)).toMatchObject({ status: 'executing', subsessionKey: key })
     expect(await s.assistantSubsessions.get(agentId, key)).toMatchObject({ state: 'open', replyThread: CARD })
     expect(
