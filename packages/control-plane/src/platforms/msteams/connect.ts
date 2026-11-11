@@ -263,12 +263,28 @@ export async function redeemMsTeamsCode(
       'Sign in with an account of the Microsoft 365 organization that added the app in Teams.'
     )
   // The signed-in person's object ID in their tenant, whom an agent identity names as its sponsor (§8.6.5).
-  const userId = claims.success && claims.data.oid && GUID.test(claims.data.oid.toLowerCase()) ? claims.data.oid : ''
+  const claimed = claims.success && claims.data.oid && GUID.test(claims.data.oid.toLowerCase()) ? claims.data.oid : ''
+  // Entra puts the object ID in an ID token only where the sign-in asked the profile scope, so Graph is asked where a sponsor is needed.
+  const userId =
+    claimed || (input.agentBots || input.member ? await readMsTeamsUserId(fetchImpl, tokens.data.access_token) : '')
   return {
     accessToken: tokens.data.access_token,
     tenantId,
     ...(userId ? { userId: userId.toLowerCase() } : {}),
     ...(tokens.data.refresh_token ? { refreshToken: tokens.data.refresh_token } : {})
+  }
+}
+
+const Me = z.object({ id: z.string().regex(/^[0-9a-fA-F-]{36}$/) })
+
+// The signed-in person's object ID from Graph; empty when Graph does not answer one.
+async function readMsTeamsUserId(fetchImpl: typeof fetch, token: string): Promise<string> {
+  try {
+    const response = await graph(fetchImpl, token, 'GET', '/me?$select=id')
+    const me = response.ok ? Me.safeParse(await response.json().catch(() => null)) : undefined
+    return me?.success ? me.data.id : ''
+  } catch {
+    return ''
   }
 }
 

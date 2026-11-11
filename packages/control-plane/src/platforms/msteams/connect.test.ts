@@ -164,6 +164,19 @@ describe('Teams connect for a deployment with agent bots (§8.6.5)', () => {
       await redeemMsTeamsCode(keys, { clientId: CLIENT, clientSecret: 's', redirectUri, code: 'c', state }, plain)
     ).toEqual({ accessToken: 'delegated', tenantId: TENANT })
     expect(String(plain.mock.calls[0]![1]?.body)).not.toContain('AppCatalog.Submit')
+    // Where a sponsor is needed and the ID token names none, Graph is asked who signed in.
+    const viaGraph = vi.fn(async (url: string | URL | Request, _init?: RequestInit) =>
+      String(url).endsWith('/me?$select=id')
+        ? Response.json({ id: OID })
+        : Response.json({ access_token: 'delegated', id_token: idToken({ tid: TENANT }) })
+    )
+    expect(
+      await redeemMsTeamsCode(
+        keys,
+        { clientId: CLIENT, clientSecret: 's', redirectUri, code: 'c', state, agentBots: true },
+        viaGraph
+      )
+    ).toEqual({ accessToken: 'delegated', tenantId: TENANT, userId: OID.toLowerCase() })
   })
 
   it('seals a provisioning ticket apart from an install ticket', () => {
