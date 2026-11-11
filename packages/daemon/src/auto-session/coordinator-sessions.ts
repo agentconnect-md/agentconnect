@@ -6,7 +6,7 @@ import type { SessionContext } from '../mcp/ops/context.js'
 import { parseArgs, requiredString, ToolArgumentError } from '../mcp/ops/args.js'
 import { taskTitleField, TASK_TITLE_MAX_CHARS } from '../mcp/ops/send-message-actions.js'
 import { deriveTitle } from '../session/derive-title.js'
-import { isNoResponsePrefix } from '../session/no-response.js'
+import { isNoResponseBody } from '../session/no-response.js'
 import { sessionKey, transcriptChannelKey, type LocalStore } from '../store/local-store.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
 import { a2aCoordChannel } from '../cp/cp-collab-routes.js'
@@ -253,12 +253,8 @@ export class CoordinatorSessions {
             : { ok: true, taskId: handed.taskKey, attachedThread: call.messageId }
         }
         case 'replyToMessage': {
-          const posted = await this.host.post(ctx.agentId, held.message.integrationId, held.message.msg, call.message)
+          const thread = await this.answer(key, ctx.agentId, held.message, call.message)
           this.turns.settle(key, call.messageId, 'reply')
-          const thread = answerThreadOf(held.message.msg)
-          // A reply at the root opens the thread its own id names; one in a thread stays in that thread.
-          const landed = thread ?? posted
-          if (held.message.report && landed !== undefined) this.host.reportAnswered(key, landed)
           return {
             ok: true,
             posted: { channel: ctx.channel, ...(thread ? { thread: coordinatorMessageId(thread) } : { at: 'root' }) }
@@ -269,6 +265,21 @@ export class CoordinatorSessions {
       this.turns.release(key, call.messageId)
       throw err
     }
+  }
+
+  /** Post the coordinator's own words where a delivered message is answered, by a call or by the turn's text; the thread they belong to (§4.2). */
+  private async answer(
+    key: string,
+    agentId: string,
+    message: DeliveredMessage,
+    text: string
+  ): Promise<string | undefined> {
+    const posted = await this.host.post(agentId, message.integrationId, message.msg, text)
+    const thread = answerThreadOf(message.msg)
+    // A reply at the root opens the thread its own id names; one in a thread stays in that thread.
+    const landed = thread ?? posted
+    if (message.report && landed !== undefined) this.host.reportAnswered(key, landed)
+    return thread
   }
 
   /** The person's message a place-tool call acts for (§5.4): a channel message of the live turn, never a report. */
@@ -673,13 +684,31 @@ export class CoordinatorSessions {
     await this.host.reportTaskOwners(agentId, moved)
   }
 
-  /** End a coordinator turn: its final text is never posted, and a mention left without an outcome goes to a task (§4.3, §4.5). */
+  /** Post a coordinator turn's final text as its own reply to the message no call decided (§4.3); once a turn, before it settles. */
+  async speak(key: string, agentId: string): Promise<void> {
+    const spoken = this.turns.takeSpoken(key, isNoResponseBody)
+    if (!spoken) return
+    const { to, text } = spoken
+    // A reply a browser streamed is committed with its turn.
+    if (!to.streamed) {
+      // The coordinator reads only an attachment's name (§5.1), so a task answers a person's file.
+      if (!to.report && to.msg.attachments?.length) return
+      try {
+        await this.answer(key, agentId, to, text)
+      } catch (err) {
+        this.host.warn(`coordinator ${key}: reply to ${to.id} failed (${String(err)})`)
+        return
+      }
+    }
+    this.turns.settle(key, to.id, 'reply')
+  }
+
+  /** End a coordinator turn: its final text is its reply, and a mention still without an outcome goes to a task (§4.3, §4.5). */
   async settleTurn(key: string, agentId: string, ended: 'answered' | 'failed' | 'stopped'): Promise<void> {
-    const settled = this.turns.end(key, isNoResponsePrefix)
+    if (ended === 'answered') await this.speak(key, agentId)
+    const settled = this.turns.end(key)
     // A stopped turn was stopped on purpose: nothing it left undecided is acted on.
     if (!settled || ended === 'stopped') return
-    // Only a browser that streamed the text shows it, and commits it with its turn; elsewhere the coordinator acts through its calls alone.
-    if (ended === 'answered' && settled.reply !== undefined && settled.undecided[0]!.streamed) return
     for (const message of settled.undecided) {
       if (!message.mentionsYou) continue
       await this.fallBack(key, agentId, message).catch((err: unknown) =>

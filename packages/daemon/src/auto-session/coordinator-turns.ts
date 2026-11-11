@@ -24,7 +24,7 @@ export type CoordinatorOutcome = 'delegate' | 'route' | 'reply'
 interface Turn {
   messages: DeliveredMessage[]
   outcomes: Map<string, CoordinatorOutcome | 'pending'>
-  /** The text after the turn's last tool call, which a one-message turn answers with. */
+  /** The text after the turn's last tool call, which answers the message left without a call. */
   tail: string
   /** Takes back what shows the turn's messages are being decided (§4.4). */
   clearFeedback: () => void
@@ -33,10 +33,26 @@ interface Turn {
 /** How a turn ended for its messages without an outcome. */
 export interface SettledCoordinatorTurn {
   messages: DeliveredMessage[]
-  /** A one-message turn's final text, when it is a reply rather than silence. */
-  reply?: string
   /** Messages left without an outcome. */
   undecided: DeliveredMessage[]
+}
+
+/** A turn's final text with the message it answers. */
+export interface SpokenReply {
+  to: DeliveredMessage
+  text: string
+}
+
+/** The message a turn's text answers: its only one, else the one person's message left without a call, else the one of those that mentions the agent (§4.3). */
+export function spokenTo<T extends { report?: boolean; mentionsYou: boolean }>(
+  messages: readonly T[],
+  undecided: readonly T[]
+): T | undefined {
+  if (messages.length === 1) return undecided[0]
+  const people = undecided.filter((message) => !message.report)
+  if (people.length === 1) return people[0]
+  const mentions = people.filter((message) => message.mentionsYou)
+  return mentions.length === 1 ? mentions[0] : undefined
 }
 
 type MessageIdentity = Pick<NormalizedMessage, 'msgId' | 'transcriptTs' | 'transcriptPostId'>
@@ -206,16 +222,24 @@ export class CoordinatorTurns {
     if (turn?.outcomes.get(messageId) === 'pending') turn.outcomes.delete(messageId)
   }
 
-  /** Close the turn and report what it left undecided; `silent` is a sentinel test for the final text. */
-  end(key: string, silent: (text: string) => boolean): SettledCoordinatorTurn | undefined {
+  /** Take the live turn's final text with the message it answers, when it is a reply rather than silence (§4.3); `silent` is a sentinel test, and the text is taken once. */
+  takeSpoken(key: string, silent: (text: string) => boolean): SpokenReply | undefined {
+    const turn = this.turns.get(key)
+    const text = turn?.tail.trim()
+    if (!turn || !text) return undefined
+    turn.tail = ''
+    if (silent(text)) return undefined
+    const undecided = turn.messages.filter((message) => !turn.outcomes.has(message.id))
+    const to = spokenTo(turn.messages, undecided)
+    return to ? { to, text } : undefined
+  }
+
+  /** Close the turn and report what it left undecided. */
+  end(key: string): SettledCoordinatorTurn | undefined {
     const turn = this.turns.get(key)
     if (!turn) return undefined
     this.turns.delete(key)
     turn.clearFeedback()
-    const undecided = turn.messages.filter((message) => !turn.outcomes.has(message.id))
-    const text = turn.tail.trim()
-    // A turn's final text answers its message only when there is exactly one (§4.3).
-    const reply = turn.messages.length === 1 && undecided.length === 1 && text && !silent(text) ? text : undefined
-    return { messages: turn.messages, undecided, ...(reply !== undefined ? { reply } : {}) }
+    return { messages: turn.messages, undecided: turn.messages.filter((message) => !turn.outcomes.has(message.id)) }
   }
 }

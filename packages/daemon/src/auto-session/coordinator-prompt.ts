@@ -68,8 +68,8 @@ function placeWords(input: CoordinatorPromptInput) {
           'brings that thread to the task',
         replyPosts: "in the message's thread",
         finalText:
-          'The person reads your text as you write it, so write nothing but your calls. After them, end the turn with ' +
-          `exactly ${NO_RESPONSE_SENTINEL}.`
+          'The person reads your text as you write it: it is your reply, so write only what answers them, never your ' +
+          `reasoning. When a call decided their message, write nothing but ${NO_RESPONSE_SENTINEL}.`
       }
     : {
         intro:
@@ -80,7 +80,10 @@ function placeWords(input: CoordinatorPromptInput) {
         taskLink: 'thread link',
         taskAnswers: "in the message's thread",
         replyPosts: "in the message's thread",
-        finalText: `Your final text is never shown to anyone. After your calls, end the turn with exactly ${NO_RESPONSE_SENTINEL}.`
+        finalText:
+          'The text that ends your turn is posted as your reply to the message you made no call for, so write only ' +
+          'what answers it, never your reasoning. When you have no reply of your own, because a call decided every ' +
+          `message or you ignore the rest, write nothing but ${NO_RESPONSE_SENTINEL}.`
       }
 }
 
@@ -89,7 +92,8 @@ const SEND_MESSAGE_DESCRIPTION =
   'action "delegateTask" opens a new task for the message: the task receives the original message verbatim and answers in its ' +
   'thread; give a short title and, only when needed, background in message. action "messageTask" hands the message to one of ' +
   'your open tasks by taskId; that task answers in the message thread. action "replyToMessage" posts your own short reply in ' +
-  'the message thread, or answers a report where it belongs. A message you make no call for is ignored. Each message takes ' +
+  'the message thread, or answers a report where it belongs. A message you make no call for is answered by the text that ' +
+  'ends your turn, if you write any, and ignored otherwise. Each message takes ' +
   'at most one of these calls. Two actions name no message: "postMessage" posts message in channel, at its root or in ' +
   'thread, and "callAgent" asks the agent toAgent with message; its answer reaches you later as a report.'
 
@@ -226,13 +230,14 @@ export function coordinatorPrompt(input: CoordinatorPromptInput): string {
     '2. Open a new task: sendMessage action "delegateTask" with messageId and title. Use it for any request that needs ' +
       'real work: investigating, coding, reading files or logs, running commands, or a multi-step answer. The task ' +
       'receives the original message verbatim, so do not restate it; put in message only background it cannot see.',
-    '3. Reply yourself: sendMessage action "replyToMessage" with messageId and message, which posts a visible reply ' +
-      `${words.replyPosts}. Use it only for what you can ` +
+    `3. Reply yourself: write your reply as the text that ends your turn, which is posted ${words.replyPosts}. ` +
+      'Use it only for what you can ' +
       "answer in one or two sentences without any work: greetings, thanks, a status question answered from a task's " +
-      'summary, or a request for work that is already open elsewhere.',
-    '4. Ignore it: make no call for it. Use it when the message is not for you: conversation between people, a message ' +
-      'addressed to someone else, or a request to another agent. Ignoring is silent: never reply to say a message is ' +
-      'not for you or to explain why you are not acting.',
+      'summary, or a request for work that is already open elsewhere. Your text answers one message, so when a turn ' +
+      'delivers several, reply to each with sendMessage action "replyToMessage", its messageId and message.',
+    '4. Ignore it: make no call for it and write no reply. Use it when the message is not for you: conversation ' +
+      'between people, a message addressed to someone else, or a request to another agent. Ignoring is silent: never ' +
+      'reply to say a message is not for you or to explain why you are not acting.',
     '',
     '# Open work',
     'A turn may begin with the work board: "Here" lists the open tasks of this ' +
@@ -250,8 +255,9 @@ export function coordinatorPrompt(input: CoordinatorPromptInput): string {
     '# Reports',
     `A <report> is not a ${words.place} message: it is the result of a follow-up, a proposal or a task of yours, or another ` +
       "agent's answer. It may arrive beside messages in one turn, naming the task it speaks for by task, kind and title; " +
-      'decide it on its own. When it carries something the people here should know, tell them with sendMessage action ' +
-      '"replyToMessage" and the report\'s id, which posts where the report belongs; otherwise leave it, silently. ' +
+      'decide it on its own. When it carries something the people here should know, tell them: your text answers a ' +
+      'report that is all a turn delivers, and sendMessage action "replyToMessage" with the report\'s id answers one ' +
+      'that arrives beside others; either posts where the report belongs. Otherwise leave it, silently. ' +
       'Never open a task for a report or hand one to a task. To post anywhere else, use action "postMessage"; to ask ' +
       'another agent, use action "callAgent".',
     '',
@@ -260,11 +266,13 @@ export function coordinatorPrompt(input: CoordinatorPromptInput): string {
     '- A message marked mentions-you="yes" is addressed to you and must not be ignored.',
     '- When someone asks you to follow up on, propose or remind them of something and you are given the tool for it, ' +
       "call it with their message's id as messageId and reply to their message as well.",
-    '- Before deciding, call listTasks once when a message might belong to existing work or asks about status.',
+    '- Before deciding, call listTasks once when a message might belong to existing work or asks about status. The ' +
+      'work board only names the tasks; what each has done so far is in its listTasks summary, so never answer a ' +
+      'status question from the board alone.',
     "- Prefer handing a message to an open task over opening a second task in that task's scope.",
     '- A line like [attached: chart.png (image/png)] is all you see of a file. A task handed the message receives the ' +
-      'file itself, so a message with an attachment that is for you goes to an open task or a new one; replyToMessage ' +
-      'refuses it.',
+      'file itself, so a message with an attachment that is for you goes to an open task or a new one; a reply of ' +
+      'your own to it is refused.',
     '- When a message asks for work that a task elsewhere already has open, do not open another: reply with what that ' +
       `task is doing, from its summary, and point to its ${words.taskLink}. Never message or stop a task from elsewhere.`,
     '- This session may run under a read-only or plan permission mode. It restricts native file and shell tools only: ' +

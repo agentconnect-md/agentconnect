@@ -349,75 +349,81 @@ describe('assistant mode under auto (auto-session-mode.md §3.4)', () => {
     await daemon.stop()
   })
 
-  it('releases a getting-to-know round’s held cards into the thread of the coordinator’s first reply', async () => {
-    const live: { d?: any; ctx?: SessionContext } = {}
-    const { daemon, d, scope } = await boot(async (blocks) => {
-      const prompt = blocks.map((block) => block.text ?? '').join('\n')
-      const id = /<report id="(msg-[^"]+)">/.exec(prompt)?.[1]
-      if (!id) return
-      await live.d.coordinators.decide(live.ctx, {
-        action: 'replyToMessage',
-        messageId: id,
-        message: 'Hello, I read this channel.'
+  it.each([
+    ['a replyToMessage call', true],
+    ['its turn’s text', false]
+  ])(
+    'releases a getting-to-know round’s held cards into the thread of the coordinator’s reply by %s',
+    async (_how, byCall) => {
+      const live: { d?: any; ctx?: SessionContext; key?: string } = {}
+      const { daemon, d, scope } = await boot(async (blocks) => {
+        const prompt = blocks.map((block) => block.text ?? '').join('\n')
+        const id = /<report id="(msg-[^"]+)">/.exec(prompt)?.[1]
+        if (!id) return
+        const message = 'Hello, I read this channel.'
+        if (byCall) await live.d.coordinators.decide(live.ctx, { action: 'replyToMessage', messageId: id, message })
+        // What the daemon notes as the runtime streams its answer.
+        else live.d.coordinators.turns.noteText(live.key, message)
       })
-    })
-    live.d = d
-    const coordinator = await d.store.resolveAppendCoordinate('bot-a', 'C1', scope, 1, 'coordinator')
-    await d.store.upsertSession({
-      key: sessionKey('slack', 'C1', coordinator, 'bot-a', scope),
-      agentId: 'bot-a',
-      platform: 'slack',
-      channel: 'C1',
-      thread: coordinator,
-      transportScope: scope,
-      acpSessionId: 'acp-coordinator',
-      sessionId: 'sid-coordinator',
-      state: 'idle',
-      lastDeliveredTs: null,
-      updatedAt: Date.now()
-    })
-    live.ctx = {
-      agentId: 'bot-a',
-      platform: 'slack',
-      channel: 'C1',
-      thread: coordinator,
-      transportScope: scope,
-      isDm: false,
-      tools: coordinatorSessionTools([])
-    } as SessionContext
-    vi.spyOn(d, 'gatewayForIntegration').mockReturnValue({ postMessage: vi.fn(async () => '1700000400.000001') })
-    vi.spyOn(d, 'replyConnFor').mockReturnValue({ react: vi.fn(async () => {}), setStatus: vi.fn(async () => true) })
-    const released = vi.spyOn(d, 'releaseRoundCards').mockResolvedValue(undefined)
+      live.d = d
+      const coordinator = await d.store.resolveAppendCoordinate('bot-a', 'C1', scope, 1, 'coordinator')
+      live.key = sessionKey('slack', 'C1', coordinator, 'bot-a', scope)
+      await d.store.upsertSession({
+        key: sessionKey('slack', 'C1', coordinator, 'bot-a', scope),
+        agentId: 'bot-a',
+        platform: 'slack',
+        channel: 'C1',
+        thread: coordinator,
+        transportScope: scope,
+        acpSessionId: 'acp-coordinator',
+        sessionId: 'sid-coordinator',
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt: Date.now()
+      })
+      live.ctx = {
+        agentId: 'bot-a',
+        platform: 'slack',
+        channel: 'C1',
+        thread: coordinator,
+        transportScope: scope,
+        isDm: false,
+        tools: coordinatorSessionTools([])
+      } as SessionContext
+      vi.spyOn(d, 'gatewayForIntegration').mockReturnValue({ postMessage: vi.fn(async () => '1700000400.000001') })
+      vi.spyOn(d, 'replyConnFor').mockReturnValue({ react: vi.fn(async () => {}), setStatus: vi.fn(async () => true) })
+      const released = vi.spyOn(d, 'releaseRoundCards').mockResolvedValue(undefined)
 
-    const result = await d.collab.deliverDaemonReport({
-      agentId: 'bot-a',
-      caller: { platform: 'slack', channel: 'C1', thread: checkCoordinate('look-1'), transportScope: scope },
-      place: { platform: 'slack', channel: 'C1', transportScope: scope },
-      parentSessionId: 'sid-coordinator',
-      text: '[getting to know] the report',
-      reportId: 'follow-up:look-1',
-      gettingToKnow: 'look-1'
-    })
-    expect(result).toEqual({ admitted: true })
-    await vi.waitFor(() => expect(released).toHaveBeenCalledTimes(1), WAIT)
-    await vi.waitFor(() => expect(d.pending.size + d.inflight.size).toBe(0), WAIT)
-    // The turn's own text is never posted, so the first reply it made is the one the cards go under.
-    expect(released.mock.calls[0]).toEqual(['bot-a', expect.any(String), '1700000400.000001'])
-    // The introduction is the coordinator's own post at the top level: a root its conversation's record keeps.
-    expect(
-      await d.store.threadRootInSession(
-        {
-          transcriptChannel: transcriptChannelKey('C1', scope),
-          coordinate: coordinator,
-          sessionKey: sessionKey('slack', 'C1', coordinator, 'bot-a', scope),
-          agentId: 'bot-a'
-        },
-        '1700000400.000001'
-      )
-    ).toMatchObject({ ts: '1700000400.000001', thread: '1700000400.000001', sender: 'bot-a' })
-    expect(d.roundReplies.size).toBe(0)
-    await daemon.stop()
-  })
+      const result = await d.collab.deliverDaemonReport({
+        agentId: 'bot-a',
+        caller: { platform: 'slack', channel: 'C1', thread: checkCoordinate('look-1'), transportScope: scope },
+        place: { platform: 'slack', channel: 'C1', transportScope: scope },
+        parentSessionId: 'sid-coordinator',
+        text: '[getting to know] the report',
+        reportId: 'follow-up:look-1',
+        gettingToKnow: 'look-1'
+      })
+      expect(result).toEqual({ admitted: true })
+      await vi.waitFor(() => expect(released).toHaveBeenCalledTimes(1), WAIT)
+      await vi.waitFor(() => expect(d.pending.size + d.inflight.size).toBe(0), WAIT)
+      // The reply posts before the round's cards are released, so they go under it.
+      expect(released.mock.calls[0]).toEqual(['bot-a', expect.any(String), '1700000400.000001'])
+      // The introduction is the coordinator's own post at the top level: a root its conversation's record keeps.
+      expect(
+        await d.store.threadRootInSession(
+          {
+            transcriptChannel: transcriptChannelKey('C1', scope),
+            coordinate: coordinator,
+            sessionKey: sessionKey('slack', 'C1', coordinator, 'bot-a', scope),
+            agentId: 'bot-a'
+          },
+          '1700000400.000001'
+        )
+      ).toMatchObject({ ts: '1700000400.000001', thread: '1700000400.000001', sender: 'bot-a' })
+      expect(d.roundReplies.size).toBe(0)
+      await daemon.stop()
+    }
+  )
 
   it('posts a getting-to-know round’s cards at the top level of a coordinator’s room, and under the reply elsewhere (§6.9.2)', async () => {
     const { daemon, d, scope } = await boot()

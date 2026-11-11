@@ -63,12 +63,13 @@ describe('runtime matrix coordinator probe', () => {
     const [chatter] = scopeOf('ignore-chatter').messages
     const reply = recorded('ignore-chatter', [{ action: 'replyToMessage', messageId: chatter, message: 'sure' }])
     expect(judgeCoordinator(scenario('ignore-chatter'), reply, '').verdict).toBe('FAIL')
-    // A channel turn's text posts nothing, so it leaves the chatter ignored.
-    expect(judgeCoordinator(scenario('ignore-chatter'), [], 'Sounds fun').verdict).toBe('PASS')
+    // A turn's text is posted as its reply, so it answers the chatter; prose that ends in the sentinel is silence.
+    expect(judgeCoordinator(scenario('ignore-chatter'), [], 'Sounds fun').verdict).toBe('FAIL')
+    expect(judgeCoordinator(scenario('ignore-chatter'), [], 'Not for me.\n\nAC_NO_RESPONSE').verdict).toBe('PASS')
   })
 
-  it('never counts a channel turn’s text as its reply, and counts an alternative as degraded', () => {
-    expect(judgeCoordinator(scenario('greeting'), [], 'Good morning!').verdict).toBe('FAIL')
+  it('counts a turn’s text as the reply to its message, and an alternative as degraded', () => {
+    expect(judgeCoordinator(scenario('greeting'), [], 'Good morning!').verdict).toBe('PASS')
     const [status] = scopeOf('status-reply').messages
     const routed = recorded('status-reply', [{ action: 'messageTask', messageId: status, taskId: CO_IDS.checkoutTask }])
     expect(judgeCoordinator(scenario('status-reply'), routed, '').verdict).toBe('DEGRADED')
