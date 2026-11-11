@@ -74,7 +74,9 @@ describe('an agent bot’s names', () => {
     expect(KEY).toMatch(/^[0-9a-f]{32}$/)
     expect(msTeamsAgentBotKey(AGENT, TENANT.toUpperCase())).toBe(KEY)
     expect(msTeamsAgentBotKey(AGENT, APP.tenantId)).not.toBe(KEY)
-    expect(msTeamsAgentBotResourceName(KEY)).toBe(`agentconnect-${KEY}`)
+    expect(msTeamsAgentBotResourceName(KEY)).toBe(`acbot-${KEY}`)
+    // Azure refuses a bot name longer than 42 characters.
+    expect(msTeamsAgentBotResourceName(KEY).length).toBeLessThanOrEqual(42)
     expect(msTeamsAgentBotTag(KEY)).toBe(`agentconnect-agent-bot:${KEY}`)
   })
 })
@@ -170,7 +172,7 @@ describe('MsTeamsAgentBotClient', () => {
     })
     const base =
       `https://management.azure.com/subscriptions/${AGENT_BOTS.subscriptionId}/resourceGroups/example-bots` +
-      `/providers/Microsoft.BotService/botServices/agentconnect-${KEY}`
+      `/providers/Microsoft.BotService/botServices/acbot-${KEY}`
     expect(ms.calls[0]).toMatchObject({
       url: tokenUrl(APP.tenantId),
       form: { client_id: APP.appId, scope: 'https://management.azure.com/.default' }
@@ -228,7 +230,7 @@ describe('MsTeamsAgentBotClient', () => {
     await ms.client.deleteRegistration(KEY)
     await ms.client.deleteIdentity(TENANT, IDENTITY)
     expect(ms.calls.filter((c) => c.method === 'DELETE').map((c) => c.url)).toEqual([
-      expect.stringContaining(`/botServices/agentconnect-${KEY}?api-version=`),
+      expect.stringContaining(`/botServices/acbot-${KEY}?api-version=`),
       `https://graph.microsoft.com/v1.0/servicePrincipals/${IDENTITY}`
     ])
     const stuck = microsoft((call) =>
@@ -245,7 +247,7 @@ describe('MsTeamsAgentBotClient', () => {
           status: 200,
           body: {
             value: [
-              { name: `agentconnect-${KEY}`, properties: { msaAppId: IDENTITY.toUpperCase(), msaAppTenantId: TENANT } },
+              { name: `acbot-${KEY}`, properties: { msaAppId: IDENTITY.toUpperCase(), msaAppTenantId: TENANT } },
               { name: 'someone-elses-bot', properties: { msaAppId: 'x' } }
             ],
             nextLink: other

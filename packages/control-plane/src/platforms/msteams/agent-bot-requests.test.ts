@@ -201,7 +201,7 @@ describe('MsTeamsAgentBotRequests', () => {
           tokenTenantId: TENANT,
           appOwner: 'deployment',
           agentBotBlueprintId: AGENT_BOTS.blueprintId,
-          agentBotResourceName: `agentconnect-${msTeamsAgentBotKey(AGENT, TENANT)}`
+          agentBotResourceName: `acbot-${msTeamsAgentBotKey(AGENT, TENANT)}`
         }
       })
     )

@@ -3,7 +3,12 @@
 import { MSTEAMS_PLATFORM } from '@agentconnect.md/protocol'
 import type { HttpDeps } from '../../http/deps.js'
 import type { BotRecord } from '../../persistence/ports.js'
-import { msTeamsAgentBotKey, msTeamsPrincipalAbsent, type MsTeamsAgentBotClient } from './agent-bots.js'
+import {
+  msTeamsAgentBotKey,
+  msTeamsAgentBotKeyOfResource,
+  msTeamsPrincipalAbsent,
+  type MsTeamsAgentBotClient
+} from './agent-bots.js'
 import { msTeamsAgentBotOf, type MsTeamsAgentBots } from './deployment-app.js'
 
 /** The row's record of the name its bot was last given. */
@@ -12,7 +17,6 @@ export const MSTEAMS_AGENT_BOT_NAME_KEY = 'agentBotName'
 export const MSTEAMS_KEEPER_INTERVAL_MS = 60_000
 /** Every this many passes the registrations and identities are listed; an orphan is deleted on the second pass that sees it. */
 export const MSTEAMS_KEEPER_SWEEP_EVERY = 60
-const RESOURCE_PREFIX = 'agentconnect-'
 const REQUEST_LIMIT = 1000
 
 type Client = Pick<
@@ -42,7 +46,7 @@ export class MsTeamsAgentBotKeeper {
   private keyOf(bot: Pick<BotRecord, 'platformConfig'>): string | undefined {
     const entry = msTeamsAgentBotOf(bot)
     if (!entry || entry.blueprintId !== this.deps.agentBots.blueprintId) return undefined
-    return entry.resourceName.startsWith(RESOURCE_PREFIX) ? entry.resourceName.slice(RESOURCE_PREFIX.length) : undefined
+    return msTeamsAgentBotKeyOfResource(entry.resourceName)
   }
 
   private async rows(): Promise<BotRecord[]> {
