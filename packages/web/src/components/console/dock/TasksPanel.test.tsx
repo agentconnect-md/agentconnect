@@ -623,9 +623,10 @@ describe('TasksPanel groups', () => {
     expect(actionsIn('tasks')).toEqual(['Stop'])
     expect(actionsIn('follow-ups')).toEqual(['End'])
     expect(container?.querySelectorAll('[data-task-row] button:not([aria-expanded])')).toHaveLength(0)
-    // One line each: a task's latest word, a follow-up's next check on hover.
+    // One line each: a task's latest word, a follow-up's next check and what counts as done on hover.
     expect(container?.querySelector('[data-task-group="tasks"] span[title^="Last update"]')?.textContent).toBe('2m ago')
-    expect(container?.querySelector('[data-task-group="follow-ups"] span[title^="Next check "]')).not.toBeNull()
+    const followUpTip = container?.querySelector('[data-task-group="follow-ups"] span[title*="Next check "]')
+    expect(followUpTip?.getAttribute('title')).toContain('all checks pass')
     // The finished delegated task waits behind its group's fold.
     expect(container?.querySelector('[data-task-group="tasks"] [data-fold-toggle]')?.textContent).toBe('1 more')
     expect(last()).toEqual({ settled: true, running: 3, shown: true })
