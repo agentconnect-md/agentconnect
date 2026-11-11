@@ -1146,6 +1146,64 @@ describe('microsandbox process and VM ownership', () => {
     expect([...images.keys()]).toEqual(['next-image'])
   })
 
+  it('retires a stopped VM on a superseded image, keeping its id until the next start creates it fresh', async () => {
+    const { manager, options, environment, images, created } = await fixture()
+    await (await occupy(manager, environment)).stop(0)
+    await manager.stopAll()
+    const original = created.find((vm) => vm.spec.image === 'test-image' && !vm.destroy.mock.calls.length)!
+    images.set('next-image', null)
+    const upgradedOptions = { ...options, config: { ...options.config, image: 'next-image' } }
+    const upgraded = new MicrosandboxManager(upgradedOptions)
+    await upgraded.prepare()
+    expect(await upgraded.staleImageIds()).toEqual([environment.id])
+    expect(await upgraded.retireStaleImage(environment.id)).toBe(true)
+    expect(original.destroy).toHaveBeenCalledOnce()
+    expect(await upgraded.environmentIds()).toEqual([environment.id])
+    expect(await upgraded.staleImageIds()).toEqual([])
+    await upgraded.collectImages()
+    expect([...images.keys()]).toEqual(['next-image'])
+
+    await upgraded.prepareEnvironment(environment)
+    expect(created.at(-1)!.spec.image).toBe('next-image')
+    await upgraded.stopAll()
+    const restarted = new MicrosandboxManager(upgradedOptions)
+    expect(await restarted.environmentIds()).toEqual([environment.id])
+    await restarted.prepareEnvironment(environment)
+    expect(created.at(-1)!.destroy).not.toHaveBeenCalled()
+    await restarted.stopAll()
+  })
+
+  it('finishes a retirement cut short when the environment next starts', async () => {
+    const { manager, options, environment, images, created } = await fixture()
+    await (await occupy(manager, environment)).stop(0)
+    await manager.stopAll()
+    const original = created.find((vm) => vm.spec.image === 'test-image' && !vm.destroy.mock.calls.length)!
+    images.set('next-image', null)
+    const upgraded = new MicrosandboxManager({ ...options, config: { ...options.config, image: 'next-image' } })
+    await upgraded.prepare()
+    original.destroy.mockRejectedValueOnce(new Error('disk busy'))
+    await expect(upgraded.retireStaleImage(environment.id)).rejects.toThrow('disk busy')
+    expect(await upgraded.environmentIds()).toEqual([environment.id])
+    await upgraded.prepareEnvironment(environment)
+    expect(original.destroy).toHaveBeenCalledTimes(2)
+    expect(created.at(-1)!.spec.image).toBe('next-image')
+    await upgraded.stopAll()
+  })
+
+  it('never retires a loaded or current-image VM, and a discard forgets a retired one', async () => {
+    const { manager, options, environment, images } = await fixture()
+    await (await occupy(manager, environment)).stop(0)
+    expect(await manager.staleImageIds()).toEqual([])
+    expect(await manager.retireStaleImage(environment.id)).toBe(false)
+    images.set('next-image', null)
+    const upgraded = new MicrosandboxManager({ ...options, config: { ...options.config, image: 'next-image' } })
+    await upgraded.prepare()
+    await manager.stopAll()
+    expect(await upgraded.retireStaleImage(environment.id)).toBe(true)
+    await upgraded.discard(environment.id)
+    expect(await upgraded.environmentIds()).toEqual([])
+  })
+
   it('keeps an image a sandbox outside this daemon still boots from', async () => {
     const { options, images, imageCache, leak } = await fixture()
     images.set('shared-image', null)

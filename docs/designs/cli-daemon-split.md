@@ -185,8 +185,13 @@ which an install does not activate, and defers entirely while `<root>/daemon.loc
 names a live process. A running daemon keeps loading files from the bundle it was
 launched under, which is not necessarily `current`, so the only automatic prune
 that treats the store as idle is the one after an upgrade whose restart passed its
-health check. Otherwise the versions are reported as kept and a later prune
-reclaims them.
+health check. Otherwise the versions are kept and the deferral is recorded in
+`<root>/version-prune-deferred.json` with its retention and protected versions.
+A CLI-supervised daemon that reaches READY on `current` runs that prune once
+through `version prune --deferred <its version>`, which declines while the
+running version is not `current`. Any prune that runs supersedes the record, so
+an automatic upgrade, which never restarts the daemon from the CLI, still bounds
+the store.
 
 Mutating version commands hold a root-scoped inter-process lock. Install and
 use fail fast when another live writer owns the lock; prune and upgrade wait.

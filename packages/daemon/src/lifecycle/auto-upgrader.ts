@@ -1,10 +1,13 @@
 // Unattended upgrade onto the CP-announced release (daemon-auto-upgrade.md §4.2, §5, §7): the CP decides what, this decides when.
 import { createHash } from 'node:crypto'
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   CONFIG_KEY_UPGRADE_AUTO,
   CONFIG_KEY_UPGRADE_LATEST,
   DaemonRelease,
   LIFECYCLE_DEFERRED_REASON,
+  VERSION_PRUNE_DEFERRED_FILE,
   type DaemonLifecycleBegin,
   type DaemonLifecycleBeginOk,
   type DaemonLifecycleProgress
@@ -161,6 +164,7 @@ export class AutoUpgrader implements AutoUpgradeConfigSink, AutoUpgradeCpHooks {
   private wakeWaiter?: () => void
   private unsubscribe?: () => void
   private registerRejections = 0
+  private deferredPruneChecked = false
 
   constructor(private readonly host: AutoUpgradeHost) {}
 
@@ -272,6 +276,17 @@ export class AutoUpgrader implements AutoUpgradeConfigSink, AutoUpgradeCpHooks {
     this.registerRejections = 0
     if (!this.upgrading) await this.settleTrialMarker()
     this.poke()
+    if (!this.deferredPruneChecked && !this.upgrading) {
+      this.deferredPruneChecked = true
+      void this.runDeferredPrune()
+    }
+  }
+
+  /** The prune an install deferred while the old daemon ran; READY on `current` is the first moment no older bundle is in use. */
+  private async runDeferredPrune(): Promise<void> {
+    if (!this.host.eligible() || !existsSync(join(this.host.root(), VERSION_PRUNE_DEFERRED_FILE))) return
+    const result = await this.host.runCli(['version', 'prune', '--deferred', this.host.version()])
+    if (!result.ok) this.host.log().warn(`auto-upgrade: deferred version prune failed: ${result.stderr.trim()}`)
   }
 
   /** §7.2: a trial version the CP authenticates but refuses to register, twice, restores `from`. Unreachable is never a reason. */

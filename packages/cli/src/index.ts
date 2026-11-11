@@ -26,7 +26,14 @@ import {
   sudoAccountName
 } from './service/index.js'
 import { performInstallService, performUninstallService } from './install-service.js'
-import { runUpgrade, versionInstall, versionList, versionPrune, versionUse } from './version-commands.js'
+import {
+  runUpgrade,
+  versionInstall,
+  versionList,
+  versionPrune,
+  versionPruneDeferred,
+  versionUse
+} from './version-commands.js'
 import { DEFAULT_KEEP_VERSIONS } from './version-ops.js'
 import { CLI_VERSION } from './version.js'
 
@@ -361,9 +368,16 @@ async function main(): Promise<void> {
     .command('prune')
     .description('Remove old daemon versions, keeping the newest N in total (current/previous always kept)')
     .option('--keep <n>', 'how many versions to keep in total', String(DEFAULT_KEEP_VERSIONS))
-    .action(async (o: { keep: string }) => {
+    .addOption(
+      new Option(
+        '--deferred <running>',
+        'apply the prune a live daemon deferred, if it runs <running> = current'
+      ).hideHelp()
+    )
+    .action(async (o: { keep: string; deferred?: string }) => {
       try {
-        await versionPrune(root, keepOption(o.keep) ?? DEFAULT_KEEP_VERSIONS)
+        if (o.deferred) await versionPruneDeferred(root, o.deferred)
+        else await versionPrune(root, keepOption(o.keep) ?? DEFAULT_KEEP_VERSIONS)
       } catch (err) {
         fail('version prune', err)
       }

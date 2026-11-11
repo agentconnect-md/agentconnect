@@ -29070,7 +29070,9 @@ export class Daemon {
       const discarded =
         (await this.sweepExpiredSessions()) +
         (await this.sweepExpiredWorkspaces()) +
-        (await this.retireOrphanSessionVms())
+        (await this.retireOrphanSessionVms()) +
+        (await this.retireDepartedAgentVms()) +
+        (await this.retireStaleImageVms())
       // A discarded VM may have been the last pin on a retired release's image, which startup alone keeps until a restart.
       if (discarded && !this.draining) {
         try {
@@ -29322,6 +29324,80 @@ export class Daemon {
         })
       } catch (err) {
         this.log.warn(`retention: could not judge the session VMs of agent ${agentId} (${formatErr(err)})`)
+      }
+    }
+    return retired
+  }
+
+  /** Retire the VMs of an agent no longer loaded here that left nothing behind, as a removal made while microsandbox was down does. */
+  private async retireDepartedAgentVms(): Promise<number> {
+    const manager = this.microsandbox
+    if (!manager || this.draining) return 0
+    const byAgent = new Map<string, string[]>()
+    try {
+      for (const id of await manager.environmentIds()) {
+        const agentId = id.slice(0, id.indexOf('/'))
+        if (!agentId || id.startsWith(HOSTED_PREFIX) || this.agents.has(agentId) || manager.environment(id)) continue
+        byAgent.set(agentId, [...(byAgent.get(agentId) ?? []), id])
+      }
+    } catch (err) {
+      this.log.warn(`retention: could not list microsandbox environments (${formatErr(err)})`)
+      return 0
+    }
+    let retired = 0
+    for (const [agentId, ids] of byAgent) {
+      if (this.draining) break
+      try {
+        // Rows, dreams or work in flight mean the agent may come back to these VMs (a detach, a move); the shared leaf is always listed.
+        const kept = await this.keptSessionLeaves(agentId)
+        kept.delete(hostKeyDirName(undefined))
+        if (kept.size > 0 || this.agentHostLive(agentId)) continue
+        await this.withWorkspaceAdmissionFence(agentId, async () => {
+          for (const id of ids) {
+            if (this.draining || this.agents.has(agentId) || manager.environment(id)) return
+            await manager.discard(id)
+            retired += 1
+            this.log.info(`retention: retired VM ${id}, whose agent is no longer on this daemon`)
+          }
+        })
+      } catch (err) {
+        this.log.warn(`retention: could not retire the VMs of departed agent ${agentId} (${formatErr(err)})`)
+      }
+    }
+    return retired
+  }
+
+  /** Whether any host of the agent is live, starting or stopping, which may hold one of its VMs. */
+  private agentHostLive(agentId: string): boolean {
+    return [this.hosts, this.hostStarts, this.hostStopping].some((map) =>
+      [...map.keys()].some((key) => hostKeyAgentId(key) === agentId)
+    )
+  }
+
+  /** Retire stopped VMs on a superseded image: their next start replaces them anyway, and until then each pins a whole image. */
+  private async retireStaleImageVms(): Promise<number> {
+    const manager = this.microsandbox
+    if (!manager || this.draining) return 0
+    let stale: string[]
+    try {
+      stale = await manager.staleImageIds()
+    } catch (err) {
+      this.log.warn(`retention: could not judge microsandbox images (${formatErr(err)})`)
+      return 0
+    }
+    let retired = 0
+    for (const id of stale) {
+      const agentId = id.slice(0, id.indexOf('/'))
+      if (this.draining) break
+      if (!agentId || id.startsWith(HOSTED_PREFIX) || !this.agents.has(agentId) || this.orphanSweepHeld(agentId))
+        continue
+      try {
+        await this.withWorkspaceAdmissionFence(agentId, async () => {
+          // Inside the fence no turn starts, but a live, starting or stopping host may still hold one of the agent's VMs.
+          if (!this.agentHostLive(agentId) && (await manager.retireStaleImage(id))) retired += 1
+        })
+      } catch (err) {
+        this.log.warn(`retention: could not retire the stale-image VM ${id} (${formatErr(err)})`)
       }
     }
     return retired

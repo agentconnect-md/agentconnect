@@ -3959,11 +3959,23 @@ describe('Daemon session retention GC (#485)', () => {
       }
     })
 
-    it('leaves row-backed, shared, loaded, dream, hosted and unknown-agent VMs alone', async () => {
+    it('leaves row-backed, shared, loaded, dream, hosted and row-backed unknown-agent VMs alone', async () => {
       const daemon = await startDaemon()
       const store = (daemon as any).store
       const now = (daemon as any).clock.now()
       await seedSession(daemon, 'has-row', 'idle', now)
+      // An agent this daemon no longer loads, whose rows say it may return (a detach, a move).
+      await store.upsertSession({
+        key: 'ghost-row',
+        agentId: 'ghost-agent',
+        platform: 'slack',
+        channel: 'C1',
+        thread: 'ghost-row',
+        acpSessionId: null,
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt: now
+      })
       // A row with no ACP id yet still owns its VM.
       await store.upsertSession({
         key: 'no-acp-id',

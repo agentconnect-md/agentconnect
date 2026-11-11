@@ -4,11 +4,19 @@
  * (§5.5); `list` reads without locking. These are thin over the version-store /
  * install / upgrade modules and are what index.ts wires to commander.
  */
+import { rmSync } from 'node:fs'
 import { installTarget, resolveTarget } from './install.js'
 import { cliCommand } from './invocation.js'
 import { realUpgradeDeps, upgrade } from './upgrade.js'
 import { withVersionLock } from './version-lock.js'
-import { autoPrune, DEFAULT_KEEP_VERSIONS, pruneVersions, useVersion } from './version-ops.js'
+import {
+  autoPrune,
+  DEFAULT_KEEP_VERSIONS,
+  deferredPrunePath,
+  pruneVersions,
+  runDeferredPrune,
+  useVersion
+} from './version-ops.js'
 import { currentVersion, listInstalled, readMeta, writeMeta, type Channel } from './version-store.js'
 
 const note = (m: string): void => console.log(m)
@@ -67,7 +75,26 @@ export async function versionPrune(root: string, keep: number): Promise<void> {
     'prune',
     () => {
       const removed = pruneVersions(root, keep)
+      // An explicit prune supersedes whatever retention an earlier automatic one deferred.
+      rmSync(deferredPrunePath(root), { force: true })
       note(removed.length ? `pruned ${removed.length}: ${removed.join(', ')}` : 'nothing to prune')
+    },
+    { wait: true }
+  )
+}
+
+/** The daemon's call once it runs `running`: apply the prune an install or upgrade deferred while it was live. */
+export async function versionPruneDeferred(root: string, running: string): Promise<void> {
+  await withVersionLock(
+    root,
+    'prune',
+    () => {
+      const result = runDeferredPrune(root, running)
+      if ('skipped' in result) note(`deferred prune skipped: ${result.skipped}`)
+      else
+        note(
+          result.removed.length ? `pruned ${result.removed.length}: ${result.removed.join(', ')}` : 'nothing to prune'
+        )
     },
     { wait: true }
   )
