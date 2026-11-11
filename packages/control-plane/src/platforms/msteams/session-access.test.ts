@@ -115,7 +115,8 @@ describe('Microsoft Teams session access', () => {
         platformConfig: {
           tokenTenantId: TENANT,
           appOwner: 'deployment',
-          agentBot: { blueprintId, resourceName: 'agentconnect-example' }
+          agentBotBlueprintId: blueprintId,
+          agentBotResourceName: 'agentconnect-example'
         }
       })
     const f = fixture(undefined, { app, agentBots, stored: MSTEAMS_DEPLOYMENT_SECRET_MARKER })
