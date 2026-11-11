@@ -4002,7 +4002,9 @@ it, and a burst of changes within a minute is one write.
   place, and it is not created again until assistant mode is switched off and on. Deleting it is
   the off switch; there is no setting.
 - _Removed_, with its bookmark, when assistant mode is switched off or the channel becomes
-  shared with another organization. Removal is best effort. A page whose agent left the channel,
+  shared with another organization. A removal that fails, or finds no connection, keeps the row
+  with its canvas and bookmark ids, and the next sweep tries again; a canvas Slack already reports
+  gone counts as removed. A page whose agent left the channel,
   or was deleted, stays where it is with its last "updated" time; deleting the agent drops its
   rows.
 - _Found again_ after a restart through its row in `assistant_work_canvas` (agent, place → state,

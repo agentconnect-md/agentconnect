@@ -137,11 +137,19 @@ export async function sweepWorkCanvases(deps: WorkCanvasDeps): Promise<void> {
   }
 }
 
+// A page whose removal did not go through keeps its row, so the next sweep tries again.
 async function takeDown(deps: WorkCanvasDeps, row: WorkCanvasRow, integrationId: string | undefined): Promise<void> {
   const ref = refOf(row)
-  const conn = integrationId ? deps.connection(integrationId) : undefined
-  if (ref && conn?.removeWorkPage)
-    await conn.removeWorkPage(row.channel, ref).catch((err) => deps.warn(`work canvas removal failed: ${err}`))
+  if (ref) {
+    const conn = integrationId ? deps.connection(integrationId) : undefined
+    if (!conn?.removeWorkPage) return
+    try {
+      await conn.removeWorkPage(row.channel, ref)
+    } catch (err) {
+      deps.warn(`work canvas removal failed (ch=${row.channel}): ${(err as Error).message}`)
+      return
+    }
+  }
   await deps.stores.workCanvases.remove(row.agentId, row)
 }
 

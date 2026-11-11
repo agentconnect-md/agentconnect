@@ -277,6 +277,20 @@ describe('the Work page sweep', () => {
     expect(await rowOf()).toBeUndefined()
   })
 
+  it('keeps the page’s record when its removal fails or its connection is away, and retries on the next sweep', async () => {
+    const f = await fake([followUp()])
+    await sweepWorkCanvases(f.deps)
+    f.agent.assistantMode = { enabled: false }
+    f.remove.mockRejectedValueOnce(new Error('ratelimited'))
+    await sweepWorkCanvases(f.deps)
+    expect(await rowOf()).toMatchObject({ state: 'live', canvasId: 'F0WORK' })
+    await sweepWorkCanvases({ ...f.deps, connection: () => undefined })
+    expect(await rowOf()).toMatchObject({ state: 'live', canvasId: 'F0WORK' })
+    await sweepWorkCanvases(f.deps)
+    expect(f.remove).toHaveBeenCalledTimes(2)
+    expect(await rowOf()).toBeUndefined()
+  })
+
   it('records a failed write and retries it only when the page changes', async () => {
     const f = await fake([followUp()])
     f.put.mockRejectedValueOnce(new Error('ratelimited'))
