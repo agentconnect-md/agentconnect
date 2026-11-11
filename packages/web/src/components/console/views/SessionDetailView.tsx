@@ -2979,6 +2979,27 @@ export default function SessionDetailView() {
       </div>
     )
   }
+  // The thread under the agent's own post at the root: its task's card and its replies line, on the agent's side.
+  const ownRootFooter = (rootId: string) => {
+    const summary = threadSummaries.get(rootId)
+    if (!summary) return null
+    return (
+      <div className="mt-[6px] flex w-full">
+        <RootThreadFooter
+          agentId={session.agentId ?? ''}
+          parentSessionId={session.id}
+          summary={summary}
+          rootId={rootId}
+          href={threadHref(rootId)}
+          {...(threadWriter ? { onReply: () => replyInThread(rootId) } : {})}
+          selected={openRoot === rootId}
+          onOpen={() => openRootThread(rootId)}
+          nameOf={threadAuthorName}
+          markOf={threadAuthorMark}
+        />
+      </div>
+    )
+  }
   // A message the coordinator handed into a task's thread says so above its bubble, as Slack's "replied to a thread", and opens it.
   const handedLead = (turn: Turn) => {
     if (!threadsView || turn.kind !== 'user' || !turn.handedTo) return null
@@ -4110,6 +4131,7 @@ export default function SessionDetailView() {
                                       onOpen={() => openTaskThread(link)}
                                     />
                                   )}
+                                  {...(threadsView ? { rootFooter: ownRootFooter } : {})}
                                   answerElicitation={answerElicitation}
                                   appRpc={appRpc}
                                   appReport={appReport}

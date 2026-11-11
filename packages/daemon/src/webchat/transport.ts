@@ -481,7 +481,9 @@ export class WebchatTransport {
         conversationId: webchat.conversationId,
         author: { kind: 'agent', agentId: msg.sender.id },
         text: msg.text,
-        at: Number(msg.transcriptTs)
+        at: Number(msg.transcriptTs),
+        // A turn answering in a thread received its message there, so the post is drawn in that thread.
+        ...(webchat.thread ? { thread: webchat.thread } : {})
       },
       initiator: 'agent'
     })

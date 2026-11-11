@@ -4,7 +4,7 @@ import { type CSSProperties, type ReactNode } from 'react'
 import Link from 'next/link'
 import { speaker, type Agent, type ElicitAnswerValue, type FillCardAnswer } from '@/lib/data'
 import { agentToneColor } from '@/lib/agent-tone'
-import { AGENT_PROSE, SELF_BUBBLE } from '@/components/console/transcript-bubbles'
+import { AGENT_PROSE, DELIVERED_BUBBLE, SELF_BUBBLE } from '@/components/console/transcript-bubbles'
 import { AgentTurnHeader } from '@/components/console/AgentTurnHeader'
 import { TurnApprovals } from '@/components/console/TurnApprovals'
 import { askedApprovalIds } from '@/components/console/approval-placement'
@@ -13,7 +13,7 @@ import { MessageText } from '@/components/console/MessageText'
 import { SharedFileChip } from '@/components/console/SharedFileChip'
 import { SharedImageCard } from '@/components/console/SharedImageCard'
 import { SessionMessageCaption, UserTurnDetails } from '@/components/console/UserTurnDetails'
-import type { McpAppRpc } from '@agentconnect.md/protocol'
+import type { McpAppRpc, SessionMessageTurnFacts } from '@agentconnect.md/protocol'
 import type { McpAppCardProps } from '@/components/console/McpAppCard'
 import { Avatar, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
@@ -216,6 +216,15 @@ export function lastSpokenSentence(steps: readonly FmtStep[]): string {
   return sentences.at(-1) ?? ''
 }
 
+/** A message delivered into the agent's session, set apart from what the agent said itself and folded to its first lines. */
+function DeliveredMessage({ facts, children }: { facts: SessionMessageTurnFacts; children: ReactNode }) {
+  return (
+    <div data-delivered-message="" className={DELIVERED_BUBBLE}>
+      <UserTurnDetails body={{ sessionMessage: facts }}>{children}</UserTurnDetails>
+    </div>
+  )
+}
+
 export function BotTurnView({
   turn,
   agentById,
@@ -230,6 +239,7 @@ export function BotTurnView({
   trail,
   openedTasks,
   taskFooter,
+  rootFooter,
   answerElicitation,
   appRpc,
   appReport,
@@ -258,6 +268,8 @@ export function BotTurnView({
   openedTasks?: readonly TaskLink[]
   /** A task's card; without it a step linking a task reads as prose. */
   taskFooter?: (link: TaskLink, opened: boolean) => ReactNode
+  /** The footer of the thread under the agent's own post at the root; null where it has none. */
+  rootFooter?: (rootId: string) => ReactNode
   answerElicitation?:
     ((agentId: string | undefined, requestId: string | undefined, value: ElicitAnswerValue) => void) | undefined
   appRpc?:
@@ -418,6 +430,13 @@ export function BotTurnView({
                 ) : (
                   <>
                     {st.sessionMessage && <SessionMessageCaption facts={st.sessionMessage} />}
+                    {st.sessionMessage && st.text && (
+                      <DeliveredMessage facts={st.sessionMessage}>
+                        <div className="whitespace-pre-wrap">
+                          <MessageText text={st.text} platform={st.platform} />
+                        </div>
+                      </DeliveredMessage>
+                    )}
                     {st.image && (
                       <img
                         src={`data:${st.image.mimeType};base64,${st.image.data}`}
@@ -425,7 +444,7 @@ export function BotTurnView({
                         className={`max-h-[360px] max-w-full rounded-md object-contain ${st.text ? 'mb-[10px]' : ''}`}
                       />
                     )}
-                    {st.text && (
+                    {st.text && !st.sessionMessage && (
                       <div className="whitespace-pre-wrap">
                         <MessageText text={st.text} platform={st.platform} />
                       </div>
@@ -439,10 +458,11 @@ export function BotTurnView({
                         />
                       </div>
                     )}
-                    {st.sessionMessage && <UserTurnDetails body={{ sessionMessage: st.sessionMessage }} />}
+                    {st.sessionMessage && !st.text && <UserTurnDetails body={{ sessionMessage: st.sessionMessage }} />}
                   </>
                 )}
                 <StepExtras step={st} sessionId={sessionId} />
+                {st.rootId && rootFooter ? rootFooter(st.rootId) : null}
               </div>
             )
           )}

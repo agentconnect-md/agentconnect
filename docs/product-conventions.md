@@ -1962,8 +1962,8 @@ nowhere else; each list shows the most recent entries, up to a limit, and says w
   decision that got no answer keeps its row with a warning; once the draft is no longer waiting,
   it says to check the destination, since it may have been posted. Proposals are listed here too,
   labelled as proposals: the sentence, the reason, the work, the conversation it runs in, its follow-up,
-  who is asked and when it expires, with Approve and Deny. An approved one says it runs in the
-  background and reports back in that conversation; one refused at the task limit
+  who is asked and when it expires, with Approve and Deny. An approved one says it runs as a task
+  in that conversation; one refused at the task limit
   keeps its choices and says why. A task waiting for permission is listed here as well:
   which task and conversation (named only to someone who may view them), what it asks to run and
   when it is denied unless answered, with the runtime's own choices. An answer here is the same

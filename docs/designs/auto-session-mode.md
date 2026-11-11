@@ -864,6 +864,19 @@ Built.
   its first six lines in the transcript, with the toggle that opens the rest directly below them.
   Before, the whole body showed and the toggle sat under it, a screen or more down for a
   getting-to-know report.
+- **A delivered message is not the agent's speech.** A report in its coordinator and the work
+  handed to a task are rows of the session's own agent, so they were drawn as prose the agent said,
+  unfolded. They are drawn as a bubble on the agent's side, folded as above; what the agent says in
+  answer follows as prose. The work handed to a task in a webchat thread is also posted live in
+  that thread, where it showed at the conversation's root until a reload.
+- **The agent's own root carries its thread's footer.** An approved proposal's root and a
+  getting-to-know introduction are the agent's posts at the root. Each is drawn with the footer of
+  the thread under it, its task's card and its replies line, as a person's root is.
+- **The agent's posts on a platform are rows of its conversation.** A coordinator's reply and an
+  approved proposal's root are recorded in the coordinator's conversation under the id the platform
+  gave the post, as its webchat posts already were; one at the top level is the root of its own
+  thread. Before, the page showed neither until something read the thread back from the platform,
+  and a getting-to-know row opened a thread the conversation did not have.
 
 #### 6.9.6 What still runs without a home
 

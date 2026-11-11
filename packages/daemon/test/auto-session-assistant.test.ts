@@ -11,7 +11,7 @@ import { executeTool } from '../src/mcp/ops.js'
 import { ASSISTANT_REMINDER_TOOLS } from '../src/mcp/ops/assistant-reminders.js'
 import { isCoordinatorCoordinate } from '../src/session/append-coordinate.js'
 import { checkCoordinate } from '../src/session/subsession-coordinate.js'
-import { sessionKey } from '../src/store/local-store.js'
+import { sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
 
@@ -403,6 +403,18 @@ describe('assistant mode under auto (auto-session-mode.md §3.4)', () => {
     await vi.waitFor(() => expect(d.pending.size + d.inflight.size).toBe(0), WAIT)
     // The turn's own text is never posted, so the first reply it made is the one the cards go under.
     expect(released.mock.calls[0]).toEqual(['bot-a', expect.any(String), '1700000400.000001'])
+    // The introduction is the coordinator's own post at the top level: a root its conversation's record keeps.
+    expect(
+      await d.store.threadRootInSession(
+        {
+          transcriptChannel: transcriptChannelKey('C1', scope),
+          coordinate: coordinator,
+          sessionKey: sessionKey('slack', 'C1', coordinator, 'bot-a', scope),
+          agentId: 'bot-a'
+        },
+        '1700000400.000001'
+      )
+    ).toMatchObject({ ts: '1700000400.000001', thread: '1700000400.000001', sender: 'bot-a' })
     expect(d.roundReplies.size).toBe(0)
     await daemon.stop()
   })
@@ -455,6 +467,17 @@ describe('assistant mode under auto (auto-session-mode.md §3.4)', () => {
     expect(posts[0]?.thread).toBeUndefined()
     expect(posts[0]?.text).toContain('**I want to check the findings.**')
     expect(posts[0]?.text).toContain('Approved by Grace.')
+    // The root is a row of the coordinator's conversation, so its page shows it and its thread opens there.
+    const reader = { transcriptChannel: transcriptChannelKey('C1', scope), agentId: 'bot-a' }
+    expect(await d.store.threadRootRows(reader, ['1700000500.000001'])).toMatchObject([
+      { ts: '1700000500.000001', thread: '1700000500.000001', sender: 'bot-a', text: posts[0]?.text }
+    ])
+    expect(
+      await d.store.threadRootInSession(
+        { ...reader, coordinate: coordinator, sessionKey: parent.key },
+        '1700000500.000001'
+      )
+    ).toMatchObject({ sender: 'bot-a' })
     // No coordinator, or guests in the room: it runs with no thread, as before.
     expect(await d.taskHomeFor(draft, { ...parent, thread: 'append:1' })).toBeUndefined()
     internal.mockResolvedValue(false)
