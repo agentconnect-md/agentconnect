@@ -16,7 +16,11 @@ import { agentIconBackgroundColor } from '../../agents/agent-icon.js'
 import { AgentId, DaemonId, IntegrationId } from '../../domain/ids.js'
 import { BotExternalIdentityTaken } from '../../persistence/errors.js'
 import type { AgentRecord, MsTeamsAgentBotRequestRecord, MsTeamsBindingMutations } from '../../persistence/ports.js'
-import { MSTEAMS_REQUEST_FIRST_CHECK_MS, type MsTeamsAgentBotRequests } from './agent-bot-requests.js'
+import {
+  MSTEAMS_REQUEST_FIRST_CHECK_MS,
+  MsTeamsRequestBusy,
+  type MsTeamsAgentBotRequests
+} from './agent-bot-requests.js'
 import {
   MsTeamsAgentBotClient,
   MsTeamsAgentBotError,
@@ -1146,7 +1150,7 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
             'Withdraw the package from review where the stored sign-in still works, delete the agent’s bot registration and identity, and forget the request with its stored sign-in. Answers 502 when Microsoft could not be reached, and nothing is forgotten.',
           operationId: 'cancelMsTeamsAgentBotRequest',
           params: IdParam,
-          response: { 204: z.null(), 403: ErrorDto, 404: ErrorDto, 502: ErrorDto }
+          response: { 204: z.null(), 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 502: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -1157,6 +1161,8 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
         try {
           await seams.requests.cancel(orgOf(req), request.id)
         } catch (err) {
+          if (err instanceof MsTeamsRequestBusy)
+            return refuse(reply, 409, 'MSTEAMS_REQUEST_BUSY', 'The request is being checked. Try again in a moment.')
           req.log.warn({ err, requestId: request.id }, 'msteams: agent bot request not cancelled')
           return refuse(reply, 502, 'MSTEAMS_CONNECT_UNAVAILABLE', 'Microsoft could not be reached. Try again.')
         }

@@ -61,6 +61,14 @@ export interface MsTeamsAgentBotRequestsDeps {
   log: { info(obj: object, msg: string): void; warn(obj: object, msg: string): void }
 }
 
+/** A check or another cancel holds the request; the caller tries again once it is done. */
+export class MsTeamsRequestBusy extends Error {
+  constructor() {
+    super('The request is being checked.')
+    this.name = 'MsTeamsRequestBusy'
+  }
+}
+
 export class MsTeamsAgentBotRequests {
   private readonly fetchImpl: typeof fetch
   readonly client: MsTeamsAgentBotClient
@@ -198,6 +206,8 @@ export class MsTeamsAgentBotRequests {
       const made = await this.deps.bindingMutations.runExclusive(request.tenantId, async () => {
         // The tenant may have changed hands while the teams were being installed into.
         if (!(await this.owned(request))) throw new Error('the tenant changed hands')
+        // A request cancelled meanwhile has had its bot removed, so no row may name it.
+        if (!(await this.store.get(request.orgId, request.id))) throw new Error('the request was cancelled')
         return await installNewBot(http, this.deps.log as never, {
           bot: {
             externalAppId: request.identity,
@@ -244,8 +254,27 @@ export class MsTeamsAgentBotRequests {
 
   /** Withdraws the submission where the member's token still works, removes the bot, and forgets the request; throws when Microsoft could not be reached, so nothing is forgotten half-removed. */
   async cancel(orgId: OrgId, id: string): Promise<boolean> {
+    // A cancel holds the claim a check holds, so neither acts on a request the other is finishing.
+    const claim = randomUUID()
+    const now = this.now()
+    if (!(await this.store.claim(orgId, id, claim, now, new Date(now.getTime() + CLAIM_MS)))) {
+      if (await this.store.get(orgId, id)) throw new MsTeamsRequestBusy()
+      return false
+    }
     const request = await this.store.get(orgId, id)
     if (!request) return false
+    try {
+      await this.withdrawAndRemove(request)
+    } catch (err) {
+      await this.store.release(orgId, id, claim, { nextCheckAt: request.nextCheckAt })
+      throw err
+    }
+    await this.store.delete(orgId, id)
+    return true
+  }
+
+  // Withdraws the submission where the stored token still works, then removes the bot.
+  private async withdrawAndRemove(request: MsTeamsAgentBotRequestRecord): Promise<void> {
     if (request.refreshToken) {
       try {
         const tokens = await redeemMsTeamsRefreshToken(
@@ -264,8 +293,6 @@ export class MsTeamsAgentBotRequests {
       }
     }
     await this.removeBot(request)
-    await this.store.delete(orgId, id)
-    return true
   }
 
   // The registration and the identity of a request that will not be installed.
