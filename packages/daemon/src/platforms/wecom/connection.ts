@@ -5,11 +5,18 @@ import type { LoadedAgent } from '../../agents/load-agents.js'
 import type { Logger } from '../../log.js'
 import type { NormalizedMessage } from '../../messages/normalized.js'
 import { splitMarkdownByBytes } from '../../messages/split-markdown-bytes.js'
-import type { PlatformChannelInfo, PlatformConnection, PlatformMemberRef, PlatformUserProfile } from '../contract.js'
+import type {
+  InteractionActor,
+  PlatformChannelInfo,
+  PlatformConnection,
+  PlatformMemberRef,
+  PlatformUserProfile
+} from '../contract.js'
 import type { UploadOutcome } from '../../mcp/ops/context.js'
 import { platformIntegrationConfig } from '../integration-config.js'
 import { WECOM_ATTACHMENT_TOOL } from './attachments.js'
 import {
+  WECOM_EVENT_CALLBACK,
   WECOM_MSG_CALLBACK,
   WeComClient,
   WeComRequestError,
@@ -28,6 +35,7 @@ import {
   type WeComDownloaded,
   type WeComMediaPort
 } from './media.js'
+import { weComCardTap } from './elicit-card.js'
 import { WeComRateLimited, WeComSendBudget } from './rate-limit.js'
 
 export interface WeComConnectionGroup {
@@ -76,6 +84,11 @@ const DEFAULT_MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
 const HELD_MAX_BYTES = 64 * 1024 * 1024
 const HELD_TTL_MS = 24 * 60 * 60_000
 const UPLOAD_BUDGET_KEY = 'uploads'
+// WeCom takes a card update only within 5 s of the tap (official doc, path 101463); half a second is kept as margin.
+export const WECOM_CARD_UPDATE_WINDOW_MS = 4_500
+const TAP_LIMIT = 500
+const CLOSED_CARD_LIMIT = 2_000
+const QUESTION_TAG_LIMIT = 500
 const IMAGE_UNAVAILABLE = '[WeCom image unavailable: it could not be downloaded when it arrived.]'
 
 /** A callback a turn may answer under its `req_id`; held by the connection, never put in the message. */
@@ -108,6 +121,18 @@ export interface WeComReplyPort {
   sendMarkdown(channel: string, text: string): Promise<WeComSentPart[]>
 }
 
+/** The question card calls the elicitation facet makes through the connection a turn leased. */
+export interface WeComQuestionPort {
+  /** Send a template card proactively; false when WeCom refused it or it could not go out. */
+  sendQuestionCard(channel: string, card: Record<string, unknown>): Promise<boolean>
+  /** Replace a settled card under its latest tap's `req_id`; false when no tap is inside WeCom's window or the update failed. */
+  closeQuestionCard(taskId: string, channel: string, card: Record<string, unknown>): Promise<boolean>
+  /** A numbered text card's tag is live: a quote carrying it in `channel` reads as a reply to it. */
+  noteQuestionTag(channel: string, tag: string): void
+  retireQuestionTag(tag: string): void
+  sendText(channel: string, text: string): Promise<boolean>
+}
+
 /** Where a proactive send addresses a conversation: a direct chat by its member's userid, a group by its chatid. */
 export function weComSendTarget(channel: string): { chatid: string; chat_type: 1 | 2 } {
   return channel.startsWith('dm:') ? { chatid: channel.slice(3), chat_type: 1 } : { chatid: channel, chat_type: 2 }
@@ -126,11 +151,24 @@ export interface WeComConnectionDeps {
   fetchImpl?: typeof fetch
   /** The cap a received attachment is fetched under at receipt; the daemon's default attachment limit when unset. */
   maxAttachmentBytes?: number
+  /** A tap on a question card; a refusal for the tapper comes back, which WeCom has nowhere private to show. */
+  onElicitChoice?(a: {
+    requestId: string
+    token: string | null
+    ts?: string
+    actor?: InteractionActor
+  }): Promise<string | undefined>
+}
+
+interface CardTap {
+  reqId: string
+  generation: number
+  at: number
 }
 
 type HeldMediaRef = WeComMediaRef & { receivedAt: number }
 
-export class WeComConnection implements PlatformConnection, WeComReplyPort, WeComMediaPort {
+export class WeComConnection implements PlatformConnection, WeComReplyPort, WeComMediaPort, WeComQuestionPort {
   readonly botUserId: string
   private readonly client: WeComClient
   private readonly budget: WeComSendBudget
@@ -148,6 +186,12 @@ export class WeComConnection implements PlatformConnection, WeComReplyPort, WeCo
   private readonly channels = new Map<string, { isIm: boolean }>()
   private readonly members = new Map<string, Set<string>>()
   private readonly sendChains = new Map<string, Promise<unknown>>()
+  // A question card's latest tap, whose req_id an update must go out under.
+  private readonly taps = new Map<string, CardTap>()
+  // A settled card's replacement, sent under any later tap so a card that could not be closed in time closes then.
+  private readonly closedCards = new Map<string, { channel: string; card: Record<string, unknown> }>()
+  // Live numbered text cards by tag, with the conversation each was asked in.
+  private readonly questionTags = new Map<string, string>()
   private stopped = false
   private kicks = 0
   private heldSince = 0
@@ -230,15 +274,14 @@ export class WeComConnection implements PlatformConnection, WeComReplyPort, WeCo
 
   private onCallback(callback: WeComCallback): void {
     if (this.stopped) return
-    // Events (enter_chat, template_card_event, feedback_event, and any new one) are served by later changes.
+    // Of the events, only a card tap is served; enter_chat, feedback_event and any new one are left to later changes.
+    if (callback.cmd === WECOM_EVENT_CALLBACK) return this.onEvent(callback)
     if (callback.cmd !== WECOM_MSG_CALLBACK) return
     const payload = callback.body as WeComInboundMessage
-    const msgid = typeof payload.msgid === 'string' ? payload.msgid : undefined
-    if (!msgid || this.seen.has(msgid)) return
-    this.seen.add(msgid)
-    while (this.seen.size > SEEN_LIMIT) this.seen.delete(this.seen.values().next().value!)
+    if (!this.firstSeen(payload.msgid)) return
     const msg = this.normalize(payload)
     if (!msg) return
+    this.matchQuestionQuote(msg, payload.quote)
     this.replies.set(msg.msgId, {
       reqId: callback.reqId,
       generation: callback.generation,
@@ -248,6 +291,52 @@ export class WeComConnection implements PlatformConnection, WeComReplyPort, WeCo
     })
     while (this.replies.size > REPLY_LIMIT) this.replies.delete(this.replies.keys().next().value!)
     this.deliver(msg)
+  }
+
+  // A callback's msgid is its dedup key, events included (official doc: a callback may be delivered more than once).
+  private firstSeen(msgid: unknown): boolean {
+    if (typeof msgid !== 'string' || !msgid || this.seen.has(msgid)) return false
+    this.seen.add(msgid)
+    while (this.seen.size > SEEN_LIMIT) this.seen.delete(this.seen.values().next().value!)
+    return true
+  }
+
+  private onEvent(callback: WeComCallback): void {
+    const event = callback.body.event as { eventtype?: unknown } | undefined
+    if (event?.eventtype !== 'template_card_event' || callback.body.aibotid !== this.group.botId) return
+    if (!this.firstSeen(callback.body.msgid)) return
+    const tap = weComCardTap(callback.body)
+    if (!tap) return
+    this.taps.delete(tap.taskId)
+    this.taps.set(tap.taskId, { reqId: callback.reqId, generation: callback.generation, at: this.now() })
+    while (this.taps.size > TAP_LIMIT) this.taps.delete(this.taps.keys().next().value!)
+    // A card settled before this tap is closed now, under this tap's own req_id; core is not asked again.
+    const closed = this.closedCards.get(tap.taskId)
+    if (closed) {
+      void this.closeQuestionCard(tap.taskId, closed.channel, closed.card)
+      return
+    }
+    if (!this.deps.onElicitChoice) return
+    const actor: InteractionActor = { userId: tap.userId }
+    void this.deps
+      .onElicitChoice({ requestId: tap.requestId, token: tap.token, ts: tap.taskId, actor })
+      .catch((error: unknown) => this.deps.log.warn(`wecom: card tap failed (${sendErrorLabel(error)})`))
+  }
+
+  // WeCom's quote names no message, so a quote reads as a reply to a numbered text card only when it carries that card's live tag.
+  private matchQuestionQuote(msg: NormalizedMessage, quote: unknown): void {
+    if (!quote || msg.replyTo !== undefined || !this.questionTags.size) return
+    let quoted: string
+    try {
+      quoted = JSON.stringify(quote)
+    } catch {
+      return
+    }
+    for (const [tag, channel] of this.questionTags)
+      if (channel === msg.channel && quoted.includes(tag)) {
+        msg.replyTo = tag
+        return
+      }
   }
 
   // Fetch a message's attachments before handing it on: the URLs expire in five minutes, long before an agent may read them.
@@ -416,6 +505,49 @@ export class WeComConnection implements PlatformConnection, WeComReplyPort, WeCo
       if (this.sendChains.get(channel) === settled) this.sendChains.delete(channel)
     })
     return run
+  }
+
+  async sendQuestionCard(channel: string, card: Record<string, unknown>): Promise<boolean> {
+    return await this.chained(channel, async () => {
+      try {
+        await this.budget.take(channel)
+        await this.client.send({ ...weComSendTarget(channel), msgtype: 'template_card', template_card: card })
+        return true
+      } catch (error) {
+        this.deps.log.warn(`wecom: question card not sent (${sendErrorLabel(error)}); sending the text card instead`)
+        return false
+      }
+    })
+  }
+
+  async closeQuestionCard(taskId: string, channel: string, card: Record<string, unknown>): Promise<boolean> {
+    this.closedCards.delete(taskId)
+    this.closedCards.set(taskId, { channel, card })
+    while (this.closedCards.size > CLOSED_CARD_LIMIT) this.closedCards.delete(this.closedCards.keys().next().value!)
+    const tap = this.taps.get(taskId)
+    this.taps.delete(taskId)
+    if (!tap || this.now() - tap.at >= WECOM_CARD_UPDATE_WINDOW_MS) return false
+    // Whether an update counts toward the conversation's 30 a minute is undocumented, so it counts; the window cannot wait.
+    this.budget.note(channel)
+    try {
+      await this.client.respondUpdate(tap.reqId, tap.generation, {
+        response_type: 'update_template_card',
+        template_card: card
+      })
+      return true
+    } catch (error) {
+      this.deps.log.warn(`wecom: question card not updated (${sendErrorLabel(error)})`)
+      return false
+    }
+  }
+
+  noteQuestionTag(channel: string, tag: string): void {
+    this.questionTags.set(tag, channel)
+    while (this.questionTags.size > QUESTION_TAG_LIMIT) this.questionTags.delete(this.questionTags.keys().next().value!)
+  }
+
+  retireQuestionTag(tag: string): void {
+    this.questionTags.delete(tag)
   }
 
   /** A short message for chrome and notices; false when WeCom did not take it. */

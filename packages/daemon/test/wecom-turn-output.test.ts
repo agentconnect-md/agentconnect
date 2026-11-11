@@ -206,6 +206,35 @@ describe('WeCom streamed answer', () => {
     expect(warnings[0]).not.toContain('Nightly')
   })
 
+  it('seals the answer so far before a card, so what follows is sent below it', async () => {
+    vi.useFakeTimers()
+    const { port, pushes, sends } = fakePort()
+    const { apply, state } = harness(port)
+    await apply({ kind: 'wecom-stream', text: 'Let me check.' })
+    await vi.advanceTimersByTimeAsync(0)
+    await apply({ kind: 'wecom-stream', text: 'Let me check. I need one answer.' })
+    await state.stream!.seal()
+    expect(pushes.map((p) => [p.content, p.finish])).toEqual([
+      ['Let me check.', false],
+      ['Let me check. I need one answer.', true]
+    ])
+    await apply({ kind: 'post', text: 'Let me check. I need one answer.\n\nThanks, cutting from main.' })
+    expect(pushes).toHaveLength(2)
+    expect(sends).toEqual(['Thanks, cutting from main.'])
+  })
+
+  it('sends throttled text before a card even when the stream never opened', async () => {
+    vi.useFakeTimers()
+    const { port, pushes, setFits } = fakePort()
+    const { apply, state } = harness(port)
+    setFits(false)
+    await apply({ kind: 'wecom-stream', text: 'Before the card.' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(pushes).toEqual([])
+    await state.stream!.seal()
+    expect(pushes.map((p) => [p.content, p.finish])).toEqual([['Before the card.', true]])
+  })
+
   it('closes a suppressed turn’s open stream with what it last showed', async () => {
     vi.useFakeTimers()
     const { port, pushes } = fakePort()

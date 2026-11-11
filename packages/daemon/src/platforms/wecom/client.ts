@@ -11,6 +11,7 @@ export const WECOM_EVENT_CALLBACK = 'aibot_event_callback'
 const SUBSCRIBE = 'aibot_subscribe'
 const PING = 'ping'
 const RESPOND = 'aibot_respond_msg'
+const RESPOND_UPDATE = 'aibot_respond_update_msg'
 const SEND = 'aibot_send_msg'
 
 /** The slice of the WHATWG WebSocket the client uses, so tests can drive a fake. */
@@ -170,11 +171,25 @@ export class WeComClient {
 
   /** Answer a callback under its `req_id`, serially per `req_id`; a callback from an earlier socket is refused unsent. */
   respond(reqId: string, generation: number, body: Record<string, unknown>): Promise<WeComFrame> {
+    return this.respondAs(RESPOND, reqId, generation, body)
+  }
+
+  /** Replace a template card under the `req_id` of the tap that names it; WeCom takes it only within 5 s of the tap. */
+  respondUpdate(reqId: string, generation: number, body: Record<string, unknown>): Promise<WeComFrame> {
+    return this.respondAs(RESPOND_UPDATE, reqId, generation, body)
+  }
+
+  private respondAs(
+    cmd: string,
+    reqId: string,
+    generation: number,
+    body: Record<string, unknown>
+  ): Promise<WeComFrame> {
     const previous = this.replyChains.get(reqId) ?? Promise.resolve()
     const run = previous.then(() => {
       if (generation !== this.generationNo || this.state !== 'up')
         throw new WeComTransportError('wecom: the callback came on an earlier connection', false)
-      return this.request(RESPOND, body, reqId)
+      return this.request(cmd, body, reqId)
     })
     const settled = run.catch(() => undefined)
     this.replyChains.set(reqId, settled)
