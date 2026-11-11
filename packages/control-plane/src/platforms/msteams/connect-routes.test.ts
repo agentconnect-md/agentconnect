@@ -146,6 +146,8 @@ async function harness(
     if (url.includes('$filter')) return Response.json({ value: [] })
     if (url.includes('/appDefinitions/') && init?.method === 'PATCH') {
       order.push(`approve ${(init.headers as Record<string, string>)['if-match']}`)
+      // A 500 here is the one Graph has answered to an approval it applied.
+      if (opts.approve === 500) packageStates = ['published']
       if (opts.approve) return new Response(null, { status: opts.approve })
       packageStates = ['published']
       return new Response(null, { status: 200 })
@@ -974,6 +976,15 @@ describe('a member who is not an administrator (§8.6.6)', () => {
     expect(
       (await h.app.inject({ method: 'POST', url: `/integrations/msteams/requests/${id}/approve` })).statusCode
     ).toBe(404)
+  })
+
+  it('takes an approval Microsoft answered 500 to as given when the package reads as published', async () => {
+    const h = await connected({ approve: 500 })
+    const ticket = (await signIn(h)).json<{ ticket: string }>().ticket
+    const id = (await h.post('/request', { ticket, teamIds: ['team-1'] })).json<{ id: string }>().id
+    const approved = await h.callback(h.state({ approve: id }))
+    expect(approved.statusCode, approved.body).toBe(200)
+    expect(approved.json()).toMatchObject({ approved: true, agentId: AGENT })
   })
 
   it('names a sign-in that cannot approve, and keeps the request waiting', async () => {

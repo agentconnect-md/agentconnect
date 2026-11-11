@@ -18,6 +18,7 @@ import {
   MsTeamsConnectError,
   installMsTeamsApp,
   installMsTeamsAppForUser,
+  probeMsTeamsPackageForUser,
   readMsTeamsPackageState,
   redeemMsTeamsRefreshToken,
   withdrawMsTeamsSubmission
@@ -137,7 +138,17 @@ export class MsTeamsAgentBotRequests {
       return { outcome: refused ? 'needs_sign_in' : 'pending' }
     }
     try {
-      const state = await readMsTeamsPackageState(this.fetchImpl, tokens.accessToken, request.catalogAppId)
+      let state = await readMsTeamsPackageState(this.fetchImpl, tokens.accessToken, request.catalogAppId)
+      // A member's token reads only their pending submission, so an approved package answers as a removed one does: adding it for the member tells them apart.
+      if (state === 'gone') {
+        const probe = await probeMsTeamsPackageForUser(this.fetchImpl, tokens.accessToken, {
+          userId: request.sponsorId,
+          catalogAppId: request.catalogAppId,
+          permissions: MSTEAMS_RSC_PERMISSIONS
+        })
+        if (probe === 'added') state = 'published'
+        else if (probe === 'unknown') state = 'submitted'
+      }
       if (state === 'submitted') {
         await this.store.release(orgId, id, claim, { nextCheckAt: later(), refreshToken: tokens.refreshToken })
         return { outcome: 'pending' }

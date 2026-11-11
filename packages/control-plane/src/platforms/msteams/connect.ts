@@ -555,10 +555,17 @@ export async function approveMsTeamsSubmission(
       json: { publishingState: 'published' },
       ifMatch: definition['@odata.etag'] ?? '*'
     })
-    if (!response.ok) throw refused(response)
+    // Graph has answered 500 to an approval it applied, so a failed answer is checked against what the catalog now holds.
+    if (!response.ok && !(response.status >= 500 && (await published(fetchImpl, token, catalogAppId))))
+      throw refused(response)
     approved = true
   }
   return approved
+}
+
+async function published(fetchImpl: typeof fetch, token: string, catalogAppId: string): Promise<boolean> {
+  const definitions = await readDefinitions(fetchImpl, token, catalogAppId).catch(() => null)
+  return (definitions ?? []).some((definition) => definition.publishingState === 'published')
 }
 
 /** Withdraws a member's own pending submission by deleting its pending definitions, which their submit scope allows; one already gone counts as withdrawn. */
@@ -647,6 +654,27 @@ export async function installMsTeamsAppForUser(
     return (await refusedWithReason(response)).detail ?? 'refused'
   } catch (err) {
     return err instanceof MsTeamsConnectError ? (err.detail ?? err.message) : 'failed'
+  }
+}
+
+/** Whether a person can add the catalog app, which tells a published package from a removed one where the person's token cannot read the catalog: added (or already theirs), absent from the catalog, or undecided. */
+export async function probeMsTeamsPackageForUser(
+  fetchImpl: typeof fetch,
+  token: string,
+  input: { userId: string; catalogAppId: string; permissions: readonly { name: string; type: string }[] }
+): Promise<'added' | 'absent' | 'unknown'> {
+  try {
+    const path = `/users/${encodeURIComponent(input.userId)}/teamwork/installedApps`
+    const response = await graph(fetchImpl, token, 'POST', path, {
+      json: {
+        'teamsApp@odata.bind': `${GRAPH}/appCatalogs/teamsApps/${input.catalogAppId}`,
+        consentedPermissionSet: consentedPermissions(input.permissions)
+      }
+    })
+    if (response.ok || response.status === 409) return 'added'
+    return response.status === 404 ? 'absent' : 'unknown'
+  } catch {
+    return 'unknown'
   }
 }
 
