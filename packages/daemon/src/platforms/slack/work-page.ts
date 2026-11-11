@@ -1,7 +1,13 @@
 // A channel's Work page as canvas Markdown (assistant-mode.md §5.19).
 import type { WorkPage, WorkPageTask } from '../contract.js'
 
-export const WORK_PAGE_TITLE = 'Work'
+/** The canvas's title: whose work and where, since Slack also lists a canvas outside its channel. */
+export function workPageTitle(page: Pick<WorkPage, 'agentName'>, channelName: string | undefined): string {
+  return channelName ? `${page.agentName} · #${channelName}` : `${page.agentName}'s work`
+}
+
+/** The bookmark's title: inside the channel only whose work it is needs saying. */
+export const workBookmarkTitle = (page: Pick<WorkPage, 'agentName'>): string => `${page.agentName}'s work`
 
 // Titles and labels are written by people or the model, so Markdown in them is shown as text.
 const plain = (text: string): string => text.replace(/[\\`*_[\]#<>~|]/g, (c) => `\\${c}`)
@@ -27,7 +33,8 @@ export function renderWorkPage(page: WorkPage, links: ReadonlyMap<string, string
   const lines: string[] = ['## Open work', '']
   if (page.tasks.length === 0) lines.push('Nothing is open.')
   for (const task of page.tasks) {
-    const parts = [`**${statusText(task)}**`, KIND_TEXT[task.kind], plain(task.title)]
+    const title = task.consoleUrl ? `[${plain(task.title)}](${task.consoleUrl})` : plain(task.title)
+    const parts = [`**${statusText(task)}**`, KIND_TEXT[task.kind], title]
     const asker = task.askerId ? mention(task.askerId) : undefined
     if (asker) parts.push(`asked by ${asker}`)
     const link = task.thread ? links.get(task.thread) : undefined

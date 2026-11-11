@@ -13067,6 +13067,10 @@ export class Daemon {
         return agent ? sharedWithOutsiders(agent, place) : false
       },
       askerOf: (row) => this.taskOwnerId(row),
+      taskLink: (row, place) =>
+        row.sessionId
+          ? this.sessionLink(row.sessionId, this.sessionLinkSource(place.platform, place.integrationId))
+          : undefined,
       consoleUrl: (agentId) => this.agentLink(agentId),
       now: () => this.clock.now(),
       warn: (message) => this.log.warn(message)

@@ -82,7 +82,7 @@ export function fakeSlackAppFactory(identity: FakeSlackIdentity = {}): SlackAppF
           access: { set: ok },
           delete: ok
         },
-        bookmarks: { list: async () => ({ bookmarks: [] }), add: async () => ({ bookmark: {} }), remove: ok },
+        bookmarks: { list: async () => ({ bookmarks: [] }), add: async () => ({ bookmark: {} }), edit: ok, remove: ok },
         slackLists: {
           items: { list: async () => ({ items: [] }), create: async () => ({ item: {} }), update: ok }
         },
