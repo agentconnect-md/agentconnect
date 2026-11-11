@@ -3284,7 +3284,11 @@
         "plusCoordinatorOff": "+ 协调会话已关闭",
         "coordinatorOff": "协调会话已关闭",
         "disableCoordinator": "关闭协调会话",
-        "disableCoordinatorHelp": "不再提供 Auto 会话模式：Auto 会话改按单一会话运行，重新选择协调模型即可恢复"
+        "disableCoordinatorHelp": "不再提供 Auto 会话模式：Auto 会话改按单一会话运行，重新选择协调模型即可恢复",
+        "filter": "过滤",
+        "filterHint": "协调会话读到消息之前，先由 Decision 模型判断每条未点名本 Agent 的消息；确信与 Agent 无关时直接跳过。@提及、线程回复和控制台消息总是交给协调会话。",
+        "filterNotReady": "此 Agent 的 daemon 上尚未就绪",
+        "noFilter": "不过滤"
       }
     },
     "detail": {
@@ -3369,7 +3373,8 @@
         "openRecovery": "打开恢复选项",
         "runtimeAndModel": "Runtime 和模型",
         "coordinator": "协调会话",
-        "coordinatorOff": "已关闭"
+        "coordinatorOff": "已关闭",
+        "coordinatorFilter": "过滤"
       },
       "runtime": {
         "title": "Runtime",

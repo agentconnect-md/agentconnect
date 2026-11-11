@@ -780,6 +780,13 @@ not addressed to this agent. Cost grows with the number of agents.
 
 ## 11. Console
 
+- The agent's model picker sets the coordinator under its Coordinator tab (§5.4). Below the
+  runtimes, a **Filter** group lists the Decision providers whose models can answer the filter's
+  Boolean question where the agent runs, each with its model count; a provider lists its models and
+  **No filter** (§4.7). The group shows in the Edit dialog only while the agent stays on a daemon that
+  advertises `coordinator-filter-v1`, and never while the coordinator is off. **Disable coordinator**
+  ends the runtimes' model list (§3.6). The agent's Configuration card names the filter under the
+  coordinator.
 - The session-mode menu gains Auto beside Per thread and Single session, where the conversation's
   consumer's daemon reads it and outside By decision and shared-bot routing; a group DM row offers it
   too (§3.2).

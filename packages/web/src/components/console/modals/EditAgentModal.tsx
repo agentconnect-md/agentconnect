@@ -37,7 +37,8 @@ import { Button, Icon, Toggle } from '@/components/ui'
 import { DaemonSelect, type DaemonSelectOption } from '@/components/console/DaemonSelect'
 import { useModal } from '@/components/console/ModalProvider'
 import { ModelSelectionField } from '@/components/console/decisions/ModelSelectionField'
-import type { AgentModelSelection } from '@agentconnect.md/protocol/decision'
+import type { AgentCoordinatorFilter, AgentModelSelection } from '@agentconnect.md/protocol/decision'
+import { coordinatorFilterSupported, useCoordinatorFilterProviders } from '@/lib/coordinator-filter'
 import type { CoordinatorModel } from '@agentconnect.md/protocol/coordinator-model'
 import { editAgentCapabilitySource, editAgentDaemonChoices, preselectPlacementReset } from './edit-agent-daemon-choice'
 import { storedModelAfterPick } from './fallback-model'
@@ -191,6 +192,8 @@ export default function EditAgentModal({
   const initialCoordinatorModel = useRef<CoordinatorModel | null>(null)
   const [coordinatorDisabled, setCoordinatorDisabled] = useState(false)
   const initialCoordinatorDisabled = useRef(false)
+  const [coordinatorFilter, setCoordinatorFilter] = useState<AgentCoordinatorFilter | null>(null)
+  const initialCoordinatorFilter = useRef<AgentCoordinatorFilter | null>(null)
   const [outputMode, setOutputMode] = useState<OutputMode | ''>('')
   const initialOutputMode = useRef<OutputMode | ''>('')
   const [showFooter, setShowFooter] = useState(agent.showFooter)
@@ -286,6 +289,8 @@ export default function EditAgentModal({
         initialCoordinatorModel.current = dto.coordinatorModel ?? null
         setCoordinatorDisabled(dto.coordinatorDisabled === true)
         initialCoordinatorDisabled.current = dto.coordinatorDisabled === true
+        setCoordinatorFilter(dto.coordinatorFilter ?? null)
+        initialCoordinatorFilter.current = dto.coordinatorFilter ?? null
         setModelProvider(dto.modelProvider ?? null)
         initialModelProvider.current = dto.modelProvider ?? null
         setEffort(dto.reasoningEffort ?? '')
@@ -452,6 +457,9 @@ export default function EditAgentModal({
   const daemon = useDaemonDetail(editAgentCapabilitySource(daemons, daemonId, memberSets, daemonChoices.poolChoice))
   const sourceDaemon = daemons.find((d) => d.daemonId === initialDaemonId.current)
   const daemonChanged = daemonId !== initialDaemonId.current
+  // The filter is offered where the agent runs now and its daemon screens messages (auto-session-mode.md §4.7).
+  const filterProviders = useCoordinatorFilterProviders(agent)
+  const filterOffered = !daemonChanged && coordinatorFilterSupported(daemon?.caps?.features)
   const initialPlacement = daemonChanged && !initialDaemonId.current
   const placementRequested = daemonChanged || repairPlacement
   // Placement consumes the durable agent definition. Pending execution config
@@ -665,6 +673,9 @@ export default function EditAgentModal({
       ? { coordinatorModel }
       : {}),
     ...(coordinatorDisabled !== initialCoordinatorDisabled.current ? { coordinatorDisabled } : {}),
+    ...(JSON.stringify(coordinatorFilter) !== JSON.stringify(initialCoordinatorFilter.current)
+      ? { coordinatorFilter }
+      : {}),
     ...(modelSelectionChanged ? { modelSelection, ...(modelSelection && !model ? { model: selectedModel } : {}) } : {}),
     ...(runtime.trim() !== initialRuntime.current ? { runtime: runtime.trim() } : {}),
     ...(daemonId !== POOL_PLACEMENT && modelProvider !== initialModelProvider.current ? { modelProvider } : {}),
@@ -959,7 +970,12 @@ export default function EditAgentModal({
                   value: coordinatorModelOf({ runtime, model: selectedModel, coordinatorModel }, modelSource),
                   onChange: setCoordinatorModel,
                   disabled: coordinatorDisabled,
-                  onDisabledChange: setCoordinatorDisabled
+                  onDisabledChange: setCoordinatorDisabled,
+                  ...(filterOffered
+                    ? {
+                        filter: { value: coordinatorFilter, providers: filterProviders, onChange: setCoordinatorFilter }
+                      }
+                    : {})
                 }}
                 onFallbackChange={(target) => {
                   if (savedCredentials) setModelProvider('auto')

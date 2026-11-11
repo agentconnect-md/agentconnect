@@ -15,6 +15,7 @@ import type {
 import type {
   AgentModelSelection,
   AgentRepositorySelector,
+  AgentCoordinatorFilter,
   ChannelDecisionGate,
   CodeHostRoutingFamily,
   CodeHostRoutingProvider,
@@ -418,6 +419,7 @@ export interface AgentDto {
   modelSelection?: AgentModelSelection | null
   coordinatorModel?: CoordinatorModel | null // the `auto` coordinator's model; null ⇒ Default, absent on an older CP
   coordinatorDisabled?: boolean // the coordinator is off; absent on an older CP
+  coordinatorFilter?: AgentCoordinatorFilter | null // screens messages before the coordinator; absent on an older CP
   repositorySelector?: AgentRepositorySelector | null // the evaluator that chooses `decision` repositories; absent on an older CP
   memory: AgentMemoryConfig | null // memory backend; null ⇒ managed default
   assistantMode?: AssistantModePolicy | null // null ⇒ never configured, off; absent on an older CP
@@ -1210,6 +1212,8 @@ export interface UpdateAgentInput {
   coordinatorModel?: CoordinatorModel | null
   /** True turns the coordinator off; false turns it back on. */
   coordinatorDisabled?: boolean
+  /** The coordinator filter's Decision provider and model; null removes it. */
+  coordinatorFilter?: AgentCoordinatorFilter | null
   /** The repository selector's Decision provider and model; null clears. */
   repositorySelector?: AgentRepositorySelector | null
   /** Memory backend; null clears (revert to managed default). */
@@ -1444,6 +1448,7 @@ export interface CreateAgentInput {
   modelSelection?: AgentModelSelection
   coordinatorModel?: CoordinatorModel
   coordinatorDisabled?: boolean
+  coordinatorFilter?: AgentCoordinatorFilter
   /** Memory backend; absent ⇒ managed default. */
   memory?: AgentMemoryConfig
   /** The strategy sessions run in; absent ⇒ the Control Plane's default for the placement. */
@@ -2183,6 +2188,7 @@ export function agentFromDto(d: AgentDto): Agent {
     modelSelection: d.modelSelection ?? null,
     coordinatorModel: d.coordinatorModel ?? null,
     coordinatorDisabled: d.coordinatorDisabled === true,
+    coordinatorFilter: d.coordinatorFilter ?? null,
     repositorySelector: d.repositorySelector ?? null,
     // Blank when the runtime is deferred (an unplaced preset) — mirrors the
     // daemon '—' coalesce below; display sites render '—' for an empty runtime.
