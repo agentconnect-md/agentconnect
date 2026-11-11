@@ -6,6 +6,7 @@ import {
   GOOGLE_CHAT_PLATFORM,
   MSTEAMS_PLATFORM,
   WECHAT_PLATFORM,
+  WECOM_PLATFORM,
   manifestFor
 } from './platform-manifest.js'
 
@@ -79,12 +80,13 @@ describe('platform manifest', () => {
     expect(DEFAULT_MANIFEST.ownerAsDefault).toBe(false)
   })
 
-  it('declares addressing by construction on Linear, Google Chat and DingTalk, and nowhere else', () => {
+  it('declares addressing by construction on Linear, Google Chat, DingTalk and WeCom, and nowhere else', () => {
     // The decision gate reads it: a follow-up in a session the agent holds is a continuation on a
-    // platform whose every delivery already addresses the app — Linear's events, Google's and DingTalk's mentions.
+    // platform whose every delivery already addresses the app — Linear's events, the others' mentions.
     expect(manifestFor('linear').addressedByConstruction).toBe(true)
     expect(manifestFor(GOOGLE_CHAT_PLATFORM).addressedByConstruction).toBe(true)
     expect(manifestFor(DINGTALK_PLATFORM).addressedByConstruction).toBe(true)
+    expect(manifestFor(WECOM_PLATFORM).addressedByConstruction).toBe(true)
     // Teams delivers every message its resource-specific consent covers, so a mention there is a fresh address, as on Slack.
     for (const p of ['slack', 'telegram', 'discord', 'feishu', 'qq', MSTEAMS_PLATFORM])
       expect(manifestFor(p).addressedByConstruction, p).toBe(false)
@@ -101,7 +103,8 @@ describe('platform manifest', () => {
       'qq',
       GOOGLE_CHAT_PLATFORM,
       DINGTALK_PLATFORM,
-      MSTEAMS_PLATFORM
+      MSTEAMS_PLATFORM,
+      WECOM_PLATFORM
     ])
       expect(manifestFor(p).appendKinds, p).toContain('channel')
     expect(manifestFor('linear').appendKinds).toEqual([])
@@ -113,13 +116,23 @@ describe('platform manifest', () => {
       GOOGLE_CHAT_PLATFORM,
       DINGTALK_PLATFORM,
       MSTEAMS_PLATFORM,
+      WECOM_PLATFORM,
       'linear'
     ])
       expect(manifestFor(p).appendKinds, p).not.toContain('im')
     expect(manifestFor('slack').appendKinds).toContain('im')
     // Only Slack has a group DM of its own, a small room that keys one session too (auto-session-mode.md §3.2).
     expect(manifestFor('slack').appendKinds).toContain('mpim')
-    for (const p of ['telegram', 'discord', 'feishu', 'qq', GOOGLE_CHAT_PLATFORM, MSTEAMS_PLATFORM, 'linear'])
+    for (const p of [
+      'telegram',
+      'discord',
+      'feishu',
+      'qq',
+      GOOGLE_CHAT_PLATFORM,
+      MSTEAMS_PLATFORM,
+      WECOM_PLATFORM,
+      'linear'
+    ])
       expect(manifestFor(p).appendKinds, p).not.toContain('mpim')
     expect(manifestFor('some-future-platform').appendKinds).toEqual([])
     expect(DEFAULT_MANIFEST.appendKinds).toEqual([])
@@ -191,6 +204,23 @@ describe('platform manifest', () => {
     // A chat origin the console composer may not continue.
     expect(originKindOf(WECHAT_PLATFORM)).toBe('chat')
     expect(continuableOrigin(WECHAT_PLATFORM)).toBe(false)
+  })
+
+  it('keeps WeCom on the conservative arm of every axis it did not earn, with direct chats recognizable by key', () => {
+    // A WeCom group delivers only mentions of the bot, a group may append, and a direct chat key names its member.
+    const { platform, ...axes } = manifestFor(WECOM_PLATFORM)
+    expect(platform).toBe('wecom')
+    expect(axes).toEqual({
+      ...DEFAULT_MANIFEST,
+      dmChannelPattern: /^dm:/,
+      addressedByConstruction: true,
+      appendKinds: ['channel']
+    })
+    expect(axes.dmChannelPattern?.test('dm:user-alice')).toBe(true)
+    expect(axes.dmChannelPattern?.test('chat-example-group')).toBe(false)
+    // Not a known id yet: readers ship a release before the Control Plane provider emits it.
+    expect(originKindOf(WECOM_PLATFORM)).toBeUndefined()
+    expect(continuableOrigin(WECOM_PLATFORM)).toBe(false)
   })
 
   it('composes with origin kind for arms whose fall-through serves non-chat origins', () => {
