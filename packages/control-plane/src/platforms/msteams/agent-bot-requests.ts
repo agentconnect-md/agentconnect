@@ -209,7 +209,8 @@ export class MsTeamsAgentBotRequests {
     // The member gets the agent's app themselves too, so their Teams client lists it at once.
     await installMsTeamsAppForUser(this.fetchImpl, accessToken, {
       userId: request.sponsorId,
-      catalogAppId: request.catalogAppId
+      catalogAppId: request.catalogAppId,
+      permissions: MSTEAMS_RSC_PERMISSIONS
     })
     const key = msTeamsAgentBotKey(request.agentId, request.tenantId)
     try {
