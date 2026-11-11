@@ -114,6 +114,8 @@ export function msTeamsAgentBotOf(bot: {
 
 /** Marks a tenant's row once an administrator accepted the tenant-wide consent (§8.6.5), so later connects of the organization skip that page. */
 export const MSTEAMS_TENANT_CONSENT_KEY = 'tenantConsent'
+/** The scope set that consent covered; raised when the connect asks a further scope, so a tenant is asked once more. */
+export const MSTEAMS_TENANT_CONSENT_VERSION = '2'
 
 /** The entries a new agent bot's row is written with. */
 export const msTeamsAgentBotEntries = (entry: MsTeamsAgentBotEntry): Record<string, string> => ({
