@@ -2178,7 +2178,10 @@ describe('SlackConnection chat.postMessage boundary', () => {
     })
     expect(calls[0].blocks).toEqual([
       { type: 'markdown', text: 'Review revision' },
-      { type: 'mrkdwn', text: '<https://github.com/example-org/example-repo|example-org/example-repo>' }
+      {
+        type: 'context',
+        elements: [{ type: 'mrkdwn', text: '<https://github.com/example-org/example-repo|example-org/example-repo>' }]
+      }
     ])
   })
 

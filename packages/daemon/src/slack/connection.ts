@@ -1977,7 +1977,12 @@ export class SlackConnection implements PlatformConnection {
       const trailing = options?.trailingBlocks
       const source = options?.sourceRepository
       const sourceBlock = source
-        ? [{ type: 'mrkdwn', text: `<${source.url}|${source.label.replace(/[&<>]/g, '')}>` }]
+        ? [
+            {
+              type: 'context',
+              elements: [{ type: 'mrkdwn', text: `<${source.url}|${source.label.replace(/[&<>]/g, '')}>` }]
+            }
+          ]
         : []
       const res = await this.postChatMessage(
         channel,
