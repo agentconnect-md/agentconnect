@@ -10,6 +10,7 @@ import {
   MSTEAMS_REQUEST_MAX_CHECK_MS,
   MSTEAMS_REQUEST_TTL_MS,
   MsTeamsAgentBotRequests,
+  MsTeamsRequestBusy,
   msTeamsRequestBackoffMs
 } from './agent-bot-requests.js'
 import { msTeamsAgentBotKey } from './agent-bots.js'
@@ -287,6 +288,14 @@ describe('MsTeamsAgentBotRequests', () => {
     await expired.requests.cancel(ORG, 'request-1')
     expect(expired.calls).toEqual(['refresh stored-token', 'DELETE registration', 'DELETE identity'])
     expect(expired.rows.size).toBe(0)
+
+    // A check in flight holds the request: the cancel waits its turn and removes nothing.
+    const held = harness()
+    await held.open()
+    await held.store.claim(ORG, 'request-1', 'a-check', new Date(NOW), new Date(NOW + 60_000))
+    await expect(held.requests.cancel(ORG, 'request-1')).rejects.toBeInstanceOf(MsTeamsRequestBusy)
+    expect(held.calls).toEqual([])
+    expect(held.rows.size).toBe(1)
 
     // Microsoft unreachable: nothing is forgotten half-removed.
     const down = harness({ unreachable: true })
