@@ -35,6 +35,10 @@ export function memoryMsTeamsAgentBotRequestStore(now: () => number): {
       Object.assign(row, { claim: token, claimedUntil: until.getTime() })
       return true
     },
+    holds: async (orgId, id, token) => {
+      const row = rows.get(id)
+      return !!row && row.orgId === orgId && row.claim === token
+    },
     release: async (_orgId, id, token, patch) => {
       const row = rows.get(id)
       if (!row || row.claim !== token) return
