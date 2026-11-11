@@ -835,8 +835,10 @@ wait for the daemon to record them (§6.9.2).
   introduction has posted it carries the mark and opens that thread (§6.9.2). A task's row may
   open a thread the task cannot be written to in, as this one does. The grouping reads the row's
   getting-to-know marker, since its mode is still watch.
-- **No "background task" in the product.** The transcript's captions read "Report from a task" and
-  "Instruction for this task". This document keeps the term for the rules of §6.2.
+- **No "background task" in the product.** A task's report and the instruction a task opened with
+  carry no caption in the transcript: the line named no task, and a task's thread and card carry
+  none either. Another agent's message or reply keeps its caption, which names that agent, and
+  shows none for a sender known only by its id. This document keeps the term for the rules of §6.2.
 - **Long session messages fold.** A report, a task's instruction or another agent's message shows
   its first six lines in the transcript, with the toggle that opens the rest directly below them.
   Before, the whole body showed and the toggle sat under it, a screen or more down for a

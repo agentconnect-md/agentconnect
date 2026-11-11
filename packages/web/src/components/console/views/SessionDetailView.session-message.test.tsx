@@ -221,9 +221,10 @@ afterEach(() => {
 })
 
 describe('a delivered session message on the session page', () => {
-  it('shows the body under a caption naming its sender, and never the framed prompt', async () => {
+  it('shows the body, captioned only where another agent sent it, and never the framed prompt', async () => {
     await render()
-    expect(text()).toContain('Report from a task')
+    // A task's report carries no caption (auto-session-mode.md §6.9.5).
+    expect(text()).not.toContain('Report from')
     expect(text()).toContain('40 files, 15,393 lines.')
     expect(text()).toContain('Reply from reviewer')
     expect(text()).toContain('LGTM')

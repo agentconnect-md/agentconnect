@@ -668,9 +668,7 @@
       "notes": "Agent 收到的提示",
       "messageCaption": {
         "call": "来自 {agent} 的消息",
-        "reply": "{agent} 的回复",
-        "report": "任务的报告",
-        "taskInput": "给这个任务的指示"
+        "reply": "{agent} 的回复"
       }
     },
     "panel": {

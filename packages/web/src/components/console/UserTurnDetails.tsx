@@ -77,10 +77,11 @@ export function CodehostTurnFacts({ facts }: { facts: CodehostFacts }) {
   )
 }
 
-/** The one line above a delivered session message's body: who sent it, and as what. */
+/** The one line above another agent's message or reply, naming that agent; a task's report or instruction has none, and neither does a sender with no name. */
 export function SessionMessageCaption({ facts }: { facts: MessageFacts }) {
   const t = useTranslations('Sessions.userTurnDetails')
-  const agent = facts.source.label ?? facts.source.agentId
+  const agent = facts.source.label
+  if (!agent || (facts.kind !== 'call' && facts.kind !== 'reply')) return null
   return (
     <p className="mb-1 font-sans text-[11.5px] leading-normal text-(--text-tertiary)">
       {t(`messageCaption.${facts.kind}`, { agent })}

@@ -105,6 +105,17 @@ describe('UserTurnDetails', () => {
     expect(caption.textContent).toBe('Reply from reviewer')
     await act(async () => root?.unmount())
     host?.remove()
+    // A report or an instruction has no caption, and neither does a sender known only by its id.
+    for (const facts of [
+      { ...sessionMessage, kind: 'report' as const },
+      { ...sessionMessage, kind: 'taskInput' as const },
+      { ...sessionMessage, source: { agentId: 'agent-b' } }
+    ]) {
+      const none = await render(<SessionMessageCaption facts={facts} />)
+      expect(none.textContent).toBe('')
+      await act(async () => root?.unmount())
+      host?.remove()
+    }
 
     const el = await render(<UserTurnDetails body={{ sessionMessage, prompt: 'THE PROMPT' }} platform="webchat" />)
     const toggle = el.querySelector('button')!

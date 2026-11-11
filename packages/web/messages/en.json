@@ -668,9 +668,7 @@
       "notes": "Guidance the agent received",
       "messageCaption": {
         "call": "Message from {agent}",
-        "reply": "Reply from {agent}",
-        "report": "Report from a task",
-        "taskInput": "Instruction for this task"
+        "reply": "Reply from {agent}"
       }
     },
     "panel": {
