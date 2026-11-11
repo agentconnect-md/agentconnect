@@ -3608,7 +3608,6 @@ export default function SessionDetailView() {
                 </span>
               </div>
             ) : null}
-            {followUpPageAgentId ? <FollowUpTaskSummary agentId={followUpPageAgentId} sessionId={session.id} /> : null}
             {/* One responsive header: the mobile app bar owns the title; these actions stay the same at every width. */}
             {/* Where the dock is a drawer, its fixed Panels toggle sits over the row's right end, so the row leaves it room. */}
             <div
@@ -3851,6 +3850,8 @@ export default function SessionDetailView() {
                 </Link>
               ) : null}
             </div>
+            {/* Under the title row: above it, the desktop header's rise would lift it into the nav band. */}
+            {followUpPageAgentId ? <FollowUpTaskSummary agentId={followUpPageAgentId} sessionId={session.id} /> : null}
           </div>
 
           {currentSessionDetail?.accessSyncDegraded && (

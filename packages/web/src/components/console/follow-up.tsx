@@ -301,7 +301,7 @@ export function FollowUpTaskSummary({ agentId, sessionId }: { agentId: string; s
   return (
     <div
       data-follow-up-summary={followUp.status}
-      className="flex min-w-0 flex-col gap-[6px] max-desktop:border-b max-desktop:border-(--border-subtle) max-desktop:bg-(--surface-card) max-desktop:px-4 max-desktop:py-2 desktop:mb-3"
+      className="flex min-w-0 flex-col gap-[6px] max-desktop:border-b max-desktop:border-(--border-subtle) max-desktop:bg-(--surface-card) max-desktop:px-4 max-desktop:py-2 desktop:my-3"
     >
       <div className="flex min-w-0 items-center gap-2 font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)">
         <Icon name="clock" size={13} color="var(--text-tertiary)" className="flex-none" />
