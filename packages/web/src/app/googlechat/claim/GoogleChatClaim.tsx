@@ -6,7 +6,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
 import { Spinner, Wordmark } from '@/components/marks'
-import { ApiError, claimGoogleChatCustomer, fetchOrgs, type OrgDto } from '@/lib/api'
+import { ApiError, claimGoogleChatCustomer, fetchOrgs, startGoogleChatRecovery, type OrgDto } from '@/lib/api'
 import { getUser, isAuthConfigured, login } from '@/lib/auth'
 import { writeFlowState } from '@/lib/flow-state'
 import {
@@ -28,6 +28,7 @@ export default function GoogleChatClaim() {
   const [orgId, setOrgId] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [taken, setTaken] = useState(false)
 
   // Only organizations the person can edit may take the app.
   const loadOrgs = useCallback(async () => {
@@ -72,6 +73,7 @@ export default function GoogleChatClaim() {
       return
     }
     setSubmitting(true)
+    setTaken(false)
     setError(null)
     try {
       const { redirect } = await claimGoogleChatCustomer(orgId, raw)
@@ -86,7 +88,23 @@ export default function GoogleChatClaim() {
       setPhase('returning')
       window.location.assign(redirect)
     } catch (e) {
+      setTaken(e instanceof ApiError && e.code === 'GOOGLE_CHAT_CLAIM_TAKEN')
       setError(t(`errors.${e instanceof ApiError ? googleChatClaimErrorKey(e.code, e.status) : 'generic'}`))
+      setSubmitting(false)
+    }
+  }
+
+  async function recover() {
+    setSubmitting(true)
+    setError(null)
+    try {
+      const result = await startGoogleChatRecovery(orgId, raw)
+      const saved = JSON.stringify({ orgId, claim: raw, state: result.state })
+      sessionStorage.setItem('ac.googleChatRecovery', saved)
+      if (sessionStorage.getItem('ac.googleChatRecovery') !== saved) throw new Error('storage unavailable')
+      window.location.assign(result.authorizeUrl)
+    } catch {
+      setError(t('recovery.unavailable'))
       setSubmitting(false)
     }
   }
@@ -157,7 +175,11 @@ export default function GoogleChatClaim() {
                 </span>
                 <select
                   value={orgId}
-                  onChange={(e) => setOrgId(e.target.value)}
+                  onChange={(e) => {
+                    setOrgId(e.target.value)
+                    setTaken(false)
+                    setError(null)
+                  }}
                   disabled={submitting}
                   className="rounded-md border border-(--border-default) bg-(--surface-card) px-[10px] py-2 text-[14px] text-(--text-primary)"
                 >
@@ -186,6 +208,18 @@ export default function GoogleChatClaim() {
               <p role="alert" className="text-[13px] leading-[1.55] text-(--status-error)">
                 {error}
               </p>
+            )}
+
+            {taken && (
+              <div className="flex flex-col gap-3">
+                <p className="text-[13px] leading-[1.55] text-(--text-secondary)">{t('recovery.description')}</p>
+                <Button variant="secondary" onClick={() => void recover()} disabled={submitting}>
+                  {t('recovery.verify')}
+                </Button>
+                <a className="text-[13px] text-(--brand)" href="mailto:contact@agentconnect.md">
+                  {t('recovery.support')}
+                </a>
+              </div>
             )}
 
             <Button onClick={() => void connect()} disabled={submitting || !orgId}>

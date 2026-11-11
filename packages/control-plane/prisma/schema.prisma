@@ -3405,6 +3405,7 @@ enum AuditKind {
   hook_change
   agent_repo_change
   org_invite_change
+  integration_recovery
   protocol_error
   api_key_create
   api_key_rotate

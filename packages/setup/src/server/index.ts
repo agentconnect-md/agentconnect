@@ -466,6 +466,10 @@ function socialRedirectUris(endpoint: string, connectorId: string, webUrl: strin
   ]
 }
 
+function googleRedirectUris(endpoint: string, connectorId: string, webUrl: string): string[] {
+  return [...socialRedirectUris(endpoint, connectorId, webUrl), appendPath(webUrl, '/googlechat/recover')]
+}
+
 const REGIONAL_LOGTO_CONNECTOR_NAMES = { feishu: 'Feishu', lark: 'Lark' } as const
 
 type ServiceTopology = { web: string; controlPlane: string; relay: string }
@@ -758,7 +762,7 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
       google: values.logto?.browser
         ? {
             origins: [logtoEndpoint],
-            redirects: socialRedirectUris(
+            redirects: googleRedirectUris(
               logtoEndpoint,
               connectorIds.google ?? LOGTO_GOOGLE_CONNECTOR_ID,
               localAuthBootstrap.services.web
@@ -902,7 +906,7 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
     }
     const googleConnectorId = connectorIds.google ?? LOGTO_GOOGLE_CONNECTOR_ID
     const slackConnectorId = connectorIds.slack ?? LOGTO_SLACK_CONNECTOR_ID
-    const redirectUris = socialRedirectUris(logtoEndpoint, googleConnectorId, localAuthBootstrap.services.web)
+    const redirectUris = googleRedirectUris(logtoEndpoint, googleConnectorId, localAuthBootstrap.services.web)
     const logtoConfigured = Boolean(
       current?.values.logto?.managementAppId &&
       current.secrets.some((secret) => secret.key === 'logto.managementAppSecret' && secret.configured)
@@ -1261,7 +1265,7 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
       if (!current?.values.logto?.browser) return problem(reply, 409, 'save Logto browser configuration first')
       const connectorIds = await resolveLogtoConnectorIds()
       const connectorId = connectorIds.google ?? LOGTO_GOOGLE_CONNECTOR_ID
-      const redirectUris = socialRedirectUris(logtoEndpoint, connectorId, localAuthBootstrap.services.web)
+      const redirectUris = googleRedirectUris(logtoEndpoint, connectorId, localAuthBootstrap.services.web)
       const put = logtoGoogleConnectorPut(current, {
         clientId: parsed.data.clientId,
         ...(parsed.data.clientSecret ? { clientSecret: parsed.data.clientSecret } : {})

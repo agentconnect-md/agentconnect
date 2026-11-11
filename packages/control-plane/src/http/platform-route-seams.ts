@@ -37,6 +37,8 @@ import type { GoogleAccountIdentity } from './google-account-id.js'
 import type { LinearApiClient } from '../platforms/linear/api.js'
 import type { LinearTokenService } from '../platforms/linear/token-service.js'
 import type { CpProviderToolingCredentials } from '../platforms/provider.js'
+import type { GoogleChatRecoveryOAuth } from '../platforms/googlechat/recovery.js'
+import type { GoogleChatBindingMutations } from '../persistence/ports.js'
 
 /** Seams for the Slack route plugins: the two install funnels, the config-token
  *  routes, and the Settings→Bots manifest refresh. */
@@ -84,6 +86,8 @@ export interface GoogleChatRouteSeams {
   fetch: typeof fetch
   /** The identity provider's read of the caller's Google identity; absent ⇒ only an already recorded id can claim. */
   identity?: GoogleAccountIdentity
+  bindingMutations?: GoogleChatBindingMutations
+  recovery?: GoogleChatRecoveryOAuth
 }
 
 /** Seams for the Telegram route plugin (the credential-probe route). */

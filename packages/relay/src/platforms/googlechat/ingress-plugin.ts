@@ -23,6 +23,7 @@ import {
   UNKNOWN_APP_USER_NAME,
   UnclaimedTenantMemo,
   googleChatClaimPrompt,
+  googleChatClaimLink,
   googleChatWelcomeCard,
   googleChatDedupId,
   googleChatDedupKey,
@@ -162,6 +163,7 @@ export function createGoogleChatIngressPlugin(deps: GoogleChatIngressPluginDeps 
   const unclaimed = new UnclaimedTenantMemo()
   const refused = new UnclaimedTenantMemo()
   let egress: GoogleChatRelayEgress | undefined
+  let claimAnchor: RcDeploymentConfig['googleChatAnchor']
   return {
     platformId: GOOGLE_CHAT_PLATFORM,
     verifier,
@@ -170,6 +172,7 @@ export function createGoogleChatIngressPlugin(deps: GoogleChatIngressPluginDeps 
     installRoutes: registerGoogleChatHttpIngress,
 
     deploymentAssignments(snapshot: RcDeploymentConfig | undefined): BotAssignment[] {
+      claimAnchor = snapshot?.googleChatAnchor
       // The deployment app's egress for its customer rows (§10.10), kept in place so a call in flight finishes.
       const app = snapshot?.googleChatApp
       if (!app) egress = undefined
@@ -284,7 +287,21 @@ export function createGoogleChatIngressPlugin(deps: GoogleChatIngressPluginDeps 
         return {}
       }
       // `/help` is answered here, in the body, without a daemon.
-      if (result.kind === 'help') return { syncResponse: googleChatHelp() }
+      if (result.kind === 'help') {
+        const connectionUrl =
+          claimAnchor?.projectNumber === ingest.projectNumber && ingest.tenantIds && result.tenant
+            ? googleChatClaimLink(claimAnchor.claimUrl, {
+                v: 1,
+                app: ingest.projectNumber,
+                space: result.help.space,
+                user: result.help.user,
+                kind: result.help.isDm ? 'dm' : 'space',
+                tenant: result.tenant,
+                iat: Math.floor(host.clock.now() / 1000)
+              })
+            : undefined
+        return { syncResponse: googleChatHelp({ connectionUrl }) }
+      }
       if (result.kind === 'membership') {
         const displayName = googleChatPayloadOf(event)?.space?.displayName
         const name = typeof displayName === 'string' ? displayName : undefined

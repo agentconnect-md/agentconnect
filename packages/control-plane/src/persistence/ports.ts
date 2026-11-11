@@ -238,6 +238,7 @@ export type AuditKind =
   | 'hook_change'
   | 'agent_repo_change'
   | 'org_invite_change'
+  | 'integration_recovery'
   | 'protocol_error'
   | 'api_key_create'
   | 'api_key_rotate'
@@ -4292,6 +4293,18 @@ export interface BotRecord {
    *  shareable bot is never "in use" in the reuse-blocking sense. */
   inUseByAgentId: AgentId | null
   createdAt: Date
+}
+
+// Serialized Google Chat claims and atomic administrator recovery.
+export interface GoogleChatBindingMutations {
+  runExclusive<T>(appId: string, mutation: () => Promise<T>): Promise<T>
+  replace(input: {
+    held: BotRecord[]
+    replacement: CreateBotInput
+    userId: string
+    accountId: string
+    agentId: AgentId
+  }): Promise<{ bot: BotRecord; removed: IntegrationRecord[] }>
 }
 
 /** A bot row's public identity as {@link BotRepo.mergeBotIdentity} reads it under the row lock. */

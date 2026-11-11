@@ -175,6 +175,9 @@ import { linearConnectRoutes, linearOauthCallbackRoutes } from '../../src/platfo
 import { createGoogleChatCpProvider } from '../../src/platforms/googlechat/provider.js'
 import { googleChatAppRoutes, googleChatKeyRoutes } from '../../src/platforms/googlechat/routes.js'
 import { googleChatClaimRoutes } from '../../src/platforms/googlechat/claim.js'
+import { googleChatRecoveryRoutes } from '../../src/platforms/googlechat/recovery-routes.js'
+import { GoogleChatRecoveryOAuth, type GoogleChatRecoveryApplication } from '../../src/platforms/googlechat/recovery.js'
+import { PgGoogleChatBindingMutations } from '../../src/persistence/repositories/googlechat-binding-mutations.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from '../../src/http/routes/slack-install.js'
 import {
   slackPlatformInstallRoutes,
@@ -255,6 +258,7 @@ export interface PlatformStubs {
   googleChatPlatformApp?: GoogleChatPlatformAppConfig
   /** Google's token endpoint and Chat API, stubbed; absent ⇒ every credential probe is a connectivity failure. */
   googleChatFetch?: typeof fetch
+  googleChatRecoveryApplication?: GoogleChatRecoveryApplication
   /** DingTalk's token endpoint, stubbed; absent ⇒ every credential check is a connectivity failure. */
   dingTalkFetch?: typeof fetch
   /** Entra's token endpoint, stubbed; absent ⇒ every credential check is a connectivity failure. */
@@ -286,6 +290,7 @@ const PLATFORM_STUB_KEYS = [
   'linearFetch',
   'googleChatPlatformApp',
   'googleChatFetch',
+  'googleChatRecoveryApplication',
   'dingTalkFetch',
   'msTeamsFetch',
   'weChatLoginClient',
@@ -865,6 +870,17 @@ export function buildHttpApp(
     clock
   })
   const googleChatSeams: GoogleChatRouteSeams = {
+    bindingMutations: new PgGoogleChatBindingMutations(prisma, (input) => botIdentityProjector(platforms)(input)),
+    ...(platformStubs.googleChatRecoveryApplication && platformStubs.googleChatFetch
+      ? {
+          recovery: new GoogleChatRecoveryOAuth(
+            platformStubs.googleChatRecoveryApplication,
+            TEST_API_KEY_PEPPER,
+            clock,
+            platformStubs.googleChatFetch
+          )
+        }
+      : {}),
     get app() {
       return platformStubs.googleChatPlatformApp
     },
@@ -976,7 +992,8 @@ export function buildHttpApp(
         org: [
           googleChatAppRoutes(googleChatSeams),
           googleChatKeyRoutes(deps, googleChatSeams),
-          googleChatClaimRoutes(deps, googleChatSeams)
+          googleChatClaimRoutes(deps, googleChatSeams),
+          googleChatRecoveryRoutes(deps, googleChatSeams)
         ],
         publicCallback: []
       },

@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => {
     orgs: [] as unknown[],
     fetchOrgs: vi.fn(),
     claim: vi.fn(),
+    recovery: vi.fn(),
     login: vi.fn()
   }
 })
@@ -32,7 +33,8 @@ vi.mock('@/lib/auth', () => ({
 vi.mock('@/lib/api', () => ({
   ApiError: mocks.FakeApiError,
   fetchOrgs: mocks.fetchOrgs,
-  claimGoogleChatCustomer: mocks.claim
+  claimGoogleChatCustomer: mocks.claim,
+  startGoogleChatRecovery: mocks.recovery
 }))
 
 import GoogleChatClaim from './GoogleChatClaim'
@@ -139,6 +141,27 @@ describe('GoogleChatClaim', () => {
       'Your Google Workspace is already connected to another organization.'
     )
     expect(window.location.assign).not.toHaveBeenCalled()
+  })
+
+  it('offers recovery only after a binding conflict and pins the selected organization across OAuth', async () => {
+    mocks.recovery.mockResolvedValue({
+      state: 'signed-state',
+      authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth?state=signed-state'
+    })
+    await render()
+    expect(host.textContent).not.toContain('Verify Workspace administrator')
+    mocks.claim.mockRejectedValue(new mocks.FakeApiError('taken', 409, 'GOOGLE_CHAT_CLAIM_TAKEN'))
+    await act(async () => button('Connect').click())
+    await act(async () => button('Verify Workspace administrator').click())
+    expect(mocks.recovery).toHaveBeenCalledWith('org-edit', STATE)
+    expect(JSON.parse(sessionStorage.getItem('ac.googleChatRecovery')!)).toEqual({
+      orgId: 'org-edit',
+      claim: STATE,
+      state: 'signed-state'
+    })
+    expect(window.location.assign).toHaveBeenCalledWith(
+      'https://accounts.google.com/o/oauth2/v2/auth?state=signed-state'
+    )
   })
 
   it('never follows a redirect off Chat’s origin', async () => {
