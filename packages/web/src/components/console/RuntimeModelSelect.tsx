@@ -299,7 +299,9 @@ export function RuntimeModelSelect({
     const option = coordinator?.filter?.providers.find((one) => one.id === choice.providerId)
     return option?.models.find((model) => model.id === choice.model)?.label ?? choice.model
   }
-  const footer = filterProvider ? undefined : onCoordinator ? coControls : showSettings ? controls : undefined
+  // The filter adds to the coordinator model, so the coordinator's settings stay while a filter provider is browsed.
+  const footer = onCoordinator ? coControls : showSettings ? controls : undefined
+  const filterValue = !coOff ? coordinator?.filter?.value : undefined
   const coOnly = !!coordinator?.only && !!co
   const fastOn = coOnly ? !!co?.fastMode : !decision?.selected && !!controls?.fast?.value
   const triggerName = coOnly
@@ -321,7 +323,9 @@ export function RuntimeModelSelect({
       : coOff
         ? t('plusCoordinatorOff')
         : co.model
-          ? t('plusCoordinator', { model: nameOf(co.runtime, co.model) })
+          ? filterValue
+            ? t('plusCoordinatorAndFilter', { model: nameOf(co.runtime, co.model), filter: filterName(filterValue) })
+            : t('plusCoordinator', { model: nameOf(co.runtime, co.model) })
           : ''
   const selectModel = (runtime: string, model: string) => {
     if (!runSettings) return onChange({ runtime, model })
@@ -504,7 +508,9 @@ export function RuntimeModelSelect({
                 label: label(item.runtime),
                 mark: <AgentMark model={item.runtime} fillPct={100} />,
                 count: item.options.length,
-                warning: item.warning ? warningLabel(item.warning) : undefined
+                warning: item.warning ? warningLabel(item.warning) : undefined,
+                // The coordinator always runs on one model; its runtime keeps the mark while a filter is browsed.
+                ...(onCoordinator && !coOff && co?.runtime === item.runtime ? { current: t('currentChoice') } : {})
               }))}
               active={search ? null : provider}
               onPick={(runtime) => {
@@ -521,7 +527,8 @@ export function RuntimeModelSelect({
                         label: option.name,
                         mark: <ModelMark model={`${option.id}/`} fallbackRuntime="" fillPct={100} />,
                         count: option.models.length,
-                        warning: option.readiness.status === 'ready' ? undefined : t('filterNotReady')
+                        warning: option.readiness.status === 'ready' ? undefined : t('filterNotReady'),
+                        ...(filter.value?.providerId === option.id ? { current: t('currentChoice') } : {})
                       }))
                     }
                   : undefined
@@ -553,6 +560,11 @@ export function RuntimeModelSelect({
             >
               {filterProvider && filter && (
                 <>
+                  {co?.model && (
+                    <div className="px-2 pb-[6px] pt-[2px] font-sans text-[11.5px] font-normal leading-[1.45] text-(--text-tertiary)">
+                      {t('filterCaption', { model: nameOf(co.runtime, co.model) })}
+                    </div>
+                  )}
                   {filterProvider.models.map((model) => (
                     <ModelOption
                       key={model.id}

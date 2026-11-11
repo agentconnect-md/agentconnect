@@ -498,8 +498,19 @@ it('picks and removes the coordinator filter from its own group, hidden while th
   expect(dialog().textContent).not.toContain('Filter')
   await act(async () => tab('Coordinator').click())
   expect(dialog().textContent).toContain('Filter')
+  // Only the provider list scrolls; the filter group sits below it, outside the scroll.
+  const list = dialog().querySelector('[data-testid="provider-list"]')!
+  const section = dialog().querySelector('[data-testid="provider-section"]')!
+  expect(list.textContent).toContain('Claude Code')
+  expect(list.textContent).not.toContain('TypeSafe')
+  expect(section.textContent).toContain('TypeSafe')
   const provider = buttons().find((b) => b.textContent === 'TypeSafe2')!
   await act(async () => provider.click())
+  // The filter adds to the coordinator model: its runtime stays marked and its settings stay shown.
+  expect(list.querySelector('[aria-label="Selected"]')).not.toBeNull()
+  expect(section.querySelector('[aria-label="Selected"]')).toBeNull()
+  expect(dialog().querySelector('select[aria-label="Effort"]')).not.toBeNull()
+  expect(dialog().textContent).toContain('before the coordinator (model-small) reads it')
   expect(
     buttons()
       .find((b) => b.textContent === 'No filter')!
@@ -511,6 +522,9 @@ it('picks and removes the coordinator filter from its own group, hidden while th
 
   await render({ providerId: 'typesafe', model: 'jev-1.13.0' })
   expect(dialog().querySelector('button[aria-label="TypeSafe · Jev 1.13"]')!.getAttribute('aria-pressed')).toBe('true')
+  expect(dialog().querySelector('[data-testid="provider-section"] [aria-label="Selected"]')).not.toBeNull()
+  expect(dialog().querySelector('[data-testid="provider-list"] [aria-label="Selected"]')).not.toBeNull()
+  expect(trigger.textContent).toContain('+ coordinator model-small · filter Jev 1.13')
   await act(async () =>
     buttons()
       .find((b) => b.textContent === 'No filter')!

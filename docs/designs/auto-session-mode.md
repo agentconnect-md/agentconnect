@@ -1044,7 +1044,10 @@ not addressed to this agent. Cost grows with the number of agents.
 - The agent's model picker sets the coordinator under its Coordinator tab (§5.4). Below the
   runtimes, a **Filter** group lists the Decision providers whose models can answer the filter's
   Boolean question where the agent runs, each with its model count; a provider lists its models and
-  **No filter** (§4.7). TypeSafe is named **Jev** there, after its models. The group reads the
+  **No filter** (§4.7). The coordinator model is required and the filter is an optional addition to
+  it, never a replacement: the runtime holding the coordinator model and the provider holding the filter
+  are each marked as chosen, the coordinator's settings stay shown while a filter is browsed, and only
+  the runtime list scrolls, with the Filter group kept in view below it. TypeSafe is named **Jev** there, after its models. The group reads the
   providers of the placement chosen: in the Add dialog the machine, group or pool picked, sent with the
   new agent only while that placement still offers the model; in the Edit dialog the agent's current
   placement, while it stays there. Either way it shows only where that placement's daemon advertises

@@ -3315,7 +3315,10 @@
         "filter": "过滤",
         "filterHint": "协调会话读到消息之前，先由 Decision 模型判断每条未点名本 Agent 的消息；确信与 Agent 无关时直接跳过。@提及、线程回复和控制台消息总是交给协调会话。",
         "filterNotReady": "此 Agent 的 daemon 上尚未就绪",
-        "noFilter": "不过滤"
+        "noFilter": "不过滤",
+        "currentChoice": "已选",
+        "plusCoordinatorAndFilter": "+ 协调会话 {model} · 过滤 {filter}",
+        "filterCaption": "可选：在协调会话（{model}）读到消息之前，先筛一遍未点名本 Agent 的消息。协调会话模型保持不变。"
       }
     },
     "detail": {

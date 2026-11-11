@@ -11,6 +11,8 @@ export interface ProviderColumnItem {
   count?: number
   /** Shown as a warning icon whose tooltip is this text. */
   warning?: string
+  /** Holds the current choice, marked apart from the row being browsed; the text names it for assistive tech. */
+  current?: string
 }
 
 /** A second titled group in the provider column, such as the coordinator's filter models. */
@@ -26,6 +28,11 @@ function ProviderButton({ item, active, onPick }: { item: ProviderColumnItem; ac
     <button type="button" aria-pressed={active} className={`fopt min-h-8 ${active ? 'on' : ''}`} onClick={onPick}>
       <MarkSlot>{item.mark}</MarkSlot>
       <span className="min-w-0 flex-1 truncate text-left">{item.label}</span>
+      {item.current && (
+        <span className="flex flex-none" title={item.current} aria-label={item.current}>
+          <Icon name="check" size={12} color="var(--brand)" />
+        </span>
+      )}
       {item.warning && (
         <span className="flex flex-none" title={item.warning}>
           <Icon name="triangle-alert" size={12} color="var(--status-paused)" />
@@ -65,15 +72,20 @@ export function ProviderModelMenu({
 }) {
   return (
     <div className="flex">
-      <div className="max-h-[320px] w-[168px] flex-none overflow-y-auto border-r border-(--border-subtle) bg-(--surface-app) p-1">
-        {header}
-        <div className="fhdr">{title}</div>
-        {providers.map((item) => (
-          <ProviderButton key={item.id} item={item} active={active === item.id} onPick={() => onPick(item.id)} />
-        ))}
+      {/* Only the provider list scrolls: the header stays on top and a section stays in view below it. */}
+      <div className="flex max-h-[320px] w-[168px] flex-none flex-col border-r border-(--border-subtle) bg-(--surface-app) p-1">
+        <div className="flex-none">
+          {header}
+          <div className="fhdr">{title}</div>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto" data-testid="provider-list">
+          {providers.map((item) => (
+            <ProviderButton key={item.id} item={item} active={active === item.id} onPick={() => onPick(item.id)} />
+          ))}
+        </div>
         {section && section.providers.length > 0 && (
-          <>
-            <div className="fhdr mt-1 flex items-center gap-1">
+          <div className="mt-1 flex-none border-t border-(--border-subtle) pt-1" data-testid="provider-section">
+            <div className="fhdr flex items-center gap-1">
               {section.title}
               {section.hint && (
                 <span className="flex" title={section.hint} aria-label={section.hint}>
@@ -84,7 +96,7 @@ export function ProviderModelMenu({
             {section.providers.map((item) => (
               <ProviderButton key={item.id} item={item} active={active === item.id} onPick={() => onPick(item.id)} />
             ))}
-          </>
+          </div>
         )}
       </div>
       <div className="flex min-w-0 flex-1 flex-col p-[6px]">
