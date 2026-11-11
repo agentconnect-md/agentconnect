@@ -228,7 +228,8 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
     }
   ],
   ['wechat', { platform: 'wechat', label: 'WeChat', attachmentReadTool: WECHAT_ATTACHMENT_TOOL }],
-  ['wecom', { platform: 'wecom', label: 'WeCom', attachmentReadTool: WECOM_ATTACHMENT_TOOL }],
+  // A direct chat is addressed by userid; WeCom documents no mention in a bot's proactive message, so no channel mentions.
+  ['wecom', { platform: 'wecom', label: 'WeCom', openDirectMessage: true, attachmentReadTool: WECOM_ATTACHMENT_TOOL }],
   [
     'discord',
     {

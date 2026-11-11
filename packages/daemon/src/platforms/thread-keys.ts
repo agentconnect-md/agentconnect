@@ -37,6 +37,8 @@
  * registered per platform rather than inferred.
  */
 
+import { WECOM_DM_THREAD, WECOM_GROUP_THREAD } from './wecom/module.js'
+
 interface ThreadKeyStrategy {
   key(channel: string, ts: string, isDm: boolean): string
   /** Whether callers must classify a root target as DM before deriving its key. */
@@ -57,7 +59,9 @@ const STRATEGIES = new Map<string, ThreadKeyStrategy>([
   // A Space keys on the post's `spaces/…/threads/…` (the gateway's `threadOfPost`), a DM on the Space itself.
   ['googlechat', { key: (channel, thread, isDm) => (isDm ? channel : thread), dmSensitive: true }],
   // A group post keys on its process query key, which a quote of it brings back; a DM is the one continuous `dm` session.
-  ['dingtalk', { key: (_channel, ts, isDm) => (isDm ? 'dm' : ts), dmSensitive: true }]
+  ['dingtalk', { key: (_channel, ts, isDm) => (isDm ? 'dm' : ts), dmSensitive: true }],
+  // A group and a direct chat are each one session whatever was posted, as `canonicalizeWeComThread` keys them.
+  ['wecom', { key: (_channel, _ts, isDm) => (isDm ? WECOM_DM_THREAD : WECOM_GROUP_THREAD), dmSensitive: true }]
 ])
 
 /** Whether the platform's root-post session key depends on DM classification. */

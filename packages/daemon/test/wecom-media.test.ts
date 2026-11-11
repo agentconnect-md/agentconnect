@@ -49,6 +49,7 @@ function served(body: Buffer, headers: Record<string, string> = {}): typeof fetc
 }
 
 const signal = new AbortController().signal
+const SENT = { ok: true, messageId: expect.stringMatching(/^aibot_send_msg_/) }
 
 describe('WeCom media crypto', () => {
   it('decrypts AES-256-CBC with the key prefix as IV and padding to 32 or 16 bytes', () => {
@@ -367,8 +368,9 @@ describe('WeCom outbound media', () => {
     const { server, conn } = setup()
     await conn.start()
     const outcome = await conn.sendMedia(`dm:${USER}`, { bytes: PNG, name: 'chart.png', mimeType: 'image/png' }, 'Q3')
-    expect(outcome).toEqual({ ok: true })
     const socket = server.last
+    // The image's own send frame names it.
+    expect(outcome).toEqual({ ok: true, messageId: socket.frames('aibot_send_msg')[0]!.headers.req_id })
     expect(socket.frames('aibot_upload_media_init')[0]!.body).toEqual({
       type: 'image',
       filename: 'chart.png',
@@ -391,7 +393,7 @@ describe('WeCom outbound media', () => {
     await conn.start()
     const bytes = Buffer.alloc(WECOM_UPLOAD_CHUNK_BYTES + 1, 3)
     const outcome = await conn.sendMedia(GROUP, { bytes, name: 'data.bin', mimeType: 'application/octet-stream' })
-    expect(outcome).toEqual({ ok: true })
+    expect(outcome).toEqual(SENT)
     const chunks = server.last.frames('aibot_upload_media_chunk').map((f) => f.body!)
     expect(chunks.map((c) => [c.chunk_index, Buffer.from(c.base64_data as string, 'base64').length])).toEqual([
       [0, WECOM_UPLOAD_CHUNK_BYTES],
@@ -445,12 +447,12 @@ describe('WeCom outbound media', () => {
     const { server, conn } = setup({ now: () => now })
     await conn.start()
     const file = { bytes: PNG, name: 'chart.png', mimeType: 'image/png' }
-    for (let i = 0; i < 30; i++) expect(await conn.sendMedia(`chat-example-${i}`, file)).toEqual({ ok: true })
+    for (let i = 0; i < 30; i++) expect(await conn.sendMedia(`chat-example-${i}`, file)).toEqual(SENT)
     const refused = await conn.sendMedia('chat-example-30', file)
     expect(refused).toMatchObject({ ok: false, reason: 'platform_error' })
     expect(server.last.frames('aibot_upload_media_init')).toHaveLength(30)
     now += 60_000
-    expect(await conn.sendMedia('chat-example-30', file)).toEqual({ ok: true })
+    expect(await conn.sendMedia('chat-example-30', file)).toEqual(SENT)
   })
 
   it("binds the turn's uploader to its leased connection, and a headless turn gets none", async () => {
@@ -458,7 +460,7 @@ describe('WeCom outbound media', () => {
     await conn.start()
     expect(weComFileUploader({ channel: GROUP, msgId: 'm' })).toBeUndefined()
     const upload = weComFileUploader({ channel: GROUP, msgId: 'm', conn })!
-    expect(await upload({ bytes: PNG, name: 'chart.png', mimeType: 'image/png' })).toEqual({ ok: true })
+    expect(await upload({ bytes: PNG, name: 'chart.png', mimeType: 'image/png' })).toEqual(SENT)
     expect(server.last.frames('aibot_send_msg')[0]!.body).toMatchObject({ chatid: GROUP, msgtype: 'image' })
   })
 })

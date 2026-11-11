@@ -17,6 +17,8 @@ import { attachmentFileName } from '../src/mcp/ops/platform-reads.js'
 import type { MemoryProvider } from '../src/memory/provider.js'
 import { toolsForIntegrations } from '../src/mcp/tools.js'
 import { EPHEMERAL_RESULT_MARKER } from '../src/session/ephemeral-results.js'
+import { WeComConnection } from '../src/platforms/wecom/connection.js'
+import { FakeWeComServer, quietLog } from './fakes/wecom-server.js'
 
 const ctx: SessionContext = {
   agentId: 'bot-a',
@@ -1428,7 +1430,7 @@ describe('executeTool: sendMessage (channel post)', () => {
     const dual = { ...ctx, integrations: [...ctx.integrations!, { id: 'int-tg', platform: 'telegram' }] }
     await expect(
       executeTool(dual, 'sendMessage', { action: 'postMessage', toUser: '42', platform: 'telegram', message: 'x' }, d)
-    ).rejects.toThrow('sendMessage: toUser is only supported on Slack or DingTalk (not telegram) yet')
+    ).rejects.toThrow('sendMessage: toUser is only supported on Slack or DingTalk or WeCom (not telegram) yet')
     expect(gw.postMessage).not.toHaveBeenCalled()
   })
 
@@ -1446,7 +1448,7 @@ describe('executeTool: sendMessage (channel post)', () => {
         { action: 'postMessage', toUser: '42', channel: '-100123', platform: 'telegram', message: 'x' },
         d
       )
-    ).rejects.toThrow('sendMessage: toUser is only supported on Slack or DingTalk (not telegram) yet')
+    ).rejects.toThrow('sendMessage: toUser is only supported on Slack or DingTalk or WeCom (not telegram) yet')
     expect(gw.postMessage).not.toHaveBeenCalled()
   })
 
@@ -1480,6 +1482,100 @@ describe('executeTool: sendMessage (channel post)', () => {
     )
     expect(postMentioning).toHaveBeenCalledWith('C1', 'x', ['0123', '0456'], authorIdentity)
     expect(gw.postMessage).not.toHaveBeenCalled()
+  })
+
+  describe('on WeCom', () => {
+    // A WeCom session in a member's direct chat; WeCom's write rule confirms the post's own conversation only.
+    const wc = {
+      ...ctx,
+      platform: 'wecom',
+      integrationId: 'int-wc',
+      channel: 'dm:user-carol',
+      thread: 'dm',
+      deliveryThread: 'dm',
+      isDm: true,
+      integrations: [...ctx.integrations!, { id: 'int-wc', platform: 'wecom' }]
+    }
+
+    async function live() {
+      const server = new FakeWeComServer()
+      const conn = new WeComConnection(
+        { botId: 'aibot-example', secret: 'secret-placeholder', integrations: [] },
+        { onMessage: () => {}, log: quietLog, createSocket: server.createSocket }
+      )
+      await conn.start()
+      const recorded: { channel: string; thread?: string; ts: string }[] = []
+      const seeded: { thread: string; isDm?: boolean }[] = []
+      const d = makeDeps({
+        gatewayFor: () => conn,
+        recordOutbound: async (_c, channel, thread, _text, ts) => void recorded.push({ channel, thread, ts }),
+        spawnChannelRootSession: async (req) => {
+          seeded.push({ thread: req.thread, ...(req.isDm !== undefined ? { isDm: req.isDm } : {}) })
+          return true
+        },
+        resolveAttachment: async (_c, name) =>
+          name === 'chart.png'
+            ? { bytes: Buffer.from('89504e470d0a1a0a6578616d706c65', 'hex'), name, mimeType: 'image/png' }
+            : undefined
+      })
+      return { server, conn, d, recorded, seeded }
+    }
+
+    it('direct-messages a member by userid, keyed to the direct chat session', async () => {
+      const { server, conn, d, recorded, seeded } = await live()
+      // The session's own platform opens the DM, so no `platform` is needed.
+      const res = (await executeTool(
+        wc,
+        'sendMessage',
+        { action: 'postMessage', toUser: 'user-alice', message: 'Review done.' },
+        d
+      )) as { post: { channel: string; ts: string } }
+      const frame = server.last.frames('aibot_send_msg')[0]!
+      expect(frame.body).toMatchObject({ chatid: 'user-alice', chat_type: 1, markdown: { content: 'Review done.' } })
+      expect(res.post).toMatchObject({ channel: 'dm:user-alice', ts: frame.headers.req_id })
+      expect(recorded).toEqual([{ channel: 'dm:user-alice', thread: 'dm', ts: frame.headers.req_id }])
+      expect(seeded).toEqual([{ thread: 'dm', isDm: true }])
+      await conn.stop()
+    })
+
+    it("refuses the channel mention form, which WeCom's proactive message does not document", async () => {
+      const { server, conn, d } = await live()
+      await expect(
+        executeTool(
+          wc,
+          'sendMessage',
+          { action: 'postMessage', toUser: 'user-alice', channel: 'dm:user-carol', message: 'x' },
+          d
+        )
+      ).rejects.toThrow('toUser with channel (an @-mention in a channel) is not supported on WeCom')
+      expect(server.last.frames('aibot_send_msg')).toEqual([])
+      await conn.stop()
+    })
+
+    it("hands WeCom's refusal to the agent as the tool's error, sending once and recording nothing", async () => {
+      const { server, conn, d, recorded, seeded } = await live()
+      server.answers.set('aibot_send_msg', 40001)
+      await expect(
+        executeTool(wc, 'sendMessage', { action: 'postMessage', toUser: 'user-bob', message: 'Ready.' }, d)
+      ).rejects.toThrow(/only after someone there has messaged it.*Nothing was sent\./)
+      expect(server.last.frames('aibot_send_msg')).toHaveLength(1)
+      expect(recorded).toEqual([])
+      expect(seeded).toEqual([])
+      await conn.stop()
+    })
+
+    it('posts a file with its caption into its own conversation', async () => {
+      const { server, conn, d, recorded } = await live()
+      await executeTool(
+        wc,
+        'sendMessage',
+        { action: 'postMessage', channel: 'dm:user-carol', attachment: 'chart.png', message: 'Q3' },
+        d
+      )
+      expect(server.last.frames('aibot_send_msg').map((f) => f.body!.msgtype)).toEqual(['image', 'markdown'])
+      expect(recorded).toMatchObject([{ channel: 'dm:user-carol', thread: 'dm' }])
+      await conn.stop()
+    })
   })
 
   it('refuses a channel mention where the gateway cannot carry one', async () => {

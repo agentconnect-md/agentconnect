@@ -28017,15 +28017,16 @@ export class Daemon {
     return undefined
   }
 
-  /** The send tool's and assistant mode's gateway: a reply connection, or a Google Chat, Teams or DingTalk one, which posts outside a turn but has no reply surface here. */
+  /** The send tool's and assistant mode's gateway: a reply connection, or a Google Chat, Teams, DingTalk or WeCom one, which posts outside a turn but has no reply surface here. */
   private gatewayForIntegration(
     integrationId: string
-  ): ReplyConnection | GoogleChatConnection | MsTeamsConnection | DingTalkConnection | undefined {
+  ): ReplyConnection | GoogleChatConnection | MsTeamsConnection | DingTalkConnection | WeComConnection | undefined {
     return (
       this.connForIntegration(integrationId) ??
       this.gcConnByIntegration.get(integrationId) ??
       this.msTeamsConnByIntegration.get(integrationId) ??
-      this.dingTalkConnByIntegration.get(integrationId)
+      this.dingTalkConnByIntegration.get(integrationId) ??
+      this.weComConnByIntegration.get(integrationId)
     )
   }
 
