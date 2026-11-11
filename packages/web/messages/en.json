@@ -15,8 +15,8 @@
       "dismiss": "Dismiss"
     },
     "modelProvider": {
-      "label": "Model sign-in",
-      "daemon": "Daemon's login",
+      "label": "Model credentials",
+      "daemon": "Daemon login",
       "saved": "Provider key (Beta)"
     },
     "chatActions": {

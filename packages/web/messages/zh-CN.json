@@ -15,8 +15,8 @@
       "dismiss": "关闭"
     },
     "modelProvider": {
-      "label": "模型登录",
-      "daemon": "Daemon 本机登录",
+      "label": "模型凭据",
+      "daemon": "Daemon 登录",
       "saved": "Provider key（Beta）"
     },
     "chatActions": {
