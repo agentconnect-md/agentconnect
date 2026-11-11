@@ -196,9 +196,9 @@ const button = (label: string) => document.querySelector<HTMLButtonElement>(`but
 const saveButton = () => [...host!.querySelectorAll<HTMLButtonElement>('.modalfoot button')].at(-1)!
 
 async function chooseCredentials(saved: boolean) {
-  await act(async () => button('Model sign-in').click())
+  await act(async () => button('Model credentials').click())
   const options = [...host!.querySelectorAll<HTMLButtonElement>('[role="option"]')]
-  expect(options.map((option) => option.textContent)).toEqual(["Daemon's login", 'Provider key (Beta)'])
+  expect(options.map((option) => option.textContent)).toEqual(['Daemon login', 'Provider key (Beta)'])
   await act(async () => options[saved ? 1 : 0]!.click())
 }
 
@@ -213,7 +213,7 @@ it('offers two credential sources, filters models by saved keys and restores dae
     ]
   }
   await openEditor({ model: 'model-host' })
-  expect(button('Model sign-in').textContent).toBe("Daemon's login")
+  expect(button('Model credentials').textContent).toBe('Daemon login')
   await chooseCredentials(true)
   await vi.waitFor(() => expect(saveButton().disabled).toBe(false))
   await act(async () => button('Provider and model').click())
@@ -269,7 +269,7 @@ it.each([false, true])('waits for saved credentials without a false model error 
       : {})
   })
   await chooseCredentials(true)
-  expect(button('Model sign-in').textContent).toBe('Provider key (Beta)')
+  expect(button('Model credentials').textContent).toBe('Provider key (Beta)')
   expect(host!.querySelector('[role="status"]')?.textContent).toBe('Loading provider keys…')
   expect(host!.querySelector('[role="alert"]')).toBeNull()
   expect(host!.textContent).toContain('model-host')
@@ -301,13 +301,13 @@ it('keeps saved credentials selected after a lookup failure and retries before a
   await chooseCredentials(true)
   await vi.waitFor(() => expect(host!.textContent).toContain('Could not load provider keys.'))
   expect(host!.textContent).not.toContain('Choose a model with a key configured in Providers.')
-  expect(button('Model sign-in').textContent).toBe('Provider key (Beta)')
+  expect(button('Model credentials').textContent).toBe('Provider key (Beta)')
   expect(saveButton().disabled).toBe(true)
   mocks.providers = ['anthropic']
   await act(async () => [...host!.querySelectorAll('button')].find((entry) => entry.textContent === 'Retry')!.click())
   await vi.waitFor(() => expect(saveButton().disabled).toBe(false))
   expect(host!.querySelector('[role="alert"]')).toBeNull()
-  expect(button('Model sign-in').textContent).toBe('Provider key (Beta)')
+  expect(button('Model credentials').textContent).toBe('Provider key (Beta)')
 })
 
 it('shows the saved level of what people can do in chat and saves a new one', async () => {
