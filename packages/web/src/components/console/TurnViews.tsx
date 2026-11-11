@@ -120,14 +120,30 @@ export function UserTurnView({
   onShare?: (() => void) | undefined
 }) {
   const { orgPath } = useOrgs()
+  // Only a message known to be the reader's own sits on the right, as a chat app draws it; everyone else's is on the left.
+  const mine = turn.self === true
+  const avatar = (
+    <ParticipantAvatar
+      agent={turn.agent}
+      {...(turn.agent ? { href: orgPath(`/agents/${encodeURIComponent(turn.agent.id)}`) } : {})}
+      avatarUrl={turn.avatarUrl}
+      avatarInitials={turn.avatarInitials}
+      platformMark={platformMark}
+      sp={turn.sp}
+      isCron={turn.isCron}
+    />
+  )
   return (
-    <div className="group/turn flex items-start justify-end gap-[9px]">
+    <div className={`group/turn flex items-start gap-[9px] ${mine ? 'justify-end' : 'justify-start'}`}>
+      {mine ? null : avatar}
       <ThreadRootPress
         enabled={pressToReply && onReply !== undefined}
         onReply={() => onReply?.()}
-        className="relative flex min-w-0 max-w-[86%] flex-col items-end gap-[3px]"
+        className={`relative flex min-w-0 max-w-[86%] flex-col gap-[3px] ${mine ? 'items-end' : 'items-start'}`}
       >
-        <span className="flex items-center gap-[6px] pr-1 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)">
+        <span
+          className={`flex items-center gap-[6px] font-sans ${mine ? 'pr-1' : 'pl-1'} text-[11px] font-medium leading-normal text-(--text-tertiary)`}
+        >
           {turn.isCron && turn.cronId ? (
             <Link className="lnk text-inherit" href={orgPath(`/crons/${turn.cronId}`)}>
               {turn.sp.name}
@@ -140,18 +156,21 @@ export function UserTurnView({
         {turn.steer && (
           // A glyph and one word; the full meaning sits in the tooltip.
           <span
-            className="flex items-center gap-1 pr-1 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)"
+            className={`flex items-center gap-1 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary) ${mine ? 'pr-1' : 'pl-1'}`}
             title={turn.steered ? 'Steered into the running reply' : 'Steering into the running reply…'}
           >
             {turn.steered ? <Icon name="corner-down-right" size={11} /> : <Spinner size={10} />}
             {turn.steered ? 'Steered' : 'Steering…'}
           </span>
         )}
-        {/* A sent message wraps its cards right-aligned so none hides off-screen; the composer keeps one scrolling row. */}
-        <AttachmentCards className="mb-[3px] flex-wrap justify-end" cards={messageCards(turn.images, turn.files)} />
+        {/* A message wraps its cards on its own side so none hides off-screen; the composer keeps one scrolling row. */}
+        <AttachmentCards
+          className={`mb-[3px] flex-wrap ${mine ? 'justify-end' : 'justify-start'}`}
+          cards={messageCards(turn.images, turn.files)}
+        />
         {(turn.text || turn.body) && (
           <div className="relative max-w-full">
-            <div className={SELF_BUBBLE}>
+            <div className={mine ? SELF_BUBBLE : DELIVERED_BUBBLE}>
               {turn.body?.sessionMessage && <SessionMessageCaption facts={turn.body.sessionMessage} />}
               {turn.body ? (
                 <UserTurnDetails body={turn.body} platform={turn.platform}>
@@ -161,28 +180,22 @@ export function UserTurnView({
                 turn.text && <MessageText text={turn.text} platform={turn.platform} />
               )}
             </div>
-            {/* Its hover menu on the bubble's top edge at the side facing the timeline: a message on the right keeps its menu on the left. */}
+            {/* Its hover menu on the bubble's top edge at the side facing the timeline: left for a message on the right, right for one on the left. */}
             <MessageMenu
               text={turn.text}
               onReply={onReply}
               onShare={onShare}
-              className="left-[8px] bottom-full -mb-[6px]"
+              className={mine ? 'left-[8px] bottom-full -mb-[6px]' : 'right-[8px] bottom-full -mb-[6px]'}
             />
           </div>
         )}
         {footer}
         {/* A message of attachments alone has no bubble: its menu sits on the column's top edge instead. */}
-        {turn.text || turn.body ? null : <MessageMenu onReply={onReply} onShare={onShare} className="top-0 left-0" />}
+        {turn.text || turn.body ? null : (
+          <MessageMenu onReply={onReply} onShare={onShare} className={mine ? 'top-0 left-0' : 'top-0 right-0'} />
+        )}
       </ThreadRootPress>
-      <ParticipantAvatar
-        agent={turn.agent}
-        {...(turn.agent ? { href: orgPath(`/agents/${encodeURIComponent(turn.agent.id)}`) } : {})}
-        avatarUrl={turn.avatarUrl}
-        avatarInitials={turn.avatarInitials}
-        platformMark={platformMark}
-        sp={turn.sp}
-        isCron={turn.isCron}
-      />
+      {mine ? avatar : null}
     </div>
   )
 }

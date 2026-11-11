@@ -2951,8 +2951,16 @@ export default function SessionDetailView() {
     const rootId = rootOf(turn)
     const summary = rootId ? threadSummaries.get(rootId) : undefined
     if (!rootId || !summary || (part === 'card' && !summary.task)) return null
+    // The replies line sits under its message, on whichever side the message is drawn.
+    const rootIsMine = turn.kind === 'user' && turn.self === true
     return (
-      <div className={part === 'line' ? 'mt-[3px] flex w-full justify-end' : 'mt-[6px] flex w-full'}>
+      <div
+        className={
+          part === 'line'
+            ? `mt-[3px] flex w-full ${rootIsMine ? 'justify-end' : 'justify-start'}`
+            : 'mt-[6px] flex w-full'
+        }
+      >
         <RootThreadFooter
           part={part}
           {...(part === 'card' && owner
@@ -2974,7 +2982,7 @@ export default function SessionDetailView() {
           onOpen={() => openRootThread(rootId)}
           nameOf={threadAuthorName}
           markOf={threadAuthorMark}
-          align="end"
+          align={rootIsMine ? 'end' : 'start'}
         />
       </div>
     )
