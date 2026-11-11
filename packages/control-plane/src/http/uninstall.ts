@@ -83,24 +83,25 @@ export async function releaseFreedBot(
   return true
 }
 
-/**
- * Delete one bot identity and run the platform teardown the cascade cannot reach
- * (provider contract §9 `onBotDelete` — Linear's upstream grant revoke).
- *
- * The secret row is read BEFORE the delete cascades it away and the side effect runs
- * AFTER the row is gone, so a refused delete never tears down a live install's upstream
- * state. Best-effort by contract: a failing side effect is logged and the delete stands,
- * because the row is already gone and each platform owns a sweeper as its backstop.
- *
- * The caller owns authorization and the "no install remains" precondition.
- */
+// After the caller authorizes an uninstalled bot, capture teardown material, delete it, and notify its provider.
 export async function deleteBotIdentity(deps: HttpDeps, log: TeardownLog, orgId: OrgId, bot: BotRecord): Promise<void> {
   const onBotDelete = deps.platforms.get(bot.platform)?.sideEffects?.onBotDelete
   const secrets = onBotDelete ? await deps.repos.botSecret.get(orgId, bot.id) : null
   await deps.repos.bot.delete(orgId, bot.id)
+  await notifyBotDeleted(deps, log, bot, secrets)
+}
+
+// Atomic recovery also runs provider teardown, using material captured before the secret row was deleted.
+export async function notifyBotDeleted(
+  deps: HttpDeps,
+  log: TeardownLog,
+  bot: BotRecord,
+  secrets: Awaited<ReturnType<HttpDeps['repos']['botSecret']['get']>>
+): Promise<void> {
   if (bot.transport === 'http' && deps.platforms.get(bot.platform)?.retainUnboundIngress) {
     await deps.httpBot.unassign(bot)
   }
+  const onBotDelete = deps.platforms.get(bot.platform)?.sideEffects?.onBotDelete
   if (!onBotDelete) return
   try {
     await onBotDelete(bot, secrets)

@@ -15,7 +15,14 @@ import { relayHttpBase, relayIngress } from '../../http/relay-ingress.js'
 import { agentIconBackgroundColor } from '../../agents/agent-icon.js'
 import { AgentId, DaemonId, IntegrationId } from '../../domain/ids.js'
 import { BotExternalIdentityTaken } from '../../persistence/errors.js'
-import type { AgentRecord } from '../../persistence/ports.js'
+import type { AgentRecord, MsTeamsBindingMutations } from '../../persistence/ports.js'
+import {
+  MsTeamsRecoveryError,
+  msTeamsRecoveryChanged,
+  msTeamsRecoveryRows,
+  msTeamsRecoverySnapshot,
+  type MsTeamsRecoveryOAuth
+} from './recovery.js'
 import {
   MSTEAMS_RSC_PERMISSIONS,
   msTeamsAppIcons,
@@ -50,6 +57,8 @@ export interface MsTeamsConnectSeams {
   /** The deployment-owned app; absent ⇒ every route answers that there is none. */
   app?: MsTeamsPlatformApp
   keys: MsTeamsConnectKeys
+  bindingMutations: MsTeamsBindingMutations
+  recovery?: MsTeamsRecoveryOAuth
   /** The Console origin whose `/msteams/connect` page Microsoft redirects to. */
   webAppUrl?: string
   fetch?: typeof fetch
@@ -61,7 +70,7 @@ export function msTeamsConnectRedirectUri(webAppUrl: string): string {
 }
 
 const TAKEN_MESSAGE =
-  'This Microsoft 365 organization is already connected to another AgentConnect organization. Ask its owner to remove the Teams integration first.'
+  'This Microsoft 365 organization is already connected to another AgentConnect organization. A Teams or Global Administrator can recover the connection here, or contact support.'
 const IN_USE_MESSAGE =
   'This Microsoft 365 organization already connects another agent here. Remove that Teams integration first, or register your own bot for this agent.'
 
@@ -85,6 +94,7 @@ const CallbackBody = z.object({
   code: z.string().min(1).max(4096).describe('The authorization code Microsoft returned to the connect page.'),
   state: z.string().min(1).max(2048).describe('The state Microsoft returned with it.')
 })
+const ConflictDto = ErrorDto.extend({ recovery: z.object({ tenantId: z.string(), agentId: z.string() }).optional() })
 const CallbackDto = z.object({
   integrationId: z.string(),
   agentId: z.string(),
@@ -131,7 +141,11 @@ const STATUS_OF: Record<MsTeamsConnectError['code'], number> = {
 }
 
 // The agent the tenant will serve, once the caller may edit it and its daemon runs Teams.
-async function connectTarget(deps: HttpDeps, req: FastifyRequest, agentId: string): Promise<AgentRecord | string> {
+export async function connectTarget(
+  deps: HttpDeps,
+  req: FastifyRequest,
+  agentId: string
+): Promise<AgentRecord | string> {
   const agent = await deps.repos.agent.get(orgOf(req), AgentId(agentId))
   if (!agent || !canView(agent, ctxOf(req))) return 'agent not found'
   if (!canEdit(agent, ctxOf(req))) return 'cannot edit this agent'
@@ -221,7 +235,7 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
             'Redeem the code Microsoft returned, take the tenant from the ID token, and connect it: a tenant another organization holds answers 409 MSTEAMS_TENANT_TAKEN, and one this organization connects to another agent answers 409 MSTEAMS_TENANT_IN_USE. The tenant’s row is installed on the agent, the app is published to the tenant’s organization catalog, each of the administrator’s teams that already has the app is upgraded to it with its resource-specific permissions re-consented, and the administrator’s teams are answered with a short-lived ticket for the install step. Running it again for the same agent is how the Console updates the app in Teams.',
           operationId: 'finishMsTeamsConnect',
           body: CallbackBody,
-          response: { 200: CallbackDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 502: ErrorDto }
+          response: { 200: CallbackDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ConflictDto, 502: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -262,14 +276,26 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
           // A Teams Store install already has the app, so this connect only claims the tenant (§8.4).
           const store = state.tenant !== undefined
 
-          // One tenant maps to one organization and, within it, to one agent (§8.2).
-          const held = await deps.repos.bot.getByExternalIdentity(MSTEAMS_PLATFORM, live.app.appId, tenantId)
-          if (held && held.orgId !== orgId) return refuse(reply, 409, 'MSTEAMS_TENANT_TAKEN', TAKEN_MESSAGE)
+          const tenantRows = () =>
+            deps.repos.bot
+              .listForPlatform(MSTEAMS_PLATFORM)
+              .then((rows) => msTeamsRecoveryRows(rows, live.app.appId, tenantId))
+          const before = await tenantRows()
+          const taken = () =>
+            reply.code(409).send({
+              error: 'Conflict',
+              statusCode: 409,
+              code: 'MSTEAMS_TENANT_TAKEN',
+              message: TAKEN_MESSAGE,
+              recovery: { tenantId, agentId: target.id }
+            })
+          if (before.some((row) => row.orgId !== orgId)) return taken()
+          const held = before.find((row) => row.externalAppId === live.app.appId)
           if (held && held.agentIds.length > 0 && !held.agentIds.includes(target.id)) {
             return refuse(reply, 409, 'MSTEAMS_TENANT_IN_USE', IN_USE_MESSAGE)
           }
 
-          // Publishing without review is an administrator's act, so it proves the authority the claim needs before anything is written; a Store install publishes nothing.
+          // Preserve the existing catalog connect behavior; recovery verifies administrator authority separately.
           const packageInput = {
             appId: live.app.appId,
             relayHost: new URL(relayBase).host,
@@ -290,72 +316,82 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
                 )
               )
 
-          let integrationId: string
-          let botId = held?.id
-          if (!held) {
-            try {
-              const installed = await installNewBot(deps, req.log, {
-                bot: {
-                  externalAppId: live.app.appId,
-                  platformConfig: {
-                    tenantId,
-                    tokenTenantId: live.app.tenantId,
-                    // Marks the row as the deployment app's for good, whatever its settings say later (§8.5).
-                    [MSTEAMS_ROW_OWNER_KEY]: MSTEAMS_DEPLOYMENT_OWNER,
-                    ...(store ? { source: 'store' } : {})
-                  }
-                },
-                // The row stores no secret; its daemon sends through the relay (§8.5).
-                secrets: msTeamsDeploymentSecrets(),
-                externalIdentity: {
-                  externalAppId: live.app.appId,
-                  externalTenantId: tenantId,
-                  conflictMessage: TAKEN_MESSAGE
-                },
+          const organizationName = held ? undefined : await readMsTeamsOrganizationName(fetchImpl, accessToken)
+          const connected = await seams.bindingMutations.runExclusive(tenantId, async () => {
+            if (msTeamsRecoverySnapshot(await tenantRows()) !== msTeamsRecoverySnapshot(before))
+              throw msTeamsRecoveryChanged()
+            const currentTarget = await connectTarget(deps, req, state.agentId)
+            if (typeof currentTarget === 'string') throw msTeamsRecoveryChanged()
+            let integrationId: string
+            let botId = held?.id
+            if (!held) {
+              try {
+                const installed = await installNewBot(deps, req.log, {
+                  bot: {
+                    externalAppId: live.app.appId,
+                    platformConfig: {
+                      tenantId,
+                      tokenTenantId: live.app.tenantId,
+                      // Marks the row as the deployment app's for good, whatever its settings say later (§8.5).
+                      [MSTEAMS_ROW_OWNER_KEY]: MSTEAMS_DEPLOYMENT_OWNER,
+                      ...(store ? { source: 'store' } : {})
+                    }
+                  },
+                  // The row stores no secret; its daemon sends through the relay (§8.5).
+                  secrets: msTeamsDeploymentSecrets(),
+                  externalIdentity: {
+                    externalAppId: live.app.appId,
+                    externalTenantId: tenantId,
+                    conflictMessage: TAKEN_MESSAGE
+                  },
+                  orgId,
+                  agent: currentTarget,
+                  platform: MSTEAMS_PLATFORM,
+                  // The organization's own name, as the console lists it; the tenant ID only when Graph names none.
+                  name: `Microsoft Teams · ${organizationName ?? tenantId}`,
+                  transport: 'http',
+                  prebuilt: true,
+                  createdByUserId: req.principal!.userId
+                })
+                integrationId = installed.integration.id
+                botId = installed.bot.id
+              } catch (err) {
+                if (err instanceof BotExternalIdentityTaken)
+                  throw new MsTeamsRecoveryError(409, 'MSTEAMS_TENANT_TAKEN', TAKEN_MESSAGE)
+                throw err
+              }
+            } else {
+              const admission = await deps.repos.integration.addBotMembership({
+                id: IntegrationId(randomUUID()),
                 orgId,
-                agent: target,
+                agentId: target.id,
+                botId: held.id,
                 platform: MSTEAMS_PLATFORM,
-                // The organization's own name, as the console lists it; the tenant ID only when Graph names none.
-                name: `Microsoft Teams · ${(await readMsTeamsOrganizationName(fetchImpl, accessToken)) ?? tenantId}`,
-                transport: 'http',
-                prebuilt: true,
-                createdByUserId: req.principal.userId
+                name: held.name,
+                createdByUserId: req.principal!.userId
               })
-              integrationId = installed.integration.id
-              botId = installed.bot.id
-            } catch (err) {
-              if (err instanceof BotExternalIdentityTaken)
-                return refuse(reply, 409, 'MSTEAMS_TENANT_TAKEN', TAKEN_MESSAGE)
-              throw err
+              if (admission.outcome === 'revoked' || admission.outcome === 'not_shareable') {
+                throw new MsTeamsRecoveryError(409, 'MSTEAMS_TENANT_IN_USE', IN_USE_MESSAGE)
+              }
+              if (admission.outcome === 'added') {
+                if (held.platformConfig?.[MSTEAMS_ROW_OWNER_KEY] !== MSTEAMS_DEPLOYMENT_OWNER)
+                  await deps.repos.bot.mergeBotIdentity(orgId, held.id, () => ({
+                    platformConfig: { [MSTEAMS_ROW_OWNER_KEY]: MSTEAMS_DEPLOYMENT_OWNER }
+                  }))
+                await deps.repos.botCredential.install(
+                  orgId,
+                  held.id,
+                  msTeamsDeploymentSecrets(),
+                  new Date(deps.clock.now())
+                )
+                await deps.httpBot.syncBot(held.id)
+              }
+              integrationId = admission.integration.id
             }
-          } else {
-            const admission = await deps.repos.integration.addBotMembership({
-              id: IntegrationId(randomUUID()),
-              orgId,
-              agentId: target.id,
-              botId: held.id,
-              platform: MSTEAMS_PLATFORM,
-              name: held.name,
-              createdByUserId: req.principal.userId
-            })
-            if (admission.outcome === 'revoked' || admission.outcome === 'not_shareable') {
-              return refuse(reply, 409, 'MSTEAMS_TENANT_IN_USE', IN_USE_MESSAGE)
-            }
-            if (admission.outcome === 'added') {
-              if (held.platformConfig?.[MSTEAMS_ROW_OWNER_KEY] !== MSTEAMS_DEPLOYMENT_OWNER)
-                await deps.repos.bot.mergeBotIdentity(orgId, held.id, () => ({
-                  platformConfig: { [MSTEAMS_ROW_OWNER_KEY]: MSTEAMS_DEPLOYMENT_OWNER }
-                }))
-              await deps.repos.botCredential.install(
-                orgId,
-                held.id,
-                msTeamsDeploymentSecrets(),
-                new Date(deps.clock.now())
-              )
-              await deps.httpBot.syncBot(held.id)
-            }
-            integrationId = admission.integration.id
-          }
+
+            return { integrationId, botId }
+          })
+          const { integrationId, botId } = connected
 
           if (!catalogAppId) {
             // The Store keeps the package current; recording the source keeps Update in Teams off its row.
@@ -383,6 +419,7 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
             store: false
           }
         } catch (err) {
+          if (err instanceof MsTeamsRecoveryError) return refuse(reply, err.status, err.code, err.message)
           if (err instanceof MsTeamsConnectError) return refuse(reply, STATUS_OF[err.code], err.code, err.message)
           throw err
         }
@@ -399,7 +436,7 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
             'Install the connected tenant’s catalog app into each chosen team with the package’s resource-specific permissions, using the ticket the connect step answered. A team that already has the app counts as installed.',
           operationId: 'installMsTeamsApp',
           body: InstallBody,
-          response: { 200: InstallDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 502: ErrorDto }
+          response: { 200: InstallDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 502: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -416,6 +453,14 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
         }
         try {
           for (const teamId of req.body.teamIds) {
+            const integration = await deps.repos.integration.get(orgOf(req), IntegrationId(ticket.integrationId))
+            if (!integration || typeof (await connectTarget(deps, req, integration.agentId)) === 'string')
+              return refuse(
+                reply,
+                409,
+                'MSTEAMS_CONNECT_STATE_INVALID',
+                'This connection changed. Start connecting again.'
+              )
             await installMsTeamsApp(fetchImpl, ticket.accessToken, {
               teamId,
               catalogAppId: ticket.catalogAppId,

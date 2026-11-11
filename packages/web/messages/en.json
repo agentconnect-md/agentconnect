@@ -1560,12 +1560,25 @@
         "denied": "Microsoft did not accept the sign-in. Start connecting again.",
         "personalAccount": "Sign in with a work or school account that administers your Microsoft 365 organization.",
         "notAdmin": "Microsoft refused the request. Sign in as a Teams or Global administrator who can approve for the organization.",
-        "taken": "Your Microsoft 365 organization is already connected to another organization here.",
+        "taken": "This Microsoft 365 organization is already connected elsewhere. A Teams or Global Administrator can recover the connection, or contact support.",
         "inUse": "Your Microsoft 365 organization already connects another agent. Remove that Teams integration first.",
         "noAgent": "This agent cannot take a Teams app right now.",
         "unavailable": "Microsoft could not be reached, or this deployment cannot connect Teams right now. Try again later.",
         "generic": "Teams could not be connected.",
         "tenantMismatch": "Sign in with an account of the Microsoft 365 organization that added the app in Teams."
+      },
+      "recovery": {
+        "verify": "Verify administrator access",
+        "title": "Recover Teams connection",
+        "confirm": "Connect this Microsoft 365 tenant to {organization}?",
+        "effect": "All Teams connections using our app in the previous organization will be removed. Its agents and history stay there; connection settings aren't transferred.",
+        "recover": "Recover connection",
+        "cancel": "Cancel",
+        "support": "Contact support",
+        "done": "Connection recovered",
+        "doneBody": "Your selected agent is connected. Open its Teams integration to update the app name and icon if needed.",
+        "notAdmin": "Sign in as an active Teams Administrator or Global Administrator of this tenant, or contact support.",
+        "failed": "Recovery could not be completed. Open your agent's integrations and start Connect Teams again, or contact support."
       }
     },
     "msTeamsStoreConnect": {

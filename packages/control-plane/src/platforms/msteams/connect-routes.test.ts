@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MSTEAMS_RELAY_EGRESS_V1_FEATURE } from '@agentconnect.md/protocol'
 import type { HttpDeps } from '../../http/deps.js'
 import { installZod } from '../../http/plugins/zod.js'
-import type { BotRecord } from '../../persistence/ports.js'
+import type { BotRecord, MsTeamsBindingMutations } from '../../persistence/ports.js'
 import { AgentId, BotId, OrgId } from '../../domain/ids.js'
 import { FakeClock } from '../../../test/fakes/fake-clock.js'
 import { mintMsTeamsConnectState, msTeamsConnectKeys } from './connect.js'
@@ -89,6 +89,9 @@ async function harness(
         id: BOT,
         orgId: ORG,
         name: 'Microsoft Teams',
+        platform: 'msteams',
+        externalAppId: APP.appId,
+        externalTenantId: CUSTOMER,
         agentIds: [],
         platformConfig: { appOwner: 'deployment' },
         ...opts.held
@@ -139,10 +142,15 @@ async function harness(
           visibility: 'org'
         })
       },
-      bot: { getByExternalIdentity: async () => held, create, mergeBotIdentity },
+      bot: {
+        listForPlatform: async () => (held ? [held] : []),
+        getByExternalIdentity: async () => held,
+        create,
+        mergeBotIdentity
+      },
       botSecret: { put },
       botCredential: { install: credentialInstall },
-      integration: { create: integrationCreate, addBotMembership }
+      integration: { create: integrationCreate, addBotMembership, get: async () => ({ agentId: AGENT }) }
     }
   } as unknown as HttpDeps
   const app = Fastify()
@@ -156,6 +164,7 @@ async function harness(
     msTeamsConnectRoutes(deps, {
       ...(deploymentApp ? { app: deploymentApp } : {}),
       keys,
+      bindingMutations: { runExclusive: async (_tenant, action) => action() } as MsTeamsBindingMutations,
       webAppUrl: 'https://console.example.test',
       fetch: fetchImpl
     })
