@@ -59,12 +59,14 @@ import {
   upgradeMsTeamsInstalls,
   verifyMsTeamsConnectState,
   type MsTeamsConnectKeys,
-  approveMsTeamsSubmission
+  approveMsTeamsSubmission,
+  installMsTeamsAppForUser
 } from './connect.js'
 import {
   MSTEAMS_DEPLOYMENT_OWNER,
   MSTEAMS_ROW_OWNER_KEY,
   MSTEAMS_TENANT_CONSENT_KEY,
+  MSTEAMS_TENANT_CONSENT_VERSION,
   isMsTeamsDeploymentRow,
   msTeamsAgentBotEntries,
   msTeamsAgentBotOf,
@@ -376,7 +378,9 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
           agentBots &&
           !req.body.consent &&
           (await deps.repos.bot.listForOrg(orgOf(req))).some(
-            (row) => row.platform === MSTEAMS_PLATFORM && !!row.platformConfig?.[MSTEAMS_TENANT_CONSENT_KEY]
+            (row) =>
+              row.platform === MSTEAMS_PLATFORM &&
+              row.platformConfig?.[MSTEAMS_TENANT_CONSENT_KEY] === MSTEAMS_TENANT_CONSENT_VERSION
           )
         const consent = agentBots && !recorded
         const state = mintMsTeamsConnectState(
@@ -601,10 +605,10 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
           if (
             state.agentBots &&
             !state.consented &&
-            !before.some((row) => !!row.platformConfig?.[MSTEAMS_TENANT_CONSENT_KEY])
+            !before.some((row) => row.platformConfig?.[MSTEAMS_TENANT_CONSENT_KEY] === MSTEAMS_TENANT_CONSENT_VERSION)
           )
             return refuse(reply, 409, 'MSTEAMS_CONSENT_NEEDED', CONSENT_NEEDED_MESSAGE)
-          const consentRecord = { platformConfig: { [MSTEAMS_TENANT_CONSENT_KEY]: '1' } }
+          const consentRecord = { platformConfig: { [MSTEAMS_TENANT_CONSENT_KEY]: MSTEAMS_TENANT_CONSENT_VERSION } }
           const servesAnother = !!held && held.agentIds.length > 0 && !held.agentIds.includes(target.id)
           // The app's bot serves the agent connected first; a further agent gets a bot of its own where the deployment makes them (§8.6.4), and keeps it on a reconnect.
           if (
@@ -936,6 +940,9 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
           if (![...upgrades.values()].includes('failed')) {
             await deps.repos.bot.mergeBotIdentity(orgId, botId, () => ({ platformConfig: { appPackage } }))
           }
+          // The person who connects the agent gets its app themselves, so their Teams client lists it at once.
+          if (!(await installMsTeamsAppForUser(fetchImpl, accessToken, { userId: sponsorId, catalogAppId })))
+            req.log.warn({ integrationId }, 'msteams: agent bot not added for the person who connected it')
           return {
             integrationId,
             agentId: target.id,

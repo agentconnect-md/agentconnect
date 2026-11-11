@@ -15,10 +15,11 @@ export const MSTEAMS_CONNECT_SCOPES = [
 /** A Store install only proves its tenant (§8.4): the sign-in and the organization's name, no catalog or install scope. */
 export const MSTEAMS_STORE_CONNECT_SCOPES = ['https://graph.microsoft.com/User.Read', 'openid'] as const
 
-/** What a deployment with agent bots asks besides (§8.6.5): submitting a package for review, which a member does later, and creating the blueprint's principal. */
+/** What a deployment with agent bots asks besides (§8.6.5): submitting a package for review, which a member does later, creating the blueprint's principal, and adding an agent's app for the person who connects it. */
 export const MSTEAMS_AGENT_BOT_SCOPES = [
   'https://graph.microsoft.com/AppCatalog.Submit',
-  'https://graph.microsoft.com/AgentIdentityBlueprintPrincipal.Create'
+  'https://graph.microsoft.com/AgentIdentityBlueprintPrincipal.Create',
+  'https://graph.microsoft.com/TeamsAppInstallation.ReadWriteForUser'
 ] as const
 
 const AUTHORITY = 'https://login.microsoftonline.com/organizations/oauth2/v2.0'
@@ -30,6 +31,7 @@ export const MSTEAMS_MEMBER_SCOPES = [
   'https://graph.microsoft.com/AppCatalog.Submit',
   'https://graph.microsoft.com/Team.ReadBasic.All',
   'https://graph.microsoft.com/TeamsAppInstallation.ReadWriteAndConsentSelfForTeam',
+  'https://graph.microsoft.com/TeamsAppInstallation.ReadWriteForUser',
   'https://graph.microsoft.com/User.Read',
   'openid',
   'offline_access'
@@ -573,6 +575,23 @@ export async function installMsTeamsApp(
   })
   if (response.ok || response.status === 409) return
   throw refused(response)
+}
+
+/** Adds the catalog app for one person, so their Teams client lists the agent at once: its mention, its card and a 1:1 chat. Best effort: false when Microsoft refuses or cannot be reached, which leaves the team installs as they are. */
+export async function installMsTeamsAppForUser(
+  fetchImpl: typeof fetch,
+  token: string,
+  input: { userId: string; catalogAppId: string }
+): Promise<boolean> {
+  try {
+    const path = `/users/${encodeURIComponent(input.userId)}/teamwork/installedApps`
+    const response = await graph(fetchImpl, token, 'POST', path, {
+      json: { 'teamsApp@odata.bind': `${GRAPH}/appCatalogs/teamsApps/${input.catalogAppId}` }
+    })
+    return response.ok || response.status === 409
+  } catch {
+    return false
+  }
 }
 
 const Installed = z.object({ value: z.array(z.object({ id: z.string() })) })

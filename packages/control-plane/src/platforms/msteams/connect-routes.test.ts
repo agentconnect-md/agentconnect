@@ -77,6 +77,8 @@ async function harness(
     me?: string
     /** The submitted package's definitions as its submitter reads them. */
     packageStates?: string[]
+    /** Graph's status for adding the app for the person who connects it. */
+    personal?: number
     /** Graph's status for an administrator's approval of a pending definition. */
     approve?: number
   } = {}
@@ -178,6 +180,10 @@ async function harness(
       return opts.organization === null
         ? new Response(null, { status: 403 })
         : Response.json({ value: [{ displayName: opts.organization ?? 'Example Org' }] })
+    if (url.includes('/teamwork/installedApps')) {
+      order.push('personal')
+      return new Response(null, { status: opts.personal ?? 201 })
+    }
     if (url.includes('/installedApps')) return new Response(null, { status: 201 })
     throw new Error(`unexpected request to ${url}`)
   }) as typeof fetch
@@ -551,7 +557,7 @@ describe('a deployment that makes agent bots (§8.6)', () => {
     harness({ agentBots: true, held: HELD, agentNames: { [OTHER_AGENT]: 'Reviewer' }, ...over })
 
   it('skips the consent page for an organization whose tenant recorded it, and sends another tenant back through it', async () => {
-    const CONSENTED = { ...HELD, platformConfig: { appOwner: 'deployment', tenantConsent: '1' } } as Partial<BotRecord>
+    const CONSENTED = { ...HELD, platformConfig: { appOwner: 'deployment', tenantConsent: '2' } } as Partial<BotRecord>
     const h = await further({ held: CONSENTED })
     const direct = new URL((await h.post('', { agentId: AGENT })).json<{ authorizeUrl: string }>().authorizeUrl)
     expect(direct.pathname).toBe('/organizations/oauth2/v2.0/authorize')
@@ -639,14 +645,14 @@ describe('a deployment that makes agent bots (§8.6)', () => {
     expect(JSON.stringify(first.json())).not.toContain('delegated')
     // Nothing is made before the agent-bot step; the tenant's row only records the consent just accepted.
     expect(h.order).toEqual(['record'])
-    expect(h.recorded).toEqual([{ tenantConsent: '1' }])
+    expect(h.recorded).toEqual([{ tenantConsent: '2' }])
     expect(h.create).not.toHaveBeenCalled()
 
     const made = await h.post('/agent-bot', { ticket: first.json<{ ticket: string }>().ticket })
     expect(made.statusCode).toBe(200)
     expect(made.json()).toMatchObject({ agentId: AGENT, store: false, teams: [{ app: 'none' }, { app: 'none' }] })
     expect(typeof made.json<{ integrationId: string }>().integrationId).toBe('string')
-    // The principal, the identity, the registration and its channel, the proof, then the catalog, the row and its package.
+    // The principal, the identity, the registration and its channel, the proof, then the catalog, the row, its package, and the app for the person who connected it.
     expect(h.order.slice(1)).toEqual([
       `token ${AGENT_BOTS.blueprintId}`,
       'principal',
@@ -659,8 +665,17 @@ describe('a deployment that makes agent bots (§8.6)', () => {
       `token ${IDENTITY}`,
       'publish',
       'create',
-      'record'
+      'record',
+      'personal'
     ])
+    expect(h.graph.at(-1)).toMatchObject({
+      method: 'POST',
+      url: `https://graph.microsoft.com/v1.0/users/${SPONSOR}/teamwork/installedApps`
+    })
+    // A refused personal install leaves the connect as it is.
+    const refused = await further({ personal: 403 })
+    const again = await refused.callback(refused.state({ agentBots: true, consented: true }))
+    expect((await refused.post('/agent-bot', { ticket: again.json<{ ticket: string }>().ticket })).statusCode).toBe(200)
     const key = msTeamsAgentBotKey(AGENT, CUSTOMER)
     expect(h.create).toHaveBeenCalledWith(
       expect.objectContaining({

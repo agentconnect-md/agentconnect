@@ -17,6 +17,7 @@ import { MSTEAMS_RSC_PERMISSIONS } from './app-package.js'
 import {
   MsTeamsConnectError,
   installMsTeamsApp,
+  installMsTeamsAppForUser,
   readMsTeamsPackageState,
   redeemMsTeamsRefreshToken,
   withdrawMsTeamsSubmission
@@ -205,6 +206,11 @@ export class MsTeamsAgentBotRequests {
       }
     }
     if (request.teamIds.length > 0 && installed === 0) return undefined
+    // The member gets the agent's app themselves too, so their Teams client lists it at once.
+    await installMsTeamsAppForUser(this.fetchImpl, accessToken, {
+      userId: request.sponsorId,
+      catalogAppId: request.catalogAppId
+    })
     const key = msTeamsAgentBotKey(request.agentId, request.tenantId)
     try {
       const made = await this.deps.bindingMutations.runExclusive(request.tenantId, async () => {
