@@ -22,6 +22,8 @@ import {
   type CapabilityDecideReq,
   type CapabilityDecideResult,
   type CapabilityRequestReq,
+  type AgentCronReq,
+  type AgentCronResult,
   type CapabilityRequestResult,
   type CapabilityWithdrawReq,
   type CapabilityWithdrawResult,
@@ -1223,6 +1225,22 @@ export class CpClient {
   /** A Decline clicked on a card, settled by the CP's compare-and-set (§4.4.4). */
   async capabilityDecide(payload: CapabilityDecideReq, orgId?: string): Promise<CapabilityDecideResult> {
     return await this.capabilityCall('capability/decide', payload, orgId)
+  }
+
+  /** An agent's own cron operation (`cron/self`), single-shot: a lost reply is retried by the agent, not by this socket. */
+  async agentCron(payload: AgentCronReq, orgId?: string): Promise<AgentCronResult> {
+    this.requireReady('cron/self')
+    const rep = await this.correlator.request(
+      this.scopedFrame('cron/self', payload, orgId),
+      (e) => this.transport!.send(e),
+      {
+        maxTries: 1,
+        ackTimeoutMs: CAPABILITY_CALL_BUDGET_MS
+      }
+    )
+    if (rep.type !== 'cron/self/result')
+      throw new WireError('INTERNAL', `expected cron/self/result, got ${rep.type}`, false)
+    return rep.payload as AgentCronResult
   }
 
   private async capabilityCall<T>(

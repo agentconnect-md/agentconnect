@@ -56,4 +56,9 @@ async function recordCronReport(
     ...(p.sessionId ? { sessionId: p.sessionId } : {}),
     ...(p.reason ? { reason: p.reason } : {})
   })
+  // A one-shot has nothing left to fire once its run completes; a failed retirement leaves it inert.
+  if (p.status && deps.agentCrons)
+    await deps.agentCrons
+      .retireOneShot(cron)
+      .catch((err: unknown) => deps.log.error({ err, cronId: cron.id }, 'one-shot cron retirement failed'))
 }
