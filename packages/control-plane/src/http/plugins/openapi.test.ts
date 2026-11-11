@@ -21,6 +21,9 @@ import { createFeishuCpProvider } from '../../platforms/feishu/provider.js'
 import { createWeComCpProvider } from '../../platforms/wecom/provider.js'
 import { createGoogleChatCpProvider } from '../../platforms/googlechat/provider.js'
 import { googleChatRecoveryRoutes } from '../../platforms/googlechat/recovery-routes.js'
+import { createMsTeamsCpProvider } from '../../platforms/msteams/provider.js'
+import { msTeamsRecoveryRoutes } from '../../platforms/msteams/recovery-routes.js'
+import type { MsTeamsConnectSeams } from '../../platforms/msteams/connect-routes.js'
 import { weComCredentialRoutes } from '../../platforms/wecom/routes.js'
 
 /** Minimal stub deps: `config` plus the platform registry, which the create
@@ -46,6 +49,7 @@ function stubDeps(): HttpDeps {
         installRoutes: { org: [googleChatRecoveryRoutes({} as HttpDeps, { fetch })], publicCallback: [] }
       }),
       createFeishuCpProvider({}),
+      createMsTeamsCpProvider({ installRoutes: [msTeamsRecoveryRoutes({} as HttpDeps, {} as MsTeamsConnectSeams)] }),
       createWeChatCpProvider({ routes: [weChatLoginRoutes({} as HttpDeps, {} as WeChatLoginService)] }),
       createWeComCpProvider({ installRoutes: [weComCredentialRoutes({} as HttpDeps)] })
     ])
@@ -336,6 +340,9 @@ describe('openapi plane', () => {
           'POST /api/v1/orgs/:orgId/integrations/googlechat/recovery/start',
           'POST /api/v1/orgs/:orgId/integrations/googlechat/recovery/verify',
           'POST /api/v1/orgs/:orgId/integrations/googlechat/recovery/confirm',
+          'POST /api/v1/orgs/:orgId/integrations/msteams/recovery/start',
+          'POST /api/v1/orgs/:orgId/integrations/msteams/recovery/verify',
+          'POST /api/v1/orgs/:orgId/integrations/msteams/recovery/confirm',
           'GET /api/v1/orgs/:orgId/integrations/wechat/login/:id',
           'POST /api/v1/orgs/:orgId/integrations/wechat/login',
           'PUT /api/v1/orgs/:orgId/bots/:id/wecom/credentials',

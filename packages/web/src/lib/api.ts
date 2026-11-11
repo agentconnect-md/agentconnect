@@ -5761,6 +5761,21 @@ export async function installMsTeamsTeams(
 ): Promise<{ installed: number }> {
   return apiPost<{ installed: number }>(`${orgBase(orgId)}/integrations/msteams/connect/install`, { ticket, teamIds })
 }
+
+export function startMsTeamsRecovery(orgId: string, tenantId: string, agentId: string) {
+  return apiPost<{ authorizeUrl: string; state: string }>(`${orgBase(orgId)}/integrations/msteams/recovery/start`, {
+    tenantId,
+    agentId
+  })
+}
+
+export function verifyMsTeamsRecovery(orgId: string, state: string, code: string) {
+  return apiPost<{ ticket: string }>(`${orgBase(orgId)}/integrations/msteams/recovery/verify`, { state, code })
+}
+
+export function confirmMsTeamsRecovery(orgId: string, ticket: string) {
+  return apiPost<{ agentId: string }>(`${orgBase(orgId)}/integrations/msteams/recovery/confirm`, { ticket })
+}
 /** Claim the caller's Google Workspace for `orgId` on the deployment's Chat app; returns where Chat continues, when the prompt carried a completion URL. */
 export async function claimGoogleChatCustomer(orgId: string, state: string): Promise<{ redirect?: string }> {
   return apiPost<{ redirect?: string }>(`${orgBase(orgId)}/integrations/googlechat/claim`, { state })
