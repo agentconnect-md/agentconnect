@@ -289,8 +289,6 @@
     "taskList": {
       "groups": {
         "tasks": "Tasks",
-        "threaded": "Threaded tasks",
-        "background": "Background tasks",
         "followUps": "Follow-ups",
         "subagents": "Subagents",
         "commands": "Commands",
@@ -671,8 +669,8 @@
       "messageCaption": {
         "call": "Message from {agent}",
         "reply": "Reply from {agent}",
-        "report": "Report from a background task",
-        "taskInput": "Instruction for this background task"
+        "report": "Report from a task",
+        "taskInput": "Instruction for this task"
       }
     },
     "panel": {

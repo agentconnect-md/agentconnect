@@ -153,8 +153,13 @@ export function UserTurnView({
           <div className="relative max-w-full">
             <div className={SELF_BUBBLE}>
               {turn.body?.sessionMessage && <SessionMessageCaption facts={turn.body.sessionMessage} />}
-              {turn.text && <MessageText text={turn.text} platform={turn.platform} />}
-              {turn.body && <UserTurnDetails body={turn.body} platform={turn.platform} />}
+              {turn.body ? (
+                <UserTurnDetails body={turn.body} platform={turn.platform}>
+                  {turn.text ? <MessageText text={turn.text} platform={turn.platform} /> : null}
+                </UserTurnDetails>
+              ) : (
+                turn.text && <MessageText text={turn.text} platform={turn.platform} />
+              )}
             </div>
             {/* Its hover menu on the bubble's top edge at the side facing the timeline: a message on the right keeps its menu on the left. */}
             <MessageMenu

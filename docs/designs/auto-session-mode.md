@@ -824,6 +824,9 @@ short trigger for machinery that exists either way.
 
 #### 6.9.5 Console
 
+Built, ahead of the rest of this section, except a getting-to-know task's mark and thread, which
+wait for the daemon to record them (§6.9.2).
+
 - **One group.** A parent's Tasks tab lists its work-mode tasks in one **Tasks** group, replacing
   §11's two. A row with a home carries its platform's mark and opens its thread; a row without one
   opens its page and folds into Finished once it ended. Follow-ups keep their own group.
@@ -836,7 +839,7 @@ short trigger for machinery that exists either way.
   "Instruction for this task". This document keeps the term for the rules of §6.2.
 - **Long session messages fold.** A report, a task's instruction or another agent's message shows
   its first six lines in the transcript, with the toggle that opens the rest directly below them.
-  Today the whole body shows and the toggle sits under it, a screen or more down for a
+  Before, the whole body showed and the toggle sat under it, a screen or more down for a
   getting-to-know report.
 
 #### 6.9.6 What still runs without a home
@@ -1015,8 +1018,8 @@ not addressed to this agent. Cost grows with the number of agents.
 - The session list labels the coordinator; tasks show their title and link to their parent. A
   threaded task's page names its coordinator once, among its related sessions, from the Control
   Plane's record of the owner (§6.2).
-- A parent's Tasks tab lists all its tasks, threaded and background grouped apart; §6.9.5 proposes
-  one group.
+- A parent's Tasks tab lists all its tasks in one group, a task with a thread wearing its
+  platform's mark (§6.9.5).
 - A coordinator's page takes its platform's thread shape where the web platform module declares one
   (`WebPlatformModule.threadShape`; webchat's is core's own). On Slack it reads the coordinator's
   roots with their threads' footers, keeps thread replies in their threads, labels the turns that
