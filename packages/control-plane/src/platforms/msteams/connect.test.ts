@@ -157,6 +157,16 @@ describe('Teams connect for a deployment with agent bots (§8.6.5)', () => {
     )
     expect(redeemed).toEqual({ accessToken: 'delegated', tenantId: TENANT, userId: OID.toLowerCase() })
     expect(new URLSearchParams(String(fetchImpl.mock.calls[0]![1]?.body)).get('scope')).toBe(asked)
+    // A member's sign-in pinned to the organization's tenant is asked and redeemed at that tenant's authority.
+    const pinned = mintMsTeamsConnectState(keys, { ...attempt, member: true, pin: TENANT }, clock)
+    expect(verifyMsTeamsConnectState(keys, pinned, clock)).toMatchObject({ member: true, pin: TENANT })
+    const pinInput = { clientId: CLIENT, redirectUri, state: pinned, member: true, pin: TENANT }
+    expect(new URL(msTeamsAuthorizeUrl(keys, pinInput)).pathname).toBe(`/${TENANT}/oauth2/v2.0/authorize`)
+    const atTenant = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
+      Response.json({ access_token: 'delegated', id_token: idToken({ tid: TENANT, oid: OID }) })
+    )
+    await redeemMsTeamsCode(keys, { ...pinInput, clientSecret: 's', code: 'c' }, atTenant)
+    expect(String(atTenant.mock.calls[0]![0])).toBe(`https://login.microsoftonline.com/${TENANT}/oauth2/v2.0/token`)
     // Without the agent bots the scope set is the three of §8.1, and an ID token with no object ID names no sponsor.
     const plain = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
       Response.json({ access_token: 'delegated', id_token: idToken({ tid: TENANT }) })

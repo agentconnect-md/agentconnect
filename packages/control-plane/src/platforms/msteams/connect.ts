@@ -75,6 +75,8 @@ export interface MsTeamsConnectState {
   consented?: boolean
   /** A member's sign-in, which submits the agent's package for the administrator's approval (§8.6.6). */
   member?: boolean
+  /** The organization's one connected tenant, whose authority a member signs in at so that Entra offers that tenant's accounts, guests included. */
+  pin?: string
   /** The waiting request an administrator signs in to approve (§8.6.6). */
   approve?: string
 }
@@ -104,6 +106,7 @@ const StatePayload = z.object({
   consent: z.boolean().optional(),
   consented: z.boolean().optional(),
   member: z.boolean().optional(),
+  pin: z.string().regex(GUID).optional(),
   approve: z.string().optional(),
   e: z.number(),
   n: z.string()
@@ -136,6 +139,7 @@ export function verifyMsTeamsConnectState(
     ...(parsed.consent ? { consent: true } : {}),
     ...(parsed.consented ? { consented: true } : {}),
     ...(parsed.member ? { member: true } : {}),
+    ...(parsed.pin ? { pin: parsed.pin } : {}),
     ...(parsed.approve ? { approve: parsed.approve } : {})
   }
 }
@@ -171,6 +175,7 @@ export function msTeamsAuthorizeUrl(
     tenant?: string
     agentBots?: boolean
     member?: boolean
+    pin?: string
     /** The administrator just chose an account on the consent page, so the picker is not forced again. */
     afterConsent?: boolean
   }
@@ -187,7 +192,7 @@ export function msTeamsAuthorizeUrl(
     code_challenge_method: 'S256',
     ...(input.afterConsent ? {} : { prompt: 'select_account' })
   })
-  return `${authorityOf(input.tenant)}/authorize?${params.toString()}`
+  return `${authorityOf(input.tenant ?? input.pin)}/authorize?${params.toString()}`
 }
 
 /** Why a step failed, as the route reports it. */
@@ -226,12 +231,13 @@ export async function redeemMsTeamsCode(
     tenant?: string
     agentBots?: boolean
     member?: boolean
+    pin?: string
   },
   fetchImpl: typeof fetch
 ): Promise<{ accessToken: string; tenantId: string; userId?: string; refreshToken?: string }> {
   let response: Response
   try {
-    response = await fetchImpl(`${authorityOf(input.tenant)}/token`, {
+    response = await fetchImpl(`${authorityOf(input.tenant ?? input.pin)}/token`, {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({

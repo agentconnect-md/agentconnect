@@ -1263,8 +1263,12 @@ for review.
 
 1. **Sign-in**, with no consent page: `AppCatalog.Submit`,
    `TeamsAppInstallation.ReadWriteAndConsentSelfForTeam`, `Team.ReadBasic.All`,
-   `User.Read`, `openid` and `offline_access`. The member picks the teams the
-   agent should join, among those they belong to.
+   `User.Read`, `openid` and `offline_access`. An organization that connected
+   one tenant sends the member to that tenant's own authority, where Entra
+   offers the tenant's accounts, a guest's among them; at the shared
+   `organizations` authority a guest would be signed in to their home tenant
+   and refused. The member picks the teams the agent should join, among those
+   they belong to.
 2. **The agent bot** is provisioned as in §8.6.5 steps 3 to 5, with the member
    as the identity's sponsor. None of it needs a consent.
 3. **Submit.** The package goes to the catalog as `submitted`.

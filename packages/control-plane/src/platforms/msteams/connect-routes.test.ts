@@ -834,7 +834,8 @@ describe('a member who is not an administrator (§8.6.6)', () => {
     const h = await connected()
     const res = await h.post('', { agentId: AGENT, member: true })
     const url = new URL(res.json<{ authorizeUrl: string }>().authorizeUrl)
-    expect(url.pathname).toBe('/organizations/oauth2/v2.0/authorize')
+    // The organization connected one tenant, so the member signs in at its authority, which also offers its guests.
+    expect(url.pathname).toBe(`/${CUSTOMER}/oauth2/v2.0/authorize`)
     const scopes = url.searchParams.get('scope')!.split(' ')
     expect(scopes).toEqual(
       expect.arrayContaining(['https://graph.microsoft.com/AppCatalog.Submit', 'openid', 'offline_access'])
