@@ -249,6 +249,12 @@ const STATUS_OF: Record<MsTeamsConnectError['code'], number> = {
   MSTEAMS_TENANT_MISMATCH: 400
 }
 
+// A refusal from Microsoft is answered by its code, and logged with the call that failed, which the answer does not carry.
+function refuseConnect(req: FastifyRequest, reply: FastifyReply, err: MsTeamsConnectError): FastifyReply {
+  req.log.warn({ code: err.code, detail: err.detail }, 'msteams: connect step refused by Microsoft')
+  return refuse(reply, STATUS_OF[err.code], err.code, err.message)
+}
+
 // The agent the tenant will serve, once the caller may edit it and its daemon runs Teams.
 export async function connectTarget(
   deps: HttpDeps,
@@ -773,7 +779,7 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
           }
         } catch (err) {
           if (err instanceof MsTeamsRecoveryError) return refuse(reply, err.status, err.code, err.message)
-          if (err instanceof MsTeamsConnectError) return refuse(reply, STATUS_OF[err.code], err.code, err.message)
+          if (err instanceof MsTeamsConnectError) return refuseConnect(req, reply, err)
           throw err
         }
       }
@@ -952,7 +958,7 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
           }
         } catch (err) {
           if (err instanceof BotExternalIdentityTaken) return refuse(reply, 409, 'MSTEAMS_TENANT_TAKEN', TAKEN_MESSAGE)
-          if (err instanceof MsTeamsConnectError) return refuse(reply, STATUS_OF[err.code], err.code, err.message)
+          if (err instanceof MsTeamsConnectError) return refuseConnect(req, reply, err)
           if (err instanceof MsTeamsRecoveryError) return refuse(reply, err.status, err.code, err.message)
           throw err
         }
@@ -1081,7 +1087,7 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
           })
           return requestDto(request)
         } catch (err) {
-          if (err instanceof MsTeamsConnectError) return refuse(reply, STATUS_OF[err.code], err.code, err.message)
+          if (err instanceof MsTeamsConnectError) return refuseConnect(req, reply, err)
           if (err instanceof MsTeamsRecoveryError) return refuse(reply, err.status, err.code, err.message)
           throw err
         }
@@ -1253,7 +1259,7 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
             })
           }
         } catch (err) {
-          if (err instanceof MsTeamsConnectError) return refuse(reply, STATUS_OF[err.code], err.code, err.message)
+          if (err instanceof MsTeamsConnectError) return refuseConnect(req, reply, err)
           throw err
         }
         return { installed: req.body.teamIds.length }
