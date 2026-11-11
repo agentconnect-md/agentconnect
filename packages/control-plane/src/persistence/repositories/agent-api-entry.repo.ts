@@ -3,7 +3,7 @@ import type { AgentApiProtocol } from '@agentconnect.md/protocol'
 import type { AgentApiProtocol as DbAgentApiProtocol } from '../../generated/prisma/client.js'
 import type { PrismaLike } from '../prisma.js'
 import type { AgentApiEntryRecord, AgentApiEntryRepo } from '../ports.js'
-import { AgentId } from '../../domain/ids.js'
+import { AgentId, type OrgId } from '../../domain/ids.js'
 
 // The wire names carry a hyphen Prisma enum members cannot.
 const toDb = (protocol: AgentApiProtocol): DbAgentApiProtocol => {
@@ -47,6 +47,17 @@ export class PgAgentApiEntryRepo implements AgentApiEntryRepo {
   async listForAgent(agentId: AgentId): Promise<AgentApiEntryRecord[]> {
     const rows = await this.db.agentApiEntry.findMany({ where: { agentId }, orderBy: { createdAt: 'asc' } })
     return rows.map(toRecord)
+  }
+
+  async protocolsByAgent(orgId: OrgId): Promise<Map<string, AgentApiProtocol[]>> {
+    const rows = await this.db.agentApiEntry.findMany({
+      where: { agent: { orgId } },
+      select: { agentId: true, protocol: true },
+      orderBy: { createdAt: 'asc' }
+    })
+    const map = new Map<string, AgentApiProtocol[]>()
+    for (const row of rows) map.set(row.agentId, [...(map.get(row.agentId) ?? []), fromDb(row.protocol)])
+    return map
   }
 
   async enable(

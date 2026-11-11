@@ -85,7 +85,8 @@ import {
   TransferFileName,
   TransferMimeType,
   TransferSha256,
-  HOOK_INSTRUCTIONS_MAX
+  HOOK_INSTRUCTIONS_MAX,
+  AgentApiProtocol
 } from '@agentconnect.md/protocol'
 import { HEX_COLOR_RE, AGENT_ICON_GLYPHS } from '../../agents/agent-icon.js'
 import { CP_PLATFORM_IDS } from '../../platforms/ids.js'
@@ -1038,7 +1039,9 @@ export const AgentDto = z.object({
   strategies: StrategyTableDto,
   // Distinct kinds of ENABLED inbound triggers on this agent — one mark per kind in the
   // list's integrations cell, without an org-wide hook list existing anywhere.
-  hookKinds: z.array(z.enum(HOOK_KINDS))
+  hookKinds: z.array(z.enum(HOOK_KINDS)),
+  // The chat APIs the agent accepts calls on — one API mark in the list's integrations cell.
+  apiProtocols: z.array(AgentApiProtocol)
 })
 export const AgentListDto = z.array(AgentDto)
 

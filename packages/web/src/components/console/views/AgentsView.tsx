@@ -422,6 +422,7 @@ export default function AgentsView() {
               // An integration needing attention takes the one mark, as it leads the desktop cluster.
               const first = agentInts.find(credentialAttention) ?? agentInts[0]
               const primaryKind = primaryHookKind(a.hookKinds ?? [])
+              const hasApi = (a.apiProtocols?.length ?? 0) > 0
               const n24 = sessions24h(a.id)
               return (
                 <Link
@@ -465,6 +466,10 @@ export default function AgentsView() {
                   ) : primaryKind ? (
                     <span className="flex h-4 w-4 flex-none items-center justify-center">
                       {AGENT_HOOK_MARK[primaryKind]}
+                    </span>
+                  ) : hasApi ? (
+                    <span className="flex h-4 w-4 flex-none items-center justify-center">
+                      <PlatformMark platform="api" fillPct={100} />
                     </span>
                   ) : null}
                   <span className="flex-none font-mono text-[14px] font-medium leading-normal text-(--text-primary) tabular-nums">
@@ -586,8 +591,12 @@ export default function AgentsView() {
             // plus inbound triggers (github repo subscriptions / webhooks) — the
             // cell shows a mark per source, not just bot integrations.
             const agentInts = integrations.filter((i) => i.agentId === a.id)
+            // The API card counts as an integration too, marked by its protocol glyph as on the agent page.
+            const markInts = a.apiProtocols?.length
+              ? [...agentInts, { id: 'api', platform: 'api', revoked: false }]
+              : agentInts
             const hookKinds = a.hookKinds ?? []
-            const totalIntegrations = agentInts.length + hookKinds.length
+            const totalIntegrations = markInts.length + hookKinds.length
             // Only a GitHub App checkout can promise privacy, so every other clone takes the neutral repo glyph.
             const repoIcon = !isGitWorkspace(a.workspace)
               ? 'folder'
@@ -705,7 +714,7 @@ export default function AgentsView() {
                 </div>
                 <div className="min-w-0 pr-3">
                   {totalIntegrations > 0 ? (
-                    <IntegrationMarks integrations={agentInts} hookKinds={hookKinds} />
+                    <IntegrationMarks integrations={markInts} hookKinds={hookKinds} />
                   ) : (
                     <span
                       className="addchip"

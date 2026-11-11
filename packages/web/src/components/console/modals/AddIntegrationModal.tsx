@@ -993,6 +993,7 @@ export default function AddIntegrationModal({
     try {
       await addAgentApi(agent.id, apiProtocol)
       await mutateApiEntries()
+      void refresh()
       onCompleted?.(`Added the ${apiProtocolLabel(apiProtocol)} API to ${agent.name}.`)
       onClose()
     } catch (e) {

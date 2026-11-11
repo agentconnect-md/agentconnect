@@ -2623,6 +2623,8 @@ export interface AgentApiEntryRecord {
 /** The chat APIs each agent accepts calls on; an absent row refuses that API. */
 export interface AgentApiEntryRepo {
   listForAgent(agentId: AgentId): Promise<AgentApiEntryRecord[]>
+  /** Each of the org's agents' enabled APIs in one read, for the agents list's marks. */
+  protocolsByAgent(orgId: OrgId): Promise<Map<string, AgentApiProtocol[]>>
   /** Idempotent: an existing entry is returned unchanged, with `created: false`. */
   enable(
     agentId: AgentId,
