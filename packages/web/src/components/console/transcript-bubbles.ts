@@ -4,9 +4,9 @@
 export const AGENT_PROSE =
   'min-w-0 max-w-full break-words font-sans text-[14px] font-normal leading-[1.6] text-(--text-primary)'
 
-/** An agent's message: the neutral bubble everyone else's message has, holding its prose, its cards and its thread's task card at the bottom. */
+/** An agent's message: everyone else's neutral bubble, as wide at most as theirs (86%), holding its prose, cards and thread's task card. */
 export const AGENT_BUBBLE =
-  'flex w-fit min-w-0 max-w-full flex-col gap-[10px] rounded-[12px_12px_12px_4px] border border-(--bubble-self-edge) bg-(--bubble-self) px-3 py-[9px]'
+  'flex w-fit min-w-0 max-w-[86%] flex-col gap-[10px] rounded-[12px_12px_12px_4px] border border-(--bubble-self-edge) bg-(--bubble-self) px-3 py-[9px]'
 
 /** The speaking agent's name, its accent pulled 62% toward the text colour so gold or green passes contrast. */
 export const AGENT_NAME =
