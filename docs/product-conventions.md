@@ -1296,8 +1296,8 @@ The conversation the agent is answering in is always writable.
   mode drafts a post anywhere else for its responsible user, or for its Activity view when they
   cannot be reached; every other write, and any write of another agent, is refused. A run that
   reads as a person writes as them. One thing a schedule may make: a Slack code channel linked
-  to its own post in the channel an editor anchored it to, unless that channel is shared with
-  another organization.
+  to its own post in the public channel an editor anchored it to, unless that channel is shared
+  with another organization. A schedule that reads as a person needs both, too.
 
 The agent-to-agent forms of `sendMessage` and the parent-session reply are not platform writes; the
 `toAgent` channel form keeps its own reach (on Slack, a public channel, or a private conversation

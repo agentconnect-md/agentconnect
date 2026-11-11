@@ -245,8 +245,6 @@ export interface OpsDeps
   sessionToolConnectionFor?: (integrationId: string) => unknown
   /** Make a room for the session's work, which a task holds as one more thread (auto-session-mode.md §6.8). */
   sessionToolRoomFor?: (ctx: SessionContext) => PlatformSessionToolEnv['makeRoom']
-  /** The post a schedule anchored the live turn to, while the turn is that schedule's alone. */
-  scheduleAnchor?: (ctx: SessionContext) => PlatformSessionToolEnv['scheduleAnchor']
   /** Collaboration Arena §6: resolve + execute an evaluation-registry tool.
    *  Returns undefined when `name` is not an evaluation tool. Visibility and
    *  role-aware authorization live behind this seam (the daemon guarantees

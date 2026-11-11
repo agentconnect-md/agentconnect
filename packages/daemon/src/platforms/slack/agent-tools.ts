@@ -245,7 +245,7 @@ const codeTools: ToolDescriptor[] = [
   {
     name: 'createSlackCodeChannel',
     description:
-      'Start requested coding work needing several steps, edits, tests or a PR in a dedicated Slack channel, unless the user asks to stay here or the task needs earlier discussion that would be lost. Quick questions stay here. Slack preserves origin privacy, invites its author and copies only the originating message into the new channel. Repeating the same trigger returns the same channel; inside a code channel this reuses the current channel. After creating one, link it and end this turn without duplicating work or asking the user to repeat the task. A scheduled run posted into a channel may create one from its own post; follow the next step in the result instead. Follow-ups there share one channel session. If creation is unavailable, use the ordinary task workflow here.',
+      'Start requested coding work needing several steps, edits, tests or a PR in a dedicated Slack channel, unless the user asks to stay here or the task needs earlier discussion that would be lost. Quick questions stay here. Slack preserves origin privacy, invites its author and copies only the originating message into the new channel. Repeating the same trigger returns the same channel; inside a code channel this reuses the current channel. After creating one, link it and end this turn without duplicating work or asking the user to repeat the task. A scheduled run posted into a public channel may create one from its own post; follow the next step in the result instead. Follow-ups there share one channel session. If creation is unavailable, use the ordinary task workflow here.',
     inputSchema: z.toJSONSchema(createArgs) as ToolDescriptor['inputSchema']
   },
   {

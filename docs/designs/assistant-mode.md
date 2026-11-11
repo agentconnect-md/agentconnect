@@ -670,7 +670,9 @@ member (below).
   schedule is its configured target, and for a task holding a channel
   ([auto-session-mode.md](auto-session-mode.md) §6.8) is also that channel while the turn is
   delivered there, as a pull request's feedback is; assistant mode drafts other posts as before, and
-  every other agent is refused.
+  every other agent is refused. The one thing such a turn may make elsewhere is a Slack code channel
+  from a schedule's own anchor in a public, internal channel
+  ([slack-code-channels.md](slack-code-channels.md) "Agent tools").
 - **The enabled-target requirement is removed**: a drafted post no longer needs its target to be a
   conversation where the agent is enabled, since the write rule already decides where the people
   asking may post. It is a separate change so that it can be reverted alone.

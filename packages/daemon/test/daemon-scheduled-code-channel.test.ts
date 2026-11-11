@@ -57,7 +57,10 @@ const cron: CronDef = {
   enabled: true
 }
 
-async function fire(during: (d: any, ctx: SessionContext) => Promise<unknown>, external = false) {
+async function fire(
+  during: (d: any, ctx: SessionContext) => Promise<unknown>,
+  place: { external?: boolean; isPrivate?: boolean } = {}
+) {
   let outcome: unknown
   let sessions = 0
   const host = {
@@ -110,7 +113,8 @@ async function fire(during: (d: any, ctx: SessionContext) => Promise<unknown>, e
     postContext: vi.fn(async () => {})
   })
   vi.spyOn(d, 'placeConfirmedInternal').mockResolvedValue(undefined)
-  vi.spyOn(d.mcp.deps, 'targetExternal').mockResolvedValue(external)
+  vi.spyOn(d.mcp.deps, 'targetExternal').mockResolvedValue(place.external ?? false)
+  vi.spyOn(d.mcp.deps, 'placeSnapshot').mockReturnValue({ kind: 'channel', isPrivate: place.isPrivate ?? false })
   const { msg } = buildSyntheticMessage(AGENT, cron, 'trace-1', new Date('2026-11-10T17:00:00.000Z'))
   await d.onCronFire(AGENT, msg, cron)
   await daemon.stop()
@@ -142,10 +146,13 @@ describe('a scheduled run making a code channel, through the daemon', () => {
     expect(create).not.toHaveBeenCalled()
   })
 
-  it('refuses a channel shared with another organization', async () => {
-    const { outcome, create } = await fire(createChannel, true)
+  it.each([
+    ['shared with another organization', { external: true }],
+    ['private, where no hand-off could reach the new channel', { isPrivate: true }]
+  ])('refuses before creating anything when the channel is %s', async (_name, place) => {
+    const { outcome, create } = await fire(createChannel, place)
     expect(outcome).toBeInstanceOf(Error)
-    expect((outcome as Error).message).toContain('no person started this run')
+    expect((outcome as Error).message).toContain('only from its own post in a public channel')
     expect(create).not.toHaveBeenCalled()
   })
 })
