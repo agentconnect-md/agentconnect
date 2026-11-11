@@ -3,7 +3,6 @@ import { supportsCoordinatorFilter } from '@agentconnect.md/protocol/decision'
 import type { DecisionProviderOption } from '@agentconnect.md/protocol/decision-api'
 import type { Agent } from '@/lib/data'
 import { useDecisionProviders } from '@/lib/decisions/provider'
-import { placementDecisionProviders } from '@/lib/repository-selector'
 
 /** The daemon screens a coordinator's messages (protocol `COORDINATOR_FILTER_V1_FEATURE`). */
 export const COORDINATOR_FILTER_FEATURE = 'coordinator-filter-v1'
@@ -13,10 +12,39 @@ export function coordinatorFilterSupported(features: readonly string[] | undefin
   return features?.includes(COORDINATOR_FILTER_FEATURE) === true
 }
 
-/** One entry per provider, keeping the models that answer the filter's Boolean question, ready daemons first. */
-export function coordinatorFilterProviders(providers: readonly DecisionProviderOption[]): DecisionProviderOption[] {
+/** Where the agent runs or will run: one machine, a group's members, or the managed pool. */
+export type CoordinatorFilterPlacement =
+  { kind: 'daemon'; daemonId: string } | { kind: 'set'; setId: string } | { kind: 'pool' }
+
+/** An existing agent's placement, as the filter reads its providers. */
+export function agentFilterPlacement(
+  agent: Pick<Agent, 'placementKind' | 'setId' | 'daemon'> | undefined
+): CoordinatorFilterPlacement | undefined {
+  if (!agent) return undefined
+  if (agent.placementKind === 'pool') return { kind: 'pool' }
+  if (agent.placementKind === 'set') return agent.setId ? { kind: 'set', setId: agent.setId } : undefined
+  return agent.daemon ? { kind: 'daemon', daemonId: agent.daemon } : undefined
+}
+
+// The filter names a provider by its model family where the catalog names the company, as the design does.
+const FILTER_PROVIDER_NAMES: Readonly<Record<string, string>> = Object.freeze({ typesafe: 'Jev' })
+
+/** One entry per provider at the placement, keeping the models that answer the filter's Boolean question, ready daemons first. */
+export function coordinatorFilterProviders(
+  providers: readonly DecisionProviderOption[],
+  placement?: CoordinatorFilterPlacement
+): DecisionProviderOption[] {
+  const placed = placement
+    ? providers.filter((option) =>
+        placement.kind === 'daemon'
+          ? option.daemonId === placement.daemonId
+          : placement.kind === 'pool'
+            ? option.pool === true
+            : option.pool !== true && option.memberSetId === placement.setId
+      )
+    : providers
   const byId = new Map<string, DecisionProviderOption>()
-  const ready = [...providers].sort(
+  const ready = [...placed].sort(
     (a, b) => Number(b.readiness.status === 'ready') - Number(a.readiness.status === 'ready')
   )
   for (const option of ready) {
@@ -24,25 +52,28 @@ export function coordinatorFilterProviders(providers: readonly DecisionProviderO
     const models = option.models.filter((model) =>
       supportsCoordinatorFilter({ providerId: option.id, model: model.id })
     )
-    if (models.length) byId.set(option.id, { ...option, models })
+    if (!models.length) continue
+    const name = Object.hasOwn(FILTER_PROVIDER_NAMES, option.kind) ? FILTER_PROVIDER_NAMES[option.kind]! : option.name
+    byId.set(option.id, { ...option, name, models })
   }
   return [...byId.values()]
 }
 
-/** The filter's providers where the agent runs, from the Decision editor's catalog. */
+/** The filter's providers where the agent runs or will run, from the Decision editor's catalog. */
 export function useCoordinatorFilterProviders(
-  agent: Pick<Agent, 'placementKind' | 'setId' | 'daemon'> | undefined
+  placement: CoordinatorFilterPlacement | undefined
 ): DecisionProviderOption[] {
   const { providers } = useDecisionProviders()
-  return agent ? coordinatorFilterProviders(placementDecisionProviders(providers, agent)) : []
+  return placement ? coordinatorFilterProviders(providers, placement) : []
 }
 
-/** The filter as the console names it: provider · model, by the catalog's labels where it has them. */
+/** The filter as the console names it: its model's label where that already names the provider, else provider · model. */
 export function coordinatorFilterLabel(
   filter: { providerId: string; model: string },
   providers: readonly Pick<DecisionProviderOption, 'id' | 'name' | 'models'>[]
 ): string {
   const option = providers.find((one) => one.id === filter.providerId)
   const model = option?.models.find((one) => one.id === filter.model)?.label ?? filter.model
-  return `${option?.name ?? filter.providerId} · ${model}`
+  const name = option?.name ?? filter.providerId
+  return model.toLowerCase().startsWith(name.toLowerCase()) ? model : `${name} · ${model}`
 }

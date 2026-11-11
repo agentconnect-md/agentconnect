@@ -64,7 +64,8 @@ import { GithubMark, LoadingState } from '@/components/marks'
 import { AgentIconPicker } from '@/components/console/AgentIconPicker'
 import { DaemonSelect, type DaemonSelectOption } from '@/components/console/DaemonSelect'
 import { ModelSelectionField } from '@/components/console/decisions/ModelSelectionField'
-import type { AgentModelSelection } from '@agentconnect.md/protocol/decision'
+import type { AgentCoordinatorFilter, AgentModelSelection } from '@agentconnect.md/protocol/decision'
+import { coordinatorFilterSupported, useCoordinatorFilterProviders } from '@/lib/coordinator-filter'
 import type { CoordinatorModel } from '@agentconnect.md/protocol/coordinator-model'
 import { randomGlyphIcon, type AgentIcon } from '@/lib/agent-icon'
 import { DEFAULT_AGENT_OUTPUT_MODE, type OutputMode } from '@/lib/output-mode'
@@ -184,6 +185,7 @@ export default function AddAgentModal({
   const [modelSelectionValid, setModelSelectionValid] = useState(true)
   const [coordinatorModel, setCoordinatorModel] = useState<CoordinatorModel | null>(null)
   const [coordinatorDisabled, setCoordinatorDisabled] = useState(false)
+  const [coordinatorFilter, setCoordinatorFilter] = useState<AgentCoordinatorFilter | null>(null)
   const [effort, setEffort] = useState(seed.effort)
   const [fastMode, setFastMode] = useState(seed.fastMode)
   const [outputMode, setOutputMode] = useState<OutputMode>(seed.outputMode ?? DEFAULT_AGENT_OUTPUT_MODE)
@@ -353,6 +355,21 @@ export default function AddAgentModal({
   } = daemonChoice
   // The model catalogs live on the single-daemon read; until it lands this is the fleet row.
   const daemon = useDaemonDetail(fleetDaemon)
+  // The filter is offered for the chosen placement once its daemon screens messages (auto-session-mode.md §4.7).
+  const filterProviders = useCoordinatorFilterProviders(placement ?? undefined)
+  const filterOffered = !!placement && coordinatorFilterSupported(daemon?.caps?.features)
+  // A filter picked before the placement changed is sent only where that model is still offered.
+  const submittedFilter =
+    coordinatorFilter &&
+    filterOffered &&
+    !coordinatorDisabled &&
+    filterProviders.some(
+      (option) =>
+        option.id === coordinatorFilter.providerId &&
+        option.models.some((model) => model.id === coordinatorFilter.model)
+    )
+      ? coordinatorFilter
+      : null
   const daemonOptions: DaemonSelectOption[] = [
     ...(poolAvailable
       ? [
@@ -902,6 +919,7 @@ export default function AddAgentModal({
         ...(modelSelection ? { modelSelection } : {}),
         ...(coordinatorModel ? { coordinatorModel } : {}),
         ...(coordinatorDisabled ? { coordinatorDisabled } : {}),
+        ...(submittedFilter ? { coordinatorFilter: submittedFilter } : {}),
         ...(description.trim() ? { description: description.trim() } : {}),
         ...(placement?.kind === 'pool'
           ? { placementKind: 'pool' as const }
@@ -1126,7 +1144,10 @@ export default function AddAgentModal({
                 ),
                 onChange: setCoordinatorModel,
                 disabled: coordinatorDisabled,
-                onDisabledChange: setCoordinatorDisabled
+                onDisabledChange: setCoordinatorDisabled,
+                ...(filterOffered
+                  ? { filter: { value: coordinatorFilter, providers: filterProviders, onChange: setCoordinatorFilter } }
+                  : {})
               }}
               onFallbackChange={(target) => {
                 const switched = target.runtime !== effectiveRuntime

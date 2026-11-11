@@ -193,7 +193,7 @@ import { BuiltinBadge } from '@/components/console/BuiltinBadge'
 import { NotFound } from '@/components/console/NotFound'
 import { TrustedUsersField, type TrustedUsersFlush } from '@/components/console/TrustedUsersField'
 import { Button, Icon } from '@/components/ui'
-import { coordinatorFilterLabel, useCoordinatorFilterProviders } from '@/lib/coordinator-filter'
+import { agentFilterPlacement, coordinatorFilterLabel, useCoordinatorFilterProviders } from '@/lib/coordinator-filter'
 import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
 import { useSessionList } from '@/lib/use-session-list'
@@ -1101,7 +1101,7 @@ function AgentDetail() {
   // a deep link renders this before the agents pull settles. The effort row reads the
   // selected model's own effort vocabulary, which only the single-daemon read carries.
   const capabilitySource = useDaemonDetail(da ? agentCapabilitySource(da, daemons, memberSets) : undefined)
-  const filterProviders = useCoordinatorFilterProviders(da)
+  const filterProviders = useCoordinatorFilterProviders(agentFilterPlacement(da))
   // Unknown id (a stale deep link, or a demo agent that's hidden outside mock mode) —
   // show a not-found notice rather than crash on the `da.*` reads below. While the
   // agents pull is still in flight, though, it's not "not found" yet — spin instead.

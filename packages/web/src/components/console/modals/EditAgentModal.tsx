@@ -38,7 +38,11 @@ import { DaemonSelect, type DaemonSelectOption } from '@/components/console/Daem
 import { useModal } from '@/components/console/ModalProvider'
 import { ModelSelectionField } from '@/components/console/decisions/ModelSelectionField'
 import type { AgentCoordinatorFilter, AgentModelSelection } from '@agentconnect.md/protocol/decision'
-import { coordinatorFilterSupported, useCoordinatorFilterProviders } from '@/lib/coordinator-filter'
+import {
+  agentFilterPlacement,
+  coordinatorFilterSupported,
+  useCoordinatorFilterProviders
+} from '@/lib/coordinator-filter'
 import type { CoordinatorModel } from '@agentconnect.md/protocol/coordinator-model'
 import { editAgentCapabilitySource, editAgentDaemonChoices, preselectPlacementReset } from './edit-agent-daemon-choice'
 import { storedModelAfterPick } from './fallback-model'
@@ -458,7 +462,7 @@ export default function EditAgentModal({
   const sourceDaemon = daemons.find((d) => d.daemonId === initialDaemonId.current)
   const daemonChanged = daemonId !== initialDaemonId.current
   // The filter is offered where the agent runs now and its daemon screens messages (auto-session-mode.md §4.7).
-  const filterProviders = useCoordinatorFilterProviders(agent)
+  const filterProviders = useCoordinatorFilterProviders(agentFilterPlacement(agent))
   const filterOffered = !daemonChanged && coordinatorFilterSupported(daemon?.caps?.features)
   const initialPlacement = daemonChanged && !initialDaemonId.current
   const placementRequested = daemonChanged || repairPlacement
