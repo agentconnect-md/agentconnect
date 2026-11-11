@@ -153,11 +153,12 @@ export interface ProposalInput {
   task?: string
   /** The follow-up form (§5.13): the follow-up an approval takes in place of a task. */
   followUp?: AssistantProposalFollowUp
-  /** A getting-to-know task report round's proposal (§5.13): recorded now, carded once the round's reply posts. */
+  /** A proposal of a turn that has not replied yet, a getting-to-know task report round's (§5.13) or an offer (§5.10): recorded now, carded once the turn's reply posts. */
   hold?: { round: string; seq: number }
   sentence: string
   why: string
-  itemId: string
+  /** The task it acts on; null for an offer from an ordinary turn, which acts on none. */
+  itemId: string | null
   itemVersion: number
   source: AssistantDraftSource
   /** The item's conversation, for its card; absent for one with no integration (webchat). */
@@ -767,7 +768,7 @@ export class AssistantDrafts {
   /** Why an approved task must not run at all: its record changed, or the agent left assistant mode. */
   private taskRefusal(draft: AssistantDraft): string | undefined {
     const proposal = draft.proposal
-    if (!proposal || assistantProposalHash(draft.agentId, proposal, draft.text) !== draft.hash)
+    if (!proposal || assistantProposalHash(draft.agentId, proposal, draft.text, draft.target) !== draft.hash)
       return 'the proposal changed after it was written'
     if (this.host.agent(draft.agentId)?.assistantMode?.enabled !== true)
       return 'the agent is no longer in assistant mode'
@@ -777,7 +778,8 @@ export class AssistantDrafts {
   /** One line on the proposal's item for each step it takes, so its next check knows. */
   private async observeTask(draft: AssistantDraft): Promise<void> {
     const proposal = draft.proposal
-    if (!proposal || !this.host.observe) return
+    // An offer from an ordinary turn acts on no task, so there is nothing to tell.
+    if (!proposal || proposal.itemId === null || !this.host.observe) return
     const what = `"${oneLine(proposal.sentence)}"`
     const by = draft.decidedByName ? ` by ${draft.decidedByName}` : ''
     let text: string

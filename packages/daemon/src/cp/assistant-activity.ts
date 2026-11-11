@@ -487,8 +487,9 @@ function draftOf(
           proposal: {
             sentence: proposal.sentence,
             why: proposal.why,
-            itemId: proposal.itemId,
-            itemTitle: titles.get(proposal.itemId) ?? null,
+            // An offer acts on no task; the wire needs an id, so it names itself, with no title for the console to show.
+            itemId: proposal.itemId ?? draft.id,
+            itemTitle: proposal.itemId === null ? null : (titles.get(proposal.itemId) ?? null),
             ...(proposal.followUp
               ? {
                   followUp: {

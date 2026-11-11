@@ -16,7 +16,12 @@ import {
   withinWindow
 } from '../src/assistant/getting-to-know.js'
 import { GETTING_TO_KNOW_TOOL, gettingToKnowToolsFor } from '../src/mcp/ops/getting-to-know.js'
-import { PROPOSE_TOOL, RECORD_CHECK_TOOL } from '../src/mcp/ops/assistant-items.js'
+import {
+  PROPOSE_PLACE_TOOL,
+  PROPOSE_PLACE_WATCH_TOOL,
+  PROPOSE_TOOL,
+  RECORD_CHECK_TOOL
+} from '../src/mcp/ops/assistant-items.js'
 import type { RoutingRule } from '../src/router/routing-rule.js'
 import { obj, type ToolDescriptor } from '../src/tool-schema/descriptor.js'
 import { MEMBER_FIELDS, ORGANIZATION_SECTIONS } from '../src/memory/organization-files.js'
@@ -72,7 +77,7 @@ describe('which places take a getting-to-know task', () => {
   it('offers that long session propose for its report round only where the place has cards', () => {
     const agent = { ...ON, integrations: [integration()] }
     const at = { channel: 'C1', thread: APPEND, integrationId: 'int-a', isDm: false }
-    expect(gettingToKnowToolsFor(agent, at, { cards: true })).toEqual([GETTING_TO_KNOW_TOOL, PROPOSE_TOOL])
+    expect(gettingToKnowToolsFor(agent, at, { cards: true })).toEqual([GETTING_TO_KNOW_TOOL, PROPOSE_PLACE_TOOL])
     expect(gettingToKnowToolsFor(agent, at, { cards: false })).toEqual([GETTING_TO_KNOW_TOOL])
     expect(gettingToKnowToolsFor(agent, { ...at, thread: '1700000000.000100' }, { cards: true })).toEqual([])
     expect(
@@ -84,6 +89,8 @@ describe('which places take a getting-to-know task', () => {
     for (const descriptor of [
       GETTING_TO_KNOW_TOOL,
       PROPOSE_TOOL,
+      PROPOSE_PLACE_TOOL,
+      PROPOSE_PLACE_WATCH_TOOL,
       ...gettingToKnowTools([]).filter((t) => t.name === 'recordCheck')
     ]) {
       // A top-level oneOf would be flattened by the runtime and grow the description; none is used.

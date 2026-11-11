@@ -11,8 +11,13 @@ import {
   FOLLOW_UP_TOOL,
   FOLLOW_UP_WATCH_TOOL,
   followUpToolsFor,
+  PROPOSE_OFFER_TOOL,
+  PROPOSE_OFFER_WATCH_TOOL,
+  PROPOSE_PLACE_TOOL,
+  PROPOSE_PLACE_WATCH_TOOL,
   PROPOSE_TOOL,
   PROPOSE_WATCH_TOOL,
+  followUpOfferToolsFor,
   RECORD_CHECK_TOOL,
   RECORD_CHECK_WATCH_TOOL,
   type FollowUpWatchToolPort,
@@ -449,7 +454,9 @@ describe('a follow-up’s watch (assistant-mode.md §5.14)', () => {
     for (const [plain, watched] of [
       [FOLLOW_UP_TOOL, FOLLOW_UP_WATCH_TOOL],
       [RECORD_CHECK_TOOL, RECORD_CHECK_WATCH_TOOL],
-      [PROPOSE_TOOL, PROPOSE_WATCH_TOOL]
+      [PROPOSE_TOOL, PROPOSE_WATCH_TOOL],
+      [PROPOSE_OFFER_TOOL, PROPOSE_OFFER_WATCH_TOOL],
+      [PROPOSE_PLACE_TOOL, PROPOSE_PLACE_WATCH_TOOL]
     ] as const) {
       // The tool's own description is untouched; only one property is added.
       expect(watched.description).toBe(plain.description)
@@ -460,6 +467,25 @@ describe('a follow-up’s watch (assistant-mode.md §5.14)', () => {
     expect(JSON.stringify(FOLLOW_UP_WATCH_TOOL.inputSchema)).toContain('its events then wake a check early')
     expect(JSON.stringify(RECORD_CHECK_WATCH_TOOL.inputSchema)).toContain('or an empty string to stop watching')
     expect(JSON.stringify(PROPOSE_WATCH_TOOL.inputSchema)).toContain('its events then wake a check early')
+    expect(JSON.stringify(PROPOSE_OFFER_WATCH_TOOL.inputSchema)).toContain('its events then wake a check early')
+  })
+
+  it('offers an ordinary conversation the follow-up form of `propose` only, where it has cards (§5.10)', () => {
+    const on = { assistantMode: { enabled: true } }
+    const at = { thread: '1700000000.000100' }
+    expect(followUpOfferToolsFor(on, at, { cards: true })).toEqual([PROPOSE_OFFER_TOOL])
+    expect(followUpOfferToolsFor(on, at, { cards: true, watch: true })).toEqual([PROPOSE_OFFER_WATCH_TOOL])
+    expect(followUpOfferToolsFor(on, at, { cards: false })).toEqual([])
+    expect(followUpOfferToolsFor({}, at, { cards: true })).toEqual([])
+    // A background session (a check, a task, a delegated sub-session) is never offered it.
+    expect(followUpOfferToolsFor(on, { thread: 'subsession:task-1' }, { cards: true })).toEqual([])
+    const offer = PROPOSE_OFFER_TOOL.inputSchema as { properties: Record<string, unknown>; required: string[] }
+    expect(Object.keys(offer.properties).sort()).toEqual(['followUp', 'sentence', 'why'])
+    expect(offer.required).toEqual(['sentence', 'why', 'followUp'])
+    // The one sentence `followUp` gains points the agent at it, and leaves its arguments as they were.
+    expect(FOLLOW_UP_TOOL.description).toContain('propose it instead of asking in prose')
+    for (const tool of [PROPOSE_OFFER_TOOL, PROPOSE_PLACE_TOOL, FOLLOW_UP_TOOL])
+      expect(tool.description.length).toBeLessThanOrEqual(2_048)
   })
 
   it('takes the follow-up, then watches what it names, and says a refused watch back', async () => {
