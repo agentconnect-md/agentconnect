@@ -20,13 +20,8 @@ export function WeChatWizardBody({ agent, host }: { agent: Agent; host: WizardHo
     if (message) setError(message)
   }
 
-  // The CP installs out of band, so the footer only appears to close the wizard once it has.
-  usePublishedFooter(host, {
-    label: t('footer.done'),
-    enabled: state.phase === 'completed',
-    onSubmit: () => host.close(),
-    hidden: state.phase !== 'completed'
-  })
+  // The CP installs out of band, and the host draws no primary without the identity chrome, so Done is inline.
+  usePublishedFooter(host, { label: t('footer.done'), enabled: false, onSubmit: () => {}, hidden: true })
   // A bot is one member's chat with one agent, so there is nothing to reuse and no create/existing choice.
   usePublishedIdentityChrome(host, { hidden: true })
 
@@ -61,7 +56,7 @@ export function WeChatWizardBody({ agent, host }: { agent: Agent; host: WizardHo
           </Button>
         </div>
       ) : (
-        <WeChatLoginView state={state} onRetry={() => void start()} />
+        <WeChatLoginView state={state} onRetry={() => void start()} onDone={() => host.close()} />
       )}
     </div>
   )
