@@ -3280,7 +3280,11 @@
         "target": "Which model to set",
         "task": "Task",
         "coordinator": "Coordinator",
-        "plusCoordinator": "+ coordinator {model}"
+        "plusCoordinator": "+ coordinator {model}",
+        "plusCoordinatorOff": "+ coordinator off",
+        "coordinatorOff": "Coordinator off",
+        "disableCoordinator": "Disable coordinator",
+        "disableCoordinatorHelp": "No Auto session mode: Auto conversations run as Single session until a coordinator model is chosen again"
       }
     },
     "detail": {
@@ -3364,7 +3368,8 @@
         "safeMoveBody": "Bring {daemon} online before moving this agent safely.",
         "openRecovery": "Open recovery options",
         "runtimeAndModel": "Runtime and model",
-        "coordinator": "Coordinator"
+        "coordinator": "Coordinator",
+        "coordinatorOff": "Off"
       },
       "runtime": {
         "title": "Runtime",

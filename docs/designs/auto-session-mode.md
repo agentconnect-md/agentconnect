@@ -145,6 +145,30 @@ Approved proposals stay a kind of their own.
     is no longer `auto` and drops its coordinator reservation, so a switch back mints a new
     coordinator, which adopts its old tasks' sessions again.
 
+### 3.6 Turning the coordinator off
+
+- An agent can turn its coordinator off: **Disable coordinator** at the end of the Coordinator tab of
+  its model picker (`coordinatorDisabled` in `POST`/`PATCH /agents/:id`, stored with the coordinator
+  model in the agent's run overrides). Picking a coordinator model turns it back on. The chosen
+  coordinator model is kept while it is off.
+- While it is off the agent has no coordinator anywhere:
+  - The Control Plane refuses `auto` on its conversations (409 `SESSION_MODE_UNSUPPORTED`) and the
+    console offers no Auto. New rooms and group DMs start Per thread, as where the daemon cannot
+    read Auto (§3.2).
+  - A row already on `auto` keeps its stored mode but is projected as `append`: it runs as Single
+    session on the row's own trigger, and a shared bot's relay forwards it by that trigger rather than
+    every message. The console shows it as Single session. Turning the coordinator back on projects
+    `auto` again.
+  - Assistant mode's places stay `append` and are not marked for the coordinator (§3.4).
+  - A member's console conversation with the agent is an ordinary webchat conversation (§10); the
+    Control Plane mints no coordinator conversation for it.
+- The daemon reads the flag from the agent spec and keys every `auto` conversation as `append`,
+  including an assistant-mode place it does not list yet, so a stale integration spec cannot revive
+  a coordinator. Leaving Auto then follows §3.5: the minute sweep retires each coordinator and hands
+  its threaded tasks back as ordinary thread sessions, whose thread messages now join the one session.
+- `coordinatorDisabled` rides the agent spec as a plain field, always shipped by a current CP; an
+  older daemon ignores it and still receives `append` for its `auto` rows from the projection.
+
 ## 4. Root messages and the coordinator
 
 ### 4.1 What it sees

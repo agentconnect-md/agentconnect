@@ -189,6 +189,8 @@ export default function EditAgentModal({
   const [modelSelectionValid, setModelSelectionValid] = useState(true)
   const [coordinatorModel, setCoordinatorModel] = useState<CoordinatorModel | null>(null)
   const initialCoordinatorModel = useRef<CoordinatorModel | null>(null)
+  const [coordinatorDisabled, setCoordinatorDisabled] = useState(false)
+  const initialCoordinatorDisabled = useRef(false)
   const [outputMode, setOutputMode] = useState<OutputMode | ''>('')
   const initialOutputMode = useRef<OutputMode | ''>('')
   const [showFooter, setShowFooter] = useState(agent.showFooter)
@@ -282,6 +284,8 @@ export default function EditAgentModal({
         initialModelSelection.current = dto.modelSelection ?? null
         setCoordinatorModel(dto.coordinatorModel ?? null)
         initialCoordinatorModel.current = dto.coordinatorModel ?? null
+        setCoordinatorDisabled(dto.coordinatorDisabled === true)
+        initialCoordinatorDisabled.current = dto.coordinatorDisabled === true
         setModelProvider(dto.modelProvider ?? null)
         initialModelProvider.current = dto.modelProvider ?? null
         setEffort(dto.reasoningEffort ?? '')
@@ -660,6 +664,7 @@ export default function EditAgentModal({
     ...(JSON.stringify(coordinatorModel) !== JSON.stringify(initialCoordinatorModel.current)
       ? { coordinatorModel }
       : {}),
+    ...(coordinatorDisabled !== initialCoordinatorDisabled.current ? { coordinatorDisabled } : {}),
     ...(modelSelectionChanged ? { modelSelection, ...(modelSelection && !model ? { model: selectedModel } : {}) } : {}),
     ...(runtime.trim() !== initialRuntime.current ? { runtime: runtime.trim() } : {}),
     ...(daemonId !== POOL_PLACEMENT && modelProvider !== initialModelProvider.current ? { modelProvider } : {}),
@@ -952,7 +957,9 @@ export default function EditAgentModal({
                 aside={<ChatActionsField value={chatActions} onChange={setChatActions} />}
                 coordinator={{
                   value: coordinatorModelOf({ runtime, model: selectedModel, coordinatorModel }, modelSource),
-                  onChange: setCoordinatorModel
+                  onChange: setCoordinatorModel,
+                  disabled: coordinatorDisabled,
+                  onDisabledChange: setCoordinatorDisabled
                 }}
                 onFallbackChange={(target) => {
                   if (savedCredentials) setModelProvider('auto')

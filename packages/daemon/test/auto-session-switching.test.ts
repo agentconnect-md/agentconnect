@@ -306,3 +306,32 @@ describe('switching out of auto (auto-session-mode.md §3.5)', () => {
     await daemon.stop()
   })
 })
+
+// auto-session-mode.md §3.6: an agent whose coordinator is off runs its `auto` rows as Single session until it is back on.
+describe('turning the coordinator off', () => {
+  it('keys an Auto row on one session, retires the coordinator, and restores Auto once it is on again', async () => {
+    const { daemon, d, calls, scope, route, coordinatorKey } = await boot('auto')
+    await route(slack('1.1'))
+    expect(await coordinatorKey()).toBeDefined()
+    calls.length = 0
+
+    d.agents.get('bot-a').coordinatorDisabled = true
+    await d.leaveAutoConversations()
+    expect(await coordinatorKey()).toBeUndefined()
+    // The row's own trigger holds again: a mention joins the conversation's one session, an unaddressed root nothing.
+    await route(slack('2.1', mention))
+    await route(slack('2.2', { thread: '2.1', ...mention }))
+    await route(slack('2.3'))
+    const append = await d.store.currentAppendCoordinate('bot-a', 'C1', scope)
+    expect(append).toBeDefined()
+    expect(isAppendCoordinate(append)).toBe(true)
+    expect(isCoordinatorCoordinate(append)).toBe(false)
+    expect(calls.map((msg) => msg.sessionThread)).toEqual([append, append])
+
+    calls.length = 0
+    delete d.agents.get('bot-a').coordinatorDisabled
+    await route(slack('3.1'))
+    expect(calls.map((msg) => isCoordinatorCoordinate(msg.sessionThread))).toEqual([true])
+    await daemon.stop()
+  })
+})

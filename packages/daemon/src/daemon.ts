@@ -3752,14 +3752,14 @@ export class Daemon {
     return true
   }
 
-  /** An existing coordinator is shared by authorized senders; only its owner's first message mints it. */
+  /** An existing coordinator is shared by authorized senders; only its owner's first message mints it, and none runs with the coordinator off (auto-session-mode.md §3.6). */
   private async webchatCoordinator(
     agentId: string,
     conversationId: string,
     authorId: string,
     mint = true
   ): Promise<string | undefined> {
-    if (!this.cfg.features.autoSessionMode) return undefined
+    if (!this.cfg.features.autoSessionMode || this.agents.get(agentId)?.coordinatorDisabled) return undefined
     const current = await this.store.currentAppendCoordinate(agentId, conversationId, null, 'coordinator')
     if (current !== undefined || !mint) return current
     const orgId = this.orgForAgent(agentId)
@@ -11741,9 +11741,7 @@ export class Daemon {
     const int = this.agents.get(agentId)?.integrations.find((candidate) => candidate.id === integrationId)
     // A DM nobody spoke in yet is not listed, so its kind decides, as a first message there would (the onboarding DM, §5.15).
     const mode = int
-      ? isDm === undefined
-        ? conversationSessionMode(int, place.channel)
-        : this.sessionModeFor(agentId, int, { channel: place.channel, isDm })
+      ? this.sessionModeFor(agentId, int, { channel: place.channel, ...(isDm === undefined ? {} : { isDm }) })
       : undefined
     // Under `auto` the place's long session is its coordinator (auto-session-mode.md §3.4).
     const coordinator = mode === 'auto' && this.cfg.features.autoSessionMode
@@ -14970,21 +14968,24 @@ export class Daemon {
     return mode === 'auto' && this.cfg.features.autoSessionMode ? 'coordinator' : undefined
   }
 
-  /** A target's session mode where a message arrived; an assistant-mode place appends before its row reaches the spec (assistant-mode.md §5.2). */
+  /** A target's session mode where a message arrived; an assistant-mode place appends before its row reaches the spec (assistant-mode.md §5.2), and `auto` appends with the coordinator off (auto-session-mode.md §3.6). */
   private sessionModeFor(
     agentId: string,
     int: Integration,
     msg: Pick<NormalizedMessage, 'channel'> & Partial<Pick<NormalizedMessage, 'isDm' | 'isGroupDm'>>
   ): ChannelSessionMode {
+    const agent = this.agents.get(agentId)
+    const coordinatorOff = agent?.coordinatorDisabled === true
     // A coordinate with no message behind it (an agent call) has no kind to default by, so only its listed mode counts.
-    if (msg.isDm === undefined && msg.isGroupDm === undefined) return conversationSessionMode(int, msg.channel)
-    const kind = conversationKindOf({ ...msg, platform: int.platform })
-    const assistantMode = assistantModeOn(this.agents.get(agentId))
-    return conversationSessionMode(int, msg.channel, {
-      assistantMode,
-      kind,
-      auto: assistantMode && this.cfg.features.autoSessionMode
-    })
+    const mode =
+      msg.isDm === undefined && msg.isGroupDm === undefined
+        ? conversationSessionMode(int, msg.channel)
+        : conversationSessionMode(int, msg.channel, {
+            assistantMode: assistantModeOn(agent),
+            kind: conversationKindOf({ ...msg, platform: int.platform }),
+            auto: assistantModeOn(agent) && this.cfg.features.autoSessionMode && !coordinatorOff
+          })
+    return mode === 'auto' && coordinatorOff ? 'append' : mode
   }
 
   /** Key a message on its session for one agent: a room a task holds keys on the task's (auto-session-mode.md §6.8), any other on the coordinate its conversation's mode gives. */
@@ -15226,7 +15227,7 @@ export class Daemon {
       // One read per coordinator, however many tasks it owns.
       const owners = new Map<string, Promise<boolean | undefined>>()
       for (const at of await index.threadedConversations(agentId)) {
-        const runs = this.conversationRunsAuto(agentId, at) || this.webchatRunsCoordinator(at)
+        const runs = this.conversationRunsAuto(agentId, at) || this.webchatRunsCoordinator(agentId, at)
         const released: string[] = []
         for (const task of await index.threadedTasksIn(agentId, at)) {
           const owner = task.parentSessionKey
@@ -15241,7 +15242,10 @@ export class Daemon {
         await this.reportTaskOwners(agentId, released)
       }
       for (const { channel, transportScope, coordinate } of await this.store.coordinatorReservations(agentId)) {
-        if (this.conversationRunsAuto(agentId, { channel, transportScope }) || this.webchatRunsCoordinator({ channel }))
+        if (
+          this.conversationRunsAuto(agentId, { channel, transportScope }) ||
+          this.webchatRunsCoordinator(agentId, { channel })
+        )
           continue
         if (await this.store.retireCoordinator(agentId, channel, transportScope, coordinate))
           this.log.info(`coordinator ${coordinate} of ${agentId} in ${channel} retired: the conversation left auto`)
@@ -15310,12 +15314,12 @@ export class Daemon {
   private async coordinatorRunsAuto(agentId: string, ownerKey: string): Promise<boolean | undefined> {
     const owner = await this.store.getSession(ownerKey)
     if (!owner || !isCoordinatorCoordinate(owner.thread)) return undefined
-    return this.conversationRunsAuto(agentId, owner) || this.webchatRunsCoordinator(owner)
+    return this.conversationRunsAuto(agentId, owner) || this.webchatRunsCoordinator(agentId, owner)
   }
 
   /** Whether a webchat conversation keeps its coordinator: only a member's coordinator conversation mints one, and a reservation, which names no platform, is told by its conversation's UUID (§10). */
-  private webchatRunsCoordinator(at: { channel: string; platform?: string }): boolean {
-    if (!this.cfg.features.autoSessionMode) return false
+  private webchatRunsCoordinator(agentId: string, at: { channel: string; platform?: string }): boolean {
+    if (!this.cfg.features.autoSessionMode || this.agents.get(agentId)?.coordinatorDisabled) return false
     return at.platform === undefined ? UUID_RE.test(at.channel) : at.platform === 'webchat'
   }
 
@@ -15324,8 +15328,8 @@ export class Daemon {
     agentId: string,
     at: { channel: string; transportScope?: string | null; platform?: string }
   ): boolean {
-    if (!this.cfg.features.autoSessionMode) return false
     const agent = this.agents.get(agentId)
+    if (!this.cfg.features.autoSessionMode || agent?.coordinatorDisabled) return false
     const unseen = (int: Integration) =>
       assistantModeOn(agent) &&
       manifestFor(int.platform).appendKinds.length > 0 &&
@@ -19369,7 +19373,7 @@ export class Daemon {
       targetSessionCoordinate: async (agentId, integrationId, channel, transportScope) => {
         if (integrationId === undefined) return undefined
         const int = this.agents.get(agentId)?.integrations?.find((candidate) => candidate.id === integrationId)
-        if (!int || conversationSessionMode(int, channel) !== 'append') return undefined
+        if (!int || this.sessionModeFor(agentId, int, { channel }) !== 'append') return undefined
         return await this.store.resolveAppendCoordinate(agentId, channel, transportScope)
       }
     }
@@ -29127,7 +29131,7 @@ export class Daemon {
     const integrationId = this.integrationIdForSessionTransport(rec.agentId, rec.platform, rec.transportScope)
     const int = this.agents.get(rec.agentId)?.integrations?.find((candidate) => candidate.id === integrationId)
     const mode = isCoordinatorCoordinate(rec.thread) ? 'auto' : 'append'
-    if (!int || conversationSessionMode(int, rec.channel) !== mode) return false
+    if (!int || this.sessionModeFor(rec.agentId, int, { channel: rec.channel }) !== mode) return false
     return (await this.store.currentAppendCoordinate(rec.agentId, rec.channel, rec.transportScope)) === rec.thread
   }
 

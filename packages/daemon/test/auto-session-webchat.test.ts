@@ -362,6 +362,13 @@ describe("a member's coordinator conversation in webchat (auto-session-mode.md ย
     expect(await other.d.store.currentAppendCoordinate(AGENT, CONV, null, 'coordinator')).toBeUndefined()
     expect(await other.d.store.getSession(sessionKey('webchat', CONV, `webchat:${CONV}`, AGENT))).toBeDefined()
     await other.daemon.stop()
+    // auto-session-mode.md ยง3.6: the member's own conversation is an ordinary one with the coordinator off.
+    const off = await boot(async (_id, _text, say) => say('hi'))
+    off.d.agents.get(AGENT).coordinatorDisabled = true
+    await off.send('hello')
+    expect(await off.d.store.currentAppendCoordinate(AGENT, CONV, null, 'coordinator')).toBeUndefined()
+    expect(await off.d.store.getSession(sessionKey('webchat', CONV, `webchat:${CONV}`, AGENT))).toBeDefined()
+    await off.daemon.stop()
   })
 
   it.each(['workspace', 'runtime'] as const)(

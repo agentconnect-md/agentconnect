@@ -1291,6 +1291,7 @@ export interface CreateAgentInput {
   decisionIds?: string[] // explicitly enabled saved Decisions
   modelSelection?: AgentModelSelection
   coordinatorModel?: CoordinatorModel
+  coordinatorDisabled?: boolean // the coordinator is off (auto-session-mode.md §3.6)
   repositorySelector?: AgentRepositorySelector // the repository selector's evaluator (multi-repository-workspaces.md decision 15)
   skills?: string[] // enabled skills, "<sourceName>/<skillName>" or "<sourceName>/*" (shared-skills.md)
   managedSkills?: string[] // accepted managed_skill ids, explicitly enabled
@@ -1352,6 +1353,7 @@ export interface UpdateAgentInput {
   decisionIds?: string[] | null // replaced wholesale; null clears
   modelSelection?: AgentModelSelection | null
   coordinatorModel?: CoordinatorModel | null // null returns it to Default
+  coordinatorDisabled?: boolean // false turns the coordinator back on
   apiGates?: AgentApiGates | null // replaced wholesale; null or {} clears
   repositorySelector?: AgentRepositorySelector | null // null clears
   skills?: string[] | null // enabled skills; replaced wholesale when provided; null clears
@@ -1402,6 +1404,7 @@ export interface AgentRecord {
   decisionIds?: string[] // from runtimeOverrides.decisionIds; absent means none
   modelSelection?: AgentModelSelection
   coordinatorModel?: CoordinatorModel // from runtimeOverrides.coordinatorModel; absent means Default
+  coordinatorDisabled?: true // from runtimeOverrides.coordinatorDisabled; absent means the coordinator is on
   apiGates?: AgentApiGates // from runtimeOverrides.apiGates: the Decision gate on each chat API the agent added
   repositorySelector?: AgentRepositorySelector // from the repositorySelector* columns; absent means none
   skills: string[] // from runtimeOverrides.skills — enabled "<source>/<skill>" / "<source>/*" ([] ⇒ none)

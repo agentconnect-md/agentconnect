@@ -62,6 +62,10 @@ export interface CoordinatorModelChoice {
   onChange(value: CoordinatorModel): void
   /** The coordinator alone, for a field of its own beside a Decision-picked task model. */
   only?: boolean
+  /** The coordinator is off (auto-session-mode.md §3.6): no Auto, and Auto conversations run Single session. */
+  disabled?: boolean
+  /** Offers Disable coordinator; choosing a model turns it back on. */
+  onDisabledChange?(disabled: boolean): void
 }
 
 /** The agent Decision a composer can defer to, with what its hover card summarizes. */
@@ -236,12 +240,13 @@ export function RuntimeModelSelect({
         ? effortText
         : ''
   const co = coordinator?.value
+  const coOff = !!coordinator?.disabled
   const coCapability = co ? modelCapability(source, co.runtime, co.model) : undefined
   const coEffortChoices = co ? effortChoicesFor(co.runtime, coCapability) : []
   const coShowEffort = co && (coCapability?.efforts ? coEffortChoices.length > 0 : supportsModes(co.runtime))
   // The coordinator runs read-only (auto-session-mode.md §5.4), so it offers no approval.
   const coControls: RunSettingsControls | undefined =
-    co && coordinator
+    co && coordinator && !coOff
       ? {
           effort:
             coShowEffort && coEffortChoices.length
@@ -264,6 +269,7 @@ export function RuntimeModelSelect({
       capability,
       runtime === co.runtime ? (co.effort ?? '') : COORDINATOR_DEFAULT_EFFORT
     )
+    if (coOff) coordinator.onDisabledChange?.(false)
     coordinator.onChange({
       runtime,
       model,
@@ -275,7 +281,9 @@ export function RuntimeModelSelect({
   const coOnly = !!coordinator?.only && !!co
   const fastOn = coOnly ? !!co?.fastMode : !decision?.selected && !!controls?.fast?.value
   const triggerName = coOnly
-    ? nameOf(co!.runtime, co!.model) || label(co!.runtime) || t('choose')
+    ? coOff
+      ? t('coordinatorOff')
+      : nameOf(co!.runtime, co!.model) || label(co!.runtime) || t('choose')
     : decision?.selected
       ? decision.name
       : modelName || label(value.runtime) || t('choose')
@@ -286,9 +294,13 @@ export function RuntimeModelSelect({
     : summary
   // A form's trigger names the coordinator beside the task model; the composer leaves it to the hover card.
   const coordinatorNote =
-    co?.model && !coordinator?.only && !compact && !dense
-      ? t('plusCoordinator', { model: nameOf(co.runtime, co.model) })
-      : ''
+    !co || coordinator?.only || compact || dense
+      ? ''
+      : coOff
+        ? t('plusCoordinatorOff')
+        : co.model
+          ? t('plusCoordinator', { model: nameOf(co.runtime, co.model) })
+          : ''
   const selectModel = (runtime: string, model: string) => {
     if (!runSettings) return onChange({ runtime, model })
     const nextCapability = modelCapability(source, runtime, model)
@@ -325,7 +337,12 @@ export function RuntimeModelSelect({
         ...(controls?.approval ? [[t('approval'), choiceLabel(controls.approval)] as [string, string]] : []),
         ...(controls?.fast ? [[t('fastMode'), controls.fast.value ? t('on') : t('off')] as [string, string]] : []),
         ...(co && !coordinator?.only
-          ? [[t('coordinator'), `${label(co.runtime)} · ${nameOf(co.runtime, co.model)}`] as [string, string]]
+          ? [
+              [t('coordinator'), coOff ? t('off') : `${label(co.runtime)} · ${nameOf(co.runtime, co.model)}`] as [
+                string,
+                string
+              ]
+            ]
           : [])
       ]}
     />
@@ -368,7 +385,11 @@ export function RuntimeModelSelect({
               <Icon name="split" size={13} color="var(--brand)" className="flex-none" />
             ) : (
               <MarkSlot size={14}>
-                <AgentMark model={coOnly ? co!.runtime : value.runtime} fillPct={100} />
+                {coOnly && coOff ? (
+                  <Icon name="ban" size={14} className="text-(--text-tertiary)" />
+                ) : (
+                  <AgentMark model={coOnly ? co!.runtime : value.runtime} fillPct={100} />
+                )}
               </MarkSlot>
             )}
             {compact ? (
@@ -503,7 +524,7 @@ export function RuntimeModelSelect({
                           ariaLabel={`${label(item.runtime)} · ${model.name ?? model.value}`}
                           selected={
                             onCoordinator
-                              ? co?.runtime === item.runtime && co.model === model.value
+                              ? !coOff && co?.runtime === item.runtime && co.model === model.value
                               : !decision?.selected && value.runtime === item.runtime && value.model === model.value
                           }
                           onClick={() => {
@@ -529,6 +550,23 @@ export function RuntimeModelSelect({
               {(!runtimeOnly || onCoordinator) && matching.every((item) => !item.options.length) && (
                 <div className="px-2 py-[14px] font-sans text-[12px] leading-normal text-(--text-tertiary)">
                   {t('empty')}
+                </div>
+              )}
+              {onCoordinator && coordinator?.onDisabledChange && !search && (
+                <div className="mt-1 border-t border-(--border-subtle) pt-1">
+                  <button
+                    type="button"
+                    className={`fopt min-h-[30px] ${coOff ? 'on' : ''}`}
+                    aria-pressed={coOff}
+                    title={t('disableCoordinatorHelp')}
+                    onClick={() => {
+                      coordinator.onDisabledChange?.(true)
+                      close(true)
+                    }}
+                  >
+                    <Icon name="ban" size={14} className="flex-none text-(--text-tertiary)" />
+                    <span className="min-w-0 flex-1 truncate text-left">{t('disableCoordinator')}</span>
+                  </button>
                 </div>
               )}
             </ProviderModelMenu>

@@ -397,6 +397,57 @@ it('switches the menu to the coordinator, which offers no approval and keeps the
   expect(document.querySelector('[role="dialog"]')).not.toBeNull()
 })
 
+// auto-session-mode.md §3.6: Disable coordinator ends the coordinator list, and picking a model turns it back on.
+it('turns the coordinator off from its tab, and back on with a model', async () => {
+  const onCoordinator = vi.fn()
+  const onDisabledChange = vi.fn()
+  container = document.createElement('div')
+  document.body.appendChild(container)
+  root = createRoot(container)
+  const render = async (disabled: boolean) =>
+    await act(async () =>
+      root.render(
+        <RuntimeModelSelect
+          runSettings
+          value={{ runtime: 'claude', model: 'model-standard', effort: 'medium' }}
+          onChange={vi.fn()}
+          source={{ runtimeModels: [{ runtime: 'claude', version: '', models: ['model-standard', 'model-small'] }] }}
+          coordinator={{
+            value: { runtime: 'claude', model: 'model-small', effort: 'low' },
+            onChange: onCoordinator,
+            disabled,
+            onDisabledChange
+          }}
+        />
+      )
+    )
+  await render(false)
+  const trigger = container.querySelector('button')!
+  await act(async () => trigger.click())
+  let dialog = document.querySelector('[role="dialog"]')!
+  const tab = (name: string) =>
+    [...dialog.querySelectorAll<HTMLButtonElement>('[role="group"] button')].find((b) => b.textContent === name)!
+  const disable = () =>
+    [...dialog.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent === 'Disable coordinator')
+  // The task tab offers no such row.
+  expect(disable()).toBeUndefined()
+  await act(async () => tab('Coordinator').click())
+  expect(disable()!.getAttribute('aria-pressed')).toBe('false')
+  await act(async () => disable()!.click())
+  expect(onDisabledChange).toHaveBeenLastCalledWith(true)
+
+  await render(true)
+  expect(trigger.textContent).toContain('+ coordinator off')
+  await act(async () => trigger.click())
+  dialog = document.querySelector('[role="dialog"]')!
+  await act(async () => tab('Coordinator').click())
+  expect(disable()!.getAttribute('aria-pressed')).toBe('true')
+  expect(dialog.querySelector('button[aria-label$="· model-small"]')!.getAttribute('aria-pressed')).toBe('false')
+  await act(async () => dialog.querySelector<HTMLButtonElement>('button[aria-label$="· model-small"]')!.click())
+  expect(onDisabledChange).toHaveBeenLastCalledWith(false)
+  expect(onCoordinator).toHaveBeenLastCalledWith(expect.objectContaining({ runtime: 'claude', model: 'model-small' }))
+})
+
 it('shows the coordinator alone on its own field', async () => {
   container = document.createElement('div')
   document.body.appendChild(container)

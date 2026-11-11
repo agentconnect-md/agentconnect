@@ -68,6 +68,11 @@ describe('agentSpecDigest', () => {
     expect(agentSpecDigest(selected)).not.toBe(agentSpecDigest(spec({})))
   })
 
+  it('digests a coordinator that is on as the absent field, and one that is off as content', () => {
+    expect(agentSpecDigest(spec({ coordinatorDisabled: false }))).toBe(agentSpecDigest(spec({})))
+    expect(agentSpecDigest(spec({ coordinatorDisabled: true }))).not.toBe(agentSpecDigest(spec({})))
+  })
+
   it('digests a GitHub credential beside private as a restatement, and any other credential as content', () => {
     const entry = { name: 'kit', source: 'example-org/example-repo', githubRepoId: '7', skills: [], private: true }
     const legacy = spec({ skills: [entry] })
