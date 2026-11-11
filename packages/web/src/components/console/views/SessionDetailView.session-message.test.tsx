@@ -240,6 +240,16 @@ describe('a delivered session message on the session page', () => {
     expect(bubbles.some((bubble) => bubble.includes('Reply from reviewer') && bubble.includes('LGTM'))).toBe(true)
   })
 
+  it('sets a message delivered into the agent’s own session apart from what the agent said, folded to its first lines', async () => {
+    await render()
+    const delivered = [...(container?.querySelectorAll('[data-delivered-message]') ?? [])]
+    // The task's report is a row of the session's own agent; a sender this page lists no agent for keeps a person's bubble.
+    expect(delivered).toHaveLength(1)
+    expect(delivered[0]?.textContent).toContain('40 files, 15,393 lines.')
+    expect(delivered[0]?.querySelector('[data-folded-text]')).not.toBeNull()
+    expect(delivered[0]?.querySelector('[data-turn-details] button')).not.toBeNull()
+  })
+
   it('folds the header facts and the agent’s guidance under "more"', async () => {
     await render()
     const more = [...(container?.querySelectorAll('[data-turn-details] button') ?? [])]

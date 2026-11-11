@@ -5,7 +5,7 @@ import { agentLabel, speaker, type Agent, type Session, type SessionImage, type 
 import { formatTranscriptRowTime, transcriptRowTimeMs } from '@/lib/transcript-time'
 import { parseUserTurnBody } from '@/lib/user-turn-body'
 import { splitFilesMarker, type MarkedFile } from '@/lib/webchat-file'
-import { replyToMessageThread } from '@/components/console/coordinator-threads'
+import { namesThread, replyToMessageThread } from '@/components/console/coordinator-threads'
 import type { WebThreadShape } from '@/components/console/platforms/contract'
 import { platformSenderFallback } from '@/components/console/platforms/registry'
 import {
@@ -310,9 +310,13 @@ export function buildTurns(input: BuildTurnsInput): { turns: Turn[]; speakers: M
         }
         answeringThread = undefined
         const answeredIn = threadsView && threadShape ? replyToMessageThread(m, threadShape) : undefined
+        // The agent's own post at the root names a thread as a person's root does.
+        const ownRoot =
+          threadsView && !m.thread && (m.kind || 'text').toLowerCase() === 'text' ? (m.postId ?? m.ts) : ''
         const step = {
           ...msgStep(m, toolSessionId, rowPlatform),
           ...(answeredIn ? { answeredIn } : {}),
+          ...(namesThread(threadShape, ownRoot) ? { rootId: ownRoot } : {}),
           // Only its work (not its prose) moves into the thread's panel: prose there is read from the thread itself.
           ...(threadsView && m.thread && (m.kind || 'text').toLowerCase() !== 'text'
             ? { thread: handedRoot.get(m.thread) ?? m.thread }
@@ -579,6 +583,8 @@ export function buildTurns(input: BuildTurnsInput): { turns: Turn[]; speakers: M
         const step = fmtStep(stp, session.platform)
         if (step.sharedImage && stp.agentId && stp.agentId !== session.agentId && !stp.toolSessionId)
           step.peerCopy = true
+        // A post that just arrived at the root names its thread before its row is read.
+        if (threadsView && stp.kind === 'done' && namesThread(threadShape, stp.postId)) step.rootId = stp.postId
         last.steps.push(step)
         if (last.wake) last.wake = false
         if (!last.time && step.time) last.time = step.time

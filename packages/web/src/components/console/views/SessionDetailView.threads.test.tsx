@@ -469,6 +469,34 @@ describe('a webchat coordinator’s main timeline (webchat-threads.md §6.1)', (
     expect(q(`[data-thread-panel="${ROOT}"]`)).not.toBeNull()
   })
 
+  it('draws the footer of a thread under the agent’s own root, which opens it (auto-session-mode.md §6.9.5)', async () => {
+    wire.messages = [
+      row(1, 'sam', 'anything to do today?', { postId: ROOT }),
+      row(2, 'agent-1', 'I will check the findings. Approved by Sam.', { postId: LATER }),
+      row(3, 'agent-1', 'A plain answer at the root.', { postId: '11111111-2222-4333-8444-555555555555' })
+    ]
+    wire.threads = [
+      {
+        rootId: LATER,
+        rootExcerpt: 'I will check the findings.',
+        replies: 1,
+        lastReplyAt: '2026-10-01T00:00:00.000Z',
+        participants: [{ sender: 'agent-1' }],
+        task: { sessionId: 'sid-task', title: 'Check the findings', state: 'idle' },
+        readable: true
+      }
+    ]
+    await open()
+    const footer = q(`[data-thread-footer="${LATER}"]`)
+    expect(footer?.textContent).toContain('1 reply')
+    expect(footer?.querySelector('[data-task-card-open]')?.textContent).toContain('Check the findings')
+    // A post of the agent that holds no thread has no footer.
+    expect(container?.querySelectorAll('[data-thread-footer]')).toHaveLength(1)
+    await click(`[data-thread-footer="${LATER}"] [data-task-card-replies]`)
+    expect(q(`[data-thread-panel="${LATER}"]`)).not.toBeNull()
+    expect(nav.replaced.at(-1)).toBe(`/acme/sessions/session-1?thread=${LATER}`)
+  })
+
   it('opens the thread the address names, and closes it when a navigation drops it', async () => {
     conversation()
     nav.search = `thread=${ROOT}`
@@ -710,6 +738,24 @@ describe('a Slack coordinator’s page in Slack’s shape (webchat-threads.md §
     expect(q(`[data-turn-answered-in="${ROOT_TS}"]`)).toBeNull()
     // A reader who may not continue the coordinator is offered no Reply in thread.
     expect(q('[data-reply-in-thread]')).toBeNull()
+  })
+
+  it('draws the footer under the agent’s own top-level post, named by its ts', async () => {
+    wire.messages = [slackRow(1, 'agent-1', 'I will check the findings. Approved by Sam.')]
+    wire.threads = [
+      {
+        rootId: ROOT_TS,
+        rootExcerpt: 'I will check the findings.',
+        replies: 2,
+        lastReplyAt: '2026-10-01T00:00:00.000Z',
+        participants: [{ sender: 'agent-1' }],
+        task: { sessionId: 'sid-task', title: 'Check the findings', state: 'idle' },
+        readable: true
+      }
+    ]
+    const { list, detail: read } = slack('slack')
+    await open(list, read)
+    expect(q(`[data-thread-footer="${ROOT_TS}"]`)?.textContent).toContain('2 replies')
   })
 
   it('offers whoever may continue the coordinator Reply in thread, whose composer posts in the Slack thread', async () => {

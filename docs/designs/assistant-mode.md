@@ -5240,3 +5240,9 @@ pending requests gets a root, the agent's own post at the conversation's root, a
 answers in that root's thread, where a reply reaches it. Without it the person who came back to
 the conversation found the work on a page nothing in the conversation led to. The first turn's
 message, in either place, shows the approved work and not the framing the model reads.
+
+**Ninety-seventh revision (2026-11-11)**: how the console shows a task's home
+([auto-session-mode.md](auto-session-mode.md) §6.9.5). The agent's own post at a conversation's
+root carries the footer of the thread under it, a message delivered into a session by its own agent
+is drawn as a delivered message and folded, and a coordinator's posts on a platform are recorded in
+its conversation, so its page shows an introduction and a root and their threads open.

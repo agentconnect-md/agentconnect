@@ -230,6 +230,8 @@ export interface FmtStep {
   answeredIn?: string
   // The thread a coordinator's row belongs to (its root), whose panel draws it instead of the main timeline.
   thread?: string
+  // The agent's own post at the conversation's root, named as the thread it may hold.
+  rootId?: string
   // Present only on real-transcript tool rows that carry a captured body.
   msg?: SessionMessageDto
   // A conversation row's owning session, so a full-body read never targets the representative member.

@@ -241,7 +241,7 @@ describe('a webchat conversation’s proposals in its pending-requests strip', (
     await renderStrip(false)
     await click('Approve')
     expect(mocks.decideProposal).not.toHaveBeenCalled()
-    expect(host!.textContent).toContain('Run this now? It reports back in this conversation.')
+    expect(host!.textContent).toContain('Run this now? It runs as a task in this conversation.')
     await click('Cancel')
     expect(mocks.decideProposal).not.toHaveBeenCalled()
 
@@ -249,9 +249,7 @@ describe('a webchat conversation’s proposals in its pending-requests strip', (
     mocks.proposals = []
     await confirm('proposal-1')
     expect(mocks.decideProposal).toHaveBeenCalledWith('example-agent', 'sid-webchat', 'proposal-1', 'approve')
-    expect(row('proposal-1')!.textContent).toContain(
-      'Approved. It runs as a task and reports back in this conversation.'
-    )
+    expect(row('proposal-1')!.textContent).toContain('Approved. It runs as a task in this conversation.')
     expect(buttons()).not.toContain('Approve')
     // Dismissed, nothing is left to show.
     await act(async () => row('proposal-1')!.querySelector<HTMLElement>('[aria-label="Dismiss"]')!.click())

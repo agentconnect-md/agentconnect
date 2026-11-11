@@ -761,11 +761,11 @@ describe('Waiting for you', () => {
     const host = await mount(true)
     const row = host.querySelector('[data-assistant-draft="proposal-1"]')!
     await click(button(row, 'Approve'))
-    expect(row.querySelector('[role="group"]')?.textContent).toContain('Run this now? It reports back in #support.')
+    expect(row.querySelector('[role="group"]')?.textContent).toContain('Run this now? It runs as a task in #support.')
     await click(button(row.querySelector('[role="group"]')!, 'Approve'))
     expect(api.decideAssistantDraft).toHaveBeenCalledWith(AGENT, 'proposal-1', 'approve')
     expect(row.querySelector('[data-assistant-draft-outcome]')?.textContent).toBe(
-      'Approved. It runs as a task and reports back in #support.'
+      'Approved. It runs as a task in #support.'
     )
     expect(actions(row)).toEqual([])
   })
@@ -797,7 +797,7 @@ describe('Waiting for you', () => {
     await click(button(row, 'Approve'))
     await click(button(row.querySelector('[role="group"]')!, 'Approve'))
     expect(row.querySelector('[data-assistant-draft-outcome]')?.textContent).toBe(
-      'Approved. It runs as a task and reports back in #support.'
+      'Approved. It runs as a task in #support.'
     )
   })
 

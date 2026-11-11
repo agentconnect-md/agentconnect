@@ -337,6 +337,26 @@ describe('webchat threads a task holds', () => {
       isDm: true
     })
     expect(host.sendWebchatPost).not.toHaveBeenCalled()
+    // What the agent itself hands its task is posted live in the task's thread, not at the conversation's root.
+    const inbound = {
+      ...task,
+      traceId: 't',
+      source: 'agent' as const,
+      sender: { id: '77777777-7777-4777-8777-777777777777', isBot: true },
+      text: 'check each finding',
+      mentionedBots: [],
+      transcriptPostId: reply,
+      isDm: true
+    }
+    transport.postAgentWakeInbound(context, inbound)
+    expect(host.sendWebchatPost).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(host.sendWebchatPost).mock.calls[0]![0].post).toMatchObject({
+      postId: reply,
+      text: 'check each finding',
+      thread: root
+    })
+    transport.postAgentWakeInbound(transport.webchatWakeContext('webchat', conversationId), inbound)
+    expect(vi.mocked(host.sendWebchatPost).mock.calls[1]![0].post).not.toHaveProperty('thread')
   })
 })
 

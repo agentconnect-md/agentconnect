@@ -11114,14 +11114,14 @@ export class Daemon {
         : undefined
     return {
       ...(card !== undefined ? { card } : {}),
-      postRoot: async (by) =>
-        await gateway.postMessage(
-          parent.channel,
+      postRoot: async (by) => {
+        const text =
           `**${sentence}**\n\nApproved by ${by.name ?? 'an approver'}.` +
-            (cardLink ? ` [The proposal](${cardLink})` : ''),
-          undefined,
-          this.agentPostIdentity(agentId)
-        )
+          (cardLink ? ` [The proposal](${cardLink})` : '')
+        const root = await gateway.postMessage(parent.channel, text, undefined, this.agentPostIdentity(agentId))
+        await this.recordAgentPost(agentId, parent, root, undefined, text)
+        return root
+      }
     }
   }
 
@@ -15702,13 +15702,44 @@ export class Daemon {
     const gateway: MessageGateway | undefined =
       integrationId === undefined ? undefined : this.gatewayForIntegration(integrationId)
     if (!gateway) throw new Error('the conversation is not connected right now; nothing was posted')
-    const agent = this.agents.get(agentId)
-    const name = agent?.displayName?.trim() || agent?.name
-    return await gateway.postMessage(msg.channel, text, answerThreadOf(msg), {
-      ...(name ? { username: name } : {}),
-      ...(agent?.iconUrl ? { icon_url: agent.iconUrl } : {}),
-      agentAuthorId: agentId
-    })
+    const thread = answerThreadOf(msg)
+    const posted = await gateway.postMessage(msg.channel, text, thread, this.agentPostIdentity(agentId))
+    const key = sessionKey(msg.platform, sessionChannelOf(msg), sessionThreadOf(msg), agentId, msg.transportScope)
+    await this.recordAgentPost(
+      agentId,
+      { channel: msg.channel, transportScope: msg.transportScope, key },
+      posted,
+      thread,
+      text
+    )
+    return posted
+  }
+
+  /** Record the agent's own post on a platform in the session it was made for, so that conversation's record has what its place shows (auto-session-mode.md §6.9.5). */
+  private async recordAgentPost(
+    agentId: string,
+    session: { channel: string; transportScope?: string | null | undefined; key: string },
+    posted: string | undefined,
+    thread: string | undefined,
+    text: string
+  ): Promise<void> {
+    if (posted === undefined) return
+    try {
+      await this.store.appendTranscript({
+        channel: transcriptChannelKey(session.channel, session.transportScope),
+        // A post at the top level is the root of a thread of its own, named by its id.
+        thread: thread ?? posted,
+        ts: posted,
+        // Not every platform's message id carries its time.
+        eventTimeUs: this.clock.now() * 1000,
+        sender: agentId,
+        admission: { agentId, sessionKey: session.key },
+        kind: 'text',
+        text
+      })
+    } catch (err) {
+      this.log.warn(`agent ${agentId}: its post ${posted} was not recorded: ${formatErr(err)}`)
+    }
   }
 
   /** Where the agent posts in a webchat conversation for a session of its own, with no message to answer: at the root, or in `thread`. */
