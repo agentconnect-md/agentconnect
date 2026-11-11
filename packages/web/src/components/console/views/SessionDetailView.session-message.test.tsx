@@ -223,7 +223,7 @@ afterEach(() => {
 describe('a delivered session message on the session page', () => {
   it('shows the body under a caption naming its sender, and never the framed prompt', async () => {
     await render()
-    expect(text()).toContain('Report from a background task')
+    expect(text()).toContain('Report from a task')
     expect(text()).toContain('40 files, 15,393 lines.')
     expect(text()).toContain('Reply from reviewer')
     expect(text()).toContain('LGTM')
