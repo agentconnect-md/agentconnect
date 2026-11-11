@@ -148,6 +148,15 @@ const mergeRows = (...lists: readonly SessionMessageDto[][]): SessionMessageDto[
 ]
 
 /** One thread's record: its newest page, polled faster while a turn runs in it or this visit is answered there. */
+/** How often a thread's record is re-read: quickly while its task runs or is starting, whose thread shows within seconds; an idle thread is still polled, since people and the coordinator write in it whether or not a task runs. */
+export function threadPollMs(
+  summary: Pick<SessionThreadSummaryDto, 'running' | 'task'> | undefined,
+  busy: (sessionId: string) => boolean
+): number {
+  const holder = summary?.task?.sessionId
+  return summary?.running || summary?.task?.starting || (holder && busy(holder)) ? RUNNING_POLL_MS : IDLE_POLL_MS
+}
+
 export function useThreadRecord(
   ref: ThreadRecordRef | null,
   /** Whether this visit is waiting on a turn of the holding task's session. */
@@ -163,11 +172,7 @@ export function useThreadRecord(
     ([, sessionId, rootId]) => fetchSessionThreadMessages(sessionId, rootId, { limit: THREAD_PAGE }),
     {
       ...CONSOLE_SWR_CONFIG,
-      // People and the coordinator write in a thread whether or not a task runs in it, so an idle thread is still polled.
-      refreshInterval: (page) => {
-        const holder = page?.summary.task?.sessionId
-        return page?.summary.running || (holder && busy(holder)) ? RUNNING_POLL_MS : IDLE_POLL_MS
-      }
+      refreshInterval: (page) => threadPollMs(page?.summary, busy)
     }
   )
   const data = read && ref && read.sessionId === ref.sessionId && read.rootId === ref.rootId ? read : undefined

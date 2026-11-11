@@ -2,6 +2,7 @@
 import type { Agent, Integration } from '../agents/agent-schema.js'
 import { MEMORY_TOOL_ACCESS_MODES } from '../mcp/ops/memory.js'
 import { assistantModeOn, type ProposeInput } from '../mcp/ops/assistant-items.js'
+import type { ShownInput } from '../collab/session-message.js'
 import { integrationCore } from '../platforms/integration-config.js'
 import { declaresPort, isAttachmentReadTool } from '../platforms/read-ports.js'
 import { routeRules } from '../router/routing-table.js'
@@ -252,9 +253,17 @@ export function gettingToKnowProposalRefusal(input: Pick<ProposeInput, 'followUp
     : undefined
 }
 
-/** The report round's text: the handling first, then the getting-to-know task's report. */
-export function gettingToKnowReportText(place: string, handling: string, report: string): string {
-  return `[getting to know] Your task getting to know ${place} reported back.\n\n${handling}\n\nIts report:\n\n${report}`
+/** The report round's text, the handling first and then the getting-to-know task's report, and what people read of it: the report, the rest folded with its facts. */
+export function gettingToKnowReport(
+  place: string,
+  handling: string,
+  report: string
+): { text: string; shown: ShownInput } {
+  const frame = `[getting to know] Your task getting to know ${place} reported back.`
+  return {
+    text: `${frame}\n\n${handling}\n\nIts report:\n\n${report}`,
+    shown: { text: report, notes: [frame, handling] }
+  }
 }
 
 /** The one report of a requested getting-to-know task that failed too often (§5.13); an automatic one ends without a word. */

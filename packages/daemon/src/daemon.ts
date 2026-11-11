@@ -1127,7 +1127,7 @@ import {
   TASK_NOT_FOUND_MESSAGE,
   type CollabHost
 } from './collab/coordinator.js'
-import { legacySessionMessageId } from './collab/session-message.js'
+import { legacySessionMessageId, type ShownInput } from './collab/session-message.js'
 import { CpAgentRegistry } from './cp/cp-agent-registry.js'
 import {
   agentRemovalTombstones,
@@ -11601,7 +11601,8 @@ export class Daemon {
     reportId: string,
     replyThread?: string | null,
     opens?: string,
-    gettingToKnow?: string
+    gettingToKnow?: string,
+    shown?: ShownInput
   ): Promise<boolean> {
     const report = {
       agentId,
@@ -11611,7 +11612,8 @@ export class Daemon {
       reportId,
       ...(replyThread !== undefined ? { replyThread } : {}),
       ...(opens !== undefined ? { opens } : {}),
-      ...(gettingToKnow !== undefined ? { gettingToKnow } : {})
+      ...(gettingToKnow !== undefined ? { gettingToKnow } : {}),
+      ...(shown !== undefined ? { shown } : {})
     }
     return (await this.collab.deliverDaemonReport(report)).admitted
   }
@@ -11673,8 +11675,7 @@ export class Daemon {
         (await this.memoryLayers.layerOf(this.memoryPlaceOf(agentId, place))) === 'shared',
       dispatch: (agentId, msg, integrationId, callMeta, onAdmission) =>
         this.dispatch(agentId, msg, integrationId, undefined, callMeta, { onAdmission }),
-      reportToParent: (agentId, caller, parentSessionId, text, reportId, replyThread, opens, gettingToKnow) =>
-        this.reportIntoParent(agentId, caller, parentSessionId, text, reportId, replyThread, opens, gettingToKnow),
+      reportToParent: (...report) => this.reportIntoParent(...report),
       endedSession: async (agentId, key) => {
         if (this.inflight.has(key) || this.serialQueue.has(key) || (await this.store.sessionHasPendingInboxRows(key)))
           return undefined
