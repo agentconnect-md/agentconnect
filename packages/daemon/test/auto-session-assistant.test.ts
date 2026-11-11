@@ -428,6 +428,7 @@ describe('assistant mode under auto (auto-session-mode.md §3.4)', () => {
       })
     })
     const internal = vi.spyOn(d, 'placeConfirmedInternal').mockResolvedValue(true)
+    const cards = vi.spyOn(d, 'hasCardSurface').mockReturnValue(true)
     const draft = {
       agentId: 'bot-a',
       text: 'Check each finding.',
@@ -457,6 +458,10 @@ describe('assistant mode under auto (auto-session-mode.md §3.4)', () => {
     // No coordinator, or guests in the room: it runs with no thread, as before.
     expect(await d.taskHomeFor(draft, { ...parent, thread: 'append:1' })).toBeUndefined()
     internal.mockResolvedValue(false)
+    expect(await d.taskHomeFor(draft, parent)).toBeUndefined()
+    // A platform with no approval cards keeps today's run as well.
+    internal.mockResolvedValue(true)
+    cards.mockReturnValue(false)
     expect(await d.taskHomeFor(draft, parent)).toBeUndefined()
     await daemon.stop()
   })

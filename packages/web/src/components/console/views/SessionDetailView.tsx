@@ -4799,6 +4799,9 @@ export default function SessionDetailView() {
                 refreshTick={tasksRefreshTick}
                 onVerdictChange={setTasksVerdict}
                 {...(session.agentId ? { onOpenThread: (link: TaskLink) => openTaskThread(link) } : {})}
+                {...(session.agentId && coordinatorPage
+                  ? { onOpenRoot: (rootId: string) => openRootThread(rootId) }
+                  : {})}
               />
             ) : null}
           </div>

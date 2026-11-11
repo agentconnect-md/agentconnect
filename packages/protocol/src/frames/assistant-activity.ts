@@ -160,7 +160,9 @@ export const AssistantActivitySubsession = z.object({
   /** When the newest of those landed; absent with no reply. */
   lastReplyAt: time.optional(),
   /** The platform id of the message a coordinator opened it for (§10), which the console draws its card under. */
-  openedForMessageId: z.string().max(200).optional()
+  openedForMessageId: z.string().max(200).optional(),
+  /** The platform id of the thread a getting-to-know task is shown with, its introduction's (auto-session-mode.md §6.9.2); never an attached thread. */
+  shownThreadId: z.string().max(200).optional()
 })
 export type AssistantActivitySubsession = z.infer<typeof AssistantActivitySubsession>
 

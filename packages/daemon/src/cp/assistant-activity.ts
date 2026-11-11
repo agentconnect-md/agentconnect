@@ -324,7 +324,13 @@ async function taskOf(
     const item = await checkedTaskOf(store, agentId, row.childSessionKey)
     const followUp = item ? await followUpOf(store, row, item) : undefined
     const ended = followUp?.status === 'done' || followUp?.status === 'stopped'
-    return { ...base, state: ended ? 'done' : 'open', kind: 'follow-up', ...(followUp ? { followUp } : {}) }
+    return {
+      ...base,
+      state: ended ? 'done' : 'open',
+      kind: 'follow-up',
+      ...(followUp ? { followUp } : {}),
+      ...(row.shownThread ? { shownThreadId: row.shownThread } : {})
+    }
   }
   const threads = await store.assistantSubsessions.threadsOf(agentId, row.childSessionKey)
   const replies = child?.agentId === agentId ? await repliesOf(store, agentId, child) : undefined

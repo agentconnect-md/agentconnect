@@ -2205,17 +2205,8 @@ export class Daemon {
       this.postCoordinatorReply(agentId, integrationId, msg, text, taskLink),
     reportAnswered: (key, thread) => {
       // A coordinator's turn text is never posted, so this reply is the one its round's held cards go under.
-      const meta = this.activeTurnCallMeta.get(key)
-      if (meta?.gettingToKnowReport === undefined || this.roundReplies.has(key)) return
-      this.roundReplies.set(key, thread)
-      // The same thread is what the console shows the getting-to-know task with (§6.9.2); it is never attached to it.
-      void this.store.assistantSubsessions
-        .setShownThread(meta.callFrom, meta.gettingToKnowReport, thread)
-        .catch((err) =>
-          this.log.warn(
-            `getting-to-know task ${meta.gettingToKnowReport}: its thread was not recorded: ${formatErr(err)}`
-          )
-        )
+      if (this.activeTurnCallMeta.get(key)?.gettingToKnowReport !== undefined && !this.roundReplies.has(key))
+        this.roundReplies.set(key, thread)
     },
     showTriaging: (agentId, message) => this.showTriaging(agentId, message),
     sessionLink: (sessionId) => this.sessionLink(sessionId),
@@ -11030,6 +11021,16 @@ export class Daemon {
     return this.assistantTaskService
   }
 
+  /** Record the thread a getting-to-know task's introduction landed in on the task's own row, found by the item its report named. */
+  private async showGettingToKnowIn(agentId: string, itemId: string, thread: string): Promise<void> {
+    try {
+      const item = await this.store.assistantItems.get(agentId, itemId)
+      if (item?.taskKey) await this.store.assistantSubsessions.setShownThread(agentId, item.taskKey, thread)
+    } catch (err) {
+      this.log.warn(`getting-to-know task ${itemId}: its thread was not recorded: ${formatErr(err)}`)
+    }
+  }
+
   /** How the agent's own posts are signed on a platform that takes a name and an icon. */
   private agentPostIdentity(agentId: string): SendIdentity {
     const agent = this.agents.get(agentId)
@@ -11047,7 +11048,8 @@ export class Daemon {
     const { integrationId } = parent
     const gateway: MessageGateway | undefined =
       integrationId === undefined ? undefined : this.gatewayForIntegration(integrationId)
-    if (integrationId === undefined || !gateway) return undefined
+    // Where the platform has approval cards, a message's own id opens its thread, which is what a root needs.
+    if (integrationId === undefined || !gateway || !this.hasCardSurface(integrationId)) return undefined
     const { agentId } = draft
     const dm = (await this.store.getSession(parent.key))?.conversationKind === 'dm'
     // A root in an external place would show its guests work that was approved elsewhere.
@@ -24057,6 +24059,8 @@ export class Daemon {
     if (callMeta?.gettingToKnowReport !== undefined) {
       const replyThread = p.reply.firstResponse ?? this.roundReplies.get(key)
       this.roundReplies.delete(key)
+      // The same thread is what the console shows the getting-to-know task with (§6.9.2); it is never attached to it.
+      if (replyThread !== undefined) await this.showGettingToKnowIn(agentId, callMeta.gettingToKnowReport, replyThread)
       await this.releaseRoundCards(agentId, callMeta.deliveryId, replyThread).catch((err) =>
         this.log.warn(`getting-to-know task cards of ${callMeta.deliveryId}: not posted: ${formatErr(err)}`)
       )
