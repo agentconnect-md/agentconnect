@@ -9,6 +9,7 @@ import { Icon } from '@/components/ui'
 import { taskStateKey, taskTone } from '@/components/console/task-list'
 import { StateIcon, type StateKind } from '@/components/console/StateIcon'
 import { AgentTurnHeader } from '@/components/console/AgentTurnHeader'
+import { AGENT_BUBBLE } from '@/components/console/transcript-bubbles'
 import { useTaskRow } from '@/components/console/task-thread'
 import type { TaskLink } from '@/components/console/task-link'
 import type { AssistantSubsessionDto, SessionThreadAuthorDto, SessionThreadSummaryDto } from '@/lib/api'
@@ -207,7 +208,7 @@ export function ThreadFooter({
                 {task.summary ? (
                   <span
                     data-task-card-summary=""
-                    className="min-w-0 truncate font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)"
+                    className="min-w-0 overflow-hidden break-words font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary) [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]"
                   >
                     {task.summary}
                   </span>
@@ -324,7 +325,9 @@ export function ThreadFooter({
               <StateIcon state={task.tone} label={tl(task.stateKey)} />
             ) : null}
           </AgentTurnHeader>
-          {cardBlock}
+          <div className={AGENT_BUBBLE} data-agent-bubble="">
+            {cardBlock}
+          </div>
         </div>
       </div>
     ) : (
