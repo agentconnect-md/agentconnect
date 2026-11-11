@@ -16,6 +16,7 @@ import {
   CAPABILITY_REQUESTS_V2_FEATURE,
   CAPABILITY_REQUESTS_V3_FEATURE,
   CAPABILITY_REQUESTS_V4_FEATURE,
+  AGENT_CRON_TOOLS_FEATURE,
   FRAME_FRAGMENTS_FEATURE,
   DECISION_TOOLS_V1_FEATURE,
   DECISION_MODEL_SELECTION_V1_FEATURE,
@@ -232,6 +233,8 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       ...(deps.capabilityRequests ? [CAPABILITY_REQUESTS_V3_FEATURE] : []),
       // …and every agent-form field plus the `cron` kind (capability-requests.md §4.12).
       ...(deps.capabilityRequests ? [CAPABILITY_REQUESTS_V4_FEATURE] : []),
+      // This CP takes `cron/self`: an agent's own crons, with no person's approval.
+      ...(deps.agentCrons ? [AGENT_CRON_TOOLS_FEATURE] : []),
       // A daemon socket reports explicit credential-lifecycle events only to a CP that applies them.
       ...(deps.socketBotRevocation ? [INTEGRATION_REVOKED_FEATURE] : []),
       // A daemon socket reports the tenant its traffic named only to a CP that records it.

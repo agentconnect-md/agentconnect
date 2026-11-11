@@ -697,6 +697,32 @@ crons is refused as an unknown target. A built-in agent's display name cannot be
 **Compatibility.** The CP advertises `capability-requests-v4` when it takes these asks, and the daemon
 sends one only to such a CP; a CP refuses one from a daemon that did not advertise it.
 
+### 4.13 Exception: an agent's own scheduled tasks
+
+Scheduled tasks are the one change an agent makes itself, with no request and no person's approval. The
+daemon offers every session (except a follow-up's check, research and a getting-to-know task) three tools
+toward a CP that advertises `agent-cron-tools-v1`: `listSchedules`, `saveSchedule` and `deleteSchedule`.
+They ride one D→C request, `cron/self` (`op: list | save | delete`), which the CP takes only from a daemon
+that serves the named agent (`orchestrator/agentCrons.ts`).
+
+- **Scope.** The agent sees, changes and deletes every cron bound to it, including ones a person created in
+  the console. It cannot touch another agent's cron or bind one to another agent, and a target must be a
+  channel of one of its own integrations. There is no cap and no minimum interval beyond what a console cron has.
+- **Where it posts.** A new task in a chat conversation posts each run into that conversation unless the agent
+  says `postHere: false`; elsewhere it is headless. An edit keeps the cron's target unless told otherwise.
+- **One-shot tasks.** `runAt` (an ISO-8601 instant with an offset, at least a minute ahead) is stored as the
+  wall-clock time in the cron's timezone (`2026-11-12T09:00:00`), which croner fires once. The CP deletes a
+  one-shot cron, with its run history, when its run's completion report arrives. Retirement is fenced twice:
+  the schedule's single moment must be at or before the reported fire, and the delete compares that
+  definition in the same transaction, so a save that lands in between wins and the new schedule keeps its own
+  later fire. A one-shot whose time passed while no daemon served it (beyond the scheduler's catch-up grace)
+  stays inert until someone deletes it.
+- **Audit.** Each write is a `cron_change` audit row with no actor user. The cron records no creator, so its
+  runs read as no person (assistant-mode.md §5.5) until a person edits it in the console.
+
+The tools are on by default; capability requests are too (`CAPABILITY_REQUESTS_ENABLED` and the chart's
+`features.capabilityRequests` default to on), and the console lists an agent's open requests without a flag.
+
 ## 5. Work breakdown
 
 **P1 — the loop, settings and tools**

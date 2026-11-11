@@ -160,6 +160,7 @@ import {
   PULL_REQUEST_FEEDBACK_FEATURE,
   CODEHOST_FEEDBACK_FEATURE,
   FOLLOW_UP_WAKE_FEATURE,
+  AGENT_CRON_TOOLS_FEATURE,
   CAPABILITY_REQUESTS_FEATURE,
   CAPABILITY_REQUESTS_V2_FEATURE,
   CAPABILITY_REQUESTS_V3_FEATURE,
@@ -1273,6 +1274,7 @@ import {
 } from './platforms/capability-card.js'
 import type { CapabilityCardRow } from './store/capability-cards.js'
 import { capabilityRequestToolsFor } from './mcp/ops/capability-requests.js'
+import { agentCronToolsFor } from './mcp/ops/agent-crons.js'
 import type { ApprovalCardFacet } from './platforms/approval-card.js'
 import { discordElicitCards } from './platforms/discord/elicit-card.js'
 import { feishuElicitCards } from './platforms/feishu/elicit-card.js'
@@ -5225,6 +5227,10 @@ export class Daemon {
       targetExternal: async (agentId, integrationId, channel, dm) =>
         !(await this.placeConfirmedInternal(agentId, integrationId, channel, { dm })),
       draftPost: (ctx, post) => this.draftPost(ctx, post),
+      agentCrons: {
+        offered: (ctx) => agentCronToolsFor(this.agentCronsServed(), ctx).length > 0 && this.agents.has(ctx.agentId),
+        call: async (ctx, req) => await this.cpClient!.agentCron(req, this.orgForAgent(ctx.agentId))
+      },
       capabilityRequests: {
         offered: (ctx) => this.capabilityOffered(ctx),
         request: async (ctx, ask, reason) =>
@@ -11829,6 +11835,8 @@ export class Daemon {
         thread
       })
     ]
+    // The agent's own crons, with no approval, toward a CP that serves them; execution re-checks.
+    tools = [...tools, ...agentCronToolsFor(this.agentCronsServed(), { thread })]
     // §14.2 brokers: a host's tools ride with any repository the agent holds there, and the clamped lease still authorizes each call.
     for (const provider of this.codeHostBrokers.keys()) {
       if (this.holdsEffectRepository(agent, provider)) tools = [...tools, ...codeHostEffectToolsFor(provider)]
@@ -12490,6 +12498,11 @@ export class Daemon {
       }
     })
     return this.capabilityRequestService
+  }
+
+  /** Whether the CP takes `cron/self`, an agent's own cron operations. */
+  private agentCronsServed(): boolean {
+    return this.cpClient?.supportsServerFeature?.(AGENT_CRON_TOOLS_FEATURE) === true
   }
 
   /** Whether a session may ask (§4.1, §5): any agent toward a CP that serves it, never a follow-up's check, research or a getting-to-know task. */

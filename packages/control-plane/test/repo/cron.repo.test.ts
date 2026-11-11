@@ -78,6 +78,27 @@ describe('CronRepo — cron definitions (real Postgres)', () => {
     expect(await repo.listForOrg(OrgId(DEFAULT_ORG_ID))).toHaveLength(0)
   })
 
+  it('a delete keyed on a definition the row no longer holds deletes nothing', async () => {
+    await fixtures()
+    const repo = new PgCronRepo(prisma)
+    await repo.upsert(upsertInput())
+    // The schedule a retirement read has been replaced by a save in between.
+    expect(
+      await repo.remove(OrgId(DEFAULT_ORG_ID), CronId(CRON), AgentId(AGENT), {
+        schedule: '0 9 * * MON-FRI',
+        timezone: 'Asia/Singapore'
+      })
+    ).toBe(false)
+    expect(await repo.get(OrgId(DEFAULT_ORG_ID), CronId(CRON))).not.toBeNull()
+    expect(
+      await repo.remove(OrgId(DEFAULT_ORG_ID), CronId(CRON), AgentId(AGENT), {
+        schedule: '0 9 * * *',
+        timezone: 'Asia/Singapore'
+      })
+    ).toBe(true)
+    expect(await repo.get(OrgId(DEFAULT_ORG_ID), CronId(CRON))).toBeNull()
+  })
+
   it('defaults targetPlatform to slack and enabled to true; targetChannel is optional (headless)', async () => {
     await fixtures()
     const repo = new PgCronRepo(prisma)

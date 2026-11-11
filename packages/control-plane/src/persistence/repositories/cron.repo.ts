@@ -147,11 +147,26 @@ export class PgCronRepo implements CronRepo {
     })
   }
 
-  async remove(orgId: OrgId, cronId: CronId, expectedAgentId: AgentId | null): Promise<boolean> {
+  async remove(
+    orgId: OrgId,
+    cronId: CronId,
+    expectedAgentId: AgentId | null,
+    expectedDefinition?: { schedule: string; timezone: string }
+  ): Promise<boolean> {
     return withAmbientTx(this.db, async (tx) => {
       await lockCronMutationScope(tx, cronId)
-      const current = await tx.cronDef.findUnique({ where: { id: cronId, orgId }, select: { agentId: true } })
+      const current = await tx.cronDef.findUnique({
+        where: { id: cronId, orgId },
+        select: { agentId: true, schedule: true, timezone: true }
+      })
       if (current && current.agentId !== expectedAgentId) return false
+      // A retirement keyed on a definition a concurrent save replaced deletes nothing.
+      if (
+        current &&
+        expectedDefinition &&
+        (current.schedule !== expectedDefinition.schedule || current.timezone !== expectedDefinition.timezone)
+      )
+        return false
       await tx.cronDef.delete({ where: { id: cronId, orgId } })
       return true
     })

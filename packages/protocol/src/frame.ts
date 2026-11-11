@@ -66,7 +66,7 @@ import {
   AgentWakeReq,
   AgentWakeOk
 } from './frames/agent.js'
-import { CronUpsert, CronRemove, CronReport, CronRunNow } from './frames/cron.js'
+import { CronUpsert, CronRemove, CronReport, CronRunNow, AgentCronReq, AgentCronResult } from './frames/cron.js'
 import {
   DutyGrant,
   DutyRenewed,
@@ -452,6 +452,9 @@ export const FRAME_SCHEMAS = {
   // Acknowledged terminal cron outcome — D→C REQ, replied with `ack`.
   'cron/report-sync': CronReport,
   'cron/run': CronRunNow,
+  // An agent's own crons (agent-cron-tools-v1): list, save and delete with no person's approval.
+  'cron/self': AgentCronReq,
+  'cron/self/result': AgentCronResult,
   // ── hooks (content fires ride rd/*; only metadata/effect control is here) ──
   'hook/report': HookReport,
   'hook/preparing': HookPreparing,
@@ -886,6 +889,8 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('cron/report', FRAME_SCHEMAS['cron/report']),
   frame('cron/report-sync', FRAME_SCHEMAS['cron/report-sync']),
   frame('cron/run', FRAME_SCHEMAS['cron/run']),
+  frame('cron/self', FRAME_SCHEMAS['cron/self']),
+  frame('cron/self/result', FRAME_SCHEMAS['cron/self/result']),
   frame('hook/report', FRAME_SCHEMAS['hook/report']),
   frame('hook/preparing', FRAME_SCHEMAS['hook/preparing']),
   frame('hook/preparing/ok', FRAME_SCHEMAS['hook/preparing/ok']),

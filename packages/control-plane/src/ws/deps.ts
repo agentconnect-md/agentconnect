@@ -1,3 +1,4 @@
+import type { AgentCronService } from '../orchestrator/agentCrons.js'
 import type { FileTransferService } from '../file-transfer/service.js'
 import type { SharedImageService } from '../file-transfer/shared-image.js'
 import type { AgentMemoryTransactionService } from '../agent-memory/transaction.service.js'
@@ -217,6 +218,8 @@ export interface DaemonWsDeps {
   agentBundle?: (agent: AgentRecord) => Promise<DutyAgentBundle>
   /** Stamps `lastRunAt` from the `cron/report` EVT (daemon-scoped, latest-wins). */
   cron: CronRepo
+  /** An agent's own crons (`cron/self`) and a one-shot's retirement after its run; absent ⇒ refused and not advertised. */
+  agentCrons?: Pick<AgentCronService, 'list' | 'save' | 'remove' | 'retireOneShot'>
   /** Closes `HookRun` rows from the correlated `hook/report` completion request. */
   hook: HookRepo
   /** Viewer-free agent reads for the `gitcred/request` placement check — a DATA-PLANE

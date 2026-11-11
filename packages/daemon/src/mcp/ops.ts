@@ -172,6 +172,15 @@ import {
   WITHDRAW_CAPABILITY_REQUEST_ARGS,
   type CapabilityRequestDeps
 } from './ops/capability-requests.js'
+import {
+  deleteSchedule,
+  DELETE_SCHEDULE_ARGS,
+  listSchedules,
+  LIST_SCHEDULES_ARGS,
+  saveSchedule,
+  SAVE_SCHEDULE_ARGS,
+  type AgentCronToolDeps
+} from './ops/agent-crons.js'
 
 export type { McpContentResult, MessageGateway, SendIdentity, SessionContext } from './ops/context.js'
 export type { ChannelAgentsRequest } from './ops/directory.js'
@@ -223,7 +232,8 @@ export interface OpsDeps
     AssistantReminderDeps,
     AssistantSubsessionDeps,
     TaskReadDeps,
-    CapabilityRequestDeps {
+    CapabilityRequestDeps,
+    AgentCronToolDeps {
   /** Rejected tool arguments are logged here at debug, key names only — the sole trace of them (#1921). */
   log?: Pick<Logger, 'debug'>
   /** Fail-closed turn gate checked before every daemon bridge tool. Used to make
@@ -333,7 +343,10 @@ const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<
   ...ASSISTANT_REMINDER_HANDLERS,
   ...ASSISTANT_SUBSESSION_HANDLERS,
   ['requestCapability', requestCapability],
-  ['withdrawCapabilityRequest', withdrawCapabilityRequest]
+  ['withdrawCapabilityRequest', withdrawCapabilityRequest],
+  ['listSchedules', listSchedules],
+  ['saveSchedule', saveSchedule],
+  ['deleteSchedule', deleteSchedule]
 ])
 
 /**
@@ -401,6 +414,9 @@ export const TOOL_ARG_SCHEMAS: Map<string, ZodType> = new Map<string, ZodType>([
   ...ASSISTANT_SUBSESSION_ARG_SCHEMAS,
   ['requestCapability', REQUEST_CAPABILITY_ARGS],
   ['withdrawCapabilityRequest', WITHDRAW_CAPABILITY_REQUEST_ARGS],
+  ['listSchedules', LIST_SCHEDULES_ARGS],
+  ['saveSchedule', SAVE_SCHEDULE_ARGS],
+  ['deleteSchedule', DELETE_SCHEDULE_ARGS],
   // The session's own conversation is read from trusted context alone — no arguments.
   ['getCurrentChannel', z.object({})],
   // One body serves every platform's credentialed attachment read, so one schema does too.

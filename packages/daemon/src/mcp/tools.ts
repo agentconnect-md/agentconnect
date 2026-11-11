@@ -17,6 +17,7 @@ import { FOLLOW_UP_TOOL, PROPOSE_TOOL, RECORD_CHECK_TOOL } from './ops/assistant
 import { ASSISTANT_REMINDER_TOOLS } from './ops/assistant-reminders.js'
 import { LIST_TASKS_TOOL, READ_TASK_TOOL, STOP_TASK_TOOL, UPDATE_TASK_TOOL } from './ops/assistant-subsessions.js'
 import { CAPABILITY_REQUEST_TOOLS } from './ops/capability-requests.js'
+import { AGENT_CRON_TOOLS } from './ops/agent-crons.js'
 import { CODE_HOST_RESEARCH_TOOLS } from './ops/code-host-research.js'
 import { GETTING_TO_KNOW_TOOL } from './ops/getting-to-know.js'
 import { SEND_MESSAGE_ACTIONS } from './ops/send-message-actions.js'
@@ -1018,7 +1019,8 @@ export const ALL_TOOL_NAMES = [
       READ_TASK_TOOL,
       STOP_TASK_TOOL,
       UPDATE_TASK_TOOL,
-      ...CAPABILITY_REQUEST_TOOLS
+      ...CAPABILITY_REQUEST_TOOLS,
+      ...AGENT_CRON_TOOLS
     ]
       .map((t) => t.name)
       // External-memory record tools: only their names are core knowledge here, the descriptors live in memory/.

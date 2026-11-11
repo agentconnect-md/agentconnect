@@ -349,6 +349,7 @@ import { DutyLeaseService, DUTY_LEASE_DEFAULTS } from './orchestrator/dutyLease.
 import { registerPoolMetrics } from './observability/pool-metrics.js'
 import { registerOrgMetrics } from './observability/org-metrics.js'
 import { AgentDelivery } from './orchestrator/agentDelivery.js'
+import { AgentCronService } from './orchestrator/agentCrons.js'
 import { computerAccessFanOut } from './orchestrator/computerAccessFanOut.js'
 import { SetMemoryHomeReconciler } from './orchestrator/setMemoryHomeReconciler.js'
 import { AgentRoutingConverger } from './orchestrator/agentRouting.js'
@@ -1288,6 +1289,22 @@ export function buildContainer(
   // "who is using this install, and how much" read the pool gauges deliberately do not answer.
   const orgMetrics = registerOrgMetrics({ repo: repos.org, clock, log: { warn: (o, m) => http.log.warn(o, m) } })
   const agentMutations = new AgentMutationGate()
+  // An agent's own crons (`cron/self`): saved and deleted by the agent with no person's approval, a one-shot retired after its run.
+  const agentCrons = new AgentCronService({
+    crons: repos.cron,
+    agents: repos.agent,
+    integrations: repos.integration,
+    audit: repos.audit,
+    delivery: agentDelivery,
+    mutations: agentMutations,
+    recomputeDuties: (orgId: string) => dutyRecompute.kick(orgId),
+    ...(config.CAPABILITY_REQUESTS_ENABLED
+      ? {
+          cronsChanged: (agent) => capabilityRequests.orgChanged(agent.orgId, { kind: 'cron', agentId: agent.id }, null)
+        }
+      : {}),
+    log: { warn: (o, m) => http.log.warn(o, m) }
+  })
 
   // Relay roster (shared-bot-relay.md §5): computed from the durable `relay` table
   // (alive within the failover window), fed into `register/ok.relays` and fanned to
@@ -3500,6 +3517,7 @@ export function buildContainer(
     pullRequestFeedback: sessionPullRequestFeedback,
     followUpWatch,
     ...(config.CAPABILITY_REQUESTS_ENABLED ? { capabilityRequests } : {}),
+    agentCrons,
     codeHostFeedback,
     events,
     usageWriter,
