@@ -158,7 +158,16 @@ export function useWeChatLogin(input: {
 }
 
 /** The login's live state: the QR code, the scanned prompt, the verification number, the result, or the failure. */
-export function WeChatLoginView({ state, onRetry }: { state: WeChatLogin; onRetry(): void }) {
+export function WeChatLoginView({
+  state,
+  onRetry,
+  onDone
+}: {
+  state: WeChatLogin
+  onRetry(): void
+  // Shown once connected, where the wizard has no footer of its own to close it.
+  onDone?(): void
+}) {
   const t = useTranslations('Platforms.wechat')
   const [code, setCode] = useState('')
   const { login, phase } = state
@@ -211,6 +220,13 @@ export function WeChatLoginView({ state, onRetry }: { state: WeChatLogin; onRetr
         <p className="m-0 pl-[22px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
           {t('completed.body')}
         </p>
+        {onDone && (
+          <div className="pl-[22px] pt-1">
+            <Button size="sm" onClick={onDone}>
+              {t('footer.done')}
+            </Button>
+          </div>
+        )}
       </div>
     )
   }

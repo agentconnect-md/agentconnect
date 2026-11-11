@@ -157,8 +157,9 @@ describe('WeChatWizardBody', () => {
     expect(text()).toContain('ClawBot')
     expect(state.invalidate).toHaveBeenCalledTimes(1)
     expect(mocks.polls).toHaveLength(0)
-    expect(footer).toMatchObject({ label: 'Done', enabled: true, hidden: false })
-    await act(async () => footer?.onSubmit())
+    // The host draws no primary while the identity chrome is hidden, so Done sits in the pane itself.
+    expect(footer?.hidden).toBe(true)
+    await click('Done')
     expect(state.close).toHaveBeenCalledTimes(1)
   })
 
