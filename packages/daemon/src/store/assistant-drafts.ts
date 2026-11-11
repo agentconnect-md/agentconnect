@@ -91,12 +91,12 @@ export interface AssistantProposalFollowUp {
 export interface AssistantProposal {
   sentence: string
   why: string
-  /** The task key of the follow-up or getting-to-know task it acts on, their one id (§5.18). */
-  itemId: string
+  /** The task key of the follow-up or getting-to-know task it acts on (§5.18); null for an offer from an ordinary turn, which acts on none (§5.10). */
+  itemId: string | null
   itemVersion: number
   /** Set on the follow-up form, whose approval takes this follow-up and runs no task. */
   followUp: AssistantProposalFollowUp | null
-  /** The getting-to-know task report round it was proposed in (§5.13), whose reply its card waits for. */
+  /** The turn it was proposed in, whose reply its card waits for: a getting-to-know task report round (§5.13), or an offering turn (§5.10). */
   round: string | null
   /** Its card waits for the round's reply to post. */
   held: boolean
@@ -166,7 +166,8 @@ export interface AssistantTaskCreate {
   task: string
   sentence: string
   why: string
-  itemId: string
+  /** Null for an offer from an ordinary turn, bound to its target instead. */
+  itemId: string | null
   itemVersion: number
   source: AssistantDraftSource
   approver?: AssistantDraftApprover | null
@@ -276,8 +277,26 @@ export function assistantFollowUpHash(
   return createHash('sha256').update(JSON.stringify(parts)).digest('hex')
 }
 
-/** The digest a proposal's record must still carry to run: its task's, or its follow-up form's. */
-export function assistantProposalHash(agentId: string, proposal: AssistantProposal, task: string): string {
+/** The same for an offer from an ordinary turn (§5.10), which acts on no task: the follow-up and the place and thread it reports in. */
+export function assistantOfferHash(
+  agentId: string,
+  target: AssistantDraftTarget,
+  form: AssistantProposalFollowUp
+): string {
+  const at = [target.platform, target.integrationId, target.channel, target.thread ?? '']
+  const parts = ['offer', agentId, ...at, form.title, form.doneWhen, form.nextCheck, form.watch ?? null]
+  return createHash('sha256').update(JSON.stringify(parts)).digest('hex')
+}
+
+/** The digest a proposal's record must still carry to run: its task's, its follow-up form's, or an offer's, which binds `target`. */
+export function assistantProposalHash(
+  agentId: string,
+  proposal: AssistantProposal,
+  task: string,
+  target?: AssistantDraftTarget
+): string {
+  if (proposal.itemId === null)
+    return proposal.followUp && target ? assistantOfferHash(agentId, target, proposal.followUp) : ''
   return proposal.followUp
     ? assistantFollowUpHash(agentId, proposal.itemId, proposal.itemVersion, proposal.followUp)
     : assistantTaskHash(agentId, proposal.itemId, proposal.itemVersion, task)
@@ -312,7 +331,7 @@ function draftOf(row: Row): AssistantDraft {
         ? {
             sentence: String(row.sentence ?? ''),
             why: String(row.why ?? ''),
-            itemId: String(row.itemId ?? ''),
+            itemId: str(row.itemId),
             itemVersion: Number(row.itemVersion ?? 0),
             followUp:
               row.followUpTitle === null || row.followUpTitle === undefined
@@ -428,6 +447,7 @@ export class AssistantDraftLedger {
     const { target, sentence, why, source, followUp, round } = input
     const task = followUp ? followUp.title : input.task
     if (!target.platform || !target.channel) throw new Error('a proposal needs the place it runs in')
+    if (input.itemId === null && !followUp) throw new Error('an offer from an ordinary turn takes a follow-up only')
     if (sentence.trim() === '') throw new Error('a proposal needs its sentence')
     if (task.trim() === '') throw new Error('a proposal needs its task')
     if (sentence.length > ASSISTANT_PROPOSAL_SENTENCE_MAX)
@@ -473,9 +493,12 @@ export class AssistantDraftLedger {
       approverTeamId: approver?.teamId ?? null,
       approverConsoleUserId: approver?.consoleUserId ?? null,
       status: 'awaiting_review',
-      hash: followUp
-        ? assistantFollowUpHash(input.agentId, input.itemId, input.itemVersion, followUp)
-        : assistantTaskHash(input.agentId, input.itemId, input.itemVersion, task),
+      hash:
+        input.itemId === null
+          ? assistantOfferHash(input.agentId, target, followUp!)
+          : followUp
+            ? assistantFollowUpHash(input.agentId, input.itemId, input.itemVersion, followUp)
+            : assistantTaskHash(input.agentId, input.itemId, input.itemVersion, task),
       createdAt: now,
       expiresAt: now + ASSISTANT_DRAFT_TTL_MS,
       sentence,
@@ -493,7 +516,7 @@ export class AssistantDraftLedger {
     return await this.insert(id, row)
   }
 
-  /** How many proposals a getting-to-know task report round made (§5.13). */
+  /** How many proposals a round made: a getting-to-know task report round (§5.13), or an offering turn (§5.10). */
   async countInRound(agentId: string, round: string): Promise<number> {
     const rows = (
       await this.db.query('SELECT COUNT(*) AS n FROM assistant_draft WHERE agentId = ? AND reportRound = ?', [
