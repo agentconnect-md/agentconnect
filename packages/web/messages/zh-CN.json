@@ -7066,7 +7066,8 @@
         "requestRejected": "这个 agent 的应用被拒绝或已被移除。",
         "requestOpenAdmin": "Teams 管理中心",
         "requestCheck": "再查一次",
-        "requestCancel": "取消申请"
+        "requestCancel": "取消申请",
+        "requestApprove": "以管理员身份批准"
       }
     },
     "wechat": {

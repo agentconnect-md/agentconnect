@@ -5767,8 +5767,10 @@ export interface MsTeamsConnectResultDto {
   store: boolean
   /** A member's sign-in: `ticket` goes to {@link requestMsTeamsAgentBot} with the chosen teams. */
   member?: boolean
-  /** The request this sign-in resumed, already waiting for approval. */
+  /** The request this sign-in resumed, or one just approved that Microsoft does not show as published yet. */
   request?: MsTeamsAgentBotRequestDto
+  /** An administrator's approval of a waiting request, which has no team step. */
+  approved?: boolean
 }
 /** Redeem the code Microsoft returned: connects the tenant and answers the administrator's teams. */
 export async function finishMsTeamsConnect(
@@ -5813,6 +5815,10 @@ export async function checkMsTeamsAgentBotRequest(
   id: string
 ): Promise<{ integrationId?: string; request?: MsTeamsAgentBotRequestDto }> {
   return apiPost(`${orgBase(orgId)}/integrations/msteams/requests/${encodeURIComponent(id)}/check`, {})
+}
+/** Microsoft's sign-in page for an administrator who approves the waiting request from here. */
+export async function approveMsTeamsAgentBotRequest(orgId: string, id: string): Promise<{ authorizeUrl: string }> {
+  return apiPost(`${orgBase(orgId)}/integrations/msteams/requests/${encodeURIComponent(id)}/approve`, {})
 }
 /** Withdraw the submission and remove the bot made for it. */
 export async function cancelMsTeamsAgentBotRequest(orgId: string, id: string): Promise<void> {

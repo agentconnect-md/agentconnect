@@ -71,6 +71,8 @@ export interface MsTeamsConnectState {
   consent?: boolean
   /** A member's sign-in, which submits the agent's package for the administrator's approval (§8.6.6). */
   member?: boolean
+  /** The waiting request an administrator signs in to approve (§8.6.6). */
+  approve?: string
 }
 
 /** Domain-separated keys from the pepper, one per purpose; the pepper itself never signs or encrypts. */
@@ -97,6 +99,7 @@ const StatePayload = z.object({
   agentBots: z.boolean().optional(),
   consent: z.boolean().optional(),
   member: z.boolean().optional(),
+  approve: z.string().optional(),
   e: z.number(),
   n: z.string()
 })
@@ -126,7 +129,8 @@ export function verifyMsTeamsConnectState(
     ...(parsed.tenant ? { tenant: parsed.tenant } : {}),
     ...(parsed.agentBots ? { agentBots: true } : {}),
     ...(parsed.consent ? { consent: true } : {}),
-    ...(parsed.member ? { member: true } : {})
+    ...(parsed.member ? { member: true } : {}),
+    ...(parsed.approve ? { approve: parsed.approve } : {})
   }
 }
 
@@ -359,16 +363,17 @@ export function openMsTeamsTicket(keys: MsTeamsConnectKeys, ticket: string, cloc
 async function graph(
   fetchImpl: typeof fetch,
   token: string,
-  method: 'GET' | 'POST' | 'DELETE',
+  method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
   path: string,
-  body?: { json: unknown } | { zip: Uint8Array }
+  body?: { json: unknown; ifMatch?: string } | { zip: Uint8Array }
 ): Promise<Response> {
   try {
     return await fetchImpl(`${GRAPH}${path}`, {
       method,
       headers: {
         authorization: `Bearer ${token}`,
-        ...(body ? { 'content-type': 'json' in body ? 'application/json' : 'application/zip' } : {})
+        ...(body ? { 'content-type': 'json' in body ? 'application/json' : 'application/zip' } : {}),
+        ...(body && 'json' in body && body.ifMatch ? { 'if-match': body.ifMatch } : {})
       },
       ...(body ? { body: 'json' in body ? JSON.stringify(body.json) : body.zip } : {}),
       signal: AbortSignal.timeout(TIMEOUT_MS)
@@ -433,7 +438,9 @@ export async function submitMsTeamsPackage(
 }
 
 const Definitions = z.object({
-  appDefinitions: z.array(z.object({ id: z.string(), publishingState: z.string().nullish() })).nullish()
+  appDefinitions: z
+    .array(z.object({ id: z.string(), publishingState: z.string().nullish(), '@odata.etag': z.string().nullish() }))
+    .nullish()
 })
 
 /** Where a submitted package stands, read with the submitter's token: published, still waiting, turned down, or gone from the catalog. */
@@ -457,6 +464,28 @@ export async function readMsTeamsPackageState(
   const states = definitions.map((definition) => definition.publishingState)
   if (states.includes('published')) return 'published'
   return states.includes('submitted') ? 'submitted' : 'rejected'
+}
+
+/** Publishes a package's pending definitions as an administrator, which is the approval the Teams admin center gives; false when none is pending. */
+export async function approveMsTeamsSubmission(
+  fetchImpl: typeof fetch,
+  token: string,
+  catalogAppId: string
+): Promise<boolean> {
+  const definitions = await readDefinitions(fetchImpl, token, catalogAppId)
+  let approved = false
+  for (const definition of definitions ?? []) {
+    if (definition.publishingState !== 'submitted') continue
+    const path = `/appCatalogs/teamsApps/${encodeURIComponent(catalogAppId)}/appDefinitions/${encodeURIComponent(definition.id)}`
+    // Graph changes a definition only against the version it was read at.
+    const response = await graph(fetchImpl, token, 'PATCH', path, {
+      json: { publishingState: 'published' },
+      ifMatch: definition['@odata.etag'] ?? '*'
+    })
+    if (!response.ok) throw refused(response)
+    approved = true
+  }
+  return approved
 }
 
 /** Withdraws a member's own pending submission by deleting its pending definitions, which their submit scope allows; one already gone counts as withdrawn. */
