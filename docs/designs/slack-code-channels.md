@@ -101,7 +101,11 @@ The platform-owned session tool registry exposes four tools only to Slack sessio
   message. Slack matches origin privacy and invites its author. An origin-derived
   idempotency key prevents duplicate channels when a call is retried. Creation inside
   an existing code channel returns that channel without creating another one, including
-  when the copied origin request arrives under a new message timestamp.
+  when the copied origin request arrives under a new message timestamp. A scheduled run
+  anchored to a channel may use its own anchor post as the origin. Ingress drops the bot's
+  own messages, so Slack's copy of that post starts nothing: the result tells the run to
+  hand its task to the channel with a `callAgent` to itself. That call reaches only a public
+  channel, so a run anchored to a private channel keeps the work in its own thread.
 - `setSlackCodeView`: publish a unified diff, self-contained HTML preview, PR tab, or
   existing Canvas with comment access using `type: canvas`, `canvasId` and `viewKey`.
   Attaching checks both conversation and document write authority. HTML and Canvas keys
@@ -137,7 +141,11 @@ ownership and resolve the channel-wide session before opening the modal. Subsequ
 settings changes retain the existing actor and session authorization checks.
 
 Tools use the session's own bot connection and the existing place write rule. Creating
-something new requires an eligible human asker. Cross-channel view/context/archive
+something new requires an eligible human asker. The one exception is a code channel made
+from a scheduled run's own anchor by a run no person is behind: it needs the anchored
+conversation to be the session's own, on the agent's own bot, and confirmed not shared with
+another organization. A schedule that records a person is still judged as that person, and a
+message folded into the turn removes the anchor. Cross-channel view/context/archive
 writes require that every asker may access the target, and the provider must report
 that this bot owns it. Tools never accept a privacy override or an arbitrary origin.
 

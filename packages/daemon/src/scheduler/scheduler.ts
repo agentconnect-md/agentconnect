@@ -110,6 +110,16 @@ export function isHeadlessCronSession(rec: { channel: string; triggeredBy?: stri
   return rec.triggeredBy?.startsWith('cron:') === true && rec.channel === rec.triggeredBy
 }
 
+/** The post a schedule's fire was anchored to; a headless or unanchored fire has none, and a folded-in message makes the turn no longer the schedule's alone. */
+export function scheduleAnchorOf(
+  msg: Pick<NormalizedMessage, 'source' | 'channel' | 'transcriptTs' | 'headless'>,
+  foldedMessages: number
+): { channel: string; ts: string } | undefined {
+  if (msg.source !== 'cron' || msg.headless === true || msg.transcriptTs === undefined || foldedMessages > 0)
+    return undefined
+  return { channel: msg.channel, ts: msg.transcriptTs }
+}
+
 /** Staleness cap on a catch-up: past this, a swallowed moment is history rather than a late fire. */
 const CATCH_UP_GRACE_CAP_MS = 60 * 60 * 1_000
 

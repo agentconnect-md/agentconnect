@@ -877,6 +877,70 @@ describe('Slack native surfaces', () => {
     await f.conn.stop()
   })
 
+  it('creates from a scheduled run’s own post, marked for the write rule, and says how to hand the task over', async () => {
+    const f = await fixture(false)
+    const result = await SLACK_SESSION_TOOLS.execute(
+      'createSlackCodeChannel',
+      ctx,
+      { name: 'Task' },
+      { ...f.env, originMsgId: undefined, scheduleAnchor: { channel: 'C1', ts: '1.005' } }
+    )
+    expect(f.api.create).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ origin_channel_id: 'C1', origin_message_ts: '1.005' })
+    )
+    expect(f.judgeWrite).toHaveBeenCalledExactlyOnceWith({
+      kind: 'new',
+      platform: 'slack',
+      integrationId: 'i1',
+      users: [],
+      anchoredIn: 'C1'
+    })
+    expect(result).toMatchObject({
+      channel_id: 'C2',
+      next: expect.stringContaining('"action":"callAgent","toAgent":"a1","channel":"C2"')
+    })
+    await f.conn.stop()
+  })
+
+  it('keeps a person’s message as the origin and judges it without the schedule’s exception', async () => {
+    const f = await fixture(false)
+    const result = await SLACK_SESSION_TOOLS.execute(
+      'createSlackCodeChannel',
+      ctx,
+      { name: 'Task' },
+      { ...f.env, scheduleAnchor: { channel: 'C1', ts: '1.005' } }
+    )
+    expect(f.api.create.mock.calls[0]![0]).toMatchObject({ origin_message_ts: '1.002' })
+    expect(f.judgeWrite).toHaveBeenCalledExactlyOnceWith({
+      kind: 'new',
+      platform: 'slack',
+      integrationId: 'i1',
+      users: []
+    })
+    expect(result).not.toHaveProperty('next')
+    await f.conn.stop()
+  })
+
+  it.each([
+    ['no anchor', ctx, undefined],
+    ['an anchor in another channel', ctx, { channel: 'C9', ts: '1.005' }],
+    ['an anchor in a direct message', { ...ctx, isDm: true }, { channel: 'C1', ts: '1.005' }],
+    ['a malformed anchor', ctx, { channel: 'C1', ts: 'not-a-ts' }]
+  ])('refuses a turn with no person’s message and %s', async (_name, session, scheduleAnchor) => {
+    const f = await fixture(false)
+    await expect(
+      SLACK_SESSION_TOOLS.execute(
+        'createSlackCodeChannel',
+        session,
+        { name: 'Task' },
+        { ...f.env, originMsgId: undefined, ...(scheduleAnchor ? { scheduleAnchor } : {}) }
+      )
+    ).rejects.toThrow('requires a live Slack message')
+    expect(f.judgeWrite).not.toHaveBeenCalled()
+    expect(f.api.create).not.toHaveBeenCalled()
+    await f.conn.stop()
+  })
+
   it('canonicalizes consecutive messages and omits thread timestamps on channel lifecycle and replies', async () => {
     const f = await fixture()
     const status = vi.spyOn(f.app.client.agents.sessions, 'setStatus')

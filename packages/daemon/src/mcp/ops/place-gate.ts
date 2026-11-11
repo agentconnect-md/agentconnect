@@ -279,7 +279,7 @@ export async function judgeSessionParticipation(input: {
 /** Where a platform write lands: a conversation (a direct message by its recipient), something new with these people, or a hosted document. */
 export type WriteTarget =
   | { kind: 'conversation'; platform: string; integrationId?: string; channel: string; recipient?: string }
-  | { kind: 'new'; platform: string; integrationId?: string; users: readonly string[] }
+  | { kind: 'new'; platform: string; integrationId?: string; users: readonly string[]; anchoredIn?: string }
   | { kind: 'document'; platform: string; integrationId?: string; documentId: string }
 
 /** What the write rule lets through: `post` goes out now, `draft` waits for an internal member's approval. */
@@ -332,10 +332,21 @@ async function workspaceMember(
   return !tellsWorkspaceMembers(platform) || (await lookups.fullMember(bot, userId).catch(() => false))
 }
 
-/**
- * The one choke point every platform write passes, for every agent: the current conversation always, anything else
- * only where every person asking may go; a post that needs approval comes back `draft`, and any other refusal throws.
- */
+/** Whether a run no person started may make a room from its anchor: its own conversation, on the agent's own bot, not shared outside; fails closed. */
+async function anchorAdmitsRoom(
+  ctx: SessionContext,
+  platform: string,
+  channel: string,
+  bot: string | undefined,
+  deps: PlaceAccessDeps
+): Promise<boolean> {
+  if (bot === undefined || !samePlace({ platform: ctx.platform, channel: ctx.channel }, { platform, channel }))
+    return false
+  const external = deps.targetExternal?.(ctx.agentId, bot, channel, false) ?? Promise.resolve(true)
+  return !(await external.catch(() => true))
+}
+
+/** The one choke point for every platform write: the current conversation always, elsewhere only where every asker may go; `draft` awaits approval, other refusals throw. */
 export async function judgePlaceWrite(
   ctx: SessionContext,
   tool: string,
@@ -362,6 +373,13 @@ export async function judgePlaceWrite(
   const askers = deps.readAskers ? await deps.readAskers(ctx).catch(() => NOBODY) : NOBODY
   // A run no person started writes only to its own conversation, which is an anchored hook's or schedule's target.
   if (askers.nobody || askers.people.length === 0) {
+    if (
+      target.kind === 'new' &&
+      target.anchoredIn !== undefined &&
+      askers.people.length === 0 &&
+      (await anchorAdmitsRoom(ctx, target.platform, target.anchoredIn, bot, deps))
+    )
+      return 'post'
     if (post && deps.assistantModeFor?.(ctx.agentId) === true && deps.draftPost) return 'draft'
     throw refused(tool, NOBODY_WRITES)
   }

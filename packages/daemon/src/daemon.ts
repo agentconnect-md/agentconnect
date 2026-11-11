@@ -780,6 +780,7 @@ import {
   Scheduler,
   buildSyntheticMessage,
   cronAnchorText,
+  scheduleAnchorOf,
   missedOccurrence,
   scheduleFingerprint,
   type ScheduleDefinition
@@ -5661,6 +5662,10 @@ export class Daemon {
       // shareFile (agent-authored-attachments.md): the trusted target, the fenced read, the
       // synchronous budget, and the provenance row. All coordinates come from the active
       // turn — the model supplies only a workspace-relative path and a caption.
+      scheduleAnchor: (ctx) => {
+        const live = this.activeGateEntries.get(this.sessionKeyOf(ctx))
+        return live ? scheduleAnchorOf(live.msg, live.foldedMessages?.length ?? 0) : undefined
+      },
       searchOrigin: (ctx): string | undefined =>
         this.activeTurnSearchOrigin.get(
           sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)

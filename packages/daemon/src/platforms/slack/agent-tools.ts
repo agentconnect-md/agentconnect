@@ -245,7 +245,7 @@ const codeTools: ToolDescriptor[] = [
   {
     name: 'createSlackCodeChannel',
     description:
-      'Start requested coding work needing several steps, edits, tests or a PR in a dedicated Slack channel, unless the user asks to stay here or the task needs earlier discussion that would be lost. Quick questions stay here. Slack preserves origin privacy, invites its author and copies only the originating message into the new channel. Repeating the same trigger returns the same channel; inside a code channel this reuses the current channel. After creating one, link it and end this turn without duplicating work or asking the user to repeat the task. Follow-ups there share one channel session. If creation is unavailable, use the ordinary task workflow here.',
+      'Start requested coding work needing several steps, edits, tests or a PR in a dedicated Slack channel, unless the user asks to stay here or the task needs earlier discussion that would be lost. Quick questions stay here. Slack preserves origin privacy, invites its author and copies only the originating message into the new channel. Repeating the same trigger returns the same channel; inside a code channel this reuses the current channel. After creating one, link it and end this turn without duplicating work or asking the user to repeat the task. A scheduled run posted into a channel may create one from its own post; follow the next step in the result instead. Follow-ups there share one channel session. If creation is unavailable, use the ordinary task workflow here.',
     inputSchema: z.toJSONSchema(createArgs) as ToolDescriptor['inputSchema']
   },
   {
@@ -262,6 +262,13 @@ const codeTools: ToolDescriptor[] = [
   }
 ]
 
+const SLACK_TS = /^\d+\.\d+$/
+
+const scheduledHandoff = (agentId: string, channel: string): string =>
+  `A schedule started this run, so no message starts work in ${channel}. Call sendMessage with ` +
+  `{"action":"callAgent","toAgent":"${agentId}","channel":"${channel}","message":"<the full task>"} to continue ` +
+  'there, then end this turn. If that is refused, do the work in this conversation instead.'
+
 async function execute(
   name: string,
   ctx: SessionContext,
@@ -273,18 +280,38 @@ async function execute(
     const a = parseArgs(createArgs, args)
     const here = env.deliveryChannel
     const origin = env.originMsgId?.split(':')
-    if (origin?.length !== 3 || origin[0] !== 'slack' || origin[1] !== here || !/^\d+\.\d+$/.test(origin[2]!))
-      throw new Error('A code channel requires a live Slack message as its origin')
+    const asked =
+      origin?.length === 3 && origin[0] === 'slack' && origin[1] === here && SLACK_TS.test(origin[2]!)
+        ? origin[2]!
+        : undefined
+    // A schedule's own post stands in for a person's message only in the channel it was anchored to.
+    const anchor = env.scheduleAnchor
+    const anchored =
+      asked === undefined && !ctx.isDm && anchor?.channel === here && SLACK_TS.test(anchor.ts) ? anchor.ts : undefined
+    const ts = asked ?? anchored
+    if (ts === undefined) throw new Error('A code channel requires a live Slack message as its origin')
     const make = async () => {
       const created = await createCodeChannel(
         conn,
-        { agentId: ctx.agentId, channel: here, ts: origin[2]!, isDm: ctx.isDm && here === ctx.channel },
+        { agentId: ctx.agentId, channel: here, ts, isDm: ctx.isDm && here === ctx.channel },
         a.name,
-        () => env.judgeWrite({ kind: 'new', platform: ctx.platform, integrationId: ctx.integrationId, users: [] })
+        () =>
+          env.judgeWrite({
+            kind: 'new',
+            platform: ctx.platform,
+            integrationId: ctx.integrationId,
+            users: [],
+            ...(anchored !== undefined ? { anchoredIn: here } : {})
+          })
       )
       // A code channel's one session keys on the channel itself (slack-code-channels.md), the coordinate a task holds it by.
       const id = created.existing ? undefined : created.channelId
-      return { result: created.response, ...(id ? { room: { channel: id, thread: id } } : {}) }
+      // Slack's copy of a bot's own post wakes nobody, so a scheduled run must hand its task over itself.
+      const result =
+        anchored !== undefined && id
+          ? { ...(created.response as object), next: scheduledHandoff(ctx.agentId, id) }
+          : created.response
+      return { result, ...(id ? { room: { channel: id, thread: id } } : {}) }
     }
     return env.makeRoom ? await env.makeRoom(make) : (await make()).result
   }
