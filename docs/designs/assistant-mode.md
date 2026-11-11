@@ -74,7 +74,8 @@ does not pretend to defend against effects it cannot defend against.
   tasks of the conversation they report to as well, but no conversation delegates them, and they
   stay assistant mode's.
 - In an IM: the main conversation says "started", then reports the result with a console link.
-  Nothing extra appears on the platform.
+  Nothing extra appears in the conversation; in a Slack channel the work is also listed on the
+  channel's Work canvas (§5.19).
 - Stopping and steering go through the conversation that delegated the task: "stop the PR one",
   "change the PR task to X" (§5.6, §5.8).
 - In webchat: a conversation's tasks are visible in its Tasks tab — watch, talk to one
@@ -135,6 +136,9 @@ does not pretend to defend against effects it cannot defend against.
 - "What's on your plate?" lists the follow-ups of the place, what it last saw for each, when it
   checks next, what awaits approval, which tasks are running.
 - The console lists follow-ups among the tasks, with their recent checks; Stop ends one.
+- In a Slack channel, the Work canvas lists the channel's open tasks and follow-ups, each with its
+  status and who asked, and the scheduled tasks that post there with their next run, without
+  anyone having to ask (§5.19).
 
 ### 1.8 Enabling
 
@@ -3906,6 +3910,142 @@ work on the board and the rest behind tools, a compaction loses nothing the next
 `listTasks` do not restore, so the compaction re-send above is the whole requirement); cross-place
 `messageTask`; any change for sessions that are not coordinators.
 
+### 5.19 A channel's Work canvas (Slack)
+
+**Status:** Implemented (2026-11-10), ninety-third revision. Not yet checked against a live
+workspace (Phases below). _Decided_ by the product owner (2026-11-10): §1.3's "Nothing extra
+appears on the platform" is narrowed to "nothing extra appears in the conversation", which the
+page keeps, since it posts no message.
+
+**Why.** A place's open work can be seen in three ways today: by asking "what's on your plate?"
+(§1.7), in the console's Tasks tab, and in a Slack code channel's Tasks view
+([slack-code-channels.md](slack-code-channels.md) "Tasks"). A member of an ordinary channel has
+only the first, which costs a turn and answers only the person who asked. Nobody in the channel
+can see what the agent took on there, whether a follow-up already covers what they are about to
+ask (§1.2), or whether work they heard was started is still running.
+
+**In one line.** In each internal Slack channel of an assistant-mode agent that has open work, the
+daemon keeps one read-only canvas, **Work**, listing that channel's own open tasks and the
+schedules that post there. The canvas is rendered from the stores and written by the daemon, never
+by a tool, and it holds nothing the channel's own messages have not already said there.
+
+**What it shows.** Under **Open work**, the open tasks the place owns, in the board's order
+(§5.18 ②): follow-ups taken there, and tasks delegated or approved from any session there.
+Getting-to-know tasks are left out, as the standing list leaves them out. Each line is written for
+people:
+
+- its status (running, idle, waiting, or its next check in UTC);
+- its kind (task, follow-up, approved proposal);
+- its title, cut to the board's 80 characters, with Markdown in it shown as text;
+- who asked, as a mention;
+- a link to the thread it was last asked in (`replyThread`).
+
+At most 40 lines are listed; the rest are counted, with the console a link away. Under
+**Scheduled**, the page lists the agent's enabled crons whose target is this channel on this bot.
+Each shows:
+
+- its label (as its channel anchor's, `cronLabel`: its name, else "Scheduled task");
+- its next run in the cron's own timezone, as the anchor writes the time;
+- a link to its latest anchor's thread.
+
+A headless cron, or one that targets another channel, is not listed. Schedules are a section of
+their own because a cron is not a task: it has no asker and no status. The page ends with when it
+was last updated and a link to the agent in the console.
+
+- _Never on it_: ids (§5.18 ④ "Never show an id to people"), summaries, observations, check
+  results, proposal text, and other places' work. For a cron: its trigger prompt, which its anchor
+  never shows either, who created or last edited it, its console visibility, and a failed run's
+  reason. A summary or an observation is the task's own words, written from reads judged by its
+  asker (§5.5), and those reads can reach sources other members of the channel cannot. The title
+  and the asker are already in the channel: in the restatement when the work was taken (§1.2) and
+  in every report (§5.7). Elsewhere is judged by the people in a turn, and a canvas has no turn:
+  every member, and anyone who opens it later, reads the same page.
+- _Who can read it_: the channel. The canvas is shared with read access to the channel it is in,
+  so a public channel's page reaches whoever can read that channel, as its follow-ups already reach
+  every internal place's standing list (§5.12), and a private channel's page reaches only its
+  members.
+- _A cron's console visibility_ governs its definition (prompt, edits, run history), not whether
+  it appears in its channel: every run already posts its label there. A cron is therefore listed
+  from the moment it targets the channel, before its first anchor, because choosing the channel is
+  choosing to speak there.
+- _Read from the daemon_: the cron definitions are the daemon's own copy in `agent.json`, and each
+  targeted run records its anchor's thread in `assistant_cron_anchor` (one row per cron, the
+  latest run's), so the page needs no Control Plane call and keeps updating while the Control
+  Plane is down.
+
+**Where.** Internal channels, public and private, that the agent has open work in or a cron posts
+to. The Slack module decides on the first write, from `conversations.info`; a conversation it
+declines is not asked again until its page's content changes. Not in:
+
+- a DM or a group DM, where "what's on your plate?" already reaches everyone present;
+- a place shared with another organization (§5.3): follow-ups are internal there, and a canvas
+  is a document the other organization keeps;
+- a code channel, whose Tasks view already shows this;
+- other platforms: the connection methods are optional, and only Slack has a document a bot can
+  keep on a conversation.
+
+**Lifecycle.** The once-a-minute check sweep (§5.9) renders each page of the agents whose duty this
+member holds, and writes only a page whose content changed since it last settled (a digest that
+leaves out the update time). That is the whole trigger: no write path of a task or a cron calls
+it, and a burst of changes within a minute is one write.
+
+- _Created_ when the place first has an open task or an enabled cron that targets it, not when the
+  mode is switched on, so a channel with neither gets no canvas.
+- _Rewritten_ when its content changes: a task opened, closed, changed status or title, a
+  follow-up's next check moved, a targeted cron was added, changed, disabled or removed, or a cron
+  fired, which moves its next run and its latest anchor. A cron that fires every minute rewrites
+  the page every minute. Each write replaces the whole document, since a read-only page has no
+  comments to keep.
+- _Kept_ after the last task closes and the last cron stops targeting the channel, saying nothing
+  is open, so the bookmark people know stays where it is.
+- _Left alone after a person deletes it._ A write refused because the canvas is gone marks the
+  place, and it is not created again until assistant mode is switched off and on. Deleting it is
+  the off switch; there is no setting.
+- _Removed_, with its bookmark, when assistant mode is switched off or the channel becomes
+  shared with another organization. Removal is best effort. A page whose agent left the channel,
+  or was deleted, stays where it is with its last "updated" time; deleting the agent drops its
+  rows.
+- _Found again_ after a restart through its row in `assistant_work_canvas` (agent, place → state,
+  canvas and bookmark ids, digest), which moves with duty like the follow-up tables (§5.4 ①).
+
+**Attachment on Slack.** A channel holds one channel canvas (`conversations.canvases.create`).
+People often already use it, and two agents in one channel would contend for it. So the page is a
+standalone canvas (`canvases.create`), shared read-only with the channel (`canvases.access.set`)
+and pinned as a channel bookmark (`bookmarks.add`). A canvas that cannot be shared or pinned is
+deleted again, and the next change starts over. Where a standalone canvas cannot be made (a free
+workspace creates only a channel's own canvas), the page uses the channel canvas when the channel
+has none, and the channel gets no page otherwise. The installation already holds
+`canvases:write` and `bookmarks:write`.
+
+**The seam.** Core composes a structured page (`WorkPage`: tasks, schedules, a count past the
+limit, the console link) and decides when to write. `PlatformConnection.putWorkPage` and
+`removeWorkPage` render it and attach it, so the canvas Markdown, the mention syntax, the
+permalinks and the bookmark stay in the Slack module. A platform name never becomes core knowledge.
+
+**Writes and permissions.** This is the daemon's own effect, like the Plan canvas, not an agent
+write, so the write rules of §5.5 (judged by the people asking) do not apply. It writes only into
+the channel whose work it shows, which the agent may always write. No model turn runs; the cost is
+at most one canvas write per place per minute.
+
+**Failure modes.** A failed write is logged, marks the row failed and is retried when the page's
+content next changes, not every minute; the page keeps its last content and its "updated" time.
+An installation without a scope, or a channel that refuses the bookmark, gets no page. A channel
+that becomes private keeps its page, whose read access follows the private channel.
+
+**Phases.** (1) The store tables, the sweep, the Slack connection methods and the render
+(`feat`), shipped together with this text. (2) A check on the test deployment against a live
+workspace, which unit tests cannot settle: both attachment shapes on a paid and a free workspace,
+the error a deleted canvas returns (`canvas_not_found`, `canvas_deleted`, `file_not_found` and
+`file_deleted` are read as "deleted"), and whether a canvas renders the `![](@U…)` mention.
+(3) An entry in [product-conventions.md](../product-conventions.md) once (2) holds.
+
+**Not done.** DMs and group DMs; external places; other places' work; summaries or a "last saw"
+line; comments on the canvas as input to the agent (people ask in the channel); a setting to turn
+the canvas off; noticing that the agent left a channel.
+
+**Open.** Whether waiting follow-ups belong on the page, or only running work and follow-ups
+with a next check; whether a follow-up's line should link its latest report.
+
 ---
 
 ## 6. Relation to existing mechanisms
@@ -5049,3 +5189,12 @@ fallback task as opened for its message, as it records a delegated one, so the d
 the daemon does and nothing tells the two apart. The Tasks tab read only a session keyed on the
 channel, so it stayed empty in a channel a task holds; it now takes the session the task index names
 as the channel's holder, and a channel with a session of its own reads as before.
+
+**Ninety-third revision (2026-11-10)**: a channel's Work canvas (§5.19), designed and implemented
+together. An ordinary Slack channel had no way to show its open work without someone asking for
+it, while a code channel already has a Tasks view. The daemon now keeps a read-only canvas per
+internal channel, holding only what the channel's own messages already said: tasks' titles,
+askers and status, and the crons that post there, with their labels and next runs. The minute
+sweep writes a page only when its content changed, so no task or cron write path calls it. §1.3's
+"Nothing extra appears on the platform" is narrowed to the conversation itself, as the product
+owner decided the same day.
