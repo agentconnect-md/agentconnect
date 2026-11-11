@@ -49,7 +49,13 @@ import { markNotJoined } from '../platforms/not-joined.js'
 import { slackMessageUrl } from '../platforms/slack/permalink.js'
 import { SLACK_CODE_CHANNEL_CONTEXT, SLACK_CONVERSATION_CONTEXT } from '../platforms/slack/standing-context.js'
 import { CodeTasksViews, SLACK_TASKS_VIEW_KEY, type CodeTasksSnapshot } from '../platforms/slack/code-tasks.js'
-import type { PlatformFileInfo, UploadAnchor, UploadFailReason, UploadOutcome } from '../mcp/ops/context.js'
+import type {
+  PlatformFileInfo,
+  SendIdentity,
+  UploadAnchor,
+  UploadFailReason,
+  UploadOutcome
+} from '../mcp/ops/context.js'
 import {
   STATUS_ACTION,
   ELICIT_ACTION_PREFIX,
@@ -59,6 +65,7 @@ import {
   PERMISSION_UPDATE_ACTION,
   CAPABILITY_OPEN_ACTION,
   buildPermissionUpdateCard,
+  attributionMrkdwn,
   buildStatusModal,
   buildStatusUnavailableModal,
   renderCodeContextLabels,
@@ -227,6 +234,7 @@ export interface ConsolidatedGroup {
  *  the app identity for older installations that do not have it yet. Stable AgentConnect
  *  authorship travels separately in message metadata. */
 export interface SlackPostOptions {
+  attribution?: SendIdentity['attribution']
   username?: string
   /** Public https image URL for the message avatar (the agent's icon, or a console author's). */
   icon_url?: string
@@ -1014,9 +1022,6 @@ const COMPLETION_MAY_HAVE_LANDED = new Set(['internal_error', 'fatal_error'])
  * only spends a call and replaces the real error with its echo.
  */
 const DECORATION_REFUSALS = new Set(['missing_scope', 'invalid_arguments', 'invalid_arg_name', 'invalid_array_arg'])
-
-/** `uploadV2` answers with one `completeUploadExternal` response per file. */
-type SlackUploadV2Result = { files?: { files?: { id?: string }[] }[] } | undefined
 
 /** The provider's own words, for the arm that has no category: without this a refusal
  *  reports only `platform error`, which no operator can act on. */
@@ -2663,27 +2668,18 @@ export class SlackConnection implements PlatformConnection {
     options?: SlackPostOptions
   ): Promise<UploadOutcome> {
     if (files.length === 0) return { ok: false, reason: 'platform_error' }
+    const caption =
+      [comment, options?.attribution ? attributionMrkdwn(options.attribution) : undefined]
+        .filter(Boolean)
+        .join('\n\n') || undefined
     const threadTs = anchor?.thread
     const task: Promise<UploadOutcome> = this.queue.enqueue(async () => {
       try {
-        // Complete the group with agent identity; uploadV2 omits username/icon_url from its completion.
-        const shared = await this.shareWithIdentity(channel, files, comment, threadTs, options)
+        // Only this completion path preserves the sender identity; uploadV2 drops it.
+        const shared = await this.shareWithIdentity(channel, files, caption, threadTs, options)
         if (shared !== undefined)
           return { ok: true, fileIds: shared, ...(await this.shareMessageTs(shared[0], channel)) }
-        // Only a byte-upload refusal permits SDK fallback: no completion has published anything yet.
-        this.deps.log?.debug('slack: file upload falling back to the SDK transport')
-        const done = (await this.app.client.files.uploadV2({
-          ...(files.length === 1
-            ? { file: files[0]!.bytes, filename: files[0]!.name }
-            : { file_uploads: files.map((file) => ({ file: file.bytes, filename: file.name })) }),
-          channel_id: channel,
-          ...(threadTs && threadTs !== channel ? { thread_ts: threadTs } : {}),
-          ...(comment ? { initial_comment: comment } : {})
-        })) as SlackUploadV2Result
-        // `uploadV2` answers with one completion response per file, each carrying the FILE.
-        const fileIds =
-          done?.files?.flatMap((group) => group.files?.flatMap((file) => (file.id ? [file.id] : [])) ?? []) ?? []
-        return { ok: true, fileIds, ...(await this.shareMessageTs(fileIds[0], channel)) }
+        return { ok: false, reason: 'platform_error', detail: 'File bytes could not be uploaded; nothing was shared.' }
       } catch (err) {
         this.rememberMissingScopes(err)
         this.deps.log?.debug(`slack: file upload to ${channel} failed: ${(err as Error).message}`)
@@ -2757,29 +2753,18 @@ export class SlackConnection implements PlatformConnection {
     }
   }
 
-  /**
-   * Step 2: POST the bytes to the reserved URL. Not a Slack API endpoint — no JSON envelope,
-   * no published wire contract — so it goes out through undici with the same proxy dispatcher
-   * the Web API client uses. Every field here is copied from what the SDK sends, because two
-   * live failures came out of choosing any of them differently: the multipart part is named
-   * `body` and carries an untyped Blob, and the reserved URL is given the bot token. That
-   * last one is not optional despite reading like it should be — a POST without it is
-   * answered with HTTP 500. Returns false rather than throwing: nothing is published yet, so
-   * the caller may still fall back.
-   */
+  // Match the SDK's authenticated multipart body upload; failure here precedes publication.
   private async putUploadBytes(uploadUrl: string, file: { bytes: Buffer; name: string }): Promise<boolean> {
-    const form = new FormData()
+    const form = new UndiciFormData()
     form.append('body', new Blob([new Uint8Array(file.bytes)]), file.name)
     const dispatcher = proxyDispatcher()
     try {
-      // Same cast seam as `fetchWithDispatcher`: undici's own FormData/RequestInit types and
-      // the Node globals are structurally identical but nominally distinct.
       const init = {
         method: 'POST',
         body: form,
         headers: { Authorization: `Bearer ${this.deps.group.botToken}` },
         signal: AbortSignal.timeout(SLACK_API_TIMEOUT_MS),
-        ...(dispatcher ? { dispatcher } : {})
+        dispatcher: dispatcher ?? directSlackDispatcher
       }
       const res = await undiciFetch(uploadUrl, init as Parameters<typeof undiciFetch>[1])
       // An unread body leaves the request in flight, and the graceful close below waits for

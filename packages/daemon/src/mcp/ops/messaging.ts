@@ -892,6 +892,7 @@ export async function deliverSendMessage(
       })
     }
     const identity: SendIdentity = {
+      ...(attachmentSources?.length ? { attribution: await deps.sessionToolAttributionFor?.(ctx) } : {}),
       ...(ctx.agentName ? { username: ctx.agentName } : {}),
       ...(ctx.iconUrl ? { icon_url: ctx.iconUrl } : {}),
       agentAuthorId: ctx.agentId,

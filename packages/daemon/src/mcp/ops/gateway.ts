@@ -1,9 +1,12 @@
 import { platformLabel } from '../../platforms/read-ports.js'
+import type { ReplyAttributionInfo } from '../../messages/attribution.js'
 import { askHost, type AskDeps } from '../ask.js'
 import type { MessageGateway, SessionContext } from './context.js'
 
 /** The deps every gateway-backed tool needs: resolve the live connection for one integration, plus the optional ask port {@link resolveGatewayForPlatform} uses instead of guessing which bot. */
 export interface GatewayDeps extends AskDeps {
+  // Trusted footer identity for tool-authored posts; absent when footer display is disabled.
+  sessionToolAttributionFor?: (ctx: SessionContext) => Promise<ReplyAttributionInfo | undefined>
   /** Resolve the live platform connection that owns this integration (may rotate). */
   gatewayFor: (integrationId: string) => MessageGateway | undefined
   /**

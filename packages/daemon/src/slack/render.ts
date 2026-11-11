@@ -314,7 +314,7 @@ function attributionText(info: SlackAttributionInfo): string {
   })
 }
 
-function attributionMrkdwn(info: SlackAttributionInfo): string {
+export function attributionMrkdwn(info: SlackAttributionInfo): string {
   const botName = escapeMrkdwnLabel(info.botName)
   const runtime = escapeMrkdwnLabel(info.runtime)
   const model = escapeMrkdwnLabel(info.model)

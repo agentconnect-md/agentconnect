@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
+import { Request } from 'undici'
 
 // The byte POST goes to a reserved URL that is NOT a Slack API endpoint, so it leaves
 // through undici directly rather than through the Web API client.
@@ -84,9 +85,7 @@ describe('SlackConnection.uploadFile', () => {
     })
   })
 
-  it('shares under the agent’s own identity, the only way a file post can carry one', async () => {
-    // `chat.postMessage` cannot attach a file, so the upload's completion IS the message —
-    // and `username`/`icon_url` on that call are the only identity it will ever accept.
+  it('shares with the agent identity and linked attribution in the same file message', async () => {
     const completeUploadExternal = vi.fn(async () => ({ files: [{ id: 'F1' }] }))
     const getUploadURLExternal = vi.fn(reserved)
     const conn = connWith({ getUploadURLExternal, completeUploadExternal })
@@ -100,7 +99,14 @@ describe('SlackConnection.uploadFile', () => {
         { thread: '111.1' },
         {
           username: 'Scout',
-          icon_url: 'https://example.test/a.png'
+          icon_url: 'https://example.test/a.png',
+          attribution: {
+            botName: 'scout',
+            botUrl: 'https://console.example.test/agents/scout',
+            runtime: 'Codex',
+            model: 'model',
+            sessionUrl: 'https://console.example.test/sessions/one'
+          }
         }
       )
       // The share's own ts, read back from files.info — see the anchoring test below.
@@ -113,7 +119,8 @@ describe('SlackConnection.uploadFile', () => {
       files: [{ id: 'F1', title: 'shot.png' }],
       channel_id: 'C1',
       thread_ts: '111.1',
-      initial_comment: 'from telegram',
+      initial_comment:
+        'from telegram\n\nsent by <https://console.example.test/agents/scout|scout> (Codex · model) · <https://console.example.test/sessions/one|open in session>',
       username: 'Scout',
       icon_url: 'https://example.test/a.png'
     })
@@ -128,22 +135,22 @@ describe('SlackConnection.uploadFile', () => {
     expect(init.headers.Authorization).toBe('Bearer xoxb-a')
     expect(init.body.has('body')).toBe(true)
     expect(init.body.has('file')).toBe(false)
+    const request = new Request(url, { method: 'POST', body: init.body as never })
+    expect(request.headers.get('content-type')).toContain('multipart/form-data; boundary=')
+    expect(await request.text()).toContain('filename="a.png"')
   })
 
-  it('falls back to the SDK transport when the byte POST is refused, without double posting', async () => {
-    // That step runs BEFORE anything reaches the conversation, which is the whole reason a
-    // retry is safe here and nowhere else in this flow.
+  it('refuses a failed byte upload before publishing instead of losing identity through SDK fallback', async () => {
     undici.fetch.mockResolvedValueOnce({ ok: false, status: 500 })
     const completeUploadExternal = vi.fn(async () => ({ files: [{ id: 'F1' }] }))
     const uploadV2 = vi.fn(async () => ({ ok: true, files: [{ ok: true, files: [{ id: 'F9' }] }] }))
     const conn = connWith({ completeUploadExternal, uploadV2, info: sharedAt('1700000000.000900') })
 
-    await expect(conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' }, 'hi')).resolves.toEqual({
-      ok: true,
-      fileIds: ['F9'],
-      messageId: '1700000000.000900'
+    await expect(conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' }, 'hi')).resolves.toMatchObject({
+      ok: false,
+      reason: 'platform_error'
     })
-    expect(uploadV2).toHaveBeenCalledOnce()
+    expect(uploadV2).not.toHaveBeenCalled()
     expect(completeUploadExternal).not.toHaveBeenCalled()
   })
 
@@ -156,10 +163,20 @@ describe('SlackConnection.uploadFile', () => {
     })
     const conn = connWith({ completeUploadExternal })
     await expect(
-      conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' }, 'hi', undefined, { username: 'Scout' })
+      conn.uploadFile('C1', { bytes: Buffer.from('x'), name: 'a.png' }, 'hi', undefined, {
+        username: 'Scout',
+        attribution: {
+          botName: 'scout',
+          botUrl: '',
+          runtime: 'Codex',
+          model: 'model',
+          sessionUrl: 'https://console.example.test/sessions/one'
+        }
+      })
     ).resolves.toMatchObject({ ok: true })
     expect(completeUploadExternal).toHaveBeenCalledTimes(2)
     expect(completeUploadExternal.mock.calls[1]![0]).not.toHaveProperty('username')
+    expect(completeUploadExternal.mock.calls[1]![0].initial_comment).toContain('sent by scout (Codex · model)')
   })
 
   it('does NOT retry a completion Slack answered with a partial-success code', async () => {

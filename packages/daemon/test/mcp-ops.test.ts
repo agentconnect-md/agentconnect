@@ -661,7 +661,14 @@ describe('executeTool: sendMessage (channel post)', () => {
     }
 
     it('posts into the active turn’s own conversation with the trusted anchor and identity', async () => {
-      const { d, gw, shares } = shareDeps()
+      const attribution = {
+        botName: 'Scout',
+        botUrl: 'https://console.example.test/agents/scout',
+        runtime: 'Codex',
+        model: 'model',
+        sessionUrl: 'https://console.example.test/sessions/one'
+      }
+      const { d, gw, shares } = shareDeps({ sessionToolAttributionFor: async () => attribution })
       const res = (await executeTool(
         ctx,
         'shareFile',
@@ -674,7 +681,7 @@ describe('executeTool: sendMessage (channel post)', () => {
         { bytes: image.bytes, name: 'chart.png', mimeType: 'image/png' },
         'revenue by week',
         { thread: '111.1', replyTo: 41 },
-        authorIdentity
+        { ...authorIdentity, attribution }
       )
       expect(res).toMatchObject({
         ok: true,
