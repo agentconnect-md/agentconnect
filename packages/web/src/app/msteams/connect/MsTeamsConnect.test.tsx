@@ -13,7 +13,15 @@ const mocks = vi.hoisted(() => {
       super(message)
     }
   }
-  return { FakeApiError, finish: vi.fn(), install: vi.fn(), fetchOrgs: vi.fn(), login: vi.fn() }
+  return {
+    FakeApiError,
+    finish: vi.fn(),
+    install: vi.fn(),
+    proceed: vi.fn(),
+    agentBot: vi.fn(),
+    fetchOrgs: vi.fn(),
+    login: vi.fn()
+  }
 })
 
 vi.mock('@/lib/auth', () => ({
@@ -25,7 +33,9 @@ vi.mock('@/lib/api', () => ({
   ApiError: mocks.FakeApiError,
   fetchOrgs: mocks.fetchOrgs,
   finishMsTeamsConnect: mocks.finish,
-  installMsTeamsTeams: mocks.install
+  installMsTeamsTeams: mocks.install,
+  continueMsTeamsConnect: mocks.proceed,
+  createMsTeamsAgentBot: mocks.agentBot
 }))
 
 import MsTeamsConnect, { msTeamsConnectOrgId } from './MsTeamsConnect'
@@ -137,6 +147,58 @@ describe('MsTeamsConnect', () => {
     mocks.finish.mockRejectedValue(new mocks.FakeApiError('mismatch', 400, 'MSTEAMS_TENANT_MISMATCH'))
     await land(`code=c&state=${STATE}`)
     expect(host.textContent).toContain('added the app in Teams')
+  })
+
+  it('goes on to the sign-in when Microsoft returns from the tenant-wide consent, which carries no code', async () => {
+    const assign = vi.spyOn(window.location, 'assign').mockImplementation(() => undefined)
+    mocks.proceed.mockResolvedValue({ authorizeUrl: 'https://login.example.test/authorize' })
+    await land(`admin_consent=True&tenant=tenant-1&state=${STATE}`)
+    expect(mocks.proceed).toHaveBeenCalledWith('org-a', STATE)
+    expect(assign).toHaveBeenCalledWith('https://login.example.test/authorize')
+    expect(mocks.finish).not.toHaveBeenCalled()
+    await act(async () => root.unmount())
+    root = createRoot(host)
+    // A declined consent names an administrator, and continues nothing.
+    await land(`error=access_denied&state=${STATE}`)
+    expect(host.textContent).toContain('needs an administrator')
+    expect(mocks.proceed).toHaveBeenCalledTimes(1)
+    assign.mockRestore()
+  })
+
+  it('creates a further agent’s own bot while the teams are chosen, and installs once it exists', async () => {
+    const teams = [
+      { id: 'team-1', name: 'Engineering', app: 'none' },
+      { id: 'team-2', name: 'Support', app: 'none' }
+    ]
+    mocks.finish.mockResolvedValue({ agentId: 'agent-a', agentBot: true, teams, ticket: 'provision', store: false })
+    let made!: (value: unknown) => void
+    mocks.agentBot.mockReturnValue(new Promise((resolve) => (made = resolve)))
+    mocks.install.mockResolvedValue({ installed: 1 })
+    await land(`code=c&state=${STATE}`)
+    expect(mocks.agentBot).toHaveBeenCalledWith('org-a', 'provision')
+    expect(host.textContent).toContain('Creating the agent’s bot')
+    expect(host.textContent).toContain('gets a bot of its own')
+    expect(button('Add to teams').disabled).toBe(true)
+    await act(async () => button('Add to teams').click())
+    expect(mocks.install).not.toHaveBeenCalled()
+
+    await act(async () => made({ integrationId: 'int-2', agentId: 'agent-a', teams, ticket: 'install', store: false }))
+    expect(host.textContent).not.toContain('Creating the agent’s bot')
+    await act(async () => button('Add to teams').click())
+    expect(mocks.install).toHaveBeenCalledWith('org-a', 'install', ['team-1'])
+    expect(host.textContent).toContain('Teams is connected')
+  })
+
+  it('names why a further agent’s bot was not created', async () => {
+    mocks.finish.mockResolvedValue({ agentId: 'agent-a', agentBot: true, teams: [], ticket: 'provision', store: false })
+    mocks.agentBot.mockRejectedValue(new mocks.FakeApiError('no', 409, 'MSTEAMS_AGENT_BOTS_UNAVAILABLE'))
+    await land(`code=c&state=${STATE}`)
+    expect(host.textContent).toContain('did not let this deployment create a bot')
+    await act(async () => root.unmount())
+    root = createRoot(host)
+    mocks.finish.mockRejectedValue(new mocks.FakeApiError('taken', 409, 'MSTEAMS_AGENT_NAME_TAKEN'))
+    await land(`code=c&state=${STATE}`)
+    expect(host.textContent).toContain('under this name')
   })
 
   it('names a refusal, and a sign-in Microsoft sent back without a code', async () => {

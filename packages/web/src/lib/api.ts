@@ -5737,8 +5737,11 @@ export async function startMsTeamsConnect(
   })
 }
 export interface MsTeamsConnectResultDto {
-  integrationId: string
+  /** Absent while the agent's own bot is still to be created. */
+  integrationId?: string
   agentId: string
+  /** The tenant already serves another agent: `ticket` goes to {@link createMsTeamsAgentBot}, which answers the install step's. */
+  agentBot?: boolean
   /** `app`: updated to the published package, not installed, or not updated (the package stays pending). */
   teams: { id: string; name: string; app: 'updated' | 'none' | 'failed' }[]
   /** Absent for a Teams Store install, which has no install step. */
@@ -5752,6 +5755,14 @@ export async function finishMsTeamsConnect(
   state: string
 ): Promise<MsTeamsConnectResultDto> {
   return apiPost<MsTeamsConnectResultDto>(`${orgBase(orgId)}/integrations/msteams/connect/callback`, { code, state })
+}
+/** After the tenant-wide consent Microsoft returns the state and no code: answers the sign-in that follows. */
+export async function continueMsTeamsConnect(orgId: string, state: string): Promise<{ authorizeUrl: string }> {
+  return apiPost<{ authorizeUrl: string }>(`${orgBase(orgId)}/integrations/msteams/connect/consented`, { state })
+}
+/** Create a further agent's own bot, publish its package and install its row; safe to repeat. */
+export async function createMsTeamsAgentBot(orgId: string, ticket: string): Promise<MsTeamsConnectResultDto> {
+  return apiPost<MsTeamsConnectResultDto>(`${orgBase(orgId)}/integrations/msteams/connect/agent-bot`, { ticket })
 }
 /** Install the connected app into the chosen teams. */
 export async function installMsTeamsTeams(
