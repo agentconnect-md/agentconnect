@@ -69,6 +69,8 @@ export interface MsTeamsConnectState {
   agentBots?: boolean
   /** The state of the tenant-wide consent that precedes the sign-in (§8.6.5); it redeems no code. */
   consent?: boolean
+  /** The sign-in follows a tenant-wide consent an administrator just accepted, which the tenant's row then records. */
+  consented?: boolean
   /** A member's sign-in, which submits the agent's package for the administrator's approval (§8.6.6). */
   member?: boolean
   /** The waiting request an administrator signs in to approve (§8.6.6). */
@@ -98,6 +100,7 @@ const StatePayload = z.object({
   tenant: z.string().regex(GUID).optional(),
   agentBots: z.boolean().optional(),
   consent: z.boolean().optional(),
+  consented: z.boolean().optional(),
   member: z.boolean().optional(),
   approve: z.string().optional(),
   e: z.number(),
@@ -129,6 +132,7 @@ export function verifyMsTeamsConnectState(
     ...(parsed.tenant ? { tenant: parsed.tenant } : {}),
     ...(parsed.agentBots ? { agentBots: true } : {}),
     ...(parsed.consent ? { consent: true } : {}),
+    ...(parsed.consented ? { consented: true } : {}),
     ...(parsed.member ? { member: true } : {}),
     ...(parsed.approve ? { approve: parsed.approve } : {})
   }

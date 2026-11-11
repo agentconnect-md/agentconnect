@@ -1180,12 +1180,16 @@ The administrator's flow of §8.3 with these differences:
 
 1. **Sign-in.** The scopes of §8.3 plus `AppCatalog.Submit` and
    `AgentIdentityBlueprintPrincipal.Create`, and the consent is asked
-   **tenant-wide**, so that members can add agents later (§8.6.6). Every
-   administrator connect asks this way, the tenant's first included; a tenant
-   connected before this change sees Entra's consent page once more. Entra's
+   **tenant-wide**, so that members can add agents later (§8.6.6). Entra's
    tenant-wide consent endpoint names the scopes, `offline_access` among them,
    and returns no code, so the connect page goes on to the sign-in at once: two
-   redirects, of which the second asks nothing.
+   redirects. That endpoint shows its page on every visit, accepted before or
+   not (**measured**), so the consent is asked once per tenant: the sign-in that
+   follows it records `platformConfig.tenantConsent` on the tenant's row, and
+   an organization that holds such a row signs in directly from then on. A
+   sign-in that skipped the page and turns out to be of a tenant with no record
+   answers `MSTEAMS_CONSENT_NEEDED`, and the connect page starts again through
+   the consent. A tenant connected before this change sees the page once more.
 2. **The blueprint's principal** is created with the administrator's token if
    the tenant has none. The first connect creates it too.
 3. **The agent identity** is created by the blueprint with the agent's name

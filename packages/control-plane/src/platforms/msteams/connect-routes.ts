@@ -64,6 +64,7 @@ import {
 import {
   MSTEAMS_DEPLOYMENT_OWNER,
   MSTEAMS_ROW_OWNER_KEY,
+  MSTEAMS_TENANT_CONSENT_KEY,
   isMsTeamsDeploymentRow,
   msTeamsAgentBotEntries,
   msTeamsAgentBotOf,
@@ -104,6 +105,8 @@ const NAME_TAKEN_MESSAGE = (holder: string) =>
 const AGENT_BOTS_UNAVAILABLE_MESSAGE = (reason: string) =>
   `Microsoft did not let this deployment create a bot for this agent in your Microsoft 365 organization (${reason}). Agents already connected are unaffected.`
 const APPROVE_TENANT_MESSAGE = 'Sign in with an administrator of the Microsoft 365 organization the request is for.'
+const CONSENT_NEEDED_MESSAGE =
+  'An administrator of this Microsoft 365 organization has to approve the app for the organization first.'
 const NOT_CONNECTED_MESSAGE =
   'Your Microsoft 365 organization is not connected here yet. A Teams or Global administrator has to connect it first.'
 const ALREADY_CONNECTED_MESSAGE =
@@ -122,6 +125,12 @@ const ConnectBody = z.object({
     .optional()
     .describe(
       'The tenant a Teams Store install named on its Connect card: the sign-in must be of it, asks only to read the profile, and publishes and installs nothing.'
+    ),
+  consent: z
+    .boolean()
+    .optional()
+    .describe(
+      'True to ask the tenant-wide consent even where a tenant of the organization recorded it: the connect page sends it after a sign-in of another tenant answered 409 MSTEAMS_CONSENT_NEEDED.'
     ),
   member: z
     .boolean()
@@ -361,8 +370,15 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
             })
           }
         }
-        // With agent bots every administrator connect first asks the tenant-wide consent (§8.6.5); a Store install only proves its tenant.
-        const consent = Boolean(agentBotClient) && !tenant
+        // With agent bots an administrator connect asks the tenant-wide consent first (§8.6.5), once: an organization whose tenant recorded it signs in directly. A Store install only proves its tenant.
+        const agentBots = Boolean(agentBotClient) && !tenant
+        const recorded =
+          agentBots &&
+          !req.body.consent &&
+          (await deps.repos.bot.listForOrg(orgOf(req))).some(
+            (row) => row.platform === MSTEAMS_PLATFORM && !!row.platformConfig?.[MSTEAMS_TENANT_CONSENT_KEY]
+          )
+        const consent = agentBots && !recorded
         const state = mintMsTeamsConnectState(
           seams.keys,
           {
@@ -370,7 +386,8 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
             agentId: target.id,
             userId: req.principal.userId,
             ...(tenant ? { tenant } : {}),
-            ...(consent ? { agentBots: true, consent: true } : {})
+            ...(agentBots ? { agentBots: true } : {}),
+            ...(consent ? { consent: true } : {})
           },
           deps.clock
         )
@@ -382,7 +399,8 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
                 clientId: live.app.appId,
                 redirectUri,
                 state,
-                ...(tenant ? { tenant } : {})
+                ...(tenant ? { tenant } : {}),
+                ...(agentBots ? { agentBots: true } : {})
               })
         }
       }
@@ -417,7 +435,13 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
         }
         const state = mintMsTeamsConnectState(
           seams.keys,
-          { orgId: consented.orgId, agentId: consented.agentId, userId: consented.userId, agentBots: true },
+          {
+            orgId: consented.orgId,
+            agentId: consented.agentId,
+            userId: consented.userId,
+            agentBots: true,
+            consented: true
+          },
           deps.clock
         )
         return {
@@ -573,6 +597,14 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
             })
           if (before.some((row) => row.orgId !== orgId)) return taken()
           const held = before.find((row) => row.externalAppId === live.app.appId)
+          // A sign-in that skipped the consent page is for a tenant that recorded it; another tenant of the organization goes back through it.
+          if (
+            state.agentBots &&
+            !state.consented &&
+            !before.some((row) => !!row.platformConfig?.[MSTEAMS_TENANT_CONSENT_KEY])
+          )
+            return refuse(reply, 409, 'MSTEAMS_CONSENT_NEEDED', CONSENT_NEEDED_MESSAGE)
+          const consentRecord = { platformConfig: { [MSTEAMS_TENANT_CONSENT_KEY]: '1' } }
           const servesAnother = !!held && held.agentIds.length > 0 && !held.agentIds.includes(target.id)
           // The app's bot serves the agent connected first; a further agent gets a bot of its own where the deployment makes them (§8.6.4), and keeps it on a reconnect.
           if (
@@ -584,6 +616,7 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
             if (!agentBots || !sponsorId) return refuse(reply, 409, 'MSTEAMS_TENANT_IN_USE', IN_USE_MESSAGE)
             const holder = await nameHolder(deps, orgId, tenantId, target)
             if (holder) return refuse(reply, 409, 'MSTEAMS_AGENT_NAME_TAKEN', NAME_TAKEN_MESSAGE(holder))
+            if (state.consented && held) await deps.repos.bot.mergeBotIdentity(orgId, held.id, () => consentRecord)
             // Making the bot takes up to most of a minute, so it is its own step and the teams are answered first (§8.6.5).
             const teams = await listMsTeamsTeams(fetchImpl, accessToken)
             return {
@@ -707,6 +740,7 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
             return { integrationId, botId }
           })
           const { integrationId, botId } = connected
+          if (state.consented && botId) await deps.repos.bot.mergeBotIdentity(orgId, botId, () => consentRecord)
 
           if (!catalogAppId) {
             // The Store keeps the package current; recording the source keeps Update in Teams off its row.

@@ -306,6 +306,7 @@ async function harness(
       tenant: string
       agentBots: boolean
       consent: boolean
+      consented: boolean
       member: boolean
       approve: string
     }> = {}
@@ -549,6 +550,29 @@ describe('a deployment that makes agent bots (§8.6)', () => {
   const further = (over: Parameters<typeof harness>[0] = {}) =>
     harness({ agentBots: true, held: HELD, agentNames: { [OTHER_AGENT]: 'Reviewer' }, ...over })
 
+  it('skips the consent page for an organization whose tenant recorded it, and sends another tenant back through it', async () => {
+    const CONSENTED = { ...HELD, platformConfig: { appOwner: 'deployment', tenantConsent: '1' } } as Partial<BotRecord>
+    const h = await further({ held: CONSENTED })
+    const direct = new URL((await h.post('', { agentId: AGENT })).json<{ authorizeUrl: string }>().authorizeUrl)
+    expect(direct.pathname).toBe('/organizations/oauth2/v2.0/authorize')
+    expect(direct.searchParams.get('scope')).toContain('AppCatalog.Submit')
+    expect(direct.searchParams.get('prompt')).toBe('select_account')
+    expect((await h.callback(direct.searchParams.get('state')!)).json()).toMatchObject({ agentBot: true })
+    // Nothing more is recorded for a tenant that already has it.
+    expect(h.recorded).toEqual([])
+    const forced = new URL(
+      (await h.post('', { agentId: AGENT, consent: true })).json<{ authorizeUrl: string }>().authorizeUrl
+    )
+    expect(forced.pathname).toBe('/organizations/v2.0/adminconsent')
+
+    // The administrator signed in to a tenant with no record: the page starts again with the consent.
+    const other = await further()
+    const refused = await other.callback(other.state({ agentBots: true }))
+    expect(refused.statusCode).toBe(409)
+    expect(refused.json()).toMatchObject({ code: 'MSTEAMS_CONSENT_NEEDED' })
+    expect(other.recorded).toEqual([])
+  })
+
   it('asks the tenant-wide consent first, then the sign-in with the agent bots’ scopes', async () => {
     const h = await harness({ agentBots: true })
     const consent = new URL((await h.post('', { agentId: AGENT })).json<{ authorizeUrl: string }>().authorizeUrl)
@@ -589,18 +613,18 @@ describe('a deployment that makes agent bots (§8.6)', () => {
 
   it('creates the blueprint’s principal at a tenant’s first connect, which stands without it', async () => {
     const h = await harness({ agentBots: true, noPrincipal: true })
-    expect((await h.callback(h.state({ agentBots: true }))).statusCode).toBe(200)
+    expect((await h.callback(h.state({ agentBots: true, consented: true }))).statusCode).toBe(200)
     expect(h.order).toContain('principal')
     expect(h.create).toHaveBeenCalledWith(expect.objectContaining({ externalAppId: APP.appId }))
 
     const refused = await harness({ agentBots: true, noPrincipal: true, principal: 403 })
-    expect((await refused.callback(refused.state({ agentBots: true }))).statusCode).toBe(200)
+    expect((await refused.callback(refused.state({ agentBots: true, consented: true }))).statusCode).toBe(200)
     expect(refused.create).toHaveBeenCalledTimes(1)
   })
 
   it('gives a further agent a bot of its own: the teams first, then the bot, its package and its row', async () => {
     const h = await further({ noPrincipal: true })
-    const first = await h.callback(h.state({ agentBots: true }))
+    const first = await h.callback(h.state({ agentBots: true, consented: true }))
     expect(first.statusCode).toBe(200)
     expect(first.json()).toMatchObject({
       agentId: AGENT,
@@ -613,8 +637,9 @@ describe('a deployment that makes agent bots (§8.6)', () => {
     })
     expect(first.json()).not.toHaveProperty('integrationId')
     expect(JSON.stringify(first.json())).not.toContain('delegated')
-    // Nothing is made or written before the agent-bot step.
-    expect(h.order).toEqual([])
+    // Nothing is made before the agent-bot step; the tenant's row only records the consent just accepted.
+    expect(h.order).toEqual(['record'])
+    expect(h.recorded).toEqual([{ tenantConsent: '1' }])
     expect(h.create).not.toHaveBeenCalled()
 
     const made = await h.post('/agent-bot', { ticket: first.json<{ ticket: string }>().ticket })
@@ -622,7 +647,7 @@ describe('a deployment that makes agent bots (§8.6)', () => {
     expect(made.json()).toMatchObject({ agentId: AGENT, store: false, teams: [{ app: 'none' }, { app: 'none' }] })
     expect(typeof made.json<{ integrationId: string }>().integrationId).toBe('string')
     // The principal, the identity, the registration and its channel, the proof, then the catalog, the row and its package.
-    expect(h.order).toEqual([
+    expect(h.order.slice(1)).toEqual([
       `token ${AGENT_BOTS.blueprintId}`,
       'principal',
       `token ${AGENT_BOTS.blueprintId}`,
@@ -675,7 +700,7 @@ describe('a deployment that makes agent bots (§8.6)', () => {
       agentBotRow: { id: BOT, externalAppId: IDENTITY },
       installedIn: ['team-1']
     })
-    const first = await h.callback(h.state({ agentBots: true }))
+    const first = await h.callback(h.state({ agentBots: true, consented: true }))
     const again = await h.post('/agent-bot', { ticket: first.json<{ ticket: string }>().ticket })
     expect(again.statusCode).toBe(200)
     expect(h.order).not.toContain('principal')
@@ -693,12 +718,14 @@ describe('a deployment that makes agent bots (§8.6)', () => {
       platformConfig: { appOwner: 'deployment', agentBotBlueprintId: AGENT_BOTS.blueprintId, agentBotResourceName: 'x' }
     } as Partial<BotRecord>
     const h = await harness({ agentBots: true, rows: [own] })
-    const res = await h.callback(h.state({ agentBots: true }))
+    const res = await h.callback(h.state({ agentBots: true, consented: true }))
     expect(res.json()).toMatchObject({ agentBot: true })
     expect(h.create).not.toHaveBeenCalled()
     // Another agent of the same tenant takes the app's bot, which is free.
     const other = await harness({ agentBots: true, rows: [{ ...own, agentIds: [OTHER_AGENT] }] })
-    expect((await other.callback(other.state({ agentBots: true }))).json()).not.toHaveProperty('agentBot')
+    expect((await other.callback(other.state({ agentBots: true, consented: true }))).json()).not.toHaveProperty(
+      'agentBot'
+    )
     expect(other.create).toHaveBeenCalledWith(expect.objectContaining({ externalAppId: APP.appId }))
   })
 
@@ -706,22 +733,24 @@ describe('a deployment that makes agent bots (§8.6)', () => {
     const unasked = await further()
     expect((await unasked.callback()).json()).toMatchObject({ code: 'MSTEAMS_TENANT_IN_USE' })
     const unnamed = await further({ oid: null })
-    expect((await unnamed.callback(unnamed.state({ agentBots: true }))).json()).toMatchObject({
+    expect((await unnamed.callback(unnamed.state({ agentBots: true, consented: true }))).json()).toMatchObject({
       code: 'MSTEAMS_TENANT_IN_USE'
     })
     // Entra leaves the object ID out of an ID token that did not ask the profile scope; Graph names the sponsor then.
     const asked = await further({ oid: null, me: SPONSOR })
-    expect((await asked.callback(asked.state({ agentBots: true }))).json()).toMatchObject({ agentBot: true })
+    expect((await asked.callback(asked.state({ agentBots: true, consented: true }))).json()).toMatchObject({
+      agentBot: true
+    })
   })
 
   it('refuses a further agent whose name another agent already has in the tenant, naming it', async () => {
     const h = await further({ agentNames: { [AGENT]: 'Helper', [OTHER_AGENT]: ' helper ' } })
-    const res = await h.callback(h.state({ agentBots: true }))
+    const res = await h.callback(h.state({ agentBots: true, consented: true }))
     expect(res.statusCode).toBe(409)
     expect(res.json()).toMatchObject({ code: 'MSTEAMS_AGENT_NAME_TAKEN' })
     expect(res.json<{ message: string }>().message).toContain('helper')
     const distinct = await further({ agentNames: { [AGENT]: 'Helper', [OTHER_AGENT]: 'Reviewer' } })
-    expect((await distinct.callback(distinct.state({ agentBots: true }))).statusCode).toBe(200)
+    expect((await distinct.callback(distinct.state({ agentBots: true, consented: true }))).statusCode).toBe(200)
   })
 
   it('keeps a tenant with one organization, whichever of its rows another organization holds', async () => {
@@ -729,7 +758,9 @@ describe('a deployment that makes agent bots (§8.6)', () => {
       agentBots: true,
       rows: [{ orgId: OTHER_ORG, externalTenantId: CUSTOMER, platformConfig: { appOwner: 'deployment' } }]
     })
-    expect((await h.callback(h.state({ agentBots: true }))).json()).toMatchObject({ code: 'MSTEAMS_TENANT_TAKEN' })
+    expect((await h.callback(h.state({ agentBots: true, consented: true }))).json()).toMatchObject({
+      code: 'MSTEAMS_TENANT_TAKEN'
+    })
     expect(h.create).not.toHaveBeenCalled()
     // Another organization's own bot in the tenant claims nothing.
     const own = await harness({ rows: [{ orgId: OTHER_ORG, externalTenantId: CUSTOMER, platformConfig: {} }] })
@@ -738,7 +769,7 @@ describe('a deployment that makes agent bots (§8.6)', () => {
 
   it('answers Microsoft’s reason when the bot cannot be created, and writes nothing', async () => {
     const h = await further({ identity: 403 })
-    const first = await h.callback(h.state({ agentBots: true }))
+    const first = await h.callback(h.state({ agentBots: true, consented: true }))
     const refused = await h.post('/agent-bot', { ticket: first.json<{ ticket: string }>().ticket })
     expect(refused.statusCode).toBe(409)
     expect(refused.json()).toMatchObject({ code: 'MSTEAMS_AGENT_BOTS_UNAVAILABLE' })
@@ -747,13 +778,14 @@ describe('a deployment that makes agent bots (§8.6)', () => {
     expect(h.create).not.toHaveBeenCalled()
 
     const down = await further({ identity: 503 })
-    const pending = await down.callback(down.state({ agentBots: true }))
+    const pending = await down.callback(down.state({ agentBots: true, consented: true }))
     expect((await down.post('/agent-bot', { ticket: pending.json<{ ticket: string }>().ticket })).statusCode).toBe(502)
   })
 
   it('takes each ticket only at its own step, from the person it was sealed for', async () => {
     const h = await further()
-    const provision = (await h.callback(h.state({ agentBots: true }))).json<{ ticket: string }>().ticket
+    const provision = (await h.callback(h.state({ agentBots: true, consented: true }))).json<{ ticket: string }>()
+      .ticket
     expect((await h.post('/install', { ticket: provision, teamIds: ['team-1'] })).statusCode).toBe(400)
     const made = (await h.post('/agent-bot', { ticket: provision })).json<{ ticket: string }>().ticket
     expect((await h.post('/agent-bot', { ticket: made })).statusCode).toBe(400)
@@ -933,7 +965,7 @@ describe('a member who is not an administrator (§8.6.6)', () => {
     const ticket = (await signIn(h)).json<{ ticket: string }>().ticket
     expect((await h.post('/agent-bot', { ticket })).statusCode).toBe(400)
     expect((await h.post('/install', { ticket, teamIds: ['team-1'] })).statusCode).toBe(400)
-    const admin = (await h.callback(h.state({ agentBots: true }))).json<{ ticket: string }>().ticket
+    const admin = (await h.callback(h.state({ agentBots: true, consented: true }))).json<{ ticket: string }>().ticket
     expect((await h.post('/request', { ticket: admin, teamIds: [] })).statusCode).toBe(400)
   })
 })
