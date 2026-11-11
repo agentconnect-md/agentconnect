@@ -721,7 +721,8 @@ describe('a Slack coordinator’s page in Slack’s shape (webchat-threads.md §
     await click('[data-reply-in-thread]')
     const panel = q(`[data-thread-panel="${ROOT_TS}"]`)
     expect(panel?.querySelector('[data-thread-composer]')).not.toBeNull()
-    expect(panel?.textContent).toContain('Posted in the Slack thread under your name; the coordinator answers there')
+    expect(panel?.querySelector('[data-task-thread-hint]')).toBeNull()
+    expect(panel?.querySelector('[data-task-thread-attach]')).not.toBeNull()
   })
 
   it('offers no Reply in thread on a Slack root where the daemon cannot continue a coordinator in its threads', async () => {

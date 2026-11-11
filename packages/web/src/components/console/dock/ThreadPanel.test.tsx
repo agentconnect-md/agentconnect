@@ -991,7 +991,8 @@ describe('ThreadPanel on a Slack thread’s record (webchat-threads.md §7)', ()
     const link = panel.querySelector<HTMLAnchorElement>('[data-thread-platform-link]')
     expect(link?.getAttribute('href')).toBe(props.threadUrl)
     expect(link?.getAttribute('aria-label')).toBe('Open in Slack')
-    expect(panel.textContent).toContain('Posted in the Slack thread under your name')
+    expect(panel.querySelector('[data-task-thread-hint]')).toBeNull()
+    expect(panel.querySelector('[data-task-thread-attach]')).not.toBeNull()
     act(() => {
       panel
         .querySelector<HTMLTextAreaElement>('textarea')!
@@ -1020,7 +1021,8 @@ describe('ThreadPanel on a Slack thread’s record (webchat-threads.md §7)', ()
     wire.drafts['ses_coordinator#post-root'] = 'and the cache?'
     await render()
     const panel = container.querySelector('[data-thread-panel="post-root"]')!
-    expect(panel.textContent).toContain('Posted in the Slack thread under your name; the coordinator answers there')
+    expect(panel.querySelector('[data-task-thread-hint]')).toBeNull()
+    expect(panel.querySelector('[data-task-thread-attach]')).not.toBeNull()
     act(() => {
       panel
         .querySelector<HTMLTextAreaElement>('textarea')!
@@ -1039,7 +1041,8 @@ describe('ThreadPanel on a Slack thread’s record (webchat-threads.md §7)', ()
     wire.drafts.ses_task = 'try a warm cache'
     await render()
     const panel = container.querySelector('[data-thread-panel="post-root"]')!
-    expect(panel.textContent).toContain('the task holding it answers there')
+    expect(panel.querySelector('[data-task-thread-hint]')).toBeNull()
+    expect(panel.querySelector('[data-task-thread-attach]')).not.toBeNull()
     act(() => {
       panel
         .querySelector<HTMLTextAreaElement>('textarea')!
@@ -1181,7 +1184,8 @@ describe('ThreadPanel for the conversation’s owner (webchat-threads.md §6.3)'
     const panel = container.querySelector('[data-thread-panel="post-root"]')!
     const box = panel.querySelector<HTMLTextAreaElement>('[data-thread-composer]')!
     expect(box.getAttribute('placeholder')).toBe('Reply in the thread')
-    expect(panel.querySelector('[data-task-thread-hint]')?.textContent).toBe('The coordinator answers in this thread')
+    expect(panel.querySelector('[data-task-thread-hint]')).toBeNull()
+    expect(panel.querySelector('[data-task-thread-attach]')).not.toBeNull()
     // Reply in thread hands the caret to the box.
     expect(document.activeElement).toBe(box)
     expect(panel.textContent).toContain('is it the lockfile?')
@@ -1215,9 +1219,8 @@ describe('ThreadPanel for the conversation’s owner (webchat-threads.md §6.3)'
     await render()
     const panel = container.querySelector('[data-thread-panel="post-root"]')!
     expect(panel.getAttribute('data-task-thread')).toBe('ses_task')
-    expect(panel.querySelector('[data-task-thread-hint]')?.textContent).toBe(
-      'The task holding this thread answers here'
-    )
+    expect(panel.querySelector('[data-task-thread-hint]')).toBeNull()
+    expect(panel.querySelector('[data-task-thread-attach]')).not.toBeNull()
     // The turn the owner sent in this thread is running.
     expect(panel.textContent).toContain('deploy-bot is working…')
     expect(seen).toEqual([summary])

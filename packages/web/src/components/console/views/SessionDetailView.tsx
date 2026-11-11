@@ -748,9 +748,6 @@ const HEADER_CHIP_BASE =
 const HEADER_CHIP_LINK = `${HEADER_CHIP_BASE} text-(--text-link) no-underline transition-colors hover:bg-(--surface-hover)`
 const HEADER_CHIP = `${HEADER_CHIP_BASE} text-(--text-secondary)`
 
-/** The side panel is at least this wide while it shows a task's thread. */
-const TASK_PANEL_MIN_WIDTH = 420
-
 /** The dock's tabs. PR / Tasks are each one more entry (§9), not a stub; Sessions' §1 `plus` action awaits a new-session flow. */
 const DOCK_TABS: DockTab[] = [
   { key: 'sessions', label: 'Sessions', icon: 'messages-square' },
@@ -4654,7 +4651,6 @@ export default function SessionDetailView() {
         label={t('panels')}
         onVisibleChange={setDockVisible}
         stripHidden={dockTabKey === 'tasks' && threadOpen}
-        widthFloor={threadOpen ? TASK_PANEL_MIN_WIDTH : 0}
       >
         {/* Both panels stay mounted; only the active one draws. Sessions owns the verdict that sets its own tab status, and Files owns the tree, the filter and the scroll position a tab switch must not spend. */}
         <DockPanel active={dockTabKey === 'sessions'}>

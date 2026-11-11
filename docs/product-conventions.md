@@ -1475,8 +1475,8 @@ conversation. The coordinator's turns stay in the main conversation; one that an
 thread says "In thread:" and the root's first words, and an answer the coordinator posted in a thread
 shows as one line, "Answered in the thread". The footer, that label, that line, or Reply in thread
 on a hovered root opens the thread beside the conversation, and the conversation's address names it
-with `?thread=`. There the owner reads the whole thread and writes in it, whether a task holds it or
-not. On a desktop, a thread whose first reply starts while the owner watches opens by itself; on a
+with `?thread=`, without changing the dock's chosen width. There the owner reads the whole thread and
+writes in it, whether a task holds it or not. On a desktop, a thread whose first reply starts while the owner watches opens by itself; on a
 phone the thread opens in the bottom sheet from its footer or from a long press on the root, and
 nothing opens by itself. A task's own page shrinks back into its first thread.
 

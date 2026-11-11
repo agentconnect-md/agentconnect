@@ -186,7 +186,6 @@ export function SessionDock({
   onVisibleChange,
   stripHidden = false,
   suppressed = false,
-  widthFloor = 0,
   children
 }: {
   /** The strip, in order. The dock does not sort, filter or hide them. */
@@ -210,8 +209,6 @@ export function SessionDock({
   stripHidden?: boolean
   /** Something covers the page (an expanded task): the drawer closes and its floating trigger steps aside. */
   suppressed?: boolean
-  /** The narrowest the panel draws while its content needs the room (a task's thread); the stored preference is untouched. */
-  widthFloor?: number
   /** The active panel. A function receives the live rendered width, for a body that lays out differently at 380px than at 760px. */
   children: ReactNode | ((width: number) => ReactNode)
 }) {
@@ -226,7 +223,7 @@ export function SessionDock({
   // In the bottom sheet the panel's rendered width is the VIEWPORT's, which both the label rule and the resize handle have to know.
   const isMobile = useIsMobile()
   // The rendered width, and the only one anything below here sees: a 700px preference yields to the transcript on a 1366px laptop.
-  const width = fitDockWidth(Math.max(preferred ?? DOCK_WIDTH_DEFAULT, widthFloor), viewportWidth)
+  const width = fitDockWidth(preferred ?? DOCK_WIDTH_DEFAULT, viewportWidth)
   const [dragging, setDragging] = useState(false)
   // Below `wide:` this latch is the ONLY visibility source: hover does not follow width, and a CSS reveal would fight `aria-expanded`.
   const [open, setOpen] = useState(false)
