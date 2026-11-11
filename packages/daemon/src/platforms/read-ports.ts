@@ -227,6 +227,7 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
     }
   ],
   ['wechat', { platform: 'wechat', label: 'WeChat', attachmentReadTool: WECHAT_ATTACHMENT_TOOL }],
+  ['wecom', { platform: 'wecom', label: 'WeCom' }],
   [
     'discord',
     {

@@ -14,6 +14,7 @@ import { QQCommandChrome } from '../src/platforms/qq/command-chrome.js'
 import { linearCommandChrome } from '../src/platforms/linear/command-chrome.js'
 import { msTeamsCommandChrome } from '../src/platforms/msteams/command-chrome.js'
 import { weChatCommandChrome } from '../src/platforms/wechat/command-chrome.js'
+import { weComCommandChrome } from '../src/platforms/wecom/command-chrome.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 
 const ctx = { channel: 'C1', replyThread: '1700000000.001', sessionKey: 'k1' }
@@ -137,9 +138,20 @@ describe('out-of-turn notices (§7.4 notice)', () => {
       msTeamsCommandChrome,
       dingTalkCommandChrome,
       QQCommandChrome,
-      linearCommandChrome
+      linearCommandChrome,
+      weComCommandChrome
     ])
       expect(surface.notice).toBeTypeOf('function')
+  })
+
+  it('wecom posts a Markdown message into the conversation, and rejects a send WeCom did not accept', async () => {
+    const sendText = vi.fn(async (): Promise<boolean> => true)
+    await weComCommandChrome.notice!({ sendText }, 'chat-example-group', 'group', 'a', msg)
+    expect(sendText).toHaveBeenCalledWith('chat-example-group', 'a')
+    sendText.mockResolvedValueOnce(false)
+    await expect(weComCommandChrome.notice!({ sendText }, 'chat-example-group', 'group', 'b', msg)).rejects.toThrow()
+    expect(weComCommandChrome.threadIdentifiesSession).toBe(false)
+    expect(weComCommandChrome.stopLatchesMute).toBeUndefined()
   })
 
   it('google chat posts into a Space thread, and at the top of a DM whose thread is the Space itself', async () => {

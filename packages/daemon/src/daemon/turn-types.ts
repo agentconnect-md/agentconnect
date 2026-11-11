@@ -27,6 +27,7 @@ import type { DingTalkAction, DingTalkConverger } from '../platforms/dingtalk/tu
 import type { GoogleChatAction, GoogleChatConverger } from '../platforms/googlechat/turn-output.js'
 import type { MsTeamsAction, MsTeamsConverger } from '../platforms/msteams/turn-output.js'
 import type { WeChatAction, WeChatConverger } from '../platforms/wechat/turn-output.js'
+import type { WeComAction, WeComConverger } from '../platforms/wecom/turn-output.js'
 import type { PlatformConnection } from '../platforms/connection-reconciler.js'
 import type { TurnAcknowledgement } from '../platforms/turn-output.js'
 import type { SlackConnection } from '../slack/connection.js'
@@ -511,6 +512,7 @@ export type DaemonRenderAction =
   | GoogleChatAction
   | MsTeamsAction
   | WeChatAction
+  | WeComAction
 export type DaemonConverger =
   | QQConverger
   | DingTalkConverger
@@ -522,6 +524,7 @@ export type DaemonConverger =
   | GoogleChatConverger
   | MsTeamsConverger
   | WeChatConverger
+  | WeComConverger
 
 /**
  * §7.3 per-turn platform state. Each shape is owned by exactly one turn-output

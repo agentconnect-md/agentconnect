@@ -69,7 +69,9 @@ const CONNECTION_IDENTITY = new Map<string, (integration: Integration) => string
   // The bot's app ID survives a secret rotation; Entra IDs compare case-insensitively.
   ['msteams', (int) => platformIntegrationConfig('msteams', int)?.appId.toLowerCase()],
   // The bot id names one QR binding; its token changes only with a re-scan.
-  ['wechat', (int) => platformIntegrationConfig('wechat', int)?.botId]
+  ['wechat', (int) => platformIntegrationConfig('wechat', int)?.botId],
+  // The BotID survives a Secret reset and names one organization's smart bot.
+  ['wecom', (int) => platformIntegrationConfig('wecom', int)?.botId]
 ])
 
 /** The credential string identifying `integration`'s physical connection —
@@ -97,6 +99,8 @@ const LIVE_TENANT_SCOPE = new Set(['slack'])
 const TENANT_SCOPE = new Map<string, (host: TenantScopeHost, integration: Integration) => Promise<string | undefined>>([
   ['qq', async (_host, int) => platformIntegrationConfig('qq', int)?.appId],
   ['dingtalk', async (_host, int) => platformIntegrationConfig('dingtalk', int)?.clientId],
+  // The BotID names one organization's smart bot and survives a Secret reset.
+  ['wecom', async (host, int) => platformIntegrationConfig('wecom', int)?.botId ?? (await host.minted(int.id))],
   // A re-scan mints a new bot id but keeps ilink_user_id, so the owner is `wechat:ilink:<ilink_user_id>` (wechat-integration.md §4.2).
   ['wechat', async (host, int) => (platformIntegrationConfig('wechat', int) ? 'ilink' : await host.minted(int.id))],
   // The auth.test workspace id; a not-yet-authenticated connection falls back to the minted scope rather than throw.
