@@ -3941,7 +3941,8 @@ people:
 
 - its status (running, idle, waiting, or its next check in UTC);
 - its kind (task, follow-up, approved proposal);
-- its title, cut to the board's 80 characters, with Markdown in it shown as text;
+- its title, cut to the board's 80 characters, with Markdown in it shown as text, linking the task's
+  own session in the console, which opens for whoever may see that session;
 - who asked, as a mention;
 - a link to the thread it was last asked in (`replyThread`).
 
@@ -4022,7 +4023,10 @@ and pinned as a channel bookmark (`bookmarks.add`). A canvas that cannot be shar
 deleted again, and the next change starts over. Where a standalone canvas cannot be made (a free
 workspace creates only a channel's own canvas), the page uses the channel canvas when the channel
 has none, and the channel gets no page otherwise. The installation already holds
-`canvases:write` and `bookmarks:write`.
+`canvases:write` and `bookmarks:write`. The canvas is titled "<agent> · #<channel>", since Slack
+also lists it in Files and search, away from its channel; the bookmark is "<agent>'s work", since
+inside the channel only whose work it is needs saying. An agent or channel renamed later renames
+both on the page's next write.
 
 **The seam.** Core composes a structured page (`WorkPage`: tasks, schedules, a count past the
 limit, the console link) and decides when to write. `PlatformConnection.putWorkPage` and

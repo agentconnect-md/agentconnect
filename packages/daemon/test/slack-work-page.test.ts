@@ -5,6 +5,7 @@ import { SlackConnection } from '../src/slack/connection.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 const PAGE: WorkPage = {
+  agentName: 'Butler',
   tasks: [
     { kind: 'follow-up', status: 'waiting', title: 'Tell Alice when 2.9 is tagged', thread: '1761980000.000100' }
   ],
@@ -26,6 +27,7 @@ async function fixture(channel: Record<string, unknown> = { id: 'C0ENG', name: '
   } as never)
   const bookmark = vi.spyOn(app.client.bookmarks, 'add').mockResolvedValue({ bookmark: { id: 'Bk0WORK' } })
   const unbookmark = vi.spyOn(app.client.bookmarks, 'remove')
+  const rebookmark = vi.spyOn(app.client.bookmarks, 'edit')
   const channelCanvas = vi.fn(async (_a: unknown) => ({ canvas_id: 'F0CHANNEL' }))
   Object.assign(app.client.conversations, { canvases: { create: channelCanvas } })
   const conn = new SlackConnection(
@@ -38,11 +40,11 @@ async function fixture(channel: Record<string, unknown> = { id: 'C0ENG', name: '
     () => app
   )
   await conn.start()
-  return { conn, create, edit, access, del, bookmark, unbookmark, channelCanvas }
+  return { conn, create, edit, access, del, bookmark, unbookmark, rebookmark, channelCanvas }
 }
 
 describe('the Slack Work page', () => {
-  it('creates a canvas, shares it read-only with the channel and pins it, with threads linked', async () => {
+  it('creates a canvas named for its agent and channel, shares it read-only with the channel and pins it', async () => {
     const f = await fixture()
     try {
       expect(await f.conn.putWorkPage('C0ENG', PAGE)).toEqual({
@@ -53,11 +55,12 @@ describe('the Slack Work page', () => {
       const markdown = (f.create.mock.calls[0]![0] as { document_content: { markdown: string } }).document_content
         .markdown
       expect(markdown).toContain('[thread](https://example.slack.com/archives/C0ENG/p1761980000000100)')
+      expect(f.create).toHaveBeenCalledWith(expect.objectContaining({ title: 'Butler · #eng' }))
       expect(f.access).toHaveBeenCalledWith({ canvas_id: 'F0WORK', access_level: 'read', channel_ids: ['C0ENG'] })
       expect(f.bookmark).toHaveBeenCalledWith(
         expect.objectContaining({
           channel_id: 'C0ENG',
-          title: 'Work',
+          title: "Butler's work",
           type: 'link',
           link: 'https://example.slack.com/docs/T0/F0WORK'
         })
@@ -75,6 +78,15 @@ describe('the Slack Work page', () => {
       expect(f.edit).toHaveBeenCalledWith(
         expect.objectContaining({ canvas_id: 'F0WORK', changes: [expect.objectContaining({ operation: 'replace' })] })
       )
+      // A page made under an older name is renamed once, with its bookmark.
+      expect(f.edit).toHaveBeenCalledWith({
+        canvas_id: 'F0WORK',
+        changes: [{ operation: 'rename', title_content: { type: 'markdown', markdown: 'Butler · #eng' } }]
+      })
+      expect(f.rebookmark).toHaveBeenCalledWith({ channel_id: 'C0ENG', bookmark_id: 'Bk0WORK', title: "Butler's work" })
+      await f.conn.putWorkPage('C0ENG', PAGE, stored)
+      expect(f.edit).toHaveBeenCalledTimes(3)
+      expect(f.rebookmark).toHaveBeenCalledTimes(1)
       f.edit.mockRejectedValueOnce(slackError('canvas_not_found'))
       expect(await f.conn.putWorkPage('C0ENG', PAGE, stored)).toEqual({ state: 'deleted' })
       expect(f.create).not.toHaveBeenCalled()

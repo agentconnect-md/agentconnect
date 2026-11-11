@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { composeWorkPages, sweepWorkCanvases, type WorkCanvasDeps } from '../src/assistant/work-canvas.js'
 import type { WorkPage, WorkPageRef, WorkPageResult } from '../src/platforms/contract.js'
-import { renderWorkPage } from '../src/platforms/slack/work-page.js'
+import { renderWorkPage, workBookmarkTitle, workPageTitle } from '../src/platforms/slack/work-page.js'
 import type { PlacedSubsession } from '../src/store/assistant-subsessions.js'
 import type { LocalStore } from '../src/store/local-store.js'
 import { canonicalColumns } from '../src/store/postgres-dialect.js'
@@ -33,6 +33,7 @@ function followUp(over: Partial<PlacedSubsession> = {}): PlacedSubsession {
     place: CHANNEL,
     title: 'Tell Alice when PR #412 merges',
     replyThread: '1761980000.000100',
+    sessionId: 'sess-check-1',
     threadSessions: [],
     ...over
   }
@@ -57,7 +58,7 @@ function delegated(over: Partial<PlacedSubsession> = {}): PlacedSubsession {
 interface Fake {
   deps: WorkCanvasDeps
   rows: PlacedSubsession[]
-  agent: { id: string; assistantMode?: { enabled: boolean }; integrations: never[]; crons: unknown[] }
+  agent: { id: string; name: string; assistantMode?: { enabled: boolean }; integrations: never[]; crons: unknown[] }
   put: ReturnType<typeof vi.fn<(channel: string, page: WorkPage, stored?: WorkPageRef) => Promise<WorkPageResult>>>
   remove: ReturnType<typeof vi.fn<(channel: string, stored: WorkPageRef) => Promise<void>>>
   external: { value: boolean }
@@ -66,7 +67,7 @@ interface Fake {
 async function fake(rows: PlacedSubsession[] = [], crons: unknown[] = []): Promise<Fake> {
   store = await openTestStore()
   const opened = store
-  const agent = { id: 'bot-a', assistantMode: { enabled: true }, integrations: [] as never[], crons }
+  const agent = { id: 'bot-a', name: 'Butler', assistantMode: { enabled: true }, integrations: [] as never[], crons }
   const put = vi.fn(async (_channel: string, _page: WorkPage, stored?: WorkPageRef): Promise<WorkPageResult> =>
     stored ? { state: 'live', ...stored } : { state: 'live', canvasId: 'F0WORK', bookmarkId: 'Bk0WORK' }
   )
@@ -91,6 +92,7 @@ async function fake(rows: PlacedSubsession[] = [], crons: unknown[] = []): Promi
       connection: () => ({ putWorkPage: put, removeWorkPage: remove }),
       external: () => external.value,
       askerOf: async (row) => (row.mode === 'watch' ? 'U0ALICE' : 'U0DAVE'),
+      taskLink: (row) => (row.sessionId ? `https://console.example.test/sessions/${row.sessionId}` : undefined),
       consoleUrl: () => 'https://console.example.test/agents/bot-a',
       now: () => NOW,
       warn: () => {}
@@ -166,7 +168,8 @@ describe('what a Work page lists', () => {
             nextCheck: NOW + 3_600_000,
             title: 'Tell Alice when PR #412 merges',
             askerId: 'U0ALICE',
-            thread: '1761980000.000100'
+            thread: '1761980000.000100',
+            consoleUrl: 'https://console.example.test/sessions/sess-check-1'
           }
         ],
         schedules: [{ label: 'Weekly digest', nextRun: '2026-11-16 09:00 Asia/Shanghai', thread: '1762000000.000200' }],
@@ -176,9 +179,10 @@ describe('what a Work page lists', () => {
     expect(JSON.stringify([...pages.values()])).not.toMatch(/private|secret prompt/)
   })
 
-  it('renders as Markdown, with titles shown as text, people as mentions and threads as links', () => {
+  it('renders as Markdown, with titles shown as text linking the console, people as mentions and threads as links', () => {
     const markdown = renderWorkPage(
       {
+        agentName: 'Butler',
         tasks: [
           {
             kind: 'follow-up',
@@ -188,7 +192,13 @@ describe('what a Work page lists', () => {
             askerId: 'U0ALICE',
             thread: '1.000'
           },
-          { kind: 'task', status: 'idle', title: 'Draft the FAQ', askerId: 'user:console-1' }
+          {
+            kind: 'task',
+            status: 'idle',
+            title: 'Draft the FAQ',
+            askerId: 'user:console-1',
+            consoleUrl: 'https://console.example.test/sessions/sess-2'
+          }
         ],
         schedules: [{ label: 'Weekly digest', nextRun: '2026-11-16 09:00 Asia/Shanghai' }],
         more: 2,
@@ -202,7 +212,7 @@ describe('what a Work page lists', () => {
         '## Open work',
         '',
         '- **Next check 2026-11-10 08:00 UTC** · Follow-up · Fix \\*all\\* \\[the\\] things · asked by ![](@U0ALICE) · [thread](https://example.slack.com/archives/C0ENG/p1000)',
-        '- **Idle** · Task · Draft the FAQ',
+        '- **Idle** · Task · [Draft the FAQ](https://console.example.test/sessions/sess-2)',
         '',
         'And 2 more in the console.',
         '',
@@ -215,7 +225,11 @@ describe('what a Work page lists', () => {
         'Updated 2026-11-10 08:00 UTC · [Open in the console](https://console.example.test/agents/bot-a)'
       ].join('\n')
     )
-    expect(renderWorkPage({ tasks: [], schedules: [], updatedAt: NOW })).toContain('Nothing is open.')
+    expect(renderWorkPage({ agentName: 'Butler', tasks: [], schedules: [], updatedAt: NOW })).toContain(
+      'Nothing is open.'
+    )
+    expect(workPageTitle({ agentName: 'Butler' }, 'eng-platform')).toBe('Butler · #eng-platform')
+    expect(workBookmarkTitle({ agentName: 'Butler' })).toBe("Butler's work")
   })
 })
 
@@ -289,6 +303,16 @@ describe('the Work page sweep', () => {
     await sweepWorkCanvases(f.deps)
     expect(f.remove).toHaveBeenCalledTimes(2)
     expect(await rowOf()).toBeUndefined()
+  })
+
+  it('rewrites the page under the agent’s new name when it is renamed', async () => {
+    const f = await fake([followUp()])
+    await sweepWorkCanvases(f.deps)
+    expect(f.put.mock.calls[0]![1]).toMatchObject({ agentName: 'Butler' })
+    f.agent.name = 'Jeeves'
+    await sweepWorkCanvases(f.deps)
+    expect(f.put).toHaveBeenCalledTimes(2)
+    expect(f.put.mock.calls[1]![1]).toMatchObject({ agentName: 'Jeeves' })
   })
 
   it('records a failed write and retries it only when the page changes', async () => {
