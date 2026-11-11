@@ -1023,12 +1023,16 @@ limit of §8.2.
   agent identity has no credential of its own: the blueprint obtains its
   tokens, and the customer's tenant issues them.
 - **The package** of an agent bot names the agent identity as `bots[].botId`
-  and keeps **the deployment app** as `webApplicationInfo.id`. Name, icon and
-  the UUIDv5 manifest `id` follow §5. Resource-specific consent is therefore
-  granted to the deployment app, as today: the per-tenant Graph token (§8.5)
-  and the `TeamsAppInstallation.ReadWriteAndConsentSelfForTeam` scope of the
-  connect flow keep working, and the customer's Entra shows the deployment app
-  as the one enterprise application.
+  and **the blueprint** as `webApplicationInfo.id`. Name, icon and the UUIDv5
+  manifest `id` follow §5. Microsoft lists a package whose bot is an agent
+  identity only when its associated application is that identity's blueprint:
+  with any other application the organization's catalog does not return the
+  app, so it cannot be looked up or updated, and the Teams client offers no
+  mention and no Open button for it. Resource-specific consent is therefore
+  granted to the blueprint: the relay reads Graph for an agent bot's row with
+  the blueprint's own token in the row's tenant (§8.6.7). The
+  `TeamsAppInstallation.ReadWriteAndConsentSelfForTeam` scope of the connect
+  flow installs this package as it does the deployment app's.
 
 Compared with the deployment app's bot, an agent bot's Bot Connector token is
 issued by the customer's tenant for an identity that exists only there, where
@@ -1074,6 +1078,18 @@ All **measured**, unless marked.
   `webApplicationInfo.id` install into the same team without conflict. An
   upgrade (§8.3 step 5) to a package with a further resource-specific
   permission granted it to the team.
+- **The associated application decides the listing.** With the identity as the
+  bot and an ordinary application as `webApplicationInfo.id`, the package was
+  accepted and installed, and the bot posted, but the organization's catalog
+  did not return the app: a lookup by manifest `id` found nothing, a second
+  publish answered 409, and the Teams client offered neither a mention nor an
+  Open button. Uploading through the Teams admin center changed nothing. With
+  the identity's blueprint there, the catalog returned the app within a
+  minute, the client listed the bot, the connect flow's "Self" scope installed
+  it into a team, the consent landed on the blueprint, and the blueprint's
+  app-only token read the team, its channels, messages and members, where the
+  identity's own token was refused. An install upgraded from the first shape
+  to the second moved the team's grants from the application to the blueprint.
 - **Inbound.** Teams delivers to an agent identity's endpoint as to any bot:
   installation events within a second, and an unmentioned channel message
   about two seconds after it is posted. The request's token has the identity
@@ -1303,9 +1319,11 @@ need a second consent page, so the design keeps to the member's own token.
   tenant. For an agent bot's row the relay obtains the Bot Connector token by
   the two-step exchange against **the row's tenant** with the blueprint's
   secret, and caches it per identity; a 1:1 chat it opens names the row's bot.
-- **Graph** is unchanged: the deployment app holds every package's
-  resource-specific consent, so the per-tenant Graph token serves an agent
-  bot's row as it does the deployment app's.
+- **Graph** tokens for an agent bot's row are the blueprint's: an app-only
+  token it obtains with its secret in the row's tenant, where the package's
+  resource-specific consent was granted to it (§8.6.1). The agent identity's
+  own token carries no such consent and is refused. The deployment app's row
+  keeps the deployment app's token.
 - **Mentions.** A message that mentions one agent bot also reaches every other
   bot the team installed, as an unmentioned message. The existing trigger
   check, which looks for the row's own `28:<app ID>`, keeps the others quiet.

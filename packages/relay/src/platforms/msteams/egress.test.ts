@@ -275,9 +275,10 @@ describe('MsTeamsRelayEgress', () => {
     expect((ms.sent[1]!.body as { bot: unknown }).bot).toEqual({ id: `28:${IDENTITY}` })
     expect(openMsTeamsTicket(KEY, BINDING, opened.tickets!['a:new-chat']!)?.conversationId).toBe('a:new-chat')
 
-    // Graph stays the deployment app's, in the row's tenant.
+    // Graph is read as the blueprint, which holds the package's consent, in the row's tenant.
     resultOf(await egress.call(AGENT_ROW, { op: 'graph-token' }))
-    expect(ms.tokenRequests[2]).toMatchObject({ client_id: APP_ID, scope: MSTEAMS_GRAPH_SCOPE })
+    expect(ms.tokenRequests[2]).toMatchObject({ client_id: BLUEPRINT.appId, scope: MSTEAMS_GRAPH_SCOPE })
+    expect(ms.tokens[2]!.tenant).toBe(TENANT)
   })
 
   it('renews an agent bot’s token after a 401, and drops them all when the blueprint changes', async () => {
