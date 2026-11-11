@@ -52,6 +52,7 @@ import {
   MSTEAMS_ROW_OWNER_KEY,
   isMsTeamsDeploymentRow,
   msTeamsAgentBotEntries,
+  msTeamsAgentBotOf,
   msTeamsDeploymentSecrets,
   type MsTeamsAgentBots,
   type MsTeamsPlatformApp
@@ -205,6 +206,22 @@ async function nameHolder(
     }
   }
   return undefined
+}
+
+// Whether the agent already has a bot of its own in the tenant, which a reconnect updates rather than moving the agent to the app's bot.
+async function hasAgentBot(
+  deps: HttpDeps,
+  orgId: AgentRecord['orgId'],
+  tenantId: string,
+  agentId: AgentRecord['id']
+): Promise<boolean> {
+  return (await deps.repos.bot.listForOrg(orgId)).some(
+    (bot) =>
+      bot.platform === MSTEAMS_PLATFORM &&
+      bot.externalTenantId === tenantId &&
+      !!msTeamsAgentBotOf(bot) &&
+      bot.agentIds.includes(agentId)
+  )
 }
 
 export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams) {
@@ -397,8 +414,9 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
           const held = await deps.repos.bot.getByExternalIdentity(MSTEAMS_PLATFORM, live.app.appId, tenantId)
           if ((held && held.orgId !== orgId) || (await heldElsewhere(orgId, tenantId)))
             return refuse(reply, 409, 'MSTEAMS_TENANT_TAKEN', TAKEN_MESSAGE)
-          if (held && held.agentIds.length > 0 && !held.agentIds.includes(target.id)) {
-            // The app's bot serves the agent connected first; a further agent gets a bot of its own where the deployment makes them (§8.6.4).
+          const servesAnother = !!held && held.agentIds.length > 0 && !held.agentIds.includes(target.id)
+          // The app's bot serves the agent connected first; a further agent gets a bot of its own where the deployment makes them (§8.6.4), and keeps it on a reconnect.
+          if (servesAnother || (agentBots && sponsorId && (await hasAgentBot(deps, orgId, tenantId, target.id)))) {
             if (!agentBots || !sponsorId) return refuse(reply, 409, 'MSTEAMS_TENANT_IN_USE', IN_USE_MESSAGE)
             const holder = await nameHolder(deps, orgId, tenantId, target)
             if (holder) return refuse(reply, 409, 'MSTEAMS_AGENT_NAME_TAKEN', NAME_TAKEN_MESSAGE(holder))

@@ -613,6 +613,23 @@ describe('a deployment that makes agent bots (§8.6)', () => {
     expect(again.json<{ teams: { app: string }[] }>().teams.map((team) => team.app)).toEqual(['updated', 'none'])
   })
 
+  it('keeps an agent on its own bot when the tenant’s first agent is gone', async () => {
+    const own = {
+      orgId: ORG,
+      externalTenantId: CUSTOMER,
+      agentIds: [AGENT],
+      platformConfig: { appOwner: 'deployment', agentBotBlueprintId: AGENT_BOTS.blueprintId, agentBotResourceName: 'x' }
+    } as Partial<BotRecord>
+    const h = await harness({ agentBots: true, rows: [own] })
+    const res = await h.callback(h.state({ agentBots: true }))
+    expect(res.json()).toMatchObject({ agentBot: true })
+    expect(h.create).not.toHaveBeenCalled()
+    // Another agent of the same tenant takes the app's bot, which is free.
+    const other = await harness({ agentBots: true, rows: [{ ...own, agentIds: [OTHER_AGENT] }] })
+    expect((await other.callback(other.state({ agentBots: true }))).json()).not.toHaveProperty('agentBot')
+    expect(other.create).toHaveBeenCalledWith(expect.objectContaining({ externalAppId: APP.appId }))
+  })
+
   it('keeps one agent per tenant where the sign-in did not ask the agent bots’ scopes, or named no sponsor', async () => {
     const unasked = await further()
     expect((await unasked.callback()).json()).toMatchObject({ code: 'MSTEAMS_TENANT_IN_USE' })
