@@ -118,6 +118,8 @@ async function boot(prompt: (blocks: { type: string; text?: string }[]) => Promi
   d.decisionEvaluator.evaluate = vi.fn(async (input: { state: { currentMessage?: { text?: string } } }) => {
     const text = input.state.currentMessage?.text ?? ''
     asked.push(text)
+    // An answer takes a while, as a provider's does, so the queue waits on it.
+    await new Promise((resolve) => setTimeout(resolve, 20))
     if (text.includes('outage')) return { status: 'unavailable', reason: 'provider' } satisfies DecisionEvaluation
     return answered(text.includes('chatter') ? 0.05 : 0.9)
   })
@@ -140,6 +142,9 @@ describe('a coordinator with a filter', () => {
     await route(slack('1.2', { text: 'chatter about lunch' }))
     await route(slack('1.3', { text: '<@U_FAKE_BOT> chatter but addressed', mentionedBots: ['U_FAKE_BOT'] }))
     await route(slack('1.4', { text: 'outage while asking' }))
+    // All three wait in the coordinator's queue before the running turn ends, so one batch decides them.
+    const queued = () => [...(d.serialQueue as Map<string, unknown[]>).values()].reduce((n, q) => n + q.length, 0)
+    await vi.waitFor(() => expect(queued()).toBe(3), WAIT)
     release()
     await vi.waitFor(() => expect(prompts).toHaveLength(2), WAIT)
     await vi.waitFor(() => expect(d.inflight.size).toBe(0), WAIT)
