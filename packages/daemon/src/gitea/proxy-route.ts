@@ -13,10 +13,22 @@ const WRITE_REFUSAL =
 const NO_REPOSITORY_REFUSAL =
   'a Gitea API read that names no repository is not available with this agent’s credential; name the repository as /api/v1/repos/{owner}/{repo}/…'
 const SETTINGS_REFUSAL = 'repository settings are not available with this agent’s credential'
+const NOT_A_PLAIN_PATH = 'the API path under the repository has an empty, dot or encoded-separator segment'
+
+/** A segment Gitea or Forgejo could route as something else: empty (Forgejo collapses repeated slashes), a dot segment, or one decoding to a separator. */
+function ambiguousSegment(segment: string): boolean {
+  let decoded: string
+  try {
+    decoded = decodeURIComponent(segment)
+  } catch {
+    return true
+  }
+  return decoded === '' || decoded === '.' || decoded === '..' || /[/\\]/.test(decoded)
+}
 
 /** Repository subresources only an administrator reads, the bot always being one: webhooks, deploy keys, mirrors, Actions secrets, variables and runners. */
 function adminSetting(rest: readonly string[]): boolean {
-  const [first, second] = rest.map((segment) => segment.toLowerCase())
+  const [first, second] = rest.map((segment) => decodeURIComponent(segment).toLowerCase())
   if (first === 'hooks' || first === 'keys' || first === 'push_mirrors') return true
   return first === 'actions' && (second === 'secrets' || second === 'variables' || second === 'runners')
 }
@@ -51,7 +63,9 @@ export const giteaProxyRoute: ProxyRouteDescriptor = {
     const named = rest.slice(1, 3)
     const repo = /\.git$/i.test(named[1] ?? '') ? undefined : repositoryPath(named, false)
     if (!repo) return { kind: 'deny', status: 400, reason: 'the API path does not name a repository' }
-    if (adminSetting(rest.slice(3))) return { kind: 'deny', status: 403, reason: SETTINGS_REFUSAL }
+    const under = rest.slice(3)
+    if (under.some(ambiguousSegment)) return { kind: 'deny', status: 400, reason: NOT_A_PLAIN_PATH }
+    if (adminSetting(under)) return { kind: 'deny', status: 403, reason: SETTINGS_REFUSAL }
     return { kind: 'repository', plane: 'api', repo }
   }
 }

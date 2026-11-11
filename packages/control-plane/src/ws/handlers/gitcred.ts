@@ -235,6 +235,10 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
         )
         return
       }
+      if (purpose !== undefined) {
+        conn.sendError(frame.id, 'SCOPE_DENIED', `gitea has no ${purpose} credential`, false)
+        return
+      }
       const grant = await deps.giteaGitcred!.grantForAgent(
         agent,
         externalRepoId !== undefined ? BigInt(externalRepoId) : undefined,

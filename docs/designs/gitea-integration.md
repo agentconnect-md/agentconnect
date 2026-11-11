@@ -576,6 +576,9 @@ repository's lease. Every other read is refused, such as `user/repos`,
 `orgs/{org}/repos`, `repositories/{id}`, `notifications` and `repos/search`. So
 are the settings only an administrator reads on an authorized repository:
 webhooks, deploy keys, push mirrors, and Actions secrets, variables and runners.
+A path under a repository with an empty or dot segment, or a segment that
+decodes to a separator, is refused too, because Forgejo collapses repeated
+slashes before routing and would otherwise answer a setting the check missed.
 
 There is no CLI wrapper. The agent reads issues, pull requests, diffs, and
 statuses through the provider read tools and mutates through the effect

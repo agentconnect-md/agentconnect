@@ -680,6 +680,21 @@ describe('a Gitea read that names no repository', () => {
     ]) {
       expect(route(`/forge/api/v1/repos/example-org/example-repo/${rest}`)).toMatchObject({ kind: 'deny', status: 403 })
     }
+    // Forgejo collapses repeated slashes before routing, so a doubled or dot segment never slips a setting past the check.
+    for (const rest of [
+      '/hooks',
+      'actions//runners/registration-token',
+      './hooks',
+      'x/../hooks',
+      '%68ooks',
+      'actions/%2Fsecrets',
+      'contents/a//b'
+    ]) {
+      expect(route(`/forge/api/v1/repos/example-org/example-repo/${rest}`)).toMatchObject({ kind: 'deny' })
+    }
+    expect(route('/forge/api/v1/repos/example-org/example-repo/contents/docs/read%20me.md')).toMatchObject({
+      kind: 'repository'
+    })
     expect(route('/forge/api/v1/repos/example-org/example-repo/actions/tasks')).toEqual({
       kind: 'repository',
       plane: 'api',

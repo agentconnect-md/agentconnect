@@ -870,6 +870,20 @@ describe('handleGitCredRequest — the gitea arm (gitea-integration.md §9, §10
       expect(conn.replyTo).not.toHaveBeenCalled()
     }
     expect(grantForAgent).not.toHaveBeenCalled()
+    // A purpose the Gitea arm does not know is refused, never answered with the Git grant.
+    const unknown = fakeConn()
+    await handleGitCredRequest(
+      gitcredFrame({ provider: 'gitea', externalRepoId: '556677', purpose: 'azure_devops_hook_reply' }),
+      unknown,
+      deps
+    )
+    expect(unknown.sendError).toHaveBeenCalledWith(
+      expect.anything(),
+      'SCOPE_DENIED',
+      'gitea has no azure_devops_hook_reply credential',
+      false
+    )
+    expect(grantForAgent).not.toHaveBeenCalled()
     for (const consumer of ['proxy', 'daemon']) {
       const conn = fakeConn()
       const frame = gitcredFrame({ provider: 'gitea', externalRepoId: '556677', consumer })
