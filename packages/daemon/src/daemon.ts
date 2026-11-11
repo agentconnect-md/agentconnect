@@ -31496,7 +31496,10 @@ export class Daemon {
           postAttempted = true
           const ts = await this.postIntoConfiguredTarget(conn, target.channel, label, () =>
             options
-              ? (conn as SlackConnection).postMessage(target.channel!, anchorText, undefined, options)
+              ? (conn as SlackConnection).postMessage(target.channel!, anchorText, undefined, {
+                  ...options,
+                  ...(msg.sourceRepository ? { sourceRepository: msg.sourceRepository } : {})
+                })
               : conn.postMessage(target.channel!, anchorText)
           )
           if (ts) {
@@ -31528,7 +31531,14 @@ export class Daemon {
             // transcript/read cursor. Keep the synthetic msgId as the durable turn id.
             // The session is created only after any required provider thread exists,
             // so every follow-up resolves to these exact coordinates.
-            msg = { ...msg, channel: target.channel, thread, transcriptTs: ts }
+            const targetThreadUrl = sessionThreadUrlFor({ ...msg, channel: target.channel, thread }, conn)
+            msg = {
+              ...msg,
+              channel: target.channel,
+              thread,
+              transcriptTs: ts,
+              ...(targetThreadUrl ? { threadUrl: targetThreadUrl } : {})
+            }
           }
         } catch (err) {
           this.log.warn(

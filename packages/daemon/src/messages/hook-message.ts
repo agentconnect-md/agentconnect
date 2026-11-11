@@ -18,6 +18,7 @@
 import {
   codeHostHookMetadataOf,
   GITEA_DEFAULT_BASE_URL,
+  GITLAB_DEFAULT_BASE_URL,
   HOOK_SUBJECT_SEGMENT,
   isCodeHostHookKind,
   isGithubPullRequestRevisionEvent,
@@ -1504,6 +1505,45 @@ export function hookAnchorText(msg: RdMsgHook): string {
   return `🪝 ${capped || `Webhook delivery ${msg.deliveryKey}`}`
 }
 
+/** A target-channel fire keeps its source repository beside the target conversation's session link. */
+function hookAnchorRepository(msg: RdMsgHook): { label: string; url: string } | undefined {
+  const host = hookProviderOf(msg)
+  const c = envelopeOf(msg, host)
+  if (!host || !c) return undefined
+  switch (host.provider) {
+    case 'github': {
+      const label = host.metadata?.repoFullName ?? c.repo
+      const source = githubSourceThreadUrl(c, host.metadata)
+      if (!label || !source) return undefined
+      const url = new URL(source)
+      url.pathname = url.pathname.split('/').slice(0, 3).join('/')
+      return { label, url: url.toString() }
+    }
+    case 'gitlab': {
+      const gitlab = host.metadata
+      if (!gitlab) return undefined
+      const base = (gitlab.host ?? GITLAB_DEFAULT_BASE_URL).replace(/\/+$/, '')
+      return { label: gitlab.projectPath, url: `${base}/${gitlab.projectPath}` }
+    }
+    case 'gitea': {
+      const gitea = host.metadata
+      if (!gitea) return undefined
+      const base = (gitea.host ?? GITEA_DEFAULT_BASE_URL).replace(/\/+$/, '')
+      return { label: gitea.repoPath, url: `${base}/${gitea.repoPath}` }
+    }
+    case 'azure-devops': {
+      const azure = host.metadata
+      if (!azure) return undefined
+      const [organization, project, repository, ...rest] = azure.repoPath.split('/')
+      if (!organization || !project || !repository || rest.length > 0) return undefined
+      return {
+        label: azure.repoPath,
+        url: `https://dev.azure.com/${encodeURIComponent(organization)}/${encodeURIComponent(project)}/_git/${encodeURIComponent(repository)}`
+      }
+    }
+  }
+}
+
 export function buildHookMessage(
   msg: RdMsgHook,
   traceId: string,
@@ -1525,6 +1565,8 @@ export function buildHookMessage(
   const standingContext = buildHookStandingContext(msg)
   const prompt = buildHookText(msg, supplement)
   const turnBody = buildHookTurnBody(msg, prompt)
+  const sourceUrl = host ? normalize(host, (n, metadata) => n.threadUrl(envelope, metadata)) : undefined
+  const sourceRepository = hookAnchorRepository(msg)
   // With a turn body the row's text is the console's short form; without one it is the prompt.
   const text = (turnBody && hookDisplayText(msg)) || prompt
   const target = msg.target
@@ -1543,6 +1585,7 @@ export function buildHookMessage(
       platform: target.platform,
       channel: target.channel,
       thread: msg.msgId,
+      ...(sourceRepository ? { sourceRepository } : {}),
       sender: { id: senderId, isBot: false, ...(senderAvatarUrl ? { avatarUrl: senderAvatarUrl } : {}) },
       sessionTriggerId,
       text,
@@ -1554,7 +1597,7 @@ export function buildHookMessage(
       trigger: 'hook'
     }
   }
-  const threadUrl = host ? normalize(host, (n, metadata) => n.threadUrl(envelope, metadata)) : undefined
+  const threadUrl = sourceUrl
   return {
     msgId: msg.msgId, // hookId:deliveryKey — unique per delivery (dedup happened upstream)
     transcriptTs,

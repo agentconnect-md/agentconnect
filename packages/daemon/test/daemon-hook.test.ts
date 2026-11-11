@@ -4697,8 +4697,10 @@ describe('buildHookMessage', () => {
         buildHookMessage(
           ghFire({}, { target: { platform: 'slack', channel: 'C-alerts', integrationId: 'int-a' } }),
           'trace-anchored'
-        ).threadUrl
-      ).toBeUndefined()
+        )
+      ).toMatchObject({
+        sourceRepository: { label: 'acme/infra', url: 'https://github.com/acme/infra' }
+      })
     })
 
     it('does not expose a source URL outside the accepted GitHub repository', async () => {

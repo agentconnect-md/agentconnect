@@ -72,6 +72,15 @@ describe('gitlab hook normalization (§12.3)', () => {
     expect(msg.thread).toBe(`gitlab:audience-v1:${PROJECT}:issue:42`)
   })
 
+  it('keeps the source repository linked when the session anchors into Slack', () => {
+    expect(buildHookMessage(fire({ target: { platform: 'slack', channel: 'C1' } }), 'trace')).toMatchObject({
+      sourceRepository: {
+        label: 'example-group/example-project',
+        url: 'https://gitlab.com/example-group/example-project'
+      }
+    })
+  })
+
   it('subjects are disjoint by kind, iid, project, and ref; deliveries for one subject share a key', () => {
     const issue = gitlabSessionThread({ projectId: PROJECT, projectPath: 'p', target: { kind: 'issue', iid: 7 } })
     const mr = gitlabSessionThread({ projectId: PROJECT, projectPath: 'p', target: { kind: 'merge_request', iid: 7 } })
