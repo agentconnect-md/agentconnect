@@ -199,7 +199,9 @@ export class MsTeamsConnectError extends Error {
       | 'MSTEAMS_CONNECT_NOT_ADMIN'
       | 'MSTEAMS_CONNECT_UNAVAILABLE'
       | 'MSTEAMS_TENANT_MISMATCH',
-    message: string
+    message: string,
+    /** The Microsoft call that failed and its status, for the log; never shown to the caller. */
+    readonly detail?: string
   ) {
     super(message)
   }
@@ -389,8 +391,10 @@ async function graph(
   path: string,
   body?: { json: unknown; ifMatch?: string } | { zip: Uint8Array }
 ): Promise<Response> {
+  // The call a log line names: the method and the path without its query, which carries no token.
+  const call = `${method} ${path.split('?')[0]}`
   try {
-    return await fetchImpl(`${GRAPH}${path}`, {
+    const response = await fetchImpl(`${GRAPH}${path}`, {
       method,
       headers: {
         authorization: `Bearer ${token}`,
@@ -400,19 +404,30 @@ async function graph(
       ...(body ? { body: 'json' in body ? JSON.stringify(body.json) : body.zip } : {}),
       signal: AbortSignal.timeout(TIMEOUT_MS)
     })
+    calls.set(response, call)
+    return response
   } catch {
-    throw new MsTeamsConnectError('MSTEAMS_CONNECT_UNAVAILABLE', 'Microsoft Graph could not be reached.')
+    throw new MsTeamsConnectError('MSTEAMS_CONNECT_UNAVAILABLE', 'Microsoft Graph could not be reached.', call)
   }
 }
 
+// Which call each Graph answer belongs to, so a refusal can say what was refused.
+const calls = new WeakMap<Response, string>()
+
 // A 401 or 403 means the signed-in person lacks the admin role or the consent; anything else is Microsoft's side.
 function refused(response: Response): MsTeamsConnectError {
+  const detail = `${calls.get(response) ?? 'Graph'} answered ${response.status}`
   return response.status === 401 || response.status === 403
     ? new MsTeamsConnectError(
         'MSTEAMS_CONNECT_NOT_ADMIN',
-        'Microsoft refused the request. Sign in as a Teams or Global administrator who can consent for the organization.'
+        'Microsoft refused the request. Sign in as a Teams or Global administrator who can consent for the organization.',
+        detail
       )
-    : new MsTeamsConnectError('MSTEAMS_CONNECT_UNAVAILABLE', `Microsoft Graph answered HTTP ${response.status}.`)
+    : new MsTeamsConnectError(
+        'MSTEAMS_CONNECT_UNAVAILABLE',
+        `Microsoft Graph answered HTTP ${response.status}.`,
+        detail
+      )
 }
 
 const CatalogList = z.object({ value: z.array(z.object({ id: z.string(), externalId: z.string().nullish() })) })
