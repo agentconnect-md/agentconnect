@@ -23,6 +23,8 @@ export const CO_IDS = {
   selfBot: 'U0EXAMPLEBOT',
   peer: 'peer-agent',
   peerBot: 'U0EXAMPLEPEER',
+  /** A monitoring integration that posts alerts into the channel without naming anyone. */
+  alertBot: 'U0EXAMPLEALERT',
   alice: 'U0EXAMPLE1',
   bob: 'U0EXAMPLE2',
   channel: 'C0EXAMPLE1',
@@ -243,6 +245,7 @@ export function coordinatorPrompt(webchat = false): string {
     })
   return shippedCoordinatorPrompt({
     agentName: CO_IDS.self,
+    agentDescription: "Platform engineering for eng-platform: CI, deploys, and the platform's monitoring alerts.",
     platform: 'Slack',
     channelId: CO_IDS.channel,
     channelName: CO_IDS.channelName,
@@ -487,6 +490,7 @@ export type CoScenarioId =
   | 'greeting'
   | 'ignore-chatter'
   | 'ignore-peer'
+  | 'role-alert'
   | 'mention-vague'
   | 'no-self-work'
   | 'batch-mixed'
@@ -587,6 +591,19 @@ export const CO_SCENARIOS: CoordinatorScenario[] = [
       )
     ],
     expect: { 'msg-1700000600.000100': { kind: 'ignore' } }
+  },
+  {
+    id: 'role-alert',
+    tasks: [CHECKOUT_TASK],
+    messages: [
+      msg(
+        'msg-1700001500.000100',
+        CO_IDS.alertBot,
+        false,
+        '[FIRING:1] ApiHighErrorRate: api 5xx ratio 7.2% > 5% for 10m. Runbook: https://runbooks.example.test/api-5xx'
+      )
+    ],
+    expect: { 'msg-1700001500.000100': { kind: 'delegate' } }
   },
   {
     id: 'mention-vague',
