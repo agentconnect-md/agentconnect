@@ -5,7 +5,6 @@ import Link from 'next/link'
 import useSWR from 'swr'
 import { useFormatter, useTranslations } from 'next-intl'
 import { fetchCapabilityRequests } from '@/lib/api'
-import { featureFlagEnabled } from '@/lib/feature-flags'
 import { formatDateTime } from '@/i18n/format'
 import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
@@ -20,16 +19,15 @@ export function AgentCapabilityRequestsCard({
   /** Spacing where it is placed: below it in a stack (the default), none inside a grid that spaces its cells. */
   className?: string
 }) {
-  const enabled = featureFlagEnabled('capability-requests')
   const { activeOrg, orgPath } = useOrgs()
   const t = useTranslations('CapabilityRequests')
   const format = useFormatter()
-  const key = enabled ? consoleKeys.agentCapabilityRequests(activeOrg?.id, agentId) : null
+  const key = consoleKeys.agentCapabilityRequests(activeOrg?.id, agentId)
   const { data } = useSWR(key, ([, orgId, , id]) => fetchCapabilityRequests({ agentId: id, status: 'open' }, orgId), {
     refreshInterval: REFRESH_MS
   })
   // Nothing to find means nothing to show; a failed read is not worth a card of its own here.
-  if (!enabled || !data || data.length === 0) return null
+  if (!data || data.length === 0) return null
   return (
     <div className={`card overflow-hidden max-desktop:rounded-lg ${className}`} data-capability-requests>
       <div className="cardhead flex-wrap gap-2">

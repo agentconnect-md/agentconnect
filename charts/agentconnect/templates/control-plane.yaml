@@ -221,11 +221,9 @@ spec:
             {{- if hasKey $.Values.controlPlane.extraEnv "CAPABILITY_REQUESTS_ENABLED" }}
             {{- fail "controlPlane.extraEnv.CAPABILITY_REQUESTS_ENABLED collides with the features block: flip features.capabilityRequests instead" }}
             {{- end }}
-            {{- if .Values.features.capabilityRequests }}
-            # Capability requests: daemons offer agents requestCapability (capability-requests.md).
+            # Capability requests: daemons offer agents requestCapability (capability-requests.md); on unless turned off.
             - name: CAPABILITY_REQUESTS_ENABLED
-              value: 'true'
-            {{- end }}
+              value: {{ ternary "true" "false" (ne .Values.features.capabilityRequests false) | quote }}
             {{- if hasKey $.Values.controlPlane.extraEnv "AC_COMPUTER_PLAN" }}
             {{- fail "controlPlane.extraEnv.AC_COMPUTER_PLAN collides with the chart-owned computerPlan values" }}
             {{- end }}
