@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('@/lib/decisions/provider', () => ({
+  useDecisionProviders: () => ({ providers: [], daemonId: null, error: null }),
   useOptionalDecisionsPrototype: () => ({
     api: { mode: 'mock' },
     orgId: 'example-org',

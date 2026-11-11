@@ -17,7 +17,8 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('@/lib/decisions/provider', () => ({
-  useOptionalDecisionsPrototype: () => ({ decisions: [], api: { mode: 'live' }, orgId: '' })
+  useOptionalDecisionsPrototype: () => ({ decisions: [], api: { mode: 'live' }, orgId: '' }),
+  useDecisionProviders: () => ({ providers: [], daemonId: null, error: null })
 }))
 vi.mock('next/navigation', () => ({
   useParams: () => ({ id: 'agent-1' }),

@@ -3284,7 +3284,11 @@
         "plusCoordinatorOff": "+ coordinator off",
         "coordinatorOff": "Coordinator off",
         "disableCoordinator": "Disable coordinator",
-        "disableCoordinatorHelp": "No Auto session mode: Auto conversations run as Single session until a coordinator model is chosen again"
+        "disableCoordinatorHelp": "No Auto session mode: Auto conversations run as Single session until a coordinator model is chosen again",
+        "filter": "Filter",
+        "filterHint": "A Decision model reads each message nobody addressed to the agent before the coordinator does, and skips it when it is confident the agent has no part in it. Mentions, thread replies and console messages always reach the coordinator.",
+        "filterNotReady": "Not ready on this agent’s daemon",
+        "noFilter": "No filter"
       }
     },
     "detail": {
@@ -3369,7 +3373,8 @@
         "openRecovery": "Open recovery options",
         "runtimeAndModel": "Runtime and model",
         "coordinator": "Coordinator",
-        "coordinatorOff": "Off"
+        "coordinatorOff": "Off",
+        "coordinatorFilter": "Filter"
       },
       "runtime": {
         "title": "Runtime",
