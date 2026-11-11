@@ -18,6 +18,8 @@ interface Recovery {
 
 async function verify(): Promise<Recovery | null> {
   const query = new URLSearchParams(window.location.search)
+  const returnTo = window.location.pathname + window.location.search
+  window.history.replaceState({}, '', '/googlechat/recover')
   const saved: unknown = JSON.parse(sessionStorage.getItem('ac.googleChatRecovery') ?? 'null')
   if (
     !saved ||
@@ -34,13 +36,11 @@ async function verify(): Promise<Recovery | null> {
   )
     throw new Error('invalid recovery')
   if (isAuthConfigured() && !(await getUser())) {
-    if (!writeFlowState('returnTo', window.location.pathname + window.location.search))
-      throw new Error('storage unavailable')
+    if (!writeFlowState('returnTo', returnTo)) throw new Error('storage unavailable')
     await login('google')
     return null
   }
   const org = (await fetchOrgs()).find((row) => row.id === saved.orgId && row.role !== 'viewer')
-  window.history.replaceState({}, '', '/googlechat/recover')
   if (!org) throw new Error('organization unavailable')
   const { ticket } = await verifyGoogleChatRecovery(saved.orgId, saved.state, query.get('code')!)
   sessionStorage.removeItem('ac.googleChatRecovery')

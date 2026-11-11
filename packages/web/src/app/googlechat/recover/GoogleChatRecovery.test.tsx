@@ -65,6 +65,10 @@ const button = (label: string) => [...host.querySelectorAll('button')].find((nod
 
 describe('Google Chat recovery confirmation', () => {
   it('exchanges the code once and waits for explicit confirmation with the destination shown', async () => {
+    mocks.orgs.mockImplementation(async () => {
+      expect(window.location.search).toBe('')
+      return [{ id: 'example-org', name: 'Example Org', role: 'collaborator' }]
+    })
     await render()
     expect(mocks.verify).toHaveBeenCalledExactlyOnceWith('example-org', 'signed-state', 'one-use-code')
     expect(mocks.confirm).not.toHaveBeenCalled()
