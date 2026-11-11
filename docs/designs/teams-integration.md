@@ -642,10 +642,10 @@ relay route is added to the chart's HTTPRoute in the same change.
 - That the bot's own team-wide install carries `eventType: teamMemberAdded` as a
   member's does (§4.1).
 - Extended Markdown on mobile clients (§4.3).
-- That the upgrade of §8.3 step 5 takes a resource-specific permission the team
-  has not granted before (the measured upgrade re-consented grants it already
-  held), and how soon a personal install shows a new icon, which the Control
-  Plane does not upgrade (§5.1).
+- How soon a personal install shows a new icon, which the Control Plane does
+  not upgrade (§5.1). That the upgrade of §8.3 step 5 takes a
+  resource-specific permission the team has not granted before is now
+  **measured** (§8.6.2).
 
 ## 8. The deployment's Teams app
 
@@ -736,7 +736,8 @@ tenant matters, the two tenants stay apart:
 
 One customer row serves one agent, as an organization's own bot does (§1). An
 organization that wants another agent in the same tenant registers its own bot
-for it.
+for it; §8.6 proposes a bot the deployment creates for each further agent
+instead.
 
 ### 8.3 Connecting a tenant
 
@@ -995,7 +996,344 @@ can serve any call, since every relay holds the same key and credential.
   sign. Forging it needs a valid inbound token, which Microsoft sends only to
   the relay.
 
-### 8.6 Open
+### 8.6 More agents in one tenant
+
+Status: **proposed**. The provider behavior is **measured** end to end from one
+tenant acting on a second; the product change is not built.
+
+The deployment app's bot serves one agent per tenant (§8.2). This section gives
+each further agent in that tenant a bot of its own, with its own name, icon,
+mention and 1:1 chat, which the deployment creates and the organization never
+registers. The first agent an organization connects, a Store install (§8.4)
+and every existing row stay as they are, and a deployment that does not
+configure agent bots (§8.6.3) keeps the limit of §8.2.
+
+#### 8.6.1 The objects
+
+- **The deployment app** is unchanged: sign-in (§4.5), the OAuth client of the
+  connect flow (§8.3), the Store listing, and the bot of one agent per tenant.
+- **The blueprint** is a second deployment-wide object in the home tenant: a
+  Microsoft Entra _agent identity blueprint_. It holds the only credential the
+  agent bots have. It is not a bot and is never installed in Teams.
+- **An agent bot** is an _agent identity_ created from the blueprint **in the
+  customer's tenant**, plus a bot registration in the deployment's Azure
+  subscription whose messaging endpoint is the relay's `/msteams/messages`. An
+  agent identity has no credential of its own: the blueprint obtains its
+  tokens, and the customer's tenant issues them.
+- **The package** of an agent bot names the agent identity as `bots[].botId`
+  and keeps **the deployment app** as `webApplicationInfo.id`. Name, icon and
+  the UUIDv5 manifest `id` follow §5. Resource-specific consent is therefore
+  granted to the deployment app, as today: the per-tenant Graph token (§8.5)
+  and the `TeamsAppInstallation.ReadWriteAndConsentSelfForTeam` scope of the
+  connect flow keep working, and the customer's Entra shows the deployment app
+  as the one enterprise application.
+
+Compared with the deployment app's bot, an agent bot's Bot Connector token is
+issued by the customer's tenant for an identity that exists only there, where
+the deployment app's token works in every tenant the app is installed in
+(§8.5). The customer's administrator sees every agent in the Entra admin
+center under the blueprint, with the person who connected it as its sponsor,
+and can disable it there. The home tenant gains no application and no secret
+per agent.
+
+#### 8.6.2 Provider facts
+
+All **measured**, unless marked.
+
+- **The blueprint in a customer tenant.** The delegated permission
+  `AgentIdentityBlueprintPrincipal.Create`, with an administrator's consent,
+  allows `POST /servicePrincipals/microsoft.graph.agentIdentityBlueprintPrincipal`
+  with the blueprint's app ID. From then on the blueprint's own
+  client-credentials token from that tenant carries the role
+  `AgentIdentity.CreateAsManager` with no further consent.
+- **Creating an agent identity.** With that token,
+  `POST /servicePrincipals/microsoft.graph.agentIdentity` with a display name,
+  the blueprint's ID and a sponsor answered 201 in under a second; a call
+  without a sponsor is refused. Right after the principal was created the call
+  answered 401 `Authorization_IdentityNotFound` for about thirty seconds.
+- **Its tokens.** Two client-credentials calls against the customer tenant's
+  token endpoint: the blueprint, with its credential, requests
+  `api://AzureADTokenExchange/.default` with `fmi_path` set to the identity;
+  the identity then presents that token as its client assertion and requests
+  `https://api.botframework.com/.default`. Both took about a second together.
+- **An agent identity as a bot.** An Azure Bot resource in the deployment's
+  subscription with `msaAppId` the identity, `msaAppType: SingleTenant` and
+  `msaAppTenantId` **the customer's tenant**, and its Teams channel, were
+  created in a few seconds. A package naming the identity as its bot was
+  published and installed into a team, and the identity's token posted to a
+  channel. Microsoft documents no such use of an agent identity; this is
+  measured behavior, not a documented contract.
+- **Consent and install.** A package's resource-specific permissions are
+  granted to its `webApplicationInfo.id`, never to the bot. With an ordinary
+  application there and an agent identity as the bot, the install succeeded
+  with that application's "Self" scope, the identity posted, and the
+  application's Graph token read the channel. The install must carry the
+  permissions in `consentedPermissionSet`, and several packages sharing one
+  `webApplicationInfo.id` install into the same team without conflict. An
+  upgrade (§8.3 step 5) to a package with a further resource-specific
+  permission granted it to the team.
+- **Inbound.** Teams delivers to an agent identity's endpoint as to any bot:
+  installation events within a second, and an unmentioned channel message
+  about two seconds after it is posted. The request's token has the identity
+  as its audience and `https://api.botframework.com` as its issuer; a mention
+  names `28:<identity>`, and Graph reports the identity as the author of the
+  bot's messages.
+- **What the blueprint may do to its identities** with its own token: rename,
+  disable, delete, and replace sponsors. It cannot purge a deleted identity
+  (403). After an administrator disables an identity or the blueprint's
+  principal, the token request fails within seconds with `AADSTS7000112`, and
+  works again seconds after it is enabled; a deleted identity fails with
+  `AADSTS700016` a few minutes later.
+- **Submitting without an administrator.** `AppCatalog.Submit` never
+  publishes: `POST /appCatalogs/teamsApps?requiresReview=true` leaves the
+  package `submitted`, and without `requiresReview` Graph answers 403, for an
+  administrator's token too. Only the submitter's token reads the pending
+  package (an application token gets 404). An administrator publishes it in
+  the Teams admin center or through Graph
+  (`PATCH …/appDefinitions/{id}` with `publishingState: published`, which
+  needs `AppCatalog.ReadWrite.All`), and the submitter's token saw `published`
+  five to eight seconds later.
+- **Installing without an administrator.** With the delegated "Self" scope
+  consented tenant-wide, an ordinary member of a team installed the package
+  with its consent set. A team owner is not required; a person outside the
+  team is refused (403), and so is a guest ("Guest members are not allowed to
+  install the apps").
+- **Consent across tenants.** A member of another tenant who is not an
+  administrator gets Entra's "Need admin approval" page for an application
+  whose publisher is not verified, until an administrator consents tenant-wide
+  to the same delegated scopes; the member then signs in with no prompt.
+- **Personal scope.** A just-published package could not be installed into a
+  person's own scope through Graph for at least twelve minutes ("blocked by
+  app permission policy"), while a team install worked at once.
+- **The catalog** enforces only a unique manifest `id`: two packages with one
+  display name are both accepted and both listed.
+- **Limits** (documented). A blueprint may hold 250 agent identities in one
+  tenant, and a deleted identity counts until Entra purges it thirty days
+  later. A resource group holds 800 bot resources by default. The F0 bot tier
+  is free and its Teams channel unmetered.
+
+#### 8.6.3 Setup
+
+**Setup → Microsoft** gains an **Agent bots** group, shown once the Teams app
+is configured (§8.2): a **Create blueprint** button, and the Azure subscription
+ID and resource group for the bot registrations. The operator does three
+things once:
+
+1. grants the deployment app three Graph application permissions in the home
+   tenant: `AgentIdentityBlueprint.Create`,
+   `AgentIdentityBlueprint.AddRemoveCreds.All` and
+   `AgentIdentityBlueprintPrincipal.Create`;
+2. assigns the deployment app's service principal the Contributor role on the
+   resource group;
+3. registers the `Microsoft.BotService` resource provider on the subscription.
+
+**Create blueprint** makes the blueprint through Graph, open to other
+organizations, with the operator as its owner and sponsor; adds a client
+secret, which goes straight into the deployment secret store and is never
+shown; and creates its principal in the home tenant (**measured** with exactly
+these permissions). A blueprint the operator made by hand in the Entra admin
+center can be entered by its ID and a secret instead (**measured**); the form
+there creates it for one organization only, so it must be opened to others
+first.
+
+The three permissions are needed only for that button, and Setup says so: the
+operator may remove them afterwards. Nothing at run time uses them, since
+agent identities are created with the blueprint's own token. Rotating the
+blueprint's secret from Setup needs `AgentIdentityBlueprint.AddRemoveCreds.All`
+again; an operator who removed it rotates by hand.
+
+Before saving, Setup checks the blueprint's secret with a client-credentials
+request to the home tenant, that the blueprint is open to other organizations,
+the resource group, and the provider's registration. The blueprint's secret is
+a second deployment credential under the rule of §8.5: it reaches the Control
+Plane and the relay and never a daemon.
+
+#### 8.6.4 Rows and names
+
+The tenant's first row is the deployment app's, exactly as §8.2. A further
+agent's row has the agent identity as `externalAppId` and the customer tenant
+as `externalTenantId`. It is prebuilt, keeps `platformConfig.appOwner:
+deployment`, holds the marker in its secret slot, and sends through the relay.
+Two things differ: its `tokenTenantId` is **the customer tenant**, and it adds
+`platformConfig.agentBot` with the blueprint's ID and the Azure resource name.
+
+A tenant still belongs to one organization (`MSTEAMS_TENANT_TAKEN`).
+`MSTEAMS_TENANT_IN_USE` goes away where agent bots are configured: an
+organization that already holds the tenant gets an agent bot for the next
+agent. The agent on the deployment app's bot is whichever was connected first,
+or the one a Store install connected (§8.4), and moves only by removing that
+integration.
+
+Teams lists every bot of the tenant in one mention picker and the catalog
+accepts duplicate names, so the Control Plane refuses a further agent whose
+package name (§5) equals that of another package it published to the tenant,
+the deployment app's included, and names the agent that holds it.
+
+#### 8.6.5 Connecting a further agent
+
+The administrator's flow of §8.3 with these differences:
+
+1. **Sign-in.** The scopes of §8.3 plus `AppCatalog.Submit` and
+   `AgentIdentityBlueprintPrincipal.Create`, and the consent is asked
+   **tenant-wide**, so that members can add agents later (§8.6.6). Every
+   administrator connect asks this way, the tenant's first included; a tenant
+   connected before this change sees Entra's consent page once more.
+2. **The blueprint's principal** is created with the administrator's token if
+   the tenant has none. The first connect creates it too.
+3. **The agent identity** is created by the blueprint with the agent's name
+   and the signed-in person as its sponsor, retrying while Graph answers 401
+   after a new principal.
+4. **The registration**: the Azure Bot resource and its Teams channel, named
+   by a key derived from the agent and the tenant so that a retry finds them.
+5. **The proof**: a Bot Connector token for the identity, which shows the
+   principal, the identity and the blueprint's secret working together.
+6. **The row, the catalog, the teams**, as §8.3 steps 3 to 5, with the agent
+   bot's package.
+
+Steps 2 to 5 took about 10 seconds for a tenant that already had the principal
+and about 40 for one that did not (**measured**), so the connect page shows
+them as a step of its own and lets the administrator pick teams meanwhile. A
+failed attempt writes no row; the next connect resumes from what the key and
+the tenant already hold.
+
+- **Refused.** A tenant where the principal or the identity cannot be created
+  answers `MSTEAMS_AGENT_BOTS_UNAVAILABLE` with Microsoft's reason. Its first
+  agent is unaffected, and no second identity scheme is built as a fallback.
+- **Removal.** Removing the integration releases the row, deletes the bot
+  registration and has the blueprint delete the agent identity, none of which
+  needs the customer's administrator; the bot then neither receives nor sends.
+  The catalog app and its installs in teams stay as a dead entry until the
+  administrator removes them or connects again, when the flow removes them. A
+  reaper deletes registrations and identities no row names.
+- **Disabled by the customer.** The token request then fails with a code that
+  names the cause (§8.6.2). The relay answers the daemon's call as refused,
+  and the Control Plane marks the row's credential rejected with that reason,
+  which the Console shows with the way back: enable the agent in the Entra
+  admin center, or connect it again.
+- **Renaming** updates the registration and the identity's display name at
+  once and marks the package out of date (§5.1).
+- **Another tenant.** An agent bot has no anchor (§8.4): its package is in one
+  tenant's catalog, and an activity that names it from another tenant matches
+  no row and answers 401 (§3).
+
+#### 8.6.6 Without an administrator's sign-in
+
+Once an administrator has connected the tenant, a member who is not one can
+add a further agent. Before that, Entra refuses the member's sign-in (§8.6.2)
+and the connect page says, as today, that an administrator has to connect
+first.
+
+1. **Sign-in**, with no consent page: `AppCatalog.Submit`,
+   `TeamsAppInstallation.ReadWriteAndConsentSelfForTeam`, `Team.ReadBasic.All`,
+   `User.Read`, `openid` and `offline_access`. The member picks the teams the
+   agent should join, among those they belong to.
+2. **The agent bot** is provisioned as in §8.6.5 steps 3 to 5, with the member
+   as the identity's sponsor. None of it needs a consent.
+3. **Submit.** The package goes to the catalog as `submitted`.
+4. **The pending request.** An approval can come days later, long after the
+   member closed the page, so the Control Plane stores the request: the agent,
+   the tenant, the chosen teams, the catalog app, and the member's **refresh
+   token**, sealed in the deployment secret store. The token is kept only
+   while the request is pending and is deleted when the request finishes, is
+   cancelled or expires. It never reaches a daemon or the relay.
+5. **Waiting for approval.** The agent's Teams entry in the Console shows the
+   request as **Waiting for approval**, on the connect page and wherever the
+   agent's integrations are listed. It says that a Teams administrator of the
+   tenant must approve the agent and that Microsoft does not notify them, and
+   carries **Open in Teams admin center**, a link to the page that lists the
+   pending app (**Teams apps → Manage apps**), for the member to send or an
+   administrator to follow. An administrator who is also an editor of the
+   agent gets **Approve** there instead, which signs them in and publishes the
+   pending definition through Graph. **Check again** and **Cancel request**
+   sit beside it.
+6. **Detecting the approval.** A background loop redeems the stored token and
+   reads the package's state, on a backoff from seconds to minutes; the open
+   page and **Check again** read it at once.
+7. **Install.** Once published, the Control Plane installs into the chosen
+   teams with the member's token and the package's consent set, writes the
+   row, and the entry turns into a connected integration.
+
+**When the stored token no longer works.** Entra revokes a refresh token when
+the person changes their password, an administrator revokes their sessions, or
+a sign-in policy demands a fresh sign-in, and the member may have left the
+team meanwhile. The request stays pending with that reason and finishes when
+the member opens the Console and signs in again.
+
+**A request that is never approved** leaves a pending package and a
+provisioned bot. Cancelling withdraws the submission, which `AppCatalog.Submit`
+allows for one's own, and removes the bot; the reaper does the same for a
+request older than thirty days.
+
+**Not taken: application permissions.** Granted through Entra's admin-consent
+link, `AppCatalog.Read.All` and
+`TeamsAppInstallation.ReadWriteAndConsentSelfForTeam.All` would let the
+Control Plane finish with no member's token (**measured**). They are a standing
+permission to install the deployment's apps into any team of the tenant and
+need a second consent page, so the design keeps to the member's own token.
+
+#### 8.6.7 The relay
+
+- **Ingress** keeps its shape: `(app ID, tenant ID)` selects the row and the
+  token's audience is checked against the row's app ID, here the identity. The
+  assignment marks the row as an agent bot of the deployment, which the relay
+  cannot tell otherwise.
+- **Egress** (§8.5) keeps its tickets, whose MAC covers the row's `botId` and
+  tenant. For an agent bot's row the relay obtains the Bot Connector token by
+  the two-step exchange against **the row's tenant** with the blueprint's
+  secret, and caches it per identity; a 1:1 chat it opens names the row's bot.
+- **Graph** is unchanged: the deployment app holds every package's
+  resource-specific consent, so the per-tenant Graph token serves an agent
+  bot's row as it does the deployment app's.
+- **Mentions.** A message that mentions one agent bot also reaches every other
+  bot the team installed, as an unmentioned message. The existing trigger
+  check, which looks for the row's own `28:<app ID>`, keeps the others quiet.
+- **The snapshot** carries the blueprint's ID and secret beside the app's.
+- **Member lookups** of session access sync (§4.5) use the token of the bot
+  that is in the conversation, so the Control Plane runs the same exchange.
+
+The daemon needs no change: its spec already names `egress: relay` and a
+`botId`.
+
+#### 8.6.8 What it does not solve
+
+- **The blueprint's secret is deployment-wide.** A stolen token reaches one
+  bot in one tenant, but the secret can obtain a token for every agent bot. It
+  sits where the deployment app's secret sits.
+- **The agent on the deployment app's bot** keeps a token that works in every
+  tenant, and stays behind the relay for that reason.
+- **Updates.** A package that is renamed or gains a permission still needs an
+  administrator of the customer tenant (§5.1), once per agent.
+- **Azure DevOps.** An agent identity is not an Azure DevOps identity: it was
+  issued a token for Azure DevOps, but the organization refused to add it as a
+  member, where the same call added an ordinary service principal
+  (**measured**). The [Azure DevOps](azure-devops-integration.md) connection
+  stays on the deployment app for every agent.
+- **1:1 chats.** The connect flow installs into teams only (§8.6.2, personal
+  scope); people add the agent to a 1:1 chat from **Built for your org**, as
+  §8.3 already says.
+- **The limit of 250.** A tenant that adds and removes agents often can reach
+  it below 250 live agents, since the blueprint cannot purge what it deleted.
+- **Sponsors.** An identity whose sponsor has left keeps working (**measured**
+  with none left). A tenant can disable sponsorless agents by policy
+  (documented); the bot then stops as a disabled one does, and connecting
+  again names a new sponsor.
+
+#### 8.6.9 Unverified
+
+- That Graph refuses a catalog publish from a person without the
+  administrator role once `AppCatalog.ReadWrite.All` is consented tenant-wide.
+- An administrator installing into a team they do not belong to.
+- The stored-token chain of §8.6.6 end to end: its parts are measured, a
+  redemption after days is not.
+- A link that opens the pending app's own page in the Teams admin center
+  rather than the list.
+- A tenant that restricts agent identities, other than by disabling the
+  blueprint's principal.
+- A group-chat install of an agent bot, and unmentioned messages in private
+  and shared channels (§4.1).
+- A team whose settings stop members from adding apps.
+
+### 8.7 Open
 
 - Whether members of a tenant that connected through §8.3 can sign in with
   Microsoft without their own consent prompt (§4.5).
@@ -1032,9 +1370,30 @@ tenant:
 - Edits stay within the per-conversation budget; 429 responses back off.
 - The Control Plane never receives a message body.
 
+For agent bots (§8.6), once built:
+
+- An organization connects a second agent to a tenant; both appear in Teams
+  under their own names, and a mention of one never starts a turn of the other.
+  The first agent's connect and a Store install behave as before.
+- A member with no administrator role adds a further agent: the entry shows
+  **Waiting for approval** with its link, and after the approval the agent is
+  installed into the team they picked without the member returning.
+- The same member in a tenant no administrator has connected is told that an
+  administrator must connect first; a guest and a person outside the team are
+  refused the install with the reason.
+- A cancelled or expired request leaves no bot registration, identity or
+  pending package behind, and a provisioning step that fails half-way is
+  finished by the retry.
+- Removing the second agent's integration deletes its registration and leaves
+  the first agent answering.
+- An administrator disables the agent identity; the Console shows the row as
+  rejected, and connecting again restores it.
+- A deployment with no agent bots configured behaves as before.
+
 ## 11. References
 
 - Bot Connector: [authentication](https://learn.microsoft.com/azure/bot-service/rest-api/bot-framework-rest-connector-authentication), [conversations](https://learn.microsoft.com/microsoftteams/platform/bots/build-conversational-capability), [channel and group chats](https://learn.microsoft.com/microsoftteams/platform/bots/how-to/conversations/channel-and-group-conversations), [proactive messages](https://learn.microsoft.com/microsoftteams/platform/bots/how-to/conversations/send-proactive-messages), [rate limits](https://learn.microsoft.com/microsoftteams/platform/bots/how-to/rate-limit), [Teams context](https://learn.microsoft.com/microsoftteams/platform/bots/how-to/get-teams-context).
 - Registration: [Azure Bot quickstart](https://learn.microsoft.com/azure/bot-service/abs-quickstart), [Developer Portal](https://learn.microsoft.com/microsoftteams/platform/concepts/build-and-test/manage-your-apps-in-developer-portal), [app manifest](https://learn.microsoft.com/microsoft-365/extensibility/schema/), [custom app policies](https://learn.microsoft.com/microsoftteams/teams-custom-app-policies-and-settings).
 - Messages and cards: [formatting](https://learn.microsoft.com/microsoftteams/platform/bots/how-to/format-your-bot-messages), [Universal Actions](https://learn.microsoft.com/adaptive-cards/authoring-cards/universal-action-model), [streaming](https://learn.microsoft.com/microsoftteams/platform/bots/streaming-ux).
 - Consent: [resource-specific consent](https://learn.microsoft.com/microsoftteams/platform/graph-api/rsc/resource-specific-consent).
+- Agent bots: [agent identity blueprints](https://learn.microsoft.com/entra/agent-id/agent-blueprint), [agent identities](https://learn.microsoft.com/entra/agent-id/agent-identities), [publishing to the catalog](https://learn.microsoft.com/graph/api/teamsapp-publish), [approving custom apps](https://learn.microsoft.com/microsoftteams/submit-approve-custom-apps), [directory limits](https://learn.microsoft.com/entra/identity/users/directory-service-limits-restrictions).
