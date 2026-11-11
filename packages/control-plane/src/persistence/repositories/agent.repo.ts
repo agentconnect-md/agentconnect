@@ -253,6 +253,8 @@ type RuntimeOverrides = {
   modelSelection?: AgentModelSelection
   // The model an `auto` coordinator runs on (auto-session-mode.md §5.4); absent means Default.
   coordinatorModel?: CoordinatorModel
+  // The coordinator is off (auto-session-mode.md §3.6); absent means on.
+  coordinatorDisabled?: true
   // The Decision gate on each chat API the agent added (shared-bot-relay.md §10.4).
   apiGates?: AgentApiGates
   // Which memory backend the agent uses (managed | native | external). Stored in
@@ -421,6 +423,7 @@ function toRecord(a: AgentWithUsers): AgentRecord {
     decisionIds: ov.decisionIds ?? [],
     ...(ov.modelSelection ? { modelSelection: ov.modelSelection } : {}),
     ...(ov.coordinatorModel ? { coordinatorModel: ov.coordinatorModel } : {}),
+    ...(ov.coordinatorDisabled ? { coordinatorDisabled: true as const } : {}),
     apiGates: ov.apiGates ?? {},
     ...repositorySelectorOf(a),
     managedSkills: a.managedSkills,
@@ -557,6 +560,7 @@ export class PgAgentRepo implements AgentRepo {
             ...(input.decisionIds ? { decisionIds: input.decisionIds } : {}),
             ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
             ...(input.coordinatorModel ? { coordinatorModel: input.coordinatorModel } : {}),
+            ...(input.coordinatorDisabled ? { coordinatorDisabled: true } : {}),
             ...(input.memory ? { memory: input.memory } : {}),
             ...(input.computerUse ? { computerUse: input.computerUse } : {})
           },
@@ -696,6 +700,7 @@ export class PgAgentRepo implements AgentRepo {
       patch.decisionIds !== undefined ||
       patch.modelSelection !== undefined ||
       patch.coordinatorModel !== undefined ||
+      patch.coordinatorDisabled !== undefined ||
       patch.apiGates !== undefined ||
       patch.memory !== undefined ||
       patch.computerUse !== undefined ||
@@ -799,6 +804,10 @@ export class PgAgentRepo implements AgentRepo {
       if (patch.coordinatorModel !== undefined) {
         if (patch.coordinatorModel === null) delete next.coordinatorModel
         else next.coordinatorModel = patch.coordinatorModel
+      }
+      if (patch.coordinatorDisabled !== undefined) {
+        if (patch.coordinatorDisabled) next.coordinatorDisabled = true
+        else delete next.coordinatorDisabled
       }
       if (patch.apiGates !== undefined) {
         if (patch.apiGates === null || Object.keys(patch.apiGates).length === 0) delete next.apiGates

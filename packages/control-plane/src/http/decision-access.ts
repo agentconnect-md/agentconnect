@@ -118,11 +118,12 @@ async function servingDaemonFeatures(
     .map((conn) => conn?.capabilities?.features ?? [])
 }
 
-/** Why a conversation this agent serves cannot be set to `auto` (auto-session-mode.md §3.1): no connected daemon, or one that does not read it. */
+/** Why a conversation this agent serves cannot be set to `auto` (auto-session-mode.md §3.1, §3.6): its coordinator is off, no connected daemon, or one that does not read it. */
 export async function autoSessionModeRefusal(
   deps: Pick<HttpDeps, 'placementResolver' | 'daemonConns'>,
   agent: AgentRecord
 ): Promise<string | undefined> {
+  if (agent.coordinatorDisabled) return 'The coordinator is off for this agent; turn it on to use Auto.'
   const served = await servingDaemonFeatures(deps, agent)
   if (served.length === 0) return 'No daemon serving this agent is connected.'
   if (served.some((features) => !autoSessionModeSupported(features))) return 'Upgrade the daemon to use Auto.'

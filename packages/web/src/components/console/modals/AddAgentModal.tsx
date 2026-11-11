@@ -183,6 +183,7 @@ export default function AddAgentModal({
   const [modelSelection, setModelSelection] = useState<AgentModelSelection | null>(null)
   const [modelSelectionValid, setModelSelectionValid] = useState(true)
   const [coordinatorModel, setCoordinatorModel] = useState<CoordinatorModel | null>(null)
+  const [coordinatorDisabled, setCoordinatorDisabled] = useState(false)
   const [effort, setEffort] = useState(seed.effort)
   const [fastMode, setFastMode] = useState(seed.fastMode)
   const [outputMode, setOutputMode] = useState<OutputMode>(seed.outputMode ?? DEFAULT_AGENT_OUTPUT_MODE)
@@ -900,6 +901,7 @@ export default function AddAgentModal({
         ...(selectedModel ? { model: selectedModel } : {}),
         ...(modelSelection ? { modelSelection } : {}),
         ...(coordinatorModel ? { coordinatorModel } : {}),
+        ...(coordinatorDisabled ? { coordinatorDisabled } : {}),
         ...(description.trim() ? { description: description.trim() } : {}),
         ...(placement?.kind === 'pool'
           ? { placementKind: 'pool' as const }
@@ -1122,7 +1124,9 @@ export default function AddAgentModal({
                   { runtime: effectiveRuntime, model: selectedModel, coordinatorModel },
                   modelSource
                 ),
-                onChange: setCoordinatorModel
+                onChange: setCoordinatorModel,
+                disabled: coordinatorDisabled,
+                onDisabledChange: setCoordinatorDisabled
               }}
               onFallbackChange={(target) => {
                 const switched = target.runtime !== effectiveRuntime

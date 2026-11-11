@@ -591,6 +591,8 @@ export interface Agent {
   modelSelection?: AgentModelSelection | null
   /** The model an `auto` coordinator runs on; null ⇒ Default, a small model of its runtime. */
   coordinatorModel?: CoordinatorModel | null
+  /** The coordinator is off: Auto is unavailable and Auto conversations run Single session. */
+  coordinatorDisabled?: boolean
   /** The evaluator that chooses which `decision` repositories a new session checks out. */
   repositorySelector?: AgentRepositorySelector | null
   /** Authoritative runtime id (e.g. 'claude' | 'codex' | 'opencode' | 'claude-acp').

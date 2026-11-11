@@ -15,13 +15,14 @@ export function openConversationTrigger(
   return mode === 'off' ? 'off' : 'mention'
 }
 
-/** The kinds a new conversation starts on Auto in (auto-session-mode.md §3.2): rooms and group DMs its platform keys one session for, once the bot's daemon reads Auto, unless its agent starts new rooms on Mention or Off. */
+/** The kinds a new conversation starts on Auto in (auto-session-mode.md §3.2): rooms and group DMs its platform keys one session for, once the bot's daemon reads Auto, unless its agent starts new rooms on Mention or Off or has its coordinator off (§3.6). */
 export function autoConversationKinds(
   platform: string,
   features: readonly string[] | undefined,
-  mode?: NewConversationMode | null
+  mode?: NewConversationMode | null,
+  coordinatorDisabled?: boolean
 ): readonly ConversationKind[] {
-  if (mode === 'mention' || mode === 'off') return []
+  if (mode === 'mention' || mode === 'off' || coordinatorDisabled) return []
   if (!autoSessionModeSupported(features)) return []
   return manifestFor(platform).appendKinds.filter((kind) => kind !== 'im')
 }

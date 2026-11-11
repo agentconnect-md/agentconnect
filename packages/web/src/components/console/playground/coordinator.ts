@@ -3,13 +3,14 @@ import { agentCapabilitySource, type Agent, type DaemonRow, type MemberSetRow } 
 import { autoSessionModeSupported } from '@/lib/session-mode'
 import { protocolFor } from './selector'
 
-/** Whether opening this agent enters the member's coordinator: its daemon reads Auto and its webchat runs the legacy protocol. */
+/** Whether opening this agent enters the member's coordinator: its coordinator is on, its daemon reads Auto and its webchat runs the legacy protocol. */
 export function opensCoordinator(
   agent: Agent,
   daemons: readonly DaemonRow[],
   memberSets: readonly Pick<MemberSetRow, 'setId'>[]
 ): boolean {
   return (
+    !agent.coordinatorDisabled &&
     autoSessionModeSupported(agentCapabilitySource(agent, daemons, memberSets)?.caps?.features) &&
     protocolFor([agent]) === 'legacy'
   )

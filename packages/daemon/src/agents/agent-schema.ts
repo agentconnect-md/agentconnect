@@ -206,6 +206,8 @@ export const AgentSchema = z.object({
   modelSelection: AgentModelSelection.optional(),
   // The model an `auto` coordinator runs on (auto-session-mode.md §5.4); absent is Default. CP-owned.
   coordinatorModel: CoordinatorModel.optional(),
+  // The coordinator is off (auto-session-mode.md §3.6): `auto` runs as `append`; absent is on. CP-owned.
+  coordinatorDisabled: z.literal(true).optional(),
   // The Decision gate each chat API turn must pass before admission (shared-bot-relay.md §10.4); CP-owned.
   apiGates: AgentApiGateProjections.optional(),
   // The evaluator the per-session repository selector asks (multi-repository-workspaces.md decision 15); CP-owned.

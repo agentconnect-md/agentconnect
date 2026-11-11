@@ -78,6 +78,7 @@ function RowSettings({
   gateOwnsTrigger = false,
   assistantMode = false,
   autoReady = false,
+  coordinatorOff = false,
   routed = false,
   onTrigger,
   onSessionMode
@@ -88,6 +89,8 @@ function RowSettings({
   assistantMode?: boolean
   /** The conversation's consumer runs on a daemon that reads Auto (auto-session-mode.md §3.1). */
   autoReady?: boolean
+  /** The consumer's coordinator is off: no Auto, and an Auto row runs Single session (auto-session-mode.md §3.6). */
+  coordinatorOff?: boolean
   /** A shared bot's By decision routing owns the row, which Auto never runs behind (§3.3). */
   routed?: boolean
   channel: IntegrationChannelRow
@@ -151,8 +154,11 @@ function RowSettings({
     label: translate('sessionMode.auto'),
     hint: translate('sessionMode.autoHint', { room: here })
   }
+  // An Auto row of a consumer whose coordinator is off runs Single session, as the projection sends it.
+  const storedMode = coordinatorOff && channel.sessionMode === 'auto' ? 'append' : (channel.sessionMode ?? 'createNew')
   // Auto only where the consumer's daemon reads it and never behind By decision or routing (auto-session-mode.md §3.3); a row on it keeps it listed.
-  const autoOffered = channel.sessionMode === 'auto' || (autoReady && trigger !== 'decision' && !routed)
+  const autoOffered =
+    !coordinatorOff && (channel.sessionMode === 'auto' || (autoReady && trigger !== 'decision' && !routed))
   const sessions = (
     [
       {
@@ -177,11 +183,11 @@ function RowSettings({
   // Mirrors the projection: an assistant-mode place runs on its coordinator where the daemon reads Auto, else on one session, unless a decision gates it.
   const fixedSession: SessionMode | null =
     assistantMode && trigger !== 'decision' && sessions.some((o) => o.value === 'append')
-      ? autoReady
+      ? autoReady && !coordinatorOff
         ? 'auto'
         : 'append'
       : null
-  const sessionValue: SessionMode = fixedSession ?? channel.sessionMode ?? 'createNew'
+  const sessionValue: SessionMode = fixedSession ?? storedMode
   const off = trigger === 'off'
   const offOption = plainRespond.find((o) => o.value === 'off')
   const respondOn = plainRespond.filter((o) => o.value !== 'off')
@@ -213,7 +219,7 @@ function RowSettings({
         fixedSession === 'auto' ? [autoOption] : fixedSession ? sessions.filter((o) => o.value === 'append') : sessions,
       value: off ? '' : sessionValue,
       onPick: async (value) => {
-        if (!fixedSession && value !== (channel.sessionMode ?? 'createNew')) await onSessionMode(value as SessionMode)
+        if (!fixedSession && value !== storedMode) await onSessionMode(value as SessionMode)
         if (off) await onTrigger(resumeTrigger)
       }
     })
@@ -899,10 +905,14 @@ export function IntegrationChannelList({
     const explicit = c.agentId ?? owners?.get(c.channelId)
     return (explicit ? members.find((m) => m.id === explicit) : undefined) ?? members[0]
   }
-  // Auto reaches the conversation's consumer, a shared bot's row owner or else this page's agent, only on a daemon that reads it.
-  const autoReady = (c: IntegrationChannelRow) => {
+  // The conversation's consumer: a shared bot's row owner, else this page's agent.
+  const consumerOf = (c: IntegrationChannelRow) => {
     const consumerId = shareable ? (defaultAgent(c)?.id ?? agentId) : agentId
-    const consumer = consumerId ? agents.find((a) => a.id === consumerId) : undefined
+    return consumerId ? agents.find((a) => a.id === consumerId) : undefined
+  }
+  // Auto reaches the consumer only on a daemon that reads it.
+  const autoReady = (c: IntegrationChannelRow) => {
+    const consumer = consumerOf(c)
     return (
       !!consumer &&
       autoSessionModeSupported(agentCapabilitySource(consumer, daemons ?? [], memberSets ?? [])?.caps.features)
@@ -1055,6 +1065,7 @@ export function IntegrationChannelList({
                 }
                 assistantMode={assistantMode}
                 autoReady={autoReady(c)}
+                coordinatorOff={consumerOf(c)?.coordinatorDisabled === true}
                 routed={shareable && managedByRouting(c)}
                 onTrigger={(next) => pickTrigger(c, next)}
                 onSessionMode={(mode) => setChannelSessionMode(integrationId!, c.channelId, mode)}

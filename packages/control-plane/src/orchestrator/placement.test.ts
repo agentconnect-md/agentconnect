@@ -242,6 +242,27 @@ describe('assistant-mode places', () => {
     ])
   })
 
+  // auto-session-mode.md §3.6: with the coordinator off an assistant-mode place stays one session and never becomes Auto.
+  it('keeps assistant-mode places unmarked with the coordinator off', async () => {
+    const spec = await specOf(INTEGRATION, SECRET, rows(), { ...ASSISTANT, coordinatorDisabled: true })
+    expect(spec.core.sessionModes.filter((m) => m.mode === 'append')).toEqual([
+      { channel: 'C1', mode: 'append' },
+      { channel: 'C2', mode: 'append' },
+      { channel: 'C3', mode: 'append' },
+      { channel: 'D1', mode: 'append' },
+      { channel: 'G1', mode: 'append' },
+      { channel: 'C5', mode: 'append' }
+    ])
+  })
+
+  it('sends an Auto row as Single session while the coordinator is off, and as Auto once it is back on', async () => {
+    const auto = [channel('C1', 'mention', 'channel', 'auto'), channel('C2', 'any', 'channel', 'createNew')]
+    const off = await specOf(INTEGRATION, SECRET, auto, { ...OFF, coordinatorDisabled: true })
+    expect(off.core.sessionModes).toEqual([{ channel: 'C1', mode: 'append' }])
+    const on = await specOf(INTEGRATION, SECRET, auto, OFF)
+    expect(on.core.sessionModes).toEqual([{ channel: 'C1', mode: 'auto' }])
+  })
+
   it("restores every row's own mode once assistant mode is off", async () => {
     for (const owner of [undefined, OFF, RESTRICTED]) {
       const spec = await specOf(INTEGRATION, SECRET, rows(), owner)

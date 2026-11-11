@@ -190,7 +190,8 @@ export function rulesFromAgent(
   for (const int of agent.integrations) {
     const routing = integrationRouting(int)
     const { staticBotUserId, mutedChannels } = routing
-    const bindRules = [...routing.bindRules, ...(opts.autoSessionMode ? autoConversationRules(int, routing) : [])]
+    const auto = opts.autoSessionMode && !agent.coordinatorDisabled
+    const bindRules = [...routing.bindRules, ...(auto ? autoConversationRules(int, routing) : [])]
     const botUserId = botUserIds[int.id] ?? staticBotUserId ?? ''
     for (const br of bindRules) {
       out.push({

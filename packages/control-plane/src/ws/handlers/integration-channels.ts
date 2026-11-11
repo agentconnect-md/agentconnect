@@ -87,7 +87,8 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
     const autoKinds = autoConversationKinds(
       integration.platform,
       deps.connReg.get(conn.daemonId)?.capabilities?.features,
-      newConversationMode
+      newConversationMode,
+      owner?.coordinatorDisabled
     )
     const written = await deps.integrationChannel.replaceSnapshot(
       integration.id,

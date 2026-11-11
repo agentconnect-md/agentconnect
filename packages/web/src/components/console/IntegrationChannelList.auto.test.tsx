@@ -15,7 +15,8 @@ import { SESSION_MODE_AUTO_FEATURE } from '@/lib/session-mode'
 const data = vi.hoisted(() => ({
   setChannelTrigger: vi.fn(async (..._args: unknown[]) => undefined),
   setChannelSessionMode: vi.fn(async (..._args: unknown[]) => undefined),
-  features: [] as string[]
+  features: [] as string[],
+  coordinatorDisabled: false
 }))
 
 vi.mock('next/navigation', () => ({
@@ -35,7 +36,16 @@ vi.mock('@/lib/data-context', () => ({
     forgetChannel: vi.fn(),
     leaveConversation: vi.fn(),
     bots: [{ id: 'bot-1', name: 'Support bot', agentIds: ['agent-1'] }],
-    agents: [{ id: 'agent-1', name: 'helper', displayName: 'Helper', runtime: 'claude', daemon: 'daemon-1' }],
+    agents: [
+      {
+        id: 'agent-1',
+        name: 'helper',
+        displayName: 'Helper',
+        runtime: 'claude',
+        daemon: 'daemon-1',
+        coordinatorDisabled: data.coordinatorDisabled
+      }
+    ],
     daemons: [
       { daemonId: 'daemon-1', pool: false, status: 'online', caps: { features: data.features, platforms: ['slack'] } }
     ],
@@ -83,6 +93,7 @@ beforeEach(() => {
   data.setChannelTrigger.mockReset().mockResolvedValue(undefined)
   data.setChannelSessionMode.mockReset().mockResolvedValue(undefined)
   data.features.splice(0, data.features.length, SESSION_MODE_AUTO_FEATURE)
+  data.coordinatorDisabled = false
 })
 
 afterEach(async () => {
@@ -155,6 +166,18 @@ describe('Auto in a conversation’s settings', () => {
     data.features.splice(0, data.features.length)
     await render([room()])
     await click(settings('Settings for general: Per thread, @-mentions'))
+    expect(options()).not.toContain('Auto')
+  })
+
+  // auto-session-mode.md §3.6: with the coordinator off an Auto row reads as Single session and Auto is offered nowhere.
+  it('shows an Auto row as Single session with the coordinator off, offers no Auto, and keeps its stored mode', async () => {
+    data.coordinatorDisabled = true
+    await render([room({ sessionMode: 'auto', trigger: 'mention' }), room({ channelId: 'C2', name: 'random' })])
+    await click(settings('Settings for general: Single session, @-mentions'))
+    expect(options()).toEqual(['Per thread', 'Single session', '@-mentions', 'All messages', 'Off'])
+    await click(option('Single session'))
+    expect(data.setChannelSessionMode).not.toHaveBeenCalled()
+    await click(settings('Settings for random: Per thread, @-mentions'))
     expect(options()).not.toContain('Auto')
   })
 

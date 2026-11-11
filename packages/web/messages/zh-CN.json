@@ -3284,7 +3284,11 @@
         "target": "设置哪个模型",
         "task": "任务",
         "coordinator": "协调会话",
-        "plusCoordinator": "+ 协调会话 {model}"
+        "plusCoordinator": "+ 协调会话 {model}",
+        "plusCoordinatorOff": "+ 协调会话已关闭",
+        "coordinatorOff": "协调会话已关闭",
+        "disableCoordinator": "关闭协调会话",
+        "disableCoordinatorHelp": "不再提供 Auto 会话模式：Auto 会话改按单一会话运行，重新选择协调模型即可恢复"
       }
     },
     "detail": {
@@ -3368,7 +3372,8 @@
         "safeMoveBody": "请先让 {daemon} 上线，再安全迁移此 Agent。",
         "openRecovery": "打开恢复选项",
         "runtimeAndModel": "Runtime 和模型",
-        "coordinator": "协调会话"
+        "coordinator": "协调会话",
+        "coordinatorOff": "已关闭"
       },
       "runtime": {
         "title": "Runtime",

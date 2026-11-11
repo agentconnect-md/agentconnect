@@ -847,7 +847,8 @@ export class HttpBotOrchestrator {
     return autoConversationKinds(
       platform,
       daemonId ? this.control.daemonFeatures?.(daemonId) : undefined,
-      agent.newConversationMode
+      agent.newConversationMode,
+      agent.coordinatorDisabled
     )
   }
 
@@ -1590,8 +1591,8 @@ export class HttpBotOrchestrator {
         continue
       }
       let match: BindMatch = c.trigger === 'any' ? { kind: 'auto' } : { kind: 'mention' }
-      // Under Auto the owner's coordinator decides every message (auto-session-mode.md §3.3), once its daemon is known to read Auto.
-      if (c.sessionMode === 'auto' && match.kind !== 'auto') {
+      // Under Auto the owner's coordinator decides every message (auto-session-mode.md §3.3), once its daemon reads Auto; with it off the row keeps its trigger (§3.6).
+      if (c.sessionMode === 'auto' && match.kind !== 'auto' && !agentById.get(c.agentId)?.coordinatorDisabled) {
         if (autoSessionModeSupported(this.control.daemonFeatures?.(p.daemonId))) match = { kind: 'auto' }
         else autoHeldFor.add(p.daemonId)
       }

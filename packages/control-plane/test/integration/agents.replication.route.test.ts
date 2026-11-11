@@ -210,6 +210,7 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
         decisionIds: [decisionId],
         modelSelection,
         coordinatorModel: null, // always shipped value-or-null so a return to Default replicates
+        coordinatorDisabled: false, // always shipped so turning the coordinator back on replicates
         modelProvider: null,
         apiGates: {}, // always shipped so removing the last chat API gate replicates
         repositorySelector: null, // always shipped value-or-null so clearing the evaluator replicates
@@ -285,6 +286,24 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
     expect(clear.statusCode).toBe(200)
     expect(clear.json()).toMatchObject({ coordinatorModel: null })
     expect(spy.upserts.at(-1)!.u.spec.coordinatorModel).toBeNull()
+  })
+
+  // auto-session-mode.md §3.6: the coordinator switch replicates both ways and keeps the chosen coordinator model.
+  it('replicates turning the coordinator off and back on', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON })
+    const { app, spy } = withSpy()
+    const coordinatorModel = { runtime: 'codex-acp', model: 'model-small', effort: 'low' }
+    const patch = (payload: Record<string, unknown>) =>
+      app.app.inject({ method: 'PATCH', url: `${ORG}/agents/${agentId}`, payload })
+    const off = await patch({ coordinatorModel, coordinatorDisabled: true })
+    expect(off.statusCode).toBe(200)
+    expect(off.json()).toMatchObject({ coordinatorDisabled: true, coordinatorModel })
+    expect(spy.upserts.at(-1)!.u.spec).toMatchObject({ coordinatorDisabled: true, coordinatorModel })
+    const on = await patch({ coordinatorDisabled: false })
+    expect(on.json()).toMatchObject({ coordinatorDisabled: false, coordinatorModel })
+    expect(spy.upserts.at(-1)!.u.spec).toMatchObject({ coordinatorDisabled: false, coordinatorModel })
   })
 
   it('PATCHed secrets replicate on the wire spec (values from the AgentSecretStore, never the DTO)', async () => {

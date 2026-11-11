@@ -252,6 +252,7 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
       decisionIds: [],
       modelSelection: null,
       coordinatorModel: null, // always shipped value-or-null so a return to Default replicates
+      coordinatorDisabled: false, // always shipped so turning the coordinator back on replicates
       modelProvider: null,
       apiGates: {}, // always shipped so removing the last chat API gate replicates
       repositorySelector: null, // always shipped value-or-null so clearing the evaluator replicates

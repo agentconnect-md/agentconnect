@@ -2147,6 +2147,45 @@ describe('PATCH /integrations/:id/channels/:channelId — session mode', () => {
     expect(spy.upserts.at(-1)!.u.core!.sessionModes).toEqual([{ channel: 'C1', mode: 'auto' }])
   })
 
+  // auto-session-mode.md §3.6: with the coordinator off Auto is refused and an Auto row runs Single session; its stored mode returns with it.
+  it('runs an Auto row as Single session while the coordinator is off and refuses Auto until it is back on', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    const conn = { state: 'READY', capabilities: { features: [SESSION_MODE_AUTO_V1_FEATURE] } }
+    running = buildHttpApp(prisma, undefined, { get: () => conn } as never, spy as unknown as ControlSender)
+    const id = await install(running)
+    const { agentId } = await prisma.integration.findUniqueOrThrow({ where: { id }, select: { agentId: true } })
+    await report(DAEMON, id, [
+      { id: 'C1', name: 'deploys' },
+      { id: 'C2', name: 'support' }
+    ])
+    const setAuto = (channel: string) =>
+      running!.app.inject({
+        method: 'PATCH',
+        url: `${ORG}/integrations/${id}/channels/${channel}`,
+        payload: { sessionMode: 'auto' }
+      })
+    const coordinator = (coordinatorDisabled: boolean) =>
+      running!.app.inject({ method: 'PATCH', url: `${ORG}/agents/${agentId}`, payload: { coordinatorDisabled } })
+    expect((await setAuto('C1')).statusCode).toBe(200)
+
+    spy.upserts.length = 0
+    const off = await coordinator(true)
+    expect(off.statusCode).toBe(200)
+    expect(off.json()).toMatchObject({ coordinatorDisabled: true })
+    expect(spy.upserts.at(-1)!.u.core!.sessionModes).toEqual([{ channel: 'C1', mode: 'append' }])
+    expect((await modesOf(id)).get('C1')).toBe('auto')
+    const refused = await setAuto('C2')
+    expect(refused.statusCode).toBe(409)
+    expect(refused.json()).toMatchObject({ code: 'SESSION_MODE_UNSUPPORTED' })
+
+    spy.upserts.length = 0
+    const on = await coordinator(false)
+    expect(on.json()).toMatchObject({ coordinatorDisabled: false })
+    expect(spy.upserts.at(-1)!.u.core!.sessionModes).toEqual([{ channel: 'C1', mode: 'auto' }])
+    expect((await setAuto('C2')).statusCode).toBe(200)
+  })
+
   // auto-session-mode.md §3.2: new rooms and group DMs start on Auto where the bot's daemon reads it; DMs and known rows never change.
   it('starts a new room and group DM on Auto for a daemon that reads it, and pushes them', async () => {
     await seedDaemon(prisma, DAEMON)

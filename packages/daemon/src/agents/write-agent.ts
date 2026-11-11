@@ -780,6 +780,8 @@ export function applySpecFields(
   else if (spec.modelSelection !== undefined) raw.modelSelection = spec.modelSelection
   if (spec.coordinatorModel === null) delete raw.coordinatorModel
   else if (spec.coordinatorModel !== undefined) raw.coordinatorModel = spec.coordinatorModel
+  if (spec.coordinatorDisabled === true) raw.coordinatorDisabled = true
+  else if (spec.coordinatorDisabled === false) delete raw.coordinatorDisabled
   // Always shipped by a current CP, so {} clears the last gate.
   if (spec.apiGates !== undefined) {
     if (Object.keys(spec.apiGates).length === 0) delete raw.apiGates

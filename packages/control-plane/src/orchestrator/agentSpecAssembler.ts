@@ -585,6 +585,8 @@ export function agentRecordToSpec(
     modelSelection: a.modelSelection ?? null,
     // Value or null, so a return to Default replicates.
     coordinatorModel: a.coordinatorModel ?? null,
+    // Always shipped, so turning the coordinator back on replicates.
+    coordinatorDisabled: a.coordinatorDisabled === true,
     // Always shipped, so removing the last gate replicates.
     apiGates,
     // Value or null, so clearing the evaluator replicates; the daemon digests null as the absent field.

@@ -522,6 +522,8 @@ export const AgentSpec = z.object({
   modelSelection: AgentModelSelection.nullable().optional(),
   // The model an `auto` coordinator runs on (auto-session-mode.md §5.4); null is Default, absent leaves it unchanged.
   coordinatorModel: CoordinatorModel.nullable().optional(),
+  // The coordinator is off (auto-session-mode.md §3.6); a current CP always ships it, absent leaves it unchanged.
+  coordinatorDisabled: z.boolean().optional(),
   // The Decision gate on each chat API the agent added, with its Decisions (shared-bot-relay.md §10.4); a current CP ships it, {} when none.
   apiGates: AgentApiGateProjections.optional(),
   // The evaluator the per-session repository selector asks (multi-repository-workspaces.md decision 15); a current CP ships value or null.

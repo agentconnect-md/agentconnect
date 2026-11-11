@@ -191,7 +191,7 @@ function leaseToGrant(l: LeaseRecord): SecretsGrant {
 const DEFAULT_BIND_RULES: IntegrationBindRule[] = [{ match: { kind: 'mention' } }, { match: { kind: 'dm' } }]
 
 /** What the spec projection reads off an integration's agent: its gating and its places' session modes. */
-export type SpecOwner = Pick<AgentRecord, 'visibility' | 'assistantMode'>
+export type SpecOwner = Pick<AgentRecord, 'visibility' | 'assistantMode' | 'coordinatorDisabled'>
 
 /** Assistant mode is on (assistant-mode.md §5.1). */
 export const isAssistantModeAgent = (a: Pick<AgentRecord, 'assistantMode'>): boolean =>
@@ -291,16 +291,17 @@ function mutedChannelIds(channels: IntegrationChannelRecord[], gated: boolean): 
   return channels.filter((c) => c.trigger === 'off').map((c) => c.channelId)
 }
 
-/** Per-conversation session modes (channel-session-mode.md §4): sparse, but complete where `appendKinds` forces one session per place, so the daemon's default for an unseen place never overrides a known row. */
+/** Per-conversation session modes (channel-session-mode.md §4): sparse, but complete where `appendKinds` forces one session per place; with the coordinator off every `auto` is `append` (auto-session-mode.md §3.6). */
 function sessionModeEntries(
   channels: IntegrationChannelRecord[],
-  appendKinds: readonly AppendConversationKind[] = []
+  appendKinds: readonly AppendConversationKind[] = [],
+  coordinatorOff = false
 ): ProjectedSessionMode[] {
   return channels
     .map((c): ProjectedSessionMode =>
       forcedAppend(c, appendKinds)
-        ? { channel: c.channelId, mode: 'append', assistantPlace: true }
-        : { channel: c.channelId, mode: c.sessionMode }
+        ? { channel: c.channelId, mode: 'append', ...(coordinatorOff ? {} : { assistantPlace: true as const }) }
+        : { channel: c.channelId, mode: coordinatorOff && c.sessionMode === 'auto' ? 'append' : c.sessionMode }
     )
     .filter((entry) => appendKinds.length > 0 || entry.mode !== 'createNew')
 }
@@ -370,7 +371,7 @@ export async function integrationToSpec(
     bindRules,
     mutedChannels,
     gated,
-    sessionModes: sessionModeEntries(channels, forcedAppendKinds(i, owner)),
+    sessionModes: sessionModeEntries(channels, forcedAppendKinds(i, owner), owner?.coordinatorDisabled === true),
     externalChannels: externalChannelIds(channels),
     decisions: decisionBundleOf(channels),
     chatAuthority: await chatAuthorityOf(platforms, chatAuthority, i)
@@ -402,7 +403,7 @@ export async function httpIntegrationToSpec(
     bindRules: gated ? gatedBindRules(channels) : [],
     mutedChannels: [...mutedChannelIds(channels, gated), ...(gated ? [] : heldDecisionChannels(channels))],
     gated,
-    sessionModes: sessionModeEntries(channels, forcedAppendKinds(i, owner)),
+    sessionModes: sessionModeEntries(channels, forcedAppendKinds(i, owner), owner?.coordinatorDisabled === true),
     externalChannels: externalChannelIds(channels),
     decisions: decisionBundleOf(channels),
     chatAuthority: await chatAuthorityOf(platforms, chatAuthority, i)

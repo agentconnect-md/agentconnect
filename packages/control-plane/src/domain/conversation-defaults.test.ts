@@ -45,6 +45,15 @@ describe("an agent's new-conversation mode", () => {
     }
   })
 
+  // auto-session-mode.md §3.6: an agent whose coordinator is off starts new rooms Per thread whatever its mode.
+  it('starts a room Per thread with the coordinator off', () => {
+    for (const mode of ['auto', null, 'mention'] as const) {
+      expect(autoConversationKinds('slack', reads, mode, true)).toEqual([])
+      expect(openConversationTrigger({ kind: 'channel' }, mode)).toBe('mention')
+    }
+    expect(autoConversationKinds('slack', reads, 'auto', false)).toEqual(['channel', 'mpim'])
+  })
+
   it('Mention starts a room on Mention, Per thread, even where the daemon reads Auto', () => {
     expect(autoConversationKinds('slack', reads, 'mention')).toEqual([])
     expect(openConversationTrigger({ kind: 'channel' }, 'mention')).toBe('mention')
