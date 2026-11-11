@@ -3961,6 +3961,11 @@ A headless cron, or one that targets another channel, is not listed. Schedules a
 their own because a cron is not a task: it has no asker and no status. The page ends with when it
 was last updated and a link to the agent in the console.
 
+While the agent is paused (§1.4), the page opens with a line saying so: no task runs and no
+follow-up is checked until it is resumed in the console. Without it, a paused agent's next checks
+read as overdue work that broke. Pausing and resuming each rewrite the page, since the state is
+part of its digest.
+
 - _Never on it_: ids (§5.18 ④ "Never show an id to people"), summaries, observations, check
   results, proposal text, and other places' work. For a cron: its trigger prompt, which its anchor
   never shows either, who created or last edited it, its console visibility, and a failed run's
