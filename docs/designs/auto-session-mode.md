@@ -1217,7 +1217,11 @@ ended in the sentinel alone 6 / 6, and the batches replied by `replyToMessage`. 
 passed 57 / 63: answering in text, the model skipped `listTasks` in `webchat-elsewhere-status` and
 answered from the board, without the pull request its summary names. The prompt now says the board
 only names tasks and a status answer comes from `listTasks`, after which that scenario passed 3 / 3.
-A one-message reply takes one call fewer, so a turn averaged 6.4 s where it took 8.0 s.
+A one-message reply takes one call fewer, so a turn averaged 6.4 s where it took 8.0 s. Those runs
+had the role lines of #3978 and its `role-alert` scenario, since reverted; on the prompt without
+them the new form passed 58 / 60 (20 scenarios), the two degraded runs again `elsewhere-read-task`,
+`ignore-chatter` and `ignore-peer` silent 6 / 6, and a vague mention answered in text with a
+question back rather than a task.
 
 Two findings changed the design. A bare Slack timestamp as the message id was passed as a number by
 `qoder`, losing its trailing zeros, so ids carry a `msg-` prefix (§4.3). `github-copilot-cli` posted
