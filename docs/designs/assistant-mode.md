@@ -5312,7 +5312,12 @@ approver as its asker and no model turn. A proposal may now have no source task:
 the conversation and thread instead, and Activity names it by its own id. §5.12's `followUp` rules
 point there.
 
-**Hundred-and-first revision (2026-11-11)**: a report from the check that ended a follow-up tells
+**Hundred-and-first revision (2026-11-11)**: threaded tasks stay outside `maxConcurrentSubsessions`
+([auto-session-mode.md](auto-session-mode.md) §6.2, #3970). The cap bounds the tasks an agent opens
+by its own decision. A threaded task opens only for a person's message or approval, one each, as a
+Per thread session did. Nothing in the code changes.
+
+**Hundred-and-second revision (2026-11-11)**: a report from the check that ended a follow-up tells
 its conversation that the follow-up has ended and nothing is left to close (§5.12), and a check's
 rules keep "can be closed" out of the report itself; before, the conversation's session had to guess
 the end from the task list and passed the phrase on. A coordinator's reply on Slack carries the

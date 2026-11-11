@@ -464,6 +464,15 @@ its parent both ways: tightening the parent tightens it, and widening widens it
 ([session-visibility.md](session-visibility.md) §4.5). A webchat coordinator's task is the
 exception (§10).
 
+`maxConcurrentSubsessions` bounds the tasks an agent opens by its own decision. On a daemon whose
+Auto switch is off, a session's `delegateTask` opens a background task with no person's message
+behind it, any number in one turn, and the cap is what stops that. A threaded task does not open
+that way: the coordinator opens one only for a person's message delivered in the turn, and a thread
+belongs to one task (§5.1, §6.4), so a message opens at most one; an approved proposal opens one
+per approval (§6.9.1). People's messages and approvals bound it, which is all that ever bounded a
+Per thread session, so it stays outside the cap. Organization research and an approved proposal
+with no home (§6.9.6) run as background tasks and are counted (decided 2026-11-11, #3970).
+
 - A background task's coordinate and lineage already tell the Control Plane that it is a task.
 - A threaded task is a session on a platform thread. It is classified as any session there is, which
   in the coordinator's conversation is the coordinator's audience. Its daemon reports
@@ -668,8 +677,7 @@ place; a channel is a workspace the task earns.
 
 > Status: Built (§6.9.1, §6.9.2, §6.9.5), on a platform with approval cards and in a member's
 > webchat coordinator conversation. Proposed, not built: read-only tasks (§6.9.3), where
-> [assistant-mode.md](assistant-mode.md) §5.9 describes what runs. Whether a threaded task counts
-> against `maxConcurrentSubsessions` is not decided here (#3970).
+> [assistant-mode.md](assistant-mode.md) §5.9 describes what runs.
 
 **Why.** In one coordinator's channel, a getting-to-know report and one approved proposal left five
 top-level messages within four minutes: the introduction, two proposal cards, the approved
@@ -736,8 +744,8 @@ without cards run it as before. The follow-up form runs no task and is unchanged
   nothing later: approving already grants only what asking in the place gets.
 - **It reports nothing.** A task that answers in its own thread reports nothing (§6.8), so the
   coordinator has no result to relay. The work board and `readTask` carry its state.
-- **The cap.** Like every threaded task it is outside `maxConcurrentSubsessions`, so a full cap no
-  longer refuses the approval. #3970 decides whether threaded tasks should count.
+- **The cap.** Like every threaded task it is outside `maxConcurrentSubsessions` (§6.2), so a full
+  cap no longer refuses the approval. Each one starts on a person's approval.
 - **The card** settles as "Approved by …" with where the task answers: this thread, or a link to
   the root.
 - **Order of writes.** The decision is won before anything is posted, so a root never announces
@@ -923,9 +931,6 @@ Auto switch is off (§6.3).
 
 Open:
 
-- Whether threaded tasks count against `maxConcurrentSubsessions` (#3970). An approved proposal
-  starts from the agent's own check, not from a person's message, so outside the cap its approvals
-  are its only bound.
 - Whether a read-only task may call a user MCP server's tools that declare `readOnlyHint`. The
   hint is the server's own claim, so it is not enough alone; the likelier form is an
   organization's allow per server.

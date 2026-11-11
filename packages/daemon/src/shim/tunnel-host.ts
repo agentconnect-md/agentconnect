@@ -52,6 +52,9 @@ const CONNECT_QUEUE_FACTOR = 4
 /** How long a waiting CONNECT keeps its place before it is refused with 503. */
 export const CONNECT_QUEUE_WAIT_MS = 120_000
 
+/** How long a proxy tunnel's stream waits for the daemon's first byte, past a channel renewal, before its client is refused with 503. */
+export const CONNECT_ANSWER_MS = 30_000
+
 /** A CONNECT waiting for a stream on its full tunnel. */
 interface QueuedConnect {
   authority: ConnectAuthority
@@ -74,6 +77,8 @@ interface HostStream {
   tunnel: TunnelName
   /** Chunks emitted and acknowledged, on a stream whose daemon acknowledges them. */
   flow?: Flow
+  /** Armed until the daemon's first byte or ack, on a proxy tunnel's stream. */
+  answer?: NodeJS.Timeout
 }
 
 /** `held` is what a read brought past the window, sent as acks make room. */
@@ -160,6 +165,8 @@ export interface TunnelHostDeps {
   maxStreams?: number
   /** How long a CONNECT waits at a full proxy tunnel (a test seam). */
   connectQueueWaitMs?: number
+  /** How long an opened CONNECT waits for the daemon to answer (a test seam). */
+  connectAnswerMs?: number
   maxCodehostStreams?: number
   maxProviderStreams?: number
   /** Under `srt`: the code-host names the boundary routes to the codehost socket, which a `codehost` listen then serves. */
@@ -217,6 +224,10 @@ export class TunnelHost {
       return { ...listening, acks: true } satisfies TunnelListening
     }
     const stream = this.streams.get(parsed.streamId)
+    if (stream?.answer && (parsed.op === 'ack' || parsed.op === 'data')) {
+      clearTimeout(stream.answer)
+      delete stream.answer
+    }
     if (parsed.op === 'ack') {
       // An unknown id is ordinary, as for a close: the stream may have ended as the ack was in flight.
       if (stream?.flow) this.acknowledge(parsed.streamId, stream, stream.flow, parsed.received)
@@ -240,8 +251,9 @@ export class TunnelHost {
   /** Stop serving. Called on shim shutdown; the pod is going away with it. */
   close(): void {
     this.closed = true
-    for (const [streamId, { socket }] of [...this.streams]) {
+    for (const [streamId, { socket, answer }] of [...this.streams]) {
       this.streams.delete(streamId)
+      clearTimeout(answer)
       socket.destroy()
     }
     for (const socket of [...this.direct]) socket.destroy()
@@ -490,7 +502,24 @@ export class TunnelHost {
   private openConnect(tunnel: ProxyTunnelName, authority: ConnectAuthority, socket: Socket, head: Buffer): void {
     // A clean CONNECT for the daemon's proxy, so no client header (this listener's credential among them) leaves the machine.
     const connect = Buffer.from(`CONNECT ${authority.key} HTTP/1.1\r\nHost: ${authority.key}\r\n\r\n`)
-    this.open(tunnel, socket, head.length > 0 ? Buffer.concat([connect, head]) : connect)
+    const streamId = this.open(tunnel, socket, head.length > 0 ? Buffer.concat([connect, head]) : connect)
+    const stream = this.streams.get(streamId)
+    if (!stream) return
+    // The daemon's proxy answers a CONNECT at once, so silence means no daemon end: no bound channel, or one that never opened this tunnel.
+    const wait = this.deps.connectAnswerMs ?? CONNECT_ANSWER_MS
+    stream.answer = setTimeout(() => this.unanswered(streamId, stream, wait), wait)
+    stream.answer.unref?.()
+  }
+
+  /** Refuse a CONNECT the daemon never answered, which its client has seen no byte of, and end its stream on both sides. */
+  private unanswered(streamId: string, stream: HostStream, wait: number): void {
+    if (this.streams.get(streamId) !== stream) return
+    this.streams.delete(streamId)
+    this.deps.log?.warn(`shim: refusing a ${stream.tunnel} connection — the daemon did not answer within ${wait} ms`)
+    refuseConnect(stream.socket, 503, 'Service Unavailable')
+    stream.socket.resume()
+    this.deps.emit(streamId, { kind: 'exit', code: 1, signal: null, error: 'the daemon did not answer the connection' })
+    this.drain(stream.tunnel)
   }
 
   private connectDirect(authority: ConnectAuthority, socket: Socket, head: Buffer): void {
@@ -531,7 +560,7 @@ export class TunnelHost {
     return count
   }
 
-  private open(tunnel: TunnelName, socket: Socket, preface?: Buffer): void {
+  private open(tunnel: TunnelName, socket: Socket, preface?: Buffer): string {
     const streamId = randomUUID()
     const flow = this.acked.has(tunnel) ? { flow: { sent: 0, acked: 0 } } : {}
     this.streams.set(streamId, { socket, tunnel, ...flow })
@@ -544,6 +573,7 @@ export class TunnelHost {
     // `close` rather than `end`: a half-open peer that stops reading still ends the stream, and
     // the daemon side must learn about it or its own socket leaks.
     socket.on('close', () => this.finish(streamId, socket))
+    return streamId
   }
 
   // Sliced, one chunk per frame; a stream whose daemon acknowledges chunks sends up to its window and holds the rest.
@@ -587,6 +617,7 @@ export class TunnelHost {
     const stream = this.streams.get(streamId)
     if (stream?.socket !== socket) return
     this.streams.delete(streamId)
+    clearTimeout(stream.answer)
     socket.destroy()
     this.deps.emit(streamId, { kind: 'exit', code: error ? 1 : 0, signal: null, ...(error ? { error } : {}) })
     this.drain(stream.tunnel)
@@ -594,7 +625,9 @@ export class TunnelHost {
 
   // Unregistered first so its `close` reports no exit; `end` keeps the daemon's EOF, and resuming discards a paused client's unsent bytes so it can close.
   private end(streamId: string, socket: Socket): void {
-    const tunnel = this.streams.get(streamId)?.tunnel
+    const stream = this.streams.get(streamId)
+    const tunnel = stream?.tunnel
+    clearTimeout(stream?.answer)
     this.streams.delete(streamId)
     socket.end()
     socket.resume()
