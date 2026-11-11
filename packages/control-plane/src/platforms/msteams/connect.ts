@@ -15,11 +15,24 @@ export const MSTEAMS_CONNECT_SCOPES = [
 /** A Store install only proves its tenant (§8.4): the sign-in and the organization's name, no catalog or install scope. */
 export const MSTEAMS_STORE_CONNECT_SCOPES = ['https://graph.microsoft.com/User.Read', 'openid'] as const
 
+/** What a deployment with agent bots asks besides (§8.6.5): submitting a package for review, which a member does later, and creating the blueprint's principal. */
+export const MSTEAMS_AGENT_BOT_SCOPES = [
+  'https://graph.microsoft.com/AppCatalog.Submit',
+  'https://graph.microsoft.com/AgentIdentityBlueprintPrincipal.Create'
+] as const
+
 const AUTHORITY = 'https://login.microsoftonline.com/organizations/oauth2/v2.0'
 // A pinned tenant signs in at its own authority, so Entra offers only that tenant's accounts.
 const authorityOf = (tenant?: string) =>
   tenant ? `https://login.microsoftonline.com/${tenant}/oauth2/v2.0` : AUTHORITY
-const scopesOf = (tenant?: string) => (tenant ? MSTEAMS_STORE_CONNECT_SCOPES : MSTEAMS_CONNECT_SCOPES).join(' ')
+// A Store install asks only for its proof; a deployment with agent bots asks their two scopes too.
+const scopesOf = (tenant?: string, agentBots = false) =>
+  (tenant
+    ? MSTEAMS_STORE_CONNECT_SCOPES
+    : agentBots
+      ? [...MSTEAMS_CONNECT_SCOPES, ...MSTEAMS_AGENT_BOT_SCOPES]
+      : MSTEAMS_CONNECT_SCOPES
+  ).join(' ')
 const GRAPH = 'https://graph.microsoft.com/v1.0'
 const STATE_TTL_MS = 10 * 60_000
 const TIMEOUT_MS = 15_000
@@ -34,6 +47,10 @@ export interface MsTeamsConnectState {
   userId: string
   /** The tenant a Store install's Connect card named (§8.4): the sign-in must be of it, and nothing is published. */
   tenant?: string
+  /** The sign-in asks the agent bots' scopes too; the redemption must name the same set. */
+  agentBots?: boolean
+  /** The state of the tenant-wide consent that precedes the sign-in (§8.6.5); it redeems no code. */
+  consent?: boolean
 }
 
 /** Domain-separated keys from the pepper, one per purpose; the pepper itself never signs or encrypts. */
@@ -57,6 +74,8 @@ const StatePayload = z.object({
   agentId: z.string(),
   userId: z.string(),
   tenant: z.string().regex(GUID).optional(),
+  agentBots: z.boolean().optional(),
+  consent: z.boolean().optional(),
   e: z.number(),
   n: z.string()
 })
@@ -83,7 +102,9 @@ export function verifyMsTeamsConnectState(
     orgId: parsed.orgId,
     agentId: parsed.agentId,
     userId: parsed.userId,
-    ...(parsed.tenant ? { tenant: parsed.tenant } : {})
+    ...(parsed.tenant ? { tenant: parsed.tenant } : {}),
+    ...(parsed.agentBots ? { agentBots: true } : {}),
+    ...(parsed.consent ? { consent: true } : {})
   }
 }
 
@@ -92,10 +113,34 @@ function pkceVerifier(keys: MsTeamsConnectKeys, state: string): string {
   return mac(keys.state, `pkce:${state}`).toString('base64url')
 }
 
+/** Microsoft's tenant-wide consent page for the connect scopes (§8.6.5): once an administrator accepts, nobody of the tenant is asked again, so a member can add an agent later. It returns to the connect page with the state and no code. */
+export function msTeamsAdminConsentUrl(input: { clientId: string; redirectUri: string; state: string }): string {
+  const params = new URLSearchParams({
+    client_id: input.clientId,
+    redirect_uri: input.redirectUri,
+    // The delegated Graph scopes by name, and `offline_access` so a member's later sign-in is issued a refresh token unprompted (§8.6.6); `openid` is consented with the sign-in that follows.
+    scope: [
+      ...MSTEAMS_CONNECT_SCOPES.filter((scope) => scope !== 'openid'),
+      ...MSTEAMS_AGENT_BOT_SCOPES,
+      'offline_access'
+    ].join(' '),
+    state: input.state
+  })
+  return `https://login.microsoftonline.com/organizations/v2.0/adminconsent?${params.toString()}`
+}
+
 /** Microsoft's authorize URL for the deployment app, any work or school tenant. */
 export function msTeamsAuthorizeUrl(
   keys: MsTeamsConnectKeys,
-  input: { clientId: string; redirectUri: string; state: string; tenant?: string }
+  input: {
+    clientId: string
+    redirectUri: string
+    state: string
+    tenant?: string
+    agentBots?: boolean
+    /** The administrator just chose an account on the consent page, so the picker is not forced again. */
+    afterConsent?: boolean
+  }
 ): string {
   const challenge = createHash('sha256').update(pkceVerifier(keys, input.state)).digest('base64url')
   const params = new URLSearchParams({
@@ -103,11 +148,11 @@ export function msTeamsAuthorizeUrl(
     response_type: 'code',
     redirect_uri: input.redirectUri,
     response_mode: 'query',
-    scope: scopesOf(input.tenant),
+    scope: scopesOf(input.tenant, input.agentBots),
     state: input.state,
     code_challenge: challenge,
     code_challenge_method: 'S256',
-    prompt: 'select_account'
+    ...(input.afterConsent ? {} : { prompt: 'select_account' })
   })
   return `${authorityOf(input.tenant)}/authorize?${params.toString()}`
 }
@@ -133,9 +178,17 @@ const IdClaims = z.object({ tid: z.string(), oid: z.string().optional() })
 /** The delegated token and the customer tenant, read from the ID token Entra's token endpoint answered directly. */
 export async function redeemMsTeamsCode(
   keys: MsTeamsConnectKeys,
-  input: { clientId: string; clientSecret: string; redirectUri: string; code: string; state: string; tenant?: string },
+  input: {
+    clientId: string
+    clientSecret: string
+    redirectUri: string
+    code: string
+    state: string
+    tenant?: string
+    agentBots?: boolean
+  },
   fetchImpl: typeof fetch
-): Promise<{ accessToken: string; tenantId: string }> {
+): Promise<{ accessToken: string; tenantId: string; userId?: string }> {
   let response: Response
   try {
     response = await fetchImpl(`${authorityOf(input.tenant)}/token`, {
@@ -148,7 +201,7 @@ export async function redeemMsTeamsCode(
         redirect_uri: input.redirectUri,
         code: input.code,
         code_verifier: pkceVerifier(keys, input.state),
-        scope: scopesOf(input.tenant)
+        scope: scopesOf(input.tenant, input.agentBots)
       }).toString(),
       signal: AbortSignal.timeout(TIMEOUT_MS)
     })
@@ -177,15 +230,13 @@ export async function redeemMsTeamsCode(
       'MSTEAMS_TENANT_MISMATCH',
       'Sign in with an account of the Microsoft 365 organization that added the app in Teams.'
     )
-  return { accessToken: tokens.data.access_token, tenantId }
+  // The signed-in person's object ID in their tenant, whom an agent identity names as its sponsor (§8.6.5).
+  const userId = claims.success && claims.data.oid && GUID.test(claims.data.oid.toLowerCase()) ? claims.data.oid : ''
+  return { accessToken: tokens.data.access_token, tenantId, ...(userId ? { userId: userId.toLowerCase() } : {}) }
 }
 
 /** The opaque handle the Console holds between listing teams and installing: the delegated token, encrypted, bound to its attempt. */
-export function sealMsTeamsTicket(
-  keys: MsTeamsConnectKeys,
-  ticket: { accessToken: string; orgId: string; integrationId: string; catalogAppId: string },
-  clock: Clock
-): string {
+export function sealMsTeamsTicket(keys: MsTeamsConnectKeys, ticket: MsTeamsTicket, clock: Clock): string {
   const iv = randomBytes(12)
   const cipher = createCipheriv('aes-256-gcm', keys.ticket, iv)
   const plain = Buffer.from(JSON.stringify({ ...ticket, e: clock.now() + STATE_TTL_MS }))
@@ -193,13 +244,25 @@ export function sealMsTeamsTicket(
   return [iv, cipher.getAuthTag(), sealed].map((part) => part.toString('base64url')).join('.')
 }
 
-const Ticket = z.object({
+// An install ticket names the published app; a provisioning ticket names the further agent whose bot is still to be made (§8.6.5).
+const InstallTicket = z.object({
   accessToken: z.string(),
   orgId: z.string(),
   integrationId: z.string(),
-  catalogAppId: z.string(),
-  e: z.number()
+  catalogAppId: z.string()
 })
+const ProvisionTicket = z.object({
+  accessToken: z.string(),
+  orgId: z.string(),
+  agentBot: z.object({
+    agentId: z.string(),
+    tenantId: z.string().regex(GUID),
+    sponsorId: z.string().regex(GUID),
+    userId: z.string()
+  })
+})
+export type MsTeamsTicket = z.infer<typeof InstallTicket> | z.infer<typeof ProvisionTicket>
+const Ticket = z.union([ProvisionTicket, InstallTicket]).and(z.object({ e: z.number() }))
 
 export function openMsTeamsTicket(keys: MsTeamsConnectKeys, ticket: string, clock: Clock) {
   const parts = ticket.split('.').map((part) => Buffer.from(part, 'base64url'))

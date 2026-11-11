@@ -65,6 +65,8 @@ it('tells a Connect card’s landing apart from Microsoft’s return', () => {
   expect(isMsTeamsStoreStart(`?tenant=${TENANT}`)).toBe(true)
   expect(isMsTeamsStoreStart(`?tenant=${TENANT}&code=c&state=s`)).toBe(false)
   expect(isMsTeamsStoreStart('?code=c&state=s')).toBe(false)
+  // The return from the tenant-wide consent names the tenant too, but finishes a sign-in.
+  expect(isMsTeamsStoreStart(`?admin_consent=True&tenant=${TENANT}&state=s`)).toBe(false)
 })
 
 it('offers the organizations and agents the person can edit, then sends them to Microsoft pinned to the tenant', async () => {

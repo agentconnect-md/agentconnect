@@ -52,6 +52,12 @@
       "import": "./dist/platforms/msteams/provider.js",
       "default": "./dist/platforms/msteams/provider.js"
     },
+    "./msteams-agent-bots": {
+      "development": "./src/platforms/msteams/agent-bots.ts",
+      "types": "./dist/platforms/msteams/agent-bots.d.ts",
+      "import": "./dist/platforms/msteams/agent-bots.js",
+      "default": "./dist/platforms/msteams/agent-bots.js"
+    },
     "./gitea-config": {
       "development": "./src/gitea/config.ts",
       "types": "./dist/gitea/config.d.ts",

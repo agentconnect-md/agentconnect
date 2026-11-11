@@ -3205,6 +3205,7 @@ export function buildContainer(
 
   const msTeamsSeams: MsTeamsConnectSeams = {
     ...(msTeamsPlatformApp ? { app: msTeamsPlatformApp } : {}),
+    ...(msTeamsAgentBots ? { agentBots: msTeamsAgentBots } : {}),
     keys: msTeamsConnectKeys(config.API_KEY_PEPPER),
     bindingMutations: new PgMsTeamsBindingMutations(prisma, (input) => botIdentityProjector(platforms)(input)),
     ...(webAppUrl ? { webAppUrl } : {}),

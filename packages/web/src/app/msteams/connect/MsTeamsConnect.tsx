@@ -8,6 +8,8 @@ import { Button, Icon } from '@/components/ui'
 import { Spinner, Wordmark } from '@/components/marks'
 import {
   ApiError,
+  continueMsTeamsConnect,
+  createMsTeamsAgentBot,
   fetchOrgs,
   finishMsTeamsConnect,
   installMsTeamsTeams,
@@ -39,6 +41,8 @@ const ERROR_KEYS: Record<string, string> = {
   MSTEAMS_CONNECT_NOT_ADMIN: 'notAdmin',
   MSTEAMS_TENANT_TAKEN: 'taken',
   MSTEAMS_TENANT_IN_USE: 'inUse',
+  MSTEAMS_AGENT_NAME_TAKEN: 'nameTaken',
+  MSTEAMS_AGENT_BOTS_UNAVAILABLE: 'agentBotsUnavailable',
   MSTEAMS_CONNECT_NO_AGENT: 'noAgent',
   MSTEAMS_RELAY_ORIGIN_MISSING: 'unavailable',
   MSTEAMS_CONNECT_UNAVAILABLE: 'unavailable',
@@ -53,6 +57,8 @@ export default function MsTeamsConnect() {
   const [result, setResult] = useState<MsTeamsConnectResultDto | null>(null)
   const [chosen, setChosen] = useState<Set<string>>(new Set())
   const [agentHref, setAgentHref] = useState('/')
+  // A further agent's own bot is created while the administrator picks teams (teams-integration.md §8.6.5).
+  const [creatingBot, setCreatingBot] = useState(false)
   const [recovery, setRecovery] = useState<{ tenantId: string; agentId: string } | null>(null)
   const [recovering, setRecovering] = useState(false)
   const landing = useRef<URLSearchParams | null>(null)
@@ -81,8 +87,10 @@ export default function MsTeamsConnect() {
     const code = params.get('code')
     const state = params.get('state')
     const org = msTeamsConnectOrgId(state)
+    // The tenant-wide consent returns the state and no code: the sign-in follows at once.
+    const consented = params.get('admin_consent')?.toLowerCase() === 'true' && !params.get('error') && !code
     // Microsoft sends an error instead of a code when the person declined or lacks the admin role.
-    if (params.get('error') || !code || !state || !org) {
+    if (params.get('error') || (!code && !consented) || !state || !org) {
       setError(t(params.get('error') === 'access_denied' ? 'errors.declined' : 'errors.expired'))
       setPhase('failed')
       return
@@ -93,6 +101,10 @@ export default function MsTeamsConnect() {
       if (isAuthConfigured() && !(await getUser())) {
         writeFlowState('returnTo', `${window.location.pathname}?${params}`)
         await login()
+        return null
+      }
+      if (!code) {
+        window.location.assign((await continueMsTeamsConnect(org, state)).authorizeUrl)
         return null
       }
       return finishMsTeamsConnect(org, code, state)
@@ -113,6 +125,26 @@ export default function MsTeamsConnect() {
         const update = connected.teams.some((team) => team.app !== 'none')
         setChosen(new Set(update ? [] : connected.teams.slice(0, 1).map((team) => team.id)))
         setPhase('teams')
+        if (connected.agentBot && connected.ticket) {
+          setCreatingBot(true)
+          // The step answers the integration, each team's app, and the ticket the install step takes.
+          void createMsTeamsAgentBot(org, connected.ticket)
+            .then((made) => {
+              if (cancelled) return
+              setResult(made)
+              // A team that already had the bot is updated and no longer a choice.
+              setChosen(
+                (current) =>
+                  new Set(
+                    made.teams.filter((team) => team.app === 'none' && current.has(team.id)).map((team) => team.id)
+                  )
+              )
+              setCreatingBot(false)
+            })
+            .catch((e: unknown) => {
+              if (!cancelled) fail(e)
+            })
+        }
       } catch (e) {
         if (!cancelled) fail(e)
       }
@@ -140,7 +172,7 @@ export default function MsTeamsConnect() {
   }
 
   async function install() {
-    if (!result?.ticket || chosen.size === 0) return
+    if (!result?.ticket || chosen.size === 0 || creatingBot) return
     setPhase('installing')
     setError(null)
     try {
@@ -217,7 +249,18 @@ export default function MsTeamsConnect() {
           <>
             <div>
               <h1 className="text-[18px] font-semibold leading-normal text-(--text-primary)">{t('title')}</h1>
-              <p className="mt-2 text-[13px] leading-[1.55] text-(--text-secondary)">{t('description')}</p>
+              <p className="mt-2 text-[13px] leading-[1.55] text-(--text-secondary)">
+                {t(creatingBot ? 'agentBotDescription' : 'description')}
+              </p>
+              {creatingBot && (
+                <p
+                  role="status"
+                  className="mt-2 flex items-center gap-2 text-[13px] leading-[1.55] text-(--text-secondary)"
+                >
+                  <Spinner size={16} />
+                  {t('creatingBot')}
+                </p>
+              )}
               {updatedCount > 0 && (
                 <p role="status" className="mt-2 text-[13px] leading-[1.55] text-(--text-secondary)">
                   {t('updated', { count: updatedCount })}
@@ -260,10 +303,17 @@ export default function MsTeamsConnect() {
                 <Button onClick={() => setPhase('done')}>{t('finish')}</Button>
               ) : (
                 <>
-                  <Button onClick={() => void install()} disabled={phase === 'installing' || chosen.size === 0}>
+                  <Button
+                    onClick={() => void install()}
+                    disabled={phase === 'installing' || creatingBot || chosen.size === 0}
+                  >
                     {phase === 'installing' ? t('installing') : t('install')}
                   </Button>
-                  <Button variant="ghost" onClick={() => setPhase('done')} disabled={phase === 'installing'}>
+                  <Button
+                    variant="ghost"
+                    onClick={() => setPhase('done')}
+                    disabled={phase === 'installing' || creatingBot}
+                  >
                     {t('skip')}
                   </Button>
                 </>

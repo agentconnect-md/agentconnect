@@ -455,6 +455,32 @@ export const SETUP_HTML = String.raw`<!doctype html>
         </dl>
         <p>Messaging endpoint:</p><ul id="azuread-teams-endpoint" class="uris"></ul>
         <p>Connect page (Web redirect URI):</p><ul id="azuread-teams-redirects" class="uris"></ul>
+        <div id="azuread-agent-bots" hidden>
+          <h4>Agent bots</h4>
+          <p class="muted">The Teams app's bot serves one agent in each Microsoft 365 tenant. With a blueprint and an Azure resource group, the deployment gives every further agent of a tenant a bot of its own. Do these once:</p>
+          <ol class="muted">
+            <li>To create the blueprint here, grant the application three Microsoft Graph application permissions in its home tenant, with administrator consent: <code>AgentIdentityBlueprint.Create</code>, <code>AgentIdentityBlueprint.AddRemoveCreds.All</code> and <code>AgentIdentityBlueprintPrincipal.Create</code>. Only this button uses them, so you may remove them afterwards.</li>
+            <li>Assign the application's service principal the Contributor role on the resource group.</li>
+            <li>Register the <code>Microsoft.BotService</code> resource provider on the subscription.</li>
+          </ol>
+          <dl class="credentials">
+            <dt>Blueprint ID</dt><dd><code id="azuread-agent-bots-blueprint">Not configured</code></dd>
+            <dt>Blueprint secret</dt><dd><span id="azuread-agent-bots-secret" class="muted">Not configured</span></dd>
+            <dt>Azure subscription ID</dt><dd><code id="azuread-agent-bots-subscription">Not configured</code></dd>
+            <dt>Resource group</dt><dd><code id="azuread-agent-bots-group">Not configured</code></dd>
+          </dl>
+          <div id="azuread-agent-bots-controls" class="subsection">
+            <label class="field">Azure subscription ID<input id="azuread-agent-bots-subscription-input" autocomplete="off"></label>
+            <label class="field">Resource group<input id="azuread-agent-bots-group-input" autocomplete="off"></label>
+            <label class="field">Your Microsoft Entra user, as the blueprint's owner and sponsor<input id="azuread-agent-bots-operator-input" autocomplete="off" placeholder="you@example.com"></label>
+            <div class="row"><button id="create-azuread-agent-bots-blueprint">Create blueprint</button></div>
+            <p class="muted">Or enter a blueprint you made in the Microsoft Entra admin center. Open it to accounts in any organizational directory first, and add a client secret.</p>
+            <label class="field">Blueprint ID<input id="azuread-agent-bots-blueprint-input" autocomplete="off"></label>
+            <label class="field">Blueprint client secret<input id="azuread-agent-bots-secret-input" type="password" autocomplete="new-password"></label>
+            <div class="row"><button id="save-azuread-agent-bots">Save blueprint</button></div>
+          </div>
+          <div class="row"><button id="clear-azuread-agent-bots" class="danger" hidden>Clear agent bots</button></div>
+        </div>
         <h4>Azure DevOps</h4>
         <p class="muted">The same application connects Azure DevOps organizations: an administrator signs in from the console's Azure DevOps card. Add its connect page as another Web redirect URI.</p>
         <p>Connect page (Web redirect URI):</p><ul id="azuread-azure-devops-redirects" class="uris"></ul>`
@@ -1103,6 +1129,17 @@ export const SETUP_HTML = String.raw`<!doctype html>
       el('azuread-teams-tenant-input').value = values.msTeams ? values.msTeams.tenantId : '';
       renderUriList('azuread-teams-endpoint', expectedTeams ? [expectedTeams.messagingEndpoint] : []);
       renderUriList('azuread-teams-redirects', expectedTeams ? [expectedTeams.connectRedirectUri] : []);
+      // Agent bots sit beside the Teams app: the group shows once it is configured, and its form until a blueprint is saved.
+      const agentBots = values.msTeams && values.msTeams.agentBots;
+      const blueprintSecret = configured(byKey, 'msTeams.blueprintClientSecret');
+      el('azuread-agent-bots').hidden = !values.msTeams;
+      text('azuread-agent-bots-blueprint', agentBots && agentBots.blueprintId);
+      el('azuread-agent-bots-secret').textContent = blueprintSecret ? '***' : 'Not configured';
+      el('azuread-agent-bots-secret').className = blueprintSecret ? 'redacted' : 'muted';
+      text('azuread-agent-bots-subscription', agentBots && agentBots.subscriptionId);
+      text('azuread-agent-bots-group', agentBots && agentBots.resourceGroup);
+      el('azuread-agent-bots-controls').hidden = Boolean(agentBots);
+      el('clear-azuread-agent-bots').hidden = !agentBots;
       renderUriList('azuread-azure-devops-redirects', expected.azureDevOps ? [expected.azureDevOps.connectRedirectUri] : []);
 
       const feishuSecret = byKey.get('feishu.loginAppSecret');
@@ -1808,6 +1845,43 @@ export const SETUP_HTML = String.raw`<!doctype html>
       message('Google OAuth client and Logto connector are configured. Restart AgentConnect to apply the saved settings.');
     }
 
+    // Agent bots (teams-integration.md §8.6.3): 'create' makes the blueprint through Graph, 'save' takes one entered by hand, 'clear' turns them off.
+    async function saveAgentBots(mode) {
+      if (mode === 'clear' && !window.confirm('Clear the saved blueprint and its secret? Agents that already have a bot of their own stop answering in Teams.')) return;
+      const azure = mode === 'clear' ? {} : {
+        subscriptionId: requiredInput('azuread-agent-bots-subscription-input', 'the Azure subscription ID'),
+        resourceGroup: requiredInput('azuread-agent-bots-group-input', 'the resource group')
+      };
+      let saved;
+      try {
+        if (mode === 'create') {
+          const operator = requiredInput('azuread-agent-bots-operator-input', 'your Microsoft Entra user');
+          saved = await json(await fetch(api + '/configure/msteams-agent-bots/blueprint', {
+            method: 'POST', headers: { 'content-type': 'application/json', ...bearer() },
+            body: JSON.stringify({ operator, ...azure })
+          }));
+        } else {
+          const clientSecret = el('azuread-agent-bots-secret-input').value;
+          const agentBots = mode === 'clear' ? null : {
+            blueprintId: requiredInput('azuread-agent-bots-blueprint-input', 'the blueprint ID'),
+            ...(clientSecret ? { clientSecret } : {}),
+            ...azure
+          };
+          saved = await json(await fetch(api + '/configure/msteams-agent-bots', {
+            method: 'POST', headers: { 'content-type': 'application/json', ...bearer() },
+            body: JSON.stringify({ agentBots })
+          }));
+        }
+      } finally {
+        // The secret never stays in the page once it has been submitted, whatever the outcome.
+        el('azuread-agent-bots-secret-input').value = '';
+      }
+      await load();
+      if (mode === 'clear') return message('Agent bots cleared. Restart AgentConnect to apply the saved settings.');
+      const settling = mode === 'create' && saved.check !== 'ok';
+      message('Blueprint ' + saved.blueprintId + ' saved.' + (settling ? ' Its new secret was not accepted yet; give Microsoft a minute before you restart.' : '') + ' Restart AgentConnect to apply the saved settings.' + (mode === 'create' ? ' You may now remove the three Graph permissions from the application.' : ''));
+    }
+
     async function saveLoginApp(provider, clear = false) {
       const app = loginApps[provider];
       if (clear && !window.confirm('Clear the saved ' + app.name + ' login application and secret?')) return;
@@ -2127,6 +2201,9 @@ export const SETUP_HTML = String.raw`<!doctype html>
     el('cancel-gitlab-configuration').onclick = cancelConfigurationEdit;
     el('clear-gitlab').onclick = () => clearProvider('gitlab').catch((error) => message(error.message, true));
     el('save-googlechat').onclick = () => saveGoogleChat().catch((error) => message(error.message, true));
+    for (const [id, mode] of [['create-azuread-agent-bots-blueprint', 'create'], ['save-azuread-agent-bots', 'save'], ['clear-azuread-agent-bots', 'clear']]) {
+      el(id).onclick = () => saveAgentBots(mode).catch((error) => message(error.message, true));
+    }
     el('cancel-googlechat-configuration').onclick = cancelConfigurationEdit;
     el('clear-googlechat').onclick = () => clearProvider('googlechat').catch((error) => message(error.message, true));
     el('save-linear').onclick = () => saveLinear().catch((error) => message(error.message, true));

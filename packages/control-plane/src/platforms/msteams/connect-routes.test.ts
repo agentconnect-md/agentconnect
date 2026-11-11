@@ -9,7 +9,9 @@ import { AgentId, BotId, OrgId } from '../../domain/ids.js'
 import { FakeClock } from '../../../test/fakes/fake-clock.js'
 import { mintMsTeamsConnectState, msTeamsConnectKeys } from './connect.js'
 import { msTeamsConnectRoutes } from './connect-routes.js'
-import { MSTEAMS_DEPLOYMENT_SECRET_MARKER, type MsTeamsPlatformApp } from './deployment-app.js'
+import { msTeamsAgentBotKey } from './agent-bots.js'
+import { msTeamsPackageId } from './app-package.js'
+import { MSTEAMS_DEPLOYMENT_SECRET_MARKER, type MsTeamsAgentBots, type MsTeamsPlatformApp } from './deployment-app.js'
 
 const ORG = OrgId('11111111-1111-4111-8111-111111111111')
 const OTHER_ORG = OrgId('22222222-2222-4222-8222-222222222222')
@@ -23,11 +25,20 @@ const APP: MsTeamsPlatformApp = {
   clientSecret: 'synthetic-secret'
 }
 const CUSTOMER = '55555555-5555-4555-8555-555555555555'
+const AGENT_BOTS: MsTeamsAgentBots = {
+  blueprintId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  clientSecret: 'synthetic-blueprint-secret',
+  subscriptionId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+  resourceGroup: 'example-bots'
+}
+const IDENTITY = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+const SPONSOR = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
 const NOW = Date.parse('2026-12-01T00:00:00Z')
 const clock = new FakeClock(NOW)
 const keys = msTeamsConnectKeys('p'.repeat(40))
 
-const idToken = (tid: string) => ['e30', Buffer.from(JSON.stringify({ tid })).toString('base64url'), 'sig'].join('.')
+const idToken = (tid: string, oid?: string) =>
+  ['e30', Buffer.from(JSON.stringify({ tid, ...(oid ? { oid } : {}) })).toString('base64url'), 'sig'].join('.')
 
 let running: FastifyInstance | undefined
 afterEach(async () => {
@@ -46,16 +57,61 @@ async function harness(
     upgrade?: number
     /** The agent's serving daemon and the features it registered; absent ⇒ the agent is unplaced. */
     daemonFeatures?: string[]
+    /** The deployment makes agent bots (§8.6); Microsoft's answers to their steps are scripted below. */
+    agentBots?: boolean
+    /** The blueprint has no principal in the tenant until one is created. */
+    noPrincipal?: boolean
+    principal?: number
+    /** The tenant already holds this key's identity. */
+    identityExists?: boolean
+    identity?: number
+    /** Other Teams rows, of any organization. */
+    rows?: Partial<BotRecord>[]
+    /** The row an agent identity already has. */
+    agentBotRow?: Partial<BotRecord>
+    agentNames?: Record<string, string>
+    oid?: string | null
   } = {}
 ) {
   const graph: { method: string; url: string; body?: unknown }[] = []
+  let principalCreated = false
   // Every write in the order it ran, Graph and repository alike.
   const order: string[] = []
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input)
-    if (url.endsWith('/oauth2/v2.0/token'))
-      return Response.json({ access_token: 'delegated', id_token: idToken(opts.tid ?? CUSTOMER) })
+    if (url.endsWith('/oauth2/v2.0/token')) {
+      const form = new URLSearchParams(String(init?.body))
+      if (form.get('grant_type') === 'authorization_code')
+        return Response.json({
+          access_token: 'delegated',
+          id_token: idToken(opts.tid ?? CUSTOMER, opts.oid === null ? undefined : (opts.oid ?? SPONSOR))
+        })
+      // The blueprint's and the identity's own tokens; a tenant with no principal refuses the blueprint.
+      order.push(`token ${form.get('client_id')}`)
+      if (form.get('client_id') === AGENT_BOTS.blueprintId && opts.noPrincipal && !principalCreated)
+        return Response.json({ error: 'invalid_client', error_codes: [7000229] }, { status: 400 })
+      return Response.json({ access_token: `own-${form.get('client_id')}`, expires_in: 3600 })
+    }
     graph.push({ method: init?.method ?? 'GET', url, body: init?.body })
+    if (url.endsWith('agentIdentityBlueprintPrincipal')) {
+      order.push('principal')
+      if (opts.principal)
+        return Response.json({ error: { code: 'Authorization_RequestDenied' } }, { status: opts.principal })
+      principalCreated = true
+      return Response.json({ id: 'principal-1' }, { status: 201 })
+    }
+    if (url.includes('/servicePrincipals?$filter='))
+      return Response.json({ value: opts.identityExists ? [{ id: IDENTITY }] : [] })
+    if (url.endsWith('microsoft.graph.agentIdentity')) {
+      order.push('identity')
+      return opts.identity
+        ? Response.json({ error: { code: 'Authorization_RequestDenied' } }, { status: opts.identity })
+        : Response.json({ id: IDENTITY }, { status: 201 })
+    }
+    if (url.startsWith('https://management.azure.com/')) {
+      order.push(url.includes('/channels/') ? 'channel' : 'registration')
+      return Response.json({}, { status: 201 })
+    }
     const team = /\/teams\/([^/]+)\/installedApps/.exec(url)?.[1]
     if (team && url.endsWith('/upgrade')) {
       order.push(`upgrade ${team}`)
@@ -97,6 +153,14 @@ async function harness(
         ...opts.held
       } as BotRecord)
     : null
+  const rows = [
+    ...(held ? [held] : []),
+    ...(opts.rows ?? []).map((row) => ({ platform: 'msteams', agentIds: [], ...row }) as BotRecord)
+  ]
+  if (held) Object.assign(held, { platform: 'msteams', externalTenantId: held.externalTenantId ?? CUSTOMER })
+  const agentBotRow = opts.agentBotRow
+    ? ({ orgId: ORG, name: 'Microsoft Teams', agentIds: [], ...opts.agentBotRow } as BotRecord)
+    : null
   const create = vi.fn(async (input: Record<string, unknown>) => {
     order.push('create')
     return { ...input, agentIds: [] } as unknown as BotRecord
@@ -136,15 +200,16 @@ async function harness(
           id,
           orgId: ORG,
           name: 'helper',
-          displayName: 'Helper',
+          displayName: opts.agentNames?.[id] ?? 'Helper',
           icon: null,
           runtime: 'claude',
           visibility: 'org'
         })
       },
       bot: {
-        listForPlatform: async () => (held ? [held] : []),
-        getByExternalIdentity: async () => held,
+        getByExternalIdentity: async (_platform: string, appId: string) => (appId === APP.appId ? held : agentBotRow),
+        listForPlatform: async () => rows,
+        listForOrg: async (org: OrgId) => rows.filter((row) => row.orgId === org),
         create,
         mergeBotIdentity
       },
@@ -163,6 +228,7 @@ async function harness(
   await app.register(
     msTeamsConnectRoutes(deps, {
       ...(deploymentApp ? { app: deploymentApp } : {}),
+      ...(opts.agentBots ? { agentBots: AGENT_BOTS, agentBotWait: async () => {} } : {}),
       keys,
       bindingMutations: { runExclusive: async (_tenant, action) => action() } as MsTeamsBindingMutations,
       webAppUrl: 'https://console.example.test',
@@ -170,8 +236,18 @@ async function harness(
     })
   )
   running = app
-  const state = (over: Partial<{ orgId: string; agentId: string; userId: string; tenant: string }> = {}) =>
-    mintMsTeamsConnectState(keys, { orgId: ORG, agentId: AGENT, userId: 'user-1', ...over }, clock)
+  const state = (
+    over: Partial<{
+      orgId: string
+      agentId: string
+      userId: string
+      tenant: string
+      agentBots: boolean
+      consent: boolean
+    }> = {}
+  ) => mintMsTeamsConnectState(keys, { orgId: ORG, agentId: AGENT, userId: 'user-1', ...over }, clock)
+  const post = (path: string, payload: unknown) =>
+    app.inject({ method: 'POST', url: `/integrations/msteams/connect${path}`, payload: payload as object })
   const callback = (raw = state()) =>
     app.inject({ method: 'POST', url: '/integrations/msteams/connect/callback', payload: { code: 'c', state: raw } })
   return {
@@ -186,7 +262,8 @@ async function harness(
     syncBot,
     recorded,
     callback,
-    state
+    state,
+    post
   }
 }
 
@@ -398,5 +475,222 @@ describe('the deployment Teams app routes', () => {
   it('refuses a personal Microsoft account', async () => {
     const h = await harness({ tid: '9188040d-6c67-4c5b-b112-36a304b66dad' })
     expect((await h.callback()).json()).toMatchObject({ code: 'MSTEAMS_CONNECT_PERSONAL_ACCOUNT' })
+  })
+})
+
+describe('a deployment that makes agent bots (§8.6)', () => {
+  const HELD = { agentIds: [OTHER_AGENT], externalAppId: APP.appId } as Partial<BotRecord>
+  // The agent already on the app's bot has a name of its own unless a test says otherwise.
+  const further = (over: Parameters<typeof harness>[0] = {}) =>
+    harness({ agentBots: true, held: HELD, agentNames: { [OTHER_AGENT]: 'Reviewer' }, ...over })
+
+  it('asks the tenant-wide consent first, then the sign-in with the agent bots’ scopes', async () => {
+    const h = await harness({ agentBots: true })
+    const consent = new URL((await h.post('', { agentId: AGENT })).json<{ authorizeUrl: string }>().authorizeUrl)
+    expect(`${consent.origin}${consent.pathname}`).toBe(
+      'https://login.microsoftonline.com/organizations/v2.0/adminconsent'
+    )
+    const asked = consent.searchParams.get('scope')!.split(' ')
+    expect(asked).toContain('https://graph.microsoft.com/AppCatalog.Submit')
+    expect(asked).toContain('https://graph.microsoft.com/AgentIdentityBlueprintPrincipal.Create')
+    expect(asked).not.toContain('openid')
+    expect(consent.searchParams.get('redirect_uri')).toBe('https://console.example.test/msteams/connect')
+
+    const consentState = consent.searchParams.get('state')!
+    const next = await h.post('/consented', { state: consentState })
+    expect(next.statusCode).toBe(200)
+    const signIn = new URL(next.json<{ authorizeUrl: string }>().authorizeUrl)
+    expect(signIn.pathname).toBe('/organizations/oauth2/v2.0/authorize')
+    expect(asked).toContain('offline_access')
+    expect(signIn.searchParams.get('scope')!.split(' ')).toEqual(
+      expect.arrayContaining([...asked.filter((scope) => scope !== 'offline_access'), 'openid'])
+    )
+    expect(signIn.searchParams.has('prompt')).toBe(false)
+    // The consent's state redeems no code, and a sign-in's state continues no consent.
+    expect((await h.callback(consentState)).statusCode).toBe(400)
+    expect((await h.post('/consented', { state: signIn.searchParams.get('state')! })).statusCode).toBe(400)
+    expect((await h.post('/consented', { state: h.state({ consent: true, userId: 'user-2' }) })).statusCode).toBe(400)
+
+    // A Store install only proves its tenant, and a deployment without agent bots signs in at once.
+    const store = new URL(
+      (await h.post('', { agentId: AGENT, tenantId: CUSTOMER })).json<{ authorizeUrl: string }>().authorizeUrl
+    )
+    expect(store.pathname).toBe(`/${CUSTOMER}/oauth2/v2.0/authorize`)
+    const plain = await harness()
+    expect(
+      new URL((await plain.post('', { agentId: AGENT })).json<{ authorizeUrl: string }>().authorizeUrl).pathname
+    ).toBe('/organizations/oauth2/v2.0/authorize')
+  })
+
+  it('creates the blueprint’s principal at a tenant’s first connect, which stands without it', async () => {
+    const h = await harness({ agentBots: true, noPrincipal: true })
+    expect((await h.callback(h.state({ agentBots: true }))).statusCode).toBe(200)
+    expect(h.order).toContain('principal')
+    expect(h.create).toHaveBeenCalledWith(expect.objectContaining({ externalAppId: APP.appId }))
+
+    const refused = await harness({ agentBots: true, noPrincipal: true, principal: 403 })
+    expect((await refused.callback(refused.state({ agentBots: true }))).statusCode).toBe(200)
+    expect(refused.create).toHaveBeenCalledTimes(1)
+  })
+
+  it('gives a further agent a bot of its own: the teams first, then the bot, its package and its row', async () => {
+    const h = await further({ noPrincipal: true })
+    const first = await h.callback(h.state({ agentBots: true }))
+    expect(first.statusCode).toBe(200)
+    expect(first.json()).toMatchObject({
+      agentId: AGENT,
+      agentBot: true,
+      store: false,
+      teams: [
+        { id: 'team-1', name: 'Engineering', app: 'none' },
+        { id: 'team-2', name: 'Support', app: 'none' }
+      ]
+    })
+    expect(first.json()).not.toHaveProperty('integrationId')
+    expect(JSON.stringify(first.json())).not.toContain('delegated')
+    // Nothing is made or written before the agent-bot step.
+    expect(h.order).toEqual([])
+    expect(h.create).not.toHaveBeenCalled()
+
+    const made = await h.post('/agent-bot', { ticket: first.json<{ ticket: string }>().ticket })
+    expect(made.statusCode).toBe(200)
+    expect(made.json()).toMatchObject({ agentId: AGENT, store: false, teams: [{ app: 'none' }, { app: 'none' }] })
+    expect(typeof made.json<{ integrationId: string }>().integrationId).toBe('string')
+    // The principal, the identity, the registration and its channel, the proof, then the catalog, the row and its package.
+    expect(h.order).toEqual([
+      `token ${AGENT_BOTS.blueprintId}`,
+      'principal',
+      `token ${AGENT_BOTS.blueprintId}`,
+      'identity',
+      `token ${APP.appId}`,
+      'registration',
+      'channel',
+      `token ${AGENT_BOTS.blueprintId}`,
+      `token ${IDENTITY}`,
+      'publish',
+      'create',
+      'record'
+    ])
+    const key = msTeamsAgentBotKey(AGENT, CUSTOMER)
+    expect(h.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orgId: ORG,
+        prebuilt: true,
+        externalAppId: IDENTITY,
+        platformConfig: {
+          tenantId: CUSTOMER,
+          tokenTenantId: CUSTOMER,
+          appOwner: 'deployment',
+          agentBotBlueprintId: AGENT_BOTS.blueprintId,
+          agentBotResourceName: `agentconnect-${key}`
+        }
+      })
+    )
+    expect(h.put).toHaveBeenCalledWith(ORG, expect.anything(), {
+      botToken: MSTEAMS_DEPLOYMENT_SECRET_MARKER,
+      appToken: null,
+      signingSecret: null
+    })
+    // The identity is created with the signed-in administrator as its sponsor, and the package is named by the identity.
+    const identity = h.graph.find((call) => call.url.endsWith('microsoft.graph.agentIdentity'))!
+    expect(JSON.parse(String(identity.body))['sponsors@odata.bind']).toEqual([
+      `https://graph.microsoft.com/v1.0/users/${SPONSOR}`
+    ])
+    expect(
+      h.graph.some((call) => decodeURIComponent(call.url).includes(`externalId eq '${msTeamsPackageId(IDENTITY)}'`))
+    ).toBe(true)
+
+    const install = await h.post('/install', { ticket: made.json<{ ticket: string }>().ticket, teamIds: ['team-2'] })
+    expect(install.json()).toEqual({ installed: 1 })
+  })
+
+  it('finds what an earlier attempt made, and updates an agent bot that is already connected', async () => {
+    const h = await further({
+      identityExists: true,
+      agentBotRow: { id: BOT, externalAppId: IDENTITY },
+      installedIn: ['team-1']
+    })
+    const first = await h.callback(h.state({ agentBots: true }))
+    const again = await h.post('/agent-bot', { ticket: first.json<{ ticket: string }>().ticket })
+    expect(again.statusCode).toBe(200)
+    expect(h.order).not.toContain('principal')
+    expect(h.order).not.toContain('identity')
+    expect(h.create).not.toHaveBeenCalled()
+    expect(h.addBotMembership).toHaveBeenCalledWith(expect.objectContaining({ agentId: AGENT, botId: BOT }))
+    expect(again.json<{ teams: { app: string }[] }>().teams.map((team) => team.app)).toEqual(['updated', 'none'])
+  })
+
+  it('keeps an agent on its own bot when the tenant’s first agent is gone', async () => {
+    const own = {
+      orgId: ORG,
+      externalTenantId: CUSTOMER,
+      agentIds: [AGENT],
+      platformConfig: { appOwner: 'deployment', agentBotBlueprintId: AGENT_BOTS.blueprintId, agentBotResourceName: 'x' }
+    } as Partial<BotRecord>
+    const h = await harness({ agentBots: true, rows: [own] })
+    const res = await h.callback(h.state({ agentBots: true }))
+    expect(res.json()).toMatchObject({ agentBot: true })
+    expect(h.create).not.toHaveBeenCalled()
+    // Another agent of the same tenant takes the app's bot, which is free.
+    const other = await harness({ agentBots: true, rows: [{ ...own, agentIds: [OTHER_AGENT] }] })
+    expect((await other.callback(other.state({ agentBots: true }))).json()).not.toHaveProperty('agentBot')
+    expect(other.create).toHaveBeenCalledWith(expect.objectContaining({ externalAppId: APP.appId }))
+  })
+
+  it('keeps one agent per tenant where the sign-in did not ask the agent bots’ scopes, or named no sponsor', async () => {
+    const unasked = await further()
+    expect((await unasked.callback()).json()).toMatchObject({ code: 'MSTEAMS_TENANT_IN_USE' })
+    const unnamed = await further({ oid: null })
+    expect((await unnamed.callback(unnamed.state({ agentBots: true }))).json()).toMatchObject({
+      code: 'MSTEAMS_TENANT_IN_USE'
+    })
+  })
+
+  it('refuses a further agent whose name another agent already has in the tenant, naming it', async () => {
+    const h = await further({ agentNames: { [AGENT]: 'Helper', [OTHER_AGENT]: ' helper ' } })
+    const res = await h.callback(h.state({ agentBots: true }))
+    expect(res.statusCode).toBe(409)
+    expect(res.json()).toMatchObject({ code: 'MSTEAMS_AGENT_NAME_TAKEN' })
+    expect(res.json<{ message: string }>().message).toContain('helper')
+    const distinct = await further({ agentNames: { [AGENT]: 'Helper', [OTHER_AGENT]: 'Reviewer' } })
+    expect((await distinct.callback(distinct.state({ agentBots: true }))).statusCode).toBe(200)
+  })
+
+  it('keeps a tenant with one organization, whichever of its rows another organization holds', async () => {
+    const h = await harness({
+      agentBots: true,
+      rows: [{ orgId: OTHER_ORG, externalTenantId: CUSTOMER, platformConfig: { appOwner: 'deployment' } }]
+    })
+    expect((await h.callback(h.state({ agentBots: true }))).json()).toMatchObject({ code: 'MSTEAMS_TENANT_TAKEN' })
+    expect(h.create).not.toHaveBeenCalled()
+    // Another organization's own bot in the tenant claims nothing.
+    const own = await harness({ rows: [{ orgId: OTHER_ORG, externalTenantId: CUSTOMER, platformConfig: {} }] })
+    expect((await own.callback()).statusCode).toBe(200)
+  })
+
+  it('answers Microsoft’s reason when the bot cannot be created, and writes nothing', async () => {
+    const h = await further({ identity: 403 })
+    const first = await h.callback(h.state({ agentBots: true }))
+    const refused = await h.post('/agent-bot', { ticket: first.json<{ ticket: string }>().ticket })
+    expect(refused.statusCode).toBe(409)
+    expect(refused.json()).toMatchObject({ code: 'MSTEAMS_AGENT_BOTS_UNAVAILABLE' })
+    expect(refused.json<{ message: string }>().message).toContain('identity: Authorization_RequestDenied')
+    expect(h.order).not.toContain('publish')
+    expect(h.create).not.toHaveBeenCalled()
+
+    const down = await further({ identity: 503 })
+    const pending = await down.callback(down.state({ agentBots: true }))
+    expect((await down.post('/agent-bot', { ticket: pending.json<{ ticket: string }>().ticket })).statusCode).toBe(502)
+  })
+
+  it('takes each ticket only at its own step, from the person it was sealed for', async () => {
+    const h = await further()
+    const provision = (await h.callback(h.state({ agentBots: true }))).json<{ ticket: string }>().ticket
+    expect((await h.post('/install', { ticket: provision, teamIds: ['team-1'] })).statusCode).toBe(400)
+    const made = (await h.post('/agent-bot', { ticket: provision })).json<{ ticket: string }>().ticket
+    expect((await h.post('/agent-bot', { ticket: made })).statusCode).toBe(400)
+    // Without agent bots the step does not exist.
+    const plain = await harness()
+    expect((await plain.post('/agent-bot', { ticket: provision })).statusCode).toBe(404)
   })
 })

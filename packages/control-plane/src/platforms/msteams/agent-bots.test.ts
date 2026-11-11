@@ -4,6 +4,8 @@ import {
   MSTEAMS_AGENT_BOT_DISABLED_CODE,
   MsTeamsAgentBotClient,
   MsTeamsAgentBotError,
+  MsTeamsBlueprintIncomplete,
+  createMsTeamsBlueprint,
   msTeamsAgentBotKey,
   msTeamsAgentBotResourceName,
   msTeamsAgentBotTag
@@ -298,5 +300,80 @@ describe('MsTeamsAgentBotClient', () => {
       reason: 'provider_unregistered'
     })
     expect(await script({ provider: { status: 500 } })).toEqual({ ok: false, reason: 'unavailable' })
+  })
+})
+
+describe('creating the blueprint from Setup', () => {
+  const NEW = '00000000-0000-4000-8000-0000000000C9'
+  const script = (answer: (call: Call, seen: Call[]) => Answer | undefined) => {
+    const ms = microsoft(answer)
+    const fetchImpl = ((input: unknown, init?: RequestInit) =>
+      (ms.client as unknown as { fetchImpl: typeof fetch }).fetchImpl(input as string, init)) as typeof fetch
+    const waits: number[] = []
+    const create = () =>
+      createMsTeamsBlueprint(
+        APP,
+        { displayName: 'Example Agents', operator: 'operator@example.test' },
+        fetchImpl,
+        async (ms) => void waits.push(ms)
+      )
+    return { ...ms, waits, create }
+  }
+
+  it('makes it open to other organizations with the operator as owner and sponsor, then its principal and a secret', async () => {
+    const ms = script((call, seen) => {
+      if (call.form) return undefined
+      if (call.url.endsWith('/applications')) return { status: 201, body: { appId: NEW } }
+      // Graph does not see the new application on the first try.
+      if (call.url.endsWith('agentIdentityBlueprintPrincipal'))
+        return seen.some((c) => c.url === call.url) ? { status: 201, body: { id: 'p1' } } : { status: 400 }
+      return { status: 200, body: { secretText: 'example-new-secret' } }
+    })
+    expect(await ms.create()).toEqual({ blueprintId: NEW.toLowerCase(), clientSecret: 'example-new-secret' })
+    expect(ms.waits).toHaveLength(1)
+    expect(ms.calls[0]!.form).toMatchObject({ client_id: APP.appId, scope: 'https://graph.microsoft.com/.default' })
+    expect(ms.calls[1]!.body).toEqual({
+      '@odata.type': 'Microsoft.Graph.AgentIdentityBlueprint',
+      displayName: 'Example Agents',
+      signInAudience: 'AzureADMultipleOrgs',
+      'sponsors@odata.bind': ['https://graph.microsoft.com/v1.0/users/operator%40example.test'],
+      'owners@odata.bind': ['https://graph.microsoft.com/v1.0/users/operator%40example.test']
+    })
+    expect(ms.calls.at(-1)!.url).toBe(
+      `https://graph.microsoft.com/v1.0/applications(appId='${NEW.toLowerCase()}')/addPassword`
+    )
+  })
+
+  it('names the refusal when the app lacks the permission, and the half-made blueprint when a later step fails', async () => {
+    const denied = script((call) =>
+      call.form ? undefined : { status: 403, body: { error: { code: 'Authorization_RequestDenied' } } }
+    )
+    const refusal = await denied.create().catch((err: unknown) => err)
+    expect(refusal).toMatchObject({ step: 'blueprint', status: 403, providerCode: 'Authorization_RequestDenied' })
+    expect(refusal).not.toBeInstanceOf(MsTeamsBlueprintIncomplete)
+
+    const half = script((call) => {
+      if (call.form) return undefined
+      if (call.url.endsWith('/applications')) return { status: 201, body: { appId: NEW } }
+      return { status: 403, body: { error: { code: 'Authorization_RequestDenied' } } }
+    })
+    const incomplete = await half.create().catch((err: unknown) => err)
+    expect(incomplete).toBeInstanceOf(MsTeamsBlueprintIncomplete)
+    expect(incomplete).toMatchObject({ blueprintId: NEW.toLowerCase(), status: 403 })
+  })
+
+  it('gives a just-made blueprint’s secret time before it reads as wrong', async () => {
+    const ms = microsoft((call, seen) => {
+      if (call.form?.client_id === AGENT_BOTS.blueprintId)
+        return seen.filter((c) => c.form?.client_id === AGENT_BOTS.blueprintId).length < 2
+          ? entraRefusal(7000215)
+          : undefined
+      if (call.url.includes('/applications(')) return { status: 200, body: { signInAudience: 'AzureADMultipleOrgs' } }
+      if (call.url.includes('/providers/Microsoft.BotService?'))
+        return { status: 200, body: { registrationState: 'Registered' } }
+      return undefined
+    })
+    expect(await ms.client.check({ settle: true })).toEqual({ ok: true })
+    expect(ms.waits).toHaveLength(2)
   })
 })

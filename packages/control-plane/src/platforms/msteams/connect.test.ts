@@ -6,6 +6,7 @@ import {
   installMsTeamsApp,
   listMsTeamsTeams,
   mintMsTeamsConnectState,
+  msTeamsAdminConsentUrl,
   msTeamsAuthorizeUrl,
   msTeamsConnectKeys,
   openMsTeamsTicket,
@@ -114,6 +115,71 @@ describe('Teams connect state', () => {
     expect(openMsTeamsTicket(keys, `${ticket}x`, clock)).toBeNull()
     clock.advance(10 * 60_000 + 1)
     expect(openMsTeamsTicket(keys, ticket, clock)).toBeNull()
+  })
+})
+
+describe('Teams connect for a deployment with agent bots (§8.6.5)', () => {
+  const SUBMIT = 'https://graph.microsoft.com/AppCatalog.Submit'
+  const PRINCIPAL = 'https://graph.microsoft.com/AgentIdentityBlueprintPrincipal.Create'
+  const redirectUri = 'https://console.example.test/msteams/connect'
+
+  it('carries the consent and the scope set in the state, and asks the tenant-wide consent by named Graph scopes', () => {
+    const clock = new FakeClock(Date.UTC(2026, 0, 1))
+    const state = mintMsTeamsConnectState(keys, { ...attempt, agentBots: true, consent: true }, clock)
+    expect(verifyMsTeamsConnectState(keys, state, clock)).toEqual({ ...attempt, agentBots: true, consent: true })
+    const url = new URL(msTeamsAdminConsentUrl({ clientId: CLIENT, redirectUri, state }))
+    expect(`${url.origin}${url.pathname}`).toBe('https://login.microsoftonline.com/organizations/v2.0/adminconsent')
+    expect(Object.fromEntries(url.searchParams)).toMatchObject({ client_id: CLIENT, redirect_uri: redirectUri, state })
+    const scopes = url.searchParams.get('scope')!.split(' ')
+    expect(scopes).toEqual(expect.arrayContaining([SUBMIT, PRINCIPAL, 'https://graph.microsoft.com/User.Read']))
+    // Graph scopes by name, and offline_access so a member is later issued a refresh token without a prompt.
+    expect(scopes.filter((scope) => !scope.startsWith('https://graph.microsoft.com/'))).toEqual(['offline_access'])
+  })
+
+  it('signs in and redeems with the same scopes, and names the signed-in person as the sponsor', async () => {
+    const clock = new FakeClock(Date.UTC(2026, 0, 1))
+    const state = mintMsTeamsConnectState(keys, { ...attempt, agentBots: true }, clock)
+    const url = new URL(
+      msTeamsAuthorizeUrl(keys, { clientId: CLIENT, redirectUri, state, agentBots: true, afterConsent: true })
+    )
+    const asked = url.searchParams.get('scope')!
+    expect(asked.split(' ')).toEqual(expect.arrayContaining([SUBMIT, PRINCIPAL, 'openid']))
+    expect(url.searchParams.has('prompt')).toBe(false)
+    const OID = '33333333-3333-4333-8333-33333333333A'
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
+      Response.json({ access_token: 'delegated', id_token: idToken({ tid: TENANT, oid: OID }) })
+    )
+    const redeemed = await redeemMsTeamsCode(
+      keys,
+      { clientId: CLIENT, clientSecret: 's', redirectUri, code: 'c', state, agentBots: true },
+      fetchImpl
+    )
+    expect(redeemed).toEqual({ accessToken: 'delegated', tenantId: TENANT, userId: OID.toLowerCase() })
+    expect(new URLSearchParams(String(fetchImpl.mock.calls[0]![1]?.body)).get('scope')).toBe(asked)
+    // Without the agent bots the scope set is the three of §8.1, and an ID token with no object ID names no sponsor.
+    const plain = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
+      Response.json({ access_token: 'delegated', id_token: idToken({ tid: TENANT }) })
+    )
+    expect(
+      await redeemMsTeamsCode(keys, { clientId: CLIENT, clientSecret: 's', redirectUri, code: 'c', state }, plain)
+    ).toEqual({ accessToken: 'delegated', tenantId: TENANT })
+    expect(String(plain.mock.calls[0]![1]?.body)).not.toContain('AppCatalog.Submit')
+  })
+
+  it('seals a provisioning ticket apart from an install ticket', () => {
+    const clock = new FakeClock(Date.UTC(2026, 0, 1))
+    const agentBot = { agentId: 'agent-1', tenantId: TENANT, sponsorId: CLIENT, userId: 'user-1' }
+    const provision = sealMsTeamsTicket(keys, { accessToken: 'delegated', orgId: 'org-1', agentBot }, clock)
+    expect(provision).not.toContain('delegated')
+    const opened = openMsTeamsTicket(keys, provision, clock)!
+    expect(opened).toMatchObject({ accessToken: 'delegated', orgId: 'org-1', agentBot })
+    expect('catalogAppId' in opened).toBe(false)
+    const install = sealMsTeamsTicket(
+      keys,
+      { accessToken: 'delegated', orgId: 'org-1', integrationId: 'i', catalogAppId: 'c' },
+      clock
+    )
+    expect('agentBot' in openMsTeamsTicket(keys, install, clock)!).toBe(false)
   })
 })
 
