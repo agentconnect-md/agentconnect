@@ -29,6 +29,7 @@ import { createGoogleChatCpProvider } from './googlechat/provider.js'
 import { createDingTalkCpProvider } from './dingtalk/provider.js'
 import { createMsTeamsCpProvider } from './msteams/provider.js'
 import { createWeChatCpProvider } from './wechat/provider.js'
+import { createWeComCpProvider } from './wecom/provider.js'
 import { toDbPlatform } from '../persistence/platform.js'
 import { Platform, UpsertCronBody, WaitlistJoinBody } from '../http/dto/index.js'
 import { findTool } from '../http/mcp/tools.js'
@@ -46,7 +47,8 @@ const productionRegistry = buildCpPlatformRegistry([
   createGoogleChatCpProvider(),
   createDingTalkCpProvider(),
   createMsTeamsCpProvider(),
-  createWeChatCpProvider({})
+  createWeChatCpProvider({}),
+  createWeComCpProvider()
 ])
 
 const sorted = [...CP_PLATFORM_IDS].sort()

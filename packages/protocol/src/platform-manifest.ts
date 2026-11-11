@@ -120,7 +120,7 @@ export const MSTEAMS_PLATFORM = 'msteams'
 // Personal WeChat's platform id, served through Tencent's iLink bot API (wechat-integration.md).
 export const WECHAT_PLATFORM = 'wechat'
 
-// WeCom's platform id (a smart bot on its long connection); joins `KNOWN_PLATFORMS` with its Control Plane provider, a release after readers accept it.
+// WeCom's platform id (a smart bot on its long connection), registered in `KNOWN_PLATFORMS` with its Control Plane provider.
 export const WECOM_PLATFORM = 'wecom'
 
 /** The conservative arm of every axis — see the fail-closed note above. */

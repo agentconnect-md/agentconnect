@@ -433,7 +433,7 @@ describe('§6.1 origin-kind classification on the wire', () => {
 })
 
 describe('writer-side vocabulary stays closed until the fleet gate (S1b)', () => {
-  it('KNOWN_PLATFORMS includes the QQ, Google Chat, DingTalk, Microsoft Teams and WeChat integrations', () => {
+  it('KNOWN_PLATFORMS includes the QQ, Google Chat, DingTalk, Microsoft Teams, WeChat and WeCom integrations', () => {
     expect([...KNOWN_PLATFORMS]).toEqual([
       'slack',
       'telegram',
@@ -446,7 +446,8 @@ describe('writer-side vocabulary stays closed until the fleet gate (S1b)', () =>
       'googlechat',
       'dingtalk',
       'msteams',
-      'wechat'
+      'wechat',
+      'wecom'
     ])
   })
 

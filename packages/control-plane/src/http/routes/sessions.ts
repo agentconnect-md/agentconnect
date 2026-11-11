@@ -110,7 +110,8 @@ const SESSION_PLATFORM_IDS = [
   'googlechat',
   'dingtalk',
   'msteams',
-  'wechat'
+  'wechat',
+  'wecom'
 ] as const
 
 const SessionFilterQueryDto = z.object({

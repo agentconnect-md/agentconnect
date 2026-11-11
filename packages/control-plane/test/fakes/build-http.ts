@@ -150,6 +150,9 @@ import { createDingTalkCpProvider } from '../../src/platforms/dingtalk/provider.
 import { dingTalkCredentialRoutes } from '../../src/platforms/dingtalk/routes.js'
 import { createMsTeamsCpProvider } from '../../src/platforms/msteams/provider.js'
 import { createWeChatCpProvider } from '../../src/platforms/wechat/provider.js'
+import { createWeComCpProvider, type WeComDial } from '../../src/platforms/wecom/provider.js'
+import { weComCredentialRoutes } from '../../src/platforms/wecom/routes.js'
+import { TENANTLESS_SENTINEL } from '../../src/persistence/ports.js'
 import { weChatLoginRoutes } from '../../src/platforms/wechat/routes.js'
 import { WeChatLoginService } from '../../src/platforms/wechat/login.js'
 import { WECHAT_DEFAULT_API_URL, type WeChatLoginClient } from '../../src/platforms/wechat/ilink.js'
@@ -258,6 +261,8 @@ export interface PlatformStubs {
   msTeamsFetch?: typeof fetch
   /** iLink's QR login, stubbed; absent ⇒ WeChat is unreachable. */
   weChatLoginClient?: WeChatLoginClient
+  /** WeCom's long connection, stubbed; absent ⇒ every credential check is a connectivity failure. */
+  weComDial?: WeComDial
 }
 
 /** The keys `buildHttpApp` peels out of its overrides bag into
@@ -283,7 +288,8 @@ const PLATFORM_STUB_KEYS = [
   'googleChatFetch',
   'dingTalkFetch',
   'msTeamsFetch',
-  'weChatLoginClient'
+  'weChatLoginClient',
+  'weComDial'
 ] as const satisfies readonly (keyof PlatformStubs)[]
 
 export interface HttpApp {
@@ -875,6 +881,10 @@ export function buildHttpApp(
     platformStubs.msTeamsFetch
       ? platformStubs.msTeamsFetch(input, init)
       : Promise.reject(new TypeError('no msteams fetch stub installed'))
+  const weComDial: WeComDial = (url, handlers) => {
+    if (!platformStubs.weComDial) throw new TypeError('no wecom dial stub installed')
+    return platformStubs.weComDial(url, handlers)
+  }
   const msTeamsRelayBase = relayHttpBase(configOverrides?.PUBLIC_RELAY_URL) ?? undefined
   const feishuSeams: FeishuRouteSeams = {
     verifyBot: async (appId, appSecret, region) =>
@@ -996,6 +1006,12 @@ export function buildHttpApp(
           )
         )
       ]
+    }),
+    createWeComCpProvider({
+      dial: weComDial,
+      installRoutes: [weComCredentialRoutes(deps)],
+      isInstalled: async (botId) =>
+        (await deps.repos.bot.getByExternalIdentity('wecom', botId, TENANTLESS_SENTINEL)) !== null
     })
   ])
 

@@ -33,7 +33,8 @@ import {
   AGENT_MODEL_PROVIDER_FEATURE,
   FOLLOW_UP_WATCH_FEATURE,
   GITHUB_APP_WEBHOOK_V1_FEATURE,
-  COMPUTER_WS_PUBLIC_PATH
+  COMPUTER_WS_PUBLIC_PATH,
+  WECOM_PLATFORM
 } from '@agentconnect.md/protocol'
 
 import { type AppConfig, resolveWebAppUrl } from './config/env.js'
@@ -393,6 +394,8 @@ import { createDingTalkCpProvider } from './platforms/dingtalk/provider.js'
 import { dingTalkCredentialRoutes } from './platforms/dingtalk/routes.js'
 import { createMsTeamsCpProvider } from './platforms/msteams/provider.js'
 import { createWeChatCpProvider } from './platforms/wechat/provider.js'
+import { createWeComCpProvider } from './platforms/wecom/provider.js'
+import { weComCredentialRoutes } from './platforms/wecom/routes.js'
 import { weChatLoginRoutes } from './platforms/wechat/routes.js'
 import { WeChatLoginService } from './platforms/wechat/login.js'
 import { createWeChatLoginClient, WECHAT_DEFAULT_API_URL, type WeChatLoginClient } from './platforms/wechat/ilink.js'
@@ -444,7 +447,12 @@ import { createTelegramSessionAccess } from './platforms/telegram/session-access
 import { createDiscordSessionAccess } from './platforms/discord/session-access.js'
 import { createMsTeamsSessionAccess } from './platforms/msteams/session-access.js'
 import { SessionAccessWarmer } from './http/session-access-warmer.js'
-import type { AgentRecord, SessionMetaRecord, ExternalScopeRecord } from './persistence/ports.js'
+import {
+  TENANTLESS_SENTINEL,
+  type AgentRecord,
+  type SessionMetaRecord,
+  type ExternalScopeRecord
+} from './persistence/ports.js'
 
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from './config/defaults.js'
 
@@ -3303,6 +3311,11 @@ export function buildContainer(
       routes: [weChatLoginRoutes(httpDeps, weChatLogins)],
       logins: repos.wechatPendingLogin,
       reapIntervalMs: config.SLACK_INSTALL_REAP_INTERVAL_SEC * 1000
+    }),
+    createWeComCpProvider({
+      installRoutes: [weComCredentialRoutes(httpDeps)],
+      isInstalled: async (botId) =>
+        (await repos.bot.getByExternalIdentity(WECOM_PLATFORM, botId, TENANTLESS_SENTINEL)) !== null
     })
   ])
 
