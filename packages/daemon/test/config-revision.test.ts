@@ -73,6 +73,12 @@ describe('agentSpecDigest', () => {
     expect(agentSpecDigest(spec({ coordinatorDisabled: true }))).not.toBe(agentSpecDigest(spec({})))
   })
 
+  it('digests a removed coordinator filter as the absent field, and a filter as content', () => {
+    expect(agentSpecDigest(spec({ coordinatorFilter: null }))).toBe(agentSpecDigest(spec({})))
+    const filtered = spec({ coordinatorFilter: { providerId: 'typesafe', model: 'jev-1.13.0' } })
+    expect(agentSpecDigest(filtered)).not.toBe(agentSpecDigest(spec({})))
+  })
+
   it('digests a GitHub credential beside private as a restatement, and any other credential as content', () => {
     const entry = { name: 'kit', source: 'example-org/example-repo', githubRepoId: '7', skills: [], private: true }
     const legacy = spec({ skills: [entry] })

@@ -259,6 +259,33 @@ When the coordinator's turn fails or times out:
 No separate cap: batching (§4.3) bounds it, and the console's Usage page shows, under each agent,
 what its coordinators spent. A limit is decided once real usage is known.
 
+### 4.7 The filter
+
+An agent may put a Decision model in front of its coordinator: `coordinatorFilter: { providerId,
+model }` in `POST`/`PATCH /agents/:id`, stored beside the coordinator model and shipped on the agent
+spec. It is a provider and model only, like the repository selector
+([multi-repository-workspaces.md](multi-repository-workspaces.md) decision 15): the daemon writes the
+question, and the model must answer Boolean questions (400 otherwise). Null removes it.
+
+- **What it screens.** An unaddressed channel-root message from a person. A mention, which may not
+  be ignored (§4.1), a reply in a thread, a report (§3.4), an agent's call and every webchat message
+  reach the coordinator unasked.
+- **The question.** `COORDINATOR_FILTER_QUESTION` in `packages/daemon/src/auto-session/coordinator-filter.ts`
+  asks whether the agent, described by its name and description, should get involved with the
+  latest message, judged with the conversation's earlier messages as the Decision gate reads them
+  ([decisions.md](decisions.md) §8.2).
+- **The verdict.** A message is skipped only when the probability of Yes is below
+  `COORDINATOR_FILTER_SKIP_BELOW` (0.25); a less certain answer lets it through. An unavailable
+  answer (no key, timeout, capacity, an invalid response) lets it through as well (decisions.md §5).
+- **Where it runs.** The daemon asks when the message is queued for its coordinator and holds the
+  queue entry on the answer, so evaluations overlap while the queue keeps arrival order. A skipped
+  message settles as an ignored one does (§4.2 (c)): no 🤔, no turn, no reply. It stays in the
+  conversation's record, where `recall` and later evaluations read it, but no later batch delivers it.
+  A skip that finds the coordinator idle opens no turn.
+- **Visibility.** Each verdict is logged by message id with its probability or failure reason. The
+  daemon advertises `coordinator-filter-v1`; the console offers the filter only where the agent's
+  daemon does. An older daemon ignores the field and runs no filter.
+
 ## 5. Tools
 
 ### 5.1 `sendMessage` task actions
@@ -876,7 +903,6 @@ a reply saying a message was for another agent, so the prompt states that ignori
 ## 13. Not done / later
 
 - Returning a conversation's coordinator to the agent's coordinator model (Reset); a task has none either.
-- A trigger filter: a decision model screening each message before the coordinator.
 - A cap on coordinator usage (§4.6).
 - Judging across bots; one coordinator shared by a shared bot's agents.
 - Carrying an assistant-mode `append` session's context into the coordinator.

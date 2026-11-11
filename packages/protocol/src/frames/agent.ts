@@ -1,6 +1,12 @@
 import { z } from 'zod'
 import { AgentModelProvider } from '../provider-key.js'
-import { AgentDecisionIds, AgentModelSelection, AgentRepositorySelector, HookRoutingProjection } from '../decision.js'
+import {
+  AgentCoordinatorFilter,
+  AgentDecisionIds,
+  AgentModelSelection,
+  AgentRepositorySelector,
+  HookRoutingProjection
+} from '../decision.js'
 import { AgentApiGateProjections } from '../agent-api.js'
 import { CodeHostProviderString } from '../code-host.js'
 import { AgentMemoryBinding } from './memory-connection.js'
@@ -524,6 +530,8 @@ export const AgentSpec = z.object({
   coordinatorModel: CoordinatorModel.nullable().optional(),
   // The coordinator is off (auto-session-mode.md §3.6); a current CP always ships it, absent leaves it unchanged.
   coordinatorDisabled: z.boolean().optional(),
+  // The evaluator that screens a message before the coordinator (auto-session-mode.md §4.7); a current CP ships value or null.
+  coordinatorFilter: AgentCoordinatorFilter.nullable().optional(),
   // The Decision gate on each chat API the agent added, with its Decisions (shared-bot-relay.md §10.4); a current CP ships it, {} when none.
   apiGates: AgentApiGateProjections.optional(),
   // The evaluator the per-session repository selector asks (multi-repository-workspaces.md decision 15); a current CP ships value or null.

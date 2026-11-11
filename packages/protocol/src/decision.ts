@@ -111,6 +111,18 @@ export function supportsDecision(
 export const AgentRepositorySelector = z.object({ providerId: Id, model: Id })
 export type AgentRepositorySelector = z.infer<typeof AgentRepositorySelector>
 
+// The evaluator that screens a message before the `auto` coordinator (auto-session-mode.md §4.7); the daemon writes the question.
+export const AgentCoordinatorFilter = z.object({ providerId: Id, model: Id })
+export type AgentCoordinatorFilter = z.infer<typeof AgentCoordinatorFilter>
+
+// The filter asks a Boolean question, so its evaluator must answer one.
+export function supportsCoordinatorFilter(
+  filter: AgentCoordinatorFilter,
+  catalog: DecisionProviderCatalog = DECISION_PROVIDER_PROFILES
+): boolean {
+  return supportsDecision({ ...filter, question: { type: 'boolean' } }, catalog)
+}
+
 // The selector asks Choice questions, so its evaluator must answer them.
 export function supportsRepositorySelector(
   selector: AgentRepositorySelector,
