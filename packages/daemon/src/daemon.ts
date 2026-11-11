@@ -11262,7 +11262,6 @@ export class Daemon {
     const selfAddress = addressOf(agent.id)
     return coordinatorPrompt({
       agentName: agent.displayName?.trim() || agent.name,
-      ...(agent.description ? { agentDescription: agent.description } : {}),
       platform: platformLabel(at.platform),
       channelId: at.channel,
       ...(selfAddress ? { selfAddress } : {}),

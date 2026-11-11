@@ -179,8 +179,6 @@ Approved proposals stay a kind of their own.
 - Every **root message** of the conversation, and every message in an **unowned thread** (a thread
   under a message the coordinator replied to itself, or one whose task has closed).
 - A message that mentions the agent may not be ignored.
-- The prompt gives the agent's own description as its role, so a message within that role, such as an
-  alert a bot posts, is for the agent even when it names no one.
 
 ### 4.2 Four outcomes
 
@@ -1099,9 +1097,9 @@ its `here` and `elsewhere` lists, and `readTask`) into a real runtime session ov
 turn with the work board the daemon would send ([assistant-mode.md](assistant-mode.md) §5.18),
 delivers channel messages in the format of §4.3, and judges each message's outcome. Its scenarios:
 new work, a message for an open task, a status question, a greeting, chatter between people, a
-request to another agent, a bot's alert within the agent's role (`role-alert`), a vague mention, a
-small edit the coordinator must not do itself, two mixed batches, a follow-up's report (§3.4), a
-batch of one message and two reports, one worth telling and one with nothing new, a request for work another channel's task already has open, a question
+request to another agent, a vague mention, a small edit the coordinator must not do itself, two mixed
+batches, a follow-up's report (§3.4), a batch of one message and two reports, one worth telling
+and one with nothing new, a request for work another channel's task already has open, a question
 about another channel's task that only its latest words answer, a run report from a task holding
 its code channel (§6.8), and
 in a webchat conversation (§10) new work, a status question, a message for an open task, a status
