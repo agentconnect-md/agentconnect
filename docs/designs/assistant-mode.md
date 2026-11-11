@@ -1823,8 +1823,9 @@ under the introduction works. For a getting-to-know task, `propose` changes in f
   the first reply message the round posted, else where the place's cards go otherwise (its top
   level for an appending long session). A held card a restart left behind is posted the same way by
   the minute sweep once nothing runs the round; one decided in the console while held gets none.
-  Under a coordinator the round's reply is a `replyToMessage` post, which this hold does not see,
-  so its cards post at the top level; auto-session-mode.md §6.9.2 records the fix.
+  Under a coordinator the round's reply is the `replyToMessage` post that answers the report, since
+  a coordinator's turn text is never posted; the cards go in that post's thread
+  (auto-session-mode.md §6.9.2).
 - **An HTTP bot's place.** The relay routes an HTTP-mode bot, so the daemon holds no routing rules
   for it and cannot replay its ladder. Where such a bot serves one agent, a person's mention reaches
   the agent wherever the conversation is open to it, so the place's people approve there, for every
