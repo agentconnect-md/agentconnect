@@ -4,6 +4,7 @@ import { turnState, type DaemonRenderAction, type Pending } from '../../daemon/t
 import type { NormalizedMessage } from '../../messages/normalized.js'
 import type { TurnOutputContext, TurnOutputSurface } from '../turn-output.js'
 import type { WeComReplyPort } from './connection.js'
+import { weComElicitCards } from './elicit-card.js'
 import { weComFileUploader } from './media.js'
 import { applyWeComAction, WeComConverger, type WeComTurnHost, type WeComTurnState } from './turn-output.js'
 
@@ -11,12 +12,14 @@ function egressOf(ctx: TurnOutputContext<NormalizedMessage>): WeComReplyPort | u
   return ctx.egress && !ctx.message.headless ? (ctx.egress as WeComReplyPort) : undefined
 }
 
-// No acknowledgement: the long connection offers no reaction or typing call; no question card yet, so asks decline.
+// No acknowledgement: the long connection offers no reaction or typing call.
 export function createWeComTurnOutput(
   host: WeComTurnHost
 ): TurnOutputSurface<Pending, DaemonRenderAction, WeComConverger, NormalizedMessage> {
   return {
     platform: WECOM_PLATFORM,
+    // Questions are template cards answered by a tap; approvals have no card and stay in the Console, as on DingTalk.
+    elicitCards: weComElicitCards,
     // The answer streams as it is written, so it is never held back for a final regeneration.
     answerDelivery: (ctx) => (ctx.mode !== 'none' && !ctx.message.headless ? 'live' : 'staged'),
     // A shared file goes as its own image or file message beside the streamed answer.

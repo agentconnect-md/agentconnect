@@ -268,6 +268,26 @@ export class WeComTurnStream {
     return this.refusal !== undefined ? { refused: this.refusal } : {}
   }
 
+  /** Deliver and close what the answer holds before a card is posted, so text after the card reads below it. */
+  async seal(): Promise<void> {
+    if (this.timer) clearTimeout(this.timer)
+    this.timer = undefined
+    await this.enqueue(async () => {
+      if (this.stopped || this.finished) return
+      const rest = this.rest()
+      if (this.live && this.stream && !rest.trim()) {
+        await this.write(this.stream.pushed, true)
+        this.live = false
+        this.lastSealAt = this.now()
+        return
+      }
+      if (!rest.trim()) return
+      if (this.live) await this.rollover(weComCutPoint(rest, WECOM_MARKDOWN_MAX_BYTES))
+      const left = this.rest()
+      if (left.trim() && (await this.sendProactive(left))) this.sealed += left.length
+    })
+  }
+
   /** Stop refreshing at once; an open stream is closed by {@link close}. */
   suppress(): void {
     this.stopped = true

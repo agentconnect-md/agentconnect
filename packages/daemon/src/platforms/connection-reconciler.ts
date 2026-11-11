@@ -414,7 +414,8 @@ export class ConnectionReconciler {
             if (conn) this.host.channelNameResolver()?.noteMessage(conn, msg)
             this.host.onInbound(msg, this.host.srcIntegrationIds(conn))
           },
-          onKicked: (redialAt) => this.armWeComRedial(key, redialAt)
+          onKicked: (redialAt) => this.armWeComRedial(key, redialAt),
+          onElicitChoice: (a) => this.host.handleElicitCardTap(a)
         })
         try {
           await conn.start()

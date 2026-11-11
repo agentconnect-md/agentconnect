@@ -78,6 +78,34 @@ export class FakeWeComSocket implements WeComSocket {
     })
   }
 
+  /** A `template_card_event` tap on `taskId` by `userid`, nested as the doc's callback example nests it. */
+  cardTap(
+    reqId: string,
+    tap: { taskId: string; key: string; userid?: string; msgid?: string; chatid?: string; selected?: unknown }
+  ): void {
+    this.reply({
+      cmd: 'aibot_event_callback',
+      headers: { req_id: reqId },
+      body: {
+        msgid: tap.msgid ?? `event-${reqId}`,
+        create_time: 1700000000,
+        aibotid: 'aibot-example',
+        ...(tap.chatid ? { chatid: tap.chatid, chattype: 'group' } : { chattype: 'single' }),
+        from: { userid: tap.userid ?? 'user-alice' },
+        msgtype: 'event',
+        event: {
+          eventtype: 'template_card_event',
+          template_card_event: {
+            card_type: 'button_interaction',
+            event_key: tap.key,
+            task_id: tap.taskId,
+            ...(tap.selected ? { selected_items: tap.selected } : {})
+          }
+        }
+      }
+    })
+  }
+
   /** WeCom's takeover: `disconnected_event`, then the server closes the socket. */
   kick(): void {
     this.event(`kick-${this.sent.length}`, 'disconnected_event')
@@ -108,8 +136,11 @@ export class FakeWeComServer {
   refuseOpens = 0
   private uploads = 0
 
+  /** A per-frame answer that wins over `answers`, such as refusing only `template_card` sends; undefined defers. */
+  answerBy?: (frame: SentFrame) => FakeAnswer | undefined
+
   answerFor(frame: SentFrame): FakeAnswer {
-    return this.answers.get(frame.cmd) ?? 0
+    return this.answerBy?.(frame) ?? this.answers.get(frame.cmd) ?? 0
   }
 
   /** A successful answer's body: the media upload's `upload_id` and `media_id`, as WeCom returns them. */
