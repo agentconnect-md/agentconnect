@@ -15,10 +15,17 @@ import { relayHttpBase, relayIngress } from '../../http/relay-ingress.js'
 import { agentIconBackgroundColor } from '../../agents/agent-icon.js'
 import { AgentId, DaemonId, IntegrationId } from '../../domain/ids.js'
 import { BotExternalIdentityTaken } from '../../persistence/errors.js'
-import type { AgentRecord } from '../../persistence/ports.js'
+import type { AgentRecord, BotRecord } from '../../persistence/ports.js'
+import {
+  MsTeamsAgentBotClient,
+  MsTeamsAgentBotError,
+  msTeamsAgentBotKey,
+  msTeamsAgentBotResourceName
+} from './agent-bots.js'
 import {
   MSTEAMS_RSC_PERMISSIONS,
   msTeamsAppIcons,
+  msTeamsAppName,
   msTeamsAppPackage,
   msTeamsManifest,
   msTeamsPackageFingerprint,
@@ -29,6 +36,7 @@ import {
   installMsTeamsApp,
   listMsTeamsTeams,
   mintMsTeamsConnectState,
+  msTeamsAdminConsentUrl,
   msTeamsAuthorizeUrl,
   openMsTeamsTicket,
   publishMsTeamsPackage,
@@ -42,13 +50,20 @@ import {
 import {
   MSTEAMS_DEPLOYMENT_OWNER,
   MSTEAMS_ROW_OWNER_KEY,
+  isMsTeamsDeploymentRow,
+  msTeamsAgentBotEntries,
   msTeamsDeploymentSecrets,
+  type MsTeamsAgentBots,
   type MsTeamsPlatformApp
 } from './deployment-app.js'
 
 export interface MsTeamsConnectSeams {
   /** The deployment-owned app; absent ⇒ every route answers that there is none. */
   app?: MsTeamsPlatformApp
+  /** The blueprint and the Azure resource group agent bots are made with (§8.6.3); absent ⇒ a tenant serves one agent. */
+  agentBots?: MsTeamsAgentBots
+  /** The wait between tries while a new principal or identity settles; tests pass one that does not sleep. */
+  agentBotWait?: (ms: number) => Promise<void>
   keys: MsTeamsConnectKeys
   /** The Console origin whose `/msteams/connect` page Microsoft redirects to. */
   webAppUrl?: string
@@ -64,6 +79,11 @@ const TAKEN_MESSAGE =
   'This Microsoft 365 organization is already connected to another AgentConnect organization. Ask its owner to remove the Teams integration first.'
 const IN_USE_MESSAGE =
   'This Microsoft 365 organization already connects another agent here. Remove that Teams integration first, or register your own bot for this agent.'
+
+const NAME_TAKEN_MESSAGE = (holder: string) =>
+  `Another agent of this Microsoft 365 organization, ${holder}, already appears in Teams under this name. Rename one of them first, so people can tell them apart.`
+const AGENT_BOTS_UNAVAILABLE_MESSAGE = (reason: string) =>
+  `Microsoft did not let this deployment create a bot for this agent in your Microsoft 365 organization (${reason}). Agents already connected are unaffected.`
 
 const MsTeamsDeploymentAppDto = z.object({
   appId: z
@@ -81,13 +101,25 @@ const ConnectBody = z.object({
     )
 })
 const ConnectDto = z.object({ authorizeUrl: z.url().describe('Microsoft’s sign-in page to send the browser to.') })
+const ConsentedBody = z.object({
+  state: z.string().min(1).max(2048).describe('The state Microsoft returned to the connect page with the consent.')
+})
 const CallbackBody = z.object({
   code: z.string().min(1).max(4096).describe('The authorization code Microsoft returned to the connect page.'),
   state: z.string().min(1).max(2048).describe('The state Microsoft returned with it.')
 })
 const CallbackDto = z.object({
-  integrationId: z.string(),
+  integrationId: z
+    .string()
+    .optional()
+    .describe('The agent’s Teams integration; absent while its own bot is still to be created.'),
   agentId: z.string(),
+  agentBot: z
+    .boolean()
+    .optional()
+    .describe(
+      'True when the tenant already serves another agent, so this agent gets a bot of its own: the ticket goes to the agent-bot step, which answers the integration and the ticket for the install step.'
+    ),
   teams: z
     .array(
       z.object({
@@ -109,6 +141,7 @@ const CallbackDto = z.object({
     .boolean()
     .describe('Whether the tenant installed the app from the Teams Store, so nothing was published or installed.')
 })
+const AgentBotBody = z.object({ ticket: z.string().min(1).max(16_384) })
 const InstallBody = z.object({
   ticket: z.string().min(1).max(16_384),
   teamIds: z.array(z.string().min(1).max(256)).min(1).max(50)
@@ -153,9 +186,44 @@ async function connectTarget(deps: HttpDeps, req: FastifyRequest, agentId: strin
   return agent
 }
 
+// The agent that already appears in this tenant under the name the target's package would take (§8.6.4); Teams lists every bot of a tenant in one mention picker.
+async function nameHolder(
+  deps: HttpDeps,
+  orgId: AgentRecord['orgId'],
+  tenantId: string,
+  target: AgentRecord
+): Promise<string | undefined> {
+  const label = deps.config.MSTEAMS_APP_LABEL
+  const nameOf = (agent: AgentRecord) => msTeamsAppName(agent.displayName ?? agent.name, label, 30).toLowerCase()
+  const wanted = nameOf(target)
+  for (const bot of await deps.repos.bot.listForOrg(orgId)) {
+    if (bot.platform !== MSTEAMS_PLATFORM || bot.externalTenantId !== tenantId || !isMsTeamsDeploymentRow(bot)) continue
+    for (const agentId of bot.agentIds) {
+      if (agentId === target.id) continue
+      const other = await deps.repos.agent.get(orgId, agentId)
+      if (other && nameOf(other) === wanted) return other.displayName ?? other.name
+    }
+  }
+  return undefined
+}
+
 export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams) {
   const fetchImpl: typeof fetch = (input, init) => (seams.fetch ?? fetch)(input, init)
   const usable = () => (seams.app && seams.webAppUrl ? { app: seams.app, webAppUrl: seams.webAppUrl } : undefined)
+  const agentBotClient =
+    seams.app && seams.agentBots
+      ? new MsTeamsAgentBotClient({
+          app: seams.app,
+          agentBots: seams.agentBots,
+          fetch: fetchImpl,
+          ...(seams.agentBotWait ? { wait: seams.agentBotWait } : {})
+        })
+      : undefined
+  // A tenant belongs to one organization (§8.6.4): any deployment row of it another organization holds, the app's or an agent bot's.
+  const heldElsewhere = async (orgId: string, tenantId: string) =>
+    (await deps.repos.bot.listForPlatform(MSTEAMS_PLATFORM)).some(
+      (bot) => bot.orgId !== orgId && bot.externalTenantId === tenantId && isMsTeamsDeploymentRow(bot, seams.app)
+    )
   return async function msTeamsConnectRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
 
@@ -195,9 +263,63 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
         const target = await connectTarget(deps, req, req.body.agentId)
         if (typeof target === 'string') return refuse(reply, 409, 'MSTEAMS_CONNECT_NO_AGENT', target)
         const tenant = req.body.tenantId?.toLowerCase()
+        // With agent bots every administrator connect first asks the tenant-wide consent (§8.6.5); a Store install only proves its tenant.
+        const consent = Boolean(agentBotClient) && !tenant
         const state = mintMsTeamsConnectState(
           seams.keys,
-          { orgId: orgOf(req), agentId: target.id, userId: req.principal.userId, ...(tenant ? { tenant } : {}) },
+          {
+            orgId: orgOf(req),
+            agentId: target.id,
+            userId: req.principal.userId,
+            ...(tenant ? { tenant } : {}),
+            ...(consent ? { agentBots: true, consent: true } : {})
+          },
+          deps.clock
+        )
+        const redirectUri = msTeamsConnectRedirectUri(live.webAppUrl)
+        return {
+          authorizeUrl: consent
+            ? msTeamsAdminConsentUrl({ clientId: live.app.appId, redirectUri, state })
+            : msTeamsAuthorizeUrl(seams.keys, {
+                clientId: live.app.appId,
+                redirectUri,
+                state,
+                ...(tenant ? { tenant } : {})
+              })
+        }
+      }
+    )
+
+    r.post(
+      '/integrations/msteams/connect/consented',
+      {
+        schema: {
+          tags: [Tag.Integrations],
+          summary: 'Continue connecting after the tenant-wide consent',
+          description:
+            'After an administrator accepted the tenant-wide consent, Microsoft returns to the Console’s connect page with the state and no code. This answers the sign-in URL that follows, for the same organization, agent and caller, with a new state that expires in ten minutes.',
+          operationId: 'continueMsTeamsConnect',
+          body: ConsentedBody,
+          response: { 200: ConnectDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const live = usable()
+        if (!live || !req.principal)
+          return refuse(reply, 404, 'MSTEAMS_CONNECT_UNAVAILABLE', 'This deployment has no Teams app.')
+        const consented = verifyMsTeamsConnectState(seams.keys, req.body.state, deps.clock)
+        if (!consented?.consent || consented.orgId !== orgOf(req) || consented.userId !== req.principal.userId) {
+          return refuse(
+            reply,
+            400,
+            'MSTEAMS_CONNECT_STATE_INVALID',
+            'This sign-in has expired. Start connecting again.'
+          )
+        }
+        const state = mintMsTeamsConnectState(
+          seams.keys,
+          { orgId: consented.orgId, agentId: consented.agentId, userId: consented.userId, agentBots: true },
           deps.clock
         )
         return {
@@ -205,7 +327,8 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
             clientId: live.app.appId,
             redirectUri: msTeamsConnectRedirectUri(live.webAppUrl),
             state,
-            ...(tenant ? { tenant } : {})
+            agentBots: true,
+            afterConsent: true
           })
         }
       }
@@ -231,7 +354,8 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
           return refuse(reply, 404, 'MSTEAMS_CONNECT_UNAVAILABLE', 'This deployment has no Teams app.')
         const orgId = orgOf(req)
         const state = verifyMsTeamsConnectState(seams.keys, req.body.state, deps.clock)
-        if (!state || state.orgId !== orgId || state.userId !== req.principal.userId) {
+        // The consent's state redeems no code.
+        if (!state || state.consent || state.orgId !== orgId || state.userId !== req.principal.userId) {
           return refuse(
             reply,
             400,
@@ -247,7 +371,11 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
           return refuse(reply, 409, 'MSTEAMS_RELAY_ORIGIN_MISSING', 'This deployment has no public callback endpoint.')
         }
         try {
-          const { accessToken, tenantId } = await redeemMsTeamsCode(
+          const {
+            accessToken,
+            tenantId,
+            userId: sponsorId
+          } = await redeemMsTeamsCode(
             seams.keys,
             {
               clientId: live.app.appId,
@@ -255,19 +383,50 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
               redirectUri: msTeamsConnectRedirectUri(live.webAppUrl),
               code: req.body.code,
               state: req.body.state,
-              ...(state.tenant ? { tenant: state.tenant } : {})
+              ...(state.tenant ? { tenant: state.tenant } : {}),
+              ...(state.agentBots ? { agentBots: true } : {})
             },
             fetchImpl
           )
+          // The sign-in asked the agent bots' scopes, so their steps can run with it.
+          const agentBots = state.agentBots ? agentBotClient : undefined
           // A Teams Store install already has the app, so this connect only claims the tenant (§8.4).
           const store = state.tenant !== undefined
 
           // One tenant maps to one organization and, within it, to one agent (§8.2).
           const held = await deps.repos.bot.getByExternalIdentity(MSTEAMS_PLATFORM, live.app.appId, tenantId)
-          if (held && held.orgId !== orgId) return refuse(reply, 409, 'MSTEAMS_TENANT_TAKEN', TAKEN_MESSAGE)
+          if ((held && held.orgId !== orgId) || (await heldElsewhere(orgId, tenantId)))
+            return refuse(reply, 409, 'MSTEAMS_TENANT_TAKEN', TAKEN_MESSAGE)
           if (held && held.agentIds.length > 0 && !held.agentIds.includes(target.id)) {
-            return refuse(reply, 409, 'MSTEAMS_TENANT_IN_USE', IN_USE_MESSAGE)
+            // The app's bot serves the agent connected first; a further agent gets a bot of its own where the deployment makes them (§8.6.4).
+            if (!agentBots || !sponsorId) return refuse(reply, 409, 'MSTEAMS_TENANT_IN_USE', IN_USE_MESSAGE)
+            const holder = await nameHolder(deps, orgId, tenantId, target)
+            if (holder) return refuse(reply, 409, 'MSTEAMS_AGENT_NAME_TAKEN', NAME_TAKEN_MESSAGE(holder))
+            // Making the bot takes up to most of a minute, so it is its own step and the teams are answered first (§8.6.5).
+            const teams = await listMsTeamsTeams(fetchImpl, accessToken)
+            return {
+              agentId: target.id,
+              agentBot: true,
+              teams: teams.map((team) => ({ ...team, app: 'none' as const })),
+              ticket: sealMsTeamsTicket(
+                seams.keys,
+                {
+                  accessToken,
+                  orgId,
+                  agentBot: { agentId: target.id, tenantId, sponsorId, userId: req.principal.userId }
+                },
+                deps.clock
+              ),
+              store: false
+            }
           }
+          // The blueprint's principal is created at the first connect too, so a member can add an agent later (§8.6.5); the first agent does not depend on it.
+          if (agentBots && !store)
+            await agentBots
+              .ensurePrincipal(tenantId, accessToken)
+              .catch((err: unknown) =>
+                req.log.warn({ err }, 'msteams: could not create the blueprint’s principal in the tenant')
+              )
 
           // Publishing without review is an administrator's act, so it proves the authority the claim needs before anything is written; a Store install publishes nothing.
           const packageInput = {
@@ -390,6 +549,169 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
     )
 
     r.post(
+      '/integrations/msteams/connect/agent-bot',
+      {
+        schema: {
+          tags: [Tag.Integrations],
+          summary: 'Create a further agent’s own Teams bot',
+          description:
+            'For a tenant that already serves another agent: with the ticket the connect step answered, create the agent’s bot (the blueprint’s principal if the tenant has none, the agent identity, its bot registration, and a proof token), publish its package to the tenant’s organization catalog, and install its row on the agent. Answers the integration, the administrator’s teams with the app’s state in each, and the ticket for the install step. Safe to repeat: a retry finds what an earlier attempt created. A tenant where the bot cannot be created answers 409 MSTEAMS_AGENT_BOTS_UNAVAILABLE with Microsoft’s reason.',
+          operationId: 'createMsTeamsAgentBot',
+          body: AgentBotBody,
+          response: { 200: CallbackDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 502: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const live = usable()
+        if (!live || !agentBotClient || !seams.agentBots || !req.principal)
+          return refuse(reply, 404, 'MSTEAMS_CONNECT_UNAVAILABLE', 'This deployment makes no bots for further agents.')
+        const orgId = orgOf(req)
+        const ticket = openMsTeamsTicket(seams.keys, req.body.ticket, deps.clock)
+        if (
+          !ticket ||
+          !('agentBot' in ticket) ||
+          ticket.orgId !== orgId ||
+          ticket.agentBot.userId !== req.principal.userId
+        ) {
+          return refuse(
+            reply,
+            400,
+            'MSTEAMS_CONNECT_STATE_INVALID',
+            'This sign-in has expired. Start connecting again.'
+          )
+        }
+        const { accessToken } = ticket
+        const { tenantId, sponsorId } = ticket.agentBot
+        const target = await connectTarget(deps, req, ticket.agentBot.agentId)
+        if (typeof target === 'string') return refuse(reply, 409, 'MSTEAMS_CONNECT_NO_AGENT', target)
+        const relayBase = relayHttpBase(deps.config.PUBLIC_RELAY_URL)
+        if (!relayBase || !relayIngress(deps).ok) {
+          return refuse(reply, 409, 'MSTEAMS_RELAY_ORIGIN_MISSING', 'This deployment has no public callback endpoint.')
+        }
+        const holder = await nameHolder(deps, orgId, tenantId, target)
+        if (holder) return refuse(reply, 409, 'MSTEAMS_AGENT_NAME_TAKEN', NAME_TAKEN_MESSAGE(holder))
+        const agentName = target.displayName ?? target.name
+        const key = msTeamsAgentBotKey(target.id, tenantId)
+        let identity: string
+        try {
+          await agentBotClient.ensurePrincipal(tenantId, accessToken)
+          identity = await agentBotClient.ensureIdentity({
+            tenantId,
+            key,
+            displayName: agentName,
+            sponsorUserId: sponsorId
+          })
+          await agentBotClient.ensureRegistration({
+            key,
+            tenantId,
+            identity,
+            displayName: agentName,
+            relayPublicUrl: relayBase
+          })
+          await agentBotClient.prove(tenantId, identity)
+        } catch (err) {
+          if (!(err instanceof MsTeamsAgentBotError)) throw err
+          req.log.warn({ step: err.step, status: err.status, code: err.providerCode }, 'msteams: agent bot not created')
+          if (err.transient)
+            return refuse(reply, 502, 'MSTEAMS_CONNECT_UNAVAILABLE', 'Microsoft could not be reached. Try again.')
+          const reason = `${err.step}${err.providerCode ? `: ${err.providerCode}` : ''}`
+          return refuse(reply, 409, 'MSTEAMS_AGENT_BOTS_UNAVAILABLE', AGENT_BOTS_UNAVAILABLE_MESSAGE(reason))
+        }
+        try {
+          // The package names the identity as its bot and keeps the deployment app as its consent app (§8.6.1).
+          const packageInput = {
+            appId: identity,
+            consentAppId: live.app.appId,
+            relayHost: new URL(relayBase).host,
+            agentName,
+            nameLabel: deps.config.MSTEAMS_APP_LABEL,
+            accentColor: agentIconBackgroundColor(target.icon)
+          }
+          const appPackage = msTeamsPackageFingerprint(packageInput, target)
+          const catalogAppId = await publishMsTeamsPackage(
+            fetchImpl,
+            accessToken,
+            msTeamsPackageId(identity),
+            msTeamsAppPackage(
+              msTeamsManifest({ ...packageInput, nowMs: deps.clock.now() }),
+              await msTeamsAppIcons(target, deps.iconStore)
+            )
+          )
+          let integrationId: string
+          let botId: BotRecord['id']
+          const held = await deps.repos.bot.getByExternalIdentity(MSTEAMS_PLATFORM, identity, tenantId)
+          if (held && held.orgId !== orgId) return refuse(reply, 409, 'MSTEAMS_TENANT_TAKEN', TAKEN_MESSAGE)
+          if (!held) {
+            const installed = await installNewBot(deps, req.log, {
+              bot: {
+                externalAppId: identity,
+                platformConfig: {
+                  tenantId,
+                  // An agent bot's tokens are issued by its own tenant (§8.6.4).
+                  tokenTenantId: tenantId,
+                  [MSTEAMS_ROW_OWNER_KEY]: MSTEAMS_DEPLOYMENT_OWNER,
+                  ...msTeamsAgentBotEntries({
+                    blueprintId: seams.agentBots.blueprintId,
+                    resourceName: msTeamsAgentBotResourceName(key)
+                  })
+                }
+              },
+              secrets: msTeamsDeploymentSecrets(),
+              externalIdentity: { externalAppId: identity, externalTenantId: tenantId, conflictMessage: TAKEN_MESSAGE },
+              orgId,
+              agent: target,
+              platform: MSTEAMS_PLATFORM,
+              name: `Microsoft Teams · ${(await readMsTeamsOrganizationName(fetchImpl, accessToken)) ?? tenantId}`,
+              transport: 'http',
+              prebuilt: true,
+              createdByUserId: req.principal.userId
+            })
+            integrationId = installed.integration.id
+            botId = installed.bot.id
+          } else {
+            const admission = await deps.repos.integration.addBotMembership({
+              id: IntegrationId(randomUUID()),
+              orgId,
+              agentId: target.id,
+              botId: held.id,
+              platform: MSTEAMS_PLATFORM,
+              name: held.name,
+              createdByUserId: req.principal.userId
+            })
+            if (admission.outcome === 'revoked' || admission.outcome === 'not_shareable') {
+              return refuse(reply, 409, 'MSTEAMS_TENANT_IN_USE', IN_USE_MESSAGE)
+            }
+            if (admission.outcome === 'added') await deps.httpBot.syncBot(held.id)
+            integrationId = admission.integration.id
+            botId = held.id
+          }
+          const teams = await listMsTeamsTeams(fetchImpl, accessToken)
+          const upgrades = await upgradeMsTeamsInstalls(
+            fetchImpl,
+            accessToken,
+            { teamIds: teams.map((team) => team.id), catalogAppId, permissions: MSTEAMS_RSC_PERMISSIONS },
+            req.log
+          )
+          if (![...upgrades.values()].includes('failed')) {
+            await deps.repos.bot.mergeBotIdentity(orgId, botId, () => ({ platformConfig: { appPackage } }))
+          }
+          return {
+            integrationId,
+            agentId: target.id,
+            teams: teams.map((team) => ({ ...team, app: upgrades.get(team.id) ?? 'failed' })),
+            ticket: sealMsTeamsTicket(seams.keys, { accessToken, orgId, integrationId, catalogAppId }, deps.clock),
+            store: false
+          }
+        } catch (err) {
+          if (err instanceof BotExternalIdentityTaken) return refuse(reply, 409, 'MSTEAMS_TENANT_TAKEN', TAKEN_MESSAGE)
+          if (err instanceof MsTeamsConnectError) return refuse(reply, STATUS_OF[err.code], err.code, err.message)
+          throw err
+        }
+      }
+    )
+
+    r.post(
       '/integrations/msteams/connect/install',
       {
         schema: {
@@ -406,7 +728,7 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
         if (denyViewerWrite(req, reply)) return
         if (!usable()) return refuse(reply, 404, 'MSTEAMS_CONNECT_UNAVAILABLE', 'This deployment has no Teams app.')
         const ticket = openMsTeamsTicket(seams.keys, req.body.ticket, deps.clock)
-        if (!ticket || ticket.orgId !== orgOf(req)) {
+        if (!ticket || !('catalogAppId' in ticket) || ticket.orgId !== orgOf(req)) {
           return refuse(
             reply,
             400,

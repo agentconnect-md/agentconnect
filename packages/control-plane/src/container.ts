@@ -3326,6 +3326,7 @@ export function buildContainer(
         msTeamsRoutes(httpDeps, fetch, msTeamsPlatformApp),
         msTeamsConnectRoutes(httpDeps, {
           ...(msTeamsPlatformApp ? { app: msTeamsPlatformApp } : {}),
+          ...(msTeamsAgentBots ? { agentBots: msTeamsAgentBots } : {}),
           keys: msTeamsConnectKeys(config.API_KEY_PEPPER),
           ...(webAppUrl ? { webAppUrl } : {})
         })
