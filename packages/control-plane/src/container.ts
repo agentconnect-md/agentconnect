@@ -2521,7 +2521,8 @@ export function buildContainer(
   const msTeamsSessionAccess = createMsTeamsSessionAccess(
     { ...botSessionAccessDeps, configured: configuredSocialProviders.includes('azuread') },
     fetch,
-    msTeamsPlatformApp
+    msTeamsPlatformApp,
+    msTeamsAgentBots
   )
 
   // Built once and shared between the route deps (the live paths) and the
@@ -3330,6 +3331,7 @@ export function buildContainer(
         })
       ],
       ...(msTeamsPlatformApp ? { app: msTeamsPlatformApp } : {}),
+      ...(msTeamsAgentBots ? { agentBots: msTeamsAgentBots } : {}),
       credentialReconciler: msTeamsCredentialReconciler,
       ...(relayPublicBase ? { publicRelayUrl: relayPublicBase } : {})
     }),
