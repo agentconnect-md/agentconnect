@@ -33,9 +33,11 @@ export class FakeWeComSocket implements WeComSocket {
     this.sent.push(frame)
     const answer = this.server.answerFor(frame)
     if (answer === 'silent') return
+    const body = answer === 0 ? this.server.bodyFor(frame) : undefined
     queueMicrotask(() =>
       this.reply({
         headers: { req_id: frame.headers.req_id },
+        ...(body ? { body } : {}),
         errcode: answer,
         errmsg: answer === 0 ? 'ok' : 'refused'
       })
@@ -104,9 +106,18 @@ export class FakeWeComServer {
   autoOpen = true
   /** Open attempts refused before a socket opens, for reconnect tests. */
   refuseOpens = 0
+  private uploads = 0
 
   answerFor(frame: SentFrame): FakeAnswer {
     return this.answers.get(frame.cmd) ?? 0
+  }
+
+  /** A successful answer's body: the media upload's `upload_id` and `media_id`, as WeCom returns them. */
+  bodyFor(frame: SentFrame): Record<string, unknown> | undefined {
+    if (frame.cmd === 'aibot_upload_media_init') return { upload_id: `upload-example-${++this.uploads}` }
+    if (frame.cmd === 'aibot_upload_media_finish')
+      return { type: 'file', media_id: `media-example-${String(frame.body?.upload_id)}`, created_at: 1700000000 }
+    return undefined
   }
 
   createSocket = (url: string): FakeWeComSocket => {

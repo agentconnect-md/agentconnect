@@ -6,7 +6,9 @@ import type { Logger } from '../../log.js'
 import type { NormalizedMessage } from '../../messages/normalized.js'
 import { splitMarkdownByBytes } from '../../messages/split-markdown-bytes.js'
 import type { PlatformChannelInfo, PlatformConnection, PlatformMemberRef, PlatformUserProfile } from '../contract.js'
+import type { UploadOutcome } from '../../mcp/ops/context.js'
 import { platformIntegrationConfig } from '../integration-config.js'
+import { WECOM_ATTACHMENT_TOOL } from './attachments.js'
 import {
   WECOM_MSG_CALLBACK,
   WeComClient,
@@ -16,7 +18,17 @@ import {
   type WeComClientTiming,
   type WeComSocket
 } from './client.js'
-import { WeComSendBudget } from './rate-limit.js'
+import {
+  correctWeComAttachment,
+  downloadWeComMedia,
+  uploadWeComMedia,
+  weComMediaType,
+  WECOM_MEDIA_MIN_BYTES,
+  WECOM_MEDIA_URL_TTL_MS,
+  type WeComDownloaded,
+  type WeComMediaPort
+} from './media.js'
+import { WeComRateLimited, WeComSendBudget } from './rate-limit.js'
 
 export interface WeComConnectionGroup {
   botId: string
@@ -59,6 +71,12 @@ const SEEN_LIMIT = 2_000
 const REPLY_LIMIT = 2_000
 const MEDIA_LIMIT = 2_000
 const MEMBERS_PER_CHANNEL = 200
+const DEFAULT_MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
+// Conservative choice: received bytes are held in memory, at most 64 MiB per bot and for 24 hours, then read as unavailable.
+const HELD_MAX_BYTES = 64 * 1024 * 1024
+const HELD_TTL_MS = 24 * 60 * 60_000
+const UPLOAD_BUDGET_KEY = 'uploads'
+const IMAGE_UNAVAILABLE = '[WeCom image unavailable: it could not be downloaded when it arrived.]'
 
 /** A callback a turn may answer under its `req_id`; held by the connection, never put in the message. */
 export interface WeComReplyHandle {
@@ -104,16 +122,29 @@ export interface WeComConnectionDeps {
   createSocket?(url: string): WeComSocket
   timing?: Partial<WeComClientTiming>
   now?(): number
+  /** A test seam for media downloads; production uses the guarded fetch in `media.ts`. */
+  fetchImpl?: typeof fetch
+  /** The cap a received attachment is fetched under at receipt; the daemon's default attachment limit when unset. */
+  maxAttachmentBytes?: number
 }
 
-export class WeComConnection implements PlatformConnection, WeComReplyPort {
+type HeldMediaRef = WeComMediaRef & { receivedAt: number }
+
+export class WeComConnection implements PlatformConnection, WeComReplyPort, WeComMediaPort {
   readonly botUserId: string
   private readonly client: WeComClient
   private readonly budget: WeComSendBudget
+  private readonly uploads: WeComSendBudget
   private readonly seen = new Set<string>()
   private readonly replies = new Map<string, WeComReplyHandle & { claimed: boolean }>()
-  // Reference → download material for the attachments PR; the keys never leave this map.
-  private readonly media = new Map<string, WeComMediaRef>()
+  // Reference → download material until its bytes are held or its URL expires; the URLs and keys never leave this map.
+  private readonly media = new Map<string, HeldMediaRef>()
+  private readonly held = new Map<string, { bytes: Buffer; at: number }>()
+  private heldBytes = 0
+  private readonly fetching = new Map<string, Promise<WeComDownloaded | null>>()
+  // A message with attachments waits for its downloads; later messages in its conversation wait behind it to keep their order.
+  private readonly receipts = new Map<string, Promise<void>>()
+  private readonly abort = new AbortController()
   private readonly channels = new Map<string, { isIm: boolean }>()
   private readonly members = new Map<string, Set<string>>()
   private readonly sendChains = new Map<string, Promise<unknown>>()
@@ -121,7 +152,6 @@ export class WeComConnection implements PlatformConnection, WeComReplyPort {
   private kicks = 0
   private heldSince = 0
   private redialAt?: number
-  private downloadRefusalLogged = false
 
   constructor(
     readonly group: WeComConnectionGroup,
@@ -130,6 +160,7 @@ export class WeComConnection implements PlatformConnection, WeComReplyPort {
     this.botUserId = group.botId
     const now = deps.now ?? Date.now
     this.budget = new WeComSendBudget(now)
+    this.uploads = new WeComSendBudget(now)
     this.client = new WeComClient({
       botId: group.botId,
       secret: group.secret,
@@ -155,6 +186,7 @@ export class WeComConnection implements PlatformConnection, WeComReplyPort {
 
   async stop(): Promise<void> {
     this.stopped = true
+    this.abort.abort()
     await this.client.stop()
   }
 
@@ -215,7 +247,99 @@ export class WeComConnection implements PlatformConnection, WeComReplyPort {
       claimed: false
     })
     while (this.replies.size > REPLY_LIMIT) this.replies.delete(this.replies.keys().next().value!)
-    this.deps.onMessage(msg)
+    this.deliver(msg)
+  }
+
+  // Fetch a message's attachments before handing it on: the URLs expire in five minutes, long before an agent may read them.
+  private deliver(msg: NormalizedMessage): void {
+    const previous = this.receipts.get(msg.channel)
+    const fetches = (msg.attachments ?? []).some((a) => a.sourceUrl && this.media.has(a.sourceUrl))
+    if (!fetches && !previous) {
+      this.deps.onMessage(msg)
+      return
+    }
+    const run = (previous ?? Promise.resolve())
+      .then(() => this.prefetch(msg))
+      .then(() => {
+        if (!this.stopped) this.deps.onMessage(msg)
+      })
+      .catch(() => this.deps.log.warn('wecom: a message with attachments could not be handed on'))
+    this.receipts.set(msg.channel, run)
+    void run.then(() => {
+      if (this.receipts.get(msg.channel) === run) this.receipts.delete(msg.channel)
+    })
+  }
+
+  private async prefetch(msg: NormalizedMessage): Promise<void> {
+    const cap = this.deps.maxAttachmentBytes ?? DEFAULT_MAX_ATTACHMENT_BYTES
+    await Promise.all(
+      (msg.attachments ?? []).map(async (attachment) => {
+        const ref = attachment.sourceUrl
+        const kind = ref ? this.media.get(ref)?.kind : undefined
+        if (!ref || !kind) return
+        const downloaded = await this.fetchMedia(ref, cap)
+        if (downloaded && correctWeComAttachment(attachment, kind, downloaded)) return
+        if (downloaded) {
+          this.dropHeld(ref)
+          this.deps.log.warn('wecom: attachment download failed (unsupported_format)')
+        }
+        if (kind === 'image') attachment.unavailableText = IMAGE_UNAVAILABLE
+      })
+    )
+  }
+
+  private fetchMedia(ref: string, maxBytes: number): Promise<WeComDownloaded | null> {
+    const inflight = this.fetching.get(ref)
+    if (inflight) return inflight
+    const media = this.media.get(ref)
+    if (!media) return Promise.resolve(null)
+    if (this.now() - media.receivedAt >= WECOM_MEDIA_URL_TTL_MS) {
+      this.media.delete(ref)
+      this.deps.log.warn('wecom: attachment download refused (expired)')
+      return Promise.resolve(null)
+    }
+    const deps = { signal: this.abort.signal, ...(this.deps.fetchImpl ? { fetchImpl: this.deps.fetchImpl } : {}) }
+    const run = downloadWeComMedia(deps, media, maxBytes, (reason) =>
+      this.deps.log.warn(`wecom: attachment download failed (${reason})`)
+    )
+      .then((downloaded) => {
+        if (downloaded) {
+          this.media.delete(ref)
+          this.hold(ref, downloaded.bytes)
+        }
+        return downloaded
+      })
+      .finally(() => this.fetching.delete(ref))
+    this.fetching.set(ref, run)
+    return run
+  }
+
+  private hold(ref: string, bytes: Buffer): void {
+    this.dropHeld(ref)
+    if (bytes.byteLength > HELD_MAX_BYTES) return
+    this.held.set(ref, { bytes, at: this.now() })
+    this.heldBytes += bytes.byteLength
+    while (this.heldBytes > HELD_MAX_BYTES) this.dropHeld(this.held.keys().next().value!)
+  }
+
+  private dropHeld(ref: string): void {
+    const entry = this.held.get(ref)
+    if (!entry) return
+    this.held.delete(ref)
+    this.heldBytes -= entry.bytes.byteLength
+  }
+
+  // Entries are kept in arrival order, so expiry sweeps from the front.
+  private sweep(): void {
+    const now = this.now()
+    for (const [ref, media] of this.media) {
+      if (now - media.receivedAt < WECOM_MEDIA_URL_TTL_MS) break
+      if (!this.fetching.has(ref)) this.media.delete(ref)
+    }
+    for (const [ref, entry] of this.held) {
+      if (now - entry.at < HELD_TTL_MS) break
+      this.dropHeld(ref)
+    }
   }
 
   /** Normalize one message callback body, keeping its media download material here. */
@@ -228,12 +352,15 @@ export class WeComConnection implements PlatformConnection, WeComReplyPort {
       return null
     }
     if (!result) return null
+    this.sweep()
+    const receivedAt = this.now()
     for (const ref of result.media) {
       this.media.delete(ref.ref)
-      this.media.set(ref.ref, ref)
+      this.media.set(ref.ref, { ...ref, receivedAt })
     }
     while (this.media.size > MEDIA_LIMIT) this.media.delete(this.media.keys().next().value!)
     const msg = result.message as NormalizedMessage
+    for (const attachment of msg.attachments ?? []) attachment.readerToolName = WECOM_ATTACHMENT_TOOL.name
     this.channels.set(msg.channel, { isIm: msg.isDm })
     const members = this.members.get(msg.channel) ?? new Set<string>()
     members.delete(msg.sender.id)
@@ -276,8 +403,13 @@ export class WeComConnection implements PlatformConnection, WeComReplyPort {
   }
 
   sendMarkdown(channel: string, text: string): Promise<WeComSentPart[]> {
+    return this.chained(channel, () => this.sendParts(channel, text))
+  }
+
+  // Sends to one conversation go out one at a time, in the order they were asked for.
+  private chained<T>(channel: string, send: () => Promise<T>): Promise<T> {
     const previous = this.sendChains.get(channel) ?? Promise.resolve()
-    const run = previous.then(() => this.sendParts(channel, text))
+    const run = previous.then(send)
     const settled = run.catch(() => undefined)
     this.sendChains.set(channel, settled)
     void settled.then(() => {
@@ -330,12 +462,64 @@ export class WeComConnection implements PlatformConnection, WeComReplyPort {
     return { id: user }
   }
 
-  // Attachment download and decryption arrive with the attachments change; until then every reference reads as unavailable.
-  async downloadFile(_ref: string, _maxBytes?: number): Promise<Buffer | null> {
-    if (!this.downloadRefusalLogged) this.deps.log.warn('wecom: attachment download is not available yet')
-    this.downloadRefusalLogged = true
+  /** A received attachment's plaintext by its reference: the bytes fetched at receipt, or a fetch while its URL is valid. */
+  async downloadFile(ref: string, maxBytes = DEFAULT_MAX_ATTACHMENT_BYTES): Promise<Buffer | null> {
+    this.sweep()
+    const bytes = this.held.get(ref)?.bytes ?? (await this.fetchMedia(ref, maxBytes))?.bytes
+    if (!bytes) {
+      if (!this.media.has(ref)) this.deps.log.warn('wecom: attachment unavailable (unknown or expired reference)')
+      return null
+    }
+    if (bytes.byteLength <= maxBytes) return bytes
+    this.deps.log.warn('wecom: attachment download refused (size_limit)')
     return null
   }
+
+  /** Upload a file and send it as an image or file message, then its caption; refusals report as the share tool expects. */
+  async sendMedia(
+    channel: string,
+    file: { bytes: Buffer; name: string; mimeType: string },
+    caption?: string
+  ): Promise<UploadOutcome> {
+    if (file.bytes.byteLength < WECOM_MEDIA_MIN_BYTES)
+      return { ok: false, reason: 'platform_error', detail: 'WeCom accepts files of 5 bytes or more' }
+    const type = weComMediaType(file)
+    if (!type) return { ok: false, reason: 'too_large' }
+    if (!this.client.connected) return { ok: false, reason: 'platform_error', detail: 'not connected to WeCom' }
+    if (!this.uploads.tryTake(UPLOAD_BUDGET_KEY))
+      return {
+        ok: false,
+        reason: 'platform_error',
+        detail: 'WeCom allows a bot 30 uploads a minute and 1,000 an hour, and this bot has used them'
+      }
+    let mediaId: string
+    try {
+      mediaId = await uploadWeComMedia(this.client, file, type)
+    } catch (error) {
+      this.deps.log.warn(`wecom: media upload failed (${sendErrorLabel(error)})`)
+      return { ok: false, reason: 'platform_error', ...uploadDetail(error) }
+    }
+    return this.chained(channel, async (): Promise<UploadOutcome> => {
+      try {
+        await this.budget.take(channel)
+        await this.client.send({ ...weComSendTarget(channel), msgtype: type, [type]: { media_id: mediaId } })
+      } catch (error) {
+        this.deps.log.warn(`wecom: media send failed (${sendErrorLabel(error)})`)
+        // Only a refusal or an unsent frame proves nothing was sent; a lost answer may still have delivered it.
+        if (error instanceof WeComTransportError && error.maybeDelivered) return { ok: false, reason: 'indeterminate' }
+        return { ok: false, reason: 'platform_error', ...uploadDetail(error) }
+      }
+      const captioned = caption ? (await this.sendParts(channel, caption)).every((part) => !part.error) : true
+      return { ok: true, ...(captioned ? {} : { warning: 'The caption was not delivered.' }) }
+    })
+  }
+}
+
+function uploadDetail(error: unknown): { detail?: string } {
+  if (error instanceof WeComRequestError) return { detail: `errcode ${error.errcode}` }
+  if (error instanceof WeComRateLimited) return { detail: 'the conversation has used its 1,000 messages for this hour' }
+  if (error instanceof WeComTransportError) return { detail: 'the connection to WeCom was not available' }
+  return {}
 }
 
 /** A send failure as a log line names it: WeCom's code, or the transport's reason; never the content. */

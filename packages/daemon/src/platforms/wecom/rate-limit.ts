@@ -1,4 +1,4 @@
-// WeCom's per-conversation send budget: replies and proactive sends share 30 a minute and 1,000 an hour (official doc, path 101463).
+// WeCom's send budget per conversation and upload budget per bot: each 30 a minute and 1,000 an hour (official doc, path 101463).
 
 export const WECOM_PER_MINUTE = 30
 export const WECOM_PER_HOUR = 1000
@@ -42,6 +42,14 @@ export class WeComSendBudget {
       await this.sleep(Math.max(1, oldestInMinute + MINUTE_MS - this.now()))
     }
     this.note(conversation)
+  }
+
+  /** Take one slot only if both windows have room now; never waits. */
+  tryTake(key: string): boolean {
+    const { minute, hour } = this.used(key)
+    if (minute >= WECOM_PER_MINUTE || hour >= WECOM_PER_HOUR) return false
+    this.note(key)
+    return true
   }
 
   /** Count a frame sent without waiting, such as a refresh `refreshFits` already allowed. */

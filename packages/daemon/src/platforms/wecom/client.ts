@@ -1,6 +1,7 @@
 // WeCom's smart bot long connection: subscribe, heartbeat, replies correlated by req_id, reconnect, and a kick that stays down.
 import { randomUUID } from 'node:crypto'
 import type { Logger } from '../../log.js'
+import type { WeComUploadCommand } from './media.js'
 
 /** WeCom's public long-connection endpoint (official doc, path 101463); privately deployed WeCom is out of scope. */
 export const WECOM_LONG_CONNECTION_URL = 'wss://openws.work.weixin.qq.com'
@@ -181,6 +182,12 @@ export class WeComClient {
       if (this.replyChains.get(reqId) === settled) this.replyChains.delete(reqId)
     })
     return run
+  }
+
+  /** One media upload step under a fresh `req_id`. */
+  command(cmd: WeComUploadCommand, body: Record<string, unknown>): Promise<WeComFrame> {
+    if (this.state !== 'up') return Promise.reject(new WeComTransportError('wecom: not connected', false))
+    return this.request(cmd, body)
   }
 
   /** A proactive send under a fresh `req_id`. */

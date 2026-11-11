@@ -59,7 +59,7 @@ afterEach(async () => {
   vi.useRealTimers()
 })
 
-function setup(opts: { now?: () => number; log?: typeof quietLog } = {}) {
+function setup(opts: { now?: () => number; log?: typeof quietLog; fetchImpl?: typeof fetch } = {}) {
   const server = new FakeWeComServer()
   const messages: NormalizedMessage[] = []
   const kicks: number[] = []
@@ -70,7 +70,8 @@ function setup(opts: { now?: () => number; log?: typeof quietLog } = {}) {
       onKicked: (at) => kicks.push(at),
       log: opts.log ?? quietLog,
       createSocket: server.createSocket,
-      ...(opts.now ? { now: opts.now } : {})
+      ...(opts.now ? { now: opts.now } : {}),
+      ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {})
     }
   )
   connections.push(conn)
@@ -121,17 +122,20 @@ describe('WeCom connection', () => {
     expect(conn.connected).toBe(true)
   })
 
-  it('delivers a message with an attachment by its text, holding the download material but never logging it', async () => {
+  it('delivers a message with an attachment by its text whose download failed, never logging its material', async () => {
     const lines: string[] = []
     const log = { ...quietLog, warn: (line: string) => lines.push(line), info: (line: string) => lines.push(line) }
-    const { server, conn, messages } = setup({ log })
+    const fetchImpl = vi.fn(async () => new Response('gone', { status: 404 })) as unknown as typeof fetch
+    const { server, conn, messages } = setup({ log, fetchImpl })
     await conn.start()
     server.last.message('req-1', dmImage as Record<string, unknown>)
+    await vi.waitFor(() => expect(messages).toHaveLength(1))
     const [msg] = messages
     expect(msg!.text).toBe('what is in this picture?')
     expect(msg!.attachments).toHaveLength(1)
     const ref = msg!.attachments![0]!.sourceUrl!
-    expect(conn.hasMedia(ref)).toBe(true)
+    expect(msg!.attachments![0]).toMatchObject({ readerToolName: 'readWeComFile' })
+    expect(msg!.attachments![0]!.unavailableText).toMatch(/unavailable/)
     expect(JSON.stringify(msg)).not.toContain('aes-key-placeholder')
     expect(await conn.downloadFile(ref)).toBeNull()
     expect(lines.join('\n')).not.toMatch(/media\.example\.test|aes-key-placeholder|picture/)

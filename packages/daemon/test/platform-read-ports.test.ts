@@ -204,7 +204,8 @@ describe('credentialed attachment tools', () => {
       'readTelegramFile',
       'readQQFile',
       'readDingTalkFile',
-      'readWeChatFile'
+      'readWeChatFile',
+      'readWeComFile'
     ])
   })
 
@@ -214,6 +215,7 @@ describe('credentialed attachment tools', () => {
     expect(isAttachmentReadTool('readQQFile')).toBe(true)
     expect(isAttachmentReadTool('readDingTalkFile')).toBe(true)
     expect(isAttachmentReadTool('readWeChatFile')).toBe(true)
+    expect(isAttachmentReadTool('readWeComFile')).toBe(true)
     expect(isAttachmentReadTool('readDiscordFile')).toBe(false)
     expect(isAttachmentReadTool('getCurrentChannel')).toBe(false)
     expect(isAttachmentReadTool('')).toBe(false)

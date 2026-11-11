@@ -4,6 +4,7 @@ import { turnState, type DaemonRenderAction, type Pending } from '../../daemon/t
 import type { NormalizedMessage } from '../../messages/normalized.js'
 import type { TurnOutputContext, TurnOutputSurface } from '../turn-output.js'
 import type { WeComReplyPort } from './connection.js'
+import { weComFileUploader } from './media.js'
 import { applyWeComAction, WeComConverger, type WeComTurnHost, type WeComTurnState } from './turn-output.js'
 
 function egressOf(ctx: TurnOutputContext<NormalizedMessage>): WeComReplyPort | undefined {
@@ -18,6 +19,8 @@ export function createWeComTurnOutput(
     platform: WECOM_PLATFORM,
     // The answer streams as it is written, so it is never held back for a final regeneration.
     answerDelivery: (ctx) => (ctx.mode !== 'none' && !ctx.message.headless ? 'live' : 'staged'),
+    // A shared file goes as its own image or file message beside the streamed answer.
+    fileUploader: (turn) => weComFileUploader(turnState<WeComTurnState>(turn)),
     createConverger: (ctx) => new WeComConverger(ctx.mode, ctx.resolveFileLink),
     initialTurnState: (ctx): WeComTurnState => {
       const conn = egressOf(ctx)

@@ -43,6 +43,7 @@ import type { ReplyAttributionInfo } from '../messages/attribution.js'
 import type { ToolDescriptor } from '../tool-schema/descriptor.js'
 import { DINGTALK_ATTACHMENT_TOOL } from './dingtalk/attachments.js'
 import { WECHAT_ATTACHMENT_TOOL } from './wechat/attachments.js'
+import { WECOM_ATTACHMENT_TOOL } from './wecom/attachments.js'
 import { LINEAR_SESSION_TOOLS } from './linear/agent-tools.js'
 import { QQ_ATTACHMENT_TOOL } from './qq/attachments.js'
 import { SLACK_ATTACHMENT_TOOL } from './slack/attachments.js'
@@ -227,7 +228,7 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
     }
   ],
   ['wechat', { platform: 'wechat', label: 'WeChat', attachmentReadTool: WECHAT_ATTACHMENT_TOOL }],
-  ['wecom', { platform: 'wecom', label: 'WeCom' }],
+  ['wecom', { platform: 'wecom', label: 'WeCom', attachmentReadTool: WECOM_ATTACHMENT_TOOL }],
   [
     'discord',
     {
