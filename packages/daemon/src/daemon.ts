@@ -13060,6 +13060,7 @@ export class Daemon {
       stores: this.store,
       agents: () => this.agents.values(),
       serves: (agentId) => this.servesAgent(agentId),
+      paused: (agentId) => this.paused(agentId),
       resolve: (agentId, at) => {
         const integrationId =
           at.integrationId ?? this.integrationIdForTransportScope(agentId, at.platform, at.transportScope)

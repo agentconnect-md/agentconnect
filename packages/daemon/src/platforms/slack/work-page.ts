@@ -30,7 +30,14 @@ const mention = (id: string): string | undefined => (/^[UW][A-Z0-9]+$/.test(id) 
 
 /** The page's Markdown; `links` maps a thread to its permalink, and a thread without one is not linked. */
 export function renderWorkPage(page: WorkPage, links: ReadonlyMap<string, string> = new Map()): string {
-  const lines: string[] = ['## Open work', '']
+  const lines: string[] = []
+  // Without it a paused agent's next checks read as overdue work that broke.
+  if (page.paused)
+    lines.push(
+      `**${plain(page.agentName)} is paused.** No task runs and no follow-up is checked until it is resumed in the console.`,
+      ''
+    )
+  lines.push('## Open work', '')
   if (page.tasks.length === 0) lines.push('Nothing is open.')
   for (const task of page.tasks) {
     const title = task.consoleUrl ? `[${plain(task.title)}](${task.consoleUrl})` : plain(task.title)

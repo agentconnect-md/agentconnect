@@ -62,6 +62,7 @@ interface Fake {
   put: ReturnType<typeof vi.fn<(channel: string, page: WorkPage, stored?: WorkPageRef) => Promise<WorkPageResult>>>
   remove: ReturnType<typeof vi.fn<(channel: string, stored: WorkPageRef) => Promise<void>>>
   external: { value: boolean }
+  paused: { value: boolean }
 }
 
 async function fake(rows: PlacedSubsession[] = [], crons: unknown[] = []): Promise<Fake> {
@@ -73,12 +74,14 @@ async function fake(rows: PlacedSubsession[] = [], crons: unknown[] = []): Promi
   )
   const remove = vi.fn(async (_channel: string, _stored: WorkPageRef) => undefined)
   const external = { value: false }
+  const paused = { value: false }
   const holder: Fake = {
     rows,
     agent,
     put,
     remove,
     external,
+    paused,
     deps: {
       stores: {
         assistantSubsessions: { listPlaced: async () => holder.rows },
@@ -87,6 +90,7 @@ async function fake(rows: PlacedSubsession[] = [], crons: unknown[] = []): Promi
       },
       agents: () => [holder.agent as never],
       serves: () => true,
+      paused: () => paused.value,
       resolve: (_agentId, at) =>
         at.platform === 'slack' ? { integrationId: 'int-slack', transportScope: 'T0EXAMPLE' } : undefined,
       connection: () => ({ putWorkPage: put, removeWorkPage: remove }),
@@ -303,6 +307,22 @@ describe('the Work page sweep', () => {
     await sweepWorkCanvases(f.deps)
     expect(f.remove).toHaveBeenCalledTimes(2)
     expect(await rowOf()).toBeUndefined()
+  })
+
+  it('says the agent is paused, and drops that once it is resumed', async () => {
+    const f = await fake([followUp()])
+    await sweepWorkCanvases(f.deps)
+    expect(f.put.mock.calls[0]![1].paused).toBeUndefined()
+    f.paused.value = true
+    await sweepWorkCanvases(f.deps)
+    expect(f.put.mock.calls[1]![1]).toMatchObject({ paused: true })
+    expect(renderWorkPage(f.put.mock.calls[1]![1])).toMatch(
+      /^\*\*Butler is paused\.\*\* No task runs and no follow-up is checked until it is resumed in the console\./
+    )
+    f.paused.value = false
+    await sweepWorkCanvases(f.deps)
+    expect(f.put).toHaveBeenCalledTimes(3)
+    expect(renderWorkPage(f.put.mock.calls[2]![1])).toMatch(/^## Open work/)
   })
 
   it('rewrites the page under the agent’s new name when it is renamed', async () => {

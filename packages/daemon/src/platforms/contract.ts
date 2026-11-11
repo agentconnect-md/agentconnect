@@ -329,6 +329,8 @@ export interface WorkPageSchedule {
 export interface WorkPage {
   /** The agent's name as people see it, which the page's title carries. */
   agentName: string
+  /** The agent is paused: no task runs and no follow-up is checked until it is resumed. */
+  paused?: boolean
   tasks: WorkPageTask[]
   schedules: WorkPageSchedule[]
   /** Tasks past the page's limit, counted. */

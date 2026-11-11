@@ -25,6 +25,8 @@ export interface WorkCanvasDeps {
   agents(): Iterable<WorkAgent>
   /** Whether this member holds the agent's duty, so only one member writes its pages. */
   serves(agentId: string): boolean
+  /** A paused agent runs no task and checks no follow-up until it is resumed (assistant-mode.md §1.4). */
+  paused(agentId: string): boolean
   /** The bot a stored conversation or a cron target is reached through, with its canonical scope. */
   resolve(
     agentId: string,
@@ -187,6 +189,7 @@ async function sweepAgent(deps: WorkCanvasDeps, agent: WorkAgent): Promise<void>
     if (row?.state === 'deleted') continue
     const page: WorkPage = {
       agentName: agent.displayName?.trim() || agent.name,
+      ...(deps.paused(agent.id) ? { paused: true } : {}),
       tasks: composed?.tasks ?? [],
       schedules: composed?.schedules ?? [],
       ...(composed?.more ? { more: composed.more } : {}),
