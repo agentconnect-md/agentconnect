@@ -12,7 +12,7 @@ import type {
   PlatformMemberRef,
   PlatformUserProfile
 } from '../contract.js'
-import type { UploadOutcome } from '../../mcp/ops/context.js'
+import type { UploadAnchor, UploadOutcome } from '../../mcp/ops/context.js'
 import { platformIntegrationConfig } from '../integration-config.js'
 import { WECOM_ATTACHMENT_TOOL } from './attachments.js'
 import {
@@ -36,6 +36,7 @@ import {
   type WeComMediaPort
 } from './media.js'
 import { weComCardTap } from './elicit-card.js'
+import { WECOM_DM_THREAD, WECOM_GROUP_THREAD } from './module.js'
 import { WeComRateLimited, WeComSendBudget } from './rate-limit.js'
 
 export interface WeComConnectionGroup {
@@ -99,10 +100,11 @@ export interface WeComReplyHandle {
   receivedAt: number
 }
 
-/** One part of a proactive send; `error` names why it, and every part after it, was not sent. */
+/** One part of a proactive send; `error` names why it, and every part after it, was not sent; `reqId` is the frame it went out in. */
 export interface WeComSentPart {
   text: string
   error?: unknown
+  reqId?: string
 }
 
 /** The sends a turn makes through the connection it leased. */
@@ -131,6 +133,14 @@ export interface WeComQuestionPort {
   noteQuestionTag(channel: string, tag: string): void
   retireQuestionTag(tag: string): void
   sendText(channel: string, text: string): Promise<boolean>
+}
+
+// A chatid or userid is opaque (a userid may be encrypted), so an address is checked by shape only: no space, colon or control character.
+const WECOM_ID = /^[^\s:\p{Cc}]{1,256}$/u
+
+/** Whether `channel` is a WeCom conversation address: a group's chatid, or `dm:` and a member's userid. */
+export function isWeComAddress(channel: string): boolean {
+  return WECOM_ID.test(channel.startsWith('dm:') ? channel.slice(3) : channel)
 }
 
 /** Where a proactive send addresses a conversation: a direct chat by its member's userid, a group by its chatid. */
@@ -495,6 +505,38 @@ export class WeComConnection implements PlatformConnection, WeComReplyPort, WeCo
     return this.chained(channel, () => this.sendParts(channel, text))
   }
 
+  /** The send tool's post: WeCom has no threads, so the conversation is the whole target and the first part's frame names the post. */
+  async postMessage(channel: string, text: string): Promise<string | undefined> {
+    if (!isWeComAddress(channel)) throw new Error(notAnAddress(channel))
+    const sent = await this.sendMarkdown(channel, text)
+    const failed = sent.findIndex((part) => part.error !== undefined)
+    if (failed >= 0) throw new Error(weComSendFailure(sent[failed]!.error, failed, sent.length))
+    return sent[0]?.reqId
+  }
+
+  /** A member's direct chat by userid; whether they have messaged the bot there is WeCom's to enforce, so its refusal is the answer. */
+  async openDirectMessage(user: string): Promise<string> {
+    const id = /^<@([^>]+)>$/.exec(user)?.[1] ?? user
+    if (!WECOM_ID.test(id))
+      throw new Error(`wecom: "${user}" is not a WeCom userid; a direct message needs one. Nothing was sent.`)
+    return `dm:${id}`
+  }
+
+  /** The send tool's file post, through the same upload and send as a turn's; WeCom has no threads or replies to place it in. */
+  async uploadFile(
+    channel: string,
+    file: { bytes: Buffer; name: string; mimeType: string },
+    comment?: string,
+    anchor?: UploadAnchor
+  ): Promise<UploadOutcome> {
+    if (!isWeComAddress(channel)) return { ok: false, reason: 'not_found', detail: notAnAddress(channel) }
+    // The thread a WeCom session keys on is the conversation itself, so only that thread is a placement it can honor.
+    const ownThread = channel.startsWith('dm:') ? WECOM_DM_THREAD : WECOM_GROUP_THREAD
+    if (anchor?.replyTo !== undefined || (anchor?.thread !== undefined && anchor.thread !== ownThread))
+      return { ok: false, reason: 'platform_error', detail: 'WeCom has no threads or replies to place a file in' }
+    return this.sendMedia(channel, file, comment)
+  }
+
   // Sends to one conversation go out one at a time, in the order they were asked for.
   private chained<T>(channel: string, send: () => Promise<T>): Promise<T> {
     const previous = this.sendChains.get(channel) ?? Promise.resolve()
@@ -566,8 +608,12 @@ export class WeComConnection implements PlatformConnection, WeComReplyPort, WeCo
       }
       try {
         await this.budget.take(channel)
-        await this.client.send({ ...weComSendTarget(channel), msgtype: 'markdown', markdown: { content: part } })
-        sent.push({ text: part })
+        const frame = await this.client.send({
+          ...weComSendTarget(channel),
+          msgtype: 'markdown',
+          markdown: { content: part }
+        })
+        sent.push({ text: part, ...(frame.headers?.req_id ? { reqId: frame.headers.req_id } : {}) })
       } catch (error) {
         failed = error
         this.deps.log.warn(`wecom: send failed (${sendErrorLabel(error)})`)
@@ -632,9 +678,15 @@ export class WeComConnection implements PlatformConnection, WeComReplyPort, WeCo
       return { ok: false, reason: 'platform_error', ...uploadDetail(error) }
     }
     return this.chained(channel, async (): Promise<UploadOutcome> => {
+      let messageId: string | undefined
       try {
         await this.budget.take(channel)
-        await this.client.send({ ...weComSendTarget(channel), msgtype: type, [type]: { media_id: mediaId } })
+        const frame = await this.client.send({
+          ...weComSendTarget(channel),
+          msgtype: type,
+          [type]: { media_id: mediaId }
+        })
+        messageId = frame.headers?.req_id
       } catch (error) {
         this.deps.log.warn(`wecom: media send failed (${sendErrorLabel(error)})`)
         // Only a refusal or an unsent frame proves nothing was sent; a lost answer may still have delivered it.
@@ -642,7 +694,11 @@ export class WeComConnection implements PlatformConnection, WeComReplyPort, WeCo
         return { ok: false, reason: 'platform_error', ...uploadDetail(error) }
       }
       const captioned = caption ? (await this.sendParts(channel, caption)).every((part) => !part.error) : true
-      return { ok: true, ...(captioned ? {} : { warning: 'The caption was not delivered.' }) }
+      return {
+        ok: true,
+        ...(messageId ? { messageId } : {}),
+        ...(captioned ? {} : { warning: 'The caption was not delivered.' })
+      }
     })
   }
 }
@@ -652,6 +708,29 @@ function uploadDetail(error: unknown): { detail?: string } {
   if (error instanceof WeComRateLimited) return { detail: 'the conversation has used its 1,000 messages for this hour' }
   if (error instanceof WeComTransportError) return { detail: 'the connection to WeCom was not available' }
   return {}
+}
+
+function notAnAddress(channel: string): string {
+  return `wecom: "${channel}" is not a WeCom conversation; name a group by its chatid or a direct chat as dm:<userid>, as listChannels reports them. Nothing was sent.`
+}
+
+/** Why the send tool's post failed, for the agent: the cause, what was delivered, and whether to retry. */
+export function weComSendFailure(error: unknown, delivered: number, total: number): string {
+  const which = total > 1 ? `part ${delivered + 1} of ${total}` : 'the message'
+  const before =
+    delivered === 0
+      ? ''
+      : delivered === 1
+        ? ' The part before it was delivered.'
+        : ` The ${delivered} parts before it were delivered.`
+  if (error instanceof WeComTransportError && error.maybeDelivered)
+    return `wecom: WeCom did not confirm ${which}, so it MAY have been delivered.${before} Do NOT retry.`
+  const outcome = delivered > 0 ? `${before.trim()} Do not send them again.` : 'Nothing was sent.'
+  if (error instanceof WeComRequestError)
+    return `wecom: WeCom refused ${which} (errcode ${error.errcode}: ${error.errmsg}). WeCom lets a bot message a conversation only after someone there has messaged it, so do not retry until someone there messages the bot. ${outcome}`
+  if (error instanceof WeComRateLimited)
+    return `wecom: this conversation has used its 1,000 WeCom messages for this hour, so do not retry this hour. ${outcome}`
+  return `wecom: the connection to WeCom was not available. ${outcome}`
 }
 
 /** A send failure as a log line names it: WeCom's code, or the transport's reason; never the content. */

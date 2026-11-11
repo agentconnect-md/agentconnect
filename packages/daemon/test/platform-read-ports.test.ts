@@ -20,6 +20,7 @@ import { TelegramConnection } from '../src/telegram/connection.js'
 import { DiscordConnection } from '../src/discord/connection.js'
 import { DingTalkConnection } from '../src/platforms/dingtalk/connection.js'
 import { FeishuConnection } from '../src/feishu/connection.js'
+import { WeComConnection } from '../src/platforms/wecom/connection.js'
 
 /**
  * The Layer-1 read-port seam (integration-plugin-architecture.md §7.1/§7.4).
@@ -74,6 +75,9 @@ describe('the read-port registry', () => {
     expect(offersDirectMessages('discord')).toBe(has(DiscordConnection, 'openDirectMessage'))
     expect(offersDirectMessages('feishu')).toBe(has(FeishuConnection, 'openDirectMessage'))
     expect(offersDirectMessages('dingtalk')).toBe(has(DingTalkConnection, 'openDirectMessage'))
+    expect(offersDirectMessages('wecom')).toBe(has(WeComConnection, 'openDirectMessage'))
+    // WeCom documents no mention in a bot's proactive message, so the toUser channel form stays refused there.
+    expect(readPortsFor('wecom')?.channelMentions).toBeUndefined()
   })
 
   // assistant-mode.md §5.5: membership is decided only where the listing names every member — Slack, and Feishu/Lark by union_id.
@@ -160,6 +164,7 @@ describe('the direct-message port', () => {
     // to it — including sessions on platforms that cannot DM at all.
     expect(directMessagePlatformFor('slack')).toBe('slack')
     expect(directMessagePlatformFor('dingtalk')).toBe('dingtalk')
+    expect(directMessagePlatformFor('wecom')).toBe('wecom')
     expect(directMessagePlatformFor('telegram')).toBe('slack')
     expect(directMessagePlatformFor('discord')).toBe('slack')
     expect(directMessagePlatformFor('feishu')).toBe('slack')
@@ -167,7 +172,7 @@ describe('the direct-message port', () => {
   })
 
   it('renders the capable platforms for the "not supported here" error', () => {
-    expect(directMessagePlatformList()).toBe('Slack or DingTalk')
+    expect(directMessagePlatformList()).toBe('Slack or DingTalk or WeCom')
   })
 })
 

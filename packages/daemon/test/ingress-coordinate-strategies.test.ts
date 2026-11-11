@@ -30,6 +30,9 @@ describe('outbound thread keys (threadKeyForPost)', () => {
     // DingTalk: a group post keys on its process query key, a DM joins the one `dm` session.
     expect(threadKeyForPost('dingtalk', 'cid-1', 'pqk-1')).toBe('pqk-1')
     expect(threadKeyForPost('dingtalk', 'dm:user-0001', 'pqk-1', true)).toBe('dm')
+    // WeCom: a group and a direct chat are each one session, whatever the post's frame id.
+    expect(threadKeyForPost('wecom', 'chat-example-group', 'aibot_send_msg_1')).toBe('group')
+    expect(threadKeyForPost('wecom', 'dm:user-alice', 'aibot_send_msg_1', true)).toBe('dm')
   })
 
   it('lands a DingTalk send and the reply to it in the same session', async () => {
