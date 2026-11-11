@@ -9,9 +9,9 @@ import { BotExternalIdentityTaken } from '../../persistence/errors.js'
 import { msTeamsRecoveryRows } from './recovery.js'
 import {
   MsTeamsAgentBotClient,
-  MsTeamsAgentBotError,
   msTeamsAgentBotKey,
-  msTeamsAgentBotResourceName
+  msTeamsAgentBotResourceName,
+  msTeamsPrincipalAbsent
 } from './agent-bots.js'
 import { MSTEAMS_RSC_PERMISSIONS } from './app-package.js'
 import {
@@ -313,8 +313,8 @@ export class MsTeamsAgentBotRequests {
     try {
       await this.client.deleteIdentity(request.tenantId, request.identity)
     } catch (err) {
-      // A tenant whose principal is gone has nothing left to delete with; Microsoft unreachable is tried again.
-      if (!(err instanceof MsTeamsAgentBotError) || err.transient) throw err
+      // Only a tenant with no principal left has nothing to delete; any other refusal is tried again.
+      if (!msTeamsPrincipalAbsent(err)) throw err
     }
     await this.client.deleteRegistration(msTeamsAgentBotKey(request.agentId, request.tenantId))
   }

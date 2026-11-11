@@ -161,6 +161,18 @@ describe('MsTeamsAgentBotKeeper', () => {
     expect(client.deleteIdentity).toHaveBeenLastCalledWith(TENANT, 'identity-a')
     expect(client.deleteRegistration.mock.calls).toEqual([[KEY_A]])
 
+    // A wrong secret, a disabled principal or a refused permission leaves the identity in place, so the registration stays too.
+    for (const refusal of [
+      new MsTeamsAgentBotError('token', 401, '7000215'),
+      new MsTeamsAgentBotError('token', 400, '7000112'),
+      new MsTeamsAgentBotError('identity', 403, 'Authorization_RequestDenied')
+    ]) {
+      client.deleteRegistration.mockClear()
+      client.deleteIdentity.mockRejectedValueOnce(refusal)
+      await expect(keeper.remove(row())).rejects.toBe(refusal)
+      expect(client.deleteRegistration).not.toHaveBeenCalled()
+    }
+
     // A tenant whose principal is gone has nothing left to delete with, so the registration goes alone.
     client.deleteRegistration.mockClear()
     client.deleteIdentity.mockRejectedValueOnce(new MsTeamsAgentBotError('token', 400, '7000229'))

@@ -3,7 +3,7 @@
 import { MSTEAMS_PLATFORM } from '@agentconnect.md/protocol'
 import type { HttpDeps } from '../../http/deps.js'
 import type { BotRecord } from '../../persistence/ports.js'
-import { MsTeamsAgentBotError, msTeamsAgentBotKey, type MsTeamsAgentBotClient } from './agent-bots.js'
+import { msTeamsAgentBotKey, msTeamsPrincipalAbsent, type MsTeamsAgentBotClient } from './agent-bots.js'
 import { msTeamsAgentBotOf, type MsTeamsAgentBots } from './deployment-app.js'
 
 /** The row's record of the name its bot was last given. */
@@ -61,8 +61,8 @@ export class MsTeamsAgentBotKeeper {
       try {
         await this.deps.client.deleteIdentity(tenantId, identity)
       } catch (err) {
-        // A tenant whose principal is gone has nothing left to delete with; Microsoft unreachable is tried again.
-        if (!(err instanceof MsTeamsAgentBotError) || err.transient) throw err
+        // Only a tenant with no principal left has nothing to delete; any other refusal keeps the registration, so the next sweep tries again.
+        if (!msTeamsPrincipalAbsent(err)) throw err
       }
     }
     await this.deps.client.deleteRegistration(key)
