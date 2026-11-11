@@ -42,6 +42,13 @@ const message = (over: Partial<Extract<Turn, { kind: 'user' }>> = {}): Extract<T
 const draw = (turn: Extract<Turn, { kind: 'user' }>) =>
   act(() => root.render(renderWithIntl(<UserTurnView turn={turn} onShare={() => {}} />)))
 
+it('draws a schedule’s avatar on the light chip tile, not the dark agent plate', () => {
+  draw(message({ isCron: true, cronId: 'cron-1', sp: speaker('Hourly sweep') }))
+  const tile = container.querySelector('[title="Hourly sweep"]')
+  expect(tile?.classList.contains('imark')).toBe(true)
+  expect(tile?.classList.contains('av')).toBe(false)
+})
+
 it('draws only the reader’s own message on the right, and everyone else’s on the left with the avatar first', () => {
   draw(message({ self: true }))
   const row = () => container.firstElementChild as HTMLElement

@@ -57,7 +57,9 @@ function ParticipantAvatar({
   sp: ReturnType<typeof speaker>
   isCron: boolean
 }) {
-  const boxClass = `av flex h-[26px] w-[26px] flex-none items-center justify-center overflow-hidden rounded-md font-sans text-[9.5px] font-semibold leading-normal ${
+  // A schedule sits on the header chip's light tile, not the dark plate an agent's fallback avatar uses.
+  const tile = !agent && isCron ? 'imark' : 'av'
+  const boxClass = `${tile} flex h-[26px] w-[26px] flex-none items-center justify-center overflow-hidden rounded-md font-sans text-[9.5px] font-semibold leading-normal ${
     !agent && !isCron ? 'bg-transparent' : ''
   }`
   if (agent && href)
