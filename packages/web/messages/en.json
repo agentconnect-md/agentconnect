@@ -1569,7 +1569,9 @@
         "noAgent": "This agent cannot take a Teams app right now.",
         "unavailable": "Microsoft could not be reached, or this deployment cannot connect Teams right now. Try again later.",
         "generic": "Teams could not be connected.",
-        "tenantMismatch": "Sign in with an account of the Microsoft 365 organization that added the app in Teams."
+        "tenantMismatch": "Sign in with an account of the Microsoft 365 organization that added the app in Teams.",
+        "notConnected": "Your Microsoft 365 organization is not connected here yet. A Teams or Global administrator has to connect it first.",
+        "alreadyConnected": "This agent is already in Teams for your Microsoft 365 organization."
       },
       "recovery": {
         "verify": "Verify administrator access",
@@ -1583,6 +1585,18 @@
         "doneBody": "Your selected agent is connected. Open its Teams integration to update the app name and icon if needed.",
         "notAdmin": "Sign in as an active Teams Administrator or Global Administrator of this tenant, or contact support.",
         "failed": "Recovery could not be completed. Open your agent's integrations and start Connect Teams again, or contact support."
+      },
+      "request": {
+        "description": "You are not an administrator of your Microsoft 365 organization, so a Teams administrator approves this agent’s app before it joins. Choose the teams it joins once approved.",
+        "submit": "Request approval",
+        "submitting": "Creating the agent’s bot…",
+        "title": "Waiting for approval",
+        "pending": "A Teams administrator of your Microsoft 365 organization has to approve the agent’s app. It joins the teams you chose as soon as they do; you do not need to keep this page open.",
+        "needs_sign_in": "Your Microsoft sign-in stopped working before the app was approved. Start connecting again from the agent’s integrations to carry on.",
+        "rejected": "The agent’s app was turned down or removed. Cancel the request from the agent’s integrations, then ask again.",
+        "openAdmin": "Open Teams admin center",
+        "check": "Check again",
+        "checking": "Checking…"
       }
     },
     "msTeamsStoreConnect": {
@@ -7045,7 +7059,14 @@
         "connect": "Connect with Microsoft",
         "connecting": "Opening Microsoft…",
         "next": "A Teams or Global administrator of your Microsoft 365 organization signs in and approves. The app is then added to your organization’s apps and to the teams you choose.",
-        "useOwn": "Register your own bot instead"
+        "useOwn": "Register your own bot instead",
+        "notAdmin": "I’m not an administrator",
+        "requestWaiting": "Waiting for a Teams administrator to approve this agent’s app.",
+        "requestNeedsSignIn": "Your Microsoft sign-in stopped working. Request again to carry on.",
+        "requestRejected": "The agent’s app was turned down or removed.",
+        "requestOpenAdmin": "Teams admin center",
+        "requestCheck": "Check again",
+        "requestCancel": "Cancel request"
       }
     },
     "wechat": {

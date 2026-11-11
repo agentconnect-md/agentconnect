@@ -1,9 +1,9 @@
 // No 'use client' here: rendered only inside ModalProvider's tree (the client boundary).
 
-import { useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
-import type { IntegrationDto } from '@/lib/api'
+import type { IntegrationDto, MsTeamsAgentBotRequestDto } from '@/lib/api'
 import type { Agent } from '@/lib/data'
 import type { WizardHost } from '../contract'
 import { useDeploymentConfig } from '../deployment-config'
@@ -72,14 +72,53 @@ export function MsTeamsWizardBody({ agent, host }: { agent: Agent; host: WizardH
   const relayAvailable: boolean | null = probe.config ? host.relayCapability.available : probe.failed ? false : null
   const pane = msTeamsPane({ relayAvailable, created: !!created, deploymentApp, ownBot })
 
-  // Leaves for Microsoft's sign-in; the connect page finishes the install there.
-  const connect = async () => {
+  // A member's request for this agent still waiting for a Teams administrator (teams-integration.md §8.6.6).
+  const [request, setRequest] = useState<MsTeamsAgentBotRequestDto | null>(null)
+  const [requestBusy, setRequestBusy] = useState(false)
+  const orgId = activeOrg?.id
+  useEffect(() => {
+    if (host.mockMode || !deploymentApp || !orgId) return
+    let cancelled = false
+    void msTeamsApi
+      .requests(orgId, agent.id)
+      .then((requests) => {
+        if (!cancelled) setRequest(requests[0] ?? null)
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [host.mockMode, deploymentApp, orgId, agent.id])
+  const onRequest = async (action: 'check' | 'cancel') => {
+    if (!request || !orgId || requestBusy) return
+    setRequestBusy(true)
+    host.setError(null)
+    try {
+      if (action === 'cancel') {
+        await msTeamsApi.cancelRequest(orgId, request.id)
+        setRequest(null)
+      } else {
+        const checked = await msTeamsApi.checkRequest(orgId, request.id)
+        if (checked.integrationId) {
+          host.invalidate()
+          host.close()
+        } else if (checked.request) setRequest(checked.request)
+      }
+    } catch (e) {
+      host.setError(msTeamsErrorMessage(e, translate))
+    } finally {
+      setRequestBusy(false)
+    }
+  }
+
+  // Leaves for Microsoft's sign-in; the connect page finishes the install there. A member asks for approval instead.
+  const connect = async (member = false) => {
     if (busyRef.current || !activeOrg) return
     busyRef.current = true
     setConnecting(true)
     host.setError(null)
     try {
-      const { authorizeUrl } = await msTeamsApi.connect(activeOrg.id, agent.id)
+      const { authorizeUrl } = await msTeamsApi.connect(activeOrg.id, agent.id, undefined, member)
       window.location.assign(authorizeUrl)
     } catch (e) {
       host.setError(msTeamsErrorMessage(e, translate))
@@ -168,6 +207,63 @@ export function MsTeamsWizardBody({ agent, host }: { agent: Agent; host: WizardH
             {t('deployment.next')}
           </div>
         </div>
+        {request && (
+          <div className="mb-3 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
+            <div
+              role="status"
+              className="flex items-start gap-2 font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)"
+            >
+              <Icon name="clock" size={15} className="mt-[2px] flex-none" />
+              {t(
+                request.status === 'pending'
+                  ? 'deployment.requestWaiting'
+                  : request.status === 'rejected'
+                    ? 'deployment.requestRejected'
+                    : 'deployment.requestNeedsSignIn'
+              )}
+            </div>
+            <div className="mt-[10px] flex flex-wrap items-center gap-2">
+              {request.status === 'pending' && (
+                <button
+                  type="button"
+                  disabled={requestBusy}
+                  onClick={() => void onRequest('check')}
+                  className="dsbtn dsbtn-secondary h-[32px]"
+                >
+                  {t('deployment.requestCheck')}
+                </button>
+              )}
+              <button
+                type="button"
+                disabled={requestBusy}
+                onClick={() => void onRequest('cancel')}
+                className="dsbtn dsbtn-secondary h-[32px]"
+              >
+                {t('deployment.requestCancel')}
+              </button>
+              <a
+                href={request.adminCenterUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)"
+              >
+                {t('deployment.requestOpenAdmin')}
+                <Icon name="external-link" size={13} />
+              </a>
+            </div>
+          </div>
+        )}
+        {request?.status !== 'pending' && (
+          <button
+            type="button"
+            disabled={connecting}
+            onClick={() => void connect(true)}
+            className="mb-3 flex cursor-pointer items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[13px] font-semibold leading-normal text-(--text-primary)"
+          >
+            <Icon name="chevron-right" size={14} color="var(--text-tertiary)" />
+            {t('deployment.notAdmin')}
+          </button>
+        )}
         <button
           type="button"
           onClick={() => setOwnBot(true)}

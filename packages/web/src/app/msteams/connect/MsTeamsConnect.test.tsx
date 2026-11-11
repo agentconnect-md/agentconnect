@@ -20,6 +20,8 @@ const mocks = vi.hoisted(() => {
     install: vi.fn(),
     proceed: vi.fn(),
     agentBot: vi.fn(),
+    request: vi.fn(),
+    checkRequest: vi.fn(),
     fetchOrgs: vi.fn(),
     login: vi.fn(),
     startRecovery: vi.fn()
@@ -38,6 +40,8 @@ vi.mock('@/lib/api', () => ({
   installMsTeamsTeams: mocks.install,
   continueMsTeamsConnect: mocks.proceed,
   createMsTeamsAgentBot: mocks.agentBot,
+  requestMsTeamsAgentBot: mocks.request,
+  checkMsTeamsAgentBotRequest: mocks.checkRequest,
   startMsTeamsRecovery: mocks.startRecovery
 }))
 
@@ -223,6 +227,59 @@ describe('MsTeamsConnect', () => {
     await act(async () => button('Add to teams').click())
     expect(mocks.install).toHaveBeenCalledWith('org-a', 'install', ['team-1'])
     expect(host.textContent).toContain('Teams is connected')
+  })
+
+  it('submits a member’s request for the chosen teams, then waits for approval and checks on demand', async () => {
+    const teams = [{ id: 'team-1', name: 'Engineering', app: 'none' }]
+    const waiting = {
+      id: 'req-1',
+      agentId: 'agent-a',
+      tenantId: 'example-tenant',
+      status: 'pending',
+      reason: null,
+      createdAt: '2026-11-01T00:00:00.000Z',
+      adminCenterUrl: 'https://admin.example.test/manage-apps'
+    }
+    mocks.finish.mockResolvedValue({ agentId: 'agent-a', member: true, teams, ticket: 'member', store: false })
+    mocks.request.mockResolvedValue(waiting)
+    await land(`code=c&state=${STATE}`)
+    expect(host.textContent).toContain('not an administrator')
+    await act(async () => button('Request approval').click())
+    expect(mocks.request).toHaveBeenCalledWith('org-a', 'member', ['team-1'])
+    expect(host.textContent).toContain('Waiting for approval')
+    expect(host.querySelector('a[href="https://admin.example.test/manage-apps"]')).not.toBeNull()
+
+    mocks.checkRequest.mockResolvedValueOnce({ request: waiting }).mockResolvedValueOnce({ integrationId: 'int-3' })
+    await act(async () => button('Check again').click())
+    expect(host.textContent).toContain('Waiting for approval')
+    await act(async () => button('Check again').click())
+    expect(mocks.checkRequest).toHaveBeenCalledWith('org-a', 'req-1')
+    expect(host.textContent).toContain('Teams is connected')
+  })
+
+  it('shows a request a new sign-in resumed, and names a tenant no administrator connected', async () => {
+    mocks.finish.mockResolvedValue({
+      agentId: 'agent-a',
+      member: true,
+      teams: [],
+      store: false,
+      request: {
+        id: 'req-1',
+        agentId: 'agent-a',
+        tenantId: 'example-tenant',
+        status: 'pending',
+        reason: null,
+        createdAt: '2026-11-01T00:00:00.000Z',
+        adminCenterUrl: 'https://admin.example.test/manage-apps'
+      }
+    })
+    await land(`code=c&state=${STATE}`)
+    expect(host.textContent).toContain('Waiting for approval')
+    await act(async () => root.unmount())
+    root = createRoot(host)
+    mocks.finish.mockRejectedValue(new mocks.FakeApiError('no', 409, 'MSTEAMS_TENANT_NOT_CONNECTED'))
+    await land(`code=c&state=${STATE}`)
+    expect(host.textContent).toContain('is not connected here yet')
   })
 
   it('names why a further agent’s bot was not created', async () => {
