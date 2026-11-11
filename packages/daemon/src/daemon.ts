@@ -11010,13 +11010,20 @@ export class Daemon {
       servesAgent: (agentId) => this.servesAgent(agentId),
       parentFor: (agentId, place) => this.checkParent(agentId, place),
       dispatch: (agentId, msg, integrationId, callMeta, onAdmission) =>
-        this.dispatch(agentId, msg, integrationId, undefined, callMeta, { onAdmission }),
+        // A task in a webchat thread has no browser turn: it posts its answer in its thread (webchat-threads.md §4).
+        this.dispatch(agentId, msg, integrationId, this.webchatTransport.webchatThreadContext(msg), callMeta, {
+          onAdmission
+        }),
       settleSubsession: (end) => this.collab.settleSubsessionTurn(end),
       reportToParent: (agentId, caller, parentSessionId, text, reportId) =>
         this.reportIntoParent(agentId, caller, parentSessionId, text, reportId),
       settled: (draft) => this.drafts.taskSettled(draft),
       homeFor: (draft, parent) => this.taskHomeFor(draft, parent),
       say: async (agentId, at, text) => {
+        if (at.platform === 'webchat') {
+          await this.postWebchatAgentMessage(agentId, this.webchatPostAt(at.channel, at.thread, at.thread), text)
+          return
+        }
         const integrationId = this.integrationIdForSessionTransport(agentId, at.platform, at.transportScope)
         const gateway: MessageGateway | undefined =
           integrationId === undefined ? undefined : this.gatewayForIntegration(integrationId)
@@ -11057,6 +11064,20 @@ export class Daemon {
   /** Where an approved proposal of this place answers in a thread (auto-session-mode.md §6.9.1): an internal room whose long session is a coordinator, on a platform the daemon posts to; undefined elsewhere. */
   private async taskHomeFor(draft: AssistantDraft, parent: CheckParent): Promise<TaskHome | undefined> {
     if (!this.cfg.features.autoSessionMode || !isCoordinatorCoordinate(parent.thread)) return undefined
+    const sentence = (draft.proposal?.sentence ?? draft.text).replace(/\s+/g, ' ').trim()
+    // A member's coordinator conversation has threads of its own (webchat-threads.md §5.2): the root is the agent's post, whose id names the thread.
+    if (parent.platform === 'webchat') {
+      if (!UUID_RE.test(parent.channel)) return undefined
+      return {
+        isDm: true,
+        postRoot: async (by) =>
+          await this.postWebchatAgentMessage(
+            draft.agentId,
+            this.webchatPostAt(parent.channel, parent.thread),
+            `**${sentence}**\n\nApproved by ${by.name ?? 'an approver'}.`
+          )
+      }
+    }
     const { integrationId } = parent
     const gateway: MessageGateway | undefined =
       integrationId === undefined ? undefined : this.gatewayForIntegration(integrationId)
@@ -11077,7 +11098,6 @@ export class Daemon {
             this.connForIntegration(integrationId)
           )
         : undefined
-    const sentence = (draft.proposal?.sentence ?? draft.text).replace(/\s+/g, ' ').trim()
     return {
       ...(card !== undefined ? { card } : {}),
       postRoot: async (by) =>
@@ -15677,13 +15697,33 @@ export class Daemon {
     })
   }
 
-  /** The coordinator's own post in a webchat conversation, in the message's thread where it has one, recorded in its session and shown live (webchat-threads.md §4). */
+  /** Where the agent posts in a webchat conversation for a session of its own, with no message to answer: at the root, or in `thread`. */
+  private webchatPostAt(
+    conversationId: string,
+    sessionThread: string,
+    thread?: string
+  ): Parameters<Daemon['postWebchatAgentMessage']>[1] {
+    return {
+      msgId: `webchat:${conversationId}:${monotonicTs()}`,
+      source: 'agent',
+      platform: 'webchat',
+      channel: conversationId,
+      sessionThread,
+      ...(thread !== undefined ? { thread } : {})
+    }
+  }
+
+  /** The agent's own post in a webchat conversation, in the message's thread where it has one, recorded in its session and shown live (webchat-threads.md §4); its post id. */
   private async postWebchatAgentMessage(
     agentId: string,
-    msg: NormalizedMessage,
+    msg: Pick<
+      NormalizedMessage,
+      'msgId' | 'source' | 'platform' | 'channel' | 'thread' | 'sessionThread' | 'transportScope'
+    > &
+      Partial<Pick<NormalizedMessage, 'transcriptTs' | 'transcriptPostId'>>,
     text: string,
     taskLink?: TaskLinkFacts
-  ): Promise<void> {
+  ): Promise<string> {
     const conversationId = msg.channel
     if (!UUID_RE.test(conversationId))
       throw new Error('the conversation is no webchat conversation; nothing was posted')
@@ -15728,6 +15768,7 @@ export class Daemon {
       },
       initiator: 'agent'
     })
+    return postId
   }
 
   private onInbound(msg: NormalizedMessage, srcIntegrationIds?: string[]): void {

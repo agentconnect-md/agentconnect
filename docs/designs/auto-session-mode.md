@@ -8,8 +8,9 @@
 > places run through the coordinator (§3.4). On Slack a task moves into a code channel only
 > when it makes one for its work (§6.8). The
 > coordinator's prompt and tool surface are the ones the local runtime matrix validates (§12).
-> An approved proposal answers in a thread of its place where the platform has approval cards
-> (§6.9.1); its webchat form and read-only tasks (§6.9.3) are proposed, not built.
+> An approved proposal answers in a thread of its place, on a platform with approval cards and in
+> a member's webchat coordinator conversation (§6.9.1); read-only tasks (§6.9.3) are proposed, not
+> built.
 > Builds on: [channel-session-mode.md](channel-session-mode.md) (the per-conversation setting),
 > [assistant-mode.md](assistant-mode.md) §5.6 (delegated tasks),
 > [send-message-guide.md](send-message-guide.md) (the `sendMessage` actions).
@@ -658,11 +659,10 @@ place; a channel is a workspace the task earns.
 
 ### 6.9 A home for every task
 
-> Status: Built for a platform with approval cards (§6.9.1), with the card fix and the console
-> (§6.9.2, §6.9.5). Proposed, not built: a webchat conversation's root (§6.9.1) and read-only tasks
-> (§6.9.3), where §6.2 and [assistant-mode.md](assistant-mode.md) §5.9 and §5.10 describe what
-> runs. Whether a threaded task counts against `maxConcurrentSubsessions` is not decided here
-> (#3970).
+> Status: Built (§6.9.1, §6.9.2, §6.9.5), on a platform with approval cards and in a member's
+> webchat coordinator conversation. Proposed, not built: read-only tasks (§6.9.3), where
+> [assistant-mode.md](assistant-mode.md) §5.9 describes what runs. Whether a threaded task counts
+> against `maxConcurrentSubsessions` is not decided here (#3970).
 
 **Why.** In one coordinator's channel, a getting-to-know report and one approved proposal left five
 top-level messages within four minutes: the introduction, two proposal cards, the approved
@@ -678,10 +678,10 @@ work nobody talks to runs without one.
 
 #### 6.9.1 An approved proposal gets a home
 
-This covers the task form of `propose` (assistant-mode.md §5.10) in an internal room whose long
-session is a coordinator, on a platform with approval cards, where a message's own id opens its
-thread. A 1:1 DM, a platform without cards and a webchat conversation run it as before. The
-follow-up form runs no task and is unchanged.
+This covers the task form of `propose` (assistant-mode.md §5.10) where the place's long session is
+a coordinator: an internal room on a platform with approval cards, where a message's own id opens
+its thread, and a member's webchat coordinator conversation. A platform 1:1 DM and a platform
+without cards run it as before. The follow-up form runs no task and is unchanged.
 
 | Where the proposal's card is                                                                                                                                                                                  | The task's home                                                                 |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
@@ -748,9 +748,15 @@ follow-up form runs no task and is unchanged.
   3. A record left `executing` and waiting for a root, by a crash between the two transactions,
      has started no work. The recovery sweep that already catches an approval cut before its row
      exists opens it with no home.
-- **Webchat (proposed, not built).** The root is an agent post at the conversation's root, and
-  the task is keyed `webchat:<conv>:<rootPostId>:<agent>` (webchat-threads.md §5.2), drawn as that
-  root's thread footer. A daemon without `webchat-threads-v1` runs the proposal as today.
+- **Webchat.** A proposal there has no card: it waits in the conversation's pending requests. Once
+  approved, the root is the agent's own post at the conversation's root, the proposal's sentence
+  and who approved it, and the task is keyed `webchat:<conv>:<rootPostId>:<agent>`
+  (webchat-threads.md §5.2). The console draws it as that root's thread footer, and the task's
+  answer and every reply are posts in that thread. A daemon whose Auto switch is off, which has no
+  webchat threads, runs the proposal as before.
+- **What its people read.** The first turn's message shows the work that was approved, as the
+  proposal's task states it. The framing the model reads (who approved it, the follow-up it serves,
+  the check to make first) is the model's and is not shown.
 - **A card from before this.** A card's record says which thread it was posted in. One posted
   before that was recorded is never taken for a root, so its approval posts one.
 - **Not in this change.** An approved proposal makes no code channel (§6.8): the tool links the

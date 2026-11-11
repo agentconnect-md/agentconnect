@@ -111,6 +111,8 @@ export interface TaskHome {
   card?: string
   /** Post the root a task with no card to hold starts under; undefined when it did not post or may not have. */
   postRoot(by: { name: string | null }): Promise<string | undefined>
+  /** The place is one person's own conversation with the agent, as a member's webchat coordinator is. */
+  isDm?: boolean
 }
 
 /** A follow-up a proposal may still act on: open, or a getting-to-know task, which ends after its one check by design (§5.13). */
@@ -239,7 +241,7 @@ export class AssistantTasks {
       )
       if (opened.kind === 'refused') return { kind: 'lost' }
       if (opened.kind === 'opened') {
-        this.runAtHome(draft, by, item, parent, home.card, opened.key)
+        this.runAtHome(draft, by, item, parent, home.card, opened.key, home.isDm === true)
         return { kind: 'started' }
       }
       // A task took the card's thread before the approval: it starts under a root of its own.
@@ -256,7 +258,7 @@ export class AssistantTasks {
           ledger.setTaskSession(draft.id, key, tx)
         )
         if (opened.kind === 'opened') {
-          this.runAtHome(draft, by, item, parent, root, opened.key)
+          this.runAtHome(draft, by, item, parent, root, opened.key, home.isDm === true)
           return { kind: 'started' }
         }
         // Another path gave it a session meanwhile, so nothing more starts here.
@@ -353,7 +355,8 @@ export class AssistantTasks {
     item: CheckedTask,
     parent: CheckParent,
     thread: string,
-    key: string
+    key: string,
+    isDm: boolean
   ): void {
     const deliveryId = monotonicTs()
     const messageId = newSessionMessageId()
@@ -375,10 +378,12 @@ export class AssistantTasks {
           sourceSessionId: parent.sessionId,
           replyRequested: false
         },
-        taskPrompt(draft, item, by, true)
+        taskPrompt(draft, item, by, true),
+        // Its people read the thread: they see the work that was approved, and the rest is the model's.
+        { text: draft.text.trim() }
       ),
       mentionedBots: [],
-      isDm: false,
+      isDm,
       initialSessionTitle: oneLine(draft.proposal?.sentence ?? draft.text).slice(0, 80)
     }
     // Its root is a message of the place, so the turn binds the place's audience as a person's reply in that thread would.
