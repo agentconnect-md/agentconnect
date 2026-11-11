@@ -288,6 +288,7 @@ export {
   GOOGLE_CHAT_PLATFORM,
   MSTEAMS_PLATFORM,
   WECHAT_PLATFORM,
+  WECOM_PLATFORM,
   manifestFor
 } from './platform-manifest.js'
 export type { AppendConversationKind, MembershipEnumeration, PlatformManifest } from './platform-manifest.js'

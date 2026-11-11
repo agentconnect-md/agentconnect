@@ -120,6 +120,9 @@ export const MSTEAMS_PLATFORM = 'msteams'
 // Personal WeChat's platform id, served through Tencent's iLink bot API (wechat-integration.md).
 export const WECHAT_PLATFORM = 'wechat'
 
+// WeCom's platform id (a smart bot on its long connection); joins `KNOWN_PLATFORMS` with its Control Plane provider, a release after readers accept it.
+export const WECOM_PLATFORM = 'wecom'
+
 /** The conservative arm of every axis — see the fail-closed note above. */
 export const DEFAULT_MANIFEST: Omit<PlatformManifest, 'platform'> = {
   consoleContinuation: false,
@@ -271,6 +274,18 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       ...DEFAULT_MANIFEST,
       // A bot has one counterpart, so its one conversation is keyed `dm:<ilink_user_id>` and is already one session (wechat-integration.md §4.1).
       dmChannelPattern: /^dm:/
+    }
+  ],
+  [
+    WECOM_PLATFORM,
+    {
+      ...DEFAULT_MANIFEST,
+      // A direct chat carries no `chatid`, so it is keyed `dm:<userid>`; a group key is its bare `chatid`.
+      dmChannelPattern: /^dm:/,
+      // The official doc delivers a group message only when it mentions the bot, so a mention in a session the agent holds continues it.
+      addressedByConstruction: true,
+      // A direct chat is one continuous session already, so only groups take `append`.
+      appendKinds: ['channel']
     }
   ]
 ])

@@ -88,6 +88,13 @@ export const IntegrationDingTalkConfig = z.object({
 })
 export type IntegrationDingTalkConfig = z.infer<typeof IntegrationDingTalkConfig>
 
+// The WeCom payload: a smart bot's long-connection credentials, sent in `aibot_subscribe`; its BotID is also the inbound `aibotid`.
+export const IntegrationWeComConfig = z.object({
+  botId: z.string().min(1), // BotID, semi-public
+  secret: z.string().min(1) // long-connection Secret (plaintext — never log)
+})
+export type IntegrationWeComConfig = z.infer<typeof IntegrationWeComConfig>
+
 /**
  * The Telegram config payload — long-polling + routing (grammY). Telegram has a
  * SINGLE BotFather HTTP token — no app-level token and no signing secret
