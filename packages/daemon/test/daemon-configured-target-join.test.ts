@@ -96,6 +96,22 @@ describe('a run posting into the target an editor configured', () => {
     await w.store.close()
   })
 
+  it('records the thread a schedule’s run anchored, which the channel’s Work page links (assistant-mode.md §5.19)', async () => {
+    const w = await world()
+    await w.daemon.onCronFire(AGENT, w.run('cron'), {
+      id: 'weekly',
+      trigger: 'post the weekly digest',
+      schedule: '0 9 * * 1',
+      target: { channel: TARGET, integrationId: INT }
+    })
+    await vi.waitFor(async () =>
+      expect(await w.store.workCanvases.anchors(AGENT)).toEqual([
+        expect.objectContaining({ cronId: 'weekly', channel: TARGET, thread: '1700000000.000100' })
+      ])
+    )
+    await w.store.close()
+  })
+
   it('joins a hook’s public target the same way', async () => {
     const w = await world()
     const anchored = await w.daemon

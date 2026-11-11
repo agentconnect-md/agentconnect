@@ -4,7 +4,7 @@ import { MSTEAMS_PLATFORM } from '@agentconnect.md/protocol'
 import type { HttpDeps } from '../../http/deps.js'
 import { installNewBot } from '../../http/install-bot.js'
 import type { OrgId } from '../../domain/ids.js'
-import type { MsTeamsAgentBotRequestRecord } from '../../persistence/ports.js'
+import type { MsTeamsAgentBotRequestRecord, MsTeamsBindingMutations } from '../../persistence/ports.js'
 import { BotExternalIdentityTaken } from '../../persistence/errors.js'
 import {
   MsTeamsAgentBotClient,
@@ -52,6 +52,8 @@ export interface MsTeamsAgentBotRequestsDeps {
   http: HttpDeps
   app: MsTeamsPlatformApp
   agentBots: MsTeamsAgentBots
+  /** The per-tenant lock connects and recovery write the tenant's rows under. */
+  bindingMutations: MsTeamsBindingMutations
   fetch?: typeof fetch
   /** The wait between tries while a new identity settles; tests pass one that does not sleep. */
   wait?: (ms: number) => Promise<void>
@@ -174,33 +176,35 @@ export class MsTeamsAgentBotRequests {
     if (request.teamIds.length > 0 && installed === 0) return undefined
     const key = msTeamsAgentBotKey(request.agentId, request.tenantId)
     try {
-      const made = await installNewBot(http, this.deps.log as never, {
-        bot: {
-          externalAppId: request.identity,
-          platformConfig: {
-            tenantId: request.tenantId,
-            tokenTenantId: request.tenantId,
-            [MSTEAMS_ROW_OWNER_KEY]: MSTEAMS_DEPLOYMENT_OWNER,
-            ...msTeamsAgentBotEntries({
-              blueprintId: this.deps.agentBots.blueprintId,
-              resourceName: msTeamsAgentBotResourceName(key)
-            })
-          }
-        },
-        secrets: msTeamsDeploymentSecrets(),
-        externalIdentity: {
-          externalAppId: request.identity,
-          externalTenantId: request.tenantId,
-          conflictMessage: 'This Teams bot is already connected.'
-        },
-        orgId: request.orgId,
-        agent,
-        platform: MSTEAMS_PLATFORM,
-        name: request.botName,
-        transport: 'http',
-        prebuilt: true,
-        createdByUserId: request.createdByUserId
-      })
+      const made = await this.deps.bindingMutations.runExclusive(request.tenantId, () =>
+        installNewBot(http, this.deps.log as never, {
+          bot: {
+            externalAppId: request.identity,
+            platformConfig: {
+              tenantId: request.tenantId,
+              tokenTenantId: request.tenantId,
+              [MSTEAMS_ROW_OWNER_KEY]: MSTEAMS_DEPLOYMENT_OWNER,
+              ...msTeamsAgentBotEntries({
+                blueprintId: this.deps.agentBots.blueprintId,
+                resourceName: msTeamsAgentBotResourceName(key)
+              })
+            }
+          },
+          secrets: msTeamsDeploymentSecrets(),
+          externalIdentity: {
+            externalAppId: request.identity,
+            externalTenantId: request.tenantId,
+            conflictMessage: 'This Teams bot is already connected.'
+          },
+          orgId: request.orgId,
+          agent,
+          platform: MSTEAMS_PLATFORM,
+          name: request.botName,
+          transport: 'http',
+          prebuilt: true,
+          createdByUserId: request.createdByUserId
+        })
+      )
       // The package the administrator approved is the one in the teams, so the row records it as current (§5.1).
       await http.repos.bot.mergeBotIdentity(request.orgId, made.bot.id, () => ({
         platformConfig: { appPackage: request.appPackage }

@@ -339,7 +339,9 @@ describe('creating the blueprint from Setup', () => {
       'sponsors@odata.bind': ['https://graph.microsoft.com/v1.0/users/operator%40example.test'],
       'owners@odata.bind': ['https://graph.microsoft.com/v1.0/users/operator%40example.test']
     })
-    expect(ms.calls.at(-1)!.url).toBe(`https://graph.microsoft.com/v1.0/applications/${NEW.toLowerCase()}/addPassword`)
+    expect(ms.calls.at(-1)!.url).toBe(
+      `https://graph.microsoft.com/v1.0/applications(appId='${NEW.toLowerCase()}')/addPassword`
+    )
   })
 
   it('names the refusal when the app lacks the permission, and the half-made blueprint when a later step fails', async () => {

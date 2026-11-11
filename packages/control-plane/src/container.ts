@@ -401,7 +401,10 @@ import { weChatLoginRoutes } from './platforms/wechat/routes.js'
 import { WeChatLoginService } from './platforms/wechat/login.js'
 import { createWeChatLoginClient, WECHAT_DEFAULT_API_URL, type WeChatLoginClient } from './platforms/wechat/ilink.js'
 import { msTeamsRoutes } from './platforms/msteams/routes.js'
-import { msTeamsConnectRoutes } from './platforms/msteams/connect-routes.js'
+import { msTeamsConnectRoutes, type MsTeamsConnectSeams } from './platforms/msteams/connect-routes.js'
+import { msTeamsRecoveryRoutes } from './platforms/msteams/recovery-routes.js'
+import { MsTeamsRecoveryOAuth } from './platforms/msteams/recovery.js'
+import { PgMsTeamsBindingMutations } from './persistence/repositories/msteams-binding-mutations.js'
 import { msTeamsConnectKeys } from './platforms/msteams/connect.js'
 import { MsTeamsCredentialReconciler } from './platforms/msteams/credential-reconciler.js'
 import { MsTeamsAgentBotRequests } from './platforms/msteams/agent-bot-requests.js'
@@ -3204,6 +3207,39 @@ export function buildContainer(
     log: http.log
   })
 
+  const msTeamsBindingMutations = new PgMsTeamsBindingMutations(prisma, (input) =>
+    botIdentityProjector(platforms)(input)
+  )
+  // Watches members' pending agent-bot requests until their packages are approved (teams-integration.md §8.6.6).
+  const msTeamsAgentBotRequests =
+    msTeamsPlatformApp && msTeamsAgentBots
+      ? new MsTeamsAgentBotRequests({
+          http: httpDeps,
+          app: msTeamsPlatformApp,
+          agentBots: msTeamsAgentBots,
+          bindingMutations: msTeamsBindingMutations,
+          log: http.log
+        })
+      : undefined
+  const msTeamsSeams: MsTeamsConnectSeams = {
+    ...(msTeamsPlatformApp ? { app: msTeamsPlatformApp } : {}),
+    ...(msTeamsAgentBots ? { agentBots: msTeamsAgentBots } : {}),
+    keys: msTeamsConnectKeys(config.API_KEY_PEPPER),
+    bindingMutations: msTeamsBindingMutations,
+    ...(msTeamsAgentBotRequests ? { requests: msTeamsAgentBotRequests } : {}),
+    ...(webAppUrl ? { webAppUrl } : {}),
+    ...(msTeamsPlatformApp && webAppUrl
+      ? {
+          recovery: new MsTeamsRecoveryOAuth(
+            msTeamsPlatformApp,
+            webAppUrl,
+            config.API_KEY_PEPPER,
+            clock,
+            (input, init) => fetch(input, init)
+          )
+        }
+      : {})
+  }
   // Removes the deployment app's secret from any of its rows an older build stamped (teams-integration.md §8.5).
   const msTeamsCredentialReconciler = new MsTeamsCredentialReconciler({
     bots: repos.bot,
@@ -3214,16 +3250,6 @@ export function buildContainer(
     clock,
     log: http.log
   })
-  // Watches members' pending agent-bot requests until their packages are approved (teams-integration.md §8.6.6).
-  const msTeamsAgentBotRequests =
-    msTeamsPlatformApp && msTeamsAgentBots
-      ? new MsTeamsAgentBotRequests({
-          http: httpDeps,
-          app: msTeamsPlatformApp,
-          agentBots: msTeamsAgentBots,
-          log: http.log
-        })
-      : undefined
 
   // §9 platform-provider registry (S3): the behavioral CpPlatformProvider
   // instances — all four platforms — constructed with the SAME verify/sync
@@ -3338,13 +3364,8 @@ export function buildContainer(
     createMsTeamsCpProvider({
       installRoutes: [
         msTeamsRoutes(httpDeps, fetch, msTeamsPlatformApp),
-        msTeamsConnectRoutes(httpDeps, {
-          ...(msTeamsPlatformApp ? { app: msTeamsPlatformApp } : {}),
-          ...(msTeamsAgentBots ? { agentBots: msTeamsAgentBots } : {}),
-          ...(msTeamsAgentBotRequests ? { requests: msTeamsAgentBotRequests } : {}),
-          keys: msTeamsConnectKeys(config.API_KEY_PEPPER),
-          ...(webAppUrl ? { webAppUrl } : {})
-        })
+        msTeamsConnectRoutes(httpDeps, msTeamsSeams),
+        msTeamsRecoveryRoutes(httpDeps, msTeamsSeams)
       ],
       ...(msTeamsPlatformApp ? { app: msTeamsPlatformApp } : {}),
       ...(msTeamsAgentBots ? { agentBots: msTeamsAgentBots } : {}),

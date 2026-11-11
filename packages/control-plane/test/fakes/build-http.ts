@@ -167,6 +167,12 @@ const unreachableWeChat: WeChatLoginClient = {
   }
 }
 import { msTeamsRoutes } from '../../src/platforms/msteams/routes.js'
+import { MsTeamsRecoveryOAuth } from '../../src/platforms/msteams/recovery.js'
+import { msTeamsRecoveryRoutes } from '../../src/platforms/msteams/recovery-routes.js'
+import { msTeamsConnectRoutes, type MsTeamsConnectSeams } from '../../src/platforms/msteams/connect-routes.js'
+import { msTeamsConnectKeys } from '../../src/platforms/msteams/connect.js'
+import { PgMsTeamsBindingMutations } from '../../src/persistence/repositories/msteams-binding-mutations.js'
+import type { MsTeamsPlatformApp } from '../../src/platforms/msteams/deployment-app.js'
 import { relayHttpBase } from '../../src/http/relay-ingress.js'
 import { LinearCredentialReconciler } from '../../src/platforms/linear/credential-reconciler.js'
 import { LinearApiClient } from '../../src/platforms/linear/api.js'
@@ -264,6 +270,7 @@ export interface PlatformStubs {
   dingTalkFetch?: typeof fetch
   /** Entra's token endpoint, stubbed; absent ⇒ every credential check is a connectivity failure. */
   msTeamsFetch?: typeof fetch
+  msTeamsPlatformApp?: MsTeamsPlatformApp
   /** iLink's QR login, stubbed; absent ⇒ WeChat is unreachable. */
   weChatLoginClient?: WeChatLoginClient
   /** WeCom's long connection, stubbed; absent ⇒ every credential check is a connectivity failure. */
@@ -294,6 +301,7 @@ const PLATFORM_STUB_KEYS = [
   'googleChatRecoveryApplication',
   'dingTalkFetch',
   'msTeamsFetch',
+  'msTeamsPlatformApp',
   'weChatLoginClient',
   'weComDial'
 ] as const satisfies readonly (keyof PlatformStubs)[]
@@ -899,6 +907,26 @@ export function buildHttpApp(
     platformStubs.msTeamsFetch
       ? platformStubs.msTeamsFetch(input, init)
       : Promise.reject(new TypeError('no msteams fetch stub installed'))
+  const msTeamsSeams: MsTeamsConnectSeams = {
+    keys: msTeamsConnectKeys(TEST_API_KEY_PEPPER),
+    bindingMutations: new PgMsTeamsBindingMutations(prisma, (input) => botIdentityProjector(platforms)(input)),
+    webAppUrl: 'https://console.example.test',
+    fetch: msTeamsFetch,
+    get app() {
+      return platformStubs.msTeamsPlatformApp
+    },
+    ...(platformStubs.msTeamsPlatformApp
+      ? {
+          recovery: new MsTeamsRecoveryOAuth(
+            platformStubs.msTeamsPlatformApp,
+            'https://console.example.test',
+            TEST_API_KEY_PEPPER,
+            clock,
+            msTeamsFetch
+          )
+        }
+      : {})
+  }
   const weComDial: WeComDial = (url, handlers) => {
     if (!platformStubs.weComDial) throw new TypeError('no wecom dial stub installed')
     return platformStubs.weComDial(url, handlers)
@@ -1006,7 +1034,11 @@ export function buildHttpApp(
     createDingTalkCpProvider({ fetch: dingTalkFetch, installRoutes: [dingTalkCredentialRoutes(deps, dingTalkFetch)] }),
     createMsTeamsCpProvider({
       fetch: msTeamsFetch,
-      installRoutes: [msTeamsRoutes(deps, msTeamsFetch)],
+      installRoutes: [
+        msTeamsRoutes(deps, msTeamsFetch),
+        msTeamsConnectRoutes(deps, msTeamsSeams),
+        msTeamsRecoveryRoutes(deps, msTeamsSeams)
+      ],
       ...(msTeamsRelayBase ? { publicRelayUrl: msTeamsRelayBase } : {})
     }),
     createWeChatCpProvider({

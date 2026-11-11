@@ -19,7 +19,8 @@ import type {
   PlatformChannelHistoryMessage,
   PlatformChannelHistoryOptions,
   PlatformChannelHistoryPage,
-  PlatformConnection
+  PlatformConnection,
+  WorkPageResult
 } from '../platforms/contract.js'
 
 /** Slack post options subset the virtual transport interprets. Structurally
@@ -650,6 +651,13 @@ export class VirtualSlackConnection implements PlatformConnection {
   async documentReach(): Promise<never> {
     this.unmodelled('canvases')
   }
+
+  // The daemon's own sweep writes the Work page, not a tool, so the arena keeps none rather than failing it.
+  async putWorkPage(): Promise<WorkPageResult> {
+    return { state: 'skipped' }
+  }
+
+  async removeWorkPage(): Promise<void> {}
 
   async uploadFile(
     channel: string,

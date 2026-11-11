@@ -2,7 +2,7 @@
 
 // Microsoft returns an administrator here after consent (teams-integration.md §8.3): connect the tenant, then install the app into teams.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
 import { Spinner, Wordmark } from '@/components/marks'
@@ -13,6 +13,7 @@ import {
   fetchOrgs,
   finishMsTeamsConnect,
   installMsTeamsTeams,
+  startMsTeamsRecovery,
   type MsTeamsConnectResultDto
 } from '@/lib/api'
 import { getUser, isAuthConfigured, login } from '@/lib/auth'
@@ -58,15 +59,31 @@ export default function MsTeamsConnect() {
   const [agentHref, setAgentHref] = useState('/')
   // A further agent's own bot is created while the administrator picks teams (teams-integration.md §8.6.5).
   const [creatingBot, setCreatingBot] = useState(false)
+  const [recovery, setRecovery] = useState<{ tenantId: string; agentId: string } | null>(null)
+  const [recovering, setRecovering] = useState(false)
+  const landing = useRef<URLSearchParams | null>(null)
+  const exchange = useRef<Promise<MsTeamsConnectResultDto | null> | null>(null)
 
   const fail = (e: unknown) => {
+    const detail = e instanceof ApiError && e.code === 'MSTEAMS_TENANT_TAKEN' ? e.details?.recovery : null
+    if (
+      detail &&
+      typeof detail === 'object' &&
+      'tenantId' in detail &&
+      'agentId' in detail &&
+      typeof detail.tenantId === 'string' &&
+      typeof detail.agentId === 'string'
+    )
+      setRecovery({ tenantId: detail.tenantId, agentId: detail.agentId })
     const key = e instanceof ApiError && e.code ? ERROR_KEYS[e.code] : undefined
     setError(t(`errors.${(key ?? 'generic') as 'generic'}`))
     setPhase('failed')
   }
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search)
+    landing.current ??= new URLSearchParams(window.location.search)
+    const params = landing.current
+    window.history.replaceState(null, '', window.location.pathname)
     const code = params.get('code')
     const state = params.get('state')
     const org = msTeamsConnectOrgId(state)
@@ -79,22 +96,23 @@ export default function MsTeamsConnect() {
       return
     }
     let cancelled = false
-    void (async () => {
+    setOrgId(org)
+    exchange.current ??= (async () => {
       if (isAuthConfigured() && !(await getUser())) {
-        writeFlowState('returnTo', window.location.pathname + window.location.search)
+        writeFlowState('returnTo', `${window.location.pathname}?${params}`)
         await login()
-        return
+        return null
       }
+      if (!code) {
+        window.location.assign((await continueMsTeamsConnect(org, state)).authorizeUrl)
+        return null
+      }
+      return finishMsTeamsConnect(org, code, state)
+    })()
+    void (async () => {
       try {
-        // The code is single-use, so the address bar drops it before anything can replay it.
-        window.history.replaceState(null, '', window.location.pathname)
-        if (!code) {
-          window.location.assign((await continueMsTeamsConnect(org, state)).authorizeUrl)
-          return
-        }
-        const connected = await finishMsTeamsConnect(org, code, state)
-        if (cancelled) return
-        setOrgId(org)
+        const connected = await exchange.current
+        if (cancelled || !connected) return
         setResult(connected)
         const slug = (await fetchOrgs().catch(() => [])).find((o) => o.id === org)?.slug
         if (slug) setAgentHref(`/${slug}/agents/${connected.agentId}`)
@@ -137,6 +155,22 @@ export default function MsTeamsConnect() {
     // Runs once per landing.
   }, [])
 
+  async function recover() {
+    if (!recovery) return
+    setRecovering(true)
+    try {
+      const attempt = await startMsTeamsRecovery(orgId, recovery.tenantId, recovery.agentId)
+      sessionStorage.setItem(
+        'ac.msTeamsRecovery',
+        JSON.stringify({ orgId, agentId: recovery.agentId, state: attempt.state })
+      )
+      window.location.assign(attempt.authorizeUrl)
+    } catch {
+      setError(t('recovery.failed'))
+      setRecovering(false)
+    }
+  }
+
   async function install() {
     if (!result?.ticket || chosen.size === 0 || creatingBot) return
     setPhase('installing')
@@ -177,7 +211,17 @@ export default function MsTeamsConnect() {
                 {error}
               </p>
             </div>
-            <Button variant="secondary" onClick={() => window.location.assign(agentHref)}>
+            {recovery && (
+              <>
+                <Button disabled={recovering} onClick={() => void recover()}>
+                  {t('recovery.verify')}
+                </Button>
+                <a className="text-[13px] text-(--brand)" href="mailto:contact@agentconnect.md">
+                  {t('recovery.support')}
+                </a>
+              </>
+            )}
+            <Button variant="secondary" disabled={recovering} onClick={() => window.location.assign(agentHref)}>
               {t('goToAgentConnect')}
             </Button>
           </div>

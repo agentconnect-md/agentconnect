@@ -1,7 +1,7 @@
+import type { MsTeamsBindingMutations, BotRecord, MsTeamsAgentBotRequestRecord } from '../../persistence/ports.js'
 // A member's pending request for an agent's own Teams bot (teams-integration.md §8.6.6), against a scripted Microsoft and an in-memory store.
 import { describe, expect, it, vi } from 'vitest'
 import type { HttpDeps } from '../../http/deps.js'
-import type { BotRecord, MsTeamsAgentBotRequestRecord } from '../../persistence/ports.js'
 import { AgentId, OrgId } from '../../domain/ids.js'
 import { FakeClock } from '../../../test/fakes/fake-clock.js'
 import { memoryMsTeamsAgentBotRequestStore } from '../../../test/fakes/msteams-agent-bot-request-store.js'
@@ -108,6 +108,7 @@ function harness(script: Script = {}) {
     http,
     app: APP,
     agentBots: AGENT_BOTS,
+    bindingMutations: { runExclusive: async (_tenant, action) => action() } as MsTeamsBindingMutations,
     fetch: fetchImpl,
     wait: async () => {},
     log: { info: vi.fn(), warn: vi.fn() }

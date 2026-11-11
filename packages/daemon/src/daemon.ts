@@ -528,6 +528,7 @@ import {
   type BoardView,
   type RenderedBoard
 } from './assistant/work-board.js'
+import { sweepWorkCanvases } from './assistant/work-canvas.js'
 import {
   FollowUpChecks,
   CHECK_SWEEP_INTERVAL_MS,
@@ -12073,6 +12074,7 @@ export class Daemon {
       )
       await this.followUpChecks.sweep().catch((err) => this.log.warn(`follow-up check sweep failed: ${formatErr(err)}`))
       await this.reminders.sweep().catch((err) => this.log.warn(`reminder sweep failed: ${formatErr(err)}`))
+      await this.sweepWorkCanvases().catch((err) => this.log.warn(`work canvas sweep failed: ${formatErr(err)}`))
       // A sub-session failure report whose admission was refused is retried here (assistant-mode.md §5.7).
       await this.collab
         .resendSubsessionReports([...this.agents.keys()])
@@ -13045,8 +13047,34 @@ export class Daemon {
     await Promise.race([cleared, new Promise((resolve) => setTimeout(resolve, TASK_HOLD_CLEAR_MS).unref())])
   }
 
-  /** Who a task works for (auto-session-mode.md §6.2): a follow-up's asker, else the opener of the first session above it that is no task. */
-  private async taskOwnerName(row: AssistantSubsession): Promise<string | undefined> {
+  /** Each minute, the duty holder rewrites every changed Work page of its agents (assistant-mode.md §5.19). */
+  private async sweepWorkCanvases(): Promise<void> {
+    await sweepWorkCanvases({
+      stores: this.store,
+      agents: () => this.agents.values(),
+      serves: (agentId) => this.servesAgent(agentId),
+      resolve: (agentId, at) => {
+        const integrationId =
+          at.integrationId ?? this.integrationIdForTransportScope(agentId, at.platform, at.transportScope)
+        if (!integrationId) return undefined
+        return { integrationId, transportScope: this.transportScopeForIntegrationIds([integrationId]) ?? null }
+      },
+      connection: (integrationId) =>
+        this.connForIntegration(integrationId) as
+          Pick<ContractConnection, 'putWorkPage' | 'removeWorkPage'> | undefined,
+      external: (agentId, place) => {
+        const agent = this.agents.get(agentId)
+        return agent ? sharedWithOutsiders(agent, place) : false
+      },
+      askerOf: (row) => this.taskOwnerId(row),
+      consoleUrl: (agentId) => this.agentLink(agentId),
+      now: () => this.clock.now(),
+      warn: (message) => this.log.warn(message)
+    })
+  }
+
+  /** Who a task works for (auto-session-mode.md §6.2), by platform user id: a follow-up's asker, else the opener of the first session above it that is no task. */
+  private async taskOwnerId(row: AssistantSubsession): Promise<string | undefined> {
     let id: string | undefined
     if (row.mode === 'watch') {
       const asker = (await this.checkedTasks.get(row.agentId, row.childSessionKey))?.asker
@@ -13064,6 +13092,12 @@ export class Daemon {
       }
       id = isSubsessionKey(key) ? undefined : ((await this.store.getSession(key))?.triggeredBy ?? undefined)
     }
+    return id
+  }
+
+  /** Who a task works for, by the name people know them by. */
+  private async taskOwnerName(row: AssistantSubsession): Promise<string | undefined> {
+    const id = await this.taskOwnerId(row)
     if (!id) return undefined
     return (await this.store.getDisplayNames([id])).get(id) ?? id
   }
@@ -31574,10 +31608,12 @@ export class Daemon {
     target: { channel?: string; integrationId?: string } | undefined,
     anchorText: string,
     label: string,
-    onSessionReady?: (sessionId: string) => void
+    onSessionReady?: (sessionId: string) => void,
+    onAnchored?: (channel: string, thread: string) => void
   ): Promise<string | null> {
     const { message: anchored } = await this.anchorTrigger(agentId, msg, target, anchorText, label)
     if (!anchored) return null
+    if (target?.channel && anchored.transcriptTs && anchored.thread) onAnchored?.(target.channel, anchored.thread)
     // Same integration for the session's replies as for the anchor.
     return this.dispatch(
       agentId,
@@ -31686,7 +31722,12 @@ export class Daemon {
               readySessionId = sessionId
               report({ sessionId })
             }
-          : undefined
+          : undefined,
+        // The Work page links a schedule's latest run (assistant-mode.md §5.19).
+        (channel, thread) =>
+          void this.store.workCanvases
+            .noteAnchor(agentId, { cronId: cron.id, channel, thread, firedAt })
+            .catch((err) => this.log.warn(`cron anchor record failed: ${formatErr(err)}`))
       )
       if (sessionId !== null)
         report({

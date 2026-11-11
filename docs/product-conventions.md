@@ -2187,6 +2187,15 @@ the conversation hidden. Without sync, new Google Chat conversations are visible
 to the organization. Turning sync off hides previously synced sessions until it
 is enabled again; historical private DMs retain their recorded owner.
 
+When a deployment Teams app is connected to another organization, the connection
+page offers administrator recovery. First-time connections keep their existing
+checks. A current tenant-wide Teams or Global Administrator verifies with
+Microsoft, then explicitly confirms the destination organization. Verification
+alone changes nothing. Recovery releases every deployment-owned Teams binding
+in that tenant, including additional agent bots when supported; it does not
+transfer agents, history, settings or organization-owned apps. Removing the app
+from a chat or Team never releases tenant-wide ownership.
+
 When Microsoft Teams session access sync is enabled, channels, group chats and
 1:1 chats require a linked Microsoft account and current membership in that
 conversation within the bot's tenant. A guest cannot be matched, and a matching
