@@ -95,6 +95,24 @@ describe('the coordinator prompt and batch', () => {
     expect(prompt.indexOf('# The agent')).toBeLessThan(prompt.indexOf('# Open work'))
   })
 
+  // With no description there is no role to judge an unaddressed message by, so the channel coordinator stays quiet.
+  it('keeps an undescribed agent to what mentions or names it, in a channel only', () => {
+    const base = { agentName: 'bot-a', platform: 'Slack', channelId: 'C1', peers: [] }
+    const conservative =
+      "The agent's owner has not described its role, so a Slack message is for you only when it mentions you, names " +
+      'you ("bot-a"), or continues a thread you replied in; ignore every other one, including requests and alerts that ' +
+      'name no one.'
+    expect(coordinatorPrompt(base)).toContain(conservative)
+    expect(coordinatorPrompt(base)).not.toContain('even when it names no one')
+    expect(coordinatorPrompt({ ...base, agentDescription: '  ' })).toContain(conservative)
+    const described = coordinatorPrompt({ ...base, agentDescription: 'Handles on-call alerts.' })
+    expect(described).toContain('even when it names no one')
+    expect(described).not.toContain('has not described its role')
+    const webchat = coordinatorPrompt({ ...base, platform: 'webchat', webchat: true })
+    expect(webchat).not.toContain('has not described its role')
+    expect(webchat).not.toContain('even when it names no one')
+  })
+
   it('tells the model its read-only mode leaves its AgentConnect tools alone and needs no plan', () => {
     const prompt = coordinatorPrompt({ agentName: 'bot-a', platform: 'Slack', channelId: 'C1', peers: [] })
     expect(prompt).toContain('restricts native file and shell tools only')

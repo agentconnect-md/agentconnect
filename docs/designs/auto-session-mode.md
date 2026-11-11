@@ -181,6 +181,9 @@ Approved proposals stay a kind of their own.
 - A message that mentions the agent may not be ignored.
 - The prompt gives the agent's own description as its role, so a message within that role, such as an
   alert a bot posts, is for the agent even when it names no one.
+- An agent with no description has no role to judge by, so its coordinator is conservative: in a
+  channel a message is for it only when it mentions or names the agent or continues a thread the
+  coordinator replied in, and every other message is ignored. Webchat messages are always for it.
 
 ### 4.2 Four outcomes
 
@@ -1077,11 +1080,13 @@ its `here` and `elsewhere` lists, and `readTask`) into a real runtime session ov
 turn with the work board the daemon would send ([assistant-mode.md](assistant-mode.md) §5.18),
 delivers channel messages in the format of §4.3, and judges each message's outcome. Its scenarios:
 new work, a message for an open task, a status question, a greeting, chatter between people, a
-request to another agent, a bot's alert within the agent's role (`role-alert`), a vague mention, a
-small edit the coordinator must not do itself, two mixed batches, a follow-up's report (§3.4), a
-batch of one message and two reports, one worth telling and one with nothing new, a request for work another channel's task already has open, a question
-about another channel's task that only its latest words answer, a run report from a task holding
-its code channel (§6.8), and
+request to another agent, a bot's alert within the agent's role (`role-alert`), for an agent with no
+description an unaddressed request and a bot's alert it ignores and a request that names or mentions
+it (`undescribed-*`), a vague mention, a small edit the coordinator must not do itself, two mixed
+batches, a follow-up's report (§3.4), a batch of one message and two reports, one worth telling and
+one with nothing new, a request for work another channel's task already has open, a question about
+another channel's task that only its latest words answer, a run report from a task holding its code
+channel (§6.8), and
 in a webchat conversation (§10) new work, a status question, a message for an open task, a status
 question about another channel's task and a follow-up asking for work in a thread no task holds
 (`webchat-thread-follow-up`, [webchat-threads.md](webchat-threads.md) §11). That scenario and the
