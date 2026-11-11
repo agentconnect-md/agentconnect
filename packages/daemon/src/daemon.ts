@@ -635,6 +635,10 @@ import type { WeChatConnection } from './platforms/wechat/connection.js'
 import { weChatCommandChrome } from './platforms/wechat/command-chrome.js'
 import { weChatPlatformModule } from './platforms/wechat/module.js'
 import { createWeChatTurnOutput } from './platforms/wechat/surface.js'
+import type { WeComConnection } from './platforms/wecom/connection.js'
+import { weComCommandChrome } from './platforms/wecom/command-chrome.js'
+import { weComPlatformModule } from './platforms/wecom/module.js'
+import { createWeComTurnOutput } from './platforms/wecom/surface.js'
 import { TelegramConnection, type TelegramCallback } from './telegram/connection.js'
 import { DiscordConnection } from './discord/connection.js'
 import { FeishuConnection } from './feishu/connection.js'
@@ -1933,6 +1937,7 @@ export class Daemon {
     registry.register(googleChatCommandChrome)
     registry.register(msTeamsCommandChrome)
     registry.register(weChatCommandChrome)
+    registry.register(weComCommandChrome)
     return registry
   })()
 
@@ -2135,6 +2140,13 @@ export class Daemon {
           monotonicTs: () => monotonicTs()
         })
       )
+      registry.register(
+        createWeComTurnOutput({
+          appendTranscript: async (row) => await this.store.appendTranscript(row),
+          monotonicTs: () => monotonicTs(),
+          warn: (message) => this.log.warn(message)
+        })
+      )
       return registry
     })()
   // Slack id → display-name resolver (created with the store in start()).
@@ -2256,6 +2268,8 @@ export class Daemon {
   private msTeamsConnByIntegration = new Map<string, MsTeamsConnection>()
   // integrationId -> the WeChatConnection that owns it: the bot's daemon-held long poll and its sends.
   private weChatConnByIntegration = new Map<string, WeChatConnection>()
+  // integrationId -> the WeComConnection that owns it: the smart bot's daemon-held long connection and its sends.
+  private weComConnByIntegration = new Map<string, WeComConnection>()
   // One Google Chat write budget per app on this daemon (§10.8), built from the config on first use.
   private googleChatBudgets: GoogleChatWriteBudgets | undefined
   // Sessions whose console link already sits in the issue's Resources (Linear keys the entry
@@ -3200,7 +3214,8 @@ export class Daemon {
         linear: this.lnConnByIntegration,
         googlechat: this.gcConnByIntegration,
         msteams: this.msTeamsConnByIntegration,
-        wechat: this.weChatConnByIntegration
+        wechat: this.weChatConnByIntegration,
+        wecom: this.weComConnByIntegration
       }),
       bindSlack: (integrationId, conn, botUserId) => {
         this.bind(this.connByIntegration, integrationId, conn, botUserId)
@@ -3231,6 +3246,7 @@ export class Daemon {
       },
       bindMsTeams: (id, conn, botUserId) => this.bind(this.msTeamsConnByIntegration, id, conn, botUserId),
       bindWeChat: (id, conn, botId) => this.bind(this.weChatConnByIntegration, id, conn, botId),
+      bindWeCom: (id, conn, botId) => this.bind(this.weComConnByIntegration, id, conn, botId),
       unbindIntegration: (integrationId) => this.unbindIntegration(integrationId),
       slackNameResolver: () => this.nameResolver,
       channelNameResolver: () => this.channelNameResolver,
@@ -3341,6 +3357,7 @@ export class Daemon {
     this.gcConnByIntegration.delete(integrationId)
     this.msTeamsConnByIntegration.delete(integrationId)
     this.weChatConnByIntegration.delete(integrationId)
+    this.weComConnByIntegration.delete(integrationId)
     delete this.botUserIds[integrationId]
     this.channelSnapshots.delete(integrationId)
     this.placeTrust.forget(integrationId)
@@ -6497,6 +6514,7 @@ export class Daemon {
     void this.connections.reconcileQQConnections().catch(() => this.log.warn('qq: initial connect failed'))
     void this.connections.reconcileDingTalkConnections().catch(() => this.log.warn('dingtalk: initial connect failed'))
     void this.connections.reconcileWeChatConnections().catch(() => this.log.warn('wechat: initial connect failed'))
+    void this.connections.reconcileWeComConnections().catch(() => this.log.warn('wecom: initial connect failed'))
     // open consolidated Slack connections, resolve bot user ids (merged rules are per-message)
     await this.connections.openInitialSlackConnections(agents)
     // Open send-only Slack clients for HTTP bots (inbound lives on the relay).
@@ -6996,6 +7014,7 @@ export class Daemon {
       await this.connections.reconcileDingTalkConnections()
       await this.connections.reconcileMsTeamsConnections()
       await this.connections.reconcileWeChatConnections()
+      await this.connections.reconcileWeComConnections()
       // Converged for real: the sockets a duty change invalidated are closed. Publishing the
       // CLAIMED value (not the current one) leaves a duty change that landed mid-pass outstanding,
       // so the trailing re-run still converges it.
@@ -16629,7 +16648,8 @@ export class Daemon {
     telegramPlatformModule,
     dingTalkPlatformModule,
     msTeamsPlatformModule(this.relayIngressHost((integrationId) => this.msTeamsConnByIntegration.get(integrationId))),
-    weChatPlatformModule
+    weChatPlatformModule,
+    weComPlatformModule
   ])
 
   /** The one narrow port every relay-ingress strategy reaches the daemon through; only the connection accessor is per platform. */
@@ -19625,7 +19645,8 @@ export class Daemon {
     ['linear', (integrationId) => (integrationId ? this.lnConnByIntegration.get(integrationId) : undefined)],
     ['googlechat', (integrationId) => (integrationId ? this.gcConnByIntegration.get(integrationId) : undefined)],
     ['msteams', (id) => (id ? this.msTeamsConnByIntegration.get(id) : undefined)],
-    ['wechat', (id) => (id ? this.weChatConnByIntegration.get(id) : undefined)]
+    ['wechat', (id) => (id ? this.weChatConnByIntegration.get(id) : undefined)],
+    ['wecom', (id) => (id ? this.weComConnByIntegration.get(id) : undefined)]
   ])
 
   private readonly platformFailureSinks = new Map<
@@ -19667,6 +19688,13 @@ export class Daemon {
       'wechat',
       async (ctx) => {
         const conn = ctx.integrationId ? this.weChatConnByIntegration.get(ctx.integrationId) : undefined
+        if (conn) await conn.sendText(ctx.channel, `⚠️ Agent failed to respond: ${ctx.reason}`)
+      }
+    ],
+    [
+      'wecom',
+      async (ctx) => {
+        const conn = ctx.integrationId ? this.weComConnByIntegration.get(ctx.integrationId) : undefined
         if (conn) await conn.sendText(ctx.channel, `⚠️ Agent failed to respond: ${ctx.reason}`)
       }
     ]
@@ -27296,6 +27324,7 @@ export class Daemon {
     for (const [id, c] of this.gcConnByIntegration) if (c === conn) out.push(id)
     for (const [id, c] of this.msTeamsConnByIntegration) if (c === conn) out.push(id)
     for (const [id, c] of this.weChatConnByIntegration) if (c === conn) out.push(id)
+    for (const [id, c] of this.weComConnByIntegration) if (c === conn) out.push(id)
     return out
   }
 
@@ -28031,7 +28060,8 @@ export class Daemon {
       this.dingTalkConnByIntegration.get(integrationId) ??
       this.gcConnByIntegration.get(integrationId) ??
       this.msTeamsConnByIntegration.get(integrationId) ??
-      this.weChatConnByIntegration.get(integrationId)
+      this.weChatConnByIntegration.get(integrationId) ??
+      this.weComConnByIntegration.get(integrationId)
     )
   }
 

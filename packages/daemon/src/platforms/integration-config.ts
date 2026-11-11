@@ -29,6 +29,7 @@ import {
   IntegrationMsTeamsConfig,
   IntegrationQQConfig,
   IntegrationWeChatConfig,
+  IntegrationWeComConfig,
   type ChatAuthority,
   type DecisionBundle,
   type IntegrationSessionMode
@@ -56,7 +57,8 @@ const CONFIG_SCHEMAS = {
   googlechat: GoogleChatConfigSchema,
   dingtalk: IntegrationDingTalkConfig,
   msteams: IntegrationMsTeamsConfig,
-  wechat: IntegrationWeChatConfig
+  wechat: IntegrationWeChatConfig,
+  wecom: IntegrationWeComConfig
 } as const
 
 /** The union of every platform's validated config, derived from the registry

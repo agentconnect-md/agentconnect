@@ -67,6 +67,14 @@ describe('connection identity (transport scope)', () => {
         config: { projectId: 'example-project', projectNumber: '100000000000', serviceAccountKey: '{"k":2}' }
       } as never)
     ).toBe('100000000000')
+    // A WeCom Secret reset keeps the BotID, so the transport scope stays.
+    expect(
+      connectionIdentityFor({
+        id: 'i9',
+        platform: 'wecom',
+        config: { botId: 'aibot-example', secret: 'secret-placeholder-2' }
+      } as never)
+    ).toBe('aibot-example')
   })
 
   it('fails CLOSED (integration-id isolation) on a payload the module schema refuses — never a throw', () => {
@@ -145,6 +153,21 @@ describe('tenant scope (durable owner identity)', () => {
         config: { botId: 'b1@im.bot' }
       } as never)
     ).toBe('m11')
+    // A WeCom smart bot's BotID survives a Secret reset; without its Secret the payload is refused and the minted scope stands.
+    expect(
+      await tenantScopeFor(host(undefined, 'm12'), {
+        id: 'i9',
+        platform: 'wecom',
+        config: { botId: 'aibot-example', secret: 'secret-placeholder' }
+      } as never)
+    ).toBe('aibot-example')
+    expect(
+      await tenantScopeFor(host(undefined, 'm13'), {
+        id: 'i9',
+        platform: 'wecom',
+        config: { botId: 'aibot-example' }
+      } as never)
+    ).toBe('m13')
   })
 
   it('falls back to the minted scope on a payload the module schema refuses — never a throw', async () => {

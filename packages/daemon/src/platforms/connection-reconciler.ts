@@ -68,6 +68,7 @@ import {
 } from './msteams/connection.js'
 import { consolidateWeChat, WeChatConnection, weChatConnKey, weChatEndpointOverrides } from './wechat/connection.js'
 import { weChatStateStore } from './wechat/state.js'
+import { consolidateWeCom, WeComConnection, weComConnKey } from './wecom/connection.js'
 import { MsTeamsWriteBudgets } from './msteams/write-budget.js'
 import { msTeamsRelayPort } from './msteams/api.js'
 import type { PlatformRelay } from './platform-relay.js'
@@ -93,6 +94,7 @@ export type PlatformConnection =
   | DingTalkConnection
   | MsTeamsConnection
   | WeChatConnection
+  | WeComConnection
 
 /**
  * The UI-action callbacks every platform connection is constructed with — a status-bar tap,
@@ -205,6 +207,7 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
     googlechat: ReadonlyMap<string, GoogleChatConnection>
     msteams?: ReadonlyMap<string, MsTeamsConnection>
     wechat?: ReadonlyMap<string, WeChatConnection>
+    wecom?: ReadonlyMap<string, WeComConnection>
   }
   /** Point an integration at a live connection and record the identity mention-routing
    *  matches — the bot user id on Slack/Discord, the @username on Telegram, the open_id on
@@ -224,6 +227,8 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
   bindMsTeams?(integrationId: string, conn: MsTeamsConnection, botUserId: string): void
   /** The bot's `ilink_bot_id`. */
   bindWeChat?(integrationId: string, conn: WeChatConnection, botId: string): void
+  /** The BotID a group mention names, which WeCom sends as `aibotid`. */
+  bindWeCom?(integrationId: string, conn: WeComConnection, botId: string): void
   /** Drop an integration's connection binding, bot identity and channel snapshot together. */
   unbindIntegration(integrationId: string): void
   slackNameResolver(): SlackNameResolver | undefined
@@ -386,6 +391,64 @@ export class ConnectionReconciler {
     }
   }
 
+  // One long connection per bot on this daemon: a second subscribe of the same bot evicts the first (official doc, path 101463).
+  readonly weComPool = new ConnectionPool<WeComConnection>('wecom', (conn) => weComConnKey(conn.group))
+  // A kicked connection's redial pass, armed for the end of its cooldown; the client itself never redials after a kick.
+  private readonly weComRedialTimers = new Map<string, TimerHandle>()
+
+  async reconcileWeComConnections(): Promise<void> {
+    const groups = consolidateWeCom(this.host.transportAgents())
+    for (const [key, timer] of this.weComRedialTimers) {
+      if (groups.has(key)) continue
+      this.host.clock().clearTimeout(timer)
+      this.weComRedialTimers.delete(key)
+    }
+    for (const [key, group] of groups) {
+      let conn = this.weComPool.find(key)
+      if (!conn) {
+        if (!this.weComPool.beginConnect(key)) continue
+        conn = new WeComConnection(group, {
+          log: this.log,
+          now: () => this.host.clock().now(),
+          onMessage: (msg) => {
+            if (conn) this.host.channelNameResolver()?.noteMessage(conn, msg)
+            this.host.onInbound(msg, this.host.srcIntegrationIds(conn))
+          },
+          onKicked: (redialAt) => this.armWeComRedial(key, redialAt)
+        })
+        try {
+          await conn.start()
+          if (this.host.draining() || !consolidateWeCom(this.host.transportAgents()).has(key)) {
+            await conn.stop()
+            continue
+          }
+          this.weComPool.add(conn)
+        } catch {
+          await conn.stop()
+          this.log.warn('wecom: could not open the long connection; retry on next reconcile')
+          continue
+        } finally {
+          this.weComPool.endConnect(key)
+        }
+      } else if (!this.host.draining()) await conn.redial()
+      for (const { integrationId } of group.integrations) this.host.bindWeCom?.(integrationId, conn, conn.botUserId)
+    }
+  }
+
+  private armWeComRedial(key: string, at: number): void {
+    const previous = this.weComRedialTimers.get(key)
+    if (previous) this.host.clock().clearTimeout(previous)
+    const timer = this.host.clock().setTimeout(
+      () => {
+        this.weComRedialTimers.delete(key)
+        if (this.host.draining()) return
+        void this.reconcileWeComConnections().catch(() => this.log.warn('wecom: redial pass failed'))
+      },
+      Math.max(0, at - this.host.clock().now())
+    )
+    this.weComRedialTimers.set(key, timer)
+  }
+
   // §7.5 connection pools — one per (platform, MODE), each keyed by the platform's
   // own opaque identity function. The pool owns the live set AND the in-flight
   // connect guard: a key is claimed BEFORE `await conn.start()` and released when
@@ -448,7 +511,8 @@ export class ConnectionReconciler {
       this.googleChatPool,
       this.dingTalkPool,
       this.msTeamsPool,
-      this.weChatPool
+      this.weChatPool,
+      this.weComPool
     ]
   }
 
@@ -643,11 +707,16 @@ export class ConnectionReconciler {
     const weChatByIntegration = new Map<string, string>()
     for (const [key, group] of weChatGroups)
       for (const { integrationId } of group.integrations) weChatByIntegration.set(integrationId, key)
+    const weComGroups = consolidateWeCom(agents)
+    const weComByIntegration = new Map<string, string>()
+    for (const [key, group] of weComGroups)
+      for (const { integrationId } of group.integrations) weComByIntegration.set(integrationId, key)
     const allDesiredIds = new Set([
       ...QQByIntegration.keys(),
       ...dingTalkByIntegration.keys(),
       ...msTeamsByIntegration.keys(),
       ...weChatByIntegration.keys(),
+      ...weComByIntegration.keys(),
       ...directByIntegration.keys(),
       ...sharedByIntegration.keys(),
       ...telegramByIntegration.keys(),
@@ -669,6 +738,9 @@ export class ConnectionReconciler {
     }
     for (const [id, conn] of bindings.wechat ?? []) {
       if (weChatConnKey(conn.group) !== weChatByIntegration.get(id)) this.host.unbindIntegration(id)
+    }
+    for (const [id, conn] of bindings.wecom ?? []) {
+      if (weComConnKey(conn.group) !== weComByIntegration.get(id)) this.host.unbindIntegration(id)
     }
     // Unbinding drops the connection mapping, the bot identity and the channel
     // snapshot together — the three indexes an evicted integration must leave behind.
@@ -746,6 +818,7 @@ export class ConnectionReconciler {
     await this.prunePool(this.googleChatPool, new Set(googleChat.keys()))
     await this.prunePool(this.msTeamsPool, new Set(msTeams.keys()))
     await this.prunePool(this.weChatPool, new Set(weChatGroups.keys()))
+    await this.prunePool(this.weComPool, new Set(weComGroups.keys()))
   }
 
   /** Close every connection in `pool` whose opaque identity consolidation no
@@ -1616,6 +1689,8 @@ export class ConnectionReconciler {
   cancelRetryTimers(): void {
     for (const t of this.slackRetryTimers.values()) this.host.clock().clearTimeout(t)
     this.slackRetryTimers.clear()
+    for (const t of this.weComRedialTimers.values()) this.host.clock().clearTimeout(t)
+    this.weComRedialTimers.clear()
     this.revocations.stop()
   }
 
