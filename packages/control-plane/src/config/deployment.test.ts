@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { DeploymentConfigRuntime } from '../persistence/deployment-config.js'
 import { googleChatRelayApp } from '../platforms/googlechat/deployment-app.js'
 import { googleChatClaimAnchor } from '../platforms/googlechat/provider.js'
-import { msTeamsConnectAnchor, msTeamsRelayApp } from '../platforms/msteams/deployment-app.js'
+import { msTeamsConnectAnchor, msTeamsRelayApp, resolveMsTeamsAgentBots } from '../platforms/msteams/deployment-app.js'
 import { applyDeploymentEnvironment, relayDeploymentSnapshot } from './deployment.js'
 import { loadConfig } from './env.js'
 
@@ -188,6 +188,35 @@ describe('applyDeploymentEnvironment', () => {
     ).toBeUndefined()
   })
 
+  it('projects agent bots beside the Teams app, and clears stale startup values', () => {
+    const base = runtime()
+    const agentBots = {
+      blueprintId: '55555555-5555-4555-8555-555555555555',
+      subscriptionId: '66666666-6666-4666-8666-666666666666',
+      resourceGroup: 'example-bots'
+    }
+    const stale = { ...bootstrap, MSTEAMS_AGENT_BOTS_RESOURCE_GROUP: 'startup-group' }
+    const managed = applyDeploymentEnvironment(
+      stale,
+      runtime({
+        values: {
+          ...base.values,
+          logto: { azureadConnector: { clientId: '33333333-3333-4333-8333-333333333333' } } as never,
+          msTeams: { tenantId: '44444444-4444-4444-8444-444444444444', agentBots }
+        },
+        secrets: {
+          'logto.azureadConnectorClientSecret': 'synthetic-secret',
+          'msTeams.blueprintClientSecret': 'synthetic-blueprint-secret'
+        }
+      })
+    )
+    expect(managed.MSTEAMS_AGENT_BOTS_BLUEPRINT_ID).toBe(agentBots.blueprintId)
+    expect(managed.MSTEAMS_AGENT_BOTS_BLUEPRINT_SECRET).toBe('synthetic-blueprint-secret')
+    expect(managed.MSTEAMS_AGENT_BOTS_SUBSCRIPTION_ID).toBe(agentBots.subscriptionId)
+    expect(managed.MSTEAMS_AGENT_BOTS_RESOURCE_GROUP).toBe('example-bots')
+    expect(applyDeploymentEnvironment(stale, runtime()).MSTEAMS_AGENT_BOTS_RESOURCE_GROUP).toBeUndefined()
+  })
+
   it('keeps regional Login Apps owned by the deployment document', () => {
     const base = runtime()
     const managed = applyDeploymentEnvironment(
@@ -261,6 +290,33 @@ describe('relayDeploymentSnapshot', () => {
       revision: 0,
       msTeamsApp: app
     })
+    expect(app.blueprint).toBeUndefined()
+  })
+
+  // teams-integration.md §8.6.7: the blueprint rides beside the app, and only with it.
+  it('carries the blueprint the relay obtains an agent bot’s token with', () => {
+    const teams = {
+      appId: '33333333-3333-4333-8333-333333333333',
+      tenantId: '44444444-4444-4444-8444-444444444444',
+      clientSecret: 'synthetic-secret'
+    }
+    const env = {
+      MSTEAMS_AGENT_BOTS_BLUEPRINT_ID: '55555555-5555-4555-8555-55555555555A',
+      MSTEAMS_AGENT_BOTS_BLUEPRINT_SECRET: 'synthetic-blueprint-secret',
+      MSTEAMS_AGENT_BOTS_SUBSCRIPTION_ID: '66666666-6666-4666-8666-666666666666',
+      MSTEAMS_AGENT_BOTS_RESOURCE_GROUP: 'example-bots'
+    }
+    const agentBots = resolveMsTeamsAgentBots(env, teams)!
+    expect(msTeamsRelayApp(teams, 'p'.repeat(32), agentBots)!.blueprint).toEqual({
+      appId: '55555555-5555-4555-8555-55555555555a',
+      clientSecret: 'synthetic-blueprint-secret'
+    })
+    expect(msTeamsRelayApp(undefined, 'p'.repeat(32), agentBots)).toBeUndefined()
+    expect(resolveMsTeamsAgentBots({}, teams)).toBeUndefined()
+    expect(() => resolveMsTeamsAgentBots({ ...env, MSTEAMS_AGENT_BOTS_RESOURCE_GROUP: undefined }, teams)).toThrow(
+      /partial/
+    )
+    expect(() => resolveMsTeamsAgentBots(env, undefined)).toThrow(/platform app/)
   })
 
   // google-chat-integration.md §10.10: the relay sends the app's rows' calls, with or without an anchor.

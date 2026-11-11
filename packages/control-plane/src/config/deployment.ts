@@ -41,6 +41,10 @@ const MANAGED_KEYS = [
   'MSTEAMS_PLATFORM_APP_ID',
   'MSTEAMS_PLATFORM_TENANT_ID',
   'MSTEAMS_PLATFORM_CLIENT_SECRET',
+  'MSTEAMS_AGENT_BOTS_BLUEPRINT_ID',
+  'MSTEAMS_AGENT_BOTS_BLUEPRINT_SECRET',
+  'MSTEAMS_AGENT_BOTS_SUBSCRIPTION_ID',
+  'MSTEAMS_AGENT_BOTS_RESOURCE_GROUP',
   'FEISHU_PLATFORM_APP_ID',
   'FEISHU_PLATFORM_APP_SECRET',
   'LARK_PLATFORM_APP_ID',
@@ -117,6 +121,13 @@ export function applyDeploymentEnvironment(
     set('MSTEAMS_PLATFORM_APP_ID', microsoft.clientId)
     set('MSTEAMS_PLATFORM_TENANT_ID', values.msTeams.tenantId)
     set('MSTEAMS_PLATFORM_CLIENT_SECRET', secrets['logto.azureadConnectorClientSecret'])
+    // Agent bots exist only beside the Teams app; all four or none, which resolveMsTeamsAgentBots checks.
+    if (values.msTeams.agentBots) {
+      set('MSTEAMS_AGENT_BOTS_BLUEPRINT_ID', values.msTeams.agentBots.blueprintId)
+      set('MSTEAMS_AGENT_BOTS_BLUEPRINT_SECRET', secrets['msTeams.blueprintClientSecret'])
+      set('MSTEAMS_AGENT_BOTS_SUBSCRIPTION_ID', values.msTeams.agentBots.subscriptionId)
+      set('MSTEAMS_AGENT_BOTS_RESOURCE_GROUP', values.msTeams.agentBots.resourceGroup)
+    }
   }
 
   if (values.feishu) {
