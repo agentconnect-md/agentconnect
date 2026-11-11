@@ -88,7 +88,9 @@ export const CollabOrgAgent = CollabAgentPlacement.extend({
   // The member a wake is forwarded to. ABSENT ⇒ PENDING: the agent exists, its policy is authoritative, but
   // no member is addressable yet (unconfirmed pool grant / lapsed lease) → `not_ready`, not `not_found`.
   // Only this flat directory carries pending entries; `channels[]` never does.
-  daemonId: z.string().uuid().optional()
+  daemonId: z.string().uuid().optional(),
+  // The agent takes no turns while paused, so a peer's coordinator does not defer to it (auto-session-mode.md §9).
+  paused: z.boolean().optional()
 })
 export type CollabOrgAgent = z.infer<typeof CollabOrgAgent>
 

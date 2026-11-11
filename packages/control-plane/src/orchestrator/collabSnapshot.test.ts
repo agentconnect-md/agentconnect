@@ -175,6 +175,16 @@ describe('buildCollabSnapshot (agent-collaboration P2)', () => {
     expect(snap.agents.find((a) => a.agentId === AGENT_1)?.displayName).toBe('Deploy Bot')
   })
 
+  it('marks a paused agent in the flat directory, and carries no flag for one that is not', () => {
+    const snap = buildCollabSnapshot(DEFAULT_ORG_ID, [], 1, [
+      orgAgent({ agentId: AGENT_1, paused: true }),
+      orgAgent({ agentId: AGENT_2 })
+    ])
+    expect(CollabRoutesSnapshot.parse(snap)).toEqual(snap)
+    expect(snap.agents.find((a) => a.agentId === AGENT_1)?.paused).toBe(true)
+    expect(snap.agents.find((a) => a.agentId === AGENT_2)).not.toHaveProperty('paused')
+  })
+
   // A `set` (pool) agent's `Agent.daemonId` is null by design; only the resolved directory names
   // its holder (agent-collaboration-implementation.md §"Collaboration-routing snapshot").
   it('places a pool agent in its channels from the resolved directory, not the null placement column', () => {

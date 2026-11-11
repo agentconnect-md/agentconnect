@@ -960,6 +960,13 @@ Each agent has its own coordinator, and each decides independently. The prompt l
 agents in the conversation, by name and description, so a message for one of them is recognized as
 not addressed to this agent. Cost grows with the number of agents.
 
+The list holds the agents that answer in the conversation. An agent whose bot has left it is no
+longer listed, and neither is a paused agent: a coordinator that still deferred to one would leave
+it messages no one takes. A daemon reads the pause state of its own agents from their specs, and of
+another daemon's agents from the peer directory, which the Control Plane pushes again when an agent
+is paused or resumed. The list is part of the session's standing instructions, so a coordinator
+already running takes the change on its next turn, with no `!new`.
+
 ## 10. Webchat (the console home and playground)
 
 - Opening an agent from the home page or the playground enters **that member's private coordinator**

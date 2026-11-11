@@ -1159,6 +1159,65 @@ describe('auto conversations route to the coordinator', () => {
     })
   })
 
+  it('lists the conversation’s other agents in its instructions, and leaves out a paused one (§9)', async () => {
+    const { daemon, d } = await boot(async () => 'end_turn')
+    const agent = d.agents.get('bot-a')
+    const org = '00000000-0000-0000-0000-0000000000a1'
+    d.agents.set('bot-b', { ...agent, id: 'bot-b', name: 'alerts', description: 'Reads the alerts a bot posts.' })
+    const placements = [agent, d.agents.get('bot-b')].map((a) => ({
+      agentId: a.id,
+      daemonId: 'local-daemon',
+      name: a.name,
+      callPolicy: 'all',
+      allowedCallerAgentIds: [],
+      outboundPolicy: 'all',
+      allowedTargetAgentIds: []
+    }))
+    d.cpCollab.replace({
+      generation: 0,
+      channels: [{ orgId: org, platform: 'slack', channelId: 'C1', agents: placements }],
+      agents: placements.map((placement) => ({ ...placement, orgId: org }))
+    })
+    const thread = coordinatorCoordinate(1)
+    const context = () =>
+      d.sessions.deps.toolContextFor({
+        agent,
+        platform: 'slack',
+        channel: 'C1',
+        thread,
+        deliveryThread: thread,
+        integrationId: 'int-bot-a',
+        isDm: false,
+        sessionKey: sessionKey('slack', 'C1', thread, 'bot-a')
+      })
+    const listed = context()
+    expect(listed.instructions).toContain(
+      '- Other agents in this channel: alerts: Reads the alerts a bot posts. A message addressed to one of them is not for you.'
+    )
+    d.agents.get('bot-b').pause = true
+    const paused = context()
+    expect(paused.instructions).toContain('- No other agent is in this channel.')
+    // The list is part of the fingerprint, so a coordinator already running is handed the change.
+    expect(paused.fingerprint).not.toBe(listed.fingerprint)
+    d.agents.get('bot-b').pause = false
+    expect(context().fingerprint).toBe(listed.fingerprint)
+    // Another daemon's agent is known by the pushed directory alone, which says whether it is paused.
+    const remote = { ...placements[1], agentId: 'bot-c', daemonId: 'other-daemon', name: 'deploys' }
+    const push = (generation: number, paused: boolean) =>
+      d.cpCollab.replace({
+        generation,
+        channels: [{ orgId: org, platform: 'slack', channelId: 'C1', agents: [...placements, remote] }],
+        agents: [...placements, { ...remote, ...(paused ? { paused } : {}) }].map((p) => ({ ...p, orgId: org }))
+      })
+    push(1, false)
+    expect(context().instructions).toContain(
+      '- Other agents in this channel: alerts: Reads the alerts a bot posts; deploys.'
+    )
+    push(2, true)
+    expect(context().instructions).toContain('- Other agents in this channel: alerts: Reads the alerts a bot posts.')
+    await daemon.stop()
+  })
+
   it('opens a host of its own in an empty directory inside the agent’s, with no workspace roots', async () => {
     // A runtime whose MCP servers are per process gives each session a host of its own.
     const { daemon, d, host, route, root } = await boot(

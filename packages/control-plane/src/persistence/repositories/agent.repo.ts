@@ -1501,7 +1501,8 @@ export class PgAgentRepo implements AgentRepo {
         callPolicy: true,
         allowedCallerAgentIds: true,
         outboundPolicy: true,
-        allowedTargetAgentIds: true
+        allowedTargetAgentIds: true,
+        runtimeOverrides: true
       }
     })
     return rows.map((row) => ({
@@ -1510,6 +1511,7 @@ export class PgAgentRepo implements AgentRepo {
       displayName: row.displayName,
       description: row.description,
       status: row.status as OrgAgentRecord['status'],
+      ...((row.runtimeOverrides as RuntimeOverrides | null)?.pause === true ? { paused: true } : {}),
       placementKind: row.placementKind,
       daemonId: row.daemonId,
       setId: row.setId,

@@ -1674,6 +1674,8 @@ export interface OrgAgentRecord extends ChannelAgentRecord {
   placementKind: PlacementKind
   daemonId: string | null
   setId: string | null
+  /** Message processing is switched off (`runtimeOverrides.pause`); absent means it is on. */
+  paused?: boolean
 }
 
 // ───────────────────────────────────────────────────────────────────────────
