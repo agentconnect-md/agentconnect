@@ -47,7 +47,12 @@ function harness(existing: CronRecord[] = []) {
         crons.set(saved.id, saved)
         return saved
       },
-      remove: async (_org, id, expected) => crons.get(id)?.agentId === expected && crons.delete(id),
+      remove: async (_org, id, expected, definition) => {
+        const row = crons.get(id)
+        if (row?.agentId !== expected) return false
+        if (definition && (row.schedule !== definition.schedule || row.timezone !== definition.timezone)) return false
+        return crons.delete(id)
+      },
       listForAgent: async (id) => [...crons.values()].filter((c) => c.agentId === id)
     },
     agents: { get: async () => agent },
@@ -164,6 +169,50 @@ describe('an agent’s own crons', () => {
     await service.retireOneShot(daily, fired)
     expect([...crons.keys()]).toEqual([daily.id])
     expect(delivery.cronRemove).toHaveBeenCalledOnce()
+  })
+
+  it('does not retire a one-shot whose definition a concurrent save replaced', async () => {
+    const fired = new Date('2026-11-12T09:00:00Z')
+    const firedRow = row({
+      cronId: CronId('7f3a1c56-8a2b-4c3d-9e4f-0a1b2c3d4e5f'),
+      orgId: ORG,
+      agentId: AGENT,
+      schedule: '2026-11-12T09:00:00',
+      timezone: 'UTC',
+      trigger: 'a'
+    })
+    const replacement = row({
+      cronId: CronId('7f3a1c56-8a2b-4c3d-9e4f-0a1b2c3d4e5f'),
+      orgId: ORG,
+      agentId: AGENT,
+      schedule: '0 9 * * *',
+      timezone: 'UTC',
+      trigger: 'replaced'
+    })
+    // The report read the fired row; a save replaced it before the delete ran.
+    const stored = new Map([[replacement.id, replacement]])
+    const service = new AgentCronService({
+      crons: {
+        get: async () => firedRow,
+        upsert: async () => firedRow,
+        remove: async (_org, id, expected, definition) => {
+          const row = stored.get(id)
+          if (row?.agentId !== expected) return false
+          if (definition && (row.schedule !== definition.schedule || row.timezone !== definition.timezone)) return false
+          return stored.delete(id)
+        },
+        listForAgent: async () => []
+      },
+      agents: { get: async () => agent },
+      integrations: { get: async () => null },
+      audit: { append: async () => ({}) as never },
+      delivery: { cronUpsert: async () => {}, cronRemove: async () => {} } as unknown as never,
+      mutations: { tryBeginMutation: () => () => {} },
+      now: () => NOW,
+      log: { warn: () => {} }
+    })
+    await service.retireOneShot(firedRow, fired)
+    expect(stored.get(replacement.id)?.schedule).toBe('0 9 * * *')
   })
 
   it('does not retire a one-shot rescheduled while a run was in flight', async () => {

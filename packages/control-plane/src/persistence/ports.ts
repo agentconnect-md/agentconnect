@@ -3227,8 +3227,14 @@ export interface CronRepo {
     sharing: { visibility: ResourceVisibility; sharedWith: string[] },
     byUserId?: string
   ): Promise<CronRecord>
-  /** Org-fenced CAS delete; false means the agent binding changed concurrently. */
-  remove(orgId: OrgId, cronId: CronId, expectedAgentId: AgentId | null): Promise<boolean>
+  /** Org-fenced CAS delete; false means the agent binding, or the supplied definition, changed
+   *  concurrently. `expectedDefinition` is for a retirement keyed on one specific schedule. */
+  remove(
+    orgId: OrgId,
+    cronId: CronId,
+    expectedAgentId: AgentId | null,
+    expectedDefinition?: { schedule: string; timezone: string }
+  ): Promise<boolean>
   /** Console list (org-wide, orphans included). Every supplied human principal
    *  is resource-filtered; undefined is reserved for unfiltered internal reads
    *  (authorization/policy.ts#visibilityWhere). */

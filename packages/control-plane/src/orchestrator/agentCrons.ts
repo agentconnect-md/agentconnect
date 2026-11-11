@@ -56,15 +56,12 @@ function validTimezone(timezone: string): boolean {
   }
 }
 
-/** Whether `firedAt` is a fire of THIS one-shot definition: croner's next run after a second before
- *  the report is the definition's own moment, and nothing later than the report. A schedule replaced
- *  while a run was in flight has its next fire after it, so its run's completion retires nothing. */
+/** Whether `firedAt` is a fire of THIS one-shot definition: its one moment lies at or before the
+ *  report. A schedule replaced while a run was in flight has no fire before it, so nothing retires. */
 function firedThisOneShot(schedule: string, timezone: string, firedAt: Date): boolean {
   if (!isOneShotSchedule(schedule)) return false
   try {
-    // The definition's one moment lies at or before the reported fire; a schedule moved later has none.
-    const prior = new Cron(schedule, { timezone, paused: true }).previousRuns(1, new Date(firedAt.getTime() + 1000))
-    return prior.length > 0
+    return new Cron(schedule, { timezone, paused: true }).previousRuns(1, new Date(firedAt.getTime() + 1000)).length > 0
   } catch {
     return false
   }
@@ -206,14 +203,24 @@ export class AgentCronService {
     const current = await this.deps.crons.get(cron.orgId, cron.id)
     if (!current?.agentId || !firedThisOneShot(current.schedule, current.timezone, firedAt)) return
     const agent = await this.deps.agents.get(cron.orgId, current.agentId)
-    if (agent) await this.removeBound(agent, current, 'after its one run')
+    if (!agent) return
+    // The definition is re-checked inside the delete, so a save that lands in between wins.
+    await this.removeBound(agent, current, 'after its one run', {
+      schedule: current.schedule,
+      timezone: current.timezone
+    })
   }
 
-  private async removeBound(agent: AgentRecord, cron: CronRecord, why: string): Promise<boolean> {
+  private async removeBound(
+    agent: AgentRecord,
+    cron: CronRecord,
+    why: string,
+    definition?: { schedule: string; timezone: string }
+  ): Promise<boolean> {
     const release = this.deps.mutations.tryBeginMutation(agent.id)
     if (!release) return false
     try {
-      if (!(await this.deps.crons.remove(agent.orgId, cron.id, agent.id))) return false
+      if (!(await this.deps.crons.remove(agent.orgId, cron.id, agent.id, definition))) return false
       this.deps.recomputeDuties?.(agent.orgId)
       this.audit(agent, 'cron/remove', `cron ${cron.id} removed ${why}`, { cronId: cron.id })
       await this.deps.delivery.cronRemove(agent, cron.id, cron.orgId, this.pushFailed('cron/remove'))
