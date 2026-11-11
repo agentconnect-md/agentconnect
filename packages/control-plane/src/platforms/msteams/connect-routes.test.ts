@@ -73,6 +73,8 @@ async function harness(
     agentBotRow?: Partial<BotRecord>
     agentNames?: Record<string, string>
     oid?: string | null
+    /** The signed-in person's object ID as Graph answers it; absent ⇒ Graph refuses. */
+    me?: string
     /** The submitted package's definitions as its submitter reads them. */
     packageStates?: string[]
     /** Graph's status for an administrator's approval of a pending definition. */
@@ -163,6 +165,8 @@ async function harness(
         ? new Response(null, { status: opts.publish })
         : Response.json({ id: 'catalog-1' }, { status: 201 })
     }
+    if (url.includes('/me?$select=id'))
+      return opts.me ? Response.json({ id: opts.me }) : new Response(null, { status: 403 })
     if (url.includes('/me/joinedTeams'))
       return Response.json({
         value: [
@@ -705,6 +709,9 @@ describe('a deployment that makes agent bots (§8.6)', () => {
     expect((await unnamed.callback(unnamed.state({ agentBots: true }))).json()).toMatchObject({
       code: 'MSTEAMS_TENANT_IN_USE'
     })
+    // Entra leaves the object ID out of an ID token that did not ask the profile scope; Graph names the sponsor then.
+    const asked = await further({ oid: null, me: SPONSOR })
+    expect((await asked.callback(asked.state({ agentBots: true }))).json()).toMatchObject({ agentBot: true })
   })
 
   it('refuses a further agent whose name another agent already has in the tenant, naming it', async () => {
