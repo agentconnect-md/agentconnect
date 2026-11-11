@@ -124,7 +124,8 @@ export function TasksPanel({
   turnActive = false,
   refreshTick = 0,
   onVerdictChange,
-  onOpenThread
+  onOpenThread,
+  onOpenRoot
 }: {
   agentId: string
   /** The ACP session whose tasks this reads; the daemon keys both reads by it. */
@@ -142,6 +143,8 @@ export function TasksPanel({
   onVerdictChange?: (verdict: TasksPanelVerdict) => void
   /** Opens a threaded task's thread in this tab. */
   onOpenThread?: (link: TaskLink) => void
+  /** Opens a thread of the conversation by its root. */
+  onOpenRoot?: (rootId: string) => void
 }) {
   const t = useTranslations('Sessions.detail.tasksPanel')
   const scope = `${agentId}\n${sessionId}`
@@ -192,6 +195,7 @@ export function TasksPanel({
             refreshTick={refreshTick}
             onVerdictChange={onDelegatedVerdict}
             {...(onOpenThread ? { onOpenThread } : {})}
+            {...(onOpenRoot ? { onOpenRoot } : {})}
           />
         ) : null}
         {coordinator ? null : (

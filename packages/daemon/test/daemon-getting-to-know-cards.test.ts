@@ -268,6 +268,12 @@ describe('a getting-to-know task’s report round on a platform with cards', () 
     expect(posts.indexOf(intro)).toBeLessThan(posts.indexOf(carded[0]!))
     const pending = await d.store.assistantDrafts.listPending('bot-a', 10, Date.now(), { tasks: true })
     expect(pending.every((draft: any) => draft.proposal.held === false && draft.cardTs !== null)).toBe(true)
+    // Each card's record says it sits in the introduction's thread, so its own thread is never taken for a task's home (§6.9.1).
+    expect(pending.map((draft: any) => draft.cardThread)).toEqual([intro.ts, intro.ts, intro.ts])
+    // The getting-to-know task is shown with that thread, which is never attached to it (§6.9.2).
+    const lookRow = (await d.store.assistantSubsessions.list('bot-a', 10)).find((row: any) => row.gettingToKnow)
+    expect(lookRow?.shownThread).toBe(intro.ts)
+    expect(await d.store.assistantSubsessions.threadsOf('bot-a', lookRow.childSessionKey)).toEqual([])
     await daemon.stop()
   })
 

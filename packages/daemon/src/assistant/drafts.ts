@@ -10,6 +10,7 @@ import type { MessageGateway, SendIdentity } from '../mcp/ops/context.js'
 import type { SubsessionApprover } from '../permissions/subsession-approval.js'
 import type { ReadAsker } from './place-access.js'
 import { isSendQueueTimeout } from '../platforms/send-queue.js'
+import { isSubsessionKey } from '../session/subsession-coordinate.js'
 import type { AssistantDraftCardView, AssistantDraftChoice } from '../slack/render.js'
 import {
   assistantDraftHash,
@@ -524,7 +525,7 @@ export class AssistantDrafts {
     )
     const ts = posted?.ts
     if (!ts) return posted?.mayHaveLanded ? { draft, rung: undefined, mayHaveLanded: true } : { draft, rung: undefined }
-    await ledger.setCard(draft.id, ts)
+    await ledger.setCard(draft.id, ts, thread ?? '')
     // A click can land before the card handle is stored; settle the card here if it did.
     const live = await ledger.get(draft.id)
     if (live && live.status !== 'awaiting_review') await this.rewriteDraft(live)
@@ -1000,6 +1001,18 @@ function outcomeOf(draft: AssistantDraft): string {
 /** A proposal's card once it left review: running, how it ended, or why it never ran; a follow-up form's, the follow-up it took. */
 function taskOutcomeOf(draft: AssistantDraft, by: string): string {
   if (draft.proposal?.followUp) return followUpOutcomeOf(draft, by)
+  // A task with a home answers in a thread of its place and reports nothing (auto-session-mode.md §6.9.1).
+  const key = draft.subsessionKey
+  if (key !== null && !isSubsessionKey(key)) {
+    const where =
+      draft.cardTs !== null && key.includes(`:${draft.cardTs}:`)
+        ? 'this thread'
+        : 'a thread of the conversation the follow-up belongs to'
+    if (draft.status === 'executing') return `▶️ Approved${by}. It answers in ${where}.`
+    if (draft.status === 'succeeded') return `✅ Approved${by}. It answered in ${where}; reply there to go on.`
+    if (draft.status === 'failed') return `⚠️ Approved${by}. It ended without finishing; see ${where}.`
+  }
+  if (draft.status === 'executing' && key === null) return `▶️ Approved${by}. Starting.`
   switch (draft.status) {
     case 'executing':
       return `▶️ Approved${by}. Running in the background; it reports back in the conversation the follow-up belongs to.`

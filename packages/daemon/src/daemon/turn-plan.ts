@@ -141,7 +141,9 @@ export function buildTurnPlan(input: TurnPlanInput): TurnPlan {
     !webchat &&
     !githubReply &&
     originKindOf(msg.platform) === 'chat' &&
-    !isCoordinatorCoordinate(sessionThreadOf(msg))
+    !isCoordinatorCoordinate(sessionThreadOf(msg)) &&
+    // An approved run does the work its hash binds, so a reply in its thread waits for a turn of its own (§6.9.1).
+    callMeta?.approvedProposal === undefined
   const webchatRefresh =
     input.features.turnFinalContextRefresh &&
     !!webchat &&

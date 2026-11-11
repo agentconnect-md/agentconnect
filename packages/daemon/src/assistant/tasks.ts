@@ -1,4 +1,4 @@
-// Approved proposals (assistant-mode.md §5.10): each runs once in a normal-permission sub-session of its follow-up's place, and a cut one is never re-run (§5.7 step 1).
+// Approved proposals (assistant-mode.md §5.10): each runs once with normal permissions, in a thread of its follow-up's place or a sub-session of it (auto-session-mode.md §6.9.1), and a cut one is never re-run (§5.7 step 1).
 import { renderedSessionMessageInput } from '../collab/session-message.js'
 import { newSessionMessageId } from '../store/session-messages.js'
 import type { Agent } from '../agents/agent-schema.js'
@@ -9,7 +9,7 @@ import {
 } from '../collab/coordinator.js'
 import type { CallMeta } from '../daemon/turn-types.js'
 import { sessionThreadOf, type NormalizedMessage } from '../messages/normalized.js'
-import { taskCoordinate } from '../session/subsession-coordinate.js'
+import { isSubsessionCoordinate, taskCoordinate } from '../session/subsession-coordinate.js'
 import type { AssistantDraft, AssistantDraftLedger } from '../store/assistant-drafts.js'
 import type { AssistantPlace } from '../store/assistant-items.js'
 import { followUpTaskKey, type CheckedTask, type CheckedTasks } from './checked-tasks.js'
@@ -48,8 +48,14 @@ export interface AssistantTasksHost {
     | 'executingTasks'
     | 'beginFollowUp'
     | 'settleFollowUp'
+    | 'setTaskSession'
+    | 'settleUnstarted'
+    | 'get'
   >
-  subsessions: Pick<AssistantSubsessionIndex, 'openWithinLimitClaiming' | 'finishClaiming' | 'get'>
+  subsessions: Pick<
+    AssistantSubsessionIndex,
+    'openWithinLimitClaiming' | 'openClaiming' | 'finishClaiming' | 'finish' | 'get'
+  >
   /** The follow-up or getting-to-know task a proposal acts on, by its task key. */
   items: Pick<CheckedTasks, 'get'>
   agent(agentId: string): Pick<Agent, 'name' | 'assistantMode'> | undefined
@@ -76,6 +82,12 @@ export interface AssistantTasksHost {
   ): Promise<boolean>
   /** The card and the item take in how the task ended. */
   settled(draft: AssistantDraft): Promise<void>
+  /** Where a task of this place may answer in a thread (auto-session-mode.md §6.9.1); undefined where it runs with none, as today. */
+  homeFor?(draft: AssistantDraft, parent: CheckParent): Promise<TaskHome | undefined>
+  /** One line as the agent in a thread a task holds; best effort. */
+  say?(agentId: string, at: TaskCaller, text: string): Promise<void>
+  /** Tell the Control Plane which session owns each of these tasks now (auto-session-mode.md §6.2). */
+  reportTaskOwners?(agentId: string, keys: string[]): Promise<void>
   /** Take a follow-up of a place under the task key an approval minted (assistant-mode.md §5.12). */
   takeFollowUp?(input: {
     taskKey: string
@@ -93,23 +105,39 @@ export interface AssistantTasksHost {
   draining(): boolean
 }
 
+/** A thread of its place an approved task may hold (auto-session-mode.md §6.9.1). */
+export interface TaskHome {
+  /** The proposal's own card, when it sits at the place's top level: its thread is the home. */
+  card?: string
+  /** Post the root a task with no card to hold starts under; undefined when it did not post or may not have. */
+  postRoot(by: { name: string | null }): Promise<string | undefined>
+}
+
 /** A follow-up a proposal may still act on: open, or a getting-to-know task, which ends after its one check by design (§5.13). */
 const actsOn = (item: Pick<CheckedTask, 'status' | 'gettingToKnow'>): boolean =>
   item.status === 'active' || item.status === 'waiting' || item.gettingToKnow !== null
 
 const oneLine = (text: string): string => text.replace(/\s+/g, ' ').trim()
 
-/** The approved proposal's first message: what was approved, by whom, and the follow-up it serves. */
-export function taskPrompt(draft: AssistantDraft, item: CheckedTask, by: { name: string | null }): string {
+/** The approved proposal's first message: what was approved, by whom, and the follow-up it serves; `home` says its reply posts in the thread it holds. */
+export function taskPrompt(
+  draft: AssistantDraft,
+  item: CheckedTask,
+  by: { name: string | null },
+  home = false
+): string {
   const proposal = draft.proposal!
   const origin =
     item.gettingToKnow !== null
       ? 'You proposed this after reading this place’s recent messages'
       : 'A check of one of your follow-ups proposed this'
+  const where = home
+    ? 'approved it. Carry it out now, with your normal tools and permissions. Your reply posts in this thread, where ' +
+      'the people of the conversation read it and may answer you.'
+    : 'approved it. Carry it out now in this background session, with your normal tools and permissions. Nothing ' +
+      'you write here is posted anywhere.'
   return [
-    `[approved proposal] ${origin}, and ${by.name ?? 'an approver'} ` +
-      'approved it. Carry it out now in this background session, with your normal tools and permissions. Nothing ' +
-      'you write here is posted anywhere.',
+    `[approved proposal] ${origin}, and ${by.name ?? 'an approver'} ${where}`,
     '',
     `Work: ${draft.text.trim()}`,
     `Why: ${proposal.why.trim() === '' ? 'not given' : proposal.why.trim()}`,
@@ -133,6 +161,8 @@ export function taskPrompt(draft: AssistantDraft, item: CheckedTask, by: { name:
 export class AssistantTasks {
   /** Sub-sessions this process started and has not seen end, which a recovery sweep must leave alone. */
   private readonly running = new Set<string>()
+  /** Approved tasks this process is posting a root for, which a recovery sweep must leave alone. */
+  private readonly rooting = new Set<string>()
 
   constructor(private readonly host: AssistantTasksHost) {}
 
@@ -152,6 +182,11 @@ export class AssistantTasks {
     if (!actsOn(item)) return await fail('its follow-up has ended')
     const parent = await this.host.parentFor(draft.agentId, item.origin)
     if (!parent) return await fail('the conversation its follow-up belongs to has no ongoing session to report to')
+    const home = await this.host.homeFor?.(draft, parent).catch((err: unknown) => {
+      this.host.log.warn(`assistant task ${draft.id}: no thread for it: ${(err as Error).message}`)
+      return undefined
+    })
+    if (home) return await this.startAtHome(draft, by, item, parent, home, now)
     const deliveryId = monotonicTs()
     const thread = taskCoordinate(deliveryId)
     const key = sessionKey(parent.platform, parent.channel, thread, draft.agentId, parent.transportScope)
@@ -184,6 +219,237 @@ export class AssistantTasks {
           'Approve again once one of them finishes; this proposal is still waiting.'
       }
     }
+    this.runInBackground(draft, by, item, parent, key, deliveryId)
+    return { kind: 'started' }
+  }
+
+  /** A task with a home (auto-session-mode.md §6.9.1): on its card's thread in the approval's own transaction, else the decision is won first and a root posts. */
+  private async startAtHome(
+    draft: AssistantDraft,
+    by: { id: string | null; name: string | null },
+    item: CheckedTask,
+    parent: CheckParent,
+    home: TaskHome,
+    now: number
+  ): Promise<TaskStart> {
+    const ledger = this.host.ledger()
+    if (home.card !== undefined) {
+      const opened = await this.openAt(draft, parent, home.card, now, (tx, key) =>
+        ledger.beginTask(draft.id, by, key, now, tx)
+      )
+      if (opened.kind === 'refused') return { kind: 'lost' }
+      if (opened.kind === 'opened') {
+        this.runAtHome(draft, by, item, parent, home.card, opened.key)
+        return { kind: 'started' }
+      }
+      // A task took the card's thread before the approval: it starts under a root of its own.
+    }
+    if (!(await ledger.beginTask(draft.id, by, null, now))) return { kind: 'lost' }
+    this.rooting.add(draft.id)
+    try {
+      const root = await home.postRoot(by).catch((err: unknown) => {
+        this.host.log.warn(`assistant task ${draft.id}: its root did not post: ${(err as Error).message}`)
+        return undefined
+      })
+      if (root !== undefined) {
+        const opened = await this.openAt(draft, parent, root, now, (tx, key) =>
+          ledger.setTaskSession(draft.id, key, tx)
+        )
+        if (opened.kind === 'opened') {
+          this.runAtHome(draft, by, item, parent, root, opened.key)
+          return { kind: 'started' }
+        }
+        // Another path gave it a session meanwhile, so nothing more starts here.
+        if (opened.kind === 'refused') return { kind: 'started' }
+      }
+      await this.startWithoutHome(draft, by, item, parent)
+      return { kind: 'started' }
+    } finally {
+      this.rooting.delete(draft.id)
+    }
+  }
+
+  /** Index a task on a thread of its place, holding that thread, with `claim` in the same transaction. */
+  private async openAt(
+    draft: AssistantDraft,
+    parent: CheckParent,
+    thread: string,
+    now: number,
+    claim: (tx: Parameters<Parameters<AssistantSubsessionIndex['openClaiming']>[2]>[0], key: string) => Promise<boolean>
+  ): Promise<{ kind: 'opened' | 'held' | 'refused'; key: string }> {
+    const key = sessionKey(parent.platform, parent.channel, thread, draft.agentId, parent.transportScope)
+    this.running.add(key)
+    try {
+      const kind = await this.host.subsessions.openClaiming(
+        {
+          agentId: draft.agentId,
+          childSessionKey: key,
+          parentSessionId: parent.sessionId,
+          parentSessionKey: parent.key,
+          title: oneLine(draft.proposal?.sentence ?? draft.text).slice(0, 80),
+          background: draft.text,
+          replyThread: thread,
+          now
+        },
+        {
+          platform: parent.platform,
+          channel: parent.channel,
+          ...(parent.transportScope ? { transportScope: parent.transportScope } : {}),
+          thread
+        },
+        (tx) => claim(tx, key)
+      )
+      if (kind !== 'opened') this.running.delete(key)
+      return { kind, key }
+    } catch (err) {
+      this.running.delete(key)
+      throw err
+    }
+  }
+
+  /** An approved task whose root never posted, or whose thread was taken, runs with no home, outside the cap its approval already passed. */
+  private async startWithoutHome(
+    draft: AssistantDraft,
+    by: { id: string | null; name: string | null },
+    item: CheckedTask,
+    parent: CheckParent
+  ): Promise<void> {
+    const deliveryId = monotonicTs()
+    const key = sessionKey(
+      parent.platform,
+      parent.channel,
+      taskCoordinate(deliveryId),
+      draft.agentId,
+      parent.transportScope
+    )
+    this.running.add(key)
+    const opened = await this.host.subsessions
+      .openClaiming(
+        {
+          agentId: draft.agentId,
+          childSessionKey: key,
+          parentSessionId: parent.sessionId,
+          parentSessionKey: parent.key,
+          now: this.host.now()
+        },
+        undefined,
+        (tx) => this.host.ledger().setTaskSession(draft.id, key, tx)
+      )
+      .catch((err: unknown) => {
+        this.host.log.warn(`assistant task ${draft.id}: could not start with no thread: ${(err as Error).message}`)
+        return 'refused' as const
+      })
+    if (opened !== 'opened') {
+      this.running.delete(key)
+      return
+    }
+    this.runInBackground(draft, by, item, parent, key, deliveryId)
+  }
+
+  /** The first turn of a task with a home: the approved work, as a message in the thread it holds, where its reply posts. */
+  private runAtHome(
+    draft: AssistantDraft,
+    by: { id: string | null; name: string | null },
+    item: CheckedTask,
+    parent: CheckParent,
+    thread: string,
+    key: string
+  ): void {
+    const deliveryId = monotonicTs()
+    const messageId = newSessionMessageId()
+    const msg: NormalizedMessage = {
+      msgId: `task:${parent.channel}:${deliveryId}`,
+      traceId: deliveryId,
+      transcriptTs: deliveryId,
+      source: 'agent',
+      platform: parent.platform as NormalizedMessage['platform'],
+      channel: parent.channel,
+      thread,
+      ...(parent.transportScope ? { transportScope: parent.transportScope } : {}),
+      sender: { id: draft.agentId, isBot: true },
+      ...renderedSessionMessageInput(
+        {
+          messageId,
+          kind: 'call',
+          sourceAgentId: draft.agentId,
+          sourceSessionId: parent.sessionId,
+          replyRequested: false
+        },
+        taskPrompt(draft, item, by, true)
+      ),
+      mentionedBots: [],
+      isDm: false,
+      initialSessionTitle: oneLine(draft.proposal?.sentence ?? draft.text).slice(0, 80)
+    }
+    // Its root is a message of the place, so the turn binds the place's audience as a person's reply in that thread would.
+    const callMeta: CallMeta = {
+      callFrom: draft.agentId,
+      hopCount: 0,
+      deliveryId,
+      originSessionId: parent.sessionId,
+      messageId,
+      messageKind: 'call',
+      platformOrigin: true,
+      approvedProposal: draft.id
+    }
+    this.host.log.info(`assistant task ${draft.id}: runs in ${key}, in a thread of its place`)
+    void this.host.reportTaskOwners?.(draft.agentId, [key]).catch(() => undefined)
+    const never = (reason: string | undefined) =>
+      void this.homeTurnEnded({ agentId: draft.agentId, key, outcome: 'refused', reason, replayed: false })
+    let admitted = false
+    void this.host
+      .dispatch(draft.agentId, msg, parent.integrationId, callMeta, (result) => {
+        admitted = true
+        if (!result.accepted) never(result.reason)
+      })
+      .catch((err: unknown) => {
+        // An admitted turn that failed is settled by the turn engine; one that never got that far is settled here.
+        if (admitted) return
+        this.host.log.warn(`assistant task ${draft.id}: dispatch failed: ${(err as Error).message}`)
+        never('it could not be dispatched')
+      })
+  }
+
+  /** The first turn of a task with a home ended (auto-session-mode.md §6.9.1): its record settles from the turn, with no report; a cut kept for replay waits for {@link cut}. */
+  async homeTurnEnded(end: {
+    agentId: string
+    key: string
+    outcome: 'completed' | 'interrupted' | 'failed' | 'refused'
+    reason?: string | undefined
+    replayed: boolean
+  }): Promise<void> {
+    const { agentId, key } = end
+    this.running.delete(key)
+    if (end.replayed) return
+    try {
+      // A turn that never ran leaves its row open, which nothing else would settle.
+      if (end.outcome === 'refused') await this.host.subsessions.finish(agentId, key, 'failed')
+      const settled = await this.host
+        .ledger()
+        .settleTask(
+          agentId,
+          key,
+          end.outcome === 'completed' ? 'succeeded' : 'failed',
+          end.outcome === 'completed' ? null : homeEndReason(end),
+          this.host.now()
+        )
+      if (settled) await this.host.settled(settled)
+    } catch (err) {
+      this.host.log.warn(`assistant task ${key}: could not settle: ${(err as Error).message}`)
+    }
+  }
+
+  /** The run of a task with no home: a sub-session of its place that owes its parent one report. */
+  private runInBackground(
+    draft: AssistantDraft,
+    by: { id: string | null; name: string | null },
+    item: CheckedTask,
+    parent: CheckParent,
+    key: string,
+    deliveryId: string
+  ): void {
+    const proposal = draft.proposal!
+    const thread = taskCoordinate(deliveryId)
     // send-message-guide.md §9.3: its input is a session message from the session that started it, answerable by id.
     const messageId = newSessionMessageId()
     const msg: NormalizedMessage = {
@@ -248,7 +514,6 @@ export class AssistantTasks {
         this.host.log.warn(`assistant task ${draft.id}: dispatch failed: ${(err as Error).message}`)
         void this.ended({ agentId: draft.agentId, key, msg, outcome: 'failed', replayed: false })
       })
-    return { kind: 'started' }
   }
 
   /** Approval of a follow-up form (assistant-mode.md §5.13): the record names the follow-up it takes, then the follow-up is taken; no task runs and no limit counts. */
@@ -329,8 +594,24 @@ export class AssistantTasks {
       // An open sub-session of an executing task is what the claim below cuts: its place is told first, so a crash in between re-reports instead of losing it.
       const draft = await ledger.taskBySubsession(agentId, key)
       const row = await this.host.subsessions.get(agentId, key)
-      if (draft?.status === 'executing' && row?.state === 'open')
-        await this.reportCut(agentId, key, draft, row.parentSessionId, caller)
+      if (draft?.status === 'executing' && row?.state === 'open') {
+        const at = caller ?? callerOf(draft, key)
+        // A task with a home says so in its thread, where a failed turn of any threaded task shows; one without tells its place.
+        if (at && !isSubsessionCoordinate(at.thread) && this.host.say)
+          await this.host
+            .say(
+              agentId,
+              at,
+              'Not sure this went through, please check: this work was cut short by a restart before it finished. It ' +
+                'may have partly run, and it will not be run again.'
+            )
+            .catch((err: unknown) =>
+              this.host.log.warn(
+                `assistant task ${key}: its uncertain-outcome notice failed: ${(err as Error).message}`
+              )
+            )
+        else await this.reportCut(agentId, key, draft, row.parentSessionId, caller)
+      }
       const now = this.host.now()
       // The sub-session's durable end and the record's settlement in one transaction, so a racing end settles it once.
       const ended = await this.host.subsessions.finishClaiming(agentId, key, (tx, how) =>
@@ -390,10 +671,49 @@ export class AssistantTasks {
   async recover(agentIds: readonly string[]): Promise<void> {
     const served = agentIds.filter((agentId) => this.host.servesAgent(agentId))
     for (const draft of await this.host.ledger().executingTasks(served)) {
-      if (!draft.subsessionKey || this.running.has(draft.subsessionKey)) continue
+      if (!draft.subsessionKey) {
+        if (!this.rooting.has(draft.id)) await this.startUnrooted(draft)
+        continue
+      }
+      if (this.running.has(draft.subsessionKey)) continue
       await this.cut(draft.agentId, draft.subsessionKey, undefined)
     }
   }
+
+  /** An approval won before its root posted and cut there has started no work (auto-session-mode.md §6.9.1): it runs now, with no home. */
+  private async startUnrooted(draft: AssistantDraft): Promise<void> {
+    if (this.host.draining()) return
+    try {
+      const proposal = draft.proposal
+      const item = proposal ? await this.host.items.get(draft.agentId, proposal.itemId) : undefined
+      const parent = item ? await this.host.parentFor(draft.agentId, item.origin) : undefined
+      if (!item || !parent) {
+        const ledger = this.host.ledger()
+        const failure = item ? 'its conversation has no ongoing session to report to' : 'its follow-up is gone'
+        if (await ledger.settleUnstarted(draft.id, failure, this.host.now())) {
+          const settled = await ledger.get(draft.id)
+          if (settled) await this.host.settled(settled)
+        }
+        return
+      }
+      this.rooting.add(draft.id)
+      try {
+        await this.startWithoutHome(draft, { id: draft.decidedBy, name: draft.decidedByName }, item, parent)
+      } finally {
+        this.rooting.delete(draft.id)
+      }
+    } catch (err) {
+      this.host.log.warn(
+        `assistant task ${draft.id}: could not start after its root was cut: ${(err as Error).message}`
+      )
+    }
+  }
+}
+
+function homeEndReason(end: { outcome: string; reason?: string | undefined }): string {
+  if (end.outcome === 'refused') return `it did not start: ${end.reason ?? 'refused'}`
+  if (end.outcome === 'failed') return 'it failed'
+  return `it was stopped (${end.reason ?? 'interrupted'})`
 }
 
 function endReason(end: SubsessionTurnEnd): string {

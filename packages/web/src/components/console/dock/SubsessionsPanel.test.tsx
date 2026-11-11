@@ -451,6 +451,28 @@ describe('SubsessionsPanel', () => {
     expect(groupOf('The release channel')).toBe('tasks')
     expect(groupOf('The 2.6 release date')).toBe('follow-ups')
     expect(stateOf(titled('The release channel'))).toBe('Waiting')
+    // Until its introduction posts it has no thread to show: no mark, and it opens its page.
+    expect(titled('The release channel')?.querySelector('[data-task-home]')).toBeNull()
+  })
+
+  // auto-session-mode.md §6.9.2: once its introduction has posted, the row opens that thread and wears the mark.
+  it('opens a getting-to-know task’s row on the thread its introduction is in', async () => {
+    wire.pages = [
+      page([
+        followUp(
+          'done',
+          { sessionId: 'look-1', title: 'The release channel', shownThreadId: '1700000400.000001' },
+          { gettingToKnow: true, nextCheck: null }
+        )
+      ])
+    ]
+    const opened: string[] = []
+    await render({ onOpenRoot: (rootId) => opened.push(rootId) })
+    await unfold()
+    const line = rows().find((r) => r.textContent?.includes('The release channel'))!
+    expect(line.querySelector('[data-task-home]')?.getAttribute('data-task-home')).toBe('slack')
+    await click(line.querySelector('[data-task-open-thread]'))
+    expect(opened).toEqual(['1700000400.000001'])
   })
 
   it('draws a follow-up in each state, and counts only a check as running', async () => {

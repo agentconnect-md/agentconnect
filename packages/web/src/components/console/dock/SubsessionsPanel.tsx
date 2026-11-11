@@ -118,7 +118,8 @@ export function SubsessionsPanel({
   turnActive = false,
   refreshTick = 0,
   onVerdictChange,
-  onOpenThread
+  onOpenThread,
+  onOpenRoot
 }: {
   agentId: string
   /** The conversation's own session: only its tasks are listed. */
@@ -132,6 +133,8 @@ export function SubsessionsPanel({
   onVerdictChange?: (verdict: SubsessionsPanelVerdict) => void
   /** Opens a threaded task's thread beside the conversation, where its row would follow a link to its page. */
   onOpenThread?: (link: TaskLink) => void
+  /** Opens a thread of the conversation by its root, as a getting-to-know task's row opens the one its introduction is in. */
+  onOpenRoot?: (rootId: string) => void
 }) {
   const t = useTranslations('Sessions.detail.subsessionsPanel')
   const tl = useTranslations('Common.taskList')
@@ -267,9 +270,11 @@ export function SubsessionsPanel({
             now={now}
             stop={stopOf(row)}
             onStop={stop}
-            {...(onOpenThread && row.threaded && row.sessionId
-              ? { onOpen: () => onOpenThread({ title: row.title ?? '', sessionId: row.sessionId!, how: 'opened' }) }
-              : {})}
+            {...(onOpenRoot && row.shownThreadId
+              ? { onOpen: () => onOpenRoot(row.shownThreadId!) }
+              : onOpenThread && row.threaded && row.sessionId
+                ? { onOpen: () => onOpenThread({ title: row.title ?? '', sessionId: row.sessionId!, how: 'opened' }) }
+                : {})}
           />
         ))}
         {folded.hidden > 0 ? (
@@ -375,8 +380,8 @@ function SubsessionLine({
     ) : (
       <span className="min-w-0 truncate font-normal text-(--text-tertiary)">{t('hidden')}</span>
     )
-  // A task with a thread wears its platform's mark: its people read it and write to it there.
-  const home = row.threaded ? (row.parent?.platform ?? row.place?.platform ?? null) : null
+  // A task with a thread wears its platform's mark: its people read it there, and a getting-to-know task's introduction is there.
+  const home = row.threaded || row.shownThreadId ? (row.parent?.platform ?? row.place?.platform ?? null) : null
   const at = latestAt(row)
   const ago =
     now - new Date(at).getTime() < 60_000 ? t('now') : format.relativeTime(new Date(at), { now, style: 'narrow' })

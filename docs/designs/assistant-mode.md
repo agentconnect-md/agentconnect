@@ -1128,8 +1128,10 @@ a schedule fires / a watched object's event (§5.14) / a follow-up's nextCheck i
   see §5.7 step 1.
 - The card reuses `OrganizationSuggestion`'s component, not its review route.
 
-[auto-session-mode.md](auto-session-mode.md) §6.9 proposes running an approved proposal as a threaded
-task in a thread of its place, and a read-only form of it; neither is built.
+In an internal room a coordinator runs, on a platform with approval cards, an approved proposal
+runs as a threaded task in a thread of its place and reports nothing
+([auto-session-mode.md](auto-session-mode.md) §6.9.1). What follows describes it everywhere else. A
+read-only form is proposed there and not built.
 
 **P1 ships `propose` for patrols only** (#2895): `propose({ sentence, why, task })`, at most once
 per patrol run; an approved proposal runs as a task with the agent's own permission mode in
@@ -5217,3 +5219,12 @@ a second task. [auto-session-mode.md](auto-session-mode.md) §6.9 proposes a thr
 it, a read-only form of `delegateTask` and `propose`, and one Tasks group in the console; it also
 records why a getting-to-know round's cards post at the top level under a coordinator (§5.13
 "Holding the cards"). §5.10 and §5.13 point there and are otherwise unchanged.
+
+**Ninety-fifth revision (2026-11-11)**: the ninety-fourth's first part, built
+([auto-session-mode.md](auto-session-mode.md) §6.9.1). An approved proposal of an internal room a
+coordinator runs opens as a threaded task: on its card's thread when the card sits at the top level
+and no task holds that thread, else under a root the daemon posts once the decision is won. Its one
+run is known by its turn's metadata, so a replay never runs it again and no reply joins it; an
+approval cut before its root posted starts with no thread. A getting-to-know task's row records the
+thread its introduction landed in, which the console shows it with. Local store version 79. §5.10
+says where the old run still holds.

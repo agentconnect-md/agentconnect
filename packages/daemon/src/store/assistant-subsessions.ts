@@ -61,6 +61,8 @@ export interface AssistantSubsession {
   closedAt?: number
   /** The message it was opened for, by its place as `recall` names one and its id as the coordinator names it. */
   openedFor?: TaskMessage
+  /** The thread a getting-to-know task is shown with, its introduction's (auto-session-mode.md §6.9.2); display only, never an attached thread. */
+  shownThread?: string
 }
 
 /** A message by its place (`platform:channel`) and its id as the coordinator names it (`msg-…`). */
@@ -170,6 +172,7 @@ export const ASSISTANT_SUBSESSION_SCHEMA = `
         openedForPlace TEXT,
         openedForMessage TEXT,
         gettingToKnow INTEGER NOT NULL DEFAULT 0,
+        shownThread TEXT,
         ${WATCH_TASK_COLUMNS}
         PRIMARY KEY (agentId, childSessionKey)
       );
@@ -199,6 +202,9 @@ export interface AssistantSubsessionDatabase {
 
 /** Thrown inside the claim's transaction to roll its index row back. */
 class ClaimRefused extends Error {}
+
+/** Thrown inside the claim's transaction when the task's key or the thread it would hold is taken. */
+class ThreadHeld extends Error {}
 
 type Row = Record<string, unknown>
 
@@ -243,6 +249,7 @@ type OpenInput = Omit<
   | 'changedAt'
   | 'closedAt'
   | 'gettingToKnow'
+  | 'shownThread'
 > & {
   now?: number
 }
@@ -281,7 +288,8 @@ function subsessionOf(row: Row): AssistantSubsession {
     ...(row.closedAt != null ? { closedAt: Number(row.closedAt) } : {}),
     ...(row.openedForPlace != null && row.openedForMessage != null
       ? { openedFor: { place: String(row.openedForPlace), messageId: String(row.openedForMessage) } }
-      : {})
+      : {}),
+    ...(row.shownThread != null ? { shownThread: String(row.shownThread) } : {})
   }
 }
 
@@ -351,8 +359,44 @@ export class AssistantSubsessionIndex {
 
   /** Record a delegation; true when the row is new, false when the child was already indexed. */
   async open(input: OpenInput): Promise<boolean> {
-    await clearClosed(this.db, input.agentId, input.childSessionKey)
-    const { changes } = await this.db.query(
+    return await this.insert(this.db, input)
+  }
+
+  /** Open a task outside the cap and `claim` in one transaction, holding `thread` from its first round when one is named (auto-session-mode.md §6.9.1); `held` when its key is indexed already or the thread is another task's. */
+  async openClaiming(
+    input: OpenInput,
+    thread: Pick<AssistantSubsessionThread, 'platform' | 'channel' | 'transportScope' | 'thread'> | undefined,
+    claim: (tx: StoreTx) => Promise<boolean>
+  ): Promise<'opened' | 'held' | 'refused'> {
+    const db = this.db
+    if (!db.transaction) throw new Error('the task index has no transaction to claim in')
+    const now = input.now ?? Date.now()
+    try {
+      return await db.transaction<'opened'>(async (tx) => {
+        if (!(await this.insert(tx, input))) throw new ThreadHeld()
+        if (thread) {
+          const attached = await this.insertThread(tx, {
+            ...thread,
+            agentId: input.agentId,
+            childSessionKey: input.childSessionKey,
+            sinceRound: 1,
+            now
+          })
+          if (!attached) throw new ThreadHeld()
+        }
+        if (!(await claim(tx))) throw new ClaimRefused()
+        return 'opened'
+      })
+    } catch (err) {
+      if (err instanceof ThreadHeld) return 'held'
+      if (err instanceof ClaimRefused) return 'refused'
+      throw err
+    }
+  }
+
+  private async insert(db: Pick<AssistantSubsessionDatabase, 'query'>, input: OpenInput): Promise<boolean> {
+    await clearClosed(db, input.agentId, input.childSessionKey)
+    const { changes } = await db.query(
       `INSERT OR IGNORE INTO assistant_subsession
          (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt, replyThread, title, background,
           changedAt, openedForPlace, openedForMessage)
@@ -880,7 +924,14 @@ export class AssistantSubsessionIndex {
 
   /** Attach a platform thread to a task; rounds from `sinceRound` on no longer report to its parent. False when the thread is another task's or the task is not indexed. */
   async attachThread(input: Omit<AssistantSubsessionThread, 'attachedAt'> & { now: number }): Promise<boolean> {
-    const { changes } = await this.db.query(
+    return await this.insertThread(this.db, input)
+  }
+
+  private async insertThread(
+    db: Pick<AssistantSubsessionDatabase, 'query'>,
+    input: Omit<AssistantSubsessionThread, 'attachedAt'> & { now: number }
+  ): Promise<boolean> {
+    const { changes } = await db.query(
       `INSERT OR IGNORE INTO assistant_subsession_thread
          (agentId, platform, channel, transportScope, thread, childSessionKey, sinceRound, attachedAt, reportThread)
        SELECT CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT),
@@ -900,6 +951,16 @@ export class AssistantSubsessionIndex {
         input.agentId,
         input.childSessionKey
       ]
+    )
+    return changes > 0
+  }
+
+  /** Record the thread a getting-to-know task is shown with, once (auto-session-mode.md §6.9.2); false when it is no such task or has one. */
+  async setShownThread(agentId: string, childSessionKey: string, thread: string): Promise<boolean> {
+    const { changes } = await this.db.query(
+      `UPDATE assistant_subsession SET shownThread = ?
+        WHERE agentId = ? AND childSessionKey = ? AND gettingToKnow = 1 AND shownThread IS NULL`,
+      [thread, agentId, childSessionKey]
     )
     return changes > 0
   }

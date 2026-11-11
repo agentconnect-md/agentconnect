@@ -4577,6 +4577,8 @@ export interface AssistantSubsessionDto {
   lastReplyAt?: string
   /** The platform id of the message a coordinator opened it for (a Slack ts, a webchat post id); only where `visible`. */
   openedForMessageId?: string
+  /** The platform id of the thread a getting-to-know task is shown with, its introduction's; only where `visible`. */
+  shownThreadId?: string
 }
 
 export interface AssistantSubsessionsPageDto {

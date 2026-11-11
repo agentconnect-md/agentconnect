@@ -8,7 +8,8 @@
 > places run through the coordinator (§3.4). On Slack a task moves into a code channel only
 > when it makes one for its work (§6.8). The
 > coordinator's prompt and tool surface are the ones the local runtime matrix validates (§12).
-> A home for approved proposals and read-only tasks (§6.9) are proposed, not built.
+> An approved proposal answers in a thread of its place where the platform has approval cards
+> (§6.9.1); its webchat form and read-only tasks (§6.9.3) are proposed, not built.
 > Builds on: [channel-session-mode.md](channel-session-mode.md) (the per-conversation setting),
 > [assistant-mode.md](assistant-mode.md) §5.6 (delegated tasks),
 > [send-message-guide.md](send-message-guide.md) (the `sendMessage` actions).
@@ -646,11 +647,13 @@ place; a channel is a workspace the task earns.
 - **Earlier tasks.** A task the coordinator opened in a code channel before this change keeps the
   channel's session as its own and routes as before; nothing migrates.
 
-### 6.9 A home for every task (proposed)
+### 6.9 A home for every task
 
-> Status: Proposed (2026-11-11), not built. Until it ships, §6.2, §6.6, §11 and
-> [assistant-mode.md](assistant-mode.md) §5.6, §5.10, §5.13 and §5.18 describe what runs. Whether a
-> threaded task counts against `maxConcurrentSubsessions` is not decided here (#3970).
+> Status: Built for a platform with approval cards (§6.9.1), with the card fix and the console
+> (§6.9.2, §6.9.5). Proposed, not built: a webchat conversation's root (§6.9.1) and read-only tasks
+> (§6.9.3), where §6.2 and [assistant-mode.md](assistant-mode.md) §5.9 and §5.10 describe what
+> runs. Whether a threaded task counts against `maxConcurrentSubsessions` is not decided here
+> (#3970).
 
 **Why.** In one coordinator's channel, a getting-to-know report and one approved proposal left five
 top-level messages within four minutes: the introduction, two proposal cards, the approved
@@ -666,8 +669,10 @@ work nobody talks to runs without one.
 
 #### 6.9.1 An approved proposal gets a home
 
-This covers the task form of `propose` (assistant-mode.md §5.10) in an internal place whose long
-session is a coordinator. The follow-up form runs no task and is unchanged.
+This covers the task form of `propose` (assistant-mode.md §5.10) in an internal room whose long
+session is a coordinator, on a platform with approval cards, where a message's own id opens its
+thread. A 1:1 DM, a platform without cards and a webchat conversation run it as before. The
+follow-up form runs no task and is unchanged.
 
 | Where the proposal's card is                                                                                                                                                                                  | The task's home                                                                 |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
@@ -687,32 +692,29 @@ session is a coordinator. The follow-up form runs no task and is unchanged.
   `delegateTask` with that `messageId` opens one (§5.1): keyed on the root's thread, titled with the
   proposal's sentence, owned by the approver. Its record stays an approved proposal: the hash,
   approvers, expiry and settled states of assistant-mode.md §5.10 are unchanged.
-- **Its kind.** Until its first turn settles it is an approved proposal, as `listTasks`, the board
-  and the Work canvas name one today, and the coordinator neither messages nor stops it
-  (assistant-mode.md §5.6). Once the record has settled it is a task like any other the
-  coordinator holds: listed as a task with its thread, open on the board while it is indexed,
-  `running` or `idle`, and addressed by `messageTask`. This replaces "open only until its one run
-  settles" of assistant-mode.md §5.18 for a proposal with a home; one without keeps that rule.
+- **Its kind.** It is a task like any other the coordinator holds, from its first turn: listed as
+  a task with its thread, open on the board while it is indexed, `running` or `idle`, and
+  addressed by `messageTask`. "Open only until its one run settles" of assistant-mode.md §5.18
+  holds for a proposal with no home alone. Its record alone says it began as a proposal.
 - **Who asks.** The approver owns the session, as the sender of the message a task opened for
   does (§6.2). The first turn's reads are still judged by the follow-up's askers, as an approved
   run's are today; a later turn's by its own sender.
 - **Its first turn** takes the approved proposal's prompt, which now says its reply posts in this
   thread. The record settles from that turn as it settles from a report today: completed is
   `succeeded`, failed is `failed`, cut short is `outcome_unknown`.
-- **Recognized by its record, not its coordinate.** Today the reserved `subsession:task-`
-  coordinate is how the daemon knows an approved run: inbox replay removes its row instead of
-  running it again, the turn's end settles the proposal, its reads are judged by its follow-up's
-  askers, and the console and the board name its kind (assistant-mode.md §5.7 step 1, §5.10). A
-  thread key says none of that. The first turn's inbox row therefore carries the proposal's id,
-  and each of those reads the proposal's record, which names the task's session, where it read the
-  coordinate.
+- **Recognized by its turn, not its coordinate.** The reserved `subsession:task-` coordinate is
+  how the daemon knows an approved run with no home: inbox replay removes its row instead of
+  running it again, the turn's end settles the proposal, and its reads are judged by its
+  follow-up's askers (assistant-mode.md §5.7 step 1, §5.10). A thread key says none of that. The
+  first turn's metadata therefore carries the proposal's id (`approvedProposal`), persisted with
+  its inbox row, and each of those reads it where it read the coordinate.
   - **Never run twice.** A replay after a restart or a handover removes a row that carries a
     proposal's id and settles that proposal `outcome_unknown`, as today. The daemon says so once in
-    the task's thread, where a failed turn of any threaded task is reported. Later turns of the task
-    carry no proposal and replay as any thread's do.
-  - **Never steered.** A reply that arrives in the thread while the first turn runs waits for a
-    turn of its own, as a message on a task's page waits (§10). The hash binds the approved work,
-    so nobody's message joins it.
+    the task's thread. Later turns of the task carry no proposal and replay as any thread's do.
+  - **Never steered.** A reply that arrives in the thread while the first turn runs is neither
+    steered into it nor folded into a regenerated answer: it waits for a turn of its own, as a
+    message on a task's page waits (§10). The hash binds the approved work, so nobody's message
+    joins it.
 - **Afterwards** it rests as any threaded task does (§6.5). A reply in its thread reaches it as an
   ordinary turn under its sender's own permission. The approval covered the first turn's work and
   nothing later: approving already grants only what asking in the place gets.
@@ -737,9 +739,11 @@ session is a coordinator. The follow-up form runs no task and is unchanged.
   3. A record left `executing` and waiting for a root, by a crash between the two transactions,
      has started no work. The recovery sweep that already catches an approval cut before its row
      exists opens it with no home.
-- **Webchat.** The root is an agent post at the conversation's root, and the task is keyed
-  `webchat:<conv>:<rootPostId>:<agent>` (webchat-threads.md §5.2), drawn as that root's thread
-  footer. A daemon without `webchat-threads-v1` runs the proposal as today.
+- **Webchat (proposed, not built).** The root is an agent post at the conversation's root, and
+  the task is keyed `webchat:<conv>:<rootPostId>:<agent>` (webchat-threads.md §5.2), drawn as that
+  root's thread footer. A daemon without `webchat-threads-v1` runs the proposal as today.
+- **A card from before this.** A card's record says which thread it was posted in. One posted
+  before that was recorded is never taken for a root, so its approval posts one.
 - **Not in this change.** An approved proposal makes no code channel (§6.8): the tool links the
   message a task works on and invites its author, and this root's author is the agent.
 
@@ -756,8 +760,8 @@ With §6.9.1 and this fix, the channel above gets two top-level messages: the in
 the cards in its thread, and one root for the approved proposal, with its result and every reply
 in that thread.
 
-**Shown with a home.** The thread of that first reply is also recorded on the getting-to-know
-task's row, for display only: the introduction's own thread for a join, the asker's thread for a
+**Shown with a home (built).** The thread of that first reply is also recorded on the
+getting-to-know task's row (`shownThread`, on the wire `shownThreadId`), for display only: the introduction's own thread for a join, the asker's thread for a
 requested one. The console then draws the task as one with a home (§6.9.5), and its row opens that
 thread: the introduction, the cards and the replies. The thread is not attached to the task, which
 ended with its one check and takes no message. It stays unowned, so a reply there reaches the
@@ -827,8 +831,7 @@ short trigger for machinery that exists either way.
 
 #### 6.9.5 Console
 
-Built, ahead of the rest of this section, except a getting-to-know task's mark and thread, which
-wait for the daemon to record them (§6.9.2).
+Built.
 
 - **One group.** A parent's Tasks tab lists its work-mode tasks in one **Tasks** group, replacing
   §11's two. A row with a home carries its platform's mark and opens its thread; a row without one
