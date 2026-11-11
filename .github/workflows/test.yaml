@@ -382,8 +382,8 @@ jobs:
   sandbox-linux:
     name: Sandbox (Linux)
     needs: scope
-    # Setting the repository variable CI_SKIP_SANDBOX_LINUX to `true` skips this job without a commit.
-    if: ${{ needs.scope.outputs.code == 'true' && vars.CI_SKIP_SANDBOX_LINUX != 'true' }}
+    # The repository variable CI_SKIP_APT_JOBS set to `true` skips every apt-installing job while apt is unreachable.
+    if: ${{ needs.scope.outputs.code == 'true' && vars.CI_SKIP_APT_JOBS != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -606,7 +606,8 @@ jobs:
   computer-xvfb:
     name: Computer (Xvfb)
     needs: scope
-    if: ${{ needs.scope.outputs.computer == 'true' }}
+    # Skipped by CI_SKIP_APT_JOBS, for the reason the Sandbox (Linux) job gives.
+    if: ${{ needs.scope.outputs.computer == 'true' && vars.CI_SKIP_APT_JOBS != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
