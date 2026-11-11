@@ -172,6 +172,24 @@ describe('Teams administrator recovery', () => {
     })
     const session = randomUUID()
     await seedSessionMeta(prisma, session, h.oldInstall.agentId, { platform: 'msteams', tenantScope: TENANT })
+    // A member's request of the previous organization, still waiting for approval.
+    const waiting = await prisma.msTeamsAgentBotRequest.create({
+      data: {
+        id: randomUUID(),
+        orgId: DEFAULT_ORG_ID,
+        agentId: h.oldInstall.agentId,
+        tenantId: TENANT,
+        createdByUserId: DEFAULT_OWNER_ID,
+        sponsorId: randomUUID(),
+        identity: randomUUID(),
+        catalogAppId: 'catalog-example',
+        teamIds: [],
+        appPackage: 'fingerprint-example',
+        botName: 'Microsoft Teams',
+        status: 'pending',
+        nextCheckAt: new Date()
+      }
+    })
     const unassign = vi.spyOn(h.app.deps.httpBot, 'unassign')
     const provider = h.app.deps.platforms.get('msteams')!
     const teardown = vi.fn()
@@ -193,6 +211,7 @@ describe('Teams administrator recovery', () => {
     expect(await prisma.bot.findUnique({ where: { id: h.old.id } })).toBeNull()
     expect(await prisma.bot.findUnique({ where: { id: extra.id } })).toBeNull()
     expect(await prisma.bot.findUnique({ where: { id: own.id } })).not.toBeNull()
+    expect(await prisma.msTeamsAgentBotRequest.findUnique({ where: { id: waiting.id } })).toBeNull()
     expect(await prisma.sessionMeta.findUnique({ where: { id: session } })).toMatchObject({
       agentId: h.oldInstall.agentId
     })

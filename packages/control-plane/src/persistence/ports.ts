@@ -6149,6 +6149,65 @@ export interface FeishuAppRegistrationStore {
   reapExpired(staleBefore: Date): Promise<number>
 }
 
+// MsTeamsAgentBotRequestStore — a member's request for a further agent's own Teams bot, pending the tenant
+// administrator's approval (teams-integration.md §8.6.6). The member's refresh token is sealed at rest.
+export type MsTeamsAgentBotRequestStatus = 'pending' | 'needs_sign_in' | 'rejected'
+
+export interface MsTeamsAgentBotRequestRecord {
+  id: string
+  orgId: OrgId
+  agentId: AgentId
+  tenantId: string
+  createdByUserId: string
+  sponsorId: string
+  identity: string
+  catalogAppId: string
+  teamIds: string[]
+  appPackage: string
+  botName: string
+  refreshToken: string | null
+  status: MsTeamsAgentBotRequestStatus
+  reason: string | null
+  checks: number
+  nextCheckAt: Date
+  createdAt: Date
+}
+
+export type CreateMsTeamsAgentBotRequestInput = Omit<
+  MsTeamsAgentBotRequestRecord,
+  'status' | 'reason' | 'checks' | 'createdAt' | 'refreshToken'
+> & { refreshToken: string }
+
+export interface MsTeamsAgentBotRequestStore {
+  /** Open a request, replacing the agent's earlier one for the same tenant. */
+  create(input: CreateMsTeamsAgentBotRequestInput): Promise<MsTeamsAgentBotRequestRecord>
+  get(orgId: OrgId, id: string): Promise<MsTeamsAgentBotRequestRecord | null>
+  listForAgent(orgId: OrgId, agentId: AgentId): Promise<MsTeamsAgentBotRequestRecord[]>
+  /** Pending requests whose next check is due, oldest first, of any organization. */
+  due(now: Date, limit: number): Promise<{ orgId: OrgId; id: string }[]>
+  /** Requests opened before `before`, of any organization, for the expiry sweep. */
+  openedBefore(before: Date, limit: number): Promise<{ orgId: OrgId; id: string }[]>
+  /** Take the one check of a request until `until`; false while another holds it. */
+  claim(orgId: OrgId, id: string, token: string, now: Date, until: Date): Promise<boolean>
+  /** Whether the request still exists with `token` as its latest claim; an expired claim nobody replaced still holds. */
+  holds(orgId: OrgId, id: string, token: string): Promise<boolean>
+  /** Hand a claim back with what the check learned: the next check, a rotated token, or why it stopped. */
+  release(
+    orgId: OrgId,
+    id: string,
+    token: string,
+    patch: {
+      nextCheckAt: Date
+      refreshToken?: string | null
+      status?: MsTeamsAgentBotRequestStatus
+      reason?: string | null
+    }
+  ): Promise<void>
+  /** A new sign-in's token puts a stopped request back to pending, due at once. */
+  resume(orgId: OrgId, id: string, refreshToken: string, now: Date): Promise<void>
+  delete(orgId: OrgId, id: string): Promise<void>
+}
+
 // WechatPendingLoginStore — a personal-WeChat QR login (wechat-integration.md §2.2). The login handle and the
 // confirmed bot token are sealed at rest; every read and write is org-fenced.
 export type WechatLoginState = 'waiting' | 'scanned' | 'verify_code' | 'authorized' | 'completed' | 'failed'

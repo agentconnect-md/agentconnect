@@ -1569,7 +1569,9 @@
         "noAgent": "这个 Agent 现在无法添加 Teams 应用。",
         "unavailable": "无法连接 Microsoft，或本部署暂时不能连接 Teams。请稍后再试。",
         "generic": "无法连接 Teams。",
-        "tenantMismatch": "请用在 Teams 里添加了这个应用的 Microsoft 365 组织的账号登录。"
+        "tenantMismatch": "请用在 Teams 里添加了这个应用的 Microsoft 365 组织的账号登录。",
+        "notConnected": "你所在的 Microsoft 365 组织还没有在这里连接。需要 Teams 或全局管理员先连接。",
+        "alreadyConnected": "这个 agent 已经在你所在 Microsoft 365 组织的 Teams 里了。"
       },
       "recovery": {
         "verify": "验证管理员身份",
@@ -1583,6 +1585,18 @@
         "doneBody": "所选 agent 已连接。如需更新应用名称和图标，请打开其 Teams 集成。",
         "notAdmin": "请使用此租户当前有效的 Teams 管理员或全局管理员身份登录，或联系支持。",
         "failed": "未能完成恢复。请回到 agent 的集成页，重新点击「连接 Teams」，或联系支持。"
+      },
+      "request": {
+        "description": "你不是所在 Microsoft 365 组织的管理员，所以要先由 Teams 管理员批准这个 agent 的应用。选择批准后它要加入的团队。",
+        "submit": "提交审批",
+        "submitting": "正在创建 agent 的 bot…",
+        "title": "等待审批",
+        "pending": "需要你所在 Microsoft 365 组织的 Teams 管理员批准这个 agent 的应用。批准后它会自动加入你选的团队，不用一直开着这个页面。",
+        "needs_sign_in": "应用获批前，你的 Microsoft 登录已失效。从 agent 的集成页重新开始连接即可继续。",
+        "rejected": "这个 agent 的应用被拒绝或已被移除。先在 agent 的集成页取消申请，再重新提交。",
+        "openAdmin": "打开 Teams 管理中心",
+        "check": "再查一次",
+        "checking": "正在检查…"
       }
     },
     "msTeamsStoreConnect": {
@@ -7045,7 +7059,15 @@
         "connect": "使用 Microsoft 连接",
         "connecting": "正在打开 Microsoft…",
         "next": "由你所在 Microsoft 365 组织的 Teams 管理员或全局管理员登录并批准。之后应用会加入组织的应用目录，并添加到你选择的团队。",
-        "useOwn": "改为注册自己的 Bot"
+        "useOwn": "改为注册自己的 Bot",
+        "notAdmin": "我不是管理员",
+        "requestWaiting": "正在等 Teams 管理员批准这个 agent 的应用。",
+        "requestNeedsSignIn": "你的 Microsoft 登录已失效。重新申请即可继续。",
+        "requestRejected": "这个 agent 的应用被拒绝或已被移除。",
+        "requestOpenAdmin": "Teams 管理中心",
+        "requestCheck": "再查一次",
+        "requestCancel": "取消申请",
+        "requestApprove": "以管理员身份批准"
       }
     },
     "wechat": {

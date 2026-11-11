@@ -180,6 +180,7 @@ import {
   PgSlackWorkspaceInstallStore,
   PgFeishuAppRegistrationStore,
   PgWechatPendingLoginStore,
+  PgMsTeamsAgentBotRequestStore,
   PgSlackUserConfigStore,
   PgLinearTokenStore,
   PgLinearInstallStateStore,
@@ -406,6 +407,7 @@ import { MsTeamsRecoveryOAuth } from './platforms/msteams/recovery.js'
 import { PgMsTeamsBindingMutations } from './persistence/repositories/msteams-binding-mutations.js'
 import { msTeamsConnectKeys } from './platforms/msteams/connect.js'
 import { MsTeamsCredentialReconciler } from './platforms/msteams/credential-reconciler.js'
+import { MsTeamsAgentBotRequests } from './platforms/msteams/agent-bot-requests.js'
 import {
   msTeamsConnectAnchor,
   msTeamsRelayApp,
@@ -668,6 +670,7 @@ export function buildContainer(
     slackWorkspaceInstall: new PgSlackWorkspaceInstallStore(prisma, secretCipher),
     feishuAppRegistration: new PgFeishuAppRegistrationStore(prisma, secretCipher),
     wechatPendingLogin: new PgWechatPendingLoginStore(prisma, secretCipher),
+    msTeamsAgentBotRequest: new PgMsTeamsAgentBotRequestStore(prisma, secretCipher),
     slackUserConfig: new PgSlackUserConfigStore(prisma, secretCipher),
     linearToken: new PgLinearTokenStore(prisma, secretCipher),
     linearInstallState: new PgLinearInstallStateStore(prisma),
@@ -2665,6 +2668,7 @@ export function buildContainer(
       slackWorkspaceInstall: repos.slackWorkspaceInstall,
       feishuAppRegistration: repos.feishuAppRegistration,
       wechatPendingLogin: repos.wechatPendingLogin,
+      msTeamsAgentBotRequest: repos.msTeamsAgentBotRequest,
       slackUserConfig: repos.slackUserConfig,
       linearToken: repos.linearToken,
       linearInstallState: repos.linearInstallState,
@@ -3203,11 +3207,26 @@ export function buildContainer(
     log: http.log
   })
 
+  const msTeamsBindingMutations = new PgMsTeamsBindingMutations(prisma, (input) =>
+    botIdentityProjector(platforms)(input)
+  )
+  // Watches members' pending agent-bot requests until their packages are approved (teams-integration.md §8.6.6).
+  const msTeamsAgentBotRequests =
+    msTeamsPlatformApp && msTeamsAgentBots
+      ? new MsTeamsAgentBotRequests({
+          http: httpDeps,
+          app: msTeamsPlatformApp,
+          agentBots: msTeamsAgentBots,
+          bindingMutations: msTeamsBindingMutations,
+          log: http.log
+        })
+      : undefined
   const msTeamsSeams: MsTeamsConnectSeams = {
     ...(msTeamsPlatformApp ? { app: msTeamsPlatformApp } : {}),
     ...(msTeamsAgentBots ? { agentBots: msTeamsAgentBots } : {}),
     keys: msTeamsConnectKeys(config.API_KEY_PEPPER),
-    bindingMutations: new PgMsTeamsBindingMutations(prisma, (input) => botIdentityProjector(platforms)(input)),
+    bindingMutations: msTeamsBindingMutations,
+    ...(msTeamsAgentBotRequests ? { requests: msTeamsAgentBotRequests } : {}),
     ...(webAppUrl ? { webAppUrl } : {}),
     ...(msTeamsPlatformApp && webAppUrl
       ? {
@@ -3350,6 +3369,7 @@ export function buildContainer(
       ],
       ...(msTeamsPlatformApp ? { app: msTeamsPlatformApp } : {}),
       ...(msTeamsAgentBots ? { agentBots: msTeamsAgentBots } : {}),
+      ...(msTeamsAgentBotRequests ? { agentBotRequests: msTeamsAgentBotRequests } : {}),
       credentialReconciler: msTeamsCredentialReconciler,
       ...(relayPublicBase ? { publicRelayUrl: relayPublicBase } : {})
     }),

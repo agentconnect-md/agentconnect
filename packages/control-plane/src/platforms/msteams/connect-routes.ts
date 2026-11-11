@@ -6,7 +6,7 @@ import { MSTEAMS_PLATFORM, MSTEAMS_RELAY_EGRESS_V1_FEATURE } from '@agentconnect
 import type { HttpDeps } from '../../http/deps.js'
 import type { ZodTypeProvider } from '../../http/plugins/zod.js'
 import { Tag } from '../../http/plugins/openapi.js'
-import { ErrorDto } from '../../http/dto/index.js'
+import { ErrorDto, IdParam } from '../../http/dto/index.js'
 import { ctxOf, denyViewerWrite, orgOf } from '../../http/rbac.js'
 import { canEdit, canView } from '../../authorization/policy.js'
 import { integrationPlatformAvailability } from '../../http/daemon-platform-capability.js'
@@ -15,7 +15,12 @@ import { relayHttpBase, relayIngress } from '../../http/relay-ingress.js'
 import { agentIconBackgroundColor } from '../../agents/agent-icon.js'
 import { AgentId, DaemonId, IntegrationId } from '../../domain/ids.js'
 import { BotExternalIdentityTaken } from '../../persistence/errors.js'
-import type { AgentRecord, MsTeamsBindingMutations } from '../../persistence/ports.js'
+import type { AgentRecord, MsTeamsAgentBotRequestRecord, MsTeamsBindingMutations } from '../../persistence/ports.js'
+import {
+  MSTEAMS_REQUEST_FIRST_CHECK_MS,
+  MsTeamsRequestBusy,
+  type MsTeamsAgentBotRequests
+} from './agent-bot-requests.js'
 import {
   MsTeamsAgentBotClient,
   MsTeamsAgentBotError,
@@ -50,9 +55,11 @@ import {
   readMsTeamsOrganizationName,
   redeemMsTeamsCode,
   sealMsTeamsTicket,
+  submitMsTeamsPackage,
   upgradeMsTeamsInstalls,
   verifyMsTeamsConnectState,
-  type MsTeamsConnectKeys
+  type MsTeamsConnectKeys,
+  approveMsTeamsSubmission
 } from './connect.js'
 import {
   MSTEAMS_DEPLOYMENT_OWNER,
@@ -72,6 +79,8 @@ export interface MsTeamsConnectSeams {
   agentBots?: MsTeamsAgentBots
   /** The wait between tries while a new principal or identity settles; tests pass one that does not sleep. */
   agentBotWait?: (ms: number) => Promise<void>
+  /** Members' pending requests (§8.6.6), built with the same app and blueprint; absent ⇒ no member flow. */
+  requests?: MsTeamsAgentBotRequests
   keys: MsTeamsConnectKeys
   bindingMutations: MsTeamsBindingMutations
   recovery?: MsTeamsRecoveryOAuth
@@ -94,6 +103,11 @@ const NAME_TAKEN_MESSAGE = (holder: string) =>
   `Another agent of this Microsoft 365 organization, ${holder}, already appears in Teams under this name. Rename one of them first, so people can tell them apart.`
 const AGENT_BOTS_UNAVAILABLE_MESSAGE = (reason: string) =>
   `Microsoft did not let this deployment create a bot for this agent in your Microsoft 365 organization (${reason}). Agents already connected are unaffected.`
+const APPROVE_TENANT_MESSAGE = 'Sign in with an administrator of the Microsoft 365 organization the request is for.'
+const NOT_CONNECTED_MESSAGE =
+  'Your Microsoft 365 organization is not connected here yet. A Teams or Global administrator has to connect it first.'
+const ALREADY_CONNECTED_MESSAGE =
+  'This agent is already in Teams for your Microsoft 365 organization. A Teams administrator updates it from the agent’s Teams bot.'
 
 const MsTeamsDeploymentAppDto = z.object({
   appId: z
@@ -108,7 +122,37 @@ const ConnectBody = z.object({
     .optional()
     .describe(
       'The tenant a Teams Store install named on its Connect card: the sign-in must be of it, asks only to read the profile, and publishes and installs nothing.'
+    ),
+  member: z
+    .boolean()
+    .optional()
+    .describe(
+      'True for a person who is not an administrator of the tenant: the sign-in asks no consent, and the agent’s package is submitted for the administrator’s approval instead of published.'
     )
+})
+const RequestDto = z.object({
+  id: z.string(),
+  agentId: z.string(),
+  tenantId: z.string(),
+  status: z
+    .enum(['pending', 'needs_sign_in', 'rejected'])
+    .describe(
+      'pending: waiting for a Teams administrator to approve the package; needs_sign_in: the stored sign-in stopped working, so the member signs in again; rejected: the package was turned down or removed.'
+    ),
+  reason: z.string().nullable(),
+  createdAt: z.string(),
+  adminCenterUrl: z.string().describe('The Teams admin center page that lists the package waiting for approval.')
+})
+/** Teams apps → Manage apps, where a Teams administrator sees packages waiting for approval. */
+const MSTEAMS_ADMIN_CENTER_URL = 'https://admin.teams.microsoft.com/policies/manage-apps'
+const requestDto = (request: MsTeamsAgentBotRequestRecord): z.infer<typeof RequestDto> => ({
+  id: request.id,
+  agentId: request.agentId,
+  tenantId: request.tenantId,
+  status: request.status,
+  reason: request.reason,
+  createdAt: request.createdAt.toISOString(),
+  adminCenterUrl: MSTEAMS_ADMIN_CENTER_URL
 })
 const ConnectDto = z.object({ authorizeUrl: z.url().describe('Microsoft’s sign-in page to send the browser to.') })
 const ConsentedBody = z.object({
@@ -131,6 +175,19 @@ const CallbackDto = z.object({
     .describe(
       'True when the tenant already serves another agent, so this agent gets a bot of its own: the ticket goes to the agent-bot step, which answers the integration and the ticket for the install step.'
     ),
+  member: z
+    .boolean()
+    .optional()
+    .describe(
+      'True for a member’s sign-in: the ticket goes to the request step with the teams the agent should join, and the package then waits for the administrator’s approval.'
+    ),
+  request: RequestDto.optional().describe(
+    'The agent’s open request: one this sign-in renewed after its stored sign-in had stopped working, or one an administrator just approved that Microsoft does not show the member as published yet.'
+  ),
+  approved: z
+    .boolean()
+    .optional()
+    .describe('True for an administrator’s approval of a waiting request, which has no team step.'),
   teams: z
     .array(
       z.object({
@@ -153,6 +210,13 @@ const CallbackDto = z.object({
     .describe('Whether the tenant installed the app from the Teams Store, so nothing was published or installed.')
 })
 const AgentBotBody = z.object({ ticket: z.string().min(1).max(16_384) })
+const RequestBody = z.object({
+  ticket: z.string().min(1).max(16_384),
+  teamIds: z
+    .array(z.string().min(1).max(256))
+    .max(50)
+    .describe('The teams, among the member’s, the agent joins once approved.')
+})
 const InstallBody = z.object({
   ticket: z.string().min(1).max(16_384),
   teamIds: z.array(z.string().min(1).max(256)).min(1).max(50)
@@ -273,6 +337,30 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
         const target = await connectTarget(deps, req, req.body.agentId)
         if (typeof target === 'string') return refuse(reply, 409, 'MSTEAMS_CONNECT_NO_AGENT', target)
         const tenant = req.body.tenantId?.toLowerCase()
+        const redirect = msTeamsConnectRedirectUri(live.webAppUrl)
+        // A member signs in with no consent and submits for approval, where the deployment makes agent bots (§8.6.6).
+        if (req.body.member && !tenant) {
+          if (!seams.requests)
+            return refuse(
+              reply,
+              404,
+              'MSTEAMS_CONNECT_UNAVAILABLE',
+              'This deployment makes no bots for further agents.'
+            )
+          const memberState = mintMsTeamsConnectState(
+            seams.keys,
+            { orgId: orgOf(req), agentId: target.id, userId: req.principal.userId, member: true },
+            deps.clock
+          )
+          return {
+            authorizeUrl: msTeamsAuthorizeUrl(seams.keys, {
+              clientId: live.app.appId,
+              redirectUri: redirect,
+              state: memberState,
+              member: true
+            })
+          }
+        }
         // With agent bots every administrator connect first asks the tenant-wide consent (§8.6.5); a Store install only proves its tenant.
         const consent = Boolean(agentBotClient) && !tenant
         const state = mintMsTeamsConnectState(
@@ -384,7 +472,8 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
           const {
             accessToken,
             tenantId,
-            userId: sponsorId
+            userId: sponsorId,
+            refreshToken
           } = await redeemMsTeamsCode(
             seams.keys,
             {
@@ -394,20 +483,86 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
               code: req.body.code,
               state: req.body.state,
               ...(state.tenant ? { tenant: state.tenant } : {}),
-              ...(state.agentBots ? { agentBots: true } : {})
+              ...(state.agentBots ? { agentBots: true } : {}),
+              ...(state.member ? { member: true } : {})
             },
             fetchImpl
           )
-          // The sign-in asked the agent bots' scopes, so their steps can run with it.
-          const agentBots = state.agentBots ? agentBotClient : undefined
-          // A Teams Store install already has the app, so this connect only claims the tenant (§8.4).
-          const store = state.tenant !== undefined
-
           const tenantRows = () =>
             deps.repos.bot
               .listForPlatform(MSTEAMS_PLATFORM)
               .then((rows) => msTeamsRecoveryRows(rows, live.app.appId, tenantId))
           const before = await tenantRows()
+          if (state.approve) {
+            // An administrator approves a member's waiting request: the pending package is published, then finished as any approved one is (§8.6.6).
+            const waiting = await deps.repos.msTeamsAgentBotRequest.get(orgId, state.approve)
+            if (!seams.requests || !waiting || waiting.agentId !== target.id)
+              return refuse(reply, 404, 'NOT_FOUND', 'Request not found.')
+            if (waiting.tenantId !== tenantId)
+              return refuse(reply, 409, 'MSTEAMS_TENANT_MISMATCH', APPROVE_TENANT_MESSAGE)
+            await approveMsTeamsSubmission(fetchImpl, accessToken, waiting.catalogAppId)
+            const checked = await seams.requests.check(orgId, waiting.id)
+            if (checked.outcome === 'installed')
+              return {
+                integrationId: checked.integrationId,
+                agentId: target.id,
+                teams: [],
+                store: false,
+                approved: true
+              }
+            // Microsoft shows a new approval to the member's token some seconds later; the request stays and the next check finishes it.
+            const left = await deps.repos.msTeamsAgentBotRequest.get(orgId, waiting.id)
+            return {
+              agentId: target.id,
+              teams: [],
+              store: false,
+              approved: true,
+              ...(left ? { request: requestDto(left) } : {})
+            }
+          }
+          if (state.member) {
+            // A member's request: nothing is published, so only a tenant this organization already connected is taken (§8.6.6).
+            if (!seams.requests || !refreshToken || !sponsorId)
+              return refuse(reply, 400, 'MSTEAMS_CONNECT_DENIED', 'Microsoft did not accept the sign-in. Try again.')
+            if (before.some((row) => row.orgId !== orgId))
+              return refuse(reply, 409, 'MSTEAMS_TENANT_TAKEN', TAKEN_MESSAGE)
+            if (before.length === 0) return refuse(reply, 409, 'MSTEAMS_TENANT_NOT_CONNECTED', NOT_CONNECTED_MESSAGE)
+            // A request the stored sign-in could no longer finish goes on with this one.
+            const open = (await deps.repos.msTeamsAgentBotRequest.listForAgent(orgId, target.id)).find(
+              (request) => request.tenantId === tenantId
+            )
+            if (open) {
+              await deps.repos.msTeamsAgentBotRequest.resume(orgId, open.id, refreshToken, new Date(deps.clock.now()))
+              const resumed = await deps.repos.msTeamsAgentBotRequest.get(orgId, open.id)
+              return { agentId: target.id, member: true, teams: [], store: false, request: requestDto(resumed ?? open) }
+            }
+            if (before.some((row) => !!msTeamsAgentBotOf(row) && row.agentIds.includes(target.id)))
+              return refuse(reply, 409, 'MSTEAMS_AGENT_ALREADY_CONNECTED', ALREADY_CONNECTED_MESSAGE)
+            const taken = await nameHolder(deps, orgId, tenantId, target)
+            if (taken) return refuse(reply, 409, 'MSTEAMS_AGENT_NAME_TAKEN', NAME_TAKEN_MESSAGE(taken))
+            const joined = await listMsTeamsTeams(fetchImpl, accessToken)
+            return {
+              agentId: target.id,
+              member: true,
+              teams: joined.map((team) => ({ ...team, app: 'none' as const })),
+              ticket: sealMsTeamsTicket(
+                seams.keys,
+                {
+                  accessToken,
+                  refreshToken,
+                  orgId,
+                  member: { agentId: target.id, tenantId, sponsorId, userId: req.principal.userId }
+                },
+                deps.clock
+              ),
+              store: false
+            }
+          }
+          // The sign-in asked the agent bots' scopes, so their steps can run with it.
+          const agentBots = state.agentBots ? agentBotClient : undefined
+          // A Teams Store install already has the app, so this connect only claims the tenant (§8.4).
+          const store = state.tenant !== undefined
+
           const taken = () =>
             reply.code(409).send({
               error: 'Conflict',
@@ -760,6 +915,258 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
           if (err instanceof MsTeamsRecoveryError) return refuse(reply, err.status, err.code, err.message)
           throw err
         }
+      }
+    )
+
+    r.post(
+      '/integrations/msteams/connect/request',
+      {
+        schema: {
+          tags: [Tag.Integrations],
+          summary: 'Request a further agent’s own Teams bot',
+          description:
+            'For a member who is not an administrator of a tenant this organization already connected: with the ticket the connect step answered and the teams the agent should join, create the agent’s bot, submit its package for the administrator’s review, and store the request with the member’s refresh token, sealed. The Control Plane then watches the package and, once a Teams administrator approves it, installs it into the chosen teams as the member and connects the agent. The token is kept only while the request is open.',
+          operationId: 'requestMsTeamsAgentBot',
+          body: RequestBody,
+          response: { 200: RequestDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 502: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const live = usable()
+        const requests = seams.requests
+        if (!live || !requests || !req.principal)
+          return refuse(reply, 404, 'MSTEAMS_CONNECT_UNAVAILABLE', 'This deployment makes no bots for further agents.')
+        const orgId = orgOf(req)
+        const ticket = openMsTeamsTicket(seams.keys, req.body.ticket, deps.clock)
+        if (
+          !ticket ||
+          !('member' in ticket) ||
+          ticket.orgId !== orgId ||
+          ticket.member.userId !== req.principal.userId
+        ) {
+          return refuse(
+            reply,
+            400,
+            'MSTEAMS_CONNECT_STATE_INVALID',
+            'This sign-in has expired. Start connecting again.'
+          )
+        }
+        const { accessToken, refreshToken } = ticket
+        const { tenantId, sponsorId } = ticket.member
+        const target = await connectTarget(deps, req, ticket.member.agentId)
+        if (typeof target === 'string') return refuse(reply, 409, 'MSTEAMS_CONNECT_NO_AGENT', target)
+        const relayBase = relayHttpBase(deps.config.PUBLIC_RELAY_URL)
+        if (!relayBase || !relayIngress(deps).ok) {
+          return refuse(reply, 409, 'MSTEAMS_RELAY_ORIGIN_MISSING', 'This deployment has no public callback endpoint.')
+        }
+        const holder = await nameHolder(deps, orgId, tenantId, target)
+        if (holder) return refuse(reply, 409, 'MSTEAMS_AGENT_NAME_TAKEN', NAME_TAKEN_MESSAGE(holder))
+        const agentName = target.displayName ?? target.name
+        const key = msTeamsAgentBotKey(target.id, tenantId)
+        let identity: string
+        try {
+          // A member cannot create the blueprint's principal: the administrator's connect did, or the tenant takes no agent bots.
+          if (!(await requests.client.hasPrincipal(tenantId)))
+            return refuse(reply, 409, 'MSTEAMS_AGENT_BOTS_UNAVAILABLE', AGENT_BOTS_UNAVAILABLE_MESSAGE('principal'))
+          identity = await requests.client.ensureIdentity({
+            tenantId,
+            key,
+            displayName: agentName,
+            sponsorUserId: sponsorId
+          })
+          await requests.client.ensureRegistration({
+            key,
+            tenantId,
+            identity,
+            displayName: agentName,
+            relayPublicUrl: relayBase
+          })
+          await requests.client.prove(tenantId, identity)
+        } catch (err) {
+          if (!(err instanceof MsTeamsAgentBotError)) throw err
+          req.log.warn({ step: err.step, status: err.status, code: err.providerCode }, 'msteams: agent bot not created')
+          if (err.transient)
+            return refuse(reply, 502, 'MSTEAMS_CONNECT_UNAVAILABLE', 'Microsoft could not be reached. Try again.')
+          const reason = `${err.step}${err.providerCode ? `: ${err.providerCode}` : ''}`
+          return refuse(reply, 409, 'MSTEAMS_AGENT_BOTS_UNAVAILABLE', AGENT_BOTS_UNAVAILABLE_MESSAGE(reason))
+        }
+        try {
+          const packageInput = {
+            appId: identity,
+            consentAppId: live.app.appId,
+            relayHost: new URL(relayBase).host,
+            agentName,
+            nameLabel: deps.config.MSTEAMS_APP_LABEL,
+            accentColor: agentIconBackgroundColor(target.icon)
+          }
+          const catalogAppId = await submitMsTeamsPackage(
+            fetchImpl,
+            accessToken,
+            msTeamsPackageId(identity),
+            msTeamsAppPackage(
+              msTeamsManifest({ ...packageInput, nowMs: deps.clock.now() }),
+              await msTeamsAppIcons(target, deps.iconStore)
+            )
+          )
+          const organizationName = await readMsTeamsOrganizationName(fetchImpl, accessToken)
+          const userId = req.principal.userId
+          // The request is stored under the tenant's lock, for an organization that still holds the tenant (§8.7).
+          const request = await seams.bindingMutations.runExclusive(tenantId, async () => {
+            const rows = msTeamsRecoveryRows(
+              await deps.repos.bot.listForPlatform(MSTEAMS_PLATFORM),
+              live.app.appId,
+              tenantId
+            )
+            if (rows.some((row) => row.orgId !== orgId))
+              throw new MsTeamsRecoveryError(409, 'MSTEAMS_TENANT_TAKEN', TAKEN_MESSAGE)
+            if (rows.length === 0)
+              throw new MsTeamsRecoveryError(409, 'MSTEAMS_TENANT_NOT_CONNECTED', NOT_CONNECTED_MESSAGE)
+            return await deps.repos.msTeamsAgentBotRequest.create({
+              id: randomUUID(),
+              orgId,
+              agentId: target.id,
+              tenantId,
+              createdByUserId: userId,
+              sponsorId,
+              identity,
+              catalogAppId,
+              teamIds: req.body.teamIds,
+              appPackage: msTeamsPackageFingerprint(packageInput, target),
+              botName: `Microsoft Teams · ${organizationName ?? tenantId}`,
+              refreshToken,
+              nextCheckAt: new Date(deps.clock.now() + MSTEAMS_REQUEST_FIRST_CHECK_MS)
+            })
+          })
+          return requestDto(request)
+        } catch (err) {
+          if (err instanceof MsTeamsConnectError) return refuse(reply, STATUS_OF[err.code], err.code, err.message)
+          if (err instanceof MsTeamsRecoveryError) return refuse(reply, err.status, err.code, err.message)
+          throw err
+        }
+      }
+    )
+
+    r.get(
+      '/integrations/msteams/requests',
+      {
+        schema: {
+          tags: [Tag.Integrations],
+          summary: 'List an agent’s pending Teams bot requests',
+          description:
+            'The requests for this agent’s own Teams bot that still wait for a Teams administrator’s approval, or stopped for a reason the status names. Never returns the stored sign-in.',
+          operationId: 'listMsTeamsAgentBotRequests',
+          querystring: z.object({ agentId: z.uuid() }),
+          response: { 200: z.object({ requests: z.array(RequestDto) }), 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await deps.repos.agent.get(orgOf(req), AgentId(req.query.agentId))
+        if (!agent || !canView(agent, ctxOf(req))) return refuse(reply, 404, 'NOT_FOUND', 'Agent not found.')
+        const requests = await deps.repos.msTeamsAgentBotRequest.listForAgent(orgOf(req), agent.id)
+        return { requests: requests.map(requestDto) }
+      }
+    )
+
+    // The request an editor of its agent may act on; a string names the refusal.
+    const editableRequest = async (req: FastifyRequest<{ Params: { id: string } }>) => {
+      const request = await deps.repos.msTeamsAgentBotRequest.get(orgOf(req), req.params.id)
+      const agent = request ? await deps.repos.agent.get(orgOf(req), request.agentId) : null
+      if (!request || !agent || !canView(agent, ctxOf(req))) return 'not_found' as const
+      return canEdit(agent, ctxOf(req)) ? request : ('forbidden' as const)
+    }
+
+    r.post(
+      '/integrations/msteams/requests/:id/approve',
+      {
+        schema: {
+          tags: [Tag.Integrations],
+          summary: 'Approve a pending Teams bot request as an administrator',
+          description:
+            'For a person who can edit the agent and administers the request’s Microsoft 365 organization: answers Microsoft’s sign-in page. The connect step that follows publishes the pending package with the administrator’s token, installs it into the teams the member chose, and connects the agent.',
+          operationId: 'approveMsTeamsAgentBotRequest',
+          params: IdParam,
+          response: { 200: ConnectDto, 403: ErrorDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const live = usable()
+        const request = await editableRequest(req)
+        if (request === 'forbidden') return refuse(reply, 403, 'FORBIDDEN', 'You cannot edit this agent.')
+        if (request === 'not_found' || !live || !req.principal)
+          return refuse(reply, 404, 'NOT_FOUND', 'Request not found.')
+        const state = mintMsTeamsConnectState(
+          seams.keys,
+          { orgId: orgOf(req), agentId: request.agentId, userId: req.principal.userId, approve: request.id },
+          deps.clock
+        )
+        return {
+          authorizeUrl: msTeamsAuthorizeUrl(seams.keys, {
+            clientId: live.app.appId,
+            redirectUri: msTeamsConnectRedirectUri(live.webAppUrl),
+            state
+          })
+        }
+      }
+    )
+
+    r.post(
+      '/integrations/msteams/requests/:id/check',
+      {
+        schema: {
+          tags: [Tag.Integrations],
+          summary: 'Check a pending Teams bot request now',
+          description:
+            'Read the package’s state at once instead of waiting for the next background check. Once a Teams administrator has approved it, this installs it into the chosen teams and connects the agent, and answers the integration; otherwise it answers the request as it stands.',
+          operationId: 'checkMsTeamsAgentBotRequest',
+          params: IdParam,
+          response: {
+            200: z.object({ integrationId: z.string().optional(), request: RequestDto.optional() }),
+            403: ErrorDto,
+            404: ErrorDto
+          }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const request = await editableRequest(req)
+        if (request === 'forbidden') return refuse(reply, 403, 'FORBIDDEN', 'You cannot edit this agent.')
+        if (request === 'not_found' || !seams.requests) return refuse(reply, 404, 'NOT_FOUND', 'Request not found.')
+        const checked = await seams.requests.check(orgOf(req), request.id)
+        if (checked.outcome === 'installed') return { integrationId: checked.integrationId }
+        const current = await deps.repos.msTeamsAgentBotRequest.get(orgOf(req), request.id)
+        return current ? { request: requestDto(current) } : {}
+      }
+    )
+
+    r.delete(
+      '/integrations/msteams/requests/:id',
+      {
+        schema: {
+          tags: [Tag.Integrations],
+          summary: 'Cancel a pending Teams bot request',
+          description:
+            'Withdraw the package from review where the stored sign-in still works, delete the agent’s bot registration and identity, and forget the request with its stored sign-in. Answers 502 when Microsoft could not be reached, and nothing is forgotten.',
+          operationId: 'cancelMsTeamsAgentBotRequest',
+          params: IdParam,
+          response: { 204: z.null(), 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 502: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const request = await editableRequest(req)
+        if (request === 'forbidden') return refuse(reply, 403, 'FORBIDDEN', 'You cannot edit this agent.')
+        if (request === 'not_found' || !seams.requests) return refuse(reply, 404, 'NOT_FOUND', 'Request not found.')
+        try {
+          await seams.requests.cancel(orgOf(req), request.id)
+        } catch (err) {
+          if (err instanceof MsTeamsRequestBusy)
+            return refuse(reply, 409, 'MSTEAMS_REQUEST_BUSY', 'The request is being checked. Try again in a moment.')
+          req.log.warn({ err, requestId: request.id }, 'msteams: agent bot request not cancelled')
+          return refuse(reply, 502, 'MSTEAMS_CONNECT_UNAVAILABLE', 'Microsoft could not be reached. Try again.')
+        }
+        return reply.code(204).send(null)
       }
     )
 

@@ -8,18 +8,21 @@ import { Button, Icon } from '@/components/ui'
 import { Spinner, Wordmark } from '@/components/marks'
 import {
   ApiError,
+  checkMsTeamsAgentBotRequest,
   continueMsTeamsConnect,
   createMsTeamsAgentBot,
   fetchOrgs,
   finishMsTeamsConnect,
   installMsTeamsTeams,
+  requestMsTeamsAgentBot,
   startMsTeamsRecovery,
+  type MsTeamsAgentBotRequestDto,
   type MsTeamsConnectResultDto
 } from '@/lib/api'
 import { getUser, isAuthConfigured, login } from '@/lib/auth'
 import { writeFlowState } from '@/lib/flow-state'
 
-type Phase = 'loading' | 'failed' | 'teams' | 'installing' | 'done'
+type Phase = 'loading' | 'failed' | 'teams' | 'installing' | 'requested' | 'done'
 
 /** The organization a signed state names; the Control Plane re-checks the signature, this only routes the request. */
 export function msTeamsConnectOrgId(state: string | null): string | null {
@@ -43,6 +46,8 @@ const ERROR_KEYS: Record<string, string> = {
   MSTEAMS_TENANT_IN_USE: 'inUse',
   MSTEAMS_AGENT_NAME_TAKEN: 'nameTaken',
   MSTEAMS_AGENT_BOTS_UNAVAILABLE: 'agentBotsUnavailable',
+  MSTEAMS_TENANT_NOT_CONNECTED: 'notConnected',
+  MSTEAMS_AGENT_ALREADY_CONNECTED: 'alreadyConnected',
   MSTEAMS_CONNECT_NO_AGENT: 'noAgent',
   MSTEAMS_RELAY_ORIGIN_MISSING: 'unavailable',
   MSTEAMS_CONNECT_UNAVAILABLE: 'unavailable',
@@ -59,6 +64,9 @@ export default function MsTeamsConnect() {
   const [agentHref, setAgentHref] = useState('/')
   // A further agent's own bot is created while the administrator picks teams (teams-integration.md §8.6.5).
   const [creatingBot, setCreatingBot] = useState(false)
+  // A member's request waits for a Teams administrator's approval (§8.6.6).
+  const [request, setRequest] = useState<MsTeamsAgentBotRequestDto | null>(null)
+  const [checking, setChecking] = useState(false)
   const [recovery, setRecovery] = useState<{ tenantId: string; agentId: string } | null>(null)
   const [recovering, setRecovering] = useState(false)
   const landing = useRef<URLSearchParams | null>(null)
@@ -121,6 +129,17 @@ export default function MsTeamsConnect() {
           setPhase('done')
           return
         }
+        // A sign-in that resumed a waiting request has nothing more to choose.
+        if (connected.request) {
+          setRequest(connected.request)
+          setPhase('requested')
+          return
+        }
+        // An administrator's approval already installed into the teams the member chose.
+        if (connected.approved) {
+          setPhase('done')
+          return
+        }
         // An update preselects nothing: the teams that had the app already run the new package.
         const update = connected.teams.some((team) => team.app !== 'none')
         setChosen(new Set(update ? [] : connected.teams.slice(0, 1).map((team) => team.id)))
@@ -172,14 +191,34 @@ export default function MsTeamsConnect() {
   }
 
   async function install() {
-    if (!result?.ticket || chosen.size === 0 || creatingBot) return
+    if (!result?.ticket || creatingBot) return
+    if (!result.member && chosen.size === 0) return
     setPhase('installing')
     setError(null)
     try {
+      if (result.member) {
+        setRequest(await requestMsTeamsAgentBot(orgId, result.ticket, [...chosen]))
+        setPhase('requested')
+        return
+      }
       await installMsTeamsTeams(orgId, result.ticket, [...chosen])
       setPhase('done')
     } catch (e) {
       fail(e)
+    }
+  }
+
+  async function check() {
+    if (!request) return
+    setChecking(true)
+    try {
+      const checked = await checkMsTeamsAgentBotRequest(orgId, request.id)
+      if (checked.integrationId) setPhase('done')
+      else if (checked.request) setRequest(checked.request)
+    } catch (e) {
+      fail(e)
+    } finally {
+      setChecking(false)
     }
   }
 
@@ -240,6 +279,35 @@ export default function MsTeamsConnect() {
               {t('backToAgent')}
             </a>
           </div>
+        ) : phase === 'requested' && request ? (
+          <div className="flex flex-col items-center gap-5 text-center">
+            <span className="flex h-12 w-12 items-center justify-center rounded-full bg-(--surface-active)">
+              <Icon name="clock" size={22} color="var(--text-secondary)" />
+            </span>
+            <div>
+              <h1 className="text-[18px] font-semibold leading-normal text-(--text-primary)">{t('request.title')}</h1>
+              <p role="status" className="mt-2 text-[13px] leading-[1.55] text-(--text-secondary)">
+                {t(`request.${request.status}`)}
+              </p>
+            </div>
+            <a
+              href={request.adminCenterUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="dsbtn dsbtn-secondary no-underline"
+            >
+              {t('request.openAdmin')}
+              <Icon name="external-link" size={14} />
+            </a>
+            <div className="flex gap-[10px]">
+              <Button disabled={checking} onClick={() => void check()}>
+                {t(checking ? 'request.checking' : 'request.check')}
+              </Button>
+              <Button variant="ghost" disabled={checking} onClick={() => window.location.assign(agentHref)}>
+                {t('backToAgent')}
+              </Button>
+            </div>
+          </div>
         ) : phase === 'loading' || !result ? (
           <div className="flex flex-col items-center gap-4 py-6 text-[14px] text-(--text-secondary)">
             <Spinner size={40} />
@@ -250,7 +318,7 @@ export default function MsTeamsConnect() {
             <div>
               <h1 className="text-[18px] font-semibold leading-normal text-(--text-primary)">{t('title')}</h1>
               <p className="mt-2 text-[13px] leading-[1.55] text-(--text-secondary)">
-                {t(creatingBot ? 'agentBotDescription' : 'description')}
+                {t(result.member ? 'request.description' : creatingBot ? 'agentBotDescription' : 'description')}
               </p>
               {creatingBot && (
                 <p
@@ -297,9 +365,13 @@ export default function MsTeamsConnect() {
             ) : (
               <p className="text-[13px] leading-[1.55] text-(--text-secondary)">{t('noTeams')}</p>
             )}
-            <p className="text-[12px] leading-[1.5] text-(--text-tertiary)">{t('personal')}</p>
+            {!result.member && <p className="text-[12px] leading-[1.5] text-(--text-tertiary)">{t('personal')}</p>}
             <div className="flex gap-[10px]">
-              {updatedCount + failedCount > 0 && chosen.size === 0 ? (
+              {result.member ? (
+                <Button onClick={() => void install()} disabled={phase === 'installing'}>
+                  {t(phase === 'installing' ? 'request.submitting' : 'request.submit')}
+                </Button>
+              ) : updatedCount + failedCount > 0 && chosen.size === 0 ? (
                 <Button onClick={() => setPhase('done')}>{t('finish')}</Button>
               ) : (
                 <>

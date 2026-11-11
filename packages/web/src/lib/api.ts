@@ -5735,12 +5735,24 @@ export async function fetchMsTeamsDeploymentApp(orgId?: string): Promise<MsTeams
 export async function startMsTeamsConnect(
   orgId: string,
   agentId: string,
-  tenantId?: string
+  tenantId?: string,
+  member?: boolean
 ): Promise<{ authorizeUrl: string }> {
   return apiPost<{ authorizeUrl: string }>(`${orgBase(orgId)}/integrations/msteams/connect`, {
     agentId,
-    ...(tenantId ? { tenantId } : {})
+    ...(tenantId ? { tenantId } : {}),
+    ...(member ? { member: true } : {})
   })
+}
+/** A member's request for an agent's own Teams bot, waiting for a Teams administrator to approve its package. */
+export interface MsTeamsAgentBotRequestDto {
+  id: string
+  agentId: string
+  tenantId: string
+  status: 'pending' | 'needs_sign_in' | 'rejected'
+  reason: string | null
+  createdAt: string
+  adminCenterUrl: string
 }
 export interface MsTeamsConnectResultDto {
   /** Absent while the agent's own bot is still to be created. */
@@ -5753,6 +5765,12 @@ export interface MsTeamsConnectResultDto {
   /** Absent for a Teams Store install, which has no install step. */
   ticket?: string
   store: boolean
+  /** A member's sign-in: `ticket` goes to {@link requestMsTeamsAgentBot} with the chosen teams. */
+  member?: boolean
+  /** The request this sign-in resumed, or one just approved that Microsoft does not show as published yet. */
+  request?: MsTeamsAgentBotRequestDto
+  /** An administrator's approval of a waiting request, which has no team step. */
+  approved?: boolean
 }
 /** Redeem the code Microsoft returned: connects the tenant and answers the administrator's teams. */
 export async function finishMsTeamsConnect(
@@ -5769,6 +5787,42 @@ export async function continueMsTeamsConnect(orgId: string, state: string): Prom
 /** Create a further agent's own bot, publish its package and install its row; safe to repeat. */
 export async function createMsTeamsAgentBot(orgId: string, ticket: string): Promise<MsTeamsConnectResultDto> {
   return apiPost<MsTeamsConnectResultDto>(`${orgBase(orgId)}/integrations/msteams/connect/agent-bot`, { ticket })
+}
+/** Create the agent's bot and submit its package for the administrator's approval. */
+export async function requestMsTeamsAgentBot(
+  orgId: string,
+  ticket: string,
+  teamIds: string[]
+): Promise<MsTeamsAgentBotRequestDto> {
+  return apiPost<MsTeamsAgentBotRequestDto>(`${orgBase(orgId)}/integrations/msteams/connect/request`, {
+    ticket,
+    teamIds
+  })
+}
+/** The agent's requests still waiting for approval. */
+export async function fetchMsTeamsAgentBotRequests(
+  orgId: string,
+  agentId: string
+): Promise<MsTeamsAgentBotRequestDto[]> {
+  const { requests } = await apiGet<{ requests: MsTeamsAgentBotRequestDto[] }>(
+    `${orgBase(orgId)}/integrations/msteams/requests?agentId=${encodeURIComponent(agentId)}`
+  )
+  return requests
+}
+/** Read the package's state now; answers the integration once it was approved and installed. */
+export async function checkMsTeamsAgentBotRequest(
+  orgId: string,
+  id: string
+): Promise<{ integrationId?: string; request?: MsTeamsAgentBotRequestDto }> {
+  return apiPost(`${orgBase(orgId)}/integrations/msteams/requests/${encodeURIComponent(id)}/check`, {})
+}
+/** Microsoft's sign-in page for an administrator who approves the waiting request from here. */
+export async function approveMsTeamsAgentBotRequest(orgId: string, id: string): Promise<{ authorizeUrl: string }> {
+  return apiPost(`${orgBase(orgId)}/integrations/msteams/requests/${encodeURIComponent(id)}/approve`, {})
+}
+/** Withdraw the submission and remove the bot made for it. */
+export async function cancelMsTeamsAgentBotRequest(orgId: string, id: string): Promise<void> {
+  await apiDelete(`${orgBase(orgId)}/integrations/msteams/requests/${encodeURIComponent(id)}`)
 }
 /** Install the connected app into the chosen teams. */
 export async function installMsTeamsTeams(

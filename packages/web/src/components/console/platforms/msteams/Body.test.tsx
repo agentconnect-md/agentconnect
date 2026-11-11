@@ -14,7 +14,11 @@ const mocks = vi.hoisted(() => ({
   appPackage: vi.fn(),
   saveBlob: vi.fn(),
   deploymentApp: vi.fn(),
-  connect: vi.fn()
+  connect: vi.fn(),
+  requests: vi.fn(),
+  checkRequest: vi.fn(),
+  cancelRequest: vi.fn(),
+  approveRequest: vi.fn()
 }))
 
 vi.mock('../deployment-config', () => ({
@@ -25,7 +29,11 @@ vi.mock('./api', () => ({
     create: mocks.create,
     appPackage: mocks.appPackage,
     deploymentApp: mocks.deploymentApp,
-    connect: mocks.connect
+    connect: mocks.connect,
+    requests: mocks.requests,
+    checkRequest: mocks.checkRequest,
+    cancelRequest: mocks.cancelRequest,
+    approveRequest: mocks.approveRequest
   }
 }))
 vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ activeOrg: { id: 'org-a' } }) }))
@@ -157,6 +165,7 @@ describe('msTeamsPane', () => {
 describe('MsTeamsWizardBody with the deployment app', () => {
   it('sends the person to Microsoft’s sign-in for this agent, or lets them register their own bot', async () => {
     mocks.deploymentApp.mockResolvedValue({ appId: APP_ID })
+    mocks.requests.mockResolvedValue([])
     mocks.connect.mockResolvedValue({ authorizeUrl: 'https://login.microsoftonline.com/organizations/x' })
     const assign = vi.fn()
     vi.stubGlobal('location', { ...window.location, assign })
@@ -166,11 +175,61 @@ describe('MsTeamsWizardBody with the deployment app', () => {
     })
     expect(identity?.hidden).toBe(true)
     await act(async () => buttonWith('Connect with Microsoft')?.click())
-    expect(mocks.connect).toHaveBeenCalledWith('org-a', 'agent-a')
+    expect(mocks.connect).toHaveBeenCalledWith('org-a', 'agent-a', undefined, false)
     expect(assign).toHaveBeenCalledWith('https://login.microsoftonline.com/organizations/x')
     await act(async () => buttonWith('Register your own bot instead')?.click())
     expect(text()).toContain('Open Teams Developer Portal')
     vi.unstubAllGlobals()
+  })
+
+  it('lets a member ask for approval, and shows a waiting request with its check and cancel', async () => {
+    mocks.deploymentApp.mockResolvedValue({ appId: APP_ID })
+    mocks.requests.mockResolvedValue([])
+    mocks.connect.mockResolvedValue({ authorizeUrl: 'https://login.microsoftonline.com/organizations/x' })
+    const assign = vi.fn()
+    vi.stubGlobal('location', { ...window.location, assign })
+    await render()
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    await act(async () => buttonWith('I’m not an administrator')?.click())
+    expect(mocks.connect).toHaveBeenCalledWith('org-a', 'agent-a', undefined, true)
+    vi.unstubAllGlobals()
+
+    await act(async () => root.unmount())
+    root = createRoot(host)
+    const waiting = {
+      id: 'req-1',
+      agentId: 'agent-a',
+      tenantId: TENANT_ID,
+      status: 'pending',
+      reason: null,
+      createdAt: '2026-11-01T00:00:00.000Z',
+      adminCenterUrl: 'https://admin.example.test/manage-apps'
+    }
+    mocks.requests.mockResolvedValue([waiting])
+    mocks.checkRequest.mockResolvedValue({ request: { ...waiting, status: 'rejected' } })
+    mocks.cancelRequest.mockResolvedValue(undefined)
+    await render()
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(text()).toContain('Waiting for a Teams administrator')
+    expect(buttonWith('I’m not an administrator')).toBeUndefined()
+    expect(host.querySelector('a[href="https://admin.example.test/manage-apps"]')).not.toBeNull()
+    mocks.approveRequest.mockResolvedValue({ authorizeUrl: 'https://login.microsoftonline.com/organizations/y' })
+    const approve = vi.fn()
+    vi.stubGlobal('location', { ...window.location, assign: approve })
+    await act(async () => buttonWith('Approve as administrator')?.click())
+    expect(mocks.approveRequest).toHaveBeenCalledWith('org-a', 'req-1')
+    expect(approve).toHaveBeenCalledWith('https://login.microsoftonline.com/organizations/y')
+    vi.unstubAllGlobals()
+    await act(async () => buttonWith('Check again')?.click())
+    expect(mocks.checkRequest).toHaveBeenCalledWith('org-a', 'req-1')
+    expect(text()).toContain('turned down or removed')
+    await act(async () => buttonWith('Cancel request')?.click())
+    expect(mocks.cancelRequest).toHaveBeenCalledWith('org-a', 'req-1')
+    expect(text()).not.toContain('turned down or removed')
   })
 })
 

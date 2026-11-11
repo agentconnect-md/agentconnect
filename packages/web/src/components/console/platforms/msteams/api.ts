@@ -1,7 +1,11 @@
 // No 'use client' here: reached only from ModalProvider's tree and the Settings view, both client trees.
 
 import {
+  approveMsTeamsAgentBotRequest,
+  cancelMsTeamsAgentBotRequest,
+  checkMsTeamsAgentBotRequest,
   createIntegration,
+  fetchMsTeamsAgentBotRequests,
   downloadMsTeamsAppPackage,
   fetchMsTeamsAppPackageStatus,
   fetchMsTeamsDeploymentApp,
@@ -16,7 +20,11 @@ export const msTeamsApi = {
   appPackage: downloadMsTeamsAppPackage,
   appPackageStatus: fetchMsTeamsAppPackageStatus,
   deploymentApp: fetchMsTeamsDeploymentApp,
-  connect: startMsTeamsConnect
+  connect: startMsTeamsConnect,
+  requests: fetchMsTeamsAgentBotRequests,
+  checkRequest: checkMsTeamsAgentBotRequest,
+  approveRequest: approveMsTeamsAgentBotRequest,
+  cancelRequest: cancelMsTeamsAgentBotRequest
 }
 
 export type MsTeamsApi = typeof msTeamsApi
