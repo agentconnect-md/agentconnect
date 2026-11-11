@@ -648,6 +648,7 @@ export type WebChannelListMessageKey =
   | 'discordCannotLeaveRowHint'
   | 'googlechatMentionHint'
   | 'dingtalkMentionHint'
+  | 'wecomMentionHint'
   | 'linearGatedNote'
   | 'ownerChange.title'
   | 'ownerChange.body'

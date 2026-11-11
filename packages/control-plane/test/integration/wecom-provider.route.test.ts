@@ -137,6 +137,7 @@ describe('a WeCom smart bot from POST /integrations', () => {
     expect((await install(app, agentId)).statusCode).toBe(201)
     const dup = await install(app, other)
     expect(dup.statusCode).toBe(409)
+    expect(dup.json().code).toBe('WECOM_BOT_ALREADY_INSTALLED')
     expect(dup.json().message).toMatch(/already installed/)
     expect(subscribes).toEqual([BOT_ID])
     expect(await prisma.bot.count({ where: { platform: 'wecom' } })).toBe(1)

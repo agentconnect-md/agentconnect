@@ -13,6 +13,8 @@ export type FeatureFlagId =
   | 'qq'
   // The personal WeChat integration's console install entry points.
   | 'wechat'
+  // The WeCom integration's console install entry points; existing WeCom bots keep their Bots tab.
+  | 'wecom'
   // The built-in agent offers the deployment's Google Chat app first, through its Marketplace listing; otherwise it connects its own app.
   | 'google-chat-deployment-app'
   // The By decision checkout for additional repositories; a row already By decision keeps it, and a set selector stays shown.

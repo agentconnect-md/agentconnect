@@ -1936,6 +1936,7 @@
       "discordCannotLeaveRowHint": "A Discord bot belongs to a server, not one channel — use Leave on the server heading above to take it out. If it is still in there, the row will come back.",
       "googlechatMentionHint": "Replies when mentioned. Google Chat delivers a message in a space, thread replies included, only when it mentions the app.",
       "dingtalkMentionHint": "Replies when mentioned. DingTalk delivers a group message only when it mentions the bot.",
+      "wecomMentionHint": "Replies when mentioned. WeCom delivers a group message only when it mentions the bot.",
       "space": {
         "thisServer": "this server",
         "leaveTitle": "Leave {space} — the bot leaves the whole server, with every {noun} in it",
@@ -2587,6 +2588,10 @@
         "wechat": {
           "create": "Scan a QR code with your WeChat",
           "existing": "An unused WeChat bot"
+        },
+        "wecom": {
+          "create": "Create a smart bot in WeCom",
+          "existing": "An unused WeCom bot"
         }
       },
       "api": {
@@ -7059,6 +7064,29 @@
         "reconnectHint": "Scan again with the same WeChat, for example after WeChat logged the bot out. The bot keeps its integration; its current conversation closes and the next message starts a new one.",
         "close": "Close"
       }
+    },
+    "wecom": {
+      "checking": "Checking credentials…",
+      "connect": "Connect",
+      "openConsole": "Open WeCom admin console",
+      "step1": "In the WeCom admin console, create a smart bot, set its API mode to long connection, then copy its BotID and Secret.",
+      "step2": "Paste the BotID & Secret — required to connect",
+      "errors": {
+        "invalidCredentials": "WeCom rejected this BotID or Secret. Copy both again from the smart bot in WeCom, then connect again.",
+        "longConnectionDisabled": "This smart bot does not use long connection. Set its API mode to long connection in WeCom, then connect again.",
+        "checkUnavailable": "AgentConnect could not reach WeCom to check this bot, so nothing was saved. Try again in a moment.",
+        "alreadyInstalled": "This WeCom bot is already connected to AgentConnect. Reuse it instead of adding it again: disconnect it from any agent that still uses it, then choose “An unused WeCom bot”. A bot connected in another organization must be removed there first."
+      },
+      "settings": {
+        "replace": "Replace secret",
+        "untested": "AgentConnect does not test the new Secret, because testing it would disconnect the running bot. The bot reconnects with the new Secret; if it stops responding, the Secret is likely wrong, so copy it again from WeCom.",
+        "newSecret": "New Secret",
+        "save": "Save",
+        "saving": "Saving…",
+        "close": "Close",
+        "updated": "Secret saved. The bot reconnects with it."
+      },
+      "brand": "WeCom"
     }
   },
   "Computers": {

@@ -58,6 +58,8 @@ const LABELS = new Map<string, PlatformLabel>([
   ['msteams', { name: 'Microsoft Teams', picker: 'Microsoft Teams', sigil: '' }],
   // A WeChat bot has one chat, the member's own, and no rooms to name.
   ['wechat', { name: 'WeChat', picker: 'WeChat', sigil: '' }],
+  // A WeCom group is named without a "#".
+  ['wecom', { name: 'WeCom', picker: 'WeCom', sigil: '' }],
   // Nothing routes a bare 'lark' id today (the cloud rides on its own `region`
   // field), but the substring chains this replaces accepted it.
   ['lark', { name: 'Lark', picker: 'Lark/Feishu', sigil: '' }]

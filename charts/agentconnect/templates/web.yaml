@@ -84,6 +84,7 @@ spec:
             {{- if .Values.features.gitUrl }}{{- $flags = append $flags "git-url" }}{{- end }}
             {{- if .Values.features.qq }}{{- $flags = append $flags "qq" }}{{- end }}
             {{- if .Values.features.wechat }}{{- $flags = append $flags "wechat" }}{{- end }}
+            {{- if .Values.features.wecom }}{{- $flags = append $flags "wecom" }}{{- end }}
             {{- if .Values.features.googleChatDeploymentApp }}{{- $flags = append $flags "google-chat-deployment-app" }}{{- end }}
             {{- if .Values.features.repositoryDecision }}{{- $flags = append $flags "repository-decision" }}{{- end }}
             {{- if .Values.features.computerUse }}{{- $flags = append $flags "computer-use" }}{{- end }}

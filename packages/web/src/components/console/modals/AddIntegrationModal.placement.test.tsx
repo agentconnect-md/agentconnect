@@ -166,6 +166,25 @@ describe('AddIntegrationModal, flag-gated platform tiles', () => {
     expect(document.querySelector('.ptile.on')?.textContent).toContain('Slack')
   })
 
+  it('leaves the WeCom tile out where the wecom flag is off, even with another flag on', async () => {
+    window.__AC_ENV = { FEATURE_FLAGS: 'qq,wechat' }
+    await render({ daemon: '—', placementKind: 'daemon' })
+    const more = document.querySelector<HTMLButtonElement>('button.ptile')!
+    await act(async () => more.click())
+    expect(tileStates()).toHaveProperty('QQ')
+    expect(tileStates()).not.toHaveProperty('WeCom')
+  })
+
+  it('offers the WeCom tile where the wecom flag is on', async () => {
+    window.__AC_ENV = { FEATURE_FLAGS: 'wecom' }
+    await render({ daemon: '—', placementKind: 'daemon' })
+    const more = document.querySelector<HTMLButtonElement>('button.ptile')!
+    expect(more.textContent).toBe('More')
+    await act(async () => more.click())
+    expect(tileStates()['WeCom']).toBe(false)
+    expect(tileStates()).not.toHaveProperty('QQ')
+  })
+
   it('reveals an overflow platform selected after placement loads', async () => {
     window.__AC_ENV = { FEATURE_FLAGS: 'qq' }
     mocks.daemons = [daemon({ caps: { platforms: ['qq'], runtimes: [], acp: true, features: [] } })]

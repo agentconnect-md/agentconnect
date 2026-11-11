@@ -158,6 +158,7 @@ describe('WeCom provider validation', () => {
     expect(await provider.validateConfig(credentials, 'socket')).toMatchObject({
       ok: false,
       status: 409,
+      code: 'WECOM_BOT_ALREADY_INSTALLED',
       message: 'This WeCom bot is already installed. Reuse the existing bot.'
     })
     expect(isInstalled).toHaveBeenCalledWith('aibot-example')

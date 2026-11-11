@@ -204,7 +204,8 @@ export function createWeComCpProvider(deps: WeComCpProviderDeps = {}): CpPlatfor
     credentialBodySchema: WeComCreateCredentials,
     async validateConfig(credentials): Promise<WeComValidation> {
       // The create route fences duplicates only after this check, and a subscribe here would evict the installed bot's daemon.
-      if (await deps.isInstalled?.(credentials.botId)) return { ok: false, status: 409, message: CONFLICT_MESSAGE }
+      if (await deps.isInstalled?.(credentials.botId))
+        return { ok: false, status: 409, code: 'WECOM_BOT_ALREADY_INSTALLED', message: CONFLICT_MESSAGE }
       return verifyWeComBot(credentials, {
         ...(deps.dial ? { dial: deps.dial } : {}),
         ...(deps.url ? { url: deps.url } : {})

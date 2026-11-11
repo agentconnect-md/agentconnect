@@ -910,6 +910,7 @@ export type CreateIntegrationInput =
       slack?: { botToken: string; appToken: string } | { botToken: string; signingSecret: string }
     })
   | (CreateIntegrationBase & { platform: 'qq'; qq?: { appId: string; appSecret: string } })
+  | (CreateIntegrationBase & { platform: 'wecom'; wecom?: { botId: string; secret: string } })
   | (CreateIntegrationBase & {
       platform: 'dingtalk'
       dingtalk?: { clientId: string; clientSecret: string; edition?: 'mainland' | 'international' }
