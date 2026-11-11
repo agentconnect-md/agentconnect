@@ -8,6 +8,8 @@ import {
   type ProxyRouteDescriptor
 } from '../credential-proxy/route-descriptor.js'
 
+const NO_PROJECT_REFUSAL = 'this GitLab API read names no project and the agent has no workspace project'
+
 const WRITE_REFUSAL =
   'GitLab API writes are not available with this agent’s credential. Use the gitlabMergeRequest, gitlabIssue, gitlabComment or gitlabPipeline tool.'
 
@@ -27,7 +29,7 @@ function gitlabProject(encoded: string): { repo: string } | { repoId: string } |
 
 export const gitlabProxyRoute: ProxyRouteDescriptor = {
   provider: 'gitlab',
-  route: (instance, method, target) => {
+  route: (instance, method, target, { repositories }) => {
     const stripped = underInstance(instance, target)
     // Another application beside the instance on the same host is not the agent's code host.
     if (stripped === undefined) return { kind: 'anonymous' }
@@ -41,7 +43,12 @@ export const gitlabProxyRoute: ProxyRouteDescriptor = {
     if (segments[0] !== 'api') return { kind: 'anonymous' }
     if (segments[1] !== 'v4') return { kind: 'deny', status: 400, reason: 'only API v4 is available' }
     if (!READS.has(method.toUpperCase())) return { kind: 'deny', status: 403, reason: WRITE_REFUSAL }
-    if (segments[2] !== 'projects' || segments.length < 4) return { kind: 'workspace' }
+    // A read that names no project answers with the service account's own memberships, under the workspace project's read lease.
+    if (segments[2] !== 'projects' || segments.length < 4) {
+      const workspace = repositories.find((row) => row.workspace)
+      if (!workspace) return { kind: 'deny', status: 403, reason: NO_PROJECT_REFUSAL }
+      return { kind: 'repository', plane: 'api', repoId: workspace.repoId }
+    }
     const project = gitlabProject(segments[3]!)
     if (!project) return { kind: 'deny', status: 400, reason: 'the API path does not name a project' }
     return { kind: 'repository', plane: 'api', ...project }

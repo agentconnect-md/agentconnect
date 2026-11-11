@@ -422,7 +422,9 @@ describe('GitCredentialCache', () => {
       expect(h.calls()).toBe(2)
       expect((await h.cache.getGitlabEffectToken(AGENT, PROJECT)).token).toBe('glpat_3')
       // And the agent's own workspace grant was never dragged into the denial.
-      expect((await h.cache.get(AGENT, 'clone', { provider: 'gitlab', externalRepoId: PROJECT })).token).toBe('glpat_4')
+      expect(
+        (await h.cache.get(AGENT, 'clone', { provider: 'gitlab', consumer: 'daemon', externalRepoId: PROJECT })).token
+      ).toBe('glpat_4')
     })
 
     it('keeps a SCOPE_DENIED hook-reply lease retryable instead of durably denying the key', async () => {
@@ -449,7 +451,9 @@ describe('GitCredentialCache', () => {
       expect((await h.cache.getGitlabPostToken(AGENT, PROJECT, HOOK)).token).toBe('glpat_3')
       // The broker lease and the agent's own workspace grant were never dragged into the denial.
       expect((await h.cache.getGitlabEffectToken(AGENT, PROJECT)).token).toBe('glpat_4')
-      expect((await h.cache.get(AGENT, 'clone', { provider: 'gitlab', externalRepoId: PROJECT })).token).toBe('glpat_5')
+      expect(
+        (await h.cache.get(AGENT, 'clone', { provider: 'gitlab', consumer: 'daemon', externalRepoId: PROJECT })).token
+      ).toBe('glpat_5')
     })
 
     it('leaves a workspace-keyed git SCOPE_DENIED terminal, exactly as before', async () => {

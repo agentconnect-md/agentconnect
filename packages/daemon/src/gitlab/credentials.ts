@@ -26,6 +26,8 @@ export const gitlabCredentials: CodeHostCredentialModule = {
   liveCredentialPurposes: ['gitlab_hook_reply', 'gitlab_effect'],
   workspaceRepoId: (workspace) => workspace.gitlabProjectId,
   resolvesByName: false,
+  // The service account's PATs last months and reach every project it is a member of, so only the proxy and the daemon's own Git present them.
+  proxyOnly: true,
   placeSecondaryRoot: (row): SecondaryRootPlacement | undefined => {
     // `repos/_gitlab/<project id>` — the id, because a project path is namespaced to any depth and a rename moves it.
     const segments = row.repoFullName.split('/')

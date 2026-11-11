@@ -90,6 +90,8 @@ export const gitlabCodeHostProvider: CodeHostProviderModule = {
   provider: 'gitlab',
   displayName: 'GitLab',
   repositorySubject: 'project',
+  // The service account's PATs last months and reach every project it is a member of, so only the proxy may hold them.
+  proxyOnly: true,
   features: {
     deploymentHost: (deps) => deps.gitlab?.api.baseUrl,
     specHost: (spec) => spec.gitlabHost,

@@ -408,7 +408,7 @@ describe('the grant host echo (§24.4)', () => {
   }
 
   const ask = (instance: GitCredentialCache) =>
-    instance.get(AGENT, 'clone', { provider: 'gitlab', externalRepoId: '4455667' })
+    instance.get(AGENT, 'clone', { provider: 'gitlab', consumer: 'daemon', externalRepoId: '4455667' })
 
   it('accepts the instance the spec names, prefix and port included', async () => {
     await expect(ask(cache({ host: INSTANCE }, INSTANCE))).resolves.toMatchObject({ token: 'glpat-x' })

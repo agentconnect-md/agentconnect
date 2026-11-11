@@ -7181,7 +7181,7 @@ export class Daemon {
     }
   }
 
-  /** The proxy's token for one request: GitHub's straight from the cache, as before; a proxy-only provider's by its own lease; GitLab's through exactly the helper's ask; each with its `erase`. */
+  /** The proxy's token for one request: GitHub's straight from the cache, as before; a proxy-only provider's by its own lease; each with its `erase`. */
   private async credentialProxyMint(agentId: string, ask: MintAsk): Promise<MintedCredential> {
     if (isProxyOnlyProvider(ask.provider)) return await this.proxyOnlyLease(agentId, ask)
     if (ask.provider === 'github') {
@@ -7199,30 +7199,7 @@ export class Daemon {
         invalidate: () => this.gitCreds.invalidate(agentId, cred.token, { plane, ...repo })
       }
     }
-    const server = this.agentChannelServer
-    if (!server) throw new Error('the agent channel is not running')
-    let repo = ask.repo
-    // GitLab's API may name a project by its numeric id: the workspace's, or an authorized one's path.
-    if (ask.repoId !== undefined) {
-      const workspace = this.managedWorkspaceRepo(agentId)
-      const additional = (this.agents.get(agentId)?.workspace.additionalRepos ?? []).find(
-        (row) => row.provider === ask.provider && row.repoId === ask.repoId
-      )
-      if (workspace?.provider === ask.provider && workspace.repoId === ask.repoId) repo = undefined
-      else if (additional) repo = additional.repoFullName
-      else throw new Error(`project ${ask.repoId} is not authorized for this agent`)
-    }
-    // GitLab's API reads take the read-only CLI's plane.
-    const plane = ask.plane === 'api' && ask.provider === 'gitlab' ? 'glab' : 'git'
-    const serverAsk = { plane, provider: ask.provider, ...(repo !== undefined ? { repoFullName: repo } : {}) } as const
-    const cred = await server.agentCredential(agentId, serverAsk)
-    return {
-      ...cred,
-      invalidate: () =>
-        void server
-          .agentErase(agentId, serverAsk, cred.token)
-          .catch((err) => this.log.warn(`credential proxy: could not drop a rejected token (${formatErr(err)})`))
-    }
+    throw new Error(`the credential proxy holds no ${ask.provider} credential`)
   }
 
   /** azure-devops-integration.md §6.1, §11.9: the provider and its hooks, advertised together exactly while the credential proxy carries them. */
@@ -7270,7 +7247,10 @@ export class Daemon {
         ? [
             {
               repoId: managed.repoId,
-              repoFullName: gitRepoLabel(gitRepo),
+              // A host on a configurable instance names the workspace from that instance's root, as its routes read a request.
+              repoFullName: codeHostCredentials(provider)?.hostFromSpec
+                ? (managed.repoPath ?? gitRepoLabel(gitRepo))
+                : gitRepoLabel(gitRepo),
               workspace: true,
               ...(workspace.azureDevOps ? { azureDevOps: workspace.azureDevOps } : {})
             }

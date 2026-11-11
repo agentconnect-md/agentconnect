@@ -192,7 +192,7 @@ describe('handleGitCredRequest — repoFullName passthrough (issue #457)', () =>
       gitlabGitcred: { grantForAgent }
     } as unknown as DaemonWsDeps
     const conn = fakeConn()
-    const frame = gitcredFrame({ provider: 'gitlab', externalRepoId: '4455667' })
+    const frame = gitcredFrame({ provider: 'gitlab', externalRepoId: '4455667', consumer: 'proxy' })
 
     await handleGitCredRequest(frame, conn, deps)
 
@@ -203,6 +203,41 @@ describe('handleGitCredRequest — repoFullName passthrough (issue #457)', () =>
       'gitcred/grant',
       expect.objectContaining({ provider: 'gitlab', username: 'agentconnect-p4455667' })
     )
+  })
+
+  it('serves gitlab to the proxy and the daemon only, and has no lease for a purpose it does not know', async () => {
+    const grantForAgent = vi.fn()
+    const deps = {
+      agent: { get: async () => PLACED_AGENT },
+      gitlabGitcred: { grantForAgent }
+    } as unknown as DaemonWsDeps
+    for (const consumer of [undefined, 'helper']) {
+      const conn = fakeConn()
+      await handleGitCredRequest(
+        gitcredFrame({ provider: 'gitlab', externalRepoId: '4455667', ...(consumer ? { consumer } : {}) }),
+        conn,
+        deps
+      )
+      expect(conn.sendError).toHaveBeenCalledWith(
+        expect.anything(),
+        'SCOPE_DENIED',
+        expect.stringContaining("gitlab credentials are served only to the daemon's credential proxy and its own Git"),
+        false
+      )
+    }
+    const conn = fakeConn()
+    await handleGitCredRequest(
+      gitcredFrame({ provider: 'gitlab', externalRepoId: '4455667', consumer: 'proxy', purpose: 'gitea_effect' }),
+      conn,
+      deps
+    )
+    expect(conn.sendError).toHaveBeenCalledWith(
+      expect.anything(),
+      'SCOPE_DENIED',
+      'gitlab has no gitea_effect credential',
+      false
+    )
+    expect(grantForAgent).not.toHaveBeenCalled()
   })
 
   it('routes a gitlab_hook_reply to the effect grant, gated by the enabled gitlab hook (§14.1)', async () => {
@@ -466,7 +501,7 @@ describe('handleGitCredRequest — repoFullName passthrough (issue #457)', () =>
   it('fails a gitlab request closed when the seam is absent, and refuses unknown providers per-value', async () => {
     const deps = { agent: { get: async () => PLACED_AGENT }, github: {} } as unknown as DaemonWsDeps
     const conn = fakeConn()
-    await handleGitCredRequest(gitcredFrame({ provider: 'gitlab' }), conn, deps)
+    await handleGitCredRequest(gitcredFrame({ provider: 'gitlab', consumer: 'daemon' }), conn, deps)
     expect(conn.sendError).toHaveBeenCalledWith(
       expect.anything(),
       'SCOPE_DENIED',
