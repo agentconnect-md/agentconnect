@@ -63,7 +63,10 @@ function clip(text: string, max: number): string {
 }
 
 export interface MsTeamsManifestInput {
+  /** The bot's ID, which also names the package. */
   appId: string
+  /** The application the package's resource-specific permissions are granted to: the deployment app for an agent bot (§8.6.1), else the bot itself. */
+  consentAppId?: string
   /** The relay's public host, the bot's only web domain. */
   relayHost: string
   agentName: string
@@ -119,7 +122,10 @@ export function msTeamsManifest(input: MsTeamsManifestInput): Record<string, unk
       }
     ],
     validDomains: [input.relayHost],
-    webApplicationInfo: { id: input.appId, resource: `api://${input.relayHost}/${input.appId}` },
+    webApplicationInfo: {
+      id: input.consentAppId ?? input.appId,
+      resource: `api://${input.relayHost}/${input.consentAppId ?? input.appId}`
+    },
     authorization: { permissions: { resourceSpecific: MSTEAMS_RSC_PERMISSIONS.map((p) => ({ ...p })) } },
     // Teams refuses a v1.25+ manifest with the `team` scope without it (measured).
     supportsChannelFeatures: 'tier1'

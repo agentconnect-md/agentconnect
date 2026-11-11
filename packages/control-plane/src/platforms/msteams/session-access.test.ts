@@ -3,7 +3,7 @@ import { FakeClock } from '../../../test/fakes/fake-clock.js'
 import { BotId, OrgId } from '../../domain/ids.js'
 import type { SessionAccessViewer } from '../../http/session-access-plugin.js'
 import type { BotRecord, ExternalScopeRecord } from '../../persistence/ports.js'
-import { MSTEAMS_DEPLOYMENT_SECRET_MARKER, type MsTeamsPlatformApp } from './deployment-app.js'
+import { MSTEAMS_DEPLOYMENT_SECRET_MARKER, type MsTeamsAgentBots, type MsTeamsPlatformApp } from './deployment-app.js'
 import { MSTEAMS_CONNECTOR_ORIGIN, createMsTeamsSessionAccess } from './session-access.js'
 
 const APP = '22222222-2222-4222-8222-222222222222'
@@ -15,7 +15,7 @@ const HOME = '44444444-4444-4444-8444-444444444444'
 
 function fixture(
   respond: (url: string) => Response = () => Response.json({ aadObjectId: MEMBER, tenantId: TENANT }),
-  opts: { app?: MsTeamsPlatformApp; stored?: string } = {}
+  opts: { app?: MsTeamsPlatformApp; stored?: string; agentBots?: MsTeamsAgentBots; tokenStatus?: number } = {}
 ) {
   const clock = new FakeClock(Date.UTC(2026, 0, 1))
   const bot = {
@@ -29,7 +29,9 @@ function fixture(
   } as BotRecord
   const fetchImpl = vi.fn(async (url: string | URL | Request, _init?: RequestInit) =>
     String(url).includes('login.microsoftonline.com')
-      ? Response.json({ access_token: 'synthetic-token', expires_in: 3599 })
+      ? opts.tokenStatus
+        ? Response.json({ error: 'invalid_client', error_codes: [7000112] }, { status: opts.tokenStatus })
+        : Response.json({ access_token: 'synthetic-token', expires_in: 3599 })
       : respond(String(url))
   )
   const identity = {
@@ -46,7 +48,8 @@ function fixture(
       }
     },
     fetchImpl,
-    opts.app
+    opts.app,
+    opts.agentBots
   )
   const viewer = {
     orgId: bot.orgId,
@@ -91,6 +94,73 @@ describe('Microsoft Teams session access', () => {
     const [tokenCall] = f.fetchImpl.mock.calls
     expect(String(tokenCall![0])).toBe(`https://login.microsoftonline.com/${HOME}/oauth2/v2.0/token`)
     expect(String(tokenCall![1]?.body)).toContain('client_secret=deployment-secret-example')
+  })
+
+  it('checks an agent bot’s row with the token its own tenant issues for the blueprint (§8.6.7)', async () => {
+    const BLUEPRINT = '55555555-5555-4555-8555-555555555555'
+    const app = {
+      appId: '66666666-6666-4666-8666-666666666666',
+      tenantId: HOME,
+      clientSecret: 'deployment-secret-example'
+    }
+    const agentBots = {
+      blueprintId: BLUEPRINT,
+      clientSecret: 'blueprint-secret-example',
+      subscriptionId: '77777777-7777-4777-8777-777777777777',
+      resourceGroup: 'example-bots'
+    }
+    const asAgentBot = (f: ReturnType<typeof fixture>, blueprintId = BLUEPRINT) =>
+      Object.assign(f.bot, {
+        prebuilt: true,
+        platformConfig: {
+          tokenTenantId: TENANT,
+          appOwner: 'deployment',
+          agentBot: { blueprintId, resourceName: 'agentconnect-example' }
+        }
+      })
+    const f = fixture(undefined, { app, agentBots, stored: MSTEAMS_DEPLOYMENT_SECRET_MARKER })
+    asAgentBot(f)
+    await f.service.addViewerIdentities(f.viewer)
+    await expect(f.service.resolve([f.scope()], f.viewer)).resolves.toMatchObject({
+      allowedScopes: [{ id: 'scope-1', aclRevision: 1n }]
+    })
+    const [exchange, identity] = f.fetchImpl.mock.calls
+    const form = (call: (typeof f.fetchImpl.mock.calls)[number]) => new URLSearchParams(String(call[1]?.body))
+    expect(String(exchange![0])).toBe(`https://login.microsoftonline.com/${TENANT}/oauth2/v2.0/token`)
+    expect(form(exchange!).get('client_id')).toBe(BLUEPRINT)
+    expect(form(exchange!).get('fmi_path')).toBe(APP)
+    expect(form(identity!).get('client_id')).toBe(APP)
+    expect(form(identity!).get('client_assertion')).toBe('synthetic-token')
+    expect(f.fetchImpl.mock.calls.some(([, init]) => String(init?.body).includes('deployment-secret-example'))).toBe(
+      false
+    )
+
+    // Another blueprint's row, agent bots turned off, or an identity Entra refuses: nothing is admitted.
+    for (const refused of [
+      (() => {
+        const other = fixture(undefined, { app, agentBots, stored: MSTEAMS_DEPLOYMENT_SECRET_MARKER })
+        asAgentBot(other, app.appId)
+        return other
+      })(),
+      (() => {
+        const off = fixture(undefined, { app, stored: MSTEAMS_DEPLOYMENT_SECRET_MARKER })
+        asAgentBot(off)
+        return off
+      })(),
+      (() => {
+        const disabled = fixture(undefined, {
+          app,
+          agentBots,
+          stored: MSTEAMS_DEPLOYMENT_SECRET_MARKER,
+          tokenStatus: 400
+        })
+        asAgentBot(disabled)
+        return disabled
+      })()
+    ]) {
+      await refused.service.addViewerIdentities(refused.viewer)
+      expect((await refused.service.resolve([refused.scope()], refused.viewer)).allowedScopes).toEqual([])
+    }
   })
 
   it('admits a linked member of the conversation, checked with the bot’s own token', async () => {

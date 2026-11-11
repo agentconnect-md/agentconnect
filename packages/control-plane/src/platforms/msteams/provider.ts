@@ -10,13 +10,16 @@ import {
 import type { BotRecord, BotSecretMaterial } from '../../persistence/ports.js'
 import { isMsTeamsConversationId, msTeamsSessionRealm } from './session-access.js'
 import {
+  MSTEAMS_AGENT_BOT_KEY,
   MSTEAMS_DEPLOYMENT_OWNER,
   MSTEAMS_DEPLOYMENT_SECRET_MARKER,
   MSTEAMS_ROW_OWNER_KEY,
   MsTeamsCpEnvSchema,
   isMsTeamsCustomerRow,
   isMsTeamsDeploymentRow,
-  usesMsTeamsDeploymentApp,
+  msTeamsAgentBotOf,
+  servesMsTeamsDeploymentRow,
+  type MsTeamsAgentBots,
   type MsTeamsPlatformApp
 } from './deployment-app.js'
 import type { CpConfigRefusal, CpInstallTransport, CpPlatformProvider, CpValidatedIdentity } from '../provider.js'
@@ -149,12 +152,13 @@ export function msTeamsSecrets(clientSecret: string): BotSecretMaterial {
   return { botToken: clientSecret, appToken: null, signingSecret: null }
 }
 
-/** The daemon spec payload; undefined when the row lacks its identity or secret. A deployment app's row gets no secret, only the relay as its egress (§8.5). */
+/** The daemon spec payload; undefined when the row lacks its identity or secret. A deployment row, the app's or an agent bot's, gets no secret, only the relay as its egress (§8.5, §8.6.7). */
 export function msTeamsIntegrationConfig(
   bot: Pick<BotRecord, 'id' | 'externalAppId' | 'externalTenantId' | 'prebuilt' | 'platformConfig'>,
   secrets: Pick<BotSecretMaterial, 'botToken'>,
   publicRelayUrl?: string,
-  app?: Pick<MsTeamsPlatformApp, 'appId'>
+  app?: Pick<MsTeamsPlatformApp, 'appId'>,
+  agentBots?: Pick<MsTeamsAgentBots, 'blueprintId'>
 ): IntegrationMsTeamsConfig | undefined {
   if (!bot.externalAppId || !bot.externalTenantId) return undefined
   const identity = {
@@ -164,7 +168,7 @@ export function msTeamsIntegrationConfig(
   }
   // Decided by what the row stores, never by its secret slot; with no matching app configured it delivers nothing.
   if (isMsTeamsDeploymentRow(bot, app) || secrets.botToken === MSTEAMS_DEPLOYMENT_SECRET_MARKER)
-    return usesMsTeamsDeploymentApp(bot, app) ? { ...identity, egress: 'relay', botId: bot.id } : undefined
+    return servesMsTeamsDeploymentRow(bot, app, agentBots) ? { ...identity, egress: 'relay', botId: bot.id } : undefined
   if (!secrets.botToken) return undefined
   return { ...identity, clientSecret: secrets.botToken }
 }
@@ -175,8 +179,8 @@ export function msTeamsRequiredDaemonFeatures(config: unknown): readonly string[
   return parsed.success && 'egress' in parsed.data ? [MSTEAMS_RELAY_EGRESS_V1_FEATURE] : []
 }
 
-/** The relay assignment: no secret, the app ID the inbound token's audience must equal, the bot's own tenant, and its `28:` mention identity. */
-export function msTeamsBotAssignBags(bot: Pick<BotRecord, 'externalAppId' | 'externalTenantId'>): {
+/** The relay assignment: no secret, the app ID the inbound token's audience must equal, the bot's own tenant, its `28:` mention identity, and the mark of an agent bot, which the relay cannot tell otherwise (§8.6.7). */
+export function msTeamsBotAssignBags(bot: Pick<BotRecord, 'externalAppId' | 'externalTenantId' | 'platformConfig'>): {
   secrets: Record<string, unknown>
   ingress: Record<string, unknown>
 } {
@@ -184,7 +188,8 @@ export function msTeamsBotAssignBags(bot: Pick<BotRecord, 'externalAppId' | 'ext
     secrets: {},
     ingress: {
       ...(bot.externalAppId ? { apiAppId: bot.externalAppId, botUserId: `28:${bot.externalAppId.toLowerCase()}` } : {}),
-      ...(bot.externalTenantId ? { teamId: bot.externalTenantId } : {})
+      ...(bot.externalTenantId ? { teamId: bot.externalTenantId } : {}),
+      ...(msTeamsAgentBotOf(bot) ? { agentBot: true } : {})
     }
   }
 }
@@ -196,6 +201,8 @@ export const MSTEAMS_DEPLOYMENT_APP_MESSAGE =
 export interface MsTeamsCpProviderDeps {
   /** The deployment-owned app (§8.2), when Setup configured one. */
   app?: MsTeamsPlatformApp
+  /** The blueprint agent bots are made from (§8.6.3), when Setup configured them. */
+  agentBots?: Pick<MsTeamsAgentBots, 'blueprintId'>
   /** The boot pass that removes the deployment secret from the app's rows (§8.5). */
   credentialReconciler?: { start(): void; stop(): void }
   /** Entra's token endpoint; tests pass a fake. Defaults to the global fetch. */
@@ -241,9 +248,12 @@ export function createMsTeamsCpProvider(
       const tokenTenantId = input.platformConfig?.tokenTenantId
       const owner = input.platformConfig?.[MSTEAMS_ROW_OWNER_KEY]
       if (!input.externalAppId || !tenantId) return {}
+      // An agent bot's row keeps what names its blueprint and its Azure resource (§8.6.4).
+      const agentBot = msTeamsAgentBotOf({ platformConfig: input.platformConfig ?? null })
       const kept = {
         ...(tokenTenantId ? { tokenTenantId } : {}),
-        ...(owner === MSTEAMS_DEPLOYMENT_OWNER ? { [MSTEAMS_ROW_OWNER_KEY]: owner } : {})
+        ...(owner === MSTEAMS_DEPLOYMENT_OWNER ? { [MSTEAMS_ROW_OWNER_KEY]: owner } : {}),
+        ...(agentBot ? { [MSTEAMS_AGENT_BOT_KEY]: agentBot } : {})
       }
       return {
         externalAppId: input.externalAppId,
@@ -274,11 +284,11 @@ export function createMsTeamsCpProvider(
         }
       : {}),
 
-    // A freed customer row is deleted so its tenant can be connected anew, by any organization (§8.3).
-    releasesFreedBot: (bot) => isMsTeamsCustomerRow(bot, deps.app),
+    // A freed customer row is deleted so its tenant can be connected anew, by any organization (§8.3); a freed agent bot's row names a bot that is being deleted (§8.6.5).
+    releasesFreedBot: (bot) => isMsTeamsCustomerRow(bot, deps.app) || !!msTeamsAgentBotOf(bot),
 
     async projectIntegrationConfig(_integration, bot, _core, secrets) {
-      return msTeamsIntegrationConfig(bot, secrets, deps.publicRelayUrl, deps.app)
+      return msTeamsIntegrationConfig(bot, secrets, deps.publicRelayUrl, deps.app, deps.agentBots)
     },
 
     requiredDaemonFeatures: msTeamsRequiredDaemonFeatures,

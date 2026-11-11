@@ -93,6 +93,30 @@ export function isMsTeamsDeploymentRow(
   )
 }
 
+/** The `platformConfig` entry of an agent bot's row (§8.6.4): the blueprint that made its identity, and its Azure Bot resource. */
+export const MSTEAMS_AGENT_BOT_KEY = 'agentBot'
+const AgentBotEntry = z.object({ blueprintId: z.string().min(1), resourceName: z.string().min(1) })
+export type MsTeamsAgentBotEntry = z.infer<typeof AgentBotEntry>
+
+/** The agent bot a row is, by what it stores; undefined for the app's own row and for an organization's own bot. */
+export function msTeamsAgentBotOf(bot: {
+  platformConfig: Record<string, unknown> | null
+}): MsTeamsAgentBotEntry | undefined {
+  const parsed = AgentBotEntry.safeParse(bot.platformConfig?.[MSTEAMS_AGENT_BOT_KEY])
+  return parsed.success ? parsed.data : undefined
+}
+
+/** A deployment row the configured deployment can send for: the app's own row, or an agent bot of the configured blueprint. */
+export function servesMsTeamsDeploymentRow(
+  bot: { externalAppId: string | null; platformConfig: Record<string, unknown> | null },
+  app: Pick<MsTeamsPlatformApp, 'appId'> | undefined,
+  agentBots?: Pick<MsTeamsAgentBots, 'blueprintId'>
+): boolean {
+  const agentBot = msTeamsAgentBotOf(bot)
+  if (agentBot) return !!app && agentBots?.blueprintId === agentBot.blueprintId
+  return usesMsTeamsDeploymentApp(bot, app)
+}
+
 /** What a deployment app's row stores in its secret slot: a marker, not a secret, since the app's secret never leaves the deployment (§8.5). */
 export const MSTEAMS_DEPLOYMENT_SECRET_MARKER = 'msteams-deployment-app:no-secret'
 
