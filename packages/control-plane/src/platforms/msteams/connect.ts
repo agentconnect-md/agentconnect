@@ -25,13 +25,31 @@ const AUTHORITY = 'https://login.microsoftonline.com/organizations/oauth2/v2.0'
 // A pinned tenant signs in at its own authority, so Entra offers only that tenant's accounts.
 const authorityOf = (tenant?: string) =>
   tenant ? `https://login.microsoftonline.com/${tenant}/oauth2/v2.0` : AUTHORITY
-// A Store install asks only for its proof; a deployment with agent bots asks their two scopes too.
-const scopesOf = (tenant?: string, agentBots = false) =>
-  (tenant
+/** What a member who is not an administrator signs in with (§8.6.6): submit for review, install into their own teams, and a refresh token for the wait; none of it needs a consent once the tenant's administrator connected. */
+export const MSTEAMS_MEMBER_SCOPES = [
+  'https://graph.microsoft.com/AppCatalog.Submit',
+  'https://graph.microsoft.com/Team.ReadBasic.All',
+  'https://graph.microsoft.com/TeamsAppInstallation.ReadWriteAndConsentSelfForTeam',
+  'https://graph.microsoft.com/User.Read',
+  'openid',
+  'offline_access'
+] as const
+
+/** Which sign-in a state or a redemption is for; both must name the same scope set. */
+interface ScopeChoice {
+  tenant?: string
+  agentBots?: boolean
+  member?: boolean
+}
+// A Store install asks only for its proof; a member their own set; a deployment with agent bots asks an administrator their two scopes too.
+const scopesOf = (choice: ScopeChoice) =>
+  (choice.tenant
     ? MSTEAMS_STORE_CONNECT_SCOPES
-    : agentBots
-      ? [...MSTEAMS_CONNECT_SCOPES, ...MSTEAMS_AGENT_BOT_SCOPES]
-      : MSTEAMS_CONNECT_SCOPES
+    : choice.member
+      ? MSTEAMS_MEMBER_SCOPES
+      : choice.agentBots
+        ? [...MSTEAMS_CONNECT_SCOPES, ...MSTEAMS_AGENT_BOT_SCOPES]
+        : MSTEAMS_CONNECT_SCOPES
   ).join(' ')
 const GRAPH = 'https://graph.microsoft.com/v1.0'
 const STATE_TTL_MS = 10 * 60_000
@@ -51,6 +69,8 @@ export interface MsTeamsConnectState {
   agentBots?: boolean
   /** The state of the tenant-wide consent that precedes the sign-in (§8.6.5); it redeems no code. */
   consent?: boolean
+  /** A member's sign-in, which submits the agent's package for the administrator's approval (§8.6.6). */
+  member?: boolean
 }
 
 /** Domain-separated keys from the pepper, one per purpose; the pepper itself never signs or encrypts. */
@@ -76,6 +96,7 @@ const StatePayload = z.object({
   tenant: z.string().regex(GUID).optional(),
   agentBots: z.boolean().optional(),
   consent: z.boolean().optional(),
+  member: z.boolean().optional(),
   e: z.number(),
   n: z.string()
 })
@@ -104,7 +125,8 @@ export function verifyMsTeamsConnectState(
     userId: parsed.userId,
     ...(parsed.tenant ? { tenant: parsed.tenant } : {}),
     ...(parsed.agentBots ? { agentBots: true } : {}),
-    ...(parsed.consent ? { consent: true } : {})
+    ...(parsed.consent ? { consent: true } : {}),
+    ...(parsed.member ? { member: true } : {})
   }
 }
 
@@ -138,6 +160,7 @@ export function msTeamsAuthorizeUrl(
     state: string
     tenant?: string
     agentBots?: boolean
+    member?: boolean
     /** The administrator just chose an account on the consent page, so the picker is not forced again. */
     afterConsent?: boolean
   }
@@ -148,7 +171,7 @@ export function msTeamsAuthorizeUrl(
     response_type: 'code',
     redirect_uri: input.redirectUri,
     response_mode: 'query',
-    scope: scopesOf(input.tenant, input.agentBots),
+    scope: scopesOf(input),
     state: input.state,
     code_challenge: challenge,
     code_challenge_method: 'S256',
@@ -172,7 +195,11 @@ export class MsTeamsConnectError extends Error {
   }
 }
 
-const TokenResponse = z.object({ access_token: z.string().min(1), id_token: z.string().min(1) })
+const TokenResponse = z.object({
+  access_token: z.string().min(1),
+  id_token: z.string().min(1),
+  refresh_token: z.string().min(1).optional()
+})
 const IdClaims = z.object({ tid: z.string(), oid: z.string().optional() })
 
 /** The delegated token and the customer tenant, read from the ID token Entra's token endpoint answered directly. */
@@ -186,9 +213,10 @@ export async function redeemMsTeamsCode(
     state: string
     tenant?: string
     agentBots?: boolean
+    member?: boolean
   },
   fetchImpl: typeof fetch
-): Promise<{ accessToken: string; tenantId: string; userId?: string }> {
+): Promise<{ accessToken: string; tenantId: string; userId?: string; refreshToken?: string }> {
   let response: Response
   try {
     response = await fetchImpl(`${authorityOf(input.tenant)}/token`, {
@@ -201,7 +229,7 @@ export async function redeemMsTeamsCode(
         redirect_uri: input.redirectUri,
         code: input.code,
         code_verifier: pkceVerifier(keys, input.state),
-        scope: scopesOf(input.tenant, input.agentBots)
+        scope: scopesOf(input)
       }).toString(),
       signal: AbortSignal.timeout(TIMEOUT_MS)
     })
@@ -232,7 +260,44 @@ export async function redeemMsTeamsCode(
     )
   // The signed-in person's object ID in their tenant, whom an agent identity names as its sponsor (§8.6.5).
   const userId = claims.success && claims.data.oid && GUID.test(claims.data.oid.toLowerCase()) ? claims.data.oid : ''
-  return { accessToken: tokens.data.access_token, tenantId, ...(userId ? { userId: userId.toLowerCase() } : {}) }
+  return {
+    accessToken: tokens.data.access_token,
+    tenantId,
+    ...(userId ? { userId: userId.toLowerCase() } : {}),
+    ...(tokens.data.refresh_token ? { refreshToken: tokens.data.refresh_token } : {})
+  }
+}
+
+const RefreshResponse = z.object({ access_token: z.string().min(1), refresh_token: z.string().min(1).optional() })
+
+/** A member's new access token from their stored refresh token, in their own tenant; Entra issues a new refresh token each time, which replaces the stored one (§8.6.6). A refusal means the stored token no longer works. */
+export async function redeemMsTeamsRefreshToken(
+  input: { clientId: string; clientSecret: string; tenantId: string; refreshToken: string },
+  fetchImpl: typeof fetch
+): Promise<{ accessToken: string; refreshToken: string }> {
+  let response: Response
+  try {
+    response = await fetchImpl(`${authorityOf(input.tenantId)}/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        client_id: input.clientId,
+        client_secret: input.clientSecret,
+        refresh_token: input.refreshToken,
+        scope: MSTEAMS_MEMBER_SCOPES.filter((scope) => scope !== 'openid').join(' ')
+      }).toString(),
+      signal: AbortSignal.timeout(TIMEOUT_MS)
+    })
+  } catch {
+    throw new MsTeamsConnectError('MSTEAMS_CONNECT_UNAVAILABLE', 'Microsoft Entra could not be reached.')
+  }
+  if (response.status >= 500 || response.status === 429)
+    throw new MsTeamsConnectError('MSTEAMS_CONNECT_UNAVAILABLE', 'Microsoft Entra could not be reached.')
+  const tokens = response.ok ? RefreshResponse.safeParse(await response.json().catch(() => null)) : undefined
+  if (!tokens?.success)
+    throw new MsTeamsConnectError('MSTEAMS_CONNECT_DENIED', 'Microsoft Entra no longer accepts the stored sign-in.')
+  return { accessToken: tokens.data.access_token, refreshToken: tokens.data.refresh_token ?? input.refreshToken }
 }
 
 /** The opaque handle the Console holds between listing teams and installing: the delegated token, encrypted, bound to its attempt. */
@@ -261,8 +326,21 @@ const ProvisionTicket = z.object({
     userId: z.string()
   })
 })
-export type MsTeamsTicket = z.infer<typeof InstallTicket> | z.infer<typeof ProvisionTicket>
-const Ticket = z.union([ProvisionTicket, InstallTicket]).and(z.object({ e: z.number() }))
+// A member's ticket carries their refresh token too, which the pending request keeps while the package waits (§8.6.6).
+const MemberTicket = z.object({
+  accessToken: z.string(),
+  refreshToken: z.string(),
+  orgId: z.string(),
+  member: z.object({
+    agentId: z.string(),
+    tenantId: z.string().regex(GUID),
+    sponsorId: z.string().regex(GUID),
+    userId: z.string()
+  })
+})
+export type MsTeamsTicket =
+  z.infer<typeof InstallTicket> | z.infer<typeof ProvisionTicket> | z.infer<typeof MemberTicket>
+const Ticket = z.union([MemberTicket, ProvisionTicket, InstallTicket]).and(z.object({ e: z.number() }))
 
 export function openMsTeamsTicket(keys: MsTeamsConnectKeys, ticket: string, clock: Clock) {
   const parts = ticket.split('.').map((part) => Buffer.from(part, 'base64url'))
@@ -281,7 +359,7 @@ export function openMsTeamsTicket(keys: MsTeamsConnectKeys, ticket: string, cloc
 async function graph(
   fetchImpl: typeof fetch,
   token: string,
-  method: 'GET' | 'POST',
+  method: 'GET' | 'POST' | 'DELETE',
   path: string,
   body?: { json: unknown } | { zip: Uint8Array }
 ): Promise<Response> {
@@ -331,6 +409,69 @@ export async function publishMsTeamsPackage(
   if (!published.ok) throw refused(published)
   if (existing) return existing.id
   return CatalogApp.parse(await published.json()).id
+}
+
+/** Submits the package for the administrator's review, which a member may do (§8.6.6): it is never published by this call; answers the catalog app ID. */
+export async function submitMsTeamsPackage(
+  fetchImpl: typeof fetch,
+  token: string,
+  externalId: string,
+  zip: Uint8Array
+): Promise<string> {
+  // The submitter reads their own pending app, so a resubmission adds a definition to it.
+  const filter = encodeURIComponent(`externalId eq '${externalId}'`)
+  const listed = await graph(fetchImpl, token, 'GET', `/appCatalogs/teamsApps?$filter=${filter}`)
+  if (!listed.ok) throw refused(listed)
+  const existing = CatalogList.parse(await listed.json()).value.find((app) => app.externalId === externalId)
+  const path = existing
+    ? `/appCatalogs/teamsApps/${encodeURIComponent(existing.id)}/appDefinitions?requiresReview=true`
+    : '/appCatalogs/teamsApps?requiresReview=true'
+  const submitted = await graph(fetchImpl, token, 'POST', path, { zip })
+  if (!submitted.ok) throw refused(submitted)
+  if (existing) return existing.id
+  return CatalogApp.parse(await submitted.json()).id
+}
+
+const Definitions = z.object({
+  appDefinitions: z.array(z.object({ id: z.string(), publishingState: z.string().nullish() })).nullish()
+})
+
+/** Where a submitted package stands, read with the submitter's token: published, still waiting, turned down, or gone from the catalog. */
+export type MsTeamsPackageState = 'published' | 'submitted' | 'rejected' | 'gone'
+
+async function readDefinitions(fetchImpl: typeof fetch, token: string, catalogAppId: string) {
+  const path = `/appCatalogs/teamsApps/${encodeURIComponent(catalogAppId)}?$expand=appDefinitions`
+  const response = await graph(fetchImpl, token, 'GET', path)
+  if (response.status === 404) return null
+  if (!response.ok) throw refused(response)
+  return Definitions.parse(await response.json()).appDefinitions ?? []
+}
+
+export async function readMsTeamsPackageState(
+  fetchImpl: typeof fetch,
+  token: string,
+  catalogAppId: string
+): Promise<MsTeamsPackageState> {
+  const definitions = await readDefinitions(fetchImpl, token, catalogAppId)
+  if (!definitions) return 'gone'
+  const states = definitions.map((definition) => definition.publishingState)
+  if (states.includes('published')) return 'published'
+  return states.includes('submitted') ? 'submitted' : 'rejected'
+}
+
+/** Withdraws a member's own pending submission by deleting its pending definitions, which their submit scope allows; one already gone counts as withdrawn. */
+export async function withdrawMsTeamsSubmission(
+  fetchImpl: typeof fetch,
+  token: string,
+  catalogAppId: string
+): Promise<void> {
+  const definitions = await readDefinitions(fetchImpl, token, catalogAppId)
+  for (const definition of definitions ?? []) {
+    if (definition.publishingState !== 'submitted') continue
+    const path = `/appCatalogs/teamsApps/${encodeURIComponent(catalogAppId)}/appDefinitions/${encodeURIComponent(definition.id)}`
+    const response = await graph(fetchImpl, token, 'DELETE', path)
+    if (!response.ok && response.status !== 404) throw refused(response)
+  }
 }
 
 const Organization = z.object({ value: z.array(z.object({ displayName: z.string().nullish() })) })

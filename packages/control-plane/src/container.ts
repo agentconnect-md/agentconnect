@@ -404,6 +404,7 @@ import { msTeamsRoutes } from './platforms/msteams/routes.js'
 import { msTeamsConnectRoutes } from './platforms/msteams/connect-routes.js'
 import { msTeamsConnectKeys } from './platforms/msteams/connect.js'
 import { MsTeamsCredentialReconciler } from './platforms/msteams/credential-reconciler.js'
+import { MsTeamsAgentBotRequests } from './platforms/msteams/agent-bot-requests.js'
 import {
   msTeamsConnectAnchor,
   msTeamsRelayApp,
@@ -3213,6 +3214,16 @@ export function buildContainer(
     clock,
     log: http.log
   })
+  // Watches members' pending agent-bot requests until their packages are approved (teams-integration.md §8.6.6).
+  const msTeamsAgentBotRequests =
+    msTeamsPlatformApp && msTeamsAgentBots
+      ? new MsTeamsAgentBotRequests({
+          http: httpDeps,
+          app: msTeamsPlatformApp,
+          agentBots: msTeamsAgentBots,
+          log: http.log
+        })
+      : undefined
 
   // §9 platform-provider registry (S3): the behavioral CpPlatformProvider
   // instances — all four platforms — constructed with the SAME verify/sync
@@ -3330,12 +3341,14 @@ export function buildContainer(
         msTeamsConnectRoutes(httpDeps, {
           ...(msTeamsPlatformApp ? { app: msTeamsPlatformApp } : {}),
           ...(msTeamsAgentBots ? { agentBots: msTeamsAgentBots } : {}),
+          ...(msTeamsAgentBotRequests ? { requests: msTeamsAgentBotRequests } : {}),
           keys: msTeamsConnectKeys(config.API_KEY_PEPPER),
           ...(webAppUrl ? { webAppUrl } : {})
         })
       ],
       ...(msTeamsPlatformApp ? { app: msTeamsPlatformApp } : {}),
       ...(msTeamsAgentBots ? { agentBots: msTeamsAgentBots } : {}),
+      ...(msTeamsAgentBotRequests ? { agentBotRequests: msTeamsAgentBotRequests } : {}),
       credentialReconciler: msTeamsCredentialReconciler,
       ...(relayPublicBase ? { publicRelayUrl: relayPublicBase } : {})
     }),

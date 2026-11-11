@@ -1,0 +1,283 @@
+// A member's pending request for an agent's own Teams bot (teams-integration.md §8.6.6), against a scripted Microsoft and an in-memory store.
+import { describe, expect, it, vi } from 'vitest'
+import type { HttpDeps } from '../../http/deps.js'
+import type { BotRecord, MsTeamsAgentBotRequestRecord } from '../../persistence/ports.js'
+import { AgentId, OrgId } from '../../domain/ids.js'
+import { FakeClock } from '../../../test/fakes/fake-clock.js'
+import { memoryMsTeamsAgentBotRequestStore } from '../../../test/fakes/msteams-agent-bot-request-store.js'
+import {
+  MSTEAMS_REQUEST_FIRST_CHECK_MS,
+  MSTEAMS_REQUEST_MAX_CHECK_MS,
+  MSTEAMS_REQUEST_TTL_MS,
+  MsTeamsAgentBotRequests,
+  msTeamsRequestBackoffMs
+} from './agent-bot-requests.js'
+import { msTeamsAgentBotKey } from './agent-bots.js'
+import { MSTEAMS_DEPLOYMENT_SECRET_MARKER } from './deployment-app.js'
+
+const ORG = OrgId('11111111-1111-4111-8111-111111111111')
+const AGENT = AgentId('22222222-2222-4222-8222-222222222222')
+const TENANT = '33333333-3333-4333-8333-333333333333'
+const IDENTITY = '44444444-4444-4444-8444-444444444444'
+const APP = {
+  appId: '55555555-5555-4555-8555-555555555555',
+  tenantId: '66666666-6666-4666-8666-666666666666',
+  clientSecret: 'synthetic-app-secret'
+}
+const AGENT_BOTS = {
+  blueprintId: '77777777-7777-4777-8777-777777777777',
+  clientSecret: 'synthetic-blueprint-secret',
+  subscriptionId: '88888888-8888-4888-8888-888888888888',
+  resourceGroup: 'example-bots'
+}
+const NOW = Date.parse('2026-12-01T00:00:00Z')
+
+interface Script {
+  /** Entra's answer to the refresh-token redemption. */
+  refresh?: number
+  /** The package's definitions as the member's token reads them; null ⇒ the app is gone. */
+  definitions?: string[] | null
+  /** Graph's status for an install into a team. */
+  install?: Record<string, number>
+  withdraw?: number
+  unreachable?: boolean
+}
+
+function harness(script: Script = {}) {
+  const clock = new FakeClock(NOW)
+  const { rows, store } = memoryMsTeamsAgentBotRequestStore(() => clock.now())
+  const calls: string[] = []
+  let refreshes = 0
+  const fetchImpl = (async (input: unknown, init?: RequestInit) => {
+    const url = String(input)
+    const method = init?.method ?? 'GET'
+    if (script.unreachable) throw new Error('offline')
+    if (url.endsWith('/oauth2/v2.0/token')) {
+      const form = new URLSearchParams(String(init?.body))
+      if (form.get('grant_type') === 'refresh_token') {
+        calls.push(`refresh ${form.get('refresh_token')}`)
+        if (script.refresh) return Response.json({ error: 'invalid_grant' }, { status: script.refresh })
+        refreshes += 1
+        return Response.json({ access_token: `access-${refreshes}`, refresh_token: `rotated-${refreshes}` })
+      }
+      return Response.json({ access_token: `own-${form.get('client_id')}`, expires_in: 3600 })
+    }
+    if (url.includes('/appDefinitions/')) {
+      calls.push(`withdraw ${url.split('/appDefinitions/')[1]}`)
+      return new Response(null, { status: script.withdraw ?? 204 })
+    }
+    if (url.includes('/appCatalogs/teamsApps/')) {
+      if (script.definitions === null) return new Response(null, { status: 404 })
+      const states = script.definitions ?? ['submitted']
+      return Response.json({ appDefinitions: states.map((state, i) => ({ id: `def-${i}`, publishingState: state })) })
+    }
+    const team = /\/teams\/([^/]+)\/installedApps/.exec(url)?.[1]
+    if (team) {
+      calls.push(`install ${team} ${init?.headers ? (init.headers as Record<string, string>).authorization : ''}`)
+      return new Response(null, { status: script.install?.[team] ?? 201 })
+    }
+    if (url.startsWith('https://management.azure.com/')) {
+      calls.push(`${method} registration`)
+      return new Response(null, { status: 200 })
+    }
+    if (url.includes('/servicePrincipals/')) {
+      calls.push(`${method} identity`)
+      return new Response(null, { status: 204 })
+    }
+    throw new Error(`unexpected request to ${url}`)
+  }) as typeof fetch
+  const create = vi.fn(async (input: Record<string, unknown>) => ({ ...input, agentIds: [] }) as unknown as BotRecord)
+  const put = vi.fn(async () => {})
+  const mergeBotIdentity = vi.fn(async () => true)
+  const http = {
+    clock,
+    config: {},
+    httpBot: { hasConnectedRelay: () => true, syncBot: vi.fn(async () => {}) },
+    repos: {
+      msTeamsAgentBotRequest: store,
+      agent: { get: async () => ({ id: AGENT, orgId: ORG, name: 'helper', displayName: 'Helper', visibility: 'org' }) },
+      bot: { create, mergeBotIdentity, getByExternalIdentity: async () => null },
+      botSecret: { put },
+      integration: {
+        create: vi.fn(async (input: Record<string, unknown>) => ({ ...input, status: 'active' })),
+        listForBot: async () => []
+      }
+    }
+  } as unknown as HttpDeps
+  const requests = new MsTeamsAgentBotRequests({
+    http,
+    app: APP,
+    agentBots: AGENT_BOTS,
+    fetch: fetchImpl,
+    wait: async () => {},
+    log: { info: vi.fn(), warn: vi.fn() }
+  })
+  const open = async (over: Partial<MsTeamsAgentBotRequestRecord> = {}) =>
+    store.create({
+      id: 'request-1',
+      orgId: ORG,
+      agentId: AGENT,
+      tenantId: TENANT,
+      createdByUserId: 'user-1',
+      sponsorId: '99999999-9999-4999-8999-999999999999',
+      identity: IDENTITY,
+      catalogAppId: 'catalog-1',
+      teamIds: ['team-1', 'team-2'],
+      appPackage: 'fingerprint-1',
+      botName: 'Microsoft Teams · Example Org',
+      refreshToken: 'stored-token',
+      nextCheckAt: new Date(NOW),
+      ...over
+    } as never)
+  return { clock, rows, store, calls, create, put, mergeBotIdentity, requests, open }
+}
+
+describe('the wait between checks', () => {
+  it('starts at seconds, doubles, and stops at the cap', () => {
+    expect(msTeamsRequestBackoffMs(0)).toBe(MSTEAMS_REQUEST_FIRST_CHECK_MS)
+    expect(msTeamsRequestBackoffMs(1)).toBe(2 * MSTEAMS_REQUEST_FIRST_CHECK_MS)
+    expect(msTeamsRequestBackoffMs(20)).toBe(MSTEAMS_REQUEST_MAX_CHECK_MS)
+    expect(msTeamsRequestBackoffMs(1000)).toBe(MSTEAMS_REQUEST_MAX_CHECK_MS)
+  })
+})
+
+describe('MsTeamsAgentBotRequests', () => {
+  it('keeps waiting while the package is in review, and replaces the stored token with the one Entra issued', async () => {
+    const h = harness()
+    await h.open()
+    expect(await h.requests.check(ORG, 'request-1')).toEqual({ outcome: 'pending' })
+    const row = h.rows.get('request-1')!
+    expect(row).toMatchObject({ status: 'pending', checks: 1, refreshToken: 'rotated-1' })
+    expect(row.nextCheckAt.getTime()).toBe(NOW + MSTEAMS_REQUEST_FIRST_CHECK_MS)
+    expect(h.calls).toEqual(['refresh stored-token'])
+    // The next check redeems the token the first one stored.
+    await h.requests.check(ORG, 'request-1')
+    expect(h.calls.at(-1)).toBe('refresh rotated-1')
+    expect(h.rows.get('request-1')!.nextCheckAt.getTime()).toBe(NOW + 2 * MSTEAMS_REQUEST_FIRST_CHECK_MS)
+    expect(h.create).not.toHaveBeenCalled()
+  })
+
+  it('installs an approved package into the chosen teams as the member, writes the row, and forgets the request', async () => {
+    const h = harness({ definitions: ['published'] })
+    await h.open()
+    const checked = await h.requests.check(ORG, 'request-1')
+    expect(checked.outcome).toBe('installed')
+    expect(h.calls.filter((call) => call.startsWith('install'))).toEqual([
+      'install team-1 Bearer access-1',
+      'install team-2 Bearer access-1'
+    ])
+    expect(h.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orgId: ORG,
+        prebuilt: true,
+        name: 'Microsoft Teams · Example Org',
+        externalAppId: IDENTITY,
+        platformConfig: {
+          tenantId: TENANT,
+          tokenTenantId: TENANT,
+          appOwner: 'deployment',
+          agentBotBlueprintId: AGENT_BOTS.blueprintId,
+          agentBotResourceName: `agentconnect-${msTeamsAgentBotKey(AGENT, TENANT)}`
+        }
+      })
+    )
+    expect(h.put).toHaveBeenCalledWith(ORG, expect.anything(), {
+      botToken: MSTEAMS_DEPLOYMENT_SECRET_MARKER,
+      appToken: null,
+      signingSecret: null
+    })
+    expect(h.mergeBotIdentity).toHaveBeenCalledTimes(1)
+    // The stored sign-in goes with the request.
+    expect(h.rows.size).toBe(0)
+    expect(await h.requests.check(ORG, 'request-1')).toEqual({ outcome: 'gone' })
+  })
+
+  it('installs where the member still can, and asks them back only when every team refuses', async () => {
+    const partly = harness({ definitions: ['published'], install: { 'team-1': 403 } })
+    await partly.open()
+    expect((await partly.requests.check(ORG, 'request-1')).outcome).toBe('installed')
+
+    const none = harness({ definitions: ['published'], install: { 'team-1': 403, 'team-2': 403 } })
+    await none.open()
+    expect(await none.requests.check(ORG, 'request-1')).toEqual({ outcome: 'needs_sign_in' })
+    expect(none.rows.get('request-1')).toMatchObject({ status: 'needs_sign_in', reason: 'install_refused' })
+    expect(none.create).not.toHaveBeenCalled()
+  })
+
+  it('stops for the member when Entra refuses the stored sign-in, and drops it', async () => {
+    const h = harness({ refresh: 400 })
+    await h.open()
+    expect(await h.requests.check(ORG, 'request-1')).toEqual({ outcome: 'needs_sign_in' })
+    expect(h.rows.get('request-1')).toMatchObject({
+      status: 'needs_sign_in',
+      reason: 'sign_in_expired',
+      refreshToken: null
+    })
+    // A stopped request is not picked up again until a new sign-in resumes it.
+    expect(await h.store.due(new Date(NOW + MSTEAMS_REQUEST_MAX_CHECK_MS), 10)).toEqual([])
+    await h.store.resume(ORG, 'request-1', 'new-token', new Date(NOW))
+    expect(await h.store.due(new Date(NOW), 10)).toEqual([{ orgId: ORG, id: 'request-1' }])
+  })
+
+  it('reads a package that was turned down or removed as rejected, and an unreachable Microsoft as still pending', async () => {
+    for (const [definitions, reason] of [
+      [['rejected'], 'package_rejected'],
+      [null, 'package_removed']
+    ] as const) {
+      const h = harness({ definitions: definitions as string[] | null })
+      await h.open()
+      expect(await h.requests.check(ORG, 'request-1')).toEqual({ outcome: 'rejected' })
+      expect(h.rows.get('request-1')).toMatchObject({ status: 'rejected', reason })
+    }
+    const down = harness({ unreachable: true })
+    await down.open()
+    expect(await down.requests.check(ORG, 'request-1')).toEqual({ outcome: 'pending' })
+    expect(down.rows.get('request-1')).toMatchObject({ status: 'pending', refreshToken: 'stored-token', checks: 1 })
+  })
+
+  it('lets one check hold a request at a time', async () => {
+    const h = harness()
+    await h.open()
+    await h.store.claim(ORG, 'request-1', 'someone-else', new Date(NOW), new Date(NOW + 60_000))
+    expect(await h.requests.check(ORG, 'request-1')).toEqual({ outcome: 'busy' })
+    expect(h.calls).toEqual([])
+  })
+
+  it('cancels by withdrawing the submission, deleting the registration and the identity, and forgetting the request', async () => {
+    const h = harness()
+    await h.open()
+    expect(await h.requests.cancel(ORG, 'request-1')).toBe(true)
+    expect(h.calls).toEqual(['refresh stored-token', 'withdraw def-0', 'DELETE registration', 'DELETE identity'])
+    expect(h.rows.size).toBe(0)
+    expect(await h.requests.cancel(ORG, 'request-1')).toBe(false)
+
+    // A sign-in Entra refuses leaves the package to the administrator; the bot is removed all the same.
+    const expired = harness({ refresh: 400 })
+    await expired.open()
+    await expired.requests.cancel(ORG, 'request-1')
+    expect(expired.calls).toEqual(['refresh stored-token', 'DELETE registration', 'DELETE identity'])
+    expect(expired.rows.size).toBe(0)
+
+    // Microsoft unreachable: nothing is forgotten half-removed.
+    const down = harness({ unreachable: true })
+    await down.open()
+    await expect(down.requests.cancel(ORG, 'request-1')).rejects.toBeTruthy()
+    expect(down.rows.size).toBe(1)
+  })
+
+  it('checks what is due on a pass, and cancels a request nobody approved in thirty days', async () => {
+    const h = harness()
+    await h.open()
+    // Another agent's request; one agent has one request per tenant.
+    const other = AgentId('22222222-2222-4222-8222-2222222222aa')
+    await h.open({ id: 'request-later', agentId: other, nextCheckAt: new Date(NOW + 60_000) } as never)
+    await h.requests.tick()
+    expect(h.rows.get('request-1')!.checks).toBe(1)
+    expect(h.rows.get('request-later')!.checks).toBe(0)
+
+    h.clock.advance(MSTEAMS_REQUEST_TTL_MS + 1)
+    await h.requests.tick()
+    expect(h.rows.size).toBe(0)
+    expect(h.calls.filter((call) => call === 'DELETE registration')).toHaveLength(2)
+  })
+})

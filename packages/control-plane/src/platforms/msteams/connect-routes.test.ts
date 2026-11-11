@@ -7,6 +7,8 @@ import { installZod } from '../../http/plugins/zod.js'
 import type { BotRecord } from '../../persistence/ports.js'
 import { AgentId, BotId, OrgId } from '../../domain/ids.js'
 import { FakeClock } from '../../../test/fakes/fake-clock.js'
+import { memoryMsTeamsAgentBotRequestStore } from '../../../test/fakes/msteams-agent-bot-request-store.js'
+import { MsTeamsAgentBotRequests } from './agent-bot-requests.js'
 import { mintMsTeamsConnectState, msTeamsConnectKeys } from './connect.js'
 import { msTeamsConnectRoutes } from './connect-routes.js'
 import { msTeamsAgentBotKey } from './agent-bots.js'
@@ -71,6 +73,8 @@ async function harness(
     agentBotRow?: Partial<BotRecord>
     agentNames?: Record<string, string>
     oid?: string | null
+    /** The submitted package's definitions as its submitter reads them. */
+    packageStates?: string[]
   } = {}
 ) {
   const graph: { method: string; url: string; body?: unknown }[] = []
@@ -84,8 +88,12 @@ async function harness(
       if (form.get('grant_type') === 'authorization_code')
         return Response.json({
           access_token: 'delegated',
-          id_token: idToken(opts.tid ?? CUSTOMER, opts.oid === null ? undefined : (opts.oid ?? SPONSOR))
+          id_token: idToken(opts.tid ?? CUSTOMER, opts.oid === null ? undefined : (opts.oid ?? SPONSOR)),
+          // Entra issues a refresh token only where the sign-in asked offline access, as a member's does.
+          ...(form.get('scope')?.includes('offline_access') ? { refresh_token: 'member-refresh' } : {})
         })
+      if (form.get('grant_type') === 'refresh_token')
+        return Response.json({ access_token: 'delegated-again', refresh_token: 'member-refresh-2' })
       // The blueprint's and the identity's own tokens; a tenant with no principal refuses the blueprint.
       order.push(`token ${form.get('client_id')}`)
       if (form.get('client_id') === AGENT_BOTS.blueprintId && opts.noPrincipal && !principalCreated)
@@ -109,8 +117,16 @@ async function harness(
         : Response.json({ id: IDENTITY }, { status: 201 })
     }
     if (url.startsWith('https://management.azure.com/')) {
+      if (init?.method === 'DELETE') {
+        order.push('delete registration')
+        return new Response(null, { status: 204 })
+      }
       order.push(url.includes('/channels/') ? 'channel' : 'registration')
       return Response.json({}, { status: 201 })
+    }
+    if (init?.method === 'DELETE' && url.includes('/servicePrincipals/')) {
+      order.push('delete identity')
+      return new Response(null, { status: 204 })
     }
     const team = /\/teams\/([^/]+)\/installedApps/.exec(url)?.[1]
     if (team && url.endsWith('/upgrade')) {
@@ -120,6 +136,17 @@ async function harness(
     if (team && url.includes('$filter'))
       return Response.json({ value: opts.installedIn?.includes(team) ? [{ id: `install-${team}` }] : [] })
     if (url.includes('$filter')) return Response.json({ value: [] })
+    if (url.includes('/appDefinitions/')) {
+      order.push('withdraw')
+      return new Response(null, { status: 204 })
+    }
+    if (url.includes('$expand=appDefinitions'))
+      return Response.json({
+        appDefinitions: (opts.packageStates ?? ['submitted']).map((publishingState, i) => ({
+          id: `def-${i}`,
+          publishingState
+        }))
+      })
     if (url.includes('/appCatalogs/teamsApps')) {
       order.push('publish')
       return opts.publish
@@ -158,6 +185,7 @@ async function harness(
   const agentBotRow = opts.agentBotRow
     ? ({ orgId: ORG, name: 'Microsoft Teams', agentIds: [], ...opts.agentBotRow } as BotRecord)
     : null
+  const requestStore = memoryMsTeamsAgentBotRequestStore(() => clock.now())
   const create = vi.fn(async (input: Record<string, unknown>) => {
     order.push('create')
     return { ...input, agentIds: [] } as unknown as BotRecord
@@ -212,9 +240,22 @@ async function harness(
       },
       botSecret: { put },
       botCredential: { install: credentialInstall },
-      integration: { create: integrationCreate, addBotMembership }
+      integration: { create: integrationCreate, addBotMembership, listForBot: async () => [] },
+      msTeamsAgentBotRequest: requestStore.store
     }
   } as unknown as HttpDeps
+  const log = { info: vi.fn(), warn: vi.fn() }
+  const requests =
+    opts.agentBots && opts.app !== null
+      ? new MsTeamsAgentBotRequests({
+          http: deps,
+          app: opts.app ?? APP,
+          agentBots: AGENT_BOTS,
+          fetch: fetchImpl,
+          wait: async () => {},
+          log
+        })
+      : undefined
   const app = Fastify()
   installZod(app)
   app.addHook('onRequest', async (req) => {
@@ -226,6 +267,7 @@ async function harness(
     msTeamsConnectRoutes(deps, {
       ...(deploymentApp ? { app: deploymentApp } : {}),
       ...(opts.agentBots ? { agentBots: AGENT_BOTS, agentBotWait: async () => {} } : {}),
+      ...(requests ? { requests } : {}),
       keys,
       webAppUrl: 'https://console.example.test',
       fetch: fetchImpl
@@ -240,6 +282,7 @@ async function harness(
       tenant: string
       agentBots: boolean
       consent: boolean
+      member: boolean
     }> = {}
   ) => mintMsTeamsConnectState(keys, { orgId: ORG, agentId: AGENT, userId: 'user-1', ...over }, clock)
   const post = (path: string, payload: unknown) =>
@@ -259,7 +302,8 @@ async function harness(
     recorded,
     callback,
     state,
-    post
+    post,
+    requestRows: requestStore.rows
   }
 }
 
@@ -688,5 +732,151 @@ describe('a deployment that makes agent bots (§8.6)', () => {
     // Without agent bots the step does not exist.
     const plain = await harness()
     expect((await plain.post('/agent-bot', { ticket: provision })).statusCode).toBe(404)
+  })
+})
+
+describe('a member who is not an administrator (§8.6.6)', () => {
+  // The tenant is connected: the app's bot serves another agent of this organization.
+  const HELD = { agentIds: [OTHER_AGENT], externalAppId: APP.appId } as Partial<BotRecord>
+  const connected = (over: Parameters<typeof harness>[0] = {}) =>
+    harness({ agentBots: true, held: HELD, agentNames: { [OTHER_AGENT]: 'Reviewer' }, ...over })
+  const signIn = async (h: Awaited<ReturnType<typeof harness>>) => h.callback(h.state({ member: true }))
+  const requestsOf = (h: Awaited<ReturnType<typeof harness>>) =>
+    h.app.inject({ method: 'GET', url: `/integrations/msteams/requests?agentId=${AGENT}` })
+
+  it('signs in with no consent hop and the scopes a member holds', async () => {
+    const h = await connected()
+    const res = await h.post('', { agentId: AGENT, member: true })
+    const url = new URL(res.json<{ authorizeUrl: string }>().authorizeUrl)
+    expect(url.pathname).toBe('/organizations/oauth2/v2.0/authorize')
+    const scopes = url.searchParams.get('scope')!.split(' ')
+    expect(scopes).toEqual(
+      expect.arrayContaining(['https://graph.microsoft.com/AppCatalog.Submit', 'openid', 'offline_access'])
+    )
+    expect(scopes).not.toContain('https://graph.microsoft.com/AppCatalog.ReadWrite.All')
+    // A deployment that makes no agent bots has no member flow.
+    expect((await (await harness()).post('', { agentId: AGENT, member: true })).statusCode).toBe(404)
+  })
+
+  it('submits the agent’s package for approval and stores the request with the sign-in sealed away from every answer', async () => {
+    const h = await connected()
+    const first = await signIn(h)
+    expect(first.statusCode).toBe(200)
+    expect(first.json()).toMatchObject({ agentId: AGENT, member: true, store: false })
+    expect(first.json<{ teams: unknown[] }>().teams).toHaveLength(2)
+    expect(h.order).toEqual([])
+
+    const made = await h.post('/request', { ticket: first.json<{ ticket: string }>().ticket, teamIds: ['team-2'] })
+    expect(made.statusCode).toBe(200)
+    expect(made.json()).toMatchObject({
+      agentId: AGENT,
+      tenantId: CUSTOMER,
+      status: 'pending',
+      reason: null,
+      adminCenterUrl: 'https://admin.teams.microsoft.com/policies/manage-apps'
+    })
+    // The identity and its registration are made, the package is submitted for review, and no row is written yet.
+    expect(h.order).toContain('identity')
+    expect(h.order).toContain('registration')
+    expect(h.order).not.toContain('principal')
+    expect(h.graph.some((call) => call.method === 'POST' && call.url.endsWith('teamsApps?requiresReview=true'))).toBe(
+      true
+    )
+    expect(h.create).not.toHaveBeenCalled()
+    const [row] = [...h.requestRows.values()]
+    expect(row).toMatchObject({
+      agentId: AGENT,
+      tenantId: CUSTOMER,
+      identity: IDENTITY,
+      catalogAppId: 'catalog-1',
+      teamIds: ['team-2'],
+      refreshToken: 'member-refresh',
+      sponsorId: SPONSOR,
+      botName: 'Microsoft Teams · Example Org'
+    })
+    for (const body of [first.body, made.body, (await requestsOf(h)).body]) expect(body).not.toContain('member-refresh')
+    expect((await requestsOf(h)).json<{ requests: unknown[] }>().requests).toHaveLength(1)
+  })
+
+  it('says an administrator has to connect first, and refuses a tenant another organization holds', async () => {
+    const unconnected = await harness({ agentBots: true })
+    expect((await signIn(unconnected)).json()).toMatchObject({ code: 'MSTEAMS_TENANT_NOT_CONNECTED' })
+    const elsewhere = await harness({
+      agentBots: true,
+      rows: [{ orgId: OTHER_ORG, externalTenantId: CUSTOMER, platformConfig: { appOwner: 'deployment' } }]
+    })
+    expect((await signIn(elsewhere)).json()).toMatchObject({ code: 'MSTEAMS_TENANT_TAKEN' })
+  })
+
+  it('refuses a name another agent has, an agent that already has its bot, and a tenant without the blueprint’s principal', async () => {
+    const named = await connected({ agentNames: { [AGENT]: 'Helper', [OTHER_AGENT]: 'Helper' } })
+    expect((await signIn(named)).json()).toMatchObject({ code: 'MSTEAMS_AGENT_NAME_TAKEN' })
+
+    const own = {
+      orgId: ORG,
+      externalTenantId: CUSTOMER,
+      agentIds: [AGENT],
+      platformConfig: { appOwner: 'deployment', agentBotBlueprintId: AGENT_BOTS.blueprintId, agentBotResourceName: 'x' }
+    } as Partial<BotRecord>
+    const already = await connected({ rows: [own] })
+    expect((await signIn(already)).json()).toMatchObject({ code: 'MSTEAMS_AGENT_ALREADY_CONNECTED' })
+
+    const bare = await connected({ noPrincipal: true })
+    const ticket = (await signIn(bare)).json<{ ticket: string }>().ticket
+    const refused = await bare.post('/request', { ticket, teamIds: [] })
+    expect(refused.json()).toMatchObject({ code: 'MSTEAMS_AGENT_BOTS_UNAVAILABLE' })
+    expect(bare.order).not.toContain('identity')
+    expect(bare.requestRows.size).toBe(0)
+  })
+
+  it('finishes on a check once the package is approved, and answers the integration', async () => {
+    const h = await connected({ packageStates: ['published'] })
+    const ticket = (await signIn(h)).json<{ ticket: string }>().ticket
+    const id = (await h.post('/request', { ticket, teamIds: ['team-1'] })).json<{ id: string }>().id
+    const checked = await h.app.inject({ method: 'POST', url: `/integrations/msteams/requests/${id}/check` })
+    expect(checked.statusCode).toBe(200)
+    expect(typeof checked.json<{ integrationId: string }>().integrationId).toBe('string')
+    expect(h.create).toHaveBeenCalledWith(expect.objectContaining({ externalAppId: IDENTITY, prebuilt: true }))
+    expect(h.requestRows.size).toBe(0)
+    expect((await requestsOf(h)).json()).toEqual({ requests: [] })
+  })
+
+  it('answers the request as it stands while it waits, and removes everything on a cancel', async () => {
+    const h = await connected()
+    const ticket = (await signIn(h)).json<{ ticket: string }>().ticket
+    const id = (await h.post('/request', { ticket, teamIds: ['team-1'] })).json<{ id: string }>().id
+    const waiting = await h.app.inject({ method: 'POST', url: `/integrations/msteams/requests/${id}/check` })
+    expect(waiting.json()).toMatchObject({ request: { id, status: 'pending' } })
+    expect([...h.requestRows.values()][0]!.refreshToken).toBe('member-refresh-2')
+
+    const cancelled = await h.app.inject({ method: 'DELETE', url: `/integrations/msteams/requests/${id}` })
+    expect(cancelled.statusCode).toBe(204)
+    expect(h.order.filter((step) => step === 'withdraw' || step.startsWith('delete'))).toEqual([
+      'withdraw',
+      'delete registration',
+      'delete identity'
+    ])
+    expect(h.requestRows.size).toBe(0)
+    expect((await h.app.inject({ method: 'DELETE', url: `/integrations/msteams/requests/${id}` })).statusCode).toBe(404)
+  })
+
+  it('renews a stopped request with a new sign-in instead of starting another', async () => {
+    const h = await connected()
+    const ticket = (await signIn(h)).json<{ ticket: string }>().ticket
+    const id = (await h.post('/request', { ticket, teamIds: [] })).json<{ id: string }>().id
+    Object.assign(h.requestRows.get(id)!, { status: 'needs_sign_in', reason: 'sign_in_expired', refreshToken: null })
+    const again = await signIn(h)
+    expect(again.json()).toMatchObject({ member: true, request: { id, status: 'pending', reason: null } })
+    expect(again.json()).not.toHaveProperty('ticket')
+    expect(h.requestRows.get(id)).toMatchObject({ refreshToken: 'member-refresh', status: 'pending' })
+  })
+
+  it('takes a member’s ticket only at the request step', async () => {
+    const h = await connected()
+    const ticket = (await signIn(h)).json<{ ticket: string }>().ticket
+    expect((await h.post('/agent-bot', { ticket })).statusCode).toBe(400)
+    expect((await h.post('/install', { ticket, teamIds: ['team-1'] })).statusCode).toBe(400)
+    const admin = (await h.callback(h.state({ agentBots: true }))).json<{ ticket: string }>().ticket
+    expect((await h.post('/request', { ticket: admin, teamIds: [] })).statusCode).toBe(400)
   })
 })

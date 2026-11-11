@@ -205,6 +205,8 @@ export interface MsTeamsCpProviderDeps {
   agentBots?: Pick<MsTeamsAgentBots, 'blueprintId'>
   /** The boot pass that removes the deployment secret from the app's rows (§8.5). */
   credentialReconciler?: { start(): void; stop(): void }
+  /** The loop that watches members' pending agent-bot requests until their packages are approved (§8.6.6). */
+  agentBotRequests?: { start(): void; stop(): void }
   /** Entra's token endpoint; tests pass a fake. Defaults to the global fetch. */
   fetch?: typeof fetch
   /** The credential and app-package routes, pre-bound by the composition root. */
@@ -272,14 +274,27 @@ export function createMsTeamsCpProvider(
 
     envSchema: MsTeamsCpEnvSchema,
 
-    ...(deps.credentialReconciler
+    ...(deps.credentialReconciler || deps.agentBotRequests
       ? {
           backgroundLoops: [
-            {
-              label: 'msteams-deployment-secret-purge',
-              start: () => deps.credentialReconciler!.start(),
-              stop: () => deps.credentialReconciler!.stop()
-            }
+            ...(deps.credentialReconciler
+              ? [
+                  {
+                    label: 'msteams-deployment-secret-purge',
+                    start: () => deps.credentialReconciler!.start(),
+                    stop: () => deps.credentialReconciler!.stop()
+                  }
+                ]
+              : []),
+            ...(deps.agentBotRequests
+              ? [
+                  {
+                    label: 'msteams-agent-bot-requests',
+                    start: () => deps.agentBotRequests!.start(),
+                    stop: () => deps.agentBotRequests!.stop()
+                  }
+                ]
+              : [])
           ]
         }
       : {}),
