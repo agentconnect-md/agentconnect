@@ -25,7 +25,8 @@ export const CHANNEL_PLATFORMS = [
   'qq',
   'dingtalk',
   'msteams',
-  'wechat'
+  'wechat',
+  'wecom'
 ] as const
 export type ChannelPlatform = (typeof CHANNEL_PLATFORMS)[number]
 

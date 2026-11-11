@@ -218,8 +218,8 @@ describe('platform manifest', () => {
     })
     expect(axes.dmChannelPattern?.test('dm:user-alice')).toBe(true)
     expect(axes.dmChannelPattern?.test('chat-example-group')).toBe(false)
-    // Not a known id yet: readers ship a release before the Control Plane provider emits it.
-    expect(originKindOf(WECOM_PLATFORM)).toBeUndefined()
+    // A chat origin the console composer may not continue.
+    expect(originKindOf(WECOM_PLATFORM)).toBe('chat')
     expect(continuableOrigin(WECOM_PLATFORM)).toBe(false)
   })
 

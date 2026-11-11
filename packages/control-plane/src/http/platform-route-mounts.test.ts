@@ -51,6 +51,8 @@ import { msTeamsRoutes } from '../platforms/msteams/routes.js'
 import { createWeChatCpProvider } from '../platforms/wechat/provider.js'
 import { weChatLoginRoutes } from '../platforms/wechat/routes.js'
 import type { WeChatLoginService } from '../platforms/wechat/login.js'
+import { createWeComCpProvider } from '../platforms/wecom/provider.js'
+import { weComCredentialRoutes } from '../platforms/wecom/routes.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from './routes/slack-install.js'
 import { slackPlatformInstallRoutes, slackPlatformCallbackRoutes } from './routes/slack-platform-install.js'
 import { feishuRegistrationRoutes } from './routes/feishu-registration.js'
@@ -102,6 +104,7 @@ const EXPECTED_MOUNTS: Record<CpRouteScope, Record<string, string[]>> = {
     googleChatClaimRoutesPlugin: ['POST /integrations/googlechat/claim'],
     dingTalkCredentialRoutesPlugin: ['PUT /bots/:id/dingtalk/credentials'],
     weChatLoginRoutesPlugin: ['POST /integrations/wechat/login', 'GET /integrations/wechat/login/:id'],
+    weComCredentialRoutesPlugin: ['PUT /bots/:id/wecom/credentials'],
     msTeamsRoutesPlugin: [
       'PUT /bots/:id/msteams/credentials',
       'GET /integrations/:id/msteams/app-package',
@@ -211,7 +214,8 @@ function productionPlatforms(deps: HttpDeps): CpPlatformRegistry {
     }),
     createDingTalkCpProvider({ installRoutes: [dingTalkCredentialRoutes(deps)] }),
     createMsTeamsCpProvider({ installRoutes: [msTeamsRoutes(deps)] }),
-    createWeChatCpProvider({ routes: [weChatLoginRoutes(deps, {} as WeChatLoginService)] })
+    createWeChatCpProvider({ routes: [weChatLoginRoutes(deps, {} as WeChatLoginService)] }),
+    createWeComCpProvider({ installRoutes: [weComCredentialRoutes(deps)] })
   ])
 }
 
@@ -248,7 +252,11 @@ async function builtServer(): Promise<{ app: FastifyInstance; routes: string[]; 
 }
 
 // Interactive-only routes leave the OpenAPI document, so the conventions check skips them.
-const INTERACTIVE_ONLY_MOUNTS = new Set(['POST /integrations/wechat/login', 'GET /integrations/wechat/login/:id'])
+const INTERACTIVE_ONLY_MOUNTS = new Set([
+  'POST /integrations/wechat/login',
+  'GET /integrations/wechat/login/:id',
+  'PUT /bots/:id/wecom/credentials'
+])
 
 describe('platform route mounts', () => {
   it('mounts every provider plugin at its pinned paths, and the callbacks at BOTH public prefixes', async () => {
