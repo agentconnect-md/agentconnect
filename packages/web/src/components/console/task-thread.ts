@@ -34,18 +34,30 @@ const running = (row: AssistantSubsessionDto | undefined) => row?.state === 'ope
 /** The conversation's rows: a map once read, null while that read is out, undefined where it is not listed or cannot be read. */
 type ListedTasks = ReadonlyMap<string, AssistantSubsessionDto> | null | undefined
 
+/** A poll interval that is the same value until what it polls changes. SWR restarts its timer whenever its interval is a new value, and an interval given as a function is one on every render, so under a parent that re-renders more often than the interval the poll never fired. */
+function usePollMs(): [number, (want: number) => void] {
+  const [ms, setMs] = useState(IDLE_POLL_MS)
+  return [
+    ms,
+    (want) => {
+      if (want !== ms) setMs(want)
+    }
+  ]
+}
+
 /** This conversation's tasks by their session id, read once for every card in it and polled faster while one runs. */
 function useConversationTasks(agentId: string, parentSessionId: string | null): ListedTasks {
+  const [pollMs, pollEvery] = usePollMs()
   const { data, error } = useSWR(
     parentSessionId ? ['conversation-tasks', agentId, parentSessionId] : null,
     ([, agent, parent]) => fetchAssistantSubsessions(agent, { parentSessionId: parent, limit: ROWS_PAGE }),
     {
       ...CONSOLE_SWR_CONFIG,
       keepPreviousData: true,
-      refreshInterval: (page) =>
-        page?.subsessions.some((row) => row.state === 'open') ? RUNNING_POLL_MS : IDLE_POLL_MS
+      refreshInterval: pollMs
     }
   )
+  pollEvery(data?.subsessions.some((row) => row.state === 'open') ? RUNNING_POLL_MS : IDLE_POLL_MS)
   if (!parentSessionId || (error && !data)) return undefined
   if (!data) return null
   return new Map(data.subsessions.flatMap((row) => (row.sessionId ? [[row.sessionId, row] as const] : [])))
@@ -73,14 +85,16 @@ export function useTaskRow(
 ): AssistantSubsessionDto | undefined {
   const listed = useConversationTasks(agentId, sessionId ? parentSessionId : null)
   const fromList = sessionId ? listed?.get(sessionId) : undefined
+  const [pollMs, pollEvery] = usePollMs()
   const { data } = useSWR(
     sessionId && listed !== null && !fromList ? ['task-row', agentId, sessionId] : null,
     ([, agent, id]) => readOnceRegistered(() => fetchAssistantSubsession(agent, id)),
     {
       ...CONSOLE_SWR_CONFIG,
-      refreshInterval: (row) => (running(row) ? RUNNING_POLL_MS : IDLE_POLL_MS)
+      refreshInterval: pollMs
     }
   )
+  pollEvery(running(data) ? RUNNING_POLL_MS : IDLE_POLL_MS)
   return fromList ?? data
 }
 
@@ -162,6 +176,7 @@ export function useThreadRecord(
   /** Whether this visit is waiting on a turn of the holding task's session. */
   busy: (sessionId: string) => boolean = () => false
 ): ThreadRecord {
+  const [pollMs, pollEvery] = usePollMs()
   // No previous data across keys: another thread's footer would name its task as this panel's reply target.
   const {
     data: read,
@@ -172,10 +187,11 @@ export function useThreadRecord(
     ([, sessionId, rootId]) => fetchSessionThreadMessages(sessionId, rootId, { limit: THREAD_PAGE }),
     {
       ...CONSOLE_SWR_CONFIG,
-      refreshInterval: (page) => threadPollMs(page?.summary, busy)
+      refreshInterval: pollMs
     }
   )
   const data = read && ref && read.sessionId === ref.sessionId && read.rootId === ref.rootId ? read : undefined
+  pollEvery(threadPollMs(data?.summary, busy))
   const key = ref ? `${ref.sessionId}\n${ref.rootId}` : ''
   const [older, setOlder] = useState<{ key: string; messages: SessionMessageDto[]; nextCursor: string | null } | null>(
     null
