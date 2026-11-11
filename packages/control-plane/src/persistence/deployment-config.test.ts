@@ -46,6 +46,36 @@ describe('DeploymentConfigValuesV1Schema', () => {
     ).toBe(false)
   })
 
+  it('accepts agent bots beside the Teams app and refuses a malformed resource group', () => {
+    const tenantId = '44444444-4444-4444-8444-444444444444'
+    const agentBots = {
+      blueprintId: '55555555-5555-4555-8555-55555555555A',
+      subscriptionId: '66666666-6666-4666-8666-666666666666',
+      resourceGroup: ' example-bots_(1) '
+    }
+    const parsed = DeploymentConfigValuesV1Schema.parse({ ...base, msTeams: { tenantId, agentBots } })
+    expect(parsed.msTeams?.agentBots).toEqual({
+      blueprintId: '55555555-5555-4555-8555-55555555555a',
+      subscriptionId: '66666666-6666-4666-8666-666666666666',
+      resourceGroup: 'example-bots_(1)'
+    })
+    for (const resourceGroup of ['', 'ends-in-a-period.', 'has a space', 'x'.repeat(91)])
+      expect(
+        DeploymentConfigValuesV1Schema.safeParse({
+          ...base,
+          msTeams: { tenantId, agentBots: { ...agentBots, resourceGroup } }
+        }).success
+      ).toBe(false)
+    // Another blueprint needs its own secret; a moved resource group does not.
+    const before = DeploymentConfigValuesV1Schema.parse({ ...base, msTeams: { tenantId } })
+    expect(deploymentSecretsRequiringRefresh(before, parsed)).toEqual(['msTeams.blueprintClientSecret'])
+    const moved = {
+      ...parsed,
+      msTeams: { tenantId, agentBots: { ...parsed.msTeams!.agentBots!, resourceGroup: 'other' } }
+    }
+    expect(deploymentSecretsRequiringRefresh(parsed, moved)).toEqual([])
+  })
+
   it('accepts a Google Chat project and refuses a non-numeric project number', () => {
     const googleChat = { projectId: 'example-project', projectNumber: '123456789012' }
     expect(DeploymentConfigValuesV1Schema.parse({ ...base, googleChat }).googleChat).toEqual(googleChat)

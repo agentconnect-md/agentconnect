@@ -403,7 +403,12 @@ import { msTeamsRoutes } from './platforms/msteams/routes.js'
 import { msTeamsConnectRoutes } from './platforms/msteams/connect-routes.js'
 import { msTeamsConnectKeys } from './platforms/msteams/connect.js'
 import { MsTeamsCredentialReconciler } from './platforms/msteams/credential-reconciler.js'
-import { msTeamsConnectAnchor, msTeamsRelayApp, resolveMsTeamsPlatformApp } from './platforms/msteams/deployment-app.js'
+import {
+  msTeamsConnectAnchor,
+  msTeamsRelayApp,
+  resolveMsTeamsAgentBots,
+  resolveMsTeamsPlatformApp
+} from './platforms/msteams/deployment-app.js'
 import { createTelegramCpProvider } from './platforms/telegram/provider.js'
 import { createDiscordCpProvider } from './platforms/discord/provider.js'
 import { createSlackCpProvider, createSlackToolingCredentials } from './platforms/slack/provider.js'
@@ -2512,6 +2517,7 @@ export function buildContainer(
   })
   // The deployment's Teams app (teams-integration.md §8): its secret stays on the CP and relay, so its rows' member checks use it from here.
   const msTeamsPlatformApp = resolveMsTeamsPlatformApp(config)
+  const msTeamsAgentBots = resolveMsTeamsAgentBots(config, msTeamsPlatformApp)
   const msTeamsSessionAccess = createMsTeamsSessionAccess(
     { ...botSessionAccessDeps, configured: configuredSocialProviders.includes('azuread') },
     fetch,
@@ -3635,7 +3641,7 @@ export function buildContainer(
     // The relay answers a Teams tenant no organization connected with the deployment app's own card (teams-integration.md §8.4).
     msTeamsConnectAnchor(msTeamsPlatformApp, webAppUrl),
     // The relay sends the app's rows' Bot Connector calls and mints their Graph tokens (§8.5).
-    msTeamsRelayApp(msTeamsPlatformApp, config.API_KEY_PEPPER),
+    msTeamsRelayApp(msTeamsPlatformApp, config.API_KEY_PEPPER, msTeamsAgentBots),
     // The relay sends the app's customer rows' Chat API calls (google-chat-integration.md §10.10).
     googleChatRelayApp(googleChatPlatformApp)
   )
