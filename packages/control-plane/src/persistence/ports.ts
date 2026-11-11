@@ -6189,6 +6189,8 @@ export interface MsTeamsAgentBotRequestStore {
   openedBefore(before: Date, limit: number): Promise<{ orgId: OrgId; id: string }[]>
   /** Take the one check of a request until `until`; false while another holds it. */
   claim(orgId: OrgId, id: string, token: string, now: Date, until: Date): Promise<boolean>
+  /** Whether the request still exists with `token` as its latest claim; an expired claim nobody replaced still holds. */
+  holds(orgId: OrgId, id: string, token: string): Promise<boolean>
   /** Hand a claim back with what the check learned: the next check, a rotated token, or why it stopped. */
   release(
     orgId: OrgId,

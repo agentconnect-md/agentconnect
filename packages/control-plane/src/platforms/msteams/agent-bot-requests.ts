@@ -150,7 +150,7 @@ export class MsTeamsAgentBotRequests {
         })
         return { outcome: 'rejected' }
       }
-      const integrationId = await this.install(request, tokens.accessToken)
+      const integrationId = await this.install(request, tokens.accessToken, claim)
       if (!integrationId) {
         await this.store.release(orgId, id, claim, {
           nextCheckAt: later(),
@@ -182,7 +182,11 @@ export class MsTeamsAgentBotRequests {
   }
 
   // Installs into each chosen team as the member, then writes the row; undefined when Microsoft refused every team, which a new sign-in mends.
-  private async install(request: MsTeamsAgentBotRequestRecord, accessToken: string): Promise<string | undefined> {
+  private async install(
+    request: MsTeamsAgentBotRequestRecord,
+    accessToken: string,
+    claim: string
+  ): Promise<string | undefined> {
     const { http } = this.deps
     const agent = await http.repos.agent.get(request.orgId, request.agentId)
     if (!agent) throw new Error('the request’s agent is gone')
@@ -206,9 +210,10 @@ export class MsTeamsAgentBotRequests {
       const made = await this.deps.bindingMutations.runExclusive(request.tenantId, async () => {
         // The tenant may have changed hands while the teams were being installed into.
         if (!(await this.owned(request))) throw new Error('the tenant changed hands')
-        // A request cancelled meanwhile has had its bot removed, so no row may name it.
-        if (!(await this.store.get(request.orgId, request.id))) throw new Error('the request was cancelled')
-        return await installNewBot(http, this.deps.log as never, {
+        // A claim that ran out may have passed to a cancel, which removes the bot: only the latest claim writes the row.
+        if (!(await this.store.holds(request.orgId, request.id, claim)))
+          throw new Error('the request passed to another')
+        const installed = await installNewBot(http, this.deps.log as never, {
           bot: {
             externalAppId: request.identity,
             platformConfig: {
@@ -235,6 +240,9 @@ export class MsTeamsAgentBotRequests {
           prebuilt: true,
           createdByUserId: request.createdByUserId
         })
+        // The request ends with the row's write, under the same lock a cancel removes the bot under.
+        await this.store.delete(request.orgId, request.id)
+        return installed
       })
       // The package the administrator approved is the one in the teams, so the row records it as current (§5.1).
       await http.repos.bot.mergeBotIdentity(request.orgId, made.bot.id, () => ({
@@ -264,17 +272,22 @@ export class MsTeamsAgentBotRequests {
     const request = await this.store.get(orgId, id)
     if (!request) return false
     try {
-      await this.withdrawAndRemove(request)
+      await this.withdraw(request)
+      // The bot goes under the lock a check writes its row under, and only while this cancel's claim is the latest.
+      return await this.deps.bindingMutations.runExclusive(request.tenantId, async () => {
+        if (!(await this.store.holds(orgId, id, claim))) return false
+        await this.removeBot(request)
+        await this.store.delete(orgId, id)
+        return true
+      })
     } catch (err) {
       await this.store.release(orgId, id, claim, { nextCheckAt: request.nextCheckAt })
       throw err
     }
-    await this.store.delete(orgId, id)
-    return true
   }
 
-  // Withdraws the submission where the stored token still works, then removes the bot.
-  private async withdrawAndRemove(request: MsTeamsAgentBotRequestRecord): Promise<void> {
+  // Withdraws the submission where the stored token still works.
+  private async withdraw(request: MsTeamsAgentBotRequestRecord): Promise<void> {
     if (request.refreshToken) {
       try {
         const tokens = await redeemMsTeamsRefreshToken(
@@ -292,7 +305,6 @@ export class MsTeamsAgentBotRequests {
         if (!(err instanceof MsTeamsConnectError) || err.code === 'MSTEAMS_CONNECT_UNAVAILABLE') throw err
       }
     }
-    await this.removeBot(request)
   }
 
   // The registration and the identity of a request that will not be installed.

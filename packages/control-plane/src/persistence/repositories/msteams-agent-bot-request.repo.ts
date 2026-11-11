@@ -106,6 +106,10 @@ export class PgMsTeamsAgentBotRequestStore implements MsTeamsAgentBotRequestStor
     return count === 1
   }
 
+  async holds(orgId: OrgId, id: string, token: string): Promise<boolean> {
+    return (await this.prisma.msTeamsAgentBotRequest.count({ where: { id, orgId, claimToken: token } })) === 1
+  }
+
   async release(
     orgId: OrgId,
     id: string,

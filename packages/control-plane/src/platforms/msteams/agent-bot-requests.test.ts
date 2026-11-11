@@ -50,6 +50,8 @@ function harness(script: Script = {}) {
   const clock = new FakeClock(NOW)
   const { rows, store } = memoryMsTeamsAgentBotRequestStore(() => clock.now())
   const calls: string[] = []
+  // What a test runs in the middle of a Microsoft call, to interleave a second actor.
+  const during: { install?: () => Promise<void>; read?: () => Promise<void> } = {}
   let refreshes = 0
   const fetchImpl = (async (input: unknown, init?: RequestInit) => {
     const url = String(input)
@@ -70,6 +72,7 @@ function harness(script: Script = {}) {
       return new Response(null, { status: script.withdraw ?? 204 })
     }
     if (url.includes('/appCatalogs/teamsApps/')) {
+      await during.read?.()
       if (script.definitions === null) return new Response(null, { status: 404 })
       const states = script.definitions ?? ['submitted']
       return Response.json({ appDefinitions: states.map((state, i) => ({ id: `def-${i}`, publishingState: state })) })
@@ -77,6 +80,7 @@ function harness(script: Script = {}) {
     const team = /\/teams\/([^/]+)\/installedApps/.exec(url)?.[1]
     if (team) {
       calls.push(`install ${team} ${init?.headers ? (init.headers as Record<string, string>).authorization : ''}`)
+      await during.install?.()
       return new Response(null, { status: script.install?.[team] ?? 201 })
     }
     if (url.startsWith('https://management.azure.com/')) {
@@ -149,7 +153,7 @@ function harness(script: Script = {}) {
       nextCheckAt: new Date(NOW),
       ...over
     } as never)
-  return { clock, rows, store, calls, create, put, mergeBotIdentity, requests, open }
+  return { clock, rows, store, calls, during, create, put, mergeBotIdentity, requests, open }
 }
 
 describe('the wait between checks', () => {
@@ -261,6 +265,32 @@ describe('MsTeamsAgentBotRequests', () => {
     await h.store.claim(ORG, 'request-1', 'someone-else', new Date(NOW), new Date(NOW + 60_000))
     expect(await h.requests.check(ORG, 'request-1')).toEqual({ outcome: 'busy' })
     expect(h.calls).toEqual([])
+  })
+
+  it('lets only the latest claim finish once a claim ran out: a slow check writes no row after a cancel, and a slow cancel removes no connected bot', async () => {
+    // The check is still installing when its claim runs out and a cancel takes the request.
+    const slowCheck = harness({ definitions: ['published'] })
+    await slowCheck.open({ teamIds: ['team-1'] })
+    slowCheck.during.install = async () => {
+      delete slowCheck.during.install
+      slowCheck.clock.advance(3 * 60_000)
+      expect(await slowCheck.requests.cancel(ORG, 'request-1')).toBe(true)
+    }
+    expect(await slowCheck.requests.check(ORG, 'request-1')).toEqual({ outcome: 'pending' })
+    expect(slowCheck.create).not.toHaveBeenCalled()
+    expect(slowCheck.rows.size).toBe(0)
+
+    // The cancel is still reading the package when its claim runs out and a check installs the approved package.
+    const slowCancel = harness({ definitions: ['published'] })
+    await slowCancel.open({ teamIds: ['team-1'] })
+    slowCancel.during.read = async () => {
+      delete slowCancel.during.read
+      slowCancel.clock.advance(3 * 60_000)
+      expect(await slowCancel.requests.check(ORG, 'request-1')).toMatchObject({ outcome: 'installed' })
+    }
+    expect(await slowCancel.requests.cancel(ORG, 'request-1')).toBe(false)
+    expect(slowCancel.create).toHaveBeenCalledTimes(1)
+    expect(slowCancel.calls.filter((call) => call.startsWith('DELETE'))).toEqual([])
   })
 
   it('ends a request whose tenant another organization recovered: nothing is installed and the bot goes', async () => {
