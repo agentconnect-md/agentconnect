@@ -2167,6 +2167,21 @@ describe('SlackConnection chat.postMessage boundary', () => {
     })
   })
 
+  it('links a hook trigger to its source repository', async () => {
+    const calls: any[] = []
+    const conn = new SlackConnection(
+      { ...deps(), sendIntervalMs: 0 } as any,
+      () => withPostMessage(async (payload) => (calls.push(payload), { ts: '100.2' })) as any
+    )
+    await conn.postMessage('C1', 'Review revision', undefined, {
+      sourceRepository: { label: 'example-org/example-repo', url: 'https://github.com/example-org/example-repo' }
+    })
+    expect(calls[0].blocks).toEqual([
+      { type: 'markdown', text: 'Review revision' },
+      { type: 'mrkdwn', text: '<https://github.com/example-org/example-repo|example-org/example-repo>' }
+    ])
+  })
+
   it('passes the agent icon_url through, and drops it with username on a missing customize scope', async () => {
     const calls: any[] = []
     const missingCustomize = Object.assign(new Error('An API error occurred: missing_scope'), {
