@@ -135,6 +135,11 @@ export default function MsTeamsConnect() {
           setPhase('requested')
           return
         }
+        // An administrator's approval already installed into the teams the member chose.
+        if (connected.approved) {
+          setPhase('done')
+          return
+        }
         // An update preselects nothing: the teams that had the app already run the new package.
         const update = connected.teams.some((team) => team.app !== 'none')
         setChosen(new Set(update ? [] : connected.teams.slice(0, 1).map((team) => team.id)))

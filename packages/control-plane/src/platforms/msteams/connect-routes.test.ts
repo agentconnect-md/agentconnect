@@ -75,12 +75,15 @@ async function harness(
     oid?: string | null
     /** The submitted package's definitions as its submitter reads them. */
     packageStates?: string[]
+    /** Graph's status for an administrator's approval of a pending definition. */
+    approve?: number
   } = {}
 ) {
   const graph: { method: string; url: string; body?: unknown }[] = []
   let principalCreated = false
   // Every write in the order it ran, Graph and repository alike.
   const order: string[] = []
+  let packageStates = opts.packageStates ?? ['submitted']
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input)
     if (url.endsWith('/oauth2/v2.0/token')) {
@@ -136,15 +139,22 @@ async function harness(
     if (team && url.includes('$filter'))
       return Response.json({ value: opts.installedIn?.includes(team) ? [{ id: `install-${team}` }] : [] })
     if (url.includes('$filter')) return Response.json({ value: [] })
+    if (url.includes('/appDefinitions/') && init?.method === 'PATCH') {
+      order.push(`approve ${(init.headers as Record<string, string>)['if-match']}`)
+      if (opts.approve) return new Response(null, { status: opts.approve })
+      packageStates = ['published']
+      return new Response(null, { status: 200 })
+    }
     if (url.includes('/appDefinitions/')) {
       order.push('withdraw')
       return new Response(null, { status: 204 })
     }
     if (url.includes('$expand=appDefinitions'))
       return Response.json({
-        appDefinitions: (opts.packageStates ?? ['submitted']).map((publishingState, i) => ({
+        appDefinitions: packageStates.map((publishingState, i) => ({
           id: `def-${i}`,
-          publishingState
+          publishingState,
+          '@odata.etag': `etag-${i}`
         }))
       })
     if (url.includes('/appCatalogs/teamsApps')) {
@@ -293,6 +303,7 @@ async function harness(
       agentBots: boolean
       consent: boolean
       member: boolean
+      approve: string
     }> = {}
   ) => mintMsTeamsConnectState(keys, { orgId: ORG, agentId: AGENT, userId: 'user-1', ...over }, clock)
   const post = (path: string, payload: unknown) =>
@@ -879,6 +890,35 @@ describe('a member who is not an administrator (§8.6.6)', () => {
     expect(again.json()).toMatchObject({ member: true, request: { id, status: 'pending', reason: null } })
     expect(again.json()).not.toHaveProperty('ticket')
     expect(h.requestRows.get(id)).toMatchObject({ refreshToken: 'member-refresh', status: 'pending' })
+  })
+
+  it('lets an administrator approve a waiting request from here: the package is published and the agent connected', async () => {
+    const h = await connected()
+    const ticket = (await signIn(h)).json<{ ticket: string }>().ticket
+    const id = (await h.post('/request', { ticket, teamIds: ['team-1'] })).json<{ id: string }>().id
+    const start = await h.app.inject({ method: 'POST', url: `/integrations/msteams/requests/${id}/approve` })
+    const url = new URL(start.json<{ authorizeUrl: string }>().authorizeUrl)
+    expect(url.searchParams.get('scope')).toContain('AppCatalog.ReadWrite.All')
+    const approved = await h.callback(url.searchParams.get('state')!)
+    expect(approved.statusCode, approved.body).toBe(200)
+    expect(approved.json()).toMatchObject({ approved: true, agentId: AGENT })
+    expect(typeof approved.json<{ integrationId: string }>().integrationId).toBe('string')
+    expect(h.order).toContain('approve etag-0')
+    expect(h.requestRows.size).toBe(0)
+    expect(
+      (await h.app.inject({ method: 'POST', url: `/integrations/msteams/requests/${id}/approve` })).statusCode
+    ).toBe(404)
+  })
+
+  it('names a sign-in that cannot approve, and keeps the request waiting', async () => {
+    const h = await connected({ approve: 403 })
+    const ticket = (await signIn(h)).json<{ ticket: string }>().ticket
+    const id = (await h.post('/request', { ticket, teamIds: [] })).json<{ id: string }>().id
+    const refusal = await h.callback(h.state({ approve: id }))
+    expect(refusal.statusCode).toBe(403)
+    expect(refusal.json()).toMatchObject({ code: 'MSTEAMS_CONNECT_NOT_ADMIN' })
+    expect(h.requestRows.get(id)).toMatchObject({ status: 'pending' })
+    expect((await h.callback(h.state({ approve: 'no-such-request' }))).statusCode).toBe(404)
   })
 
   it('takes a member’s ticket only at the request step', async () => {

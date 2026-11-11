@@ -277,6 +277,18 @@ describe('MsTeamsConnect', () => {
     expect(host.textContent).toContain('Waiting for approval')
     await act(async () => root.unmount())
     root = createRoot(host)
+    // An administrator's approval that already installed the agent has no further step.
+    mocks.finish.mockResolvedValue({
+      integrationId: 'int-4',
+      agentId: 'agent-a',
+      teams: [],
+      store: false,
+      approved: true
+    })
+    await land(`code=c&state=${STATE}`)
+    expect(host.textContent).toContain('Teams is connected')
+    await act(async () => root.unmount())
+    root = createRoot(host)
     mocks.finish.mockRejectedValue(new mocks.FakeApiError('no', 409, 'MSTEAMS_TENANT_NOT_CONNECTED'))
     await land(`code=c&state=${STATE}`)
     expect(host.textContent).toContain('is not connected here yet')

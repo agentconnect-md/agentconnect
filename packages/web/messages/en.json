@@ -7066,7 +7066,8 @@
         "requestRejected": "The agent’s app was turned down or removed.",
         "requestOpenAdmin": "Teams admin center",
         "requestCheck": "Check again",
-        "requestCancel": "Cancel request"
+        "requestCancel": "Cancel request",
+        "requestApprove": "Approve as administrator"
       }
     },
     "wechat": {

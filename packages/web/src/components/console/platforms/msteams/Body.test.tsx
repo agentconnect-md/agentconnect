@@ -17,7 +17,8 @@ const mocks = vi.hoisted(() => ({
   connect: vi.fn(),
   requests: vi.fn(),
   checkRequest: vi.fn(),
-  cancelRequest: vi.fn()
+  cancelRequest: vi.fn(),
+  approveRequest: vi.fn()
 }))
 
 vi.mock('../deployment-config', () => ({
@@ -31,7 +32,8 @@ vi.mock('./api', () => ({
     connect: mocks.connect,
     requests: mocks.requests,
     checkRequest: mocks.checkRequest,
-    cancelRequest: mocks.cancelRequest
+    cancelRequest: mocks.cancelRequest,
+    approveRequest: mocks.approveRequest
   }
 }))
 vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ activeOrg: { id: 'org-a' } }) }))
@@ -215,6 +217,13 @@ describe('MsTeamsWizardBody with the deployment app', () => {
     expect(text()).toContain('Waiting for a Teams administrator')
     expect(buttonWith('I’m not an administrator')).toBeUndefined()
     expect(host.querySelector('a[href="https://admin.example.test/manage-apps"]')).not.toBeNull()
+    mocks.approveRequest.mockResolvedValue({ authorizeUrl: 'https://login.microsoftonline.com/organizations/y' })
+    const approve = vi.fn()
+    vi.stubGlobal('location', { ...window.location, assign: approve })
+    await act(async () => buttonWith('Approve as administrator')?.click())
+    expect(mocks.approveRequest).toHaveBeenCalledWith('org-a', 'req-1')
+    expect(approve).toHaveBeenCalledWith('https://login.microsoftonline.com/organizations/y')
+    vi.unstubAllGlobals()
     await act(async () => buttonWith('Check again')?.click())
     expect(mocks.checkRequest).toHaveBeenCalledWith('org-a', 'req-1')
     expect(text()).toContain('turned down or removed')

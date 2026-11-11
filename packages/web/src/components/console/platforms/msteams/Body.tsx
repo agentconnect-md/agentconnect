@@ -89,12 +89,15 @@ export function MsTeamsWizardBody({ agent, host }: { agent: Agent; host: WizardH
       cancelled = true
     }
   }, [host.mockMode, deploymentApp, orgId, agent.id])
-  const onRequest = async (action: 'check' | 'cancel') => {
+  const onRequest = async (action: 'check' | 'cancel' | 'approve') => {
     if (!request || !orgId || requestBusy) return
     setRequestBusy(true)
     host.setError(null)
     try {
-      if (action === 'cancel') {
+      if (action === 'approve') {
+        // An administrator of the tenant signs in; the connect page publishes the package and connects the agent.
+        window.location.assign((await msTeamsApi.approveRequest(orgId, request.id)).authorizeUrl)
+      } else if (action === 'cancel') {
         await msTeamsApi.cancelRequest(orgId, request.id)
         setRequest(null)
       } else {
@@ -231,6 +234,16 @@ export function MsTeamsWizardBody({ agent, host }: { agent: Agent; host: WizardH
                   className="dsbtn dsbtn-secondary h-[32px]"
                 >
                   {t('deployment.requestCheck')}
+                </button>
+              )}
+              {request.status === 'pending' && (
+                <button
+                  type="button"
+                  disabled={requestBusy}
+                  onClick={() => void onRequest('approve')}
+                  className="dsbtn dsbtn-secondary h-[32px]"
+                >
+                  {t('deployment.requestApprove')}
                 </button>
               )}
               <button

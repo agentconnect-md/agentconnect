@@ -54,7 +54,8 @@ import {
   submitMsTeamsPackage,
   upgradeMsTeamsInstalls,
   verifyMsTeamsConnectState,
-  type MsTeamsConnectKeys
+  type MsTeamsConnectKeys,
+  approveMsTeamsSubmission
 } from './connect.js'
 import {
   MSTEAMS_DEPLOYMENT_OWNER,
@@ -98,6 +99,7 @@ const NAME_TAKEN_MESSAGE = (holder: string) =>
   `Another agent of this Microsoft 365 organization, ${holder}, already appears in Teams under this name. Rename one of them first, so people can tell them apart.`
 const AGENT_BOTS_UNAVAILABLE_MESSAGE = (reason: string) =>
   `Microsoft did not let this deployment create a bot for this agent in your Microsoft 365 organization (${reason}). Agents already connected are unaffected.`
+const APPROVE_TENANT_MESSAGE = 'Sign in with an administrator of the Microsoft 365 organization the request is for.'
 const NOT_CONNECTED_MESSAGE =
   'Your Microsoft 365 organization is not connected here yet. A Teams or Global administrator has to connect it first.'
 const ALREADY_CONNECTED_MESSAGE =
@@ -176,8 +178,12 @@ const CallbackDto = z.object({
       'True for a member’s sign-in: the ticket goes to the request step with the teams the agent should join, and the package then waits for the administrator’s approval.'
     ),
   request: RequestDto.optional().describe(
-    'The agent’s open request, when this sign-in renewed one whose stored sign-in had stopped working.'
+    'The agent’s open request: one this sign-in renewed after its stored sign-in had stopped working, or one an administrator just approved that Microsoft does not show the member as published yet.'
   ),
+  approved: z
+    .boolean()
+    .optional()
+    .describe('True for an administrator’s approval of a waiting request, which has no team step.'),
   teams: z
     .array(
       z.object({
@@ -483,6 +489,33 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
               .listForPlatform(MSTEAMS_PLATFORM)
               .then((rows) => msTeamsRecoveryRows(rows, live.app.appId, tenantId))
           const before = await tenantRows()
+          if (state.approve) {
+            // An administrator approves a member's waiting request: the pending package is published, then finished as any approved one is (§8.6.6).
+            const waiting = await deps.repos.msTeamsAgentBotRequest.get(orgId, state.approve)
+            if (!seams.requests || !waiting || waiting.agentId !== target.id)
+              return refuse(reply, 404, 'NOT_FOUND', 'Request not found.')
+            if (waiting.tenantId !== tenantId)
+              return refuse(reply, 409, 'MSTEAMS_TENANT_MISMATCH', APPROVE_TENANT_MESSAGE)
+            await approveMsTeamsSubmission(fetchImpl, accessToken, waiting.catalogAppId)
+            const checked = await seams.requests.check(orgId, waiting.id)
+            if (checked.outcome === 'installed')
+              return {
+                integrationId: checked.integrationId,
+                agentId: target.id,
+                teams: [],
+                store: false,
+                approved: true
+              }
+            // Microsoft shows a new approval to the member's token some seconds later; the request stays and the next check finishes it.
+            const left = await deps.repos.msTeamsAgentBotRequest.get(orgId, waiting.id)
+            return {
+              agentId: target.id,
+              teams: [],
+              store: false,
+              approved: true,
+              ...(left ? { request: requestDto(left) } : {})
+            }
+          }
           if (state.member) {
             // A member's request: nothing is published, so only a tenant this organization already connected is taken (§8.6.6).
             if (!seams.requests || !refreshToken || !sponsorId)
@@ -1038,6 +1071,41 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
       if (!request || !agent || !canView(agent, ctxOf(req))) return 'not_found' as const
       return canEdit(agent, ctxOf(req)) ? request : ('forbidden' as const)
     }
+
+    r.post(
+      '/integrations/msteams/requests/:id/approve',
+      {
+        schema: {
+          tags: [Tag.Integrations],
+          summary: 'Approve a pending Teams bot request as an administrator',
+          description:
+            'For a person who can edit the agent and administers the request’s Microsoft 365 organization: answers Microsoft’s sign-in page. The connect step that follows publishes the pending package with the administrator’s token, installs it into the teams the member chose, and connects the agent.',
+          operationId: 'approveMsTeamsAgentBotRequest',
+          params: IdParam,
+          response: { 200: ConnectDto, 403: ErrorDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const live = usable()
+        const request = await editableRequest(req)
+        if (request === 'forbidden') return refuse(reply, 403, 'FORBIDDEN', 'You cannot edit this agent.')
+        if (request === 'not_found' || !live || !req.principal)
+          return refuse(reply, 404, 'NOT_FOUND', 'Request not found.')
+        const state = mintMsTeamsConnectState(
+          seams.keys,
+          { orgId: orgOf(req), agentId: request.agentId, userId: req.principal.userId, approve: request.id },
+          deps.clock
+        )
+        return {
+          authorizeUrl: msTeamsAuthorizeUrl(seams.keys, {
+            clientId: live.app.appId,
+            redirectUri: msTeamsConnectRedirectUri(live.webAppUrl),
+            state
+          })
+        }
+      }
+    )
 
     r.post(
       '/integrations/msteams/requests/:id/check',
