@@ -712,8 +712,10 @@ that serves the named agent (`orchestrator/agentCrons.ts`).
   says `postHere: false`; elsewhere it is headless. An edit keeps the cron's target unless told otherwise.
 - **One-shot tasks.** `runAt` (an ISO-8601 instant with an offset, at least a minute ahead) is stored as the
   wall-clock time in the cron's timezone (`2026-11-12T09:00:00`), which croner fires once. The CP deletes a
-  one-shot cron, with its run history, when its run's completion report arrives. A one-shot whose time passed
-  while no daemon served it (beyond the scheduler's catch-up grace) stays inert until someone deletes it.
+  one-shot cron, with its run history, when its run's completion report arrives — fenced to the fire that
+  produced the report, so moving the schedule while a run is in flight keeps the new definition for its own
+  later fire. A one-shot whose time passed while no daemon served it (beyond the scheduler's catch-up grace)
+  stays inert until someone deletes it.
 - **Audit.** Each write is a `cron_change` audit row with no actor user. The cron records no creator, so its
   runs read as no person (assistant-mode.md §5.5) until a person edits it in the console.
 

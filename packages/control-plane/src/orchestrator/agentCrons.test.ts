@@ -158,10 +158,27 @@ describe('an agent’s own crons', () => {
       timezone: 'UTC',
       trigger: 'b'
     })
+    const fired = new Date('2026-11-12T09:00:00Z')
     const { service, crons, delivery } = harness([once, daily])
-    await service.retireOneShot(once)
-    await service.retireOneShot(daily)
+    await service.retireOneShot(once, fired)
+    await service.retireOneShot(daily, fired)
     expect([...crons.keys()]).toEqual([daily.id])
     expect(delivery.cronRemove).toHaveBeenCalledOnce()
+  })
+
+  it('does not retire a one-shot rescheduled while a run was in flight', async () => {
+    const fired = new Date('2026-11-12T09:00:00Z')
+    const later = row({
+      cronId: CronId('7f3a1c56-8a2b-4c3d-9e4f-0a1b2c3d4e5f'),
+      orgId: ORG,
+      agentId: AGENT,
+      schedule: '2026-11-13T09:00:00',
+      timezone: 'Asia/Shanghai',
+      trigger: 'moved'
+    })
+    const { service, crons, delivery } = harness([later])
+    await service.retireOneShot(later, fired)
+    expect([...crons.keys()]).toEqual([later.id])
+    expect(delivery.cronRemove).not.toHaveBeenCalled()
   })
 })

@@ -56,6 +56,19 @@ function validTimezone(timezone: string): boolean {
   }
 }
 
+/** Whether `firedAt` is a fire of THIS one-shot definition: croner's next run after a second before
+ *  the report is the definition's own moment, and nothing later than the report. A schedule replaced
+ *  while a run was in flight has its next fire after it, so its run's completion retires nothing. */
+function firedThisOneShot(schedule: string, timezone: string, firedAt: Date): boolean {
+  if (!isOneShotSchedule(schedule)) return false
+  try {
+    const next = new Cron(schedule, { timezone, paused: true }).nextRun(new Date(firedAt.getTime() - 1000))
+    return next !== null && next.getTime() <= firedAt.getTime()
+  } catch {
+    return false
+  }
+}
+
 /** The schedule's next fire after `now`, or a reason it has none. */
 function nextFire(schedule: string, timezone: string, now: Date): Date | string {
   try {
@@ -185,11 +198,14 @@ export class AgentCronService {
       : refused('the cron changed meanwhile; try again')
   }
 
-  /** A one-shot cron's run completed: it has nothing left to fire, so it goes. */
-  async retireOneShot(cron: CronRecord): Promise<void> {
-    if (!cron.agentId || !isOneShotSchedule(cron.schedule)) return
-    const agent = await this.deps.agents.get(cron.orgId, cron.agentId)
-    if (agent) await this.removeBound(agent, cron, 'after its one run')
+  /** A one-shot cron's run completed: it has nothing left to fire, so it goes — but only if the
+   *  run reported is a fire of the definition stored now, never one of a schedule since replaced. */
+  async retireOneShot(cron: CronRecord, firedAt: Date): Promise<void> {
+    if (!cron.agentId) return
+    const current = await this.deps.crons.get(cron.orgId, cron.id)
+    if (!current?.agentId || !firedThisOneShot(current.schedule, current.timezone, firedAt)) return
+    const agent = await this.deps.agents.get(cron.orgId, current.agentId)
+    if (agent) await this.removeBound(agent, current, 'after its one run')
   }
 
   private async removeBound(agent: AgentRecord, cron: CronRecord, why: string): Promise<boolean> {

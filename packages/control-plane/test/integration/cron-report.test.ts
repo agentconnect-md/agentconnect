@@ -325,4 +325,67 @@ describe('a one-shot cron after its run', () => {
     expect(await repo.get(OrgId(DEFAULT_ORG_ID), CronId(cronId))).toBeNull()
     expect(cronRemove).toHaveBeenCalledOnce()
   })
+
+  it('leaves a one-shot rescheduled during the run for its own later fire', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON })
+    const repo = new PgCronRepo(prisma)
+    const cronId = randomUUID()
+    await repo.upsert({
+      cronId: CronId(cronId),
+      orgId: OrgId(DEFAULT_ORG_ID),
+      agentId: AgentId(agentId),
+      schedule: '2026-07-03T09:00:00',
+      timezone: 'UTC',
+      trigger: 'check once'
+    })
+    const cronRemove = vi.fn(async () => {})
+    const agents = new PgAgentRepo(prisma)
+    const deps = {
+      cron: repo,
+      agent: agents,
+      log: { error: () => {} },
+      placementResolver: new PlacementResolver({ duties: new PgDutyGroupRepo(prisma), clock: systemClock }),
+      agentCrons: new AgentCronService({
+        crons: repo,
+        agents,
+        integrations: { get: async () => null },
+        audit: { append: async () => ({}) as never },
+        delivery: { cronUpsert: async () => {}, cronRemove },
+        mutations: new AgentMutationGate(),
+        log: { warn: () => {} }
+      })
+    } as unknown as DaemonWsDeps
+    const send = (payload: Record<string, unknown>) =>
+      handleCronReport(
+        {
+          v: 1,
+          id: randomUUID(),
+          ts: new Date().toISOString(),
+          type: 'cron/report',
+          orgId: DEFAULT_ORG_ID,
+          payload: { cronId, agentId, firedAt: '2026-07-03T09:00:00.000Z', ...payload }
+        } as AnyFrame,
+        { daemonId: DAEMON } as DaemonConnection,
+        deps
+      )
+
+    // The agent moves the task to tomorrow while the run is still going.
+    await repo.upsert({
+      cronId: CronId(cronId),
+      orgId: OrgId(DEFAULT_ORG_ID),
+      agentId: AgentId(agentId),
+      schedule: '2026-07-04T09:00:00',
+      timezone: 'UTC',
+      trigger: 'check once, tomorrow'
+    })
+    await send({ status: 'success', durationMs: 1000 })
+    const kept = await repo.get(OrgId(DEFAULT_ORG_ID), CronId(cronId))
+    expect(kept?.schedule).toBe('2026-07-04T09:00:00')
+    expect(cronRemove).not.toHaveBeenCalled()
+
+    await send({ firedAt: '2026-07-04T09:00:00.000Z', status: 'success', durationMs: 1000 })
+    expect(await repo.get(OrgId(DEFAULT_ORG_ID), CronId(cronId))).toBeNull()
+  })
 })
