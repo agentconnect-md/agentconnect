@@ -667,16 +667,20 @@ work nobody talks to runs without one.
 This covers the task form of `propose` (assistant-mode.md §5.10) in an internal place whose long
 session is a coordinator. The follow-up form runs no task and is unchanged.
 
-| Where the proposal's card is                                                                                                                         | The task's home                                                                 |
-| ---------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| At the place's top level, as a check's proposal is in a coordinator's conversation                                                                   | The card's thread: the card is the root                                         |
-| In a thread (under a getting-to-know introduction), or on no message of the place (webchat's pending requests, Activity, a DM the card fell back to) | A root the daemon posts at the place's top level when the task starts           |
-| An external place, a place with no coordinator, or a root that could not be posted                                                                   | None: it runs as today, on a `subsession:` coordinate that reports to its place |
+| Where the proposal's card is                                                                                                                                                                                  | The task's home                                                                 |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| At the place's top level, as a check's proposal is in a coordinator's conversation, with no task holding its thread                                                                                           | The card's thread: the card is the root                                         |
+| In a thread (under a getting-to-know introduction), at the top level with a task already holding its thread, or on no message of the place (webchat's pending requests, Activity, a DM the card fell back to) | A root the daemon posts at the place's top level when the task starts           |
+| An external place, a place with no coordinator, or a root that could not be posted                                                                                                                            | None: it runs as today, on a `subsession:` coordinate that reports to its place |
 
 - **The root the daemon posts** is one message as the agent: the proposal's sentence, who approved
   it, and a link to its card where the card is a message of the place. It is not a turn of the
   coordinator. A platform cannot nest a thread under a card that is already in one, and a thread
   holds one task (§6.4), so a card in a thread is never a home.
+- **A card whose thread is taken.** Until the approval a card's thread is unowned, so a reply under
+  it reaches the coordinator, which may open a task for it (§4.2). That task then holds the thread.
+  The approval reads the task index in its transaction: a card whose thread a task holds is no
+  home, and the daemon posts a root.
 - **What it becomes.** A threaded task of the place's coordinator, opened for its root as
   `delegateTask` with that `messageId` opens one (§5.1): keyed on the root's thread, titled with the
   proposal's sentence, owned by the approver. Its record stays an approved proposal: the hash,
@@ -684,6 +688,20 @@ session is a coordinator. The follow-up form runs no task and is unchanged.
 - **Its first turn** takes the approved proposal's prompt, which now says its reply posts in this
   thread. The record settles from that turn as it settles from a report today: completed is
   `succeeded`, failed is `failed`, cut short is `outcome_unknown`.
+- **Recognized by its record, not its coordinate.** Today the reserved `subsession:task-`
+  coordinate is how the daemon knows an approved run: inbox replay removes its row instead of
+  running it again, the turn's end settles the proposal, its reads are judged by its follow-up's
+  askers, and the console and the board name its kind (assistant-mode.md §5.7 step 1, §5.10). A
+  thread key says none of that. The first turn's inbox row therefore carries the proposal's id,
+  and each of those reads the proposal's record, which names the task's session, where it read the
+  coordinate.
+  - **Never run twice.** A replay after a restart or a handover removes a row that carries a
+    proposal's id and settles that proposal `outcome_unknown`, as today. The daemon says so once in
+    the task's thread, where a failed turn of any threaded task is reported. Later turns of the task
+    carry no proposal and replay as any thread's do.
+  - **Never steered.** A reply that arrives in the thread while the first turn runs waits for a
+    turn of its own, as a message on a task's page waits (§10). The hash binds the approved work,
+    so nobody's message joins it.
 - **Afterwards** it rests as any threaded task does (§6.5). A reply in its thread reaches it as an
   ordinary turn under its sender's own permission. The approval covered the first turn's work and
   nothing later: approving already grants only what asking in the place gets.
@@ -732,7 +750,21 @@ records none.
   agent only to look.
 - **The profile** is a follow-up check's as shipped (assistant-mode.md §5.9, layers (a) and (c)):
   AgentConnect tools filtered to reads, the runtime's read-only mode, and the daemon refusing
-  whatever asks for approval. A runtime is marked complete or degraded as it is for checks.
+  whatever asks for approval.
+- **Only where the profile is complete.** On a runtime assistant-mode.md §5.9 marks degraded (no
+  read-only mode, native tools that ask no permission, no sandbox) the native shell can still
+  write, so `readOnly` is refused there: `delegateTask` and `propose` answer that this agent's
+  runtime cannot hold a read-only task, and nothing opens. A check runs degraded because it
+  promises nobody anything; a card and a board line that say read-only are a promise to the people
+  who read them.
+- **The code host.** A read-only task's session reaches its code host through the credential
+  proxy at the read tier, whatever the agent's tier on the repository
+  ([github-app-git-credentials.md](github-app-git-credentials.md), Phase 2): a write through REST
+  or `git-receive-pack` is refused there, on every runtime. The proxy already resolves the session
+  behind each request, so the task's row is where it reads the flag.
+- **Residual.** The task runs on the agent's host, so the agent's other credentials stay within
+  reach of whatever the runtime's read-only mode lets run. The credential-less host of that
+  section's layer (b) would close that and is not part of this change.
 - **What it still writes.** Its replies in the threads it holds, `updateTask`, and `propose`, as a
   check has: a read-only task that finds work to do offers it as a card in its thread, and the
   approved work is a new task with a home of its own (§6.9.1).
