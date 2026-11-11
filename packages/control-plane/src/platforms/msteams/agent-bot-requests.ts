@@ -6,6 +6,7 @@ import { installNewBot } from '../../http/install-bot.js'
 import type { OrgId } from '../../domain/ids.js'
 import type { MsTeamsAgentBotRequestRecord, MsTeamsBindingMutations } from '../../persistence/ports.js'
 import { BotExternalIdentityTaken } from '../../persistence/errors.js'
+import { msTeamsRecoveryRows } from './recovery.js'
 import {
   MsTeamsAgentBotClient,
   MsTeamsAgentBotError,
@@ -94,6 +95,14 @@ export class MsTeamsAgentBotRequests {
     const request = await this.store.get(orgId, id)
     if (!request) return { outcome: 'gone' }
     const later = () => new Date(this.now().getTime() + msTeamsRequestBackoffMs(request.checks))
+    // A tenant another organization recovered ends this one's requests: nothing is installed, and the bot goes (§8.7).
+    if (!(await this.owned(request))) {
+      await this.removeBot(request).catch((err: unknown) =>
+        this.deps.log.warn({ err, requestId: id }, 'msteams: bot of an ended request left for the reaper')
+      )
+      await this.store.delete(orgId, id)
+      return { outcome: 'gone' }
+    }
     if (!request.refreshToken) {
       await this.store.release(orgId, id, claim, { nextCheckAt: later(), status: 'needs_sign_in' })
       return { outcome: 'needs_sign_in' }
@@ -154,6 +163,16 @@ export class MsTeamsAgentBotRequests {
     }
   }
 
+  // Whether the request's organization still holds the tenant, with the app's row or an agent bot's.
+  private async owned(request: MsTeamsAgentBotRequestRecord): Promise<boolean> {
+    const rows = msTeamsRecoveryRows(
+      await this.deps.http.repos.bot.listForPlatform(MSTEAMS_PLATFORM),
+      this.deps.app.appId,
+      request.tenantId
+    )
+    return rows.length > 0 && rows.every((row) => row.orgId === request.orgId)
+  }
+
   // Installs into each chosen team as the member, then writes the row; undefined when Microsoft refused every team, which a new sign-in mends.
   private async install(request: MsTeamsAgentBotRequestRecord, accessToken: string): Promise<string | undefined> {
     const { http } = this.deps
@@ -176,8 +195,10 @@ export class MsTeamsAgentBotRequests {
     if (request.teamIds.length > 0 && installed === 0) return undefined
     const key = msTeamsAgentBotKey(request.agentId, request.tenantId)
     try {
-      const made = await this.deps.bindingMutations.runExclusive(request.tenantId, () =>
-        installNewBot(http, this.deps.log as never, {
+      const made = await this.deps.bindingMutations.runExclusive(request.tenantId, async () => {
+        // The tenant may have changed hands while the teams were being installed into.
+        if (!(await this.owned(request))) throw new Error('the tenant changed hands')
+        return await installNewBot(http, this.deps.log as never, {
           bot: {
             externalAppId: request.identity,
             platformConfig: {
@@ -204,7 +225,7 @@ export class MsTeamsAgentBotRequests {
           prebuilt: true,
           createdByUserId: request.createdByUserId
         })
-      )
+      })
       // The package the administrator approved is the one in the teams, so the row records it as current (§5.1).
       await http.repos.bot.mergeBotIdentity(request.orgId, made.bot.id, () => ({
         platformConfig: { appPackage: request.appPackage }

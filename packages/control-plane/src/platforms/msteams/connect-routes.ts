@@ -972,24 +972,39 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
               await msTeamsAppIcons(target, deps.iconStore)
             )
           )
-          const request = await deps.repos.msTeamsAgentBotRequest.create({
-            id: randomUUID(),
-            orgId,
-            agentId: target.id,
-            tenantId,
-            createdByUserId: req.principal.userId,
-            sponsorId,
-            identity,
-            catalogAppId,
-            teamIds: req.body.teamIds,
-            appPackage: msTeamsPackageFingerprint(packageInput, target),
-            botName: `Microsoft Teams · ${(await readMsTeamsOrganizationName(fetchImpl, accessToken)) ?? tenantId}`,
-            refreshToken,
-            nextCheckAt: new Date(deps.clock.now() + MSTEAMS_REQUEST_FIRST_CHECK_MS)
+          const organizationName = await readMsTeamsOrganizationName(fetchImpl, accessToken)
+          const userId = req.principal.userId
+          // The request is stored under the tenant's lock, for an organization that still holds the tenant (§8.7).
+          const request = await seams.bindingMutations.runExclusive(tenantId, async () => {
+            const rows = msTeamsRecoveryRows(
+              await deps.repos.bot.listForPlatform(MSTEAMS_PLATFORM),
+              live.app.appId,
+              tenantId
+            )
+            if (rows.some((row) => row.orgId !== orgId))
+              throw new MsTeamsRecoveryError(409, 'MSTEAMS_TENANT_TAKEN', TAKEN_MESSAGE)
+            if (rows.length === 0)
+              throw new MsTeamsRecoveryError(409, 'MSTEAMS_TENANT_NOT_CONNECTED', NOT_CONNECTED_MESSAGE)
+            return await deps.repos.msTeamsAgentBotRequest.create({
+              id: randomUUID(),
+              orgId,
+              agentId: target.id,
+              tenantId,
+              createdByUserId: userId,
+              sponsorId,
+              identity,
+              catalogAppId,
+              teamIds: req.body.teamIds,
+              appPackage: msTeamsPackageFingerprint(packageInput, target),
+              botName: `Microsoft Teams · ${organizationName ?? tenantId}`,
+              refreshToken,
+              nextCheckAt: new Date(deps.clock.now() + MSTEAMS_REQUEST_FIRST_CHECK_MS)
+            })
           })
           return requestDto(request)
         } catch (err) {
           if (err instanceof MsTeamsConnectError) return refuse(reply, STATUS_OF[err.code], err.code, err.message)
+          if (err instanceof MsTeamsRecoveryError) return refuse(reply, err.status, err.code, err.message)
           throw err
         }
       }
