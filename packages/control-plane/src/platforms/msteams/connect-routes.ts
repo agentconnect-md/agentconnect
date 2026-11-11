@@ -364,9 +364,22 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
               'MSTEAMS_CONNECT_UNAVAILABLE',
               'This deployment makes no bots for further agents.'
             )
+          // A member belongs to a tenant the organization connected; with one such tenant the sign-in is at its authority, which also offers its guests.
+          const tenants = new Set(
+            (await deps.repos.bot.listForOrg(orgOf(req)))
+              .filter((row) => row.platform === MSTEAMS_PLATFORM && isMsTeamsDeploymentRow(row) && row.externalTenantId)
+              .map((row) => row.externalTenantId!)
+          )
+          const pin = tenants.size === 1 ? [...tenants][0]! : undefined
           const memberState = mintMsTeamsConnectState(
             seams.keys,
-            { orgId: orgOf(req), agentId: target.id, userId: req.principal.userId, member: true },
+            {
+              orgId: orgOf(req),
+              agentId: target.id,
+              userId: req.principal.userId,
+              member: true,
+              ...(pin ? { pin } : {})
+            },
             deps.clock
           )
           return {
@@ -374,7 +387,8 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
               clientId: live.app.appId,
               redirectUri: redirect,
               state: memberState,
-              member: true
+              member: true,
+              ...(pin ? { pin } : {})
             })
           }
         }
@@ -518,7 +532,8 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
               state: req.body.state,
               ...(state.tenant ? { tenant: state.tenant } : {}),
               ...(state.agentBots ? { agentBots: true } : {}),
-              ...(state.member ? { member: true } : {})
+              ...(state.member ? { member: true } : {}),
+              ...(state.pin ? { pin: state.pin } : {})
             },
             fetchImpl
           )
