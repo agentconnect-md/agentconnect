@@ -62,8 +62,9 @@ function validTimezone(timezone: string): boolean {
 function firedThisOneShot(schedule: string, timezone: string, firedAt: Date): boolean {
   if (!isOneShotSchedule(schedule)) return false
   try {
-    const next = new Cron(schedule, { timezone, paused: true }).nextRun(new Date(firedAt.getTime() - 1000))
-    return next !== null && next.getTime() <= firedAt.getTime()
+    // The definition's one moment lies at or before the reported fire; a schedule moved later has none.
+    const prior = new Cron(schedule, { timezone, paused: true }).previousRuns(1, new Date(firedAt.getTime() + 1000))
+    return prior.length > 0
   } catch {
     return false
   }
