@@ -3151,10 +3151,18 @@ export function agentRoutes(deps: HttpDeps) {
           ) {
             await convergeIntegrationGating(deps, agent, req.log)
           }
-          // Pause decides whether this agent's hooks belong in the relay pool at all, so a toggle
-          // needs the rule convergence a placement change gets — nothing else recomputes it.
           if ((existing.pause === true) !== (agent.pause === true)) {
+            // Pause decides whether this agent's hooks belong in the relay pool, which nothing else recomputes.
             await deps.hooks.rebroadcastForAgent(AgentId(agent.id))
+            // The peer directory names a paused agent so other agents' coordinators stop deferring to it; the row is committed, so a failed push only waits for the reconnect snapshot.
+            if (agent.daemonId || agent.setId) {
+              await deps.collabRoutes.broadcast(agent.orgId).catch((err: unknown) => {
+                app.log.warn(
+                  { err, agentId: agent.id, orgId: agent.orgId },
+                  'collaboration routes push failed after pause change (backstop: reconnect snapshot)'
+                )
+              })
+            }
           }
           if (req.body.icon !== undefined) {
             void syncAgentBotIcons(deps, agent, app.log)

@@ -11240,7 +11240,7 @@ export class Daemon {
     return mention ? `${sender} (mention: ${mention})` : sender
   }
 
-  /** A coordinator's standing instructions for one conversation, naming the other agents in it (auto-session-mode.md §9). */
+  /** A coordinator's standing instructions for one conversation, naming the other agents that answer in it (auto-session-mode.md §9). */
   private coordinatorInstructions(
     agent: Agent,
     at: { platform: string; channel: string; integrationId?: string }
@@ -11248,8 +11248,12 @@ export class Daemon {
     const orgId = this.cpCollab.orgForAgent(agent.id)
     const addressOf = (agentId: string) =>
       orgId ? this.cpCollab.mentionAddress(orgId, at.platform, at.channel, agentId) : undefined
+    // This daemon's own agents by their spec, another daemon's by the directory the Control Plane pushes.
+    const paused = (agentId: string) =>
+      this.agents.has(agentId) ? this.paused(agentId) : this.cpCollab.agent(agentId)?.paused === true
     const peers = (orgId ? this.cpCollab.mentionDirectory(orgId, at.platform, at.channel) : [])
-      .filter((entry) => entry.agentId !== agent.id)
+      // A paused agent answers nothing, so listing it would have this one leave it messages no one takes.
+      .filter((entry) => entry.agentId !== agent.id && !paused(entry.agentId))
       .map((entry) => {
         const local = this.agents.get(entry.agentId)
         const address = addressOf(entry.agentId)

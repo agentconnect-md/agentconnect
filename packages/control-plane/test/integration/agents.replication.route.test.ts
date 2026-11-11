@@ -550,6 +550,29 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
     expect(snapshot?.snapshot.agents.map((a) => a.agentId)).not.toContain(agentId)
   })
 
+  it('pausing a PLACED agent marks it in the flat peer directory, and resuming clears the mark', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON })
+    const { app, spy } = withSpy()
+    const entry = () => spy.collaboration.at(-1)?.snapshot.agents.find((a) => a.agentId === agentId)
+
+    const pause = await app.app.inject({ method: 'PATCH', url: `${ORG}/agents/${agentId}`, payload: { pause: true } })
+    expect(pause.statusCode).toBe(200)
+    expect(spy.collaboration).toHaveLength(1)
+    expect(entry()?.paused).toBe(true)
+
+    // An edit that leaves pause alone publishes nothing.
+    await app.app.inject({ method: 'PATCH', url: `${ORG}/agents/${agentId}`, payload: { description: 'edited' } })
+    expect(spy.collaboration).toHaveLength(1)
+
+    const resume = await app.app.inject({ method: 'PATCH', url: `${ORG}/agents/${agentId}`, payload: { pause: false } })
+    expect(resume.statusCode).toBe(200)
+    expect(spy.collaboration).toHaveLength(2)
+    expect(entry()).toBeDefined()
+    expect(entry()).not.toHaveProperty('paused')
+  })
+
   it('an UNPLACED agent (no daemonId) pushes nothing — reconcile is the backstop', async () => {
     const { app, spy } = withSpy()
 

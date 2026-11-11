@@ -106,7 +106,8 @@ export function buildCollabSnapshot(
     outboundPolicy: a.outboundPolicy,
     allowedTargetAgentIds: a.allowedTargetAgentIds,
     name: a.name,
-    ...(a.displayName !== null ? { displayName: a.displayName } : {})
+    ...(a.displayName !== null ? { displayName: a.displayName } : {}),
+    ...(a.paused ? { paused: true } : {})
   }))
 
   return { generation, channels: [...byChannel.values()], agents, platformKinds: PLATFORM_KINDS }
