@@ -752,6 +752,7 @@ function subsessionSettledLine(asker: string, outcome: SubsessionNoticeOutcome):
 /** What an assistant-mode draft card shows (assistant-mode.md §5.5); a `task` is a check's proposal (§5.10), whose text is the task. */
 export interface AssistantDraftCardView {
   agentName: string
+  iconUrl?: string
   kind: 'reply' | 'elsewhere' | 'task'
   /** A proposal's own sentence, which the card leads with, its reason, and a follow-up form's follow-up. */
   proposal?: {

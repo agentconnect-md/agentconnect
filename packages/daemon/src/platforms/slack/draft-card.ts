@@ -51,6 +51,7 @@ export function slackDraftCardPort(conn: DraftCardConnection, integrationId: str
       const blocks = buildAssistantDraftCard(card.draftId, card.view, { routingTarget })
       return await conn.postBlocks(channel, blocks, fallbackText(card.view), thread, {
         username: card.view.agentName,
+        ...(card.view.iconUrl ? { icon_url: card.view.iconUrl } : {}),
         chrome: true
       })
     },
