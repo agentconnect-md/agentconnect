@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import {
   buildSyntheticMessage,
   cronAnchorText,
+  cronNextRunText,
   isHeadlessCronSession,
   missedOccurrence,
   scheduleFingerprint,
@@ -163,8 +164,26 @@ describe('scheduledRunContext', () => {
   })
 })
 
+const depsOf = () => ({ onFire: vi.fn(), newTraceId: () => 't', warn: vi.fn() })
+
+describe('a one-shot schedule', () => {
+  const ONCE = cron('once', { schedule: '2026-11-12T09:00:00', timezone: 'Asia/Shanghai' })
+  it('arms like a pattern and reports its moment on the schedule clock', () => {
+    expect(cronNextRunText(ONCE, new Date('2026-11-11T00:00:00Z'))).toBe('2026-11-12 09:00 Asia/Shanghai')
+    expect(cronNextRunText(ONCE, new Date('2026-11-12T01:30:00Z'))).toBeUndefined()
+  })
+  it('is armed by the scheduler, not skipped as malformed', () => {
+    const d = depsOf()
+    const s = new Scheduler(d)
+    s.sync('bot-a', [ONCE])
+    expect(s.count('bot-a')).toBe(1)
+    s.stop()
+    expect(d.warn).not.toHaveBeenCalled()
+  })
+})
+
 describe('Scheduler (per-agent converge — §5.2 crons change → upsert/remove)', () => {
-  const deps = () => ({ onFire: vi.fn(), newTraceId: () => 't', warn: vi.fn() })
+  const deps = depsOf
 
   it("sync registers an agent's cron set and is replace-all idempotent", () => {
     const s = new Scheduler(deps())
