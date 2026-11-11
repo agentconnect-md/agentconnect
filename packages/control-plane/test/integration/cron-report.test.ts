@@ -17,6 +17,8 @@ import { PgCronRepo } from '../../src/persistence/repositories/cron.repo.js'
 import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
 import { PgDutyGroupRepo } from '../../src/persistence/repositories/duty-group.repo.js'
 import { PlacementResolver } from '../../src/orchestrator/placementResolver.js'
+import { AgentCronService } from '../../src/orchestrator/agentCrons.js'
+import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
 import { systemClock } from '../../src/domain/clock.js'
 import { handleCronReport, handleCronReportSync } from '../../src/ws/handlers/index.js'
 import { AgentId, CronId, OrgId } from '../../src/domain/ids.js'
@@ -268,5 +270,59 @@ describe('cron/report-sync REQ → acknowledged terminal outcome', () => {
     expect(await syncReport(DAEMON, randomUUID(), randomUUID(), {})).toEqual([
       { type: 'error', payload: { code: 'SCOPE_DENIED', message: 'organization is required', retryable: false } }
     ])
+  })
+})
+
+describe('a one-shot cron after its run', () => {
+  it('stays through the fire report and is deleted, and its removal pushed, on completion', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON })
+    const repo = new PgCronRepo(prisma)
+    const cronId = randomUUID()
+    await repo.upsert({
+      cronId: CronId(cronId),
+      orgId: OrgId(DEFAULT_ORG_ID),
+      agentId: AgentId(agentId),
+      schedule: '2026-07-03T09:00:00',
+      timezone: 'UTC',
+      trigger: 'check once'
+    })
+    const cronRemove = vi.fn(async () => {})
+    const agents = new PgAgentRepo(prisma)
+    const deps = {
+      cron: repo,
+      agent: agents,
+      log: { error: () => {} },
+      placementResolver: new PlacementResolver({ duties: new PgDutyGroupRepo(prisma), clock: systemClock }),
+      agentCrons: new AgentCronService({
+        crons: repo,
+        agents,
+        integrations: { get: async () => null },
+        audit: { append: async () => ({}) as never },
+        delivery: { cronUpsert: async () => {}, cronRemove },
+        mutations: new AgentMutationGate(),
+        log: { warn: () => {} }
+      })
+    } as unknown as DaemonWsDeps
+    const send = (payload: Record<string, unknown>) =>
+      handleCronReport(
+        {
+          v: 1,
+          id: randomUUID(),
+          ts: new Date().toISOString(),
+          type: 'cron/report',
+          orgId: DEFAULT_ORG_ID,
+          payload: { cronId, agentId, firedAt: '2026-07-03T09:00:00.000Z', ...payload }
+        } as AnyFrame,
+        { daemonId: DAEMON } as DaemonConnection,
+        deps
+      )
+
+    await send({})
+    expect(await repo.get(OrgId(DEFAULT_ORG_ID), CronId(cronId))).not.toBeNull()
+    await send({ status: 'success', durationMs: 1000 })
+    expect(await repo.get(OrgId(DEFAULT_ORG_ID), CronId(cronId))).toBeNull()
+    expect(cronRemove).toHaveBeenCalledOnce()
   })
 })
