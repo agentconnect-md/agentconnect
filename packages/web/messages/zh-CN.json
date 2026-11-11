@@ -3401,7 +3401,8 @@
         "runtimeAndModel": "Runtime 和模型",
         "coordinator": "协调会话",
         "coordinatorOff": "已关闭",
-        "coordinatorFilter": "过滤"
+        "coordinatorFilter": "过滤",
+        "filterEvaluations": "最近评估"
       },
       "runtime": {
         "title": "Runtime",
@@ -6003,6 +6004,14 @@
         "rawMissing": "未记录",
         "copy": "复制",
         "copied": "已复制"
+      },
+      "coordinatorFilter": {
+        "empty": "暂无评估。过滤判断过的消息会显示在这里。",
+        "offline": "没有已连接的守护进程服务此 agent，暂时无法读取最近评估。",
+        "unsupported": "请升级服务此 agent 的守护进程以查看协调会话过滤的最近评估。",
+        "retention": "详情保留 24 小时，或保留此 agent 最近 20 条评估；摘要保留七天。",
+        "name": "协调会话过滤",
+        "triggerWhen": "除非 Yes 概率低于 25%，否则交给协调会话"
       }
     },
     "routing": {

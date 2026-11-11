@@ -3401,7 +3401,8 @@
         "runtimeAndModel": "Runtime and model",
         "coordinator": "Coordinator",
         "coordinatorOff": "Off",
-        "coordinatorFilter": "Filter"
+        "coordinatorFilter": "Filter",
+        "filterEvaluations": "Recent evaluations"
       },
       "runtime": {
         "title": "Runtime",
@@ -6003,6 +6004,14 @@
         "rawMissing": "Not recorded",
         "copy": "Copy",
         "copied": "Copied"
+      },
+      "coordinatorFilter": {
+        "empty": "No evaluations yet. Messages the filter judged appear here.",
+        "offline": "No daemon serving this agent is connected, so recent evaluations can't be read right now.",
+        "unsupported": "Upgrade the daemon serving this agent to see its coordinator filter's recent evaluations.",
+        "retention": "Details are kept for 24 hours, or for the 20 most recent evaluations of this agent; the summary stays for seven days.",
+        "name": "Coordinator filter",
+        "triggerWhen": "Reaches the coordinator unless Yes is below 25%"
       }
     },
     "routing": {

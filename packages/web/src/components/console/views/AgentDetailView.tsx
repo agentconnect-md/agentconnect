@@ -70,6 +70,7 @@ import {
 } from '@/lib/api'
 import { opensCoordinator } from '@/components/console/playground/coordinator'
 import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
+import { CoordinatorFilterEvaluationsLink } from '@/components/console/CoordinatorFilterEvaluations'
 import { useConsoleData } from '@/lib/data-context'
 import { useProfile } from '@/lib/profile'
 import { usePlayground } from '@/components/console/PlaygroundProvider'
@@ -1669,8 +1670,13 @@ function AgentDetail() {
                     <span className="text-[14px] text-(--text-tertiary) desktop:text-[13px]">
                       {t('basics.coordinatorFilter')}
                     </span>
-                    <span className="truncate font-sans text-[12.5px] font-medium leading-normal">
-                      {coordinatorFilterLabel(da.coordinatorFilter, filterProviders)}
+                    <span className="flex min-w-0 items-center gap-3">
+                      <span className="truncate font-sans text-[12.5px] font-medium leading-normal">
+                        {coordinatorFilterLabel(da.coordinatorFilter, filterProviders)}
+                      </span>
+                      {da.canEdit && !da.name.startsWith(MOCK_PREFIX) && (
+                        <CoordinatorFilterEvaluationsLink agentId={da.id} agentName={da.displayName || da.name} />
+                      )}
                     </span>
                   </div>
                 )}

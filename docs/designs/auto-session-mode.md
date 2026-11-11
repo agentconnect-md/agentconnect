@@ -286,9 +286,18 @@ question, and the model must answer Boolean questions (400 otherwise). Null remo
   message settles as an ignored one does (§4.2 (c)): no 🤔, no turn, no reply. It stays in the
   conversation's record, where `recall` and later evaluations read it, but no later batch delivers it.
   A skip that finds the coordinator idle opens no turn.
-- **Visibility.** Each verdict is logged by message id with its probability or failure reason. The
-  daemon advertises `coordinator-filter-v1`; the console offers the filter only where the agent's
-  daemon does. An older daemon ignores the field and runs no filter.
+- **Visibility.** Each verdict is logged by message id with its probability or failure reason, and
+  recorded in the daemon's `coordinator_filter_evaluation` table in the shape of a gate verdict:
+  `triggered` let the message through, `skipped` kept it from the coordinator, `unavailable` let it
+  through without an answer; `decisionId` is `coordinator-filter` and the title is the message's
+  first line. The agent's editors read them under **Recent evaluations** beside the filter on its
+  Configuration card, through `GET /agents/:id/coordinator-filter/evaluations` and `…/:seq`, which the
+  Control Plane proxies from a daemon advertising `coordinator-filter-evaluations-v1` without storing
+  them. The detail shows the question, the message and conversation judged, the answer and the
+  provider JSON; it goes after 24 hours or 20 newer verdicts of the agent, the summary after seven
+  days. A replayed message keeps its first record.
+- **Rollout.** The daemon advertises `coordinator-filter-v1`; the console offers the filter only where
+  the agent's daemon does. An older daemon ignores the field and runs no filter.
 
 ## 5. Tools
 

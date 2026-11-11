@@ -749,28 +749,30 @@ GET/PUT, routing preview, and routing Recent evaluations are implemented.
 Usage lists identify the
 consumer kind without restricting the reusable resource to gates and routers.
 
-| Method and route                                                       | Input / result                                                                              |
-| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `GET /decisions/providers?daemonId=:id`                                | Authorized daemon's non-secret catalog, BYOK/AC credits source, models, and readiness       |
-| `GET /decisions`                                                       | Visible definitions, model/type, visible consumer counts                                    |
-| `GET /decisions/:id`                                                   | Definition and visible consumer usages, each with this Decision's rules at that place       |
-| `POST /decisions`                                                      | DecisionDraft                                                                               |
-| `PATCH /decisions/:id`                                                 | Complete DecisionDraft, atomically saved                                                    |
-| `DELETE /decisions/:id`                                                | Refuse while used                                                                           |
-| `PATCH /integrations/:id/channels/:channelId`                          | Trigger and complete decisionBinding                                                        |
-| `GET /bots/:id/decision-routing` (Stage 2)                             | Bot-owned routing configuration, effective channel scope, readiness                         |
-| `PUT /bots/:id/decision-routing` (Stage 2)                             | Complete configuration plus explicit channel additions/removals and replacement settings    |
-| `POST /decisions/preview`                                              | Draft/ID and sample state; typed answer only                                                |
-| `POST /integrations/:id/channels/:channelId/decision-preview`          | Gate draft and sample state; answer plus match/skip                                         |
-| `GET /integrations/:id/channels/:channelId/decision-evaluations`       | Recent evaluations, newest first, bounded page by `cursor`/`limit`; proxied from the daemon |
-| `GET /integrations/:id/channels/:channelId/decision-evaluations/:seq`  | One evaluation's frozen snapshot, input, answer, and evidence, or `detailsExpired`          |
-| `GET /agents/:id/model-evaluations`                                    | Session-start model choices, scoped to the Agent and each session's audience                |
-| `GET /agents/:id/model-evaluations/:seq`                               | One frozen model choice and its retained input, answer, and rules                           |
-| `GET /agents/:id/api/:protocol/evaluations`                            | A chat API gate's verdicts, newest first; editors of the Agent only                         |
-| `GET /agents/:id/api/:protocol/evaluations/:seq`                       | One API gate verdict's frozen snapshot, call text, answer, and chain                        |
-| `POST /bots/:id/decision-routing/preview` (Stage 2)                    | Routing draft, channel and sample context; precedence outcome or answer/rule/target         |
-| `GET /bots/:id/decision-routing/evaluations` (Stage 2)                 | Router verdicts newest first by `channelId`/`cursor`/`limit`; each row's audience checked   |
-| `GET /bots/:id/decision-routing/evaluations/:seq?channelId=` (Stage 2) | One router verdict's snapshots, constraint, input, answer, and per-target admissions        |
+| Method and route                                                       | Input / result                                                                                 |
+| ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `GET /decisions/providers?daemonId=:id`                                | Authorized daemon's non-secret catalog, BYOK/AC credits source, models, and readiness          |
+| `GET /decisions`                                                       | Visible definitions, model/type, visible consumer counts                                       |
+| `GET /decisions/:id`                                                   | Definition and visible consumer usages, each with this Decision's rules at that place          |
+| `POST /decisions`                                                      | DecisionDraft                                                                                  |
+| `PATCH /decisions/:id`                                                 | Complete DecisionDraft, atomically saved                                                       |
+| `DELETE /decisions/:id`                                                | Refuse while used                                                                              |
+| `PATCH /integrations/:id/channels/:channelId`                          | Trigger and complete decisionBinding                                                           |
+| `GET /bots/:id/decision-routing` (Stage 2)                             | Bot-owned routing configuration, effective channel scope, readiness                            |
+| `PUT /bots/:id/decision-routing` (Stage 2)                             | Complete configuration plus explicit channel additions/removals and replacement settings       |
+| `POST /decisions/preview`                                              | Draft/ID and sample state; typed answer only                                                   |
+| `POST /integrations/:id/channels/:channelId/decision-preview`          | Gate draft and sample state; answer plus match/skip                                            |
+| `GET /integrations/:id/channels/:channelId/decision-evaluations`       | Recent evaluations, newest first, bounded page by `cursor`/`limit`; proxied from the daemon    |
+| `GET /integrations/:id/channels/:channelId/decision-evaluations/:seq`  | One evaluation's frozen snapshot, input, answer, and evidence, or `detailsExpired`             |
+| `GET /agents/:id/model-evaluations`                                    | Session-start model choices, scoped to the Agent and each session's audience                   |
+| `GET /agents/:id/model-evaluations/:seq`                               | One frozen model choice and its retained input, answer, and rules                              |
+| `GET /agents/:id/coordinator-filter/evaluations`                       | Coordinator filter verdicts (auto-session-mode.md §4.7), newest first, for the Agent's editors |
+| `GET /agents/:id/coordinator-filter/evaluations/:seq`                  | One filter verdict: its fixed question, judged message and context, answer, and provider JSON  |
+| `GET /agents/:id/api/:protocol/evaluations`                            | A chat API gate's verdicts, newest first; editors of the Agent only                            |
+| `GET /agents/:id/api/:protocol/evaluations/:seq`                       | One API gate verdict's frozen snapshot, call text, answer, and chain                           |
+| `POST /bots/:id/decision-routing/preview` (Stage 2)                    | Routing draft, channel and sample context; precedence outcome or answer/rule/target            |
+| `GET /bots/:id/decision-routing/evaluations` (Stage 2)                 | Router verdicts newest first by `channelId`/`cursor`/`limit`; each row's audience checked      |
+| `GET /bots/:id/decision-routing/evaluations/:seq?channelId=` (Stage 2) | One router verdict's snapshots, constraint, input, answer, and per-target admissions           |
 
 For example, a fixed-target binding selects its own condition:
 

@@ -1,5 +1,10 @@
 import {
   API_GATE_EVALUATIONS_V1_FEATURE,
+  COORDINATOR_FILTER_EVALUATIONS_V1_FEATURE,
+  CoordinatorFilterEvaluationReply,
+  CoordinatorFilterEvaluationsReply,
+  type CoordinatorFilterEvaluationRequest,
+  type CoordinatorFilterEvaluationsRequestInput,
   ApiGateEvaluationReply,
   ApiGateEvaluationsReply,
   type ApiGateEvaluationRequest,
@@ -1192,6 +1197,45 @@ export class ControlSender {
       await c.conn.request(
         'decision/api-gate-evaluation',
         { ...req, ...chainSteps(c.capabilities.features) },
+        { epoch: c.sessionEpoch, agentId: req.agentId },
+        { ackTimeoutMs: 5000, maxTries: 1 },
+        orgId
+      )
+    )
+  }
+
+  /** An agent's coordinator filter verdicts (auto-session-mode.md §4.7); proxied, never persisted or logged. */
+  async coordinatorFilterEvaluations(
+    daemonId: string,
+    orgId: string,
+    req: CoordinatorFilterEvaluationsRequestInput
+  ): Promise<CoordinatorFilterEvaluationsReply> {
+    const c = this.must(daemonId)
+    if (c.state !== 'READY' || !c.capabilities?.features.includes(COORDINATOR_FILTER_EVALUATIONS_V1_FEATURE))
+      throw new NoConnection(daemonId)
+    return CoordinatorFilterEvaluationsReply.parse(
+      await c.conn.request(
+        'decision/coordinator-filter-evaluations',
+        req,
+        { epoch: c.sessionEpoch, agentId: req.agentId },
+        { ackTimeoutMs: 5000, maxTries: 1 },
+        orgId
+      )
+    )
+  }
+
+  async coordinatorFilterEvaluation(
+    daemonId: string,
+    orgId: string,
+    req: CoordinatorFilterEvaluationRequest
+  ): Promise<CoordinatorFilterEvaluationReply> {
+    const c = this.must(daemonId)
+    if (c.state !== 'READY' || !c.capabilities?.features.includes(COORDINATOR_FILTER_EVALUATIONS_V1_FEATURE))
+      throw new NoConnection(daemonId)
+    return CoordinatorFilterEvaluationReply.parse(
+      await c.conn.request(
+        'decision/coordinator-filter-evaluation',
+        req,
         { epoch: c.sessionEpoch, agentId: req.agentId },
         { ackTimeoutMs: 5000, maxTries: 1 },
         orgId

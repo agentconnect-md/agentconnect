@@ -8,11 +8,14 @@ import {
   DecisionModelEvaluationsRequest,
   DecisionModelEvaluationRequest,
   ApiGateEvaluationsRequest,
-  ApiGateEvaluationRequest
+  ApiGateEvaluationRequest,
+  CoordinatorFilterEvaluationsRequest,
+  CoordinatorFilterEvaluationRequest
 } from '@agentconnect.md/protocol'
 import { DecisionEvaluationScopeError, type DecisionEvaluationReader } from '../../decisions/evaluations.js'
 import type { DecisionModelEvaluationReader } from '../../decisions/model-evaluations.js'
 import type { DecisionApiGateEvaluationReader } from '../../decisions/api-gate-evaluations.js'
+import type { CoordinatorFilterEvaluationReader } from '../../auto-session/coordinator-filter-evaluations.js'
 import type { DecisionEvaluator } from '../../decisions/evaluator.js'
 import type { ControlHandler } from './context.js'
 
@@ -21,6 +24,7 @@ export interface DecisionControlDeps {
   decisionEvaluations?: Pick<DecisionEvaluationReader, 'list' | 'get' | 'listRouting' | 'getRouting'>
   decisionModelEvaluations?: Pick<DecisionModelEvaluationReader, 'list' | 'get'>
   decisionApiGateEvaluations?: Pick<DecisionApiGateEvaluationReader, 'list' | 'get'>
+  coordinatorFilterEvaluations?: Pick<CoordinatorFilterEvaluationReader, 'list' | 'get'>
 }
 
 export const decisionCatalog: ControlHandler<DecisionControlDeps> = (frame, deps, wire) => {
@@ -203,5 +207,29 @@ export const decisionApiGateEvaluation: ControlHandler<DecisionControlDeps> = as
     () => ApiGateEvaluationRequest.parse(frame.payload),
     (orgId, req) => reader.get(orgId, req),
     'decision/api-gate-evaluation/result'
+  )
+}
+
+export const coordinatorFilterEvaluations: ControlHandler<DecisionControlDeps> = async (frame, deps, wire) => {
+  const reader = deps.coordinatorFilterEvaluations
+  if (!reader) return wire.sendError(frame.id, 'BAD_PAYLOAD', 'Coordinator filter evaluations are unavailable', false)
+  await readEvaluations(
+    frame,
+    wire,
+    () => CoordinatorFilterEvaluationsRequest.parse(frame.payload),
+    (orgId, req) => reader.list(orgId, req),
+    'decision/coordinator-filter-evaluations/page'
+  )
+}
+
+export const coordinatorFilterEvaluation: ControlHandler<DecisionControlDeps> = async (frame, deps, wire) => {
+  const reader = deps.coordinatorFilterEvaluations
+  if (!reader) return wire.sendError(frame.id, 'BAD_PAYLOAD', 'Coordinator filter evaluations are unavailable', false)
+  await readEvaluations(
+    frame,
+    wire,
+    () => CoordinatorFilterEvaluationRequest.parse(frame.payload),
+    (orgId, req) => reader.get(orgId, req),
+    'decision/coordinator-filter-evaluation/result'
   )
 }

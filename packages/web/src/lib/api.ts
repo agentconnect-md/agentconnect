@@ -8811,3 +8811,27 @@ export async function forwardCapabilityRequest(
     userId ? { userId } : {}
   )
 }
+
+const coordinatorFilterBase = (agentId: string, orgId?: string) =>
+  `${orgBase(orgId)}/agents/${encodeURIComponent(agentId)}/coordinator-filter/evaluations`
+
+/** The agent's coordinator filter verdicts, newest first (auto-session-mode.md §4.7); read through from its daemon. */
+export function fetchCoordinatorFilterEvaluations(
+  agentId: string,
+  page: { cursor?: number; limit?: number } = {},
+  orgId?: string
+): Promise<DecisionEvaluationRecordPage> {
+  const query = new URLSearchParams()
+  if (page.cursor !== undefined) query.set('cursor', String(page.cursor))
+  if (page.limit !== undefined) query.set('limit', String(page.limit))
+  const suffix = query.toString()
+  return apiGet(`${coordinatorFilterBase(agentId, orgId)}${suffix ? `?${suffix}` : ''}`)
+}
+
+export function fetchCoordinatorFilterEvaluation(
+  agentId: string,
+  seq: number,
+  orgId?: string
+): Promise<DecisionEvaluationRecordDetail> {
+  return apiGet(`${coordinatorFilterBase(agentId, orgId)}/${encodeURIComponent(String(seq))}`)
+}
