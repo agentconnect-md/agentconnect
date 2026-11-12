@@ -1220,7 +1220,8 @@ function AgentDetail() {
   const outboundEffectiveIds = agentReach.outgoingByAgentId.get(da.id) ?? []
   // Webhook triggers share the Integrations card (the Add modal offers both);
   // `agentHooks` is fetched per-agent above.
-  const hasInt = agentInts.length > 0 || agentHooks.length > 0 || apiEntries.length > 0
+  // A connect still waiting counts too, so its entry never sits above the empty state's "No integration yet".
+  const hasInt = agentInts.length > 0 || agentHooks.length > 0 || apiEntries.length > 0 || agentPending.length > 0
   // Match the list's enabled, distinct hook-kind summary. Use the agent snapshot
   // only until this page's live hook query resolves; hook mutations revalidate
   // that query immediately, keeping the header and Integrations card in sync.
