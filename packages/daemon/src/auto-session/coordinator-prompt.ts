@@ -49,6 +49,16 @@ export interface CoordinatorMessage extends ReportAbout {
   report?: boolean
 }
 
+/** What was said in a thread before the coordinator was given any of it (§4.1). */
+export interface CoordinatorThread {
+  /** The {@link coordinatorMessageId} of the thread's root, as a message's `thread` names it. */
+  id: string
+  /** Its earlier messages, oldest first; `from` is `you` for this agent's own. */
+  earlier: readonly { from: string; text: string }[]
+  /** How many earlier messages the excerpt leaves out. */
+  elided?: number
+}
+
 const where = (input: { channelId: string; channelName?: string }): string =>
   input.channelName ? `#${input.channelName} (${input.channelId})` : input.channelId
 
@@ -270,6 +280,9 @@ export function coordinatorPrompt(input: CoordinatorPromptInput): string {
     '# Rules',
     '- Each call names its message by its id, copied exactly as a string, and each message gets at most one outcome.',
     '- A message marked mentions-you="yes" is addressed to you and must not be ignored.',
+    '- A <thread> block holds what was said in a thread before you were given any of it; from="you" marks this ' +
+      "agent's own words there. It is background for the message that names that thread, never a message to decide. " +
+      'Read that message as part of its thread: what it asks about is what the thread is about, not your other work.',
     '- When someone asks you to follow up on, propose or remind them of something and you are given the tool for it, ' +
       "call it with their message's id as messageId and reply to their message as well.",
     '- Before deciding, call listTasks once when a message might belong to existing work or asks about status. The ' +
@@ -290,7 +303,7 @@ export function coordinatorPrompt(input: CoordinatorPromptInput): string {
 }
 
 // A body cannot close its own frame and open a forged one.
-const framed = (text: string): string => text.replace(/<\/(message|report)>/gi, '<\\/$1>')
+const framed = (text: string): string => text.replace(/<\/(message|report|thread|earlier)>/gi, '<\\/$1>')
 
 const counted = (n: number, one: string, many: string): string => (n === 1 ? `One ${one}` : `${n} ${many}`)
 
@@ -303,10 +316,18 @@ const aboutAttrs = (about: ReportAbout): string =>
     .flatMap((name) => (about[name] ? [` ${name}="${attr(about[name])}"`] : []))
     .join('')
 
-/** One coordinator turn's input: the delivered messages, each with its id, sender and whether it mentions the agent, and the reports with the task each speaks for. */
+/** One thread's earlier messages, framed apart from the messages a turn decides. */
+function renderCoordinatorThread(thread: CoordinatorThread): string {
+  const elided = thread.elided ? ` earlier-elided="${thread.elided}"` : ''
+  const rows = thread.earlier.map((row) => `<earlier from="${attr(row.from)}">\n${framed(row.text)}\n</earlier>`)
+  return `<thread id="${thread.id}"${elided}>\n${rows.join('\n')}\n</thread>`
+}
+
+/** One coordinator turn's input: the delivered messages, each with its id, sender and whether it mentions the agent, the reports with the task each speaks for, and the threads it meets part-way. */
 export function renderCoordinatorBatch(
   messages: readonly CoordinatorMessage[],
-  at: { channelId: string; channelName?: string; webchat?: boolean }
+  at: { channelId: string; channelName?: string; webchat?: boolean },
+  threads: readonly CoordinatorThread[] = []
 ): string {
   const blocks = messages.map((message) =>
     message.report
@@ -328,5 +349,6 @@ export function renderCoordinatorBatch(
     ...(reports > 0 ? [counted(reports, 'report', 'reports')] : [])
   ]
   const count = counts.length === 2 ? `${counts[0]} and ${counts[1]!.replace(/^One /, 'one ')}` : counts[0]
-  return `[${count} in ${at.webchat ? `this conversation (${at.channelId})` : where(at)}]\n${blocks.join('\n')}`
+  const heard = threads.filter((thread) => thread.earlier.length > 0).map(renderCoordinatorThread)
+  return `[${count} in ${at.webchat ? `this conversation (${at.channelId})` : where(at)}]\n${[...heard, ...blocks].join('\n')}`
 }

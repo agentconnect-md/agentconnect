@@ -180,6 +180,22 @@ Approved proposals stay a kind of their own.
 - Every **root message** of the conversation, and every message in an **unowned thread** (a thread
   under a message the coordinator replied to itself, or one whose task has closed).
 - A message that mentions the agent may not be ignored.
+- **A thread it meets part-way.** A message in a thread the coordinator was admitted no earlier
+  message of comes with a `<thread>` block ahead of the batch: the thread's messages before it,
+  read through the platform's thread-history port as a thread session's catch-up reads them
+  ([daemon-detailed-design.md](daemon-detailed-design.md) §8.4). It covers a mention part-way
+  through another agent's thread, a thread from before the conversation was on Auto, and a thread
+  whose earlier messages the filter (§4.7) kept from it.
+  - The block is background for the message that names the thread, never a message to decide. It
+    holds the root and the newest of the rest, 20 messages of at most 1,500 characters each, and
+    says how many it leaves out; the agent's own earlier words there read `from="you"`.
+  - It is read once per thread: the delivered message is admitted, so the coordinator holds the
+    thread from then on and later messages there arrive alone. A message the filter skips in a
+    thread it already holds stays unseen.
+  - The rows are not recorded in the coordinator's transcript. A task opened for the message
+    catches the whole thread up itself.
+  - The read is bounded at 5 seconds. A failed or late read, and a platform with no thread-history
+    port or no ordered message ids, leave the turn as it was: the message and its thread's id.
 
 ### 4.2 Four outcomes
 
