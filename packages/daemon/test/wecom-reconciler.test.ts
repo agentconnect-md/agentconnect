@@ -6,7 +6,18 @@ import { WECOM_KICK_COOLDOWN_BASE_MS, type WeComConnection } from '../src/platfo
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { FakeWeComServer, quietLog } from './fakes/wecom-server.js'
 
-afterEach(() => vi.unstubAllGlobals())
+// The production client dials through `ws`; the fake server stands in for WeCom.
+const fake = vi.hoisted(() => ({ server: undefined as FakeWeComServer | undefined }))
+vi.mock('ws', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('ws')>()),
+  WebSocket: function FakeWebSocket(url: string) {
+    return fake.server!.createSocket(url)
+  }
+}))
+
+afterEach(() => {
+  fake.server = undefined
+})
 
 const BOT = 'aibot-example'
 
@@ -19,10 +30,7 @@ function agent(id: string, secret: string): LoadedAgent {
 
 function setup(initial: LoadedAgent[]) {
   const server = new FakeWeComServer()
-  // The production client dials the global WebSocket; the fake server stands in for WeCom.
-  vi.stubGlobal('WebSocket', function FakeWebSocket(url: string) {
-    return server.createSocket(url)
-  })
+  fake.server = server
   const clock = new FakeClock(1_000_000)
   let agents = initial
   const bound = new Map<string, WeComConnection>()
