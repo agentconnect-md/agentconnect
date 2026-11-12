@@ -1883,6 +1883,26 @@ describe('SlackConnection.setTitle', () => {
     expect(calls[0]).toEqual({ channel_id: 'D1', thread_ts: '123.45', title: 'Runtime summary' })
   })
 
+  it('leaves the name of a code channel alone', async () => {
+    const rename = vi.fn(async () => ({}))
+    const app = fakeAppWith({ rename }) as any
+    app.client.conversations = {
+      info: async () => ({ channel: { properties: { record_channel: { record_type: 'agent_channel' } } } })
+    }
+    const conn = new SlackConnection(deps() as any, () => app)
+    await conn.setTitle('C1', 'C1', 'Runtime summary')
+    expect(rename).not.toHaveBeenCalled()
+  })
+
+  it('still titles a plain channel keyed as its own thread', async () => {
+    const calls: any[] = []
+    const app = fakeAppWith({ rename: async (a) => void calls.push(a) }) as any
+    app.client.conversations = { info: async () => ({ channel: { properties: {} } }) }
+    const conn = new SlackConnection(deps() as any, () => app)
+    await conn.setTitle('C2', 'C2', 'Runtime summary')
+    expect(calls).toEqual([{ channel_id: 'C2', title: 'Runtime summary' }])
+  })
+
   it('swallows errors and never rejects (best-effort)', async () => {
     const conn = new SlackConnection(
       deps() as any,
