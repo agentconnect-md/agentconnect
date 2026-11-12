@@ -2,17 +2,13 @@
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { SWRConfig } from 'swr'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Agent } from '@/lib/data'
 
-const mocks = vi.hoisted(() => ({ requests: vi.fn() }))
-vi.mock('./api', () => ({ msTeamsApi: { requests: mocks.requests } }))
-vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ activeOrg: { id: 'org-a' } }) }))
+const mocks = vi.hoisted(() => ({ requests: vi.fn(), checkRequest: vi.fn() }))
+vi.mock('./api', () => ({ msTeamsApi: { requests: mocks.requests, checkRequest: mocks.checkRequest } }))
 
-import { MsTeamsPendingEntry } from './pending'
+import { msTeamsAgentPending } from './pending'
 
-const agent = { id: 'agent-a', name: 'deploy-bot' } as unknown as Agent
 const WAITING = {
   id: 'req-1',
   agentId: 'agent-a',
@@ -29,6 +25,7 @@ let root: Root
 
 beforeEach(() => {
   mocks.requests.mockReset()
+  mocks.checkRequest.mockReset()
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
@@ -38,36 +35,29 @@ afterEach(async () => {
   host.remove()
 })
 
-async function render(open = vi.fn(), mockMode = false) {
-  await act(async () =>
-    root.render(
-      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-        <MsTeamsPendingEntry agent={agent} mockMode={mockMode} open={open} />
-      </SWRConfig>
-    )
-  )
-  return open
-}
-
-describe('MsTeamsPendingEntry', () => {
-  it('lists a waiting request with the agent’s integrations, and opens the Teams pane on a click', async () => {
-    mocks.requests.mockResolvedValue([WAITING])
-    const open = await render()
+describe('the Teams request waiting on the agent page', () => {
+  it('reads the agent’s oldest waiting request, or none', async () => {
+    mocks.requests.mockResolvedValueOnce([WAITING, { ...WAITING, id: 'req-2' }]).mockResolvedValueOnce([])
+    expect(await msTeamsAgentPending.read('org-a', 'agent-a')).toBe(WAITING)
     expect(mocks.requests).toHaveBeenCalledWith('org-a', 'agent-a')
+    expect(await msTeamsAgentPending.read('org-a', 'agent-a')).toBeNull()
+  })
+
+  it('draws the request as the integration it becomes, opens the Teams pane, and checks again in place', async () => {
+    const open = vi.fn()
+    const refresh = vi.fn()
+    const { Entry } = msTeamsAgentPending
+    await act(async () => root.render(<Entry orgId="org-a" pending={WAITING} open={open} refresh={refresh} />))
     expect(host.textContent).toContain('deploy-bot (Example Org)')
     expect(host.textContent).toContain('Pending')
     expect(host.textContent).toContain('Waiting for a Teams administrator to publish the agent’s app')
-    await act(async () => host.querySelector('button')!.click())
+    await act(async () => host.querySelector<HTMLButtonElement>('button:not([aria-label])')!.click())
     expect(open).toHaveBeenCalledTimes(1)
-  })
-
-  it('draws nothing without a request, and asks nothing in design mode', async () => {
-    mocks.requests.mockResolvedValue([])
-    await render()
-    expect(host.innerHTML).toBe('')
-    mocks.requests.mockClear()
-    await render(vi.fn(), true)
-    expect(mocks.requests).not.toHaveBeenCalled()
-    expect(host.innerHTML).toBe('')
+    // The refresh button reads the package's state now, then has the page read the agent's requests again.
+    mocks.checkRequest.mockResolvedValue({ request: WAITING })
+    await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Check again"]')!.click())
+    expect(mocks.checkRequest).toHaveBeenCalledWith('org-a', 'req-1')
+    expect(refresh).toHaveBeenCalledTimes(1)
+    expect(open).toHaveBeenCalledTimes(1)
   })
 })

@@ -392,6 +392,22 @@ function AgentDetail() {
   } = useConsoleData()
   const { openPlayground } = usePlayground()
   const { openModal } = useModal()
+  // Connects still waiting on someone outside the console, read once for the header's marks and the Integrations card.
+  const { data: agentPendingData, mutate: mutateAgentPending } = useSWR(
+    MOCK_MODE || !activeOrg?.id ? null : (['agent-pending', activeOrg.id, id] as const),
+    async ([, orgId, agentId]: readonly [string, string, string]) =>
+      (
+        await Promise.all(
+          platformAgentPending().map(async ({ platformId, read, Entry }) => ({
+            platformId,
+            Entry,
+            pending: await read(orgId, agentId).catch(() => null)
+          }))
+        )
+      ).filter((entry) => entry.pending !== null),
+    { refreshInterval: 30_000, shouldRetryOnError: false }
+  )
+  const agentPending = agentPendingData ?? []
   // Tasks belong to their session, so the Recent card and the header count leave them out as All sessions does.
   const {
     sessions: agentSessionRows,
@@ -1213,8 +1229,17 @@ function AgentDetail() {
       ? (da.hookKinds ?? [])
       : [...new Set(agentHooks.filter((hook) => hook.enabled).map((hook) => hook.kind))]
   // The API card counts as an integration too, marked by its protocol glyph.
-  const markIntegrations =
-    apiEntries.length > 0 ? [...agentInts, { id: 'api', platform: 'api', revoked: false }] : agentInts
+  const markIntegrations = [
+    ...agentInts,
+    ...(apiEntries.length > 0 ? [{ id: 'api', platform: 'api', revoked: false }] : []),
+    // A waiting connect's mark is faded, and keeps the header from saying there is no integration.
+    ...agentPending.map(({ platformId }) => ({
+      id: `pending:${platformId}`,
+      platform: platformId,
+      revoked: false,
+      pending: true
+    }))
+  ]
   const hasIntegrationMarks = markIntegrations.length > 0 || integrationHookKinds.length > 0
   const sessionCount = MOCK_MODE ? recentSessions.length : agentSessionTotal
   // Icon upload is available only when the object store is configured (org flag) — the
@@ -2032,17 +2057,20 @@ function AgentDetail() {
                 {t('integrations.addIntegration')}
               </Button>
             </div>
-            {/* A connect still waiting on someone outside the console shows here too; the wrapper hides while no module has one. */}
-            <div className="flex flex-col gap-3 px-4 pt-[14px] empty:hidden">
-              {platformAgentPending().map(({ platformId, Entry }) => (
-                <Entry
-                  key={platformId}
-                  agent={da}
-                  mockMode={MOCK_MODE}
-                  open={() => openModal('integration', da, { platform: platformId as Platform })}
-                />
-              ))}
-            </div>
+            {/* A connect still waiting on someone outside the console leads the list, drawn as the integration it becomes. */}
+            {agentPending.length > 0 && (
+              <div className="flex flex-col gap-3 px-4 pt-[14px]">
+                {agentPending.map(({ platformId, Entry, pending }) => (
+                  <Entry
+                    key={platformId}
+                    orgId={activeOrg!.id}
+                    pending={pending}
+                    refresh={() => void mutateAgentPending()}
+                    open={() => openModal('integration', da, { platform: platformId as Platform })}
+                  />
+                ))}
+              </div>
+            )}
             {hasInt ? (
               <>
                 {/* Dual-rendered lists: mobile flat rows (padX 16) vs desktop
