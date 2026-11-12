@@ -260,9 +260,9 @@ describe('a getting-to-know task’s report round on a platform with cards', () 
       expect.stringContaining('A date is posted here.'),
       expect.stringContaining('I want to pin the release checklist')
     ])
-    // A task's exact work is one click away on the proposing session, not on the card.
+    // A task card shows its sentence and reason only: no session link and no quoted work.
     const [draft, , pin] = carded.map((p) => JSON.stringify(p.blocks))
-    expect(draft).toMatch(/\/sessions\/sid-parent[^|]*\|🔗>/)
+    expect(draft).not.toContain('/sessions/')
     expect(draft).not.toContain('Draft the release notes for 2.6.')
     expect(pin).not.toContain('Pin the release checklist.')
     expect(posts.indexOf(intro)).toBeLessThan(posts.indexOf(carded[0]!))

@@ -1218,10 +1218,9 @@ bot is already its sender.
 - **Both forms.** The `sentence` in bold, with no name before it, then the `why`, unlabelled. No
   footer says where it runs, whose permissions it runs with or where it reports. Approve and Deny
   and the settled outcomes are unchanged.
-- **A task.** A 🔗 to the session that proposed it, whose transcript holds the exact work the
-  record's hash binds. No console page shows one proposal alone. Activity lists them but cannot
-  point at one, and only people who may open the agent see it, while the card's approvers are the
-  place's people. With no session to link, the work is quoted instead, unlabelled.
+- **A task.** Nothing more: no link to the proposing session and no quoted work. The sentence and
+  reason are what an approver decides on; the exact work the record's hash binds folds open in the
+  console's request row (Requests popover and Activity).
 - **A follow-up.** Its `doneWhen`, which `propose` asks for as one sentence of when it looks, what it
   does and when it stops. Then 🕒 and its first check as Slack's date token, shown in the reader's
   own time zone. The follow-up's title is for the Tasks list and is not shown.
@@ -5327,7 +5326,12 @@ attribution footer a turn's reply does ([auto-session-mode.md](auto-session-mode
 session page's Tasks tab a follow-up's row says its next check or state and what counts as done on
 hover, so one whose first check has not run, which has no page, can still be read.
 
-**Hundred-and-third revision (2026-11-12)**: under a coordinator, a report or reply that names no
+**Hundred-and-third revision (2026-11-11)**: a task proposal's Slack card drops the 🔗 to the
+proposing session and the quoted work it fell back to, and shows only its sentence and reason
+(§5.10's card). The link led into a transcript an approver had no reason to read, and the exact
+work stays in the console's request row.
+
+**Hundred-and-fourth revision (2026-11-12)**: under a coordinator, a report or reply that names no
 thread of its own lands at the conversation's root (§5.12). It used to follow the thread of the
 coordinator's latest turn, which belongs to whatever message that turn happened to answer, so an
 approved proposal's result or a follow-up taken at the top level could surface in an unrelated

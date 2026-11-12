@@ -844,29 +844,12 @@ function draftBody(view: AssistantDraftCardView): unknown[] {
   return blocks
 }
 
-/** A proposal's reason, then a link to its exact work (quoted where there is none); a follow-up form's, what it will do and its first check. */
+/** A proposal's reason; a follow-up form's, then what it will do and its first check. */
 function proposalBody(view: AssistantDraftCardView): unknown[] {
   const why = view.proposal?.why.trim() ?? ''
   const blocks: unknown[] = why ? [{ type: 'markdown', text: clampTo(why, 2_000) }] : []
   const followUp = view.proposal?.followUp
-  if (followUp) return [...blocks, ...followUpProposalBody(followUp)]
-  // The proposing session shows the exact work its approval runs, which the record's hash binds.
-  const session = safeSlackLinkUrl(view.sessionUrl)
-  if (session) return [...blocks, { type: 'context', elements: [{ type: 'mrkdwn', text: `<${session}|🔗>` }] }]
-  const task = view.text.length > DRAFT_CARD_TEXT_CAP ? view.text.slice(0, DRAFT_CARD_TEXT_CAP) : view.text
-  blocks.push({
-    type: 'markdown',
-    text: task
-      .split('\n')
-      .map((line) => `> ${line}`)
-      .join('\n')
-  })
-  if (task.length < view.text.length)
-    blocks.push({
-      type: 'context',
-      elements: [{ type: 'mrkdwn', text: `Showing the first ${task.length} of ${view.text.length} characters.` }]
-    })
-  return blocks
+  return followUp ? [...blocks, ...followUpProposalBody(followUp)] : blocks
 }
 
 /** A follow-up form's sentence of what it will do, what it watches, and its first check as a date in the reader's own time zone. */
