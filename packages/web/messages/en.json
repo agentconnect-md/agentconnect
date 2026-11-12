@@ -6953,8 +6953,7 @@
     },
     "msteams": {
       "pending": {
-        "title": "Microsoft Teams",
-        "badge": "Waiting",
+        "badge": "Pending",
         "pending": "Waiting for a Teams administrator to publish the agent’s app",
         "needs_sign_in": "Your Microsoft sign-in stopped working. Open to connect again.",
         "rejected": "The agent’s app was turned down or removed. Open to cancel the request."

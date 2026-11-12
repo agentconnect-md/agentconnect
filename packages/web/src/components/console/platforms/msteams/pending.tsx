@@ -2,6 +2,7 @@
 
 import useSWR from 'swr'
 import { useTranslations } from 'next-intl'
+import { Icon } from '@/components/ui'
 import type { Agent } from '@/lib/data'
 import { useOrgs } from '@/lib/org-context'
 import { msTeamsApi } from './api'
@@ -30,11 +31,15 @@ export function MsTeamsPendingEntry({ agent, mockMode, open }: { agent: Agent; m
         <MsTeamsMark />
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
+        {/* Drawn as the integration it becomes, under the name it will take, with its state where a connected one's would be. */}
         <span className="flex items-center gap-2">
           <span className="truncate font-sans text-[13.5px] font-semibold leading-normal text-(--text-primary)">
-            {t('title')}
+            {request.name}
           </span>
-          <span className="badge bg-(--surface-active) text-(--text-secondary)">{t('badge')}</span>
+          <span className="badge flex-none bg-(--surface-active) text-(--text-secondary)">
+            <Icon name="clock" size={12} />
+            {t('badge')}
+          </span>
         </span>
         <span className="font-sans text-[12.5px] leading-normal text-(--text-secondary)">{t(request.status)}</span>
       </span>

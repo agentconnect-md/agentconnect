@@ -19,6 +19,7 @@ const WAITING = {
   tenantId: 'example-tenant',
   status: 'pending',
   reason: null,
+  name: 'deploy-bot (Example Org)',
   createdAt: '2026-11-01T00:00:00.000Z',
   adminCenterUrl: 'https://admin.example.test/manage-apps/catalog-1'
 }
@@ -53,7 +54,8 @@ describe('MsTeamsPendingEntry', () => {
     mocks.requests.mockResolvedValue([WAITING])
     const open = await render()
     expect(mocks.requests).toHaveBeenCalledWith('org-a', 'agent-a')
-    expect(host.textContent).toContain('Microsoft Teams')
+    expect(host.textContent).toContain('deploy-bot (Example Org)')
+    expect(host.textContent).toContain('Pending')
     expect(host.textContent).toContain('Waiting for a Teams administrator to publish the agent’s app')
     await act(async () => host.querySelector('button')!.click())
     expect(open).toHaveBeenCalledTimes(1)
