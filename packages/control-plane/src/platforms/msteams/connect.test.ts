@@ -3,7 +3,6 @@ import { createHash } from 'node:crypto'
 import { FakeClock } from '../../../test/fakes/fake-clock.js'
 import {
   MsTeamsConnectError,
-  installMsTeamsApp,
   listMsTeamsTeams,
   mintMsTeamsConnectState,
   msTeamsAdminConsentUrl,
@@ -109,13 +108,19 @@ describe('Teams connect state', () => {
     const clock = new FakeClock(Date.UTC(2026, 0, 1))
     const ticket = sealMsTeamsTicket(
       keys,
-      { accessToken: 'delegated', orgId: 'org-1', integrationId: 'i-1', catalogAppId: 'c-1' },
+      {
+        accessToken: 'delegated',
+        orgId: 'org-1',
+        agentBot: { agentId: 'agent-1', tenantId: TENANT, sponsorId: CLIENT, userId: 'user-1' }
+      },
       clock
     )
     expect(ticket).not.toContain('delegated')
     expect(openMsTeamsTicket(keys, ticket, clock)).toMatchObject({ accessToken: 'delegated', orgId: 'org-1' })
     expect(openMsTeamsTicket(msTeamsConnectKeys('q'.repeat(40)), ticket, clock)).toBeNull()
-    expect(openMsTeamsTicket(keys, `${ticket}x`, clock)).toBeNull()
+    const at = ticket.length - 10
+    const tampered = `${ticket.slice(0, at)}${ticket[at] === 'A' ? 'B' : 'A'}${ticket.slice(at + 1)}`
+    expect(openMsTeamsTicket(keys, tampered, clock)).toBeNull()
     clock.advance(10 * 60_000 + 1)
     expect(openMsTeamsTicket(keys, ticket, clock)).toBeNull()
   })
@@ -204,22 +209,6 @@ describe('Teams connect for a deployment with agent bots (§8.6.5)', () => {
         viaGraph
       )
     ).toEqual({ accessToken: 'delegated', tenantId: TENANT, userId: OID.toLowerCase() })
-  })
-
-  it('seals a provisioning ticket apart from an install ticket', () => {
-    const clock = new FakeClock(Date.UTC(2026, 0, 1))
-    const agentBot = { agentId: 'agent-1', tenantId: TENANT, sponsorId: CLIENT, userId: 'user-1' }
-    const provision = sealMsTeamsTicket(keys, { accessToken: 'delegated', orgId: 'org-1', agentBot }, clock)
-    expect(provision).not.toContain('delegated')
-    const opened = openMsTeamsTicket(keys, provision, clock)!
-    expect(opened).toMatchObject({ accessToken: 'delegated', orgId: 'org-1', agentBot })
-    expect('catalogAppId' in opened).toBe(false)
-    const install = sealMsTeamsTicket(
-      keys,
-      { accessToken: 'delegated', orgId: 'org-1', integrationId: 'i', catalogAppId: 'c' },
-      clock
-    )
-    expect('agentBot' in openMsTeamsTicket(keys, install, clock)!).toBe(false)
   })
 })
 
@@ -325,22 +314,5 @@ describe('Teams Graph calls', () => {
   it('names a refused Graph call as a missing administrator', async () => {
     const error = await listMsTeamsTeams(async () => new Response(null, { status: 403 }), 't').catch((e: unknown) => e)
     expect((error as MsTeamsConnectError).code).toBe('MSTEAMS_CONNECT_NOT_ADMIN')
-  })
-
-  it('installs with the consented permissions and treats an existing install as done', async () => {
-    const fetchImpl = vi.fn(
-      async (_url: string | URL | Request, _init?: RequestInit) => new Response(null, { status: 409 })
-    )
-    await installMsTeamsApp(fetchImpl, 't', {
-      teamId: 'team-1',
-      catalogAppId: 'catalog-1',
-      permissions: [{ name: 'ChannelMessage.Read.Group', type: 'Application' }]
-    })
-    expect(JSON.parse(String(fetchImpl.mock.calls[0]![1]?.body))).toEqual({
-      'teamsApp@odata.bind': 'https://graph.microsoft.com/v1.0/appCatalogs/teamsApps/catalog-1',
-      consentedPermissionSet: {
-        resourceSpecificPermissions: [{ permissionValue: 'ChannelMessage.Read.Group', permissionType: 'application' }]
-      }
-    })
   })
 })

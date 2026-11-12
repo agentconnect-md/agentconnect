@@ -343,14 +343,7 @@ export function sealMsTeamsTicket(keys: MsTeamsConnectKeys, ticket: MsTeamsTicke
   return [iv, cipher.getAuthTag(), sealed].map((part) => part.toString('base64url')).join('.')
 }
 
-// An install ticket names the published app; a provisioning ticket names the further agent whose bot is still to be made (§8.6.5).
-const InstallTicket = z.object({
-  accessToken: z.string(),
-  orgId: z.string(),
-  integrationId: z.string(),
-  catalogAppId: z.string()
-})
-// It carries the refresh token too, which a pending request keeps while a submitted package waits for approval (§8.6.6).
+// A ticket names the agent whose bot is still to be made (§8.6.5). It carries the refresh token too, which a pending request keeps while a submitted package waits for approval (§8.6.6).
 const ProvisionTicket = z.object({
   accessToken: z.string(),
   refreshToken: z.string().optional(),
@@ -364,8 +357,8 @@ const ProvisionTicket = z.object({
     consented: z.boolean().optional()
   })
 })
-export type MsTeamsTicket = z.infer<typeof InstallTicket> | z.infer<typeof ProvisionTicket>
-const Ticket = z.union([ProvisionTicket, InstallTicket]).and(z.object({ e: z.number() }))
+export type MsTeamsTicket = z.infer<typeof ProvisionTicket>
+const Ticket = ProvisionTicket.and(z.object({ e: z.number() }))
 
 export function openMsTeamsTicket(keys: MsTeamsConnectKeys, ticket: string, clock: Clock) {
   const parts = ticket.split('.').map((part) => Buffer.from(part, 'base64url'))
@@ -579,22 +572,6 @@ function consentedPermissions(permissions: readonly { name: string; type: string
       permissionType: p.type.toLowerCase()
     }))
   }
-}
-
-/** Installs the catalog app into a team with the package's resource-specific permissions; an app already there counts as installed. */
-export async function installMsTeamsApp(
-  fetchImpl: typeof fetch,
-  token: string,
-  input: { teamId: string; catalogAppId: string; permissions: readonly { name: string; type: string }[] }
-): Promise<void> {
-  const response = await graph(fetchImpl, token, 'POST', `/teams/${encodeURIComponent(input.teamId)}/installedApps`, {
-    json: {
-      'teamsApp@odata.bind': `${GRAPH}/appCatalogs/teamsApps/${input.catalogAppId}`,
-      consentedPermissionSet: consentedPermissions(input.permissions)
-    }
-  })
-  if (response.ok || response.status === 409) return
-  throw await refusedWithReason(response)
 }
 
 /** Adds the catalog app for one person, so their Teams client lists the agent at once: its mention, its card and a 1:1 chat. Best effort: answers null when added, or what Microsoft refused for the log, which leaves the team installs as they are. */

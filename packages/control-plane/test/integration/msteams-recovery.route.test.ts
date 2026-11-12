@@ -2,9 +2,8 @@ import { createHash, createPublicKey, generateKeyPairSync, randomUUID } from 'no
 import { importPKCS8, SignJWT } from 'jose'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { prisma } from '../setup.db.js'
-import { buildHttpApp, TEST_API_KEY_PEPPER, type HttpApp } from '../fakes/build-http.js'
+import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { BotId, OrgId } from '../../src/domain/ids.js'
-import { msTeamsConnectKeys, sealMsTeamsTicket } from '../../src/platforms/msteams/connect.js'
 import type { RelayChannel } from '../../src/ws/relay-registry.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { provisionPresetAgents } from '../../src/persistence/index.js'
@@ -224,24 +223,6 @@ describe('Teams administrator recovery', () => {
     expect(unassign.mock.calls.map(([bot]) => bot.id)).toEqual(expect.arrayContaining([h.old.id, extra.id]))
     expect(teardown.mock.calls.map(([bot]) => bot.id)).toEqual(expect.arrayContaining([h.old.id, extra.id]))
     expect((await h.post('recovery/confirm', { ticket })).statusCode).toBe(409)
-    const oldTicket = sealMsTeamsTicket(
-      msTeamsConnectKeys(TEST_API_KEY_PEPPER),
-      {
-        accessToken: 'synthetic-old-install-token',
-        orgId: DEFAULT_ORG_ID,
-        integrationId: h.oldInstall.id,
-        catalogAppId: 'example-catalog-app'
-      },
-      h.app.deps.clock
-    )
-    h.microsoft.calls.length = 0
-    const oldRequest = await h.app.app.inject({
-      method: 'POST',
-      url: `/api/v1/orgs/${DEFAULT_ORG_ID}/integrations/msteams/connect/install`,
-      payload: { ticket: oldTicket, teamIds: ['example-team'] }
-    })
-    expect(oldRequest.statusCode).toBe(409)
-    expect(h.microsoft.calls).toEqual([])
   })
 
   it.each(['member', 'wrongTenant', 'wrongNonce', 'wrongAccount', 'graphFailure'] as const)(
