@@ -5827,14 +5827,6 @@ export async function checkMsTeamsAgentBotRequest(
 export async function cancelMsTeamsAgentBotRequest(orgId: string, id: string): Promise<void> {
   await apiDelete(`${orgBase(orgId)}/integrations/msteams/requests/${encodeURIComponent(id)}`)
 }
-/** Install the connected app into the chosen teams. */
-export async function installMsTeamsTeams(
-  orgId: string,
-  ticket: string,
-  teamIds: string[]
-): Promise<{ installed: number }> {
-  return apiPost<{ installed: number }>(`${orgBase(orgId)}/integrations/msteams/connect/install`, { ticket, teamIds })
-}
 
 export function startMsTeamsRecovery(orgId: string, tenantId: string, agentId: string) {
   return apiPost<{ authorizeUrl: string; state: string }>(`${orgBase(orgId)}/integrations/msteams/recovery/start`, {

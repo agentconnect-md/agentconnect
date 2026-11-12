@@ -45,7 +45,6 @@ import {
 } from './app-package.js'
 import {
   MsTeamsConnectError,
-  installMsTeamsApp,
   listMsTeamsTeams,
   mintMsTeamsConnectState,
   msTeamsAdminConsentUrl,
@@ -211,17 +210,12 @@ const CallbackDto = z.object({
   ticket: z
     .string()
     .optional()
-    .describe('An opaque, short-lived handle for the install step; absent for a Teams Store install.'),
+    .describe('An opaque, short-lived handle for the step that makes an agent’s own bot; absent otherwise.'),
   store: z
     .boolean()
     .describe('Whether the tenant installed the app from the Teams Store, so nothing was published or installed.')
 })
 const AgentBotBody = z.object({ ticket: z.string().min(1).max(16_384) })
-const InstallBody = z.object({
-  ticket: z.string().min(1).max(16_384),
-  teamIds: z.array(z.string().min(1).max(256)).min(1).max(50)
-})
-const InstallDto = z.object({ installed: z.number().int().describe('How many teams now have the app.') })
 
 function refuse(reply: FastifyReply, status: number, code: string, message: string): FastifyReply {
   const label = { 400: 'Bad Request', 403: 'Forbidden', 404: 'Not Found', 409: 'Conflict', 502: 'Bad Gateway' }
@@ -438,7 +432,7 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
           tags: [Tag.Integrations],
           summary: 'Finish connecting a Microsoft 365 tenant',
           description:
-            'Redeem the code Microsoft returned, take the tenant from the ID token, and connect it: a tenant another organization holds answers 409 MSTEAMS_TENANT_TAKEN, and one this organization connects to another agent answers 409 MSTEAMS_TENANT_IN_USE. The tenant’s row is installed on the agent, the app is published to the tenant’s organization catalog, each of the administrator’s teams that already has the app is upgraded to it with its resource-specific permissions re-consented, and the administrator’s teams are answered with a short-lived ticket for the install step. Running it again for the same agent is how the Console updates the app in Teams.',
+            'Redeem the code Microsoft returned, take the tenant from the ID token, and connect it: a tenant another organization holds answers 409 MSTEAMS_TENANT_TAKEN, and one this organization connects to another agent answers 409 MSTEAMS_TENANT_IN_USE. The tenant’s row is installed on the agent, the app is published to the tenant’s organization catalog, and each of the administrator’s teams that already has the app is upgraded to it with its resource-specific permissions re-consented; the teams are answered with the app’s state in each. The app joins a further team when someone mentions it there. Running it again for the same agent is how the Console updates the app in Teams.',
           operationId: 'finishMsTeamsConnect',
           body: CallbackBody,
           response: { 200: CallbackDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ConflictDto, 502: ErrorDto }
@@ -759,7 +753,6 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
             integrationId,
             agentId: target.id,
             teams: teams.map((team) => ({ ...team, app: upgrades.get(team.id) ?? 'failed' })),
-            ticket: sealMsTeamsTicket(seams.keys, { accessToken, orgId, integrationId, catalogAppId }, deps.clock),
             store: false
           }
         } catch (err) {
@@ -1083,55 +1076,6 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
           return refuse(reply, 502, 'MSTEAMS_CONNECT_UNAVAILABLE', 'Microsoft could not be reached. Try again.')
         }
         return reply.code(204).send(null)
-      }
-    )
-
-    r.post(
-      '/integrations/msteams/connect/install',
-      {
-        schema: {
-          tags: [Tag.Integrations],
-          summary: 'Install the Teams app into teams',
-          description:
-            'Install the connected tenant’s catalog app into each chosen team with the package’s resource-specific permissions, using the ticket the connect step answered. A team that already has the app counts as installed.',
-          operationId: 'installMsTeamsApp',
-          body: InstallBody,
-          response: { 200: InstallDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 502: ErrorDto }
-        }
-      },
-      async (req, reply) => {
-        if (denyViewerWrite(req, reply)) return
-        if (!usable()) return refuse(reply, 404, 'MSTEAMS_CONNECT_UNAVAILABLE', 'This deployment has no Teams app.')
-        const ticket = openMsTeamsTicket(seams.keys, req.body.ticket, deps.clock)
-        if (!ticket || !('catalogAppId' in ticket) || ticket.orgId !== orgOf(req)) {
-          return refuse(
-            reply,
-            400,
-            'MSTEAMS_CONNECT_STATE_INVALID',
-            'This sign-in has expired. Start connecting again.'
-          )
-        }
-        try {
-          for (const teamId of req.body.teamIds) {
-            const integration = await deps.repos.integration.get(orgOf(req), IntegrationId(ticket.integrationId))
-            if (!integration || typeof (await connectTarget(deps, req, integration.agentId)) === 'string')
-              return refuse(
-                reply,
-                409,
-                'MSTEAMS_CONNECT_STATE_INVALID',
-                'This connection changed. Start connecting again.'
-              )
-            await installMsTeamsApp(fetchImpl, ticket.accessToken, {
-              teamId,
-              catalogAppId: ticket.catalogAppId,
-              permissions: MSTEAMS_RSC_PERMISSIONS
-            })
-          }
-        } catch (err) {
-          if (err instanceof MsTeamsConnectError) return refuseConnect(req, reply, err)
-          throw err
-        }
-        return { installed: req.body.teamIds.length }
       }
     )
   }

@@ -13,7 +13,6 @@ import {
   createMsTeamsAgentBot,
   fetchOrgs,
   finishMsTeamsConnect,
-  installMsTeamsTeams,
   startMsTeamsConnect,
   startMsTeamsRecovery,
   type MsTeamsAgentBotRequestDto,
@@ -22,7 +21,7 @@ import {
 import { getUser, isAuthConfigured, login } from '@/lib/auth'
 import { writeFlowState } from '@/lib/flow-state'
 
-type Phase = 'loading' | 'failed' | 'creating' | 'teams' | 'installing' | 'requested' | 'done'
+type Phase = 'loading' | 'failed' | 'creating' | 'requested' | 'done'
 
 /** The organization a signed state names; the Control Plane re-checks the signature, this only routes the request. */
 export function msTeamsConnectOrgId(state: string | null): string | null {
@@ -80,10 +79,7 @@ export default function MsTeamsConnect() {
   const [error, setError] = useState<string | null>(null)
   const [orgId, setOrgId] = useState('')
   const [result, setResult] = useState<MsTeamsConnectResultDto | null>(null)
-  const [chosen, setChosen] = useState<Set<string>>(new Set())
   const [agentHref, setAgentHref] = useState('/')
-  // A further agent's own bot has no team step: it joins a team when someone mentions it there (teams-integration.md §8.6.5).
-  const [ownBot, setOwnBot] = useState(false)
   // A request from a person who may not publish waits for a Teams administrator's approval (§8.6.6).
   const [request, setRequest] = useState<MsTeamsAgentBotRequestDto | null>(null)
   const [checking, setChecking] = useState(false)
@@ -170,7 +166,6 @@ export default function MsTeamsConnect() {
           return
         }
         if (connected.agentBot) {
-          setOwnBot(true)
           // A sign-in that finished a waiting request carries no ticket: there is nothing left to make.
           if (!connected.ticket) {
             setPhase('done')
@@ -188,10 +183,8 @@ export default function MsTeamsConnect() {
           } else setPhase('done')
           return
         }
-        // An update preselects nothing: the teams that had the app already run the new package.
-        const update = connected.teams.some((team) => team.app !== 'none')
-        setChosen(new Set(update ? [] : connected.teams.slice(0, 1).map((team) => team.id)))
-        setPhase('teams')
+        // No team is chosen: the app joins one when someone mentions it there (teams-integration.md §8.3).
+        setPhase('done')
       } catch (e) {
         if (cancelled) return
         // The sign-in skipped the consent page, but this tenant has not recorded it: start again through it.
@@ -230,18 +223,6 @@ export default function MsTeamsConnect() {
     }
   }
 
-  async function install() {
-    if (!result?.ticket || chosen.size === 0) return
-    setPhase('installing')
-    setError(null)
-    try {
-      await installMsTeamsTeams(orgId, result.ticket, [...chosen])
-      setPhase('done')
-    } catch (e) {
-      fail(e)
-    }
-  }
-
   async function check() {
     if (!request) return
     setChecking(true)
@@ -261,14 +242,6 @@ export default function MsTeamsConnect() {
 
   const updatedCount = result?.teams.filter((team) => team.app === 'updated').length ?? 0
   const failedCount = result?.teams.filter((team) => team.app === 'failed').length ?? 0
-
-  const toggle = (id: string) =>
-    setChosen((current) => {
-      const next = new Set(current)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
 
   return (
     <div className="authpage">
@@ -309,8 +282,18 @@ export default function MsTeamsConnect() {
             <div>
               <h1 className="text-[18px] font-semibold leading-normal text-(--text-primary)">{t('doneTitle')}</h1>
               <p className="mt-2 text-[13px] leading-[1.55] text-(--text-secondary)">
-                {t(result?.store ? 'storeDoneBody' : ownBot ? 'agentBotDoneBody' : 'doneBody')}
+                {t(result?.store ? 'storeDoneBody' : 'doneBody')}
               </p>
+              {updatedCount > 0 && (
+                <p role="status" className="mt-2 text-[13px] leading-[1.55] text-(--text-secondary)">
+                  {t('updated', { count: updatedCount })}
+                </p>
+              )}
+              {failedCount > 0 && (
+                <p role="alert" className="mt-2 text-[13px] leading-[1.55] text-(--status-error)">
+                  {t('updateFailed', { count: failedCount })}
+                </p>
+              )}
             </div>
             <a href={agentHref} className="dsbtn dsbtn-primary">
               {t('backToAgent')}
@@ -351,68 +334,11 @@ export default function MsTeamsConnect() {
             <p role="status">{t('creatingBot')}</p>
             <p className="text-[13px] leading-[1.55]">{t('agentBotDescription')}</p>
           </div>
-        ) : phase === 'loading' || !result ? (
+        ) : (
           <div className="flex flex-col items-center gap-4 py-6 text-[14px] text-(--text-secondary)">
             <Spinner size={40} />
             {t('connecting')}
           </div>
-        ) : (
-          <>
-            <div>
-              <h1 className="text-[18px] font-semibold leading-normal text-(--text-primary)">{t('title')}</h1>
-              <p className="mt-2 text-[13px] leading-[1.55] text-(--text-secondary)">{t('description')}</p>
-              {updatedCount > 0 && (
-                <p role="status" className="mt-2 text-[13px] leading-[1.55] text-(--text-secondary)">
-                  {t('updated', { count: updatedCount })}
-                </p>
-              )}
-              {failedCount > 0 && (
-                <p role="alert" className="mt-2 text-[13px] leading-[1.55] text-(--status-error)">
-                  {t('updateFailed', { count: failedCount })}
-                </p>
-              )}
-            </div>
-            {result.teams.length > 0 ? (
-              <div className="flex max-h-[260px] flex-col gap-2 overflow-y-auto">
-                {result.teams.map((team) => (
-                  <label
-                    key={team.id}
-                    className="flex cursor-pointer items-center gap-[10px] text-[14px] text-(--text-primary)"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={team.app === 'updated' || chosen.has(team.id)}
-                      disabled={team.app !== 'none' || phase === 'installing'}
-                      onChange={() => toggle(team.id)}
-                    />
-                    {team.name}
-                    {team.app !== 'none' && (
-                      <span className="text-[12px] text-(--text-tertiary)">
-                        {t(team.app === 'updated' ? 'teamUpdated' : 'teamNotUpdated')}
-                      </span>
-                    )}
-                  </label>
-                ))}
-              </div>
-            ) : (
-              <p className="text-[13px] leading-[1.55] text-(--text-secondary)">{t('noTeams')}</p>
-            )}
-            <p className="text-[12px] leading-[1.5] text-(--text-tertiary)">{t('personal')}</p>
-            <div className="flex gap-[10px]">
-              {updatedCount + failedCount > 0 && chosen.size === 0 ? (
-                <Button onClick={() => setPhase('done')}>{t('finish')}</Button>
-              ) : (
-                <>
-                  <Button onClick={() => void install()} disabled={phase === 'installing' || chosen.size === 0}>
-                    {phase === 'installing' ? t('installing') : t('install')}
-                  </Button>
-                  <Button variant="ghost" onClick={() => setPhase('done')} disabled={phase === 'installing'}>
-                    {t('skip')}
-                  </Button>
-                </>
-              )}
-            </div>
-          </>
         )}
       </div>
     </div>

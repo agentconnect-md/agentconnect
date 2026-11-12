@@ -420,14 +420,8 @@ describe('the deployment Teams app routes', () => {
       'GET https://graph.microsoft.com/v1.0/teams/team-2/installedApps'
     ])
     expect(JSON.stringify(res.json())).not.toContain('delegated')
-
-    const install = await h.app.inject({
-      method: 'POST',
-      url: '/integrations/msteams/connect/install',
-      payload: { ticket: res.json<{ ticket: string }>().ticket, teamIds: ['team-1'] }
-    })
-    expect(install.json()).toEqual({ installed: 1 })
-    expect(h.graph.at(-1)?.url).toBe('https://graph.microsoft.com/v1.0/teams/team-1/installedApps')
+    // No team is chosen: the app joins one when someone mentions it there.
+    expect(res.json()).not.toHaveProperty('ticket')
   })
 
   // teams-integration.md §8.4: a Teams Store install only proves its tenant; nothing is published or installed.
@@ -855,11 +849,10 @@ describe('a deployment that makes agent bots (§8.6)', () => {
     expect((await down.post('/agent-bot', { ticket: pending.json<{ ticket: string }>().ticket })).statusCode).toBe(502)
   })
 
-  it('takes each ticket only at its own step, from the person it was sealed for', async () => {
+  it('takes a ticket once, and only where the deployment makes agent bots', async () => {
     const h = await further()
     const provision = (await h.callback(h.state({ agentBots: true, consented: true }))).json<{ ticket: string }>()
       .ticket
-    expect((await h.post('/install', { ticket: provision, teamIds: ['team-1'] })).statusCode).toBe(400)
     const made = (await h.post('/agent-bot', { ticket: provision })).json<{ ticket: string }>().ticket
     expect((await h.post('/agent-bot', { ticket: made })).statusCode).toBe(400)
     // Without agent bots the step does not exist.

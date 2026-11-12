@@ -17,7 +17,6 @@ const mocks = vi.hoisted(() => {
   return {
     FakeApiError,
     finish: vi.fn(),
-    install: vi.fn(),
     proceed: vi.fn(),
     agentBot: vi.fn(),
     start: vi.fn(),
@@ -37,7 +36,6 @@ vi.mock('@/lib/api', () => ({
   ApiError: mocks.FakeApiError,
   fetchOrgs: mocks.fetchOrgs,
   finishMsTeamsConnect: mocks.finish,
-  installMsTeamsTeams: mocks.install,
   continueMsTeamsConnect: mocks.proceed,
   createMsTeamsAgentBot: mocks.agentBot,
   startMsTeamsConnect: mocks.start,
@@ -117,62 +115,38 @@ describe('MsTeamsConnect', () => {
     expect(msTeamsConnectOrgId(null)).toBeNull()
   })
 
-  it('redeems the code, drops it from the address bar, and installs into the chosen teams', async () => {
+  it('redeems the code, drops it from the address bar, and finishes with no team to choose', async () => {
     mocks.finish.mockResolvedValue({
       integrationId: 'int-1',
       agentId: 'agent-a',
       teams: [
         { id: 'team-1', name: 'Engineering', app: 'none' },
         { id: 'team-2', name: 'Support', app: 'none' }
-      ],
-      ticket: 'sealed'
+      ]
     })
-    mocks.install.mockResolvedValue({ installed: 1 })
     await land(`code=c&state=${STATE}`)
     expect(mocks.finish).toHaveBeenCalledWith('org-a', 'c', STATE)
     expect(window.location.search).toBe('')
-    expect(host.textContent).toContain('Engineering')
-    await act(async () => button('Add to teams').click())
-    expect(mocks.install).toHaveBeenCalledWith('org-a', 'sealed', ['team-1'])
     expect(host.textContent).toContain('Teams is connected')
+    expect(host.textContent).toContain('Mention the agent in any channel')
+    expect(host.querySelector('input[type="checkbox"]')).toBeNull()
     expect(host.querySelector('a')?.getAttribute('href')).toBe('/example/agents/agent-a')
   })
 
-  it('shows an update: the teams that had the app are updated, and nothing more is preselected', async () => {
+  it('says how many teams that had the app were updated, and how many Microsoft did not update', async () => {
     mocks.finish.mockResolvedValue({
       integrationId: 'int-1',
       agentId: 'agent-a',
       teams: [
         { id: 'team-1', name: 'Engineering', app: 'updated' },
-        { id: 'team-2', name: 'Support', app: 'none' }
-      ],
-      ticket: 'sealed'
+        { id: 'team-2', name: 'Support', app: 'failed' },
+        { id: 'team-3', name: 'Sales', app: 'none' }
+      ]
     })
     await land(`code=c&state=${STATE}`)
-    expect(host.textContent).toContain('Updated the app in 1 team that already had it.')
-    const boxes = [...host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')]
-    expect(boxes.map((box) => [box.checked, box.disabled])).toEqual([
-      [true, true],
-      [false, false]
-    ])
-    await act(async () => button('Done').click())
-    expect(mocks.install).not.toHaveBeenCalled()
     expect(host.textContent).toContain('Teams is connected')
-  })
-
-  it('names the teams Microsoft did not update and offers no install into them', async () => {
-    mocks.finish.mockResolvedValue({
-      integrationId: 'int-1',
-      agentId: 'agent-a',
-      teams: [{ id: 'team-1', name: 'Engineering', app: 'failed' }],
-      ticket: 'sealed'
-    })
-    await land(`code=c&state=${STATE}`)
+    expect(host.textContent).toContain('Updated the app in 1 team that already had it.')
     expect(host.querySelector('[role="alert"]')?.textContent).toContain('Microsoft did not update the app in 1 team.')
-    expect(host.textContent).toContain('Not updated')
-    const box = host.querySelector<HTMLInputElement>('input[type="checkbox"]')!
-    expect([box.checked, box.disabled]).toEqual([false, true])
-    expect(button('Done')).toBeTruthy()
   })
 
   // teams-integration.md §8.4: a Teams Store install already has the app, so connecting the tenant finishes.
@@ -181,7 +155,6 @@ describe('MsTeamsConnect', () => {
     await land(`code=c&state=${STATE}`)
     expect(host.textContent).toContain('Teams is connected')
     expect(host.textContent).toContain('Message the agent in Teams')
-    expect(mocks.install).not.toHaveBeenCalled()
     await act(async () => root.unmount())
     root = createRoot(host)
     mocks.finish.mockRejectedValue(new mocks.FakeApiError('mismatch', 400, 'MSTEAMS_TENANT_MISMATCH'))
@@ -213,12 +186,10 @@ describe('MsTeamsConnect', () => {
     expect(mocks.agentBot).toHaveBeenCalledWith('org-a', 'provision')
     expect(host.textContent).toContain('Creating the agent’s bot')
     expect(host.textContent).toContain('gets a bot of its own')
-    expect(host.textContent).not.toContain('Add to teams')
 
     await act(async () => made({ integrationId: 'int-2', agentId: 'agent-a', teams: [], store: false }))
     expect(host.textContent).toContain('Teams is connected')
     expect(host.textContent).toContain('Mention the agent in any channel')
-    expect(mocks.install).not.toHaveBeenCalled()
   })
 
   it('shows a request waiting for an administrator when the person may not publish, and checks on demand', async () => {

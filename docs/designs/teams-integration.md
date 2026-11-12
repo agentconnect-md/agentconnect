@@ -772,27 +772,25 @@ advertise `msteams-relay-egress-v1` (§8.5); an older daemon is refused with
 4. **The catalog.** It builds the package of §5 from the row and publishes it
    to the tenant's organization catalog, or adds an app definition when the
    catalog already holds the app's external ID, so a reconnect updates it.
-5. **The team.** It answers the admin's teams (`/me/joinedTeams`) and a
-   short-lived, encrypted handle to the delegated token, which never leaves the
-   Control Plane in the clear. The page lists the teams; the admin picks one or
-   more and the Control Plane installs the app into each with the package's
-   resource-specific permissions
-   (`POST /orgs/:orgId/integrations/msteams/connect/install`). Before answering,
-   the Control Plane upgrades the app to the published definition in each of
-   those teams that already has it
-   (`POST /teams/{id}/installedApps/{id}/upgrade`), consenting to the
+5. **The teams.** No team is chosen. The app joins a team when someone
+   mentions it in one of its channels: the mention picker offers every app of
+   the organization's catalog, Teams installs the app there with no dialog, and
+   the team holds the package's resource-specific grants within about a minute
+   (**measured** with an administrator's account). The Control Plane therefore
+   installs the app into no team, and the connect page ends by saying so.
+   Before answering, the Control Plane upgrades the app to the published
+   definition in each of the admin's teams (`/me/joinedTeams`) that already has
+   it (`POST /teams/{id}/installedApps/{id}/upgrade`), consenting to the
    package's resource-specific permissions again; the delegated
    `TeamsAppInstallation.ReadWriteAndConsentSelfForTeam` scope covers both the
    read and the upgrade. A team that only picks up a new grant after the app is
    removed and added again (**measured** without this step) takes it here. The
-   page marks those teams as updated and preselects none of the others. A team
-   whose read or upgrade Microsoft refuses or fails is marked as not updated
-   and cannot be picked for an install, which would count its existing app as
-   installed; the fingerprint of §5.1 then stays unrecorded, so **Update in
-   Teams** stays on offer to retry. The page drops
-   the single-use code from the address bar before redeeming it.
-   The app also appears under **Built for your org**, where people add it to a
-   1:1 chat themselves where their app setup policy allows.
+   page says how many teams were updated, and how many Microsoft refused or
+   failed; with any of the latter the fingerprint of §5.1 stays unrecorded, so
+   **Update in Teams** stays on offer to retry. The page drops the single-use
+   code from the address bar before redeeming it. The app also appears under
+   **Built for your org**, where people add it to a 1:1 chat themselves where
+   their app setup policy allows.
 
 The three scopes need an administrator: a member who is not one sees Entra's
 admin-approval page, and the connect page asks for a Teams or Global
