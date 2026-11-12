@@ -225,15 +225,10 @@ describe('MsTeamsConnection writes', () => {
     expect(budget.available()).toBeLessThan(50)
     expect(urls[0]).toBe(`${SERVICE_URL}v3/conversations/${encodeURIComponent(thread.conversationId)}/activities`)
     expect(bodies[0]).toEqual({ type: 'message', textFormat: 'extendedmarkdown', text: 'one' })
-    // Another bot named as the agent was given it is mentioned; the bot's own address is the same form without a label.
+    // Another bot named as the agent was given it goes out as plain `@label`; the bot's own address is the same form without a label.
     expect(conn.selfMentionAddress).toBe(`<@28:${ZERO}>`)
     await conn.post(target, 'over to <@28:other-app|Other Bot>')
-    expect(bodies[3]).toEqual({
-      type: 'message',
-      textFormat: 'extendedmarkdown',
-      text: 'over to <at>Other Bot</at>',
-      entities: [{ type: 'mention', text: '<at>Other Bot</at>', mentioned: { id: '28:other-app', name: 'Other Bot' } }]
-    })
+    expect(bodies[3]).toEqual({ type: 'message', textFormat: 'extendedmarkdown', text: 'over to @Other Bot' })
   })
 
   it('remembers each conversation’s serviceUrl and builds a channel thread’s target from its root', async () => {

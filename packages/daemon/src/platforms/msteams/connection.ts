@@ -1,6 +1,6 @@
 // One Teams bot's daemon connection (teams-integration.md §3, §4.3): relay-terminated ingress, Bot Connector egress, no socket.
 import { createHash } from 'node:crypto'
-import { msTeamsBotMention, msTeamsOutgoingMentions } from '@agentconnect.md/message'
+import { msTeamsBotMention, msTeamsOutgoingText } from '@agentconnect.md/message'
 import {
   MSTEAMS_PLATFORM,
   type IntegrationMsTeamsConfig,
@@ -1067,10 +1067,9 @@ function newestFirst(a: MsTeamsGraphMessage, b: MsTeamsGraphMessage): number {
   return b.createdMs - a.createdMs
 }
 
-// A reply that names another bot as it was named to the agent mentions it (§4.1).
+// Another bot named as it was named to the agent goes out as `@<label>` (§4.1).
 function activityOf(text: string): Record<string, unknown> {
-  const { text: body, entities } = msTeamsOutgoingMentions(text)
-  return { type: 'message', textFormat: MSTEAMS_TEXT_FORMAT, text: body, ...(entities.length ? { entities } : {}) }
+  return { type: 'message', textFormat: MSTEAMS_TEXT_FORMAT, text: msTeamsOutgoingText(text) }
 }
 
 // A raw conversation ID's normalized channel: a channel thread drops its `;messageid=` suffix.
