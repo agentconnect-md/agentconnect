@@ -8,8 +8,12 @@ import { agentHostKey, sessionHostKey } from '../src/acp/host-key.js'
 import {
   coordinatorPrompt,
   coordinatorSessionTools,
+  coordinatorTools,
   renderCoordinatorBatch
 } from '../src/auto-session/coordinator-prompt.js'
+import { isBuiltinSystemTool } from '../src/daemon/tool-classification.js'
+import { ALL_TOOL_NAMES } from '../src/mcp/tools.js'
+import { RESERVED_MCP_SERVER_NAME } from '../src/mcp/resolve-servers.js'
 import { CoordinatorSessions, deliveredMessage, messageForTask } from '../src/auto-session/coordinator-sessions.js'
 import {
   batchCut,
@@ -159,6 +163,14 @@ describe('the coordinator prompt and batch', () => {
     )
     expect(batch).toContain('[One new message in this conversation (conv-1)]')
     expect(batch).toContain('<message id="msg-p2" from="user-1" mentions-you="yes" thread="msg-p1">')
+  })
+
+  it('names every coordinator tool among the daemon’s own, which run without an ask a coordinator would refuse', () => {
+    for (const tool of coordinatorTools()) {
+      expect(ALL_TOOL_NAMES).toContain(tool.name)
+      const call = { toolCallId: 'call-1', title: `mcp__${RESERVED_MCP_SERVER_NAME}__${tool.name}` }
+      expect(isBuiltinSystemTool({ sessionId: 's', toolCall: call, options: [] })).toBe(true)
+    }
   })
 
   it('offers its decision tools and the memory and place tools, nothing else', () => {
