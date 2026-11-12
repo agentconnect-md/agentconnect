@@ -270,6 +270,19 @@ describe('MsTeamsConnect', () => {
     expect(host.textContent).toContain('Waiting for approval')
     await act(async () => root.unmount())
     root = createRoot(host)
+    // A sign-in that finished an already approved request has nothing left to wait for.
+    mocks.finish.mockResolvedValue({
+      integrationId: 'int-9',
+      agentId: 'agent-a',
+      member: true,
+      teams: [],
+      store: false
+    })
+    await land(`code=c&state=${STATE}`)
+    expect(host.textContent).toContain('Teams is connected')
+    expect(host.textContent).toContain('Mention the agent in any channel')
+    await act(async () => root.unmount())
+    root = createRoot(host)
     mocks.finish.mockRejectedValue(new mocks.FakeApiError('no', 409, 'MSTEAMS_TENANT_NOT_CONNECTED'))
     await land(`code=c&state=${STATE}`)
     expect(host.textContent).toContain('is not connected here yet')
