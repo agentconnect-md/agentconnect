@@ -632,7 +632,7 @@ export async function installMsTeamsApp(
     }
   })
   if (response.ok || response.status === 409) return
-  throw refused(response)
+  throw await refusedWithReason(response)
 }
 
 /** Adds the catalog app for one person, so their Teams client lists the agent at once: its mention, its card and a 1:1 chat. Best effort: answers null when added, or what Microsoft refused for the log, which leaves the team installs as they are. */
