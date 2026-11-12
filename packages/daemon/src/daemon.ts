@@ -27072,7 +27072,8 @@ export class Daemon {
     }
     const isAnswerChunk = update?.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text'
     // A coordinator turn's text after its last call is its own reply to the message no call decided (auto-session-mode.md §4.3).
-    if (isCoordinatorCoordinate(p.plan.sessionThread)) {
+    const coordinatorTurn = isCoordinatorCoordinate(p.plan.sessionThread)
+    if (coordinatorTurn) {
       if (isAnswerChunk) this.coordinators.turns.noteText(p.plan.sessionKey, String(update.content.text ?? ''))
       else if (update?.sessionUpdate === 'tool_call') this.coordinators.turns.noteToolCall(p.plan.sessionKey)
     }
@@ -27109,7 +27110,9 @@ export class Daemon {
     if (p.webchat) chatTurnOutput.emitChatUpdate(p.webchat, update, p.resolveFileLink)
     else if (!(p.plan.stageAnswer && isAnswerChunk)) this.ahpNativeTurns.get(p)?.update(update)
     this.projectNativeIntegration(p, update)
-    if ((!p.webchat || p.webchat.continuation) && !isHeadlessGithubFinal && !(p.plan.stageAnswer && isAnswerChunk)) {
+    // A coordinator's unstreamed text is recorded only as the post speak() makes of it; a console continuation's streamed text keeps the renderer's row.
+    const rendersAnswer = !(isAnswerChunk && (p.plan.stageAnswer || (coordinatorTurn && !p.webchat)))
+    if ((!p.webchat || p.webchat.continuation) && !isHeadlessGithubFinal && rendersAnswer) {
       const startsWork = p.workBoundary.opens(update)
       // Only new work commits a staged segment; ongoing tool output leaves the closing tail regenerable.
       if (p.plan.stageAnswer && startsWork && p.reply.attemptText) this.commitStagedSegment(p)

@@ -29,7 +29,7 @@ import type { SessionContext } from '../src/mcp/ops/context.js'
 import type { ToolDescriptor } from '../src/tool-schema/descriptor.js'
 import { coordinatorCoordinate, isAppendCoordinate, isCoordinatorCoordinate } from '../src/session/append-coordinate.js'
 import { isNoResponseBody } from '../src/session/no-response.js'
-import { sessionKey, type LocalStore } from '../src/store/local-store.js'
+import { sessionKey, transcriptChannelKey, type LocalStore } from '../src/store/local-store.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { openTestStore } from './store-support.js'
 import { WAIT } from './wait-support.js'
@@ -1701,7 +1701,7 @@ describe('a coordinator driven through every outcome (auto-session-mode.md §4.2
     expect(tasks[0]).toContain('fix the flaky test')
     expect(tasks[1]).toContain('is the flaky test fixed yet?')
     expect(tasks[2]).toContain('thoughts?')
-    // The final text of 3.1 is its reply; what was written after 3.2's ignoreMessage and 4.1's sentinel stayed in the transcript.
+    // The final text of 3.1 is its reply; what was written after 3.2's ignoreMessage and 4.1's sentinel was posted nowhere.
     expect(coordinatorPosts).toEqual([
       { thread: '3.1', text: 'Good morning!' },
       { thread: '6.1', text: 'Glad it helped.' }
@@ -1722,6 +1722,81 @@ describe('a coordinator driven through every outcome (auto-session-mode.md §4.2
       title: '<@U_FAKE_BOT> thoughts?'
     })
     await booted.daemon.stop()
+  })
+
+  /** A coordinator that writes `text` for each message after its `call`, with a gateway whose posts carry a platform ts. */
+  async function bootTranscribed(script: Record<string, { call?: () => Record<string, unknown>; text?: string }>) {
+    const live: { d?: any; ctx?: SessionContext } = {}
+    const decided: string[][] = []
+    const booted = await boot(async (_id, blocks, say) => {
+      const prompt = blocks.map((block) => block.text ?? '').join('\n')
+      const ids = [...prompt.matchAll(/<message id="(msg-[^"]+)"/g)].map((match) => match[1]!)
+      decided.push(ids)
+      for (const id of ids) {
+        const step = script[id]
+        if (step?.call) await live.d.coordinators.decide(live.ctx, step.call())
+        if (step?.text) say(step.text)
+      }
+      return 'end_turn'
+    })
+    const d = booted.d
+    live.d = d
+    const scope = d.transportScopeForIntegrationIds(['int-bot-a'])
+    const coordinator = await d.store.resolveAppendCoordinate('bot-a', 'C1', scope, 1, 'coordinator')
+    live.ctx = {
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: coordinator,
+      transportScope: scope,
+      isDm: false,
+      tools: coordinatorSessionTools([])
+    } as SessionContext
+    const posts: { thread?: string; text: string }[] = []
+    vi.spyOn(d, 'gatewayForIntegration').mockReturnValue({
+      postMessage: vi.fn(async (_channel: string, text: string, thread?: string) => {
+        posts.push({ thread, text })
+        return `1700000300.00000${posts.length}`
+      })
+    })
+    const scopeOfSession = {
+      transcriptChannel: transcriptChannelKey('C1', scope),
+      coordinate: coordinator,
+      sessionKey: sessionKey('slack', 'C1', coordinator, 'bot-a', scope),
+      agentId: 'bot-a'
+    }
+    // The coordinator's own text rows in its session, as the console reads them.
+    const agentText = async () =>
+      ((await d.store.transcriptSince(scopeOfSession, null)) as { sender: string; ts: string; text: string }[])
+        .filter((row) => row.sender === 'bot-a')
+        .map((row) => ({ ts: row.ts, text: row.text }))
+    const send = async (ts: string) => {
+      await booted.route(slack(ts, { text: 'morning all' }))
+      await vi.waitFor(() => expect(decided.at(-1)).toEqual([`msg-${ts}`]), WAIT)
+      await vi.waitFor(() => expect(d.pending.size + d.inflight.size).toBe(0), WAIT)
+    }
+    return { daemon: booted.daemon, posts, agentText, send }
+  }
+
+  it('records its final-text reply once, under the ts of the post it made', async () => {
+    const { daemon, posts, agentText, send } = await bootTranscribed({ 'msg-7.1': { text: 'Good morning!' } })
+    await send('7.1')
+    expect(posts).toEqual([{ thread: '7.1', text: 'Good morning!' }])
+    expect(await agentText()).toEqual([{ ts: '1700000300.000001', text: 'Good morning!' }])
+    await daemon.stop()
+  })
+
+  it('records no reply for text it never posted, as text after ignoreMessage', async () => {
+    const { daemon, posts, agentText, send } = await bootTranscribed({
+      'msg-8.1': {
+        call: () => ({ action: 'ignoreMessage', messageId: 'msg-8.1', reason: 'for another bot' }),
+        text: 'This one is for someone else, so I am posting nothing.'
+      }
+    })
+    await send('8.1')
+    expect(posts).toEqual([])
+    expect(await agentText()).toEqual([])
+    await daemon.stop()
   })
 })
 
