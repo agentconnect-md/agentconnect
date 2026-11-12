@@ -1,5 +1,6 @@
 // WeCom's smart bot long connection: subscribe, heartbeat, replies correlated by req_id, reconnect, and a kick that stays down.
 import { randomUUID } from 'node:crypto'
+import { WebSocket as WsWebSocket } from 'ws'
 import type { Logger } from '../../log.js'
 import type { WeComUploadCommand } from './media.js'
 
@@ -220,7 +221,7 @@ export class WeComClient {
 
   private async openSocket(): Promise<void> {
     const url = this.deps.url ?? WECOM_LONG_CONNECTION_URL
-    const socket = this.deps.createSocket?.(url) ?? (new WebSocket(url) as unknown as WeComSocket)
+    const socket = this.deps.createSocket?.(url) ?? this.defaultSocket(url)
     await new Promise<void>((resolve, reject) => {
       let opened = false
       const timer = setTimeout(() => {
@@ -266,6 +267,11 @@ export class WeComClient {
     this.upSince = Date.now()
     this.missedPongs = 0
     this.startHeartbeat(socket)
+  }
+
+  // `ws`, not Node's built-in WebSocket: WeCom's server 404s a handshake whose `Sec-WebSocket-Key` name is not in canonical case.
+  private defaultSocket(url: string): WeComSocket {
+    return new WsWebSocket(url, { handshakeTimeout: this.timing.openTimeoutMs })
   }
 
   private request(cmd: string, body: Record<string, unknown> | undefined, reqId = `${cmd}_${randomUUID()}`) {
