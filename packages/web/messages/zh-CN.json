@@ -7064,8 +7064,8 @@
       "deployment": {
         "connect": "使用 Microsoft 连接",
         "connecting": "正在打开 Microsoft…",
-        "next": "由你所在 Microsoft 365 组织的 Teams 管理员或全局管理员登录并批准。之后应用会加入组织的应用目录，并添加到你选择的团队。",
-        "useOwn": "改为注册自己的 Bot",
+        "next": "用你的 Microsoft 365 账号登录。管理员登录后，agent 的应用会直接加入组织的应用目录；其他人登录后，会提交给 Teams 管理员发布。",
+        "useOwn": "改用你自己的 Teams Bot",
         "requestWaiting": "正在等 Teams 管理员批准这个 agent 的应用。",
         "requestNeedsSignIn": "你的 Microsoft 登录已失效。重新申请即可继续。",
         "requestRejected": "这个 agent 的应用被拒绝或已被移除。",

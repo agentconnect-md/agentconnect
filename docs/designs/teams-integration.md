@@ -742,7 +742,7 @@ instead.
 ### 8.3 Connecting a tenant
 
 When the deployment app is configured, the Teams wizard leads with **Connect
-with Microsoft** and keeps **Register your own bot instead** one click away. A
+with Microsoft** and keeps **Use your own Teams bot instead** one click away. A
 per-agent install that pastes the deployment app's ID is refused
 (`MSTEAMS_DEPLOYMENT_APP`), and the deployment app's secret follows the Setup
 Server rather than a Console rotation. Connecting needs the agent's daemon to
@@ -1136,9 +1136,11 @@ All **measured**, unless marked.
   administrator gets Entra's "Need admin approval" page for an application
   whose publisher is not verified, until an administrator consents tenant-wide
   to the same delegated scopes; the member then signs in with no prompt.
-- **Personal scope.** A just-published package could not be installed into a
-  person's own scope through Graph for at least twelve minutes ("blocked by
-  app permission policy"), while a team install worked at once.
+- **Personal scope.** A just-published package cannot be installed into a
+  person's own scope through Graph at once: the install answers 403 "blocked
+  by app permission policy" for a time that has measured from under a minute
+  to more than twelve. The connect therefore tries again on a widening
+  interval for about a quarter of an hour, after it has answered.
 - **The catalog** enforces only a unique manifest `id`: two packages with one
   display name are both accepted and both listed.
 - **Limits** (documented). A blueprint may hold 250 agent identities in one

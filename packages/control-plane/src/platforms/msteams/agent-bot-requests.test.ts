@@ -141,6 +141,7 @@ function harness(script: Script = {}) {
     bindingMutations: { runExclusive: async (_tenant, action) => action() } as MsTeamsBindingMutations,
     fetch: fetchImpl,
     wait: async () => {},
+    personalInstallWait: async () => {},
     log: { info: vi.fn(), warn: vi.fn() }
   })
   const open = async (over: Partial<MsTeamsAgentBotRequestRecord> = {}) =>
@@ -274,11 +275,11 @@ describe('MsTeamsAgentBotRequests', () => {
   })
 
   it('lets only the latest claim finish once a claim ran out: a slow check writes no row after a cancel, and a slow cancel removes no connected bot', async () => {
-    // The check is still installing when its claim runs out and a cancel takes the request.
+    // The check is still reading the approved package when its claim runs out and a cancel takes the request.
     const slowCheck = harness({ definitions: ['published'] })
     await slowCheck.open({ teamIds: ['team-1'] })
-    slowCheck.during.install = async () => {
-      delete slowCheck.during.install
+    slowCheck.during.read = async () => {
+      delete slowCheck.during.read
       slowCheck.clock.advance(3 * 60_000)
       expect(await slowCheck.requests.cancel(ORG, 'request-1')).toBe(true)
     }

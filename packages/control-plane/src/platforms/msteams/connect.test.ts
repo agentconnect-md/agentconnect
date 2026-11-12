@@ -11,6 +11,7 @@ import {
   msTeamsConnectKeys,
   openMsTeamsTicket,
   installMsTeamsAppForUser,
+  installMsTeamsAppForUserEventually,
   publishMsTeamsPackage,
   redeemMsTeamsCode,
   sealMsTeamsTicket,
@@ -268,6 +269,26 @@ describe('Teams Graph calls', () => {
       "GET /appCatalogs/teamsApps?$filter=distributionMethod eq 'organization'",
       'POST /appCatalogs/teamsApps/catalog-3/appDefinitions'
     ])
+  })
+
+  it('tries again while Microsoft still refuses a just-published app, and stops at any other answer', async () => {
+    const input = { userId: 'user-1', catalogAppId: 'catalog-1', permissions: [] }
+    const waits: number[] = []
+    const wait = async (ms: number) => void waits.push(ms)
+    // Refused twice by the policy, then added.
+    const answers = [403, 403, 201]
+    const settling = async () => new Response(null, { status: answers.shift()! })
+    expect(await installMsTeamsAppForUserEventually(settling, 't', input, wait, [10, 20, 30])).toBeNull()
+    expect(waits).toEqual([10, 20])
+    // A refusal that time does not mend is answered at once.
+    waits.length = 0
+    const unconsented = async () => new Response(null, { status: 400 })
+    expect(await installMsTeamsAppForUserEventually(unconsented, 't', input, wait, [10, 20])).toContain('answered 400')
+    expect(waits).toEqual([])
+    // Still refused after the last wait: the last refusal is the answer.
+    const blocked = async () => new Response(null, { status: 403 })
+    expect(await installMsTeamsAppForUserEventually(blocked, 't', input, wait, [10])).toContain('answered 403')
+    expect(waits).toEqual([10])
   })
 
   it('answers what Microsoft refused when the app is not added for a person', async () => {

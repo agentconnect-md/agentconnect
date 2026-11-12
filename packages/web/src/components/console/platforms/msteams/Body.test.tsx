@@ -177,7 +177,7 @@ describe('MsTeamsWizardBody with the deployment app', () => {
     expect(assign).toHaveBeenCalledWith('https://login.microsoftonline.com/organizations/x')
     // One way in for everyone: who may publish is settled after the sign-in.
     expect(buttonWith('I’m not an administrator')).toBeUndefined()
-    await act(async () => buttonWith('Register your own bot instead')?.click())
+    await act(async () => buttonWith('Use your own Teams bot instead')?.click())
     expect(text()).toContain('Open Teams Developer Portal')
     vi.unstubAllGlobals()
   })

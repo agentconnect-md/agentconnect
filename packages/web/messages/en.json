@@ -7064,8 +7064,8 @@
       "deployment": {
         "connect": "Connect with Microsoft",
         "connecting": "Opening Microsoft…",
-        "next": "A Teams or Global administrator of your Microsoft 365 organization signs in and approves. The app is then added to your organization’s apps and to the teams you choose.",
-        "useOwn": "Register your own bot instead",
+        "next": "Sign in with your Microsoft 365 account. An administrator’s sign-in adds the agent’s app to your organization’s apps at once; anyone else’s sends it to a Teams administrator to publish.",
+        "useOwn": "Use your own Teams bot instead",
         "requestWaiting": "Waiting for a Teams administrator to approve this agent’s app.",
         "requestNeedsSignIn": "Your Microsoft sign-in stopped working. Request again to carry on.",
         "requestRejected": "The agent’s app was turned down or removed.",
