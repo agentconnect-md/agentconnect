@@ -402,6 +402,7 @@ describe('msteams ingress plugin — admission, dedup and triggers (§4.1, §4.2
     }
     expect(s.h.forwardStrict).not.toHaveBeenCalled()
     expect(s.h.forwardAction).not.toHaveBeenCalled()
+    expect(s.h.log.info).toHaveBeenCalledWith(expect.stringContaining('Teams messageUpdate activity not forwarded'))
   })
 
   it('forwards the people a roster change added, the bot left out, for the daemon to look up', async () => {
