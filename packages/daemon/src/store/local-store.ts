@@ -8798,6 +8798,25 @@ export class LocalStore {
       )) as unknown as TranscriptEntry[]
   }
 
+  /** Whether a session was admitted a text row of one physical thread other than those at `exceptTs`: what tells a thread it has followed from one it meets part-way. */
+  async sessionHoldsThread(
+    scope: Pick<TranscriptSessionScope, 'transcriptChannel' | 'sessionKey' | 'agentId' | 'orgId'>,
+    thread: string,
+    exceptTs: readonly string[] = []
+  ): Promise<boolean> {
+    const except = exceptTs.length > 0 ? `AND ts NOT IN (${exceptTs.map(() => '?').join(', ')})` : ''
+    const row = await this.db
+      .prepare(
+        `SELECT seq FROM transcript WHERE orgId = ? AND channel = ? AND thread = ? AND kind = 'text' ${except}
+           AND EXISTS (
+             SELECT 1 FROM transcript_recipient tr_h
+             WHERE tr_h.seq = transcript.seq AND tr_h.sessionKey = ?)
+         LIMIT 1`
+      )
+      .get(this.orgForRead(scope.agentId, scope.orgId), scope.transcriptChannel, thread, ...exceptTs, scope.sessionKey)
+    return row !== undefined
+  }
+
   /**
    * Provider-neutral context fence for one physical conversation thread. Unlike
    * `transcriptSince`, this never compares provider message ids from different

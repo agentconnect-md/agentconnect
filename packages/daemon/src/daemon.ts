@@ -688,6 +688,7 @@ import { isMalformedPlatformTurn } from './platforms/malformed-turn.js'
 import { physicalThreadOf, registerThreadPromotion, threadPromotionFor } from './platforms/thread-promotion.js'
 import { discordThreadPromotion } from './platforms/discord/thread-promotion.js'
 import { sessionLinkSourceFor } from './platforms/link-source.js'
+import { messageOrderingFor } from './platforms/message-ordering.js'
 import { sessionThreadUrlFor } from './platforms/session-links.js'
 import {
   confirmsInternalAudience,
@@ -1190,6 +1191,7 @@ import {
   deliveredMessage,
   THREADED_TASK_IDLE_CLOSE_MS
 } from './auto-session/coordinator-sessions.js'
+import { coordinatorThreadContext } from './auto-session/coordinator-thread-context.js'
 import {
   answerThreadOf,
   batchCut,
@@ -1641,6 +1643,8 @@ const OAUTH_REFRESH_CONTENTION_RETRY_MS = 60_000
 const RUNTIME_FAILURE_RETRY_MS = 5_000
 /** How long shutdown waits for Slack to take the clears of task-held working indicators. */
 const TASK_HOLD_CLEAR_MS = 2_000
+/** How long a coordinator's turn waits for the history of a thread it meets part-way. */
+const COORDINATOR_THREAD_READ_MS = 5_000
 
 /** The step a relay delivery is in, read by the slow-ack watchdog when it fires. */
 type RelayAckTrace = { stage: string }
@@ -15445,6 +15449,22 @@ export class Daemon {
     this.coordinators.beginTurn(key, entry.agentId, messages)
     const { channel } = entry.msg
     const channelName = (await this.store.getDisplayNames([channel])).get(channel)
+    const transcriptChannel = transcriptChannelKey(channel, entry.msg.transportScope)
+    // A thread the coordinator holds nothing of is one it joins part-way: it reads what a thread session would catch up (§4.1).
+    const threads = await coordinatorThreadContext({
+      agentId: entry.agentId,
+      messages,
+      ordering: messageOrderingFor(entry.msg.platform),
+      holds: (thread, exceptIds) =>
+        this.store.sessionHoldsThread(
+          { transcriptChannel, sessionKey: key, agentId: entry.agentId },
+          thread,
+          exceptIds
+        ),
+      fetchHistory: (thread, beforeId, integrationId) =>
+        this.readThreadForCoordinator(entry.agentId, channel, thread, beforeId, integrationId),
+      warn: (message) => this.log.warn(`coordinator ${key}: ${message}`)
+    })
     entry.coordinatorPrompt = renderCoordinatorBatch(
       messages.map((message) => {
         // A report reads as its session input does, header and guidance included.
@@ -15452,8 +15472,31 @@ export class Daemon {
         const mention = attachmentMention(message.msg.attachments)
         return coordinatorView(message, mention ? `${message.msg.text}\n${mention}`.trim() : message.msg.text)
       }),
-      { channelId: channel, ...(channelName ? { channelName } : {}), ...(entry.webchat ? { webchat: true } : {}) }
+      { channelId: channel, ...(channelName ? { channelName } : {}), ...(entry.webchat ? { webchat: true } : {}) },
+      threads
     )
+  }
+
+  /** A thread's history for a coordinator's batch, given up after a bounded wait so a slow provider read never holds the turn. */
+  private async readThreadForCoordinator(
+    agentId: string,
+    channel: string,
+    thread: string,
+    beforeId: string,
+    integrationId: string | undefined
+  ): Promise<{ sender: string; ts: string; text: string }[]> {
+    const read = this.fetchThreadHistory(agentId, channel, thread, beforeId, null, false, integrationId)
+    read.catch(() => {})
+    let timer: NodeJS.Timeout | undefined
+    const late = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('timed out')), COORDINATOR_THREAD_READ_MS)
+      timer.unref()
+    })
+    try {
+      return await Promise.race([read, late])
+    } finally {
+      clearTimeout(timer)
+    }
   }
 
   /** End a coordinator turn: settle the entries its batch took, then act on what it left undecided (§4.3, §4.5); a turn startup replays keeps every row and acts on nothing. */

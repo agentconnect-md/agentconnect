@@ -1490,7 +1490,10 @@ Work already in a Code channel continues there and keeps
 its repository, branch, diff and PR surfaces current; it never creates a second channel
 or delegates the same work merely because the original request was copied into it.
 Quick questions stay in their original conversation. In an Auto conversation on Slack, a task
-the coordinator opens for a message works in the message's thread. When its work calls for a Code
+the coordinator opens for a message works in the message's thread. A message in a thread the
+coordinator has been given nothing of, such as a mention part-way through someone else's thread,
+reaches it with what was said in that thread before, so it decides and answers about that thread
+rather than about its other work. When its work calls for a Code
 channel, the task makes one, says so in the thread, and holds the channel as one more of its
 threads; at the end of each run there the coordinator hears what the task did and may tell the
 thread that requested that channel, even when the task originally opened in another thread.
