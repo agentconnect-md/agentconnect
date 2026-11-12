@@ -15939,7 +15939,9 @@ export class Daemon {
         sender: agentId,
         admission: { agentId, sessionKey: session.key },
         kind: 'text',
-        text
+        text,
+        // A post in a thread is a message of that thread, not output of the turn: it counts as a reply there and leaves the roots view (webchat-threads.md §5.3).
+        ...(thread !== undefined ? { body: JSON.stringify({ threadPost: true } satisfies UserTurnBody) } : {})
       })
     } catch (err) {
       this.log.warn(`agent ${agentId}: its post ${posted} was not recorded: ${formatErr(err)}`)
