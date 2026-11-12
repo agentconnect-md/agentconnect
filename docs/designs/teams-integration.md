@@ -742,7 +742,7 @@ instead.
 ### 8.3 Connecting a tenant
 
 When the deployment app is configured, the Teams wizard leads with **Connect
-with Microsoft** and keeps **Register your own bot instead** one click away. A
+with Microsoft** and keeps **Use your own Teams bot instead** one click away. A
 per-agent install that pastes the deployment app's ID is refused
 (`MSTEAMS_DEPLOYMENT_APP`), and the deployment app's secret follows the Setup
 Server rather than a Console rotation. Connecting needs the agent's daemon to
