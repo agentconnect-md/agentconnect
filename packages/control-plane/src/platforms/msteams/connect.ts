@@ -359,7 +359,9 @@ const ProvisionTicket = z.object({
     agentId: z.string(),
     tenantId: z.string().regex(GUID),
     sponsorId: z.string().regex(GUID),
-    userId: z.string()
+    userId: z.string(),
+    // The sign-in followed the tenant-wide consent, which the agent's row records.
+    consented: z.boolean().optional()
   })
 })
 export type MsTeamsTicket = z.infer<typeof InstallTicket> | z.infer<typeof ProvisionTicket>

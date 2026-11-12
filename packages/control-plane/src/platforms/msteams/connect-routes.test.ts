@@ -84,6 +84,8 @@ async function harness(
     notAdmin?: boolean
     /** The account name Entra puts in the ID token. */
     username?: string
+    /** The organization's built-in agent, whose bot the deployment app's is. */
+    builtin?: AgentId
   } = {}
 ) {
   const graph: { method: string; url: string; body?: unknown }[] = []
@@ -233,6 +235,16 @@ async function harness(
       return true
     }
   )
+  const agentOf = (id: AgentId) => ({
+    id,
+    orgId: ORG,
+    name: 'helper',
+    displayName: opts.agentNames?.[id] ?? (id === AGENT ? 'Helper' : 'Reviewer'),
+    icon: null,
+    runtime: 'claude',
+    visibility: 'org',
+    builtin: id === opts.builtin
+  })
   const deps = {
     config: { PUBLIC_RELAY_URL: 'https://relay.example.test' },
     clock,
@@ -248,15 +260,8 @@ async function harness(
     },
     repos: {
       agent: {
-        get: async (_org: OrgId, id: AgentId) => ({
-          id,
-          orgId: ORG,
-          name: 'helper',
-          displayName: opts.agentNames?.[id] ?? 'Helper',
-          icon: null,
-          runtime: 'claude',
-          visibility: 'org'
-        })
+        get: async (_org: OrgId, id: AgentId) => agentOf(id),
+        list: async () => [AGENT, OTHER_AGENT].map(agentOf)
       },
       bot: {
         getByExternalIdentity: async (_platform: string, appId: string) => (appId === APP.appId ? held : agentBotRow),
@@ -624,14 +629,52 @@ describe('a deployment that makes agent bots (§8.6)', () => {
   })
 
   it('creates the blueprint’s principal at a tenant’s first connect, which stands without it', async () => {
-    const h = await harness({ agentBots: true, noPrincipal: true })
+    const h = await harness({ agentBots: true, noPrincipal: true, builtin: AGENT })
     expect((await h.callback(h.state({ agentBots: true, consented: true }))).statusCode).toBe(200)
     expect(h.order).toContain('principal')
     expect(h.create).toHaveBeenCalledWith(expect.objectContaining({ externalAppId: APP.appId }))
 
-    const refused = await harness({ agentBots: true, noPrincipal: true, principal: 403 })
+    const refused = await harness({ agentBots: true, noPrincipal: true, principal: 403, builtin: AGENT })
     expect((await refused.callback(refused.state({ agentBots: true, consented: true }))).statusCode).toBe(200)
     expect(refused.create).toHaveBeenCalledTimes(1)
+  })
+
+  it('gives the app’s bot to the built-in agent on the way, and the agent being connected a bot of its own', async () => {
+    // A tenant nobody connected, and an agent that is not the built-in one.
+    const h = await harness({ agentBots: true, builtin: OTHER_AGENT })
+    const first = await h.callback(h.state({ agentBots: true, consented: true }))
+    expect(first.statusCode, first.body).toBe(200)
+    expect(first.json()).toMatchObject({ agentId: AGENT, agentBot: true, teams: [] })
+    // The deployment app's row is the built-in agent's, with the consent on it and no team asked.
+    expect(h.create).toHaveBeenCalledTimes(1)
+    expect(h.create).toHaveBeenCalledWith(expect.objectContaining({ externalAppId: APP.appId }))
+    expect(h.integrationCreate).toHaveBeenCalledWith(expect.objectContaining({ agentId: OTHER_AGENT }))
+    expect(h.recorded).toContainEqual({ tenantConsent: expect.any(String) })
+    expect(h.graph.some((call) => call.url.includes('/me/joinedTeams'))).toBe(false)
+    const made = await h.post('/agent-bot', { ticket: first.json<{ ticket: string }>().ticket })
+    expect(made.statusCode, made.body).toBe(200)
+    expect(h.create).toHaveBeenCalledWith(expect.objectContaining({ externalAppId: IDENTITY }))
+
+    // An organization with no built-in agent leaves the app's bot unconnected, and the agent's own row records the consent.
+    const none = await harness({ agentBots: true })
+    const alone = await none.callback(none.state({ agentBots: true, consented: true }))
+    expect(alone.json()).toMatchObject({ agentBot: true })
+    expect(none.create).not.toHaveBeenCalled()
+    await none.post('/agent-bot', { ticket: alone.json<{ ticket: string }>().ticket })
+    expect(none.create).toHaveBeenCalledTimes(1)
+    expect(none.recorded).toContainEqual(expect.objectContaining({ tenantConsent: expect.any(String) }))
+
+    // Connecting the built-in agent itself is the app's own connect, with its teams.
+    const direct = await harness({ agentBots: true, builtin: AGENT })
+    const own = await direct.callback(direct.state({ agentBots: true, consented: true }))
+    expect(own.json()).not.toHaveProperty('agentBot')
+    expect(direct.create).toHaveBeenCalledWith(expect.objectContaining({ externalAppId: APP.appId }))
+
+    // A person who may not publish leaves the built-in agent for a later connect, and goes on.
+    const member = await harness({ agentBots: true, notAdmin: true, builtin: OTHER_AGENT })
+    const later = await member.callback(member.state({ agentBots: true, consented: true }))
+    expect(later.json()).toMatchObject({ agentBot: true })
+    expect(member.create).not.toHaveBeenCalled()
   })
 
   it('gives a further agent a bot of its own: the teams first, then the bot, its package and its row', async () => {
@@ -751,8 +794,8 @@ describe('a deployment that makes agent bots (§8.6)', () => {
     const res = await h.callback(h.state({ agentBots: true, consented: true }))
     expect(res.json()).toMatchObject({ agentBot: true })
     expect(h.create).not.toHaveBeenCalled()
-    // Another agent of the same tenant takes the app's bot, which is free.
-    const other = await harness({ agentBots: true, rows: [{ ...own, agentIds: [OTHER_AGENT] }] })
+    // The built-in agent of the same tenant takes the app's bot, which is free.
+    const other = await harness({ agentBots: true, builtin: AGENT, rows: [{ ...own, agentIds: [OTHER_AGENT] }] })
     expect((await other.callback(other.state({ agentBots: true, consented: true }))).json()).not.toHaveProperty(
       'agentBot'
     )
@@ -900,7 +943,7 @@ describe('a person who may not publish (§8.6.6)', () => {
 
   it('says an administrator has to connect first, and refuses a tenant another organization holds', async () => {
     // A tenant nobody connected: the first connect publishes the deployment's own app, which Microsoft refuses.
-    const unconnected = await harness({ agentBots: true, notAdmin: true })
+    const unconnected = await harness({ agentBots: true, notAdmin: true, builtin: AGENT })
     const first = await unconnected.callback(unconnected.state({ agentBots: true, consented: true }))
     expect(first.json()).toMatchObject({ code: 'MSTEAMS_CONNECT_NOT_ADMIN' })
     expect(unconnected.create).not.toHaveBeenCalled()

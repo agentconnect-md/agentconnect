@@ -1002,9 +1002,9 @@ Status: **proposed**. The provider behavior is **measured** end to end from one
 tenant acting on a second; the product change is not built.
 
 The deployment app's bot serves one agent per tenant (§8.2). This section gives
-each further agent in that tenant a bot of its own, with its own name, icon,
+every other agent in that tenant a bot of its own, with its own name, icon,
 mention and 1:1 chat, which the deployment creates and the organization never
-registers. The first agent keeps the deployment app's shared bot; Store
+registers. The deployment app's bot is the built-in agent's; Store
 installs (§8.4) and existing rows retain their identities. The additional
 administrator consent proposed in §8.6.5 is separate from that unchanged bot
 identity. A deployment that does not configure agent bots (§8.6.3) keeps the
@@ -1199,9 +1199,21 @@ bot was last given.
 A tenant still belongs to one organization (`MSTEAMS_TENANT_TAKEN`).
 `MSTEAMS_TENANT_IN_USE` goes away where agent bots are configured: an
 organization that already holds the tenant gets an agent bot for the next
-agent. The agent on the deployment app's bot is whichever was connected first,
-or the one a Store install connected (§8.4), and moves only by removing that
-integration.
+agent. The deployment app's bot is the organization's **built-in agent's**, as
+the deployment's apps on the other platforms are, so the app that carries the
+product's name answers as the agent that does. Connecting the built-in agent
+is the connect of §8.3. Connecting any other agent to a tenant that has no row
+of the app yet does that connect on the way, with the same sign-in: the app's
+package is published under the built-in agent's name and the tenant's row is
+installed on it, with no team asked, and the agent being connected then gets
+its own bot (§8.6.5). That step never holds the other agent back: where the
+organization has no built-in agent, the caller may not edit it, its daemon
+cannot run Teams, or Microsoft refuses the publish, it is left for a later
+connect and the tenant-wide consent is recorded on the agent's own row. An
+agent keeps the bot it already has on a reconnect, whichever kind it is; the
+bot of a Store install (§8.4) stays with the agent that install connected, and
+moves only by removing that integration. A deployment that makes no agent bots
+keeps one agent per tenant, whichever connects first.
 
 Teams lists every bot of the tenant in one mention picker and the catalog
 accepts duplicate names, so the Control Plane refuses a further agent whose
@@ -1515,7 +1527,7 @@ For agent bots (§8.6), once built:
 
 - An organization connects a second agent to a tenant; both appear in Teams
   under their own names, and a mention of one never starts a turn of the other.
-  The first agent's connect and a Store install behave as before.
+  The built-in agent's connect and a Store install behave as before.
 - A member with no administrator role adds a further agent: the entry shows
   **Waiting for approval** with its link, and after the approval the agent is
   installed into the team they picked without the member returning.
