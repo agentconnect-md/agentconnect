@@ -16,6 +16,7 @@ import { useConsoleData } from '@/lib/data-context'
 import { Icon } from '@/components/ui'
 import { AgentIconView } from '@/components/marks'
 import { channelListSemantics } from '@/components/console/platforms/registry'
+import { rowUrl, type ConversationLinkBot } from '@/components/console/place-link'
 import {
   ChannelSettingsPopover,
   type ChannelSettingsGroup,
@@ -402,24 +403,6 @@ export const roomGlyph = (kind: IntegrationChannelRow['kind'], platform?: string
  *  a module that declares none leaves the host printing the name. Exported for the same host. */
 export const rowName = (kind: IntegrationChannelRow['kind'], platform?: string) =>
   isDirectConversation(kind) ? undefined : channelListSemantics(platform).RowName
-
-/** The bot fields a conversation link can depend on. */
-type ConversationLinkBot = { workspaceId?: string | null; feishuRegion?: 'feishu' | 'lark' | null }
-
-/** The page the row opens on the platform: the one its daemon reported, else the one its module builds from the row's ids. */
-export const rowUrl = (
-  c: IntegrationChannelRow,
-  platform: string | undefined,
-  bot: ConversationLinkBot | undefined
-): string | undefined =>
-  c.url ??
-  channelListSemantics(platform).conversationUrl?.({
-    channelId: c.channelId,
-    ...(c.spaceId ? { spaceId: c.spaceId } : {}),
-    ...(c.kind ? { kind: c.kind } : {}),
-    workspaceId: bot?.workspaceId ?? null,
-    feishuRegion: bot?.feishuRegion ?? null
-  })
 
 /** A row's printed name: the module's own rendering where it has one, else the name, linked to the conversation when there is a page to open. */
 export function ConversationName({

@@ -613,14 +613,17 @@ export interface WebChannelListSemantics {
   RowName?: ComponentType<{ name: string; channelKey?: string; url?: string }>
   /** The page a conversation opens on the platform, built from ids its row and bot already carry; a row's own reported `url` wins. Absent ⇒ no link. */
   conversationUrl?(row: ConversationLinkInput): string | undefined
+  /** The page one thread of a conversation opens, where the platform links a thread it does not draw as a {@link WebThreadShape}. Absent ⇒ the conversation's. */
+  threadUrl?(input: ThreadLinkInput): string | undefined
 }
 
 /** What a conversation link is built from: the row's platform ids plus its bot's workspace and cloud. */
 export interface ConversationLinkInput {
   channelId: string
   spaceId?: string
-  kind?: 'channel' | 'im' | 'mpim'
-  /** The bot's platform workspace — Slack's "T…" team id. */
+  /** Absent ⇒ a room, as a row says it; 'unknown' ⇒ no row tells, so a page that depends on the kind is not built. */
+  kind?: 'channel' | 'im' | 'mpim' | 'unknown'
+  /** The bot's platform workspace — Slack's "T…" team id, a Teams bot's Microsoft 365 tenant. */
   workspaceId?: string | null
   feishuRegion?: 'feishu' | 'lark' | null
 }
@@ -635,7 +638,7 @@ export interface WebThreadShape {
   continuesInThread?: true
 }
 
-/** What a thread link is built from: the conversation's channel, its workspace (Slack's "T…" team id) and the root's id. */
+/** What a thread link is built from: the conversation's channel, its workspace (as {@link ConversationLinkInput.workspaceId}) and the root's id. */
 export interface ThreadLinkInput {
   channelId: string
   workspaceId?: string | null

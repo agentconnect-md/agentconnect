@@ -63,7 +63,7 @@ export const feishuModule: WebPlatformModule<FeishuApi> = {
     leave: 'none',
     // AppLink opens a group by its chat id on the bot's own cloud; a DM opens by user, which the row lacks.
     conversationUrl: ({ channelId, kind, feishuRegion }) =>
-      kind === 'im'
+      kind === 'im' || kind === 'unknown'
         ? undefined
         : `${feishuAppLinkOrigin(feishuRegionOf({ feishuRegion }))}/client/chat/open?openChatId=${encodeURIComponent(channelId)}`
   },

@@ -19,7 +19,7 @@ export const GOOGLE_CHAT_CHANNEL_LIST: WebChannelListSemantics = {
   mentionHint: { key: 'googlechatMentionHint' },
   // A row's id is the space's resource name; Chat opens a DM under /dm and every other space under /room.
   conversationUrl: ({ channelId, kind }) => {
-    const id = /^spaces\/([^/]+)$/.exec(channelId)?.[1]
+    const id = kind === 'unknown' ? undefined : /^spaces\/([^/]+)$/.exec(channelId)?.[1]
     return id ? `https://chat.google.com/${kind === 'im' ? 'dm' : 'room'}/${encodeURIComponent(id)}` : undefined
   }
 }

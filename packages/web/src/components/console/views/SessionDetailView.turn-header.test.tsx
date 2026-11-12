@@ -87,6 +87,8 @@ vi.mock('@/lib/data-context', () => ({
     getSessions: () => [session],
     sessionsLoading: false,
     crons: [],
+    integrations: [],
+    bots: [],
     daemons: [],
     members: [],
     sessionActivityVersionById: {},

@@ -164,6 +164,7 @@ import {
   type TasksPanelVerdict
 } from '@/components/console/dock/TasksPanel'
 import { ThreadPanel } from '@/components/console/dock/ThreadPanel'
+import { sessionPlaceLink } from '@/components/console/place-link'
 import { RunningCommandsDock } from '@/components/console/RunningCommandsDock'
 import { StateIcon, sessionState } from '@/components/console/StateIcon'
 import { TaskBrief } from '@/components/console/TaskBrief'
@@ -985,6 +986,8 @@ export default function SessionDetailView() {
     getSessions,
     sessionsLoading,
     crons,
+    integrations,
+    bots,
     daemons,
     memberSets,
     orgSetIds,
@@ -2407,6 +2410,30 @@ export default function SessionDetailView() {
   const sessionIntegration = sessionPlatform(session)
   // Header channel chip — resolves a headless `cron:<id>` channel to its schedule.
   const channelDisplay = sessionChannelDisplay(session, (id) => crons.find((c) => c.id === id)?.name)
+  // What the chip opens: the session's thread on its platform, else the conversation it runs in.
+  const placeChannelId = currentSessionDetail?.channel ?? session.channelId
+  const placeLink = sessionPlaceLink(
+    {
+      platform: sessionIntegration,
+      channelId: placeChannelId,
+      thread: currentSessionDetail?.thread,
+      threadUrl: session.threadUrl,
+      workspaceId: currentSessionDetail?.tenantScope,
+      feishuRegion: currentSessionDetail?.feishuRegion,
+      agentId: session.agentId
+    },
+    { integrations, bots }
+  )
+  // A schedule's own run has no conversation; its chip opens the schedule.
+  const placeCronId = session.channel.startsWith('cron:') ? session.channel.slice('cron:'.length) : undefined
+  const placeChip = (
+    <>
+      <span className="imark h-[14px] w-[14px] flex-none rounded-xs">
+        <PlatformMark platform={channelDisplay.platform} />
+      </span>
+      <span className="truncate">{channelDisplay.label}</span>
+    </>
+  )
   const usesIntegrationAvatar = session.platform === 'hook' && sessionIntegration === 'github'
   // A task's thread is no platform thread, so only a delegated task the server lets this caller continue takes messages, console-only (auto-session-mode.md §10).
   const readOnlySubsession = taskPage && composerDetail?.canContinue !== true
@@ -3667,26 +3694,33 @@ export default function SessionDetailView() {
                     </span>
                   )
                 ) : null}
-                {session.threadUrl ? (
+                {placeLink ? (
                   <a
-                    data-header-place=""
+                    data-header-place={placeLink.opens}
                     className={HEADER_CHIP_LINK}
-                    href={session.threadUrl}
+                    href={placeLink.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    title={`Open the ${platName(sessionIntegration)} thread`}
+                    title={
+                      placeLink.opens === 'thread'
+                        ? t('openThreadIn', { platform: platName(sessionIntegration) })
+                        : t('openPlaceIn', { place: channelDisplay.label, platform: platName(sessionIntegration) })
+                    }
                   >
-                    <span className="imark h-[14px] w-[14px] flex-none rounded-xs">
-                      <PlatformMark platform={channelDisplay.platform} />
-                    </span>
-                    <span className="truncate">{channelDisplay.label}</span>
+                    {placeChip}
                   </a>
+                ) : placeCronId ? (
+                  <Link
+                    data-header-place="schedule"
+                    className={HEADER_CHIP_LINK}
+                    href={orgPath(`/crons/${encodeURIComponent(placeCronId)}`)}
+                    title={t('openSchedule', { name: channelDisplay.label })}
+                  >
+                    {placeChip}
+                  </Link>
                 ) : (
                   <span data-header-place="" className={HEADER_CHIP}>
-                    <span className="imark h-[14px] w-[14px] flex-none rounded-xs">
-                      <PlatformMark platform={channelDisplay.platform} />
-                    </span>
-                    <span className="truncate">{channelDisplay.label}</span>
+                    {placeChip}
                   </span>
                 )}
               </div>
