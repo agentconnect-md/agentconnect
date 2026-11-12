@@ -781,6 +781,8 @@ advertise `msteams-relay-egress-v1` (§8.5); an older daemon is refused with
    holds for another agent is refused (`MSTEAMS_TENANT_IN_USE`) until that
    integration is removed. Otherwise the Control Plane writes or reuses the
    customer row, installs it on the agent, and syncs the relay assignment.
+   The integration is named as a Slack one is: the bot's name in Teams, then
+   the Microsoft 365 organization's name in parentheses.
 4. **The catalog.** It builds the package of §5 from the row and publishes it
    to the tenant's organization catalog, or adds an app definition when the
    catalog already holds the app's external ID, so a reconnect updates it.
@@ -1255,8 +1257,18 @@ The administrator's flow of §8.3 with these differences:
    by a key derived from the agent and the tenant so that a retry finds them.
 5. **The proof**: a Bot Connector token for the identity, which shows the
    principal, the identity and the blueprint's secret working together.
-6. **The row and the catalog**, as §8.3 steps 3 and 4, with the agent bot's
-   package, and the app added for the person who connected it.
+6. **The catalog.** A new agent bot's package is **submitted** for review, by
+   an administrator as by anyone else, and waits as §8.6.6 describes until an
+   administrator publishes it in the Teams admin center. Graph's direct
+   publish of a new blueprint-associated package left the app without
+   availability: the admin center listed it as installed for and available to
+   nobody, could not read its installs, offered no way to set availability,
+   and an uploaded new version did not change that; Teams never offered it
+   for a mention (**measured** three times). The same package submitted and
+   then published in the admin center was available to everyone and joined a
+   team by mention (**measured**). A connect of an agent that already has its
+   bot publishes the new definition directly, as the deployment app's own
+   update does, and only an administrator's connect may.
 
 There is no team step: Graph refuses the deployment app a team install of this
 package (§8.6.2). The connect page ends by saying to mention the agent in a
@@ -1300,16 +1312,19 @@ resumes from what the key and the tenant already hold.
 Once an administrator has connected the tenant, a member who is not one can
 add a further agent. Before that, Entra refuses the member's sign-in (§8.6.2)
 and the connect page says, as today, that an administrator has to connect
-first. A member cannot publish: Graph answers a catalog publish from a person
-without the administrator role with 403 even where `AppCatalog.ReadWrite.All`
-is consented tenant-wide (**measured**), so the member's package is submitted
-for review.
+first. A member cannot publish either: Graph answers a catalog publish from a
+person without the administrator role with 403 even where
+`AppCatalog.ReadWrite.All` is consented tenant-wide (**measured**). Every new
+agent bot's package is submitted for review anyway (§8.6.5 step 6), so this
+section is the path of every new agent bot, an administrator's included. A
+submission needs a row of the tenant that the organization already holds; an
+organization whose built-in agent could not be connected on the way answers
+`MSTEAMS_TENANT_NOT_CONNECTED`.
 
 There is **one way in**. The Console does not ask who the person is: everyone
 uses **Connect with Microsoft** and signs in with the scopes of §8.6.5, which
 the tenant-wide consent already covers for every member. The flow is the
-administrator's up to the publish, and Microsoft's answer to that call decides
-the rest.
+administrator's up to the catalog step, which submits.
 
 1. **Sign-in**, as §8.6.5 step 1, with `offline_access` among the scopes so
    that a submission can wait. A person whose account is of another tenant
@@ -1323,9 +1338,9 @@ the rest.
    signed-in person as the identity's sponsor. A tenant with no principal of
    the blueprint cannot get one from a member, and answers that agent bots are
    unavailable there.
-3. **Publish, or submit.** The publish is tried. Refused with 403, the same
-   package goes to the catalog as `submitted` instead, unless the agent
-   already has its bot, which only an administrator's connect updates.
+3. **Submit.** The package goes to the catalog as `submitted`. An agent that
+   already has its bot is not submitted again: its update is published
+   directly, which only an administrator's connect may do.
 4. **The pending request.** An approval can come days later, long after the
    member closed the page, so the Control Plane stores the request: the agent,
    the tenant, the catalog app, and the member's **refresh token**, sealed in
@@ -1337,8 +1352,9 @@ the rest.
    agent's integrations are listed. It says that a Teams administrator of the
    tenant must approve the agent and that Microsoft does not notify them, and
    carries a link to **the pending app's own page** in the Teams admin center,
-   where **Publish** approves it, for the member to send or an administrator
-   to follow. The Console offers no approval of its own: publishing the
+   where **Publish** approves it, for an administrator to follow, and a
+   **Copy link** beside it for a person who cannot open the admin center to
+   send to one. The Console offers no approval of its own: publishing the
    definition through Graph leaves an app nobody can add (§8.6.2). **Check
    again** and **Cancel request** sit beside the link.
 6. **Detecting the approval.** A background loop redeems the stored token and

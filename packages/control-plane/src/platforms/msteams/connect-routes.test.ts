@@ -12,7 +12,6 @@ import { memoryMsTeamsAgentBotRequestStore } from '../../../test/fakes/msteams-a
 import { MsTeamsAgentBotRequests } from './agent-bot-requests.js'
 import { mintMsTeamsConnectState, msTeamsConnectKeys } from './connect.js'
 import { msTeamsConnectRoutes } from './connect-routes.js'
-import { msTeamsAgentBotKey } from './agent-bots.js'
 import { msTeamsPackageId } from './app-package.js'
 import { MSTEAMS_DEPLOYMENT_SECRET_MARKER, type MsTeamsAgentBots, type MsTeamsPlatformApp } from './deployment-app.js'
 
@@ -346,7 +345,8 @@ async function harness(
     callback,
     state,
     post,
-    requestRows: requestStore.rows
+    requestRows: requestStore.rows,
+    rows
   }
 }
 
@@ -399,7 +399,7 @@ describe('the deployment Teams app routes', () => {
         platform: 'msteams',
         transport: 'http',
         prebuilt: true,
-        name: 'Microsoft Teams · Example Org',
+        name: 'Helper (Example Org)',
         externalAppId: APP.appId,
         platformConfig: { tenantId: CUSTOMER, tokenTenantId: APP.tenantId, appOwner: 'deployment' }
       })
@@ -546,7 +546,7 @@ describe('the deployment Teams app routes', () => {
   it('names the row after the tenant when Graph answers no organization name', async () => {
     const h = await harness({ organization: null })
     expect((await h.callback()).statusCode).toBe(200)
-    expect(h.create).toHaveBeenCalledWith(expect.objectContaining({ name: `Microsoft Teams · ${CUSTOMER}` }))
+    expect(h.create).toHaveBeenCalledWith(expect.objectContaining({ name: `Helper (${CUSTOMER})` }))
   })
 
   it('refuses a personal Microsoft account', async () => {
@@ -645,18 +645,27 @@ describe('a deployment that makes agent bots (§8.6)', () => {
     expect(h.integrationCreate).toHaveBeenCalledWith(expect.objectContaining({ agentId: OTHER_AGENT }))
     expect(h.recorded).toContainEqual({ tenantConsent: expect.any(String) })
     expect(h.graph.some((call) => call.url.includes('/me/joinedTeams'))).toBe(false)
+    // The built-in agent's row now holds the tenant, and the agent's own new package waits for an administrator.
+    h.rows.push({
+      orgId: ORG,
+      platform: 'msteams',
+      externalAppId: APP.appId,
+      externalTenantId: CUSTOMER,
+      agentIds: [OTHER_AGENT],
+      platformConfig: { appOwner: 'deployment' }
+    } as unknown as BotRecord)
     const made = await h.post('/agent-bot', { ticket: first.json<{ ticket: string }>().ticket })
     expect(made.statusCode, made.body).toBe(200)
-    expect(h.create).toHaveBeenCalledWith(expect.objectContaining({ externalAppId: IDENTITY }))
+    expect(made.json()).toMatchObject({ agentBot: true, request: { agentId: AGENT, status: 'pending' } })
+    expect(h.create).toHaveBeenCalledTimes(1)
 
-    // An organization with no built-in agent leaves the app's bot unconnected, and the agent's own row records the consent.
+    // An organization with no built-in agent has nothing that holds the tenant, so its agent cannot wait on a submission.
     const none = await harness({ agentBots: true })
     const alone = await none.callback(none.state({ agentBots: true, consented: true }))
     expect(alone.json()).toMatchObject({ agentBot: true })
+    const unheld = await none.post('/agent-bot', { ticket: alone.json<{ ticket: string }>().ticket })
+    expect(unheld.json()).toMatchObject({ code: 'MSTEAMS_TENANT_NOT_CONNECTED' })
     expect(none.create).not.toHaveBeenCalled()
-    await none.post('/agent-bot', { ticket: alone.json<{ ticket: string }>().ticket })
-    expect(none.create).toHaveBeenCalledTimes(1)
-    expect(none.recorded).toContainEqual(expect.objectContaining({ tenantConsent: expect.any(String) }))
 
     // Connecting the built-in agent itself is the app's own connect, with its teams.
     const direct = await harness({ agentBots: true, builtin: AGENT })
@@ -671,7 +680,7 @@ describe('a deployment that makes agent bots (§8.6)', () => {
     expect(member.create).not.toHaveBeenCalled()
   })
 
-  it('gives a further agent a bot of its own: the teams first, then the bot, its package and its row', async () => {
+  it('gives a further agent a bot of its own and submits its new package for an administrator to publish', async () => {
     const h = await further({ noPrincipal: true })
     const first = await h.callback(h.state({ agentBots: true, consented: true }))
     expect(first.statusCode).toBe(200)
@@ -690,12 +699,18 @@ describe('a deployment that makes agent bots (§8.6)', () => {
     expect(h.create).not.toHaveBeenCalled()
 
     const made = await h.post('/agent-bot', { ticket: first.json<{ ticket: string }>().ticket })
-    expect(made.statusCode).toBe(200)
-    expect(made.json()).toMatchObject({ agentId: AGENT, store: false, teams: [] })
+    expect(made.statusCode, made.body).toBe(200)
+    // Graph's direct publish of a new agent bot leaves it unavailable, so even an administrator's package is submitted (§8.6.5).
+    expect(made.json()).toMatchObject({
+      agentId: AGENT,
+      store: false,
+      teams: [],
+      request: { status: 'pending', adminCenterUrl: 'https://admin.teams.microsoft.com/policies/manage-apps/catalog-1' }
+    })
     expect(made.json()).not.toHaveProperty('ticket')
-    expect(typeof made.json<{ integrationId: string }>().integrationId).toBe('string')
-    // The principal, the identity, the registration and its channel, the proof, then the catalog, the row, its package, and the app for the person who connected it.
-    expect(h.order.slice(1)).toEqual([
+    expect(made.json()).not.toHaveProperty('integrationId')
+    // The principal, the identity, the registration and its channel, the proof, then the submission; the row waits for the publish.
+    expect(h.order.slice(1, 10)).toEqual([
       `token ${AGENT_BOTS.blueprintId}`,
       'principal',
       `token ${AGENT_BOTS.blueprintId}`,
@@ -704,40 +719,17 @@ describe('a deployment that makes agent bots (§8.6)', () => {
       'registration',
       'channel',
       `token ${AGENT_BOTS.blueprintId}`,
-      `token ${IDENTITY}`,
-      'publish',
-      'create',
-      'record',
-      'personal'
+      `token ${IDENTITY}`
     ])
-    expect(h.graph.at(-1)).toMatchObject({
-      method: 'POST',
-      url: `https://graph.microsoft.com/v1.0/users/${SPONSOR}/teamwork/installedApps`
-    })
-    // A refused personal install leaves the connect as it is.
-    const refused = await further({ personal: 403 })
-    const again = await refused.callback(refused.state({ agentBots: true, consented: true }))
-    expect((await refused.post('/agent-bot', { ticket: again.json<{ ticket: string }>().ticket })).statusCode).toBe(200)
-    const key = msTeamsAgentBotKey(AGENT, CUSTOMER)
-    expect(h.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        orgId: ORG,
-        prebuilt: true,
-        externalAppId: IDENTITY,
-        platformConfig: {
-          tenantId: CUSTOMER,
-          tokenTenantId: CUSTOMER,
-          appOwner: 'deployment',
-          agentBotBlueprintId: AGENT_BOTS.blueprintId,
-          agentBotResourceName: `acbot-${key}`
-        }
-      })
+    expect(h.order).not.toContain('create')
+    expect(h.order).not.toContain('personal')
+    expect(h.graph.some((call) => call.method === 'POST' && call.url.endsWith('teamsApps?requiresReview=true'))).toBe(
+      true
     )
-    expect(h.put).toHaveBeenCalledWith(ORG, expect.anything(), {
-      botToken: MSTEAMS_DEPLOYMENT_SECRET_MARKER,
-      appToken: null,
-      signingSecret: null
-    })
+    expect(h.graph.some((call) => call.url.includes('requiresReview=false'))).toBe(false)
+    expect([...h.requestRows.values()]).toEqual([
+      expect.objectContaining({ agentId: AGENT, identity: IDENTITY, catalogAppId: 'catalog-1', sponsorId: SPONSOR })
+    ])
     // The identity is created with the signed-in administrator as its sponsor, and the package is named by the identity.
     const identity = h.graph.find((call) => call.url.endsWith('microsoft.graph.agentIdentity'))!
     expect(JSON.parse(String(identity.body))['sponsors@odata.bind']).toEqual([
@@ -746,7 +738,7 @@ describe('a deployment that makes agent bots (§8.6)', () => {
     expect(
       h.graph.some((call) => decodeURIComponent(call.url).includes(`externalId eq '${msTeamsPackageId(IDENTITY)}'`))
     ).toBe(true)
-    // The published package names the identity as its bot and the blueprint as its consent app (§8.6.1).
+    // The submitted package names the identity as its bot and the blueprint as its consent app (§8.6.1).
     const published = h.graph.find(
       (call) => call.method === 'POST' && call.url.split('?')[0]!.endsWith('/appCatalogs/teamsApps')
     )!
@@ -893,7 +885,7 @@ describe('a person who may not publish (§8.6.6)', () => {
     expect(first.body).not.toContain('member-refresh')
   })
 
-  it('submits the package when Microsoft refuses the publish, and stores the request with the sign-in sealed away from every answer', async () => {
+  it('submits the package, and stores the request with the sign-in sealed away from every answer', async () => {
     const h = await connected()
     const made = await ask(h)
     expect(made.statusCode, made.body).toBe(200)
@@ -911,10 +903,10 @@ describe('a person who may not publish (§8.6.6)', () => {
       }
     })
     expect(made.json()).not.toHaveProperty('integrationId')
-    // The identity and its registration are made, the publish is refused, the package is submitted for review, and no row is written.
+    // The identity and its registration are made, the package is submitted for review with no publish tried, and no row is written.
     expect(h.order).toContain('identity')
     expect(h.order).toContain('registration')
-    expect(h.order).toContain('publish refused')
+    expect(h.order).not.toContain('publish refused')
     expect(h.graph.some((call) => call.method === 'POST' && call.url.endsWith('teamsApps?requiresReview=true'))).toBe(
       true
     )
@@ -928,7 +920,7 @@ describe('a person who may not publish (§8.6.6)', () => {
       teamIds: [],
       refreshToken: 'member-refresh',
       sponsorId: SPONSOR,
-      botName: 'Microsoft Teams · Example Org'
+      botName: 'Helper (Example Org)'
     })
     for (const body of [made.body, (await requestsOf(h)).body]) expect(body).not.toContain('member-refresh')
     expect((await requestsOf(h)).json<{ requests: unknown[] }>().requests).toHaveLength(1)

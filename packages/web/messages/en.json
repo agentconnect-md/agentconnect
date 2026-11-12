@@ -1577,10 +1577,12 @@
       },
       "request": {
         "title": "Waiting for approval",
-        "pending": "You cannot publish apps for your Microsoft 365 organization, so a Teams administrator has to publish this agent’s app. Send them the link below; you do not need to keep this page open.",
+        "pending": "A Teams administrator publishes this agent’s app in the Teams admin center. If you are one, open the app below and choose Publish; otherwise copy the link and send it to one. You do not need to keep this page open.",
         "needs_sign_in": "Your Microsoft sign-in stopped working before the app was approved. Start connecting again from the agent’s integrations to carry on.",
         "rejected": "The agent’s app was turned down or removed. Cancel the request from the agent’s integrations, then ask again.",
         "openAdmin": "Open the app in Teams admin center",
+        "copyLink": "Copy link",
+        "copied": "Copied",
         "check": "Check again",
         "checking": "Checking…"
       }
@@ -7063,12 +7065,15 @@
       "deployment": {
         "connect": "Connect with Microsoft",
         "connecting": "Opening Microsoft…",
-        "next": "Sign in with your Microsoft 365 account. An administrator’s sign-in adds the agent’s app to your organization’s apps at once; anyone else’s sends it to a Teams administrator to publish.",
+        "next": "Sign in with your Microsoft 365 account. The agent gets a Teams app of its own, which a Teams administrator then publishes in the Teams admin center.",
+        "nextBuiltin": "A Teams or Global administrator of your Microsoft 365 organization signs in. The app is then added to your organization’s apps.",
         "useOwn": "Use your own Teams bot instead",
-        "requestWaiting": "Waiting for a Teams administrator to approve this agent’s app.",
+        "requestWaiting": "Waiting for a Teams administrator to publish this agent’s app.",
         "requestNeedsSignIn": "Your Microsoft sign-in stopped working. Request again to carry on.",
         "requestRejected": "The agent’s app was turned down or removed.",
         "requestOpenAdmin": "The app in Teams admin center",
+        "requestCopyLink": "Copy link",
+        "requestCopied": "Copied",
         "requestCheck": "Check again",
         "requestCancel": "Cancel request"
       }
