@@ -309,7 +309,10 @@ export function createMsTeamsIngressPlugin(deps: MsTeamsIngressPluginDeps = {}):
         })
       if (added || joined) return {}
       // Typing, reactions, edits, deletes, installs and other roster changes start nothing on the relay (§4.2).
-      if (activity.type !== 'message') return {}
+      if (activity.type !== 'message') {
+        host.log.info(`relay-ingress(${botId}): Teams ${String(activity.type)} activity not forwarded`)
+        return {}
+      }
       const result = normalizeMsTeamsActivity(activity, {
         appId: ingest.appId,
         tenantId: ingest.tenantId,
