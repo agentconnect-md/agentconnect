@@ -23,6 +23,7 @@ export const MOCKING_TESTS = [
   'test/skill-install-bulk-publish.test.ts',
   'test/skill-workspace-mutator.test.ts',
   'test/telegram-connection.test.ts',
+  'test/wecom-reconciler.test.ts',
   'test/workspace-git.test.ts',
   'test/workspace.test.ts'
 ]
