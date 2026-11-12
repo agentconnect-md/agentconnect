@@ -148,7 +148,8 @@ export default function MsTeamsConnect() {
         }
         if (connected.member) {
           setOwnBot(true)
-          setPhase('teams')
+          // A renewed sign-in whose request finished meanwhile carries neither a request nor a ticket.
+          setPhase(connected.ticket ? 'teams' : 'done')
           return
         }
         // Making the bot takes up to a minute; the page waits for it and has nothing to choose.
@@ -226,8 +227,11 @@ export default function MsTeamsConnect() {
       const checked = await checkMsTeamsAgentBotRequest(orgId, request.id)
       if (checked.integrationId) setPhase('done')
       else if (checked.request) setRequest(checked.request)
+      // The request is gone: a background check finished it, or someone cancelled it. The agent's page shows which.
+      else window.location.assign(agentHref)
     } catch (e) {
-      fail(e)
+      if (e instanceof ApiError && e.status === 404) window.location.assign(agentHref)
+      else fail(e)
     } finally {
       setChecking(false)
     }

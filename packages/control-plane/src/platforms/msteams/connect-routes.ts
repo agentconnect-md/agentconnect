@@ -193,7 +193,7 @@ const CallbackDto = z.object({
       'True for a member’s sign-in: the ticket goes to the request step, and the package then waits for the administrator’s approval.'
     ),
   request: RequestDto.optional().describe(
-    'The agent’s open request, which this sign-in renewed after its stored sign-in had stopped working.'
+    'The agent’s open request, which this sign-in renewed after its stored sign-in had stopped working; absent, with no ticket, once the request finished.'
   ),
   teams: z
     .array(
@@ -545,8 +545,17 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
             )
             if (open) {
               await deps.repos.msTeamsAgentBotRequest.resume(orgId, open.id, refreshToken, new Date(deps.clock.now()))
+              // A package approved while the sign-in was stopped is finished here, not left for the next background check.
+              const checked = await seams.requests.check(orgId, open.id)
               const resumed = await deps.repos.msTeamsAgentBotRequest.get(orgId, open.id)
-              return { agentId: target.id, member: true, teams: [], store: false, request: requestDto(resumed ?? open) }
+              return {
+                agentId: target.id,
+                member: true,
+                teams: [],
+                store: false,
+                ...(checked.outcome === 'installed' ? { integrationId: checked.integrationId } : {}),
+                ...(resumed ? { request: requestDto(resumed) } : {})
+              }
             }
             if (before.some((row) => !!msTeamsAgentBotOf(row) && row.agentIds.includes(target.id)))
               return refuse(reply, 409, 'MSTEAMS_AGENT_ALREADY_CONNECTED', ALREADY_CONNECTED_MESSAGE)

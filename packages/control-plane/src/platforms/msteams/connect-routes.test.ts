@@ -949,7 +949,23 @@ describe('a member who is not an administrator (§8.6.6)', () => {
     const again = await signIn(h)
     expect(again.json()).toMatchObject({ member: true, request: { id, status: 'pending', reason: null } })
     expect(again.json()).not.toHaveProperty('ticket')
-    expect(h.requestRows.get(id)).toMatchObject({ refreshToken: 'member-refresh', status: 'pending' })
+    // The renewed sign-in is checked at once, which stores the token Entra issued in exchange.
+    expect(h.requestRows.get(id)).toMatchObject({ status: 'pending' })
+    expect(h.requestRows.get(id)!.refreshToken).toBeTruthy()
+  })
+
+  it('finishes a request approved while its sign-in was stopped, on the member’s new sign-in', async () => {
+    const h = await connected({ packageStates: ['published'] })
+    const ticket = (await signIn(h)).json<{ ticket: string }>().ticket
+    const id = (await h.post('/request', { ticket })).json<{ id: string }>().id
+    Object.assign(h.requestRows.get(id)!, { status: 'needs_sign_in', reason: 'sign_in_expired', refreshToken: null })
+    const again = await signIn(h)
+    expect(again.statusCode, again.body).toBe(200)
+    expect(typeof again.json<{ integrationId: string }>().integrationId).toBe('string')
+    expect(again.json()).toMatchObject({ member: true })
+    expect(again.json()).not.toHaveProperty('request')
+    expect(again.json()).not.toHaveProperty('ticket')
+    expect(h.requestRows.size).toBe(0)
   })
 
   it('takes a member’s ticket only at the request step', async () => {
