@@ -175,7 +175,7 @@ describe('MsTeamsWizardBody with the deployment app', () => {
     await act(async () => buttonWith('Connect with Microsoft')?.click())
     expect(mocks.connect).toHaveBeenCalledWith('org-a', 'agent-a', undefined, false)
     expect(assign).toHaveBeenCalledWith('https://login.microsoftonline.com/organizations/x')
-    await act(async () => buttonWith('Register your own bot instead')?.click())
+    await act(async () => buttonWith('Use your own Teams bot instead')?.click())
     expect(text()).toContain('Open Teams Developer Portal')
     vi.unstubAllGlobals()
   })
