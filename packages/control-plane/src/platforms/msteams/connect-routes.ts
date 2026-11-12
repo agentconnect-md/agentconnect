@@ -59,7 +59,7 @@ import {
   upgradeMsTeamsInstalls,
   verifyMsTeamsConnectState,
   type MsTeamsConnectKeys,
-  installMsTeamsAppForUser
+  installMsTeamsAppForUserEventually
 } from './connect.js'
 import {
   MSTEAMS_DEPLOYMENT_OWNER,
@@ -81,6 +81,8 @@ export interface MsTeamsConnectSeams {
   agentBots?: MsTeamsAgentBots
   /** The wait between tries while a new principal or identity settles; tests pass one that does not sleep. */
   agentBotWait?: (ms: number) => Promise<void>
+  /** The wait between tries of adding a new app for the person who connected it; tests pass one that does not sleep. */
+  personalInstallWait?: (ms: number) => Promise<void>
   /** Members' pending requests (§8.6.6), built with the same app and blueprint; absent ⇒ no member flow. */
   requests?: MsTeamsAgentBotRequests
   keys: MsTeamsConnectKeys
@@ -90,6 +92,9 @@ export interface MsTeamsConnectSeams {
   webAppUrl?: string
   fetch?: typeof fetch
 }
+
+// A wait that does not hold the process open on shutdown.
+const sleepUnref = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms).unref())
 
 /** The Console page the deployment app's registration lists as a Web redirect URI. */
 export function msTeamsConnectRedirectUri(webAppUrl: string): string {
@@ -913,14 +918,21 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
             }
           })
           await deps.repos.bot.mergeBotIdentity(orgId, botId, () => ({ platformConfig: { appPackage } }))
-          // The person who connects the agent gets its app themselves, so their Teams client lists it at once.
-          const detail = await installMsTeamsAppForUser(fetchImpl, accessToken, {
-            userId: sponsorId,
-            catalogAppId,
-            permissions: MSTEAMS_RSC_PERMISSIONS
-          })
-          if (detail)
-            req.log.warn({ integrationId, detail }, 'msteams: agent bot not added for the person who connected it')
+          // The person who connects the agent gets its app themselves; Microsoft refuses a just-published app for some minutes, so the tries go on after the answer.
+          const log = req.log
+          void installMsTeamsAppForUserEventually(
+            fetchImpl,
+            accessToken,
+            { userId: sponsorId, catalogAppId, permissions: MSTEAMS_RSC_PERMISSIONS },
+            seams.personalInstallWait ?? sleepUnref
+          )
+            .then((detail) => {
+              if (detail)
+                log.warn({ integrationId, detail }, 'msteams: agent bot not added for the person who connected it')
+            })
+            .catch((err: unknown) =>
+              log.warn({ integrationId, err }, 'msteams: adding the agent bot for its person failed')
+            )
           return {
             integrationId,
             agentId: target.id,

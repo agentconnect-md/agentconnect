@@ -16,7 +16,7 @@ import {
 import { MSTEAMS_RSC_PERMISSIONS } from './app-package.js'
 import {
   MsTeamsConnectError,
-  installMsTeamsAppForUser,
+  installMsTeamsAppForUserEventually,
   probeMsTeamsPackageForUser,
   readMsTeamsPackageState,
   redeemMsTeamsRefreshToken,
@@ -59,6 +59,8 @@ export interface MsTeamsAgentBotRequestsDeps {
   fetch?: typeof fetch
   /** The wait between tries while a new identity settles; tests pass one that does not sleep. */
   wait?: (ms: number) => Promise<void>
+  /** The wait between tries of adding a just-approved app for its member; tests pass one that does not sleep. */
+  personalInstallWait?: (ms: number) => Promise<void>
   log: { info(obj: object, msg: string): void; warn(obj: object, msg: string): void }
 }
 
@@ -196,12 +198,21 @@ export class MsTeamsAgentBotRequests {
     const { http } = this.deps
     const agent = await http.repos.agent.get(request.orgId, request.agentId)
     if (!agent) throw new Error('the request’s agent is gone')
-    // The member gets the agent's app themselves too, so their Teams client lists it at once.
-    await installMsTeamsAppForUser(this.fetchImpl, accessToken, {
-      userId: request.sponsorId,
-      catalogAppId: request.catalogAppId,
-      permissions: MSTEAMS_RSC_PERMISSIONS
-    })
+    // The member gets the agent's app themselves too; Microsoft refuses a just-approved app for some minutes, so the tries go on after the row is written.
+    const { log } = this.deps
+    void installMsTeamsAppForUserEventually(
+      this.fetchImpl,
+      accessToken,
+      { userId: request.sponsorId, catalogAppId: request.catalogAppId, permissions: MSTEAMS_RSC_PERMISSIONS },
+      this.deps.personalInstallWait ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms).unref()))
+    )
+      .then((detail) => {
+        if (detail)
+          log.warn({ requestId: request.id, detail }, 'msteams: agent bot not added for the member who asked for it')
+      })
+      .catch((err: unknown) =>
+        log.warn({ requestId: request.id, err }, 'msteams: adding the agent bot for its member failed')
+      )
     const key = msTeamsAgentBotKey(request.agentId, request.tenantId)
     try {
       const made = await this.deps.bindingMutations.runExclusive(request.tenantId, async () => {

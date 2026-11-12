@@ -277,6 +277,7 @@ async function harness(
           bindingMutations: { runExclusive: async (_tenant, action) => action() } as MsTeamsBindingMutations,
           fetch: fetchImpl,
           wait: async () => {},
+          personalInstallWait: async () => {},
           log
         })
       : undefined
@@ -291,6 +292,7 @@ async function harness(
     msTeamsConnectRoutes(deps, {
       ...(deploymentApp ? { app: deploymentApp } : {}),
       ...(opts.agentBots ? { agentBots: AGENT_BOTS, agentBotWait: async () => {} } : {}),
+      personalInstallWait: async () => {},
       ...(requests ? { requests } : {}),
       keys,
       bindingMutations: { runExclusive: async (_tenant, action) => action() } as MsTeamsBindingMutations,
