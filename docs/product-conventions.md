@@ -1900,8 +1900,8 @@ editor may decide any proposal from the Activity view, including one no one coul
 and the first answer decides it.
 
 The card reads as the agent talking: the sentence in bold, then the reason, with no labels or
-footer. Work to carry out is a 🔗 to the session that proposed it, where the exact work is shown
-(quoted on the card where there is no such link). A follow-up shows one sentence of when it looks,
+footer. Work to carry out shows nothing more, neither a link nor the work quoted; the exact work
+folds open in the console's request row. A follow-up shows one sentence of when it looks,
 what it does and when it stops, what it would watch, then 🕒 and its first check. The card offers Approve and Deny;
 there is no "always allow". Once decided it is rewritten in place: approved by whom and running,
 denied by whom, or expired with nothing run, and later how the approved proposal ended. A card a restart left unedited is
