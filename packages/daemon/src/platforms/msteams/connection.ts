@@ -1,5 +1,6 @@
 // One Teams bot's daemon connection (teams-integration.md §3, §4.3): relay-terminated ingress, Bot Connector egress, no socket.
 import { createHash } from 'node:crypto'
+import { msTeamsBotMention, msTeamsOutgoingMentions } from '@agentconnect.md/message'
 import {
   MSTEAMS_PLATFORM,
   type IntegrationMsTeamsConfig,
@@ -291,6 +292,8 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
   readonly tenantId: string
   /** The bot's own `28:<appId>`, the ID a mention entity names (§4.1). */
   readonly botUserId: string
+  /** The bot's own ID as a message's text writes another bot's (§4.1). */
+  readonly selfMentionAddress: string
   /** Teams deep links come from the client, so the console URL is the fallback. */
   readonly workspaceUrl = ''
   private readonly api: MsTeamsApi
@@ -341,6 +344,7 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
     this.appId = group.config.appId.toLowerCase()
     this.tenantId = group.config.tenantId.toLowerCase()
     this.botUserId = `28:${this.appId}`
+    this.selfMentionAddress = msTeamsBotMention(this.botUserId)
     this.now = deps.now ?? (() => Date.now())
     this.sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)))
     this.sendIntervalMs = deps.sendIntervalMs ?? MSTEAMS_CONVERSATION_INTERVAL_MS
@@ -1063,8 +1067,10 @@ function newestFirst(a: MsTeamsGraphMessage, b: MsTeamsGraphMessage): number {
   return b.createdMs - a.createdMs
 }
 
+// A reply that names another bot as it was named to the agent mentions it (§4.1).
 function activityOf(text: string): Record<string, unknown> {
-  return { type: 'message', textFormat: MSTEAMS_TEXT_FORMAT, text }
+  const { text: body, entities } = msTeamsOutgoingMentions(text)
+  return { type: 'message', textFormat: MSTEAMS_TEXT_FORMAT, text: body, ...(entities.length ? { entities } : {}) }
 }
 
 // A raw conversation ID's normalized channel: a channel thread drops its `;messageid=` suffix.
