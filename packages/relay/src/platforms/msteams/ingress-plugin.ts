@@ -264,6 +264,8 @@ export function createMsTeamsIngressPlugin(deps: MsTeamsIngressPluginDeps = {}):
       const { activity } = verified
       // A tenant no organization connected: the anchor answers it itself and forwards nothing (§8.4).
       if (ingest.anchor) {
+        if (activity.type === 'message')
+          host.log.info(`relay-ingress(${botId}): Teams message answered by the anchor, not forwarded`)
         await answerMsTeamsAnchor(ingest.anchor, activity, msTeamsActivityTenantId(activity)?.toLowerCase(), host.log)
         return {}
       }
@@ -320,13 +322,18 @@ export function createMsTeamsIngressPlugin(deps: MsTeamsIngressPluginDeps = {}):
         return {}
       }
       if (result.kind === 'ignored' || result.kind === 'unsupported') {
+        if (result.reason !== 'app_authored')
+          host.log.info(`relay-ingress(${botId}): Teams message not forwarded (${result.kind}: ${result.reason})`)
         host.dedupMark(dedupKey)
         return {}
       }
       const message = withMessageTickets(result.message, tickets)
       const trigger = triggerOf(message.isDm, message.mentionedBots, ingest.appId)
       // A repeat of a settled attempt answers 200 without forwarding; an unsettled one is forwarded again.
-      if (host.dedupPeek(dedupKey)) return {}
+      if (host.dedupPeek(dedupKey)) {
+        host.log.info(`relay-ingress(${botId}): Teams message not forwarded (repeat of a settled delivery)`)
+        return {}
+      }
       const admission = await host.forwardStrict(botId, trigger ? { ...message, trigger } : message)
       if (admission.disposition !== 'retry') host.dedupMark(dedupKey)
       return { admission }
