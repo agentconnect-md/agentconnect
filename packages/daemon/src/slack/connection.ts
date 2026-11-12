@@ -3902,6 +3902,9 @@ export class SlackConnection implements PlatformConnection {
    *  `not_authorized` and degrade here. */
   async setTitle(channel: string, threadTs: string, title: string): Promise<void> {
     if (this.lastTitles.get(`${channel}:${threadTs}`) === title) return
+    // A code channel is keyed as its own thread, so renaming its session renames the channel,
+    // overwriting the name the creating call or a person gave it. Leave code channels alone.
+    if (threadTs === channel && (await this.codeChannel(channel).catch(() => undefined))?.code) return
     try {
       await this.queue.enqueue(() =>
         this.app.client.agents.sessions.rename({
