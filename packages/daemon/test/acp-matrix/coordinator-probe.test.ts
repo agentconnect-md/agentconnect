@@ -6,6 +6,7 @@ import {
   coordinatorFixture,
   coordinatorPrompt,
   decide,
+  decideIgnore,
   judgeCoordinator,
   renderBatch,
   selectedCoordinatorScenarios,
@@ -27,8 +28,9 @@ const recorded = (id: string, calls: Array<Record<string, unknown>>): CoRecorded
   const log: CoRecordedCall[] = []
   for (const args of calls) {
     const decided = new Set(log.flatMap((call) => (call.outcome ? [call.outcome.messageId] : [])))
-    const verdict = decide(args, scopeOf(id), decided)
-    log.push({ tool: 'sendMessage', args, ...verdict })
+    const ignore = args.action === undefined
+    const verdict = ignore ? decideIgnore(args, scopeOf(id), decided) : decide(args, scopeOf(id), decided)
+    log.push({ tool: ignore ? 'ignoreMessage' : 'sendMessage', args, ...verdict })
   }
   return log
 }
@@ -63,8 +65,11 @@ describe('runtime matrix coordinator probe', () => {
     const [chatter] = scopeOf('ignore-chatter').messages
     const reply = recorded('ignore-chatter', [{ action: 'replyToMessage', messageId: chatter, message: 'sure' }])
     expect(judgeCoordinator(scenario('ignore-chatter'), reply, '').verdict).toBe('FAIL')
-    // A turn's text is posted as its reply, so it answers the chatter; prose that ends in the sentinel is silence.
-    expect(judgeCoordinator(scenario('ignore-chatter'), [], 'Sounds fun').verdict).toBe('FAIL')
+    // Reasons written where a reply goes are posted to the chatter, unless ignoreMessage left it first.
+    const note = 'Not for me, so I am ignoring it.'
+    expect(judgeCoordinator(scenario('ignore-chatter'), [], note).verdict).toBe('FAIL')
+    const left = recorded('ignore-chatter', [{ messageId: chatter, reason: 'between people' }])
+    expect(judgeCoordinator(scenario('ignore-chatter'), left, note).verdict).toBe('PASS')
     expect(judgeCoordinator(scenario('ignore-chatter'), [], 'Not for me.\n\nAC_NO_RESPONSE').verdict).toBe('PASS')
   })
 
@@ -92,6 +97,7 @@ describe('runtime matrix coordinator probe', () => {
       const listed = await post({ jsonrpc: '2.0', id: 1, method: 'tools/list' })
       expect(listed.result.tools.map((tool: { name: string }) => tool.name)).toEqual([
         'sendMessage',
+        'ignoreMessage',
         'listTasks',
         'readTask'
       ])

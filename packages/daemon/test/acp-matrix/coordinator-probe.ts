@@ -24,6 +24,8 @@ export const CO_IDS = {
   selfBot: 'U0EXAMPLEBOT',
   peer: 'peer-agent',
   peerBot: 'U0EXAMPLEPEER',
+  /** Another app's bot in the channel, which is no agent the coordinator knows. */
+  otherBot: 'U0EXAMPLEOTHER',
   alice: 'U0EXAMPLE1',
   bob: 'U0EXAMPLE2',
   channel: 'C0EXAMPLE1',
@@ -272,6 +274,7 @@ export type CoOutcome =
   | { kind: 'delegate'; messageId: string; title: string }
   | { kind: 'route'; messageId: string; taskId: string }
   | { kind: 'reply'; messageId: string; text: string }
+  | { kind: 'ignore'; messageId: string; reason: string }
 
 const outcomeArgs = z.discriminatedUnion('action', [
   z.strictObject({
@@ -304,6 +307,25 @@ export interface CoScope {
   reads?: Record<string, unknown>
 }
 
+const ignoreArgs = z.object({ messageId: z.string().min(1), reason: z.string().nullish() })
+
+/** Check one `ignoreMessage` call against the turn, as the daemon does: any delivered message or report may be left once. */
+export function decideIgnore(
+  args: Record<string, unknown>,
+  scope: CoScope,
+  decided: ReadonlySet<string>
+): { outcome: CoOutcome } | { error: string } {
+  const parsed = ignoreArgs.safeParse(args)
+  if (!parsed.success)
+    return { error: `ignoreMessage: ${parsed.error.issues.map((issue) => issue.message).join('; ')}` }
+  const { messageId, reason } = parsed.data
+  if (!scope.messages.includes(messageId))
+    return { error: `ignoreMessage: messageId ${messageId} is not a message delivered in this turn` }
+  if (decided.has(messageId))
+    return { error: `ignoreMessage: message ${messageId} already has an outcome; each message takes one` }
+  return { outcome: { kind: 'ignore', messageId, reason: reason ?? '' } }
+}
+
 /** Check one `sendMessage` call against the turn: its outcome, or the error text the model reads. */
 export function decide(
   args: Record<string, unknown>,
@@ -320,7 +342,7 @@ export function decide(
     return { error: `sendMessage: message ${call.messageId} already has an outcome; each message takes one` }
   if (scope.reports?.includes(call.messageId) && call.action !== 'replyToMessage')
     return {
-      error: `sendMessage: ${call.messageId} is a report, not a channel message: answer it with action "replyToMessage", or leave it`
+      error: `sendMessage: ${call.messageId} is a report, not a channel message: answer it with action "replyToMessage", or leave it with ignoreMessage`
     }
   switch (call.action) {
     case 'delegateTask':
@@ -342,6 +364,8 @@ function receipt(outcome: CoOutcome): unknown {
       return { ok: true, taskId: outcome.taskId, attachedThread: outcome.messageId }
     case 'reply':
       return { ok: true, posted: { channel: CO_IDS.channel, thread: outcome.messageId } }
+    case 'ignore':
+      return { ok: true, ignored: outcome.messageId }
   }
 }
 
@@ -385,12 +409,12 @@ function callTool(
     const error = `readTask: ${String(args.taskId)} is no task this conversation may read`
     return { result: text(error, true), call: { tool: name, args, error } }
   }
-  if (name !== 'sendMessage') {
+  if (name !== 'sendMessage' && name !== 'ignoreMessage') {
     const error = `${name} is not available to the coordinator`
     return { result: text(error, true), call: { tool: name, args, error } }
   }
   const decided = new Set(previous.flatMap((call) => (call.outcome ? [call.outcome.messageId] : [])))
-  const verdict = decide(args, scope, decided)
+  const verdict = name === 'ignoreMessage' ? decideIgnore(args, scope, decided) : decide(args, scope, decided)
   if ('error' in verdict) return { result: text(verdict.error, true), call: { tool: name, args, error: verdict.error } }
   return { result: text(receipt(verdict.outcome)), call: { tool: name, args, outcome: verdict.outcome } }
 }
@@ -488,6 +512,8 @@ export type CoScenarioId =
   | 'greeting'
   | 'ignore-chatter'
   | 'ignore-peer'
+  | 'ignore-other-bot-thread'
+  | 'ignore-streak'
   | 'mention-vague'
   | 'no-self-work'
   | 'batch-mixed'
@@ -506,6 +532,8 @@ export type CoScenarioId =
 export interface CoordinatorScenario {
   id: CoScenarioId
   messages: ChannelMessage[]
+  /** Turns delivered before `messages` in the same session, one batch each: how a coordinator behaves once it has a past. */
+  earlier?: ChannelMessage[][]
   tasks: ProbeTask[]
   /** Other places' open tasks on the work board and in `listTasks` (assistant-mode.md §5.18). */
   elsewhere?: ProbeElsewhereTask[]
@@ -588,6 +616,75 @@ export const CO_SCENARIOS: CoordinatorScenario[] = [
       )
     ],
     expect: { 'msg-1700000600.000100': { kind: 'ignore' } }
+  },
+  {
+    // A follow-up in an unowned thread asking a bot that is no listed peer for a plan: the coordinator leaves it, saying nothing.
+    id: 'ignore-other-bot-thread',
+    tasks: [],
+    messages: [
+      {
+        ...msg(
+          'msg-1700000650.000200',
+          CO_IDS.alice,
+          false,
+          `<@${CO_IDS.otherBot}> security advisories like the ones above need to reach a channel of their own. ` +
+            'Can you draft a plan for collecting and posting them? I will create the channel myself.'
+        ),
+        thread: 'msg-1700000650.000100'
+      }
+    ],
+    expect: { 'msg-1700000650.000200': { kind: 'ignore' } }
+  },
+  {
+    // A coordinator with a past: twelve turns of messages that are not for it, then a greeting that is. Each is left by a call, with no note posted.
+    id: 'ignore-streak',
+    tasks: [],
+    earlier: [
+      [msg('msg-1700002000.000100', CO_IDS.alice, false, 'anyone tried the new espresso machine on 4?')],
+      [msg('msg-1700002000.000200', CO_IDS.bob, false, 'it is better than the old one')],
+      [msg('msg-1700002000.000300', CO_IDS.alice, false, `<@${CO_IDS.otherBot}>`)],
+      [
+        {
+          ...msg('msg-1700002000.000500', CO_IDS.bob, false, 'why can I still not use it?'),
+          thread: 'msg-1700002000.000400'
+        }
+      ],
+      [{ ...msg('msg-1700002000.000600', CO_IDS.bob, false, 'my own org'), thread: 'msg-1700002000.000400' }],
+      [msg('msg-1700002000.000700', CO_IDS.alice, false, '[attached: screenshot.png (image/png)]')],
+      [
+        msg(
+          'msg-1700002000.000800',
+          CO_IDS.alice,
+          false,
+          `<@${CO_IDS.peerBot}> please rotate the staging database credentials before the audit`
+        )
+      ],
+      [msg('msg-1700002000.000900', CO_IDS.bob, false, 'I am out, having lunch with a friend')],
+      [msg('msg-1700002000.001000', CO_IDS.alice, false, 'test')],
+      [
+        {
+          ...msg(
+            'msg-1700002000.001200',
+            CO_IDS.alice,
+            false,
+            `<@${CO_IDS.otherBot}> can you draft a plan for the vendor review? I will set up the meeting myself.`
+          ),
+          thread: 'msg-1700002000.001100'
+        }
+      ],
+      [msg('msg-1700002000.001300', CO_IDS.bob, false, 'overseas accounts get the short end again')],
+      [{ ...msg('msg-1700002000.001400', CO_IDS.bob, false, 'ok'), thread: 'msg-1700002000.001100' }]
+    ],
+    messages: [msg('msg-1700002000.001500', CO_IDS.alice, true, 'good morning!')],
+    expect: {
+      ...Object.fromEntries(
+        [100, 200, 300, 500, 600, 700, 800, 900, 1000, 1200, 1300, 1400].map((n) => [
+          `msg-1700002000.${String(n).padStart(6, '0')}`,
+          { kind: 'ignore' as const }
+        ])
+      ),
+      'msg-1700002000.001500': { kind: 'reply' }
+    }
   },
   {
     id: 'mention-vague',
@@ -830,26 +927,28 @@ const textReply = (finalText: string): string | undefined => {
 export function judgeCoordinator(
   scenario: CoordinatorScenario,
   calls: CoRecordedCall[],
-  finalText: string
+  finalText: string | readonly string[]
 ): { verdict: SendMessageVerdict; notes: string[] } {
   const outcomes = new Map<string, CoOutcome>()
   for (const call of calls) if (call.outcome) outcomes.set(call.outcome.messageId, call.outcome)
   const notes: string[] = []
   let degraded = false
   let failed = false
-  const spoken = textReply(finalText)
-  // The daemon posts the text where it ties it to one message, so the judge ties it the same way.
-  const answered =
-    spoken !== undefined
-      ? spokenTo(
-          scenario.messages,
-          scenario.messages.filter((message) => !outcomes.has(message.id))
-        )
-      : undefined
-  for (const message of scenario.messages) {
+  const turns = [...(scenario.earlier ?? []), scenario.messages]
+  // One text per turn; a lone text is the last turn's.
+  const texts = typeof finalText === 'string' ? [...turns.slice(1).map(() => ''), finalText] : finalText
+  // The daemon posts a turn's text where it ties it to one message, so the judge ties it the same way.
+  const spoken = new Map<string, string>()
+  turns.forEach((turn, index) => {
+    const reply = textReply(texts[index] ?? '')
+    const to = reply === undefined ? undefined : spokenTo(turn.filter((message) => !outcomes.has(message.id)))
+    if (to) spoken.set(to.id, reply!)
+  })
+  for (const message of turns.flat()) {
     const expected = scenario.expect[message.id]!
     let outcome = outcomes.get(message.id)
-    if (!outcome && message === answered) outcome = { kind: 'reply', messageId: message.id, text: spoken! }
+    const said = spoken.get(message.id)
+    if (!outcome && said !== undefined) outcome = { kind: 'reply', messageId: message.id, text: said }
     const got = outcome?.kind ?? 'ignore'
     if (expected.kind === 'any' ? got !== 'ignore' : got === expected.kind) {
       if (outcome?.kind === 'route' && expected.taskId && outcome.taskId !== expected.taskId) {
@@ -875,11 +974,12 @@ export function judgeCoordinator(
       notes.push(`${message.id}: ${got}, preferred ${expected.kind}`)
     } else {
       failed = true
-      notes.push(`${message.id}: ${got}, expected ${expected.kind}`)
+      const posted = outcome?.kind === 'reply' ? ` ${JSON.stringify(outcome.text.slice(0, 80))}` : ''
+      notes.push(`${message.id}: ${got}${posted}, expected ${expected.kind}`)
     }
   }
   // A webchat person reads the text a turn writes beside a call, which a channel never posts.
-  const chatter = textReply(finalText)
+  const chatter = textReply(texts.at(-1) ?? '')
   if (scenario.webchat && chatter !== undefined && outcomes.size > 0) {
     degraded = true
     notes.push(`text shown beside a call: ${JSON.stringify(chatter.slice(0, 80))}`)
@@ -917,7 +1017,9 @@ export const describeOutcome = (outcome: CoOutcome): string =>
     ? `delegate(${outcome.messageId},"${outcome.title}")`
     : outcome.kind === 'route'
       ? `route(${outcome.messageId}->${outcome.taskId})`
-      : `reply(${outcome.messageId},${JSON.stringify(outcome.text.slice(0, 60))})`
+      : outcome.kind === 'ignore'
+        ? `ignore(${outcome.messageId})`
+        : `reply(${outcome.messageId},${JSON.stringify(outcome.text.slice(0, 60))})`
 
 /** Run every selected scenario `reps` times, each in a fresh coordinator session on an already-started host. */
 export async function runCoordinatorScenarios(input: {
@@ -941,9 +1043,13 @@ export async function runCoordinatorScenarios(input: {
     for (const scenario of input.scenarios) {
       const key = `${runtime}/co/${scenario.id}/${rep}`
       const prompt = coordinatorPrompt(scenario.webchat === true)
+      const turns = [...(scenario.earlier ?? []), scenario.messages]
       const scope: CoScope = {
-        messages: scenario.messages.map((message) => message.id),
-        reports: scenario.messages.filter((message) => message.report).map((message) => message.id),
+        messages: turns.flat().map((message) => message.id),
+        reports: turns
+          .flat()
+          .filter((message) => message.report)
+          .map((message) => message.id),
         tasks: scenario.tasks,
         ...(scenario.elsewhere ? { elsewhere: scenario.elsewhere } : {}),
         ...(scenario.reads ? { reads: scenario.reads } : {})
@@ -952,6 +1058,8 @@ export async function runCoordinatorScenarios(input: {
       let sessionId: string | undefined
       let tokens: unknown
       let failure: unknown
+      // Where each turn's updates begin, so its text is read apart from the turns before it.
+      const turnStarts: number[] = []
       try {
         sessionId = await support.withTimeout(
           host.newSession(
@@ -971,36 +1079,47 @@ export async function runCoordinatorScenarios(input: {
         const model = input.model ? host.modelOptions()?.models.find((id) => id.includes(input.model!)) : undefined
         if (model) await host.setSessionModel(sessionId, model)
         if (input.effort) await host.setSessionEffort(sessionId, input.effort)
-        // As the daemon opens a coordinator turn: its standing instructions, the work board, then the batch.
+        // As the daemon opens a coordinator turn: its standing instructions and the work board once, then each batch.
         const board = boardFor(scenario)
-        const blocks = [
-          ...(usesMeta ? [] : [{ type: 'text' as const, text: prompt }]),
-          ...(board ? [{ type: 'text' as const, text: board }] : []),
-          { type: 'text' as const, text: renderBatch(scenario.messages, scenario.webchat === true) }
-        ]
-        tokens = (await support.withTimeout(host.prompt(sessionId, blocks), `${runtime}/coordinator ${scenario.id}`))
-          .usage
+        for (const [index, turn] of turns.entries()) {
+          const blocks = [
+            ...(index > 0 || usesMeta ? [] : [{ type: 'text' as const, text: prompt }]),
+            ...(index === 0 && board ? [{ type: 'text' as const, text: board }] : []),
+            { type: 'text' as const, text: renderBatch(turn, scenario.webchat === true) }
+          ]
+          turnStarts.push(input.updates.length)
+          tokens = (await support.withTimeout(host.prompt(sessionId, blocks), `${runtime}/coordinator ${scenario.id}`))
+            .usage
+        }
       } catch (error) {
         failure = error
       }
       const ms = Date.now() - started
       const calls = fixture.calls(key)
       const sessionUpdates = input.updates.filter((entry) => entry.sessionId === sessionId)
-      // A channel posts the text after the turn's last call, as the daemon keeps it; a webchat browser shows all of it (§4.3).
-      const lastCall = sessionUpdates.map((entry) => entry.update?.sessionUpdate).lastIndexOf('tool_call')
-      const finalText = (scenario.webchat ? sessionUpdates : sessionUpdates.slice(lastCall + 1))
-        .filter(
-          (entry) => entry.update?.sessionUpdate === 'agent_message_chunk' && entry.update?.content?.type === 'text'
-        )
-        .map((entry) => String(entry.update.content.text))
-        .join('')
+      // A channel posts the text after a turn's last call, as the daemon keeps it; a webchat browser shows all of it (§4.3).
+      const turnTexts = turns.map((_turn, index) => {
+        const start = turnStarts[index]
+        if (start === undefined) return ''
+        const updates = input.updates
+          .slice(start, turnStarts[index + 1])
+          .filter((entry) => entry.sessionId === sessionId)
+        const lastCall = updates.map((entry) => entry.update?.sessionUpdate).lastIndexOf('tool_call')
+        return (scenario.webchat ? updates : updates.slice(lastCall + 1))
+          .filter(
+            (entry) => entry.update?.sessionUpdate === 'agent_message_chunk' && entry.update?.content?.type === 'text'
+          )
+          .map((entry) => String(entry.update.content.text))
+          .join('')
+      })
+      const finalText = turnTexts.at(-1) ?? ''
       const notes: string[] = []
       let verdict: SendMessageVerdict
       if (failure !== undefined && support.providerUnavailable(failure)) {
         verdict = 'UNAVAILABLE'
         notes.push(support.errorReason(failure))
       } else {
-        const judged = judgeCoordinator(scenario, calls, finalText)
+        const judged = judgeCoordinator(scenario, calls, turnTexts)
         verdict = failure !== undefined ? 'FAIL' : judged.verdict
         notes.push(...judged.notes)
         if (failure !== undefined) notes.push(`turn error: ${support.errorReason(failure)}`)
@@ -1024,7 +1143,16 @@ export async function runCoordinatorScenarios(input: {
         },
         ms,
         ...(tokens !== undefined ? { tokens } : {}),
-        notes: [...notes, ...(finalText.trim() ? [`final=${JSON.stringify(finalText.trim().slice(0, 160))}`] : [])]
+        notes: [
+          ...notes,
+          // What each earlier turn wrote after its calls, to show a note written where a reply would be posted.
+          ...turnTexts
+            .slice(0, -1)
+            .flatMap((text, index) =>
+              text.trim() ? [`turn${index + 1}=${JSON.stringify(text.trim().slice(0, 100))}`] : []
+            ),
+          ...(finalText.trim() ? [`final=${JSON.stringify(finalText.trim().slice(0, 160))}`] : [])
+        ]
       }
       runs.push(run)
       input.onRun?.(run)

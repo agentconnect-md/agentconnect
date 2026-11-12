@@ -464,6 +464,11 @@ export async function executeTool(
     if (!ctx.tools.some((tool) => tool.name === name))
       throw new Error(`${name} is not available to the coordinator, which only decides where each message goes`)
     if (name === 'sendMessage') args = withoutBlankCoordinatorFields(args)
+    // Leaving a delivered message unanswered is an outcome of its own, so the turn's text has no message to answer.
+    if (name === 'ignoreMessage') {
+      if (!deps.coordinatorDecision) throw new Error('ignoreMessage: the coordinator is not available on this daemon')
+      return await deps.coordinatorDecision(ctx, { messageId: args.messageId, reason: args.reason, action: name })
+    }
     if (name === 'sendMessage' && args.action !== 'postMessage' && args.action !== 'callAgent') {
       if (!deps.coordinatorDecision) throw new Error('sendMessage: the coordinator is not available on this daemon')
       return await deps.coordinatorDecision(ctx, args)

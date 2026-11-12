@@ -2222,7 +2222,7 @@ export class Daemon {
     post: (agentId, integrationId, msg, text, taskLink) =>
       this.postCoordinatorReply(agentId, integrationId, msg, text, taskLink),
     reportAnswered: (key, thread) => {
-      // The coordinator's own answer to a getting-to-know report, by a call or its turn's text, is the reply its round's held cards go under.
+      // The coordinator's replyToMessage answer to a getting-to-know report is the reply its round's held cards go under; a report's turn text never posts.
       if (this.activeTurnCallMeta.get(key)?.gettingToKnowReport !== undefined && !this.roundReplies.has(key))
         this.roundReplies.set(key, thread)
     },
@@ -15381,7 +15381,7 @@ export class Daemon {
     at: { platform: string; channel: string; transportScope: string | null }
   ): Promise<string> {
     const current = await this.store.currentAppendCoordinate(agentId, at.channel, at.transportScope, 'coordinator')
-    if (current !== undefined) return current
+    if (current !== undefined) return await this.succeedStaleCoordinator(agentId, at, current)
     const minted = await this.store.resolveAppendCoordinate(
       agentId,
       at.channel,
@@ -15398,6 +15398,32 @@ export class Daemon {
       this.log.warn(`coordinator ${key}: adopting the conversation's thread sessions failed: ${formatErr(err)}`)
     }
     return minted
+  }
+
+  /** A coordinator opened under an earlier outcome protocol is succeeded as `!new` does, its tasks handed over: its own past turns would keep it writing the old way (auto-session-mode.md §4.3, §8). */
+  private async succeedStaleCoordinator(
+    agentId: string,
+    at: { platform: string; channel: string; transportScope: string | null },
+    current: string
+  ): Promise<string> {
+    // A webchat browser shows the coordinator's text whatever the protocol, so its conversation keeps its context.
+    if (at.platform === 'webchat') return current
+    if (await this.store.coordinatorProtocolCurrent(agentId, at.channel, at.transportScope)) return current
+    const next = await this.store.advanceAppendCoordinate(
+      agentId,
+      at.channel,
+      current,
+      at.transportScope,
+      this.clock.now()
+    )
+    if (next === current || !isCoordinatorCoordinate(next)) return next
+    const key = (coordinate: string): string =>
+      sessionKey(at.platform, at.channel, coordinate, agentId, at.transportScope)
+    await this.coordinators
+      .handOver(agentId, key(current), key(next))
+      .catch((err) => this.log.warn(`coordinator ${key(next)}: taking over its tasks failed: ${formatErr(err)}`))
+    this.log.info(`coordinator ${key(current)}: succeeded by ${next}, opened under the current outcomes`)
+    return next
   }
 
   /** Open a coordinator turn on its batch: the trigger, the channel messages right behind it of one permission class and the reports among them, each under its own id (auto-session-mode.md §3.4, §4.3, assistant-mode.md §5.18 ③④). */
@@ -24333,7 +24359,7 @@ export class Daemon {
     // notice. Release before local metadata cleanup so even a cleanup exception
     // cannot strand the connection lease forever.
     releaseReplyConn()
-    // A coordinator's final text is its reply (auto-session-mode.md §4.3), posted before its round's cards so that they follow it; a turn startup replays posts nothing.
+    // A coordinator's final text answers the message no call decided (auto-session-mode.md §4.3), before the turn settles; a turn startup replays posts nothing.
     if (entry.coordinatorEnded === 'answered' && !this.retainsInboxRow(entry, false))
       await this.coordinators.speak(key, agentId)
     // A getting-to-know task's report round: its held cards go under the reply it posted, else where the place's cards go (§5.13).

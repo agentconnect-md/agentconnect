@@ -100,12 +100,14 @@ AC_RUNTIME_MATRIX_ONLY=sendMessage \
 `AC_RUNTIME_MATRIX_ONLY=coordinator` checks whether each runtime's model can act as the
 `auto` session mode's coordinator ([auto-session-mode.md](../../../../docs/designs/auto-session-mode.md)).
 It injects the candidate coordinator prompt and tool surface from `coordinator-probe.ts`
-(`sendMessage` with `delegateTask`, `messageTask` and `replyToMessage`, plus `listTasks` with its
+(`sendMessage` with `delegateTask`, `messageTask` and `replyToMessage`, `ignoreMessage`, plus `listTasks` with its
 `here` and `elsewhere` lists) through its own HTTP MCP fixture, opens each turn with the work board
 the daemon would send, delivers channel-root messages one or several per turn,
 and judges each message's outcome: handed to an open task, a new task, a direct reply, or
 ignored. A turn's text after its last call counts as the reply to the message no call decided, as
-the daemon posts it. A refused call (an unknown message or task id, a second outcome for a message)
+the daemon posts it, so a note written for a message `ignoreMessage` did not leave fails the run. A
+scenario may deliver earlier turns in the same session first (`ignore-streak`), each judged the
+same way, to show a coordinator with a past. A refused call (an unknown message or task id, a second outcome for a message)
 reads the fixture's error and degrades the run. Nothing is posted or started.
 
 ```bash

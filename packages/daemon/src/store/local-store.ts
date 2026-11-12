@@ -32,6 +32,7 @@ import {
   coordinateKind,
   isAppendCoordinate,
   nextAppendCoordinate,
+  COORDINATOR_PROTOCOL,
   type ConversationCoordinateKind
 } from '../session/append-coordinate.js'
 import { GETTING_TO_KNOW_COORDINATE_PREFIX, checkCoordinate } from '../session/subsession-coordinate.js'
@@ -1262,6 +1263,7 @@ const APPEND_RESERVATION_SCHEMA = `
         transportScope TEXT NOT NULL DEFAULT '',
         coordinate TEXT NOT NULL,
         updatedAt INTEGER,
+        protocol INTEGER,
         PRIMARY KEY (agentId, channel, transportScope)
       );
 `
@@ -1426,7 +1428,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 80
+export const SCHEMA_VERSION = 81
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -2212,7 +2214,9 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
       bodiesStrippedAt INTEGER,
       UNIQUE (agentId, messageId)
     );
-    CREATE INDEX IF NOT EXISTS coordinator_filter_evaluation_agent ON coordinator_filter_evaluation (orgId, agentId, seq);`)
+    CREATE INDEX IF NOT EXISTS coordinator_filter_evaluation_agent ON coordinator_filter_evaluation (orgId, agentId, seq);`),
+  // v81 records the outcome protocol a coordinator's coordinate was minted under (auto-session-mode.md §4.2).
+  async (db, store) => await addColumn(db, store.postgres, 'append_reservation', 'protocol', 'INTEGER')
 ]
 
 /** Tasks gain when they closed, the message they were opened for, what they opened and a getting-to-know task's marker; an ended watch task counts as closed when it last changed. */
@@ -4893,10 +4897,10 @@ export class LocalStore {
     const minted = nextAppendCoordinate(undefined, now, kind)
     await this.db
       .prepare(
-        `INSERT OR IGNORE INTO append_reservation (agentId, channel, transportScope, coordinate, updatedAt)
-         VALUES (?, ?, ?, ?, ?)`
+        `INSERT OR IGNORE INTO append_reservation (agentId, channel, transportScope, coordinate, updatedAt, protocol)
+         VALUES (?, ?, ?, ?, ?, ?)`
       )
-      .run(agentId, channel, scope, minted, now)
+      .run(agentId, channel, scope, minted, now, kind === 'coordinator' ? COORDINATOR_PROTOCOL : null)
     const row = (await this.db
       .prepare('SELECT coordinate FROM append_reservation WHERE agentId = ? AND channel = ? AND transportScope = ?')
       .get(agentId, channel, scope)) as { coordinate: string } | undefined
@@ -4918,6 +4922,14 @@ export class LocalStore {
       .prepare('SELECT coordinate FROM append_reservation WHERE agentId = ? AND channel = ? AND transportScope = ?')
       .get(agentId, channel, transportScope ?? '')) as { coordinate: string } | undefined
     return row && (kind === undefined || coordinateKind(row.coordinate) === kind) ? row.coordinate : undefined
+  }
+
+  /** Whether the conversation's coordinator was minted under the outcome protocol in force (auto-session-mode.md §4.2); one from an earlier daemon reads as not. */
+  async coordinatorProtocolCurrent(agentId: string, channel: string, transportScope?: string | null): Promise<boolean> {
+    const row = (await this.db
+      .prepare('SELECT protocol FROM append_reservation WHERE agentId = ? AND channel = ? AND transportScope = ?')
+      .get(agentId, channel, transportScope ?? '')) as { protocol: number | null } | undefined
+    return Number(row?.protocol ?? 0) >= COORDINATOR_PROTOCOL
   }
 
   /** The agent's conversations whose coordinate in force is a coordinator's (auto-session-mode.md §3.5). */
@@ -4989,10 +5001,10 @@ export class LocalStore {
     const minted = nextAppendCoordinate(from, now, kind)
     const res = await this.db
       .prepare(
-        `UPDATE append_reservation SET coordinate = ?, updatedAt = ?
+        `UPDATE append_reservation SET coordinate = ?, updatedAt = ?, protocol = ?
          WHERE agentId = ? AND channel = ? AND transportScope = ? AND coordinate = ?`
       )
-      .run(minted, now, agentId, channel, scope, from)
+      .run(minted, now, kind === 'coordinator' ? COORDINATOR_PROTOCOL : null, agentId, channel, scope, from)
     if (Number(res.changes) > 0) return minted
     // Lost the CAS or nothing to rotate: the current value answers, read as-is so two opposite mode switches cannot rotate forever.
     return (

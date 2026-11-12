@@ -1869,8 +1869,9 @@ under the introduction works. For a getting-to-know task, `propose` changes in f
   the first reply message the round posted, else where the place's cards go otherwise (its top
   level for an appending long session). A held card a restart left behind is posted the same way by
   the minute sweep once nothing runs the round; one decided in the console while held gets none.
-  Under a coordinator the round's reply is the post that answers the report, by the turn's text or
-  by `replyToMessage`; the cards go in that post's thread (auto-session-mode.md §6.9.2).
+  Under a coordinator the round's reply is the `replyToMessage` post that answers the report, since
+  a report's turn text is never posted; the cards go in that post's thread
+  (auto-session-mode.md §6.9.2).
 - **An HTTP bot's place.** The relay routes an HTTP-mode bot, so the daemon holds no routing rules
   for it and cannot replay its ladder. Where such a bot serves one agent, a person's mention reaches
   the agent wherever the conversation is open to it, so the place's people approve there, for every
@@ -5336,3 +5337,11 @@ thread of its own lands at the conversation's root (§5.12). It used to follow t
 coordinator's latest turn, which belongs to whatever message that turn happened to answer, so an
 approved proposal's result or a follow-up taken at the top level could surface in an unrelated
 task's thread, where a person's reply reached that task and not the coordinator.
+
+**Hundred-and-fifth revision (2026-11-12)**: a coordinator leaves a message by calling
+`ignoreMessage`, which records its reason and posts nothing, where it was to end its turn with
+`AC_NO_RESPONSE` ([auto-session-mode.md](auto-session-mode.md) §4.2, §4.3). Under the ninety-ninth
+revision a coordinator wrote its reasons for leaving a message as the turn's text, and they were
+posted. A report's turn text is not posted, so a getting-to-know round's reply is again the
+`replyToMessage` post. A coordinator opened before the change is succeeded at its next message, its
+tasks handed over.

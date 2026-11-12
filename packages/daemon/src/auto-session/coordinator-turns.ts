@@ -19,7 +19,7 @@ export interface DeliveredMessage {
 }
 
 /** What a message's one call did. */
-export type CoordinatorOutcome = 'delegate' | 'route' | 'reply'
+export type CoordinatorOutcome = 'delegate' | 'route' | 'reply' | 'ignore'
 
 interface Turn {
   messages: DeliveredMessage[]
@@ -33,7 +33,7 @@ interface Turn {
 /** How a turn ended for its messages without an outcome. */
 export interface SettledCoordinatorTurn {
   messages: DeliveredMessage[]
-  /** Messages left without an outcome. */
+  /** Messages left without an answer: those no call decided, and those `ignoreMessage` left. */
   undecided: DeliveredMessage[]
 }
 
@@ -43,12 +43,8 @@ export interface SpokenReply {
   text: string
 }
 
-/** The message a turn's text answers: its only one, else the one person's message left without a call, else the one of those that mentions the agent (§4.3). */
-export function spokenTo<T extends { report?: boolean; mentionsYou: boolean }>(
-  messages: readonly T[],
-  undecided: readonly T[]
-): T | undefined {
-  if (messages.length === 1) return undecided[0]
+/** The message a turn's text answers: the one person's message left without a call, else the one of those that mentions the agent; never a report (§4.3). */
+export function spokenTo<T extends { report?: boolean; mentionsYou: boolean }>(undecided: readonly T[]): T | undefined {
   const people = undecided.filter((message) => !message.report)
   if (people.length === 1) return people[0]
   const mentions = people.filter((message) => message.mentionsYou)
@@ -230,7 +226,7 @@ export class CoordinatorTurns {
     turn.tail = ''
     if (silent(text)) return undefined
     const undecided = turn.messages.filter((message) => !turn.outcomes.has(message.id))
-    const to = spokenTo(turn.messages, undecided)
+    const to = spokenTo(undecided)
     return to ? { to, text } : undefined
   }
 
@@ -240,6 +236,7 @@ export class CoordinatorTurns {
     if (!turn) return undefined
     this.turns.delete(key)
     turn.clearFeedback()
-    return { messages: turn.messages, undecided: turn.messages.filter((message) => !turn.outcomes.has(message.id)) }
+    const unanswered = (message: DeliveredMessage): boolean => (turn.outcomes.get(message.id) ?? 'ignore') === 'ignore'
+    return { messages: turn.messages, undecided: turn.messages.filter(unanswered) }
   }
 }

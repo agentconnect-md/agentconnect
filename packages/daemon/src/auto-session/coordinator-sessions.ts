@@ -82,6 +82,11 @@ const CALL = z.discriminatedUnion(
         .string('replyToMessage needs a message: the reply text')
         .trim()
         .min(1, 'replyToMessage needs a message: the reply text')
+    }),
+    z.strictObject({
+      action: z.literal('ignoreMessage'),
+      messageId: requiredString('messageId'),
+      reason: z.string('argument reason must be a string').nullish()
     })
   ],
   { error: 'argument action must be delegateTask, messageTask or replyToMessage' }
@@ -204,23 +209,31 @@ export class CoordinatorSessions {
     })
   }
 
-  /** The coordinator's `sendMessage`: one outcome for one delivered message. */
+  /** The coordinator's `sendMessage` or `ignoreMessage`: one outcome for one delivered message. */
   async decide(ctx: SessionContext, args: Record<string, unknown>): Promise<unknown> {
+    const tool = args.action === 'ignoreMessage' ? 'ignoreMessage' : 'sendMessage'
     let call: z.output<typeof CALL>
     try {
       call = parseArgs(CALL, args)
     } catch (err) {
-      if (err instanceof ToolArgumentError) throw new Error(`sendMessage: ${err.issues.join('; ')}`)
+      if (err instanceof ToolArgumentError) throw new Error(`${tool}: ${err.issues.join('; ')}`)
       throw err
     }
     const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
     const held = this.turns.reserve(key, call.messageId)
-    if ('error' in held) throw new Error(`sendMessage: ${held.error}`)
+    if ('error' in held) throw new Error(`${tool}: ${held.error}`)
     try {
+      if (call.action === 'ignoreMessage') {
+        this.turns.settle(key, call.messageId, 'ignore')
+        // A mention may not be ignored (§4.1): nothing is posted for it, and a task answers it when the turn ends (§4.5).
+        return held.message.mentionsYou
+          ? { ok: true, ignored: call.messageId, note: 'It mentions you, so a task will answer it instead.' }
+          : { ok: true, ignored: call.messageId }
+      }
       if (held.message.report && call.action !== 'replyToMessage')
         throw new Error(
           `sendMessage: ${call.messageId} is a report, not a channel message: answer it with action "replyToMessage", or ` +
-            'leave it; no task was opened or messaged'
+            'leave it with ignoreMessage; no task was opened or messaged'
         )
       // The coordinator reads only an attachment's name (§5.1); a report is exempt because no task can take one.
       if (call.action === 'replyToMessage' && !held.message.report && held.message.msg.attachments?.length)
@@ -692,7 +705,7 @@ export class CoordinatorSessions {
     // A reply a browser streamed is committed with its turn.
     if (!to.streamed) {
       // The coordinator reads only an attachment's name (§5.1), so a task answers a person's file.
-      if (!to.report && to.msg.attachments?.length) return
+      if (to.msg.attachments?.length) return
       try {
         await this.answer(key, agentId, to, text)
       } catch (err) {
@@ -703,7 +716,7 @@ export class CoordinatorSessions {
     this.turns.settle(key, to.id, 'reply')
   }
 
-  /** End a coordinator turn: its final text is its reply, and a mention still without an outcome goes to a task (§4.3, §4.5). */
+  /** End a coordinator turn: its final text answers the message no call decided, and a mention left unanswered goes to a task (§4.3, §4.5). */
   async settleTurn(key: string, agentId: string, ended: 'answered' | 'failed' | 'stopped'): Promise<void> {
     if (ended === 'answered') await this.speak(key, agentId)
     const settled = this.turns.end(key)
