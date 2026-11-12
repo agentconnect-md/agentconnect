@@ -1779,9 +1779,20 @@ describe('a coordinator driven through every outcome (auto-session-mode.md §4.2
     }
     // The coordinator's own text rows in its session, as the console reads them.
     const agentText = async () =>
-      ((await d.store.transcriptSince(scopeOfSession, null)) as { sender: string; ts: string; text: string }[])
+      (
+        (await d.store.transcriptSince(scopeOfSession, null)) as {
+          sender: string
+          ts: string
+          text: string
+          body?: string | null
+        }[]
+      )
         .filter((row) => row.sender === 'bot-a')
-        .map((row) => ({ ts: row.ts, text: row.text }))
+        .map((row) => ({
+          ts: row.ts,
+          text: row.text,
+          ...(row.body?.includes('"threadPost":true') ? { threadPost: true } : {})
+        }))
     const send = async (ts: string) => {
       await booted.route(slack(ts, { text: 'morning all' }))
       await vi.waitFor(() => expect(decided.at(-1)).toEqual([`msg-${ts}`]), WAIT)
@@ -1794,7 +1805,8 @@ describe('a coordinator driven through every outcome (auto-session-mode.md §4.2
     const { daemon, posts, agentText, send } = await bootTranscribed({ 'msg-7.1': { text: 'Good morning!' } })
     await send('7.1')
     expect(posts).toEqual([{ thread: '7.1', text: 'Good morning!' }])
-    expect(await agentText()).toEqual([{ ts: '1700000300.000001', text: 'Good morning!' }])
+    // Posted in the message's thread, it is a message of that thread, which the roots view leaves and the thread counts.
+    expect(await agentText()).toEqual([{ ts: '1700000300.000001', text: 'Good morning!', threadPost: true }])
     await daemon.stop()
   })
 
