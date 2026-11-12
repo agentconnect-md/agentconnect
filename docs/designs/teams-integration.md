@@ -208,9 +208,11 @@ text has to say which bot a message names: a label alone does not, because an
 agent is not told the name Teams shows for it or for another bot. The
 coordinator is told its own `<@28:<appId>>`, taken from its connection, and
 compares the two. A reply that carries the `<@28:<appId>|<label>>` form is sent
-with the `<at><label></at>` span and its `mention` entity in its place; the
-form without a label is sent as written. Whether `extendedmarkdown` (§4.3)
-renders that span as a mention is **unverified**.
+as plain `@<label>`; the form without a label is sent as written. No mention
+entity goes out: Teams delivers no bot's message to another bot, so a mention
+could not reach it, and an `<at>` span with its `mention` entity, sent as
+`extendedmarkdown` (§4.3), was shown as plain text without the `@`
+(**measured**). Another agent is reached through `callAgent`.
 
 The relay reads a mention as addressing the bot only through the assignment's
 `28:<appId>`, so a channel's first contact is a mention: it reaches the daemon,

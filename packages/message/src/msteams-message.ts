@@ -134,22 +134,15 @@ export function msTeamsActivityTenantId(activity: unknown): string | undefined {
 
 const BOT_MENTION = /<@(28:[^\s|<>]+)\|([^|<>\n]+)>/g
 
-/** Another bot's mention as normalized text holds it (§4.1): its `28:` ID, which tells bots apart, and its label, which a reply's mention shows. */
+/** Another bot's mention as normalized text holds it (§4.1): its `28:` ID, which tells bots apart, and its label. */
 export function msTeamsBotMention(id: string, label?: string): string {
   const name = label?.replace(/[|<>\n]/g, '').trim()
   return name ? `<@${id}|${name}>` : `<@${id}>`
 }
 
-/** Outgoing text with each {@link msTeamsBotMention} written as a Teams mention: the `<at>` span and the entity that names it. */
-export function msTeamsOutgoingMentions(text: string): { text: string; entities: MsTeamsEntity[] } {
-  const entities = new Map<string, MsTeamsEntity>()
-  const out = text.replace(BOT_MENTION, (_, id: string, label: string) => {
-    const name = label.trim()
-    const span = `<at>${name}</at>`
-    entities.set(`${id}\0${name}`, { type: 'mention', text: span, mentioned: { id, name } })
-    return span
-  })
-  return { text: out, entities: [...entities.values()] }
+/** Outgoing text with each labelled {@link msTeamsBotMention} written as `@<label>`: a bot never receives another bot's message, so no mention is sent. */
+export function msTeamsOutgoingText(text: string): string {
+  return text.replace(BOT_MENTION, (_, _id: string, label: string) => `@${label.trim()}`)
 }
 
 // Removes the bot's own mention spans, renders another bot's as its ID and label and a person's as `@Name`; a span the text does not hold is skipped, so no user content is erased.
