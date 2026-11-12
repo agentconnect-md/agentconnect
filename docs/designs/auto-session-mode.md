@@ -203,7 +203,7 @@ Approved proposals stay a kind of their own.
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | (a) Hand to an open task | `messageTask {taskId, messageId}`: the message's thread is attached to that task, which answers there                                                                                            |
 | (b) Open a new task      | `delegateTask {messageId, title}`: a new task opens for the message, with its thread attached                                                                                                    |
-| (c) Ignore               | No call for the message, and no reply in the turn's text                                                                                                                                         |
+| (c) Ignore               | `ignoreMessage {messageId, reason}`: nothing is posted for the message, whatever the turn writes; the reason stays in the coordinator's transcript                                               |
 | (d) Reply directly       | The turn's final text, or `replyToMessage {messageId, message}` in a turn of several messages, posted in the message's thread. The thread stays unowned, so replies come back to the coordinator |
 
 (d) is for what needs no session of its own: greetings, thanks, a question about a task's status.
@@ -221,27 +221,41 @@ A batch holds one permission class, so the queue is cut in arrival order where t
 class differs, and every sender of a batch is asked on its turn
 ([assistant-mode.md](assistant-mode.md) §5.18 ③).
 
-A task outcome is a call that names its message; the coordinator's own reply is the turn's final
-text, or a call where the text could not be tied to one message:
+Every outcome is a call that names its message, except the coordinator's own reply, which may be the
+turn's final text:
 
-- (a) `messageTask`, (b) `delegateTask`, (d) `replyToMessage`, at most one call per message.
-- The final text, the text after the turn's last call, answers the message no call decided: the
-  turn's only message, a report included; in a batch the one person's message left without a call,
-  else the one of those that mentions the agent. It is posted where that message is answered. Text
-  the daemon cannot tie to one message is not posted, and neither is text after every message got
-  its call.
-- Text that is `AC_NO_RESPONSE`, or prose that ends in it on a line of its own, is silence, as in
-  any session (`packages/daemon/src/session/no-response.ts`). A message with no call and no reply
-  is ignored (c).
+- (a) `messageTask`, (b) `delegateTask`, (c) `ignoreMessage`, (d) `replyToMessage`, at most one call
+  per message.
+- The final text, the text after the turn's last call, answers the message no call decided: the one
+  person's message left without a call, else the one of those that mentions the agent. It is posted
+  where that message is answered. Text is never posted for a report, which is answered by
+  `replyToMessage` or left, nor when several messages are left and none or more than one mentions
+  the agent, nor after every message got its call.
+- **Leaving a message is a call, not silence.** A model that leaves a message tends to write why. As
+  text that is indistinguishable from a reply, so the daemon would post it; as the `reason` of
+  `ignoreMessage` it is recorded and posted nowhere, and the call gives the message its outcome, so
+  no text can answer it. Text that is `AC_NO_RESPONSE`, or prose that ends in it on a line of its
+  own, is still silence, as in any session (`packages/daemon/src/session/no-response.ts`), but the
+  prompt no longer relies on it.
+- A mention may not be ignored (§4.1): `ignoreMessage` on one posts nothing for it and its receipt
+  says a task will answer it, which the fallback of §4.5 then opens.
 - The coordinator reads only an attachment's name (§5.1), so its text never answers a person's
   message that carries one; a mention among them takes the fallback of §4.5.
-- The prompt says the text is posted and asks for a reply, never reasons. The first prompt said the
-  text was shown to nobody while a one-message turn's text was posted, so a model wrote its reasons
-  there; for a time the daemon then posted no channel turn's text. A reply lands in its message's
-  thread, never at the channel root, so the text is posted again.
+- How it came to this. The first prompt said the text was shown to nobody while a one-message turn's
+  text was posted, and a model's reasons were posted; the daemon then posted no channel turn's text,
+  and every reply was a `replyToMessage` call. When the text answered a message again, with the
+  sentinel as the way to stay silent, a coordinator on Claude Haiku posted "This message is
+  addressed to another bot, not me, so I'm ignoring it" in two threads on the test environment. Its
+  session had left forty messages that way before, each time ending its turn with such a sentence
+  and never with the sentinel, which had been harmless while no text was posted.
+- **A coordinator from before a change of outcomes is succeeded.** Its own past turns teach it the
+  old way more strongly than a changed prompt does. The conversation's reservation records the
+  outcome protocol its coordinate was minted under (`COORDINATOR_PROTOCOL`); a message that finds
+  an earlier one mints the next coordinate and hands the tasks over, as a root `!new` does (§8). A
+  webchat conversation keeps its coordinator, since its browser shows the text either way.
 - In webchat (§10) the browser shows the text as it streams and commits it with its turn.
 
-Ignoring is silent. The prompt forbids a reply that only says a message is not for the agent; the
+Ignoring posts nothing. The prompt forbids a reply that only says a message is not for the agent; the
 runtime matrix caught one model posting exactly that (§12).
 
 Each message is delivered with its id, its sender, and whether it mentions the agent:
@@ -259,8 +273,8 @@ morning all
 The id is the platform message id behind a `msg-` prefix. A bare Slack timestamp reads as a number,
 and some models pass it as one, which drops its trailing zeros (§12).
 
-A message that mentions the agent and has neither a call nor a reply in text when the turn ends
-takes the fallback of §4.5: a task opens for it.
+A message that mentions the agent and is left unanswered when the turn ends, by `ignoreMessage` or
+with neither a call nor a reply in text, takes the fallback of §4.5: a task opens for it.
 
 ### 4.4 Feedback
 
@@ -401,7 +415,8 @@ now and the summary's first sentence states the current status.
 ### 5.4 The coordinator's limits
 
 - Only AgentConnect tools: `sendMessage` (the task actions and `replyToMessage`, plus `postMessage`
-  and `callAgent`), `listTasks`, `readTask`, `recall`, memory, and assistant mode's follow-up tools.
+  and `callAgent`), `ignoreMessage`, `listTasks`, `readTask`, `recall`, memory, and assistant mode's
+  follow-up tools.
   - `recall` keeps its parameters and the read rule, judged by every sender of the batch. Each excerpt
     carries its message id and, where the batch may read it, the task the message was handed to.
   - `postMessage` and `callAgent` run as they do in any session. `callAgent` always asks for an
@@ -811,8 +826,8 @@ in the approved card's thread.
 
 - **Which places.** Where an approved proposal gets a home: a coordinator's room that is not one
   person's direct conversation. Every other place keeps §5.13's thread under the reply.
-- **What the daemon reads the reply for.** The post that answers a getting-to-know report, by the
-  turn's text or by `replyToMessage` (§4.3), is the round's reply. The cards
+- **What the daemon reads the reply for.** The `replyToMessage` that answers a getting-to-know
+  report is the round's reply, since a report's turn text is never posted (§4.3). The cards
   still wait for it, so the introduction comes first, and its thread is still what the task's row
   shows (below).
 - **The card as a root in the console.** A card is no row of the conversation. When it becomes a
@@ -1134,12 +1149,12 @@ already running takes the change on its next turn, with no `!new`.
 ## 12. Validation
 
 `packages/daemon/test/acp-matrix/coordinator-probe.ts` injects a candidate coordinator prompt and tool
-surface (`sendMessage` with `delegateTask`, `messageTask` and `replyToMessage`, `listTasks` with
+surface (`sendMessage` with `delegateTask`, `messageTask` and `replyToMessage`, `ignoreMessage`, `listTasks` with
 its `here` and `elsewhere` lists, and `readTask`) into a real runtime session over an HTTP MCP fixture, opens each
 turn with the work board the daemon would send ([assistant-mode.md](assistant-mode.md) §5.18),
 delivers channel messages in the format of §4.3, and judges each message's outcome. Its scenarios:
 new work, a message for an open task, a status question, a greeting, chatter between people, a
-request to another agent, a vague mention, a small edit the coordinator must not do itself, two mixed
+request to another agent, a thread follow-up for another app's bot (`ignore-other-bot-thread`), twelve turns of messages that are not for the agent in one session before a greeting that is (`ignore-streak`), a vague mention, a small edit the coordinator must not do itself, two mixed
 batches, a follow-up's report (§3.4), a batch of one message and two reports, one worth telling
 and one with nothing new, a request for work another channel's task already has open, a question
 about another channel's task that only its latest words answer, a run report from a task holding
@@ -1246,6 +1261,19 @@ had the role lines of #3978 and its `role-alert` scenario, since reverted; on th
 them the new form passed 58 / 60 (20 scenarios), the two degraded runs again `elsewhere-read-task`,
 `ignore-chatter` and `ignore-peer` silent 6 / 6, and a vague mention answered in text with a
 question back rather than a task.
+
+On 2026-11-12, after a coordinator on Claude Haiku posted its reasons for leaving thread follow-ups
+addressed to another app's bot, leaving a message became the `ignoreMessage` call (§4.3). The probe
+gained `ignore-other-bot-thread`, such a follow-up, and `ignore-streak`, which delivers twelve turns
+of messages that are not for the agent to one session and then a greeting that is, because the
+coordinator that leaked had a long past and the probe's fresh sessions had not shown its habit. The
+judge fails a run whose text would be posted to a message `ignoreMessage` did not leave. On
+`claude-acp` with Claude Haiku at low effort, 3 repetitions of 22 scenarios, the prompt passed
+63 / 66; the three degraded runs were `elsewhere-read-task` again. Every message to leave got its
+call: 36 / 36 turns of `ignore-streak`, 9 / 9 of the three single ignore scenarios, and the chatter
+and empty reports of the batches, 54 calls in all. No turn wrote anything but the sentinel after
+them, the greeting that ends each streak was answered in text, and no run wrote text beside a call.
+Other runtimes were not rerun, and the probe cannot show a session of hundreds of turns.
 
 Two findings changed the design. A bare Slack timestamp as the message id was passed as a number by
 `qoder`, losing its trailing zeros, so ids carry a `msg-` prefix (§4.3). `github-copilot-cli` posted

@@ -91,9 +91,9 @@ function placeWords(input: CoordinatorPromptInput) {
         taskAnswers: "in the message's thread",
         replyPosts: "in the message's thread",
         finalText:
-          'The text that ends your turn is posted as your reply to the message you made no call for, so write only ' +
-          'what answers it, never your reasoning. When you have no reply of your own, because a call decided every ' +
-          `message or you ignore the rest, write nothing but ${NO_RESPONSE_SENTINEL}.`
+          'The text that ends your turn is posted as your reply to the message you made no call for, so it holds ' +
+          'only that reply: never your reasoning, a note on what you did, or why you left a message. Once every ' +
+          `message has its call, write nothing more, or exactly ${NO_RESPONSE_SENTINEL}.`
       }
 }
 
@@ -103,7 +103,7 @@ const SEND_MESSAGE_DESCRIPTION =
   'thread; give a short title and, only when needed, background in message. action "messageTask" hands the message to one of ' +
   'your open tasks by taskId; that task answers in the message thread. action "replyToMessage" posts your own short reply in ' +
   'the message thread, or answers a report where it belongs. A message you make no call for is answered by the text that ' +
-  'ends your turn, if you write any, and ignored otherwise. Each message takes ' +
+  'ends your turn, so leave a message unanswered with ignoreMessage, not with this tool. Each message takes ' +
   'at most one of these calls. Two actions name no message: "postMessage" posts message in channel, at its root or in ' +
   'thread, and "callAgent" asks the agent toAgent with message; its answer reaches you later as a report.'
 
@@ -177,9 +177,31 @@ export const COORDINATOR_LIST_TASKS_TOOL: ToolDescriptor = {
   }
 }
 
+const IGNORE_MESSAGE_DESCRIPTION =
+  'Leave a delivered channel message or report unanswered, as the coordinator. Call it for every message that is not ' +
+  'for you: conversation between people, a message addressed to someone else, a request to another agent, or a ' +
+  'report that tells the people here nothing new. Nothing is posted for that message, whatever you write afterwards. ' +
+  'Without this call, the text that ends your turn is posted as your reply to the message. reason is kept in your ' +
+  'own record and is never posted.'
+
+/** The coordinator's `ignoreMessage`: the outcome that leaves a message unanswered, so the turn's text has nothing to answer (§4.2). */
+export const COORDINATOR_IGNORE_MESSAGE_TOOL: ToolDescriptor = {
+  name: 'ignoreMessage',
+  description: IGNORE_MESSAGE_DESCRIPTION,
+  inputSchema: {
+    type: 'object',
+    properties: {
+      messageId: str('Id of the delivered channel message or report to leave unanswered, copied exactly.'),
+      reason: str('Why it is not for you, in a few words.')
+    },
+    required: ['messageId', 'reason'],
+    additionalProperties: false
+  }
+}
+
 /** The coordinator's decision tools and its read of one task; memory tools join them in a daemon session (§5.4). */
 export function coordinatorTools(): ToolDescriptor[] {
-  return [COORDINATOR_SEND_MESSAGE_TOOL, COORDINATOR_LIST_TASKS_TOOL, READ_TASK_TOOL]
+  return [COORDINATOR_SEND_MESSAGE_TOOL, COORDINATOR_IGNORE_MESSAGE_TOOL, COORDINATOR_LIST_TASKS_TOOL, READ_TASK_TOOL]
 }
 
 // What the coordinator keeps for its place as assistant mode's long session: follow-ups, proposals and reminders (§3.4, §5.4).
@@ -238,7 +260,7 @@ export function coordinatorPrompt(input: CoordinatorPromptInput): string {
     '# You are the coordinator',
     `${words.intro} You never do the work ` +
       'yourself: you have no workspace, and you must not read files, run commands, search the web, or use any tool other ' +
-      'than sendMessage, listTasks, readTask, recall and the memory, follow-up and reminder tools you are given. For ' +
+      'than sendMessage, ignoreMessage, listTasks, readTask, recall and the memory, follow-up and reminder tools you are given. For ' +
       'every delivered message you choose exactly one outcome:',
     '',
     '1. Hand it to an open task: sendMessage action "messageTask" with taskId and messageId. Use it when the message ' +
@@ -251,9 +273,10 @@ export function coordinatorPrompt(input: CoordinatorPromptInput): string {
       "answer in one or two sentences without any work: greetings, thanks, a status question answered from a task's " +
       'summary, or a request for work that is already open elsewhere. Your text answers one message, so when a turn ' +
       'delivers several, reply to each with sendMessage action "replyToMessage", its messageId and message.',
-    '4. Ignore it: make no call for it and write no reply. Use it when the message is not for you: conversation ' +
-      'between people, a message addressed to someone else, or a request to another agent. Ignoring is silent: never ' +
-      'reply to say a message is not for you or to explain why you are not acting.',
+    '4. Ignore it: call ignoreMessage with its messageId and a short reason. Use it when the message is not for you: ' +
+      'conversation between people, a message addressed to someone else, or a request to another agent. Nothing is ' +
+      'posted for an ignored message, and the reason stays in your own record. Never reply to say a message is not ' +
+      'for you or to explain why you are not acting: without the call, what you write is posted as a reply.',
     '',
     '# Open work',
     'A turn may begin with the work board: "Here" lists the open tasks of this ' +
@@ -271,9 +294,9 @@ export function coordinatorPrompt(input: CoordinatorPromptInput): string {
     '# Reports',
     `A <report> is not a ${words.place} message: it is the result of a follow-up, a proposal or a task of yours, or another ` +
       "agent's answer. It may arrive beside messages in one turn, naming the task it speaks for by task, kind and title; " +
-      'decide it on its own. When it carries something the people here should know, tell them: your text answers a ' +
-      'report that is all a turn delivers, and sendMessage action "replyToMessage" with the report\'s id answers one ' +
-      'that arrives beside others; either posts where the report belongs. Otherwise leave it, silently. ' +
+      'decide it on its own. When it carries something the people here should know, tell them with sendMessage action ' +
+      '"replyToMessage" and the report\'s id, which posts where the report belongs; your text never answers a report. ' +
+      'Otherwise leave it with ignoreMessage. ' +
       'Never open a task for a report or hand one to a task. To post anywhere else, use action "postMessage"; to ask ' +
       'another agent, use action "callAgent".',
     '',

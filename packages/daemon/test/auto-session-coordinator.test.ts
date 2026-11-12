@@ -172,6 +172,7 @@ describe('the coordinator prompt and batch', () => {
     )
     expect(tools.map((one) => one.name)).toEqual([
       'sendMessage',
+      'ignoreMessage',
       'listTasks',
       'readTask',
       'getMemoryEntry',
@@ -275,9 +276,9 @@ describe('a coordinator turn', () => {
     expect(cleared).toEqual(['first', 'second'])
   })
 
-  it('counts a turn’s text after its last call as the reply to its message, and a text ending in AC_NO_RESPONSE as none', () => {
+  it('counts a turn’s text after its last call as the reply to its mention, and a text ending in AC_NO_RESPONSE as none', () => {
     const turns = new CoordinatorTurns()
-    turns.begin('k', [delivered('1.1')])
+    turns.begin('k', [delivered('1.1', true)])
     turns.noteText('k', 'let me look')
     turns.noteToolCall('k')
     turns.noteText('k', ' Good morning! ')
@@ -285,39 +286,55 @@ describe('a coordinator turn', () => {
     // The text is taken once, so a second settlement posts nothing more.
     expect(turns.takeSpoken('k', isNoResponseBody)).toBeUndefined()
     for (const silent of ['AC_NO_RESPONSE', 'This one is not for me.\n\nAC_NO_RESPONSE']) {
-      turns.begin('k', [delivered('1.1')])
+      turns.begin('k', [delivered('1.1', true)])
       turns.noteText('k', silent)
       expect(turns.takeSpoken('k', isNoResponseBody)).toBeUndefined()
     }
     // A message a call decided has its outcome, so the text after it answers nothing.
-    turns.begin('k', [delivered('1.1')])
+    turns.begin('k', [delivered('1.1', true)])
     turns.reserve('k', 'msg-1.1')
     turns.settle('k', 'msg-1.1', 'delegate')
     turns.noteText('k', 'Delegated.')
     expect(turns.takeSpoken('k', isNoResponseBody)).toBeUndefined()
   })
 
-  it('ties a batch’s text to the one person’s message left without a call, else to the one that mentions the agent', () => {
+  it('ties a turn’s text to the one person’s message left without a call, never to an ignored message or a report', () => {
     const turns = new CoordinatorTurns()
     const report = { ...delivered('9.9'), report: true as const }
-    const mention = delivered('1.3', true)
-    const spoken = (messages: DeliveredMessage[], decided: string[] = []) => {
+    const spoken = (messages: DeliveredMessage[], decided: Record<string, 'route' | 'ignore'> = {}) => {
       turns.begin('k', messages)
-      for (const id of decided) {
+      for (const [id, outcome] of Object.entries(decided)) {
         turns.reserve('k', id)
-        turns.settle('k', id, 'route')
+        turns.settle('k', id, outcome)
       }
-      turns.noteText('k', 'Good morning!')
+      turns.noteText('k', 'This is addressed to someone else, so I am ignoring it.')
       return turns.takeSpoken('k', isNoResponseBody)?.to.id
     }
-    expect(spoken([delivered('1.1'), delivered('1.2')], ['msg-1.1'])).toBe('msg-1.2')
-    // A report left beside it is never what a batch's text answers.
+    expect(spoken([delivered('1.1')])).toBe('msg-1.1')
+    // ignoreMessage is an outcome, so whatever is written after it answers nothing.
+    expect(spoken([delivered('1.1')], { 'msg-1.1': 'ignore' })).toBeUndefined()
+    expect(spoken([delivered('1.1'), delivered('1.2')], { 'msg-1.1': 'ignore' })).toBe('msg-1.2')
+    expect(spoken([delivered('1.1'), delivered('1.2')], { 'msg-1.1': 'ignore', 'msg-1.2': 'ignore' })).toBeUndefined()
+    // A report is never what the text answers, alone or in a batch.
+    expect(spoken([report])).toBeUndefined()
     expect(spoken([delivered('1.1'), report])).toBe('msg-1.1')
-    expect(spoken([delivered('1.1'), report], ['msg-1.1'])).toBeUndefined()
-    expect(spoken([delivered('1.1'), delivered('1.2'), mention])).toBe('msg-1.3')
+    expect(spoken([delivered('1.1'), report], { 'msg-1.1': 'route' })).toBeUndefined()
+    // Several left without a call: the one that mentions the agent, else none.
+    expect(spoken([delivered('1.1'), delivered('1.2'), delivered('1.3', true)])).toBe('msg-1.3')
     expect(spoken([delivered('1.1'), delivered('1.2')])).toBeUndefined()
-    // A report that is all the turn delivers is answered by its text.
-    expect(spoken([report])).toBe('msg-9.9')
+  })
+
+  it('reports an ignored message as unanswered when the turn ends, so a mention among them still gets a task', () => {
+    const turns = new CoordinatorTurns()
+    turns.begin('k', [delivered('1.1', true), delivered('1.2'), delivered('1.3')])
+    for (const [id, outcome] of [
+      ['msg-1.1', 'ignore'],
+      ['msg-1.2', 'reply']
+    ] as const) {
+      turns.reserve('k', id)
+      turns.settle('k', id, outcome)
+    }
+    expect(turns.end('k')?.undecided.map((message) => message.id)).toEqual(['msg-1.1', 'msg-1.3'])
   })
 })
 
@@ -818,16 +835,26 @@ describe('the coordinator’s outcomes', () => {
     expect(posted).toHaveLength(1)
   })
 
-  it('posts a turn’s final text where its message is answered, and opens a task for a mention left without an outcome', async () => {
+  it('posts a turn’s final text as the reply to its message unless ignoreMessage left it, and opens a task for a mention left unanswered', async () => {
     const { store, sessions, ctx, dispatched, posted } = await setup()
     begin(sessions, slack('1.1'))
     sessions.turns.noteText(coordinatorKey, 'Good morning!')
+    await sessions.settleTurn(coordinatorKey, 'bot-a', 'answered')
+    // A message left by ignoreMessage takes no text, whatever the model writes after the call.
+    begin(sessions, slack('1.3', { text: '<@UOTHER> can you draft a plan?' }))
+    await expect(
+      sessions.decide(ctx, { action: 'ignoreMessage', messageId: 'msg-1.3', reason: 'for another bot' })
+    ).resolves.toEqual({ ok: true, ignored: 'msg-1.3' })
+    await expect(sessions.decide(ctx, { action: 'ignoreMessage', messageId: 'msg-1.3' })).rejects.toThrow(
+      /ignoreMessage: message msg-1.3 already has an outcome/
+    )
+    sessions.turns.noteText(coordinatorKey, 'This message is addressed to <@UOTHER>, not me, so I am ignoring it.')
     await sessions.settleTurn(coordinatorKey, 'bot-a', 'answered')
     // Prose that ends in the sentinel is silence, as in any session.
     begin(sessions, slack('1.2'))
     sessions.turns.noteText(coordinatorKey, 'This one is not for me.\n\nAC_NO_RESPONSE')
     await sessions.settleTurn(coordinatorKey, 'bot-a', 'answered')
-    // A report turn's text is its answer, posted where the report belongs.
+    // A report's text posts nothing: it is answered by replyToMessage or left by ignoreMessage.
     const report = {
       ...slack('9.9'),
       msgId: 'agentcall:C1:assistant-report:9',
@@ -837,10 +864,18 @@ describe('the coordinator’s outcomes', () => {
       parentReport: true,
       text: '[task run] Task "Flaky test" ended a run in its channel.'
     } as NormalizedMessage
-    sessions.beginTurn(coordinatorKey, 'bot-a', [
-      deliveredMessage({ ...report, sessionThread: COORDINATOR, headless: true }, 'int-bot-a')
-    ])
-    sessions.turns.noteText(coordinatorKey, 'The flaky test is fixed.')
+    const deliverReport = () =>
+      sessions.beginTurn(coordinatorKey, 'bot-a', [
+        deliveredMessage({ ...report, sessionThread: COORDINATOR, headless: true }, 'int-bot-a')
+      ])
+    deliverReport()
+    sessions.turns.noteText(coordinatorKey, 'Nothing new here, so I am leaving this report.')
+    await sessions.settleTurn(coordinatorKey, 'bot-a', 'answered')
+    deliverReport()
+    await expect(sessions.decide(ctx, { action: 'ignoreMessage', messageId: 'msg-9.9', reason: '' })).resolves.toEqual({
+      ok: true,
+      ignored: 'msg-9.9'
+    })
     await sessions.settleTurn(coordinatorKey, 'bot-a', 'answered')
     // A mention answered in text has its reply, so no task opens for it.
     begin(sessions, slack('3.1', { trigger: 'mention', text: '<@UBOT> thanks!' }))
@@ -853,7 +888,6 @@ describe('the coordinator’s outcomes', () => {
     await sessions.settleTurn(coordinatorKey, 'bot-a', 'answered')
     expect(posted.map((post) => [post.msg.msgId, post.text])).toEqual([
       ['slack:C1:1.1', 'Good morning!'],
-      ['agentcall:C1:assistant-report:9', 'The flaky test is fixed.'],
       ['slack:C1:3.1', 'You are welcome!'],
       ['slack:C1:4.1', 'Noted.']
     ])
@@ -862,16 +896,23 @@ describe('the coordinator’s outcomes', () => {
     begin(sessions, slack('2.1', { trigger: 'mention', text: '<@UBOT> thoughts?' }))
     sessions.turns.noteText(coordinatorKey, 'AC_NO_RESPONSE')
     await sessions.settleTurn(coordinatorKey, 'bot-a', 'answered')
+    // A mention may not be ignored: ignoreMessage posts nothing for it, and a task answers it.
+    begin(sessions, slack('6.1', { trigger: 'mention', text: '<@UBOT> any update?' }))
+    await expect(
+      sessions.decide(ctx, { action: 'ignoreMessage', messageId: 'msg-6.1', reason: 'unclear' })
+    ).resolves.toEqual({ ok: true, ignored: 'msg-6.1', note: 'It mentions you, so a task will answer it instead.' })
+    sessions.turns.noteText(coordinatorKey, 'I am not sure this is for me.')
+    await sessions.settleTurn(coordinatorKey, 'bot-a', 'answered')
     // The coordinator sees only a file's name, so a task answers a mention with one whatever the text says.
     const chart = { id: 'F5', name: 'chart.png', mimeType: 'image/png', sourceUrl: 'https://files.example.test/F5' }
     begin(sessions, slack('5.1', { trigger: 'mention', attachments: [chart] }))
     sessions.turns.noteText(coordinatorKey, 'Nice chart!')
     await sessions.settleTurn(coordinatorKey, 'bot-a', 'answered')
-    expect(dispatched.map((one) => one.msg.msgId)).toEqual(['slack:C1:2.1', 'slack:C1:5.1'])
+    expect(dispatched.map((one) => one.msg.msgId)).toEqual(['slack:C1:2.1', 'slack:C1:6.1', 'slack:C1:5.1'])
     expect(await store.assistantSubsessions.get('bot-a', sessionKey('slack', 'C1', '2.1', 'bot-a'))).toMatchObject({
       title: '<@UBOT> thoughts?'
     })
-    expect(posted).toHaveLength(4)
+    expect(posted).toHaveLength(3)
   })
 
   it('on a failed turn opens tasks for its mentions only, and acts on nothing a stop left', async () => {
@@ -1053,6 +1094,55 @@ async function boot(
 }
 
 describe('auto conversations route to the coordinator', () => {
+  it('succeeds a coordinator opened under an earlier outcome protocol once, handing its tasks over (§4.3, §8)', async () => {
+    const { daemon, d, route } = await boot(async () => 'end_turn')
+    const calls: NormalizedMessage[] = []
+    d.dispatch = vi.fn(async (_agentId: string, msg: NormalizedMessage) => {
+      calls.push(msg)
+      return null
+    })
+    await route(slack('1.1'))
+    const scope = d.transportScopeForIntegrationIds(['int-bot-a'])
+    const first = calls[0]!.sessionThread!
+    const firstKey = sessionKey('slack', 'C1', first, 'bot-a', scope)
+    const taskKey = sessionKey('slack', 'C1', '1.1', 'bot-a', scope)
+    await d.store.assistantSubsessions.open({
+      agentId: 'bot-a',
+      childSessionKey: taskKey,
+      parentSessionId: 'sid',
+      parentSessionKey: firstKey,
+      title: 'Task'
+    })
+    await d.store.assistantSubsessions.attachThread({
+      agentId: 'bot-a',
+      childSessionKey: taskKey,
+      platform: 'slack',
+      channel: 'C1',
+      transportScope: scope,
+      thread: '1.1',
+      sinceRound: 1,
+      now: 1
+    })
+    // A coordinator minted under the protocol in force stays.
+    await route(slack('2.1'))
+    expect(calls[1]!.sessionThread).toBe(first)
+    // One an earlier daemon minted recorded no protocol: its past turns teach the old outcomes.
+    await d.store.db
+      .prepare('UPDATE append_reservation SET protocol = NULL WHERE agentId = ? AND channel = ?')
+      .run('bot-a', 'C1')
+    await route(slack('3.1'))
+    const next = calls[2]!.sessionThread!
+    expect(isCoordinatorCoordinate(next)).toBe(true)
+    expect(next).not.toBe(first)
+    expect(await d.store.assistantSubsessions.get('bot-a', taskKey)).toMatchObject({
+      parentSessionKey: sessionKey('slack', 'C1', next, 'bot-a', scope)
+    })
+    // The successor is of the protocol in force, so nothing succeeds it again.
+    await route(slack('4.1'))
+    expect(calls[3]!.sessionThread).toBe(next)
+    await daemon.stop()
+  })
+
   it('routes root and unowned-thread messages to one coordinator, and a task’s threads to the task', async () => {
     const { daemon, d, route } = await boot(async () => 'end_turn')
     const calls: NormalizedMessage[] = []
@@ -1522,6 +1612,10 @@ describe('a coordinator driven through every outcome (auto-session-mode.md §4.2
       'msg-1.1': { call: () => ({ action: 'delegateTask', messageId: 'msg-1.1', title: 'Flaky test' }) },
       'msg-2.1': { call: () => ({ action: 'messageTask', messageId: 'msg-2.1', taskId }) },
       'msg-3.1': { text: 'Good morning!' },
+      'msg-3.2': {
+        call: () => ({ action: 'ignoreMessage', messageId: 'msg-3.2', reason: 'for another bot' }),
+        text: 'This one is for someone else, so I am ignoring it and posting nothing.'
+      },
       'msg-4.1': { text: 'Lunch is not for me.\n\nAC_NO_RESPONSE' },
       'msg-5.1': { text: 'AC_NO_RESPONSE' },
       'msg-6.1': { call: () => ({ action: 'replyToMessage', messageId: 'msg-6.1', message: 'Glad it helped.' }) }
@@ -1591,7 +1685,8 @@ describe('a coordinator driven through every outcome (auto-session-mode.md §4.2
     await vi.waitFor(() => expect(taskPosts).toHaveLength(1), WAIT)
     await send('2.1', { text: 'is the flaky test fixed yet?' })
     await vi.waitFor(() => expect(taskPosts).toHaveLength(2), WAIT)
-    await send('3.1', { text: 'morning all' })
+    await send('3.1', { ...mention, text: '<@U_FAKE_BOT> morning!' })
+    await send('3.2', { text: '<@U_OTHER> can you draft a plan?' })
     await send('4.1', { text: 'lunch?' })
     await send('5.1', { ...mention, text: '<@U_FAKE_BOT> thoughts?' })
     await vi.waitFor(() => expect(taskPosts).toHaveLength(3), WAIT)
@@ -1606,7 +1701,7 @@ describe('a coordinator driven through every outcome (auto-session-mode.md §4.2
     expect(tasks[0]).toContain('fix the flaky test')
     expect(tasks[1]).toContain('is the flaky test fixed yet?')
     expect(tasks[2]).toContain('thoughts?')
-    // The final text of 3.1 is its reply; that of 4.1, ending in the sentinel, stayed in the coordinator's transcript.
+    // The final text of 3.1 is its reply; what was written after 3.2's ignoreMessage and 4.1's sentinel stayed in the transcript.
     expect(coordinatorPosts).toEqual([
       { thread: '3.1', text: 'Good morning!' },
       { thread: '6.1', text: 'Glad it helped.' }

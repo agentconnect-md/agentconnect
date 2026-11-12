@@ -59,6 +59,9 @@ export function appendCoordinateTs(thread: string | undefined): number | undefin
   return Number.isSafeInteger(ts) ? ts : undefined
 }
 
+/** The outcomes a coordinator session was opened under (auto-session-mode.md §4.2): one from an earlier protocol is succeeded, since its own past turns teach it the old way. */
+export const COORDINATOR_PROTOCOL = 2
+
 /** The next coordinate after `current`, of its kind unless told: `max(now, current + 1)`, so a clock moved back cannot make `!new` a no-op. */
 export function nextAppendCoordinate(
   current: string | undefined,
