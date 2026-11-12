@@ -471,8 +471,8 @@ export class ShimDialer {
     // Skill write-back uploads through `bundle`, so it needs that grant beside Git plans.
     const supportsSkillWriteBack =
       supportsGitPlans && supportsBundles && identity.features?.includes('skill-git-writeback-v1') === true
-    // A GitLab plan entry is credentialed by the same Git plan window, so it needs Git plans.
-    const supportsGitlabPlans = supportsGitPlans && identity.features?.includes('skill-git-gitlab-v1') === true
+    // A GitLab plan entry reads through the pod's proxy route, a Git plan surface, so it needs Git plans.
+    const supportsGitlabPlans = supportsGitPlans && identity.features?.includes('skill-git-gitlab-proxy-v1') === true
     // A transfer stages into the bundle registry and uploads over `bundle`, so it needs that grant too.
     const supportsTransfer = supportsBundles && identity.features?.includes('workspace-transfer-v1') === true
     return {

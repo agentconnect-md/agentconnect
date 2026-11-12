@@ -1,5 +1,9 @@
 // Which resolver plans a tracking Git skill ref (source-cache.md §5): credentialed per agent, anonymous shared.
-import { skillSourceCredential, type AgentSkillEntry } from '@agentconnect.md/protocol'
+import {
+  AgentSkillEntry as AgentSkillEntrySchema,
+  skillSourceCredential,
+  type AgentSkillEntry
+} from '@agentconnect.md/protocol'
 import type { CodeHostSpecHosts } from '../codehost/credentials.js'
 import type { CodeHostRefResolver } from '../codehost/ref-resolver.js'
 import { normalizeSkillRef, type CodeHostRepositoryRef, type ResolveRefResult } from '../codehost/repository.js'
@@ -37,6 +41,21 @@ export function skillSourceRepository(
     },
     hosts: {}
   }
+}
+
+/** The GitLab projects an agent's private skill sources name, each once, as the credential proxy serves them. */
+export function privateGitlabSkillRepositories(
+  skills: readonly unknown[],
+  gitlabHost: string | undefined
+): GitlabSkillRepository[] {
+  const projects = new Map<string, GitlabSkillRepository>()
+  for (const value of skills) {
+    const parsed = AgentSkillEntrySchema.safeParse(value)
+    if (!parsed.success || skillSourceCredential(parsed.data)?.provider !== 'gitlab') continue
+    const found = skillSourceRepository(parsed.data, gitlabHost)?.repository as GitlabSkillRepository | undefined
+    if (found && !projects.has(found.externalId)) projects.set(found.externalId, found)
+  }
+  return [...projects.values()]
 }
 
 /** One agent's own answer for a credentialed skill Source, read with a token scoped to that repository. */

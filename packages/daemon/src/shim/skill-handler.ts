@@ -631,7 +631,7 @@ export class ClusterSkillHandler {
     })
   }
 
-  // The window capability lives only in this call's arguments and the Git child's env.
+  // The window capability and the skill placeholder live only in this call's arguments and the Git child's env.
   private async acquireGitPlan(
     input: ClusterSkillReconcile,
     operation: Operation,
@@ -643,6 +643,7 @@ export class ClusterSkillHandler {
       stagingFor: (sourceId) => join(this.deps.stagingRoot, input.handle, sourceDirectory(sourceId)),
       agentId: operation.authority.agentId,
       ...(input.credentialWindow ? { window: input.credentialWindow } : {}),
+      ...(input.credentialProxy ? { proxy: input.credentialProxy } : {}),
       deps: {
         credentialHelper: DEFAULT_SHIM_PATHS.gitCredentialHelper,
         credentialSocket: process.env[AGENT_CHANNEL_SOCKET_ENV]?.trim() || DEFAULT_SHIM_PATHS.tunnels.agent,

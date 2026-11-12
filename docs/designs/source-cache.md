@@ -583,11 +583,12 @@ A shim that advertises `skill-git-in-pod-v1` installs Git skill sources itself:
    workspace-repo skill whose entry lacks `private: true` keeps installing.
    An in-pod reconcile (S5b) opens one **pod-subject** window per reconcile
    (`AgentChannelServer.openPodSkillWindow`) over exactly the plan's private
-   repositories that are cloned (a `keepInstalled` entry is not), the
+   GitHub repositories that are cloned (a `keepInstalled` entry is not), the
    workspace repository included because the pod's Git child holds no other
    capability, hands its capability to the shim in the Git plan request, and
    closes it in `finally`. An agent whose only credential need is a private
-   skill source gets the `agent` tunnel too, window-gated. A window is bound
+   GitHub skill source gets the `agent` tunnel too, window-gated; one with a
+   private GitLab skill source gets the `codehost` tunnel for it (section 11). A window is bound
    to the pod it was handed to: the tunnel proxy writes a greeting line
    (`{"op":"via","subject","key"}`, the key a per-boot secret only the daemon
    holds) on every daemon-side agent channel connection before any pod byte, and
@@ -1103,21 +1104,22 @@ In-pod acquisition (P3, CP3.3b, in-pod path):
   plan's planned commit and full ref. It is never cached or shared, and the
   daemon itself never contacts the host. A pinned commit is taken as given.
 - A credentialed GitLab Source goes in-pod only to an image that advertises
-  `skill-git-gitlab-v1` (the `skills-git-gitlab` grant). Its plan entry names
-  the instance base as `credentialHost`; an older image would refuse that
-  field. The planned commit is the daemon's `resolveRef`, as for GitHub.
-- The pod-subject window names a GitLab project as `gitlab:<path>`, which can
-  never collide with a GitHub `owner/repo`. Through that window alone, the agent channel
-  serves the project's read credential by numeric id for a `git` ask. It is
-  cached as the read token keyed by project path, so it never shares an entry
-  that an additional-repository grant may hold writable. The daemon path keys
-  its own read token the same way, apart from the workspace's. The shim hands
-  the Git child a helper for that instance only.
+  `skill-git-gitlab-proxy-v1` (the `skills-git-gitlab` grant) and whose pod has a
+  `codehost` listener. Its plan entry names the instance base as
+  `credentialHost`; an older image would refuse that field. The planned commit
+  is the daemon's `resolveRef`, as for GitHub.
+- It opens no window. The reconcile carries the pod's route to the credential
+  proxy and the agent's skill placeholder (`credentialProxy`), and the shim gives
+  only that Source's Git child the placeholder helper, the proxy for that instance
+  and the listener's trust bundle. The proxy exchanges the placeholder only for a
+  Git read of a project that is one of the agent's current private GitLab skill
+  sources, leased at `read` (github-app-git-credentials.md, delivery 3). The
+  daemon path keeps its own read token, keyed apart from the workspace's.
 - A GitLab Source's `cred` cache key is `gitlab:<projectId>`. An anonymous
   Source off GitHub keys `anon` on its URL.
 - Anything a pod cannot carry stays on the daemon path above. That covers a
-  GitLab Source for an older image or for a window that would not admit it, and
-  an anonymous Source off GitHub where no runner for the pod's `exec` channel
+  GitLab Source for an older image or a pod with no `codehost` listener, and an
+  anonymous Source off GitHub where no runner for the pod's `exec` channel
   exists.
 
 Skipped-Source status (P3, CP3.4):

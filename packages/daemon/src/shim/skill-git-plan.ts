@@ -14,7 +14,14 @@ import {
   type SkillGitCredential,
   type SkillGitRunner
 } from './skill-git-acquire.js'
-import type { ClusterSkillSource, GitSkillPlan, SkillCredentialWindowGrant, SkillSkipCode } from './skill-protocol.js'
+import { CODE_HOST_CREDENTIAL_ENV, PLACEHOLDER_HELPER_COMMAND } from '../credential-proxy/placeholder-helper.js'
+import type {
+  ClusterSkillSource,
+  GitSkillPlan,
+  SkillCredentialProxyGrant,
+  SkillCredentialWindowGrant,
+  SkillSkipCode
+} from './skill-protocol.js'
 
 // The shim side of a Git plan reconcile (source-cache.md §8): acquire each Git Source in-pod, then charge one manifest budget.
 
@@ -70,33 +77,41 @@ export interface AcquireGitPlanInput {
   stagingFor(sourceId: string): string
   agentId: string
   window?: SkillCredentialWindowGrant
+  /** The pod's route to the credential proxy, which a GitLab plan entry's Git presents the skill placeholder through. */
+  proxy?: SkillCredentialProxyGrant
   deps: SkillGitPlanDeps
   abort: AbortSignal
 }
 
 const shellQuoted = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`
 
-/** The credential a Source's Git child gets: only with a window, for github.com or the GitLab instance its plan names. */
+/** The credential a Source's Git child gets: a GitLab plan's instance the skill placeholder through the proxy route, github.com a window's. */
 export function skillGitCredentialFor(
   plan: GitSkillPlan,
-  window: SkillCredentialWindowGrant | undefined,
+  grants: { window?: SkillCredentialWindowGrant; proxy?: SkillCredentialProxyGrant },
   agentId: string,
   deps: Pick<SkillGitPlanDeps, 'credentialHelper' | 'credentialSocket'>
 ): SkillGitCredential | undefined {
-  if (!window) return undefined
   const gitlab = plan.credentialHost?.replace(/\/+$/, '')
-  // The schema already holds the clone URL under the named instance; checked again where the credential is handed out.
-  if (gitlab !== undefined && !plan.url.startsWith(`${gitlab}/`)) return undefined
-  if (gitlab === undefined && new URL(plan.url).origin !== GITHUB_MANAGED_HOST.baseUrl) return undefined
-  const host = gitlab === undefined ? GITHUB_MANAGED_HOST : { provider: 'gitlab', baseUrl: gitlab }
+  if (gitlab !== undefined) {
+    // The schema already holds the clone URL under the named instance; checked again where the credential is handed out.
+    if (!grants.proxy || !plan.url.startsWith(`${gitlab}/`)) return undefined
+    return {
+      host: gitlab,
+      helper: PLACEHOLDER_HELPER_COMMAND,
+      env: { [CODE_HOST_CREDENTIAL_ENV]: grants.proxy.placeholder },
+      proxy: { url: grants.proxy.url, trustBundle: grants.proxy.trustBundle }
+    }
+  }
+  if (!grants.window || new URL(plan.url).origin !== GITHUB_MANAGED_HOST.baseUrl) return undefined
   return {
-    host: host.baseUrl,
+    host: GITHUB_MANAGED_HOST.baseUrl,
     helper: `!sh ${shellQuoted(deps.credentialHelper)} ${shellQuoted(agentId)}`,
     env: {
-      [AGENT_CHANNEL_CAPABILITY_ENV]: window.capability,
+      [AGENT_CHANNEL_CAPABILITY_ENV]: grants.window.capability,
       [AGENT_CHANNEL_AGENT_ENV]: agentId,
       [AGENT_CHANNEL_SOCKET_ENV]: deps.credentialSocket,
-      [AGENT_CHANNEL_HOSTS_ENV]: encodeManagedHostTable([host])
+      [AGENT_CHANNEL_HOSTS_ENV]: encodeManagedHostTable([GITHUB_MANAGED_HOST])
     }
   }
 }
@@ -117,7 +132,12 @@ async function acquireOne(input: AcquireGitPlanInput, plan: GitSkillPlan, phase:
   if (phase.aborted) return timedOut(plan)
   const { deps } = input
   const stagingRoot = input.stagingFor(plan.sourceId)
-  const credential = skillGitCredentialFor(plan, input.window, input.agentId, deps)
+  const credential = skillGitCredentialFor(
+    plan,
+    { ...(input.window ? { window: input.window } : {}), ...(input.proxy ? { proxy: input.proxy } : {}) },
+    input.agentId,
+    deps
+  )
   const deadline = new AbortController()
   const timer = setTimeout(() => deadline.abort(), deps.sourceTimeoutMs ?? SKILL_GIT_PLAN_SOURCE_TIMEOUT_MS)
   const signal = AbortSignal.any([input.abort, phase, deadline.signal])

@@ -37,6 +37,7 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { tlsTrustEnv } from '../config/tls-trust-env.js'
 import { proxyTrustEnv } from '../credential-proxy/ca.js'
+import { CODE_HOST_CREDENTIAL_ENV, PLACEHOLDER_HELPER_COMMAND } from '../credential-proxy/placeholder-helper.js'
 import type { GitPullSummary, GitRunner } from './git-runner.js'
 import { simpleGit, type SimpleGit } from 'simple-git'
 import { normalizeGitCloneUrl, type CodeHostProvider, type GitCommitIdentity } from '@agentconnect.md/protocol'
@@ -672,11 +673,7 @@ export function liveSecretsChannelEnv(
   }
 }
 
-/** The variable a proxied environment's placeholder rides in, which the helper below hands git. */
-export const CODE_HOST_CREDENTIAL_ENV = 'AC_CODEHOST_CREDENTIAL'
-
-// It answers only `get`, with the placeholder the proxy exchanges, and nothing in an environment without one.
-const PLACEHOLDER_HELPER_COMMAND = `!f() { test "$1" = get && test -n "$${CODE_HOST_CREDENTIAL_ENV}" || return 0; echo username=x-access-token; echo "password=$${CODE_HOST_CREDENTIAL_ENV}"; }; f`
+export { CODE_HOST_CREDENTIAL_ENV }
 // Quoted whole in a gitconfig file, since `;` would start a comment there.
 const PLACEHOLDER_HELPER = `"${PLACEHOLDER_HELPER_COMMAND.replaceAll('"', '\\"')}"`
 

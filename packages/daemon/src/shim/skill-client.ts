@@ -67,7 +67,7 @@ export class ClusterSkillClient {
     readonly gitInPod = false,
     // Present only with the `skills-git-writeback` grant: uploads and discards the handles a Git plan reply offers.
     readonly writeBack?: SkillWriteBackStager,
-    // Mirrors the `skills-git-gitlab` grant: a plan entry may name the GitLab instance its window credentials.
+    // Mirrors the `skills-git-gitlab` grant: a plan entry may name the GitLab instance it reads through the proxy route.
     readonly gitlabPlans = false
   ) {}
 
@@ -125,7 +125,7 @@ export class ClusterSkillClient {
   async reconcile(input: Omit<ClusterSkillReconcile, 'op' | 'priorRootCount'>): Promise<ClusterSkillReconcileReply> {
     if (isGitPlanReconcile(input)) {
       if (!this.gitInPod || !this.receiptPaging) throw new Error('this sandbox image does not take Git skill plans')
-      if (!this.gitlabPlans && input.sources.some((source) => 'credentialHost' in source)) {
+      if (!this.gitlabPlans && (input.credentialProxy || input.sources.some((source) => 'credentialHost' in source))) {
         throw new Error('this sandbox image does not take GitLab skill plans')
       }
       // A shim without `skill-git-writeback-v1` refuses the field, so it never leaves the daemon for one.

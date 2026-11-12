@@ -309,7 +309,7 @@ describe('shim feature negotiation', () => {
     ])
   })
 
-  it('grants `skills-git-gitlab` only beside `skills-git`, to a shim that advertises skill-git-gitlab-v1', async () => {
+  it('grants `skills-git-gitlab` only beside `skills-git`, to a shim that advertises skill-git-gitlab-proxy-v1', async () => {
     const grantsFor = async (features: string[]): Promise<string[]> => {
       const clock = new VirtualClock()
       const { dialer } = scriptedDialer({
@@ -327,8 +327,8 @@ describe('shim feature negotiation', () => {
     const gitPlans = ['cluster-skills-v1', 'cluster-skills-v2', 'cluster-skills-v3', 'skill-git-in-pod-v1']
     // An image that predates GitLab plan entries would refuse their `credentialHost`, so it never gets one.
     expect(await grantsFor(gitPlans)).not.toContain('skills-git-gitlab')
-    expect(await grantsFor(['cluster-skills-v1', 'skill-git-gitlab-v1'])).not.toContain('skills-git-gitlab')
-    expect(await grantsFor([...gitPlans, 'skill-git-gitlab-v1'])).toContain('skills-git-gitlab')
+    expect(await grantsFor(['cluster-skills-v1', 'skill-git-gitlab-proxy-v1'])).not.toContain('skills-git-gitlab')
+    expect(await grantsFor([...gitPlans, 'skill-git-gitlab-proxy-v1'])).toContain('skills-git-gitlab')
   })
 })
 
@@ -435,7 +435,7 @@ describe('shim handshake', () => {
         'source-cache-bundle-v1',
         'skill-git-in-pod-v1',
         'skill-git-writeback-v1',
-        'skill-git-gitlab-v1',
+        'skill-git-gitlab-proxy-v1',
         'workspace-transfer-v1'
       ]
     })

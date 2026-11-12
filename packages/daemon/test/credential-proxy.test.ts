@@ -74,6 +74,22 @@ describe('the placeholder', () => {
     expect(openPlaceholder(key, legacySealed(key, { a: AGENT, h: [], k: 'other' }))).toBeUndefined()
     expect(openPlaceholder(key, legacySealed(key, { a: AGENT, h: [], k: 'provider' }))).toBeUndefined()
   })
+
+  it('keeps a skill claim on a code host’s placeholder alone', () => {
+    const key = loadPlaceholderKey(join(scratch(), 'proxy.key'))
+    const skill = sealPlaceholder(key, { agentId: AGENT, hosts: ['gitlab.example.test'], skill: true })
+    expect(openPlaceholder(key, skill)).toEqual({
+      agentId: AGENT,
+      hosts: ['gitlab.example.test'],
+      kind: 'codehost',
+      skill: true
+    })
+    expect(() =>
+      sealPlaceholder(key, { agentId: AGENT, hosts: [], kind: 'provider', slot: 's', skill: true })
+    ).toThrow()
+    expect(openPlaceholder(key, legacySealed(key, { a: AGENT, h: [], k: 'provider', p: 's', s: 1 }))).toBeUndefined()
+    expect(openPlaceholder(key, legacySealed(key, { a: AGENT, h: [], k: 'codehost', s: true }))).toBeUndefined()
+  })
 })
 
 /** A placeholder sealed by hand, as a daemon before the kind claim sealed one. */
@@ -184,6 +200,7 @@ function proxyFor(
     known?: boolean
     workspace?: string
     instances?: Record<string, ManagedCredentialHost[]>
+    skillInstances?: Record<string, ManagedCredentialHost[]>
     repositoriesOf?: (agentId: string, provider: string) => readonly ProxyRepository[]
   } = {}
 ) {
@@ -197,6 +214,9 @@ function proxyFor(
     mint: mint as never,
     workspaceRepo: () => overrides.workspace,
     instancesOf: (agentId) => instances[agentId] ?? [],
+    ...(overrides.skillInstances
+      ? { skillInstancesOf: (agentId: string) => overrides.skillInstances![agentId] ?? [] }
+      : {}),
     runningAgents: () => Object.keys(instances),
     knownAgent: () => overrides.known ?? true,
     ...(overrides.repositoriesOf ? { repositoriesOf: overrides.repositoriesOf } : {}),
@@ -1039,3 +1059,108 @@ function exchange(dial: Dial, host: string, caPem: string, lines: string[]): Pro
     req.end()
   })
 }
+
+describe('a skill placeholder', () => {
+  const minted = { username: 'skill-reader', token: 'glpat_read', access: 'read' as const }
+  // The agent works on GitHub; its private skill sources live on a GitLab instance its workspace never names.
+  const setup = () =>
+    proxyFor({
+      mint: vi.fn(async () => minted),
+      instances: { [AGENT]: [GITHUB_MANAGED_HOST] },
+      skillInstances: { [AGENT]: [GITLAB] }
+    })
+  const at = { ...HTTPS, target: { host: 'gitlab.example.test', port: 8443 } }
+  const git = (credential: string, path: string, method = 'GET') =>
+    new Request(`https://gitlab.example.test:8443/gitlab/${path}`, {
+      method,
+      headers: { authorization: `Basic ${Buffer.from(`x-access-token:${credential}`).toString('base64')}` }
+    })
+
+  it('is sealed for the skill instances alone, which the tunnel reaches and no session is routed to', () => {
+    const { proxy, key, placeholder } = setup()
+    const skill = proxy.skillPlaceholderFor(AGENT)!
+    expect(openPlaceholder(key, skill)).toMatchObject({ hosts: ['gitlab.example.test:8443'], skill: true })
+    expect(openPlaceholder(key, placeholder)?.hosts).not.toContain('gitlab.example.test:8443')
+    expect(proxy.tunnelRoutes(AGENT)).toContain('gitlab.example.test:8443')
+    expect(proxy.domainsFor(AGENT)).not.toContain('gitlab.example.test')
+    expect(proxyFor().proxy.skillPlaceholderFor(AGENT)).toBeUndefined()
+  })
+
+  it('reads a skill project over Git with a read-only skill lease', async () => {
+    const { proxy, mint } = setup()
+    const skill = proxy.skillPlaceholderFor(AGENT)!
+    expect(
+      await proxy.decide(git(skill, 'group/skills.git/info/refs?service=git-upload-pack'), at, AGENT, 'codehost')
+    ).toEqual({
+      action: 'allow',
+      setHeaders: [['authorization', `Basic ${Buffer.from('skill-reader:glpat_read').toString('base64')}`]]
+    })
+    expect(mint).toHaveBeenLastCalledWith(AGENT, {
+      provider: 'gitlab',
+      repo: 'group/skills',
+      plane: 'git',
+      readOnly: true,
+      skill: true
+    })
+  })
+
+  it('refuses a push, any API call, and an ordinary placeholder on the skill instance', async () => {
+    const { proxy, mint, placeholder } = setup()
+    const skill = proxy.skillPlaceholderFor(AGENT)!
+    expect(
+      await proxy.decide(git(skill, 'group/skills.git/git-receive-pack', 'POST'), at, AGENT, 'codehost')
+    ).toMatchObject({
+      action: 'deny',
+      status: 403
+    })
+    const api = new Request('https://gitlab.example.test:8443/gitlab/api/v4/projects/77', {
+      headers: { 'private-token': skill }
+    })
+    expect(await proxy.decide(api, at, AGENT, 'codehost')).toMatchObject({ action: 'deny', status: 403 })
+    expect(await proxy.decide(git(placeholder, 'group/skills.git/info/refs'), at, AGENT, 'codehost')).toMatchObject({
+      action: 'deny',
+      status: 403
+    })
+    // One request may not carry a skill placeholder beside an ordinary one.
+    const mixed = git(skill, 'group/skills.git/info/refs')
+    mixed.headers.set('private-token', placeholder)
+    expect(await proxy.decide(mixed, at, AGENT, 'codehost')).toMatchObject({ action: 'deny', status: 403 })
+    expect(mint).not.toHaveBeenCalled()
+  })
+
+  it('is refused on the shared loopback listener even where the agent’s own instance is the skill instance', async () => {
+    const { proxy, mint } = proxyFor({
+      mint: vi.fn(async () => minted),
+      instances: { [AGENT]: [GITLAB] },
+      skillInstances: { [AGENT]: [GITLAB] }
+    })
+    const skill = proxy.skillPlaceholderFor(AGENT)!
+    expect(await proxy.decide(git(skill, 'group/skills.git/info/refs'), at)).toMatchObject({
+      action: 'deny',
+      status: 403
+    })
+    expect(mint).not.toHaveBeenCalled()
+  })
+
+  it('leaves the skill instance alone on the shared loopback listener', async () => {
+    const { proxy, mint } = setup()
+    const skill = proxy.skillPlaceholderFor(AGENT)!
+    expect(await proxy.decide(git(skill, 'group/skills.git/info/refs'), at)).toEqual({ action: 'allow' })
+    expect(mint).not.toHaveBeenCalled()
+  })
+
+  it('is not honored on the agent’s own code hosts', async () => {
+    const { proxy, mint } = setup()
+    const skill = proxy.skillPlaceholderFor(AGENT)!
+    const github = new Request('https://github.com/o/r.git/info/refs', {
+      headers: { authorization: `Basic ${Buffer.from(`x-access-token:${skill}`).toString('base64')}` }
+    })
+    expect(
+      await proxy.decide(github, { ...HTTPS, requestTarget: '/o/r.git/info/refs' }, AGENT, 'codehost')
+    ).toMatchObject({
+      action: 'deny',
+      status: 403
+    })
+    expect(mint).not.toHaveBeenCalled()
+  })
+})

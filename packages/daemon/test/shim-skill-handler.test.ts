@@ -17,6 +17,7 @@ import {
 import {
   SkillGitAbortedError,
   runLocalSkillGit,
+  skillGitEnv,
   type SkillGitInvocation,
   type SkillGitRunner
 } from '../src/shim/skill-git-acquire.js'
@@ -994,6 +995,7 @@ describe.skipIf(process.platform === 'win32')('cluster skill shim Git plan sourc
       sources: ClusterSkillReconcile['sources']
       priorRoots?: ClusterSkillReconcile['priorRoots']
       credentialWindow?: { capability: string }
+      credentialProxy?: { url: string; trustBundle: string; placeholder: string }
     }
   ) {
     const client = new ClusterSkillClient(
@@ -1001,7 +1003,9 @@ describe.skipIf(process.platform === 'win32')('cluster skill shim Git plan sourc
       true,
       true,
       true,
-      true
+      true,
+      undefined,
+      input.credentialProxy !== undefined
     )
     const operationId = randomUUID()
     const contents = Object.entries(input.uploads ?? {}).flatMap(([sourceId, files]) =>
@@ -1024,7 +1028,8 @@ describe.skipIf(process.platform === 'win32')('cluster skill shim Git plan sourc
       replayKey: randomBytes(32).toString('hex'),
       allowDesiredAdoption: false,
       sources: input.sources,
-      ...(input.credentialWindow ? { credentialWindow: input.credentialWindow } : {})
+      ...(input.credentialWindow ? { credentialWindow: input.credentialWindow } : {}),
+      ...(input.credentialProxy ? { credentialProxy: input.credentialProxy } : {})
     })
   }
 
@@ -1343,6 +1348,50 @@ describe.skipIf(process.platform === 'win32')('cluster skill shim Git plan sourc
     }
   }, 120_000)
 
+  it('hands the skill placeholder only to a GitLab Source’s Git child, through the proxy route, never to disk or a log', async () => {
+    const w = await world()
+    try {
+      const placeholder = `acph1_${randomBytes(24).toString('base64url')}.${randomBytes(32).toString('base64url')}`
+      const credentialProxy = {
+        url: 'http://codehost:token@127.0.0.1:4100',
+        trustBundle: join(w.root, 'trust.pem'),
+        placeholder
+      }
+      const GITLAB = 'https://gitlab.example.test/acme/'
+      const logs: string[] = []
+      const calls: SkillGitInvocation[] = []
+      const git: SkillGitRunner = async (invocation) => {
+        calls.push(invocation)
+        const args = invocation.args.map((arg) =>
+          arg.startsWith(GITLAB) ? `file://${join(w.root, arg.slice(GITLAB.length))}` : arg
+        )
+        return await runLocalSkillGit({ ...invocation, args })
+      }
+      const reply = await reconcile(handlerFor(w, git, { logs }), {
+        sources: [plan(w, { url: `${GITLAB}skills.git`, credentialHost: 'https://gitlab.example.test' })],
+        credentialProxy
+      })
+      expect(leaves(reply.roots)).toEqual(['alpha'])
+      expect(calls.length).toBeGreaterThan(0)
+      for (const call of calls) {
+        expect(call.env.AC_CODEHOST_CREDENTIAL).toBe(placeholder)
+        expect(call.env.AC_AGENT_CHANNEL_CAPABILITY).toBeUndefined()
+        expect(call.env.GIT_SSL_CAINFO).toBe(credentialProxy.trustBundle)
+        const config = Object.entries(call.env).filter(([key]) => key.startsWith('GIT_CONFIG_VALUE_'))
+        expect(config.map(([, value]) => value)).toContain(credentialProxy.url)
+        expect(call.args.join(' ')).not.toContain(placeholder)
+      }
+      expect(logs.join('\n')).not.toContain(placeholder)
+      const onDisk: string[] = []
+      for (const path of await filesUnder(w.root)) {
+        if ((await lstat(path)).isFile() && (await readFile(path)).includes(placeholder)) onDisk.push(path)
+      }
+      expect(onDisk).toEqual([])
+    } finally {
+      await removeTree(w.root)
+    }
+  }, 120_000)
+
   it('skips a keepInstalled Source that has no installed root instead of claiming it', async () => {
     const w = await world()
     try {
@@ -1363,28 +1412,59 @@ describe.skipIf(process.platform === 'win32')('cluster skill shim Git plan sourc
     const deps = { credentialHelper: HELPER, credentialSocket: SOCKET }
     const window = { capability: 'cap' }
     const gitlab = { ...plan({ tip: 'a'.repeat(40) } as World), url: 'https://gitlab.com/o/r.git' }
-    expect(skillGitCredentialFor(gitlab, window, 'a', deps)).toBeUndefined()
+    expect(skillGitCredentialFor(gitlab, { window }, 'a', deps)).toBeUndefined()
     const github = { ...gitlab, url: 'https://github.com/o/r.git' }
-    expect(skillGitCredentialFor(github, window, 'a', deps)?.env.AC_AGENT_CHANNEL_CAPABILITY).toBe('cap')
-    expect(skillGitCredentialFor(github, undefined, 'a', deps)).toBeUndefined()
+    expect(skillGitCredentialFor(github, { window }, 'a', deps)?.env.AC_AGENT_CHANNEL_CAPABILITY).toBe('cap')
+    expect(skillGitCredentialFor(github, {}, 'a', deps)).toBeUndefined()
   })
 
-  it('attaches the window credential to a GitLab Source only on the instance its plan names', () => {
+  it('gives a GitLab Source the skill placeholder through the proxy route, only on the instance its plan names', () => {
     const deps = { credentialHelper: HELPER, credentialSocket: SOCKET }
     const window = { capability: 'cap' }
+    const proxy = {
+      url: 'http://codehost:token@127.0.0.1:4100',
+      trustBundle: '/run/codehost/trust.pem',
+      placeholder: 'acph1_e30.sig'
+    }
     const gitlab = {
       ...plan({ tip: 'a'.repeat(40) } as World),
       url: 'https://gitlab.example.test/prefix/group/skills.git',
       credentialHost: 'https://gitlab.example.test/prefix'
     }
-    const credential = skillGitCredentialFor(gitlab, window, 'a', deps)
-    expect(credential?.host).toBe('https://gitlab.example.test/prefix')
-    expect(credential?.env.AC_AGENT_CHANNEL_HOSTS).toBe('gitlab=https://gitlab.example.test/prefix')
-    expect(credential?.env.AC_AGENT_CHANNEL_CAPABILITY).toBe('cap')
-    // A named instance that does not prefix the URL, or no window, carries nothing.
+    const credential = skillGitCredentialFor(gitlab, { window, proxy }, 'a', deps)
+    expect(credential).toMatchObject({
+      host: 'https://gitlab.example.test/prefix',
+      env: { AC_CODEHOST_CREDENTIAL: 'acph1_e30.sig' },
+      proxy: { url: proxy.url, trustBundle: proxy.trustBundle }
+    })
+    // A window's capability never reaches a GitLab Source's Git.
+    expect(credential?.env.AC_AGENT_CHANNEL_CAPABILITY).toBeUndefined()
+    const env = skillGitEnv(
+      {
+        home: '/h',
+        ceiling: '/c',
+        shimEnv: { GIT_SSL_CAINFO: '/etc/roots.pem' },
+        credential,
+        allowFileProtocol: false
+      },
+      { lazyFetch: false }
+    )
+    const pairs = Object.fromEntries(
+      Array.from({ length: Number(env.GIT_CONFIG_COUNT) }, (_, i) => [
+        `${env[`GIT_CONFIG_KEY_${i}`]}#${i}`,
+        env[`GIT_CONFIG_VALUE_${i}`]
+      ])
+    )
+    expect(Object.entries(pairs)).toContainEqual([
+      expect.stringMatching(/^http\.https:\/\/gitlab\.example\.test\/prefix\.proxy#/),
+      proxy.url
+    ])
+    expect(env.GIT_SSL_CAINFO).toBe(proxy.trustBundle)
+    expect(env.AC_CODEHOST_CREDENTIAL).toBe('acph1_e30.sig')
+    // A named instance that does not prefix the URL, or no proxy route, carries nothing.
     expect(
-      skillGitCredentialFor({ ...gitlab, credentialHost: 'https://code.example.test' }, window, 'a', deps)
+      skillGitCredentialFor({ ...gitlab, credentialHost: 'https://code.example.test' }, { proxy }, 'a', deps)
     ).toBeUndefined()
-    expect(skillGitCredentialFor(gitlab, undefined, 'a', deps)).toBeUndefined()
+    expect(skillGitCredentialFor(gitlab, { window }, 'a', deps)).toBeUndefined()
   })
 })

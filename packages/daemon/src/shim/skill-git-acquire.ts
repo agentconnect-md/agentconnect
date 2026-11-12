@@ -31,6 +31,7 @@ import {
   AGENT_CHANNEL_SOCKET_ENV
 } from '../agent-channel/env.js'
 import { AGENT_CHANNEL_HOSTS_ENV } from '../gitcred/managed-hosts.js'
+import { CODE_HOST_CREDENTIAL_ENV } from '../credential-proxy/placeholder-helper.js'
 import { assertStagingPrivate } from './bundle-staging.js'
 import { GitSkillPlanSchema, type GitSkillPlan, type SkillSkipCode } from './skill-protocol.js'
 
@@ -57,12 +58,13 @@ const PASSTHROUGH_ENV = [
   'GIT_SSL_CAINFO',
   'GIT_SSL_CAPATH'
 ]
-// The only credential-window variables the git credential helper reads; anything else the caller passes is dropped.
+// The only variables a credential helper reads, a window's or the proxy placeholder's; anything else the caller passes is dropped.
 const CREDENTIAL_ENV = [
   AGENT_CHANNEL_CAPABILITY_ENV,
   AGENT_CHANNEL_AGENT_ENV,
   AGENT_CHANNEL_SOCKET_ENV,
-  AGENT_CHANNEL_HOSTS_ENV
+  AGENT_CHANNEL_HOSTS_ENV,
+  CODE_HOST_CREDENTIAL_ENV
 ]
 // Only a transport spawn can be refused by a remote; a local `permission denied` (EACCES) is not access_denied.
 const TRANSPORT_SUBCOMMANDS = new Set(['clone', 'fetch', 'ls-remote'])
@@ -179,8 +181,10 @@ export interface SkillGitCredential {
   host: string
   /** The `credential.<host>.helper` value. */
   helper: string
-  /** The helper's own `AC_AGENT_CHANNEL_*` variables; any other name is dropped, never forwarded. */
+  /** The helper's own variables (a window's `AC_AGENT_CHANNEL_*`, or the placeholder); any other name is dropped. */
   env: Record<string, string>
+  /** The pod's route to the credential proxy, which this host alone is reached through, and the bundle its TLS is trusted by. */
+  proxy?: { url: string; trustBundle: string }
 }
 
 interface EnvOptions {
@@ -225,6 +229,17 @@ export function skillGitEnv(options: EnvOptions, { lazyFetch }: { lazyFetch: boo
       [`credential.${credential.host}.helper`, credential.helper],
       [`credential.${credential.host}.useHttpPath`, 'true']
     )
+    if (credential.proxy) {
+      pairs.push(
+        [`http.${credential.host}.proxy`, credential.proxy.url],
+        [`http.${credential.host}.proxyAuthMethod`, 'basic'],
+        [`http.${credential.host}.sslVerify`, 'true'],
+        [`credential.${new URL(credential.proxy.url).origin}.helper`, '']
+      )
+      // The bundle holds this machine's roots too, so a bundle URI read directly stays trusted.
+      env.GIT_SSL_CAINFO = credential.proxy.trustBundle
+      delete env.GIT_SSL_CAPATH
+    }
   }
   pairs.forEach(([key, value], index) => {
     env[`GIT_CONFIG_KEY_${index}`] = key
@@ -260,6 +275,16 @@ function assertCredential(credential: SkillGitCredential | undefined): void {
   }
   if (credential.helper === '' || /[\r\n\0]/.test(credential.helper)) {
     throw new SkillGitPlanRefusedError('credential helper is empty or multi-line')
+  }
+  if (credential.proxy) {
+    const proxy = URL.canParse(credential.proxy.url) ? new URL(credential.proxy.url) : undefined
+    if (
+      proxy?.protocol !== 'http:' ||
+      proxy.hostname !== '127.0.0.1' ||
+      /[\r\n\0]/.test(credential.proxy.trustBundle)
+    ) {
+      throw new SkillGitPlanRefusedError('credential proxy must be a loopback http listener')
+    }
   }
 }
 
