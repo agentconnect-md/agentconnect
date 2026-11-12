@@ -13,6 +13,7 @@ import {
   installMsTeamsAppForUser,
   installMsTeamsAppForUserEventually,
   publishMsTeamsPackage,
+  readMsTeamsUsername,
   redeemMsTeamsCode,
   sealMsTeamsTicket,
   verifyMsTeamsConnectState
@@ -169,12 +170,19 @@ describe('Teams connect for a deployment with agent bots (§8.6.5)', () => {
     const atTenant = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
       Response.json({
         access_token: 'delegated',
-        id_token: idToken({ tid: TENANT, oid: OID, preferred_username: 'guest@partner.example.test' })
+        id_token: idToken({ tid: TENANT, oid: OID })
       })
     )
     const guest = await redeemMsTeamsCode(keys, { ...pinInput, clientSecret: 's', code: 'c' }, atTenant)
     expect(String(atTenant.mock.calls[0]![0])).toBe(`https://login.microsoftonline.com/${TENANT}/oauth2/v2.0/token`)
-    expect(guest.username).toBe('guest@partner.example.test')
+    expect(guest.tenantId).toBe(TENANT)
+    // The hint is the sign-in name Graph answers; an ID token of these scopes carries none.
+    const named = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
+      Response.json({ userPrincipalName: 'guest@partner.example.test' })
+    )
+    expect(await readMsTeamsUsername(named, 'delegated')).toBe('guest@partner.example.test')
+    expect(String(named.mock.calls[0]![0])).toBe('https://graph.microsoft.com/v1.0/me?$select=userPrincipalName')
+    expect(await readMsTeamsUsername(async () => new Response(null, { status: 403 }), 'delegated')).toBe('')
     // Without the agent bots the scope set is the three of §8.1, and an ID token with no object ID names no sponsor.
     const plain = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
       Response.json({ access_token: 'delegated', id_token: idToken({ tid: TENANT }) })

@@ -59,7 +59,8 @@ import {
   upgradeMsTeamsInstalls,
   verifyMsTeamsConnectState,
   type MsTeamsConnectKeys,
-  installMsTeamsAppForUserEventually
+  installMsTeamsAppForUserEventually,
+  readMsTeamsUsername
 } from './connect.js'
 import {
   MSTEAMS_DEPLOYMENT_OWNER,
@@ -471,8 +472,7 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
             accessToken,
             tenantId,
             userId: sponsorId,
-            refreshToken,
-            username
+            refreshToken
           } = await redeemMsTeamsCode(
             seams.keys,
             {
@@ -508,7 +508,7 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
           if (before.some((row) => row.orgId !== orgId)) return taken()
           const held = before.find((row) => row.externalAppId === live.app.appId)
           // A person signed in at a tenant this organization has not connected may be a guest of the one it has: they are signed in there once, silently (§8.6.6).
-          if (state.agentBots && !state.consented && !state.pin && before.length === 0 && username) {
+          if (state.agentBots && !state.consented && !state.pin && before.length === 0) {
             const connected = new Set(
               (await deps.repos.bot.listForOrg(orgId))
                 .filter(
@@ -516,7 +516,8 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
                 )
                 .map((row) => row.externalTenantId!)
             )
-            if (connected.size === 1) {
+            const username = connected.size === 1 ? await readMsTeamsUsername(fetchImpl, accessToken) : ''
+            if (username) {
               const pin = [...connected][0]!
               const silent = mintMsTeamsConnectState(
                 seams.keys,

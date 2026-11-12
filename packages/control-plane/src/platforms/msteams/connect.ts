@@ -206,7 +206,7 @@ const TokenResponse = z.object({
   id_token: z.string().min(1),
   refresh_token: z.string().min(1).optional()
 })
-const IdClaims = z.object({ tid: z.string(), oid: z.string().optional(), preferred_username: z.string().optional() })
+const IdClaims = z.object({ tid: z.string(), oid: z.string().optional() })
 
 /** The delegated token and the customer tenant, read from the ID token Entra's token endpoint answered directly. */
 export async function redeemMsTeamsCode(
@@ -222,7 +222,7 @@ export async function redeemMsTeamsCode(
     pin?: string
   },
   fetchImpl: typeof fetch
-): Promise<{ accessToken: string; tenantId: string; userId?: string; refreshToken?: string; username?: string }> {
+): Promise<{ accessToken: string; tenantId: string; userId?: string; refreshToken?: string }> {
   let response: Response
   try {
     response = await fetchImpl(`${authorityOf(input.tenant ?? input.pin)}/token`, {
@@ -268,13 +268,11 @@ export async function redeemMsTeamsCode(
   const claimed = claims.success && claims.data.oid && GUID.test(claims.data.oid.toLowerCase()) ? claims.data.oid : ''
   // Entra puts the object ID in an ID token only where the sign-in asked the profile scope, so Graph is asked where a sponsor is needed.
   const userId = claimed || (input.agentBots ? await readMsTeamsUserId(fetchImpl, tokens.data.access_token) : '')
-  const username = claims.success ? claims.data.preferred_username : undefined
   return {
     accessToken: tokens.data.access_token,
     tenantId,
     ...(userId ? { userId: userId.toLowerCase() } : {}),
-    ...(tokens.data.refresh_token ? { refreshToken: tokens.data.refresh_token } : {}),
-    ...(username ? { username } : {})
+    ...(tokens.data.refresh_token ? { refreshToken: tokens.data.refresh_token } : {})
   }
 }
 
@@ -286,6 +284,19 @@ async function readMsTeamsUserId(fetchImpl: typeof fetch, token: string): Promis
     const response = await graph(fetchImpl, token, 'GET', '/me?$select=id')
     const me = response.ok ? Me.safeParse(await response.json().catch(() => null)) : undefined
     return me?.success ? me.data.id : ''
+  } catch {
+    return ''
+  }
+}
+
+const MeName = z.object({ userPrincipalName: z.string().min(1) })
+
+/** The signed-in person's sign-in name from Graph, the hint of a silent sign-in; empty when Graph does not answer one. An ID token carries none without the profile scope, which the tenant-wide consent does not cover. */
+export async function readMsTeamsUsername(fetchImpl: typeof fetch, token: string): Promise<string> {
+  try {
+    const response = await graph(fetchImpl, token, 'GET', '/me?$select=userPrincipalName')
+    const me = response.ok ? MeName.safeParse(await response.json().catch(() => null)) : undefined
+    return me?.success ? me.data.userPrincipalName : ''
   } catch {
     return ''
   }

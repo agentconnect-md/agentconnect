@@ -40,14 +40,8 @@ const NOW = Date.parse('2026-12-01T00:00:00Z')
 const clock = new FakeClock(NOW)
 const keys = msTeamsConnectKeys('p'.repeat(40))
 
-const idToken = (tid: string, oid?: string, username?: string) =>
-  [
-    'e30',
-    Buffer.from(
-      JSON.stringify({ tid, ...(oid ? { oid } : {}), ...(username ? { preferred_username: username } : {}) })
-    ).toString('base64url'),
-    'sig'
-  ].join('.')
+const idToken = (tid: string, oid?: string) =>
+  ['e30', Buffer.from(JSON.stringify({ tid, ...(oid ? { oid } : {}) })).toString('base64url'), 'sig'].join('.')
 
 let running: FastifyInstance | undefined
 afterEach(async () => {
@@ -104,7 +98,7 @@ async function harness(
       if (form.get('grant_type') === 'authorization_code')
         return Response.json({
           access_token: 'delegated',
-          id_token: idToken(opts.tid ?? CUSTOMER, opts.oid === null ? undefined : (opts.oid ?? SPONSOR), opts.username),
+          id_token: idToken(opts.tid ?? CUSTOMER, opts.oid === null ? undefined : (opts.oid ?? SPONSOR)),
           // Entra issues a refresh token only where the sign-in asked offline access.
           ...(form.get('scope')?.includes('offline_access') ? { refresh_token: 'member-refresh' } : {})
         })
@@ -174,6 +168,9 @@ async function harness(
         ? new Response(null, { status: opts.publish })
         : Response.json({ id: 'catalog-1' }, { status: 201 })
     }
+    // The sign-in name is Graph's to tell: the ID token of these scopes carries none.
+    if (url.includes('/me?$select=userPrincipalName'))
+      return opts.username ? Response.json({ userPrincipalName: opts.username }) : new Response(null, { status: 403 })
     if (url.includes('/me?$select=id'))
       return opts.me ? Response.json({ id: opts.me }) : new Response(null, { status: 403 })
     if (url.includes('/me/joinedTeams'))
