@@ -11269,7 +11269,11 @@ export class Daemon {
           ...(local?.description ? { description: local.description } : {})
         }
       })
-    const selfAddress = addressOf(agent.id)
+    // The directory gives a Slack bot's address; another platform's connection gives its own.
+    const conn: ContractConnection | undefined = at.integrationId
+      ? this.gatewayForIntegration(at.integrationId)
+      : undefined
+    const selfAddress = addressOf(agent.id) ?? conn?.selfMentionAddress
     return coordinatorPrompt({
       agentName: agent.displayName?.trim() || agent.name,
       platform: platformLabel(at.platform),
