@@ -771,6 +771,8 @@ export interface WebPlatformModule<TApi = unknown> {
   channelList?: WebChannelListSemantics
   /** A module's additions to its integration cards on the agent page. Absent ⇒ the host's card alone. */
   agentCard?: WebAgentIntegrationCardFacet
+  /** A connect still waiting on someone outside the console, listed with the agent's integrations; renders nothing when there is none. `open` opens this platform's pane. */
+  agentPending?: ComponentType<{ agent: Agent; mockMode: boolean; open(): void }>
   /** Its thread shape, which draws a coordinator's page as roots with their threads; absent ⇒ the flat transcript. */
   threadShape?: WebThreadShape
   /** This platform's transcript renderer, resolved per row by `MessageText`; absent ⇒ the core default. A component so the host's memo holds; load a parser lazily (Google Chat). */

@@ -127,7 +127,12 @@ import {
 import { buildAgentReachabilityGraph } from '@/lib/agent-reachability'
 import type { Platform } from '@/components/console/modals/AddIntegrationModal'
 import { INTEGRATION_BLURB, isCoreTriggerKind } from '@/components/console/platforms/host-projections'
-import { botCardCopy, platformAgentCard, withCredentialCode } from '@/components/console/platforms/registry'
+import {
+  botCardCopy,
+  platformAgentCard,
+  platformAgentPending,
+  withCredentialCode
+} from '@/components/console/platforms/registry'
 import { NewChannelsDefault } from '@/components/console/NewChannelsDefault'
 import {
   GT_TRIGGER_MODES,
@@ -2026,6 +2031,17 @@ function AgentDetail() {
                 <Icon name="plus" size={14} />
                 {t('integrations.addIntegration')}
               </Button>
+            </div>
+            {/* A connect still waiting on someone outside the console shows here too; the wrapper hides while no module has one. */}
+            <div className="flex flex-col gap-3 px-4 pt-[14px] empty:hidden">
+              {platformAgentPending().map(({ platformId, Entry }) => (
+                <Entry
+                  key={platformId}
+                  agent={da}
+                  mockMode={MOCK_MODE}
+                  open={() => openModal('integration', da, { platform: platformId as Platform })}
+                />
+              ))}
             </div>
             {hasInt ? (
               <>

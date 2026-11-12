@@ -6950,6 +6950,13 @@
       "otherEdition": "这个应用属于另一个钉钉版本。请把钉钉切换到「{edition}」后重新连接。"
     },
     "msteams": {
+      "pending": {
+        "title": "Microsoft Teams",
+        "badge": "等待中",
+        "pending": "正在等 Teams 管理员发布这个 agent 的应用",
+        "needs_sign_in": "你的 Microsoft 登录已失效，打开后重新连接即可。",
+        "rejected": "这个 agent 的应用被拒绝或已被移除，打开后可取消申请。"
+      },
       "checking": "正在检查这个部署…",
       "relayRequired": "Microsoft Teams 只通过 HTTPS 回调投递，因此需要一个公开的回调地址。请管理员配置后再在这里连接机器人。",
       "copy": "复制",
