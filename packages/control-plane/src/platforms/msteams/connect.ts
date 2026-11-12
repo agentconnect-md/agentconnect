@@ -644,6 +644,27 @@ export async function probeMsTeamsPackageForUser(
   }
 }
 
+/** The waits between further tries of {@link installMsTeamsAppForUser}: Microsoft refuses a just-published app for its first minutes. */
+export const MSTEAMS_PERSONAL_INSTALL_RETRY_MS = [30_000, 60_000, 120_000, 240_000, 480_000] as const
+
+/** Adds the catalog app for one person, trying again while Microsoft still refuses a just-published app; answers null once added, or the last refusal. */
+export async function installMsTeamsAppForUserEventually(
+  fetchImpl: typeof fetch,
+  token: string,
+  input: { userId: string; catalogAppId: string; permissions: readonly { name: string; type: string }[] },
+  wait: (ms: number) => Promise<void>,
+  delaysMs: readonly number[] = MSTEAMS_PERSONAL_INSTALL_RETRY_MS
+): Promise<string | null> {
+  let detail = await installMsTeamsAppForUser(fetchImpl, token, input)
+  for (const delay of delaysMs) {
+    // Only the policy refusal passes with time; anything else is reported as it is.
+    if (!detail?.includes('answered 403')) break
+    await wait(delay)
+    detail = await installMsTeamsAppForUser(fetchImpl, token, input)
+  }
+  return detail
+}
+
 const Installed = z.object({ value: z.array(z.object({ id: z.string() })) })
 // Teams upgraded at once; an administrator can belong to hundreds.
 const UPGRADE_CONCURRENCY = 4
