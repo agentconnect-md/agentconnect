@@ -1366,9 +1366,12 @@ Git must not silently claim that the Azure CLI is installed in every image.
    An agent whose only proxied need is such a source gets the `codehost` tunnel for it.
    No session gains a placeholder for those instances, and a runtime's own request to
    them through a pod's listener carries no placeholder of ours, so the proxy passes it
-   untouched; the shared loopback listener does not intercept them. The shim advertises this as
-   `skill-git-gitlab-proxy-v1`; a pod without it, or without a `codehost` listener,
-   takes the daemon path. Private GitHub skill sources keep their pod window until
+   untouched; the shared loopback listener does not intercept them, and refuses a skill
+   placeholder wherever it is presented there. The shim advertises this as
+   `skill-git-gitlab-proxy-v1`. Routes reach a pod at bind and spawn, while the skill
+   reconcile runs in preparation, so the daemon sends the pod's `codehost` routes again
+   first and plans a source in-pod only once that listener forwards the skill instances;
+   a pod without the feature or such a listener takes the daemon path. Private GitHub skill sources keep their pod window until
    GitHub's Git moves.
 4. **Owning-daemon host-side Git, last:** after deliveries 1–3, decide whether to
    migrate canonical clones, other host-side preparation and local host-strategy

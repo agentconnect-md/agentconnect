@@ -121,6 +121,34 @@ describe('tunnel binder', () => {
     expect(subject.listeningAt('agent-a/session-0123', 'codehost')?.proxy?.port).toBe(4100)
   })
 
+  it('hands out a codehost listener only once the pod forwards the routes asked for, sending stale routes again first', async () => {
+    const { session, request } = fakeSession(1)
+    request.mockResolvedValue({
+      socketPath: '127.0.0.1:4100',
+      proxy: { port: 4100, token: 't'.repeat(32), trustBundle: '/rt/codehost-trust.pem' }
+    } as never)
+    let routes = ['github.com:443']
+    const subject = new TunnelBinder({
+      tunnelsFor: () => ['codehost'],
+      tunnelSocketPath: () => '/daemon/codehost.sock',
+      tunnelListenOptions: (_agentId, tunnel) =>
+        tunnel === 'codehost' ? { routes, ca: 'example certificate' } : undefined,
+      log
+    })
+    await subject.ensure('agent-a', session)
+    const skill = ['gitlab.example.test:443']
+    // Bound before the skill source was enabled, and not asked again: its listener does not forward the instance.
+    expect(await subject.routedListener('agent-a', undefined, 'codehost', skill)).toBeUndefined()
+    routes = ['github.com:443', 'gitlab.example.test:443']
+    expect((await subject.routedListener('agent-a', session, 'codehost', skill))?.port).toBe(4100)
+    expect(request).toHaveBeenLastCalledWith('tunnel', expect.objectContaining({ routes }))
+    // A re-listen the pod refuses leaves the stale routes, so the source is not handed the listener.
+    routes = ['github.com:443', 'gitlab.example.test:443', 'code.example.test:443']
+    request.mockRejectedValueOnce(new Error('listen refused'))
+    expect(await subject.routedListener('agent-a', session, 'codehost', ['code.example.test:443'])).toBeUndefined()
+    expect(await subject.routedListener('agent-a', undefined, 'codehost', [])).toBeUndefined()
+  })
+
   it('stops every proxy when the plane goes down', async () => {
     const subject = binder()
     const first = fakeSession(1)

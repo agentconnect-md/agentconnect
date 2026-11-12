@@ -63,8 +63,8 @@ export interface InPodSkillDeps {
   resolve(entry: AgentSkillEntry): Promise<SkillRefPlan>
   /** The pod serves the agent tunnel; without it, private GitHub Sources take the daemon path this reconcile. */
   servesAgentTunnel: boolean
-  /** The pod's route to the credential proxy and the agent's skill placeholder; without it, private GitLab Sources take the daemon path. */
-  skillProxy?(): SkillCredentialProxyGrant | undefined
+  /** The pod's route to the credential proxy, once its listener forwards the skill instances, and the agent's skill placeholder; without it, private GitLab Sources take the daemon path. */
+  skillProxy?(): Promise<SkillCredentialProxyGrant | undefined>
   /** A pod-subject credential window over exactly these private GitHub repositories, or undefined. */
   openWindow(repos: string[]): { capability: string; close(): void } | undefined
   /** Whether `openWindow` would admit this private GitHub repository; one it would not takes the daemon path. */
@@ -406,7 +406,7 @@ async function planInPod(
   inPod: InPodSkillDeps
 ): Promise<PodPlan> {
   // A GitLab Source goes in-pod only to an image that reaches its instance through the pod's route to the proxy.
-  const proxy = input.target.client.gitlabPlans ? inPod.skillProxy?.() : undefined
+  const proxy = input.target.client.gitlabPlans ? await inPod.skillProxy?.() : undefined
   const routed = configured.filter(({ entry }) => {
     if (inPod.daemonOnly?.(entry)) return false
     // An anonymous Source off GitHub goes in-pod only where the pod can resolve it itself.

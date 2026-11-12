@@ -73,6 +73,19 @@ export class TunnelBinder {
     return this.proxies.get(subject)?.proxy.listeningAt(tunnel)
   }
 
+  /** The subject's `tunnel` listener once the pod forwards every one of `routes` into it, its routes sent again first since they change after a bind. */
+  async routedListener(
+    subject: string,
+    session: TunnelSession | undefined,
+    tunnel: TunnelName,
+    routes: readonly string[]
+  ): Promise<TunnelListening['proxy']> {
+    if (session) await this.ensure(subject, session)
+    const listened = this.proxies.get(subject)?.proxy.routesAt(tunnel) ?? []
+    if (routes.length === 0 || !routes.every((route) => listened.includes(route))) return undefined
+    return this.listeningAt(subject, tunnel)?.proxy
+  }
+
   /** Drop the subject's proxy: this member no longer serves the launch its streams belong to. */
   release(subject: string, reason: string): void {
     this.proxies.get(subject)?.proxy.stop(reason)

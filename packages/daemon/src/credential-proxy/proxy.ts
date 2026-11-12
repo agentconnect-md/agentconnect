@@ -198,6 +198,16 @@ function providerKeyId(agentId: string, slot: ProviderSlot): string {
 /** Which credentials a listener exchanges: an executor tunnel's socket carries one kind, every other listener both. */
 type ListenerScope = 'codehost' | 'provider' | 'both'
 
+/** The `host:port` authorities instances answer on: each SaaS name on 443, a self-managed instance on its own port. */
+function routesOf(instances: readonly ProxyInstance[]): string[] {
+  const routes = instances.flatMap((instance) =>
+    instance.provider === 'github'
+      ? instanceHostnames(instance).map((name) => routeAuthority(name, 443))
+      : instance.hosts.map((host) => (/:\d+$/.test(host) ? host : `${host}:443`))
+  )
+  return [...new Set(routes)]
+}
+
 function deny(status: number, reason: string): RequestDecision {
   return { action: 'deny', status, reason, mark: 'credential-proxy' }
 }
@@ -298,14 +308,14 @@ export class CredentialProxy {
     )
   }
 
-  /** The `host:port` authorities an agent's code hosts answer on: each SaaS name on 443, a self-managed instance on its own port. */
+  /** The `host:port` authorities an agent's code hosts and skill sources answer on: each SaaS name on 443, a self-managed instance on its own port. */
   tunnelRoutes(agentId: string): string[] {
-    const routes = [...this.instances(agentId), ...this.skillInstances(agentId)].flatMap((instance) =>
-      instance.provider === 'github'
-        ? instanceHostnames(instance).map((name) => routeAuthority(name, 443))
-        : instance.hosts.map((host) => (/:\d+$/.test(host) ? host : `${host}:443`))
-    )
-    return [...new Set(routes)]
+    return routesOf([...this.instances(agentId), ...this.skillInstances(agentId)])
+  }
+
+  /** The `host:port` authorities an agent's private skill sources answer on, which a pod's listener must forward for its skill Git. */
+  skillTunnelRoutes(agentId: string): string[] {
+    return routesOf(this.skillInstances(agentId))
   }
 
   /** The socket a provider tunnel reaches for this agent: its provider placeholders alone, and a CONNECT to nothing but its {@link providerTunnelRoutes}. */
@@ -525,6 +535,8 @@ export class CredentialProxy {
     if (!this.deps.knownAgent(claims.agentId)) return deny(403, 'the agent credential belongs to no running agent')
     if (boundAgent !== undefined && claims.agentId !== boundAgent)
       return deny(403, 'the agent credential belongs to another agent')
+    if (claims.skill && boundAgent === undefined)
+      return deny(403, "a skill credential is honored only on its own agent's tunnel")
     // Routed by the bytes that go upstream; an ambiguous spelling was refused before this runs.
     const target = info.requestTarget ?? `${url.pathname}${url.search}`
     if (claims.kind === 'provider') return this.providerDecision(claims, keyed, hostname, port, target)

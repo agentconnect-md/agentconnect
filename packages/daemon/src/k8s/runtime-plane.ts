@@ -222,8 +222,8 @@ export interface K8sRuntimePlane extends ExecutionPlane {
   shimGenerationFor?: (subject: string) => number | undefined
   /** Whether the subject's bound pod serves `tunnel` (S5b routes private skill Sources of a pod without `agent` through the daemon). */
   servesTunnel?: (subject: string, tunnel: TunnelName) => boolean
-  /** The bound pod's loopback `codehost` listener, which its skill Git reaches the credential proxy by. */
-  codehostFor?: (subject: string) => CodehostListener | undefined
+  /** The bound pod's loopback `codehost` listener once it forwards every one of `routes`, which its skill Git reaches the credential proxy by. */
+  codehostRouting?: (subject: string, routes: readonly string[]) => Promise<CodehostListener | undefined>
   /** Subjects this daemon holds a Sandbox for, and since when — the idle sweep's candidates. Read from
    *  the driver, not inferred from live hosts: a launch outlives the host it was made for. */
   launched: () => Array<{ subject: SandboxSubject; agentId: string; since: number }>
@@ -613,7 +613,12 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     workspaceIncarnationFor: (subject) => driver.currentLaunch(subject)?.claimUid,
     shimGenerationFor: (subject) => driver.currentLaunch(subject)?.generation,
     servesTunnel: (subject, tunnel) => tunnels.serves(subject, tunnel),
-    codehostFor: codehostProxyFor,
+    // The reconcile runs before spawn re-sends the routes, so a pod bound before a skill source was enabled is asked again here.
+    codehostRouting: async (subject, routes) => {
+      if (!boundSession(subject)) return undefined
+      const session = driver.sessionFor(subject)
+      return await tunnels.routedListener(subject, session?.isAttached() ? session : undefined, 'codehost', routes)
+    },
     launched: () => driver.launched(),
     suspendIdle: (subject) => driver.suspendIfIdle(subject),
     suspendStalled: (subject) => driver.suspendIfStalled(subject),

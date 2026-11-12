@@ -8951,10 +8951,12 @@ export class Daemon {
     return {
       resolve: (entry) => this.gitSkillRefPlans?.(entry, agent.id) ?? Promise.resolve({ ok: false }),
       servesAgentTunnel: pod.servesAgentTunnel,
-      skillProxy: () => {
-        const listener = this.k8sPlane?.codehostFor?.(pod.subject)
-        const placeholder = this.credentialProxy?.proxy.skillPlaceholderFor(agent.id)
-        return listener && placeholder
+      skillProxy: async () => {
+        const proxy = this.credentialProxy?.proxy
+        const placeholder = proxy?.skillPlaceholderFor(agent.id)
+        if (!proxy || !placeholder) return undefined
+        const listener = await this.k8sPlane?.codehostRouting?.(pod.subject, proxy.skillTunnelRoutes(agent.id))
+        return listener
           ? { url: codehostProxyUrl(listener), trustBundle: listener.trustBundle, placeholder }
           : undefined
       },

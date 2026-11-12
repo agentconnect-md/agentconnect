@@ -1128,6 +1128,20 @@ describe('a skill placeholder', () => {
     expect(mint).not.toHaveBeenCalled()
   })
 
+  it('is refused on the shared loopback listener even where the agent’s own instance is the skill instance', async () => {
+    const { proxy, mint } = proxyFor({
+      mint: vi.fn(async () => minted),
+      instances: { [AGENT]: [GITLAB] },
+      skillInstances: { [AGENT]: [GITLAB] }
+    })
+    const skill = proxy.skillPlaceholderFor(AGENT)!
+    expect(await proxy.decide(git(skill, 'group/skills.git/info/refs'), at)).toMatchObject({
+      action: 'deny',
+      status: 403
+    })
+    expect(mint).not.toHaveBeenCalled()
+  })
+
   it('leaves the skill instance alone on the shared loopback listener', async () => {
     const { proxy, mint } = setup()
     const skill = proxy.skillPlaceholderFor(AGENT)!

@@ -552,7 +552,7 @@ describe('sandbox skill reconcile: routing', () => {
         gitlabPlans: true,
         skills: [gitlab],
         inPod: {
-          skillProxy: () => proxy,
+          skillProxy: async () => proxy,
           openWindow: (repos) => {
             opened.push(repos)
             return { capability: 'w'.repeat(43), close() {} }
@@ -574,7 +574,7 @@ describe('sandbox skill reconcile: routing', () => {
       // An older image, or a pod with no route to the proxy, leaves it to the daemon.
       const older = await sandbox(w, 'older')
       const acquired: string[] = []
-      await run(w, older, 'pod', { skills: [gitlab], acquired, inPod: { skillProxy: () => proxy } })
+      await run(w, older, 'pod', { skills: [gitlab], acquired, inPod: { skillProxy: async () => proxy } })
       expect(acquired).toEqual(['gitlab'])
       const unrouted = await sandbox(w, 'unrouted')
       const daemonAcquired: string[] = []
@@ -582,7 +582,7 @@ describe('sandbox skill reconcile: routing', () => {
         gitlabPlans: true,
         skills: [gitlab],
         acquired: daemonAcquired,
-        inPod: { skillProxy: () => undefined }
+        inPod: { skillProxy: async () => undefined }
       })
       expect(daemonAcquired).toEqual(['gitlab'])
       expect(unrouted.requests.find((r) => r.op === 'reconcile')?.credentialProxy).toBeUndefined()

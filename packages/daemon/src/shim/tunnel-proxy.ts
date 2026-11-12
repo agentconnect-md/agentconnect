@@ -171,6 +171,13 @@ export class TunnelProxy {
     return this.stopped ? undefined : this.listening.get(tunnel)
   }
 
+  /** The routes a proxy tunnel was last listened with, which its pod forwards into the tunnel; none before a listen. */
+  routesAt(tunnel: TunnelName): readonly string[] {
+    if (this.stopped || !this.listening.has(tunnel)) return []
+    const routes = (JSON.parse(this.listenedWith.get(tunnel) ?? 'null') as { routes?: unknown } | null)?.routes
+    return Array.isArray(routes) ? routes.filter((route): route is string => typeof route === 'string') : []
+  }
+
   private accept(event: ShimEvent): void {
     const entry = this.streams.get(event.streamId)
     if (event.event.kind === 'connect') {
