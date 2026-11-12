@@ -815,6 +815,41 @@ describe('a follow-up owned by its place', () => {
     await daemon.stop()
   })
 
+  it('reports at the root under a coordinator, whose latest turn answered some other thread', async () => {
+    const { daemon, d, behavior, reports, settled, deps } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
+    const scope = scopeOf(d, 'bot-a')
+    const coordinate = await d.store.resolveAppendCoordinate('bot-a', 'C1', scope, 1, 'coordinator')
+    const key = sessionKey('slack', 'C1', coordinate, 'bot-a', scope)
+    await d.store.upsertSession({
+      key,
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: coordinate,
+      transportScope: scope,
+      acpSessionId: 'acp-parent-bot-a',
+      sessionId: 'sid-parent-bot-a',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    await d.store.setSessionReplyTarget(key, 'C1', '300.1')
+    await takeFollowUp(d, { title: 'Watch the docs build' })
+    behavior.check = reporting(deps)
+    await d.followUpChecks.sweep()
+    await vi.waitFor(() => expect(reports()).toHaveLength(1), WAIT)
+    await settled()
+    expect(reports()[0]!.msg.thread).toBeUndefined()
+    expect(reports()[0]!.msg.sessionThread).toBe(coordinate)
+    // One taken in a thread still reports there.
+    await takeFollowUp(d, { title: 'Watch the release build', replyThread: '200.1' })
+    await d.followUpChecks.sweep()
+    await vi.waitFor(() => expect(reports()).toHaveLength(2), WAIT)
+    await settled()
+    expect(reports()[1]!.msg).toMatchObject({ thread: '200.1', sessionThread: coordinate })
+    await daemon.stop()
+  })
+
   it('passes to the place’s new session after `!new`, and no other session addresses it', async () => {
     const { daemon, d, settled, deps } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     const place = await seedPlace(d)

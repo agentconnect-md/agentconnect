@@ -112,9 +112,10 @@ Approved proposals stay a kind of their own.
   gives an assistant-mode place it does not list yet `auto` where the platform appends its kind.
 - The place's long session is its coordinator: a report, a follow-up's result or another agent's
   answer reaches its batch as a `<report>`. The coordinator answers a report with `replyToMessage`,
-  which posts in the report's thread or at the conversation's root; a report never opens a task and
-  is never handed to one, and shows no 🤔. Its own follow-ups and proposals, made with the place
-  tools of §5.4, belong to it as they belong to an `append` session.
+  which posts in the report's thread or at the conversation's root. A report that names no thread is
+  at the root, never in the thread the coordinator's latest turn answered. A report never opens a
+  task and is never handed to one, and shows no 🤔. Its own follow-ups and proposals, made with the
+  place tools of §5.4, belong to it as they belong to an `append` session.
 - A report queued behind a running turn joins the next batch in arrival order, beside the channel
   messages and framed apart from them as `<report id task kind title>`: the task it speaks for by
   its `taskId`, kind and title, or `kind="agent answer"` for another agent's answer
