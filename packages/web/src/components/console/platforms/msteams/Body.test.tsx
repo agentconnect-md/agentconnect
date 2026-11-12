@@ -173,29 +173,17 @@ describe('MsTeamsWizardBody with the deployment app', () => {
     })
     expect(identity?.hidden).toBe(true)
     await act(async () => buttonWith('Connect with Microsoft')?.click())
-    expect(mocks.connect).toHaveBeenCalledWith('org-a', 'agent-a', undefined, false)
+    expect(mocks.connect).toHaveBeenCalledWith('org-a', 'agent-a')
     expect(assign).toHaveBeenCalledWith('https://login.microsoftonline.com/organizations/x')
+    // One way in for everyone: who may publish is settled after the sign-in.
+    expect(buttonWith('I’m not an administrator')).toBeUndefined()
     await act(async () => buttonWith('Register your own bot instead')?.click())
     expect(text()).toContain('Open Teams Developer Portal')
     vi.unstubAllGlobals()
   })
 
-  it('lets a member ask for approval, and shows a waiting request with its check and cancel', async () => {
+  it('shows a waiting request with its check and cancel', async () => {
     mocks.deploymentApp.mockResolvedValue({ appId: APP_ID })
-    mocks.requests.mockResolvedValue([])
-    mocks.connect.mockResolvedValue({ authorizeUrl: 'https://login.microsoftonline.com/organizations/x' })
-    const assign = vi.fn()
-    vi.stubGlobal('location', { ...window.location, assign })
-    await render()
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    })
-    await act(async () => buttonWith('I’m not an administrator')?.click())
-    expect(mocks.connect).toHaveBeenCalledWith('org-a', 'agent-a', undefined, true)
-    vi.unstubAllGlobals()
-
-    await act(async () => root.unmount())
-    root = createRoot(host)
     const waiting = {
       id: 'req-1',
       agentId: 'agent-a',
@@ -213,7 +201,6 @@ describe('MsTeamsWizardBody with the deployment app', () => {
       await new Promise((resolve) => setTimeout(resolve, 0))
     })
     expect(text()).toContain('Waiting for a Teams administrator')
-    expect(buttonWith('I’m not an administrator')).toBeUndefined()
     expect(host.querySelector('a[href="https://admin.example.test/manage-apps"]')).not.toBeNull()
     // Approval is the administrator's, in the Teams admin center: the entry links there and offers no approve action.
     expect(buttonWith('Approve as administrator')).toBeUndefined()

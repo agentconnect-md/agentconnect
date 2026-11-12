@@ -40,8 +40,14 @@ const NOW = Date.parse('2026-12-01T00:00:00Z')
 const clock = new FakeClock(NOW)
 const keys = msTeamsConnectKeys('p'.repeat(40))
 
-const idToken = (tid: string, oid?: string) =>
-  ['e30', Buffer.from(JSON.stringify({ tid, ...(oid ? { oid } : {}) })).toString('base64url'), 'sig'].join('.')
+const idToken = (tid: string, oid?: string, username?: string) =>
+  [
+    'e30',
+    Buffer.from(
+      JSON.stringify({ tid, ...(oid ? { oid } : {}), ...(username ? { preferred_username: username } : {}) })
+    ).toString('base64url'),
+    'sig'
+  ].join('.')
 
 let running: FastifyInstance | undefined
 afterEach(async () => {
@@ -80,8 +86,10 @@ async function harness(
     packageStates?: string[]
     /** Graph's status for adding the app for the person who connects it. */
     personal?: number
-    /** Graph's status for an administrator's approval of a pending definition. */
-    approve?: number
+    /** The signed-in person may not publish: Graph refuses the publish and takes a submission for review. */
+    notAdmin?: boolean
+    /** The account name Entra puts in the ID token. */
+    username?: string
   } = {}
 ) {
   const graph: { method: string; url: string; body?: unknown }[] = []
@@ -96,8 +104,8 @@ async function harness(
       if (form.get('grant_type') === 'authorization_code')
         return Response.json({
           access_token: 'delegated',
-          id_token: idToken(opts.tid ?? CUSTOMER, opts.oid === null ? undefined : (opts.oid ?? SPONSOR)),
-          // Entra issues a refresh token only where the sign-in asked offline access, as a member's does.
+          id_token: idToken(opts.tid ?? CUSTOMER, opts.oid === null ? undefined : (opts.oid ?? SPONSOR), opts.username),
+          // Entra issues a refresh token only where the sign-in asked offline access.
           ...(form.get('scope')?.includes('offline_access') ? { refresh_token: 'member-refresh' } : {})
         })
       if (form.get('grant_type') === 'refresh_token')
@@ -157,6 +165,10 @@ async function harness(
         }))
       })
     if (url.includes('/appCatalogs/teamsApps')) {
+      if (opts.notAdmin && init?.method === 'POST' && url.includes('requiresReview=false')) {
+        order.push('publish refused')
+        return new Response(null, { status: 403 })
+      }
       order.push('publish')
       return opts.publish
         ? new Response(null, { status: opts.publish })
@@ -814,52 +826,60 @@ describe('a deployment that makes agent bots (§8.6)', () => {
   })
 })
 
-describe('a member who is not an administrator (§8.6.6)', () => {
-  // The tenant is connected: the app's bot serves another agent of this organization.
-  const HELD = { agentIds: [OTHER_AGENT], externalAppId: APP.appId } as Partial<BotRecord>
+describe('a person who may not publish (§8.6.6)', () => {
+  // The tenant is connected and consented: the app's bot serves another agent of this organization.
+  const HELD = {
+    agentIds: [OTHER_AGENT],
+    externalAppId: APP.appId,
+    platformConfig: { appOwner: 'deployment', tenantConsent: '3' }
+  } as Partial<BotRecord>
   const connected = (over: Parameters<typeof harness>[0] = {}) =>
-    harness({ agentBots: true, held: HELD, agentNames: { [OTHER_AGENT]: 'Reviewer' }, ...over })
-  const signIn = async (h: Awaited<ReturnType<typeof harness>>) => h.callback(h.state({ member: true }))
+    harness({ agentBots: true, notAdmin: true, held: HELD, agentNames: { [OTHER_AGENT]: 'Reviewer' }, ...over })
+  const signIn = async (h: Awaited<ReturnType<typeof harness>>) => h.callback(h.state({ agentBots: true }))
+  const ask = async (h: Awaited<ReturnType<typeof harness>>) =>
+    h.post('/agent-bot', { ticket: (await signIn(h)).json<{ ticket: string }>().ticket })
   const requestsOf = (h: Awaited<ReturnType<typeof harness>>) =>
     h.app.inject({ method: 'GET', url: `/integrations/msteams/requests?agentId=${AGENT}` })
 
-  it('signs in with no consent hop and the scopes a member holds', async () => {
+  it('signs in as an administrator does, with the one set of scopes and a refresh token', async () => {
     const h = await connected()
-    const res = await h.post('', { agentId: AGENT, member: true })
-    const url = new URL(res.json<{ authorizeUrl: string }>().authorizeUrl)
-    // The organization connected one tenant, so the member signs in at its authority, which also offers its guests.
-    expect(url.pathname).toBe(`/${CUSTOMER}/oauth2/v2.0/authorize`)
-    const scopes = url.searchParams.get('scope')!.split(' ')
-    expect(scopes).toEqual(
-      expect.arrayContaining(['https://graph.microsoft.com/AppCatalog.Submit', 'openid', 'offline_access'])
+    const url = new URL((await h.post('', { agentId: AGENT })).json<{ authorizeUrl: string }>().authorizeUrl)
+    expect(url.pathname).toBe('/organizations/oauth2/v2.0/authorize')
+    expect(url.searchParams.get('scope')!.split(' ')).toEqual(
+      expect.arrayContaining([
+        'https://graph.microsoft.com/AppCatalog.ReadWrite.All',
+        'https://graph.microsoft.com/AppCatalog.Submit',
+        'openid',
+        'offline_access'
+      ])
     )
-    expect(scopes).not.toContain('https://graph.microsoft.com/AppCatalog.ReadWrite.All')
-    // A deployment that makes no agent bots has no member flow.
-    expect((await (await harness()).post('', { agentId: AGENT, member: true })).statusCode).toBe(404)
+    const first = await signIn(h)
+    expect(first.json()).toMatchObject({ agentId: AGENT, agentBot: true, store: false, teams: [] })
+    expect(first.body).not.toContain('member-refresh')
   })
 
-  it('submits the agent’s package for approval and stores the request with the sign-in sealed away from every answer', async () => {
+  it('submits the package when Microsoft refuses the publish, and stores the request with the sign-in sealed away from every answer', async () => {
     const h = await connected()
-    const first = await signIn(h)
-    expect(first.statusCode).toBe(200)
-    expect(first.json()).toMatchObject({ agentId: AGENT, member: true, store: false })
-    expect(first.json<{ teams: unknown[] }>().teams).toEqual([])
-    expect(h.order).toEqual([])
-
-    const made = await h.post('/request', { ticket: first.json<{ ticket: string }>().ticket })
-    expect(made.statusCode).toBe(200)
+    const made = await ask(h)
+    expect(made.statusCode, made.body).toBe(200)
     expect(made.json()).toMatchObject({
       agentId: AGENT,
-      tenantId: CUSTOMER,
-      status: 'pending',
-      reason: null,
-      // The link opens the package's own page, where an administrator publishes it.
-      adminCenterUrl: 'https://admin.teams.microsoft.com/policies/manage-apps/catalog-1'
+      agentBot: true,
+      teams: [],
+      request: {
+        agentId: AGENT,
+        tenantId: CUSTOMER,
+        status: 'pending',
+        reason: null,
+        // The link opens the package's own page, where an administrator publishes it.
+        adminCenterUrl: 'https://admin.teams.microsoft.com/policies/manage-apps/catalog-1'
+      }
     })
-    // The identity and its registration are made, the package is submitted for review, and no row is written yet.
+    expect(made.json()).not.toHaveProperty('integrationId')
+    // The identity and its registration are made, the publish is refused, the package is submitted for review, and no row is written.
     expect(h.order).toContain('identity')
     expect(h.order).toContain('registration')
-    expect(h.order).not.toContain('principal')
+    expect(h.order).toContain('publish refused')
     expect(h.graph.some((call) => call.method === 'POST' && call.url.endsWith('teamsApps?requiresReview=true'))).toBe(
       true
     )
@@ -875,15 +895,19 @@ describe('a member who is not an administrator (§8.6.6)', () => {
       sponsorId: SPONSOR,
       botName: 'Microsoft Teams · Example Org'
     })
-    for (const body of [first.body, made.body, (await requestsOf(h)).body]) expect(body).not.toContain('member-refresh')
+    for (const body of [made.body, (await requestsOf(h)).body]) expect(body).not.toContain('member-refresh')
     expect((await requestsOf(h)).json<{ requests: unknown[] }>().requests).toHaveLength(1)
   })
 
   it('says an administrator has to connect first, and refuses a tenant another organization holds', async () => {
-    const unconnected = await harness({ agentBots: true })
-    expect((await signIn(unconnected)).json()).toMatchObject({ code: 'MSTEAMS_TENANT_NOT_CONNECTED' })
+    // A tenant nobody connected: the first connect publishes the deployment's own app, which Microsoft refuses.
+    const unconnected = await harness({ agentBots: true, notAdmin: true })
+    const first = await unconnected.callback(unconnected.state({ agentBots: true, consented: true }))
+    expect(first.json()).toMatchObject({ code: 'MSTEAMS_CONNECT_NOT_ADMIN' })
+    expect(unconnected.create).not.toHaveBeenCalled()
     const elsewhere = await harness({
       agentBots: true,
+      notAdmin: true,
       rows: [{ orgId: OTHER_ORG, externalTenantId: CUSTOMER, platformConfig: { appOwner: 'deployment' } }]
     })
     expect((await signIn(elsewhere)).json()).toMatchObject({ code: 'MSTEAMS_TENANT_TAKEN' })
@@ -893,27 +917,19 @@ describe('a member who is not an administrator (§8.6.6)', () => {
     const named = await connected({ agentNames: { [AGENT]: 'Helper', [OTHER_AGENT]: 'Helper' } })
     expect((await signIn(named)).json()).toMatchObject({ code: 'MSTEAMS_AGENT_NAME_TAKEN' })
 
-    const own = {
-      orgId: ORG,
-      externalTenantId: CUSTOMER,
-      agentIds: [AGENT],
-      platformConfig: { appOwner: 'deployment', agentBotBlueprintId: AGENT_BOTS.blueprintId, agentBotResourceName: 'x' }
-    } as Partial<BotRecord>
-    const already = await connected({ rows: [own] })
-    expect((await signIn(already)).json()).toMatchObject({ code: 'MSTEAMS_AGENT_ALREADY_CONNECTED' })
+    const already = await connected({ identityExists: true, agentBotRow: { id: BOT, externalAppId: IDENTITY } })
+    expect((await ask(already)).json()).toMatchObject({ code: 'MSTEAMS_AGENT_ALREADY_CONNECTED' })
+    expect(already.requestRows.size).toBe(0)
 
-    const bare = await connected({ noPrincipal: true })
-    const ticket = (await signIn(bare)).json<{ ticket: string }>().ticket
-    const refused = await bare.post('/request', { ticket, teamIds: [] })
-    expect(refused.json()).toMatchObject({ code: 'MSTEAMS_AGENT_BOTS_UNAVAILABLE' })
+    const bare = await connected({ noPrincipal: true, principal: 403 })
+    expect((await ask(bare)).json()).toMatchObject({ code: 'MSTEAMS_AGENT_BOTS_UNAVAILABLE' })
     expect(bare.order).not.toContain('identity')
     expect(bare.requestRows.size).toBe(0)
   })
 
   it('finishes on a check once the package is approved, and answers the integration', async () => {
     const h = await connected({ packageStates: ['published'] })
-    const ticket = (await signIn(h)).json<{ ticket: string }>().ticket
-    const id = (await h.post('/request', { ticket, teamIds: ['team-1'] })).json<{ id: string }>().id
+    const id = (await ask(h)).json<{ request: { id: string } }>().request.id
     const checked = await h.app.inject({ method: 'POST', url: `/integrations/msteams/requests/${id}/check` })
     expect(checked.statusCode).toBe(200)
     expect(typeof checked.json<{ integrationId: string }>().integrationId).toBe('string')
@@ -924,8 +940,7 @@ describe('a member who is not an administrator (§8.6.6)', () => {
 
   it('answers the request as it stands while it waits, and removes everything on a cancel', async () => {
     const h = await connected()
-    const ticket = (await signIn(h)).json<{ ticket: string }>().ticket
-    const id = (await h.post('/request', { ticket, teamIds: ['team-1'] })).json<{ id: string }>().id
+    const id = (await ask(h)).json<{ request: { id: string } }>().request.id
     const waiting = await h.app.inject({ method: 'POST', url: `/integrations/msteams/requests/${id}/check` })
     expect(waiting.json()).toMatchObject({ request: { id, status: 'pending' } })
     expect([...h.requestRows.values()][0]!.refreshToken).toBe('member-refresh-2')
@@ -941,39 +956,51 @@ describe('a member who is not an administrator (§8.6.6)', () => {
     expect((await h.app.inject({ method: 'DELETE', url: `/integrations/msteams/requests/${id}` })).statusCode).toBe(404)
   })
 
-  it('renews a stopped request with a new sign-in instead of starting another', async () => {
+  it('renews a waiting request with a new sign-in instead of starting another', async () => {
     const h = await connected()
-    const ticket = (await signIn(h)).json<{ ticket: string }>().ticket
-    const id = (await h.post('/request', { ticket, teamIds: [] })).json<{ id: string }>().id
+    const id = (await ask(h)).json<{ request: { id: string } }>().request.id
     Object.assign(h.requestRows.get(id)!, { status: 'needs_sign_in', reason: 'sign_in_expired', refreshToken: null })
     const again = await signIn(h)
-    expect(again.json()).toMatchObject({ member: true, request: { id, status: 'pending', reason: null } })
+    expect(again.json()).toMatchObject({ agentBot: true, request: { id, status: 'pending', reason: null } })
     expect(again.json()).not.toHaveProperty('ticket')
     // The renewed sign-in is checked at once, which stores the token Entra issued in exchange.
     expect(h.requestRows.get(id)).toMatchObject({ status: 'pending' })
     expect(h.requestRows.get(id)!.refreshToken).toBeTruthy()
+    expect(h.requestRows.size).toBe(1)
   })
 
-  it('finishes a request approved while its sign-in was stopped, on the member’s new sign-in', async () => {
+  it('finishes a request approved while its sign-in was stopped, on the next sign-in', async () => {
     const h = await connected({ packageStates: ['published'] })
-    const ticket = (await signIn(h)).json<{ ticket: string }>().ticket
-    const id = (await h.post('/request', { ticket })).json<{ id: string }>().id
+    const id = (await ask(h)).json<{ request: { id: string } }>().request.id
     Object.assign(h.requestRows.get(id)!, { status: 'needs_sign_in', reason: 'sign_in_expired', refreshToken: null })
     const again = await signIn(h)
     expect(again.statusCode, again.body).toBe(200)
     expect(typeof again.json<{ integrationId: string }>().integrationId).toBe('string')
-    expect(again.json()).toMatchObject({ member: true })
     expect(again.json()).not.toHaveProperty('request')
     expect(again.json()).not.toHaveProperty('ticket')
     expect(h.requestRows.size).toBe(0)
   })
 
-  it('takes a member’s ticket only at the request step', async () => {
-    const h = await connected()
-    const ticket = (await signIn(h)).json<{ ticket: string }>().ticket
-    expect((await h.post('/agent-bot', { ticket })).statusCode).toBe(400)
-    expect((await h.post('/install', { ticket, teamIds: ['team-1'] })).statusCode).toBe(400)
-    const admin = (await h.callback(h.state({ agentBots: true, consented: true }))).json<{ ticket: string }>().ticket
-    expect((await h.post('/request', { ticket: admin, teamIds: [] })).statusCode).toBe(400)
+  it('signs a person of another tenant in at the organization’s one tenant, silently, once', async () => {
+    // The organization connected CUSTOMER; the person's account is of another tenant, as a guest's is.
+    const ELSEWHERE = '99999999-9999-4999-8999-999999999999'
+    const h = await connected({
+      tid: ELSEWHERE,
+      username: 'guest@partner.example.test',
+      held: undefined,
+      rows: [{ ...HELD, orgId: ORG, externalTenantId: CUSTOMER }]
+    })
+    const first = await signIn(h)
+    expect(first.statusCode, first.body).toBe(200)
+    const silent = new URL(first.json<{ authorizeUrl: string }>().authorizeUrl)
+    expect(silent.pathname).toBe(`/${CUSTOMER}/oauth2/v2.0/authorize`)
+    expect(silent.searchParams.get('prompt')).toBe('none')
+    expect(silent.searchParams.get('login_hint')).toBe('guest@partner.example.test')
+    expect(first.json()).not.toHaveProperty('ticket')
+    // The silent sign-in's own state does not ask for another one, and neither does a sign-in that follows a consent.
+    const again = await h.callback(silent.searchParams.get('state')!)
+    expect(again.json()).not.toHaveProperty('authorizeUrl')
+    const consented = await h.callback(h.state({ agentBots: true, consented: true }))
+    expect(consented.json()).not.toHaveProperty('authorizeUrl')
   })
 })

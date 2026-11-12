@@ -1281,16 +1281,27 @@ without the administrator role with 403 even where `AppCatalog.ReadWrite.All`
 is consented tenant-wide (**measured**), so the member's package is submitted
 for review.
 
-1. **Sign-in**, with no consent page: `AppCatalog.Submit`,
-   `TeamsAppInstallation.ReadWriteAndConsentSelfForUser`, `User.Read`, `openid`
-   and `offline_access`. An organization that connected one tenant sends the
-   member to that tenant's own authority, where Entra offers the tenant's
-   accounts, a guest's among them; at the shared `organizations` authority a
-   guest would be signed in to their home tenant and refused. There is no team
-   to pick (§8.6.5).
-2. **The agent bot** is provisioned as in §8.6.5 steps 3 to 5, with the member
-   as the identity's sponsor. None of it needs a consent.
-3. **Submit.** The package goes to the catalog as `submitted`.
+There is **one way in**. The Console does not ask who the person is: everyone
+uses **Connect with Microsoft** and signs in with the scopes of §8.6.5, which
+the tenant-wide consent already covers for every member. The flow is the
+administrator's up to the publish, and Microsoft's answer to that call decides
+the rest.
+
+1. **Sign-in**, as §8.6.5 step 1, with `offline_access` among the scopes so
+   that a submission can wait. A person whose account is of another tenant
+   than the one the organization connected may be a guest of it: where the
+   organization connected exactly one tenant, the connect page signs them in
+   once more at that tenant's own authority, silently, with their account as
+   the hint. A guest has an account there and the connect goes on; anyone
+   else gets Entra's error back with no page shown, and the connect page
+   starts again through the consent, as it does for a new tenant.
+2. **The agent bot** is provisioned as in §8.6.5 steps 2 to 5, with the
+   signed-in person as the identity's sponsor. A tenant with no principal of
+   the blueprint cannot get one from a member, and answers that agent bots are
+   unavailable there.
+3. **Publish, or submit.** The publish is tried. Refused with 403, the same
+   package goes to the catalog as `submitted` instead, unless the agent
+   already has its bot, which only an administrator's connect updates.
 4. **The pending request.** An approval can come days later, long after the
    member closed the page, so the Control Plane stores the request: the agent,
    the tenant, the catalog app, and the member's **refresh token**, sealed in
