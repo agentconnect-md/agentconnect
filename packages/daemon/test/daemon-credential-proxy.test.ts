@@ -611,6 +611,53 @@ describe("the proxy's mint and its invalidate", () => {
   })
 })
 
+describe('a GitHub agent with a private GitLab skill source', () => {
+  const instance = 'https://gitlab.example.test/gitlab'
+  const spec = (): AgentSpec =>
+    ({
+      ...githubSpec(),
+      gitlabHost: instance,
+      skills: [
+        {
+          name: 'team-skills',
+          source: `${instance}/acme/skills`,
+          credential: { provider: 'gitlab', projectId: '77' },
+          skills: ['review']
+        }
+      ]
+    }) as unknown as AgentSpec
+
+  it('reaches the skill instance through the pod tunnel, and leases the skill project read-only to a skill ask alone', async () => {
+    const { d } = await startDaemon()
+    await admit(d, GITHUB_AGENT, spec())
+    const asked = fakeControlPlane(d, 'write', instance)
+    const proxy = d.credentialProxy.proxy
+    expect(proxy.skillPlaceholderFor(GITHUB_AGENT)).toMatch(/^acph1_/)
+    expect(proxy.tunnelRoutes(GITHUB_AGENT)).toContain('gitlab.example.test:443')
+    expect(proxy.domainsFor(GITHUB_AGENT)).not.toContain('gitlab.example.test')
+    expect(d.codehostTunnelFor(GITHUB_AGENT)).toEqual(['codehost'])
+    const read = { provider: 'gitlab', repo: 'acme/skills', plane: 'git', readOnly: true }
+    // An ordinary placeholder's ask never reaches the skill project.
+    await expect(d.credentialProxyMint(GITHUB_AGENT, read)).rejects.toThrow(/not authorized for this agent/)
+    const minted = await d.credentialProxyMint(GITHUB_AGENT, { ...read, readOnly: false, skill: true })
+    expect([minted.token, minted.access]).toEqual([MINTED_GITLAB, 'read'])
+    await expect(d.credentialProxyMint(GITHUB_AGENT, { ...read, repo: 'acme/other', skill: true })).rejects.toThrow(
+      /not authorized for this agent/
+    )
+    expect(asked).toEqual([
+      {
+        agentId: GITHUB_AGENT,
+        reason: 'helper',
+        provider: 'gitlab',
+        externalRepoId: '77',
+        consumer: 'proxy',
+        repoFullName: 'acme/skills',
+        requestedAccess: 'read'
+      }
+    ])
+  })
+})
+
 describe('a Gitea agent behind the credential proxy', () => {
   it('leases the repository a request names by path to the proxy alone, and nothing for one that names none', async () => {
     const { d } = await startDaemon()

@@ -354,6 +354,35 @@ describe('Git skill plan wire (skill-git-in-pod-v1)', () => {
     ).toBe(false)
   })
 
+  it('carries a proxy route only beside a GitLab plan entry, on loopback, with a placeholder', () => {
+    const credentialProxy = {
+      url: 'http://codehost:token@127.0.0.1:4100',
+      trustBundle: '/run/codehost/trust.pem',
+      placeholder: 'acph1_e30.sig'
+    }
+    const gitlab = {
+      ...plan,
+      url: 'https://gitlab.example.test/acme/skills',
+      getUrl: undefined,
+      credentialHost: 'https://gitlab.example.test'
+    }
+    const withGitlab = { ...reconcile, sources: [gitlab] }
+    expect(ClusterSkillReconcileSchema.safeParse({ ...withGitlab, credentialProxy }).success).toBe(true)
+    expect(ClusterSkillReconcileSchema.safeParse({ ...reconcile, credentialProxy }).success).toBe(false)
+    for (const bad of [
+      { url: 'http://codehost:token@10.0.0.1:4100' },
+      { url: 'https://codehost:token@127.0.0.1:4100' },
+      { trustBundle: 'relative/trust.pem' },
+      { placeholder: 'glpat_real-token' },
+      { extra: 1 }
+    ]) {
+      expect(
+        ClusterSkillReconcileSchema.safeParse({ ...withGitlab, credentialProxy: { ...credentialProxy, ...bad } })
+          .success
+      ).toBe(false)
+    }
+  })
+
   it('takes the new reply fields as optional, and an old-shape reply still parses', () => {
     expect(ClusterSkillReconcileReplySchema.parse(gitReply)).toEqual(gitReply)
     expect(ClusterSkillReconcileReplySchema.parse({ roots: [], conflicts: [] })).toEqual({ roots: [], conflicts: [] })

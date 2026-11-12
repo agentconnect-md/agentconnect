@@ -532,7 +532,7 @@ describe('sandbox skill reconcile: routing', () => {
     })
   }, 120_000)
 
-  it('plans a credentialed GitLab Source in-pod only for an image that credentials its instance', async () => {
+  it('plans a credentialed GitLab Source in-pod through the proxy route alone, never a window', async () => {
     await withWorld(async (w) => {
       const gitlab = AgentSkillEntry.parse({
         name: 'gitlab',
@@ -541,41 +541,51 @@ describe('sandbox skill reconcile: routing', () => {
         subDir: 'skills',
         skills: ['gamma']
       })
+      const proxy = {
+        url: 'http://codehost:token@127.0.0.1:4100',
+        trustBundle: '/run/codehost/trust.pem',
+        placeholder: 'acph1_e30.sig'
+      }
       const pod = await sandbox(w, 'pod')
       const opened: string[][] = []
       await run(w, pod, 'pod', {
         gitlabPlans: true,
         skills: [gitlab],
         inPod: {
+          skillProxy: () => proxy,
           openWindow: (repos) => {
             opened.push(repos)
             return { capability: 'w'.repeat(43), close() {} }
           }
         }
       })
-      expect(opened).toEqual([['gitlab:acme/private']])
+      expect(opened).toEqual([])
       expect(pod.gitPlans()[0]).toEqual([
         expect.objectContaining({
           url: 'https://gitlab.example.test/acme/private',
           credentialHost: 'https://gitlab.example.test'
         })
       ])
+      const reconcile = pod.requests.find((r) => r.op === 'reconcile')!
+      expect(reconcile.credentialProxy).toEqual(proxy)
+      expect(reconcile.credentialWindow).toBeUndefined()
       expect(Object.keys(await installed(pod.workspace))).toContain('.agents/skills/gamma/SKILL.md')
 
-      // An older image, or a window that would not admit the project, leaves it to the daemon.
+      // An older image, or a pod with no route to the proxy, leaves it to the daemon.
       const older = await sandbox(w, 'older')
       const acquired: string[] = []
-      await run(w, older, 'pod', { skills: [gitlab], acquired })
+      await run(w, older, 'pod', { skills: [gitlab], acquired, inPod: { skillProxy: () => proxy } })
       expect(acquired).toEqual(['gitlab'])
-      const unadmitted = await sandbox(w, 'unadmitted')
+      const unrouted = await sandbox(w, 'unrouted')
       const daemonAcquired: string[] = []
-      await run(w, unadmitted, 'pod', {
+      await run(w, unrouted, 'pod', {
         gitlabPlans: true,
         skills: [gitlab],
         acquired: daemonAcquired,
-        inPod: { windowAdmits: (key) => key !== 'gitlab:acme/private' }
+        inPod: { skillProxy: () => undefined }
       })
       expect(daemonAcquired).toEqual(['gitlab'])
+      expect(unrouted.requests.find((r) => r.op === 'reconcile')?.credentialProxy).toBeUndefined()
     })
   }, 240_000)
 

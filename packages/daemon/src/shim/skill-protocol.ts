@@ -24,8 +24,8 @@ export const MAX_SKILL_GET_URL_LENGTH = 8192
 export const SKILL_GIT_IN_POD_FEATURE = 'skill-git-in-pod-v1' as const
 /** Advertised by a shim that also bundles a Git plan clone for write-back; the daemon's grant for it is `skills-git-writeback`. */
 export const SKILL_GIT_WRITEBACK_FEATURE = 'skill-git-writeback-v1' as const
-/** Advertised by a shim that credentials a GitLab plan entry through its window; the daemon's grant for it is `skills-git-gitlab`. */
-export const SKILL_GIT_GITLAB_FEATURE = 'skill-git-gitlab-v1' as const
+/** Advertised by a shim that reads a GitLab plan entry through its proxy route; the daemon's grant for it is `skills-git-gitlab`. */
+export const SKILL_GIT_GITLAB_FEATURE = 'skill-git-gitlab-proxy-v1' as const
 
 /** What `cluster-skills-v1` admits — a daemon takes over a running pod, so it may be older than us.
  *  That image has no `manifest` op, so its whole file list must still fit one `begin` frame. */
@@ -188,7 +188,7 @@ export const GitSkillPlanSchema = z
         if (problem) ctx.addIssue({ code: 'custom', message: `getUrl ${problem}` })
       })
       .optional(),
-    // Only to a `skill-git-gitlab-v1` shim: the GitLab instance base whose credential the window carries for this URL.
+    // Only to a `skill-git-gitlab-proxy-v1` shim: the GitLab instance base its Git reaches through the proxy route.
     credentialHost: SkillGitUrlSchema.optional(),
     // Only to a `skill-git-writeback-v1` shim: bundle this clone for write-back (§9) when its read calls for one.
     writeBack: z
@@ -221,6 +221,25 @@ export const SkillCredentialWindowGrantSchema = z
   .object({ capability: z.string().regex(/^[A-Za-z0-9_-]{16,512}$/) })
   .strict()
 
+/** The reconcile's route to the credential proxy (§8): the placeholder reaches only a GitLab plan entry's Git child env. */
+export const SkillCredentialProxyGrantSchema = z
+  .object({
+    url: z
+      .string()
+      .max(512)
+      .regex(/^http:\/\/[A-Za-z0-9._~-]+:[A-Za-z0-9._~-]+@127\.0\.0\.1:\d{1,5}$/),
+    trustBundle: z
+      .string()
+      .min(1)
+      .max(4096)
+      .refine((value) => value.startsWith('/') && !/[\0\r\n]/.test(value), 'trustBundle must be an absolute path'),
+    placeholder: z
+      .string()
+      .regex(/^acph1_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/)
+      .max(4096)
+  })
+  .strict()
+
 export const ClusterSkillReconcileSchema = z
   .object({
     op: z.literal('reconcile'),
@@ -232,12 +251,16 @@ export const ClusterSkillReconcileSchema = z
     replayKey: z.string().regex(/^[a-f0-9]{64}$/),
     allowDesiredAdoption: z.boolean(),
     sources: z.array(ClusterSkillSourceSchema).max(MAX_CLUSTER_SKILL_SOURCES),
-    credentialWindow: SkillCredentialWindowGrantSchema.optional()
+    credentialWindow: SkillCredentialWindowGrantSchema.optional(),
+    credentialProxy: SkillCredentialProxyGrantSchema.optional()
   })
   .strict()
   .superRefine((value, ctx) => {
     if (value.credentialWindow && !value.sources.some((source) => source.sourceKind === 'git')) {
       ctx.addIssue({ code: 'custom', message: 'a credential window rides only a Git plan reconcile' })
+    }
+    if (value.credentialProxy && !value.sources.some((source) => 'credentialHost' in source)) {
+      ctx.addIssue({ code: 'custom', message: 'a credential proxy route rides only a GitLab plan reconcile' })
     }
     const ids = new Set<string>()
     for (const source of value.sources) {
@@ -487,6 +510,7 @@ export type ClusterSkillSkippedSource = z.infer<typeof ClusterSkillSkippedSource
 export type ClusterSkillSource = z.infer<typeof ClusterSkillSourceSchema>
 export type GitSkillPlan = z.infer<typeof GitSkillPlanSchema>
 export type SkillCredentialWindowGrant = z.infer<typeof SkillCredentialWindowGrantSchema>
+export type SkillCredentialProxyGrant = z.infer<typeof SkillCredentialProxyGrantSchema>
 export type SkillSkipCode = z.infer<typeof SkillSkipCodeSchema>
 export type GitSkillSourceResult = z.infer<typeof GitSkillSourceResultSchema>
 export type SkillWriteBackCandidate = z.infer<typeof SkillWriteBackCandidateSchema>

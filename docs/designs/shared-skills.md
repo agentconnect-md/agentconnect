@@ -274,8 +274,9 @@ refused. An anonymous project read at admission decides visibility:
   ref through `CodeHostRepository.resolveRef` with that token (identity by
   project id and path, then the ref). On the daemon path it then downloads the
   project archive by project id, so no name-based read follows the identity
-  check; in a pod the shim clones it with the token served only through the
-  reconcile's skill credential window.
+  check; in a pod the shim clones it through the credential proxy with the
+  agent's skill placeholder, which the proxy exchanges only for a Git read of
+  that agent's private skill projects.
 - Without a configured GitLab connection, a GitLab address is just another
   host.
 
@@ -640,7 +641,7 @@ identity check, and an anonymous source off GitHub by one scoped
   ([source-cache.md](source-cache.md) §6.1, §8): blobless, at the planned
   commit, checking out only the subdirectory. The pod also runs the
   `ls-remote` for an anonymous source off GitHub, and a credentialed GitLab
-  source goes in-pod only to a shim that also advertises `skill-git-gitlab-v1`.
+  source goes in-pod only to a shim that also advertises `skill-git-gitlab-proxy-v1`.
   The staged checkout reaches the CLI only through the same bounded no-follow
   snapshot, with the same limits and the same rejection of links and special
   files. Whatever a pod cannot carry stays on the daemon path.
@@ -898,9 +899,10 @@ The implemented surface follows `McpServersCard`:
   credentialed source is the agent's read grant, and the Control Plane serves
   only a read token scoped to that one repository or project: `contents:read`
   for GitHub, and for GitLab a read token under a `read` clamp, its agent
-  account a Reporter member of the project. The agent channel issues it only inside a
-  skill credential window the daemon opens for the pod or for its own fill
-  ([source-cache.md](source-cache.md) §8); the per-agent helper capability the
+  account a Reporter member of the project. The agent channel issues a GitHub one only
+  inside a skill credential window the daemon opens for the pod or for its own fill
+  ([source-cache.md](source-cache.md) §8); a GitLab one reaches only the daemon and its
+  credential proxy, which a pod's skill Git reaches with a skill placeholder; the per-agent helper capability the
   runtime holds is refused for a private skill repository, and the refusal is
   audited. On the daemon path a GitHub acquisition starts anonymously and
   retries the numeric identity request through the URL-scoped helper when the

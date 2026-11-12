@@ -668,37 +668,16 @@ describe('AgentChannelServer routing (agent.sock)', () => {
       expect(gets).toEqual([{ agentId: 'a1', opts: { plane: 'git', repo: SKILL } }])
     })
 
-    it('serves a GitLab skill project read-clamped by id only through a pod window naming it', async () => {
-      const PROJECT = 'group/skills'
-      const { sockPath, gets, capability } = await bootGithub({
-        privateGitlabSkillProjectOf: (_agentId, path) => (path.toLowerCase() === PROJECT ? '77' : undefined)
+    it('serves no GitLab credential through a pod window, which the proxy reads those skills through instead', async () => {
+      const { sockPath, gets } = await bootGithub()
+      expect(server!.admitsPodSkillRepo('a1', 'gitlab:group/skills')).toBe(false)
+      const window = server!.openPodSkillWindow('a1', 'a1', [SKILL])!
+      const gitlab = { provider: 'gitlab', repoFullName: 'group/skills' }
+      expect(await askVia(sockPath, server!.tunnelGreeting('a1'), window.capability, gitlab)).toMatchObject({
+        ok: false,
+        denied: 'repository'
       })
-      expect(server!.admitsPodSkillRepo('a1', `gitlab:${PROJECT}`)).toBe(true)
-      expect(server!.admitsPodSkillRepo('a1', 'gitlab:group/other')).toBe(false)
-      const window = server!.openPodSkillWindow('a1', 'a1', [`gitlab:${PROJECT}`])!
-      const greeting = server!.tunnelGreeting('a1')
-      const gitlab = { provider: 'gitlab', repoFullName: PROJECT }
-      // The agent capability, a project the window does not name, and another plane get nothing.
-      expect(await askVia(sockPath, greeting, capability, gitlab)).toMatchObject({ ok: false })
-      expect(
-        await askVia(sockPath, greeting, window.capability, { ...gitlab, repoFullName: 'group/other' })
-      ).toMatchObject({ ok: false, denied: 'repository' })
-      expect(await askVia(sockPath, greeting, window.capability, { ...gitlab, plane: 'glab' })).toMatchObject({
-        ok: false
-      })
-      expect(gets.filter((get) => (get.opts as { externalRepoId?: string }).externalRepoId === '77')).toHaveLength(0)
-      expect(await askVia(sockPath, greeting, window.capability, gitlab)).toMatchObject({ ok: true })
-      expect(gets.at(-1)).toEqual({
-        agentId: 'a1',
-        opts: {
-          plane: 'glab',
-          repo: PROJECT,
-          provider: 'gitlab',
-          externalRepoId: '77',
-          requestedAccess: 'read',
-          consumer: 'daemon'
-        }
-      })
+      expect(gets).toHaveLength(0)
     })
 
     it('refuses a daemon window through any tunnel and a greeting without the server key', async () => {

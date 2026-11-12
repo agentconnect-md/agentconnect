@@ -1352,6 +1352,24 @@ Git must not silently claim that the Azure CLI is installed in every image.
    a plain environment rewrite is insufficient. Bundle storage authorization and
    non-Git ref-resolution APIs keep their separate contracts. Host-side acquisition
    stays on its current path. Unsupported migrated Git fails without a token fallback.
+   GitLab moved first, with its authority set to the agent rather than the window.
+   Enabling a private skill source is already the agent's read grant at the Control
+   Plane, and every pod of an agent installs the same sources, so a per-pod subject
+   and a per-reconcile lifetime add no protection there. A pod's private GitLab
+   skill source is cloned through the pod's `codehost` tunnel with a **skill
+   placeholder**: a code-host placeholder sealed with a skill claim for the instances
+   the agent's private GitLab skill sources are read from. The proxy honors it only
+   on those instances, only for a Git read (a push or any API call is refused), and
+   leases only a project that is one of the agent's current private GitLab skill
+   sources, at `read`. The agent's ordinary placeholder never reaches a skill project,
+   and a skill placeholder never reaches the agent's workspace or granted repositories.
+   An agent whose only proxied need is such a source gets the `codehost` tunnel for it.
+   No session gains a placeholder for those instances, and a runtime's own request to
+   them through a pod's listener carries no placeholder of ours, so the proxy passes it
+   untouched; the shared loopback listener does not intercept them. The shim advertises this as
+   `skill-git-gitlab-proxy-v1`; a pod without it, or without a `codehost` listener,
+   takes the daemon path. Private GitHub skill sources keep their pod window until
+   GitHub's Git moves.
 4. **Owning-daemon host-side Git, last:** after deliveries 1–3, decide whether to
    migrate canonical clones, other host-side preparation and local host-strategy
    daemon Git at all. Extend the capacity measurement to full canonical clones
@@ -1462,9 +1480,10 @@ resource/concurrency bounds; this documentation change launches no load test.
   operations retain their listeners. Also verify idle cleanup of an unused prepared
   environment and successful preparation on a newly acquired binding.
 - Source-cache hit/miss and fallback behavior, exact review refs, approved submodules
-  and lazy fetches preserve their own authorization. During later source migration,
-  a closed/expired/wrong-subject skill window must deny even with a previously issued
-  placeholder, and an ordinary runtime placeholder must not acquire source-only access.
+  and lazy fetches preserve their own authorization. A skill placeholder reads only
+  the private skill sources its agent's current spec enables, over Git and read-only;
+  an ordinary runtime placeholder must not acquire source-only access. Until GitHub's
+  skill sources move, a closed, expired or wrong-subject GitHub skill window still denies.
 
 Completion of the first delivery means Azure works in the newly enabled environments;
 completion of deliveries 1–3 means managed Git inside execution environments uses

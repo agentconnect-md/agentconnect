@@ -71,7 +71,6 @@ import {
   MEMORY_ENTRIES_WRITE_V1_FEATURE,
   AgentActivate as AgentActivateSchema,
   AgentSkillEntry as AgentSkillEntrySchema,
-  skillSourceCredential,
   WEBCHAT_MULTI_AGENT_FEATURE,
   WEBCHAT_REMOTE_MCP_FEATURE,
   WEBCHAT_HOOK_CONTINUATION_FEATURE,
@@ -753,14 +752,14 @@ import {
   createSkillRefPlanResolution,
   createSkillRefResolution,
   isCredentialedSkillSource,
+  privateGitlabSkillRepositories,
   resolveCredentialedSkillRef,
   type SkillRefPlan
 } from './skills/skill-ref-resolution.js'
 import { configureGitlabSkillReads } from './skills/gitlab-skill-source.js'
 import { gitlabRepository } from './gitlab/repository.js'
-import { reconcileSandboxSkillSources, skillWindowKey, type InPodSkillDeps } from './skills/sandbox-skill-reconcile.js'
+import { reconcileSandboxSkillSources, type InPodSkillDeps } from './skills/sandbox-skill-reconcile.js'
 import { resolveSkillRefInPod } from './skills/pod-skill-ref.js'
-import { GITLAB_SKILL_WINDOW_PREFIX } from './cp/skill-credential-window.js'
 import { cwdWorkspaceIncarnation } from './skills/workspace-incarnation.js'
 import { ClusterSkillCoordinator, clusterSkillSupportRequired } from './skills/cluster-skill-coordinator.js'
 import type { SkillSourceFailureEntry } from './skills/skill-source-failure.js'
@@ -4443,19 +4442,6 @@ export class Daemon {
           (row) => row.provider === IMPLICIT_CREDENTIAL_PROVIDER && row.repoFullName.toLowerCase() === wanted
         )
       },
-      // A credentialed GitLab skill source the spec enables, by the path its project is measured at on the spec's instance.
-      privateGitlabSkillProjectOf: (agentId: string, projectPath: string) => {
-        const agent = this.agents.get(agentId)
-        const wanted = `${GITLAB_SKILL_WINDOW_PREFIX}${projectPath.toLowerCase()}`
-        for (const value of agent?.skills ?? []) {
-          const parsed = AgentSkillEntrySchema.safeParse(value)
-          if (!parsed.success) continue
-          const credential = skillSourceCredential(parsed.data)
-          if (credential?.provider === 'gitlab' && skillWindowKey(parsed.data, agent?.gitlabHost) === wanted)
-            return credential.projectId
-        }
-        return undefined
-      },
       // A PRIVATE GitHub skill source the spec enables (shared-skills.md §3): issued only inside a skill credential window.
       privateGithubSkillRepoOf: (agentId: string, repoFullName: string) => {
         const wanted = repoFullName.toLowerCase()
@@ -7163,6 +7149,7 @@ export class Daemon {
           return workspace.gitRepo ? (gitRepoLabel(workspace.gitRepo) ?? undefined) : undefined
         },
         instancesOf: (agentId) => this.credentialProxyHosts(agentId),
+        skillInstancesOf: (agentId) => this.skillProxyHosts(agentId),
         repositoriesOf: (agentId, provider) => this.codeHostRepositories(agentId, provider),
         runningAgents: () => this.agents.keys(),
         knownAgent: (agentId) => this.agents.has(agentId),
@@ -7209,7 +7196,12 @@ export class Daemon {
   /** A proxy-only provider's lease (azure-devops-integration.md §6.1): only for a repository the request names, by id or else by path; a read one for a read, dropped on a 401 so the next asks the CP to refresh. */
   private async proxyOnlyLease(agentId: string, ask: MintAsk): Promise<MintedCredential> {
     const provider = codeHostCredentials(ask.provider)?.provider
-    const repositories = this.codeHostRepositories(agentId, ask.provider)
+    // A skill placeholder reaches only the agent's private skill projects, never its workspace or granted repositories.
+    const repositories = ask.skill
+      ? ask.provider === 'gitlab'
+        ? this.gitlabSkillRepositories(agentId)
+        : []
+      : this.codeHostRepositories(agentId, ask.provider)
     const repository =
       ask.repoId !== undefined
         ? repositories.find((row) => row.repoId === ask.repoId)
@@ -7223,7 +7215,7 @@ export class Daemon {
       provider,
       externalRepoId: repository.repoId,
       ...(repository.workspace ? {} : { repoFullName: repository.repoFullName }),
-      ...(ask.readOnly ? { requestedAccess: 'read' as const } : {})
+      ...(ask.readOnly || ask.skill ? { requestedAccess: 'read' as const } : {})
     }
     const cred = await this.gitCreds.getProxyLease(agentId, lease)
     return {
@@ -7232,6 +7224,22 @@ export class Daemon {
       access: cred.access,
       invalidate: () => this.gitCreds.invalidateProxyLease(agentId, lease, cred.token)
     }
+  }
+
+  /** The agent's private GitLab skill projects, by id and path, which only its skill placeholder is leased for. */
+  private gitlabSkillRepositories(agentId: string): ProxyRepository[] {
+    const agent = this.agents.get(agentId)
+    return privateGitlabSkillRepositories(agent?.skills ?? [], agent?.gitlabHost).map((repository) => ({
+      repoId: repository.externalId,
+      repoFullName: repository.path
+    }))
+  }
+
+  /** The instances an agent's private GitLab skill projects are read from, through the proxy alone. */
+  private skillProxyHosts(agentId: string): ManagedCredentialHost[] {
+    const agent = this.agents.get(agentId)
+    const bases = privateGitlabSkillRepositories(agent?.skills ?? [], agent?.gitlabHost).map((row) => row.baseUrl)
+    return [...new Set(bases)].map((baseUrl) => ({ provider: 'gitlab', baseUrl }))
   }
 
   /** The agent's authorized repositories on one provider from its spec, the workspace's first, as the proxy's routes resolve requests among them. */
@@ -8577,7 +8585,15 @@ export class Daemon {
 
   /** `codehost` for a known agent the credential proxy intercepts, which its VM's or pod's sessions reach the proxy by. */
   private codehostTunnelFor(agentId: string): TunnelName[] {
-    return this.agents.has(agentId) && this.credentialProxyCodeHosts(agentId) ? ['codehost'] : []
+    return this.agents.has(agentId) && this.credentialProxyTunnels(agentId) ? ['codehost'] : []
+  }
+
+  /** Whether a pod's `codehost` tunnel reaches the proxy for this agent: its code hosts, or its private skill sources' instances. */
+  private credentialProxyTunnels(agentId: string): boolean {
+    return (
+      this.credentialProxyCodeHosts(agentId) ||
+      (this.credentialProxy !== undefined && this.skillProxyHosts(agentId).length > 0)
+    )
   }
 
   /** `provider` for a known agent with a provider key slot, which its VM's, pool pod's or executor's sessions reach the proxy by. */
@@ -8614,7 +8630,7 @@ export class Daemon {
       agent: agentChannelSocketPath(root),
       mcp: mcpSocketPath(root),
       codehost: (id) =>
-        this.credentialProxy && this.credentialProxyCodeHosts(id)
+        this.credentialProxy && this.credentialProxyTunnels(id)
           ? this.credentialProxy.proxy.tunnelSocketFor(id)
           : undefined,
       provider: (id) =>
@@ -8935,6 +8951,13 @@ export class Daemon {
     return {
       resolve: (entry) => this.gitSkillRefPlans?.(entry, agent.id) ?? Promise.resolve({ ok: false }),
       servesAgentTunnel: pod.servesAgentTunnel,
+      skillProxy: () => {
+        const listener = this.k8sPlane?.codehostFor?.(pod.subject)
+        const placeholder = this.credentialProxy?.proxy.skillPlaceholderFor(agent.id)
+        return listener && placeholder
+          ? { url: codehostProxyUrl(listener), trustBundle: listener.trustBundle, placeholder }
+          : undefined
+      },
       openWindow: (repos) => this.agentChannelServer?.openPodSkillWindow(agent.id, pod.subject, repos),
       windowAdmits: (repo) => this.agentChannelServer?.admitsPodSkillRepo(agent.id, repo) ?? false,
       ...(this.skillCachePlan

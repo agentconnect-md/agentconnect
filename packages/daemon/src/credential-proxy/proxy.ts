@@ -66,6 +66,8 @@ export interface MintAsk {
   push?: true
   /** An API write, refused unless the grant is `write`, as a push is. */
   write?: true
+  /** A skill placeholder's Git read, served only from the agent's private skill sources. */
+  skill?: true
 }
 
 /** A minted credential and the tier its grant carries. */
@@ -86,6 +88,8 @@ export interface CredentialProxyDeps {
   workspaceRepo: (agentId: string) => string | undefined
   /** The code-host instances an agent's managed credential reaches, from its spec. */
   instancesOf: (agentId: string) => readonly ManagedCredentialHost[]
+  /** The instances an agent's private skill sources are read from, which only its skill placeholder is honored on. */
+  skillInstancesOf?: (agentId: string) => readonly ManagedCredentialHost[]
   /** The agent's authorized repositories on one provider, from its spec, which that provider's routes resolve a request among. */
   repositoriesOf?: (agentId: string, provider: string) => readonly ProxyRepository[]
   /** Every agent this daemon runs, whose instances the shared loopback listener serves. */
@@ -296,7 +300,7 @@ export class CredentialProxy {
 
   /** The `host:port` authorities an agent's code hosts answer on: each SaaS name on 443, a self-managed instance on its own port. */
   tunnelRoutes(agentId: string): string[] {
-    const routes = this.instances(agentId).flatMap((instance) =>
+    const routes = [...this.instances(agentId), ...this.skillInstances(agentId)].flatMap((instance) =>
       instance.provider === 'github'
         ? instanceHostnames(instance).map((name) => routeAuthority(name, 443))
         : instance.hosts.map((host) => (/:\d+$/.test(host) ? host : `${host}:443`))
@@ -360,6 +364,12 @@ export class CredentialProxy {
     return sealPlaceholder(this.deps.key, { agentId, hosts })
   }
 
+  /** The placeholder a pod's skill Git child carries for the agent's private skill sources; undefined when it has none. */
+  skillPlaceholderFor(agentId: string): string | undefined {
+    const hosts = [...new Set(this.skillInstances(agentId).flatMap((instance) => instance.hosts))]
+    return hosts.length > 0 ? sealPlaceholder(this.deps.key, { agentId, hosts, skill: true }) : undefined
+  }
+
   /** The placeholder an agent's environment carries in place of one provider slot's key; undefined for a slot it does not have. */
   providerPlaceholderFor(agentId: string, slotId: string): string | undefined {
     const slot = this.slots(agentId).find((candidate) => candidate.id === slotId)
@@ -402,10 +412,15 @@ export class CredentialProxy {
     return this.deps.instancesOf(agentId).flatMap((host) => proxyInstance(host) ?? [])
   }
 
-  /** The instances a listener serves: its own agent's on a socket, every running agent's on loopback. */
+  /** The instances an agent's private skill sources are read from. */
+  private skillInstances(agentId: string): ProxyInstance[] {
+    return (this.deps.skillInstancesOf?.(agentId) ?? []).flatMap((host) => proxyInstance(host) ?? [])
+  }
+
+  /** The instances a listener serves: its own agent's on a socket, skill sources' included, and every running agent's on loopback. */
   private served(boundAgent?: string): ProxyInstance[] {
     return boundAgent !== undefined
-      ? this.instances(boundAgent)
+      ? [...this.instances(boundAgent), ...this.skillInstances(boundAgent)]
       : [...this.deps.runningAgents()].flatMap((id) => this.instances(id))
   }
 
@@ -424,7 +439,8 @@ export class CredentialProxy {
   /** Which address space a name may not resolve into: all private space for a SaaS host or provider origin, only loopback, link-local and unspecified for a self-managed instance or an operator's endpoint. */
   private deniedFor(hostname: string): ((address: string) => boolean) | undefined {
     const slots = this.servedSlots().filter((slot) => slotHostname(slot) === hostname)
-    const instances = this.served().filter((instance) => instanceHostnames(instance).includes(hostname))
+    const skills = [...this.deps.runningAgents()].flatMap((id) => this.skillInstances(id))
+    const instances = [...this.served(), ...skills].filter((instance) => instanceHostnames(instance).includes(hostname))
     if (SAAS_HOSTS.includes(hostname) || slots.some((slot) => slot.saas) || instances.some((i) => i.saas))
       return deniedAddress
     return slots.length > 0 || instances.length > 0 ? deniedSelfManagedAddress : undefined
@@ -493,7 +509,15 @@ export class CredentialProxy {
     const opened = presented.map((value) => openPlaceholder(this.deps.key, value))
     if (opened.some((claims) => !claims)) return deny(403, 'the agent credential was not issued by this daemon')
     const claims = opened[0]!
-    if (opened.some((o) => o!.agentId !== claims.agentId || o!.kind !== claims.kind || o!.slot !== claims.slot))
+    if (
+      opened.some(
+        (o) =>
+          o!.agentId !== claims.agentId ||
+          o!.kind !== claims.kind ||
+          o!.slot !== claims.slot ||
+          o!.skill !== claims.skill
+      )
+    )
       return deny(403, 'the request carries more than one agent credential')
     // The kind first: a code-host credential is never a provider key, nor the reverse.
     if (claims.kind === 'provider' ? keyed.length === 0 : !carried)
@@ -505,7 +529,7 @@ export class CredentialProxy {
     const target = info.requestTarget ?? `${url.pathname}${url.search}`
     if (claims.kind === 'provider') return this.providerDecision(claims, keyed, hostname, port, target)
     if (!carried) return deny(403, `the agent credential is not valid for ${hostKey(hostname, port)}`)
-    const instance = this.instanceFor(claims.agentId, claims.hosts, hostname, port, target)
+    const instance = this.instanceFor(claims.agentId, claims.hosts, hostname, port, target, claims.skill === true)
     if (!instance) return deny(403, `the agent credential is not valid for ${hostKey(hostname, port)}`)
     // A descriptor may present every credential as Basic with the grant's user, whatever scheme the client used.
     const scheme = routeDescriptor(instance.provider)?.basicAuthorization ? 'basic' : carried.authorization?.scheme
@@ -522,6 +546,9 @@ export class CredentialProxy {
         ]
       }
     if ('action' in ask) return ask
+    if (claims.skill && (ask.plane !== 'git' || ask.push || ask.write))
+      return deny(403, 'a skill credential only reads its private skill sources over Git')
+    if (claims.skill) Object.assign(ask, { readOnly: true, skill: true })
     const what = ask.repo ?? (ask.repoId !== undefined ? `project ${ask.repoId}` : 'the workspace repository')
     try {
       const minted = await this.deps.mint(claims.agentId, ask)
@@ -604,16 +631,17 @@ export class CredentialProxy {
     return entry
   }
 
-  /** The agent's instance a request reaches, among those its placeholder was sealed for: the longest path prefix that applies. */
+  /** The agent's instance a request reaches, among those its placeholder was sealed for (a skill one's, its skill sources'): the longest path prefix that applies. */
   private instanceFor(
     agentId: string,
     sealed: readonly string[],
     hostname: string,
     port: number,
-    target: string
+    target: string,
+    skill: boolean
   ): ProxyInstance | undefined {
     const path = target.split('?')[0] ?? ''
-    const candidates = this.instances(agentId).filter((instance) => {
+    const candidates = (skill ? this.skillInstances(agentId) : this.instances(agentId)).filter((instance) => {
       const host = instanceHost(instance, hostname, port)
       return host !== undefined && sealed.includes(host)
     })

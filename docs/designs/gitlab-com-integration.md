@@ -1177,9 +1177,9 @@ alone, and refuses the agent-facing helper and a request that names no
 consumer, so a daemon that predates the rule loses GitLab Git until it is
 upgraded and its refusal says so. Daemon Git inside a local SRT or VM, a Cloud pod or a remote
 executor takes the proxy route with the placeholder, as the agent's own Git
-does. The one remaining exception is a private GitLab skill source's
-acquisition inside a pod, whose credential window still returns a `read`
-token until scoped source operations move to the proxy
+does. A private GitLab skill source cloned inside a pod takes the same route
+with a skill placeholder, which the proxy exchanges only for a Git read of a
+private skill project the agent's spec enables
 (github-app-git-credentials.md, delivery 3).
 
 The managed feature allows only the exact `https://gitlab.com` origin. An

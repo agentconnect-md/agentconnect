@@ -61,7 +61,7 @@ export const ShimFeatureSchema = z.enum([
   'source-cache-bundle-v1',
   'skill-git-in-pod-v1',
   'skill-git-writeback-v1',
-  'skill-git-gitlab-v1',
+  'skill-git-gitlab-proxy-v1',
   'workspace-transfer-v1'
 ])
 export type ShimFeature = z.infer<typeof ShimFeatureSchema>
@@ -96,7 +96,7 @@ export const ShimCapabilitySchema = z.enum([
   'skills-git',
   // A Git plan entry may ask the shim to bundle its clone for write-back, uploaded over `bundle` (source-cache.md §9, §13).
   'skills-git-writeback',
-  // A Git plan entry may name a GitLab instance whose credential the pod's window carries (source-cache.md §8, §11).
+  // A Git plan entry may name a GitLab instance its Git reaches through the pod's route to the credential proxy (source-cache.md §8, §11).
   'skills-git-gitlab',
   // Create, upload and discard a shim-minted Source Cache bundle handle (source-cache.md §9, §13).
   'bundle',

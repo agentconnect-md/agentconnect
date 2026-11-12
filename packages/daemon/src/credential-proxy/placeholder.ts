@@ -16,6 +16,8 @@ export interface PlaceholderClaims {
   kind?: PlaceholderKind
   /** The provider slot a `provider` placeholder stands in for, such as `org:anthropic`. */
   slot?: string
+  /** A skill Git child's code-host placeholder: it reads only the agent's private skill sources over Git. */
+  skill?: true
 }
 
 /** Claims as opened: the kind always set, a placeholder sealed before kinds existed reading as a code host's. */
@@ -47,7 +49,14 @@ function mac(key: Buffer, body: string): Buffer {
 export function sealPlaceholder(key: Buffer, claims: PlaceholderClaims): string {
   const kind = claims.kind ?? 'codehost'
   if (kind === 'provider' && !claims.slot) throw new Error('a provider placeholder needs its slot')
-  const sealed = { a: claims.agentId, h: claims.hosts, k: kind, ...(kind === 'provider' ? { p: claims.slot } : {}) }
+  if (kind === 'provider' && claims.skill) throw new Error("a skill placeholder is a code host's")
+  const sealed = {
+    a: claims.agentId,
+    h: claims.hosts,
+    k: kind,
+    ...(kind === 'provider' ? { p: claims.slot } : {}),
+    ...(claims.skill ? { s: 1 } : {})
+  }
   const body = Buffer.from(JSON.stringify(sealed)).toString('base64url')
   return `${PLACEHOLDER_PREFIX}${body}.${mac(key, body).toString('base64url')}`
 }
@@ -66,10 +75,13 @@ export function openPlaceholder(key: Buffer, value: string): OpenedClaims | unde
       h?: unknown
       k?: unknown
       p?: unknown
+      s?: unknown
     }
     if (typeof parsed.a !== 'string' || !Array.isArray(parsed.h)) return undefined
     const hosts = parsed.h.filter((host): host is string => typeof host === 'string')
-    if (parsed.k === undefined || parsed.k === 'codehost') return { agentId: parsed.a, hosts, kind: 'codehost' }
+    if (parsed.s !== undefined && (parsed.s !== 1 || parsed.k !== 'codehost')) return undefined
+    if (parsed.k === undefined || parsed.k === 'codehost')
+      return { agentId: parsed.a, hosts, kind: 'codehost', ...(parsed.s === 1 ? { skill: true as const } : {}) }
     if (parsed.k !== 'provider' || typeof parsed.p !== 'string' || parsed.p === '') return undefined
     return { agentId: parsed.a, hosts, kind: 'provider', slot: parsed.p }
   } catch {
