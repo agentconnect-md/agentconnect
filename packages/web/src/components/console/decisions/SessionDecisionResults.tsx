@@ -9,8 +9,18 @@ import { Icon } from '@/components/ui'
 import { useConsoleData } from '@/lib/data-context'
 import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
 import { answerText } from '@/lib/decisions/evaluations'
-import { evaluationsBySeq, sessionGateLane, type SessionGateLane } from '@/lib/decisions/session-evaluations'
-import { codeHostRoutingEvaluations, type DecisionEvaluationSource } from '@/lib/decisions/evaluation-source'
+import {
+  coordinatorFilterEvaluationsBySeq,
+  evaluationsBySeq,
+  sessionGateLane,
+  type SessionGateLane,
+  type SessionJudgedMessage
+} from '@/lib/decisions/session-evaluations'
+import {
+  codeHostRoutingEvaluations,
+  coordinatorFilterEvaluations,
+  type DecisionEvaluationSource
+} from '@/lib/decisions/evaluation-source'
 import type { CodeHostRoutingKey } from '@/lib/api'
 import {
   isCodeHostRoutingScope,
@@ -23,25 +33,63 @@ import { OutcomeBadge } from './DecisionEvaluationDetail'
 const PAGE = 50
 const MAX_PAGES = 5
 const PENDING_POLL_MS = 5000
+const RECENT_FILTER_WAIT_MS = 15_000
 const NONE = new Map<number, DecisionEvaluationRecord>()
 
-/** The session's gated lane and each judged message's evaluation, keyed by transcript seq. */
+/** The session's gated or coordinator-filtered lane and each judged message's evaluation, keyed by transcript seq. */
 export function useSessionDecisionResults(
-  session: { agentId?: string | null; platform?: string | null; channelId?: string | null },
-  seqs: readonly number[]
-): { lane: SessionGateLane | null; bySeq: ReadonlyMap<number, DecisionEvaluationRecord> } {
+  session: {
+    agentId?: string | null
+    platform?: string | null
+    channelId?: string | null
+    coordinator?: boolean
+    canEditAgent?: boolean
+  },
+  seqs: readonly number[],
+  messages: readonly SessionJudgedMessage[] = []
+): {
+  lane: SessionGateLane | null
+  source: DecisionEvaluationSource | null
+  bySeq: ReadonlyMap<number, DecisionEvaluationRecord>
+} {
   const decisions = useOptionalDecisionsPrototype()
+  const tDecisions = useTranslations('Decisions')
   const { integrations } = useConsoleData()
-  const { agentId, platform, channelId } = session
+  const { agentId, platform, channelId, coordinator, canEditAgent } = session
+  const filterName = tDecisions('evaluations.coordinatorFilter.name')
+  const filterTriggerWhen = tDecisions('evaluations.coordinatorFilter.triggerWhen')
   const lane = useMemo(
-    () => (decisions ? sessionGateLane(integrations, { agentId, platform, channelId }) : null),
-    [decisions, integrations, agentId, platform, channelId]
+    () => (decisions && !coordinator ? sessionGateLane(integrations, { agentId, platform, channelId }) : null),
+    [decisions, coordinator, integrations, agentId, platform, channelId]
+  )
+  const source = useMemo(
+    () =>
+      decisions &&
+      coordinator &&
+      agentId &&
+      platform &&
+      channelId &&
+      platform !== 'webchat' &&
+      platform !== 'playground' &&
+      canEditAgent !== false
+        ? coordinatorFilterEvaluations(decisions.api, decisions.orgId, agentId, {
+            name: filterName,
+            triggerWhen: filterTriggerWhen
+          })
+        : null,
+    [decisions, coordinator, canEditAgent, agentId, platform, channelId, filterName, filterTriggerWhen]
   )
   const seqSet = useMemo(() => new Set(seqs), [seqs])
   const oldest = seqs.length > 0 ? Math.min(...seqs) : null
   const newest = seqs.length > 0 ? Math.max(...seqs) : null
-  // Pages newest-first until the lane reaches back past the session's oldest loaded message.
-  const { data } = useSWR(
+  const { oldestTimeMs, newestTimeMs } = useMemo(() => {
+    const times = messages.flatMap((m) => (m.timeMs != null && Number.isFinite(m.timeMs) ? [m.timeMs] : []))
+    return {
+      oldestTimeMs: times.length > 0 ? Math.min(...times) : null,
+      newestTimeMs: times.length > 0 ? Math.max(...times) : null
+    }
+  }, [messages])
+  const swrKey =
     lane && decisions && oldest !== null
       ? [
           'session-decision-evaluations',
@@ -52,15 +100,26 @@ export function useSessionDecisionResults(
           oldest,
           newest
         ]
-      : null,
+      : source && oldest !== null && messages.length > 0
+        ? ['session-coordinator-filter-evaluations', ...source.key, platform, channelId, oldest, newest]
+        : null
+  // Pages newest-first until the lane reaches back past the session's oldest loaded message.
+  const { data } = useSWR(
+    swrKey,
     async () => {
       const records: DecisionEvaluationRecord[] = []
       let cursor: number | undefined
       for (let page = 0; page < MAX_PAGES; page += 1) {
-        const next = await decisions!.api.listEvaluations(lane!.conversation, { cursor, limit: PAGE })
+        const next = source
+          ? await source.list({ cursor, limit: PAGE })
+          : await decisions!.api.listEvaluations(lane!.conversation, { cursor, limit: PAGE })
         records.push(...next.items)
         const last = next.items[next.items.length - 1]
-        if (next.nextCursor === null || !last || last.seq < oldest!) break
+        if (next.nextCursor === null || !last || (!source && last.seq < oldest!)) break
+        if (source && oldestTimeMs !== null) {
+          const lastAt = Date.parse(last.at)
+          if (Number.isFinite(lastAt) && lastAt < oldestTimeMs) break
+        }
         cursor = next.nextCursor
       }
       return records
@@ -68,12 +127,34 @@ export function useSessionDecisionResults(
     {
       revalidateOnFocus: false,
       shouldRetryOnError: false,
-      // A verdict read mid-evaluation settles without touching the transcript, so poll only while one is pending.
-      refreshInterval: (latest) => (latest?.some((record) => record.outcome === 'pending') ? PENDING_POLL_MS : 0)
+      // A verdict read mid-evaluation settles without touching the transcript, so poll only while one is pending or just arrived.
+      refreshInterval: (latest) => {
+        if (latest?.some((record) => record.outcome === 'pending')) return PENDING_POLL_MS
+        if (
+          source &&
+          platform &&
+          channelId &&
+          newest !== null &&
+          newestTimeMs !== null &&
+          Date.now() - newestTimeMs < RECENT_FILTER_WAIT_MS &&
+          !coordinatorFilterEvaluationsBySeq(latest ?? [], { platform, channelId }, messages).has(newest)
+        ) {
+          return PENDING_POLL_MS
+        }
+        return 0
+      }
     }
   )
-  const bySeq = useMemo(() => (data ? evaluationsBySeq(data, seqSet) : NONE), [data, seqSet])
-  return { lane, bySeq }
+  const bySeq = useMemo(
+    () =>
+      !data
+        ? NONE
+        : source && platform && channelId
+          ? coordinatorFilterEvaluationsBySeq(data, { platform, channelId }, messages)
+          : evaluationsBySeq(data, seqSet),
+    [data, source, platform, channelId, messages, seqSet]
+  )
+  return { lane, source, bySeq }
 }
 
 /** "Received a decision result" under the judged message; the whole line opens that evaluation. */
