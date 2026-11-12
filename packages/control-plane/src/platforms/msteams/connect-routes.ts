@@ -265,6 +265,11 @@ export async function connectTarget(
   return agent
 }
 
+// An integration's name, as Slack's: the bot's name in Teams, then the Microsoft 365 organization's.
+function msTeamsIntegrationName(deps: HttpDeps, agent: AgentRecord, organization: string): string {
+  return `${msTeamsAppName(agent.displayName ?? agent.name, deps.config.MSTEAMS_APP_LABEL, 30)} (${organization})`
+}
+
 // The agent that already appears in this tenant under the name the target's package would take (§8.6.4); Teams lists every bot of a tenant in one mention picker.
 async function nameHolder(
   deps: HttpDeps,
@@ -598,7 +603,7 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
                     agent: currentTarget,
                     platform: MSTEAMS_PLATFORM,
                     // The organization's own name, as the console lists it; the tenant ID only when Graph names none.
-                    name: `Microsoft Teams · ${organizationName ?? tenantId}`,
+                    name: msTeamsIntegrationName(deps, agent, organizationName ?? tenantId),
                     transport: 'http',
                     prebuilt: true,
                     createdByUserId: req.principal!.userId
@@ -850,22 +855,10 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
           )
           const organizationName = await readMsTeamsOrganizationName(fetchImpl, accessToken)
           const userId = req.principal.userId
-          let catalogAppId: string
-          try {
-            catalogAppId = await publishMsTeamsPackage(fetchImpl, accessToken, msTeamsPackageId(identity), zip)
-          } catch (err) {
-            // Microsoft lets only an administrator publish: anyone else's package is submitted, and waits for one to publish it in the Teams admin center (§8.6.6).
-            const { refreshToken } = ticket
-            if (
-              !(err instanceof MsTeamsConnectError) ||
-              err.code !== 'MSTEAMS_CONNECT_NOT_ADMIN' ||
-              !seams.requests ||
-              !refreshToken
-            )
-              throw err
-            // An agent that already has its bot is updated by an administrator's connect, not by a new submission.
-            if (await deps.repos.bot.getByExternalIdentity(MSTEAMS_PLATFORM, identity, tenantId))
-              throw new MsTeamsRecoveryError(409, 'MSTEAMS_AGENT_ALREADY_CONNECTED', ALREADY_CONNECTED_MESSAGE)
+          const { refreshToken } = ticket
+          const existing = await deps.repos.bot.getByExternalIdentity(MSTEAMS_PLATFORM, identity, tenantId)
+          // A new bot's package is submitted, and an administrator publishes it in the Teams admin center: Graph's direct publish of a new one leaves it unavailable for good (§8.6.5).
+          if (!existing && seams.requests && refreshToken) {
             const submitted = await submitMsTeamsPackage(fetchImpl, accessToken, msTeamsPackageId(identity), zip)
             // The request is stored under the tenant's lock, for an organization that still holds the tenant (§8.7).
             const request = await seams.bindingMutations.runExclusive(tenantId, async () => {
@@ -889,12 +882,21 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
                 catalogAppId: submitted,
                 teamIds: [],
                 appPackage,
-                botName: `Microsoft Teams · ${organizationName ?? tenantId}`,
+                botName: msTeamsIntegrationName(deps, target, organizationName ?? tenantId),
                 refreshToken,
                 nextCheckAt: new Date(deps.clock.now() + MSTEAMS_REQUEST_FIRST_CHECK_MS)
               })
             })
             return { agentId: target.id, agentBot: true, teams: [], store: false, request: requestDto(request) }
+          }
+          let catalogAppId: string
+          try {
+            catalogAppId = await publishMsTeamsPackage(fetchImpl, accessToken, msTeamsPackageId(identity), zip)
+          } catch (err) {
+            // An agent that already has its bot is updated only by an administrator's connect.
+            if (existing && err instanceof MsTeamsConnectError && err.code === 'MSTEAMS_CONNECT_NOT_ADMIN')
+              throw new MsTeamsRecoveryError(409, 'MSTEAMS_AGENT_ALREADY_CONNECTED', ALREADY_CONNECTED_MESSAGE)
+            throw err
           }
           const blueprintId = seams.agentBots.blueprintId
           // Connects and recovery serialize per tenant, across every deployment-owned bot.
@@ -932,7 +934,7 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
                 orgId,
                 agent: target,
                 platform: MSTEAMS_PLATFORM,
-                name: `Microsoft Teams · ${organizationName ?? tenantId}`,
+                name: msTeamsIntegrationName(deps, target, organizationName ?? tenantId),
                 transport: 'http',
                 prebuilt: true,
                 createdByUserId: userId

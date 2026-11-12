@@ -209,6 +209,12 @@ describe('MsTeamsConnect', () => {
     expect(mocks.agentBot).toHaveBeenCalledWith('org-a', 'provision')
     expect(host.textContent).toContain('Waiting for approval')
     expect(host.querySelector('a[href="https://admin.example.test/manage-apps/catalog-1"]')).not.toBeNull()
+    // A person who may not open the admin center copies the link for an administrator.
+    const writeText = vi.fn(async () => {})
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    await act(async () => button('Copy link').click())
+    expect(writeText).toHaveBeenCalledWith('https://admin.example.test/manage-apps/catalog-1')
+    expect(host.textContent).toContain('Copied')
 
     mocks.checkRequest.mockResolvedValueOnce({ request: waiting }).mockResolvedValueOnce({ integrationId: 'int-3' })
     await act(async () => button('Check again').click())

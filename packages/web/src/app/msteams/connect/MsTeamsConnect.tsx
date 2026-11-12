@@ -18,6 +18,7 @@ import {
   type MsTeamsAgentBotRequestDto,
   type MsTeamsConnectResultDto
 } from '@/lib/api'
+import { CopyLinkButton } from '@/components/console/platforms/msteams/fields'
 import { getUser, isAuthConfigured, login } from '@/lib/auth'
 import { writeFlowState } from '@/lib/flow-state'
 
@@ -319,6 +320,12 @@ export default function MsTeamsConnect() {
               {t('request.openAdmin')}
               <Icon name="external-link" size={14} />
             </a>
+            <CopyLinkButton
+              url={request.adminCenterUrl}
+              label={t('request.copyLink')}
+              copiedLabel={t('request.copied')}
+              className="flex cursor-pointer items-center gap-1 border-0 bg-transparent p-0 font-sans text-[13px] font-medium leading-normal text-(--text-secondary)"
+            />
             <div className="flex gap-[10px]">
               <Button disabled={checking} onClick={() => void check()}>
                 {t(checking ? 'request.checking' : 'request.check')}
