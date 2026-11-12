@@ -89,19 +89,20 @@ describe('cron/self over the daemon WS edge', () => {
     await seedAgent(prisma, AGENT, { daemonId: DAEMON })
     await seedAgent(prisma, FOREIGN, { daemonId: OTHER })
     const { stub, audited } = await ready(DAEMON)
+    // A one-off run is refused once its time has passed, so the time is taken from the clock, not written here.
+    const runAtLocal = `${new Date().getUTCFullYear() + 1}-06-01T09:00:00`
     const saved = await answer(
       stub,
       stub.inject('cron/self', {
         orgId: DEFAULT_ORG_ID,
         op: 'save',
         agentId: AGENT,
-        // Far ahead of the real clock this suite runs on, which a runAt must be.
-        cron: { runAt: '2099-11-12T09:00:00+08:00', timezone: 'Asia/Shanghai', trigger: 'check the deploy' }
+        cron: { runAt: `${runAtLocal}+08:00`, timezone: 'Asia/Shanghai', trigger: 'check the deploy' }
       })
     )
     expect(saved.error).toBeUndefined()
     const cronId = (saved.reply!.cron as { cronId: string }).cronId
-    expect(saved.reply).toMatchObject({ status: 'ok', cron: { schedule: '2099-11-12T09:00:00', once: true } })
+    expect(saved.reply).toMatchObject({ status: 'ok', cron: { schedule: runAtLocal, once: true } })
 
     const listed = await answer(stub, stub.inject('cron/self', { orgId: DEFAULT_ORG_ID, op: 'list', agentId: AGENT }))
     expect((listed.reply!.crons as unknown[]).length).toBe(1)

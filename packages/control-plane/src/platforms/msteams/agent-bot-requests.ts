@@ -146,8 +146,14 @@ export class MsTeamsAgentBotRequests {
           catalogAppId: request.catalogAppId,
           permissions: MSTEAMS_RSC_PERMISSIONS
         })
-        if (probe === 'added') state = 'published'
-        else if (probe === 'unknown') state = 'submitted'
+        if (probe.result === 'added') state = 'published'
+        else if (probe.result === 'unknown') {
+          // What Microsoft answered is the only way to tell why an approved package is not finished.
+          this.deps.log.warn({ requestId: id, detail: probe.detail }, 'msteams: approved package not yet addable')
+          state = 'submitted'
+        }
+      } else if (state === 'submitted' && request.checks > 0) {
+        this.deps.log.info({ requestId: id, checks: request.checks }, 'msteams: package still reads as submitted')
       }
       if (state === 'submitted') {
         await this.store.release(orgId, id, claim, { nextCheckAt: later(), refreshToken: tokens.refreshToken })
