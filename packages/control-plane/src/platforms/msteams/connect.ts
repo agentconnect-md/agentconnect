@@ -15,18 +15,19 @@ export const MSTEAMS_CONNECT_SCOPES = [
 /** A Store install only proves its tenant (§8.4): the sign-in and the organization's name, no catalog or install scope. */
 export const MSTEAMS_STORE_CONNECT_SCOPES = ['https://graph.microsoft.com/User.Read', 'openid'] as const
 
-/** What a deployment with agent bots asks besides (§8.6.5): submitting a package for review, which a member does later, creating the blueprint's principal, and adding an agent's app for the person who connects it. */
+/** What a deployment with agent bots asks besides (§8.6.5): submitting a package for review, which is what a person who cannot publish ends up doing, creating the blueprint's principal, adding an agent's app for the person who connects it, and a refresh token for the wait a submission may need. */
 export const MSTEAMS_AGENT_BOT_SCOPES = [
   'https://graph.microsoft.com/AppCatalog.Submit',
   'https://graph.microsoft.com/AgentIdentityBlueprintPrincipal.Create',
-  'https://graph.microsoft.com/TeamsAppInstallation.ReadWriteAndConsentSelfForUser'
+  'https://graph.microsoft.com/TeamsAppInstallation.ReadWriteAndConsentSelfForUser',
+  'offline_access'
 ] as const
 
 const AUTHORITY = 'https://login.microsoftonline.com/organizations/oauth2/v2.0'
 // A pinned tenant signs in at its own authority, so Entra offers only that tenant's accounts.
 const authorityOf = (tenant?: string) =>
   tenant ? `https://login.microsoftonline.com/${tenant}/oauth2/v2.0` : AUTHORITY
-/** What a member who is not an administrator signs in with (§8.6.6): submit for review, add the app for themselves, and a refresh token for the wait; none of it needs a consent once the tenant's administrator connected. */
+/** What a waiting request's stored sign-in is renewed for (§8.6.6): reading its own submission, adding the app for its person, and the next refresh token. */
 export const MSTEAMS_MEMBER_SCOPES = [
   'https://graph.microsoft.com/AppCatalog.Submit',
   'https://graph.microsoft.com/TeamsAppInstallation.ReadWriteAndConsentSelfForUser',
@@ -39,17 +40,14 @@ export const MSTEAMS_MEMBER_SCOPES = [
 interface ScopeChoice {
   tenant?: string
   agentBots?: boolean
-  member?: boolean
 }
-// A Store install asks only for its proof; a member their own set; a deployment with agent bots asks an administrator their two scopes too.
+// A Store install asks only for its proof; a deployment with agent bots asks everyone its further scopes too, since the sign-in does not know yet whether the person can publish.
 const scopesOf = (choice: ScopeChoice) =>
   (choice.tenant
     ? MSTEAMS_STORE_CONNECT_SCOPES
-    : choice.member
-      ? MSTEAMS_MEMBER_SCOPES
-      : choice.agentBots
-        ? [...MSTEAMS_CONNECT_SCOPES, ...MSTEAMS_AGENT_BOT_SCOPES]
-        : MSTEAMS_CONNECT_SCOPES
+    : choice.agentBots
+      ? [...MSTEAMS_CONNECT_SCOPES, ...MSTEAMS_AGENT_BOT_SCOPES]
+      : MSTEAMS_CONNECT_SCOPES
   ).join(' ')
 const GRAPH = 'https://graph.microsoft.com/v1.0'
 const STATE_TTL_MS = 10 * 60_000
@@ -71,9 +69,7 @@ export interface MsTeamsConnectState {
   consent?: boolean
   /** The sign-in follows a tenant-wide consent an administrator just accepted, which the tenant's row then records. */
   consented?: boolean
-  /** A member's sign-in, which submits the agent's package for the administrator's approval (§8.6.6). */
-  member?: boolean
-  /** The organization's one connected tenant, whose authority a member signs in at so that Entra offers that tenant's accounts, guests included. */
+  /** The organization's one connected tenant, at whose authority a person who signed in elsewhere is signed in once more, silently: a guest of that tenant has an account there (§8.6.6). */
   pin?: string
 }
 
@@ -101,7 +97,6 @@ const StatePayload = z.object({
   agentBots: z.boolean().optional(),
   consent: z.boolean().optional(),
   consented: z.boolean().optional(),
-  member: z.boolean().optional(),
   pin: z.string().regex(GUID).optional(),
   e: z.number(),
   n: z.string()
@@ -133,7 +128,6 @@ export function verifyMsTeamsConnectState(
     ...(parsed.agentBots ? { agentBots: true } : {}),
     ...(parsed.consent ? { consent: true } : {}),
     ...(parsed.consented ? { consented: true } : {}),
-    ...(parsed.member ? { member: true } : {}),
     ...(parsed.pin ? { pin: parsed.pin } : {})
   }
 }
@@ -148,12 +142,8 @@ export function msTeamsAdminConsentUrl(input: { clientId: string; redirectUri: s
   const params = new URLSearchParams({
     client_id: input.clientId,
     redirect_uri: input.redirectUri,
-    // The delegated Graph scopes by name, and `offline_access` so a member's later sign-in is issued a refresh token unprompted (§8.6.6); `openid` is consented with the sign-in that follows.
-    scope: [
-      ...MSTEAMS_CONNECT_SCOPES.filter((scope) => scope !== 'openid'),
-      ...MSTEAMS_AGENT_BOT_SCOPES,
-      'offline_access'
-    ].join(' '),
+    // The delegated Graph scopes by name, `offline_access` among them, so nobody of the tenant is prompted at a later sign-in (§8.6.6); `openid` is consented with the sign-in that follows.
+    scope: [...MSTEAMS_CONNECT_SCOPES.filter((scope) => scope !== 'openid'), ...MSTEAMS_AGENT_BOT_SCOPES].join(' '),
     state: input.state
   })
   return `https://login.microsoftonline.com/organizations/v2.0/adminconsent?${params.toString()}`
@@ -168,10 +158,11 @@ export function msTeamsAuthorizeUrl(
     state: string
     tenant?: string
     agentBots?: boolean
-    member?: boolean
     pin?: string
     /** The administrator just chose an account on the consent page, so the picker is not forced again. */
     afterConsent?: boolean
+    /** The account a silent sign-in is for: Entra answers with a code or an error and shows no page. */
+    silentFor?: string
   }
 ): string {
   const challenge = createHash('sha256').update(pkceVerifier(keys, input.state)).digest('base64url')
@@ -184,7 +175,11 @@ export function msTeamsAuthorizeUrl(
     state: input.state,
     code_challenge: challenge,
     code_challenge_method: 'S256',
-    ...(input.afterConsent ? {} : { prompt: 'select_account' })
+    ...(input.silentFor
+      ? { prompt: 'none', login_hint: input.silentFor }
+      : input.afterConsent
+        ? {}
+        : { prompt: 'select_account' })
   })
   return `${authorityOf(input.tenant ?? input.pin)}/authorize?${params.toString()}`
 }
@@ -224,7 +219,6 @@ export async function redeemMsTeamsCode(
     state: string
     tenant?: string
     agentBots?: boolean
-    member?: boolean
     pin?: string
   },
   fetchImpl: typeof fetch
@@ -273,8 +267,7 @@ export async function redeemMsTeamsCode(
   // The signed-in person's object ID in their tenant, whom an agent identity names as its sponsor (§8.6.5).
   const claimed = claims.success && claims.data.oid && GUID.test(claims.data.oid.toLowerCase()) ? claims.data.oid : ''
   // Entra puts the object ID in an ID token only where the sign-in asked the profile scope, so Graph is asked where a sponsor is needed.
-  const userId =
-    claimed || (input.agentBots || input.member ? await readMsTeamsUserId(fetchImpl, tokens.data.access_token) : '')
+  const userId = claimed || (input.agentBots ? await readMsTeamsUserId(fetchImpl, tokens.data.access_token) : '')
   return {
     accessToken: tokens.data.access_token,
     tenantId,
@@ -291,6 +284,19 @@ async function readMsTeamsUserId(fetchImpl: typeof fetch, token: string): Promis
     const response = await graph(fetchImpl, token, 'GET', '/me?$select=id')
     const me = response.ok ? Me.safeParse(await response.json().catch(() => null)) : undefined
     return me?.success ? me.data.id : ''
+  } catch {
+    return ''
+  }
+}
+
+const MeName = z.object({ userPrincipalName: z.string().min(1) })
+
+/** The signed-in person's sign-in name from Graph, the hint of a silent sign-in; empty when Graph does not answer one. An ID token carries none without the profile scope, which the tenant-wide consent does not cover. */
+export async function readMsTeamsUsername(fetchImpl: typeof fetch, token: string): Promise<string> {
+  try {
+    const response = await graph(fetchImpl, token, 'GET', '/me?$select=userPrincipalName')
+    const me = response.ok ? MeName.safeParse(await response.json().catch(() => null)) : undefined
+    return me?.success ? me.data.userPrincipalName : ''
   } catch {
     return ''
   }
@@ -344,8 +350,10 @@ const InstallTicket = z.object({
   integrationId: z.string(),
   catalogAppId: z.string()
 })
+// It carries the refresh token too, which a pending request keeps while a submitted package waits for approval (§8.6.6).
 const ProvisionTicket = z.object({
   accessToken: z.string(),
+  refreshToken: z.string().optional(),
   orgId: z.string(),
   agentBot: z.object({
     agentId: z.string(),
@@ -354,21 +362,8 @@ const ProvisionTicket = z.object({
     userId: z.string()
   })
 })
-// A member's ticket carries their refresh token too, which the pending request keeps while the package waits (§8.6.6).
-const MemberTicket = z.object({
-  accessToken: z.string(),
-  refreshToken: z.string(),
-  orgId: z.string(),
-  member: z.object({
-    agentId: z.string(),
-    tenantId: z.string().regex(GUID),
-    sponsorId: z.string().regex(GUID),
-    userId: z.string()
-  })
-})
-export type MsTeamsTicket =
-  z.infer<typeof InstallTicket> | z.infer<typeof ProvisionTicket> | z.infer<typeof MemberTicket>
-const Ticket = z.union([MemberTicket, ProvisionTicket, InstallTicket]).and(z.object({ e: z.number() }))
+export type MsTeamsTicket = z.infer<typeof InstallTicket> | z.infer<typeof ProvisionTicket>
+const Ticket = z.union([ProvisionTicket, InstallTicket]).and(z.object({ e: z.number() }))
 
 export function openMsTeamsTicket(keys: MsTeamsConnectKeys, ticket: string, clock: Clock) {
   const parts = ticket.split('.').map((part) => Buffer.from(part, 'base64url'))

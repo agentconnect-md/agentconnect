@@ -1584,12 +1584,8 @@
         "failed": "未能完成恢复。请回到 agent 的集成页，重新点击「连接 Teams」，或联系支持。"
       },
       "request": {
-        "heading": "提交审批",
-        "description": "你不是所在 Microsoft 365 组织的管理员，所以要先由 Teams 管理员批准这个 agent 的应用，之后才能使用。",
-        "submit": "提交审批",
-        "submitting": "正在创建 agent 的 bot…",
         "title": "等待审批",
-        "pending": "需要你所在 Microsoft 365 组织的 Teams 管理员发布这个 agent 的应用。把下面的链接发给他们，不用一直开着这个页面。",
+        "pending": "你没有为所在 Microsoft 365 组织发布应用的权限，所以需要 Teams 管理员发布这个 agent 的应用。把下面的链接发给他们，不用一直开着这个页面。",
         "needs_sign_in": "应用获批前，你的 Microsoft 登录已失效。从 agent 的集成页重新开始连接即可继续。",
         "rejected": "这个 agent 的应用被拒绝或已被移除。先在 agent 的集成页取消申请，再重新提交。",
         "openAdmin": "在 Teams 管理中心打开这个应用",
@@ -7068,9 +7064,8 @@
       "deployment": {
         "connect": "使用 Microsoft 连接",
         "connecting": "正在打开 Microsoft…",
-        "next": "由你所在 Microsoft 365 组织的 Teams 管理员或全局管理员登录并批准。之后应用会加入组织的应用目录。",
+        "next": "用你的 Microsoft 365 账号登录。管理员登录后，agent 的应用会直接加入组织的应用目录；其他人登录后，会提交给 Teams 管理员发布。",
         "useOwn": "改用你自己的 Teams Bot",
-        "notAdmin": "我不是管理员",
         "requestWaiting": "正在等 Teams 管理员批准这个 agent 的应用。",
         "requestNeedsSignIn": "你的 Microsoft 登录已失效。重新申请即可继续。",
         "requestRejected": "这个 agent 的应用被拒绝或已被移除。",

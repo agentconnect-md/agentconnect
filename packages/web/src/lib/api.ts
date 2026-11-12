@@ -5755,18 +5755,16 @@ export async function startMsTeamsConnect(
   orgId: string,
   agentId: string,
   tenantId?: string,
-  member?: boolean,
   /** Ask the tenant-wide consent even where the organization's tenant recorded it. */
   consent?: boolean
 ): Promise<{ authorizeUrl: string }> {
   return apiPost<{ authorizeUrl: string }>(`${orgBase(orgId)}/integrations/msteams/connect`, {
     agentId,
     ...(tenantId ? { tenantId } : {}),
-    ...(member ? { member: true } : {}),
     ...(consent ? { consent: true } : {})
   })
 }
-/** A member's request for an agent's own Teams bot, waiting for a Teams administrator to approve its package. */
+/** A request for an agent's own Teams bot from a person who may not publish, waiting for a Teams administrator to publish its package. */
 export interface MsTeamsAgentBotRequestDto {
   id: string
   agentId: string
@@ -5787,10 +5785,10 @@ export interface MsTeamsConnectResultDto {
   /** Absent for a Teams Store install, which has no install step. */
   ticket?: string
   store: boolean
-  /** A member's sign-in: `ticket` goes to {@link requestMsTeamsAgentBot}. */
-  member?: boolean
-  /** The request this sign-in resumed. */
+  /** The request waiting for an administrator: one the agent-bot step just made, or one this sign-in renewed. */
   request?: MsTeamsAgentBotRequestDto
+  /** A silent sign-in to go to instead: the person signed in at another tenant than the organization's one. */
+  authorizeUrl?: string
 }
 /** Redeem the code Microsoft returned: connects the tenant and answers the administrator's teams. */
 export async function finishMsTeamsConnect(
@@ -5807,10 +5805,6 @@ export async function continueMsTeamsConnect(orgId: string, state: string): Prom
 /** Create a further agent's own bot, publish its package and install its row; safe to repeat. */
 export async function createMsTeamsAgentBot(orgId: string, ticket: string): Promise<MsTeamsConnectResultDto> {
   return apiPost<MsTeamsConnectResultDto>(`${orgBase(orgId)}/integrations/msteams/connect/agent-bot`, { ticket })
-}
-/** Create the agent's bot and submit its package for the administrator's approval. */
-export async function requestMsTeamsAgentBot(orgId: string, ticket: string): Promise<MsTeamsAgentBotRequestDto> {
-  return apiPost<MsTeamsAgentBotRequestDto>(`${orgBase(orgId)}/integrations/msteams/connect/request`, { ticket })
 }
 /** The agent's requests still waiting for approval. */
 export async function fetchMsTeamsAgentBotRequests(

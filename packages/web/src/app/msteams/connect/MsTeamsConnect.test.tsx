@@ -20,7 +20,6 @@ const mocks = vi.hoisted(() => {
     install: vi.fn(),
     proceed: vi.fn(),
     agentBot: vi.fn(),
-    request: vi.fn(),
     start: vi.fn(),
     checkRequest: vi.fn(),
     fetchOrgs: vi.fn(),
@@ -41,7 +40,6 @@ vi.mock('@/lib/api', () => ({
   installMsTeamsTeams: mocks.install,
   continueMsTeamsConnect: mocks.proceed,
   createMsTeamsAgentBot: mocks.agentBot,
-  requestMsTeamsAgentBot: mocks.request,
   startMsTeamsConnect: mocks.start,
   checkMsTeamsAgentBotRequest: mocks.checkRequest,
   startMsTeamsRecovery: mocks.startRecovery
@@ -223,7 +221,7 @@ describe('MsTeamsConnect', () => {
     expect(mocks.install).not.toHaveBeenCalled()
   })
 
-  it('submits a member’s request with no team step, then waits for approval and checks on demand', async () => {
+  it('shows a request waiting for an administrator when the person may not publish, and checks on demand', async () => {
     const waiting = {
       id: 'req-1',
       agentId: 'agent-a',
@@ -231,16 +229,15 @@ describe('MsTeamsConnect', () => {
       status: 'pending',
       reason: null,
       createdAt: '2026-11-01T00:00:00.000Z',
-      adminCenterUrl: 'https://admin.example.test/manage-apps'
+      adminCenterUrl: 'https://admin.example.test/manage-apps/catalog-1'
     }
-    mocks.finish.mockResolvedValue({ agentId: 'agent-a', member: true, teams: [], ticket: 'member', store: false })
-    mocks.request.mockResolvedValue(waiting)
+    mocks.finish.mockResolvedValue({ agentId: 'agent-a', agentBot: true, teams: [], ticket: 'provision', store: false })
+    // The bot step answers a request instead of an integration: Microsoft refused the publish.
+    mocks.agentBot.mockResolvedValue({ agentId: 'agent-a', agentBot: true, teams: [], store: false, request: waiting })
     await land(`code=c&state=${STATE}`)
-    expect(host.textContent).toContain('not an administrator')
-    await act(async () => button('Request approval').click())
-    expect(mocks.request).toHaveBeenCalledWith('org-a', 'member')
+    expect(mocks.agentBot).toHaveBeenCalledWith('org-a', 'provision')
     expect(host.textContent).toContain('Waiting for approval')
-    expect(host.querySelector('a[href="https://admin.example.test/manage-apps"]')).not.toBeNull()
+    expect(host.querySelector('a[href="https://admin.example.test/manage-apps/catalog-1"]')).not.toBeNull()
 
     mocks.checkRequest.mockResolvedValueOnce({ request: waiting }).mockResolvedValueOnce({ integrationId: 'int-3' })
     await act(async () => button('Check again').click())
@@ -250,10 +247,38 @@ describe('MsTeamsConnect', () => {
     expect(host.textContent).toContain('Teams is connected')
   })
 
+  it('goes to the silent sign-in the server names, and through the consent when that finds no account', async () => {
+    const assign = vi.spyOn(window.location, 'assign').mockImplementation(() => undefined)
+    try {
+      mocks.finish.mockResolvedValue({
+        agentId: 'agent-a',
+        teams: [],
+        store: false,
+        authorizeUrl: 'https://login.microsoftonline.com/example-tenant/oauth2/v2.0/authorize?prompt=none'
+      })
+      await land(`code=c&state=${STATE}`)
+      expect(assign).toHaveBeenCalledWith(
+        'https://login.microsoftonline.com/example-tenant/oauth2/v2.0/authorize?prompt=none'
+      )
+      await act(async () => root.unmount())
+      root = createRoot(host)
+      // Microsoft answers the silent sign-in with an error: the account is not of that tenant, so this one is connected through its consent.
+      const silent = `${btoa(JSON.stringify({ orgId: 'org-a', agentId: 'agent-a', pin: 'example-tenant' }))}.sig`
+      mocks.start.mockResolvedValue({
+        authorizeUrl: 'https://login.microsoftonline.com/organizations/v2.0/adminconsent'
+      })
+      await land(`error=login_required&state=${silent}`)
+      expect(mocks.start).toHaveBeenCalledWith('org-a', 'agent-a', undefined, true)
+      expect(assign).toHaveBeenCalledWith('https://login.microsoftonline.com/organizations/v2.0/adminconsent')
+    } finally {
+      assign.mockRestore()
+    }
+  })
+
   it('shows a request a new sign-in resumed, and names a tenant no administrator connected', async () => {
     mocks.finish.mockResolvedValue({
       agentId: 'agent-a',
-      member: true,
+      agentBot: true,
       teams: [],
       store: false,
       request: {
@@ -274,7 +299,7 @@ describe('MsTeamsConnect', () => {
     mocks.finish.mockResolvedValue({
       integrationId: 'int-9',
       agentId: 'agent-a',
-      member: true,
+      agentBot: true,
       teams: [],
       store: false
     })
@@ -294,7 +319,7 @@ describe('MsTeamsConnect', () => {
     const assign = vi.spyOn(window.location, 'assign').mockImplementation(() => undefined)
     try {
       await land(`code=c&state=${STATE}`)
-      expect(mocks.start).toHaveBeenCalledWith('org-a', 'agent-a', undefined, false, true)
+      expect(mocks.start).toHaveBeenCalledWith('org-a', 'agent-a', undefined, true)
       expect(assign).toHaveBeenCalledWith('https://login.microsoftonline.com/organizations/v2.0/adminconsent')
     } finally {
       assign.mockRestore()

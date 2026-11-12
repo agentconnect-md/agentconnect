@@ -13,6 +13,7 @@ import {
   installMsTeamsAppForUser,
   installMsTeamsAppForUserEventually,
   publishMsTeamsPackage,
+  readMsTeamsUsername,
   redeemMsTeamsCode,
   sealMsTeamsTicket,
   verifyMsTeamsConnectState
@@ -134,7 +135,7 @@ describe('Teams connect for a deployment with agent bots (§8.6.5)', () => {
     expect(Object.fromEntries(url.searchParams)).toMatchObject({ client_id: CLIENT, redirect_uri: redirectUri, state })
     const scopes = url.searchParams.get('scope')!.split(' ')
     expect(scopes).toEqual(expect.arrayContaining([SUBMIT, PRINCIPAL, 'https://graph.microsoft.com/User.Read']))
-    // Graph scopes by name, and offline_access so a member is later issued a refresh token without a prompt.
+    // Graph scopes by name, and offline_access so a later sign-in is issued a refresh token without a prompt.
     expect(scopes.filter((scope) => !scope.startsWith('https://graph.microsoft.com/'))).toEqual(['offline_access'])
   })
 
@@ -158,16 +159,30 @@ describe('Teams connect for a deployment with agent bots (§8.6.5)', () => {
     )
     expect(redeemed).toEqual({ accessToken: 'delegated', tenantId: TENANT, userId: OID.toLowerCase() })
     expect(new URLSearchParams(String(fetchImpl.mock.calls[0]![1]?.body)).get('scope')).toBe(asked)
-    // A member's sign-in pinned to the organization's tenant is asked and redeemed at that tenant's authority.
-    const pinned = mintMsTeamsConnectState(keys, { ...attempt, member: true, pin: TENANT }, clock)
-    expect(verifyMsTeamsConnectState(keys, pinned, clock)).toMatchObject({ member: true, pin: TENANT })
-    const pinInput = { clientId: CLIENT, redirectUri, state: pinned, member: true, pin: TENANT }
-    expect(new URL(msTeamsAuthorizeUrl(keys, pinInput)).pathname).toBe(`/${TENANT}/oauth2/v2.0/authorize`)
+    // A silent sign-in pinned to the organization's tenant is asked with no page and redeemed at that tenant's authority.
+    const pinned = mintMsTeamsConnectState(keys, { ...attempt, agentBots: true, pin: TENANT }, clock)
+    expect(verifyMsTeamsConnectState(keys, pinned, clock)).toMatchObject({ agentBots: true, pin: TENANT })
+    const pinInput = { clientId: CLIENT, redirectUri, state: pinned, agentBots: true, pin: TENANT }
+    const silent = new URL(msTeamsAuthorizeUrl(keys, { ...pinInput, silentFor: 'guest@partner.example.test' }))
+    expect(silent.pathname).toBe(`/${TENANT}/oauth2/v2.0/authorize`)
+    expect(silent.searchParams.get('prompt')).toBe('none')
+    expect(silent.searchParams.get('login_hint')).toBe('guest@partner.example.test')
     const atTenant = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
-      Response.json({ access_token: 'delegated', id_token: idToken({ tid: TENANT, oid: OID }) })
+      Response.json({
+        access_token: 'delegated',
+        id_token: idToken({ tid: TENANT, oid: OID })
+      })
     )
-    await redeemMsTeamsCode(keys, { ...pinInput, clientSecret: 's', code: 'c' }, atTenant)
+    const guest = await redeemMsTeamsCode(keys, { ...pinInput, clientSecret: 's', code: 'c' }, atTenant)
     expect(String(atTenant.mock.calls[0]![0])).toBe(`https://login.microsoftonline.com/${TENANT}/oauth2/v2.0/token`)
+    expect(guest.tenantId).toBe(TENANT)
+    // The hint is the sign-in name Graph answers; an ID token of these scopes carries none.
+    const named = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
+      Response.json({ userPrincipalName: 'guest@partner.example.test' })
+    )
+    expect(await readMsTeamsUsername(named, 'delegated')).toBe('guest@partner.example.test')
+    expect(String(named.mock.calls[0]![0])).toBe('https://graph.microsoft.com/v1.0/me?$select=userPrincipalName')
+    expect(await readMsTeamsUsername(async () => new Response(null, { status: 403 }), 'delegated')).toBe('')
     // Without the agent bots the scope set is the three of §8.1, and an ID token with no object ID names no sponsor.
     const plain = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
       Response.json({ access_token: 'delegated', id_token: idToken({ tid: TENANT }) })

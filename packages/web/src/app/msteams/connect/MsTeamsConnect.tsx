@@ -14,7 +14,6 @@ import {
   fetchOrgs,
   finishMsTeamsConnect,
   installMsTeamsTeams,
-  requestMsTeamsAgentBot,
   startMsTeamsConnect,
   startMsTeamsRecovery,
   type MsTeamsAgentBotRequestDto,
@@ -47,6 +46,16 @@ function msTeamsConnectAgentId(state: string): string | null {
   }
 }
 
+// Whether a state is the silent sign-in's, which Microsoft answers with an error when the account is not of that tenant.
+function msTeamsConnectIsSilent(state: string): boolean {
+  try {
+    const parsed = JSON.parse(atob(state.split('.')[0]!.replace(/-/g, '+').replace(/_/g, '/'))) as { pin?: unknown }
+    return typeof parsed.pin === 'string'
+  } catch {
+    return false
+  }
+}
+
 // The Control Plane's refusal codes, each mapped to the sentence that names its fix.
 const ERROR_KEYS: Record<string, string> = {
   MSTEAMS_CONNECT_STATE_INVALID: 'expired',
@@ -75,7 +84,7 @@ export default function MsTeamsConnect() {
   const [agentHref, setAgentHref] = useState('/')
   // A further agent's own bot has no team step: it joins a team when someone mentions it there (teams-integration.md §8.6.5).
   const [ownBot, setOwnBot] = useState(false)
-  // A member's request waits for a Teams administrator's approval (§8.6.6).
+  // A request from a person who may not publish waits for a Teams administrator's approval (§8.6.6).
   const [request, setRequest] = useState<MsTeamsAgentBotRequestDto | null>(null)
   const [checking, setChecking] = useState(false)
   const [recovery, setRecovery] = useState<{ tenantId: string; agentId: string } | null>(null)
@@ -108,6 +117,15 @@ export default function MsTeamsConnect() {
     const org = msTeamsConnectOrgId(state)
     // The tenant-wide consent returns the state and no code: the sign-in follows at once.
     const consented = params.get('admin_consent')?.toLowerCase() === 'true' && !params.get('error') && !code
+    // The silent sign-in found no account of the organization's tenant: this is a tenant to connect, through its consent.
+    const silentAgent =
+      params.get('error') && state && org && msTeamsConnectIsSilent(state) ? msTeamsConnectAgentId(state) : null
+    if (silentAgent && org) {
+      void startMsTeamsConnect(org, silentAgent, undefined, true)
+        .then((again) => window.location.assign(again.authorizeUrl))
+        .catch(fail)
+      return
+    }
     // Microsoft sends an error instead of a code when the person declined or lacks the admin role.
     if (params.get('error') || (!code && !consented) || !state || !org) {
       setError(t(params.get('error') === 'access_denied' ? 'errors.declined' : 'errors.expired'))
@@ -132,6 +150,11 @@ export default function MsTeamsConnect() {
       try {
         const connected = await exchange.current
         if (cancelled || !connected) return
+        // The person signed in at another tenant than the organization's: one silent sign-in there settles which they meant.
+        if (connected.authorizeUrl) {
+          window.location.assign(connected.authorizeUrl)
+          return
+        }
         setResult(connected)
         const slug = (await fetchOrgs().catch(() => [])).find((o) => o.id === org)?.slug
         if (slug) setAgentHref(`/${slug}/agents/${connected.agentId}`)
@@ -146,18 +169,23 @@ export default function MsTeamsConnect() {
           setPhase('requested')
           return
         }
-        if (connected.member) {
+        if (connected.agentBot) {
           setOwnBot(true)
-          // A renewed sign-in whose request finished meanwhile carries neither a request nor a ticket.
-          setPhase(connected.ticket ? 'teams' : 'done')
-          return
-        }
-        // Making the bot takes up to a minute; the page waits for it and has nothing to choose.
-        if (connected.agentBot && connected.ticket) {
-          setOwnBot(true)
+          // A sign-in that finished a waiting request carries no ticket: there is nothing left to make.
+          if (!connected.ticket) {
+            setPhase('done')
+            return
+          }
+          // Making the bot takes up to a minute; the page waits for it and has nothing to choose.
           setPhase('creating')
-          setResult(await createMsTeamsAgentBot(org, connected.ticket))
-          if (!cancelled) setPhase('done')
+          const made = await createMsTeamsAgentBot(org, connected.ticket)
+          if (cancelled) return
+          setResult(made)
+          // A person who may not publish gets a request that waits for an administrator instead.
+          if (made.request) {
+            setRequest(made.request)
+            setPhase('requested')
+          } else setPhase('done')
           return
         }
         // An update preselects nothing: the teams that had the app already run the new package.
@@ -170,7 +198,7 @@ export default function MsTeamsConnect() {
         const agentId = msTeamsConnectAgentId(state)
         if (e instanceof ApiError && e.code === 'MSTEAMS_CONSENT_NEEDED' && agentId) {
           try {
-            window.location.assign((await startMsTeamsConnect(org, agentId, undefined, false, true)).authorizeUrl)
+            window.location.assign((await startMsTeamsConnect(org, agentId, undefined, true)).authorizeUrl)
             return
           } catch (again) {
             fail(again)
@@ -203,16 +231,10 @@ export default function MsTeamsConnect() {
   }
 
   async function install() {
-    if (!result?.ticket) return
-    if (!result.member && chosen.size === 0) return
+    if (!result?.ticket || chosen.size === 0) return
     setPhase('installing')
     setError(null)
     try {
-      if (result.member) {
-        setRequest(await requestMsTeamsAgentBot(orgId, result.ticket))
-        setPhase('requested')
-        return
-      }
       await installMsTeamsTeams(orgId, result.ticket, [...chosen])
       setPhase('done')
     } catch (e) {
@@ -334,18 +356,6 @@ export default function MsTeamsConnect() {
             <Spinner size={40} />
             {t('connecting')}
           </div>
-        ) : result.member ? (
-          <>
-            <div>
-              <h1 className="text-[18px] font-semibold leading-normal text-(--text-primary)">{t('request.heading')}</h1>
-              <p className="mt-2 text-[13px] leading-[1.55] text-(--text-secondary)">{t('request.description')}</p>
-            </div>
-            <div className="flex gap-[10px]">
-              <Button onClick={() => void install()} disabled={phase === 'installing'}>
-                {t(phase === 'installing' ? 'request.submitting' : 'request.submit')}
-              </Button>
-            </div>
-          </>
         ) : (
           <>
             <div>

@@ -72,7 +72,7 @@ export function MsTeamsWizardBody({ agent, host }: { agent: Agent; host: WizardH
   const relayAvailable: boolean | null = probe.config ? host.relayCapability.available : probe.failed ? false : null
   const pane = msTeamsPane({ relayAvailable, created: !!created, deploymentApp, ownBot })
 
-  // A member's request for this agent still waiting for a Teams administrator (teams-integration.md §8.6.6).
+  // A request for this agent still waiting for a Teams administrator (teams-integration.md §8.6.6).
   const [request, setRequest] = useState<MsTeamsAgentBotRequestDto | null>(null)
   const [requestBusy, setRequestBusy] = useState(false)
   const orgId = activeOrg?.id
@@ -111,14 +111,14 @@ export function MsTeamsWizardBody({ agent, host }: { agent: Agent; host: WizardH
     }
   }
 
-  // Leaves for Microsoft's sign-in; the connect page finishes the install there. A member asks for approval instead.
-  const connect = async (member = false) => {
+  // Leaves for Microsoft's sign-in; the connect page finishes there, with the agent connected or a request waiting for an administrator.
+  const connect = async () => {
     if (busyRef.current || !activeOrg) return
     busyRef.current = true
     setConnecting(true)
     host.setError(null)
     try {
-      const { authorizeUrl } = await msTeamsApi.connect(activeOrg.id, agent.id, undefined, member)
+      const { authorizeUrl } = await msTeamsApi.connect(activeOrg.id, agent.id)
       window.location.assign(authorizeUrl)
     } catch (e) {
       host.setError(msTeamsErrorMessage(e, translate))
@@ -252,17 +252,6 @@ export function MsTeamsWizardBody({ agent, host }: { agent: Agent; host: WizardH
               </a>
             </div>
           </div>
-        )}
-        {request?.status !== 'pending' && (
-          <button
-            type="button"
-            disabled={connecting}
-            onClick={() => void connect(true)}
-            className="mb-3 flex cursor-pointer items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[13px] font-semibold leading-normal text-(--text-primary)"
-          >
-            <Icon name="chevron-right" size={14} color="var(--text-tertiary)" />
-            {t('deployment.notAdmin')}
-          </button>
         )}
         <button
           type="button"
