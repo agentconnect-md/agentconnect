@@ -1577,10 +1577,12 @@
       },
       "request": {
         "title": "等待审批",
-        "pending": "你没有为所在 Microsoft 365 组织发布应用的权限，所以需要 Teams 管理员发布这个 agent 的应用。把下面的链接发给他们，不用一直开着这个页面。",
+        "pending": "这个 agent 的应用需要 Teams 管理员在 Teams 管理中心发布。如果你就是管理员，打开下面的应用并点「Publish」；否则复制链接发给管理员。不用一直开着这个页面。",
         "needs_sign_in": "应用获批前，你的 Microsoft 登录已失效。从 agent 的集成页重新开始连接即可继续。",
         "rejected": "这个 agent 的应用被拒绝或已被移除。先在 agent 的集成页取消申请，再重新提交。",
         "openAdmin": "在 Teams 管理中心打开这个应用",
+        "copyLink": "复制链接",
+        "copied": "已复制",
         "check": "再查一次",
         "checking": "正在检查…"
       }
@@ -7056,12 +7058,15 @@
       "deployment": {
         "connect": "使用 Microsoft 连接",
         "connecting": "正在打开 Microsoft…",
-        "next": "用你的 Microsoft 365 账号登录。管理员登录后，agent 的应用会直接加入组织的应用目录；其他人登录后，会提交给 Teams 管理员发布。",
+        "next": "用你的 Microsoft 365 账号登录。这个 agent 会有自己的 Teams 应用，之后由 Teams 管理员在 Teams 管理中心发布。",
+        "nextBuiltin": "由你所在 Microsoft 365 组织的 Teams 管理员或全局管理员登录，之后应用会加入组织的应用目录。",
         "useOwn": "改用你自己的 Teams Bot",
-        "requestWaiting": "正在等 Teams 管理员批准这个 agent 的应用。",
+        "requestWaiting": "正在等 Teams 管理员发布这个 agent 的应用。",
         "requestNeedsSignIn": "你的 Microsoft 登录已失效。重新申请即可继续。",
         "requestRejected": "这个 agent 的应用被拒绝或已被移除。",
         "requestOpenAdmin": "Teams 管理中心里的这个应用",
+        "requestCopyLink": "复制链接",
+        "requestCopied": "已复制",
         "requestCheck": "再查一次",
         "requestCancel": "取消申请"
       }

@@ -4,6 +4,36 @@ import { useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 
+/** Copies a link for someone else to open: a person who may not open the Teams admin center sends it to an administrator. */
+export function CopyLinkButton({
+  url,
+  label,
+  copiedLabel,
+  className
+}: {
+  url: string
+  label: string
+  copiedLabel: string
+  className: string
+}) {
+  const [copied, setCopied] = useState(false)
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(url)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1600)
+    } catch {
+      /* clipboard unavailable — the link beside it still opens */
+    }
+  }
+  return (
+    <button type="button" className={className} onClick={() => void copy()}>
+      <Icon name={copied ? 'check' : 'copy'} size={13} />
+      {copied ? copiedLabel : label}
+    </button>
+  )
+}
+
 /** A value to paste into the bot registration, with its copy button. */
 export function CopyField({ label, value }: { label: string; value: string }) {
   const t = useTranslations('Platforms.msteams')

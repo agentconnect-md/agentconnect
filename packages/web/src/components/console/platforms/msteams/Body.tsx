@@ -11,7 +11,7 @@ import { usePublishedFooter, usePublishedIdentityChrome } from '../publish'
 import { BotSetupWalkthrough } from '../wizard-chrome'
 import { msTeamsApi } from './api'
 import { AppPackageButton } from './app-package'
-import { CopyField } from './fields'
+import { CopyField, CopyLinkButton } from './fields'
 import { MsTeamsMark } from './mark'
 import { useMsTeamsDeploymentApp } from './deployment-app'
 import { useOrgs } from '@/lib/org-context'
@@ -204,7 +204,7 @@ export function MsTeamsWizardBody({ agent, host }: { agent: Agent; host: WizardH
             {connecting ? t('deployment.connecting') : t('deployment.connect')}
           </button>
           <div className="mt-[10px] font-sans text-[12px] font-normal leading-[1.4] text-(--text-tertiary)">
-            {t('deployment.next')}
+            {t(agent.builtin ? 'deployment.nextBuiltin' : 'deployment.next')}
           </div>
         </div>
         {request && (
@@ -250,6 +250,12 @@ export function MsTeamsWizardBody({ agent, host }: { agent: Agent; host: WizardH
                 {t('deployment.requestOpenAdmin')}
                 <Icon name="external-link" size={13} />
               </a>
+              <CopyLinkButton
+                url={request.adminCenterUrl}
+                label={t('deployment.requestCopyLink')}
+                copiedLabel={t('deployment.requestCopied')}
+                className="flex cursor-pointer items-center gap-1 border-0 bg-transparent p-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)"
+              />
             </div>
           </div>
         )}
