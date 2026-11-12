@@ -16,7 +16,6 @@ import {
 import { MSTEAMS_RSC_PERMISSIONS } from './app-package.js'
 import {
   MsTeamsConnectError,
-  installMsTeamsApp,
   installMsTeamsAppForUser,
   probeMsTeamsPackageForUser,
   readMsTeamsPackageState,
@@ -171,15 +170,6 @@ export class MsTeamsAgentBotRequests {
         return { outcome: 'rejected' }
       }
       const integrationId = await this.install(request, tokens.accessToken, claim)
-      if (!integrationId) {
-        await this.store.release(orgId, id, claim, {
-          nextCheckAt: later(),
-          refreshToken: tokens.refreshToken,
-          status: 'needs_sign_in',
-          reason: 'install_refused'
-        })
-        return { outcome: 'needs_sign_in' }
-      }
       await this.store.delete(orgId, id)
       this.deps.log.info({ requestId: id, integrationId }, 'msteams: approved agent bot installed')
       return { outcome: 'installed', integrationId }
@@ -201,34 +191,11 @@ export class MsTeamsAgentBotRequests {
     return rows.length > 0 && rows.every((row) => row.orgId === request.orgId)
   }
 
-  // Installs into each chosen team as the member, then writes the row; undefined when Microsoft refused every team, which a new sign-in mends.
-  private async install(
-    request: MsTeamsAgentBotRequestRecord,
-    accessToken: string,
-    claim: string
-  ): Promise<string | undefined> {
+  // Adds the app for the member and writes the row; the agent joins a team when someone mentions it there (§8.6.5).
+  private async install(request: MsTeamsAgentBotRequestRecord, accessToken: string, claim: string): Promise<string> {
     const { http } = this.deps
     const agent = await http.repos.agent.get(request.orgId, request.agentId)
     if (!agent) throw new Error('the request’s agent is gone')
-    let installed = 0
-    for (const teamId of request.teamIds) {
-      try {
-        await installMsTeamsApp(this.fetchImpl, accessToken, {
-          teamId,
-          catalogAppId: request.catalogAppId,
-          permissions: MSTEAMS_RSC_PERMISSIONS
-        })
-        installed += 1
-      } catch (err) {
-        // A team the member left, or one whose settings stop members from adding apps.
-        if (!(err instanceof MsTeamsConnectError) || err.code !== 'MSTEAMS_CONNECT_NOT_ADMIN') throw err
-        this.deps.log.warn(
-          { requestId: request.id, teamId, detail: err.detail },
-          'msteams: member could not add the app to a team'
-        )
-      }
-    }
-    if (request.teamIds.length > 0 && installed === 0) return undefined
     // The member gets the agent's app themselves too, so their Teams client lists it at once.
     await installMsTeamsAppForUser(this.fetchImpl, accessToken, {
       userId: request.sponsorId,

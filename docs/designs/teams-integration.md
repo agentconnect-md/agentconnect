@@ -1030,9 +1030,12 @@ limit of §8.2.
   app, so it cannot be looked up or updated, and the Teams client offers no
   mention and no Open button for it. Resource-specific consent is therefore
   granted to the blueprint: the relay reads Graph for an agent bot's row with
-  the blueprint's own token in the row's tenant (§8.6.7). The
-  `TeamsAppInstallation.ReadWriteAndConsentSelfForTeam` scope of the connect
-  flow installs this package as it does the deployment app's.
+  the blueprint's own token in the row's tenant (§8.6.7). The deployment
+  app's `TeamsAppInstallation.ReadWriteAndConsentSelfForTeam` scope does not
+  reach this package, whose application is no longer the caller's (§8.6.2), so
+  the connect flow installs it into no team. It adds the app for the person
+  who connects the agent, and the agent joins a team when someone mentions it
+  in a channel there: the Teams client adds it, consent included.
 
 Compared with the deployment app's bot, an agent bot's Bot Connector token is
 issued by the customer's tenant for an identity that exists only there, where
@@ -1085,11 +1088,20 @@ All **measured**, unless marked.
   publish answered 409, and the Teams client offered neither a mention nor an
   Open button. Uploading through the Teams admin center changed nothing. With
   the identity's blueprint there, the catalog returned the app within a
-  minute, the client listed the bot, the connect flow's "Self" scope installed
-  it into a team, the consent landed on the blueprint, and the blueprint's
-  app-only token read the team, its channels, messages and members, where the
-  identity's own token was refused. An install upgraded from the first shape
-  to the second moved the team's grants from the application to the blueprint.
+  minute, the client listed the bot, a mention in a channel of a team that
+  lacked it made the client add it there with its consent on the blueprint,
+  and the blueprint's app-only token read the team, its channels, messages
+  and members, where the identity's own token was refused. An install upgraded
+  from the first shape to the second moved the team's grants from the
+  application to the blueprint.
+- **The "Self" scopes and the blueprint.** With the blueprint as the package's
+  application, the deployment app's delegated
+  `TeamsAppInstallation.ReadWriteAndConsentSelfForTeam` no longer installs it:
+  `POST /teams/{id}/installedApps` answers 403 "Caller is not authorized" for
+  a Teams administrator, for an owner of the team and for a member alike. The
+  personal scope differs: `TeamsAppInstallation.ReadWriteAndConsentSelfForUser`
+  with the package's permissions in `consentedPermissionSet` added the app for
+  an administrator and for a member, a minute after the package was published.
 - **Inbound.** Teams delivers to an agent identity's endpoint as to any bot:
   installation events within a second, and an unmentioned channel message
   about two seconds after it is posted. The request's token has the identity
@@ -1107,9 +1119,13 @@ All **measured**, unless marked.
   package `submitted`, and without `requiresReview` Graph answers 403, for an
   administrator's token too. Only the submitter's token reads the pending
   package (an application token gets 404). An administrator publishes it in
-  the Teams admin center or through Graph
-  (`PATCH …/appDefinitions/{id}` with `publishingState: published`, which
-  needs `AppCatalog.ReadWrite.All`), and the submitter's token saw `published`
+  the Teams admin center. Publishing through Graph
+  (`PATCH …/appDefinitions/{id}` with `publishingState: published`) is not
+  equivalent for a package whose application is a blueprint: it answered 500
+  and left the definition `published` with no availability, an app nobody
+  could add, where the admin center's **Publish** on an identical submission
+  made it available to everyone. After the admin center's approval the
+  submitter's token saw `published`
   five to eight seconds later.
 - **Installing without an administrator.** With the delegated "Self" scope
   consented tenant-wide, an ordinary member of a team installed the package
@@ -1215,14 +1231,18 @@ The administrator's flow of §8.3 with these differences:
    by a key derived from the agent and the tenant so that a retry finds them.
 5. **The proof**: a Bot Connector token for the identity, which shows the
    principal, the identity and the blueprint's secret working together.
-6. **The row, the catalog, the teams**, as §8.3 steps 3 to 5, with the agent
-   bot's package.
+6. **The row and the catalog**, as §8.3 steps 3 and 4, with the agent bot's
+   package, and the app added for the person who connected it.
+
+There is no team step: Graph refuses the deployment app a team install of this
+package (§8.6.2). The connect page ends by saying to mention the agent in a
+channel, where the Teams client adds it to that team. A team that holds an
+earlier version of the package is offered the update by its own client.
 
 Steps 2 to 5 took about 10 seconds for a tenant that already had the principal
 and about 40 for one that did not (**measured**), so the connect page shows
-them as a step of its own and lets the administrator pick teams meanwhile. A
-failed attempt writes no row; the next connect resumes from what the key and
-the tenant already hold.
+them as a step of its own. A failed attempt writes no row; the next connect
+resumes from what the key and the tenant already hold.
 
 - **Refused.** A tenant where the principal or the identity cannot be created
   answers `MSTEAMS_AGENT_BOTS_UNAVAILABLE` with Microsoft's reason. Its first
@@ -1262,45 +1282,42 @@ is consented tenant-wide (**measured**), so the member's package is submitted
 for review.
 
 1. **Sign-in**, with no consent page: `AppCatalog.Submit`,
-   `TeamsAppInstallation.ReadWriteAndConsentSelfForTeam`, `Team.ReadBasic.All`,
-   `User.Read`, `openid` and `offline_access`. An organization that connected
-   one tenant sends the member to that tenant's own authority, where Entra
-   offers the tenant's accounts, a guest's among them; at the shared
-   `organizations` authority a guest would be signed in to their home tenant
-   and refused. The member picks the teams the agent should join, among those
-   they belong to.
+   `TeamsAppInstallation.ReadWriteAndConsentSelfForUser`, `User.Read`, `openid`
+   and `offline_access`. An organization that connected one tenant sends the
+   member to that tenant's own authority, where Entra offers the tenant's
+   accounts, a guest's among them; at the shared `organizations` authority a
+   guest would be signed in to their home tenant and refused. There is no team
+   to pick (§8.6.5).
 2. **The agent bot** is provisioned as in §8.6.5 steps 3 to 5, with the member
    as the identity's sponsor. None of it needs a consent.
 3. **Submit.** The package goes to the catalog as `submitted`.
 4. **The pending request.** An approval can come days later, long after the
    member closed the page, so the Control Plane stores the request: the agent,
-   the tenant, the chosen teams, the catalog app, and the member's **refresh
-   token**, sealed in the deployment secret store. The token is kept only
+   the tenant, the catalog app, and the member's **refresh token**, sealed in
+   the deployment secret store. The token is kept only
    while the request is pending and is deleted when the request finishes, is
    cancelled or expires. It never reaches a daemon or the relay.
 5. **Waiting for approval.** The agent's Teams entry in the Console shows the
    request as **Waiting for approval**, on the connect page and wherever the
    agent's integrations are listed. It says that a Teams administrator of the
    tenant must approve the agent and that Microsoft does not notify them, and
-   carries **Open in Teams admin center**, a link to the page that lists the
-   pending app (**Teams apps → Manage apps**), for the member to send or an
-   administrator to follow. An administrator who is also an editor of the
-   agent gets **Approve** there instead, which signs them in and publishes the
-   pending definition through Graph. Graph has answered that request with 500
-   and published the definition all the same (**measured**), so a failed
-   answer is checked against the catalog before it is reported. **Check
-   again** and **Cancel request** sit beside it.
+   carries a link to **the pending app's own page** in the Teams admin center,
+   where **Publish** approves it, for the member to send or an administrator
+   to follow. The Console offers no approval of its own: publishing the
+   definition through Graph leaves an app nobody can add (§8.6.2). **Check
+   again** and **Cancel request** sit beside the link.
 6. **Detecting the approval.** A background loop redeems the stored token and
    reads the package's state, on a backoff from seconds to minutes; the open
-   page and **Check again** read it at once. The member's token reads only
-   their own pending submission: once the package is published, the same read
-   answers 404, as it does for a package that was removed (**measured**). The
-   two are told apart by adding the app for the member, which succeeds for a
+   page and **Check again** read it at once. The member's token does not read
+   a published package reliably: the same read has answered `published` and
+   has answered 404, as it does for a package that was removed (**measured**).
+   A 404 is settled by adding the app for the member, which succeeds for a
    published package and answers 404 for a removed one; any other answer
    leaves the request waiting.
-7. **Install.** Once published, the Control Plane installs into the chosen
-   teams with the member's token and the package's consent set, writes the
-   row, and the entry turns into a connected integration.
+7. **Finish.** Once published, the Control Plane adds the app for the member
+   with their token and the package's consent set, writes the row, and the
+   entry turns into a connected integration. The agent joins a team when
+   someone mentions it there (§8.6.5).
 
 **When the stored token no longer works.** Entra revokes a refresh token when
 the person changes their password, an administrator revokes their sessions, or

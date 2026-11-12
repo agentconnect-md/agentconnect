@@ -81,6 +81,7 @@ function harness(script: Script = {}) {
     }
     if (/\/users\/[^/]+\/teamwork\/installedApps/.test(url)) {
       calls.push('personal')
+      await during.install?.()
       return new Response(null, { status: script.personal ?? 201 })
     }
     const team = /\/teams\/([^/]+)\/installedApps/.exec(url)?.[1]
@@ -187,15 +188,14 @@ describe('MsTeamsAgentBotRequests', () => {
     expect(h.create).not.toHaveBeenCalled()
   })
 
-  it('installs an approved package into the chosen teams as the member, writes the row, and forgets the request', async () => {
+  it('adds an approved package for the member, writes the row, and forgets the request', async () => {
     const h = harness({ definitions: ['published'] })
     await h.open()
     const checked = await h.requests.check(ORG, 'request-1')
     expect(checked.outcome).toBe('installed')
-    expect(h.calls.filter((call) => call.startsWith('install'))).toEqual([
-      'install team-1 Bearer access-1',
-      'install team-2 Bearer access-1'
-    ])
+    // The app is added for the member only; the agent joins a team when someone mentions it there.
+    expect(h.calls.filter((call) => call.startsWith('install'))).toEqual([])
+    expect(h.calls).toContain('personal')
     expect(h.create).toHaveBeenCalledWith(
       expect.objectContaining({
         orgId: ORG,
@@ -220,18 +220,6 @@ describe('MsTeamsAgentBotRequests', () => {
     // The stored sign-in goes with the request.
     expect(h.rows.size).toBe(0)
     expect(await h.requests.check(ORG, 'request-1')).toEqual({ outcome: 'gone' })
-  })
-
-  it('installs where the member still can, and asks them back only when every team refuses', async () => {
-    const partly = harness({ definitions: ['published'], install: { 'team-1': 403 } })
-    await partly.open()
-    expect((await partly.requests.check(ORG, 'request-1')).outcome).toBe('installed')
-
-    const none = harness({ definitions: ['published'], install: { 'team-1': 403, 'team-2': 403 } })
-    await none.open()
-    expect(await none.requests.check(ORG, 'request-1')).toEqual({ outcome: 'needs_sign_in' })
-    expect(none.rows.get('request-1')).toMatchObject({ status: 'needs_sign_in', reason: 'install_refused' })
-    expect(none.create).not.toHaveBeenCalled()
   })
 
   it('stops for the member when Entra refuses the stored sign-in, and drops it', async () => {

@@ -88,7 +88,7 @@ async function harness(
   let principalCreated = false
   // Every write in the order it ran, Graph and repository alike.
   const order: string[] = []
-  let packageStates = opts.packageStates ?? ['submitted']
+  const packageStates = opts.packageStates ?? ['submitted']
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input)
     if (url.endsWith('/oauth2/v2.0/token')) {
@@ -144,14 +144,6 @@ async function harness(
     if (team && url.includes('$filter'))
       return Response.json({ value: opts.installedIn?.includes(team) ? [{ id: `install-${team}` }] : [] })
     if (url.includes('$filter')) return Response.json({ value: [] })
-    if (url.includes('/appDefinitions/') && init?.method === 'PATCH') {
-      order.push(`approve ${(init.headers as Record<string, string>)['if-match']}`)
-      // A 500 here is the one Graph has answered to an approval it applied.
-      if (opts.approve === 500) packageStates = ['published']
-      if (opts.approve) return new Response(null, { status: opts.approve })
-      packageStates = ['published']
-      return new Response(null, { status: 200 })
-    }
     if (url.includes('/appDefinitions/')) {
       order.push('withdraw')
       return new Response(null, { status: 204 })
@@ -639,10 +631,8 @@ describe('a deployment that makes agent bots (§8.6)', () => {
       agentId: AGENT,
       agentBot: true,
       store: false,
-      teams: [
-        { id: 'team-1', name: 'Engineering', app: 'none' },
-        { id: 'team-2', name: 'Support', app: 'none' }
-      ]
+      // No team is offered: the agent joins a team when someone mentions it there (§8.6.5).
+      teams: []
     })
     expect(first.json()).not.toHaveProperty('integrationId')
     expect(JSON.stringify(first.json())).not.toContain('delegated')
@@ -653,7 +643,8 @@ describe('a deployment that makes agent bots (§8.6)', () => {
 
     const made = await h.post('/agent-bot', { ticket: first.json<{ ticket: string }>().ticket })
     expect(made.statusCode).toBe(200)
-    expect(made.json()).toMatchObject({ agentId: AGENT, store: false, teams: [{ app: 'none' }, { app: 'none' }] })
+    expect(made.json()).toMatchObject({ agentId: AGENT, store: false, teams: [] })
+    expect(made.json()).not.toHaveProperty('ticket')
     expect(typeof made.json<{ integrationId: string }>().integrationId).toBe('string')
     // The principal, the identity, the registration and its channel, the proof, then the catalog, the row, its package, and the app for the person who connected it.
     expect(h.order.slice(1)).toEqual([
@@ -717,9 +708,8 @@ describe('a deployment that makes agent bots (§8.6)', () => {
     }
     expect(manifest.bots[0]!.botId).toBe(IDENTITY)
     expect(manifest.webApplicationInfo.id).toBe(AGENT_BOTS.blueprintId)
-
-    const install = await h.post('/install', { ticket: made.json<{ ticket: string }>().ticket, teamIds: ['team-2'] })
-    expect(install.json()).toEqual({ installed: 1 })
+    // Nothing is installed into a team through Graph.
+    expect(h.graph.some((call) => call.url.includes('/teams/') && call.url.includes('/installedApps'))).toBe(false)
   })
 
   it('finds what an earlier attempt made, and updates an agent bot that is already connected', async () => {
@@ -735,7 +725,8 @@ describe('a deployment that makes agent bots (§8.6)', () => {
     expect(h.order).not.toContain('identity')
     expect(h.create).not.toHaveBeenCalled()
     expect(h.addBotMembership).toHaveBeenCalledWith(expect.objectContaining({ agentId: AGENT, botId: BOT }))
-    expect(again.json<{ teams: { app: string }[] }>().teams.map((team) => team.app)).toEqual(['updated', 'none'])
+    expect(again.json<{ teams: unknown[] }>().teams).toEqual([])
+    expect(h.order.some((step) => step.startsWith('upgrade'))).toBe(false)
   })
 
   it('keeps an agent on its own bot when the tenant’s first agent is gone', async () => {
@@ -852,17 +843,18 @@ describe('a member who is not an administrator (§8.6.6)', () => {
     const first = await signIn(h)
     expect(first.statusCode).toBe(200)
     expect(first.json()).toMatchObject({ agentId: AGENT, member: true, store: false })
-    expect(first.json<{ teams: unknown[] }>().teams).toHaveLength(2)
+    expect(first.json<{ teams: unknown[] }>().teams).toEqual([])
     expect(h.order).toEqual([])
 
-    const made = await h.post('/request', { ticket: first.json<{ ticket: string }>().ticket, teamIds: ['team-2'] })
+    const made = await h.post('/request', { ticket: first.json<{ ticket: string }>().ticket })
     expect(made.statusCode).toBe(200)
     expect(made.json()).toMatchObject({
       agentId: AGENT,
       tenantId: CUSTOMER,
       status: 'pending',
       reason: null,
-      adminCenterUrl: 'https://admin.teams.microsoft.com/policies/manage-apps'
+      // The link opens the package's own page, where an administrator publishes it.
+      adminCenterUrl: 'https://admin.teams.microsoft.com/policies/manage-apps/catalog-1'
     })
     // The identity and its registration are made, the package is submitted for review, and no row is written yet.
     expect(h.order).toContain('identity')
@@ -878,7 +870,7 @@ describe('a member who is not an administrator (§8.6.6)', () => {
       tenantId: CUSTOMER,
       identity: IDENTITY,
       catalogAppId: 'catalog-1',
-      teamIds: ['team-2'],
+      teamIds: [],
       refreshToken: 'member-refresh',
       sponsorId: SPONSOR,
       botName: 'Microsoft Teams · Example Org'
@@ -958,44 +950,6 @@ describe('a member who is not an administrator (§8.6.6)', () => {
     expect(again.json()).toMatchObject({ member: true, request: { id, status: 'pending', reason: null } })
     expect(again.json()).not.toHaveProperty('ticket')
     expect(h.requestRows.get(id)).toMatchObject({ refreshToken: 'member-refresh', status: 'pending' })
-  })
-
-  it('lets an administrator approve a waiting request from here: the package is published and the agent connected', async () => {
-    const h = await connected()
-    const ticket = (await signIn(h)).json<{ ticket: string }>().ticket
-    const id = (await h.post('/request', { ticket, teamIds: ['team-1'] })).json<{ id: string }>().id
-    const start = await h.app.inject({ method: 'POST', url: `/integrations/msteams/requests/${id}/approve` })
-    const url = new URL(start.json<{ authorizeUrl: string }>().authorizeUrl)
-    expect(url.searchParams.get('scope')).toContain('AppCatalog.ReadWrite.All')
-    const approved = await h.callback(url.searchParams.get('state')!)
-    expect(approved.statusCode, approved.body).toBe(200)
-    expect(approved.json()).toMatchObject({ approved: true, agentId: AGENT })
-    expect(typeof approved.json<{ integrationId: string }>().integrationId).toBe('string')
-    expect(h.order).toContain('approve etag-0')
-    expect(h.requestRows.size).toBe(0)
-    expect(
-      (await h.app.inject({ method: 'POST', url: `/integrations/msteams/requests/${id}/approve` })).statusCode
-    ).toBe(404)
-  })
-
-  it('takes an approval Microsoft answered 500 to as given when the package reads as published', async () => {
-    const h = await connected({ approve: 500 })
-    const ticket = (await signIn(h)).json<{ ticket: string }>().ticket
-    const id = (await h.post('/request', { ticket, teamIds: ['team-1'] })).json<{ id: string }>().id
-    const approved = await h.callback(h.state({ approve: id }))
-    expect(approved.statusCode, approved.body).toBe(200)
-    expect(approved.json()).toMatchObject({ approved: true, agentId: AGENT })
-  })
-
-  it('names a sign-in that cannot approve, and keeps the request waiting', async () => {
-    const h = await connected({ approve: 403 })
-    const ticket = (await signIn(h)).json<{ ticket: string }>().ticket
-    const id = (await h.post('/request', { ticket, teamIds: [] })).json<{ id: string }>().id
-    const refusal = await h.callback(h.state({ approve: id }))
-    expect(refusal.statusCode).toBe(403)
-    expect(refusal.json()).toMatchObject({ code: 'MSTEAMS_CONNECT_NOT_ADMIN' })
-    expect(h.requestRows.get(id)).toMatchObject({ status: 'pending' })
-    expect((await h.callback(h.state({ approve: 'no-such-request' }))).statusCode).toBe(404)
   })
 
   it('takes a member’s ticket only at the request step', async () => {

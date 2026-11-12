@@ -207,32 +207,23 @@ describe('MsTeamsConnect', () => {
     assign.mockRestore()
   })
 
-  it('creates a further agent’s own bot while the teams are chosen, and installs once it exists', async () => {
-    const teams = [
-      { id: 'team-1', name: 'Engineering', app: 'none' },
-      { id: 'team-2', name: 'Support', app: 'none' }
-    ]
-    mocks.finish.mockResolvedValue({ agentId: 'agent-a', agentBot: true, teams, ticket: 'provision', store: false })
+  it('creates a further agent’s own bot with no team step, and says to mention it in a channel', async () => {
+    mocks.finish.mockResolvedValue({ agentId: 'agent-a', agentBot: true, teams: [], ticket: 'provision', store: false })
     let made!: (value: unknown) => void
     mocks.agentBot.mockReturnValue(new Promise((resolve) => (made = resolve)))
-    mocks.install.mockResolvedValue({ installed: 1 })
     await land(`code=c&state=${STATE}`)
     expect(mocks.agentBot).toHaveBeenCalledWith('org-a', 'provision')
     expect(host.textContent).toContain('Creating the agent’s bot')
     expect(host.textContent).toContain('gets a bot of its own')
-    expect(button('Add to teams').disabled).toBe(true)
-    await act(async () => button('Add to teams').click())
-    expect(mocks.install).not.toHaveBeenCalled()
+    expect(host.textContent).not.toContain('Add to teams')
 
-    await act(async () => made({ integrationId: 'int-2', agentId: 'agent-a', teams, ticket: 'install', store: false }))
-    expect(host.textContent).not.toContain('Creating the agent’s bot')
-    await act(async () => button('Add to teams').click())
-    expect(mocks.install).toHaveBeenCalledWith('org-a', 'install', ['team-1'])
+    await act(async () => made({ integrationId: 'int-2', agentId: 'agent-a', teams: [], store: false }))
     expect(host.textContent).toContain('Teams is connected')
+    expect(host.textContent).toContain('Mention the agent in any channel')
+    expect(mocks.install).not.toHaveBeenCalled()
   })
 
-  it('submits a member’s request for the chosen teams, then waits for approval and checks on demand', async () => {
-    const teams = [{ id: 'team-1', name: 'Engineering', app: 'none' }]
+  it('submits a member’s request with no team step, then waits for approval and checks on demand', async () => {
     const waiting = {
       id: 'req-1',
       agentId: 'agent-a',
@@ -242,12 +233,12 @@ describe('MsTeamsConnect', () => {
       createdAt: '2026-11-01T00:00:00.000Z',
       adminCenterUrl: 'https://admin.example.test/manage-apps'
     }
-    mocks.finish.mockResolvedValue({ agentId: 'agent-a', member: true, teams, ticket: 'member', store: false })
+    mocks.finish.mockResolvedValue({ agentId: 'agent-a', member: true, teams: [], ticket: 'member', store: false })
     mocks.request.mockResolvedValue(waiting)
     await land(`code=c&state=${STATE}`)
     expect(host.textContent).toContain('not an administrator')
     await act(async () => button('Request approval').click())
-    expect(mocks.request).toHaveBeenCalledWith('org-a', 'member', ['team-1'])
+    expect(mocks.request).toHaveBeenCalledWith('org-a', 'member')
     expect(host.textContent).toContain('Waiting for approval')
     expect(host.querySelector('a[href="https://admin.example.test/manage-apps"]')).not.toBeNull()
 
@@ -277,18 +268,6 @@ describe('MsTeamsConnect', () => {
     })
     await land(`code=c&state=${STATE}`)
     expect(host.textContent).toContain('Waiting for approval')
-    await act(async () => root.unmount())
-    root = createRoot(host)
-    // An administrator's approval that already installed the agent has no further step.
-    mocks.finish.mockResolvedValue({
-      integrationId: 'int-4',
-      agentId: 'agent-a',
-      teams: [],
-      store: false,
-      approved: true
-    })
-    await land(`code=c&state=${STATE}`)
-    expect(host.textContent).toContain('Teams is connected')
     await act(async () => root.unmount())
     root = createRoot(host)
     mocks.finish.mockRejectedValue(new mocks.FakeApiError('no', 409, 'MSTEAMS_TENANT_NOT_CONNECTED'))

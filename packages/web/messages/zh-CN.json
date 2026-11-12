@@ -1536,7 +1536,7 @@
       "goToAgentConnect": "前往 AgentConnect",
       "title": "把 Agent 添加到团队",
       "description": "你的组织已连接，应用已加入组织的应用目录。请选择 Agent 加入的团队。",
-      "agentBotDescription": "你的 Microsoft 365 组织在 Teams 里已经有一个 Agent，所以这个 Agent 会有自己的 bot，名字和图标都是它自己的。请选择它加入的团队。",
+      "agentBotDescription": "你的 Microsoft 365 组织在 Teams 里已经有一个 Agent，所以这个 Agent 会有自己的 bot，名字和图标都是它自己的。",
       "creatingBot": "正在创建这个 Agent 的 bot，最长需要一分钟。",
       "noTeams": "你不是任何团队的成员。其他人仍可在「应用 → 为你的组织构建」中添加该应用。",
       "personal": "一对一聊天：在应用设置策略允许的情况下，成员可在「应用 → 为你的组织构建」中自行添加。",
@@ -1550,6 +1550,7 @@
       "skip": "跳过",
       "doneTitle": "Teams 已连接",
       "doneBody": "在你选择的团队频道里 @ 这个 Agent，它会在那里回复。",
+      "agentBotDoneBody": "在任意频道里 @ 这个 Agent，Teams 会把它加进那个团队，它会在那里回复。",
       "storeDoneBody": "在 Teams 里给智能体发消息，或在添加了这个应用的频道、群聊里 @ 它，它会在那里回答。",
       "backToAgent": "返回 Agent",
       "errors": {
@@ -1583,14 +1584,15 @@
         "failed": "未能完成恢复。请回到 agent 的集成页，重新点击「连接 Teams」，或联系支持。"
       },
       "request": {
-        "description": "你不是所在 Microsoft 365 组织的管理员，所以要先由 Teams 管理员批准这个 agent 的应用。选择批准后它要加入的团队。",
+        "heading": "提交审批",
+        "description": "你不是所在 Microsoft 365 组织的管理员，所以要先由 Teams 管理员批准这个 agent 的应用，之后才能使用。",
         "submit": "提交审批",
         "submitting": "正在创建 agent 的 bot…",
         "title": "等待审批",
-        "pending": "需要你所在 Microsoft 365 组织的 Teams 管理员批准这个 agent 的应用。批准后它会自动加入你选的团队，不用一直开着这个页面。",
+        "pending": "需要你所在 Microsoft 365 组织的 Teams 管理员发布这个 agent 的应用。把下面的链接发给他们，不用一直开着这个页面。",
         "needs_sign_in": "应用获批前，你的 Microsoft 登录已失效。从 agent 的集成页重新开始连接即可继续。",
         "rejected": "这个 agent 的应用被拒绝或已被移除。先在 agent 的集成页取消申请，再重新提交。",
-        "openAdmin": "打开 Teams 管理中心",
+        "openAdmin": "在 Teams 管理中心打开这个应用",
         "check": "再查一次",
         "checking": "正在检查…"
       }
@@ -7072,10 +7074,9 @@
         "requestWaiting": "正在等 Teams 管理员批准这个 agent 的应用。",
         "requestNeedsSignIn": "你的 Microsoft 登录已失效。重新申请即可继续。",
         "requestRejected": "这个 agent 的应用被拒绝或已被移除。",
-        "requestOpenAdmin": "Teams 管理中心",
+        "requestOpenAdmin": "Teams 管理中心里的这个应用",
         "requestCheck": "再查一次",
-        "requestCancel": "取消申请",
-        "requestApprove": "以管理员身份批准"
+        "requestCancel": "取消申请"
       }
     },
     "wechat": {

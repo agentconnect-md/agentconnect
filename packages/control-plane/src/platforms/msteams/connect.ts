@@ -26,11 +26,9 @@ const AUTHORITY = 'https://login.microsoftonline.com/organizations/oauth2/v2.0'
 // A pinned tenant signs in at its own authority, so Entra offers only that tenant's accounts.
 const authorityOf = (tenant?: string) =>
   tenant ? `https://login.microsoftonline.com/${tenant}/oauth2/v2.0` : AUTHORITY
-/** What a member who is not an administrator signs in with (§8.6.6): submit for review, install into their own teams, and a refresh token for the wait; none of it needs a consent once the tenant's administrator connected. */
+/** What a member who is not an administrator signs in with (§8.6.6): submit for review, add the app for themselves, and a refresh token for the wait; none of it needs a consent once the tenant's administrator connected. */
 export const MSTEAMS_MEMBER_SCOPES = [
   'https://graph.microsoft.com/AppCatalog.Submit',
-  'https://graph.microsoft.com/Team.ReadBasic.All',
-  'https://graph.microsoft.com/TeamsAppInstallation.ReadWriteAndConsentSelfForTeam',
   'https://graph.microsoft.com/TeamsAppInstallation.ReadWriteAndConsentSelfForUser',
   'https://graph.microsoft.com/User.Read',
   'openid',
@@ -77,8 +75,6 @@ export interface MsTeamsConnectState {
   member?: boolean
   /** The organization's one connected tenant, whose authority a member signs in at so that Entra offers that tenant's accounts, guests included. */
   pin?: string
-  /** The waiting request an administrator signs in to approve (§8.6.6). */
-  approve?: string
 }
 
 /** Domain-separated keys from the pepper, one per purpose; the pepper itself never signs or encrypts. */
@@ -107,7 +103,6 @@ const StatePayload = z.object({
   consented: z.boolean().optional(),
   member: z.boolean().optional(),
   pin: z.string().regex(GUID).optional(),
-  approve: z.string().optional(),
   e: z.number(),
   n: z.string()
 })
@@ -139,8 +134,7 @@ export function verifyMsTeamsConnectState(
     ...(parsed.consent ? { consent: true } : {}),
     ...(parsed.consented ? { consented: true } : {}),
     ...(parsed.member ? { member: true } : {}),
-    ...(parsed.pin ? { pin: parsed.pin } : {}),
-    ...(parsed.approve ? { approve: parsed.approve } : {})
+    ...(parsed.pin ? { pin: parsed.pin } : {})
   }
 }
 
@@ -537,35 +531,6 @@ export async function readMsTeamsPackageState(
   const states = definitions.map((definition) => definition.publishingState)
   if (states.includes('published')) return 'published'
   return states.includes('submitted') ? 'submitted' : 'rejected'
-}
-
-/** Publishes a package's pending definitions as an administrator, which is the approval the Teams admin center gives; false when none is pending. */
-export async function approveMsTeamsSubmission(
-  fetchImpl: typeof fetch,
-  token: string,
-  catalogAppId: string
-): Promise<boolean> {
-  const definitions = await readDefinitions(fetchImpl, token, catalogAppId)
-  let approved = false
-  for (const definition of definitions ?? []) {
-    if (definition.publishingState !== 'submitted') continue
-    const path = `/appCatalogs/teamsApps/${encodeURIComponent(catalogAppId)}/appDefinitions/${encodeURIComponent(definition.id)}`
-    // Graph changes a definition only against the version it was read at.
-    const response = await graph(fetchImpl, token, 'PATCH', path, {
-      json: { publishingState: 'published' },
-      ifMatch: definition['@odata.etag'] ?? '*'
-    })
-    // Graph has answered 500 to an approval it applied, so a failed answer is checked against what the catalog now holds.
-    if (!response.ok && !(response.status >= 500 && (await published(fetchImpl, token, catalogAppId))))
-      throw refused(response)
-    approved = true
-  }
-  return approved
-}
-
-async function published(fetchImpl: typeof fetch, token: string, catalogAppId: string): Promise<boolean> {
-  const definitions = await readDefinitions(fetchImpl, token, catalogAppId).catch(() => null)
-  return (definitions ?? []).some((definition) => definition.publishingState === 'published')
 }
 
 /** Withdraws a member's own pending submission by deleting its pending definitions, which their submit scope allows; one already gone counts as withdrawn. */
