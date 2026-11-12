@@ -18,6 +18,7 @@ import { creatorLabel, fetchCronRuns, fmtDate, runCronNow } from '@/lib/api'
 import { cronHuman, cronNext, cronUpdateInput, fmtNextRun, zonedDay } from '@/lib/cron'
 import { useScheduleTimeZone } from '@/lib/schedule-timezone'
 import { useConsoleData } from '@/lib/data-context'
+import { conversationUrl } from '@/components/console/place-link'
 import { useProfile } from '@/lib/profile'
 import { useModal } from '@/components/console/ModalProvider'
 import { VisibilityValue } from '@/components/console/VisibilityField'
@@ -54,7 +55,7 @@ export default function ScheduleDetailView() {
   const router = useRouter()
   const { me } = useProfile()
   const { orgPath, activeOrg } = useOrgs()
-  const { crons, cronsLoading, agents, integrations, allSessions, saveCron, deleteCron } = useConsoleData()
+  const { crons, cronsLoading, agents, integrations, bots, allSessions, saveCron, deleteCron } = useConsoleData()
   const { openModal } = useModal()
   const isMobile = useIsMobile()
   const [busy, setBusy] = useState(false)
@@ -117,6 +118,18 @@ export default function ScheduleDetailView() {
         .flatMap((i) => i.channels)
         .find((ch) => ch.channelId === c.targetChannel)?.name ?? c.targetChannel)
     : null
+  // The page the target opens on its platform, resolved as every other place's link is.
+  const channelUrl = c.targetChannel
+    ? conversationUrl(
+        {
+          platform: c.targetPlatform,
+          channelId: c.targetChannel,
+          integrationId: c.targetIntegrationId,
+          agentId: c.agentId
+        },
+        { integrations, bots }
+      )
+    : undefined
   const ok = (runs ?? []).filter((r) => r.status === 'success').length
   const runSummary = runs === null ? '' : `${runs.length} runs · ${ok} success · ${runs.length - ok} not run or failed`
   // The run's session name (daemon-sourced via the sessions list); falls back to
@@ -239,10 +252,10 @@ export default function ScheduleDetailView() {
                 <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">
                   {t('postTo')}
                 </span>
-                {c.targetPlatform === 'slack' && c.targetChannel ? (
+                {channelUrl ? (
                   <a
                     className="lnk inline-flex items-center gap-[6px] font-mono text-[12px] font-medium leading-normal text-(--text-link)"
-                    href={`https://slack.com/app_redirect?channel=${c.targetChannel}`}
+                    href={channelUrl}
                     target="_blank"
                     rel="noopener noreferrer"
                     title={t('openChannelIn', {
@@ -498,10 +511,10 @@ export default function ScheduleDetailView() {
         </span>
         <ZoneSwitch clock={clock} scheduleZone={c.timezone} />
         {channelName &&
-          (c.targetPlatform === 'slack' && c.targetChannel ? (
+          (channelUrl ? (
             <a
               className="lnk font-mono text-[12px] font-normal leading-normal text-(--text-link)"
-              href={`https://slack.com/app_redirect?channel=${c.targetChannel}`}
+              href={channelUrl}
               target="_blank"
               rel="noopener noreferrer"
               title={t('openChannelIn', { channel: `${sigil}${channelName}`, platform: platName(c.targetPlatform) })}

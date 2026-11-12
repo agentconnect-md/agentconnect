@@ -1108,6 +1108,9 @@
       "computerNone": "这个 agent 没有你可以查看的电脑。",
       "computerOnDemand": "agent 在这个会话里第一次用电脑时才会分到一台。",
       "taskOfOpen": "属于 {title} 的任务 — 打开",
+      "openThreadIn": "在 {platform} 中打开会话串",
+      "openPlaceIn": "在 {platform} 中打开 {place}",
+      "openSchedule": "打开定时任务 {name}",
       "coordinatorTip": "Coordinator — 把工作交给 thread 任务，自己从不改动文件",
       "requestsWaiting": "{count, plural, other {# 个请求等你处理}}",
       "headerPeople": {

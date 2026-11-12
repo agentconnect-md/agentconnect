@@ -1108,6 +1108,9 @@
       "computerNone": "This agent has no computer you can watch.",
       "computerOnDemand": "The agent gets its computer when it first uses one in this session.",
       "taskOfOpen": "Task of {title} — open it",
+      "openThreadIn": "Open the thread in {platform}",
+      "openPlaceIn": "Open {place} in {platform}",
+      "openSchedule": "Open the schedule {name}",
       "coordinatorTip": "Coordinator — hands work to threaded tasks and never touches files itself",
       "requestsWaiting": "{count, plural, one {# request waiting for you} other {# requests waiting for you}}",
       "headerPeople": {

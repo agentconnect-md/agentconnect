@@ -109,6 +109,8 @@ vi.mock('@/lib/data-context', () => ({
     getSessions: () => [listRow],
     sessionsLoading: false,
     crons: [],
+    integrations: [],
+    bots: [],
     daemons: [],
     memberSets: [],
     orgSetIds: new Set<string>(),

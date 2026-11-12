@@ -18,7 +18,9 @@ const wire = vi.hoisted(() => ({
   messages: [] as unknown[],
   conversationReads: [] as string[],
   agentReads: [] as string[],
-  decisions: [] as unknown[][]
+  decisions: [] as unknown[][],
+  integrations: [] as unknown[],
+  bots: [] as unknown[]
 }))
 
 vi.mock('next/navigation', () => ({
@@ -129,6 +131,8 @@ vi.mock('@/lib/data-context', () => ({
     getSessions: () => [listRow],
     sessionsLoading: false,
     crons: [],
+    integrations: wire.integrations,
+    bots: wire.bots,
     daemons,
     memberSets: [],
     orgSetIds: new Set<string>(),
@@ -272,6 +276,8 @@ beforeEach(() => {
   wire.conversationReads = []
   wire.agentReads = []
   wire.decisions = []
+  wire.integrations = []
+  wire.bots = []
   window.matchMedia = ((query: string) => ({
     matches: false,
     media: query,
@@ -325,6 +331,43 @@ describe('the one-line session header', () => {
     expect(plain.tagName).toBe('SPAN')
     expect(plain.className).not.toContain('text-(--text-link)')
     expect(plain.className).not.toContain('hover:')
+  })
+
+  it('opens the conversation from the chip of a session that runs in no platform thread', async () => {
+    const webchat = { platform: listRow.platform, channel: listRow.channel, channelId: listRow.channelId }
+    Object.assign(listRow, { platform: 'slack', channel: '#ops-room', channelId: 'C0EXAMPLE' })
+    wire.detail = {
+      ...detail(true),
+      platform: 'slack',
+      channel: 'C0EXAMPLE',
+      channelName: 'ops-room',
+      thread: 'append:coordinator-1700000000000',
+      tenantScope: 'T0EXAMPLE'
+    }
+    try {
+      await render()
+      const chip = header()!.querySelector<HTMLElement>('[data-header-place]')!
+      expect(chip.tagName).toBe('A')
+      expect(chip.getAttribute('data-header-place')).toBe('conversation')
+      expect(chip.getAttribute('href')).toBe('https://app.slack.com/client/T0EXAMPLE/C0EXAMPLE')
+      expect(chip.getAttribute('title')).toBe('Open #ops-room in Slack')
+    } finally {
+      Object.assign(listRow, webchat)
+    }
+  })
+
+  it('opens the schedule from the chip of a schedule\u2019s own run', async () => {
+    const webchat = { platform: listRow.platform, channel: listRow.channel, channelId: listRow.channelId }
+    Object.assign(listRow, { platform: 'slack', channel: 'cron:sched-1', channelId: undefined })
+    wire.detail = { ...detail(true), platform: 'slack', channel: 'cron:sched-1', channelName: null }
+    try {
+      await render()
+      const chip = header()!.querySelector<HTMLElement>('[data-header-place]')!
+      expect(chip.getAttribute('data-header-place')).toBe('schedule')
+      expect(chip.getAttribute('href')).toBe('/acme/crons/sched-1')
+    } finally {
+      Object.assign(listRow, webchat)
+    }
   })
 
   it('counts what waits for an editor on an amber Requests pill, and shows a quiet icon once nothing does', async () => {

@@ -113,6 +113,7 @@ vi.mock('@/lib/data-context', () => ({
     daemons,
     memberSets: [],
     integrations: wire.integrations,
+    bots: [],
     orgSetIds: new Set<string>(),
     members: [],
     sessionActivityVersionById: wire.activity,

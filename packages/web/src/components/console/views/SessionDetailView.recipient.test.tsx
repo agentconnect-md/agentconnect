@@ -137,6 +137,8 @@ vi.mock('@/lib/data-context', () => ({
     getSessions: () => [],
     sessionsLoading: false,
     crons: [],
+    integrations: [],
+    bots: [],
     daemons: [{ daemonId: 'daemon-1', name: 'edge-1', runtimeModels: [], mcpServers: [], caps: { features: [] } }],
     memberSets: [],
     orgSetIds: new Set<string>(),
