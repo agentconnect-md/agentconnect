@@ -15,6 +15,7 @@ import { CODE_HOST_EFFECT_TOOLS } from '../codehost/effect-tools.js'
 import { RECALL_TOOL } from './recall-tool.js'
 import { FOLLOW_UP_TOOL, PROPOSE_TOOL, RECORD_CHECK_TOOL } from './ops/assistant-items.js'
 import { ASSISTANT_REMINDER_TOOLS } from './ops/assistant-reminders.js'
+import { coordinatorTools } from '../auto-session/coordinator-prompt.js'
 import { LIST_TASKS_TOOL, READ_TASK_TOOL, STOP_TASK_TOOL, UPDATE_TASK_TOOL } from './ops/assistant-subsessions.js'
 import { CAPABILITY_REQUEST_TOOLS } from './ops/capability-requests.js'
 import { AGENT_CRON_TOOLS } from './ops/agent-crons.js'
@@ -1020,7 +1021,9 @@ export const ALL_TOOL_NAMES = [
       STOP_TASK_TOOL,
       UPDATE_TASK_TOOL,
       ...CAPABILITY_REQUEST_TOOLS,
-      ...AGENT_CRON_TOOLS
+      ...AGENT_CRON_TOOLS,
+      // A coordinator's own tools (auto-session-mode.md §5.4): it refuses every ask, so one left out here could never run.
+      ...coordinatorTools()
     ]
       .map((t) => t.name)
       // External-memory record tools: only their names are core knowledge here, the descriptors live in memory/.
