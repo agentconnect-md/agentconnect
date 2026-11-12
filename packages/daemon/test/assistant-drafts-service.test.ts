@@ -1034,31 +1034,23 @@ describe('the Slack draft card', () => {
     expect(JSON.stringify(card)).not.toContain('No check until')
   })
 
-  it('shows a task form as its sentence and reason, its exact work one click away on the proposing session', () => {
-    const card = blocks(proposal())
-    expect(card.map((b) => b.type)).toEqual(['section', 'markdown', 'context', 'actions'])
-    expect(card[0].text.text).toBe('*I want to draft the release notes because two releases went out without them.*')
-    expect(card[1].text).toBe('Asked twice this month.')
-    expect(card[2].elements).toEqual([
-      { type: 'mrkdwn', text: '<https://console.example.test/example-org/sessions/s-1|🔗>' }
-    ])
-    const all = JSON.stringify(card)
-    for (const gone of ['Butler', 'Draft the release notes for 2.6', 'Work', 'Why', 'Runs with', 'Open the check'])
-      expect(all).not.toContain(gone)
-    expect(card[3].elements.map((b: any) => b.text.text)).toEqual(['Approve', 'Deny'])
-  })
-
-  it('quotes a task form’s exact work, with no label, where no session link exists', () => {
-    const { sessionUrl: _, ...rest } = proposal()
-    const card = blocks(rest)
-    expect(card.map((b) => b.type)).toEqual(['section', 'markdown', 'markdown', 'actions'])
-    expect(card[2].text).toBe('> Draft the release notes for 2.6 from the merged pull requests.')
-    expect(JSON.stringify(card)).not.toContain('Work')
+  it('shows a task form as its sentence and reason only, with no session link and no quoted work', () => {
+    const { sessionUrl: _, ...unlinked } = proposal()
+    for (const view of [proposal(), unlinked]) {
+      const card = blocks(view)
+      expect(card.map((b) => b.type)).toEqual(['section', 'markdown', 'actions'])
+      expect(card[0].text.text).toBe('*I want to draft the release notes because two releases went out without them.*')
+      expect(card[1].text).toBe('Asked twice this month.')
+      const all = JSON.stringify(card)
+      for (const gone of ['Butler', 'Draft the release notes for 2.6', '/sessions/', '🔗', 'Work', 'Why', 'Runs with'])
+        expect(all).not.toContain(gone)
+      expect(card[2].elements.map((b: any) => b.text.text)).toEqual(['Approve', 'Deny'])
+    }
   })
 
   it('keeps the settled outcome and drops the footer once a proposal is decided', () => {
     const settled = buildAssistantDraftSettledCard(proposal(), '🚫 Denied by Ada. Nothing was run.') as any[]
-    expect(settled.map((b) => b.type)).toEqual(['section', 'markdown', 'context', 'section'])
+    expect(settled.map((b) => b.type)).toEqual(['section', 'markdown', 'section'])
     expect(JSON.stringify(settled.at(-1))).toContain('🚫 Denied by Ada. Nothing was run.')
     expect(JSON.stringify(settled)).not.toContain('Runs with')
   })
