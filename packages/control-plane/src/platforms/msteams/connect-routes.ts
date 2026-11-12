@@ -148,6 +148,7 @@ const RequestDto = z.object({
       'pending: waiting for a Teams administrator to approve the package; needs_sign_in: the stored sign-in stopped working, so the member signs in again; rejected: the package was turned down or removed.'
     ),
   reason: z.string().nullable(),
+  name: z.string().describe('The name the integration takes once the package is published.'),
   createdAt: z.string(),
   adminCenterUrl: z
     .string()
@@ -161,6 +162,7 @@ const requestDto = (request: MsTeamsAgentBotRequestRecord): z.infer<typeof Reque
   tenantId: request.tenantId,
   status: request.status,
   reason: request.reason,
+  name: request.botName,
   createdAt: request.createdAt.toISOString(),
   adminCenterUrl: `${MSTEAMS_ADMIN_CENTER_URL}/${encodeURIComponent(request.catalogAppId)}`
 })

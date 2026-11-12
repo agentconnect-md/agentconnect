@@ -1388,6 +1388,21 @@ Control Plane finish with no member's token (**measured**). They are a standing
 permission to install the deployment's apps into any team of the tenant and
 need a second consent page, so the design keeps to the member's own token.
 
+**Guests of the tenant are not supported.** The connect signs in at the
+shared `organizations` authority, where Entra signs a B2B guest in at their
+home tenant rather than the organization's (**measured**). There the guest
+meets a consent page for the connect's scopes before any code returns: a guest
+without rights in their home tenant is told an administrator has to approve
+and stops, and one who administers it is asked to consent for that whole other
+organization. The silent sign-in of step 1 therefore helps only the latter, and
+only after a consent unrelated to the connect. Signing in at the
+organization's tenant from the start lets a guest through with no consent page
+(**measured**), but shows a person of any other tenant Entra's own error page
+with no way back to the Console, which would also close the way to connecting
+a second tenant; it is not done. A guest who needs an agent in Teams registers
+their own bot instead (**Use your own Teams bot instead**, §5) and pastes its
+credentials.
+
 #### 8.6.7 The relay
 
 - **Ingress** keeps its shape: `(app ID, tenant ID)` selects the row and the

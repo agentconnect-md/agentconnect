@@ -89,6 +89,16 @@ export function platformAgentCard(platformId?: string): WebAgentIntegrationCardF
   return platformId ? platformRegistry.get(platformId)?.agentCard : undefined
 }
 
+/** Each module's entry for a connect still waiting, in registry order. */
+export function platformAgentPending(): {
+  platformId: string
+  Entry: NonNullable<WebPlatformModule['agentPending']>
+}[] {
+  return platformRegistry
+    .all()
+    .flatMap((m) => (m.agentPending ? [{ platformId: m.platformId, Entry: m.agentPending }] : []))
+}
+
 /**
  * The Settings → Bots row copy every platform gets unless its module says
  * otherwise — provider-free by construction, because the strings these replace

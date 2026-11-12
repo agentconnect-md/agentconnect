@@ -5771,6 +5771,8 @@ export interface MsTeamsAgentBotRequestDto {
   tenantId: string
   status: 'pending' | 'needs_sign_in' | 'rejected'
   reason: string | null
+  /** The name the integration takes once the package is published. */
+  name: string
   createdAt: string
   adminCenterUrl: string
 }
