@@ -343,8 +343,13 @@ export async function judgePlaceWrite(
   deps: PlaceAccessDeps,
   post = false
 ): Promise<WriteVerdict> {
-  // The current conversation takes every write, shared with another organization or not (#2979, B4).
-  if (target.kind === 'conversation' && samePlace({ platform: ctx.platform, channel: ctx.channel }, target))
+  // The current conversation takes every write, shared or not (#2979, B4), as does a held channel the turn is delivered in (auto-session-mode.md §6.8).
+  if (
+    target.kind === 'conversation' &&
+    [ctx.channel, deps.deliveryChannelNow?.(ctx)].some(
+      (channel) => channel !== undefined && samePlace({ platform: ctx.platform, channel }, target)
+    )
+  )
     return 'post'
   const lookups = deps.readLookups?.(ctx.agentId) ?? CLOSED_LOOKUPS
   const bot = ownBot(ctx, target.platform, target.integrationId)

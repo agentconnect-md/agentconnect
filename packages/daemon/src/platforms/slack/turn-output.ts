@@ -24,7 +24,7 @@ export interface SlackTurnState {
 export async function startSlackCodeDiff(
   turn: SlackTurn,
   state: SlackTurnState,
-  host: Pick<CodeDiffHost, 'open' | 'authorize' | 'active' | 'mask' | 'notice' | 'debug'> & {
+  host: Pick<CodeDiffHost, 'open' | 'authorize' | 'active' | 'mask' | 'notice' | 'debug' | 'info'> & {
     keepStart?: () => Promise<void>
     // The notice this channel last showed for its task; a failure that persists across turns is reported once.
     lastNotice?: { get(): string | undefined; set(text: string | undefined): void }

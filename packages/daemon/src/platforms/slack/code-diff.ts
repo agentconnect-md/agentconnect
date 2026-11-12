@@ -17,6 +17,7 @@ export interface CodeDiffHost {
   hasPublished?: boolean
   notice(text: string): Promise<void>
   debug(message: string): void
+  info(message: string): void
 }
 
 // One serialized publisher per turn; the task baseline lives beyond the turn in its repository.
@@ -24,10 +25,16 @@ export async function startCodeDiff(host: CodeDiffHost): Promise<CodeDiffOutput 
   let source: TaskDiff
   const notice = async (error: unknown): Promise<void> => {
     const reason = error instanceof TaskDiffUnavailable ? error.message : 'The workspace or Slack could not be reached.'
-    host.debug(
-      `slack: automatic code diff unavailable (${error instanceof TaskDiffUnavailable ? reason : 'read failed'})`
+    if (error instanceof TaskDiffIneligible) {
+      host.debug(`slack: automatic code diff unavailable (${reason})`)
+      return
+    }
+    // The notice tells the channel what stopped; the log keeps the refusal behind it, which the channel is not shown.
+    const cause =
+      error instanceof TaskDiffUnavailable && error.cause instanceof Error ? ` (${error.cause.message})` : ''
+    host.info(
+      `slack: automatic code diff stopped: ${error instanceof TaskDiffUnavailable ? reason : 'read failed'}${cause}`
     )
-    if (error instanceof TaskDiffIneligible) return
     if (host.active()) await host.notice(`Code diff is not updating. ${reason}`).catch(() => {})
   }
   try {

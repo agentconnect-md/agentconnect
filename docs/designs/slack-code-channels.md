@@ -222,8 +222,10 @@ releases its connection; an HTTP request already accepted by Slack cannot be rec
 
 Only the current owned Code channel is eligible. The registered session's live-turn and
 conversation-write authorization is checked before opening the workspace and before every
-publication. A refusal or synchronization failure stops updates for the turn and produces a
-visible reason; the same reason in later turns is not repeated until the diff publishes again
+publication. A turn delivered in a channel a task holds writes there as its own conversation, so a
+wake no person started, such as a pull request's feedback, publishes as a person's turn does. A
+refusal or synchronization failure stops updates for the turn and produces a visible reason, and
+the daemon log records the refusal behind it, which the channel is not shown; the same reason in later turns is not repeated until the diff publishes again
 (the record is in memory, so a daemon restart reports it once more). Moving output into the
 platform does not authorize a previously refused send.
 The runtime is told when the platform owns its diff; it retains the HTML/PR tools and manual

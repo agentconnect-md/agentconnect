@@ -667,8 +667,10 @@ member (below).
   target is shared now (§5.3), as a granted post did; outside it, the integration's recorded
   external conversations decide.
 - **No person behind the turn** writes only to its own conversation, which for an anchored hook or
-  schedule is its configured target; assistant mode drafts other posts as before, and every other
-  agent is refused.
+  schedule is its configured target, and for a task holding a channel
+  ([auto-session-mode.md](auto-session-mode.md) §6.8) is also that channel while the turn is
+  delivered there, as a pull request's feedback is; assistant mode drafts other posts as before, and
+  every other agent is refused.
 - **The enabled-target requirement is removed**: a drafted post no longer needs its target to be a
   conversation where the agent is enabled, since the write rule already decides where the people
   asking may post. It is a separate change so that it can be reverted alone.

@@ -2011,9 +2011,10 @@ export class Daemon {
                   },
                   p.plan.channel
                 )
-              } catch {
+              } catch (err) {
                 throw new TaskDiffUnavailable(
-                  'Publication is not authorized for this task. Automatic updates have stopped.'
+                  'Publication is not authorized for this task. Automatic updates have stopped.',
+                  { cause: err }
                 )
               }
             },
@@ -2031,7 +2032,8 @@ export class Daemon {
                 else this.codeDiffNotices.set(key, text)
               }
             },
-            debug: (message) => this.log.debug(message)
+            debug: (message) => this.log.debug(message),
+            info: (message) => this.log.info(`${message} for session ${p.plan.sessionKey}`)
           }),
         // §5.5: resolve the closing routing facts before the final body flush, so a
         // terminal section posted at finalization is born `final` (no closing edit).
