@@ -662,7 +662,7 @@ export async function probeMsTeamsPackageForUser(
   fetchImpl: typeof fetch,
   token: string,
   input: { userId: string; catalogAppId: string; permissions: readonly { name: string; type: string }[] }
-): Promise<'added' | 'absent' | 'unknown'> {
+): Promise<{ result: 'added' | 'absent' } | { result: 'unknown'; detail: string }> {
   try {
     const path = `/users/${encodeURIComponent(input.userId)}/teamwork/installedApps`
     const response = await graph(fetchImpl, token, 'POST', path, {
@@ -671,10 +671,11 @@ export async function probeMsTeamsPackageForUser(
         consentedPermissionSet: consentedPermissions(input.permissions)
       }
     })
-    if (response.ok || response.status === 409) return 'added'
-    return response.status === 404 ? 'absent' : 'unknown'
-  } catch {
-    return 'unknown'
+    if (response.ok || response.status === 409) return { result: 'added' }
+    if (response.status === 404) return { result: 'absent' }
+    return { result: 'unknown', detail: (await refusedWithReason(response)).detail ?? 'refused' }
+  } catch (err) {
+    return { result: 'unknown', detail: err instanceof MsTeamsConnectError ? (err.detail ?? err.message) : 'failed' }
   }
 }
 
