@@ -146,8 +146,10 @@ export class MsTeamsAgentBotRequests {
           catalogAppId: request.catalogAppId,
           permissions: MSTEAMS_RSC_PERMISSIONS
         })
-        if (probe.result === 'added') state = 'published'
-        else if (probe.result === 'unknown') {
+        if (probe.result === 'added') {
+          this.deps.log.info({ requestId: id }, 'msteams: package read as gone was added for its member')
+          state = 'published'
+        } else if (probe.result === 'unknown') {
           // What Microsoft answered is the only way to tell why an approved package is not finished.
           this.deps.log.warn({ requestId: id, detail: probe.detail }, 'msteams: approved package not yet addable')
           state = 'submitted'
@@ -220,6 +222,10 @@ export class MsTeamsAgentBotRequests {
       } catch (err) {
         // A team the member left, or one whose settings stop members from adding apps.
         if (!(err instanceof MsTeamsConnectError) || err.code !== 'MSTEAMS_CONNECT_NOT_ADMIN') throw err
+        this.deps.log.warn(
+          { requestId: request.id, teamId, detail: err.detail },
+          'msteams: member could not add the app to a team'
+        )
       }
     }
     if (request.teamIds.length > 0 && installed === 0) return undefined
