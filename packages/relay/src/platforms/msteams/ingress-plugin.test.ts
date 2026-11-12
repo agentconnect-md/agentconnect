@@ -381,6 +381,7 @@ describe('msteams ingress plugin — admission, dedup and triggers (§4.1, §4.2
     const own = edit(personalText, (a) => (a.from = { id: `28:${APP_ID}`, name: 'Example Bot' }))
     expect((await deliver(s, own)).handled).toEqual({})
     expect(s.h.dedupMark).toHaveBeenCalledWith(DEDUP_KEY)
+    expect(s.h.log.info).not.toHaveBeenCalled()
     expect(
       (
         await deliver(
@@ -389,6 +390,7 @@ describe('msteams ingress plugin — admission, dedup and triggers (§4.1, §4.2
         )
       ).handled
     ).toEqual({})
+    expect(s.h.log.info).toHaveBeenCalledWith(expect.stringContaining('not forwarded (ignored: empty)'))
     expect(s.h.forwardStrict).not.toHaveBeenCalled()
   })
 
