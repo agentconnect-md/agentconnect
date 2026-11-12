@@ -330,7 +330,8 @@ question, and the model must answer Boolean questions (400 otherwise). Null remo
   `triggered` let the message through, `skipped` kept it from the coordinator, `unavailable` let it
   through without an answer; `decisionId` is `coordinator-filter` and the title is the message's
   first line. The agent's editors read them under **Recent evaluations** beside the filter on its
-  Configuration card, through `GET /agents/:id/coordinator-filter/evaluations` and `…/:seq`, which the
+  Configuration card, and under each screened message on the coordinator's session page, through
+  `GET /agents/:id/coordinator-filter/evaluations` and `…/:seq`, which the
   Control Plane proxies from a daemon advertising `coordinator-filter-evaluations-v1` without storing
   them. The detail shows the question, the message and conversation judged, the answer and the
   provider JSON; it goes after 24 hours or 20 newer verdicts of the agent, the summary after seven

@@ -2065,13 +2065,27 @@ export default function SessionDetailView() {
     const owner = conversationSourceAgentByMessageRef.current.get(m)
     return m.sender !== session?.agentId && (!owner || owner === session?.agentId)
   }
-  const judgedSeqs = useMemo(
-    () => (visibleMsgs ?? []).filter(ownsDecisionSeq).map((m) => m.seq),
+  const judgedMessages = useMemo(
+    () =>
+      (visibleMsgs ?? []).filter(ownsDecisionSeq).map((m) => ({
+        seq: m.seq,
+        messageId: m.postId ?? m.ts,
+        timeMs: transcriptRowTimeMs(m)
+      })),
     [visibleMsgs, session?.agentId, conversationSourceAgentByMessageRef]
   )
+  const judgedSeqs = useMemo(() => judgedMessages.map((m) => m.seq), [judgedMessages])
+  const decisionChannelId = currentSessionDetail?.channel ?? session?.channelId ?? session?.channel
   const decisionResults = useSessionDecisionResults(
-    { agentId: session?.agentId, platform: session?.platform, channelId: session?.channelId },
-    judgedSeqs
+    {
+      agentId: session?.agentId,
+      platform: session?.platform,
+      channelId: decisionChannelId,
+      coordinator: session?.coordinator === true,
+      ...(owner ? { canEditAgent: owner.canEdit } : {})
+    },
+    judgedSeqs,
+    judgedMessages
   )
   const [openDecisionSeq, setOpenDecisionSeq] = useState<number | null>(null)
   const [openRouting, setOpenRouting] = useState<{
@@ -4167,6 +4181,7 @@ export default function SessionDetailView() {
                                 <DecisionResultMarker
                                   record={record}
                                   decisionName={
+                                    decisionResults.source?.fixedDecision?.name ??
                                     decisionCatalog?.decisions.find((d) => d.id === record.decisionId)?.name
                                   }
                                   onOpen={() => setOpenDecisionSeq(record.seq)}
@@ -4182,11 +4197,15 @@ export default function SessionDetailView() {
                     {taskOwnerApprovals ? <UnplacedApprovals /> : null}
                   </TranscriptApprovalsProvider>
                 )}
-                {openDecisionSeq !== null && decisionResults.lane && (
+                {openDecisionSeq !== null && (decisionResults.source || decisionResults.lane) && (
                   <DecisionEvaluationsDrawer
                     key={openDecisionSeq}
-                    conversation={decisionResults.lane.conversation}
-                    channelName={decisionResults.lane.channelName}
+                    {...(decisionResults.source
+                      ? { source: decisionResults.source }
+                      : {
+                          conversation: decisionResults.lane!.conversation,
+                          channelName: decisionResults.lane!.channelName
+                        })}
                     agentName={session.agentName}
                     initialSeq={openDecisionSeq}
                     onClose={() => setOpenDecisionSeq(null)}
