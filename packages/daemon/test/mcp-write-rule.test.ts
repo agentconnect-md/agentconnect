@@ -578,6 +578,27 @@ describe('a turn no person is behind', () => {
     }
   })
 
+  it('writes to a channel its task holds while the turn is delivered there, and nowhere else', async () => {
+    const { deps, gw, nobody } = harness()
+    nobody()
+    let delivered: string | undefined = 'C_CODE'
+    const task = ctxAt('slack', 'C_DEPLOY')
+    const withTurn = { ...deps, deliveryChannelNow: () => delivered }
+    const post = (channel: string) =>
+      executeTool(task, 'sendMessage', { action: 'postMessage', channel, message: 'pushed a fix' }, withTurn)
+    await post('C_CODE')
+    await post('C_DEPLOY')
+    await expect(post('C_PRIV')).rejects.toThrow(/no person started this run/)
+    // A turn in the origin thread has no more reach into the channel than any other place.
+    delivered = 'C_DEPLOY'
+    await expect(post('C_CODE')).rejects.toThrow(/no person started this run/)
+    delivered = undefined
+    await expect(post('C_CODE')).rejects.toThrow(/no person started this run/)
+    expect(gw.postMessage).toHaveBeenCalledTimes(2)
+    expect(gw.postMessage).toHaveBeenNthCalledWith(1, 'C_CODE', 'pushed a fix', undefined, expect.anything())
+    expect(gw.postMessage).toHaveBeenNthCalledWith(2, 'C_DEPLOY', 'pushed a fix', undefined, expect.anything())
+  })
+
   it('drafts a post anywhere else in assistant mode, and refuses every other write', async () => {
     const { deps, gw, draftPost, nobody } = harness({ assistant: true })
     nobody()

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { startCodeDiff, type CodeDiffHost } from '../src/platforms/slack/code-diff.js'
-import { TaskDiffIneligible } from '../src/workspace/task-diff.js'
+import { TaskDiffIneligible, TaskDiffUnavailable } from '../src/workspace/task-diff.js'
 
 afterEach(() => vi.useRealTimers())
 
@@ -15,7 +15,8 @@ function setup() {
     mask: (text) => text.replaceAll('secret', '[redacted]'),
     publish: vi.fn(async () => {}),
     notice: vi.fn(async () => {}),
-    debug: vi.fn()
+    debug: vi.fn(),
+    info: vi.fn()
   }
   return {
     host,
@@ -86,6 +87,19 @@ describe('Slack task diff publisher', () => {
     expect(host.publish).not.toHaveBeenCalled()
     expect(host.notice).toHaveBeenCalledTimes(1)
     expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('logs why publication was refused where the notice cannot say', async () => {
+    const { host } = setup()
+    const refusal = new Error('task workspace output: no person started this run')
+    vi.mocked(host.authorize).mockRejectedValue(
+      new TaskDiffUnavailable('Publication is not authorized.', { cause: refusal })
+    )
+    expect(await startCodeDiff(host)).toBeUndefined()
+    expect(host.notice).toHaveBeenCalledExactlyOnceWith('Code diff is not updating. Publication is not authorized.')
+    expect(host.info).toHaveBeenCalledExactlyOnceWith(
+      'slack: automatic code diff stopped: Publication is not authorized. (task workspace output: no person started this run)'
+    )
   })
 
   it('does not even open the workspace without authorization', async () => {

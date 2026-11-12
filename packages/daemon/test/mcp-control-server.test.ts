@@ -136,6 +136,32 @@ describe('McpControlServer IPC', () => {
     await expect(server.authorizeConversationOutput(binding)).rejects.toThrow('No registered session')
   })
 
+  it('authorizes a wake no person started to publish in the channel its task holds, where the turn was delivered', async () => {
+    let delivered = 'C0EXAMPLE2'
+    server = new McpControlServer(
+      controlDeps({
+        socketPath: socketPath(),
+        gatewayFor: gateway,
+        recordOutbound: async () => {},
+        now: () => 0,
+        canRun: () => true,
+        shareTarget: () => ({ ok: true, platform: 'slack', channel: delivered, integrationId: 'int-1' }),
+        deliveryChannelNow: () => delivered
+      })
+    )
+    const binding = ctx({ transportScope: 'bot-scope' })
+    server.register(binding)
+    // A pull request's feedback wakes the task in its code channel with nobody asking, and its Code diff publishes there.
+    await expect(server.authorizeConversationOutput(binding, 'C0EXAMPLE2')).resolves.toBeUndefined()
+    await expect(server.authorizeConversationOutput(binding, 'C0EXAMPLE3')).rejects.toThrow(
+      /no person started this run/
+    )
+    delivered = 'C1'
+    await expect(server.authorizeConversationOutput(binding, 'C0EXAMPLE2')).rejects.toThrow(
+      /no person started this run/
+    )
+  })
+
   it('listTools returns the registered session tools', async () => {
     const path = socketPath()
     server = new McpControlServer(

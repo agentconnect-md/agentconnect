@@ -448,7 +448,8 @@ describe('Slack native surfaces', () => {
         active: () => true,
         mask: (text: string) => text,
         notice: async () => {},
-        debug: () => {}
+        debug: () => {},
+        info: () => {}
       }
       expect(
         await startSlackCodeDiff(
@@ -507,7 +508,8 @@ describe('Slack native surfaces', () => {
       active: () => true,
       mask: (text) => text,
       notice: async () => {},
-      debug: () => {}
+      debug: () => {},
+      info: () => {}
     })
     try {
       expect(context).toContain(
@@ -532,7 +534,8 @@ describe('Slack native surfaces', () => {
         active: () => true,
         mask: (text) => text,
         notice: async () => {},
-        debug: () => {}
+        debug: () => {},
+        info: () => {}
       })
       await state.codeDiff!.settle()
       expect(f.api.removeView).toHaveBeenCalledExactlyOnceWith({ channel_id: 'C1', view_id: 'code' })
@@ -563,7 +566,8 @@ describe('Slack native surfaces', () => {
         mask: (text) => text,
         notice,
         lastNotice: { get: () => last, set: (text) => void (last = text) },
-        debug: () => {}
+        debug: () => {},
+        info: () => {}
       })
       await state.codeDiff?.settle()
       state.codeDiff?.stop()
@@ -601,7 +605,8 @@ describe('Slack native surfaces', () => {
             active: () => true,
             mask: (text) => text,
             notice: async () => {},
-            debug: () => {}
+            debug: () => {},
+            info: () => {}
           }
         )
       ).toBeUndefined()
