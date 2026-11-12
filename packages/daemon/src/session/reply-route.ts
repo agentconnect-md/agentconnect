@@ -2,6 +2,7 @@ import { isCodeHostProvider } from '@agentconnect.md/protocol'
 import type { SessionRecord } from '../store/local-store.js'
 import type { CodeHostReplyTarget } from '../codehost/reply-target.js'
 import { wakeThreadFields, type NormalizedMessage } from '../messages/normalized.js'
+import { isCoordinatorCoordinate } from './append-coordinate.js'
 
 export interface SessionReplyRoute {
   integrationId?: string
@@ -37,13 +38,15 @@ export function sessionWakeFields(
   session: SessionRecord,
   target?: { replyChannel?: string | null; replyThread?: string | null }
 ): Pick<NormalizedMessage, 'channel' | 'thread' | 'sessionChannel' | 'sessionThread' | 'isDm' | 'isGroupDm'> {
-  const channel = target?.replyChannel ?? session.replyChannel ?? session.channel
-  const thread = target?.replyChannel != null ? target.replyThread : session.replyThread
+  // A coordinator's turns answer many threads, so its latest one says nothing about a wake with no target: that lands at the root.
+  const latest = isCoordinatorCoordinate(session.thread) ? undefined : session
+  const channel = target?.replyChannel ?? latest?.replyChannel ?? session.channel
+  const thread = target?.replyChannel != null ? target.replyThread : latest?.replyThread
   const sameChannel = channel === session.channel
   return {
     channel,
     ...wakeThreadFields(session.thread, thread ?? undefined),
-    ...(thread === null && (target?.replyChannel != null || session.replyChannel != null)
+    ...(thread === null && (target?.replyChannel != null || latest?.replyChannel != null)
       ? { thread: undefined, sessionThread: session.thread }
       : {}),
     ...(!sameChannel ? { sessionChannel: session.channel, sessionThread: session.thread } : {}),

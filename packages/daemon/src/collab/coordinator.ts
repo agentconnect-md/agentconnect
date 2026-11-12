@@ -1,5 +1,5 @@
 // Agent-to-agent collaboration (A2A wake/reply/status): every delivery is DIRECT, never a visible post, and its CAS and admission orderings are load-bearing.
-import { isAppendCoordinate } from '../session/append-coordinate.js'
+import { isAppendCoordinate, isCoordinatorCoordinate } from '../session/append-coordinate.js'
 import { deriveTitle } from '../session/derive-title.js'
 import { readCheckedTask } from '../assistant/checked-tasks.js'
 import { wholeRoomThread } from '../auto-session/coordinator-turns.js'
@@ -1116,9 +1116,11 @@ export class CollabCoordinator {
       ? this.host.botUserIds()[route.integrationId]
       : this.host.resolveCpAgent(agentId, parent.platform)?.botUserId
     const elsewhere = report.ownerSessionKey !== undefined && parent.key !== report.ownerSessionKey
+    // A report with no thread of its own follows a single session's latest turn; a coordinator's turns answer many threads, so there it lands at the root.
+    const latestThread = isCoordinatorCoordinate(parent.thread) ? undefined : (parent.replyThread ?? undefined)
     const replyThread =
       report.replyThread !== undefined && isAppendCoordinate(parent.thread)
-        ? (report.replyThread ?? parent.replyThread ?? undefined)
+        ? (report.replyThread ?? latestThread)
         : undefined
     // §9.3: a task's report into its owner is a session message; a later session of the place cannot answer the task.
     const messageId = !elsewhere && replierSessionId !== undefined ? report.messageId : undefined

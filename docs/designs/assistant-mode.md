@@ -1420,8 +1420,10 @@ else, and nobody but its own conversation is told of it.
   place does not.
 - **Reports.** A follow-up keeps the platform thread of the turn that took it (store version 54),
   and its reports reply there, else where its place's latest turn replied (`replyThread`), as a
-  background task's wake does. `listTasks` says a follow-up handed back a result only when its
-  latest check's report got through.
+  background task's wake does. Under a coordinator that fallback is the conversation's root: a
+  coordinator's turns answer many threads, so its latest one names no place for the report
+  ([auto-session-mode.md](auto-session-mode.md) §3.4). `listTasks` says a follow-up handed back a
+  result only when its latest check's report got through.
 - **Messages.** `messageTask` starts a check at once, outside the one-scheduled-check slot. While a
   check of that follow-up runs, the message waits (at most 10), with the people behind it, and
   the next check, which starts as soon as the running one ends, takes every waiting message; a check
@@ -5328,3 +5330,9 @@ hover, so one whose first check has not run, which has no page, can still be rea
 proposing session and the quoted work it fell back to, and shows only its sentence and reason
 (§5.10's card). The link led into a transcript an approver had no reason to read, and the exact
 work stays in the console's request row.
+
+**Hundred-and-fourth revision (2026-11-12)**: under a coordinator, a report or reply that names no
+thread of its own lands at the conversation's root (§5.12). It used to follow the thread of the
+coordinator's latest turn, which belongs to whatever message that turn happened to answer, so an
+approved proposal's result or a follow-up taken at the top level could surface in an unrelated
+task's thread, where a person's reply reached that task and not the coordinator.

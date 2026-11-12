@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest'
-import { sessionReplyRoute } from '../src/session/reply-route.js'
+import { sessionReplyRoute, sessionWakeFields } from '../src/session/reply-route.js'
 import type { SessionRecord } from '../src/store/local-store.js'
 
 const session = (platform: string, transportScope?: string): SessionRecord => ({
@@ -33,4 +33,21 @@ it('keeps the scoped chat integration and accepts an unscoped webhook', () => {
     integrationId: 'integration-1'
   })
   expect(sessionReplyRoute(session('hook'), () => undefined)).toEqual({})
+})
+
+it('wakes a single session where its latest turn replied, and a coordinator at the root', () => {
+  const latest = { replyChannel: 'channel', replyThread: '300.1' }
+  expect(sessionWakeFields({ ...session('slack'), thread: 'append:1000', ...latest })).toMatchObject({
+    thread: '300.1',
+    sessionThread: 'append:1000'
+  })
+  const coordinator = { ...session('slack'), thread: 'append:coordinator-1000', ...latest }
+  const woken = sessionWakeFields(coordinator)
+  expect(woken.thread).toBeUndefined()
+  expect(woken).toMatchObject({ channel: 'channel', sessionThread: 'append:coordinator-1000' })
+  // A wake that names its own target still lands there.
+  expect(sessionWakeFields(coordinator, { replyChannel: 'channel', replyThread: '200.1' })).toMatchObject({
+    thread: '200.1',
+    sessionThread: 'append:coordinator-1000'
+  })
 })
