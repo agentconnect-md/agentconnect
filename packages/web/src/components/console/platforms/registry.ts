@@ -5,6 +5,7 @@ import type { ComponentType } from 'react'
 import type { BotDto, SessionMessageDto } from '@/lib/api'
 import type {
   WebAgentIntegrationCardFacet,
+  WebAgentPendingFacet,
   WebBotCardCopy,
   WebChannelListSemantics,
   WebPlatformModule,
@@ -89,14 +90,11 @@ export function platformAgentCard(platformId?: string): WebAgentIntegrationCardF
   return platformId ? platformRegistry.get(platformId)?.agentCard : undefined
 }
 
-/** Each module's entry for a connect still waiting, in registry order. */
-export function platformAgentPending(): {
-  platformId: string
-  Entry: NonNullable<WebPlatformModule['agentPending']>
-}[] {
+/** Each module's waiting-connect facet, in registry order. */
+export function platformAgentPending(): ({ platformId: string } & WebAgentPendingFacet)[] {
   return platformRegistry
     .all()
-    .flatMap((m) => (m.agentPending ? [{ platformId: m.platformId, Entry: m.agentPending }] : []))
+    .flatMap((m) => (m.agentPending ? [{ platformId: m.platformId, ...m.agentPending }] : []))
 }
 
 /**

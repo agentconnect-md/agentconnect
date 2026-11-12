@@ -6954,6 +6954,7 @@
     "msteams": {
       "pending": {
         "badge": "待发布",
+        "check": "再查一次",
         "pending": "正在等 Teams 管理员发布这个 agent 的应用",
         "needs_sign_in": "你的 Microsoft 登录已失效，打开后重新连接即可。",
         "rejected": "这个 agent 的应用被拒绝或已被移除，打开后可取消申请。"

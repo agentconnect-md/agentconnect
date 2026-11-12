@@ -5,7 +5,7 @@ import { identityCards, inviteBotHint } from '../wizard-chrome'
 import { msTeamsApi, type MsTeamsApi } from './api'
 import { MsTeamsWizardBody } from './Body'
 import { MsTeamsMark } from './mark'
-import { MsTeamsPendingEntry } from './pending'
+import { msTeamsAgentPending } from './pending'
 import { msTeamsSettingsFragments } from './settings'
 
 const DEEP_LINK = 'https://teams.microsoft.com/l'
@@ -39,7 +39,7 @@ export const MSTEAMS_CHANNEL_LIST: WebChannelListSemantics = {
 }
 
 export const msTeamsModule: WebPlatformModule<MsTeamsApi> = {
-  agentPending: MsTeamsPendingEntry,
+  agentPending: msTeamsAgentPending,
   platformId: 'msteams',
   docsPath: 'connect-automate/chat-platforms/msteams',
   Mark: MsTeamsMark,

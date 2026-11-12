@@ -33,6 +33,8 @@ interface IntegrationMarkSource {
   platform: string
   revoked: boolean
   rejected?: boolean
+  /** A connect still waiting: its mark is drawn faded. */
+  pending?: boolean
 }
 
 /** The corner dot on a revoked or rejected integration's mark — one shape for every platform and surface. */
@@ -71,7 +73,7 @@ export function IntegrationMarks({
         {visibleIntegrations.map((integration, index) => (
           <span
             key={integration.id ?? `${integration.platform}:${index}`}
-            className={`imark relative h-[21px] w-[21px] ${index === 0 ? '' : 'imark-overlap -ml-[7px]'}`}
+            className={`imark relative h-[21px] w-[21px] ${index === 0 ? '' : 'imark-overlap -ml-[7px]'} ${integration.pending ? 'opacity-40' : ''}`}
           >
             <PlatformMark platform={integration.platform} />
             {credentialAttention(integration) && <RevokedMarkDot />}

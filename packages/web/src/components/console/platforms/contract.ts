@@ -663,6 +663,24 @@ export interface WebChannelListMessage {
 }
 
 /** A module's additions to one integration card on the agent page; the host keeps the chrome (mark, name, state pill, unlink). */
+/** A platform's connect still waiting: the host reads it once per agent for its header marks and its Integrations card. */
+export interface WebAgentPendingFacet {
+  /** The agent's waiting connect, or `null` when there is none. */
+  read(orgId: string, agentId: string): Promise<unknown>
+  /** Draws what `read` answered, as the integration it becomes. */
+  Entry: ComponentType<WebAgentPendingEntryProps>
+}
+
+export interface WebAgentPendingEntryProps {
+  orgId: string
+  /** What the facet's `read` answered. */
+  pending: unknown
+  /** Opens this platform's pane. */
+  open(): void
+  /** Reads the agent's waiting connects again, after the entry acted on its own. */
+  refresh(): void
+}
+
 export interface WebAgentIntegrationCardFacet {
   /** Card-scope state around the header actions, the notice and the body — a state carrier, not chrome. */
   CardProvider?: ComponentType<{ integration: IntegrationRow; children: ReactNode }>
@@ -771,8 +789,8 @@ export interface WebPlatformModule<TApi = unknown> {
   channelList?: WebChannelListSemantics
   /** A module's additions to its integration cards on the agent page. Absent ⇒ the host's card alone. */
   agentCard?: WebAgentIntegrationCardFacet
-  /** A connect still waiting on someone outside the console, listed with the agent's integrations; renders nothing when there is none. `open` opens this platform's pane. */
-  agentPending?: ComponentType<{ agent: Agent; mockMode: boolean; open(): void }>
+  /** A connect still waiting on someone outside the console, shown with the agent's integrations. */
+  agentPending?: WebAgentPendingFacet
   /** Its thread shape, which draws a coordinator's page as roots with their threads; absent ⇒ the flat transcript. */
   threadShape?: WebThreadShape
   /** This platform's transcript renderer, resolved per row by `MessageText`; absent ⇒ the core default. A component so the host's memo holds; load a parser lazily (Google Chat). */
