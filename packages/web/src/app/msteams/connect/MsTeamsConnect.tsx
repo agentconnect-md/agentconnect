@@ -23,7 +23,7 @@ import {
 import { getUser, isAuthConfigured, login } from '@/lib/auth'
 import { writeFlowState } from '@/lib/flow-state'
 
-type Phase = 'loading' | 'failed' | 'teams' | 'installing' | 'requested' | 'done'
+type Phase = 'loading' | 'failed' | 'creating' | 'teams' | 'installing' | 'requested' | 'done'
 
 /** The organization a signed state names; the Control Plane re-checks the signature, this only routes the request. */
 export function msTeamsConnectOrgId(state: string | null): string | null {
@@ -73,8 +73,8 @@ export default function MsTeamsConnect() {
   const [result, setResult] = useState<MsTeamsConnectResultDto | null>(null)
   const [chosen, setChosen] = useState<Set<string>>(new Set())
   const [agentHref, setAgentHref] = useState('/')
-  // A further agent's own bot is created while the administrator picks teams (teams-integration.md §8.6.5).
-  const [creatingBot, setCreatingBot] = useState(false)
+  // A further agent's own bot has no team step: it joins a team when someone mentions it there (teams-integration.md §8.6.5).
+  const [ownBot, setOwnBot] = useState(false)
   // A member's request waits for a Teams administrator's approval (§8.6.6).
   const [request, setRequest] = useState<MsTeamsAgentBotRequestDto | null>(null)
   const [checking, setChecking] = useState(false)
@@ -146,35 +146,23 @@ export default function MsTeamsConnect() {
           setPhase('requested')
           return
         }
-        // An administrator's approval already installed into the teams the member chose.
-        if (connected.approved) {
-          setPhase('done')
+        if (connected.member) {
+          setOwnBot(true)
+          setPhase('teams')
+          return
+        }
+        // Making the bot takes up to a minute; the page waits for it and has nothing to choose.
+        if (connected.agentBot && connected.ticket) {
+          setOwnBot(true)
+          setPhase('creating')
+          setResult(await createMsTeamsAgentBot(org, connected.ticket))
+          if (!cancelled) setPhase('done')
           return
         }
         // An update preselects nothing: the teams that had the app already run the new package.
         const update = connected.teams.some((team) => team.app !== 'none')
         setChosen(new Set(update ? [] : connected.teams.slice(0, 1).map((team) => team.id)))
         setPhase('teams')
-        if (connected.agentBot && connected.ticket) {
-          setCreatingBot(true)
-          // The step answers the integration, each team's app, and the ticket the install step takes.
-          void createMsTeamsAgentBot(org, connected.ticket)
-            .then((made) => {
-              if (cancelled) return
-              setResult(made)
-              // A team that already had the bot is updated and no longer a choice.
-              setChosen(
-                (current) =>
-                  new Set(
-                    made.teams.filter((team) => team.app === 'none' && current.has(team.id)).map((team) => team.id)
-                  )
-              )
-              setCreatingBot(false)
-            })
-            .catch((e: unknown) => {
-              if (!cancelled) fail(e)
-            })
-        }
       } catch (e) {
         if (cancelled) return
         // The sign-in skipped the consent page, but this tenant has not recorded it: start again through it.
@@ -214,13 +202,13 @@ export default function MsTeamsConnect() {
   }
 
   async function install() {
-    if (!result?.ticket || creatingBot) return
+    if (!result?.ticket) return
     if (!result.member && chosen.size === 0) return
     setPhase('installing')
     setError(null)
     try {
       if (result.member) {
-        setRequest(await requestMsTeamsAgentBot(orgId, result.ticket, [...chosen]))
+        setRequest(await requestMsTeamsAgentBot(orgId, result.ticket))
         setPhase('requested')
         return
       }
@@ -295,7 +283,7 @@ export default function MsTeamsConnect() {
             <div>
               <h1 className="text-[18px] font-semibold leading-normal text-(--text-primary)">{t('doneTitle')}</h1>
               <p className="mt-2 text-[13px] leading-[1.55] text-(--text-secondary)">
-                {t(result?.store ? 'storeDoneBody' : 'doneBody')}
+                {t(result?.store ? 'storeDoneBody' : ownBot ? 'agentBotDoneBody' : 'doneBody')}
               </p>
             </div>
             <a href={agentHref} className="dsbtn dsbtn-primary">
@@ -331,27 +319,34 @@ export default function MsTeamsConnect() {
               </Button>
             </div>
           </div>
+        ) : phase === 'creating' ? (
+          <div className="flex flex-col items-center gap-4 py-6 text-center text-[14px] text-(--text-secondary)">
+            <Spinner size={40} />
+            <p role="status">{t('creatingBot')}</p>
+            <p className="text-[13px] leading-[1.55]">{t('agentBotDescription')}</p>
+          </div>
         ) : phase === 'loading' || !result ? (
           <div className="flex flex-col items-center gap-4 py-6 text-[14px] text-(--text-secondary)">
             <Spinner size={40} />
             {t('connecting')}
           </div>
+        ) : result.member ? (
+          <>
+            <div>
+              <h1 className="text-[18px] font-semibold leading-normal text-(--text-primary)">{t('request.heading')}</h1>
+              <p className="mt-2 text-[13px] leading-[1.55] text-(--text-secondary)">{t('request.description')}</p>
+            </div>
+            <div className="flex gap-[10px]">
+              <Button onClick={() => void install()} disabled={phase === 'installing'}>
+                {t(phase === 'installing' ? 'request.submitting' : 'request.submit')}
+              </Button>
+            </div>
+          </>
         ) : (
           <>
             <div>
               <h1 className="text-[18px] font-semibold leading-normal text-(--text-primary)">{t('title')}</h1>
-              <p className="mt-2 text-[13px] leading-[1.55] text-(--text-secondary)">
-                {t(result.member ? 'request.description' : creatingBot ? 'agentBotDescription' : 'description')}
-              </p>
-              {creatingBot && (
-                <p
-                  role="status"
-                  className="mt-2 flex items-center gap-2 text-[13px] leading-[1.55] text-(--text-secondary)"
-                >
-                  <Spinner size={16} />
-                  {t('creatingBot')}
-                </p>
-              )}
+              <p className="mt-2 text-[13px] leading-[1.55] text-(--text-secondary)">{t('description')}</p>
               {updatedCount > 0 && (
                 <p role="status" className="mt-2 text-[13px] leading-[1.55] text-(--text-secondary)">
                   {t('updated', { count: updatedCount })}
@@ -388,27 +383,16 @@ export default function MsTeamsConnect() {
             ) : (
               <p className="text-[13px] leading-[1.55] text-(--text-secondary)">{t('noTeams')}</p>
             )}
-            {!result.member && <p className="text-[12px] leading-[1.5] text-(--text-tertiary)">{t('personal')}</p>}
+            <p className="text-[12px] leading-[1.5] text-(--text-tertiary)">{t('personal')}</p>
             <div className="flex gap-[10px]">
-              {result.member ? (
-                <Button onClick={() => void install()} disabled={phase === 'installing'}>
-                  {t(phase === 'installing' ? 'request.submitting' : 'request.submit')}
-                </Button>
-              ) : updatedCount + failedCount > 0 && chosen.size === 0 ? (
+              {updatedCount + failedCount > 0 && chosen.size === 0 ? (
                 <Button onClick={() => setPhase('done')}>{t('finish')}</Button>
               ) : (
                 <>
-                  <Button
-                    onClick={() => void install()}
-                    disabled={phase === 'installing' || creatingBot || chosen.size === 0}
-                  >
+                  <Button onClick={() => void install()} disabled={phase === 'installing' || chosen.size === 0}>
                     {phase === 'installing' ? t('installing') : t('install')}
                   </Button>
-                  <Button
-                    variant="ghost"
-                    onClick={() => setPhase('done')}
-                    disabled={phase === 'installing' || creatingBot}
-                  >
+                  <Button variant="ghost" onClick={() => setPhase('done')} disabled={phase === 'installing'}>
                     {t('skip')}
                   </Button>
                 </>
