@@ -393,7 +393,9 @@ describe('messageAgent: same-daemon delivery', () => {
       callMeta: {
         callFrom: 'bot-a',
         originSessionId: 'sid-parent-1',
-        originCoords: { platform: 'slack', channel: 'C1', thread: '100.1' }
+        originCoords: { platform: 'slack', channel: 'C1', thread: '100.1' },
+        // Observed on the platform where it landed, so its thread binds that conversation (session-visibility.md §4.2).
+        platformOrigin: true
       }
     })
     await daemon.stop()
@@ -1156,7 +1158,8 @@ describe('messageAgent: what a woken child inherits on this daemon', () => {
     await daemon.stop()
   })
 
-  it('never marks a messageAgent child platformOrigin, whichever form woke it', async () => {
+  // session-visibility.md §4.2: only a self-post channel root binds where it landed; every other child inherits.
+  it('marks only a channel-root self wake’s child platformOrigin', async () => {
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon, calls, call } = await bootWithDispatchSpy(root)
     await seedCallerSession(daemon)
@@ -1166,8 +1169,8 @@ describe('messageAgent: what a woken child inherits on this daemon', () => {
       baseReq({ toAgentId: 'bot-a', thread: '300.3', transcriptTs: '300.3', agentCallDeliveryId: 'paired-self-1' })
     )
     expect(calls.map((c) => c.agentId)).toEqual(['bot-b', 'bot-b', 'bot-a'])
+    expect(calls.map((c) => c.callMeta.platformOrigin)).toEqual([undefined, undefined, true])
     for (const { callMeta } of calls) {
-      expect(callMeta).not.toHaveProperty('platformOrigin')
       expect(callMeta).toMatchObject({
         callFrom: 'bot-a',
         originSessionId: 'sid-parent-1',
