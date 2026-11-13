@@ -81,6 +81,12 @@ const PRIVATE = AgentSkillEntry.parse({
   skills: ['gamma'],
   private: true
 })
+/** The pod's route to the credential proxy a private plan entry's Git presents the skill placeholder through. */
+const PROXY = {
+  url: 'http://codehost:token@127.0.0.1:4100',
+  trustBundle: '/run/codehost/trust.pem',
+  placeholder: 'acph1_e30.sig'
+}
 
 // Bare origins for both repositories, plus the managed and Dream directories the daemon uploads.
 async function world() {
@@ -269,7 +275,7 @@ interface Run {
   reported?: Array<Array<{ name: string; code: string }>>
   /** Fails the daemon acquisition of a Source by name. */
   failAcquire?: (entry: AgentSkillEntry) => Error | undefined
-  /** The bound image takes GitLab plan entries (`skills-git-gitlab`). */
+  /** The bound image takes proxied plan entries (`skills-git-gitlab`); a pod's default. */
   gitlabPlans?: boolean
 }
 
@@ -308,12 +314,7 @@ async function run(w: World, box: Sandbox, mode: 'daemon' | 'pod', options: Run 
       ? {
           inPod: {
             resolve: async (entry) => resolve(entry),
-            servesAgentTunnel: true,
-            windowAdmits: () => true,
-            openWindow: (repos) => ({
-              capability: `window-${repos.join('-')}`.replace(/[^A-Za-z0-9_-]/g, '_'),
-              close() {}
-            }),
+            skillProxy: async () => PROXY,
             ...options.inPod
           }
         }
@@ -329,7 +330,7 @@ async function run(w: World, box: Sandbox, mode: 'daemon' | 'pod', options: Run 
       authority: AUTHORITY,
       skillsAgentId: 'codex',
       shimGeneration: 1,
-      client: box.client(mode === 'pod', options.gitlabPlans),
+      client: box.client(mode === 'pod', options.gitlabPlans ?? true),
       isLaunchCurrent: () => true
     }
   })
@@ -433,30 +434,23 @@ describe('sandbox skill reconcile: daemon path and in-pod path parity (source-ca
 })
 
 describe('sandbox skill reconcile: routing', () => {
-  it('opens one pod window over exactly the planned private repositories and closes it', async () => {
+  it('plans a private GitHub Source in-pod through the proxy route, never a window', async () => {
     await withWorld(async (w) => {
       const pod = await sandbox(w, 'pod')
-      const opened: string[][] = []
-      let closed = 0
-      await run(w, pod, 'pod', {
-        inPod: {
-          openWindow: (repos) => {
-            opened.push(repos)
-            return { capability: 'w'.repeat(43), close: () => (closed += 1) }
-          }
-        }
-      })
-      expect(opened).toEqual([['acme/private']])
-      expect(closed).toBe(1)
+      await run(w, pod, 'pod')
       const reconcile = pod.requests.find((r) => r.op === 'reconcile')!
-      expect(reconcile.credentialWindow).toEqual({ capability: 'w'.repeat(43) })
+      expect(reconcile.credentialProxy).toEqual(PROXY)
+      expect(reconcile.credentialWindow).toBeUndefined()
+      expect(pod.gitPlans()[0]).toEqual([
+        expect.not.objectContaining({ credentialHost: expect.anything() }),
+        expect.objectContaining({ credentialHost: 'https://github.com' })
+      ])
     })
   }, 120_000)
 
   it('reads a credential without the legacy flag as private, and acquires a Source on another host on the daemon', async () => {
     await withWorld(async (w) => {
       const pod = await sandbox(w, 'pod')
-      const opened: string[][] = []
       const logs: string[] = []
       const acquired: string[] = []
       const { private: _legacy, ...credentialOnly } = PRIVATE
@@ -464,15 +458,8 @@ describe('sandbox skill reconcile: routing', () => {
       await run(w, pod, 'pod', {
         logs,
         acquired,
-        skills: [PUBLIC, { ...credentialOnly, credential: { provider: 'github' } }, elsewhere],
-        inPod: {
-          openWindow: (repos) => {
-            opened.push(repos)
-            return { capability: 'w'.repeat(43), close() {} }
-          }
-        }
+        skills: [PUBLIC, { ...credentialOnly, credential: { provider: 'github' } }, elsewhere]
       })
-      expect(opened).toEqual([['acme/private']])
       // Off GitHub the daemon acquires (this fixture has no such origin, so it is logged unavailable); the pod plans only GitHub.
       expect(acquired).toEqual(['elsewhere'])
       expect(logs).toContainEqual(expect.stringContaining('Git source elsewhere unavailable'))
@@ -547,19 +534,7 @@ describe('sandbox skill reconcile: routing', () => {
         placeholder: 'acph1_e30.sig'
       }
       const pod = await sandbox(w, 'pod')
-      const opened: string[][] = []
-      await run(w, pod, 'pod', {
-        gitlabPlans: true,
-        skills: [gitlab],
-        inPod: {
-          skillProxy: async () => proxy,
-          openWindow: (repos) => {
-            opened.push(repos)
-            return { capability: 'w'.repeat(43), close() {} }
-          }
-        }
-      })
-      expect(opened).toEqual([])
+      await run(w, pod, 'pod', { skills: [gitlab], inPod: { skillProxy: async () => proxy } })
       expect(pod.gitPlans()[0]).toEqual([
         expect.objectContaining({
           url: 'https://gitlab.example.test/acme/private',
@@ -574,7 +549,12 @@ describe('sandbox skill reconcile: routing', () => {
       // An older image, or a pod with no route to the proxy, leaves it to the daemon.
       const older = await sandbox(w, 'older')
       const acquired: string[] = []
-      await run(w, older, 'pod', { skills: [gitlab], acquired, inPod: { skillProxy: async () => proxy } })
+      await run(w, older, 'pod', {
+        gitlabPlans: false,
+        skills: [gitlab],
+        acquired,
+        inPod: { skillProxy: async () => proxy }
+      })
       expect(acquired).toEqual(['gitlab'])
       const unrouted = await sandbox(w, 'unrouted')
       const daemonAcquired: string[] = []
@@ -589,47 +569,15 @@ describe('sandbox skill reconcile: routing', () => {
     })
   }, 240_000)
 
-  it('routes private Sources through the daemon for a pod bound without the agent tunnel', async () => {
+  it('routes private Sources through the daemon for a pod with no route to the proxy', async () => {
     await withWorld(async (w) => {
       const pod = await sandbox(w, 'pod')
       const acquired: string[] = []
-      let opened = 0
-      await run(w, pod, 'pod', {
-        acquired,
-        inPod: {
-          servesAgentTunnel: false,
-          openWindow: () => {
-            opened += 1
-            return undefined
-          }
-        }
-      })
+      await run(w, pod, 'pod', { acquired, inPod: { skillProxy: async () => undefined } })
       expect(acquired).toEqual(['private'])
-      expect(opened).toBe(0)
+      expect(pod.requests.find((r) => r.op === 'reconcile')?.credentialProxy).toBeUndefined()
       expect(pod.gitPlans()[0]!.map((plan) => plan.sourceId.split(':')[1])).toEqual(['0'])
       expect(pod.uploads().sources.filter((id) => id.startsWith('agent:1:'))).toHaveLength(1)
-      expect(Object.keys(await installed(pod.workspace))).toContain('.agents/skills/gamma/SKILL.md')
-    })
-  }, 120_000)
-
-  it('routes a private Source no pod window would admit through the daemon', async () => {
-    await withWorld(async (w) => {
-      const pod = await sandbox(w, 'pod')
-      const acquired: string[] = []
-      let opened = 0
-      await run(w, pod, 'pod', {
-        acquired,
-        inPod: {
-          windowAdmits: (repo) => repo !== 'acme/private',
-          openWindow: () => {
-            opened += 1
-            return undefined
-          }
-        }
-      })
-      expect(acquired).toEqual(['private'])
-      expect(opened).toBe(0)
-      expect(pod.gitPlans()[0]!.map((plan) => plan.sourceId.split(':')[1])).toEqual(['0'])
       expect(Object.keys(await installed(pod.workspace))).toContain('.agents/skills/gamma/SKILL.md')
     })
   }, 120_000)
@@ -656,10 +604,8 @@ describe('sandbox skill reconcile: routing', () => {
             resolve: async () => {
               throw new Error('never asked')
             },
-            servesAgentTunnel: true,
-            windowAdmits: () => true,
-            openWindow: () => {
-              throw new Error('never opened')
+            skillProxy: async () => {
+              throw new Error('never asked')
             }
           }
         },
@@ -814,9 +760,6 @@ describe('sandbox skill reconcile: plan frame bound', () => {
         },
         inPod: {
           resolve: async () => ({ ok: true, commit, ref: 'refs/heads/main', pinned: false, credentialed: false }),
-          servesAgentTunnel: true,
-          windowAdmits: () => true,
-          openWindow: () => undefined,
           cachePlan: async () => ({ getUrl: `https://cache.example/${'q'.repeat(2000)}` })
         }
       },
@@ -942,9 +885,6 @@ describe('sandbox skill reconcile: cross-agent isolation', () => {
               resolvedB.push(entry)
               return { ok: false }
             },
-            servesAgentTunnel: true,
-            windowAdmits: () => true,
-            openWindow: () => undefined,
             cachePlan: async (entry, resolution) => reader.plan({ agentId: 'b', entry, resolution })
           }
         },
@@ -1158,28 +1098,6 @@ describe('sandbox skill reconcile: in-pod write-back (source-cache.md §9)', () 
         expect(b.outcomes).toHaveLength(2)
         expect(await readdir(pod.bundleStaging)).toEqual([])
         expect(await readdir(pod.staging)).toEqual([])
-      } finally {
-        pod.stop()
-        await b.close()
-      }
-    })
-  }, 180_000)
-
-  it('never writes a private Source back when no window credentialed its clone, nor asks its pod to bundle it', async () => {
-    await withWorld(async (w) => {
-      const pod = await sandbox(w, 'pod', undefined, 'a', { writeBack: true })
-      const b = await bucket()
-      try {
-        await run(w, pod, 'pod', { inPod: { cachePlan: b.cachePlan, openWindow: () => undefined } })
-        await vi.waitFor(async () => expect(await readdir(pod.bundleStaging)).toEqual([]), { timeout: 30_000 })
-        await vi.waitFor(() => expect(b.outcomes).toHaveLength(1), { timeout: 30_000 })
-        expect(b.reserved().map((key) => parseSourceCacheObjectKey(key)?.repoClass)).toEqual(['anon'])
-        const sent = pod.requests.find((request) => request.op === 'reconcile')!.sources as Array<{
-          sourceKind: string
-          writeBack?: unknown
-        }>
-        expect(sent.filter((source) => source.sourceKind === 'git')).toHaveLength(2)
-        expect(sent.filter((source) => source.writeBack)).toHaveLength(1)
       } finally {
         pod.stop()
         await b.close()

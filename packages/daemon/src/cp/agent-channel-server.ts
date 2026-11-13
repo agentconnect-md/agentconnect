@@ -236,19 +236,6 @@ export class AgentChannelServer {
     return this.skillWindows.open({ agentId, subject: DAEMON_SKILL_WINDOW_SUBJECT, repos: [repo] })
   }
 
-  /** A pod-subject window for one skill reconcile over the spec's private skill repositories in `repos`; usable only through that pod's tunnel. */
-  openPodSkillWindow(agentId: string, subject: string, repos: readonly string[]): SkillCredentialWindow | undefined {
-    if (subject === DAEMON_SKILL_WINDOW_SUBJECT) throw new Error('a pod skill window needs a pod subject')
-    // The pod's Git child holds only this capability, so the workspace repository is windowed too.
-    const admitted = repos.filter((repo) => this.admitsPodSkillRepo(agentId, repo))
-    return admitted.length > 0 ? this.skillWindows.open({ agentId, subject, repos: admitted }) : undefined
-  }
-
-  /** Whether a pod skill window for this agent would cover the private GitHub skill repository `repo`. */
-  admitsPodSkillRepo(agentId: string, repo: string): boolean {
-    return this.privateGithubSkillRepoOf?.(agentId, repo) === true
-  }
-
   /** The same predicate the workspace fold applies to an implicit-host ask. */
   private isGithubWorkspaceRepo(agentId: string, repo: string): boolean {
     if ((this.providerOf?.(agentId) ?? IMPLICIT_CREDENTIAL_PROVIDER) !== IMPLICIT_CREDENTIAL_PROVIDER) return false

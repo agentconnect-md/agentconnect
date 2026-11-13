@@ -96,7 +96,7 @@ export const ShimCapabilitySchema = z.enum([
   'skills-git',
   // A Git plan entry may ask the shim to bundle its clone for write-back, uploaded over `bundle` (source-cache.md §9, §13).
   'skills-git-writeback',
-  // A Git plan entry may name a GitLab instance its Git reaches through the pod's route to the credential proxy (source-cache.md §8, §11).
+  // A Git plan entry may name the host its Git reaches through the pod's route to the credential proxy (source-cache.md §8, §11).
   'skills-git-gitlab',
   // Create, upload and discard a shim-minted Source Cache bundle handle (source-cache.md §9, §13).
   'bundle',

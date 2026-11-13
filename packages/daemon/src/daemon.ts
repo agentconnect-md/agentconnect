@@ -71,6 +71,7 @@ import {
   MEMORY_ENTRIES_WRITE_V1_FEATURE,
   AgentActivate as AgentActivateSchema,
   AgentSkillEntry as AgentSkillEntrySchema,
+  skillSourceCredential,
   WEBCHAT_MULTI_AGENT_FEATURE,
   WEBCHAT_REMOTE_MCP_FEATURE,
   WEBCHAT_HOOK_CONTINUATION_FEATURE,
@@ -238,7 +239,7 @@ import { legacySandboxSkillLedger } from './skills/sandbox-skill-ledger.js'
 import { microsandboxSkillTarget } from './microsandbox/shim.js'
 import { MicrosandboxWorkspaceFs } from './microsandbox/workspace-fs.js'
 import { microsandboxSupportMounts } from './microsandbox/support.js'
-import { IMPLICIT_CREDENTIAL_PROVIDER } from './gitcred/managed-hosts.js'
+import { GITHUB_MANAGED_HOST, IMPLICIT_CREDENTIAL_PROVIDER } from './gitcred/managed-hosts.js'
 import {
   codeHostCredentialModules,
   codeHostCredentials,
@@ -7185,10 +7186,17 @@ export class Daemon {
     if (ask.provider === 'github') {
       const plane = ask.plane === 'git' ? 'git' : 'gh'
       const repo = ask.repo !== undefined ? { repo: ask.repo } : {}
+      // A private skill repository is the skill placeholder's alone, unless the agent is also granted it.
+      const skillRepo = ask.repo !== undefined && this.privateGithubSkillRepos(agentId).has(ask.repo.toLowerCase())
+      if (ask.skill && !skillRepo)
+        throw new Error(`${ask.repo ?? 'the workspace'} is not a private skill source of this agent`)
+      if (!ask.skill && skillRepo && !this.githubGranted(agentId, ask.repo!)) {
+        throw new Error(`${ask.repo} is a private skill source, read only by the skill reconcile`)
+      }
       const cred = await this.gitCreds.get(agentId, 'helper', {
         plane,
         ...repo,
-        ...(ask.readOnly ? { requestedAccess: 'read' as const } : {})
+        ...(ask.readOnly || ask.skill ? { requestedAccess: 'read' as const } : {})
       })
       return {
         username: cred.username,
@@ -7251,7 +7259,38 @@ export class Daemon {
   private skillProxyHosts(agentId: string): ManagedCredentialHost[] {
     const agent = this.agents.get(agentId)
     const bases = privateGitlabSkillRepositories(agent?.skills ?? [], agent?.gitlabHost).map((row) => row.baseUrl)
-    return [...new Set(bases)].map((baseUrl) => ({ provider: 'gitlab', baseUrl }))
+    return [
+      ...(this.privateGithubSkillRepos(agentId).size > 0 ? [GITHUB_MANAGED_HOST] : []),
+      ...[...new Set(bases)].map((baseUrl) => ({ provider: 'gitlab' as const, baseUrl }))
+    ]
+  }
+
+  /** Whether the agent is granted a GitHub repository outside its skills: its GitHub workspace, or an additional repository. */
+  private githubGranted(agentId: string, repoFullName: string): boolean {
+    const workspace = this.agents.get(agentId)?.workspace
+    if (!workspace) return false
+    const wanted = repoFullName.toLowerCase()
+    const own =
+      credentialProviderOf(workspace.gitCredential) === 'github' && workspace.gitRepo
+        ? gitRepoLabel(workspace.gitRepo)?.toLowerCase()
+        : undefined
+    return (
+      own === wanted ||
+      (workspace.additionalRepos ?? []).some(
+        (row) => row.provider === IMPLICIT_CREDENTIAL_PROVIDER && row.repoFullName.toLowerCase() === wanted
+      )
+    )
+  }
+
+  /** The agent's private GitHub skill repositories, lower-cased `owner/repo`. */
+  private privateGithubSkillRepos(agentId: string): Set<string> {
+    const repos = new Set<string>()
+    for (const entry of this.agents.get(agentId)?.skills ?? []) {
+      if (!isCredentialedSkillSource(entry) || skillSourceCredential(entry)?.provider === 'gitlab') continue
+      const repo = gitSkillRepositoryPath(entry)?.toLowerCase()
+      if (repo) repos.add(repo)
+    }
+    return repos
   }
 
   /** The agent's authorized repositories on one provider from its spec, the workspace's first, as the proxy's routes resolve requests among them. */
@@ -8711,7 +8750,7 @@ export class Daemon {
       shimGeneration,
       isLaunchCurrent,
       // Only the pool's plane serves tunnels per pod; an executor's client is never granted `skills-git`.
-      ...(plane?.servesTunnel ? { pod: { subject: pod, servesAgentTunnel: plane.servesTunnel(pod, 'agent') } } : {})
+      ...(plane?.servesTunnel ? { pod: { subject: pod } } : {})
     })
     if (cwd !== undefined && reported && shimGeneration !== undefined) {
       await this.retireShimRootSkills(agent, plane?.skillClientFor?.(pod), reported, shimGeneration, isLaunchCurrent)
@@ -8811,7 +8850,7 @@ export class Daemon {
       localAuthority?: { groupId: string; term: string; daemonId: string }
       initialLedger?: ClusterSkillLedger
       /** A Kubernetes runtime pod: a client granted `skills-git` there installs Git skills in the pod. */
-      pod?: { subject: string; servesAgentTunnel: boolean }
+      pod?: { subject: string }
     }
   ): Promise<ClusterSkillLedger | undefined> {
     const { client, workspaceIncarnation, shimGeneration } = peer
@@ -8947,8 +8986,8 @@ export class Daemon {
     )
   }
 
-  /** The in-pod Git skill path's daemon half (source-cache.md §8): trusted resolution, the pod's window, its GET URLs. */
-  private inPodSkillDeps(agent: Agent, pod: { subject: string; servesAgentTunnel: boolean }): InPodSkillDeps {
+  /** The in-pod Git skill path's daemon half (source-cache.md §8): trusted resolution, the pod's proxy route, its GET URLs. */
+  private inPodSkillDeps(agent: Agent, pod: { subject: string }): InPodSkillDeps {
     const workspaceRepo =
       agent.workspace.mode === 'git-repo' &&
       agent.workspace.gitRepo &&
@@ -8962,7 +9001,6 @@ export class Daemon {
     )
     return {
       resolve: (entry) => this.gitSkillRefPlans?.(entry, agent.id) ?? Promise.resolve({ ok: false }),
-      servesAgentTunnel: pod.servesAgentTunnel,
       skillProxy: async () => {
         const proxy = this.credentialProxy?.proxy
         const placeholder = proxy?.skillPlaceholderFor(agent.id)
@@ -8972,8 +9010,6 @@ export class Daemon {
           ? { url: codehostProxyUrl(listener), trustBundle: listener.trustBundle, placeholder }
           : undefined
       },
-      openWindow: (repos) => this.agentChannelServer?.openPodSkillWindow(agent.id, pod.subject, repos),
-      windowAdmits: (repo) => this.agentChannelServer?.admitsPodSkillRepo(agent.id, repo) ?? false,
       ...(this.skillCachePlan
         ? {
             cachePlan: (entry, resolution, options) =>

@@ -563,7 +563,8 @@ describe('cluster skill coordinator', () => {
           discard: async (handle) => {
             discarded.push(handle)
           }
-        }
+        },
+        true
       )
       const reconcile = (extra: Record<string, unknown> = {}) =>
         new ClusterSkillCoordinator(store).reconcile({
@@ -578,16 +579,23 @@ describe('cluster skill coordinator', () => {
       return { hashes, commits, requests, reconcile, discarded }
     }
 
-    it('sends the plan and window, uploads nothing, and maps the reply kind `agent` onto the plan', async () => {
+    it('sends the plan and its proxy route, uploads nothing, and maps the reply kind `agent` onto the plan', async () => {
       const h = harness({
         roots: [receipt('.agents/skills/alpha')],
         conflicts: [],
         gitSources: [{ sourceId, resolvedCommit: COMMIT, leaves: ['alpha'] }]
       })
-      const ledger = await h.reconcile({ credentialWindow: { capability: 'w'.repeat(43) } })
+      const proxy = {
+        url: 'http://codehost:t@127.0.0.1:1',
+        trustBundle: '/run/trust.pem',
+        placeholder: 'acph1_e30.sig'
+      }
+      const proxied = { ...plan, credentialHost: 'https://github.com' }
+      const ledger = await h.reconcile({ sources: [proxied], credentialProxy: proxy })
       expect(h.requests.map((r) => r.op)).toEqual(['begin', 'reconcile'])
       expect(h.requests[0]!.files).toEqual([])
-      expect(h.requests[1]).toMatchObject({ sources: [plan], credentialWindow: { capability: 'w'.repeat(43) } })
+      expect(h.requests[1]).toMatchObject({ sources: [proxied], credentialProxy: proxy })
+      expect(h.requests[1]).not.toHaveProperty('credentialWindow')
       expect(ledger).toEqual({ roots: [receipt('.agents/skills/alpha')], gitResolutions: [resolution] })
     })
 

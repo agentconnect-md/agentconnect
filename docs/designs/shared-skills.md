@@ -244,8 +244,9 @@ admission; the daemon checks the same rules again at acquisition:
   repository, next to the workspace repository and explicit additional-repo
   rows, and mints a `contents:read` installation token scoped to that one
   repository. No grant row is stored, so unselecting or deleting the source
-  revokes it. The daemon's agent channel issues that token only inside a **skill
-  credential window** it opens itself ([source-cache.md](source-cache.md) §8):
+  revokes it. The daemon issues that token only inside a **skill credential
+  window** it opens for its own fill, or to a pod's skill Git presenting the
+  agent's skill placeholder through the credential proxy ([source-cache.md](source-cache.md) §8):
   the per-agent helper capability, which the agent's runtime also holds, is
   refused for a private skill repository and the refusal is audited, so the
   runtime (including one in a GitHub-App workspace pod) cannot clone an enabled
@@ -899,11 +900,11 @@ The implemented surface follows `McpServersCard`:
   credentialed source is the agent's read grant, and the Control Plane serves
   only a read token scoped to that one repository or project: `contents:read`
   for GitHub, and for GitLab a read token under a `read` clamp, its agent
-  account a Reporter member of the project. The agent channel issues a GitHub one only
-  inside a skill credential window the daemon opens for the pod or for its own fill
-  ([source-cache.md](source-cache.md) §8); a GitLab one reaches only the daemon and its
-  credential proxy, which a pod's skill Git reaches with a skill placeholder; the per-agent helper capability the
-  runtime holds is refused for a private skill repository, and the refusal is
+  account a Reporter member of the project. Either reaches only the daemon's own fill (a
+  GitHub one inside a skill credential window, [source-cache.md](source-cache.md) §8) and its
+  credential proxy, which a pod's skill Git reaches with a skill placeholder; the per-agent helper
+  capability and the ordinary placeholder the runtime holds are refused for a private skill
+  repository, and the refusal is
   audited. On the daemon path a GitHub acquisition starts anonymously and
   retries the numeric identity request through the URL-scoped helper when the
   source is private or the agent's workspace is a GitHub-App checkout. The CLI
