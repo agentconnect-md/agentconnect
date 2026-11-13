@@ -32032,7 +32032,9 @@ export class Daemon {
     }
     let postAttempted = false
     if (target?.channel) {
-      const conn = this.replyConnFor(agentId, target.integrationId)
+      // The send tool's gateway, so a platform that posts outside a turn but has no reply surface here (Google Chat) is anchored too.
+      const anchorIntegrationId = target.integrationId ?? this.agents.get(agentId)?.integrations[0]?.id
+      const conn = anchorIntegrationId === undefined ? undefined : this.gatewayForIntegration(anchorIntegrationId)
       if (!conn) {
         this.log.warn(`${label}: agent "${agentId}" has no live platform connection — running without output`)
       } else {
@@ -32100,13 +32102,21 @@ export class Daemon {
                 return { message: null, postAttempted }
               }
             } else {
-              thread = threadKeyForPost(msg.platform, target.channel, ts, isDmTarget)
+              thread = threadKeyForPost(
+                msg.platform,
+                target.channel,
+                (conn as Pick<MessageGateway, 'threadOfPost'>).threadOfPost?.(ts) ?? ts,
+                isDmTarget
+              )
             }
             // The posted anchor is both the thread root and the authoritative
             // transcript/read cursor. Keep the synthetic msgId as the durable turn id.
             // The session is created only after any required provider thread exists,
             // so every follow-up resolves to these exact coordinates.
-            const targetThreadUrl = sessionThreadUrlFor({ ...msg, channel: target.channel, thread }, conn)
+            const targetThreadUrl = sessionThreadUrlFor(
+              { ...msg, channel: target.channel, thread },
+              conn as { workspaceUrl?: string }
+            )
             msg = {
               ...msg,
               channel: target.channel,
