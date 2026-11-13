@@ -37,6 +37,15 @@ describe('no-response sentinel', () => {
     expect(isNoResponseBody('No. AC_NO_RESPONSE AC_NO_RESPONSE')).toBe(false)
   })
 
+  it('treats a sentinel cut off by an interrupted generation and then repeated as silent', () => {
+    expect(isNoResponseBody('AC_NO_RESAC_NO_RESPONSE')).toBe(true)
+    expect(isNoResponseBody('AC_NO_RES\nAC_NO_RESPONSE')).toBe(true)
+    expect(isNoResponsePrefix('AC_NO_RESAC_NO_RES')).toBe(true)
+    expect(isNoResponseBody('AC_NO_RESAC_NO_RES')).toBe(false)
+    expect(isNoResponseBody('AC_NO_RES. AC_NO_RESPONSE')).toBe(false)
+    expect(isNoResponsePrefix('AC_NO_RESX')).toBe(false)
+  })
+
   it('isNoResponsePrefix holds only genuine (case-sensitive) prefixes of the sentinel', () => {
     // empty + every proper prefix of the sentinel is held while it may still complete
     expect(isNoResponsePrefix('')).toBe(true)

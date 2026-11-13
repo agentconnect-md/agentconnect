@@ -88,13 +88,20 @@ export function absorbedOutsideScopeReminder(authors: readonly string[]): string
   )
 }
 
+// Sentinels and sentinel prefixes separated by optional whitespace: a steered turn can leave "AC_NO_RES" before the retry's sentinel.
+const SENTINEL_FRAGMENT = `(?:${[...NO_RESPONSE_SENTINEL]
+  .map((_, i) => NO_RESPONSE_SENTINEL.slice(0, i + 1))
+  .reverse()
+  .join('|')})`
+const SENTINEL_FRAGMENTS = new RegExp(`^(?:${SENTINEL_FRAGMENT}(?:\\s*${SENTINEL_FRAGMENT})*)?$`)
+
 /** True while `trimmedBody` could still become the bare sentinel as more chunks stream
  *  in — i.e. it is a prefix of (or exactly) the sentinel. Convergers use this to HOLD
  *  buffered body instead of posting it, so a streamed sentinel never leaks a partial
  *  post before the turn ends. Case-sensitive, so ordinary replies that merely start with
  *  "N"/"NO" are released the instant they diverge. */
 export function isNoResponsePrefix(trimmedBody: string): boolean {
-  return NO_RESPONSE_SENTINEL.startsWith(trimmedBody)
+  return SENTINEL_FRAGMENTS.test(trimmedBody)
 }
 
 /** True when the turn is the bare sentinel, or when a non-compliant model explains itself
@@ -105,6 +112,6 @@ export function isNoResponsePrefix(trimmedBody: string): boolean {
 export function isNoResponseBody(trimmedBody: string): boolean {
   const terminalLine = trimmedBody.split(/\r?\n/).at(-1)?.trim()
   if (terminalLine === NO_RESPONSE_SENTINEL) return true
-  // Only-sentinel bodies (repeated or whitespace-separated) are unambiguous.
-  return trimmedBody.length > 0 && trimmedBody.split(NO_RESPONSE_SENTINEL).every((part) => part.trim() === '')
+  // Only sentinels, or prefixes cut off by an interrupted generation, ending in a whole sentinel (#1920).
+  return SENTINEL_FRAGMENTS.test(trimmedBody) && trimmedBody.endsWith(NO_RESPONSE_SENTINEL)
 }
