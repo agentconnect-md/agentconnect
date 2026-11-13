@@ -17,6 +17,7 @@ import { splitFilesMarker, type MarkedFile } from '@/lib/webchat-file'
 import { namesThread, replyToMessageThread } from '@/components/console/coordinator-threads'
 import type { WebThreadShape } from '@/components/console/platforms/contract'
 import { platformSenderFallback } from '@/components/console/platforms/registry'
+import type { UnnamedLabeler } from '@/components/console/platforms/unnamed-label'
 import {
   appStepKey,
   capabilityCard,
@@ -138,6 +139,8 @@ export interface BuildTurnsInput {
   pictureOf: (identity: string) => string | undefined
   /** The platform name a person's turn is labelled with. */
   sourceLabel: string
+  /** The viewer's localized label for a person their platform never names; absent ⇒ the module's sender fallback alone. */
+  unnamedLabel?: UnnamedLabeler
 }
 
 /** Rows, steps and live steps into turns: consecutive work of one agent is one turn, each person's message its own. */
@@ -157,8 +160,13 @@ export function buildTurns(input: BuildTurnsInput): { turns: Turn[]; speakers: M
     ownsDecisionSeq,
     viewer,
     pictureOf,
-    sourceLabel
+    sourceLabel,
+    unnamedLabel
   } = input
+  // A sender with no name of their own: the platform's localized placeholder, else its plain fallback.
+  const senderFallback = (platform: string, sender?: string | null): string | undefined =>
+    (sender ? unnamedLabel?.(platform, { kind: 'person', id: sender }) : undefined) ??
+    platformSenderFallback(platform, sender)
   const turns: Turn[] = []
   // A row's immutable anchor (source session + `seq`): a turn's identity when no turn key groups it.
   const rowAnchor = (m: SessionMessageDto): string => `${source.session.get(m) ?? session.id}#${m.seq}`
@@ -385,7 +393,7 @@ export function buildTurns(input: BuildTurnsInput): { turns: Turn[]; speakers: M
               cron?.name ??
                 (cron
                   ? 'Schedule'
-                  : senderLabel(who, m.senderName ?? hookFallback ?? platformSenderFallback(rowPlatform, m.sender)))
+                  : senderLabel(who, m.senderName ?? hookFallback ?? senderFallback(rowPlatform, m.sender)))
             )
         answeringThread = undefined
         pushUserTurn(senderAgent?.id ?? who, {
@@ -451,7 +459,7 @@ export function buildTurns(input: BuildTurnsInput): { turns: Turn[]; speakers: M
           ? speaker('@you')
           : speaker(
               senderAgentName ?? who,
-              cron?.name ?? (cron ? 'Schedule' : (senderAgentName ?? platformSenderFallback(session.platform, who)))
+              cron?.name ?? (cron ? 'Schedule' : (senderAgentName ?? senderFallback(session.platform, who)))
             )
         pushUserTurn(senderAgent?.id ?? who, {
           kind: 'user',
@@ -548,7 +556,7 @@ export function buildTurns(input: BuildTurnsInput): { turns: Turn[]; speakers: M
           ? speaker('@you')
           : speaker(
               senderAgentName ?? who,
-              cron?.name ?? (cron ? 'Schedule' : (senderAgentName ?? platformSenderFallback(session.platform, who)))
+              cron?.name ?? (cron ? 'Schedule' : (senderAgentName ?? senderFallback(session.platform, who)))
             )
         pushUserTurn(senderAgent?.id ?? who, {
           kind: 'user',

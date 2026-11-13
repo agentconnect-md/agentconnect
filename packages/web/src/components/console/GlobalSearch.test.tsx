@@ -36,6 +36,8 @@ const consoleData = vi.hoisted(() => ({
   decisions: [] as unknown[],
   allSessions: [] as unknown[]
 }))
+// The unnamed-label resolver reads the platform registry, whose modules this test's API mock does not cover.
+vi.mock('@/components/console/platforms/unnamed-label', () => ({ useUnnamedLabel: () => () => undefined }))
 vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => consoleData
 }))

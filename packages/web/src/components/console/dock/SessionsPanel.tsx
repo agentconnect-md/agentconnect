@@ -22,6 +22,7 @@ import { useOrgs } from '@/lib/org-context'
 import { useConsoleData } from '@/lib/data-context'
 import { Button, Icon } from '@/components/ui'
 import { usePlayground } from '@/components/console/PlaygroundProvider'
+import { useUnnamedLabel } from '@/components/console/platforms/unnamed-label'
 import { AgentIconView, PlatformMark } from '@/components/marks'
 import type { DockTabStatus } from './SessionDock'
 import { groupSessionsByAge } from '@/lib/session-age'
@@ -170,6 +171,7 @@ export function SessionsPanel({
   // Schedule-triggered rows show the schedule's name; `agents` backs the chips.
   const { agents, crons } = useConsoleData()
   const cronName = useCallback((cronId: string) => crons.find((c) => c.id === cronId)?.name, [crons])
+  const unnamedLabel = useUnnamedLabel()
   // A new session starts a fresh playground with the open session's agent — the panel's one forward action, kept beside the escape to the full list.
   const router = useRouter()
   const { openPlayground } = usePlayground()
@@ -285,7 +287,7 @@ export function SessionsPanel({
   if (empty) return null
 
   const sessionRow = (s: Session): PanelRow => {
-    const channel = sessionChannelDisplay(s, cronName)
+    const channel = sessionChannelDisplay(s, cronName, unnamedLabel)
     const id = canonicalSessionId(s)
     const merged = !flatView && isMergedConversationRow(s)
     return {

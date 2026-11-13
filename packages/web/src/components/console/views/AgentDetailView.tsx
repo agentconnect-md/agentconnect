@@ -88,7 +88,8 @@ import { modelEvaluationsTarget } from '@/components/console/decisions/ModelSele
 import { useCodeHostRowRouting } from '@/components/console/decisions/routing/useCodeHostRowRouting'
 import { AgentCallVisibility } from '@/components/console/AgentCallVisibility'
 import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
-import { IntegrationChannelList, roomGlyph, rowLabel } from '@/components/console/IntegrationChannelList'
+import { displayRow, IntegrationChannelList, roomGlyph, rowLabel } from '@/components/console/IntegrationChannelList'
+import { useUnnamedLabel } from '@/components/console/platforms/unnamed-label'
 import { AgentApiCard } from '@/components/console/AgentApiCard'
 import { RecentSessionsCard } from '@/components/console/RecentSessionsCard'
 import { TriggerSelect } from '@/components/console/TriggerSelect'
@@ -354,6 +355,7 @@ function RepoName({ name, url, className }: { name: string; url: string | null; 
 
 function AgentDetail() {
   const t = useTranslations('Agents.detail')
+  const unnamedLabel = useUnnamedLabel()
   const decisionsPrototype = useOptionalDecisionsPrototype()
   const decisions = useMemo(() => decisionsPrototype?.decisions ?? [], [decisionsPrototype])
   const permissionT = useTranslations('Common.permissionModes')
@@ -2106,7 +2108,7 @@ function AgentDetail() {
                                 {!AgentCardBody && g.channels[0] && (
                                   <span className="font-mono text-[12px] font-normal leading-normal text-(--text-tertiary)">
                                     {roomGlyph(g.channels[0].kind, g.platform)}
-                                    {rowLabel(g.channels[0])}
+                                    {rowLabel(displayRow(g.channels[0], g.platform, unnamedLabel))}
                                   </span>
                                 )}
                               </span>

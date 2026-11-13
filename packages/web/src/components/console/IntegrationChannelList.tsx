@@ -1,6 +1,6 @@
 'use client'
 
-import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslations } from 'next-intl'
 import {
@@ -16,6 +16,7 @@ import { useConsoleData } from '@/lib/data-context'
 import { Icon } from '@/components/ui'
 import { AgentIconView } from '@/components/marks'
 import { channelListSemantics } from '@/components/console/platforms/registry'
+import { useUnnamedLabel, type UnnamedLabeler } from '@/components/console/platforms/unnamed-label'
 import { rowUrl, type ConversationLinkBot } from '@/components/console/place-link'
 import {
   ChannelSettingsPopover,
@@ -420,7 +421,12 @@ export function ConversationName({
   const url = rowUrl(row, platform, bot)
   const Name = rowName(row.kind, platform)
   if (Name) return <Name name={name} channelKey={row.key} url={url} />
-  if (!url) return <span className="min-w-0 truncate">{name}</span>
+  if (!url)
+    return (
+      <span className="min-w-0 truncate" title={isPlaceholderRow(row) ? row.channelId : undefined}>
+        {name}
+      </span>
+    )
   return (
     <a
       href={url}
@@ -444,6 +450,33 @@ const platformName = (platform?: string): string => chatPlatformName(platform, '
  *  reason: the mobile card header summarises this row directly above it. */
 export const rowLabel = (row: Pick<IntegrationChannelRow, 'kind' | 'name'>): string =>
   isDirectConversation(row.kind) ? row.name.replace(/^@+/, '') : row.name
+
+/** A row the platform never named: the console receives the CP's null name as the row's own id. */
+export const isUnnamedRow = (row: Pick<IntegrationChannelRow, 'channelId' | 'name'>): boolean =>
+  row.name === row.channelId
+
+/** A row as printed, its name possibly a platform placeholder; `placeholder` marks one, whose full id the name's tooltip keeps. */
+export type DisplayChannelRow<T extends IntegrationChannelRow = IntegrationChannelRow> = T & { placeholder?: true }
+
+/** Whether a row's printed name is its platform's placeholder rather than a name. */
+export const isPlaceholderRow = (row: IntegrationChannelRow): boolean => (row as DisplayChannelRow).placeholder === true
+
+/** A row as the console prints it: an unnamed row takes its platform's placeholder, display only — the id is untouched. */
+export function displayRow<T extends IntegrationChannelRow>(
+  row: T,
+  platform: string | undefined,
+  unnamed: UnnamedLabeler
+): DisplayChannelRow<T> {
+  if (!isUnnamedRow(row)) return row
+  const name = unnamed(platform, { kind: isDirectConversation(row.kind) ? 'direct' : 'room', id: row.channelId })
+  return name ? { ...row, name, placeholder: true } : row
+}
+
+/** {@link displayRow} over a list, in the viewer's locale. */
+export function useDisplayRows<T extends IntegrationChannelRow>(rows: T[], platform?: string): DisplayChannelRow<T>[] {
+  const unnamed = useUnnamedLabel()
+  return useMemo(() => rows.map((row) => displayRow(row, platform, unnamed)), [rows, platform, unnamed])
+}
 
 /** The row's label as two pieces — the name it leads with, and the dim tail printed after it.
  *  How a label comes apart is the platform's own (`splitRowLabel`); a module that declares none
@@ -786,7 +819,7 @@ function DispatchPicker({
 /** An integration's conversation rows and their controls, for a padding-less card; demo rows (no id) are inert. */
 export function IntegrationChannelList({
   integrationId,
-  channels,
+  channels: storedChannels,
   botId,
   agentId,
   platform,
@@ -815,6 +848,7 @@ export function IntegrationChannelList({
 }) {
   const t = useTranslations('Integrations.channelList')
   const translate: ChannelListTranslator = (key, values) => t(key as never, values as never)
+  const channels = useDisplayRows(storedChannels, platform)
   const {
     setChannelSessionMode,
     setChannelAgent,

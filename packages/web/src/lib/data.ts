@@ -1473,6 +1473,8 @@ export interface Session {
   /** Raw platform channel id ("C…"), set only when `channel` is a resolved name —
    *  rendered as the secondary gray id next to the name. */
   channelId?: string
+  /** `channel` is the raw conversation id because no name was resolved, so a view may print its platform's placeholder. */
+  channelUnnamed?: true
   /** Platform-native deep link back to the source message/thread, captured or
    *  derived by the daemon. Absent when the platform exposes none. */
   threadUrl?: string
@@ -2695,14 +2697,27 @@ export function sessionPlatform(s: { platform: string; hookKind?: HookKind }): s
  * schedule mark instead of a raw uuid with a Slack icon. `cronName` looks up
  * the schedule (the crons list may still be loading → short-id fallback). */
 export function sessionChannelDisplay(
-  s: { platform: string; channel: string; hookKind?: HookKind },
-  cronName: (id: string) => string | null | undefined
+  s: { platform: string; channel: string; channelUnnamed?: boolean; hookKind?: HookKind },
+  cronName: (id: string) => string | null | undefined,
+  unnamed?: (platform: string, subject: { kind: 'place'; id: string }) => string | undefined
 ): { platform: string; label: string } {
   if (s.channel.startsWith('cron:')) {
     const id = s.channel.slice('cron:'.length)
     return { platform: 'schedule', label: cronName(id)?.trim() || `Schedule ${id.slice(0, 8)}` }
   }
-  return { platform: sessionPlatform(s), label: s.channel }
+  const platform = sessionPlatform(s)
+  // An unnamed conversation prints its platform's placeholder where it has one; the id itself is untouched.
+  const placeholder = s.channelUnnamed ? unnamed?.(platform, { kind: 'place', id: s.channel }) : undefined
+  return { platform, label: placeholder ?? s.channel }
+}
+
+/** Who started a session as printed: a `user` that is still its raw sender id takes its platform's placeholder, if it has one. */
+export function sessionUserDisplay(
+  s: { platform: string; user: string; triggeredBy?: string; hookKind?: HookKind },
+  unnamed?: (platform: string, subject: { kind: 'person'; id: string }) => string | undefined
+): string {
+  const raw = s.triggeredBy && s.user === s.triggeredBy ? s.triggeredBy : undefined
+  return (raw && unnamed?.(sessionPlatform(s), { kind: 'person', id: raw })) || s.user
 }
 
 /** Playground conversations have unique internal ids but share one user-facing
