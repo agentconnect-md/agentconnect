@@ -1271,7 +1271,8 @@ describe.skipIf(usingPostgresStore())('the v43 → v44 failure report columns on
         parentSessionKey: 'parent',
         state: 'open',
         createdAt: 1_000,
-        changedAt: 1_000
+        changedAt: 1_000,
+        lookBack: { reminders: 0, sentBack: 0, left: 6, lookedAt: expect.any(Number) }
       })
       expect(await upgraded.assistantSubsessions.claimReport(a, childKey(a, '1'), '{"text":"ended"}')).toBe(true)
       expect(await upgraded.assistantSubsessions.countReportAttempt(a, childKey(a, '1'))).toBe(1)
@@ -1318,7 +1319,8 @@ describe.skipIf(!usingPostgresStore())('the v43 → v44 failure report columns o
           parentSessionKey: 'parent',
           state: 'open',
           createdAt: 1_000,
-          changedAt: 1_000
+          changedAt: 1_000,
+          lookBack: { reminders: 0, sentBack: 0, left: 6, lookedAt: expect.any(Number) }
         })
         expect(await upgraded.assistantSubsessions.claimReport(a, childKey(a, '1'), '{"text":"ended"}')).toBe(true)
         expect(await upgraded.assistantSubsessions.countReportAttempt(a, childKey(a, '1'))).toBe(1)
@@ -1624,13 +1626,54 @@ describe('looking back at a task', () => {
   })
 })
 
-/** What a v82 store reads back of a row a v81 daemon wrote, and what it can then keep. */
+/** What the current store reads back of a row a v81 daemon wrote, and what it can then keep. */
 async function expectV82(s: LocalStore, a: string): Promise<void> {
   const key = threadKey(a, '400.1')
   expect(await s.assistantSubsessions.get(a, key)).toMatchObject({ title: 'Kept', state: 'done' })
-  expect(await s.assistantSubsessions.get(a, key)).not.toHaveProperty('lookBack')
+  // v83 starts a task that already existed as one six looks left, so no look lists it until it runs a round.
+  expect((await s.assistantSubsessions.get(a, key))?.lookBack).toMatchObject({ left: 6, lookedAt: expect.any(Number) })
   expect(await s.assistantSubsessions.notePerson(a, key, { asker: ALICE, opener: true, now: 5_000 })).toBe(true)
-  expect((await s.assistantSubsessions.get(a, key))?.lookBack).toMatchObject({ personAt: 5_000, opener: ALICE })
+  expect((await s.assistantSubsessions.get(a, key))?.lookBack).toMatchObject({
+    personAt: 5_000,
+    opener: ALICE,
+    left: 0
+  })
+}
+
+/** Rows a v82 daemon wrote: an open task no look listed, one a look listed, a closed one and a follow-up. */
+const V82_ROWS = (a: string): [string, unknown[]][] => [
+  [
+    `INSERT INTO assistant_subsession (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt, mode, changedAt, title)
+     VALUES (?, ?, 'sid-co', ?, 'done', 1000, 'work', 1000, 'Never listed')`,
+    [a, threadKey(a, '500.1'), coordinatorOf(a)]
+  ],
+  [
+    `INSERT INTO assistant_subsession (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt, mode, changedAt, title, lookedAt, lookLeft)
+     VALUES (?, ?, 'sid-co', ?, 'done', 1000, 'work', 1000, 'Listed', 2000, 2)`,
+    [a, threadKey(a, '500.2'), coordinatorOf(a)]
+  ],
+  [
+    `INSERT INTO assistant_subsession (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt, mode, changedAt, title, closedAt)
+     VALUES (?, ?, 'sid-co', ?, 'done', 1000, 'work', 1000, 'Closed', 1500)`,
+    [a, threadKey(a, '500.3'), coordinatorOf(a)]
+  ],
+  [
+    `INSERT INTO assistant_subsession (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt, mode, changedAt, title)
+     VALUES (?, ?, 'sid-co', ?, 'done', 1000, 'watch', 1000, 'Follow-up')`,
+    [a, childKey(a, 'check-9'), coordinatorOf(a)]
+  ]
+]
+
+/** What v83 leaves of {@link V82_ROWS}: only the open task no look had listed is marked, and it is not a candidate until it runs a round. */
+async function expectV83(s: LocalStore, a: string, upgradedAfter: number): Promise<void> {
+  const index = s.assistantSubsessions
+  const marked = (await index.get(a, threadKey(a, '500.1')))?.lookBack
+  expect(marked).toMatchObject({ left: 6, reminders: 0, sentBack: 0 })
+  expect(marked!.lookedAt).toBeGreaterThanOrEqual(upgradedAfter)
+  expect((await index.get(a, threadKey(a, '500.2')))?.lookBack).toMatchObject({ lookedAt: 2000, left: 2 })
+  expect(await index.get(a, childKey(a, 'check-9'))).not.toHaveProperty('lookBack')
+  // The closed task is read no more; each backend's test reads its row directly.
+  expect(await index.get(a, threadKey(a, '500.3'))).toBeUndefined()
 }
 
 const V81_ROW = (a: string): [string, unknown[]] => [
@@ -1695,6 +1738,76 @@ describe.skipIf(!usingPostgresStore())('the v81 → v82 look-back columns on Pos
       } finally {
         await upgraded.close()
       }
+      const version = await admin.query('SELECT version FROM _local_store_schema_version')
+      expect(Number(version.rows[0].version)).toBe(SCHEMA_VERSION)
+    } finally {
+      await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`).catch(() => undefined)
+      await admin.end()
+    }
+  })
+})
+
+describe.skipIf(usingPostgresStore())('the v82 → v83 look-back start on SQLite', () => {
+  it('starts only the open tasks no look had listed as left six looks in a row', async () => {
+    const path = tempStorePath('ac-assistant-v82-')
+    await (await LocalStore.open(path)).close()
+    const a = agent()
+    const old = new DatabaseSync(path)
+    for (const [sql, params] of V82_ROWS(a)) old.prepare(sql).run(...(params as never[]))
+    old.exec('PRAGMA user_version = 82')
+    old.close()
+
+    const before = Date.now()
+    const upgraded = await LocalStore.open(path)
+    try {
+      await expectV83(upgraded, a, before)
+    } finally {
+      await upgraded.close()
+    }
+    const db = new DatabaseSync(path)
+    expect((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(SCHEMA_VERSION)
+    expect(
+      db
+        .prepare('SELECT lookedAt, lookLeft FROM assistant_subsession WHERE childSessionKey = ?')
+        .get(threadKey(a, '500.3'))
+    ).toEqual({ lookedAt: null, lookLeft: 0 })
+    db.close()
+  })
+})
+
+describe.skipIf(!usingPostgresStore())('the v82 → v83 look-back start on PostgreSQL', () => {
+  it('starts only the open tasks no look had listed as left six looks in a row', async () => {
+    const databaseUrl = process.env.DATA_PLANE_TEST_DATABASE_URL!
+    const schema = `mig_${randomUUID().replace(/-/g, '')}`
+    const config = { version: 1 as const, databaseUrl, maxConnections: 2 }
+    const orgForAgent = (): string => 'org-a'
+    const admin = new pg.Client({ connectionString: databaseUrl })
+    await admin.connect()
+    const a = agent()
+    try {
+      const fresh = await PostgresAsyncDatabase.open(config, () => undefined, schema)
+      await fresh.finishSchemaInitialization()
+      await (await LocalStore.open({ database: fresh, shared: true, ownerId: 'm1', orgForAgent })).close()
+
+      await admin.query(`SET search_path TO ${schema}`)
+      for (const [sql, params] of V82_ROWS(a)) await admin.query(numbered(sql), params)
+      await admin.query('UPDATE _local_store_schema_version SET version = 82 WHERE singleton = true')
+
+      const before = Date.now()
+      const database = await PostgresAsyncDatabase.open(config, () => undefined, schema)
+      await database.finishSchemaInitialization()
+      const upgraded = await LocalStore.open({ database, shared: true, ownerId: 'm2', orgForAgent })
+      try {
+        await expectV83(upgraded, a, before)
+      } finally {
+        await upgraded.close()
+      }
+      const closed = await admin.query(
+        'SELECT lookedat, lookleft FROM assistant_subsession WHERE childsessionkey = $1',
+        [threadKey(a, '500.3')]
+      )
+      expect(closed.rows[0]).toMatchObject({ lookedat: null })
+      expect(Number(closed.rows[0].lookleft)).toBe(0)
       const version = await admin.query('SELECT version FROM _local_store_schema_version')
       expect(Number(version.rows[0].version)).toBe(SCHEMA_VERSION)
     } finally {

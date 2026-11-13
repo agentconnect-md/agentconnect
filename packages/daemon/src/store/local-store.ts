@@ -1429,7 +1429,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 82
+export const SCHEMA_VERSION = 83
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -2222,6 +2222,14 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
   async (db, store) => {
     for (const [column, type] of LOOK_BACK_COLUMN_TYPES)
       await addColumn(db, store.postgres, 'assistant_subsession', column, type)
+  },
+  // v83 starts every task that already exists as one a full run of six looks left, so only work that runs a round from now on is looked back at (§5.20).
+  async (db) => {
+    await db.query(
+      `UPDATE assistant_subsession SET lookedAt = ?, lookLeft = 6
+        WHERE mode = 'work' AND closedAt IS NULL AND lookedAt IS NULL`,
+      [Date.now()]
+    )
   }
 ]
 

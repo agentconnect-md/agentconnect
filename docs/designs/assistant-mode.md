@@ -4240,6 +4240,12 @@ note such as "this also needs an owner" was said once in its report and is not r
   keeps a task alive by itself: a task nobody writes to closes at most seven days after it was last
   sent back to work (auto-session-mode.md §6.5).
 
+**Work that was already there.** Looking back starts with the work that runs from then on. A task
+that exists when a daemon first has this is not listed until it runs a round again, by a person's
+message or by its own work. The limits above are per task, so without this the first look of every
+place would hand its coordinator every quiet task of the past week at once, and the coordinator
+would be reminding people about threads they had long left.
+
 **What the daemon keeps.** On the task's row: when a person stopped it, when it was last listed, the
 reminders, the times it was sent back and the looks that left it since a person last wrote, when and
 who that person was, and the person the task was opened for.
@@ -4312,6 +4318,10 @@ ended; who stopped it is written only into the transcript.
 - **Columns.** On `assistant_subsession`, store version 82 on both backends: `lookedAt`,
   `lookReminders`, `lookRemindedAt`, `lookSentBack`, `lookLeft`, `stoppedAt`, `personAt`,
   `lastPerson` and `openedBy`.
+- **Work that was already there.** Store version 83 marks every open work task no look has listed
+  as listed at the upgrade and left six looks in a row, which is the existing rule for a task that
+  is not listed until it changes; nothing new is stored. The place's first look then comes four
+  hours after the upgrade at the earliest.
 - **Delivery.** Each item is its task's report (`deliverDaemonReport` with the task's session as the
   caller and `kind="look back"`), replying in the thread the task's latest turn delivered to in the
   place, or, for a task working in a room it holds, in the thread that asked for the room. The
@@ -5599,3 +5609,10 @@ when nothing has changed and nothing needs a person (§5.20 "What is posted"). I
 so, so a wait of several days would have put one "still running" line in the task's thread at every
 look that woke it. The same paragraph records what a look posts at all: a reminder, and the reply
 of a task sent back to work, both in the task's own thread.
+
+**Hundred-and-eighth revision (2026-11-13)**: looking back starts with the work that runs from
+then on (§5.20 "Work that was already there"). Nothing told a task that predates the feature from
+one that went quiet under it, so the first look after an upgrade, or after an agent was resumed,
+would have listed every quiet task of the past week in every place. Store version 83 marks the
+tasks that exist at the upgrade as left six looks in a row, so each is listed again only once it
+runs a round.
