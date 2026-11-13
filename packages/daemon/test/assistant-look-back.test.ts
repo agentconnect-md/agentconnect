@@ -220,6 +220,9 @@ describe('a look-back item', () => {
     const text = sentBackText('Start the copy you were approved to run.')
     expect(text).toMatch(/^\[look back\] No person sent this/)
     expect(text).toContain('A step that needs a decision is asked in your thread and waits there.')
+    // A round that finds nothing new posts nothing, as a follow-up's check stays silent.
+    expect(text).toContain('When nothing has changed and nothing needs a person, post nothing')
+    expect(text).toContain('reply with exactly `AC_NO_RESPONSE`')
     expect(text).toContain("Your coordinator's note: Start the copy you were approved to run.")
     expect(sentBackText()).not.toContain('note')
   })

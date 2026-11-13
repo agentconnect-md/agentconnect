@@ -2,6 +2,7 @@
 import type { Agent } from '../agents/agent-schema.js'
 import { assistantModeOn } from '../mcp/ops/assistant-items.js'
 import { isCoordinatorSessionKey } from '../session/append-coordinate.js'
+import { NO_RESPONSE_SENTINEL } from '../session/no-response.js'
 import type { AssistantSubsessionIndex, PlacedSubsession, TaskLookBack } from '../store/assistant-subsessions.js'
 
 const HOUR_MS = 60 * 60_000
@@ -286,6 +287,8 @@ export function sentBackText(note?: string): string {
   const frame =
     '[look back] No person sent this: your coordinator looked back at this task, which has been quiet, and sends it ' +
     'back to work. Check where the work stands and go on with what you were already asked or approved to do. A step ' +
-    'that needs a decision is asked in your thread and waits there. Update your summary with updateTask.'
+    'that needs a decision is asked in your thread and waits there. Update your summary with updateTask. When ' +
+    'nothing has changed and nothing needs a person, post nothing: after updating your summary, reply with exactly ' +
+    `\`${NO_RESPONSE_SENTINEL}\`.`
   return note?.trim() ? `${frame}\n\nYour coordinator's note: ${note.trim()}` : frame
 }

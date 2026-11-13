@@ -4202,8 +4202,16 @@ write now is the coordinator's judgment from those two times, as it is a colleag
   it accepts, and only for the task the item speaks for; any other `taskId` is refused. The task receives the coordinator's
   message under a frame the daemon writes: no person sent this; check where the work stands and go
   on with what you were already asked or approved to do; a step that needs a decision is asked in
-  your thread and waits there; update your summary.
+  your thread and waits there; update your summary; when nothing has changed and nothing needs a
+  person, post nothing.
 - **Leave.** Posts nothing.
+
+**What is posted.** The look itself posts nothing: its items are the daemon's, the coordinator's own
+words in a turn of reports are never posted (auto-session-mode.md §3.4), and the message a task is
+sent back with goes into the task's session, not onto the platform. Two things reach the platform,
+both in the task's own thread: a reminder, one message, and the reply of a task sent back to work,
+as any of its rounds replies. A round that finds nothing new and needs nobody stays silent, as a
+follow-up's check does (§5.12), and only renews the task's summary.
 
 The coordinator reads further with `readTask` where the closing lines do not settle it. It has no
 workspace and cannot look at the world (auto-session-mode.md §5.4), so anything that needs checking
@@ -5585,3 +5593,9 @@ daemon's; the judgment, including whether it is a fair hour for that person, is 
 `messageTask` now accepts a look-back item for its own task, and a task's row keeps a mark that a
 person stopped it, beside what looking back counts (store version 82). A time a task sets for
 itself is left open.
+
+**Hundred-and-seventh revision (2026-11-13)**: a task sent back to work by a look posts nothing
+when nothing has changed and nothing needs a person (§5.20 "What is posted"). Its frame did not say
+so, so a wait of several days would have put one "still running" line in the task's thread at every
+look that woke it. The same paragraph records what a look posts at all: a reminder, and the reply
+of a task sent back to work, both in the task's own thread.
