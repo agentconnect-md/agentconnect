@@ -131,6 +131,10 @@ Approved proposals stay a kind of their own.
   place's long session. The channel messages right behind it of one permission class join its turn,
   and it adds no asker. A report that finds the coordinator idle starts a turn at once, and a webchat
   conversation's reports, like its messages, each run as a turn of their own (§10).
+- Proposed ([assistant-mode.md](assistant-mode.md) §5.20): every four hours the daemon hands the
+  coordinator its place's tasks that went quiet, each as a report of `kind="look back"` in the task's
+  thread. The coordinator answers one with `replyToMessage`, leaves it, or names it in `messageTask`
+  to send that item's own task back to work, the one report `messageTask` accepts.
 - The coordinator's turns carry the work board ([assistant-mode.md](assistant-mode.md) §5.18 ② and ④)
   instead of the standing follow-up list and the running-tasks block: its place's open tasks with
   their ids, and the other places' open tasks every person in its batch may read. It is sent when the
