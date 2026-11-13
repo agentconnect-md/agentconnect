@@ -756,9 +756,15 @@ itself, passes untouched.
 **Listeners.** `srt` reaches the proxy over a Unix socket of the agent's own
 in the daemon's run directory, which honors only that agent's placeholder: one
 that leaks into another agent's environment buys nothing there. On the host,
-the proxy listens on loopback and requires the proxy credential carried in the
-`HTTPS_PROXY` URL, so it is no open proxy to other local processes; a host
-session has no boundary from another agent's to begin with.
+the proxy listens on loopback with no proxy credential, on the port the
+previous run used when it is free. A credential there would buy little: a
+host session has no boundary from another agent's or from other processes of
+the daemon's user, and the placeholder, not the proxy hop, is what authorizes
+a code-host token or provider key. Requiring one broke every client that
+cannot send Basic proxy authentication, and a port that changed on each
+restart stranded long-lived processes a session started. The cost is that
+other local users can relay through the listener, including through the
+daemon's own outbound proxy when one is configured.
 
 A daemon that reaches the network through its own outbound proxy
 (`HTTPS_PROXY`, `NO_PROXY`) sends every listener's upstream leg through it:

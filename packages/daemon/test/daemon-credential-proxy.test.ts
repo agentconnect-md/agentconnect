@@ -301,7 +301,8 @@ describe('a host session with the credential proxy on', () => {
     const proxyUrl = new URL(env.HTTPS_PROXY!)
     expect(env.HTTPS_PROXY).toBe(d.credentialProxy.proxy.loopbackUrl())
     expect(proxyUrl.hostname).toBe('127.0.0.1')
-    expect(proxyUrl.password).not.toBe('')
+    // No proxy credential, so a client that cannot send one still reaches it.
+    expect(proxyUrl.username).toBe('')
     expect(env.https_proxy).toBe(env.HTTPS_PROXY)
     expect(env.NO_PROXY!.split(',')).toEqual(expect.arrayContaining(['localhost', '127.0.0.1', '::1']))
     expect(env.no_proxy).toBe(env.NO_PROXY)
@@ -770,9 +771,8 @@ describe('a proxied host session end to end', () => {
       expect(pushed).toContain('403')
       expect(gitlab.seen.filter((entry) => entry.url.includes('git-receive-pack') && entry.authorization)).toEqual([])
       expect(JSON.stringify(gitlab.seen)).not.toContain(HELPER_TOKEN)
-      // The machine's own helper never kept the proxy's credential, nor any other.
+      // The machine's own helper never kept a credential.
       const kept = readFileSync(machineHelperLog, { encoding: 'utf8', flag: 'a+' })
-      expect(kept).not.toContain(new URL(child.HTTPS_PROXY!).password)
       expect(kept).not.toContain('op=store')
     }
   )

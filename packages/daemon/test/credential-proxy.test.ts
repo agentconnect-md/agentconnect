@@ -421,9 +421,10 @@ describe('the proxy end to end', () => {
         expect(existsSync(socketPath)).toBe(true)
         const placeholder = proxy.placeholderFor(AGENT)
         const url = new URL(proxy.loopbackUrl()!)
-        const proxyAuth = `Basic ${Buffer.from(`${url.username}:${url.password}`).toString('base64')}`
+        // A client that cannot send proxy credentials still gets through; the placeholder is what authorizes the token.
+        expect(url.username).toBe('')
         const viaLoopback = await getThrough(
-          { host: url.hostname, port: Number(url.port), proxyAuth },
+          { host: url.hostname, port: Number(url.port) },
           upstreamPort,
           placeholder,
           ca.certPem
@@ -442,10 +443,27 @@ describe('the proxy end to end', () => {
         expect(existsSync(other)).toBe(false)
         expect(proxy.socketFor('22222222-2222-4222-8222-222222222222')).toBe(other)
         expect(proxyTrustEnv(ca).SSL_CERT_FILE).toBe(ca.bundlePath)
-        // The loopback listener is no open proxy: a CONNECT without its credential is refused.
-        expect(await connectStatus({ host: url.hostname, port: Number(url.port) }, upstreamPort)).toBe(407)
+        expect(await connectStatus({ host: url.hostname, port: Number(url.port) }, upstreamPort)).toBe(200)
       } finally {
         await proxy.stop()
+      }
+      // A restarted daemon listens on the same port, so a process a session started still reaches it.
+      const again = new CredentialProxy({
+        key: loadPlaceholderKey(join(dir, 'proxy.key')),
+        ca,
+        mint: async () => MINTED,
+        workspaceRepo: () => undefined,
+        instancesOf: () => [GITHUB_MANAGED_HOST],
+        runningAgents: () => [AGENT],
+        knownAgent: () => true,
+        log: { info: () => {}, warn: () => {} }
+      })
+      const before = proxy.loopbackUrl()
+      await again.start(join(dir, 'run'))
+      try {
+        expect(again.loopbackUrl()).toBe(before)
+      } finally {
+        await again.stop()
       }
     }
   )
