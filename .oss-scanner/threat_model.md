@@ -36,8 +36,8 @@ The ACP adapters (`claude-agent-acp`, `codex-acp`) and the model runtimes are se
 - **Managed daemon pool** (Kubernetes): no operator sits at the host, no agent is trusted, and the
   sandbox pod is the boundary. The daemon authenticates with a projected ServiceAccount token, the shim
   proves its pod through TokenReview. Credential exposure depends on the caller: proxied runtime
-  requests and migrated Azure workspace Git carry placeholders, while unmigrated daemon Git,
-  scoped source operations and the auto-merge watcher retain the contracts described below.
+  requests, migrated Azure workspace Git and the auto-merge watcher carry placeholders, while
+  unmigrated daemon Git and scoped source operations retain the contracts described below.
 
 Sandbox tiers, in increasing strength (`session-executors.md` section 5, `daemon-sandbox-backends.md`):
 
@@ -124,8 +124,8 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
   supported aliases, redirects, read-only push refusal, and missing or stale bindings.
 - **Remaining credential exposure**: GitHub daemon Git and private GitHub skill sources still use
   their existing helpers and credential windows. A pod's private GitLab skill source holds only a
-  skill placeholder, honored for a Git read of the agent's own private skill projects. The in-pod auto-merge watcher holds a
-  daemon minting capability in its environment. These processes share the runtime's OS user;
+  skill placeholder, honored for a Git read of the agent's own private skill projects. The in-pod auto-merge watcher holds only
+  the agent's placeholder and its pod's proxy route. These processes share the runtime's OS user;
   labeling a capability as daemon-held does not isolate it from a sibling process. The Azure,
   Gitea and GitLab migration is not a claim that every pod or VM is free of minting capabilities. Unconfined host execution
   remains operator-trusted.

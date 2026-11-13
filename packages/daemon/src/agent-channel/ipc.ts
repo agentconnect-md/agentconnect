@@ -1,7 +1,6 @@
-// The agent channel socket call itself, for the in-sandbox entries that reach it (the auto-merge watcher, `agentconnect-secrets`).
+// The agent channel socket call itself, for the in-sandbox entries that reach it (`agentconnect-secrets`).
 // Node builtins only: every consumer of this file is bundled into the runtime image.
 import { createConnection } from 'node:net'
-import { AGENT_CHANNEL_CAPABILITY_ENV } from './env.js'
 
 export interface AgentChannelReply {
   ok: boolean
@@ -35,25 +34,4 @@ export function agentChannelIpc(path: string, msg: unknown): Promise<AgentChanne
     })
     sock.on('error', (e) => fail(`cannot reach the daemon socket at ${path}: ${e.message}`))
   })
-}
-
-/** A GH_TOKEN-plane token for one repository, or a thrown reason. Fetched per use rather than
- *  cached here: these tokens are short-lived, and the daemon/CP side already caches and clamps. */
-export async function fetchGhToken(
-  args: { agentId: string; repoFullName: string; socketPath: string; capability?: string },
-  env: NodeJS.ProcessEnv = process.env
-): Promise<string> {
-  const res = await agentChannelIpc(args.socketPath, {
-    op: 'get',
-    agentId: args.agentId,
-    capability: args.capability ?? env[AGENT_CHANNEL_CAPABILITY_ENV],
-    plane: 'gh',
-    repoFullName: args.repoFullName
-  })
-  if (!res.ok || !res.password) {
-    throw new Error(
-      `no gh credentials for agent ${args.agentId} on ${args.repoFullName}: ${res.error ?? 'unknown error'}`
-    )
-  }
-  return res.password
 }

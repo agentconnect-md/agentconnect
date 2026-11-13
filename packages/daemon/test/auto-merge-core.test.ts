@@ -89,19 +89,22 @@ function answer(overrides: Record<string, unknown> = {}, checks: Array<Record<st
 const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 })
 
 describe('tick', () => {
-  it('merges by node id, pinned to the head it judged', async () => {
-    const bodies: Array<{ query: string; variables: Record<string, unknown> }> = []
-    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
-      bodies.push(JSON.parse(String(init?.body)))
-      return json(bodies.length === 1 ? answer() : { data: { mergePullRequest: { clientMutationId: null } } })
+  it('squash-merges through REST, pinned to the head it judged', async () => {
+    const calls: Array<{ url: string; method?: string; body: unknown }> = []
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, ...(init?.method ? { method: init.method } : {}), body: JSON.parse(String(init?.body)) })
+      return json(calls.length === 1 ? answer() : { merged: true })
     })
 
     const outcome = await tick({ token: async () => 'ghs_x', fetchImpl }, 'acme/repo', 7)
 
     expect(outcome).toEqual({ kind: 'merged' })
-    expect(bodies[1]!.query).toContain('mergePullRequest')
-    expect(bodies[1]!.query).toContain('mergeMethod:SQUASH')
-    expect(bodies[1]!.variables).toEqual({ id: 'PR_1', oid: 'sha_head' })
+    // REST rather than a GraphQL mutation, which the credential proxy refuses.
+    expect(calls[1]).toEqual({
+      url: 'https://api.github.com/repos/acme/repo/pulls/7/merge',
+      method: 'PUT',
+      body: { merge_method: 'squash', sha: 'sha_head' }
+    })
   })
 
   it('does not merge while a check runs, and says what it is waiting on', async () => {
@@ -121,9 +124,7 @@ describe('tick', () => {
       { __typename: 'CheckRun', name: 'optional', status: 'COMPLETED', conclusion: 'SKIPPED' },
       { __typename: 'StatusContext', context: 'legacy/ci', state: 'SUCCESS' }
     ]
-    const merged = vi.fn(async (_url: string, init?: RequestInit) =>
-      json(String(init?.body).includes('mergePullRequest') ? { data: { mergePullRequest: {} } } : answer({}, checks))
-    )
+    const merged = vi.fn(async (url: string) => json(url.endsWith('/merge') ? { merged: true } : answer({}, checks)))
     expect(await tick({ token: async () => 'ghs_x', fetchImpl: merged }, 'acme/repo', 7)).toEqual({ kind: 'merged' })
 
     const cancelled = vi.fn(async () =>
@@ -144,17 +145,15 @@ describe('tick', () => {
   })
 
   it('reports a GitHub refusal as DATA rather than throwing — the watcher stays armed through it', async () => {
-    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) =>
-      json(
-        String(init?.body).includes('mergePullRequest')
-          ? { data: { mergePullRequest: null }, errors: [{ message: 'Head branch was modified' }] }
-          : answer()
-      )
+    const fetchImpl = vi.fn(async (url: string) =>
+      url.endsWith('/merge')
+        ? new Response(JSON.stringify({ message: 'Head branch was modified' }), { status: 409 })
+        : json(answer())
     )
 
     expect(await tick({ token: async () => 'ghs_x', fetchImpl }, 'acme/repo', 7)).toEqual({
       kind: 'error',
-      error: 'Head branch was modified'
+      error: 'github answered 409: Head branch was modified'
     })
   })
 

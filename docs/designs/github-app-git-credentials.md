@@ -634,8 +634,9 @@ Only the proxy address differs:
 hold separate agent channel capabilities. The runtime's serves only live secrets: a
 `get` or `erase` presented with it is always refused with an error saying git
 and `gh` go through the proxy, so nothing in a session can obtain a real
-token. The daemon's own Git keeps minting with the daemon's capability, and so
-does the in-pod auto-merge watcher.
+token. The daemon's own Git keeps minting with the daemon's capability. The
+in-pod auto-merge watcher holds no capability: it presents the agent's
+placeholder through its pod's codehost proxy route.
 
 - The session gitconfig and a checkout's `.git/config` both pin a helper that
   answers only with the placeholder in `AC_CODEHOST_CREDENTIAL`, and with
@@ -1126,10 +1127,8 @@ Unmanaged SSH credentials and anonymous repository access are outside this manag
 credential migration. Managed cleartext HTTP is not a direct-token escape hatch:
 it must be rejected with a requirement to configure HTTPS. This change does not
 introduce an SSH proxy, a second proxy service, new OS users, or a user-facing switch.
-Non-Git REST brokers and watcher API calls are not migrated by changing Git's helper.
-In particular, the in-pod auto-merge watcher retains a minting capability until its
-separate follow-up; migrating Git does not eliminate same-user credential exposure
-from that process.
+Non-Git REST brokers are not migrated by changing Git's helper. The in-pod
+auto-merge watcher moved separately, below.
 
 #### Execution identity and the boundary being protected
 
@@ -1382,16 +1381,19 @@ Git must not silently claim that the Azure CLI is installed in every image.
    measured outcome. Removing the token-returning Git helper waits for this decision
    and migration of every remaining caller that needs it.
 
-**Separate open item: in-pod auto-merge watcher.**
-`github/auto-merge/watcher.ts` arms one watcher process per pull request in the runtime
-container; `shim/auto-merge-handler.ts` puts the daemon-holder capability in its
-environment, and each tick obtains a token through the `agent` tunnel. It can be
-long-lived and shares the runtime's OS user. Deliveries 1–3 do not remove this
-minting capability. A dedicated follow-up must decide how to broker the watcher
-without that capability, preserve its merge authorization and lifecycle, and fix
-the stale `AutoMergePayloadSchema.capability` comment that calls it runtime-only.
-Do not claim the environment contains no minting capability until this follow-up
-and any other credential-bearing callers have been addressed.
+**In-pod auto-merge watcher.** `github/auto-merge/watcher.ts` arms one watcher
+process per pull request in the runtime container. It is long-lived and shares
+the runtime's OS user, so it holds no minting capability. The arm carries the
+pod's codehost proxy route (the listener URL and its trust bundle) and the agent's
+placeholder, and `shim/auto-merge-handler.ts` starts the watcher with them as its
+proxy environment. Each tick reads the pull request through read-only GraphQL and
+merges through `PUT /repos/{owner}/{repo}/pulls/{number}/merge`, with `sha` pinned
+to the head it judged, because the proxy refuses a GraphQL mutation. The proxy
+attaches the repository's token at the agent's tier, so the watcher can merge only
+what the agent's own `gh` could. An arm on a pod whose listener does not forward
+`api.github.com` is refused. An image whose watcher still asks for a capability
+answers the arm as an unsupported image, and the next resume onto a current image
+fixes it.
 
 The first delivery primarily touches `workspace/git-injection.ts`, common Git runner
 preparation, the execution planes' route accessors, and daemon readiness/advertisement.
@@ -1490,9 +1492,9 @@ resource/concurrency bounds; this documentation change launches no load test.
 
 Completion of the first delivery means Azure works in the newly enabled environments;
 completion of deliveries 1–3 means managed Git inside execution environments uses
-the proxy. It does not cover owning-daemon host-side Git or eliminate the auto-merge
-watcher's minting capability. The final host-side decision determines whether all
-managed Git operations can share the rule and the old Git helper can be removed.
+the proxy. It does not cover owning-daemon host-side Git. The final host-side
+decision determines whether all managed Git operations can share the rule and the
+old Git helper can be removed.
 Update Azure's §6.1 and this document's helper/trust sections with the implementation that changes
 them, and keep the distinction explicit in PRs and release notes.
 

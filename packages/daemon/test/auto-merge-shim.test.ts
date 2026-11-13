@@ -5,6 +5,8 @@ import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
 import { AUTO_MERGE_DISARM_GRACE_MS, createAutoMergeHandler } from '../src/shim/auto-merge-handler.js'
 import { AGENT_CHANNEL_CAPABILITY_ENV } from '../src/agent-channel/env.js'
+import { CODE_HOST_CREDENTIAL_ENV } from '../src/credential-proxy/placeholder-helper.js'
+import { ShimAutoMergeClient } from '../src/shim/auto-merge-client.js'
 
 /** A child process double: stdout/stderr streams plus an `exit` the test can fire. */
 function fakeChild() {
@@ -47,19 +49,30 @@ function build() {
   return { handler, spawned }
 }
 
-const ARM = { op: 'arm' as const, agentId: 'agent-1', repoFullName: 'acme/repo', prNumber: 7, capability: 'cap_secret' }
+const PROXY = {
+  url: 'http://codehost:t@127.0.0.1:1',
+  trustBundle: '/run/agentconnect/codehost-trust.pem',
+  placeholder: 'acph1_secret'
+}
+const ARM = { op: 'arm' as const, agentId: 'agent-1', repoFullName: 'acme/repo', prNumber: 7, proxy: PROXY }
 const READ = { op: 'state' as const, agentId: 'agent-1', repoFullName: 'acme/repo', prNumber: 7 }
 
 describe('in-sandbox automerge handler', () => {
-  it('spawns one watcher per pull request and keeps the capability off argv', async () => {
+  it('spawns one watcher per pull request on the pod’s proxy route, with its placeholder off argv', async () => {
     const { handler, spawned } = build()
 
     expect(await handler(ARM)).toEqual({ armed: true })
     expect(spawned).toHaveLength(1)
     expect(spawned[0]!.args).toEqual(['agent-1', 'acme/repo', '7'])
-    // The credential capability is a secret: env, never argv, where any process listing would show it.
-    expect(spawned[0]!.args.join(' ')).not.toContain('cap_secret')
-    expect(spawned[0]!.env[AGENT_CHANNEL_CAPABILITY_ENV]).toBe('cap_secret')
+    // The placeholder rides env, never argv, and no minting capability reaches the watcher at all.
+    expect(spawned[0]!.args.join(' ')).not.toContain('acph1_secret')
+    expect(spawned[0]!.env).toMatchObject({
+      [CODE_HOST_CREDENTIAL_ENV]: 'acph1_secret',
+      HTTPS_PROXY: PROXY.url,
+      NODE_USE_ENV_PROXY: '1',
+      NODE_EXTRA_CA_CERTS: PROXY.trustBundle
+    })
+    expect(spawned[0]!.env[AGENT_CHANNEL_CAPABILITY_ENV]).toBeUndefined()
 
     // Idempotent: arming an armed watcher keeps the process it already has.
     expect(await handler(ARM)).toEqual({ armed: true })
@@ -188,9 +201,9 @@ describe('in-sandbox automerge handler', () => {
     expect(spawned[0]!.killed).toEqual(['SIGTERM', 'SIGKILL'])
   })
 
-  it('refuses to arm without a capability, and on an image that ships no watcher', async () => {
+  it('refuses to arm without a proxy route, and on an image that ships no watcher', async () => {
     const { handler } = build()
-    await expect(handler({ ...ARM, capability: undefined })).rejects.toThrow(/credential capability/)
+    await expect(handler({ ...ARM, proxy: undefined })).rejects.toThrow(/GitHub proxy route/)
 
     const old = createAutoMergeHandler({
       entryPath: '/opt/agentconnect/shim/does-not-exist.js',
@@ -216,5 +229,20 @@ describe('in-sandbox automerge handler', () => {
     const { handler, spawned } = build()
     expect(await handler(READ)).toEqual({ armed: false })
     expect(spawned).toHaveLength(0)
+  })
+})
+
+describe('the daemon side of the automerge channel', () => {
+  it('reads an image whose watcher still asks for a credential capability as an unsupported image', async () => {
+    const client = new ShimAutoMergeClient({
+      request: async () => {
+        throw new Error('arming needs the agent’s credential capability')
+      }
+    })
+    await expect(
+      client.arm({ agentId: 'agent-1', repoFullName: 'acme/repo', prNumber: 7, proxy: PROXY })
+    ).rejects.toMatchObject({
+      reason: 'unsupported-image'
+    })
   })
 })

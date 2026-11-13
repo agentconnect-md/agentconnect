@@ -798,6 +798,7 @@ describe('daemon --k8s mode', () => {
         launched: () => [{ subject: 'bot-a', agentId: 'bot-a', since: 0 }],
         autoMergeSubjects: () => ['bot-a'],
         autoMergeAt: async () => pod,
+        codehostRouting: async () => ({ port: 1, token: 't'.repeat(32), trustBundle: '/rt/trust.pem' }),
         holdIfBound: (subject: string) => {
           held.push(subject)
           return () => held.push(`released ${subject}`)
@@ -872,6 +873,7 @@ describe('daemon --k8s mode', () => {
           workspaceRootFor: () => undefined,
           autoMergeSubjects: () => Object.keys(pods),
           autoMergeAt: async (subject: string) => pods[subject],
+          codehostRouting: async () => ({ port: 1, token: 't'.repeat(32), trustBundle: '/rt/trust.pem' }),
           holdIfBound: () => () => {},
           // Only the isolated session has a claim: the other isolated one predates its own pod.
           hasSandbox: async (subject: string) => {

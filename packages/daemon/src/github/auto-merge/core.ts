@@ -84,9 +84,6 @@ query AutoMerge($owner:String!,$name:String!,$number:Int!){
   }
 }`
 
-const MERGE_MUTATION =
-  'mutation($id:ID!,$oid:GitObjectID!){mergePullRequest(input:{pullRequestId:$id,mergeMethod:SQUASH,expectedHeadOid:$oid}){clientMutationId}}'
-
 /** Raised when GitHub answered but refused — as opposed to never being reached. Both keep the
  *  watcher armed; only the wording the console shows differs. */
 export class AutoMergeGithubError extends Error {
@@ -101,23 +98,15 @@ export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>
 export interface GithubAccess {
   token: () => Promise<string>
   fetchImpl?: FetchLike
-  /** GitHub GraphQL endpoint; overridden only by tests and GHES. */
+  /** GitHub GraphQL endpoint; overridden only by tests. */
   endpoint?: string
+  /** GitHub REST root the merge goes to; overridden only by tests. */
+  restEndpoint?: string
 }
 
 /** One GraphQL round trip. GraphQL reports refusals inside a 200, so `errors` decides here. */
 async function graphql<T>(access: GithubAccess, query: string, variables: Record<string, unknown>): Promise<T> {
-  return send(access, await access.token(), query, variables)
-}
-
-/** The round trip with the token ALREADY in hand. Split out so a caller that must not await anything
- *  between its last abort check and the request can acquire the token first — see `squashMerge`. */
-async function send<T>(
-  access: GithubAccess,
-  token: string,
-  query: string,
-  variables: Record<string, unknown>
-): Promise<T> {
+  const token = await access.token()
   const fetchImpl = access.fetchImpl ?? ((input: string, init?: RequestInit) => fetch(input, init))
   const res = await fetchImpl(access.endpoint ?? 'https://api.github.com/graphql', {
     method: 'POST',
@@ -200,21 +189,34 @@ function toCheck(node: Record<string, unknown>): PrCheck {
   return { name: String(node.name ?? ''), outcome }
 }
 
-/**
- * Squash-merge, pinned to the head the readiness verdict was formed against — never to a head
- * the operator saw in the panel minutes ago. A commit landing mid-tick refuses here and the
- * next tick judges the new head on its own merits, which is the whole point of "when ready".
- *
- * The token is fetched BEFORE the last abort check, not inside the request: fetching it is itself an
- * await (a pod reads it over the agent tunnel), and a disarm landing in that window would otherwise
- * be invisible — the check would have passed already and the POST would go out regardless. Answers
- * `false` when the fence closed instead, so nothing was sent.
- */
-export async function squashMerge(access: GithubAccess, pr: PrSnapshot, aborted?: () => boolean): Promise<boolean> {
+/** Squash-merge through REST (the proxy carries GraphQL read-only), pinned by `sha` to the head judged, with nothing awaited between the last abort check and the request. */
+export async function squashMerge(
+  access: GithubAccess,
+  repoFullName: string,
+  prNumber: number,
+  pr: PrSnapshot,
+  aborted?: () => boolean
+): Promise<boolean> {
   const token = await access.token()
-  // Nothing may be awaited between here and the request; `send` takes the token already resolved.
   if (aborted?.()) return false
-  await send(access, token, MERGE_MUTATION, { id: pr.prId, oid: pr.headOid })
+  const fetchImpl = access.fetchImpl ?? ((input: string, init?: RequestInit) => fetch(input, init))
+  const res = await fetchImpl(
+    `${access.restEndpoint ?? 'https://api.github.com'}/repos/${repoFullName}/pulls/${prNumber}/merge`,
+    {
+      method: 'PUT',
+      headers: {
+        authorization: `Bearer ${token}`,
+        accept: 'application/vnd.github+json',
+        'content-type': 'application/json',
+        'user-agent': 'agentconnect-auto-merge'
+      },
+      body: JSON.stringify({ merge_method: 'squash', sha: pr.headOid })
+    }
+  )
+  if (!res.ok) {
+    const message = ((await res.json().catch(() => undefined)) as { message?: string } | undefined)?.message
+    throw new AutoMergeGithubError(`github answered ${res.status}${message ? `: ${message}` : ''}`)
+  }
   return true
 }
 
@@ -264,7 +266,7 @@ export async function tick(
     // fetching a token at all for a watch already disarmed, and again inside `squashMerge` with the
     // token in hand — that second one is the check no further await can slip behind.
     if (opts.aborted?.()) return { kind: 'aborted' }
-    if (!(await squashMerge(access, pr, opts.aborted))) return { kind: 'aborted' }
+    if (!(await squashMerge(access, repoFullName, prNumber, pr, opts.aborted))) return { kind: 'aborted' }
     return { kind: 'merged' }
   } catch (err) {
     return { kind: 'error', error: err instanceof Error ? err.message : String(err) }
