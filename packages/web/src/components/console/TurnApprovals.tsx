@@ -126,7 +126,7 @@ function PendingApproval({
       className="flex min-w-0 flex-col gap-2 rounded-r-[10px] border-l-2 border-(--amber-500) bg-gradient-to-r from-(--status-paused-soft) to-transparent to-70% px-[14px] py-3"
     >
       <div className="flex min-w-0 items-start gap-2 font-sans text-[14px] font-normal leading-[1.5] text-(--text-secondary)">
-        <Icon name="shield-alert" size={16} color="var(--amber-500)" className="mt-[2px] flex-none" />
+        <Icon name="shield-exclamation-point" size={16} color="var(--amber-500)" className="mt-[2px] flex-none" />
         <span className="min-w-0 break-words">
           <span className="font-medium text-(--text-primary)">{t('approvalNeeded')}</span>{' '}
           <code className="break-all rounded-xs bg-(--surface-sunken) px-1 font-mono text-[12.5px]">

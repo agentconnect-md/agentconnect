@@ -594,7 +594,7 @@ const BANNER_TONE: Record<CheckoutReturn['phase'], { border: string; bg: string;
   failed: { border: 'var(--status-error)', bg: 'var(--status-error-soft)', icon: 'x' },
   expired: { border: 'var(--status-paused)', bg: 'var(--status-paused-soft)', icon: 'timer-off' },
   canceled: { border: 'var(--border-strong)', bg: 'var(--surface-sunken)', icon: 'undo-2' },
-  error: { border: 'var(--status-error)', bg: 'var(--status-error-soft)', icon: 'triangle-alert' }
+  error: { border: 'var(--status-error)', bg: 'var(--status-error-soft)', icon: 'triangle-exclamation-point' }
 }
 
 type CheckoutTranslator = ReturnType<typeof useTranslations<'Billing.checkout'>>
@@ -779,7 +779,7 @@ function AddCreditsCard({ orgId, returnPath }: { orgId: string; returnPath: stri
         </div>
         {error && (
           <div className="mt-2 flex items-center gap-2 font-sans text-[12px] text-(--status-error)">
-            <Icon name="triangle-alert" size={14} />
+            <Icon name="triangle-exclamation-point" size={14} />
             <span className="min-w-0 flex-1">{error}</span>
           </div>
         )}
@@ -926,7 +926,7 @@ function ActivityCard({ orgId }: { orgId: string }) {
       </div>
       {rows.error ? (
         <div className="flex items-center gap-3 px-4 py-3">
-          <Icon name="triangle-alert" size={18} color="var(--status-error)" />
+          <Icon name="triangle-exclamation-point" size={18} color="var(--status-error)" />
           <span className="flex-1 font-sans text-[13px] font-normal leading-[1.55]">
             {t('loadError', { error: (rows.error as Error).message })}
           </span>
@@ -1321,7 +1321,7 @@ export default function BillingView() {
 
       {account.error && (
         <div className="card mb-4 flex items-center gap-3 px-4 py-3">
-          <Icon name="triangle-alert" size={18} color="var(--status-error)" />
+          <Icon name="triangle-exclamation-point" size={18} color="var(--status-error)" />
           <span className="flex-1 font-sans text-[13px] font-normal leading-[1.55]">
             {t('accountLoadError', { error: (account.error as Error).message })}
           </span>
@@ -1432,7 +1432,7 @@ export default function BillingView() {
                 otherwise render as "no transactions", which is a lie. */}
             {transactions.error ? (
               <div className="flex items-center gap-3 px-4 py-3">
-                <Icon name="triangle-alert" size={18} color="var(--status-error)" />
+                <Icon name="triangle-exclamation-point" size={18} color="var(--status-error)" />
                 <span className="flex-1 font-sans text-[13px] font-normal leading-[1.55]">
                   {t('transactions.loadError', { error: (transactions.error as Error).message })}
                 </span>

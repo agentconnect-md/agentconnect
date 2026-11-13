@@ -148,7 +148,7 @@ export function FillCard({
           {error ? (
             <span className="inline-flex min-w-0 items-start gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--brand-soft-text)">
               <span className="mt-[2px] flex-none">
-                <Icon name="triangle-alert" size={12} color="var(--brand)" />
+                <Icon name="triangle-exclamation-point" size={12} color="var(--brand)" />
               </span>
               <span className="min-w-0">{error}</span>
             </span>

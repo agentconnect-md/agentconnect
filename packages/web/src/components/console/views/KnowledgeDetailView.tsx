@@ -209,7 +209,7 @@ export default function KnowledgeDetailView() {
           />
         ) : entry.error instanceof Error ? (
           <div className="card flex items-center justify-center gap-2 px-5 py-10 font-sans text-[13px] text-(--text-tertiary)">
-            <Icon name="triangle-alert" size={16} />
+            <Icon name="triangle-exclamation-point" size={16} />
             {entry.error.message}
           </div>
         ) : (

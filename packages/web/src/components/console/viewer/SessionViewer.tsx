@@ -527,7 +527,7 @@ export function SessionViewer({
     if (diffRead.err) {
       return (
         <div className="flex items-start gap-[10px] p-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
-          <Icon name="triangle-alert" size={15} color="var(--amber-500)" className="mt-[2px] flex-none" />
+          <Icon name="triangle-exclamation-point" size={15} color="var(--amber-500)" className="mt-[2px] flex-none" />
           <span>
             {readNoticeText(diffRead.errStatus, diffRead.errCode, Boolean(sessionId))}{' '}
             <button className="lnk text-[12.5px]" onClick={retryDiff}>
@@ -542,7 +542,7 @@ export function SessionViewer({
       return (
         <div className="flex items-start gap-[10px] p-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
           <Icon
-            name={notice.warn ? 'triangle-alert' : 'file-diff'}
+            name={notice.warn ? 'triangle-exclamation-point' : 'file-diff'}
             size={15}
             color={notice.warn ? 'var(--amber-500)' : 'var(--text-tertiary)'}
             className="mt-[2px] flex-none"
@@ -570,7 +570,7 @@ export function SessionViewer({
     if (read.err) {
       return (
         <div className="flex items-start gap-[10px] p-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
-          <Icon name="triangle-alert" size={15} color="var(--amber-500)" className="mt-[2px] flex-none" />
+          <Icon name="triangle-exclamation-point" size={15} color="var(--amber-500)" className="mt-[2px] flex-none" />
           <span>{readNoticeText(read.errStatus, read.errCode, Boolean(sessionId))}</span>
         </div>
       )
@@ -613,7 +613,7 @@ export function SessionViewer({
       if (currentImage?.err) {
         return (
           <div className="flex items-start gap-[10px] p-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
-            <Icon name="triangle-alert" size={15} color="var(--amber-500)" className="mt-[2px] flex-none" />
+            <Icon name="triangle-exclamation-point" size={15} color="var(--amber-500)" className="mt-[2px] flex-none" />
             <span>{currentImage.err}</span>
           </div>
         )
@@ -827,7 +827,7 @@ export function SessionViewer({
           data-viewer-stage-error=""
           className="flex flex-none items-start gap-[6px] border-t border-(--border-subtle) px-4 py-[9px] font-sans text-[12px] font-normal leading-[1.5] text-(--red-600)"
         >
-          <Icon name="triangle-alert" size={14} color="var(--red-600)" className="mt-[2px] flex-none" />
+          <Icon name="triangle-exclamation-point" size={14} color="var(--red-600)" className="mt-[2px] flex-none" />
           <span>{moveErr}</span>
         </div>
       ) : null}
@@ -837,7 +837,7 @@ export function SessionViewer({
           data-viewer-download-error=""
           className="flex flex-none items-start gap-[6px] border-t border-(--border-subtle) px-4 py-[9px] font-sans text-[12px] font-normal leading-[1.5] text-(--red-600)"
         >
-          <Icon name="triangle-alert" size={14} color="var(--red-600)" className="mt-[2px] flex-none" />
+          <Icon name="triangle-exclamation-point" size={14} color="var(--red-600)" className="mt-[2px] flex-none" />
           <span>{downloadErr}</span>
         </div>
       ) : null}

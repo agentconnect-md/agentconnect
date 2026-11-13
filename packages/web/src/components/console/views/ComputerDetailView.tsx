@@ -345,7 +345,7 @@ function ComputerDetail({
       </div>
 
       {actionError && !confirm && (
-        <Banner tone="error" icon="triangle-alert">
+        <Banner tone="error" icon="triangle-exclamation-point">
           {actionError}
         </Banner>
       )}

@@ -67,7 +67,7 @@ export function balanceBanner(
   if (threshold > 0 && acct.balanceMicro < threshold) {
     return {
       tone: 'amber',
-      icon: 'triangle-alert',
+      icon: 'triangle-exclamation-point',
       titleKey: 'lowBalanceTitle',
       titleValues: { balance: fmtMicroUsd(acct.balanceMicro) },
       textKey: 'lowBalanceText',

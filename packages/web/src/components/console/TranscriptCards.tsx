@@ -481,7 +481,7 @@ export function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: 
                   className="inline-flex min-w-0 items-start gap-[6px] rounded-sm border border-(--border-subtle) bg-(--amber-50) px-[10px] py-[7px] font-sans text-[12px] font-normal leading-[1.45] text-(--text-primary)"
                 >
                   <span className="mt-[2px] flex-none">
-                    <Icon name="triangle-alert" size={13} color="var(--amber-500)" />
+                    <Icon name="triangle-exclamation-point" size={13} color="var(--amber-500)" />
                   </span>
                   <span className="min-w-0">{w}</span>
                 </span>
@@ -633,7 +633,7 @@ export function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: 
                       {reason ? (
                         <span className="inline-flex min-w-0 items-start gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--brand-soft-text)">
                           <span className="mt-[2px] flex-none">
-                            <Icon name="triangle-alert" size={12} color="var(--brand)" />
+                            <Icon name="triangle-exclamation-point" size={12} color="var(--brand)" />
                           </span>
                           <span className="min-w-0">{reason}</span>
                         </span>
@@ -685,7 +685,7 @@ export function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: 
               {invalid && (
                 <span className="inline-flex min-w-0 items-start gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--brand-soft-text)">
                   <span className="mt-[2px] flex-none">
-                    <Icon name="triangle-alert" size={12} color="var(--brand)" />
+                    <Icon name="triangle-exclamation-point" size={12} color="var(--brand)" />
                   </span>
                   <span className="min-w-0">{invalid}</span>
                 </span>

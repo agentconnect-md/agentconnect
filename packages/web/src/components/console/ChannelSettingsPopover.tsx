@@ -173,7 +173,7 @@ export function ChannelSettingsPopover({
           <div className="mt-[5px] flex flex-col gap-[6px] border-t border-(--border-subtle) px-3 py-[10px] font-sans text-[12px] font-normal leading-[1.45] text-(--text-tertiary) desktop:gap-[5px] desktop:px-[10px] desktop:py-[9px] desktop:text-[11.5px]">
             {error && (
               <div role="alert" className="flex items-start gap-[6px] text-(--status-error)">
-                <Icon name="triangle-alert" size={13} className="mt-[2px] flex-none" />
+                <Icon name="triangle-exclamation-point" size={13} className="mt-[2px] flex-none" />
                 <span className="min-w-0 break-words">{error}</span>
               </div>
             )}

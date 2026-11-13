@@ -1229,7 +1229,7 @@ export default function AddAgentModal({
                       <>
                         {ghDenied && (
                           <span className="mt-[6px] inline-flex items-start gap-[6px] font-sans text-[11.5px] font-medium leading-normal text-(--red-500)">
-                            <Icon name="triangle-alert" size={13} className="mt-[1px] flex-none" />
+                            <Icon name="triangle-exclamation-point" size={13} className="mt-[1px] flex-none" />
                             {ghDenied.denied === 'GITHUB_IDENTITY_REQUIRED'
                               ? t('errors.linkGithub')
                               : t('errors.githubRepositoryUnavailable')}
@@ -1728,7 +1728,7 @@ export default function AddAgentModal({
             className="mr-auto inline-flex cursor-pointer items-center gap-[6px] border-0 bg-transparent font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary) hover:text-(--text-secondary)"
             onClick={() => firstBlocker && goToSection(firstBlocker.id)}
           >
-            <Icon name="circle-alert" size={13} color="var(--amber-500)" className="flex-none" />
+            <Icon name="circle-exclamation-point" size={13} color="var(--amber-500)" className="flex-none" />
             {blockerHint}
           </button>
         ) : null}

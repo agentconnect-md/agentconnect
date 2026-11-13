@@ -36,11 +36,11 @@ export function ConfirmationDialog({
         <div className="modalhead">
           {destructive ? (
             <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] bg-(--status-error-soft)">
-              <Icon name="triangle-alert" size={16} color="var(--status-error)" />
+              <Icon name="triangle-exclamation-point" size={16} color="var(--status-error)" />
             </span>
           ) : (
             <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] bg-(--status-paused-soft)">
-              <Icon name="triangle-alert" size={16} color="var(--amber-500)" />
+              <Icon name="triangle-exclamation-point" size={16} color="var(--amber-500)" />
             </span>
           )}
           <span id={titleId} className="flex-1 font-sans text-[16px] font-semibold leading-normal">

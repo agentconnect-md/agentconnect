@@ -25,7 +25,7 @@ export function DecisionChip({
   onOpen(): void
   disabled?: boolean
   /** A held routing: the chip turns amber and this icon replaces the split. */
-  warning?: 'lock' | 'triangle-alert'
+  warning?: 'lock' | 'triangle-exclamation-point'
   /** The × segment of a bound chip; omit where the viewer cannot stop it. */
   remove?: { label: string; title?: string; onClick(): void; busy?: boolean; failed?: boolean }
   /** `data-*` locators and `aria-*` state for the open control, such as a menu trigger's. */
@@ -100,7 +100,7 @@ export function DecisionChip({
             warning ? 'border-(--border-subtle)' : 'border-(--brand-ring)'
           } ${remove.failed ? 'text-(--status-error)' : 'text-(--text-tertiary)'}`}
         >
-          <Icon name={remove.failed ? 'triangle-alert' : 'x'} size={11} />
+          <Icon name={remove.failed ? 'triangle-exclamation-point' : 'x'} size={11} />
         </button>
       )}
       {hover && card.card(hover)}

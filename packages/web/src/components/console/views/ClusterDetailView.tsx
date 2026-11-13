@@ -590,7 +590,7 @@ function Figure({
           className="mt-[6px] inline-flex items-center gap-[6px] font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)"
           title={error}
         >
-          <Icon name="triangle-alert" size={14} color="var(--status-error)" />
+          <Icon name="triangle-exclamation-point" size={14} color="var(--status-error)" />
           {t('unavailable')}
         </div>
       ) : (

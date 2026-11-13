@@ -524,7 +524,7 @@ export default function AddCronModal({
 
         {err && (
           <div className="mt-[14px] flex items-start gap-2 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[11px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--status-error)">
-            <Icon name="triangle-alert" size={15} />
+            <Icon name="triangle-exclamation-point" size={15} />
             {err}
           </div>
         )}

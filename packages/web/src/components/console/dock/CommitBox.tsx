@@ -297,7 +297,7 @@ export function CommitBox({
           className={`flex items-start gap-[6px] font-sans text-[11.5px] font-normal leading-[1.5] ${outcome.ok ? 'text-(--text-secondary)' : 'text-(--red-600)'}`}
         >
           <Icon
-            name={outcome.ok ? 'check' : 'triangle-alert'}
+            name={outcome.ok ? 'check' : 'triangle-exclamation-point'}
             size={13}
             color={outcome.ok ? 'var(--status-online)' : 'var(--red-600)'}
             className="mt-[2px] flex-none"

@@ -252,7 +252,7 @@ export default function Waitlist() {
             {phase === 'error' && (
               <div className="m-auto flex flex-col items-center gap-4 text-center">
                 <span className="flex h-12 w-12 items-center justify-center rounded-full bg-(--status-error-soft)">
-                  <Icon name="triangle-alert" size={22} color="var(--status-error)" />
+                  <Icon name="triangle-exclamation-point" size={22} color="var(--status-error)" />
                 </span>
                 <div>
                   <h1 className="wl-h1" style={{ fontSize: 22 }}>

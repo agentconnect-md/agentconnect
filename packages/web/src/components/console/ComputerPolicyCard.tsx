@@ -289,7 +289,7 @@ export function ComputerPolicyCard({
             role="note"
             className="mx-[18px] my-2 flex items-start gap-2 rounded-md bg-(--status-paused-soft) px-3 py-2 font-sans text-[12px] font-normal leading-[1.5] text-[#9a6500]"
           >
-            <Icon name="triangle-alert" size={14} className="mt-[2px] flex-none" />
+            <Icon name="triangle-exclamation-point" size={14} className="mt-[2px] flex-none" />
             <span>{t('shellNoIsolation')}</span>
           </p>
         )}

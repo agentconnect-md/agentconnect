@@ -12,7 +12,9 @@ function SeverityIcon({ severity }: { severity: NotificationSeverity }) {
     case 'error':
       return <Icon name="circle-x" size={15} color="var(--magenta-600)" className="flex-none mt-[2px]" />
     case 'warning':
-      return <Icon name="triangle-alert" size={15} color="var(--amber-500)" className="flex-none mt-[2px]" />
+      return (
+        <Icon name="triangle-exclamation-point" size={15} color="var(--amber-500)" className="flex-none mt-[2px]" />
+      )
     case 'info':
     default:
       return <Icon name="info" size={15} color="var(--brand)" className="flex-none mt-[2px]" />

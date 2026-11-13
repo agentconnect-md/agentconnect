@@ -3822,7 +3822,7 @@ export default function SessionDetailView() {
                     aria-controls={requestsTooltipId}
                     onClick={requestsPopover.toggleTap}
                   >
-                    <Icon name={pendingRequestCount > 0 ? 'shield-alert' : 'shield-check'} size={15} />
+                    <Icon name={pendingRequestCount > 0 ? 'shield-exclamation-point' : 'shield-check'} size={15} />
                     {pendingRequestCount > 0 ? <span>{pendingRequestCount}</span> : null}
                   </button>
                   {/* dialog, not tooltip: Allow/Deny live inside, and a tooltip role
@@ -4007,13 +4007,13 @@ export default function SessionDetailView() {
               )}
               {conversationOffline > 0 && (
                 <div className="card m-4 flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary) desktop:m-0">
-                  <Icon name="triangle-alert" size={15} color="var(--amber-500)" />
+                  <Icon name="triangle-exclamation-point" size={15} color="var(--amber-500)" />
                   <span>{t('offlineParticipants')}</span>
                 </div>
               )}
               {wantTranscript && visibleMsgErr && !transcriptPurged && (
                 <div className="card m-4 flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary) desktop:m-0">
-                  <Icon name="triangle-alert" size={15} color="var(--amber-500)" />
+                  <Icon name="triangle-exclamation-point" size={15} color="var(--amber-500)" />
                   <span>{t('transcriptLoadError')}</span>
                 </div>
               )}

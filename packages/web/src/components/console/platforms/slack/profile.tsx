@@ -129,7 +129,7 @@ export function SlackConfigCard() {
               <div className="flex items-center justify-between gap-3">
                 <div className="flex min-w-0 items-center gap-2">
                   <Icon
-                    name={status.durable && status.autoAvailable ? 'circle-check' : 'circle-alert'}
+                    name={status.durable && status.autoAvailable ? 'circle-check' : 'circle-exclamation-point'}
                     size={15}
                     color={
                       accessExpired

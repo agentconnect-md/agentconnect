@@ -489,7 +489,7 @@ function TriggerOutcomes({ result }: { result: AzureDevOpsConnectResultDto }) {
       className="flex w-full flex-col gap-2 rounded-md border border-(--border-subtle) bg-(--status-paused-soft) px-3 py-[10px] text-left"
     >
       <div className="flex items-start gap-2 text-[13px] font-semibold leading-[1.5] text-(--text-primary)">
-        <Icon name="triangle-alert" size={14} color="var(--amber-500)" className="mt-[3px] flex-none" />
+        <Icon name="triangle-exclamation-point" size={14} color="var(--amber-500)" className="mt-[3px] flex-none" />
         <span>{t('triggersMissedTitle')}</span>
       </div>
       {missed.length > 0 && (

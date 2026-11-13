@@ -58,7 +58,7 @@ function TelegramPrivacyStatus({
       }`}
     >
       <Icon
-        name={checking ? 'loader' : ready ? 'circle-check' : 'triangle-alert'}
+        name={checking ? 'loader' : ready ? 'circle-check' : 'triangle-exclamation-point'}
         size={14}
         color={ready ? 'var(--status-online)' : checking ? 'var(--status-info)' : 'var(--status-error)'}
         className={`mt-[1px] flex-none ${checking ? 'animate-spin' : ''}`}

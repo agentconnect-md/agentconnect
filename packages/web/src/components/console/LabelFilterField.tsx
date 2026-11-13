@@ -121,7 +121,7 @@ export function LabelFilterField({
       </div>
       {atCap && (
         <div className="mt-[7px] flex items-center gap-[6px] font-sans text-[11.5px] font-medium leading-normal text-(--amber-500)">
-          <Icon name="triangle-alert" size={12} className="flex-none" />
+          <Icon name="triangle-exclamation-point" size={12} className="flex-none" />
           {t('limitReached')}
         </div>
       )}

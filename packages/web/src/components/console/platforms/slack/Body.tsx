@@ -698,7 +698,7 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
                     <div className="mt-[14px] rounded-lg bg-(--status-error-soft) px-[11px] py-[10px]">
                       <div className="flex items-start gap-2">
                         <Icon
-                          name="triangle-alert"
+                          name="triangle-exclamation-point"
                           size={14}
                           color="var(--status-error)"
                           className="mt-[1px] flex-none"
@@ -915,7 +915,7 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
                     app" banner — reinstalling once is what activates the token pasted above. */}
                     <div className="mt-[11px] flex items-start gap-2 rounded-lg bg-(--status-paused-soft) px-[11px] py-[9px]">
                       <Icon
-                        name="triangle-alert"
+                        name="triangle-exclamation-point"
                         size={14}
                         color="var(--status-paused)"
                         className="mt-[1px] flex-none"

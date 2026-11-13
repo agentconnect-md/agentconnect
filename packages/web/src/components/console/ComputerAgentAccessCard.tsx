@@ -34,7 +34,7 @@ export function ComputerAgentAccessCard({ computer }: { computer: ComputerDto })
             {t('allDescription')}
             {computer.kind === 'self-hosted' && (
               <p className="m-0 mt-2 flex items-start gap-[7px] text-[12px] text-(--text-tertiary)">
-                <Icon name="triangle-alert" size={13} className="mt-[2px] flex-none" />
+                <Icon name="triangle-exclamation-point" size={13} className="mt-[2px] flex-none" />
                 <span>{t('allNoIsolation')}</span>
               </p>
             )}
@@ -104,7 +104,7 @@ function GrantedAgent({ agent, id, computer }: { agent: Agent | undefined; id: s
           className="inline-flex flex-none items-center gap-1 rounded-full bg-(--status-paused-soft) px-2 py-[1px] font-sans text-[11px] font-semibold leading-normal text-[#9a6500]"
           title={t('noIsolationHint')}
         >
-          <Icon name="triangle-alert" size={12} />
+          <Icon name="triangle-exclamation-point" size={12} />
           {t('noIsolation')}
         </span>
       )}

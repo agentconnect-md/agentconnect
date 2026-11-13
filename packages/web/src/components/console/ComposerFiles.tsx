@@ -231,7 +231,11 @@ function Card({ card, removeLabel, onRemove }: { card: AttachmentCard; removeLab
       )}
       {card.status === 'uploading' || failed ? (
         <span className="absolute bottom-2 right-2 flex h-6 w-6 items-center justify-center rounded-full bg-(--surface-card) shadow-(--shadow-xs)">
-          {failed ? <Icon name="triangle-alert" size={13} color="var(--status-error)" /> : <Spinner size={12} />}
+          {failed ? (
+            <Icon name="triangle-exclamation-point" size={13} color="var(--status-error)" />
+          ) : (
+            <Spinner size={12} />
+          )}
         </span>
       ) : null}
       {failed && card.retry ? (

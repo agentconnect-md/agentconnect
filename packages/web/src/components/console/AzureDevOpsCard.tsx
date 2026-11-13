@@ -404,7 +404,12 @@ export default function AzureDevOpsCard({ canWrite }: { canWrite: boolean }) {
               role="status"
               className="flex items-start gap-2 border-b border-(--border-subtle) bg-(--status-paused-soft) px-4 py-[9px] font-sans text-[12px] font-normal leading-[1.5] text-(--amber-500)"
             >
-              <Icon name="triangle-alert" size={14} color="var(--amber-500)" className="mt-[2px] flex-none" />
+              <Icon
+                name="triangle-exclamation-point"
+                size={14}
+                color="var(--amber-500)"
+                className="mt-[2px] flex-none"
+              />
               <span>{reasonText(connection.stateReason, own)}</span>
             </div>
           )}
@@ -443,7 +448,7 @@ export default function AzureDevOpsCard({ canWrite }: { canWrite: boolean }) {
           data-azure-devops-attention=""
           className="flex items-start gap-2 border-b border-(--border-subtle) px-4 py-[9px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)"
         >
-          <Icon name="shield-alert" size={13} className="mt-[2px] flex-none" />
+          <Icon name="shield-exclamation-point" size={13} className="mt-[2px] flex-none" />
           <span>
             {t('attention')}{' '}
             <a

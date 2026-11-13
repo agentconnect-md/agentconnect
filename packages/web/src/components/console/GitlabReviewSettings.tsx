@@ -40,7 +40,7 @@ export function GitlabReviewSettings({
       }}
       notices={
         botMissing ? (
-          <ReviewNotice icon="triangle-alert" tone="error">
+          <ReviewNotice icon="triangle-exclamation-point" tone="error">
             {t('botMissing')}
           </ReviewNotice>
         ) : undefined

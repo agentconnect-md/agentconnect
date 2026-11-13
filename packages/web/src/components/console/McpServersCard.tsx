@@ -914,7 +914,12 @@ export function EditConnectorModal({ provider, onClose }: { provider: McpProvide
 
           {catalogErr ? (
             <div className="flex items-start gap-[9px] rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px]">
-              <Icon name="triangle-alert" size={15} color="var(--status-error)" className="mt-[1px] flex-none" />
+              <Icon
+                name="triangle-exclamation-point"
+                size={15}
+                color="var(--status-error)"
+                className="mt-[1px] flex-none"
+              />
               <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
                 {t('catalogLoadError')}
               </span>
@@ -923,7 +928,12 @@ export function EditConnectorModal({ provider, onClose }: { provider: McpProvide
             <LoadingState size={20} padding={16} />
           ) : !cp || !auth ? (
             <div className="flex items-start gap-[9px] rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px]">
-              <Icon name="triangle-alert" size={15} color="var(--text-tertiary)" className="mt-[1px] flex-none" />
+              <Icon
+                name="triangle-exclamation-point"
+                size={15}
+                color="var(--text-tertiary)"
+                className="mt-[1px] flex-none"
+              />
               <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
                 {t('catalogMissing')}
               </span>

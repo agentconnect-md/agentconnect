@@ -108,7 +108,7 @@ export function GithubReviewSettings({
             </ReviewNotice>
           )}
           {reviewPermissionBlocked && (
-            <ReviewNotice icon="triangle-alert" tone="error">
+            <ReviewNotice icon="triangle-exclamation-point" tone="error">
               {installation?.pullRequestsPermission === 'missing'
                 ? t('reviewPermissionMissing')
                 : installation?.pullRequestsPermission === 'read'
@@ -132,7 +132,7 @@ export function GithubReviewSettings({
           )}
 
           {checkPermissionBlocked && (
-            <ReviewNotice icon="triangle-alert" tone="error">
+            <ReviewNotice icon="triangle-exclamation-point" tone="error">
               {!hasExactChecksWritePermission
                 ? installation?.checksPermission === 'missing'
                   ? t('checksPermissionMissing')
@@ -158,7 +158,7 @@ export function GithubReviewSettings({
           )}
 
           {repoSelected && hasPendingPermissionUpgrade && !blocked && (
-            <ReviewNotice icon="triangle-alert" tone="warning">
+            <ReviewNotice icon="triangle-exclamation-point" tone="warning">
               {hasExactChecksWritePermission ? t('pendingUpgradeChecksKept') : t('pendingUpgrade')}{' '}
               <a href={installation.settingsUrl} target="_blank" rel="noopener noreferrer" className="lnk text-[12px]">
                 {t('reviewPermissions')}

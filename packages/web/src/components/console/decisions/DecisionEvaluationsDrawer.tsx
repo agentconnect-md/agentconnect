@@ -134,10 +134,14 @@ export function DecisionEvaluationsDrawer({
         ? note('wifi-off', t(`${copy}.offline`), { label: t('binding.retry'), run: () => void mutate() })
         : kind === 'unsupported'
           ? note('circle-arrow-up', t(`${copy}.unsupported`))
-          : note('triangle-alert', t('evaluations.error', { message: errorParts(error)?.message ?? String(error) }), {
-              label: t('binding.retry'),
-              run: () => void mutate()
-            })
+          : note(
+              'triangle-exclamation-point',
+              t('evaluations.error', { message: errorParts(error)?.message ?? String(error) }),
+              {
+                label: t('binding.retry'),
+                run: () => void mutate()
+              }
+            )
   } else if (items.length === 0 && nextCursor === null) body = note('info', t(`${copy}.empty`))
   else
     body = (

@@ -37,8 +37,8 @@
     "@modelcontextprotocol/client": "2.4.0",
     "@modelcontextprotocol/node": "2.1.2",
     "@modelcontextprotocol/server": "2.4.0",
-    "werift": "0.26.0",
-    "ws": "^8.22.1",
+    "werift": "0.27.0",
+    "ws": "^8.22.2",
     "zod": "^4.6.7"
   },
   "devDependencies": {

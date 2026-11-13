@@ -140,7 +140,7 @@ export function CodeHostDecisionModal({
               className="flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-[13px] py-[10px] font-sans text-[12.5px] font-normal leading-[1.55]"
             >
               <Icon
-                name={status === 'access_revoked' ? 'lock' : 'triangle-alert'}
+                name={status === 'access_revoked' ? 'lock' : 'triangle-exclamation-point'}
                 size={14}
                 className="mt-[2px] flex-none"
               />
@@ -215,7 +215,7 @@ export function CodeHostDecisionModal({
               role="alert"
               className="flex items-start gap-[9px] rounded-md border border-(--red-500) bg-(--status-error-soft) px-[13px] py-[10px] font-sans text-[12.5px] font-normal leading-[1.55]"
             >
-              <Icon name="triangle-alert" size={14} className="mt-[2px] flex-none" />
+              <Icon name="triangle-exclamation-point" size={14} className="mt-[2px] flex-none" />
               <span>{serverError.kind === 'forbidden' ? tc('forbidden') : saveErrorText(t, serverError)}</span>
             </div>
           )}

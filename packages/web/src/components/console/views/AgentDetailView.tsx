@@ -1376,7 +1376,7 @@ function AgentDetail() {
               <IntegrationMarks integrations={markIntegrations} hookKinds={integrationHookKinds} />
             ) : (
               <span className="inline-flex items-center gap-[6px] font-sans text-[12px] font-semibold leading-normal text-(--amber-500)">
-                <Icon name="triangle-alert" size={14} />
+                <Icon name="triangle-exclamation-point" size={14} />
                 {t('noIntegration')}
               </span>
             )}
@@ -1621,7 +1621,12 @@ function AgentDetail() {
                 </div>
                 {owningDaemon?.status === 'offline' && (
                   <div className="flex items-start gap-[9px] border-b border-(--amber-500) bg-(--status-paused-soft) px-4 py-3">
-                    <Icon name="triangle-alert" size={14} color="var(--amber-500)" className="mt-[1px] flex-none" />
+                    <Icon
+                      name="triangle-exclamation-point"
+                      size={14}
+                      color="var(--amber-500)"
+                      className="mt-[1px] flex-none"
+                    />
                     <div className="min-w-0 flex-1">
                       <div className="font-sans text-[12px] font-semibold leading-normal text-(--text-primary)">
                         {t('basics.safeMoveUnavailable')}
@@ -3599,7 +3604,7 @@ function AgentDetail() {
               )}
               {reviewSettingsError && (
                 <div className="mt-3 flex items-start gap-2 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[10px] font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
-                  <Icon name="triangle-alert" size={14} className="mt-[2px] flex-none" />
+                  <Icon name="triangle-exclamation-point" size={14} className="mt-[2px] flex-none" />
                   {reviewSettingsError}
                 </div>
               )}
@@ -3679,7 +3684,7 @@ function UnauthorizedWatchBadge() {
       className="badge flex-none bg-(--status-paused-soft) text-(--amber-500)"
       title={t('integrations.unauthorizedRepoHint')}
     >
-      <Icon name="triangle-alert" size={11} />
+      <Icon name="triangle-exclamation-point" size={11} />
       {t('integrations.unauthorizedRepo')}
     </span>
   )

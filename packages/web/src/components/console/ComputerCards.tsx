@@ -16,7 +16,7 @@ import { Button, Icon } from '@/components/ui'
 
 const CHECK_ICON: Record<ComputerDoctorCheck['status'], { icon: string; color: string }> = {
   fail: { icon: 'circle-x', color: 'var(--status-error)' },
-  warn: { icon: 'triangle-alert', color: 'var(--status-paused)' },
+  warn: { icon: 'triangle-exclamation-point', color: 'var(--status-paused)' },
   info: { icon: 'info', color: 'var(--status-info)' },
   ok: { icon: 'circle-check', color: 'var(--status-online)' }
 }

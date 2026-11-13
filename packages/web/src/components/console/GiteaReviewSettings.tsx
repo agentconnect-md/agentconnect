@@ -42,7 +42,7 @@ export function GiteaReviewSettings({
       }}
       notices={
         repositoryMissing ? (
-          <ReviewNotice icon="triangle-alert" tone="error">
+          <ReviewNotice icon="triangle-exclamation-point" tone="error">
             {t('repositoryMissing')}
           </ReviewNotice>
         ) : undefined

@@ -663,7 +663,7 @@ function BotsCard({
                           role="alert"
                           className="mb-2 flex items-start gap-2 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)"
                         >
-                          <Icon name="triangle-alert" size={13} className="mt-[2px] flex-none" />
+                          <Icon name="triangle-exclamation-point" size={13} className="mt-[2px] flex-none" />
                           <span>{routingErr.msg}</span>
                         </div>
                       )}

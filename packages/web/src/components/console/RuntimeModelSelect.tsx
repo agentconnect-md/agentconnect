@@ -451,7 +451,7 @@ export function RuntimeModelSelect({
             )}
             {!decision?.selected && !coOnly && selectedWarning && (
               <span className="flex flex-none" title={warningLabel(selectedWarning)}>
-                <Icon name="triangle-alert" size={13} color="var(--status-paused)" />
+                <Icon name="triangle-exclamation-point" size={13} color="var(--status-paused)" />
               </span>
             )}
             {fastOn && (

@@ -70,7 +70,7 @@ export default function AddPoolComputer({ onClose }: { onClose: () => void }) {
             role="status"
             className="mt-[14px] flex items-start gap-2 rounded-md border border-(--status-paused) bg-(--status-paused-soft) px-3 py-[10px] font-sans text-[12.5px] font-normal leading-[1.5] text-[#9a6500]"
           >
-            <Icon name="triangle-alert" size={15} className="mt-[1px] flex-none" />
+            <Icon name="triangle-exclamation-point" size={15} className="mt-[1px] flex-none" />
             {t('poolUnavailable')}
           </div>
         )}
@@ -79,7 +79,7 @@ export default function AddPoolComputer({ onClose }: { onClose: () => void }) {
             role="alert"
             className="mt-[14px] flex items-start gap-2 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[11px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--status-error)"
           >
-            <Icon name="triangle-alert" size={15} />
+            <Icon name="triangle-exclamation-point" size={15} />
             {t('poolError', { message: err })}
           </div>
         )}

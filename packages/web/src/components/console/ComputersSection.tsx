@@ -270,7 +270,7 @@ export function ComputerRow({ computer }: { computer: ComputerDto }) {
           </span>
         ) : doctor.warn > 0 ? (
           <span className="min-w-0 truncate text-[#9a6500]">
-            <Icon name="triangle-alert" size={13} className="mr-[5px] inline align-[-2px]" />
+            <Icon name="triangle-exclamation-point" size={13} className="mr-[5px] inline align-[-2px]" />
             {t('doctor.warning', { count: doctor.warn })}
           </span>
         ) : cloud ? null : doctor.total === 0 ? (
