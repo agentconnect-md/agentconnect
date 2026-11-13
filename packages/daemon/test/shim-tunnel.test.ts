@@ -1133,6 +1133,29 @@ describe('binary data frames', () => {
     expect(client.received().toString('utf8').endsWith('tail')).toBe(true)
   })
 
+  it('reports the writes again when a renewal replays frames whose report was lost', async () => {
+    const events: Array<{ id: string; event: ShimEvent['event'] }> = []
+    const path = join(socketDir(), 'pod.sock')
+    const host = new TunnelHost({ emit: (id, event) => events.push({ id, event }), socketPathFor: () => path })
+    hosts.push(host)
+    await host.handle({ op: 'listen', tunnel: 'agent', acks: true })
+    const client = inPodBytes(path)
+    await vi.waitFor(() => expect(events.some(({ event }) => event.kind === 'connect')).toBe(true))
+    const streamId = events.find(({ event }) => event.kind === 'connect')!.id
+    const frame = (seq: number, text: string): Buffer =>
+      encodeTunnelData(streamId, seq, [Buffer.from(text)], text.length)
+    const written = (): number[] => events.flatMap(({ event }) => (event.kind === 'written' ? [event.seq] : []))
+
+    host.handleData(frame(1, 'a'))
+    host.handleData(frame(2, 'b'))
+    await vi.waitFor(() => expect(written()).toEqual([2]))
+    // That report went out on a channel the renewal replaced, so the daemon re-sends both frames.
+    host.handleData(frame(1, 'a'))
+    host.handleData(frame(2, 'b'))
+    await vi.waitFor(() => expect(written()).toEqual([2, 2]))
+    expect(client.received().toString()).toBe('ab')
+  })
+
   it('carries a large download intact over binary frames through a real shim channel', async () => {
     const bytes = randomBytes(8 * 1024 * 1024)
     const daemonSocketPath = daemonSideServer((_chunk, socket) => socket.write(bytes))

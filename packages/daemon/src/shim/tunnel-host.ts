@@ -281,7 +281,12 @@ export class TunnelHost {
       delete stream.answer
     }
     const applied = stream.applied ?? 0
-    if (data.seq <= applied) return
+    if (data.seq <= applied) {
+      // A replay after a renewal: the report of these writes may have died with the old channel, so it goes out again.
+      stream.reported = Math.min(stream.reported ?? 0, data.seq - 1)
+      stream.reportSoon ??= setTimeout(() => this.report(data.streamId, stream), WRITTEN_FLUSH_MS)
+      return
+    }
     if (data.seq !== applied + 1) {
       this.finish(data.streamId, stream.socket, `tunnel stream skipped from frame ${applied} to ${data.seq}`)
       return
