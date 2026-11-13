@@ -4500,7 +4500,9 @@ export class Daemon {
             ...(externalRepoId !== undefined ? { externalRepoId } : {}),
             ...proxyOnlyConsumer(provider, 'daemon')
           })
-        } else await this.gitCreds.get(agentId, reason, proxyOnlyConsumer(IMPLICIT_CREDENTIAL_PROVIDER, 'daemon'))
+        } else if (isProxyOnlyProvider(IMPLICIT_CREDENTIAL_PROVIDER)) {
+          await this.gitCreds.get(agentId, reason, { consumer: 'daemon' })
+        } else await this.gitCreds.get(agentId, reason)
       }
     })
     try {
