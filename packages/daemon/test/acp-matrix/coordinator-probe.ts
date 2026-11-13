@@ -9,10 +9,12 @@ import { LOOK_BACK_KIND, lookBackItemText, type LookBackFacts } from '../../src/
 import { REPORT_ANSWER_LANGUAGE } from '../../src/collab/coordinator.js'
 import {
   coordinatorPrompt as shippedCoordinatorPrompt,
+  coordinatorSessionTools as shippedCoordinatorSessionTools,
   coordinatorTools as shippedCoordinatorTools,
   renderCoordinatorBatch,
   withoutBlankCoordinatorFields
 } from '../../src/auto-session/coordinator-prompt.js'
+import { REMINDER_TOOLS } from '../../src/mcp/ops/assistant-reminders.js'
 import { readOnlyExtractionMode } from '../../src/memory/distill.js'
 import { CLAUDE_HEADLESS_DISALLOWED_TOOLS } from '../../src/runtime-defs/claude-runtime.js'
 import { spokenTo } from '../../src/auto-session/coordinator-turns.js'
@@ -303,6 +305,11 @@ export function coordinatorTools(): ToolDescriptor[] {
   return shippedCoordinatorTools()
 }
 
+/** The surface of a coordinator that holds its place's reminder tools too, as the daemon ships it to one in a platform conversation. */
+export function coordinatorToolsWithReminders(): ToolDescriptor[] {
+  return shippedCoordinatorSessionTools(REMINDER_TOOLS)
+}
+
 /** The coordinator session's standing instructions, as the daemon ships them, for the scenarios' channel or webchat conversation. */
 export function coordinatorPrompt(webchat = false, lookBack = false): string {
   if (webchat)
@@ -377,6 +384,21 @@ export interface CoScope {
   elsewhere?: ProbeElsewhereTask[]
   /** What `readTask` answers, by the taskId it is called with. */
   reads?: Record<string, unknown>
+  /** The tools this session lists, where a scenario offers more than the decision tools. */
+  tools?: ToolDescriptor[]
+}
+
+/** A reminder tool's answer in the fixture, which sets nothing: `remind` names a delivered message, as the coordinator's does. */
+function callReminderTool(
+  name: string,
+  args: Record<string, unknown>,
+  scope: CoScope
+): { value: unknown } | { error: string } {
+  if (name === 'listReminders') return { value: { reminders: [] } }
+  if (name === 'cancelReminder') return { error: `cancelReminder: ${String(args.id)} is no reminder set here` }
+  if (!scope.messages.includes(String(args.messageId ?? '')))
+    return { error: `remind: messageId ${String(args.messageId)} is not a message delivered in this turn` }
+  return { value: { ok: true, id: 'reminder-1', at: args.at, message: args.message } }
 }
 
 const ignoreArgs = z.object({ messageId: z.string().min(1), reason: z.string().nullish() })
@@ -490,6 +512,11 @@ function callTool(
     const error = `readTask: ${String(args.taskId)} is no task this conversation may read`
     return { result: text(error, true), call: { tool: name, args, error } }
   }
+  if (scope.tools?.some((tool) => tool.name === name) && REMINDER_TOOLS.some((tool) => tool.name === name)) {
+    const answer = callReminderTool(name, args, scope)
+    if ('error' in answer) return { result: text(answer.error, true), call: { tool: name, args, error: answer.error } }
+    return { result: text(answer.value), call: { tool: name, args } }
+  }
   if (name !== 'sendMessage' && name !== 'ignoreMessage') {
     const error = `${name} is not available to the coordinator`
     return { result: text(error, true), call: { tool: name, args, error } }
@@ -535,7 +562,7 @@ export function coordinatorFixture(tools: ToolDescriptor[] = coordinatorTools())
           serverInfo: { name: 'agentconnect', version: '1' }
         })
       } else if (rpc.method === 'tools/list') {
-        reply({ tools })
+        reply({ tools: scopes.get(key)?.tools ?? tools })
       } else if (rpc.method === 'tools/call') {
         const raw = rpc.params?.arguments
         const args = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {}
@@ -584,6 +611,10 @@ export interface Expectation {
   /** A reply must contain one of these, case-insensitively. */
   mentionsAny?: string[]
   alternatives?: Array<'delegate' | 'route' | 'reply'>
+  /** A tool the outcome needs a call to, naming this message: a reply that says a reminder is set must have set one. */
+  tool?: string
+  /** A tool that must not be called for this message, e.g. a reminder set where a task was due. */
+  notTool?: string
 }
 
 export type CoScenarioId =
@@ -598,6 +629,10 @@ export type CoScenarioId =
   | 'mention-vague'
   | 'no-self-work'
   | 'ask-then-wait'
+  | 'schedule-by-tool'
+  | 'schedule-recurring-work'
+  | 'own-setup-change'
+  | 'reminder-fixed-text'
   | 'batch-mixed'
   | 'batch-route-and-new'
   | 'report-reply'
@@ -627,6 +662,8 @@ export interface CoordinatorScenario {
   webchat?: true
   /** An assistant-mode coordinator, whose prompt explains look-back items (assistant-mode.md §5.20). */
   lookBack?: true
+  /** The coordinator holds its place's reminder tools too, so a reminder is a call it could make. */
+  reminders?: true
 }
 
 /** A webchat message: one person, always addressed to the agent. */
@@ -797,6 +834,65 @@ export const CO_SCENARIOS: CoordinatorScenario[] = [
       )
     ],
     expect: { 'msg-1700000850.000100': { kind: 'delegate' } }
+  },
+  {
+    // Names a tool only a task holds: the coordinator opens one, and neither says it lacks the tool nor sets a reminder.
+    id: 'schedule-by-tool',
+    tasks: [],
+    reminders: true,
+    messages: [
+      msg(
+        'msg-1700000810.000100',
+        CO_IDS.alice,
+        true,
+        'use your saveSchedule tool to schedule a run every weekday at 09:00 Asia/Shanghai that posts a summary of our open pull requests in this channel'
+      )
+    ],
+    expect: { 'msg-1700000810.000100': { kind: 'delegate', notTool: 'remind' } }
+  },
+  {
+    // Work on a schedule, asked in plain words: a scheduled task a new task sets up, not a reminder's fixed text.
+    id: 'schedule-recurring-work',
+    tasks: [],
+    reminders: true,
+    messages: [
+      msg(
+        'msg-1700000820.000100',
+        CO_IDS.alice,
+        true,
+        'every weekday at 9am Shanghai time, check our open pull requests and post a short summary here'
+      )
+    ],
+    expect: { 'msg-1700000820.000100': { kind: 'delegate', notTool: 'remind' } }
+  },
+  {
+    // A change to the agent's own setup, which only a task can ask for.
+    id: 'own-setup-change',
+    tasks: [],
+    messages: [
+      msg(
+        'msg-1700000830.000100',
+        CO_IDS.alice,
+        true,
+        'please add the Linear MCP server to your own tools so you can read our tickets'
+      )
+    ],
+    expect: { 'msg-1700000830.000100': { kind: 'delegate' } }
+  },
+  {
+    // Fixed words at a set time stay a reminder the coordinator sets itself, with a reply that says so.
+    id: 'reminder-fixed-text',
+    tasks: [],
+    reminders: true,
+    messages: [
+      msg(
+        'msg-1700000840.000100',
+        CO_IDS.alice,
+        true,
+        'remind me here at 15:00 Shanghai time on 2027-03-01 to send the release notes'
+      )
+    ],
+    expect: { 'msg-1700000840.000100': { kind: 'reply', tool: 'remind', alternatives: ['delegate'] } }
   },
   {
     id: 'batch-mixed',
@@ -1079,8 +1175,15 @@ export function judgeCoordinator(
     const to = reply === undefined ? undefined : spokenTo(turn.filter((message) => !outcomes.has(message.id)))
     if (to) spoken.set(to.id, reply!)
   })
+  // A tool call that named this message and was not refused.
+  const called = (tool: string, messageId: string): boolean =>
+    calls.some((call) => call.tool === tool && call.error === undefined && call.args.messageId === messageId)
   for (const message of turns.flat()) {
     const expected = scenario.expect[message.id]!
+    if (expected.notTool && called(expected.notTool, message.id)) {
+      failed = true
+      notes.push(`${message.id}: called ${expected.notTool}`)
+    }
     let outcome = outcomes.get(message.id)
     const said = spoken.get(message.id)
     if (!outcome && said !== undefined) outcome = { kind: 'reply', messageId: message.id, text: said }
@@ -1089,6 +1192,9 @@ export function judgeCoordinator(
       if (outcome?.kind === 'route' && expected.taskId && outcome.taskId !== expected.taskId) {
         failed = true
         notes.push(`${message.id}: routed to ${outcome.taskId}, expected ${expected.taskId}`)
+      } else if (expected.tool && !called(expected.tool, message.id)) {
+        failed = true
+        notes.push(`${message.id}: ${got} without a ${expected.tool} call`)
       } else if (
         outcome?.kind === 'reply' &&
         expected.mentions &&
@@ -1189,7 +1295,8 @@ export async function runCoordinatorScenarios(input: {
         ...(items.length > 0 ? { lookBack: Object.fromEntries(items.map((item) => [item.id, item.task!])) } : {}),
         tasks: scenario.tasks,
         ...(scenario.elsewhere ? { elsewhere: scenario.elsewhere } : {}),
-        ...(scenario.reads ? { reads: scenario.reads } : {})
+        ...(scenario.reads ? { reads: scenario.reads } : {}),
+        ...(scenario.reminders ? { tools: coordinatorToolsWithReminders() } : {})
       }
       const started = Date.now()
       let sessionId: string | undefined

@@ -107,7 +107,8 @@ and judges each message's outcome: handed to an open task, a new task, a direct 
 ignored. A turn's text after its last call counts as the reply to the message no call decided, as
 the daemon posts it, so a note written for a message `ignoreMessage` did not leave fails the run. A
 scenario may deliver earlier turns in the same session first (`ignore-streak`), each judged the
-same way, to show a coordinator with a past. A refused call (an unknown message or task id, a second outcome for a message)
+same way, to show a coordinator with a past. A scenario may also give the session the reminder tools a
+coordinator holds in a platform conversation (`reminders`), and expect a call to one or none. A refused call (an unknown message or task id, a second outcome for a message)
 reads the fixture's error and degrades the run. Nothing is posted or started.
 
 ```bash
