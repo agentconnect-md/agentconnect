@@ -12,8 +12,8 @@ import { TokenGuidePane } from '../wizard-chrome'
 // The Control Plane's own BotID rule, so a malformed paste is marked before the round trip.
 const BOT_ID = /^\S{1,128}$/
 
-// The WeCom admin console, where an organization admin creates the smart bot.
-export const WECOM_ADMIN_CONSOLE_URL = 'https://work.weixin.qq.com/wework_admin/frame'
+// The smart bot creation page in the WeCom admin console, where an organization admin creates the bot.
+const WECOM_SMART_BOT_CREATE_URL = 'https://work.weixin.qq.com/wework_admin/frame#/aiHelper/create'
 
 // The create route's own duplicate fence answers a racing install with a 409 that carries only this message.
 const ALREADY_INSTALLED_MESSAGE = 'This WeCom bot is already installed. Reuse the existing bot.'
@@ -70,7 +70,7 @@ export function WeComWizardBody({ agent, host }: { agent: Agent; host: WizardHos
     <TokenGuidePane
       mark={<PlatformMark platform="wecom" />}
       step1={t('step1')}
-      linkHref={WECOM_ADMIN_CONSOLE_URL}
+      linkHref={WECOM_SMART_BOT_CREATE_URL}
       linkLabel={t('openConsole')}
       step2={t('step2')}
       fields={[

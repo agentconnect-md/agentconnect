@@ -7,7 +7,7 @@ import { ApiError } from '@/lib/api'
 import type { Agent } from '@/lib/data'
 import type { WizardFooterState, WizardHost } from '../contract'
 import { channelListSemantics, platformRegistry } from '../registry'
-import { WeComWizardBody, WECOM_ADMIN_CONSOLE_URL } from './Body'
+import { WeComWizardBody } from './Body'
 
 const agent = { id: 'agent-a', name: 'deploy-bot' } as unknown as Agent
 
@@ -79,9 +79,11 @@ afterEach(async () => {
 })
 
 describe('WeComWizardBody', () => {
-  it('links the admin console, states the long-connection step, and asks for both credentials', async () => {
+  it('links the smart bot creation page, states the long-connection step, and asks for both credentials', async () => {
     await render()
-    const portal = host.querySelector<HTMLAnchorElement>(`a[href="${WECOM_ADMIN_CONSOLE_URL}"]`)
+    const portal = host.querySelector<HTMLAnchorElement>(
+      'a[href="https://work.weixin.qq.com/wework_admin/frame#/aiHelper/create"]'
+    )
     expect(portal?.textContent).toContain('Open WeCom admin console')
     expect(host.textContent).toContain('set its API mode to long connection')
     // No walkthrough of WeCom's admin screens: its menus are not verified.
