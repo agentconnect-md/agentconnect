@@ -139,8 +139,10 @@ export interface SettledSdkTask extends LiveSdkTask {
 /** The task a daemon report speaks for: its `taskId`, its kind as `listTasks` names it, and its title. */
 export interface ReportTask {
   taskId: string
-  kind: 'delegated task' | 'follow-up' | 'getting to know' | 'approved proposal' | 'research'
+  kind: 'delegated task' | 'follow-up' | 'getting to know' | 'approved proposal' | 'research' | 'look back'
   title?: string
+  /** A look-back item (assistant-mode.md §5.20): whether a reminder is open for its task now. */
+  lookBack?: { remind: boolean }
 }
 
 /** Daemon-private trusted metadata for an agent-originated delivery: caller identity and the hop/origin chain, never model-derived. */

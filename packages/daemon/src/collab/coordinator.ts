@@ -181,6 +181,8 @@ export interface DaemonReport {
   gettingToKnow?: string | undefined
   /** Called once the turn the report started has ended, however it ended (the onboarding hello's, §5.15). */
   settled?: (() => void) | undefined
+  /** A look-back item for the caller's task (§5.20), with whether a reminder is open for it now. */
+  lookBack?: { remind: boolean } | undefined
 }
 
 /** The long session a report opens in a place nobody spoke in yet; the report's turn creates its row. */
@@ -1091,7 +1093,9 @@ export class CollabCoordinator {
       ? await store.ensureOutwardSessionId(callerKey, agentId, this.host.clock().now())
       : undefined
     const externalOrigin = await this.host.externalOriginForSession(agentId, callerKey)
-    const reportOf = await this.reportTaskOf(agentId, callerKey, caller.thread)
+    const reportOf = report.lookBack
+      ? await this.lookBackTaskOf(agentId, callerKey, report.lookBack)
+      : await this.reportTaskOf(agentId, callerKey, caller.thread)
     // The lineage `replyToSession` gives a report: from the sub-session, one hop past the turn it continues.
     const callMeta: CallMeta = {
       callFrom: agentId,
@@ -1187,6 +1191,17 @@ export class CollabCoordinator {
     }
     this.host.log().info(`sub-session report: ${agentId} → ${parent.key} delivery=${deliveryId}`)
     return { admitted: true }
+  }
+
+  /** The task a look-back item speaks for (assistant-mode.md §5.20), under the item's own kind. */
+  private async lookBackTaskOf(agentId: string, key: string, lookBack: { remind: boolean }): Promise<ReportTask> {
+    const title = (
+      await this.host
+        .store()
+        .assistantSubsessions.get(agentId, key)
+        .catch(() => undefined)
+    )?.title
+    return { taskId: key, kind: 'look back', ...(title ? { title } : {}), lookBack }
   }
 
   /** The task a report speaks for, by its sub-session's key and coordinate, named as `listTasks` names it (assistant-mode.md §5.18 ④). */

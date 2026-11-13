@@ -131,6 +131,11 @@ Approved proposals stay a kind of their own.
   place's long session. The channel messages right behind it of one permission class join its turn,
   and it adds no asker. A report that finds the coordinator idle starts a turn at once, and a webchat
   conversation's reports, like its messages, each run as a turn of their own (§10).
+- Built for assistant mode ([assistant-mode.md](assistant-mode.md) §5.20): every four hours the
+  daemon hands the coordinator its place's tasks that went quiet, each as a report of
+  `kind="look back"` in the task's thread, all of one look in one turn. The coordinator answers one
+  with `replyToMessage`, leaves it, or names it in `messageTask` to send that item's own task back to
+  work, the one report `messageTask` accepts; any other task is refused.
 - The coordinator's turns carry the work board ([assistant-mode.md](assistant-mode.md) §5.18 ② and ④)
   instead of the standing follow-up list and the running-tasks block: its place's open tasks with
   their ids, and the other places' open tasks every person in its batch may read. It is sent when the
@@ -1259,7 +1264,8 @@ request to another agent, a thread follow-up for another app's bot (`ignore-othe
 batches, a follow-up's report (§3.4), a batch of one message and two reports, one worth telling
 and one with nothing new, a request for work another channel's task already has open, a question
 about another channel's task that only its latest words answer, a run report from a task holding
-its code channel (§6.8), and
+its code channel (§6.8), three quiet tasks a look hands back in one turn (`look-back-batch`,
+[assistant-mode.md](assistant-mode.md) §5.20; not run on a runtime yet), and
 in a webchat conversation (§10) new work, a status question, a message for an open task, a status
 question about another channel's task and a follow-up asking for work in a thread no task holds
 (`webchat-thread-follow-up`, [webchat-threads.md](webchat-threads.md) §11). That scenario and the

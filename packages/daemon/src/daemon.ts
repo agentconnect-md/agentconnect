@@ -500,7 +500,7 @@ import { AssistantReminders } from './assistant/reminders.js'
 import { assistantReminderToolsFor } from './mcp/ops/assistant-reminders.js'
 import { stopTaskToolsFor } from './mcp/ops/assistant-subsessions.js'
 import type { AssistantReminder } from './store/assistant-reminders.js'
-import type { AssistantSubsession, OpenedObject } from './store/assistant-subsessions.js'
+import type { AssistantSubsession, OpenedObject, PlacedSubsession } from './store/assistant-subsessions.js'
 import { createdObjectOf, feedbackPullOf } from './codehost/opened-object.js'
 import { shortTaskIds } from './assistant/task-ids.js'
 import {
@@ -541,6 +541,13 @@ import {
   type CheckParent
 } from './assistant/follow-up-checks.js'
 import { CheckedTasks, type CheckedTask } from './assistant/checked-tasks.js'
+import {
+  LOOK_BACK_SCANNED_ROWS,
+  LookBack,
+  sentBackText,
+  type LookBackFacts,
+  type LookBackItem
+} from './assistant/look-back.js'
 import { FollowUpWatches, watchTarget } from './assistant/follow-up-watches.js'
 import {
   GETTING_TO_KNOW_MAX_MESSAGES,
@@ -1182,6 +1189,7 @@ import {
   type ConversationCoordinateKind
 } from './session/append-coordinate.js'
 import {
+  coordinatorMessageId,
   coordinatorPrompt,
   coordinatorSessionTools,
   renderCoordinatorBatch
@@ -1197,6 +1205,7 @@ import {
   batchCut,
   coordinatorView,
   inThread,
+  platformMessageIdOf,
   reportAboutOf,
   reportJoinsBatch,
   threadlessRoom,
@@ -2234,6 +2243,15 @@ export class Daemon {
     reportTaskOwners: async (agentId, keys) => await this.reportTaskOwners(agentId, keys),
     threadLink: (integrationId, at) =>
       sessionThreadUrlFor(at, integrationId === undefined ? undefined : this.connForIntegration(integrationId)),
+    sendBack: (agentId, taskKey, note) => this.sendTaskBackToWork(agentId, taskKey, note),
+    lookBackSettled: async (agentId, taskKey, outcome) => {
+      await this.store.assistantSubsessions.noteLookBackOutcome(agentId, taskKey, outcome, this.clock.now())
+    },
+    taskMuted: async (agentId, taskKey) => {
+      const rec = await this.store.getSession(taskKey)
+      if (!rec || rec.agentId !== agentId || !this.commandChrome.stopLatchesMute(rec.platform)) return false
+      return await this.commands.isSessionMuted(taskKey)
+    },
     warn: (message) => this.log.warn(message)
   })
   // Latched for the WHOLE drain handoff, including the window after `draining`
@@ -11332,7 +11350,9 @@ export class Daemon {
       peers,
       ...(at.platform === 'webchat' ? { webchat: true } : {}),
       // A room without threads keeps every follow-up at its root, so the coordinator places each one (§6.10).
-      ...(threadlessRoom(at) ? { threadlessRoom: true } : {})
+      ...(threadlessRoom(at) ? { threadlessRoom: true } : {}),
+      // Only assistant mode looks back at its quiet tasks (assistant-mode.md §5.20).
+      ...(assistantModeOn(agent) && at.platform !== 'webchat' ? { lookBack: true } : {})
     })
   }
 
@@ -12372,6 +12392,7 @@ export class Daemon {
         this.log.warn(`getting-to-know task card sweep failed: ${formatErr(err)}`)
       )
       await this.followUpChecks.sweep().catch((err) => this.log.warn(`follow-up check sweep failed: ${formatErr(err)}`))
+      await this.lookBack.sweep().catch((err) => this.log.warn(`look-back sweep failed: ${formatErr(err)}`))
       await this.reminders.sweep().catch((err) => this.log.warn(`reminder sweep failed: ${formatErr(err)}`))
       await this.sweepWorkCanvases().catch((err) => this.log.warn(`work canvas sweep failed: ${formatErr(err)}`))
       // A sub-session failure report whose admission was refused is retried here (assistant-mode.md §5.7).
@@ -12389,6 +12410,220 @@ export class Daemon {
       )
       if (!this.draining) this.armCheckSweep()
     }, CHECK_SWEEP_INTERVAL_MS)
+  }
+
+  /** Looking back at assistant-mode places' quiet tasks (assistant-mode.md §5.20), built on first use over the live store. */
+  private lookBackService?: LookBack
+  private get lookBack(): LookBack {
+    this.lookBackService ??= new LookBack({
+      now: () => this.clock.now(),
+      agents: () => this.agents.values(),
+      // Gated as checks are: the duty holder, never for a paused or draining agent; only coordinators settle items.
+      mayLook: (agentId) =>
+        this.cfg.features.autoSessionMode &&
+        this.servesAgent(agentId) &&
+        !this.paused(agentId) &&
+        !this.drainingAgents.has(agentId),
+      draining: () => this.draining,
+      index: this.store.assistantSubsessions,
+      busy: async (key) =>
+        this.activeGateEntries.has(key) ||
+        this.inflight.has(key) ||
+        this.serialQueue.has(key) ||
+        (await this.store.sessionHasPendingInboxRows(key)),
+      muted: async (key, platform) =>
+        this.commandChrome.stopLatchesMute(platform) && (await this.commands.isSessionMuted(key)),
+      facts: (agentId, task, remind) => this.lookBackFacts(agentId, task, remind),
+      deliver: (agentId, place, items) => this.deliverLookBack(agentId, place, items),
+      log: { info: (m) => this.log.info(m), warn: (m) => this.log.warn(m) }
+    })
+    return this.lookBackService
+  }
+
+  /** What a look-back item says of its task, read from its row, its session and its transcript, with no model call (§5.20). */
+  private async lookBackFacts(
+    agentId: string,
+    task: PlacedSubsession,
+    remind: boolean
+  ): Promise<LookBackFacts | undefined> {
+    const rec = await this.store.getSession(task.childSessionKey)
+    if (!rec || rec.agentId !== agentId) return undefined
+    const look = task.lookBack
+    const page = await this.store.transcriptPageForAgent(
+      {
+        transcriptChannel: transcriptChannelKey(rec.channel, rec.transportScope),
+        coordinate: rec.thread,
+        sessionKey: rec.key,
+        agentId
+      },
+      null,
+      LOOK_BACK_SCANNED_ROWS
+    )
+    // The agent's own words, never a stop's audit row, which it writes under the agent's name too.
+    const reply = page.rows.find(
+      (row) => row.kind === 'text' && row.sender === agentId && row.text.trim() && !row.text.startsWith('🛑')
+    )
+    const person = look?.person && look.personAt !== undefined ? look.person : undefined
+    const userId = person?.asker.userId
+    const shown = userId ? (person!.name ?? (await this.store.getDisplayNames([userId])).get(userId)) : undefined
+    // Named with the id the coordinator's messages carry for them, so a reminder can address them.
+    const name = shown && shown !== userId ? `${shown} (${userId})` : userId
+    const zone = person ? await this.personTimeZone(agentId, person.asker) : undefined
+    return {
+      ...(task.title ? { title: task.title } : {}),
+      quietSince: task.changedAt ?? task.createdAt,
+      ...(task.summary ? { summary: task.summary } : {}),
+      ...(task.summaryUpdatedAt !== undefined ? { summaryAt: task.summaryUpdatedAt } : {}),
+      ...(reply ? { lastReply: reply.text } : {}),
+      failed: task.state === 'failed' || rec.lastTurnOutcome === 'failed',
+      // The person's own zone or none: never the place's, which speaks for nobody in particular.
+      ...(person
+        ? { person: { name: name ?? person.asker.userId, at: look!.personAt!, ...(zone ? { zone } : {}) } }
+        : {}),
+      reminders: look?.reminders ?? 0,
+      ...(look?.remindedAt !== undefined ? { remindedAt: look.remindedAt } : {}),
+      sentBack: look?.sentBack ?? 0,
+      remind,
+      now: this.clock.now()
+    }
+  }
+
+  /** One place's look-back items into its coordinator, each as its task's report, held so they start one turn together (§5.20). */
+  private async deliverLookBack(
+    agentId: string,
+    place: NonNullable<PlacedSubsession['owner']>,
+    items: LookBackItem[]
+  ): Promise<void> {
+    const at = this.clock.now()
+    const send = async (): Promise<void> => {
+      for (const { task, text, remind } of items) {
+        const rec = await this.store.getSession(task.childSessionKey)
+        if (!rec) continue
+        const delivered = await this.collab.deliverDaemonReport({
+          agentId,
+          caller: {
+            platform: rec.platform,
+            channel: rec.channel,
+            thread: rec.thread,
+            ...(rec.transportScope ? { transportScope: rec.transportScope } : {})
+          },
+          place: { platform: place.platform, channel: place.channel, transportScope: place.transportScope ?? null },
+          parentSessionId: task.parentSessionId,
+          text,
+          reportId: `look-back:${task.childSessionKey}:${at}`,
+          ownerSessionKey: task.parentSessionKey,
+          replyThread: (await this.lookBackReplyThread(agentId, task, rec, place.channel)) ?? null,
+          lookBack: { remind }
+        })
+        if (!delivered.admitted)
+          this.log.warn(`look back: ${task.childSessionKey} was not delivered (${delivered.reason ?? 'unknown'})`)
+      }
+    }
+    const coordinator = await this.store.placeSession(
+      agentId,
+      place.platform,
+      place.channel,
+      place.transportScope ?? null
+    )
+    if (!coordinator) return await send()
+    await this.whileSessionHeld(coordinator.key, send)
+  }
+
+  /** The thread a task last replied in within its place, where its item and a reminder go; a room it holds reports to the thread that asked for it (§5.20). */
+  private async lookBackReplyThread(
+    agentId: string,
+    task: PlacedSubsession,
+    rec: SessionRecord,
+    placeChannel: string
+  ): Promise<string | undefined> {
+    if (rec.replyChannel == null || rec.replyChannel === placeChannel)
+      return rec.replyThread ?? task.replyThread ?? rec.thread
+    const room = (await this.store.assistantSubsessions.threadsOf(agentId, task.childSessionKey)).find(
+      (held) => held.channel === rec.replyChannel
+    )
+    return room?.reportThread ?? task.replyThread
+  }
+
+  /** Run `run` with a session's gate held, so what it queues there starts one turn together once it is done. */
+  private async whileSessionHeld<T>(key: string, run: () => Promise<T>): Promise<T> {
+    if (this.inflight.has(key)) return await run()
+    this.inflight.add(key)
+    try {
+      return await run()
+    } finally {
+      await this.releaseDispatchClaim(key)
+    }
+  }
+
+  /** A look sends a task back to work: a daemon-framed message in its session that asks as the person it was opened for, else as no one (§5.20). */
+  private async sendTaskBackToWork(agentId: string, taskKey: string, note: string | undefined): Promise<void> {
+    const rec = await this.store.getSession(taskKey)
+    if (!rec || rec.agentId !== agentId)
+      throw new Error('sendMessage: that task has no conversation left to go on in; nothing was sent')
+    const integrationId = this.integrationIdForSessionTransport(agentId, rec.platform, rec.transportScope)
+    if (!integrationId || !this.connForIntegration(integrationId))
+      throw new Error("sendMessage: that task's platform connection is offline; nothing was sent")
+    const look = (await this.store.assistantSubsessions.get(agentId, taskKey))?.lookBack
+    // Read again at the wake itself: a stop that came after the look listed the task still holds.
+    if (look?.stoppedAt !== undefined) throw new Error('sendMessage: a person stopped that task; nothing was sent')
+    const opener = look?.opener
+    const deliveryId = `look-back:${taskKey}:${monotonicTs()}`
+    const msg: NormalizedMessage = {
+      msgId: deliveryId,
+      traceId: deliveryId,
+      transcriptTs: monotonicTs(),
+      source: 'system',
+      platform: rec.platform,
+      ...sessionWakeFields(rec),
+      ...(rec.transportScope ? { transportScope: rec.transportScope } : {}),
+      sender: { id: 'look-back', name: 'AgentConnect', isBot: true },
+      text: sentBackText(note),
+      mentionedBots: this.botUserIds[integrationId] ? [this.botUserIds[integrationId]!] : [],
+      trigger: 'auto',
+      // It gains no permission: the person it was opened for, else no one, never a wider identity.
+      lookBackWake: { askers: opener ? { people: [opener], nobody: false } : { people: [], nobody: true } }
+    }
+    const externalOrigin = this.externalAudienceForSessionRecord(rec)
+    const callMeta: CallMeta = {
+      callFrom: agentId,
+      hopCount: 0,
+      deliveryId,
+      conversationContinuation: true,
+      ...(externalOrigin ? { externalOrigin } : {})
+    }
+    // Awaited only to its admission: the task's turn runs on its own, after the coordinator's call returns.
+    const admitted = await new Promise<{ accepted: boolean; reason?: string }>((resolve) => {
+      void this.dispatch(
+        agentId,
+        msg,
+        integrationId,
+        this.webchatTransport.webchatWakeContext(rec.platform, rec.channel),
+        callMeta,
+        { requireDurable: true, deliveryId, onAdmission: (result) => resolve(result) }
+      ).catch((err) => {
+        this.log.warn(`look back: sending ${taskKey} back to work failed: ${formatErr(err)}`)
+        resolve({ accepted: false, reason: 'error' })
+      })
+    })
+    if (!admitted.accepted)
+      throw new Error(
+        `sendMessage: the task could not take the message now (${admitted.reason ?? 'refused'}); nothing was sent`
+      )
+  }
+
+  /** A person's message reached an assistant-mode task's threads: its look-back counts start over, and the message it was opened for names its opener (§5.20). */
+  private async noteTaskPerson(entry: QueueEntry, key: string): Promise<void> {
+    if (!this.cfg.features.autoSessionMode || !assistantModeOn(this.agents.get(entry.agentId))) return
+    const asker = askerOf(this.turnMessageOf(entry), entry.integrationId)
+    if (!asker) return
+    const row = await this.store.assistantSubsessions.get(entry.agentId, key)
+    if (!row || row.mode === 'watch') return
+    await this.store.assistantSubsessions.notePerson(entry.agentId, key, {
+      asker,
+      ...(entry.msg.sender.name ? { name: entry.msg.sender.name } : {}),
+      opener: row.openedFor?.messageId === coordinatorMessageId(platformMessageIdOf(entry.msg)),
+      now: this.clock.now()
+    })
   }
 
   /** Every agent's reminders (assistant-mode.md §5.9), built on first use over the live store. */
@@ -13195,6 +13430,9 @@ export class Daemon {
     // A settled capability request's reminder speaks for the people its origin's turn did (capability-requests.md §4.7.3).
     const capabilityWake = this.capabilityWakeOpener(key)
     if (capabilityWake) return capabilityWake
+    // A round a look back sent a task to asks as the person it was opened for, or as no one (assistant-mode.md §5.20).
+    const lookBackWake = this.activeGateEntries.get(key)?.msg.lookBackWake?.askers
+    if (lookBackWake) return lookBackWake
     if (isCheckCoordinate(thread)) {
       const { item, extra } = await this.followUpChecks
         .askersFor(agentId, key)
@@ -13260,6 +13498,11 @@ export class Daemon {
     const live = this.activeGateEntries.get(key)
     if (!live || live === entry) return
     ;(live.foldedMessages ??= []).push(this.turnMessageOf(entry))
+    // A person's message folded into a task's running turn reached its threads as one that starts a turn does (§5.20).
+    if (entry.msg.source === 'user' && !isCoordinatorCoordinate(sessionThreadOf(entry.msg)))
+      void this.noteTaskPerson(entry, key).catch((err) =>
+        this.log.warn(`task ${key}: noting who wrote failed: ${formatErr(err)}`)
+      )
     // send-message-guide.md §9.5: a message folded into this turn makes its final output no one message's answer.
     const call = entry.callMeta
     if (call?.originSessionId !== undefined)
@@ -15792,6 +16035,9 @@ export class Daemon {
     await this.store.assistantSubsessions
       .resumeThreaded(entry.agentId, key)
       .catch((err) => this.log.warn(`task ${key}: marking its turn running failed: ${formatErr(err)}`))
+    await this.noteTaskPerson(entry, key).catch((err) =>
+      this.log.warn(`task ${key}: noting who wrote failed: ${formatErr(err)}`)
+    )
   }
 
   /** A threaded task's turn ended: it is idle until its threads speak again (auto-session-mode.md §6.2); a run it ended in a room it holds reports (§6.8). */
@@ -25225,6 +25471,11 @@ export class Daemon {
               )
             }
           }
+    // A person's stop or mute keeps an assistant-mode task off the look-back list until a person writes there (§5.20).
+    if (actor?.isBot !== true && assistantModeOn(this.agents.get(agentId)))
+      await this.store.assistantSubsessions
+        .markStopped(agentId, coords.admission.sessionKey, this.clock.now())
+        .catch((err) => this.log.warn(`task ${coords.admission.sessionKey}: noting its stop failed: ${formatErr(err)}`))
     const who = actor?.name?.trim() || actor?.userId
     const by = who ? ` by ${who}` : ''
     await this.store

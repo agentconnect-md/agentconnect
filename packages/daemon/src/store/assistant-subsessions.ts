@@ -63,6 +63,31 @@ export interface AssistantSubsession {
   openedFor?: TaskMessage
   /** The thread a getting-to-know task is shown with, its introduction's (auto-session-mode.md §6.9.2); display only, never an attached thread. */
   shownThread?: string
+  /** What looking back at it keeps (assistant-mode.md §5.20); read back only once something is kept. */
+  lookBack?: TaskLookBack
+}
+
+/** One person as a task's row keeps them: a chat member on one of the agent's bots, or a console user. */
+export type TaskPerson =
+  { kind: 'member'; platform: string; integrationId: string; userId: string } | { kind: 'console'; userId: string }
+
+/** What looking back at a task keeps on its row (assistant-mode.md §5.20); the counts run since a person last wrote in its threads. */
+export interface TaskLookBack {
+  /** When a look last listed it. */
+  lookedAt?: number
+  reminders: number
+  /** When the latest reminder was posted. */
+  remindedAt?: number
+  sentBack: number
+  /** The looks in a row that left it, counting the latest look until its item settles otherwise. */
+  left: number
+  /** When a person stopped its turn or muted its thread; cleared when a person writes there. */
+  stoppedAt?: number
+  /** When a person last wrote in its threads, and who. */
+  personAt?: number
+  person?: { asker: TaskPerson; name?: string }
+  /** The person it was opened for, whom a round it is sent back to work in asks as. */
+  opener?: TaskPerson
 }
 
 /** A message by its place (`platform:channel`) and its id as the coordinator names it (`msg-…`). */
@@ -149,6 +174,21 @@ export const ASSISTANT_TASK_OPENED_SCHEMA = `
       );
 `
 
+/** The task row's columns for looking back (assistant-mode.md §5.20). */
+export const LOOK_BACK_COLUMN_TYPES: readonly (readonly [string, string])[] = [
+  ['lookedAt', 'INTEGER'],
+  ['lookReminders', 'INTEGER NOT NULL DEFAULT 0'],
+  ['lookRemindedAt', 'INTEGER'],
+  ['lookSentBack', 'INTEGER NOT NULL DEFAULT 0'],
+  ['lookLeft', 'INTEGER NOT NULL DEFAULT 0'],
+  ['stoppedAt', 'INTEGER'],
+  ['personAt', 'INTEGER'],
+  ['lastPerson', 'TEXT'],
+  ['openedBy', 'TEXT']
+]
+
+const LOOK_BACK_COLUMNS = LOOK_BACK_COLUMN_TYPES.map(([column, type]) => `${column} ${type},`).join('\n        ')
+
 export const ASSISTANT_SUBSESSION_SCHEMA = `
       CREATE TABLE IF NOT EXISTS assistant_subsession (
         agentId TEXT NOT NULL,
@@ -174,6 +214,7 @@ export const ASSISTANT_SUBSESSION_SCHEMA = `
         gettingToKnow INTEGER NOT NULL DEFAULT 0,
         shownThread TEXT,
         ${WATCH_TASK_COLUMNS}
+        ${LOOK_BACK_COLUMNS}
         PRIMARY KEY (agentId, childSessionKey)
       );
       CREATE INDEX IF NOT EXISTS assistant_subsession_by_parent
@@ -289,8 +330,52 @@ function subsessionOf(row: Row): AssistantSubsession {
     ...(row.openedForPlace != null && row.openedForMessage != null
       ? { openedFor: { place: String(row.openedForPlace), messageId: String(row.openedForMessage) } }
       : {}),
-    ...(row.shownThread != null ? { shownThread: String(row.shownThread) } : {})
+    ...(row.shownThread != null ? { shownThread: String(row.shownThread) } : {}),
+    ...lookBackOf(row)
   }
+}
+
+/** A stored person, or undefined for anything that is not one. */
+function personOf(value: unknown): TaskPerson | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const p = value as Record<string, unknown>
+  if (typeof p.userId !== 'string' || p.userId === '') return undefined
+  if (p.kind === 'console') return { kind: 'console', userId: p.userId }
+  if (p.kind !== 'member' || typeof p.platform !== 'string' || typeof p.integrationId !== 'string') return undefined
+  return { kind: 'member', platform: p.platform, integrationId: p.integrationId, userId: p.userId }
+}
+
+function parsed(raw: unknown): unknown {
+  if (typeof raw !== 'string') return undefined
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+}
+
+const instant = (value: unknown): number | undefined => (value != null ? Number(value) : undefined)
+
+/** The row's look-back record, absent while nothing is kept. */
+function lookBackOf(row: Row): { lookBack?: TaskLookBack } {
+  const wrote = parsed(row.lastPerson) as { asker?: unknown; name?: unknown } | undefined
+  const asker = personOf(wrote?.asker)
+  const opener = personOf(parsed(row.openedBy))
+  const record: TaskLookBack = {
+    ...(instant(row.lookedAt) !== undefined ? { lookedAt: instant(row.lookedAt)! } : {}),
+    reminders: Number(row.lookReminders ?? 0),
+    ...(instant(row.lookRemindedAt) !== undefined ? { remindedAt: instant(row.lookRemindedAt)! } : {}),
+    sentBack: Number(row.lookSentBack ?? 0),
+    left: Number(row.lookLeft ?? 0),
+    ...(instant(row.stoppedAt) !== undefined ? { stoppedAt: instant(row.stoppedAt)! } : {}),
+    ...(instant(row.personAt) !== undefined ? { personAt: instant(row.personAt)! } : {}),
+    ...(asker
+      ? { person: { asker, ...(typeof wrote?.name === 'string' && wrote.name ? { name: wrote.name } : {}) } }
+      : {}),
+    ...(opener ? { opener } : {})
+  }
+  const kept = Object.keys(record).length > 3 || record.reminders > 0 || record.sentBack > 0 || record.left > 0
+  return kept ? { lookBack: record } : {}
 }
 
 function threadOf(row: Row): AssistantSubsessionThread {
@@ -1348,6 +1433,100 @@ export class AssistantSubsessionIndex {
       )
     ).rows as Row[]
     return rows.map((row) => ({ taskKey: String(row.childSessionKey), url: String(row.watchUrl) }))
+  }
+
+  /** A person's message reached an open work task's threads (assistant-mode.md §5.20): the look-back counts and the stop mark start over, and `opener` keeps them as the person it was opened for once. */
+  async notePerson(
+    agentId: string,
+    childSessionKey: string,
+    wrote: { asker: TaskPerson; name?: string; opener?: boolean; now: number }
+  ): Promise<boolean> {
+    const person = JSON.stringify({ asker: wrote.asker, ...(wrote.name ? { name: wrote.name } : {}) })
+    const { changes } = await this.db.query(
+      `UPDATE assistant_subsession SET personAt = ?, lastPerson = ?, lookReminders = 0, lookRemindedAt = NULL,
+          lookSentBack = 0, lookLeft = 0, stoppedAt = NULL, openedBy = COALESCE(openedBy, ?)
+        WHERE agentId = ? AND childSessionKey = ? AND mode = 'work' AND closedAt IS NULL`,
+      [wrote.now, person, wrote.opener ? JSON.stringify(wrote.asker) : null, agentId, childSessionKey]
+    )
+    return changes > 0
+  }
+
+  /** A person stopped an open work task's turn or muted its thread: no look lists it until a person writes there (§5.20). */
+  async markStopped(agentId: string, childSessionKey: string, now: number): Promise<boolean> {
+    const { changes } = await this.db.query(
+      `UPDATE assistant_subsession SET stoppedAt = ?
+        WHERE agentId = ? AND childSessionKey = ? AND mode = 'work' AND closedAt IS NULL`,
+      [now, agentId, childSessionKey]
+    )
+    return changes > 0
+  }
+
+  /** The agent's settled threaded work tasks quiet since `quietBefore`, never a getting-to-know task or research, with their owner's conversation; never listed first, then the longest unlisted (§5.20). */
+  async lookBackCandidates(agentId: string, quietBefore: number): Promise<PlacedSubsession[]> {
+    const rows = (
+      await this.db.query(
+        `SELECT a.*, p.platform AS ownerPlatform, p.channel AS ownerChannel, p.transportScope AS ownerTransportScope,
+                p.conversationKind AS ownerConversationKind
+           FROM assistant_subsession a
+           JOIN sessions p ON p.key = a.parentSessionKey
+          WHERE a.agentId = ? AND a.mode = 'work' AND a.closedAt IS NULL AND a.state IN ('done', 'failed')
+            AND a.gettingToKnow = 0 AND a.childSessionKey NOT LIKE ? AND COALESCE(a.changedAt, a.createdAt) <= ?
+            AND ${THREADED('a')}
+          ORDER BY CASE WHEN a.lookedAt IS NULL THEN 0 ELSE 1 END, a.lookedAt, a.changedAt, a.childSessionKey`,
+        [agentId, RESEARCH_SESSION_KEY_PATTERN, quietBefore]
+      )
+    ).rows as Row[]
+    return rows.map((row) => ({
+      ...subsessionOf(row),
+      owner: {
+        platform: String(row.ownerPlatform),
+        channel: String(row.ownerChannel),
+        ...(row.ownerTransportScope ? { transportScope: String(row.ownerTransportScope) } : {}),
+        ...(row.ownerConversationKind ? { conversationKind: String(row.ownerConversationKind) } : {})
+      },
+      threadSessions: []
+    }))
+  }
+
+  /** When a look last listed any open task of each owning session: the place's last look (§5.20). */
+  async lastLooks(agentId: string): Promise<Map<string, number>> {
+    const rows = (
+      await this.db.query(
+        `SELECT parentSessionKey, MAX(lookedAt) AS lookedAt FROM assistant_subsession
+          WHERE agentId = ? AND lookedAt IS NOT NULL AND closedAt IS NULL GROUP BY parentSessionKey`,
+        [agentId]
+      )
+    ).rows as Row[]
+    return new Map(rows.map((row) => [String(row.parentSessionKey), Number(row.lookedAt)]))
+  }
+
+  /** A look listed the task: it counts as one that left it, `left` in a row, until its item settles otherwise (§5.20). */
+  async markLooked(agentId: string, childSessionKey: string, look: { now: number; left: number }): Promise<boolean> {
+    const { changes } = await this.db.query(
+      `UPDATE assistant_subsession SET lookedAt = ?, lookLeft = ?
+        WHERE agentId = ? AND childSessionKey = ? AND mode = 'work' AND closedAt IS NULL`,
+      [look.now, look.left, agentId, childSessionKey]
+    )
+    return changes > 0
+  }
+
+  /** The coordinator settled a look-back item otherwise than leaving it: a reminder posted, or the task sent back to work (§5.20). */
+  async noteLookBackOutcome(
+    agentId: string,
+    childSessionKey: string,
+    outcome: 'reminded' | 'sent back',
+    now: number
+  ): Promise<boolean> {
+    const set =
+      outcome === 'reminded'
+        ? 'lookReminders = lookReminders + 1, lookRemindedAt = ?, lookLeft = 0'
+        : 'lookSentBack = lookSentBack + 1, lookLeft = 0'
+    const { changes } = await this.db.query(
+      `UPDATE assistant_subsession SET ${set}
+        WHERE agentId = ? AND childSessionKey = ? AND mode = 'work' AND closedAt IS NULL`,
+      outcome === 'reminded' ? [now, agentId, childSessionKey] : [agentId, childSessionKey]
+    )
+    return changes > 0
   }
 
   async deleteForAgent(agentId: string): Promise<number> {

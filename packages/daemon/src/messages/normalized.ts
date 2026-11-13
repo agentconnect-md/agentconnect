@@ -119,6 +119,8 @@ export interface NormalizedMessage extends Omit<
     generation: number
     askers: { people: ReadAsker[]; nobody: boolean }
   }
+  /** A task sent back to work by a look back (assistant-mode.md §5.20): whom its round asks as, the person it was opened for or no one, persisted with the message. Set only by the daemon. */
+  lookBackWake?: { askers: { people: ReadAsker[]; nobody: boolean } }
   /**
    * This delivery CONTINUES a session the control plane authorized, synthesized on that
    * session's own stored coordinates (webchat-cross-integration-continuation.md §9). Set only
