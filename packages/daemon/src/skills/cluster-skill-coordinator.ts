@@ -9,7 +9,6 @@ import {
   type ClusterSkillSkippedSource,
   type GitSkillPlan,
   type SkillCredentialProxyGrant,
-  type SkillCredentialWindowGrant,
   type SkillWriteBackCandidate
 } from '../shim/skill-protocol.js'
 import { inspectLocalSkillSource, type SkillSourceSnapshotLimits } from './skill-source-snapshot.js'
@@ -77,9 +76,7 @@ export class ClusterSkillCoordinator {
     client: ClusterSkillClient
     initialLedger?: ClusterSkillLedger
     isLaunchCurrent?: () => boolean
-    /** The pod-subject window a Git plan's private Sources fill through; only its capability is sent. */
-    credentialWindow?: SkillCredentialWindowGrant
-    /** The pod's route to the credential proxy and the skill placeholder a GitLab plan entry's Git presents. */
+    /** The pod's route to the credential proxy and the skill placeholder a private plan entry's Git presents. */
     credentialProxy?: SkillCredentialProxyGrant
     /** Told the usable write-back candidates once the ledger commits; every other offered handle is discarded here. */
     onWriteBackCandidates?: (candidates: SkillWriteBackCandidate[]) => void
@@ -167,7 +164,6 @@ export class ClusterSkillCoordinator {
             ? source
             : { sourceId: source.sourceId, sourceKind: source.sourceKind, selections: source.selections }
         ),
-        ...(input.credentialWindow && plans.size > 0 ? { credentialWindow: input.credentialWindow } : {}),
         ...(input.credentialProxy && plans.size > 0 ? { credentialProxy: input.credentialProxy } : {})
       })
     )

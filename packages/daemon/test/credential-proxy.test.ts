@@ -1181,4 +1181,34 @@ describe('a skill placeholder', () => {
     })
     expect(mint).not.toHaveBeenCalled()
   })
+
+  it('reads a private GitHub skill repository over Git on github.com, where the agent also works', async () => {
+    const { proxy, mint } = proxyFor({
+      mint: vi.fn(async () => ({ username: 'x-access-token', token: 'ghs_read', access: 'read' as const })),
+      instances: { [AGENT]: [GITHUB_MANAGED_HOST] },
+      skillInstances: { [AGENT]: [GITHUB_MANAGED_HOST] }
+    })
+    const skill = proxy.skillPlaceholderFor(AGENT)!
+    const at = (path: string) => ({ ...HTTPS, requestTarget: path })
+    const read = new Request('https://github.com/acme/skills.git/info/refs?service=git-upload-pack', {
+      headers: { authorization: `Basic ${Buffer.from(`x-access-token:${skill}`).toString('base64')}` }
+    })
+    expect(
+      await proxy.decide(read, at('/acme/skills.git/info/refs?service=git-upload-pack'), AGENT, 'codehost')
+    ).toMatchObject({ action: 'allow' })
+    expect(mint).toHaveBeenLastCalledWith(AGENT, {
+      provider: 'github',
+      repo: 'acme/skills',
+      plane: 'git',
+      readOnly: true,
+      skill: true
+    })
+    const api = new Request('https://api.github.com/repos/acme/skills', {
+      headers: { authorization: `token ${skill}` }
+    })
+    expect(await proxy.decide(api, at('/repos/acme/skills'), AGENT, 'codehost')).toMatchObject({
+      action: 'deny',
+      status: 403
+    })
+  })
 })

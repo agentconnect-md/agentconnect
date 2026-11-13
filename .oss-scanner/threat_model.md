@@ -122,9 +122,9 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
   Git still uses `consumer: 'daemon'`. Azure, Gitea and GitLab token retrieval through a shim's helper
   tunnel remains refused even with a daemon-holder capability. Test mixed providers, two organizations on one authority,
   supported aliases, redirects, read-only push refusal, and missing or stale bindings.
-- **Remaining credential exposure**: GitHub daemon Git and private GitHub skill sources still use
-  their existing helpers and credential windows. A pod's private GitLab skill source holds only a
-  skill placeholder, honored for a Git read of the agent's own private skill projects. The in-pod auto-merge watcher holds only
+- **Remaining credential exposure**: GitHub daemon Git still uses its existing helper. A pod's private
+  GitHub or GitLab skill source holds only a skill placeholder, honored for a Git read of the agent's own
+  private skill repositories; the ordinary placeholder is refused on them. The in-pod auto-merge watcher holds only
   the agent's placeholder and its pod's proxy route. These processes share the runtime's OS user;
   labeling a capability as daemon-held does not isolate it from a sibling process. The Azure,
   Gitea and GitLab migration is not a claim that every pod or VM is free of minting capabilities. Unconfined host execution

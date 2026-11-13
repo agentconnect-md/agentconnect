@@ -659,6 +659,55 @@ describe('a GitHub agent with a private GitLab skill source', () => {
   })
 })
 
+describe('a GitHub agent with a private GitHub skill source', () => {
+  const spec = (): AgentSpec =>
+    ({
+      ...githubSpec(),
+      skills: [
+        {
+          name: 'team-skills',
+          source: 'acme/skills',
+          githubRepoId: '91',
+          credential: { provider: 'github' },
+          skills: ['review']
+        }
+      ]
+    }) as unknown as AgentSpec
+
+  it('routes github.com for its skill placeholder, and reads the skill repository with a skill ask alone', async () => {
+    const { d } = await startDaemon()
+    await admit(d, GITHUB_AGENT, spec())
+    const asked = fakeControlPlane(d, 'write')
+    const proxy = d.credentialProxy.proxy
+    expect(proxy.skillPlaceholderFor(GITHUB_AGENT)).toMatch(/^acph1_/)
+    expect(proxy.skillTunnelRoutes(GITHUB_AGENT)).toContain('github.com:443')
+    const read = { provider: 'github', repo: 'acme/skills', plane: 'git', readOnly: true }
+    // The ordinary placeholder no longer reads a private skill repository through the proxy.
+    await expect(d.credentialProxyMint(GITHUB_AGENT, read)).rejects.toThrow(/private skill source/)
+    const minted = await d.credentialProxyMint(GITHUB_AGENT, { ...read, readOnly: false, skill: true })
+    expect([minted.token, minted.access]).toEqual([MINTED_GITHUB, 'read'])
+    // A skill ask reaches nothing but a private skill repository, the workspace included.
+    await expect(
+      d.credentialProxyMint(GITHUB_AGENT, { ...read, repo: 'example-org/example-repo', skill: true })
+    ).rejects.toThrow(/not a private skill source/)
+    expect(asked).toEqual([
+      { agentId: GITHUB_AGENT, reason: 'helper', repoFullName: 'acme/skills', requestedAccess: 'read' }
+    ])
+  })
+
+  it('keeps the ordinary placeholder on a skill repository the agent is also granted', async () => {
+    const { d } = await startDaemon()
+    const granted = spec()
+    granted.workspace!.additionalRepos = [
+      { provider: 'github', repoId: '91', repoFullName: 'acme/skills', materialize: 'on-demand' }
+    ] as never
+    await admit(d, GITHUB_AGENT, granted)
+    fakeControlPlane(d, 'write')
+    const minted = await d.credentialProxyMint(GITHUB_AGENT, { provider: 'github', repo: 'acme/skills', plane: 'git' })
+    expect(minted.token).toBe(MINTED_GITHUB)
+  })
+})
+
 describe('a Gitea agent behind the credential proxy', () => {
   it('leases the repository a request names by path to the proxy alone, and nothing for one that names none', async () => {
     const { d } = await startDaemon()

@@ -1,12 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import {
-  AgentSkillEntry,
-  isGitHubSkillSource,
-  skillSourceCredential,
-  type CompatibleAgentSkillEntry
-} from '@agentconnect.md/protocol'
+import { AgentSkillEntry, isGitHubSkillSource, type CompatibleAgentSkillEntry } from '@agentconnect.md/protocol'
 import type { ClusterSkillClient } from '../shim/skill-client.js'
 import {
   GitSkillPlanSchema,
@@ -36,7 +31,8 @@ import {
 } from './install-skills.js'
 import { resolveSkillSelections } from './skill-cli-selection.js'
 import { gitlabSkillRepository } from './gitlab-skill-source.js'
-import { gitSkillRepositoryPath, resolveBoundedGitSkillSource } from './skill-git-source.js'
+import { resolveBoundedGitSkillSource } from './skill-git-source.js'
+import { GITHUB_MANAGED_HOST } from '../gitcred/managed-hosts.js'
 import { isCredentialedSkillSource, type SkillRefPlan } from './skill-ref-resolution.js'
 import { GIT_SKILL_SOURCE_SNAPSHOT_LIMITS, inspectLocalSkillSource } from './skill-source-snapshot.js'
 import {
@@ -61,14 +57,8 @@ export interface SandboxSkillTarget {
 export interface InPodSkillDeps {
   /** The daemon's own resolution: a planned commit is never a pod's answer. */
   resolve(entry: AgentSkillEntry): Promise<SkillRefPlan>
-  /** The pod serves the agent tunnel; without it, private GitHub Sources take the daemon path this reconcile. */
-  servesAgentTunnel: boolean
   /** The pod's route to the credential proxy, once its listener forwards the skill instances, and the agent's skill placeholder; without it, private GitLab Sources take the daemon path. */
   skillProxy?(): Promise<SkillCredentialProxyGrant | undefined>
-  /** A pod-subject credential window over exactly these private GitHub repositories, or undefined. */
-  openWindow(repos: string[]): { capability: string; close(): void } | undefined
-  /** Whether `openWindow` would admit this private GitHub repository; one it would not takes the daemon path. */
-  windowAdmits(repo: string): boolean
   /** With a bucket: a presigned GET of the Source's own access class, and a write-back intent when `writeBack` allows one. */
   cachePlan?(
     entry: AgentSkillEntry,
@@ -156,12 +146,9 @@ interface PodPlan {
   commits: Map<string, string>
   /** Sources that neither route can install this run, named for the log. */
   unresolved: ConfiguredGitSource[]
-  privateRepos: string[]
   /** The daemon's write-back intent per plan source id; a candidate for any other Source is discarded. */
   writeBacks: Map<string, SkillWriteBackIntent>
-  /** Plan source ids the pod-subject window credentials. */
-  privateSourceIds: string[]
-  /** The proxy route a GitLab plan entry's Git reaches its project by, sent only with one. */
+  /** The proxy route a private plan entry's Git reaches its repository by, sent only with one. */
   proxy?: SkillCredentialProxyGrant
 }
 
@@ -175,7 +162,6 @@ async function reconcileOnce(
 ): Promise<SandboxSkillReconcileResult> {
   const { client } = input.target
   const scratch = await mkdtemp(join(tmpdir(), 'agentconnect-cluster-skills-'))
-  let window: { capability: string; close(): void } | undefined
   try {
     const pod = inPod ? await planInPod(deps, input, configured, inPod) : undefined
     const daemonRouted = configured.filter(
@@ -310,18 +296,12 @@ async function reconcileOnce(
       configured.map(({ entry }) => entry),
       [...resolutionsByDefinition].map(([definitionDigest, resolvedCommit]) => ({ definitionDigest, resolvedCommit }))
     )
-    window = pod && pod.privateRepos.length > 0 ? inPod!.openWindow(pod.privateRepos) : undefined
     const writeBacks = pod?.writeBacks
-    // A private Source cloned without a window carried no credential, so it never writes back as `cred`.
-    const unwritten = new Set(window ? [] : (pod?.privateSourceIds ?? []))
-    for (const sourceId of unwritten) writeBacks?.delete(sourceId)
     const stager = client.writeBack
     const reconciled = await new ClusterSkillCoordinator(deps.store).reconcile({
       ...input.target,
-      // Nor does the pod bundle it for nothing.
-      sources: unwritten.size === 0 ? sources : sources.map((source) => withoutWriteBack(source, unwritten)),
+      sources,
       gitResolutions,
-      ...(window ? { credentialWindow: { capability: window.capability } } : {}),
       ...(pod?.proxy ? { credentialProxy: pod.proxy } : {}),
       ...(writeBacks && writeBacks.size > 0 && stager
         ? { onWriteBackCandidates: (candidates) => void writeBackInOrder(candidates, writeBacks, stager, deps.log) }
@@ -334,16 +314,8 @@ async function reconcileOnce(
     if (configured.length > 0) deps.reportSourceFailures?.(uniqueSkillSourceFailures(failures))
     return reconciled
   } finally {
-    // The window never outlives its reconcile, whatever the outcome.
-    window?.close()
     await rm(scratch, { recursive: true, force: true })
   }
-}
-
-function withoutWriteBack<T extends { sourceId: string; writeBack?: unknown }>(source: T, ids: Set<string>): T {
-  if (!('writeBack' in source) || !ids.has(source.sourceId)) return source
-  const { writeBack: _dropped, ...rest } = source
-  return rest as T
 }
 
 // Fire-and-forget after the ledger committed, one at a time so a reconcile never crowds the writer; every handle is spent.
@@ -405,16 +377,13 @@ async function planInPod(
   configured: ConfiguredGitSource[],
   inPod: InPodSkillDeps
 ): Promise<PodPlan> {
-  // A GitLab Source goes in-pod only to an image that reaches its instance through the pod's route to the proxy.
+  // A private Source goes in-pod only to an image that reaches its host through the pod's route to the proxy.
   const proxy = input.target.client.gitlabPlans ? await inPod.skillProxy?.() : undefined
   const routed = configured.filter(({ entry }) => {
     if (inPod.daemonOnly?.(entry)) return false
     // An anonymous Source off GitHub goes in-pod only where the pod can resolve it itself.
     if (!isCredentialedSkillSource(entry)) return isGitHubSkillSource(entry.source) || inPod.resolveInPod !== undefined
-    if (skillSourceCredential(entry)?.provider === 'gitlab') return proxy !== undefined
-    // A pod without the agent tunnel, or a repo no window would admit, cannot fill a private Source; the daemon path still can.
-    const key = skillWindowKey(entry)
-    return inPod.servesAgentTunnel && key !== undefined && inPod.windowAdmits(key)
+    return proxy !== undefined
   })
   // The pod's own answer for an anonymous Source off GitHub is used by this preparation alone (source-cache.md §5).
   const resolutions = await Promise.all(
@@ -466,7 +435,11 @@ async function planInPod(
       ...(ref ? { ref } : {}),
       plannedCommit: commit,
       ...(parsed.subDir ? { subDir: parsed.subDir } : {}),
-      ...(gitlab ? { credentialHost: gitlab.baseUrl } : {}),
+      ...(gitlab
+        ? { credentialHost: gitlab.baseUrl }
+        : isCredentialedSkillSource(entry)
+          ? { credentialHost: GITHUB_MANAGED_HOST.baseUrl }
+          : {}),
       selections: [...entry.skills],
       ...(keepInstalled ? { keepInstalled: true } : {}),
       ...(writeBack ? { writeBack } : {})
@@ -506,7 +479,6 @@ async function planInPod(
   }
   const plans = new Map<number, GitSkillPlan>()
   const commits = new Map<string, string>()
-  const privateRepos = new Set<string>()
   const writeBacks = new Map<string, SkillWriteBackIntent>()
   await Promise.all(
     fitted.map(async ({ source, plan, resolution }) => {
@@ -527,31 +499,9 @@ async function planInPod(
       })
     })
   )
-  const privateSourceIds: string[] = []
-  for (const { source, plan } of fitted) {
-    commits.set(gitResolutionDigest(source.entry), plan.plannedCommit)
-    const key = skillWindowKey(source.entry)
-    if (isCredentialedSkillSource(source.entry) && !plan.keepInstalled && key) {
-      privateRepos.add(key)
-      privateSourceIds.push(plan.sourceId)
-    }
-  }
+  for (const { source, plan } of fitted) commits.set(gitResolutionDigest(source.entry), plan.plannedCommit)
   const proxied = proxy !== undefined && [...plans.values()].some((plan) => plan.credentialHost && !plan.keepInstalled)
-  return {
-    plans,
-    commits,
-    unresolved,
-    privateRepos: [...privateRepos],
-    writeBacks,
-    privateSourceIds,
-    ...(proxied ? { proxy } : {})
-  }
-}
-
-/** The `owner/repo` a skill credential window names a private GitHub Source by; a GitLab Source is read through the proxy instead. */
-export function skillWindowKey(entry: AgentSkillEntry): string | undefined {
-  if (skillSourceCredential(entry)?.provider === 'gitlab') return undefined
-  return gitSkillRepositoryPath(entry)?.toLowerCase()
+  return { plans, commits, unresolved, writeBacks, ...(proxied ? { proxy } : {}) }
 }
 
 function planBytes(plan: GitSkillPlan): number {

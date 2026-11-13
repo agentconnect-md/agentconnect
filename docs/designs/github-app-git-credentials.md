@@ -1376,8 +1376,13 @@ Git must not silently claim that the Azure CLI is installed in every image.
    `skill-git-gitlab-proxy-v1`. Routes reach a pod at bind and spawn, while the skill
    reconcile runs in preparation, so the daemon sends the pod's `codehost` routes again
    first and plans a source in-pod only once that listener forwards the skill instances;
-   a pod without the feature or such a listener takes the daemon path. Private GitHub skill sources keep their pod window until
-   GitHub's Git moves.
+   a pod without the feature or such a listener takes the daemon path. Private GitHub skill
+   sources take the same path, since the shim's proxied plan entry names its host rather than
+   its provider: the entry names `https://github.com` as its credential host, the skill
+   placeholder is sealed for github.com too, and the proxy mints a read token only for a
+   repository that is one of the agent's private GitHub skill sources. No pod skill window
+   is opened. The agent's ordinary placeholder is refused on such a repository unless it is
+   also the agent's GitHub workspace or an additional repository.
 4. **Owning-daemon host-side Git, last:** after deliveries 1–3, decide whether to
    migrate canonical clones, other host-side preparation and local host-strategy
    daemon Git at all. Extend the capacity measurement to full canonical clones
@@ -1493,8 +1498,8 @@ resource/concurrency bounds; this documentation change launches no load test.
 - Source-cache hit/miss and fallback behavior, exact review refs, approved submodules
   and lazy fetches preserve their own authorization. A skill placeholder reads only
   the private skill sources its agent's current spec enables, over Git and read-only;
-  an ordinary runtime placeholder must not acquire source-only access. Until GitHub's
-  skill sources move, a closed, expired or wrong-subject GitHub skill window still denies.
+  an ordinary runtime placeholder must not acquire source-only access. The daemon's own
+  acquisition still fills through a daemon-subject window, which no tunnel can spend.
 
 Completion of the first delivery means Azure works in the newly enabled environments;
 completion of deliveries 1–3 means managed Git inside execution environments uses
