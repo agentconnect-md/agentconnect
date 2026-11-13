@@ -10,6 +10,7 @@ import {
   LookBack,
   firstSentence,
   lookBackItemText,
+  lookBackStale,
   lookBackVerdict,
   placeDue,
   replyTail,
@@ -129,6 +130,18 @@ describe('the look-back listing rule', () => {
     expect(lookBackVerdict(spent, NOW, idle)).toMatchObject({ listed: false })
     const cleared = task(5 * H, { personAt: NOW - 5 * H, lookedAt: NOW - H })
     expect(lookBackVerdict(cleared, NOW, idle)).toEqual({ listed: true, remind: true, left: 1 })
+  })
+
+  it('finds an item stale once its task was stopped, heard from a person or ran a round after the look', () => {
+    const looked = { lookedAt: NOW - H }
+    expect(lookBackStale(task(5 * H, looked), false)).toBeUndefined()
+    expect(lookBackStale(task(5 * H), false)).toBeUndefined()
+    expect(lookBackStale(undefined, false)).toMatch(/no longer open/)
+    expect(lookBackStale({ ...task(5 * H, looked), closedAt: NOW }, false)).toMatch(/no longer open/)
+    expect(lookBackStale(task(5 * H, { ...looked, stoppedAt: NOW - 1 }), false)).toMatch(/stopped by a person/)
+    expect(lookBackStale(task(5 * H, looked), true)).toMatch(/stopped by a person/)
+    expect(lookBackStale(task(5 * H, { ...looked, personAt: NOW - 1 }), false)).toMatch(/heard from a person/)
+    expect(lookBackStale(task(H / 2, looked), false)).toMatch(/run a round/)
   })
 
   it('looks at a place once every four hours at most', () => {
@@ -430,6 +443,39 @@ describe('the coordinator settling a look-back item', () => {
     )
     expect(sentBack).toEqual([])
     expect(settled).toEqual([])
+  })
+
+  it('acts on no item whose task a person stopped after the look listed it, and still lets it be left', async () => {
+    const { sessions, ctx, item, sentBack, settled, posted } = await setup()
+    await store!.assistantSubsessions.markLooked('bot-a', taskKey, { now: 500, left: 1 })
+    await store!.assistantSubsessions.markStopped('bot-a', taskKey, 600)
+    sessions.turns.begin(coordinatorKey, [item('9.1')])
+    await expect(
+      sessions.decide(ctx, { action: 'messageTask', messageId: 'msg-9.1', taskId: taskKey, message: 'Go on.' })
+    ).rejects.toThrow(/stopped by a person since/)
+    await expect(
+      sessions.decide(ctx, { action: 'replyToMessage', messageId: 'msg-9.1', message: 'Alice?' })
+    ).rejects.toThrow(/stopped by a person since/)
+    expect(sentBack).toEqual([])
+    expect(posted).toEqual([])
+    expect(settled).toEqual([])
+    await expect(
+      sessions.decide(ctx, { action: 'ignoreMessage', messageId: 'msg-9.1', reason: 'stopped' })
+    ).resolves.toEqual({ ok: true, ignored: 'msg-9.1' })
+  })
+
+  it('acts on no item whose task heard from a person after the look', async () => {
+    const { sessions, ctx, item, posted } = await setup()
+    await store!.assistantSubsessions.markLooked('bot-a', taskKey, { now: 500, left: 1 })
+    await store!.assistantSubsessions.notePerson('bot-a', taskKey, {
+      asker: { kind: 'member', platform: 'slack', integrationId: 'int-bot-a', userId: 'U0EXAMPLE1' },
+      now: 600
+    })
+    sessions.turns.begin(coordinatorKey, [item('9.1')])
+    await expect(
+      sessions.decide(ctx, { action: 'replyToMessage', messageId: 'msg-9.1', message: 'Alice?' })
+    ).rejects.toThrow(/heard from a person since/)
+    expect(posted).toEqual([])
   })
 
   it('leaves an ordinary report as it was: messageTask is refused there', async () => {

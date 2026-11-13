@@ -2247,6 +2247,11 @@ export class Daemon {
     lookBackSettled: async (agentId, taskKey, outcome) => {
       await this.store.assistantSubsessions.noteLookBackOutcome(agentId, taskKey, outcome, this.clock.now())
     },
+    taskMuted: async (agentId, taskKey) => {
+      const rec = await this.store.getSession(taskKey)
+      if (!rec || rec.agentId !== agentId || !this.commandChrome.stopLatchesMute(rec.platform)) return false
+      return await this.commands.isSessionMuted(taskKey)
+    },
     warn: (message) => this.log.warn(message)
   })
   // Latched for the WHOLE drain handoff, including the window after `draining`
@@ -12558,7 +12563,10 @@ export class Daemon {
     const integrationId = this.integrationIdForSessionTransport(agentId, rec.platform, rec.transportScope)
     if (!integrationId || !this.connForIntegration(integrationId))
       throw new Error("sendMessage: that task's platform connection is offline; nothing was sent")
-    const opener = (await this.store.assistantSubsessions.get(agentId, taskKey))?.lookBack?.opener
+    const look = (await this.store.assistantSubsessions.get(agentId, taskKey))?.lookBack
+    // Read again at the wake itself: a stop that came after the look listed the task still holds.
+    if (look?.stoppedAt !== undefined) throw new Error('sendMessage: a person stopped that task; nothing was sent')
+    const opener = look?.opener
     const deliveryId = `look-back:${taskKey}:${monotonicTs()}`
     const msg: NormalizedMessage = {
       msgId: deliveryId,

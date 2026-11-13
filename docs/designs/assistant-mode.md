@@ -4248,6 +4248,9 @@ ended; who stopped it is written only into the transcript.
   batch of people's messages brings no asker and changes nothing the batch may read.
 - While the agent is paused nothing is listed. After it resumes, a place gets one look, however
   many it missed.
+- An item can wait behind a running coordinator turn while its task changes. The task is read again
+  when the coordinator acts on the item: one a person stopped or wrote to since the look, or that
+  ran a round since, takes neither a reminder nor a send-back, and the item can only be left.
 - A wrong reminder, to someone who already answered elsewhere, costs one line, and at most two.
 - A place without a coordinator gets no look: a DM on a platform without threads, until it runs one
   (§5.18, Deferred).
@@ -4306,6 +4309,9 @@ ended; who stopped it is written only into the transcript.
   place, or, for a task working in a room it holds, in the thread that asked for the room. The
   daemon holds the coordinator's session gate while it admits a look's items, so an idle coordinator
   takes them in one turn; a busy one takes them in its next batch.
+- **A stale item.** `replyToMessage` and `messageTask` on an item read the task's row and its mute
+  latch again (`lookBackStale`) and are refused when the task closed, was stopped, heard from a
+  person or ran a round after the look listed it; the wake itself reads the stop mark once more.
 - **An unsettled item.** A look marks each listed task as one more look that left it before the
   items go out. A reminder or a send-back recorded afterwards replaces that, so an item left with
   `ignoreMessage`, with no call, or in a turn that failed or was cut counts as left, and nothing is

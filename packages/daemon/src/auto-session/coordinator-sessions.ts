@@ -12,7 +12,7 @@ import type { UnownedThreadSession } from '../store/assistant-subsessions.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
 import { a2aCoordChannel } from '../cp/cp-collab-routes.js'
 import { isSubsessionCoordinate, subsessionCoordinate } from '../session/subsession-coordinate.js'
-import { LOOK_BACK_KIND } from '../assistant/look-back.js'
+import { LOOK_BACK_KIND, lookBackStale } from '../assistant/look-back.js'
 import { coordinatorMessageId, type ReportAbout } from './coordinator-prompt.js'
 import {
   answerThreadOf,
@@ -58,6 +58,8 @@ export interface CoordinatorSessionsHost {
   sendBack?(agentId: string, taskKey: string, note: string | undefined): Promise<void>
   /** A look-back item settled otherwise than leaving it, kept on its task's row (§5.20). */
   lookBackSettled?(agentId: string, taskKey: string, outcome: 'reminded' | 'sent back'): Promise<void>
+  /** A person muted the task's thread, on a platform where a stop mutes (§5.20). */
+  taskMuted?(agentId: string, taskKey: string): Promise<boolean>
   /** Where a person opens a platform thread, where its platform links one. */
   threadLink?(
     integrationId: string | undefined,
@@ -261,6 +263,7 @@ export class CoordinatorSessions {
           `sendMessage: ${call.messageId} is a report, not a channel message: answer it with action "replyToMessage", or ` +
             'leave it with ignoreMessage; no task was opened or messaged'
         )
+      if (lookBack) await this.lookBackHolds(ctx.agentId, call.messageId, lookBack.task)
       // The coordinator reads only an attachment's name (§5.1); a report is exempt because no task can take one.
       if (call.action === 'replyToMessage' && !held.message.report && held.message.msg.attachments?.length)
         throw new Error(
@@ -310,6 +313,18 @@ export class CoordinatorSessions {
       this.turns.release(key, call.messageId)
       throw err
     }
+  }
+
+  /** A look-back item is acted on only while its task stands as the look found it: a stop, a person's message or a round since then leaves it (§5.20). */
+  private async lookBackHolds(agentId: string, messageId: string, taskKey: string): Promise<void> {
+    const row = await this.host.store().assistantSubsessions.get(agentId, taskKey)
+    const muted = (await this.host.taskMuted?.(agentId, taskKey)) ?? false
+    const stale = lookBackStale(row?.mode === 'watch' ? undefined : row, muted)
+    if (stale)
+      throw new Error(
+        `sendMessage: the task ${messageId} looks back at ${stale}, so this item no longer holds: leave it with ` +
+          'ignoreMessage; nothing was posted or sent'
+      )
   }
 
   /** A look-back item's `messageTask`: only the task the item speaks for goes back to work (assistant-mode.md §5.20). */

@@ -78,6 +78,19 @@ export function lookBackVerdict(
   return { listed: true, remind: reminders < LOOK_BACK_REMINDERS_MAX && gapPassed, left: leftInARow + 1 }
 }
 
+/** Why an item no longer holds for its task as it stands now, as the refusal words it, or undefined while it does. */
+export function lookBackStale(
+  task: (LookBackTask & { closedAt?: number }) | undefined,
+  muted: boolean
+): string | undefined {
+  if (!task || task.closedAt !== undefined) return 'is no longer open'
+  const look = task.lookBack
+  if (muted || look?.stoppedAt !== undefined) return 'was stopped by a person since'
+  if (look?.lookedAt === undefined) return undefined
+  if ((look.personAt ?? 0) > look.lookedAt) return 'has heard from a person since'
+  return (task.changedAt ?? task.createdAt) > look.lookedAt ? 'has run a round since' : undefined
+}
+
 /** What an item says of its task, all of it already held by the daemon. */
 export interface LookBackFacts {
   title?: string
