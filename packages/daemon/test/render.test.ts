@@ -239,6 +239,35 @@ describe('OutputConverger', () => {
         ])
       ).toEqual(['Hello there friend.'])
     })
+
+    // A steered turn can stop mid-sentinel; the retry's message must not carry that fragment.
+    it('drops a message that closed as only sentinel text instead of joining the next one onto it', () => {
+      const low = (runs: Array<[string, string]>) => posts(new OutputConverger('low'), runs)
+      expect(
+        low([
+          ['m1', 'AC_NO_RES'],
+          ['m2', 'Sure, here it is.']
+        ])
+      ).toEqual(['Sure, here it is.'])
+      expect(
+        low([
+          ['m1', 'AC_NO_RESPONSE'],
+          ['m2', 'Sure, here it is.']
+        ])
+      ).toEqual(['Sure, here it is.'])
+      expect(
+        low([
+          ['m1', 'AC_NO_RES'],
+          ['m2', 'AC_NO_RESPONSE']
+        ])
+      ).toEqual([])
+      expect(
+        low([
+          ['m1', 'Pick one:\n\nA'],
+          ['m2', 'B also works.']
+        ])
+      ).toEqual(['Pick one:\n\nA', 'B also works.'])
+    })
   })
 
   it('low mode: tool_call with no title falls back to the toolCallId', () => {

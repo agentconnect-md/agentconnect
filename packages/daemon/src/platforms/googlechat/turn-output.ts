@@ -57,7 +57,10 @@ export class GoogleChatConverger {
     if (update.sessionUpdate !== 'agent_message_chunk') return []
     const content = (update as { content?: { type?: string; text?: string } }).content
     const text = content?.type === 'text' ? (content.text ?? '') : ''
-    const closed = this.messages.opens(update) ? this.closeBlock() : []
+    const opens = this.messages.opens(update)
+    // A closed message that was only sentinel text can never complete: drop it instead of joining the next message onto it.
+    if (opens) this.buf = this.messages.withoutClosedSentinel(this.buf)
+    const closed = opens ? this.closeBlock() : []
     this.buf += text
     return [...closed, ...this.preview()]
   }

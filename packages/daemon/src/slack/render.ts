@@ -3090,9 +3090,11 @@ export class OutputConverger {
       case 'agent_message_chunk': {
         const content = (update as { content?: { type?: string; text?: string } }).content
         const text = content?.type === 'text' ? (content.text ?? '') : ''
-        // A new message closes the one before it exactly as a tool boundary would — same mode
-        // semantics, same actions. Without this the two arrive as one post, run together.
-        const closed = this.messages.opens(update) ? (this.mode === 'minimal' ? this.closeSegment() : this.flush()) : []
+        // A new message closes the one before it as a tool boundary would; without this the two run together as one post.
+        const opens = this.messages.opens(update)
+        // A closed message that was only sentinel text can never complete: drop it instead of joining the next message onto it.
+        if (opens) this.buf = this.messages.withoutClosedSentinel(this.buf)
+        const closed = opens ? (this.mode === 'minimal' ? this.closeSegment() : this.flush()) : []
         this.buf += text
         return closed
       }

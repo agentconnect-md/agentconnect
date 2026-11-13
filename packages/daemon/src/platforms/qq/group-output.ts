@@ -2,7 +2,7 @@ import type { SessionUpdate } from '@agentclientprotocol/sdk/unstable'
 import { GithubReplyCollector } from '../../github/poster.js'
 import { flattenUnsafeLinks } from '../../messages/agent-links.js'
 import { AgentMessageRun, WorkBoundary } from '../../messages/message-boundary.js'
-import { isNoResponseBody } from '../../session/no-response.js'
+import { isNoResponseBody, isNoResponsePrefix } from '../../session/no-response.js'
 import type { WorkspaceFileLinkResolver } from '../../messages/workspace-file-links.js'
 import type { QQAction } from './turn-output.js'
 import { QQProgressMaxBytes } from './text.js'
@@ -48,6 +48,7 @@ export class QQGroupOutput {
       phase === 'final_answer' ||
       !text.trim() ||
       isNoResponseBody(text.trim()) ||
+      isNoResponsePrefix(text.trim()) ||
       Buffer.byteLength(text) > QQProgressMaxBytes ||
       this.published.has(text) ||
       this.progressCount >= 2 ||

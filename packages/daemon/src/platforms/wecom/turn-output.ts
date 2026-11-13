@@ -44,8 +44,9 @@ export class WeComConverger {
     return flattenUnsafeLinks(this.sourceText, { resolveFileLink: this.resolveFileLink })
   }
 
-  private completeBlock(): void {
-    const text = this.currentText()
+  private completeBlock(final = false): void {
+    // A block closed mid-turn that is only sentinel text can never complete; at the turn's end a short reply like "A" stays.
+    const text = !final && isNoResponsePrefix(this.sourceText.trim()) ? '' : this.currentText()
     if (text) this.completed.push(text)
     this.sourceText = ''
   }
@@ -67,7 +68,7 @@ export class WeComConverger {
   onFinal(_attribution?: unknown): WeComAction[] {
     if (this.finalized) return []
     this.finalized = true
-    this.completeBlock()
+    this.completeBlock(true)
     const text = this.completed.join('\n\n')
     return text ? [{ kind: 'post', text, ...(this.mode === 'none' ? { recordOnly: true } : {}) }] : []
   }

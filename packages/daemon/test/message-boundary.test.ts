@@ -51,6 +51,27 @@ describe('AgentMessageRun', () => {
   })
 })
 
+describe('AgentMessageRun.withoutClosedSentinel', () => {
+  const said = (messageId: string, text: string) => ({
+    sessionUpdate: 'agent_message_chunk',
+    messageId,
+    content: { type: 'text', text }
+  })
+
+  it('removes a just-closed message that was only sentinel text, and nothing else', () => {
+    const run = new AgentMessageRun()
+    run.opens(said('m1', 'AC_NO'))
+    run.opens(said('m1', '_RES'))
+    expect(run.opens(said('m2', 'Sure'))).toBe(true)
+    expect(run.withoutClosedSentinel('Earlier.AC_NO_RES')).toBe('Earlier.')
+    expect(run.withoutClosedSentinel('AC_NO_RE')).toBe('AC_NO_RE')
+    run.opens(said('m2', ' there.'))
+    expect(run.withoutClosedSentinel('AC_NO_RES')).toBe('AC_NO_RES')
+    expect(run.opens(said('m3', 'x'))).toBe(true)
+    expect(run.withoutClosedSentinel('Sure there.')).toBe('Sure there.')
+  })
+})
+
 describe('WorkBoundary', () => {
   it('recognizes new tools even when their first event is an update, and ignores later output or status', () => {
     const run = new WorkBoundary()
