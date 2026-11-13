@@ -42,7 +42,7 @@
     "highlight.js": "^11.11.1",
     "lucide-react": "^1.71.0",
     "next": "^16.4.6",
-    "next-intl": "^4.14.9",
+    "next-intl": "^4.14.10",
     "node-emoji": "^2.2.0",
     "posthog-js": "^1.447.7",
     "qrcode.react": "^4.2.0",
