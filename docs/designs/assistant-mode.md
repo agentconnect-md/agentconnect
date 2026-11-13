@@ -116,7 +116,7 @@ does not pretend to defend against effects it cannot defend against.
 - **A follow-up waiting on a pull request, merge request or issue wakes when it changes**
   (being built, §5.14): a merge, a review, a finished CI run or a reply makes it check now instead of
   at its next check, which stays as the fallback.
-- **It goes back over its own open work** (proposed, §5.20). Every few hours it looks at the tasks
+- **It goes back over its own open work** (built, §5.20). Every few hours it looks at the tasks
   that went quiet. Where it asked someone and nobody answered, it reminds that person in the same
   thread, once, and once more a day later. Where it stopped partway, it goes on with what it was
   already asked to do.
@@ -4120,8 +4120,10 @@ with a next check; whether a follow-up's line should link its latest report.
 
 ### 5.20 Looking back at open tasks
 
-**Status:** Proposed (2026-11-13), hundred-and-sixth revision. Nothing is built. Every number below
-is a first value, not a measured one (Open).
+**Status:** Built in the daemon (2026-11-13), hundred-and-sixth revision: the look, its items, the
+three outcomes, the limits and the stop mark, with no Control Plane, protocol or console change. How it
+shipped is under "As shipped" at the end of this section. Every number below is a first value, not a
+measured one (Open).
 
 **Why.** A task that ends a round while it still waits on something is brought back by nothing.
 
@@ -4155,8 +4157,9 @@ commitment that some turn must remember to make fails the way the task's own did
 gates, looks at each place of an assistant-mode agent that runs a coordinator, at most once every
 four hours per place. A task of the place is listed when all of these hold:
 
-- it is open and in work mode: a follow-up keeps its own schedule (§5.12), and a getting-to-know
-  task and organization research are left out;
+- it is open, in work mode and holds a thread: a follow-up keeps its own schedule (§5.12), a
+  getting-to-know task and organization research are left out, and a background task reports every
+  round already;
 - no turn of it is running or queued, and no round of it started or settled in the last four hours
   (longer after it was sent back to work, under Limits);
 - no person stopped it: stopping or cancelling its turn, or muting its thread, keeps it off the
@@ -4195,8 +4198,8 @@ write now is the coordinator's judgment from those two times, as it is a colleag
   such as a question asked in their evening while it is still their night, and the item comes back
   at the next look. Each task is reminded in its own thread, where the question and its context
   are; reminders are not merged across tasks.
-- **Send it back to work.** `messageTask` refuses a report's id today. A look-back item is the one
-  report it accepts, and only for the task the item speaks for. The task receives the coordinator's
+- **Send it back to work.** `messageTask` refuses a report's id. A look-back item is the one report
+  it accepts, and only for the task the item speaks for; any other `taskId` is refused. The task receives the coordinator's
   message under a frame the daemon writes: no person sent this; check where the work stands and go
   on with what you were already asked or approved to do; a step that needs a decision is asked in
   your thread and waits there; update your summary.
@@ -4229,8 +4232,9 @@ note such as "this also needs an owner" was said once in its report and is not r
   keeps a task alive by itself: a task nobody writes to closes at most seven days after it was last
   sent back to work (auto-session-mode.md §6.5).
 
-**What the daemon keeps.** On the task's row: when a person stopped it, when it was last listed, and
-the reminders, the times it was sent back and the looks that left it since a person last wrote.
+**What the daemon keeps.** On the task's row: when a person stopped it, when it was last listed, the
+reminders, the times it was sent back and the looks that left it since a person last wrote, when and
+who that person was, and the person the task was opened for.
 The stop needs a mark of its own. A session's last outcome records only that a turn finished or
 failed, and a turn a person stopped is recorded as finished, like one a restart or a newer message
 ended; who stopped it is written only into the transcript.
@@ -4269,6 +4273,66 @@ ended; who stopped it is written only into the transcript.
 - "Waiting on whom, since when" as fields of the task instead of words in its summary, so that the
   board and the Work canvas (§5.18, §5.19) can show them.
 
+**As shipped** (2026-11-13). Choices the text above leaves open:
+
+- **Where it lives.** `assistant/look-back.ts` holds the listing rule, the item text, the frame a task
+  sent back to work receives and every number, one named constant each; the daemon runs its sweep
+  after the follow-up check sweep, under the checks' gates and the Auto switch.
+- **Quiet since** is the task row's `changedAt`: when a round last started or settled or its title
+  changed. Nothing else counts; the session row's `updatedAt` is not read.
+- **Which tasks.** Open threaded work tasks whose owner is a coordinator, a delegated task, a
+  fallback task, an adopted thread session or an approved proposal holding its thread. A member's
+  webchat conversation gets no look: its reports each run a turn of their own, so its items could
+  not form one batch. At most ten items go in one look, the never-listed first, then the longest
+  unlisted; the rest wait for the next look.
+- **A place's last look** is the latest time any of its open tasks was listed, read from their rows,
+  so a restart neither repeats a look nor loses one.
+- **Busy** is a turn of the task's session running or queued in memory, or a delivery of it left in
+  the inbox. **Muted** is the `!stop` latch on the task's session, read at each look on a platform
+  whose stop mutes; it ends when a mention clears it.
+- **The stop mark.** A cancel or an attributed stop that a person raised (not one whose actor is a
+  bot) marks the task's row where the transcript's "Turn cancelled" row is written. A person's
+  message that starts or joins a turn of the task clears it, together with the counts.
+- **The last person** and **the opener** are recorded when a person's message starts or joins a
+  turn of the task. The opener is recorded once, from the message the task was opened for, so a
+  task opened before this change, an adopted thread session and a task opened for a message no
+  person sent have none, and a round they are sent back to work in asks as no one. The item names
+  the person by their display name and their platform id, so a reminder can address them.
+- **Columns.** On `assistant_subsession`, store version 82 on both backends: `lookedAt`,
+  `lookReminders`, `lookRemindedAt`, `lookSentBack`, `lookLeft`, `stoppedAt`, `personAt`,
+  `lastPerson` and `openedBy`.
+- **Delivery.** Each item is its task's report (`deliverDaemonReport` with the task's session as the
+  caller and `kind="look back"`), replying in the thread the task's latest turn delivered to in the
+  place, or, for a task working in a room it holds, in the thread that asked for the room. The
+  daemon holds the coordinator's session gate while it admits a look's items, so an idle coordinator
+  takes them in one turn; a busy one takes them in its next batch.
+- **An unsettled item.** A look marks each listed task as one more look that left it before the
+  items go out. A reminder or a send-back recorded afterwards replaces that, so an item left with
+  `ignoreMessage`, with no call, or in a turn that failed or was cut counts as left, and nothing is
+  retried.
+- **Reminders.** After a reminder the task is not listed until a day has passed, unless it runs a
+  round meanwhile; then it is listed on the quiet rule, but a reminder is not open until the day has
+  passed. The item says when no reminder is open, and `replyToMessage` on it is refused. After the
+  second, it is listed only once it runs a round, with no reminder open.
+- **Left.** A round since the last look starts the run of looks that left it over.
+- **The window** counts from the last person's message where one is recorded, else from when the task
+  opened.
+- **The item** quotes the summary's first sentence, at most 200 characters, and at most the last 400
+  characters of the task's latest text row of its own, found among its latest 50 transcript rows. It
+  ends with one line naming the three outcomes, so a coordinator whose session opened before its
+  prompt gained the paragraph still settles it.
+- **The prompt.** Only an assistant-mode coordinator's prompt carries the paragraph on look-back
+  items. A coordinator keeps the prompt it opened with, and its outcome protocol is unchanged, so
+  none is succeeded for this.
+- **Sent back.** The task receives a daemon-written message, `source: 'system'`, in its session, on
+  the thread its latest turn delivered to, with the frame above and the coordinator's note. The
+  message carries whom its round asks as (`lookBackWake`), persisted with it, so a replay asks the
+  same way. The coordinator's call waits for the message's admission, not for the round.
+- **Validation.** The runtime matrix's coordinator probe gained `look-back-batch`: three items in one
+  turn, a task waiting on a copy it never came back from, a question to a person whose local time is
+  midday, and a question to a person whose local time is the middle of the night. Not run on a
+  runtime yet.
+
 ---
 
 ## 6. Relation to existing mechanisms
@@ -4305,7 +4369,7 @@ ended; who stopped it is written only into the transcript.
 | Getting-to-know task (partly shipped) | §5.13: a one-check follow-up the daemon takes when the bot is added to a place (Slack) or a person asks for one (Slack, Discord, Lark/Feishu), with `getToKnow` and the bot-join callback, shipped, as is `propose` in its report round, under the introduction and with a follow-up form; since §5.15 it writes memory itself. Still to come: Lark/Feishu's join. The read ports it needs (topic and description, message links) shipped. A timed check of the place is offered through it as a follow-up; waking on events stays P2                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | Organization research and files       | §5.15–§5.17. Shipped (2026-10-17): the shapes of three organization files in the shared layer (`organization.md`, `channels.md`, `members.md`; organization knowledge is unchanged), checked on every write, and getting-to-know tasks that write them. Proposed: the files also written directly by internal public channels' sessions on a person's turn, and by organization research, a delegated task of the conversation that switched the mode on, opened by the daemon at onboarding and given another round when that conversation asks; it reads the organization's own sources, its code hosts and the public web, and no reply waits for it. People profiles of work facts, which their subject sees, corrects and clears. A home session as single writer was considered and not chosen. Research waits for a live test of each runtime's web tools under the agent's mode. Revised (sixty-ninth revision): the three files become the organization record, knowledge entries with agent visibility, one set per organization (§5.16) |
 | P2 — cost and events                  | Event wake (§5.14, being built): a follow-up watching a pull request, merge request or issue is woken by that object's code-host events through a wake-only subscription, not hook routing; Decision triage; budgets; incremental summary injection                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| Looking back at open tasks            | §5.20, proposed (2026-11-13): every four hours the daemon hands a place's coordinator the tasks there that went quiet, and it reminds the person a task waits on, sends the task back to work or leaves it; bounded per task. Nothing is built                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Looking back at open tasks            | §5.20, built in the daemon (2026-11-13): every four hours the daemon hands a place's coordinator the tasks there that went quiet, and it reminds the person a task waits on, sends the task back to work or leaves it; bounded per task                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | P3                                    | The personal form; retention widened to every user once run state is decoupled from session rows                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 
 ---
@@ -5506,11 +5570,12 @@ posted. A report's turn text is not posted, so a getting-to-know round's reply i
 `replyToMessage` post. A coordinator opened before the change is succeeded at its next message, its
 tasks handed over.
 
-**Hundred-and-sixth revision (2026-11-13)**: looking back at open tasks is proposed (§5.20, §1.5). A
-task that ends a round with a question in prose, or waiting on work outside the runtime, is brought
-back by nothing today. Every four hours the daemon hands a place's coordinator the tasks there that
-went quiet, as report items, and the coordinator reminds the person a task waits on, sends the task
-back to work with `messageTask`, or leaves it. The timer is the daemon's; the judgment, including
-whether it is a fair hour for that person, is the coordinator's. Two things the code does not have
-yet are named: `messageTask` accepting a look-back item, and a durable mark that a person stopped a
-task. A time a task sets for itself is left open.
+**Hundred-and-sixth revision (2026-11-13)**: looking back at open tasks is built in the daemon
+(§5.20, §1.5). A task that ended a round with a question in prose, or waiting on work outside the
+runtime, was brought back by nothing. Every four hours the daemon hands a place's coordinator the
+tasks there that went quiet, as report items in one turn, and the coordinator reminds the person a
+task waits on, sends the task back to work with `messageTask`, or leaves it. The timer is the
+daemon's; the judgment, including whether it is a fair hour for that person, is the coordinator's.
+`messageTask` now accepts a look-back item for its own task, and a task's row keeps a mark that a
+person stopped it, beside what looking back counts (store version 82). A time a task sets for
+itself is left open.
