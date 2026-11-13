@@ -271,14 +271,25 @@ TTL the shim closes the channel and the daemon reconnects; tearing down those li
 every renewal would break any client mid-request, so `listen` is idempotent and each socket
 lives as long as the pod does.
 
-A frame that was travelling when the socket was replaced is a different matter, and the
-resolution is deliberate: the renewal aborts requests in flight, and that abort says a
-_reply_ was lost, not whether the request landed. Re-sending is therefore unsafe — these
-tunnels carry request/response protocols where a duplicated fragment is a corrupt request
-rather than a retry — so the stream is **terminated** and the in-pod client sees EOF at once.
-For git that is an authentication failure it can be retried, where leaving the stream open
-would be git waiting out an idle timeout. Streams that were idle across the renewal are
-untouched.
+A frame that was travelling when the socket was replaced is a different matter. The renewal
+aborts requests in flight, and that abort says a _reply_ was lost, not whether the request
+landed. A plain re-send is unsafe — these tunnels carry request/response protocols and TLS,
+where a duplicated fragment is a corrupt request rather than a retry — yet ending the stream
+is not affordable either: a clone through the `codehost` tunnel routinely outlasts the
+five-minute renewal, so every renewal would fail every proxied Git operation and model
+request in flight on that pod.
+
+So each daemon → pod `data` frame carries a per-stream `seq` from 1, and the shim announces
+`resumable` in its `listen` reply. It writes frame _n_ only after _n − 1_, answers a repeat
+without writing it, and refuses a frame that skips ahead. The daemon keeps every frame it
+has not had answered; when the replacement channel attaches it re-sends them in order, seq
+unchanged, before any new byte of the stream can be read. A hang-up from the daemon-side
+server waits behind those frames, so the pod never sees EOF ahead of the bytes before it,
+and a `close` the renewal lost is sent once more (the shim treats a repeat as ordinary).
+Pod → daemon bytes already survive: the shim buffers events across the rebind and the
+daemon's cumulative ack is re-sent once. Against a shim that does not announce `resumable`,
+a stream with a frame in flight is still terminated, so its client sees EOF at once rather
+than waiting out an idle timeout. Streams that were idle across the renewal are untouched.
 
 This is why a bound channel is announced only after its `shim/bound` frame is on the wire:
 the peer refuses anything that arrives ahead of its own binding, so an earlier notification
@@ -290,16 +301,16 @@ unwritable by the runtime — one it could rewrite is one it could replace with 
 asks the daemon for credentials in its name. It shares its implementation with the daemon's
 CLI helper and differs only in which socket it dials.
 
-### The ACP stream, where a re-send is made safe instead
+### The ACP stream, where a re-send is made safe too
 
-The runtime's stdin runs over the same channel and meets the same renewal, but it cannot take
-the tunnel's answer. Terminating an ACP stream ends the agent's runtime, and the write in
+The runtime's stdin runs over the same channel and meets the same renewal, and for it ending
+the stream was never an option. Terminating an ACP stream ends the agent's runtime, and the write in
 flight at a renewal is usually `session/prompt` — the turn itself. Worse, the daemon side
 holds that write inside a `WritableStream`, which stays errored once a write rejects: one lost
 write and every later turn fails with the same stored error while the pod sits there healthy.
 That is not a failed turn, it is an agent that has gone quiet until someone deletes its pod.
 
-So this stream buys the property the tunnels lack rather than living without it. Each chunk
+So this stream numbers its writes the same way. Each chunk
 carries a per-stream `seq`; the runner applies one at most once, recording it **after** the
 write so a write that failed is still owed; and the shim announces the dedupe in its `open`
 reply. The daemon re-sends the lost write unchanged, seq included, and the sandbox either

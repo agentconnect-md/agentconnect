@@ -79,6 +79,8 @@ interface HostStream {
   flow?: Flow
   /** Armed until the daemon's first byte or ack, on a proxy tunnel's stream. */
   answer?: NodeJS.Timeout
+  /** The highest numbered daemon frame written to the socket. */
+  applied?: number
 }
 
 /** `held` is what a read brought past the window, sent as acks make room. */
@@ -221,7 +223,7 @@ export class TunnelHost {
         : ({ socketPath: await this.listen(parsed.tunnel) } satisfies TunnelListening)
       if (parsed.acks) this.acked.add(parsed.tunnel)
       else this.acked.delete(parsed.tunnel)
-      return { ...listening, acks: true } satisfies TunnelListening
+      return { ...listening, acks: true, resumable: true } satisfies TunnelListening
     }
     const stream = this.streams.get(parsed.streamId)
     if (stream?.answer && (parsed.op === 'ack' || parsed.op === 'data')) {
@@ -240,7 +242,16 @@ export class TunnelHost {
       if (socket) this.end(parsed.streamId, socket)
       return null
     }
-    if (!socket) throw new TunnelRefusedError(`unknown tunnel stream ${parsed.streamId}`)
+    if (!stream || !socket) throw new TunnelRefusedError(`unknown tunnel stream ${parsed.streamId}`)
+    if (parsed.seq !== undefined) {
+      const applied = stream.applied ?? 0
+      // A renewal re-sends every frame whose reply it lost, including ones written here already.
+      if (parsed.seq <= applied) return null
+      if (parsed.seq !== applied + 1) {
+        throw new TunnelRefusedError(`tunnel stream ${parsed.streamId} skipped from frame ${applied} to ${parsed.seq}`)
+      }
+      stream.applied = parsed.seq
+    }
     const chunk = Buffer.from(parsed.chunk, 'base64')
     await new Promise<void>((resolve, reject) => {
       socket.write(chunk, (err) => (err ? reject(err) : resolve()))
