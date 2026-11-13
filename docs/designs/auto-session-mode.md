@@ -453,9 +453,13 @@ now and the summary's first sentence states the current status.
     made, it opens in the agent's directory with no workspace roots.
 - An ACP session with the coordinator's own prompt, on the agent's coordinator model
   (`coordinatorModel`: runtime, model, effort and Fast mode), apart from the task model.
-  - Unset is Default: the agent's runtime at low effort, on the newest small model that runtime offers
-    (Claude Code's Haiku, Codex's terra tier), else the task model. `defaultCoordinatorModel` in
+  - Unset is Default: the agent's runtime at low effort, on the newest model of that runtime's middle
+    tier (Claude Code's Sonnet, Codex's terra), else the task model. `defaultCoordinatorModel` in
     `packages/protocol/src/coordinator-model.ts` is the one rule the daemon and the console both read.
+    Claude Code's default was Haiku until 2026-11-13. A coordinator places every message of its room,
+    and on the small tier it answered a status question with another place's work and matched a
+    thread to a task by one shared word, with the right lines on its work board both times. The
+    runs recorded in §12 are Haiku's and have not been repeated on Sonnet.
   - It has no approval setting: it runs in the runtime's read-only mode, else its auto mode, else the
     runtime's own. Read-only restricts native tools only, so memory and the AgentConnect tools still work.
   - Claude Code's plan mode runs Haiku as Sonnet, so a Claude Code coordinator runs in `default`

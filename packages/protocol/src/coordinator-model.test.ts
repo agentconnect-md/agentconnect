@@ -2,9 +2,21 @@ import { describe, expect, it } from 'vitest'
 import { CoordinatorModel, defaultCoordinatorModel } from './coordinator-model.js'
 
 describe('defaultCoordinatorModel', () => {
-  it("takes Claude Code's haiku alias over a numbered haiku", () => {
-    const models = [{ id: 'sonnet' }, { id: 'claude-haiku-4-5' }, { id: 'haiku' }, { id: 'opus[1m]' }]
-    expect(defaultCoordinatorModel('claude-acp', models)).toBe('haiku')
+  it("takes Claude Code's sonnet alias over a numbered sonnet or a variant, never haiku", () => {
+    const models = [
+      { id: 'haiku' },
+      { id: 'claude-sonnet-4-5' },
+      { id: 'sonnet[1m]' },
+      { id: 'sonnet' },
+      { id: 'opus[1m]' }
+    ]
+    expect(defaultCoordinatorModel('claude-acp', models)).toBe('sonnet')
+  })
+
+  it('takes the newest numbered sonnet where Claude Code offers no bare alias', () => {
+    const models = [{ id: 'sonnet[1m]' }, { id: 'claude-sonnet-4-5' }, { id: 'claude-sonnet-5-5' }, { id: 'haiku' }]
+    expect(defaultCoordinatorModel('claude-acp', models)).toBe('claude-sonnet-5-5')
+    expect(defaultCoordinatorModel('claude-acp', [{ id: 'haiku' }, { id: 'opus' }])).toBeUndefined()
   })
 
   it('takes the newest Codex terra, never a mini or luna model', () => {
