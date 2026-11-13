@@ -126,9 +126,8 @@ export type StandingContext = {
   sessionContext: string
   /** `sessionContext` when the host has a meta system-prompt channel, else undefined. */
   metaContext: string | undefined
-  /** Digests of `sessionContext` and `resumeSystemContext`, which a resume compares with what the model last received. */
+  /** What a resume compares with the digest its session row holds: the rules and the memory index, hashed apart and joined by `:`. */
   sessionDigest: string
-  resumeDigest: string
 }
 
 // Agent memory INDEX (memory/provider.ts), read fresh. It's STANDING context
@@ -516,7 +515,7 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
     return { resume, session: [resume, memoryAppend].filter(Boolean).join('\n\n') }
   }
   const { resume: resumeSystemContext, session: sessionContext } = assemble(agentMeta)
-  // A new session's first turn precedes its own id, which never changes after, so the digests leave that line out.
+  // A new session's first turn precedes its own id, which never changes after, so the digest leaves that line out.
   const stable = input.sessionId ? assemble(buildAgentMeta({ ...input, sessionId: undefined })) : undefined
   return {
     memoryAppend,
@@ -528,8 +527,7 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
     resumeSystemContext,
     sessionContext,
     metaContext: input.usesMeta ? sessionContext || undefined : undefined,
-    sessionDigest: standingDigest(stable?.session ?? sessionContext),
-    resumeDigest: standingDigest(stable?.resume ?? resumeSystemContext)
+    sessionDigest: `${standingDigest(stable?.resume ?? resumeSystemContext)}:${standingDigest(memoryAppend)}`
   }
 }
 
@@ -537,9 +535,18 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
 const STANDING_REFRESH_HEADING =
   '[Standing instructions updated] These replace the standing instructions given earlier in this session; where they differ, follow these.'
 
-/** The inline block that hands a resumed session the current standing context. */
-export function standingRefreshBlock(sessionContext: string): string {
-  return `${STANDING_REFRESH_HEADING}\n\n${sessionContext}`
+/** The first line of a refresh that restates the memory index alone, when the rules beside it did not change. */
+const MEMORY_REFRESH_HEADING =
+  '[Memory index updated] This replaces the memory index given earlier in this session; where they differ, follow this one.'
+
+/** The inline block a resumed session needs, or undefined when its runtime already holds the current standing context. */
+export function standingRefresh(recorded: string | null | undefined, standing: StandingContext): string | undefined {
+  if (recorded === standing.sessionDigest) return undefined
+  const rules = standing.sessionDigest.slice(0, standing.sessionDigest.indexOf(':') + 1)
+  // Only the memory index moved, so the rules the runtime kept are not repeated; a digest in any other form counts as changed.
+  if (recorded?.startsWith(rules))
+    return `${MEMORY_REFRESH_HEADING}\n\n${standing.memoryAppend || 'Your memory index is now empty.'}`
+  return `${STANDING_REFRESH_HEADING}\n\n${standing.sessionContext}`
 }
 
 /** A digest of the standing-context text a model received, recorded on the session row and compared on resume. */

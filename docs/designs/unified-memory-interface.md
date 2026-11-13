@@ -508,11 +508,24 @@ none providers keep their existing behavior. The observation is evaluated only
 when the runtime lifecycle actually requests new/load system context; normal
 already-live turns do not rescan or inject it as user text.
 
+The observation on a native resume is not what tells a resumed session that
+memory changed. A runtime may keep the system context it recorded when the
+session started: a session resumed in a new process kept its creation-time index
+and an empty overview after a topic was added (2026-11-13,
+`@agentclientprotocol/claude-agent-acp` 0.106.0). The changed index reaches the
+model inline instead, through the standing-context refresh of
+[session-concept.md](session-concept.md) §2.3: the first prompt after a
+`session/load` restates the memory index in a block of its own when its digest
+differs from the one the session row holds. The observation still rides the
+load, for a runtime that renders its system context again later.
+
 This slice does not claim arbitrary mid-session system prompt replacement. A
 continuously live host without a supported update mechanism still uses explicit
 entry tools for fresh reads. Its automatic refresh requires a separately verified
 runtime capability; silently inserting a leading user-message catalog is not an
-acceptable fallback.
+acceptable fallback. The refresh above is not that fallback: it is headed as a
+replacement, sent once after a load and only when the index digest changed, and
+never on a live turn.
 
 ### Live refresh capability audit (2026-09-10)
 

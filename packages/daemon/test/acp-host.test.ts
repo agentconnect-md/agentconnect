@@ -75,8 +75,6 @@ describe('AcpHost (against a fake ACP agent)', () => {
     await host.start()
     try {
       expect(host.usesMetaSystemPrompt()).toBe(native)
-      // Custom instructions apply when a thread starts, so a load cannot refresh them.
-      expect(host.appliesSystemPromptOnLoad()).toBe(false)
       const sessionId = await host.newSession('/tmp', [], undefined, instructions)
       await host.loadSession(sessionId, '/tmp', [], undefined, instructions)
     } finally {
@@ -121,7 +119,6 @@ describe('AcpHost (against a fake ACP agent)', () => {
     )
     await host.start()
     try {
-      expect(host.appliesSystemPromptOnLoad()).toBe(true)
       const sessionId = await host.newSession('/tmp')
       expect(host.modelOptions(sessionId)?.current).toBe(model)
       await host.loadSession('persisted-session', '/tmp')

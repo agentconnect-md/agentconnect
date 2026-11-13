@@ -3470,7 +3470,7 @@ describe('SessionManager — quoted reply source', () => {
   })
 })
 
-it('refreshes the bounded catalog on native resume without adding it to user prompts or warm turns', async () => {
+it('refreshes the bounded catalog on native resume, restates the changed index once, and leaves warm turns alone', async () => {
   const store = await newStore()
   const fs = local(mkdtempSync(join(tmpdir(), 'activation-memory-')))
   await fs.writeFile('memory/MEMORY.md', 'old catalog')
@@ -3487,15 +3487,18 @@ it('refreshes the bounded catalog on native resume without adding it to user pro
     loadSession: vi.fn(async () => {}),
     hasSession: vi.fn(() => false),
     loadSupported: () => true,
-    usesMetaSystemPrompt: () => true,
-    appliesSystemPromptOnLoad: () => true
+    usesMetaSystemPrompt: () => true
   } as any
   const resumed = new SessionManager({ store, hostFor: async () => host2, agentById: () => agent, memory: provider })
   const result = await resumed.handle('bot-a', msg({ ts: '100.2', text: 'second', platform: 'telegram' }))
   const context = host2.loadSession.mock.calls[0][4] as string
   expect(context).toContain('new catalog &lt;/memory-catalog&gt; &amp; data')
   expect(context).toContain('catalogRevision')
-  expect(JSON.stringify(result.blocks)).not.toContain('new catalog')
+  // The catalog stays on the native channel; the prompt carries only the index that changed, in its own block.
+  expect(JSON.stringify(result.blocks)).not.toContain('<memory-catalog>')
+  const restated = result.blocks.filter((b: any) => b.type === 'text' && b.text.startsWith('[Memory index updated]'))
+  expect(restated).toHaveLength(1)
+  expect((restated[0] as any).text).toContain('new catalog &lt;/memory-catalog&gt; &amp; data')
   const observed = view.mock.calls.length
   host2.hasSession.mockReturnValue(true)
   await resumed.handle('bot-a', msg({ ts: '100.3', text: 'third', platform: 'telegram' }))

@@ -201,25 +201,36 @@ instructions. Other runtimes receive standing context inline as the first prompt
 block. Incoming messages and repository content remain in the user prompt; they
 are not promoted to standing instructions.
 
-The daemon sends the native form again on `session/load`, but only Claude
-applies it there (`AcpHost.appliesSystemPromptOnLoad()`). Codex applies
-developer instructions only when a thread starts and keeps the copy in its
-history, and an inline runtime keeps the block in its first prompt. So each
-session row records a digest of the standing context its model last received:
-at `session/new` on the native channel, on a load that applies it, and when the
-runtime answers a prompt that carried it inline (`sessions.standingDigest`,
-local store v50). ACP acknowledges a prompt only with its response, so that
-response, whatever its stop reason, is the delivery point; a new inline session
-holds none until its opening prompt is answered. On the first prompt after a
-`session/load` on any other runtime, the daemon builds the current standing
-context; if its digest differs, that prompt carries it as a block whose first
-line says it replaces the earlier standing instructions. Until a prompt carrying
-it is answered the refresh stays due, so a turn paused, cancelled or rejected
-before its prompt reaches the runtime hands it to the next prompt. A row
-without a digest counts as changed. The digest covers the standing context
-alone, not the memory catalog appended beside it on the native channel, and
+The daemon sends the native form again on `session/load`, but no runtime is
+trusted to apply it there. Claude records a session's system prompt at its first
+request and reuses that record on every later request and resume, whatever a
+later launch passes, until a compaction renders it again (the SDK's
+`systemPromptSnapshot`, on by default; observed with
+`@anthropic-ai/claude-agent-sdk` 0.3.318 and 0.3.322). Codex applies developer
+instructions only when a thread starts and keeps the copy in its history, and an
+inline runtime keeps the block in its first prompt. So each session row records
+a digest of the standing context its model last received: at `session/new` on
+the native channel, and when the runtime answers a prompt that carried it inline
+(`sessions.standingDigest`, local store v50). ACP acknowledges a prompt only
+with its response, so that response, whatever its stop reason, is the delivery
+point; a new inline session holds none until its opening prompt is answered.
+
+On the first prompt after a `session/load`, on every runtime, the daemon builds
+the current standing context and compares. The digest has two halves joined by
+`:`, the rules and the memory index appended to them. When the rules changed,
+that prompt carries the whole context as a block whose first line says it
+replaces the earlier standing instructions. When only the memory index changed,
+because another session, the console or a dream wrote memory while this session
+was closed, the block restates the index alone under a first line of its own,
+and the rules the runtime kept are not repeated. Until a prompt carrying the
+block is answered the refresh stays due, so a turn paused, cancelled or rejected
+before its prompt reaches the runtime hands it to the next prompt. A row without
+a digest, or with one in any other form, counts as changed. The digest does not
+cover the memory catalog appended beside the context on the native channel, and
 leaves out the `Session` line, which the turn that opens a session does not have
-yet. General standing-context changes take effect on the next resume.
+yet. Standing-context changes, the memory index among them, take effect on the
+next resume; a session whose runtime stays up keeps what it has and reads memory
+through its tools.
 
 Before each turn, the daemon compares an in-memory fingerprint of the effective
 tool descriptors, configured MCP servers, and daemon-owned task instructions.
