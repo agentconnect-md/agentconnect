@@ -10,7 +10,11 @@ import { SUBSESSION_IDLE_END_MS } from '../src/collab/coordinator.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { stopTaskToolsFor } from '../src/mcp/ops/assistant-subsessions.js'
 import { isCoordinatorCoordinate } from '../src/session/append-coordinate.js'
-import { buildStandingContext, THREADED_TASK_APPEND } from '../src/session/turn/standing-context.js'
+import {
+  buildStandingContext,
+  THREADED_TASK_APPEND,
+  THREADLESS_ROOM_TASK_APPEND
+} from '../src/session/turn/standing-context.js'
 import { sessionKey } from '../src/store/local-store.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
@@ -200,6 +204,16 @@ describe('a threaded task (auto-session-mode.md §6)', () => {
       THREADED_TASK_APPEND
     )
     expect(buildStandingContext({ ...base, ...thread }).sessionContext).not.toContain('# You are a task')
+    // §6.10: in a room without threads nobody replies to the task directly, so it is told every message passes the coordinator.
+    const threadless = buildStandingContext({
+      ...base,
+      ...thread,
+      threadedTask: true,
+      threadlessRoom: true
+    }).sessionContext
+    expect(threadless).toContain(THREADLESS_ROOM_TASK_APPEND)
+    expect(threadless).not.toContain(THREADED_TASK_APPEND)
+    expect(THREADLESS_ROOM_TASK_APPEND).toContain('people cannot reply to you directly')
   })
 
   it('settles a turn left running without reporting it to the coordinator', async () => {

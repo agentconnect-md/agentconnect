@@ -165,6 +165,26 @@ describe('the coordinator prompt and batch', () => {
     expect(batch).toContain('<message id="msg-p2" from="user-1" mentions-you="yes" thread="msg-p1">')
   })
 
+  // §6.10: a room without threads keeps every follow-up at its root, so the coordinator places each one itself.
+  it('tells a coordinator of a room without threads that people cannot answer in a thread', () => {
+    const base = { agentName: 'bot-a', platform: 'WeCom', channelId: 'chat-example-group', peers: [] }
+    const prompt = coordinatorPrompt({ ...base, threadless: true })
+    expect(prompt).toContain('You coordinate the agent "bot-a" in WeCom conversation chat-example-group.')
+    expect(prompt).toContain(
+      'This conversation has no threads: people cannot answer in a thread, so every follow-up to a task arrives here, ' +
+        'at the root, like a new message.'
+    )
+    expect(prompt).toContain('which open task a message continues and hand it over, or to open a new task')
+    expect(prompt).toContain('The task answers in this conversation, replying to the message you handed it.')
+    expect(prompt).toContain('which is posted in this conversation as a reply to the message.')
+    expect(prompt).toContain('- No other agent is in this conversation.')
+    expect(prompt).not.toMatch(/channel|in the message's thread|thread link/i)
+    // A channel's prompt is unchanged.
+    const channel = coordinatorPrompt({ ...base, platform: 'Slack', channelId: 'C1' })
+    expect(channel).toContain('You coordinate the agent "bot-a" in Slack channel C1. Channel messages are delivered')
+    expect(channel).not.toContain('has no threads')
+  })
+
   it('names every coordinator tool among the daemon’s own, which run without an ask a coordinator would refuse', () => {
     for (const tool of coordinatorTools()) {
       expect(ALL_TOOL_NAMES).toContain(tool.name)

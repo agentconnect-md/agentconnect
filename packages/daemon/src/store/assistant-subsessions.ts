@@ -351,6 +351,17 @@ const RUNNING_DELEGATIONS = `(SELECT COUNT(*) FROM assistant_subsession a
                 WHERE a.agentId = ? AND a.state = 'open' AND a.mode = 'work' AND a.closedAt IS NULL AND NOT ${THREADED('a')}
                   AND (a.createdAt >= ? OR EXISTS (SELECT 1 FROM sessions s WHERE s.key = a.childSessionKey)))`
 
+/** A thread session a switch into `auto` may adopt, with what tells a room's root from a thread (auto-session-mode.md §3.5, §6.10). */
+export interface UnownedThreadSession {
+  key: string
+  thread: string
+  title?: string
+  running: boolean
+  conversationKind?: string
+  /** The platform id of the last message it answered. */
+  lastDeliveredTs?: string
+}
+
 export class AssistantSubsessionIndex {
   // An agent delegates only on its duty holder, so serializing this process's capped opens makes each a check-and-claim.
   private readonly opening = new AsyncMutex()
@@ -1096,10 +1107,10 @@ export class AssistantSubsessionIndex {
     agentId: string,
     at: { platform: string; channel: string; transportScope?: string | null },
     activeSince: number
-  ): Promise<{ key: string; thread: string; title?: string; running: boolean; conversationKind?: string }[]> {
+  ): Promise<UnownedThreadSession[]> {
     const rows = (
       await this.db.query(
-        `SELECT s.key, s.thread, s.title, s.state, s.conversationKind FROM sessions s
+        `SELECT s.key, s.thread, s.title, s.state, s.conversationKind, s.lastDeliveredTs FROM sessions s
           WHERE s.agentId = ? AND s.platform = ? AND s.channel = ? AND COALESCE(s.transportScope, '') = ?
             AND s.thread NOT LIKE ? AND s.thread NOT LIKE ? AND s.originSessionId IS NULL AND s.updatedAt >= ?
             AND NOT EXISTS (SELECT 1 FROM assistant_subsession a WHERE a.agentId = s.agentId AND a.childSessionKey = s.key
@@ -1124,7 +1135,8 @@ export class AssistantSubsessionIndex {
       thread: String(row.thread),
       ...(row.title != null ? { title: String(row.title) } : {}),
       running: row.state === 'prompting' || row.state === 'cancelling',
-      ...(row.conversationKind != null ? { conversationKind: String(row.conversationKind) } : {})
+      ...(row.conversationKind != null ? { conversationKind: String(row.conversationKind) } : {}),
+      ...(row.lastDeliveredTs != null ? { lastDeliveredTs: String(row.lastDeliveredTs) } : {})
     }))
   }
 

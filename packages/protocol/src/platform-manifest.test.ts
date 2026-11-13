@@ -138,10 +138,10 @@ describe('platform manifest', () => {
     expect(DEFAULT_MANIFEST.appendKinds).toEqual([])
   })
 
-  it('declares a room keyed as one thread on QQ and WeCom, and nowhere else', () => {
-    // Session keying reads it before any target resolves: such a room has no root, so it never runs a coordinator.
-    expect(manifestFor('qq').roomThread).toBe('group')
-    expect(manifestFor(WECOM_PLATFORM).roomThread).toBe('group')
+  it('declares the root key of a room without threads on QQ and WeCom, and nowhere else', () => {
+    // Session keying reads it before any target resolves: a message carrying it sits at the room's root.
+    expect(manifestFor('qq').threadlessRoomRoot).toBe('group')
+    expect(manifestFor(WECOM_PLATFORM).threadlessRoomRoot).toBe('group')
     for (const p of [
       'slack',
       'telegram',
@@ -153,9 +153,9 @@ describe('platform manifest', () => {
       MSTEAMS_PLATFORM,
       WECHAT_PLATFORM
     ])
-      expect(manifestFor(p).roomThread, p).toBeUndefined()
-    expect(manifestFor('some-future-platform').roomThread).toBeUndefined()
-    expect(DEFAULT_MANIFEST.roomThread).toBeUndefined()
+      expect(manifestFor(p).threadlessRoomRoot, p).toBeUndefined()
+    expect(manifestFor('some-future-platform').threadlessRoomRoot).toBeUndefined()
+    expect(DEFAULT_MANIFEST.threadlessRoomRoot).toBeUndefined()
   })
 
   it('keeps Linear on the fail-closed arm of every axis it did not earn', () => {
@@ -235,7 +235,7 @@ describe('platform manifest', () => {
       dmChannelPattern: /^dm:/,
       addressedByConstruction: true,
       appendKinds: ['channel'],
-      roomThread: 'group'
+      threadlessRoomRoot: 'group'
     })
     expect(axes.dmChannelPattern?.test('dm:user-alice')).toBe(true)
     expect(axes.dmChannelPattern?.test('chat-example-group')).toBe(false)

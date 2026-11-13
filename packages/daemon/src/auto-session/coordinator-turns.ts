@@ -53,6 +53,7 @@ export function spokenTo<T extends { report?: boolean; mentionsYou: boolean }>(u
 }
 
 type MessageIdentity = Pick<NormalizedMessage, 'msgId' | 'transcriptTs' | 'transcriptPostId'>
+type ThreadlessRoot = Partial<Pick<NormalizedMessage, 'isDm'>>
 
 /** The platform message id inside a normalized message id (`slack:<channel>:<ts>` → `<ts>`); a webchat post is named by its post id. */
 export function platformMessageIdOf(msg: MessageIdentity): string {
@@ -64,31 +65,44 @@ export function threadless(msg: Pick<NormalizedMessage, 'platform' | 'thread'>):
   return msg.platform === 'webchat' && msg.thread === undefined
 }
 
-/** Whether a room is one thread, named after it or the one its platform declares (auto-session-mode.md §6.8): it has no root to coordinate. */
+/** Whether a room is one thread named after it, as a platform keys a room of its own (a task's place, auto-session-mode.md §6.8): it has no root to coordinate. */
 export function wholeRoomThread(msg: {
-  platform: string
   channel: string
   thread?: string
   isDm?: boolean
   isGroupDm?: boolean
 }): boolean {
-  if (msg.isDm || msg.isGroupDm === true || msg.thread === undefined) return false
-  return msg.thread === msg.channel || msg.thread === manifestFor(msg.platform).roomThread
+  return !msg.isDm && msg.isGroupDm !== true && msg.thread === msg.channel
+}
+
+/** Whether a conversation is a room its platform gives no threads, not a direct message (auto-session-mode.md §6.10). */
+export function threadlessRoom(at: { platform: string; channel: string; isDm?: boolean }): boolean {
+  const manifest = manifestFor(at.platform)
+  return !at.isDm && manifest.threadlessRoomRoot !== undefined && manifest.dmChannelPattern?.test(at.channel) !== true
+}
+
+/** Whether a message sits at the root of a room its platform gives no threads, whose fixed thread key names that root (auto-session-mode.md §6.10). */
+export function atThreadlessRoot(msg: { platform: string; thread?: string; isDm?: boolean }): boolean {
+  return !msg.isDm && msg.thread !== undefined && msg.thread === manifestFor(msg.platform).threadlessRoomRoot
 }
 
 /** Whether a message sits in a thread under another message, rather than at the conversation root. */
-export function inThread(msg: Pick<NormalizedMessage, 'thread'> & MessageIdentity): boolean {
-  return msg.thread !== undefined && msg.thread !== platformMessageIdOf(msg)
+export function inThread(
+  msg: Pick<NormalizedMessage, 'platform' | 'thread'> & ThreadlessRoot & MessageIdentity
+): boolean {
+  return msg.thread !== undefined && !atThreadlessRoot(msg) && msg.thread !== platformMessageIdOf(msg)
 }
 
-/** The thread a message's replies go to: its own thread, or the one it starts at the root; a threadless message's own id stands for one. */
-export function replyThreadOf(msg: Pick<NormalizedMessage, 'thread'> & MessageIdentity): string {
-  return msg.thread ?? platformMessageIdOf(msg)
+/** The thread a message's replies go to: its own thread, or the one it starts at the root; a message with no platform thread, or at a threadless room's root, is anchored on its own id. */
+export function replyThreadOf(
+  msg: Pick<NormalizedMessage, 'platform' | 'thread'> & ThreadlessRoot & MessageIdentity
+): string {
+  return msg.thread === undefined || atThreadlessRoot(msg) ? platformMessageIdOf(msg) : msg.thread
 }
 
 /** Where an answer to a delivered entry goes: a channel message's thread, the root for a threadless one, else a report's reply thread. */
 export function answerThreadOf(
-  msg: Pick<NormalizedMessage, 'source' | 'thread' | 'platform'> & MessageIdentity
+  msg: Pick<NormalizedMessage, 'source' | 'thread' | 'platform'> & ThreadlessRoot & MessageIdentity
 ): string | undefined {
   if (msg.source !== 'user') return msg.thread
   return threadless(msg) ? undefined : replyThreadOf(msg)

@@ -26,6 +26,8 @@ export interface CoordinatorPromptInput {
   peers: readonly CoordinatorPeer[]
   /** A member's webchat conversation, shared if published: one message a turn, with streamed text. */
   webchat?: boolean
+  /** A room its platform gives no threads, where every follow-up arrives at the root (auto-session-mode.md §6.10). */
+  threadless?: boolean
 }
 
 /** What a report's block names beside its id: the task it speaks for, by its `taskId`, kind and title. */
@@ -62,8 +64,28 @@ export interface CoordinatorThread {
 const where = (input: { channelId: string; channelName?: string }): string =>
   input.channelName ? `#${input.channelName} (${input.channelId})` : input.channelId
 
-/** The words the prompt names its place and a task's answer with: a channel's threads, or a console conversation's. */
+const CHANNEL_FINAL_TEXT =
+  'The text that ends your turn is posted as your reply to the message you made no call for, so it holds ' +
+  'only that reply: never your reasoning, a note on what you did, or why you left a message. Once every ' +
+  `message has its call, write nothing more, or exactly ${NO_RESPONSE_SENTINEL}.`
+
+/** The words the prompt names its place and a task's answer with: a channel's threads, a room without threads, or a console conversation's. */
 function placeWords(input: CoordinatorPromptInput) {
+  const self = input.selfAddress ? ` Your ${input.platform} user is ${input.selfAddress}.` : ''
+  if (input.threadless && !input.webchat)
+    return {
+      intro:
+        `You coordinate the agent "${input.agentName}" in ${input.platform} conversation ${where(input)}.${self} ` +
+        'Its messages are delivered to you, one or several per turn. This conversation has no threads: people ' +
+        'cannot answer in a thread, so every follow-up to a task arrives here, at the root, like a new message. It is ' +
+        'your job to recognize from the conversation so far, the work board and listTasks which open task a message ' +
+        'continues and hand it over, or to open a new task when it starts new work.',
+      place: 'conversation',
+      taskLink: 'title',
+      taskAnswers: 'in this conversation, replying to the message you handed it',
+      replyPosts: 'in this conversation as a reply to the message',
+      finalText: CHANNEL_FINAL_TEXT
+    }
   return input.webchat
     ? {
         intro:
@@ -83,17 +105,13 @@ function placeWords(input: CoordinatorPromptInput) {
       }
     : {
         intro:
-          `You coordinate the agent "${input.agentName}" in ${input.platform} channel ${where(input)}.` +
-          `${input.selfAddress ? ` Your ${input.platform} user is ${input.selfAddress}.` : ''} Channel messages are ` +
-          'delivered to you, one or several per turn.',
+          `You coordinate the agent "${input.agentName}" in ${input.platform} channel ${where(input)}.${self} ` +
+          'Channel messages are delivered to you, one or several per turn.',
         place: 'channel',
         taskLink: 'thread link',
         taskAnswers: "in the message's thread",
         replyPosts: "in the message's thread",
-        finalText:
-          'The text that ends your turn is posted as your reply to the message you made no call for, so it holds ' +
-          'only that reply: never your reasoning, a note on what you did, or why you left a message. Once every ' +
-          `message has its call, write nothing more, or exactly ${NO_RESPONSE_SENTINEL}.`
+        finalText: CHANNEL_FINAL_TEXT
       }
 }
 

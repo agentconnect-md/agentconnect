@@ -77,6 +77,8 @@ export type StandingContextInput = {
   thread: string
   /** A task the coordinator opened on a platform thread (auto-session-mode.md §6.2). */
   threadedTask?: boolean
+  /** That task's room has no threads, so people reach it only through the coordinator (auto-session-mode.md §6.10). */
+  threadlessRoom?: boolean
   /** A task the coordinator opened for a message of a conversation without threads, whose page is its conversation (§10). */
   pageTask?: boolean
   /** People may write to a delegated task from its console page (auto-session-mode.md §10). */
@@ -425,6 +427,14 @@ export const THREADED_TASK_APPEND =
   `here where you moved, and at the end of each run there the coordinator gets your summary, so keep it current. ` +
   `Nothing else is reported to the coordinator.\n\n${TASK_SUMMARY_REQUEST}`
 
+// auto-session-mode.md §6.10: in a room without threads every message reaches the coordinator, which hands a task the ones that continue its work.
+export const THREADLESS_ROOM_TASK_APPEND =
+  `# You are a task\n` +
+  `The coordinator of this conversation opened you for a message here, or made you its task when the conversation ` +
+  `switched to Auto. This conversation has no threads, so people cannot reply to you directly: every message reaches ` +
+  `the coordinator first, and it hands you the ones that continue your work. Your answer goes to the conversation as ` +
+  `a reply to the message you were handed. Nothing else is reported to the coordinator.\n\n${TASK_SUMMARY_REQUEST}`
+
 // auto-session-mode.md §10: a task for a console message answers on its own page and reports nothing to the coordinator.
 export const PAGE_TASK_APPEND =
   `# You are a task\n` +
@@ -489,7 +499,9 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
           input.taskPageMessages === true && keepsTaskSummaryAt(input.thread)
         )
       : input.threadedTask
-        ? THREADED_TASK_APPEND
+        ? input.threadlessRoom
+          ? THREADLESS_ROOM_TASK_APPEND
+          : THREADED_TASK_APPEND
         : ''
   const collabAppend = input.tasksCoordinatorOnly === true ? COLLAB_APPEND_WITHOUT_DELEGATION : COLLAB_APPEND
   // A coordinator's own instructions replace the reply and collaboration rules: it only decides where messages go (auto-session-mode.md §5.4).
