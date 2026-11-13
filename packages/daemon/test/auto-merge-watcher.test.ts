@@ -307,7 +307,10 @@ describe('AutoMergeWatcher', () => {
       tokenFor: async () => 'ghs_x',
       fetchImpl: QUEUED()
     })
-    await expect(watcher.set(TARGET, true)).rejects.toThrow(/no GitHub proxy route/)
+    await expect(watcher.set(TARGET, true)).rejects.toMatchObject({
+      reason: 'unsupported-image',
+      message: expect.stringContaining('no GitHub proxy route')
+    })
     expect(sandbox.ops.filter((op) => op.startsWith('arm'))).toEqual([])
   })
 
