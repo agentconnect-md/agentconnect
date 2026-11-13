@@ -1127,6 +1127,83 @@ describe('GithubService.mintForAgent — capabilities forwarding (P2.5)', () => 
     await svc.mintForAgent(agent, [], ['contents'], undefined, 'write')
     expect(bodies).toHaveLength(3) // no new mint: it landed on the grant the absent-access ask cached
   })
+
+  it('lets a pull-request token read checks and commit statuses the installation grants, never write them', async () => {
+    const clock = new FakeClock(1_700_000_000_000)
+    const bodies: Array<Record<string, unknown>> = []
+    const fetchImpl = async (_url: string, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>)
+      return Response.json(
+        { token: 'ghs_x', expires_at: new Date(clock.now() + 3_600_000).toISOString() },
+        { status: 201 }
+      )
+    }
+    const service = (permissions: Record<string, string>, access: 'read' | 'write') => {
+      const installation = {
+        id: 'row-1',
+        orgId: 'org-a',
+        installationId: 42n,
+        accountLogin: 'acme',
+        accountType: 'Organization',
+        repositorySelection: 'all',
+        permissions,
+        suspendedAt: null,
+        revokedAt: null,
+        createdAt: new Date(0)
+      }
+      const svc = new GithubService({
+        cfg: cfg(),
+        clock,
+        installations: { get: async () => installation, liveByOrgAndAccount: async () => installation } as never,
+        installState: { put: async () => {}, consume: async () => true },
+        pepper: 'p'.repeat(32),
+        fetchImpl
+      })
+      const agent = {
+        id: `agent-${access}`,
+        orgId: 'org-a',
+        workspace: {
+          mode: 'git',
+          gitRepo: 'https://github.com/acme/infra',
+          credential: { provider: 'github', installationId: 'row-1', access }
+        }
+      } as never
+      return { svc, agent }
+    }
+    const GH_ASK = ['contents', 'issues', 'pull_requests', 'actions'] as const
+
+    const full = service({ checks: 'write', statuses: 'read', pull_requests: 'write' }, 'write')
+    await full.svc.mintForAgent(full.agent, [], GH_ASK)
+    expect(bodies.at(-1)!.permissions).toEqual({
+      metadata: 'read',
+      contents: 'write',
+      issues: 'write',
+      pull_requests: 'write',
+      actions: 'write',
+      checks: 'read',
+      statuses: 'read',
+      workflows: 'write'
+    })
+
+    // The git plane's contents-only token stays as narrow as it was.
+    await full.svc.mintForAgent(full.agent, [])
+    expect(bodies.at(-1)!.permissions).toEqual({ metadata: 'read', contents: 'write', workflows: 'write' })
+
+    // A read-tier agent reads CI results too.
+    const reader = service({ checks: 'write', statuses: 'read' }, 'read')
+    await reader.svc.mintForAgent(reader.agent, [], GH_ASK)
+    expect(bodies.at(-1)!.permissions).toMatchObject({ pull_requests: 'read', checks: 'read', statuses: 'read' })
+
+    // A permission the installation lacks is never asked for: GitHub refuses the whole token with 422.
+    const checksOnly = service({ checks: 'write' }, 'write')
+    await checksOnly.svc.mintForAgent(checksOnly.agent, [], GH_ASK)
+    expect(bodies.at(-1)!.permissions).toMatchObject({ checks: 'read' })
+    expect(bodies.at(-1)!.permissions).not.toHaveProperty('statuses')
+    const neither = service({}, 'write')
+    await neither.svc.mintForAgent(neither.agent, [], GH_ASK)
+    expect(bodies.at(-1)!.permissions).not.toHaveProperty('checks')
+    expect(bodies.at(-1)!.permissions).not.toHaveProperty('statuses')
+  })
 })
 
 describe('GithubService.mintForAgent — additional repos (issue #457)', () => {

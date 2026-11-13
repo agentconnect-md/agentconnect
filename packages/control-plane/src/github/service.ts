@@ -35,6 +35,7 @@ import type { GithubAppRegistry } from './app-registry.js'
 import { githubAppBotIdentity, type GithubAppConfig } from './config.js'
 import {
   InstallationTokenService,
+  type AgentGrantLevels,
   type CapabilityLevels,
   type GitAccess,
   type MintedGitCred
@@ -769,11 +770,12 @@ export class GithubService {
     const resolved = await this.resolveAgentRepoAuthorizationByName(agent, requested)
     const tier = REPO_ACCESS_LEVELS[resolved.access]
     const wanted = capabilities ?? (['contents'] as const)
-    const levels: CapabilityLevels = {}
+    const levels: AgentGrantLevels = {}
     for (const cap of new Set(wanted)) {
       const level = tier[cap]
       if (level) levels[cap] = requestedAccess === 'read' ? 'read' : level
     }
+    if (levels.pull_requests) Object.assign(levels, ciReadLevels(resolved.installation))
     try {
       return await this.tokens.mintLevels(
         resolved.installation.installationId,
@@ -1485,6 +1487,15 @@ function OrgIdOf(s: string): OrgId {
 
 function isInstallationFactsDenial(error: GithubApiError): boolean {
   return error.status === 401 || error.status === 403 || error.status === 422
+}
+
+// Who may read a pull request may read its CI results; only scopes the installation grants, since GitHub 422s the whole mint otherwise.
+function ciReadLevels(installation: GithubInstallationRecord): Pick<AgentGrantLevels, 'checks' | 'statuses'> {
+  const grants = (permission: string | undefined) => permission === 'read' || permission === 'write'
+  return {
+    ...(grants(installation.permissions?.checks) ? { checks: 'read' as const } : {}),
+    ...(grants(installation.permissions?.statuses) ? { statuses: 'read' as const } : {})
+  }
 }
 
 function hasChecksReporterPermissions(installation: GithubInstallationRecord): boolean {

@@ -31,8 +31,10 @@ export type GitAccess = 'read' | 'write'
  *  agent capabilities are granted; `workflows: write` follows
  *  `contents: write`, and `metadata: read` always rides along. */
 export type CapabilityLevels = Partial<Record<GitCredCapability, GitAccess>>
-type InternalPermission = GitCredCapability | 'checks' | 'workflows'
+type InternalPermission = GitCredCapability | 'checks' | 'statuses' | 'workflows'
 type InternalPermissionLevels = Partial<Record<InternalPermission, GitAccess>>
+/** An agent grant's levels plus the read-only CI scopes that ride with `pull_requests`. */
+export type AgentGrantLevels = CapabilityLevels & { checks?: 'read'; statuses?: 'read' }
 
 /** Absent `capabilities` on the wire ⇒ the pre-P2.5 contents-only grant. */
 const DEFAULT_CAPABILITIES: readonly GitCredCapability[] = ['contents']
@@ -137,16 +139,14 @@ export class InstallationTokenService {
   async mintLevels(
     installationId: bigint,
     repoFullName: string,
-    levels: CapabilityLevels,
+    levels: AgentGrantLevels,
     repoId?: bigint,
     forceRefresh = false
   ): Promise<MintedGitCred> {
     return this.mintPermissionLevels(installationId, repoFullName, levels, repoId, forceRefresh)
   }
 
-  /** CP-only reporter token. `pull_requests:read` is required for the live
-   * commit -> current PR association barrier before terminal Check writes.
-   * Neither permission enters a daemon grant or the agent environment. */
+  /** CP-only reporter token (`pull_requests:read` backs the commit→PR barrier); `checks:write` never reaches a daemon or agent. */
   async mintChecks(installationId: bigint, repoFullName: string, repoId: bigint): Promise<MintedGitCred> {
     return this.mintPermissionLevels(installationId, repoFullName, { checks: 'write', pull_requests: 'read' }, repoId)
   }
@@ -287,6 +287,7 @@ export class InstallationTokenService {
         ...(levels.pull_requests ? { pull_requests: levels.pull_requests } : {}),
         ...(levels.actions ? { actions: levels.actions } : {}),
         ...(levels.checks ? { checks: levels.checks } : {}),
+        ...(levels.statuses ? { statuses: levels.statuses } : {}),
         ...(levels.workflows ? { workflows: levels.workflows } : {})
       }
     })
