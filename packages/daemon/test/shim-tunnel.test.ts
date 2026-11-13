@@ -149,7 +149,7 @@ async function clusterWithTunnel(
     /** Serve binary data frames as `src/shim/index.ts` does; otherwise the shim answers as an older one that takes none. */
     binary?: boolean
   } = {}
-): Promise<Cluster & { binaryFrames: () => number }> {
+): Promise<Cluster & { binaryFrames: () => number; binaryUploads: () => number }> {
   const warnings: string[] = []
   const shimClock = new FakeClock()
   const podSocketPath = join(scratchDir(), 'pod-agent.sock')
@@ -179,8 +179,17 @@ async function clusterWithTunnel(
   }
 
   const ensuring = plane.ensureChannel('agent-a')
+  let binaryUploads = 0
   const host = new TunnelHost({
     emit: (streamId, event) => client.emit(streamId, event),
+    ...(options.binary
+      ? {
+          emitData: (streamId: string, seq: number, chunk: Buffer) => {
+            binaryUploads += 1
+            client.emitData(streamId, seq, chunk)
+          }
+        }
+      : {}),
     socketPathFor: () => podSocketPath,
     ...(options.maxStreams === undefined ? {} : { maxStreams: options.maxStreams })
   })
@@ -215,7 +224,15 @@ async function clusterWithTunnel(
   clients.push(client)
   void client.start()
   await ensuring
-  return { plane, podSocketPath, warnings, shimClock, bindCount: () => binds, binaryFrames: () => binaryFrames }
+  return {
+    plane,
+    podSocketPath,
+    warnings,
+    shimClock,
+    bindCount: () => binds,
+    binaryFrames: () => binaryFrames,
+    binaryUploads: () => binaryUploads
+  }
 }
 
 /**
@@ -238,6 +255,8 @@ function proxyUnderTest(
   sent: unknown[]
   /** Binary frames sent, decoded. */
   frames: Array<{ streamId: string; seq: number; chunk: Buffer }>
+  /** Deliver a binary frame from the shim. */
+  data: (frame: Buffer) => void
   /** Settles held frames in send order: `ack` acknowledges, `fail` rejects. */
   held: Array<{ ack: () => void; fail: (error: Error) => void }>
   announce: (event: ShimEvent['event'], streamId: string) => void
@@ -251,6 +270,7 @@ function proxyUnderTest(
   const held: Array<{ ack: () => void; fail: (error: Error) => void }> = []
   const listeners: Array<(event: ShimEvent) => void> = []
   const attachListeners: Array<() => void> = []
+  const dataListeners: Array<(frame: Buffer) => void> = []
   const dialledSockets = new Map<string, Socket>()
   let lastDialled: Socket | undefined
   const instance = new TunnelProxy({
@@ -279,7 +299,9 @@ function proxyUnderTest(
       offAttach: () => undefined,
       onLost: () => undefined,
       carriesData: () => options.binary?.carries === true,
-      sendData: (frame) => void frames.push(decodeTunnelData(Buffer.from(frame))!)
+      sendData: (frame) => void frames.push(decodeTunnelData(Buffer.from(frame))!),
+      onData: (listener) => dataListeners.push(listener),
+      offData: () => undefined
     },
     socketPathFor: (tunnel) => `/daemon/${tunnel}.sock`,
     listenOptions: (tunnel) =>
@@ -302,6 +324,9 @@ function proxyUnderTest(
     dialled,
     sent,
     frames,
+    data: (frame) => {
+      for (const listener of dataListeners) listener(frame)
+    },
     held,
     announce: (event, streamId) => {
       for (const listener of listeners) listener({ type: 'shim/event', streamId, event })
@@ -763,14 +788,22 @@ function hashingServer(total: number): string {
   return path
 }
 
-/** A real proxy and host joined in memory; `legacy` strips the ack fields an older peer neither sends nor reads. */
+/** A real proxy and host joined in memory; `legacy` strips the ack fields an older peer neither sends nor reads, and `binary` joins them with binary frames both ways. */
 async function tunnelPair(
   daemonSocketPath: string,
-  options: { legacy?: 'shim' | 'holder'; failAcks?: number } = {}
-): Promise<{ podPath: string; requests: Array<{ op?: string }>; maxOutstanding: () => number; proxy: TunnelProxy }> {
+  options: { legacy?: 'shim' | 'holder'; failAcks?: number; binary?: boolean } = {}
+): Promise<{
+  podPath: string
+  requests: Array<{ op?: string }>
+  maxOutstanding: () => number
+  proxy: TunnelProxy
+  uploads: () => number
+}> {
   const podPath = join(socketDir(), 'pod.sock')
   const listeners: Array<(event: ShimEvent) => void> = []
+  const dataListeners: Array<(frame: Buffer) => void> = []
   const requests: Array<{ op?: string }> = []
+  let uploads = 0
   let emitted = 0
   let acked = 0
   let maxOutstanding = 0
@@ -782,6 +815,18 @@ async function tunnelPair(
         for (const listener of listeners) listener({ type: 'shim/event', streamId, event })
       })
     },
+    ...(options.binary
+      ? {
+          emitData: (streamId: string, seq: number, chunk: Buffer) => {
+            uploads += 1
+            maxOutstanding = Math.max(maxOutstanding, ++emitted - acked)
+            const frame = encodeTunnelData(streamId, seq, [chunk], chunk.length)
+            queueMicrotask(() => {
+              for (const listener of dataListeners) listener(frame)
+            })
+          }
+        }
+      : {}),
     socketPathFor: () => podPath
   })
   hosts.push(host)
@@ -810,14 +855,22 @@ async function tunnelPair(
       offEvent: () => undefined,
       onAttach: () => undefined,
       offAttach: () => undefined,
-      onLost: () => undefined
+      onLost: () => undefined,
+      ...(options.binary
+        ? {
+            carriesData: () => true,
+            sendData: (frame: Uint8Array) => queueMicrotask(() => host.handleData(Buffer.from(frame))),
+            onData: (listener: (frame: Buffer) => void) => dataListeners.push(listener),
+            offData: () => undefined
+          }
+        : {})
     },
     socketPathFor: () => daemonSocketPath,
     log: { info: () => {}, warn: () => {} }
   })
   proxies.push(proxy)
   await proxy.ensure('agent')
-  return { podPath, requests, maxOutstanding: () => maxOutstanding, proxy }
+  return { podPath, requests, maxOutstanding: () => maxOutstanding, proxy, uploads: () => uploads }
 }
 
 /** Write `bytes` from inside the pod and resolve with the daemon server's digest of what it received. */
@@ -1185,5 +1238,71 @@ describe('binary data frames', () => {
     await vi.waitFor(() => expect(helper.received()).toContain('echo:after'), waitBudget(10_000))
     expect(helper.ended()).toBe(false)
     expect(binaryFrames()).toBeGreaterThanOrEqual(2)
+  }, 40_000)
+})
+
+describe('binary data frames toward the daemon', () => {
+  it('asks the shim for binary frames only over a channel that carries them', async () => {
+    const listens = async (carries: boolean): Promise<unknown> => {
+      const proxy = proxyUnderTest({ binary: { carries } })
+      await proxy.instance.ensure('agent')
+      return proxy.sent.find((payload) => (payload as { op?: string }).op === 'listen')
+    }
+    expect(await listens(true)).toEqual(expect.objectContaining({ acks: true, binaryData: true }))
+    expect(await listens(false)).not.toHaveProperty('binaryData')
+  })
+
+  it('carries a large upload intact as binary frames, bounded by the window', async () => {
+    const bytes = randomBytes(4 * 1024 * 1024)
+    const pair = await tunnelPair(hashingServer(bytes.length), { binary: true })
+    expect(await transfer(pair.podPath, bytes)).toBe(digest(bytes))
+    expect(pair.uploads()).toBeGreaterThan(0)
+    expect(pair.requests.filter((frame) => frame.op === 'ack').length).toBeGreaterThan(0)
+    expect(pair.maxOutstanding()).toBeLessThanOrEqual(MAX_IN_FLIGHT_FRAMES)
+  })
+
+  it('ends a stream whose binary frames skip ahead', async () => {
+    const proxy = proxyUnderTest({ binary: { carries: true } })
+    await proxy.instance.ensure('agent')
+    const streamId = randomUUID()
+    proxy.announce({ kind: 'connect', tunnel: 'agent' }, streamId)
+    proxy.announce({ kind: 'chunk', data: Buffer.from('a').toString('base64') }, streamId)
+    proxy.data(encodeTunnelData(streamId, 3, [Buffer.from('c')], 1))
+    await vi.waitFor(() =>
+      expect(proxy.sent).toContainEqual(
+        expect.objectContaining({ op: 'close', streamId, error: expect.stringContaining('skipped from frame 1 to 3') })
+      )
+    )
+    expect(proxy.instance.streamCount()).toBe(0)
+  })
+
+  it('sends shim chunks as text events to a daemon that did not ask for binary frames', async () => {
+    const events: ShimEvent['event'][] = []
+    const uploads: number[] = []
+    const path = join(socketDir(), 'pod.sock')
+    const host = new TunnelHost({
+      emit: (_id, event) => events.push(event),
+      emitData: (_id, seq) => uploads.push(seq),
+      socketPathFor: () => path
+    })
+    hosts.push(host)
+    await host.handle({ op: 'listen', tunnel: 'agent', acks: true })
+    inPodClient(path).socket.write('hello')
+    await vi.waitFor(() => expect(events.some((event) => event.kind === 'chunk')).toBe(true))
+    expect(uploads).toEqual([])
+
+    await host.handle({ op: 'listen', tunnel: 'agent', acks: true, binaryData: true })
+    inPodClient(path).socket.write('again')
+    await vi.waitFor(() => expect(uploads).toEqual([1]))
+  })
+
+  it('carries a large upload intact as binary frames through a real shim channel', async () => {
+    const bytes = randomBytes(4 * 1024 * 1024)
+    const { podSocketPath, binaryUploads } = await clusterWithTunnel({
+      daemonSocketPath: hashingServer(bytes.length),
+      binary: true
+    })
+    expect(await transfer(podSocketPath, bytes)).toBe(digest(bytes))
+    expect(binaryUploads()).toBeGreaterThan(0)
   }, 40_000)
 })

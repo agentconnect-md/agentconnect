@@ -3,6 +3,7 @@ import { ShimChannelLostError } from './channels.js'
 import type { ShimCapability, ShimEvent } from './protocol.js'
 import {
   ACK_EVERY_FRAMES,
+  decodeTunnelData,
   encodeTunnelData,
   isProxyTunnel,
   MAX_BINARY_CHUNK_BYTES,
@@ -56,9 +57,11 @@ export interface TunnelProxyDeps {
     onAttach: (listener: () => void) => void
     offAttach: (listener: () => void) => void
     onLost: (listener: (reason: string) => void) => void
-    /** Whether the bound channel carries binary frames, and sends one, one-way. */
+    /** Whether the bound channel carries binary frames, sends one, one-way, and delivers the shim's. */
     carriesData?: () => boolean
     sendData?: (frame: Uint8Array) => void
+    onData?: (listener: (frame: Buffer) => void) => void
+    offData?: (listener: (frame: Buffer) => void) => void
   }
   /** This daemon's own socket for a tunnel, or undefined when it serves none — an unserved
    *  tunnel must be refused rather than dialled somewhere plausible. */
@@ -90,6 +93,8 @@ interface ProxyStream {
   resumable: boolean
   /** Set once the local socket hung up while frames were unconfirmed; the close follows them. */
   closing?: { reason?: string }
+  /** Shim chunks arrived, as events or binary frames, which a binary frame's `seq` must continue. */
+  arrived: number
   /** Shim chunks written out and acknowledged, on a stream whose shim takes acks; `sending` while one ack is in flight. */
   acks?: { received: number; acked: number; sending: boolean }
 }
@@ -110,11 +115,13 @@ export class TunnelProxy {
   /** The options each tunnel was last listened with, so changed routes are sent again. */
   private readonly listenedWith = new Map<TunnelName, string>()
   private readonly onEvent = (event: ShimEvent): void => this.accept(event)
+  private readonly onData = (frame: Buffer): void => this.acceptData(frame)
   private readonly onAttach = (): void => this.resumeStreams()
   private stopped = false
 
   constructor(private readonly deps: TunnelProxyDeps) {
     deps.session.onEvent(this.onEvent)
+    deps.session.onData?.(this.onData)
     // The pod's listeners and connections outlive each half-TTL renewal; a frame travelling across one is handled by resumeStreams.
     deps.session.onAttach(this.onAttach)
     // A lost channel takes every stream with it: the pod that held the other end is gone, and a
@@ -154,7 +161,13 @@ export class TunnelProxy {
     }
     if (isProxyTunnel(tunnel) && !options) throw new Error(`this agent has no ${tunnel} routes to tunnel`)
     const reply = TunnelListeningSchema.safeParse(
-      await this.deps.session.request('tunnel', { op: 'listen', tunnel, ...options, acks: true })
+      await this.deps.session.request('tunnel', {
+        op: 'listen',
+        tunnel,
+        ...options,
+        acks: true,
+        ...(this.deps.session.carriesData?.() === true ? { binaryData: true } : {})
+      })
     )
     // A session is pointed at the proxy listener by what its reply reports, so one without it is not served.
     if (isProxyTunnel(tunnel) && !reply.data?.proxy) throw new Error(`the sandbox reported no ${tunnel} listener`)
@@ -171,6 +184,7 @@ export class TunnelProxy {
     if (this.stopped) return
     this.stopped = true
     this.deps.session.offEvent(this.onEvent)
+    this.deps.session.offData?.(this.onData)
     this.deps.session.offAttach(this.onAttach)
     for (const streamId of [...this.streams.keys()]) this.close(streamId, reason)
     this.listening.clear()
@@ -240,24 +254,47 @@ export class TunnelProxy {
       return
     }
     if (event.event.kind === 'chunk') {
-      if (entry.closing) return
-      entry.timer?.refresh()
-      const acks = entry.acks
-      if (!acks) {
-        entry.socket.write(Buffer.from(event.event.data, 'base64'))
-        return
-      }
-      // Counted once written out, so a slow daemon-side server holds the shim's window too.
-      entry.socket.write(Buffer.from(event.event.data, 'base64'), (err) => {
-        if (err || this.streams.get(event.streamId) !== entry) return
-        acks.received += 1
-        void this.acknowledge(event.streamId, entry)
-      })
+      entry.arrived += 1
+      this.fromShim(event.streamId, entry, Buffer.from(event.event.data, 'base64'))
       return
     }
     // The pod reported its own end closing, so it needs no close frame back — only the local
     // socket has to go.
     this.discard(event.streamId)
+  }
+
+  /** A binary data frame from the shim: the next chunk of one of its streams. */
+  private acceptData(frame: Buffer): void {
+    const data = decodeTunnelData(frame)
+    if (!data) {
+      this.deps.log.warn(`tunnel: agent ${this.deps.session.agentId} sent a binary frame that is not tunnel data`)
+      return
+    }
+    const entry = this.streams.get(data.streamId)
+    if (!entry) return
+    entry.arrived += 1
+    if (data.seq !== entry.arrived) {
+      this.close(data.streamId, `the sandbox skipped from frame ${entry.arrived - 1} to ${data.seq}`)
+      return
+    }
+    this.fromShim(data.streamId, entry, data.chunk)
+  }
+
+  /** Write a shim chunk to the local socket, acknowledging it once written where the shim takes acks. */
+  private fromShim(streamId: string, entry: ProxyStream, chunk: Buffer): void {
+    if (entry.closing) return
+    entry.timer?.refresh()
+    const acks = entry.acks
+    if (!acks) {
+      entry.socket.write(chunk)
+      return
+    }
+    // Counted once written out, so a slow daemon-side server holds the shim's window too.
+    entry.socket.write(chunk, (err) => {
+      if (err || this.streams.get(streamId) !== entry) return
+      acks.received += 1
+      void this.acknowledge(streamId, entry)
+    })
   }
 
   private open(streamId: string, tunnel: TunnelName): void {
@@ -289,6 +326,7 @@ export class TunnelProxy {
       ...(timer ? { timer } : {}),
       unconfirmed: new Map(),
       seq: 0,
+      arrived: 0,
       binary,
       pending: [],
       pendingBytes: 0,

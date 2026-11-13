@@ -36,7 +36,7 @@ export const MAX_DAEMON_BYTES_IN_FLIGHT = 1024 * 1024
 export const WRITTEN_EVERY_BYTES = MAX_DAEMON_BYTES_IN_FLIGHT / 4
 const MAX_TUNNEL_CHUNK_BASE64 = Math.ceil(MAX_TUNNEL_CHUNK_BYTES / 3) * 4
 
-/** A binary daemon → shim data frame: kind byte, 16-byte stream id, 32-bit sequence number, then the chunk. */
+/** A binary data frame, in either direction: kind byte, 16-byte stream id, 32-bit sequence number, then the chunk. */
 export const TUNNEL_DATA_FRAME = 0x01
 const DATA_HEADER_BYTES = 21
 
@@ -81,7 +81,9 @@ export const TunnelListenSchema = z.object({
     .max(16 * 1024)
     .optional(),
   // The daemon acknowledges this tunnel's shim-sent chunks; an older shim strips the field and is never sent an `ack`.
-  acks: z.boolean().optional()
+  acks: z.boolean().optional(),
+  // The daemon takes this tunnel's shim-sent bytes as binary data frames; an older shim strips the field and sends `chunk` events.
+  binaryData: z.boolean().optional()
 })
 /** What the daemon sends with a `codehost` or `provider` listen: the routes, and the CA certificate alone, which the shim merges with its own machine's roots. */
 export type TunnelListenOptions = { routes: string[]; ca: string }

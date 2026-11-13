@@ -16,6 +16,7 @@ import { seedEnv } from './seed-env.js'
 import {
   decodeTunnelData,
   isProxyTunnel,
+  MAX_BINARY_CHUNK_BYTES,
   MAX_CODEHOST_STREAMS,
   MAX_IN_FLIGHT_FRAMES,
   MAX_PROVIDER_STREAMS,
@@ -79,6 +80,8 @@ interface HostStream {
   tunnel: TunnelName
   /** Chunks emitted and acknowledged, on a stream whose daemon acknowledges them. */
   flow?: Flow
+  /** Its chunks go out as binary data frames, as the daemon's listen asked. */
+  binary?: boolean
   /** Armed until the daemon's first byte or ack, on a proxy tunnel's stream. */
   answer?: NodeJS.Timeout
   /** The highest numbered daemon frame written to the socket. */
@@ -168,6 +171,8 @@ export interface TunnelHostDeps {
   /** Emit an event on a stream the shim owns. Goes through the client so a chunk produced while
    *  the channel is rebinding is buffered rather than lost, exactly like ACP output. */
   emit: (streamId: string, event: ShimEvent['event']) => void
+  /** Send a stream's bytes as one binary data frame, held across a rebind like an event; without it chunks stay events. */
+  emitData?: (streamId: string, seq: number, chunk: Buffer) => void
   /** Where each tunnel is served. The image's fixed map unless the entrypoint or a test names another root. */
   socketPathFor?: (tunnel: TunnelName) => string
   /** The helper tunnels' (`agent`, `mcp`) shared cap. */
@@ -203,6 +208,8 @@ export class TunnelHost {
   private readonly streams = new Map<string, HostStream>()
   /** Tunnels whose daemon acknowledges chunks, as its latest `listen` said; only their streams are paused. */
   private readonly acked = new Set<TunnelName>()
+  /** Tunnels whose daemon takes binary data frames, as its latest `listen` said; only their acknowledged streams send them. */
+  private readonly binaryUp = new Set<TunnelName>()
   private readonly socketPathFor: (tunnel: TunnelName) => string
   private readonly maxStreams: number
   private readonly maxProxyStreams: Record<ProxyTunnelName, number>
@@ -233,6 +240,8 @@ export class TunnelHost {
         : ({ socketPath: await this.listen(parsed.tunnel) } satisfies TunnelListening)
       if (parsed.acks) this.acked.add(parsed.tunnel)
       else this.acked.delete(parsed.tunnel)
+      if (parsed.binaryData && this.deps.emitData) this.binaryUp.add(parsed.tunnel)
+      else this.binaryUp.delete(parsed.tunnel)
       return { ...listening, acks: true, resumable: true, binaryData: true } satisfies TunnelListening
     }
     const stream = this.streams.get(parsed.streamId)
@@ -626,7 +635,9 @@ export class TunnelHost {
 
   private open(tunnel: TunnelName, socket: Socket, preface?: Buffer): string {
     const streamId = randomUUID()
-    const flow = this.acked.has(tunnel) ? { flow: { sent: 0, acked: 0 } } : {}
+    const flow = this.acked.has(tunnel)
+      ? { flow: { sent: 0, acked: 0 }, ...(this.binaryUp.has(tunnel) ? { binary: true } : {}) }
+      : {}
     this.streams.set(streamId, { socket, tunnel, ...flow })
     // Announced BEFORE any byte is read, so the daemon has dialled its end (or refused) before
     // the first chunk arrives — chunks for a stream it never saw open have nowhere to go.
@@ -660,10 +671,12 @@ export class TunnelHost {
   private release(streamId: string, stream: HostStream, flow: Flow): void {
     let offset = 0
     const held = flow.held ?? Buffer.alloc(0)
+    const size = stream.binary ? MAX_BINARY_CHUNK_BYTES : MAX_TUNNEL_CHUNK_BYTES
     while (offset < held.length && flow.sent - flow.acked < MAX_IN_FLIGHT_FRAMES) {
-      const slice = held.subarray(offset, offset + MAX_TUNNEL_CHUNK_BYTES)
-      this.deps.emit(streamId, { kind: 'chunk', data: slice.toString('base64') })
+      const slice = held.subarray(offset, offset + size)
       flow.sent += 1
+      if (stream.binary) this.deps.emitData!(streamId, flow.sent, slice)
+      else this.deps.emit(streamId, { kind: 'chunk', data: slice.toString('base64') })
       offset += slice.length
     }
     flow.held = offset < held.length ? held.subarray(offset) : undefined

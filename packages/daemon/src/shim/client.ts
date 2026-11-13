@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { Backoff, systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
 import { AcpRunner, type ResolveCommand } from './acp-runner.js'
+import { encodeTunnelData } from './tunnel.js'
 
 /** Bounded so a long outage cannot grow the buffer without limit. */
 const MAX_BUFFERED_EVENTS = 2_000
@@ -25,6 +26,13 @@ export interface ShimTransport {
   onBinary?(cb: (data: Buffer) => void): void
   onClose(cb: (code: number, reason: string) => void): void
   close(code: number, reason: string): void
+}
+
+/** Tunnel bytes held across a rebind, framed only once a transport is known to carry binary. */
+interface PendingData {
+  streamId: string
+  seq: number
+  chunk: Buffer
 }
 
 /** One dial's channel. `ended` records a close that arrived before the supervision loop
@@ -92,7 +100,7 @@ export class ShimClient {
   /** Events produced while no transport is attached. A renewal closes the old socket before
    *  the replacement binds, and ACP bytes cannot simply be dropped — losing a fragment
    *  corrupts the protocol — so they wait here and flush on the next bind. */
-  private readonly pendingEvents: string[] = []
+  private readonly pendingEvents: Array<string | PendingData> = []
   private transport?: ShimTransport
   private bound?: ShimBound
   private stopped = false
@@ -387,6 +395,26 @@ export class ShimClient {
     this.emitEvent(streamId, event)
   }
 
+  /** Send a tunnel stream's bytes as one binary data frame, or as a `chunk` event on a transport that carries text only; held across a rebind like an event. */
+  emitData(streamId: string, seq: number, chunk: Buffer): void {
+    const transport = this.transport
+    if (transport && this.bound) {
+      this.sendData(transport, { streamId, seq, chunk })
+      return
+    }
+    // A stream's window bounds what it holds here, since no acknowledgement arrives without a channel.
+    this.pendingEvents.push({ streamId, seq, chunk })
+  }
+
+  private sendData(transport: ShimTransport, data: PendingData): void {
+    if (transport.sendBinary) {
+      transport.sendBinary(encodeTunnelData(data.streamId, data.seq, [data.chunk], data.chunk.length))
+      return
+    }
+    const event = { kind: 'chunk', data: data.chunk.toString('base64') } satisfies ShimEvent['event']
+    transport.send(JSON.stringify({ type: 'shim/event', streamId: data.streamId, event }))
+  }
+
   /** Send an event on whichever transport is currently bound, or hold it until one is. */
   private emitEvent(streamId: string, event: ShimEvent['event']): void {
     const text = JSON.stringify({ type: 'shim/event', streamId, event })
@@ -418,7 +446,10 @@ export class ShimClient {
   private flushPendingEvents(transport: ShimTransport): void {
     if (this.pendingEvents.length === 0) return
     this.deps.log?.info(`shim: flushing ${this.pendingEvents.length} event(s) buffered across a rebind`)
-    for (const text of this.pendingEvents.splice(0)) transport.send(text)
+    for (const pending of this.pendingEvents.splice(0)) {
+      if (typeof pending === 'string') transport.send(pending)
+      else this.sendData(transport, pending)
+    }
   }
 
   private async serve(transport: ShimTransport, request: Extract<ShimFrame, { type: 'shim/request' }>): Promise<void> {

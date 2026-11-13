@@ -305,7 +305,17 @@ frames of up to 128 KiB: the cost of a frame, not of a byte, is what bounded the
 A binary frame carries no credential or generation. The shim serves one only from the transport
 that completed this incarnation's binding, and only under the `tunnel` grant; anything else
 closes the channel, as a malformed text frame does. A renewal is a new transport, so a frame
-from a superseded socket cannot reach the streams. Pod → daemon bytes stay `chunk` events.
+from a superseded socket cannot reach the streams.
+
+The other direction uses the same frame. A daemon whose channel carries binary frames says
+`binaryData` in its `listen` request, and the shim then sends that tunnel's pod → daemon bytes
+as binary frames of up to 128 KiB instead of base64 `chunk` events. Flow control is unchanged:
+the shim numbers each chunk, holds a window of eight, and the daemon's cumulative `ack` counts
+chunks written out, whichever form they came in. These frames ride the same event buffer across
+a rebind, so they keep their order with the stream's `connect` and `exit`, and a transport that
+carries text only gets the bytes as `chunk` events. The daemon accepts a binary frame only after
+the shim is bound and only as the next chunk of an open stream; one that skips ahead ends the
+stream. An older daemon never asks, so its shim keeps sending events.
 
 This is why a bound channel is announced only after its `shim/bound` frame is on the wire:
 the peer refuses anything that arrives ahead of its own binding, so an earlier notification
