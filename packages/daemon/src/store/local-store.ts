@@ -14,7 +14,8 @@ import {
   ASSISTANT_SUBSESSION_SCHEMA,
   ASSISTANT_SUBSESSION_THREAD_SCHEMA,
   ASSISTANT_TASK_OPENED_SCHEMA,
-  AssistantSubsessionIndex
+  AssistantSubsessionIndex,
+  LOOK_BACK_COLUMN_TYPES
 } from './assistant-subsessions.js'
 import { CLOSE_TASK } from './closed-tasks.js'
 import {
@@ -1428,7 +1429,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 81
+export const SCHEMA_VERSION = 82
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -2216,7 +2217,12 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
     );
     CREATE INDEX IF NOT EXISTS coordinator_filter_evaluation_agent ON coordinator_filter_evaluation (orgId, agentId, seq);`),
   // v81 records the outcome protocol a coordinator's coordinate was minted under (auto-session-mode.md §4.2).
-  async (db, store) => await addColumn(db, store.postgres, 'append_reservation', 'protocol', 'INTEGER')
+  async (db, store) => await addColumn(db, store.postgres, 'append_reservation', 'protocol', 'INTEGER'),
+  // v82 keeps what looking back at a task needs on its row (assistant-mode.md §5.20).
+  async (db, store) => {
+    for (const [column, type] of LOOK_BACK_COLUMN_TYPES)
+      await addColumn(db, store.postgres, 'assistant_subsession', column, type)
+  }
 ]
 
 /** Tasks gain when they closed, the message they were opened for, what they opened and a getting-to-know task's marker; an ended watch task counts as closed when it last changed. */

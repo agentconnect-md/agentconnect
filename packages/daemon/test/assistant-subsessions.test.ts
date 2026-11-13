@@ -9,8 +9,10 @@ import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import { shortTaskIds } from '../src/assistant/task-ids.js'
 import { Daemon } from '../src/daemon.js'
 import { subsessionCoordinate } from '../src/session/subsession-coordinate.js'
+import { ASSISTANT_SUBSESSION_SCHEMA, LOOK_BACK_COLUMN_TYPES } from '../src/store/assistant-subsessions.js'
 import { LocalStore, SCHEMA_VERSION, sessionKey } from '../src/store/local-store.js'
 import { PostgresAsyncDatabase } from '../src/store/postgres-async-database.js'
+import { canonicalColumns } from '../src/store/postgres-dialect.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { openTestStore, tempStorePath, usingPostgresStore } from './store-support.js'
 
@@ -1497,6 +1499,207 @@ describe.skipIf(usingPostgresStore())('assistant sub-sessions on agent removal',
       expect(await seam.store.assistantSubsessions.get(other, childKey(other, '1'))).toBeDefined()
     } finally {
       await daemon.stop()
+    }
+  })
+})
+
+// assistant-mode.md §5.20: what looking back at a task keeps on its row.
+const COORDINATOR_THREAD = 'append:coordinator-1'
+const coordinatorOf = (a: string): string => sessionKey('slack', 'C0GENERAL', COORDINATOR_THREAD, a, 'T0EXAMPLE')
+const threadKey = (a: string, thread: string): string => sessionKey('slack', 'C0GENERAL', thread, a, 'T0EXAMPLE')
+const ALICE = { kind: 'member' as const, platform: 'slack', integrationId: 'int-1', userId: 'U0ALICE' }
+
+/** A coordinator's settled threaded task in C0GENERAL, holding its own thread. */
+async function threadedTask(s: LocalStore, a: string, thread: string, now: number): Promise<string> {
+  const key = threadKey(a, thread)
+  await s.assistantSubsessions.open({
+    agentId: a,
+    childSessionKey: key,
+    parentSessionId: 'sid-co',
+    parentSessionKey: coordinatorOf(a),
+    title: `Task ${thread}`,
+    openedFor: { place: 'slack:C0GENERAL', messageId: `msg-${thread}` },
+    now
+  })
+  await s.assistantSubsessions.attachThread({
+    agentId: a,
+    childSessionKey: key,
+    platform: 'slack',
+    channel: 'C0GENERAL',
+    transportScope: 'T0EXAMPLE',
+    thread,
+    sinceRound: 1,
+    now
+  })
+  await s.assistantSubsessions.finish(a, key, 'done', undefined, now)
+  return key
+}
+
+describe('looking back at a task', () => {
+  it('lists settled threaded work tasks quiet long enough, with their place, never one that runs or is research', async () => {
+    const s = await open()
+    const a = agent()
+    await s.upsertSession({
+      key: coordinatorOf(a),
+      agentId: a,
+      platform: 'slack',
+      channel: 'C0GENERAL',
+      thread: COORDINATOR_THREAD,
+      transportScope: 'T0EXAMPLE',
+      acpSessionId: null,
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1
+    })
+    const quiet = await threadedTask(s, a, '100.1', 1_000)
+    const recent = await threadedTask(s, a, '100.2', 9_000)
+    const running = await threadedTask(s, a, '100.3', 1_000)
+    await s.assistantSubsessions.resumeThreaded(a, running, 1_000)
+    // A background task holds no thread, so its rounds report and it is never listed.
+    await s.assistantSubsessions.open({ ...row(a, 'bg'), parentSessionKey: coordinatorOf(a), now: 1_000 })
+    await s.assistantSubsessions.finish(a, childKey(a, 'bg'), 'done', undefined, 1_000)
+    const listed = await s.assistantSubsessions.lookBackCandidates(a, 5_000)
+    expect(listed.map((t) => t.childSessionKey)).toEqual([quiet])
+    expect(listed[0]).toMatchObject({
+      title: 'Task 100.1',
+      owner: { platform: 'slack', channel: 'C0GENERAL', transportScope: 'T0EXAMPLE' }
+    })
+    expect(listed[0]).not.toHaveProperty('lookBack')
+    expect(recent).toBeDefined()
+  })
+
+  it('records a look, its outcomes, a person’s message that starts them over, and a stop', async () => {
+    const s = await open()
+    const a = agent()
+    const index = s.assistantSubsessions
+    const key = await threadedTask(s, a, '200.1', 1_000)
+    expect(await index.markLooked(a, key, { now: 20_000, left: 1 })).toBe(true)
+    expect(await index.noteLookBackOutcome(a, key, 'reminded', 21_000)).toBe(true)
+    expect(await index.markLooked(a, key, { now: 30_000, left: 1 })).toBe(true)
+    expect(await index.noteLookBackOutcome(a, key, 'sent back', 31_000)).toBe(true)
+    expect(await index.markLooked(a, key, { now: 40_000, left: 1 })).toBe(true)
+    expect(await index.markStopped(a, key, 41_000)).toBe(true)
+    expect((await index.get(a, key))?.lookBack).toEqual({
+      lookedAt: 40_000,
+      reminders: 1,
+      remindedAt: 21_000,
+      sentBack: 1,
+      left: 1,
+      stoppedAt: 41_000
+    })
+    expect(await index.lastLooks(a)).toEqual(new Map([[coordinatorOf(a), 40_000]]))
+    // The message it was opened for names its opener once; a later person does not replace it.
+    expect(await index.notePerson(a, key, { asker: ALICE, name: 'Alice', opener: true, now: 50_000 })).toBe(true)
+    const bob = { ...ALICE, userId: 'U0BOB' }
+    expect(await index.notePerson(a, key, { asker: bob, opener: true, now: 60_000 })).toBe(true)
+    expect((await index.get(a, key))?.lookBack).toEqual({
+      lookedAt: 40_000,
+      reminders: 0,
+      sentBack: 0,
+      left: 0,
+      personAt: 60_000,
+      person: { asker: bob },
+      opener: ALICE
+    })
+  })
+
+  it('keeps nothing for a watch task or a closed one', async () => {
+    const s = await open()
+    const a = agent()
+    const index = s.assistantSubsessions
+    await openWatch(s, a, 'check-1', 1_000)
+    expect(await index.markStopped(a, childKey(a, 'check-1'), 2_000)).toBe(false)
+    const key = await threadedTask(s, a, '300.1', 1_000)
+    await index.closeTask(a, key, 2_000)
+    expect(await index.notePerson(a, key, { asker: ALICE, now: 3_000 })).toBe(false)
+    expect(await index.markLooked(a, key, { now: 3_000, left: 1 })).toBe(false)
+  })
+
+  it('lists every look-back column in the schema and in canonicalColumns', () => {
+    const canonical = new Set<string>(canonicalColumns)
+    for (const [column] of LOOK_BACK_COLUMN_TYPES) {
+      expect(ASSISTANT_SUBSESSION_SCHEMA).toContain(column)
+      expect(canonical.has(column)).toBe(true)
+    }
+  })
+})
+
+/** What a v82 store reads back of a row a v81 daemon wrote, and what it can then keep. */
+async function expectV82(s: LocalStore, a: string): Promise<void> {
+  const key = threadKey(a, '400.1')
+  expect(await s.assistantSubsessions.get(a, key)).toMatchObject({ title: 'Kept', state: 'done' })
+  expect(await s.assistantSubsessions.get(a, key)).not.toHaveProperty('lookBack')
+  expect(await s.assistantSubsessions.notePerson(a, key, { asker: ALICE, opener: true, now: 5_000 })).toBe(true)
+  expect((await s.assistantSubsessions.get(a, key))?.lookBack).toMatchObject({ personAt: 5_000, opener: ALICE })
+}
+
+const V81_ROW = (a: string): [string, unknown[]] => [
+  `INSERT INTO assistant_subsession (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt, mode, changedAt, title)
+   VALUES (?, ?, 'sid-co', ?, 'done', 1000, 'work', 1000, 'Kept')`,
+  [a, threadKey(a, '400.1'), coordinatorOf(a)]
+]
+
+describe.skipIf(usingPostgresStore())('the v81 → v82 look-back columns on SQLite', () => {
+  it('adds the columns to a v81 store and keeps its rows', async () => {
+    const path = tempStorePath('ac-assistant-v81-')
+    await (await LocalStore.open(path)).close()
+    const a = agent()
+    const old = new DatabaseSync(path)
+    old.exec(
+      `${LOOK_BACK_COLUMN_TYPES.map(([column]) => `ALTER TABLE assistant_subsession DROP COLUMN ${column};`).join('\n')}
+      PRAGMA user_version = 81`
+    )
+    const [sql, params] = V81_ROW(a)
+    old.prepare(sql).run(...(params as never[]))
+    old.close()
+
+    const upgraded = await LocalStore.open(path)
+    try {
+      await expectV82(upgraded, a)
+    } finally {
+      await upgraded.close()
+    }
+    const db = new DatabaseSync(path)
+    expect((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(SCHEMA_VERSION)
+    db.close()
+  })
+})
+
+describe.skipIf(!usingPostgresStore())('the v81 → v82 look-back columns on PostgreSQL', () => {
+  it('adds the columns to a v81 store and keeps its rows', async () => {
+    const databaseUrl = process.env.DATA_PLANE_TEST_DATABASE_URL!
+    const schema = `mig_${randomUUID().replace(/-/g, '')}`
+    const config = { version: 1 as const, databaseUrl, maxConnections: 2 }
+    const orgForAgent = (): string => 'org-a'
+    const admin = new pg.Client({ connectionString: databaseUrl })
+    await admin.connect()
+    const a = agent()
+    try {
+      const fresh = await PostgresAsyncDatabase.open(config, () => undefined, schema)
+      await fresh.finishSchemaInitialization()
+      await (await LocalStore.open({ database: fresh, shared: true, ownerId: 'm1', orgForAgent })).close()
+
+      await admin.query(`SET search_path TO ${schema}`)
+      await admin.query(
+        `ALTER TABLE assistant_subsession ${LOOK_BACK_COLUMN_TYPES.map(([column]) => `DROP COLUMN ${column}`).join(', ')}`
+      )
+      const [sql, params] = V81_ROW(a)
+      await admin.query(numbered(sql), params)
+      await admin.query('UPDATE _local_store_schema_version SET version = 81 WHERE singleton = true')
+
+      const database = await PostgresAsyncDatabase.open(config, () => undefined, schema)
+      await database.finishSchemaInitialization()
+      const upgraded = await LocalStore.open({ database, shared: true, ownerId: 'm2', orgForAgent })
+      try {
+        await expectV82(upgraded, a)
+      } finally {
+        await upgraded.close()
+      }
+      const version = await admin.query('SELECT version FROM _local_store_schema_version')
+      expect(Number(version.rows[0].version)).toBe(SCHEMA_VERSION)
+    } finally {
+      await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`).catch(() => undefined)
+      await admin.end()
     }
   })
 })
