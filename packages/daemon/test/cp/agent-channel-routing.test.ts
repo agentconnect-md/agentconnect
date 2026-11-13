@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { createConnection } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { effectiveAgentId, repoFromPath } from '../../src/cli/git-credential.js'
 import {
   AGENT_CHANNEL_AGENT_ENV,
@@ -661,6 +661,28 @@ describe('AgentChannelServer routing (agent.sock)', () => {
         await askVia(sockPath, server!.tunnelGreeting('a1'), capability, { repoFullName: undefined })
       ).toMatchObject({ ok: true })
       expect(gets).toEqual([{ agentId: 'a1', opts: { plane: 'git' } }])
+    })
+
+    it('with GitHub proxy-only, serves the daemon locally and its own skill window, and nothing through a tunnel', async () => {
+      vi.stubEnv('AC_GITHUB_GIT_PROXY', 'true')
+      try {
+        const { sockPath, gets, capability } = await bootGithub()
+        // The pod reaches GitHub through the proxy alone, so the daemon capability is refused through its tunnel.
+        expect(
+          await askVia(sockPath, server!.tunnelGreeting('a1'), capability, { repoFullName: undefined })
+        ).toMatchObject({ ok: false, error: proxyOnlyRefusal('github'), denied: 'agent' })
+        expect(gets).toHaveLength(0)
+        // The daemon's own Git and its own skill fill are the daemon consumer.
+        expect(await ask(sockPath, capability, { repoFullName: undefined })).toMatchObject({ ok: true })
+        const window = server!.skillWindows.open({ agentId: 'a1', subject: 'daemon', repos: [SKILL] })
+        expect(await ask(sockPath, window.capability)).toMatchObject({ ok: true })
+        expect(gets).toEqual([
+          { agentId: 'a1', opts: { plane: 'git', consumer: 'daemon' } },
+          { agentId: 'a1', opts: { plane: 'git', repo: SKILL, consumer: 'daemon' } }
+        ])
+      } finally {
+        vi.unstubAllEnvs()
+      }
     })
 
     it('leaves workspace and additional-repository issuance to the agent capability unchanged', async () => {

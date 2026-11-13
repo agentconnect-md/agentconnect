@@ -1101,8 +1101,8 @@ route readiness replaces the blanket environment bans in
 tests exercise real Git clone, fetch and push through the shim listener and
 codehost tunnel, including a direct bundle download and authorization refusals.
 These fixtures do not establish the live environment matrix below. Gitea and GitLab
-take the same path through the same `proxyOnly` selector. GitHub remains on its
-existing daemon-Git path, and the capacity gate is measured on one pod only.
+take the same path through the same `proxyOnly` selector. GitHub takes it behind a
+deployment switch, below; without the switch it remains on its existing daemon-Git path.
 
 #### Decision and scope
 
@@ -1238,8 +1238,11 @@ Scratch workspaces with only additional repositories follow the same rule.
 
 The first delivery can select proxy preparation at the common operation seam using
 the target provider's existing `proxyOnly` contract. Do not inspect whether the
-agent has _any_ Azure repository, branch on provider names in execution planes, or
-add a second provider rollout flag. The selector is temporary: once ordinary
+agent has _any_ Azure repository or branch on provider names in execution planes.
+GitHub's `proxyOnly` alone is a deployment switch, `features.githubGitProxy` in the
+chart (`AC_GITHUB_GIT_PROXY` on the pool's members), so it can be turned on in one
+environment first; every other part of the contract is the same selector. The
+selector is temporary: once ordinary
 managed workspace Git inside execution environments is migrated, every such target
 takes the shared path. The owning daemon's host-side path remains deferred.
 The provider's token-release restrictions remain a separate contract.
@@ -1342,7 +1345,13 @@ Git must not silently claim that the Azure CLI is installed in every image.
 2. **Other ordinary managed repositories:** after the measured capacity gate below,
    move GitHub in-environment workspace/review and supported nested-repository
    network calls to that same path; Gitea and GitLab moved earlier. Host-side canonical clones
-   stay unchanged.
+   stay unchanged. GitHub moves behind `features.githubGitProxy`, which a pool turns on
+   once its runtime image carries the proxied merge watcher and skill path. Under the
+   switch the proxy mints GitHub's token from the credential cache as the `proxy`
+   consumer, since GitHub's grant still resolves a repository by name; the daemon's
+   own Git and its own skill window ask as the `daemon` consumer; and the agent channel
+   serves no GitHub token through a tunnel. The control plane does not yet refuse a
+   GitHub helper ask; it does once the switch is removed and GitHub is proxy-only everywhere.
    Remove the temporary selector, audit direct Git call sites, and remove obsolete
    Git token-helper injection from migrated callers, not the helper still needed
    by deferred callers. Keep real tokens available to authorized daemon-side service
