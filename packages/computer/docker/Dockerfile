@@ -3,7 +3,7 @@
 #   docker build -f packages/computer/docker/Dockerfile -t agentconnect-computer .
 
 # The bundle is plain JavaScript, so it is built once on the build platform for every target arch.
-FROM --platform=$BUILDPLATFORM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS bundle
+FROM --platform=$BUILDPLATFORM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS bundle
 WORKDIR /app
 ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH
 RUN npm install --global corepack@0.36.0 && corepack enable \
