@@ -321,6 +321,7 @@ export class ShimDialer {
       let settled = false
       let binding = false
       const frameListeners: Array<(text: string) => void> = []
+      const dataListeners: Array<(frame: Buffer) => void> = []
       const fail = (error: Error): void => {
         if (settled) return
         settled = true
@@ -375,7 +376,12 @@ export class ShimDialer {
                 issuedCredential: result.credential,
                 ...(workspaceRoot ? { workspaceRoot } : {}),
                 send: (outbound) => transport.send(JSON.stringify(outbound)),
-                ...(transport.sendBinary ? { sendData: (frame: Uint8Array) => transport.sendBinary!(frame) } : {}),
+                ...(transport.sendBinary
+                  ? {
+                      sendData: (frame: Uint8Array) => transport.sendBinary!(frame),
+                      onData: (listener: (frame: Buffer) => void) => dataListeners.push(listener)
+                    }
+                  : {}),
                 onFrame: (listener) => frameListeners.push(listener),
                 close: (reason) => transport.close(4000, reason)
               }
@@ -421,6 +427,15 @@ export class ShimDialer {
         if (frame.type === 'shim/response' || frame.type === 'shim/event') {
           for (const listener of frameListeners) listener(text)
         }
+      })
+      // Binary frames are tunnel data, which only a bound shim sends.
+      transport.onBinary?.((frame) => {
+        if (!settled) {
+          transport.close(4403, 'not bound')
+          fail(new Error('shim sent data before binding'))
+          return
+        }
+        for (const listener of dataListeners) listener(frame)
       })
       transport.send(
         JSON.stringify({

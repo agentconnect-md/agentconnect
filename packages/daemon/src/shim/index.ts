@@ -99,6 +99,7 @@ async function main(): Promise<number> {
   // Tunnel listeners follow pod lifetime so credential renewal cannot break client sockets.
   const tunnels = new TunnelHost({
     emit: (streamId, event) => client.emit(streamId, event),
+    emitData: (streamId, seq, chunk) => client.emitData(streamId, seq, chunk),
     socketPathFor: (tunnel) => paths.tunnels[tunnel],
     ...(options.codehostDomains ? { srtCodehostDomains: options.codehostDomains } : {}),
     log

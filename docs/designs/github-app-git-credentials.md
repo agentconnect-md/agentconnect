@@ -1435,7 +1435,8 @@ providers).** Toward the sandbox (the direction a clone reads), a current shim t
 binary frames of up to 128 KiB, at most 1 MiB unreported per stream; an older one gets
 32 KiB chunks encoded as base64 in JSON, thirty-two unanswered per stream
 ([the shim design](cluster-spawn-and-shim.md#6-the-credential-tunnel-and-which-way-it-runs)).
-Toward the daemon, chunks stay base64 in JSON, eight unacknowledged per stream. A shim
+Toward the daemon, chunks are binary frames of up to 128 KiB for a daemon that asks for
+them and base64 in JSON otherwise, eight unacknowledged per stream either way. A shim
 serves sixteen simultaneous code-host streams (`shim/tunnel.ts`). Additional-repository
 and submodule fetches share that per-shim ceiling; it is not a pool-member-wide load limit. A CONNECT past the ceiling
 waits for a stream to end rather than being refused, since Git does not retry a

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Backoff, FakeClock } from '@agentconnect.md/connection'
 import { ShimBindingRegistry, type SpawnRecord } from '../src/shim/binding.js'
@@ -6,6 +7,7 @@ import type { PodIdentityVerifier, ShimConnection } from '../src/shim/connection
 import { ShimDialer, type ShimDialerDeps } from '../src/shim/dialer.js'
 import { ShimClient, type ShimTransport } from '../src/shim/client.js'
 import { SHIM_TOKEN_AUDIENCE, parseShimFrame, type ShimDialHello, type ShimFrame } from '../src/shim/protocol.js'
+import { decodeTunnelData } from '../src/shim/tunnel.js'
 import { shimFixtures } from './fakes/shim-sandbox.js'
 import { runVirtual, settle, VirtualClock } from './fakes/virtual-clock.js'
 
@@ -69,6 +71,8 @@ interface ScriptedPeer {
   reply: (frame: unknown) => void
   /** Answer with something that is not a frame at all. */
   replyRaw: (text: string) => void
+  /** Answer with a binary frame. */
+  replyBinary: (data: Buffer) => void
   /** The pod went away mid-handshake, rather than the daemon closing on it. */
   drop: (code: number, reason: string) => void
 }
@@ -91,11 +95,13 @@ function scriptedDialer(deps: {
   const peers: ScriptedPeer[] = []
   const dial: NonNullable<ShimDialerDeps['dial']> = async () => {
     let onMessage: (text: string) => void = () => {}
+    let onBinary: (data: Buffer) => void = () => {}
     let onClose: (code: number, reason: string) => void = () => {}
     const peer: ScriptedPeer = {
       received: [],
       reply: (frame) => queueMicrotask(() => onMessage(JSON.stringify(frame))),
       replyRaw: (text) => queueMicrotask(() => onMessage(text)),
+      replyBinary: (data) => queueMicrotask(() => onBinary(data)),
       drop: (code, reason) => {
         peer.closed ??= { code, reason }
         queueMicrotask(() => onClose(code, reason))
@@ -110,6 +116,7 @@ function scriptedDialer(deps: {
         if (frame.type === 'shim/hello') deps.answer(frame, peer)
       },
       onMessage: (cb) => (onMessage = cb),
+      onBinary: (cb) => (onBinary = cb),
       onClose: (cb) => (onClose = cb),
       close: (code, reason) => {
         peer.closed ??= { code, reason }
@@ -354,6 +361,21 @@ describe('handshake operability counters', () => {
     )
     expect(peers[0]!.received.at(-1)).toMatchObject({ type: 'shim/rejected', reason: 'unavailable' })
     expect(counted.rejections).toEqual(['unavailable'])
+  })
+
+  it('closes a shim that sends a binary frame before it is bound', async () => {
+    // Binary frames are tunnel data, and carry no credential of their own: only a bound shim may send one.
+    const clock = new VirtualClock()
+    const { dialer, peers } = scriptedDialer({
+      answer: (_hello, peer) => peer.replyBinary(Buffer.from([1, 2, 3])),
+      verifier: verifier({ authenticated: true, podName: 'runtime-abc', podUid: 'pod-uid-1' }),
+      clock
+    })
+
+    await expect(runVirtual(clock, dialer.connect(SCRIPTED_ENDPOINT, record(), 500))).rejects.toThrow(
+      /could not connect to sandbox shim/
+    )
+    expect(peers[0]!.closed).toEqual({ code: 4403, reason: 'not bound' })
   })
 
   it('counts a malformed frame rather than only closing the socket', async () => {
@@ -927,6 +949,62 @@ describe('shim client', () => {
     expect(closes).toEqual([])
     client.stop()
   })
+
+  it.each([true, false])(
+    'sends tunnel bytes held across a rebind in order with events, as binary frames when the transport carries them (%s)',
+    async (carriesBinary) => {
+      const sent: Array<string | Buffer> = []
+      let onMessage: ((text: string) => void) | undefined
+      const client = new ShimClient({
+        endpoint: 'accepted-daemon-channel',
+        dial: async () => ({
+          send: (text) => sent.push(text),
+          ...(carriesBinary ? { sendBinary: (data: Uint8Array) => void sent.push(Buffer.from(data)) } : {}),
+          onMessage: (cb) => (onMessage = cb),
+          onClose: () => {},
+          close: () => {}
+        }),
+        readToken: () => 't',
+        log: { info: () => {}, warn: () => {} }
+      })
+      const streamId = randomUUID()
+      // Produced before any channel binds, so both wait for it.
+      client.emit(streamId, { kind: 'connect', tunnel: 'agent' })
+      client.emitData(streamId, 1, Buffer.from('held'))
+      void client.start().catch(() => undefined)
+      await waitFor(() => onMessage !== undefined)
+      onMessage?.(hello(3))
+      onMessage?.(boundFrame(3))
+      await waitFor(() => sent.length >= 3)
+      client.emitData(streamId, 2, Buffer.from('live'))
+
+      const tail = sent.slice(1)
+      expect(JSON.parse(tail[0] as string)).toEqual({
+        type: 'shim/event',
+        streamId,
+        event: { kind: 'connect', tunnel: 'agent' }
+      })
+      const data = tail
+        .slice(1)
+        .map((frame) =>
+          typeof frame === 'string'
+            ? (JSON.parse(frame) as { event: { kind: string; data: string } }).event
+            : decodeTunnelData(frame)
+        )
+      if (carriesBinary) {
+        expect(data).toEqual([
+          { streamId, seq: 1, chunk: Buffer.from('held') },
+          { streamId, seq: 2, chunk: Buffer.from('live') }
+        ])
+      } else {
+        expect(data).toEqual([
+          { kind: 'chunk', data: Buffer.from('held').toString('base64') },
+          { kind: 'chunk', data: Buffer.from('live').toString('base64') }
+        ])
+      }
+      client.stop()
+    }
+  )
 
   it('refuses a bound frame that does not match the launch the daemon announced', async () => {
     // The binding the shim accepts is the one it was told to expect; anything else is a channel

@@ -72,6 +72,7 @@ export function fakeVm(
     const server = new ShimServer()
     const tunnels = new TunnelHost({
       emit: (streamId, event) => client.emit(streamId, event),
+      emitData: (streamId, seq, chunk) => client.emitData(streamId, seq, chunk),
       socketPathFor: (tunnel) =>
         tunnel === 'agent' || tunnel === 'mcp' ? guestSockets[tunnel] : `${guestSockets.agent}.${tunnel}`
     })
