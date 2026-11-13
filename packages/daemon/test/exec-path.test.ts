@@ -8,12 +8,21 @@ const nodeBin = dirname(process.execPath)
 const realNodeBin = dirname(realpathSync(process.execPath))
 
 describe('ensureNodeBinOnPath', () => {
-  it('prepends the Node bin dir to a service-manager-style minimal PATH', () => {
+  it('appends the Node bin dir to a service-manager-style minimal PATH', () => {
     const env: NodeJS.ProcessEnv = { PATH: ['/usr/local/bin', '/usr/bin', '/bin'].join(delimiter) }
     ensureNodeBinOnPath(env)
     const dirs = env.PATH!.split(delimiter)
-    expect(dirs[0]).toBe(nodeBin)
-    expect(dirs).toContain('/usr/bin')
+    expect(dirs.slice(0, 3)).toEqual(['/usr/local/bin', '/usr/bin', '/bin'])
+    expect(dirs).toContain(nodeBin)
+  })
+
+  it("keeps a version manager's node ahead of the daemon's own", () => {
+    const shims = '/Users/agent/.nodenv/shims'
+    const env: NodeJS.ProcessEnv = { PATH: [shims, '/opt/homebrew/bin', '/usr/bin'].join(delimiter) }
+    ensureNodeBinOnPath(env)
+    const dirs = env.PATH!.split(delimiter)
+    expect(dirs[0]).toBe(shims)
+    expect(dirs.indexOf(nodeBin)).toBeGreaterThan(dirs.indexOf('/usr/bin'))
   })
 
   it('is a no-op when the dir is already present', () => {
