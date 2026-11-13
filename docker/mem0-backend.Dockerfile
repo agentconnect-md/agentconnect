@@ -9,7 +9,7 @@
 # The upstream server requirements intentionally use `mem0ai>=...`, so constrain
 # the SDK to the release matching that source commit instead of silently pulling a
 # newer SDK on a later rebuild.
-FROM python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de
+FROM python:3.15-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928
 
 ARG MEM0_VERSION
 
