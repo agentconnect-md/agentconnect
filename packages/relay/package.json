@@ -41,17 +41,17 @@
     "@opentelemetry/api": "^1.10.0",
     "@slack/web-api": "^8.3.0",
     "fastify": "^5.12.8",
-    "jose": "^6.2.15",
+    "jose": "^6.2.17",
     "undici": "^8.12.4",
-    "ws": "^8.22.1",
+    "ws": "^8.22.2",
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@ag-ui/client": "^1.0.3",
-    "@ag-ui/core": "^1.0.3",
+    "@ag-ui/client": "^1.0.4",
+    "@ag-ui/core": "^1.0.4",
     "@types/node": "^26.6.6",
     "@types/ws": "^8.18.2",
-    "ai": "^7.0.162",
+    "ai": "^7.0.169",
     "tsx": "^4.23.15",
     "typescript": "^6.0.3",
     "vitest": "^5.1.0"

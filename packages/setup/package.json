@@ -34,13 +34,13 @@
     "@agentconnect.md/control-plane": "workspace:*",
     "@agentconnect.md/protocol": "workspace:*",
     "fastify": "^5.12.8",
-    "jose": "^6.2.15",
+    "jose": "^6.2.17",
     "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
     "json": "^11.0.0",
-    "tsdown": "^0.23.4",
+    "tsdown": "^0.23.7",
     "tsx": "^4.23.15",
     "typescript": "^6.0.3",
     "vitest": "^5.1.0"
