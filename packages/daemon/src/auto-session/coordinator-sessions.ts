@@ -8,12 +8,14 @@ import { taskTitleField, TASK_TITLE_MAX_CHARS } from '../mcp/ops/send-message-ac
 import { deriveTitle } from '../session/derive-title.js'
 import { isNoResponseBody } from '../session/no-response.js'
 import { sessionKey, transcriptChannelKey, type LocalStore } from '../store/local-store.js'
+import type { UnownedThreadSession } from '../store/assistant-subsessions.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
 import { a2aCoordChannel } from '../cp/cp-collab-routes.js'
 import { isSubsessionCoordinate, subsessionCoordinate } from '../session/subsession-coordinate.js'
 import { coordinatorMessageId, type ReportAbout } from './coordinator-prompt.js'
 import {
   answerThreadOf,
+  atThreadlessRoot,
   CoordinatorTurns,
   inThread,
   platformMessageIdOf,
@@ -118,6 +120,16 @@ export function messageForTask(
     ...(opts.title ? { initialSessionTitle: opts.title } : {}),
     ...(background ? { turnBody: withBackground(msg, background) } : {})
   }
+}
+
+/** The thread an adopted session holds (§3.5): its own, but never a room's whole thread (§6.8) nor a threadless room's root, whose session holds the internal thread of the last message it answered instead (§6.10). */
+function adoptableAs(session: UnownedThreadSession, at: { platform: string; channel: string }): UnownedThreadSession[] {
+  const isDm = session.conversationKind === 'dm'
+  const room = { ...at, thread: session.thread, isDm, isGroupDm: session.conversationKind === 'group_dm' }
+  if (wholeRoomThread(room)) return []
+  if (!atThreadlessRoot(room)) return [session]
+  const anchor = session.lastDeliveredTs
+  return anchor === undefined || atThreadlessRoot({ ...room, thread: anchor }) ? [] : [{ ...session, thread: anchor }]
 }
 
 /** A room keyed as one thread, as a task holds a channel it made (§6.8). */
@@ -667,7 +679,9 @@ export class CoordinatorSessions {
     const store = this.host.store()
     const index = store.assistantSubsessions
     const now = this.host.now()
-    const sessions = await index.unownedThreadSessions(agentId, at, now - THREADED_TASK_IDLE_CLOSE_MS)
+    const sessions = (await index.unownedThreadSessions(agentId, at, now - THREADED_TASK_IDLE_CLOSE_MS)).flatMap(
+      (session) => adoptableAs(session, at)
+    )
     if (sessions.length === 0) return 0
     const parentSessionId = await store.ensureOutwardSessionId(coordinatorKey, agentId, now)
     const adopted: string[] = []

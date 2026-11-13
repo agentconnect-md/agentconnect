@@ -30,6 +30,7 @@ import {
   type ConversationCoordinateKind
 } from '../session/append-coordinate.js'
 import { transcriptCoords } from '../session/session-manager.js'
+import { atThreadlessRoot, platformMessageIdOf } from '../auto-session/coordinator-turns.js'
 import {
   CommandChromeRegistry,
   type CommandChromeContext,
@@ -659,7 +660,9 @@ export class CommandHandlers {
     // fallback below must still not fire there — its candidates are createNew-era threads.
     // So the MODE is asked directly rather than inferred from the read coming back empty.
     const appendConversation = this.host.conversationAppends(target.agentId, target.integrationId, msg)
-    let thread = appendCoordinate ?? msg.thread ?? msg.msgId
+    // A threadless room's root key names no session of its own there, so a root with no coordinate yet finds nothing (auto-session-mode.md §6.10).
+    const rootKey = appendConversation && atThreadlessRoot(msg) ? platformMessageIdOf(msg) : undefined
+    let thread = appendCoordinate ?? rootKey ?? msg.thread ?? msg.msgId
     let key = sessionKey(msg.platform, held?.channel ?? msg.channel, thread, target.agentId, msg.transportScope)
     let rec = await this.host.store().getSession(key)
     // A cold turn owns its logical key before SessionManager persists the session row.

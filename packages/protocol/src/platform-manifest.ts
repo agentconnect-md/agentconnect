@@ -103,6 +103,8 @@ export interface PlatformManifest {
   readonly addressedByConstruction: boolean
   /** Conversation kinds whose rows can key one long (`append`) session; the spec projection reads it to give an assistant-mode agent one session per place (assistant-mode.md §5.2). */
   readonly appendKinds: readonly AppendConversationKind[]
+  /** Where a room (not a DM) of this platform has no threads: the fixed thread key its every message carries, which names the room's root, never a thread (auto-session-mode.md §6.10). Absent ⇒ its rooms have threads. */
+  readonly threadlessRoomRoot?: string
 }
 
 /** A conversation row's kind, as far as session modes go: a room, a 1:1 DM, or a group DM. */
@@ -149,7 +151,8 @@ export const DEFAULT_MANIFEST: Omit<PlatformManifest, 'platform'> = {
  * axes — a fail-OPEN hole in the exact guarantee this module sells.
  */
 const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
-  ['qq', { ...DEFAULT_MANIFEST, dmChannelPattern: /^dm:/, appendKinds: ['channel'] }],
+  // A group has no threads: every message carries the fixed thread `group` (`qq-message.ts`), its root.
+  ['qq', { ...DEFAULT_MANIFEST, dmChannelPattern: /^dm:/, appendKinds: ['channel'], threadlessRoomRoot: 'group' }],
   // Slack is the only platform with an authoritative membership snapshot — which
   // is why the branches this replaces read "Slack does X, everyone else does Y".
   // It is also the only platform whose normalizer attributes bot authorship AND
@@ -285,7 +288,9 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       // The official doc delivers a group message only when it mentions the bot, so a mention in a session the agent holds continues it.
       addressedByConstruction: true,
       // A direct chat is one continuous session already, so only groups take `append`.
-      appendKinds: ['channel']
+      appendKinds: ['channel'],
+      // WeCom has no threads: every group message carries the fixed thread `group` (`canonicalizeWeComThread`), its root.
+      threadlessRoomRoot: 'group'
     }
   ]
 ])

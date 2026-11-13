@@ -23,6 +23,9 @@ channel-root message goes to the agent's **coordinator session** for that conver
 to an open task, opens a new task, replies itself, or ignores it. A task opened for a message has the
 message's thread attached, and people in that thread talk to the task directly.
 
+A room whose platform has no threads (a WeCom or QQ group) keeps every message at its root, so every
+message goes to the coordinator, and a task's thread is anchored on its message's own id (§6.10).
+
 Tasks and today's delegated tasks become one concept. A task with a thread attached talks to people;
 a task without one works in the background and reports to its parent session, as a delegated task does
 today. Every task the coordinator opens is threaded (§6.6).
@@ -137,7 +140,7 @@ Approved proposals stay a kind of their own.
 
 - **Into `auto`**: thread sessions opened before the switch become the coordinator's threaded tasks.
   Their threads keep reaching them, and `listTasks` lists them, titled with the start of their first
-  message.
+  message. A room without threads holds its session from before by another thread (§6.10).
 - **Out of `auto`**: the coordinator takes no new messages and ages out. Threaded tasks go back to
   being ordinary thread sessions: under `createNew` they keep working; under `append` thread messages
   join the one session.
@@ -348,8 +351,9 @@ The existing names stay, with `messageId` added (`SEND_MESSAGE_ACTIONS` in
 
 - `delegateTask {title, message?, messageId?}`: `message` or `messageId` is required.
   - With `messageId`: a threaded task. It receives the original message as it arrived (sender, text,
-    attachments); `message` is the coordinator's background. It works in the message's thread; a
-    task that makes a Slack code channel for its work moves into it (§6.8).
+    attachments); `message` is the coordinator's background. It works in the message's thread, which
+    in a room without threads is anchored on the message's id (§6.10); a task that makes a Slack code
+    channel for its work moves into it (§6.8).
   - Without: a background task, as today. The coordinator's tool always names a message, so its tasks
     are always threaded (§6.6).
   - `title` is required and shown in the console and in `listTasks`.
@@ -551,9 +555,10 @@ after it closed.
 ### 6.6 Coordinator tasks are threaded
 
 Every task the coordinator opens is threaded from its first round: its `delegateTask` always names a
-message (§5.1), and the task holds that message's thread, or in webchat the message's id (§10). The
-coordinator opens no background task, so no task of the coordinator ever changes kind (decided
-2026-10-30). A background task is one a session opened on a daemon whose Auto switch is off (§6.3).
+message (§5.1), and the task holds that message's thread, or in webchat and in a room without threads
+the message's id (§10, §6.10). The coordinator opens no background task, so no task of the coordinator
+ever changes kind (decided 2026-10-30). A background task is one a session opened on a daemon whose
+Auto switch is off (§6.3).
 
 ### 6.7 The task summary
 
@@ -974,13 +979,62 @@ Open:
 - How often `getToKnow` is called. If almost never, the tool's description is a cost every
   coordinator session pays for nothing, and §6.9.4 is revisited.
 
+### 6.10 A room without threads
+
+A WeCom or QQ group has no threads: nothing can be posted under a message, and every message the
+platform delivers there carries the same fixed thread key, `group`. The platform declares that key
+in its manifest (`threadlessRoomRoot` in `packages/protocol/src/platform-manifest.ts`), and core
+reads the fact, never the platform's name. Under `auto` such a room runs as a channel whose every
+message is at its root.
+
+- **The root.** The fixed key names the room's root, not a thread a task can hold. Every message
+  there is a root message: it goes to the coordinator (§4.1), and the first row of §7, a thread
+  attached to a task, is never met by a person's message. A direct chat is not such a room; its own
+  mode decides.
+- **The internal thread.** A message's thread is anchored on its own platform id, as a webchat
+  message's is on its post (§10). It exists only in the daemon's records: `delegateTask {messageId}`
+  opens a threaded task keyed on it (§6.6), and `messageTask {taskId, messageId}` attaches the handed
+  message's to the task as one more (§6.4). Nothing about it is sent to the platform.
+- **Follow-ups.** Nobody can answer in a thread, so every later message arrives at the root and
+  reaches the coordinator. It decides from what it has, the conversation so far, the work board and
+  `listTasks`, whether the message continues an open task (hand it over), starts new work (open a
+  task), needs only a short answer (reply), or is not for the agent (ignore): the four outcomes of
+  §4.2, unchanged.
+- **Answers.** A task answers in the room, as the platform's turn output replies to the message the
+  task was handed. WeCom streams under that message's callback, which the coordinator's turn leaves
+  unclaimed because it renders no text of its own; QQ sends a passive reply to it. The coordinator's
+  own reply (§4.2 (d)) is a message in the room: a post on WeCom, and on QQ, which has no free post, a
+  passive reply through the platform's out-of-turn post for core (its command chrome's `notice`).
+- **The prompt.** The coordinator's standing instructions name the place a conversation without
+  threads: people cannot answer in a thread, so every follow-up to a task arrives at the root, and it
+  is the coordinator's job to recognize which open task a message continues and hand it over, or to
+  open a new task. A task there is told that nobody can reply to it directly, that every message
+  reaches it through the coordinator, and that its answer replies to the message it was handed.
+- **Into `auto`** (§3.5). The room's session from before is keyed on the root key, and it never holds
+  that key as a task. It is adopted holding the internal thread of the last message it answered (its
+  `lastDeliveredTs`), which no later message carries, so it is listed as an open task the coordinator
+  can hand messages to, keeping its session. A session that has answered nothing is not adopted.
+- **Out of `auto`.** Per thread keys every message on the root key again, which is the room's session
+  from before: the room is one session. A task opened under `auto` is released as an ordinary session
+  on its message's internal thread, which no message reaches, and ages out. Single session keys the
+  room on its append session, as before.
+- **Commands.** A command typed in the room is at its root, so `!new`, `!stop`, `!queue` and `/status`
+  act on the coordinator, as at a channel's root (§8). Before the conversation has a coordinator they
+  find nothing: under `auto` and Single session the root key names no session of its own, so a command
+  never reaches the session from before the switch.
+- **Rows from before this.** A daemon could record the room's session as a task holding the root key,
+  under a coordinator with an outward id and no session (#3947). The next message there keys on that
+  reserved coordinator, whose session opens then, and the old session is one of its tasks; its hold
+  on the root key routes nothing, since no message sits in a thread there. Nothing needs repair.
+
 ## 7. Thread routing
 
-| Thread                     | Goes to                                                          |
-| -------------------------- | ---------------------------------------------------------------- |
-| Attached to a task         | That task, without the coordinator                               |
-| Unowned                    | The coordinator, which may still open a task for the thread      |
-| A room keyed as one thread | That room's one session, the task's while a task holds it (§6.8) |
+| Thread                     | Goes to                                                                   |
+| -------------------------- | ------------------------------------------------------------------------- |
+| Attached to a task         | That task, without the coordinator                                        |
+| Unowned                    | The coordinator, which may still open a task for the thread               |
+| A room keyed as one thread | That room's one session, the task's while a task holds it (§6.8)          |
+| A room without threads     | Always the root: the coordinator, which hands a message to a task (§6.10) |
 
 ## 8. Commands
 
@@ -1000,6 +1054,7 @@ Open:
   on none of its messages (§4.5).
 - An unowned thread routes to the coordinator (§7), so a command there acts on the coordinator too.
   At a root with no coordinator yet, a command finds nothing rather than an older thread session.
+  In a room without threads every command is at the root (§6.10).
 - A platform's own "new chat" gesture (Slack's Assistant thread) is a root `!new`: it starts a new
   coordinator, which takes the threaded tasks over. A conversation with no coordinator yet mints none.
 

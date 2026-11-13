@@ -1199,6 +1199,7 @@ import {
   inThread,
   reportAboutOf,
   reportJoinsBatch,
+  threadlessRoom,
   wholeRoomThread,
   type DeliveredMessage
 } from './auto-session/coordinator-turns.js'
@@ -11329,7 +11330,9 @@ export class Daemon {
       channelId: at.channel,
       ...(selfAddress ? { selfAddress } : {}),
       peers,
-      ...(at.platform === 'webchat' ? { webchat: true } : {})
+      ...(at.platform === 'webchat' ? { webchat: true } : {}),
+      // A room without threads keeps every follow-up at its root, so the coordinator places each one (§6.10).
+      ...(threadlessRoom(at) ? { threadless: true } : {})
     })
   }
 
@@ -15415,9 +15418,10 @@ export class Daemon {
   private async threadTaskSession(
     agentId: string,
     at: { platform: string; channel: string; transportScope: string | null },
-    msg: Partial<Pick<NormalizedMessage, 'thread' | 'msgId' | 'transcriptTs' | 'transcriptPostId'>>
+    msg: Partial<Pick<NormalizedMessage, 'thread' | 'msgId' | 'transcriptTs' | 'transcriptPostId' | 'isDm'>>
   ): Promise<{ channel: string; thread: string } | undefined> {
-    if (msg.thread === undefined || msg.msgId === undefined || !inThread({ ...msg, msgId: msg.msgId })) return undefined
+    if (msg.thread === undefined || msg.msgId === undefined) return undefined
+    if (!inThread({ ...msg, platform: at.platform, msgId: msg.msgId })) return undefined
     const index = this.store.assistantSubsessions
     const task = await index.taskOfThread(agentId, { ...at, thread: msg.thread })
     if (task === undefined) return undefined
@@ -15945,9 +15949,19 @@ export class Daemon {
     }
     const gateway: MessageGateway | undefined =
       integrationId === undefined ? undefined : this.gatewayForIntegration(integrationId)
-    if (!gateway) throw new Error('the conversation is not connected right now; nothing was posted')
     const thread = answerThreadOf(msg)
     const key = sessionKey(msg.platform, sessionChannelOf(msg), sessionThreadOf(msg), agentId, msg.transportScope)
+    if (!gateway) {
+      // A platform that only answers a message passively replies to it through its out-of-turn post (auto-session-mode.md §6.10).
+      const conn = integrationId === undefined ? undefined : this.anyConnForIntegration(integrationId)
+      const replied = this.chromeNotice(msg.platform, conn, msg, thread, text)
+      if (!replied) throw new Error('the conversation is not connected right now; nothing was posted')
+      await replied
+      // Such a reply names no post, so its record takes a stamp of its own.
+      const session = { channel: msg.channel, transportScope: msg.transportScope, key }
+      await this.recordAgentPost(agentId, session, monotonicTs(), thread, text)
+      return undefined
+    }
     // This post is the coordinator's response, so it carries the attribution footer a turn's reply does.
     const rec = await this.store.getSession(key)
     const footer = rec ? await this.sessionAttributionBlocks(agentId, rec, integrationId) : undefined

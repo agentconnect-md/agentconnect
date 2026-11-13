@@ -9,6 +9,7 @@ import {
   mayOpenTasksAt
 } from './subsession-coordinate.js'
 import { webchatCoordinatorTask, type WebchatCoordinatorTask } from '../auto-session/webchat-task.js'
+import { threadlessRoom } from '../auto-session/coordinator-turns.js'
 import { researchRunningLine } from '../assistant/research.js'
 import {
   CLAUDE_COORDINATOR_DISALLOWED_TOOLS,
@@ -772,6 +773,9 @@ export class SessionManager {
             msg.platform === 'slack' && integrationId ? this.deps.slackBotUserIdFor?.(integrationId) : undefined,
           thread,
           ...(threadedTask ? { threadedTask } : {}),
+          ...(threadedTask && threadlessRoom({ ...msg, channel: sessionChannelOf(msg) })
+            ? { threadlessRoom: true }
+            : {}),
           ...(webchatTask?.page ? { pageTask: true } : {}),
           ...(this.deps.taskPagesTakeMessages?.() ? { taskPageMessages: true } : {}),
           ...(this.deps.tasksCoordinatorOnly?.() ? { tasksCoordinatorOnly: true } : {}),
