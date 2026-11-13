@@ -11,6 +11,7 @@
 import { randomUUID } from 'node:crypto'
 import { WireError } from '@agentconnect.md/connection'
 import {
+  HOOK_REPORT_REASON_HOOK_CHANGED,
   HOOK_REPORT_REASON_NOTICE_ALREADY_POSTED,
   HOOK_REPORT_REASON_NOTICE_POSTED,
   gitRepoLabel,
@@ -176,6 +177,14 @@ export interface GithubReviewHost {
     agentId: string,
     acpSessionId: string
   ): Promise<{ host?: AcpHost; target?: DecisionRuntimeTarget; observed?: { runtime?: string; model: string | null } }>
+}
+
+/** The CP refused this run's start barrier for good; the turn must end with `reason` instead of prompting. */
+export class HookStartRefused extends Error {
+  constructor(readonly reason: typeof HOOK_REPORT_REASON_HOOK_CHANGED) {
+    super(`hook/start refused: ${reason}`)
+    this.name = 'HookStartRefused'
+  }
 }
 
 export class GithubReviewOrchestrator {
@@ -754,11 +763,7 @@ export class GithubReviewOrchestrator {
     }
   }
 
-  /** Resolve a PR revision if the webhook omitted it (notably
-   * issue_comment), cross the CP hook/start barrier, then return the active
-   * review authority. Failure only disables structured effects; the agent turn
-   * continues, while ordinary fallback remains governed by durable formal-
-   * attempt state. */
+  /** Cross the hook/start barrier and return review authority; a failure only withholds it, unless the CP says the hook changed (HookStartRefused). */
   async prepareGithubTurn(entry: QueueEntry, sessionId: string): Promise<ActiveGithubTurnMeta | undefined> {
     const hook = entry.hookContext
     const snapshot = hook?.snapshot
@@ -803,6 +808,11 @@ export class GithubReviewOrchestrator {
       try {
         started = await client.startHook(payload)
       } catch (err) {
+        // A run its hook no longer matches can never gain review authority, so the turn ends instead of running blind.
+        if (err instanceof WireError && err.details?.reason === HOOK_REPORT_REASON_HOOK_CHANGED) {
+          this.log.warn(`github review: hook/start refused, hook changed since dispatch (${formatErr(err)})`)
+          throw new HookStartRefused(HOOK_REPORT_REASON_HOOK_CHANGED)
+        }
         if (attempt === 2) {
           this.log.warn(`github review: hook/start rejected (${formatErr(err)})`)
           return undefined

@@ -1,6 +1,7 @@
 import {
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
   HOOK_REPORT_REASON_AGENT_HANDOVER,
+  HOOK_REPORT_REASON_HOOK_CHANGED,
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
   HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED,
   HOOK_REPORT_REASON_SESSION_SOURCE_MISMATCH,
@@ -61,6 +62,7 @@ export function hookIncompleteCheckLabel(reason?: string | null, appSlug?: strin
     return 'Review could not be completed: provider usage limit reached'
   if (reason === HOOK_REPORT_REASON_SESSION_SOURCE_MISMATCH)
     return 'Review could not start: its session belongs to another source'
+  if (reason === HOOK_REPORT_REASON_HOOK_CHANGED) return 'Review did not run: the review settings changed'
   if (!reason || reason === HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED) return null
   return 'Review could not be completed'
 }
@@ -75,6 +77,14 @@ export function hookIncompleteCheckGuidance(reason?: string | null, appSlug?: st
         'so no review was produced and nothing in this pull request has been judged. ' +
         `To run it again, ${mention}use the **Request review** button above. ` +
         'Starting a review needs triage, write, or admin access to this repository.'
+    ].join('\n\n')
+  }
+  if (reason === HOOK_REPORT_REASON_HOOK_CHANGED) {
+    return [
+      '### How to run this review again',
+      "This agent's review settings were changed after the review was requested and before it started, " +
+        'so the agent did not run and nothing in this pull request has been judged. ' +
+        `To review it under the current settings, ${mention}use the **Request review** button above.`
     ].join('\n\n')
   }
   if (reason !== HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED) return null

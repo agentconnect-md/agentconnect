@@ -74,7 +74,7 @@ export const handleHookStart: Handler = async (frame, conn, deps) => {
     if (frame.payload.reviewCheckout) count(frame.payload.reviewCheckout, conn.orgId ? 'org' : 'install')
   } catch (error) {
     if (error instanceof GithubReviewBrokerError) {
-      conn.sendError(frame.id, error.code, error.message, error.retryable)
+      conn.sendError(frame.id, error.code, error.message, error.retryable, error.details)
       return
     }
     conn.sendError(frame.id, 'INTERNAL', 'hook start barrier failed', true)
