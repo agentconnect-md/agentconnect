@@ -205,20 +205,20 @@ describe('SessionDock on a server-rendered first paint', () => {
 // Everything above starts from `paintScript()`, which is a suite calling the source directly — this is the one place that mechanism is WIRED, and deleting the line left every suite green while first paint reverted to the stylesheet default.
 describe('the pre-paint script in the console layout', () => {
   const scriptsIn = (markup: string) => Array.from(markup.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g), (m) => m[1]!)
+  // The layout is an async server component, so resolve it first; renderToString cannot await.
+  const renderLayout = async () => renderToString(await AppLayout({ children: <div data-page="" /> }))
 
-  it('is shipped in front of the console markup by the `(app)` layout', () => {
-    const markup = renderToString(<AppLayout>{<div data-page="" />}</AppLayout>)
+  it('is shipped in front of the console markup by the `(app)` layout', async () => {
+    const markup = await renderLayout()
     expect(scriptsIn(markup)).toContain(DOCK_WIDTH_INIT)
     // Ahead of the shell, since a script after the markup it sizes is a script that runs after the frame it was meant to paint.
     expect(markup.indexOf(DOCK_WIDTH_INIT)).toBeLessThan(markup.indexOf('data-shell'))
   })
 
-  it('paints the stored width when run as the browser runs it, from that markup', () => {
+  it('paints the stored width when run as the browser runs it, from that markup', async () => {
     // Not mere presence: the text the layout actually ships is evaluated here, so a truncated or mis-escaped script fails too.
     writeDockWidth('org-1', 612)
-    const shipped = scriptsIn(renderToString(<AppLayout>{<div data-page="" />}</AppLayout>)).find((source) =>
-      source.includes(DOCK_WIDTH_PROPERTY)
-    )
+    const shipped = scriptsIn(await renderLayout()).find((source) => source.includes(DOCK_WIDTH_PROPERTY))
     expect(shipped).toBeDefined()
     new Function(shipped!)()
     expect(applied()).toBe('612px')
