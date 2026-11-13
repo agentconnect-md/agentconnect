@@ -315,17 +315,20 @@ const workspaceModeMark = (child: ReactNode) => (
   <span className="flex h-[18px] w-[18px] flex-none items-center justify-center">{child}</span>
 )
 
-export function WorkspaceModeField({
+export function WorkspaceModeField<M extends WorkspaceMode = WorkspaceMode>({
   value,
   onChange,
   className,
   // Omit the label where a section or dialog heading already names the workspace.
-  label
+  label,
+  // Restricts the tiles, e.g. to code hosts where only a repository can be authorized.
+  modes
 }: {
-  value: WorkspaceMode
-  onChange: (value: WorkspaceMode) => void
+  value: M
+  onChange: (value: M) => void
   className?: string
   label?: string | null
+  modes?: readonly M[]
 }) {
   const t = useTranslations('Integrations.dialog.workspaceFields')
   const fieldClassName = className ? `fld ${className}` : 'fld'
@@ -352,7 +355,11 @@ export function WorkspaceModeField({
       mark: (selected: boolean) =>
         workspaceModeMark(<Icon name="link-2" size={16} color={selected ? 'var(--brand)' : 'var(--text-tertiary)'} />)
     }
-  ].filter((option) => withGitUrl || option.value !== 'giturl')
+  ].filter(
+    (option): option is typeof option & { value: M } =>
+      (withGitUrl || option.value !== 'giturl') &&
+      (!modes || (modes as readonly WorkspaceMode[]).includes(option.value))
+  )
 
   return (
     <div className={fieldClassName}>

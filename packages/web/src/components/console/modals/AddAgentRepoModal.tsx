@@ -19,7 +19,6 @@ import { useTranslations } from 'next-intl'
 import { type CodeHostProvider } from '@agentconnect.md/protocol/code-host'
 import type { AgentRepositorySelector } from '@agentconnect.md/protocol/decision'
 import { GithubMark, LoadingState } from '@/components/marks'
-import { CodeHostMark } from '@/components/console/CodeHostMark'
 import { Button, Icon } from '@/components/ui'
 import { CODE_HOST_PROJECTION, PICKABLE_CODE_HOST_PROVIDERS } from '@/lib/code-hosts'
 import { agentLabel, type Agent } from '@/lib/data'
@@ -37,7 +36,8 @@ import {
   GitlabProjectField,
   GitlabProjectOption,
   INSTALLATION_MATERIALIZE_OPTIONS,
-  RepositoryMaterializeField
+  RepositoryMaterializeField,
+  WorkspaceModeField
 } from '@/components/console/WorkspaceFormFields'
 import { matchAzureDevOpsRepositories } from '@/lib/azure-devops-repositories'
 import { matchGiteaRepositories, type GiteaRepositoryChoice } from '@/lib/gitea-repositories'
@@ -511,14 +511,6 @@ export default function AddAgentRepoModal({
 
   // How the picked host is named and what it calls the object being authorized.
   const hostProjection = CODE_HOST_PROJECTION[provider]
-  // One tile per code host — the offer's row set IS the provider axis, each tile worded by its projection.
-  const hostTiles = PICKABLE_CODE_HOST_PROVIDERS.map((v) => ({
-    v,
-    label: CODE_HOST_PROJECTION[v].label,
-    hint: `Authorize a ${CODE_HOST_PROJECTION[v].repoNoun}.`,
-    mark: <CodeHostMark provider={v} color="var(--text-primary)" />
-  }))
-
   // The GitHub picker groups by account: its "All repositories" choice first, then its repositories, in installation order.
   const pickerGroups = (() => {
     const order = (gh?.installations ?? []).map((installation) => installation.accountLogin.toLowerCase())
@@ -1172,41 +1164,16 @@ export default function AddAgentRepoModal({
         <div className="modalbody">
           {/* A repository fixed by a manual GitHub workspace pins the host too. */}
           {!fixedRepo && (
-            <div className="fld mb-[18px]">
-              <span className="fldlbl">{t('codeHost')}</span>
-              <div className="grid grid-cols-1 gap-[10px] desktop:grid-cols-2">
-                {hostTiles.map((host) => (
-                  <button
-                    key={host.v}
-                    type="button"
-                    className={provider === host.v ? 'ptile on items-start text-left' : 'ptile items-start text-left'}
-                    onClick={() => {
-                      setProvider(host.v)
-                      setErr(null)
-                    }}
-                  >
-                    <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] border border-(--border-default) bg-(--surface-card)">
-                      <span className="flex h-4 w-4 items-center justify-center">{host.mark}</span>
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block font-sans text-[13px] font-semibold leading-normal">{host.label}</span>
-                      <span className="mt-[2px] block truncate font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
-                        {host.hint}
-                      </span>
-                    </span>
-                    <span
-                      className={
-                        provider === host.v
-                          ? 'ml-auto flex h-4 w-4 flex-none items-center justify-center self-center rounded-full border-[1.5px] border-(--brand)'
-                          : 'ml-auto flex h-4 w-4 flex-none items-center justify-center self-center rounded-full border-[1.5px] border-(--border-strong)'
-                      }
-                    >
-                      {provider === host.v && <span className="h-2 w-2 rounded-full bg-(--brand)" />}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </div>
+            <WorkspaceModeField
+              className="mb-[18px]"
+              label={t('codeHost')}
+              value={provider}
+              modes={PICKABLE_CODE_HOST_PROVIDERS}
+              onChange={(value) => {
+                setProvider(value)
+                setErr(null)
+              }}
+            />
           )}
           {/* The picked host's own picker, selected through the table above. */}
           {grantPicker[provider]()}
