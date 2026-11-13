@@ -1,4 +1,5 @@
 import { createConnection, type Socket } from 'node:net'
+import { ShimChannelLostError } from './channels.js'
 import type { ShimCapability, ShimEvent } from './protocol.js'
 import {
   ACK_EVERY_FRAMES,
@@ -66,7 +67,13 @@ interface ProxyStream {
   socket: Socket
   tunnel: TunnelName
   timer?: NodeJS.Timeout
-  inFlight: number
+  /** Data frames sent and not yet answered, by seq in send order. */
+  unconfirmed: Map<number, string>
+  seq: number
+  /** The shim writes a numbered frame once, so a renewal re-sends unconfirmed frames instead of ending the stream. */
+  resumable: boolean
+  /** Set once the local socket hung up while frames were unconfirmed; the close follows them. */
+  closing?: { reason?: string }
   /** Shim chunks written out and acknowledged, on a stream whose shim takes acks; `sending` while one ack is in flight. */
   acks?: { received: number; acked: number; sending: boolean }
 }
@@ -87,14 +94,12 @@ export class TunnelProxy {
   /** The options each tunnel was last listened with, so changed routes are sent again. */
   private readonly listenedWith = new Map<TunnelName, string>()
   private readonly onEvent = (event: ShimEvent): void => this.accept(event)
-  private readonly onAttach = (): void => this.dropUnaccountedStreams()
+  private readonly onAttach = (): void => this.resumeStreams()
   private stopped = false
 
   constructor(private readonly deps: TunnelProxyDeps) {
     deps.session.onEvent(this.onEvent)
-    // The pod's listener and its live client connections outlive a physical channel — the shim
-    // reconnects at half the credential TTL — but a frame that was travelling when the socket was
-    // replaced does not. See dropUnaccountedStreams.
+    // The pod's listeners and connections outlive each half-TTL renewal; a frame travelling across one is handled by resumeStreams.
     deps.session.onAttach(this.onAttach)
     // A lost channel takes every stream with it: the pod that held the other end is gone, and a
     // local socket kept open would hold a daemon-side server session for a client that cannot
@@ -102,11 +107,15 @@ export class TunnelProxy {
     deps.session.onLost((reason) => this.stop(reason))
   }
 
-  /** On a renewal, end each stream with a frame in flight, whose bytes may be lost or would duplicate on a resend (a corrupt request for the agent channel, a corrupt TLS record for codehost); an idle stream is untouched. */
-  private dropUnaccountedStreams(): void {
+  /** On a renewal, re-send each resumable stream's unconfirmed frames in order; a stream whose shim cannot drop a duplicate ends instead. */
+  private resumeStreams(): void {
     for (const [streamId, entry] of [...this.streams]) {
-      if (entry.inFlight === 0) continue
-      this.close(streamId, 'the sandbox channel was renewed while a frame was in flight')
+      if (entry.unconfirmed.size === 0) continue
+      if (!entry.resumable) {
+        this.close(streamId, 'the sandbox channel was renewed while a frame was in flight')
+        continue
+      }
+      for (const seq of [...entry.unconfirmed.keys()]) void this.deliver(streamId, entry, seq)
     }
   }
 
@@ -208,6 +217,7 @@ export class TunnelProxy {
     // somebody else's and not an error.
     if (!entry) return
     if (event.event.kind === 'chunk') {
+      if (entry.closing) return
       entry.timer?.refresh()
       const acks = entry.acks
       if (!acks) {
@@ -247,21 +257,42 @@ export class TunnelProxy {
     const idleMs = STREAM_IDLE_MS[tunnel]
     const timer = idleMs === null ? undefined : setTimeout(() => this.close(streamId, `idle for ${idleMs}ms`), idleMs)
     timer?.unref?.()
-    const acks = this.listening.get(tunnel)?.acks ? { received: 0, acked: 0, sending: false } : undefined
-    this.streams.set(streamId, { socket, tunnel, ...(timer ? { timer } : {}), inFlight: 0, ...(acks ? { acks } : {}) })
+    const listening = this.listening.get(tunnel)
+    const acks = listening?.acks ? { received: 0, acked: 0, sending: false } : undefined
+    const entry: ProxyStream = {
+      socket,
+      tunnel,
+      ...(timer ? { timer } : {}),
+      unconfirmed: new Map(),
+      seq: 0,
+      resumable: listening?.resumable === true,
+      ...(acks ? { acks } : {})
+    }
+    this.streams.set(streamId, entry)
     socket.on('data', (data: Buffer) => {
-      const entry = this.streams.get(streamId)
-      if (!entry) return
+      if (this.streams.get(streamId) !== entry) return
       entry.timer?.refresh()
       for (let offset = 0; offset < data.length; offset += MAX_TUNNEL_CHUNK_BYTES) {
-        const slice = data.subarray(offset, offset + MAX_TUNNEL_CHUNK_BYTES)
-        void this.deliver(streamId, { op: 'data', streamId, chunk: slice.toString('base64') })
+        const seq = ++entry.seq
+        entry.unconfirmed.set(seq, data.subarray(offset, offset + MAX_TUNNEL_CHUNK_BYTES).toString('base64'))
+        void this.deliver(streamId, entry, seq)
       }
       // Stop reading until the pod acknowledges enough, so a large transfer is not one burst of requests.
-      if (entry.inFlight >= MAX_IN_FLIGHT_FRAMES) entry.socket.pause()
+      if (entry.unconfirmed.size >= MAX_IN_FLIGHT_FRAMES) entry.socket.pause()
     })
-    socket.on('error', (err) => this.close(streamId, err.message))
-    socket.on('close', () => this.close(streamId))
+    socket.on('error', (err) => this.hangUp(streamId, entry, err.message))
+    socket.on('close', () => this.hangUp(streamId, entry))
+  }
+
+  /** The local end went away: a resumable stream with frames unconfirmed keeps its entry, so its close follows any frame a renewal re-sends. */
+  private hangUp(streamId: string, entry: ProxyStream, reason?: string): void {
+    if (this.streams.get(streamId) !== entry) return
+    if (!entry.resumable || entry.unconfirmed.size === 0) {
+      this.close(streamId, reason)
+      return
+    }
+    entry.closing ??= reason ? { reason } : {}
+    if (entry.timer) clearTimeout(entry.timer)
   }
 
   /** Tell the pod its connection is going nowhere, so the client sees EOF instead of a stall. */
@@ -286,29 +317,27 @@ export class TunnelProxy {
     return true
   }
 
-  /**
-   * Send a stream's bytes, and end the stream if they cannot be accounted for.
-   *
-   * The undelivered case is NOT recoverable by re-sending: a rejection can mean the frame never
-   * left, or that it landed and only its acknowledgement was lost, and re-sending the second case
-   * duplicates bytes inside a request/response protocol. So the stream ends and the in-pod client
-   * sees EOF — a failure it can report — rather than waiting on a reply that is not coming.
-   */
-  private async deliver(streamId: string, payload: unknown): Promise<void> {
-    const entry = this.streams.get(streamId)
-    if (!entry || this.stopped) return
-    entry.inFlight += 1
+  /** Send one numbered frame; a lost channel leaves a resumable stream's frame for the renewal to re-send, and any other failure ends the stream so the pod client sees EOF. */
+  private async deliver(streamId: string, entry: ProxyStream, seq: number): Promise<void> {
+    const chunk = entry.unconfirmed.get(seq)
+    if (chunk === undefined || this.stopped || this.streams.get(streamId) !== entry) return
     try {
-      await this.deps.session.request('tunnel', payload)
-      const current = this.streams.get(streamId)
-      if (!current) return
-      current.inFlight -= 1
-      if (current.inFlight < MAX_IN_FLIGHT_FRAMES && current.socket.isPaused()) current.socket.resume()
+      await this.deps.session.request('tunnel', { op: 'data', streamId, chunk, ...(entry.resumable ? { seq } : {}) })
     } catch (err) {
+      if (this.stopped || this.streams.get(streamId) !== entry) return
+      if (err instanceof ShimChannelLostError && entry.resumable) return
       const message = (err as Error).message
       this.deps.log.warn(`tunnel: agent ${this.deps.session.agentId} frame not delivered (${message})`)
       this.close(streamId, `a frame could not be delivered to the sandbox (${message})`)
+      return
     }
+    if (this.streams.get(streamId) !== entry) return
+    entry.unconfirmed.delete(seq)
+    if (entry.closing && entry.unconfirmed.size === 0) {
+      this.close(streamId, entry.closing.reason)
+      return
+    }
+    if (entry.unconfirmed.size < MAX_IN_FLIGHT_FRAMES && entry.socket.isPaused()) entry.socket.resume()
   }
 
   /** Tell the shim how many of its chunks are written out; cumulative, so one resend covers a renewal, and a second loss ends the stream rather than hang it paused. */
@@ -335,14 +364,14 @@ export class TunnelProxy {
     if (this.streams.get(streamId) === entry) await this.acknowledge(streamId, entry)
   }
 
-  // Best-effort by design: a hang-up for a stream this side has already dropped. It cannot be
-  // retried into anything better, and a channel that will not carry it has failed the stream in
-  // the pod's own view too.
-  private async send(payload: unknown): Promise<void> {
+  // A hang-up for a stream this side already dropped, sent best-effort.
+  private async send(payload: unknown, again = true): Promise<void> {
     if (this.stopped) return
     try {
       await this.deps.session.request('tunnel', payload)
     } catch (err) {
+      // A renewal rejects only once its replacement is attached, and a repeated close is harmless, so it is sent once more.
+      if (again && err instanceof ShimChannelLostError) return await this.send(payload, false)
       this.deps.log.warn(`tunnel: agent ${this.deps.session.agentId} frame not delivered (${(err as Error).message})`)
     }
   }

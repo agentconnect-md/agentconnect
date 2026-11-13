@@ -223,7 +223,7 @@ describe('a local VM bound in process (session-executors.md §11 step 4)', () =>
     await runtime.stop(2_000)
   })
 
-  it('ends a tunnel stream whose daemon-to-guest frame is in flight across a renewal, and keeps an idle one', async () => {
+  it('carries a daemon-to-guest frame in flight across a renewal exactly once, and keeps an idle stream', async () => {
     const { vm, bind, guestSockets } = await fixture()
     const session = await bind()
     const idle = guestClient(guestSockets.mcp)
@@ -237,9 +237,12 @@ describe('a local VM bound in process (session-executors.md §11 step 4)', () =>
     const attached = new Promise<void>((resolve) => session.onAttach(resolve))
     vm.renew()
     await attached
-    await vi.waitFor(() => expect(busy.closed()).toBe(true))
+    // The re-sent frame lands on the new channel; the held original is then answered without a second write.
+    await vi.waitFor(() => expect(busy.received()).toBe('mcp:tools/call'))
     held.release()
-    expect(busy.received()).toBe('')
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(busy.received()).toBe('mcp:tools/call')
+    expect(busy.closed()).toBe(false)
     idle.write('tools/list')
     await vi.waitFor(() => expect(idle.received()).toBe('mcp:initializemcp:tools/list'))
     expect(idle.closed()).toBe(false)
@@ -248,7 +251,7 @@ describe('a local VM bound in process (session-executors.md §11 step 4)', () =>
   it('binds the VM for a day, so its shim does not renew the channel every few minutes', async () => {
     const { vm, bind } = await fixture()
     await bind()
-    // The shim renews at half this, and each renewal ends any tunnel stream with a frame in flight.
+    // The shim renews at half this, so a day-long binding renews rarely.
     expect(vm.binding()?.expiresInSeconds).toBeGreaterThan(23 * 60 * 60)
     expect(vm.binding()?.expiresInSeconds).toBeLessThanOrEqual(24 * 60 * 60)
   })

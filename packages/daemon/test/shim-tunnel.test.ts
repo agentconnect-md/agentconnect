@@ -10,6 +10,7 @@ import { ShimClient, type ShimTransport } from '../src/shim/client.js'
 import { ShimServer } from '../src/shim/server.js'
 import { TunnelHost } from '../src/shim/tunnel-host.js'
 import { TunnelProxy } from '../src/shim/tunnel-proxy.js'
+import { ShimChannelLostError } from '../src/shim/channels.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
 import type { Sandbox, SandboxClaim, SandboxFence } from '../src/k8s/sandbox-api.js'
 import { fakeGenerations } from './fake-generations.js'
@@ -204,7 +205,7 @@ async function clusterWithTunnel(
  * announcements produce a dial at all, and a socket that fails asynchronously would race that.
  */
 function proxyUnderTest(
-  options: { stall?: (payload: unknown) => boolean; hold?: (payload: unknown) => boolean } = {}
+  options: { stall?: (payload: unknown) => boolean; hold?: (payload: unknown) => boolean; resumable?: boolean } = {}
 ): {
   instance: TunnelProxy
   dialled: string[]
@@ -237,7 +238,7 @@ function proxyUnderTest(
         const named = (payload as { tunnel?: string }).tunnel
         if (named === 'codehost' || named === 'provider')
           return { socketPath: '127.0.0.1:1', proxy: { port: 1, token: 'x'.repeat(32), trustBundle: '/rt/trust.pem' } }
-        return { socketPath: '/run/agentconnect/agent.sock' }
+        return { socketPath: '/run/agentconnect/agent.sock', ...(options.resumable ? { resumable: true } : {}) }
       },
       onEvent: (listener) => listeners.push(listener),
       offEvent: () => undefined,
@@ -342,11 +343,8 @@ describe('the shim tunnel', () => {
     expect(helper.ended()).toBe(false)
   }, 40_000)
 
-  it('ends an interrupted stream through the real renewal, so the pod client sees EOF', async () => {
-    // The production ordering, which a stubbed session cannot show: the old listener announced
-    // a new connection BEFORE sending `shim/bound`, so the daemon's cleanup of an interrupted
-    // stream reached a shim that had no binding yet and was refused as `not bound` — with the
-    // stream already dropped on this side, leaving the in-pod client waiting on nothing.
+  it('delivers a reply interrupted by the real renewal exactly once, keeping the stream open', async () => {
+    // A clone outlasts the five-minute renewal, so a reply frame caught in flight is re-sent on the new channel and the shim writes it once.
     let replied = false
     let release = (): void => undefined
     const held = new Promise<void>((resolve) => (release = resolve))
@@ -369,13 +367,14 @@ describe('the shim tunnel', () => {
     shimClock.advance(300_000)
     await vi.waitFor(() => expect(bindCount()).toBeGreaterThan(bindsBefore), waitBudget(15_000))
 
-    // The close has to LAND on the new channel: git has no deadline of its own, so a rejected
-    // cleanup is a helper that hangs until the idle timer.
-    await vi.waitFor(() => expect(helper.ended()).toBe(true), waitBudget(15_000))
     release()
+    await vi.waitFor(() => expect(helper.received()).toContain('"password":"token"'), waitBudget(15_000))
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(helper.received()).toBe('{"ok":true,"password":"token"}\n')
+    expect(helper.ended()).toBe(false)
   }, 60_000)
 
-  it('ends a stream whose frame was in flight when the channel was replaced', async () => {
+  it('ends a stream whose frame was in flight when an older shim’s channel was replaced', async () => {
     // The other half of a renewal. `ShimSession.attach` aborts the requests on the socket it
     // replaced, and that abort means a REPLY was lost — not whether the request landed. Re-sending
     // could duplicate bytes inside a request/response protocol, so the stream ends instead and the
@@ -399,6 +398,48 @@ describe('the shim tunnel', () => {
         expect.objectContaining({ op: 'close', streamId, error: expect.stringContaining('renewed') })
       )
     )
+  })
+
+  it('re-sends the frames a renewal lost, in order and numbered as before, to a resumable shim', async () => {
+    const isData = (payload: unknown): boolean => (payload as { op?: string }).op === 'data'
+    const proxy = proxyUnderTest({ hold: isData, resumable: true })
+    await proxy.instance.ensure('agent')
+    const streamId = randomUUID()
+    proxy.announce({ kind: 'connect', tunnel: 'agent' }, streamId)
+    proxy.socketFor(streamId)!.emit('data', Buffer.alloc(3 * MAX_TUNNEL_CHUNK_BYTES))
+    proxy.held.shift()!.ack()
+    await new Promise((resolve) => setImmediate(resolve))
+
+    // What `ShimSession.attach` does: reject the old channel's requests, then announce the replacement.
+    for (const frame of proxy.held.splice(0)) frame.fail(new ShimChannelLostError('shim channel renewed'))
+    proxy.reattach()
+
+    const seqs = proxy.sent.filter(isData).map((payload) => (payload as { seq?: number }).seq)
+    expect(seqs).toEqual([1, 2, 3, 2, 3])
+    for (const frame of proxy.held.splice(0)) frame.ack()
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(proxy.instance.streamCount()).toBe(1)
+    expect(proxy.sent.some((payload) => (payload as { op?: string }).op === 'close')).toBe(false)
+  })
+
+  it('sends a hang-up only after the frames ahead of it are confirmed, across a renewal', async () => {
+    const isData = (payload: unknown): boolean => (payload as { op?: string }).op === 'data'
+    const proxy = proxyUnderTest({ hold: isData, resumable: true })
+    await proxy.instance.ensure('agent')
+    const streamId = randomUUID()
+    proxy.announce({ kind: 'connect', tunnel: 'agent' }, streamId)
+    const socket = proxy.socketFor(streamId)!
+    socket.emit('data', Buffer.from('last bytes'))
+    socket.emit('close')
+    expect(proxy.sent.some((payload) => (payload as { op?: string }).op === 'close')).toBe(false)
+
+    proxy.held.shift()!.fail(new ShimChannelLostError('shim channel renewed'))
+    proxy.reattach()
+    expect(proxy.sent.some((payload) => (payload as { op?: string }).op === 'close')).toBe(false)
+    proxy.held.shift()!.ack()
+    await vi.waitFor(() => expect(proxy.sent.at(-1)).toEqual({ op: 'close', streamId }))
+    expect(proxy.sent.filter(isData)).toHaveLength(2)
+    expect(proxy.instance.streamCount()).toBe(0)
   })
 
   it('pauses a stream past its in-flight window and resumes it as the pod acknowledges', async () => {
@@ -754,6 +795,34 @@ async function transfer(podPath: string, bytes: Buffer): Promise<string> {
 const digest = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex')
 
 describe('shim-side tunnel flow control', () => {
+  it('writes a re-sent numbered frame once, and refuses one that skips ahead', async () => {
+    let streamId = ''
+    const path = join(socketDir(), 'pod.sock')
+    const host = new TunnelHost({
+      emit: (id, event) => {
+        if (event.kind === 'connect') streamId = id
+      },
+      socketPathFor: () => path
+    })
+    hosts.push(host)
+    expect(await host.handle({ op: 'listen', tunnel: 'agent', acks: true })).toEqual(
+      expect.objectContaining({ resumable: true })
+    )
+    const client = inPodClient(path)
+    await vi.waitFor(() => expect(streamId).not.toBe(''))
+    const data = (text: string, seq: number) =>
+      host.handle({ op: 'data', streamId, chunk: Buffer.from(text).toString('base64'), seq })
+
+    await data('a', 1)
+    await data('a', 1)
+    await data('b', 2)
+    await data('a', 1)
+    await vi.waitFor(() => expect(client.received()).toBe('ab'))
+    await expect(data('d', 4)).rejects.toThrow(/skipped from frame 2 to 4/)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(client.received()).toBe('ab')
+  })
+
   it('pauses a shim-side stream at its window and resumes it as the daemon acknowledges', async () => {
     // A large push through the codehost tunnel used to be read as fast as the runtime wrote it and queued on the channel.
     const chunks: string[] = []
