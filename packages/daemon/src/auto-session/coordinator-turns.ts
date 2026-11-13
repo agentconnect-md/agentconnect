@@ -172,7 +172,13 @@ export function reportAboutOf(
 ): ReportAbout | undefined {
   if (msg.source === 'user') return undefined
   const of = callMeta?.reportOf
-  if (of) return { task: of.taskId, kind: of.kind, ...(of.title ? { title: of.title } : {}) }
+  if (of)
+    return {
+      task: of.taskId,
+      kind: of.kind,
+      ...(of.title ? { title: of.title } : {}),
+      ...(of.lookBack ? { lookBack: of.lookBack } : {})
+    }
   const from = callMeta?.callFrom
   return from !== undefined && from !== agentId ? { kind: 'agent answer' } : undefined
 }

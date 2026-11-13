@@ -12,6 +12,7 @@ import type { UnownedThreadSession } from '../store/assistant-subsessions.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
 import { a2aCoordChannel } from '../cp/cp-collab-routes.js'
 import { isSubsessionCoordinate, subsessionCoordinate } from '../session/subsession-coordinate.js'
+import { LOOK_BACK_KIND } from '../assistant/look-back.js'
 import { coordinatorMessageId, type ReportAbout } from './coordinator-prompt.js'
 import {
   answerThreadOf,
@@ -53,6 +54,10 @@ export interface CoordinatorSessionsHost {
   sessionLink(sessionId: string): string
   /** Tell the Control Plane which session owns each of these tasks now, which locks a task's visibility (§6.2). */
   reportTaskOwners(agentId: string, keys: readonly string[]): Promise<void>
+  /** Send a look-back item's task back to work with the coordinator's note (assistant-mode.md §5.20). */
+  sendBack?(agentId: string, taskKey: string, note: string | undefined): Promise<void>
+  /** A look-back item settled otherwise than leaving it, kept on its task's row (§5.20). */
+  lookBackSettled?(agentId: string, taskKey: string, outcome: 'reminded' | 'sent back'): Promise<void>
   /** Where a person opens a platform thread, where its platform links one. */
   threadLink?(
     integrationId: string | undefined,
@@ -245,7 +250,13 @@ export class CoordinatorSessions {
           ? { ok: true, ignored: call.messageId, note: 'It mentions you, so a task will answer it instead.' }
           : { ok: true, ignored: call.messageId }
       }
-      if (held.message.report && call.action !== 'replyToMessage')
+      const lookBack = lookBackItemOf(held.message)
+      if (lookBack && call.action === 'replyToMessage' && lookBack.remind === false)
+        throw new Error(
+          `sendMessage: the task ${call.messageId} looks back at has had every reminder it may get for now: send it ` +
+            'back to work with action "messageTask" and its taskId, or leave it with ignoreMessage; nothing was posted'
+        )
+      if (held.message.report && call.action !== 'replyToMessage' && !(lookBack && call.action === 'messageTask'))
         throw new Error(
           `sendMessage: ${call.messageId} is a report, not a channel message: answer it with action "replyToMessage", or ` +
             'leave it with ignoreMessage; no task was opened or messaged'
@@ -267,6 +278,11 @@ export class CoordinatorSessions {
           return { ok: true, taskId: taskKey, title: call.title, note }
         }
         case 'messageTask': {
+          if (lookBack) {
+            const taskKey = await this.sendBack(ctx.agentId, call.messageId, call.taskId, lookBack.task, call.message)
+            this.turns.settle(key, call.messageId, 'route')
+            return { ok: true, taskId: taskKey, note: 'The task goes back to work and answers in its own thread.' }
+          }
           const owners = new Set([key, await this.taskOwner(ctx.agentId, ctx, key)])
           const handed = await this.handTo(owners, ctx.agentId, call.taskId, held.message, call.message)
           this.turns.settle(key, call.messageId, 'route')
@@ -283,6 +299,7 @@ export class CoordinatorSessions {
         case 'replyToMessage': {
           const thread = await this.answer(key, ctx.agentId, held.message, call.message)
           this.turns.settle(key, call.messageId, 'reply')
+          if (lookBack) await this.lookBackSettled(ctx.agentId, lookBack.task, 'reminded')
           return {
             ok: true,
             posted: { channel: ctx.channel, ...(thread ? { thread: coordinatorMessageId(thread) } : { at: 'root' }) }
@@ -293,6 +310,35 @@ export class CoordinatorSessions {
       this.turns.release(key, call.messageId)
       throw err
     }
+  }
+
+  /** A look-back item's `messageTask`: only the task the item speaks for goes back to work (assistant-mode.md §5.20). */
+  private async sendBack(
+    agentId: string,
+    messageId: string,
+    taskId: string,
+    itemTask: string,
+    note: string | undefined
+  ): Promise<string> {
+    const index = this.host.store().assistantSubsessions
+    const named = (await index.resolve(agentId, taskId)) ?? taskId
+    if (named !== itemTask)
+      throw new Error(
+        `sendMessage: ${messageId} looks back at another task; messageTask sends back to work only the task its item ` +
+          'names, by that taskId, so nothing was sent'
+      )
+    const row = await index.get(agentId, itemTask)
+    if (!row || row.mode === 'watch' || !this.host.sendBack)
+      throw new Error(`sendMessage: the task ${messageId} looks back at is no longer open; nothing was sent`)
+    await this.host.sendBack(agentId, itemTask, note?.trim() || undefined)
+    await this.lookBackSettled(agentId, itemTask, 'sent back')
+    return itemTask
+  }
+
+  private async lookBackSettled(agentId: string, taskKey: string, outcome: 'reminded' | 'sent back'): Promise<void> {
+    await this.host
+      .lookBackSettled?.(agentId, taskKey, outcome)
+      .catch((err: unknown) => this.host.warn(`coordinator: recording look back at ${taskKey} failed (${String(err)})`))
   }
 
   /** Post the coordinator's own words where a delivered message is answered, by a call or by the turn's text; the thread they belong to (§4.2). */
@@ -747,6 +793,13 @@ export class CoordinatorSessions {
       )
     }
   }
+}
+
+/** A delivered report that is a look-back item, with the task it speaks for (assistant-mode.md §5.20). */
+function lookBackItemOf(message: DeliveredMessage): { task: string; remind: boolean } | undefined {
+  const about = message.report ? message.about : undefined
+  if (about?.kind !== LOOK_BACK_KIND || about.task === undefined) return undefined
+  return { task: about.task, remind: about.lookBack?.remind !== false }
 }
 
 /** The delivered-message entry for one admitted coordinator message; anything but a channel message is a report (§3.4). */

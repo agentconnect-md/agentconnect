@@ -562,3 +562,221 @@ describe('assistant mode under auto (auto-session-mode.md §3.4)', () => {
     await daemon.stop()
   })
 })
+
+// assistant-mode.md §5.20: a look hands a place's quiet tasks to its coordinator in one turn, which settles each.
+describe('looking back at a place’s quiet tasks', () => {
+  it('delivers the items as one batch, sends a task back as its opener, and counts an unsettled item as left', async () => {
+    const live: { d?: any; ctx?: SessionContext; first?: string } = {}
+    const coordinatorPrompts: string[] = []
+    const taskPrompts: string[] = []
+    const openers: unknown[] = []
+    const outcomes: unknown[] = []
+    const { daemon, d, scope } = await boot(async (blocks) => {
+      const prompt = blocks.map((block) => block.text ?? '').join('\n')
+      if (prompt.includes('No person sent this')) {
+        taskPrompts.push(prompt)
+        openers.push(await live.d.openerOf('bot-a', '1.1', sessionKey('slack', 'C1', '1.1', 'bot-a', scope)))
+        return
+      }
+      const items = [...prompt.matchAll(/<report id="(msg-[^"]+)" task="([^"]+)" kind="look back"/g)]
+      if (items.length === 0) return
+      coordinatorPrompts.push(prompt)
+      // The first task is sent back to work; the second is left without a call.
+      const first = items.find((item) => item[2] === live.first)!
+      outcomes.push(
+        await live.d.coordinators.decide(live.ctx, {
+          action: 'messageTask',
+          messageId: first[1],
+          taskId: first[2],
+          message: 'Start the copy you were approved to run.'
+        })
+      )
+    })
+    live.d = d
+    const coordinator = await d.store.resolveAppendCoordinate('bot-a', 'C1', scope, 1, 'coordinator')
+    const coordinatorKey = sessionKey('slack', 'C1', coordinator, 'bot-a', scope)
+    const session = (key: string, thread: string, updatedAt: number) =>
+      d.store.upsertSession({
+        key,
+        agentId: 'bot-a',
+        platform: 'slack',
+        channel: 'C1',
+        thread,
+        transportScope: scope,
+        acpSessionId: `acp-${thread}`,
+        sessionId: `sid-${thread}`,
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt
+      })
+    await session(coordinatorKey, coordinator, Date.now())
+    live.ctx = {
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: coordinator,
+      transportScope: scope,
+      isDm: false,
+      tools: coordinatorSessionTools([])
+    } as SessionContext
+    const quietSince = Date.now() - 5 * 60 * 60_000
+    const keys: string[] = []
+    for (const thread of ['1.1', '2.2']) {
+      const key = sessionKey('slack', 'C1', thread, 'bot-a', scope)
+      keys.push(key)
+      await session(key, thread, quietSince)
+      await d.store.assistantSubsessions.open({
+        agentId: 'bot-a',
+        childSessionKey: key,
+        parentSessionId: 'sid-coordinator',
+        parentSessionKey: coordinatorKey,
+        title: `Task ${thread}`,
+        openedFor: { place: 'slack:C1', messageId: `msg-${thread}` },
+        now: quietSince
+      })
+      await d.store.assistantSubsessions.attachThread({
+        agentId: 'bot-a',
+        childSessionKey: key,
+        platform: 'slack',
+        channel: 'C1',
+        transportScope: scope,
+        thread,
+        sinceRound: 1,
+        now: quietSince
+      })
+      await d.store.assistantSubsessions.finish('bot-a', key, 'done', undefined, quietSince)
+    }
+    live.first = keys[0]
+    const alice = { kind: 'member', platform: 'slack', integrationId: 'int-bot-a', userId: 'U0ALICE' }
+    await d.store.assistantSubsessions.notePerson('bot-a', keys[0], {
+      asker: alice,
+      name: 'Alice',
+      opener: true,
+      now: quietSince
+    })
+    vi.spyOn(d, 'replyConnFor').mockReturnValue({
+      react: vi.fn(async () => {}),
+      setStatus: vi.fn(async () => true),
+      setTitle: vi.fn(async () => {}),
+      getThreadReplies: vi.fn(async () => []),
+      postMessage: vi.fn(async () => '1700000200.000001')
+    })
+
+    await d.lookBack.lookAt('bot-a')
+    await vi.waitFor(() => expect(taskPrompts).toHaveLength(1), WAIT)
+    await vi.waitFor(() => expect(d.pending.size + d.inflight.size).toBe(0), WAIT)
+    expect(coordinatorPrompts).toHaveLength(1)
+    expect(coordinatorPrompts[0]).toContain('[2 reports in C1]')
+    expect(coordinatorPrompts[0]).toContain('Last person to write in its threads: Alice (U0ALICE), at ')
+    expect(outcomes).toEqual([expect.objectContaining({ ok: true, taskId: keys[0] })])
+    expect(taskPrompts[0]).toContain("Your coordinator's note: Start the copy you were approved to run.")
+    // The round asks as the person the task was opened for, and gains no one else.
+    expect(openers).toEqual([{ people: [alice], nobody: false }])
+    expect((await d.store.assistantSubsessions.get('bot-a', keys[0]))?.lookBack).toMatchObject({
+      sentBack: 1,
+      left: 0
+    })
+    expect((await d.store.assistantSubsessions.get('bot-a', keys[1]))?.lookBack).toMatchObject({ left: 1 })
+    // The place was just looked at, so another sweep hands it nothing.
+    await d.lookBack.lookAt('bot-a')
+    expect(coordinatorPrompts).toHaveLength(1)
+    await daemon.stop()
+  })
+
+  it('marks a person’s stop on the task, and starts its counts over when a person writes in its thread', async () => {
+    const prompts: string[] = []
+    const { daemon, d, scope, route } = await boot(async (blocks) => {
+      prompts.push(blocks.map((block) => block.text ?? '').join('\n'))
+    })
+    const coordinator = await d.store.resolveAppendCoordinate('bot-a', 'C1', scope, 1, 'coordinator')
+    const coordinatorKey = sessionKey('slack', 'C1', coordinator, 'bot-a', scope)
+    const key = sessionKey('slack', 'C1', '1.1', 'bot-a', scope)
+    for (const [k, thread] of [
+      [coordinatorKey, coordinator],
+      [key, '1.1']
+    ] as const)
+      await d.store.upsertSession({
+        key: k,
+        agentId: 'bot-a',
+        platform: 'slack',
+        channel: 'C1',
+        thread,
+        transportScope: scope,
+        acpSessionId: `acp-${thread}`,
+        sessionId: `sid-${thread}`,
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt: Date.now()
+      })
+    const index = d.store.assistantSubsessions
+    await index.open({
+      agentId: 'bot-a',
+      childSessionKey: key,
+      parentSessionId: 'sid-coordinator',
+      parentSessionKey: coordinatorKey,
+      title: 'Task 1.1',
+      openedFor: { place: 'slack:C1', messageId: 'msg-1.1' },
+      now: 1_000
+    })
+    await index.attachThread({
+      agentId: 'bot-a',
+      childSessionKey: key,
+      platform: 'slack',
+      channel: 'C1',
+      transportScope: scope,
+      thread: '1.1',
+      sinceRound: 1,
+      now: 1_000
+    })
+    await index.finish('bot-a', key, 'done', undefined, 1_000)
+    await index.markLooked('bot-a', key, { now: 2_000, left: 3 })
+    await index.noteLookBackOutcome('bot-a', key, 'reminded', 2_000)
+    await d.recordOperatorInterrupt(
+      'bot-a',
+      'cancel',
+      { userId: 'U0ALICE', name: 'Alice' },
+      {
+        msg: slack('1.2', { thread: '1.1', transportScope: scope })
+      }
+    )
+    expect((await index.get('bot-a', key))?.lookBack).toMatchObject({ reminders: 1, stoppedAt: expect.any(Number) })
+    // Another agent's stop is no person's.
+    await index.notePerson('bot-a', key, { asker: { kind: 'console', userId: 'u-1' }, now: 3_000 })
+    await d.recordOperatorInterrupt(
+      'bot-a',
+      'cancel',
+      { userId: 'bot-b', isBot: true },
+      {
+        msg: slack('1.3', { thread: '1.1', transportScope: scope })
+      }
+    )
+    expect((await index.get('bot-a', key))?.lookBack).not.toHaveProperty('stoppedAt')
+    await index.markStopped('bot-a', key, 4_000)
+    vi.spyOn(d, 'replyConnFor').mockReturnValue({
+      react: vi.fn(async () => {}),
+      setStatus: vi.fn(async () => true),
+      setTitle: vi.fn(async () => {}),
+      getThreadReplies: vi.fn(async () => []),
+      postMessage: vi.fn(async () => '1700000300.000001')
+    })
+    await route(
+      slack('1.4', {
+        thread: '1.1',
+        text: 'go ahead',
+        sender: { id: 'U0ALICE', name: 'Alice', isBot: false },
+        mentionedBots: ['U_FAKE_BOT'],
+        trigger: 'mention'
+      })
+    )
+    await vi.waitFor(() => expect(prompts.some((p) => p.includes('go ahead'))).toBe(true), WAIT)
+    await vi.waitFor(() => expect(d.pending.size + d.inflight.size).toBe(0), WAIT)
+    expect((await index.get('bot-a', key))?.lookBack).toMatchObject({
+      reminders: 0,
+      left: 0,
+      personAt: expect.any(Number),
+      person: { asker: { kind: 'member', userId: 'U0ALICE' }, name: 'Alice' }
+    })
+    expect((await index.get('bot-a', key))?.lookBack).not.toHaveProperty('stoppedAt')
+    await daemon.stop()
+  })
+})

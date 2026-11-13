@@ -28,13 +28,33 @@ export interface CoordinatorPromptInput {
   webchat?: boolean
   /** A room its platform gives no threads, where every follow-up arrives at the root (auto-session-mode.md §6.10). */
   threadlessRoom?: boolean
+  /** An assistant-mode place, whose quiet tasks come back as look-back items (assistant-mode.md §5.20). */
+  lookBack?: boolean
 }
+
+/** How the coordinator settles a look-back item (assistant-mode.md §5.20). */
+export const LOOK_BACK_PROMPT = [
+  '# Looking back',
+  'A <report kind="look back"> is one of your tasks that has gone quiet; you are handed them every few hours. Settle ' +
+    'each on its own, with one of three outcomes:',
+  '- Remind: sendMessage action "replyToMessage" with its id, when the task asked someone and nobody answered. Write ' +
+    'one line, addressed to the person the task waits on: what they are asked to decide and what waits on it. When ' +
+    'their local times say they are likely away, such as at night, leave it instead; it comes back at the next look.',
+  '- Send it back to work: sendMessage action "messageTask" with its id, the taskId it names and, in message, what to ' +
+    'go on with, when the task said it would come back and did not, its round failed or was cut, or part of what it ' +
+    'was asked is undone. It is the one report you may hand to a task, and only to the task it names.',
+  '- Leave it: ignoreMessage, when nothing waits or this is not the time.',
+  "Read the task with readTask first when the item does not settle it. Never do the task's work yourself, and never " +
+    'remind anyone but the person the task waits on.'
+].join('\n')
 
 /** What a report's block names beside its id: the task it speaks for, by its `taskId`, kind and title. */
 export interface ReportAbout {
   task?: string
   kind?: string
   title?: string
+  /** A look-back item's limits, which its block does not show (assistant-mode.md §5.20). */
+  lookBack?: { remind: boolean }
 }
 
 /** One delivered message as the coordinator reads it. */
@@ -318,6 +338,7 @@ export function coordinatorPrompt(input: CoordinatorPromptInput): string {
       'Never open a task for a report or hand one to a task. To post anywhere else, use action "postMessage"; to ask ' +
       'another agent, use action "callAgent".',
     '',
+    ...(input.lookBack ? [LOOK_BACK_PROMPT, ''] : []),
     '# Rules',
     '- Each call names its message by its id, copied exactly as a string, and each message gets at most one outcome.',
     '- A message marked mentions-you="yes" is addressed to you and must not be ignored.',

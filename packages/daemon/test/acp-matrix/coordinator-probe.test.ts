@@ -282,4 +282,40 @@ describe('runtime matrix coordinator probe', () => {
     expect(() => selectedCoordinatorScenarios('nope')).toThrow(/unknown coordinator scenario/)
     expect(selectedCoordinatorScenarios('greeting').map((entry) => entry.id)).toEqual(['greeting'])
   })
+
+  // assistant-mode.md §5.20: a look-back item may be sent back to its own task, and to no other.
+  it('takes messageTask on a look-back item for its own task alone, and judges the batch', () => {
+    const [copy, rollout, schema] = scenario('look-back-batch').messages.map((message) => message.id)
+    const scope = {
+      ...scopeOf('look-back-batch'),
+      lookBack: { [copy!]: CO_IDS.copyTask, [rollout!]: CO_IDS.rolloutTask, [schema!]: CO_IDS.schemaTask }
+    }
+    expect(
+      decide({ action: 'messageTask', messageId: copy, taskId: CO_IDS.rolloutTask }, scope, new Set())
+    ).toMatchObject({ error: expect.stringContaining('only the task its item names') })
+    expect(decide({ action: 'messageTask', messageId: copy, taskId: CO_IDS.copyTask }, scope, new Set())).toMatchObject(
+      {
+        outcome: { kind: 'route', taskId: CO_IDS.copyTask }
+      }
+    )
+    expect(decide({ action: 'delegateTask', messageId: copy, title: 'Copy' }, scope, new Set())).toMatchObject({
+      error: expect.stringContaining('is a report')
+    })
+    const calls: CoRecordedCall[] = [
+      {
+        tool: 'sendMessage',
+        args: {},
+        outcome: { kind: 'route', messageId: copy!, taskId: CO_IDS.copyTask }
+      },
+      {
+        tool: 'sendMessage',
+        args: {},
+        outcome: { kind: 'reply', messageId: rollout!, text: 'Alice Example, may the rollout go ahead?' }
+      }
+    ]
+    expect(judgeCoordinator(scenario('look-back-batch'), calls, 'AC_NO_RESPONSE').verdict).toBe('PASS')
+    expect(scenario('look-back-batch').messages[2]!.text).toContain('their local time then Thu 17:10, now Fri 03:20')
+    expect(coordinatorPrompt(false, true)).toContain('# Looking back')
+    expect(coordinatorPrompt()).not.toContain('# Looking back')
+  })
 })

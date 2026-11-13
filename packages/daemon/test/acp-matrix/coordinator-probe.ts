@@ -5,6 +5,8 @@ import type { McpServer } from '@agentclientprotocol/sdk/unstable'
 import { z } from 'zod'
 import type { AcpHost } from '../../src/acp/acp-host.js'
 import { renderWorkBoard, type BoardTask } from '../../src/assistant/work-board.js'
+import { LOOK_BACK_KIND, lookBackItemText, type LookBackFacts } from '../../src/assistant/look-back.js'
+import { REPORT_ANSWER_LANGUAGE } from '../../src/collab/coordinator.js'
 import {
   coordinatorPrompt as shippedCoordinatorPrompt,
   coordinatorTools as shippedCoordinatorTools,
@@ -43,7 +45,11 @@ export const CO_IDS = {
   exportTask: 'slack:C0EXAMPLE4:1700000000.000200',
   /** A task that made a code channel of its own for its work, keyed in the thread it was opened in (auto-session-mode.md §6.8). */
   retryTask: 'slack:C0EXAMPLE1:1700001400.000100',
-  codeChannel: 'C0EXAMPLE5'
+  codeChannel: 'C0EXAMPLE5',
+  /** Quiet tasks a look hands back (assistant-mode.md §5.20). */
+  copyTask: 'slack:C0EXAMPLE1:1700002000.000100',
+  rolloutTask: 'slack:C0EXAMPLE1:1700002100.000100',
+  schemaTask: 'slack:C0EXAMPLE1:1700002200.000100'
 } as const
 
 /** One channel-root message a coordinator turn decides on; `id` is the platform message id it names in its calls. */
@@ -103,6 +109,69 @@ const RETRY_TASK: ProbeTask = {
     next: `<@${CO_IDS.alice}> asked to hear when it is ready for review.`
   },
   summaryUpdatedAt: '2026-11-02T09:30:00Z'
+}
+
+/** A quiet task of the channel, as `listTasks` lists it (assistant-mode.md §5.20). */
+const quietTask = (taskId: string, title: string, status: string, next: string, at: string): ProbeTask => ({
+  taskId,
+  title,
+  threaded: true,
+  owner: `<@${CO_IDS.alice}>`,
+  lastActive: at,
+  running: false,
+  summary: { scope: title, status, next },
+  summaryUpdatedAt: at
+})
+
+const COPY_TASK = quietTask(
+  CO_IDS.copyTask,
+  'Move the orders table to the new database node',
+  'Waiting on the orders table copy to the new node, which takes about two hours; then the cutover.',
+  'Run the approved cutover once the copy finishes.',
+  '2026-11-12T23:10:00Z'
+)
+const ROLLOUT_TASK = quietTask(
+  CO_IDS.rolloutTask,
+  'Roll out the new rate limiter',
+  'Waiting on Alice Example to approve the rollout and say who runs the database step.',
+  'Roll out once approved.',
+  '2026-11-12T13:00:00Z'
+)
+const SCHEMA_TASK = quietTask(
+  CO_IDS.schemaTask,
+  'Pick a schema for the audit log',
+  'Waiting on Bob Example to choose between the two schema options.',
+  'Implement the chosen option.',
+  '2026-11-13T01:30:00Z'
+)
+
+/** The moment the look-back scenario's items are written at: midday in Berlin, the middle of the night in Los Angeles. */
+const LOOK_BACK_NOW = Date.UTC(2026, 10, 13, 11, 20)
+
+/** A look-back item as the daemon delivers it: its report block and its text. */
+function lookBackItem(
+  id: string,
+  task: ProbeTask,
+  facts: Pick<LookBackFacts, 'quietSince' | 'summary' | 'lastReply' | 'person'>
+): ChannelMessage {
+  return {
+    id,
+    from: CO_IDS.self,
+    mentionsYou: false,
+    report: true,
+    task: task.taskId,
+    kind: LOOK_BACK_KIND,
+    title: task.title,
+    text: `${lookBackItemText({
+      title: task.title,
+      ...facts,
+      failed: false,
+      reminders: 0,
+      sentBack: 0,
+      remind: true,
+      now: LOOK_BACK_NOW
+    })}\n\n${REPORT_ANSWER_LANGUAGE}`
+  }
 }
 
 /** The follow-up a report speaks for, as its block names it. */
@@ -235,7 +304,7 @@ export function coordinatorTools(): ToolDescriptor[] {
 }
 
 /** The coordinator session's standing instructions, as the daemon ships them, for the scenarios' channel or webchat conversation. */
-export function coordinatorPrompt(webchat = false): string {
+export function coordinatorPrompt(webchat = false, lookBack = false): string {
   if (webchat)
     return shippedCoordinatorPrompt({
       agentName: CO_IDS.self,
@@ -256,7 +325,8 @@ export function coordinatorPrompt(webchat = false): string {
         address: `<@${CO_IDS.peerBot}>`,
         description: 'owns billing, credentials, and infrastructure access'
       }
-    ]
+    ],
+    ...(lookBack ? { lookBack: true } : {})
   })
 }
 
@@ -300,6 +370,8 @@ const outcomeArgs = z.discriminatedUnion('action', [
 export interface CoScope {
   messages: string[]
   reports?: string[]
+  /** Look-back items by id, with the one task each may send back to work (assistant-mode.md §5.20). */
+  lookBack?: Record<string, string>
   tasks: ProbeTask[]
   /** Other places' open tasks the people asking may see. */
   elsewhere?: ProbeElsewhereTask[]
@@ -340,7 +412,16 @@ export function decide(
     return { error: `sendMessage: messageId ${call.messageId} is not a message delivered in this turn` }
   if (decided.has(call.messageId))
     return { error: `sendMessage: message ${call.messageId} already has an outcome; each message takes one` }
-  if (scope.reports?.includes(call.messageId) && call.action !== 'replyToMessage')
+  const itemTask = scope.lookBack?.[call.messageId]
+  if (itemTask !== undefined && call.action === 'messageTask' && call.taskId !== itemTask)
+    return {
+      error: `sendMessage: ${call.messageId} looks back at another task; messageTask sends back to work only the task its item names, by that taskId, so nothing was sent`
+    }
+  if (
+    scope.reports?.includes(call.messageId) &&
+    call.action !== 'replyToMessage' &&
+    !(itemTask !== undefined && call.action === 'messageTask')
+  )
     return {
       error: `sendMessage: ${call.messageId} is a report, not a channel message: answer it with action "replyToMessage", or leave it with ignoreMessage`
     }
@@ -528,6 +609,7 @@ export type CoScenarioId =
   | 'webchat-route'
   | 'webchat-elsewhere-status'
   | 'webchat-thread-follow-up'
+  | 'look-back-batch'
 
 export interface CoordinatorScenario {
   id: CoScenarioId
@@ -542,6 +624,8 @@ export interface CoordinatorScenario {
   expect: Record<string, Expectation>
   /** A member's webchat conversation: the person reads every text the turn writes (auto-session-mode.md §10). */
   webchat?: true
+  /** An assistant-mode coordinator, whose prompt explains look-back items (assistant-mode.md §5.20). */
+  lookBack?: true
 }
 
 /** A webchat message: one person, always addressed to the agent. */
@@ -914,6 +998,41 @@ export const CO_SCENARIOS: CoordinatorScenario[] = [
       }
     ],
     expect: { 'msg-0d5b6a7f-4e3c-4ab1-8f9e-5c6d7e8f9a01': { kind: 'delegate' } }
+  },
+  {
+    // assistant-mode.md §5.20: a look hands back three quiet tasks; one is sent back to work, one reminded, one left for the night.
+    id: 'look-back-batch',
+    lookBack: true,
+    tasks: [COPY_TASK, ROLLOUT_TASK, SCHEMA_TASK],
+    messages: [
+      lookBackItem('msg-1700002000.000900', COPY_TASK, {
+        quietSince: Date.UTC(2026, 10, 12, 23, 10),
+        summary: 'Waiting on the orders table copy to the new node, which takes about two hours; then the cutover.',
+        lastReply:
+          'Started the copy of the orders table to the new node. It takes about two hours; I will go on with the ' +
+          'cutover you approved once it finishes.',
+        person: { name: 'Alice Example', at: Date.UTC(2026, 10, 12, 22, 50), zone: 'Europe/Berlin' }
+      }),
+      lookBackItem('msg-1700002100.000900', ROLLOUT_TASK, {
+        quietSince: Date.UTC(2026, 10, 12, 13, 0),
+        summary: 'Waiting on Alice Example to approve the rollout and say who runs the database step.',
+        lastReply:
+          'The rollout plan is ready and staging is green. Alice Example, may I go ahead with the rollout, and who ' +
+          'should run the database step?',
+        person: { name: 'Alice Example', at: Date.UTC(2026, 10, 12, 12, 40), zone: 'Europe/Berlin' }
+      }),
+      lookBackItem('msg-1700002200.000900', SCHEMA_TASK, {
+        quietSince: Date.UTC(2026, 10, 13, 1, 30),
+        summary: 'Waiting on Bob Example to choose between the two schema options.',
+        lastReply: 'Both options are written up above. Bob Example, which one should I implement?',
+        person: { name: 'Bob Example', at: Date.UTC(2026, 10, 13, 1, 10), zone: 'America/Los_Angeles' }
+      })
+    ],
+    expect: {
+      'msg-1700002000.000900': { kind: 'route', taskId: CO_IDS.copyTask },
+      'msg-1700002100.000900': { kind: 'reply', mentionsAny: ['Alice', CO_IDS.alice] },
+      'msg-1700002200.000900': { kind: 'ignore', alternatives: ['reply'] }
+    }
   }
 ]
 
@@ -1042,14 +1161,16 @@ export async function runCoordinatorScenarios(input: {
   for (let rep = 1; rep <= input.reps; rep++) {
     for (const scenario of input.scenarios) {
       const key = `${runtime}/co/${scenario.id}/${rep}`
-      const prompt = coordinatorPrompt(scenario.webchat === true)
+      const prompt = coordinatorPrompt(scenario.webchat === true, scenario.lookBack === true)
       const turns = [...(scenario.earlier ?? []), scenario.messages]
+      const items = turns.flat().filter((message) => message.kind === LOOK_BACK_KIND && message.task !== undefined)
       const scope: CoScope = {
         messages: turns.flat().map((message) => message.id),
         reports: turns
           .flat()
           .filter((message) => message.report)
           .map((message) => message.id),
+        ...(items.length > 0 ? { lookBack: Object.fromEntries(items.map((item) => [item.id, item.task!])) } : {}),
         tasks: scenario.tasks,
         ...(scenario.elsewhere ? { elsewhere: scenario.elsewhere } : {}),
         ...(scenario.reads ? { reads: scenario.reads } : {})
