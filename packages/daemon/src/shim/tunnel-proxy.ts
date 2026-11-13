@@ -3,8 +3,11 @@ import { ShimChannelLostError } from './channels.js'
 import type { ShimCapability, ShimEvent } from './protocol.js'
 import {
   ACK_EVERY_FRAMES,
+  encodeTunnelData,
   isProxyTunnel,
+  MAX_BINARY_CHUNK_BYTES,
   MAX_CODEHOST_STREAMS,
+  MAX_DAEMON_BYTES_IN_FLIGHT,
   MAX_DAEMON_FRAMES_IN_FLIGHT,
   MAX_PROVIDER_STREAMS,
   MAX_TUNNEL_CHUNK_BYTES,
@@ -23,6 +26,9 @@ const STREAM_IDLE_MS: Readonly<Record<TunnelName, number | null>> = {
   // A model stream can sit silent for minutes while the model thinks, and a client keeps its connection for the next turn.
   provider: 30 * 60_000
 }
+
+/** How long a binary stream gathers reads before framing them, unless a whole chunk is waiting sooner. */
+const BINARY_GATHER_MS = 1
 
 /** This side's own cap on concurrent helper (`agent`, `mcp`) streams per agent, protecting the daemon from a shim that does not enforce its own. */
 const MAX_TUNNEL_STREAMS = 32
@@ -50,6 +56,9 @@ export interface TunnelProxyDeps {
     onAttach: (listener: () => void) => void
     offAttach: (listener: () => void) => void
     onLost: (listener: (reason: string) => void) => void
+    /** Whether the bound channel carries binary frames, and sends one, one-way. */
+    carriesData?: () => boolean
+    sendData?: (frame: Uint8Array) => void
   }
   /** This daemon's own socket for a tunnel, or undefined when it serves none — an unserved
    *  tunnel must be refused rather than dialled somewhere plausible. */
@@ -67,9 +76,16 @@ interface ProxyStream {
   socket: Socket
   tunnel: TunnelName
   timer?: NodeJS.Timeout
-  /** Data frames sent and not yet answered, by seq in send order. */
-  unconfirmed: Map<number, string>
+  /** Data frames sent and not yet answered, by seq in send order: base64 text, or a whole binary frame. */
+  unconfirmed: Map<number, string | Buffer>
   seq: number
+  /** Frames go out as one-way binary frames the shim reports with `written` events. */
+  binary: boolean
+  /** Binary streams only: reads not yet framed, gathered briefly, and the bytes framed but unconfirmed. */
+  pending: Buffer[]
+  pendingBytes: number
+  flushSoon?: NodeJS.Timeout
+  inFlightBytes: number
   /** The shim writes a numbered frame once, so a renewal re-sends unconfirmed frames instead of ending the stream. */
   resumable: boolean
   /** Set once the local socket hung up while frames were unconfirmed; the close follows them. */
@@ -115,7 +131,10 @@ export class TunnelProxy {
         this.close(streamId, 'the sandbox channel was renewed while a frame was in flight')
         continue
       }
-      for (const seq of [...entry.unconfirmed.keys()]) void this.deliver(streamId, entry, seq)
+      for (const seq of [...entry.unconfirmed.keys()]) {
+        if (entry.binary) this.sendBinary(entry, seq)
+        else void this.deliver(streamId, entry, seq)
+      }
     }
   }
 
@@ -216,6 +235,10 @@ export class TunnelProxy {
     // ACP streams share the event channel, so an event for an id this proxy does not own is
     // somebody else's and not an error.
     if (!entry) return
+    if (event.event.kind === 'written') {
+      if (entry.binary) this.written(event.streamId, entry, event.event.seq)
+      return
+    }
     if (event.event.kind === 'chunk') {
       if (entry.closing) return
       entry.timer?.refresh()
@@ -259,19 +282,33 @@ export class TunnelProxy {
     timer?.unref?.()
     const listening = this.listening.get(tunnel)
     const acks = listening?.acks ? { received: 0, acked: 0, sending: false } : undefined
+    const binary = listening?.binaryData === true && this.deps.session.carriesData?.() === true
     const entry: ProxyStream = {
       socket,
       tunnel,
       ...(timer ? { timer } : {}),
       unconfirmed: new Map(),
       seq: 0,
-      resumable: listening?.resumable === true,
+      binary,
+      pending: [],
+      pendingBytes: 0,
+      inFlightBytes: 0,
+      resumable: listening?.resumable === true || binary,
       ...(acks ? { acks } : {})
     }
     this.streams.set(streamId, entry)
     socket.on('data', (data: Buffer) => {
       if (this.streams.get(streamId) !== entry) return
       entry.timer?.refresh()
+      if (entry.binary) {
+        // Reads arrive a few kilobytes at a time; gathered for up to a millisecond, they go out as a few large frames.
+        entry.pending.push(data)
+        entry.pendingBytes += data.length
+        if (entry.pendingBytes >= MAX_BINARY_CHUNK_BYTES) this.flush(streamId, entry)
+        else entry.flushSoon ??= setTimeout(() => this.flush(streamId, entry), BINARY_GATHER_MS)
+        if (entry.inFlightBytes + entry.pendingBytes >= MAX_DAEMON_BYTES_IN_FLIGHT) entry.socket.pause()
+        return
+      }
       for (let offset = 0; offset < data.length; offset += MAX_TUNNEL_CHUNK_BYTES) {
         const seq = ++entry.seq
         entry.unconfirmed.set(seq, data.subarray(offset, offset + MAX_TUNNEL_CHUNK_BYTES).toString('base64'))
@@ -287,6 +324,7 @@ export class TunnelProxy {
   /** The local end went away: a resumable stream with frames unconfirmed keeps its entry, so its close follows any frame a renewal re-sends. */
   private hangUp(streamId: string, entry: ProxyStream, reason?: string): void {
     if (this.streams.get(streamId) !== entry) return
+    if (entry.pendingBytes > 0) this.flush(streamId, entry)
     if (!entry.resumable || entry.unconfirmed.size === 0) {
       this.close(streamId, reason)
       return
@@ -313,6 +351,7 @@ export class TunnelProxy {
     if (!entry) return false
     this.streams.delete(streamId)
     if (entry.timer) clearTimeout(entry.timer)
+    clearTimeout(entry.flushSoon)
     entry.socket.destroy()
     return true
   }
@@ -320,7 +359,7 @@ export class TunnelProxy {
   /** Send one numbered frame; a lost channel leaves a resumable stream's frame for the renewal to re-send, and any other failure ends the stream so the pod client sees EOF. */
   private async deliver(streamId: string, entry: ProxyStream, seq: number): Promise<void> {
     const chunk = entry.unconfirmed.get(seq)
-    if (chunk === undefined || this.stopped || this.streams.get(streamId) !== entry) return
+    if (typeof chunk !== 'string' || this.stopped || this.streams.get(streamId) !== entry) return
     try {
       await this.deps.session.request('tunnel', { op: 'data', streamId, chunk, ...(entry.resumable ? { seq } : {}) })
     } catch (err) {
@@ -333,11 +372,71 @@ export class TunnelProxy {
     }
     if (this.streams.get(streamId) !== entry) return
     entry.unconfirmed.delete(seq)
+    this.confirmed(streamId, entry)
+  }
+
+  /** Frame what a binary stream has gathered, at most a binary chunk per frame, and send it. */
+  private flush(streamId: string, entry: ProxyStream): void {
+    clearTimeout(entry.flushSoon)
+    delete entry.flushSoon
+    if (entry.pendingBytes === 0 || this.streams.get(streamId) !== entry) return
+    // Frames are filled to the chunk size, a read split across two where the boundary falls.
+    let parts: Buffer[] = []
+    let length = 0
+    const emit = (): void => {
+      const seq = ++entry.seq
+      const frame = encodeTunnelData(streamId, seq, parts, length)
+      entry.unconfirmed.set(seq, frame)
+      entry.inFlightBytes += frame.length
+      this.sendBinary(entry, seq)
+      parts = []
+      length = 0
+    }
+    for (let part of entry.pending) {
+      while (part.length > 0) {
+        const piece = part.subarray(0, MAX_BINARY_CHUNK_BYTES - length)
+        parts.push(piece)
+        length += piece.length
+        part = part.subarray(piece.length)
+        if (length === MAX_BINARY_CHUNK_BYTES) emit()
+      }
+    }
+    if (length > 0) emit()
+    entry.pending = []
+    entry.pendingBytes = 0
+  }
+
+  /** Send one binary frame; a channel that cannot carry it now leaves it unconfirmed for the renewal to re-send. */
+  private sendBinary(entry: ProxyStream, seq: number): void {
+    const frame = entry.unconfirmed.get(seq)
+    if (!Buffer.isBuffer(frame) || this.stopped) return
+    try {
+      this.deps.session.sendData!(frame)
+    } catch {
+      /* re-sent on the next attach */
+    }
+  }
+
+  /** The shim wrote every binary frame through `seq`. */
+  private written(streamId: string, entry: ProxyStream, seq: number): void {
+    for (const [sent, chunk] of entry.unconfirmed) {
+      if (sent > seq) break
+      entry.unconfirmed.delete(sent)
+      entry.inFlightBytes -= chunk.length
+    }
+    this.confirmed(streamId, entry)
+  }
+
+  /** After frames are confirmed: finish a closing stream once none remain, and read again once the window has room. */
+  private confirmed(streamId: string, entry: ProxyStream): void {
     if (entry.closing && entry.unconfirmed.size === 0) {
       this.close(streamId, entry.closing.reason)
       return
     }
-    if (entry.unconfirmed.size < MAX_DAEMON_FRAMES_IN_FLIGHT && entry.socket.isPaused()) entry.socket.resume()
+    const room = entry.binary
+      ? entry.inFlightBytes + entry.pendingBytes < MAX_DAEMON_BYTES_IN_FLIGHT
+      : entry.unconfirmed.size < MAX_DAEMON_FRAMES_IN_FLIGHT
+    if (room && entry.socket.isPaused()) entry.socket.resume()
   }
 
   /** Tell the shim how many of its chunks are written out; cumulative, so one resend covers a renewal, and a second loss ends the stream rather than hang it paused. */

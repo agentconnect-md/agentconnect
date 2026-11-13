@@ -191,6 +191,8 @@ export const ShimEventSchema = z.object({
     /** A process in the sandbox connected to a tunnel's socket; the daemon dials its own end. */
     z.object({ kind: z.literal('connect'), tunnel: TunnelNameSchema }),
     z.object({ kind: z.literal('chunk'), data: z.string() }),
+    /** Binary daemon frames on a tunnel stream written out through `seq`, cumulative. */
+    z.object({ kind: z.literal('written'), seq: z.number().int().positive() }),
     z.object({
       kind: z.literal('exit'),
       code: z.number().int().nullable(),

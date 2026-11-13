@@ -101,6 +101,14 @@ export function fakeVm(
         }
         return tunnels.handle(payload)
       },
+      // As `src/shim/index.ts` serves them; a held frame is applied only once released, as if still on its way to the socket.
+      handleData: (frame) => {
+        const held = hold
+        if (!held) return tunnels.handleData(frame)
+        hold = undefined
+        held.reached()
+        void held.released.then(() => tunnels.handleData(frame))
+      },
       workspaceRoot: '/workspace',
       features: ['cluster-skills-v1', 'cluster-skills-v2', 'cluster-skills-v3'],
       backoff: new Backoff({ baseMs: 5, jitter: () => 0 }),

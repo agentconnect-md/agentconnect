@@ -91,7 +91,10 @@ export class ShimServer {
         const inbound = bufferInbound(raw)
         const transport: ShimTransport = {
           send: (text) => raw.send(text),
+          sendBinary: (data) => raw.sendBinary(data),
           onMessage: inbound.onMessage,
+          // Not buffered like text: a binary frame is served only once this transport has bound, by which time its listener is attached.
+          onBinary: (cb) => raw.onBinary(cb),
           onClose: inbound.onClose,
           close: (code, reason) => {
             if (this.active === transport) this.active = undefined

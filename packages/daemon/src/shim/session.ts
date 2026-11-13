@@ -127,6 +127,18 @@ export class ShimSession {
     return this.connection?.binding.grants.includes(capability) === true
   }
 
+  /** Whether the attached connection carries binary frames. */
+  carriesData(): boolean {
+    return this.connection?.sendData !== undefined
+  }
+
+  /** Send a binary frame on the attached connection; throws with none attached, and the caller re-sends on the next attach. */
+  sendData(frame: Uint8Array): void {
+    const send = this.connection?.sendData
+    if (!send) throw new Error(`agent ${this.agentId} has no attached shim channel that carries binary frames`)
+    send(frame)
+  }
+
   request(capability: ShimCapability, payload: unknown, options?: ShimRequestOptions): Promise<unknown> {
     if (!this.channel) throw new Error(`agent ${this.agentId} has no attached shim channel`)
     return this.channel.request(capability, payload, options)

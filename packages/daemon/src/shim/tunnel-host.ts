@@ -14,6 +14,7 @@ import { CODEX_CA_ENV, mergedTrustBundle, sessionAuthorityFiles } from '../crede
 import type { ShimEvent } from './protocol.js'
 import { seedEnv } from './seed-env.js'
 import {
+  decodeTunnelData,
   isProxyTunnel,
   MAX_CODEHOST_STREAMS,
   MAX_IN_FLIGHT_FRAMES,
@@ -24,7 +25,8 @@ import {
   type ProxyTunnelName,
   type TunnelListening,
   type TunnelName,
-  type TunnelPayload
+  type TunnelPayload,
+  WRITTEN_EVERY_BYTES
 } from './tunnel.js'
 
 /**
@@ -81,6 +83,11 @@ interface HostStream {
   answer?: NodeJS.Timeout
   /** The highest numbered daemon frame written to the socket. */
   applied?: number
+  /** Binary frames written out, the last of them reported in a `written` event, the bytes since, and the pending report. */
+  written?: number
+  reported?: number
+  unreported?: number
+  reportSoon?: NodeJS.Timeout
 }
 
 /** `held` is what a read brought past the window, sent as acks make room. */
@@ -176,6 +183,9 @@ export interface TunnelHostDeps {
   log?: { info: (m: string) => void; warn: (m: string) => void }
 }
 
+/** How long a written binary frame waits to be reported with the ones after it. */
+const WRITTEN_FLUSH_MS = 2
+
 /**
  * The in-pod half of the tunnel: a unix socket per granted tunnel, and a proxied byte stream
  * per connection made to one.
@@ -223,7 +233,7 @@ export class TunnelHost {
         : ({ socketPath: await this.listen(parsed.tunnel) } satisfies TunnelListening)
       if (parsed.acks) this.acked.add(parsed.tunnel)
       else this.acked.delete(parsed.tunnel)
-      return { ...listening, acks: true, resumable: true } satisfies TunnelListening
+      return { ...listening, acks: true, resumable: true, binaryData: true } satisfies TunnelListening
     }
     const stream = this.streams.get(parsed.streamId)
     if (stream?.answer && (parsed.op === 'ack' || parsed.op === 'data')) {
@@ -257,6 +267,49 @@ export class TunnelHost {
       socket.write(chunk, (err) => (err ? reject(err) : resolve()))
     })
     return null
+  }
+
+  /** Serve one binary data frame from the bound daemon: written in sequence once, and reported back cumulatively instead of answered. */
+  handleData(frame: Buffer): void {
+    const data = decodeTunnelData(frame)
+    if (!data) throw new TunnelRefusedError('not a tunnel data frame')
+    const stream = this.streams.get(data.streamId)
+    // An unknown id is ordinary: the stream ended as the frame was in flight, and its exit event already went out.
+    if (!stream) return
+    if (stream.answer) {
+      clearTimeout(stream.answer)
+      delete stream.answer
+    }
+    const applied = stream.applied ?? 0
+    if (data.seq <= applied) {
+      // A replay after a renewal: the report of these writes may have died with the old channel, so it goes out again.
+      stream.reported = Math.min(stream.reported ?? 0, data.seq - 1)
+      stream.reportSoon ??= setTimeout(() => this.report(data.streamId, stream), WRITTEN_FLUSH_MS)
+      return
+    }
+    if (data.seq !== applied + 1) {
+      this.finish(data.streamId, stream.socket, `tunnel stream skipped from frame ${applied} to ${data.seq}`)
+      return
+    }
+    stream.applied = data.seq
+    stream.socket.write(data.chunk, (err) => {
+      if (err || this.streams.get(data.streamId) !== stream) return
+      stream.written = data.seq
+      stream.unreported = (stream.unreported ?? 0) + data.chunk.length
+      // Reported every quarter window, and otherwise shortly after, so the last frames and a close are never left waiting.
+      if (stream.unreported >= WRITTEN_EVERY_BYTES) this.report(data.streamId, stream)
+      else stream.reportSoon ??= setTimeout(() => this.report(data.streamId, stream), WRITTEN_FLUSH_MS)
+    })
+  }
+
+  private report(streamId: string, stream: HostStream): void {
+    clearTimeout(stream.reportSoon)
+    delete stream.reportSoon
+    const seq = stream.written ?? 0
+    if (seq <= (stream.reported ?? 0) || this.streams.get(streamId) !== stream) return
+    stream.reported = seq
+    stream.unreported = 0
+    this.deps.emit(streamId, { kind: 'written', seq })
   }
 
   /** Stop serving. Called on shim shutdown; the pod is going away with it. */

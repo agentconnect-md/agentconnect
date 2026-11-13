@@ -842,6 +842,92 @@ describe('shim client', () => {
     client.stop()
   })
 
+  it.each([
+    { name: 'before the channel binds', bind: false, grants: ['tunnel'], fails: false, closed: 'not bound' },
+    { name: 'without the tunnel grant', bind: true, grants: ['materialize'], fails: false, closed: 'not granted' },
+    { name: 'that is not a data frame', bind: true, grants: ['tunnel'], fails: true, closed: 'malformed frame' }
+  ])('closes the channel on a binary frame $name, serving none of it', async ({ bind, grants, fails, closed }) => {
+    // A binary frame carries no credential, so the bound transport and its grant are the whole fence.
+    const closes: Array<{ code: number; reason: string }> = []
+    let onMessage: ((text: string) => void) | undefined
+    let onBinary: ((data: Buffer) => void) | undefined
+    const served: Buffer[] = []
+    const client = new ShimClient({
+      endpoint: 'accepted-daemon-channel',
+      dial: async () => ({
+        send: () => {},
+        onMessage: (cb) => (onMessage = cb),
+        onBinary: (cb) => (onBinary = cb),
+        onClose: () => {},
+        close: (code, reason) => closes.push({ code, reason })
+      }),
+      handleData: (frame) => {
+        if (fails) throw new Error('not a tunnel data frame')
+        served.push(frame)
+      },
+      readToken: () => 't',
+      log: { info: () => {}, warn: () => {} }
+    })
+    void client.start().catch(() => undefined)
+    await waitFor(() => onMessage !== undefined && onBinary !== undefined)
+    onMessage?.(hello(3))
+    if (bind) {
+      onMessage?.(
+        JSON.stringify({
+          type: 'shim/bound',
+          sessionCredential: 'cred-3',
+          expiresInSeconds: 600,
+          agentId: 'agent-a',
+          generation: 3,
+          grants
+        })
+      )
+      await waitFor(() => client.binding() !== undefined)
+    }
+    onBinary?.(Buffer.from([1, 2, 3]))
+    expect(closes.at(-1)?.reason).toBe(closed)
+    if (!fails) expect(served).toEqual([])
+    client.stop()
+  })
+
+  it('serves a binary frame from the bound channel that carries the tunnel grant', async () => {
+    let onMessage: ((text: string) => void) | undefined
+    let onBinary: ((data: Buffer) => void) | undefined
+    const served: Buffer[] = []
+    const closes: string[] = []
+    const client = new ShimClient({
+      endpoint: 'accepted-daemon-channel',
+      dial: async () => ({
+        send: () => {},
+        onMessage: (cb) => (onMessage = cb),
+        onBinary: (cb) => (onBinary = cb),
+        onClose: () => {},
+        close: (_code, reason) => closes.push(reason)
+      }),
+      handleData: (frame) => served.push(frame),
+      readToken: () => 't',
+      log: { info: () => {}, warn: () => {} }
+    })
+    void client.start().catch(() => undefined)
+    await waitFor(() => onMessage !== undefined && onBinary !== undefined)
+    onMessage?.(hello(3))
+    onMessage?.(
+      JSON.stringify({
+        type: 'shim/bound',
+        sessionCredential: 'cred-3',
+        expiresInSeconds: 600,
+        agentId: 'agent-a',
+        generation: 3,
+        grants: ['tunnel']
+      })
+    )
+    await waitFor(() => client.binding() !== undefined)
+    onBinary?.(Buffer.from([1, 2, 3]))
+    expect(served).toEqual([Buffer.from([1, 2, 3])])
+    expect(closes).toEqual([])
+    client.stop()
+  })
+
   it('refuses a bound frame that does not match the launch the daemon announced', async () => {
     // The binding the shim accepts is the one it was told to expect; anything else is a channel
     // it has no business serving, whatever credential comes attached.

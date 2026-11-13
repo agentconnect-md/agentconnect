@@ -127,6 +127,7 @@ async function main(): Promise<number> {
             : capability === 'transfer'
               ? bundles.transfer(payload, abort)
               : exec(capability, payload, abort, context),
+    handleData: (frame) => tunnels.handleData(frame),
     // Reported in the hello so daemon-built pod paths are anchored on this filesystem.
     workspaceRoot,
     features: [

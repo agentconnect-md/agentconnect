@@ -5,8 +5,8 @@
  * inject an in-memory pair.
  *
  * Bridges the raw socket's `message`/`close` events into the FSM and serializes
- * outbound frames as UTF-8 text; binary frames are ignored (JSON text only,
- * protocol §1). Adds `remoteAddr` for audit/logging. Shared by the relay's
+ * outbound frames as UTF-8 text; binary frames reach only an `onBinary`
+ * listener (JSON text otherwise, protocol §1). Adds `remoteAddr` for audit/logging. Shared by the relay's
  * daemon-facing `rd/*` server (and reusable by the CP gateways).
  */
 import type { WebSocket } from 'ws'
@@ -39,6 +39,16 @@ export class WsServerTransport implements ServerTransport {
     this.ws.on('message', (data: unknown, isBinary?: boolean) => {
       if (isBinary) return // JSON text frames only (protocol §1)
       cb(typeof data === 'string' ? data : String(data))
+    })
+  }
+
+  sendBinary(data: Uint8Array): void {
+    this.ws.send(data, { binary: true })
+  }
+
+  onBinary(cb: (data: Buffer) => void): void {
+    this.ws.on('message', (data: Buffer, isBinary?: boolean) => {
+      if (isBinary) cb(data)
     })
   }
 
