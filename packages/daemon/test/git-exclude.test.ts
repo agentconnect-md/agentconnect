@@ -235,6 +235,20 @@ describe('the workspace manager recording the bundles its skills step installs',
     }
   })
 
+  it('keeps saved chat attachments in uploads/ out of the task diff and status', async () => {
+    const local = fixture('uploads', false)
+    try {
+      mkdirSync(join(local.worktree, 'uploads'))
+      writeFileSync(join(local.worktree, 'uploads', 'film.mp4'), 'bytes')
+      expect(git(local.worktree, 'status', '--porcelain').trim()).toBe('?? uploads/')
+      const cwd = git(local.worktree, 'rev-parse', '--show-toplevel').trim()
+      await new WorkspaceManager().withSkills(agent, cwd, { installSkills: async () => [] })
+      expect(git(local.worktree, 'status', '--porcelain').trim()).toBe('')
+    } finally {
+      rmSync(local.base, { recursive: true, force: true })
+    }
+  })
+
   it("excludes a placed session's bundles, installed into its checkout, through the plane that holds it", async () => {
     // Composed with this host's path rules, as the workspace manager composes every placed path.
     const cwd = join('/srv', 'executor', 'sessions', 'session-a', 'workspace')
@@ -266,7 +280,7 @@ describe('the workspace manager recording the bundles its skills step installs',
     expect(written).toEqual([
       {
         path: join(cwd, '.git', 'info', 'exclude'),
-        content: `# BEGIN agentconnect-managed skills\n/.agentconnect/cluster-skill-state/\n/${BUNDLE}/\n# END agentconnect-managed skills\n`
+        content: `# BEGIN agentconnect-managed skills\n/.agentconnect/cluster-skill-state/\n/${BUNDLE}/\n/uploads/\n# END agentconnect-managed skills\n`
       }
     ])
   })

@@ -22,7 +22,8 @@ import {
   normalizeGitUrl,
   normalizeRepoSubdir,
   redactGitUrlSecrets,
-  isCodeHostProvider
+  isCodeHostProvider,
+  WORKSPACE_UPLOADS_DIR
 } from '@agentconnect.md/protocol'
 import type { Agent } from '../agents/agent-schema.js'
 import {
@@ -555,7 +556,8 @@ export class WorkspaceManager {
         .split('\n')
         .map((line) => line.trim())
       if (commonDir === '' || checkoutRoot === '') return
-      const roots = bundlePathsFromCheckoutRoot(checkoutRoot, acpCwd, owned)
+      // Inbound chat attachments land in `uploads/`; they are copies of chat files, not task changes, and would fill the task diff.
+      const roots = bundlePathsFromCheckoutRoot(checkoutRoot, acpCwd, [...owned, WORKSPACE_UPLOADS_DIR])
       await excludeManagedSkillBundles(isAbsolute(commonDir) ? commonDir : join(acpCwd, commonDir), roots, fs)
     } catch (err) {
       // A from-scratch workspace has no repository to exclude in, and bookkeeping must not fail a launch.
