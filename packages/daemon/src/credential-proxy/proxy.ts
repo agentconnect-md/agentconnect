@@ -1,6 +1,6 @@
 // The daemon's credential proxy (github-app-git-credentials.md, Phase 2): the environment holds sealed placeholders, and each request is authenticated here with a token minted at its repository's tier or its provider slot's API key.
-import { createHash, randomBytes } from 'node:crypto'
-import { chmodSync, mkdirSync, rmSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import type { Server } from 'node:http'
 import { lookup as dnsLookup } from 'node:dns'
 import { isIP, type AddressInfo, type LookupFunction } from 'node:net'
@@ -245,7 +245,6 @@ export class CredentialProxy {
   private readonly providerTunnelSockets = new Map<string, { path: string; server: Server }>()
   private socketDir: string | undefined
   private mitmCa: MitmCA | undefined
-  private readonly proxyToken = randomBytes(24).toString('base64url')
   private loopbackPort: number | undefined
   /** Resolved provider keys by agent and slot, each kept until its TTL or the upstream's 401. */
   private readonly providerKeys = new Map<string, ProviderKeyEntry>()
@@ -255,7 +254,7 @@ export class CredentialProxy {
 
   constructor(private readonly deps: CredentialProxyDeps) {}
 
-  /** Listen on an authenticated loopback port, and keep the per-agent srt sockets under `runDir`. */
+  /** Listen on loopback, on the previous run's port when it is free, and keep the per-agent srt sockets under `runDir`. */
   async start(runDir: string): Promise<void> {
     this.mitmCa = createMitmCA({
       caCertPem: this.deps.ca.certPem,
@@ -266,12 +265,22 @@ export class CredentialProxy {
     this.socketDir = join(runDir, 'codehost')
     rmSync(this.socketDir, { recursive: true, force: true })
     mkdirSync(this.socketDir, { recursive: true, mode: 0o700 })
-    const loopback = this.server(this.proxyToken)
-    await new Promise<void>((resolve, reject) => {
-      loopback.once('error', reject)
-      loopback.listen(0, '127.0.0.1', () => resolve())
-    })
+    // No proxy credential, which some clients cannot send; the placeholder is what authorizes a credential.
+    const loopback = this.server()
+    const portFile = join(runDir, 'credential-proxy.port')
+    const previous = Number(readFileOr(portFile))
+    const listen = (port: number): Promise<void> =>
+      new Promise<void>((resolve, reject) => {
+        loopback.once('error', reject)
+        loopback.listen(port, '127.0.0.1', () => {
+          loopback.off('error', reject)
+          resolve()
+        })
+      })
+    // The same port after a restart, so a long-lived process a session started keeps reaching the proxy.
+    await (Number.isInteger(previous) && previous > 0 ? listen(previous).catch(() => listen(0)) : listen(0))
     this.loopbackPort = (loopback.address() as AddressInfo).port
+    writeFileSync(portFile, `${this.loopbackPort}\n`, { mode: 0o600 })
     this.loopback = loopback
   }
 
@@ -293,18 +302,13 @@ export class CredentialProxy {
 
   /** The socket srt routes this agent's code-host domains to, listening from the first ask; only this agent's placeholder is honored there. */
   socketFor(agentId: string): string {
-    return this.agentSocket(this.agentSockets, agentId, '', () => this.server(undefined, agentId))
+    return this.agentSocket(this.agentSockets, agentId, '', () => this.server(agentId))
   }
 
   /** The socket an executor's codehost tunnel reaches for this agent: its code-host placeholder alone, and a CONNECT to nothing but its {@link tunnelRoutes}. */
   tunnelSocketFor(agentId: string): string {
     return this.agentSocket(this.tunnelSockets, agentId, '-t', () =>
-      this.server(
-        undefined,
-        agentId,
-        (port, host) => this.tunnelRoutes(agentId).includes(routeAuthority(host, port)),
-        'codehost'
-      )
+      this.server(agentId, (port, host) => this.tunnelRoutes(agentId).includes(routeAuthority(host, port)), 'codehost')
     )
   }
 
@@ -322,7 +326,6 @@ export class CredentialProxy {
   providerTunnelSocketFor(agentId: string): string {
     return this.agentSocket(this.providerTunnelSockets, agentId, '-p', () =>
       this.server(
-        undefined,
         agentId,
         (port, host) => this.providerTunnelRoutes(agentId).includes(routeAuthority(host, port)),
         'provider'
@@ -411,10 +414,10 @@ export class CredentialProxy {
     return ['localhost', '127.0.0.1', '::1', ...kept].join(',')
   }
 
-  /** The proxy URL a runtime on this host reaches the loopback listener by, its proxy credential included. */
+  /** The proxy URL a runtime on this host reaches the loopback listener by. */
   loopbackUrl(): string | undefined {
     if (this.loopbackPort === undefined) return undefined
-    return `http://srt:${this.proxyToken}@127.0.0.1:${this.loopbackPort}`
+    return `http://127.0.0.1:${this.loopbackPort}`
   }
 
   /** The instances an agent's credential reaches, as the proxy matches them. */
@@ -463,7 +466,6 @@ export class CredentialProxy {
   }
 
   private server(
-    proxyAuthToken?: string,
     boundAgent?: string,
     reachable: (port: number, host: string) => boolean = () => true,
     scope: ListenerScope = 'both'
@@ -486,8 +488,7 @@ export class CredentialProxy {
       ambiguousRequestTarget: 'refuse',
       lookupFor: this.deps.upstream?.lookupFor ?? guardedLookup((hostname) => this.deniedFor(hostname)),
       ...(this.parentProxy ? { parentProxy: this.parentProxy } : {}),
-      ...(trustedCa && trustedCa.length > 0 ? { tlsTerminateUpstreamCA: trustedCa } : {}),
-      ...(proxyAuthToken ? { proxyAuthToken } : {})
+      ...(trustedCa && trustedCa.length > 0 ? { tlsTerminateUpstreamCA: trustedCa } : {})
     })
   }
 
@@ -821,5 +822,13 @@ export class CredentialProxy {
     } catch {
       return 'the GraphQL request is not JSON'
     }
+  }
+}
+
+function readFileOr(path: string): string {
+  try {
+    return readFileSync(path, 'utf8').trim()
+  } catch {
+    return ''
   }
 }
