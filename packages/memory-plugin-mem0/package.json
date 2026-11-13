@@ -39,11 +39,11 @@
     "@modelcontextprotocol/node": "2.1.2",
     "@modelcontextprotocol/server": "2.4.0",
     "@opentelemetry/api": "^1.10.0",
-    "@opentelemetry/instrumentation-http": "^0.301.0",
+    "@opentelemetry/instrumentation-http": "^0.301.1",
     "@opentelemetry/instrumentation-undici": "^0.35.0",
-    "@opentelemetry/resources": "^3.1.0",
-    "@opentelemetry/sdk-node": "^0.301.0",
-    "@opentelemetry/semantic-conventions": "^1.44.0",
+    "@opentelemetry/resources": "^3.1.1",
+    "@opentelemetry/sdk-node": "^0.301.1",
+    "@opentelemetry/semantic-conventions": "^1.45.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {
