@@ -124,17 +124,37 @@ describe('applying a launch codehost env at spawn', () => {
     }
     const launch = applyProxySpawn({ ...base, env, codehost }, { codehost: listener })
     expect(launch.env).toMatchObject({
-      GIT_CONFIG_COUNT: '4',
+      GIT_CONFIG_COUNT: '3',
       GIT_CONFIG_KEY_0: 'safe.directory',
       GIT_CONFIG_VALUE_0: '*',
       GIT_CONFIG_KEY_1: 'credential.https://github.com.helper',
       GIT_CONFIG_VALUE_1: '',
       GIT_CONFIG_KEY_2: 'credential.https://github.com.helper',
-      GIT_CONFIG_VALUE_2: '!placeholder',
-      // No machine helper is handed the listener's own credential.
-      GIT_CONFIG_KEY_3: 'credential.http://127.0.0.1:41234.helper',
-      GIT_CONFIG_VALUE_3: ''
+      GIT_CONFIG_VALUE_2: '!placeholder'
     })
+  })
+
+  it("empties the listener's own helpers in the session gitconfig, not in the env a runtime may filter", () => {
+    // A runtime that drops `*KEY*` names from its children's env would leave an indexed reset with a count and no key, and every git would fail.
+    const gitconfig = {
+      root: '/run/agentconnect/git',
+      relPath: ['agent-a.gitconfig'],
+      content: '[core]\n\tfsmonitor = false\n'
+    }
+    const other = { root: '/run/agentconnect/config', relPath: ['settings.json'], content: '{}' }
+    const env = { ...base.env, GIT_CONFIG_GLOBAL: '/run/agentconnect/git/agent-a.gitconfig' }
+    const launch = applyProxySpawn(
+      { ...base, env, files: [gitconfig, other], codehost: OVERLAY },
+      { codehost: listener }
+    )
+    expect(launch.files).toEqual([
+      { ...gitconfig, content: `${gitconfig.content}[credential "http://127.0.0.1:${listener.port}"]\n\thelper = \n` },
+      other
+    ])
+    const indexed = Object.keys(launch.env).filter((name) => /^GIT_CONFIG_(COUNT|KEY_|VALUE_)/.test(name))
+    expect(indexed).toEqual([])
+    // A launch that does not switch to the listener keeps its files as they were.
+    expect(applyProxySpawn({ ...base, env, files: [gitconfig] }, { codehost: listener }).files).toEqual([gitconfig])
   })
 })
 

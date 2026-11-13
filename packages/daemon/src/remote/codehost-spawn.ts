@@ -1,9 +1,10 @@
 // A VM's or executor's launch switch to the credential proxy, made once its shim has reported a `codehost` or `provider` listener.
-import type { SpawnRequest } from '../acp/spawn-driver.js'
+import { posix, win32 } from 'node:path'
+import type { SpawnFile, SpawnRequest } from '../acp/spawn-driver.js'
 import { proxyTrustEnv } from '../credential-proxy/ca.js'
 import { CODEX_CA_ENV, SESSION_TRUST_ENV, sessionAuthorityFiles } from '../credential-proxy/trust-bundle.js'
 import type { TunnelListening } from '../shim/tunnel.js'
-import { mergeGitConfigEnv, proxyCredentialResetEnv } from '../workspace/git-injection.js'
+import { mergeGitConfigEnv, proxyCredentialResetLines } from '../workspace/git-injection.js'
 
 export type CodehostListener = NonNullable<TunnelListening['proxy']>
 
@@ -16,6 +17,17 @@ export interface SpawnListeners {
 /** The `HTTPS_PROXY` URL naming a shim's proxy listener, with its proxy credential. */
 export function codehostProxyUrl(listener: Pick<CodehostListener, 'port' | 'token'>): string {
   return `http://codehost:${listener.token}@127.0.0.1:${listener.port}`
+}
+
+/** The launch's files with the listener's helper reset appended to the session gitconfig `GIT_CONFIG_GLOBAL` names, read by every git in the runtime's tree. */
+function withProxyCredentialReset(files: SpawnFile[] | undefined, gitconfig: string | undefined, url: string) {
+  if (!files || !gitconfig) return files
+  // The target's own path rules, which a Windows executor's differ from a pod's.
+  const named = (file: SpawnFile): boolean =>
+    [posix, win32].some((rules) => rules.join(file.root, ...file.relPath) === gitconfig)
+  return files.map((file) =>
+    named(file) ? { ...file, content: `${file.content}${proxyCredentialResetLines(url).join('\n')}\n` } : file
+  )
 }
 
 /** The session trust request already in `env`, whose files a later switch keeps. */
@@ -75,15 +87,17 @@ export function applyProxySpawn(request: SpawnRequest, listeners: SpawnListeners
   ].filter((file) => file !== listener.trustBundle)
   // A hosted VM's seed names its executor's trust files, which only its shim can name.
   const guest = withCodehost !== undefined && codehost?.guestTrust === true && !routed
+  const files = withCodehost ? withProxyCredentialReset(launch.files, launch.env.GIT_CONFIG_GLOBAL, url) : launch.files
   return {
     ...launch,
+    ...(files ? { files } : {}),
     env: {
       ...launch.env,
       ...(withCodehost
         ? {
             ...codehost!.env,
-            // The codehost's command-scope helper is read after any pairs the launch already carries, then the listener's own helper reset.
-            ...mergeGitConfigEnv(mergeGitConfigEnv(launch.env, codehost!.env), proxyCredentialResetEnv(url))
+            // The codehost's command-scope helper is read after any pairs the launch already carries.
+            ...mergeGitConfigEnv(launch.env, codehost!.env)
           }
         : {}),
       ...(withProvider ? { ...provider!.env, [CODEX_CA_ENV]: listener.trustBundle } : {}),
