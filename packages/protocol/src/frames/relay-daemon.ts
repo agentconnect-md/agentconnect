@@ -767,6 +767,33 @@ export const WireMsTeamsCardAction = z.object({
 })
 export type WireMsTeamsCardAction = z.infer<typeof WireMsTeamsCardAction>
 
+/** R→D `platform_action` payload for a person's answer to a bot's file consent card in a 1:1 chat (teams-integration.md §4.8). */
+export const WireMsTeamsFileConsent = z.object({
+  kind: z.literal('file-consent'),
+  action: z.enum(['accept', 'decline']),
+  /** The daemon's own ID for the pending file, which the card's accept and decline contexts carried back. */
+  uploadId: z.string().min(1).max(128),
+  /** The 1:1 chat's conversation ID, which must be the one the card was posted in. */
+  conversationId: z.string().min(1),
+  /** The regional Bot Connector origin the token vouched for, where the file card goes. */
+  serviceUrl: z.string().url(),
+  /** The answering person's bot-specific `29:…` ID. */
+  userId: z.string().min(1),
+  /** On accept: the person's OneDrive upload session and the file's place there. */
+  upload: z
+    .object({
+      uploadUrl: z.string().url().max(4096),
+      contentUrl: z.string().url().max(4096),
+      name: z.string().min(1).max(256),
+      uniqueId: z.string().min(1).max(256).optional(),
+      fileType: z.string().min(1).max(32).optional()
+    })
+    .optional(),
+  /** The relay's ticket for the conversation, on a deployment app's row only (§8.5). */
+  ticket: z.string().min(1).max(MSTEAMS_TICKET_MAX).optional()
+})
+export type WireMsTeamsFileConsent = z.infer<typeof WireMsTeamsFileConsent>
+
 /** The most people one forwarded Teams member join names; Teams batches a roster change into one activity. */
 export const MSTEAMS_MEMBERS_ADDED_MAX = 50
 

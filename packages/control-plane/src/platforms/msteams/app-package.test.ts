@@ -76,7 +76,7 @@ describe('Teams manifest', () => {
         {
           botId: APP_ID,
           scopes: ['personal', 'team', 'groupChat'],
-          supportsFiles: false,
+          supportsFiles: true,
           isNotificationOnly: false,
           commandLists: [{ scopes: ['personal', 'team', 'groupChat'], commands: [...MSTEAMS_COMMANDS] }]
         }

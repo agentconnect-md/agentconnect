@@ -1,14 +1,16 @@
 // One Teams bot's daemon connection (teams-integration.md §3, §4.3): relay-terminated ingress, Bot Connector egress, no socket.
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { msTeamsBotMention, msTeamsOutgoingText } from '@agentconnect.md/message'
 import {
   MSTEAMS_PLATFORM,
   type IntegrationMsTeamsConfig,
   type PlaceExternalReason,
+  type WireMsTeamsFileConsent,
   type WireMsTeamsMembersAdded
 } from '@agentconnect.md/protocol'
 import type { Agent } from '../../agents/agent-schema.js'
 import type { Logger } from '../../log.js'
+import type { UploadAnchor, UploadOutcome } from '../../mcp/ops/context.js'
 import type { NormalizedMessage } from '../../messages/normalized.js'
 import { splitMarkdownByBytes } from '../../messages/split-markdown-bytes.js'
 import type {
@@ -51,6 +53,7 @@ import {
   type MsTeamsGraphMessage,
   type MsTeamsHistorySource
 } from './graph.js'
+import { downloadMsTeamsFile, uploadMsTeamsFile } from './files.js'
 
 /** Every write into one conversation is spaced this far apart: Microsoft allows 1,800 an hour per conversation (§4.3). */
 export const MSTEAMS_CONVERSATION_INTERVAL_MS = 2_000
@@ -65,6 +68,20 @@ const MEMORY_TOUCH_MS = 24 * 60 * 60_000
 const MEMBERS_PER_CONVERSATION = 200
 const NAMES_MAX = 5_000
 const CARDS_MAX = 2_000
+
+/** The attachment types of a file offered in a 1:1 chat and of the file once uploaded (§4.8). */
+export const MSTEAMS_FILE_CONSENT_TYPE = 'application/vnd.microsoft.teams.card.file.consent'
+export const MSTEAMS_FILE_INFO_TYPE = 'application/vnd.microsoft.teams.card.file.info'
+/** The largest file one offer holds until it is accepted. */
+export const MSTEAMS_OFFERED_FILE_MAX_BYTES = 25 * 1024 * 1024
+/** How long an offer waits for the person's answer, and the bytes and count all pending offers may hold. */
+export const MSTEAMS_OFFER_TTL_MS = 60 * 60_000
+const MSTEAMS_OFFERED_BYTES_MAX = 100 * 1024 * 1024
+const MSTEAMS_OFFERS_MAX = 200
+export const MSTEAMS_CONSENT_PENDING_NOTE =
+  'Teams asked the person to allow the file; it is saved to their OneDrive and appears in the chat once they do.'
+export const MSTEAMS_OFFER_LOST_NOTE = 'This file is no longer available. Ask me to share it again.'
+export const MSTEAMS_UPLOAD_FAILED_NOTE = 'The file could not be saved to your OneDrive. Ask me to share it again.'
 
 /** The attachment type of an Adaptive Card (§4.4). */
 export const MSTEAMS_ADAPTIVE_CARD_TYPE = 'application/vnd.microsoft.card.adaptive'
@@ -335,6 +352,9 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
   private readonly cards = new Map<string, MsTeamsTarget>()
   private readonly writeGate: (() => Promise<void>) | undefined
   private stopped = false
+  private readonly fetchImpl: typeof fetch
+  /** Files offered with a consent card and not yet answered, by the ID the card carries; lost on a restart. */
+  private readonly offered = new Map<string, { channel: string; bytes: Buffer; at: number }>()
 
   constructor(private readonly deps: MsTeamsDeps) {
     const { group } = deps
@@ -355,6 +375,7 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
       ...(deps.random ? { random: deps.random } : {})
     }
     const fetchImpl = deps.fetchImpl ?? ((...args: Parameters<typeof fetch>) => fetch(...args))
+    this.fetchImpl = fetchImpl
     const config = group.config
     // A deployment app's row holds no secret: its calls and its Graph tokens come through the relay (§8.5).
     const relay = 'clientSecret' in config ? undefined : { port: deps.relay ?? NO_RELAY, botId: config.botId }
@@ -916,9 +937,85 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
     return { id: user, ...(name ? { name } : {}) }
   }
 
-  /** Attachments are unsupported in both directions (§1): never fetched. */
-  async downloadFile(_ref: string, _maxBytes?: number): Promise<Buffer | null> {
-    return null
+  /** A 1:1 file by its pre-authorized download link (§4.8); nothing else is ever fetched. */
+  async downloadFile(ref: string, maxBytes?: number): Promise<Buffer | null> {
+    return await downloadMsTeamsFile(ref, maxBytes, this.fetchImpl, (reason) =>
+      this.deps.log?.warn(`msteams: file download failed (${reason})`)
+    )
+  }
+
+  /** Offer a file in a 1:1 chat with a consent card (§4.8); it is uploaded to the person's OneDrive once they accept. */
+  async uploadFile(
+    channel: string,
+    file: { bytes: Buffer; name: string; mimeType: string },
+    comment?: string,
+    anchor?: UploadAnchor
+  ): Promise<UploadOutcome> {
+    const known = this.conversations.get(channel)
+    const target = known ? this.targetFor(channel) : undefined
+    if (!known || !target) return { ok: false, reason: 'not_found', detail: 'the bot has not seen this conversation' }
+    if (known.kind !== 'personal')
+      return { ok: false, reason: 'forbidden', detail: 'Teams lets a bot send a file only in a 1:1 chat' }
+    if (anchor?.replyTo !== undefined)
+      return { ok: false, reason: 'platform_error', detail: 'a Teams 1:1 chat has no replies to place a file in' }
+    if (!file.bytes.length) return { ok: false, reason: 'platform_error', detail: 'the file is empty' }
+    if (file.bytes.length > MSTEAMS_OFFERED_FILE_MAX_BYTES) return { ok: false, reason: 'too_large' }
+    const uploadId = randomUUID()
+    this.offered.set(uploadId, { channel, bytes: file.bytes, at: this.now() })
+    this.pruneOffered()
+    const description = comment?.trim() ? msTeamsOutgoingText(comment.trim()).slice(0, 1000) : file.name
+    try {
+      const messageId = await this.write(target, () =>
+        this.api.postActivity(target, fileConsentActivityOf(file.name, file.bytes.length, description, uploadId))
+      )
+      return { ok: true, messageId, warning: MSTEAMS_CONSENT_PENDING_NOTE }
+    } catch (err) {
+      this.offered.delete(uploadId)
+      const kind = err instanceof MsTeamsApiError ? err.kind : undefined
+      if (kind === 'ambiguous') return { ok: false, reason: 'indeterminate' }
+      if (kind === 'forbidden' || kind === 'not_installed' || kind === 'writes_blocked')
+        return { ok: false, reason: 'forbidden', detail: (err as Error).message }
+      return { ok: false, reason: 'platform_error', detail: (err as Error).message }
+    }
+  }
+
+  /** A person's answer to an offered file: upload it on accept and post its file card; a decline or a lost offer is told in the chat. */
+  async settleFileConsent(consent: WireMsTeamsFileConsent): Promise<void> {
+    const offer = this.offered.get(consent.uploadId)
+    const channel = consent.conversationId
+    // The answer must come from the 1:1 chat the card was posted in; a stray one changes nothing.
+    if (offer && offer.channel !== channel) return
+    const ticket = consent.ticket ?? this.targetFor(channel)?.ticket
+    const target: MsTeamsTarget = {
+      serviceUrl: consent.serviceUrl,
+      conversationId: channel,
+      ...(ticket ? { ticket } : {})
+    }
+    this.offered.delete(consent.uploadId)
+    if (consent.action === 'decline') return
+    const upload = consent.upload
+    if (!offer || !upload || this.now() - offer.at > MSTEAMS_OFFER_TTL_MS) {
+      await this.post(target, MSTEAMS_OFFER_LOST_NOTE)
+      return
+    }
+    const sent = await uploadMsTeamsFile(upload.uploadUrl, offer.bytes, this.fetchImpl)
+    if (!sent.ok) {
+      this.deps.log?.warn(`msteams: offered file upload failed (${sent.reason})`)
+      await this.post(target, MSTEAMS_UPLOAD_FAILED_NOTE)
+      return
+    }
+    await this.write(target, () => this.api.postActivity(target, fileInfoActivityOf(upload)))
+  }
+
+  // Offers past their lifetime, and the oldest beyond the count and byte caps, are dropped.
+  private pruneOffered(): void {
+    const now = this.now()
+    let bytes = 0
+    for (const [id, offer] of [...this.offered].reverse()) {
+      bytes += offer.bytes.length
+      if (now - offer.at > MSTEAMS_OFFER_TTL_MS || bytes > MSTEAMS_OFFERED_BYTES_MAX) this.offered.delete(id)
+    }
+    while (this.offered.size > MSTEAMS_OFFERS_MAX) this.offered.delete(this.offered.keys().next().value!)
   }
 
   // ── 4. history: Graph reads under the package's resource-specific consent, for conversations the bot has seen ──
@@ -1080,6 +1177,43 @@ function channelOf(conversationId: string): string {
 // A posted card's cache key: its conversation and its activity ID, the pair Teams keeps unique.
 function cardKey(channel: string, activityId: string): string {
   return `${channel}\u001f${activityId}`
+}
+
+// The consent card Teams shows as Allow / Decline; both contexts carry back only the daemon's ID for the file.
+function fileConsentActivityOf(
+  name: string,
+  sizeInBytes: number,
+  description: string,
+  uploadId: string
+): Record<string, unknown> {
+  return {
+    type: 'message',
+    attachments: [
+      {
+        contentType: MSTEAMS_FILE_CONSENT_TYPE,
+        name,
+        content: { description, sizeInBytes, acceptContext: { uploadId }, declineContext: { uploadId } }
+      }
+    ]
+  }
+}
+
+// The uploaded file's card, which opens it from the person's OneDrive.
+function fileInfoActivityOf(upload: NonNullable<WireMsTeamsFileConsent['upload']>): Record<string, unknown> {
+  return {
+    type: 'message',
+    attachments: [
+      {
+        contentType: MSTEAMS_FILE_INFO_TYPE,
+        contentUrl: upload.contentUrl,
+        name: upload.name,
+        content: {
+          ...(upload.uniqueId ? { uniqueId: upload.uniqueId } : {}),
+          ...(upload.fileType ? { fileType: upload.fileType } : {})
+        }
+      }
+    ]
+  }
 }
 
 function cardActivityOf(card: Record<string, unknown>, summary?: string): Record<string, unknown> {
