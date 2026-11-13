@@ -375,6 +375,7 @@ export class ShimDialer {
                 issuedCredential: result.credential,
                 ...(workspaceRoot ? { workspaceRoot } : {}),
                 send: (outbound) => transport.send(JSON.stringify(outbound)),
+                ...(transport.sendBinary ? { sendData: (frame: Uint8Array) => transport.sendBinary!(frame) } : {}),
                 onFrame: (listener) => frameListeners.push(listener),
                 close: (reason) => transport.close(4000, reason)
               }

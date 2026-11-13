@@ -18,12 +18,17 @@ import { fenceFakeSandbox } from './fake-sandbox-fence.js'
 import type { ShimEvent } from '../src/shim/protocol.js'
 import {
   ACK_EVERY_FRAMES,
+  decodeTunnelData,
+  encodeTunnelData,
+  MAX_BINARY_CHUNK_BYTES,
   MAX_CODEHOST_STREAMS,
+  MAX_DAEMON_BYTES_IN_FLIGHT,
   MAX_DAEMON_FRAMES_IN_FLIGHT,
   MAX_IN_FLIGHT_FRAMES,
   MAX_PROVIDER_STREAMS,
   MAX_TUNNEL_CHUNK_BYTES,
-  type TunnelName
+  type TunnelName,
+  WRITTEN_EVERY_BYTES
 } from '../src/shim/tunnel.js'
 import { waitBudget } from './wait-support.js'
 
@@ -141,8 +146,10 @@ async function clusterWithTunnel(
     credentialTtlMs?: number
     /** Withhold a daemon→pod `data` frame from the host, so one is in flight on demand. */
     holdData?: () => Promise<void>
+    /** Serve binary data frames as `src/shim/index.ts` does; otherwise the shim answers as an older one that takes none. */
+    binary?: boolean
   } = {}
-): Promise<Cluster> {
+): Promise<Cluster & { binaryFrames: () => number }> {
   const warnings: string[] = []
   const shimClock = new FakeClock()
   const podSocketPath = join(scratchDir(), 'pod-agent.sock')
@@ -178,6 +185,7 @@ async function clusterWithTunnel(
     ...(options.maxStreams === undefined ? {} : { maxStreams: options.maxStreams })
   })
   hosts.push(host)
+  let binaryFrames = 0
   const client = new ShimClient({
     endpoint: 'accepted-daemon-channel',
     dial: () => shimServer.nextTransport() as Promise<ShimTransport>,
@@ -187,8 +195,19 @@ async function clusterWithTunnel(
       // Held BEFORE the host applies it: the frame has reached the pod's shim but not its socket,
       // which is exactly the state a renewal makes unknowable.
       if (options.holdData && (payload as { op?: string }).op === 'data') await options.holdData()
-      return await host.handle(payload)
+      const reply = await host.handle(payload)
+      if (options.binary || !reply || typeof reply !== 'object') return reply
+      const { binaryData: _binaryData, ...older } = reply as Record<string, unknown>
+      return older
     },
+    ...(options.binary
+      ? {
+          handleData: (frame: Buffer) => {
+            binaryFrames += 1
+            host.handleData(frame)
+          }
+        }
+      : {}),
     clock: shimClock,
     backoff: new Backoff({ jitter: () => 0 }),
     log: { info: () => {}, warn: () => {} }
@@ -196,7 +215,7 @@ async function clusterWithTunnel(
   clients.push(client)
   void client.start()
   await ensuring
-  return { plane, podSocketPath, warnings, shimClock, bindCount: () => binds }
+  return { plane, podSocketPath, warnings, shimClock, bindCount: () => binds, binaryFrames: () => binaryFrames }
 }
 
 /**
@@ -206,11 +225,19 @@ async function clusterWithTunnel(
  * announcements produce a dial at all, and a socket that fails asynchronously would race that.
  */
 function proxyUnderTest(
-  options: { stall?: (payload: unknown) => boolean; hold?: (payload: unknown) => boolean; resumable?: boolean } = {}
+  options: {
+    stall?: (payload: unknown) => boolean
+    hold?: (payload: unknown) => boolean
+    resumable?: boolean
+    /** The shim takes binary frames; `carries` says whether the channel does too. */
+    binary?: { carries: boolean }
+  } = {}
 ): {
   instance: TunnelProxy
   dialled: string[]
   sent: unknown[]
+  /** Binary frames sent, decoded. */
+  frames: Array<{ streamId: string; seq: number; chunk: Buffer }>
   /** Settles held frames in send order: `ack` acknowledges, `fail` rejects. */
   held: Array<{ ack: () => void; fail: (error: Error) => void }>
   announce: (event: ShimEvent['event'], streamId: string) => void
@@ -220,6 +247,7 @@ function proxyUnderTest(
 } {
   const dialled: string[] = []
   const sent: unknown[] = []
+  const frames: Array<{ streamId: string; seq: number; chunk: Buffer }> = []
   const held: Array<{ ack: () => void; fail: (error: Error) => void }> = []
   const listeners: Array<(event: ShimEvent) => void> = []
   const attachListeners: Array<() => void> = []
@@ -239,13 +267,19 @@ function proxyUnderTest(
         const named = (payload as { tunnel?: string }).tunnel
         if (named === 'codehost' || named === 'provider')
           return { socketPath: '127.0.0.1:1', proxy: { port: 1, token: 'x'.repeat(32), trustBundle: '/rt/trust.pem' } }
-        return { socketPath: '/run/agentconnect/agent.sock', ...(options.resumable ? { resumable: true } : {}) }
+        return {
+          socketPath: '/run/agentconnect/agent.sock',
+          ...(options.resumable || options.binary ? { resumable: true } : {}),
+          ...(options.binary ? { binaryData: true } : {})
+        }
       },
       onEvent: (listener) => listeners.push(listener),
       offEvent: () => undefined,
       onAttach: (listener) => attachListeners.push(listener),
       offAttach: () => undefined,
-      onLost: () => undefined
+      onLost: () => undefined,
+      carriesData: () => options.binary?.carries === true,
+      sendData: (frame) => void frames.push(decodeTunnelData(Buffer.from(frame))!)
     },
     socketPathFor: (tunnel) => `/daemon/${tunnel}.sock`,
     listenOptions: (tunnel) =>
@@ -267,6 +301,7 @@ function proxyUnderTest(
     instance,
     dialled,
     sent,
+    frames,
     held,
     announce: (event, streamId) => {
       for (const listener of listeners) listener({ type: 'shim/event', streamId, event })
@@ -957,5 +992,175 @@ describe('shim-side tunnel flow control', () => {
     const bytes = randomBytes(1024 * 1024)
     const { podSocketPath } = await clusterWithTunnel({ daemonSocketPath: hashingServer(bytes.length) })
     expect(await transfer(podSocketPath, bytes)).toBe(digest(bytes))
+  }, 40_000)
+})
+
+/** An in-pod client that keeps the raw bytes it reads. */
+function inPodBytes(path: string): { socket: Socket; received: () => Buffer } {
+  const socket = createConnection(path)
+  sockets.push(socket)
+  const chunks: Buffer[] = []
+  socket.on('data', (chunk: Buffer) => chunks.push(chunk))
+  socket.on('error', () => undefined)
+  return { socket, received: () => Buffer.concat(chunks) }
+}
+
+describe('binary data frames', () => {
+  const isData = (payload: unknown): boolean => (payload as { op?: string }).op === 'data'
+
+  it('round-trips a frame and refuses anything that is not one', () => {
+    const streamId = randomUUID()
+    const frame = encodeTunnelData(streamId, 7, [Buffer.from('ab'), Buffer.from('c')], 3)
+    expect(decodeTunnelData(frame)).toEqual({ streamId, seq: 7, chunk: Buffer.from('abc') })
+    expect(decodeTunnelData(Buffer.from('short'))).toBeUndefined()
+    expect(decodeTunnelData(Buffer.concat([Buffer.from([2]), frame.subarray(1)]))).toBeUndefined()
+    expect(decodeTunnelData(encodeTunnelData(streamId, 0, [], 0))).toBeUndefined()
+  })
+
+  it('frames reads one-way, filled to the chunk size, and pauses the stream at its byte window', async () => {
+    const proxy = proxyUnderTest({ binary: { carries: true } })
+    await proxy.instance.ensure('agent')
+    const streamId = randomUUID()
+    proxy.announce({ kind: 'connect', tunnel: 'agent' }, streamId)
+    const socket = proxy.socketFor(streamId)!
+    const bytes = randomBytes(MAX_DAEMON_BYTES_IN_FLIGHT)
+    socket.emit('data', bytes.subarray(0, 1000))
+    socket.emit('data', bytes.subarray(1000))
+
+    const count = MAX_DAEMON_BYTES_IN_FLIGHT / MAX_BINARY_CHUNK_BYTES
+    expect(proxy.frames.map((frame) => frame.seq)).toEqual(Array.from({ length: count }, (_, i) => i + 1))
+    expect(proxy.frames.every((frame) => frame.streamId === streamId)).toBe(true)
+    expect(Buffer.concat(proxy.frames.map((frame) => frame.chunk))).toEqual(bytes)
+    expect(proxy.sent.filter(isData)).toEqual([])
+    expect(socket.isPaused()).toBe(true)
+
+    proxy.announce({ kind: 'written', seq: count / 2 }, streamId)
+    expect(socket.isPaused()).toBe(false)
+  })
+
+  it('gathers small reads briefly into one frame', async () => {
+    const proxy = proxyUnderTest({ binary: { carries: true } })
+    await proxy.instance.ensure('agent')
+    const streamId = randomUUID()
+    proxy.announce({ kind: 'connect', tunnel: 'agent' }, streamId)
+    for (const part of ['a', 'b', 'c']) proxy.socketFor(streamId)!.emit('data', Buffer.from(part))
+    await vi.waitFor(() => expect(proxy.frames).toHaveLength(1))
+    expect(proxy.frames[0]!.chunk.toString()).toBe('abc')
+  })
+
+  it('re-sends the frames the shim has not reported written, in order, when the channel is renewed', async () => {
+    const proxy = proxyUnderTest({ binary: { carries: true } })
+    await proxy.instance.ensure('agent')
+    const streamId = randomUUID()
+    proxy.announce({ kind: 'connect', tunnel: 'agent' }, streamId)
+    proxy.socketFor(streamId)!.emit('data', randomBytes(3 * MAX_BINARY_CHUNK_BYTES))
+    proxy.announce({ kind: 'written', seq: 1 }, streamId)
+
+    proxy.reattach()
+    expect(proxy.frames.map((frame) => frame.seq)).toEqual([1, 2, 3, 2, 3])
+    proxy.announce({ kind: 'written', seq: 3 }, streamId)
+    proxy.reattach()
+    expect(proxy.frames).toHaveLength(5)
+    expect(proxy.instance.streamCount()).toBe(1)
+  })
+
+  it('sends a hang-up only once the shim reports the last frame written', async () => {
+    const proxy = proxyUnderTest({ binary: { carries: true } })
+    await proxy.instance.ensure('agent')
+    const streamId = randomUUID()
+    proxy.announce({ kind: 'connect', tunnel: 'agent' }, streamId)
+    const socket = proxy.socketFor(streamId)!
+    socket.emit('data', Buffer.from('last bytes'))
+    socket.emit('close')
+    // The hang-up framed what was still gathering, rather than leaving it behind the close.
+    expect(proxy.frames.map((frame) => frame.chunk.toString())).toEqual(['last bytes'])
+    expect(proxy.sent.some((payload) => (payload as { op?: string }).op === 'close')).toBe(false)
+
+    proxy.announce({ kind: 'written', seq: 1 }, streamId)
+    await vi.waitFor(() => expect(proxy.sent.at(-1)).toEqual({ op: 'close', streamId }))
+    expect(proxy.instance.streamCount()).toBe(0)
+  })
+
+  it('keeps text frames on a channel that carries no binary, whatever the shim takes', async () => {
+    const proxy = proxyUnderTest({ binary: { carries: false } })
+    await proxy.instance.ensure('agent')
+    const streamId = randomUUID()
+    proxy.announce({ kind: 'connect', tunnel: 'agent' }, streamId)
+    proxy.socketFor(streamId)!.emit('data', Buffer.from('reply'))
+    await vi.waitFor(() => expect(proxy.sent.filter(isData)).toHaveLength(1))
+    expect(proxy.frames).toEqual([])
+  })
+
+  it('writes binary frames once and in order, reports them cumulatively, and ends a stream that skips ahead', async () => {
+    const events: Array<{ id: string; event: ShimEvent['event'] }> = []
+    const path = join(socketDir(), 'pod.sock')
+    const host = new TunnelHost({ emit: (id, event) => events.push({ id, event }), socketPathFor: () => path })
+    hosts.push(host)
+    expect(await host.handle({ op: 'listen', tunnel: 'agent', acks: true })).toEqual(
+      expect.objectContaining({ binaryData: true })
+    )
+    const client = inPodBytes(path)
+    await vi.waitFor(() => expect(events.some(({ event }) => event.kind === 'connect')).toBe(true))
+    const streamId = events.find(({ event }) => event.kind === 'connect')!.id
+    const frame = (seq: number, chunk: Buffer): Buffer => encodeTunnelData(streamId, seq, [chunk], chunk.length)
+    const written = (): number[] => events.flatMap(({ event }) => (event.kind === 'written' ? [event.seq] : []))
+
+    // A report's worth goes out at once; small frames after it share one report shortly after.
+    const big = randomBytes(2 * WRITTEN_EVERY_BYTES)
+    const first = big.subarray(0, WRITTEN_EVERY_BYTES)
+    host.handleData(frame(1, first))
+    host.handleData(frame(1, first))
+    host.handleData(frame(2, big.subarray(WRITTEN_EVERY_BYTES)))
+    for (const [seq, text] of [
+      [3, 't'],
+      [4, 'a'],
+      [5, 'il']
+    ] as const)
+      host.handleData(frame(seq, Buffer.from(text)))
+    await vi.waitFor(() => expect(written().at(-1)).toBe(5))
+    expect(written().slice(0, 2)).toEqual([1, 2])
+    expect(written().length).toBeLessThan(5)
+    expect(client.received()).toEqual(Buffer.concat([big, Buffer.from('tail')]))
+    expect(() => host.handleData(Buffer.from('not a frame'))).toThrow()
+
+    host.handleData(frame(7, Buffer.from('gap')))
+    await vi.waitFor(() =>
+      expect(events.at(-1)).toEqual({
+        id: streamId,
+        event: expect.objectContaining({ kind: 'exit', error: expect.stringContaining('skipped from frame 5 to 7') })
+      })
+    )
+    expect(client.received().toString('utf8').endsWith('tail')).toBe(true)
+  })
+
+  it('carries a large download intact over binary frames through a real shim channel', async () => {
+    const bytes = randomBytes(8 * 1024 * 1024)
+    const daemonSocketPath = daemonSideServer((_chunk, socket) => socket.write(bytes))
+    const { podSocketPath, binaryFrames } = await clusterWithTunnel({ daemonSocketPath, binary: true })
+    const client = inPodBytes(podSocketPath)
+    client.socket.write('ask\n')
+    await vi.waitFor(() => expect(client.received().length).toBe(bytes.length), waitBudget(20_000))
+    expect(digest(client.received())).toBe(digest(bytes))
+    expect(binaryFrames()).toBeGreaterThan(0)
+  }, 40_000)
+
+  it('keeps a binary stream working across a real credential renewal', async () => {
+    const daemonSocketPath = daemonSideServer((chunk, socket) => socket.write(`echo:${chunk.toString('utf8')}`))
+    const { podSocketPath, shimClock, bindCount, binaryFrames } = await clusterWithTunnel({
+      daemonSocketPath,
+      credentialTtlMs: 600_000,
+      binary: true
+    })
+    const helper = inPodClient(podSocketPath)
+    helper.socket.write('before\n')
+    await vi.waitFor(() => expect(helper.received()).toContain('echo:before'), waitBudget(10_000))
+
+    const bindsBefore = bindCount()
+    shimClock.advance(300_000)
+    await vi.waitFor(() => expect(bindCount()).toBeGreaterThan(bindsBefore), waitBudget(15_000))
+    helper.socket.write('after\n')
+    await vi.waitFor(() => expect(helper.received()).toContain('echo:after'), waitBudget(10_000))
+    expect(helper.ended()).toBe(false)
+    expect(binaryFrames()).toBeGreaterThanOrEqual(2)
   }, 40_000)
 })

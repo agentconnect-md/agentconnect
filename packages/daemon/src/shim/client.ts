@@ -20,6 +20,9 @@ import {
 export interface ShimTransport {
   send(text: string): void
   onMessage(cb: (text: string) => void): void
+  /** Binary frames, which carry tunnel bytes; absent on a transport that carries text only. */
+  sendBinary?(data: Uint8Array): void
+  onBinary?(cb: (data: Buffer) => void): void
   onClose(cb: (code: number, reason: string) => void): void
   close(code: number, reason: string): void
 }
@@ -46,6 +49,8 @@ export interface ShimClientDeps {
     abort?: AbortSignal,
     context?: { agentId: string; generation: number }
   ) => Promise<unknown>
+  /** Handles a binary frame from the bound daemon: tunnel bytes, which need the `tunnel` grant. */
+  handleData?: (frame: Buffer) => void
   /** Resolves executables in THIS filesystem for the ACP runner. */
   resolveCommand?: ResolveCommand
   /** Pod environment the ACP runner consults for provider fill-ins (SANDBOX_PROVIDER_ENV). */
@@ -319,6 +324,7 @@ export class ShimClient {
         if (frame.type === 'shim/request') void this.serve(transport, frame)
         if (frame.type === 'shim/cancel') this.cancel(frame)
       })
+      transport.onBinary?.((data) => this.serveData(transport, data))
     })
   }
 
@@ -449,6 +455,24 @@ export class ShimClient {
       transport.send(
         JSON.stringify({ type: 'shim/response', id: request.id, ok: false, error: (err as Error).message })
       )
+    }
+  }
+
+  // A binary frame carries no credential, so it is served only from the transport this incarnation bound on and only with the `tunnel` grant.
+  private serveData(transport: ShimTransport, data: Buffer): void {
+    const bound = this.bound
+    if (!bound || this.transport !== transport) {
+      transport.close(4403, 'not bound')
+      return
+    }
+    if (!bound.grants.includes('tunnel') || !this.deps.handleData) {
+      transport.close(4403, 'not granted')
+      return
+    }
+    try {
+      this.deps.handleData(data)
+    } catch {
+      transport.close(4400, 'malformed frame')
     }
   }
 

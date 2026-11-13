@@ -4,15 +4,17 @@ import { WsServerTransport } from './ws-server-transport.js'
 
 class FakeWs {
   protocol = 'agentconnect.rd.v1'
-  sent: string[] = []
+  sent: unknown[] = []
+  sentOptions: unknown[] = []
   closed?: { code: number; reason: string }
   terminated = 0
   private handlers = new Map<string, Array<(...a: unknown[]) => void>>()
   terminate(): void {
     this.terminated += 1
   }
-  send(text: string): void {
-    this.sent.push(text)
+  send(data: unknown, options?: unknown): void {
+    this.sent.push(data)
+    this.sentOptions.push(options)
   }
   on(event: string, cb: (...a: unknown[]) => void): this {
     const arr = this.handlers.get(event) ?? []
@@ -55,6 +57,21 @@ describe('WsServerTransport', () => {
     ws.emit('message', Buffer.from('ignored'), true) // binary → skipped
     ws.emit('message', Buffer.from('world'), false) // buffer text → stringified
     expect(got).toEqual(['hello', 'world'])
+  })
+
+  it('carries binary frames only between sendBinary and onBinary', () => {
+    const { ws, t } = make()
+    const text: string[] = []
+    const binary: Buffer[] = []
+    t.onMessage((m) => text.push(m))
+    t.onBinary((data) => binary.push(data))
+    ws.emit('message', Buffer.from([1, 2, 3]), true)
+    ws.emit('message', 'hello', false)
+    expect(binary).toEqual([Buffer.from([1, 2, 3])])
+    expect(text).toEqual(['hello'])
+    t.sendBinary(Buffer.from([4]))
+    expect(ws.sent).toEqual([Buffer.from([4])])
+    expect(ws.sentOptions).toEqual([{ binary: true }])
   })
 
   it('onClose surfaces the code + reason (Buffer → string)', () => {

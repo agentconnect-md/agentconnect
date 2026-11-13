@@ -291,6 +291,22 @@ daemon's cumulative ack is re-sent once. Against a shim that does not announce `
 a stream with a frame in flight is still terminated, so its client sees EOF at once rather
 than waiting out an idle timeout. Streams that were idle across the renewal are untouched.
 
+A shim that also takes binary frames says `binaryData` in the same reply. Over a channel whose
+transport carries them, the daemon then sends a stream's bytes as binary WebSocket frames — a
+kind byte, the 16-byte stream id, the 32-bit `seq`, then raw bytes — with no base64, no JSON and
+no answer per frame. The shim applies them in `seq` order exactly as above and reports progress
+with a cumulative `written` event once a quarter of the daemon's window is written, and a couple
+of milliseconds after the last frame otherwise. The daemon holds a stream's frames until they are
+reported, pauses its socket at 1 MiB of them, and re-sends them in order when a replacement
+channel attaches; a hang-up waits for the report of the last frame. Because the daemon-side
+socket delivers a few kilobytes per read, the daemon gathers reads for up to a millisecond into
+frames of up to 128 KiB: the cost of a frame, not of a byte, is what bounded the old path.
+
+A binary frame carries no credential or generation. The shim serves one only from the transport
+that completed this incarnation's binding, and only under the `tunnel` grant; anything else
+closes the channel, as a malformed text frame does. A renewal is a new transport, so a frame
+from a superseded socket cannot reach the streams. Pod → daemon bytes stay `chunk` events.
+
 This is why a bound channel is announced only after its `shim/bound` frame is on the wire:
 the peer refuses anything that arrives ahead of its own binding, so an earlier notification
 made that cleanup unserviceable. Ordering on the socket is what makes the fix sufficient

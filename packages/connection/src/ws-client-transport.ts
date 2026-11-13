@@ -73,6 +73,9 @@ export function armRxWatchdog(ws: WatchdogSocket, opts: { selfPingMs: number; id
 export interface Transport {
   send(text: string): void
   onMessage(cb: (text: string) => void): void
+  /** A binary frame, for a wire that carries raw bytes beside its JSON text; `onMessage` never sees one. */
+  sendBinary?(data: Uint8Array): void
+  onBinary?(cb: (data: Buffer) => void): void
   onClose(cb: (code: number, reason: string) => void): void
   close(code: number, reason: string): void
   readonly subprotocol: string
@@ -166,6 +169,14 @@ export class ClientTransport implements Transport {
     this.ws.on('message', (data: unknown, isBinary?: boolean) => {
       if (isBinary) return // JSON text frames only (protocol §1)
       cb(typeof data === 'string' ? data : String(data))
+    })
+  }
+  sendBinary(data: Uint8Array): void {
+    this.ws.send(data, { binary: true })
+  }
+  onBinary(cb: (data: Buffer) => void): void {
+    this.ws.on('message', (data: Buffer, isBinary?: boolean) => {
+      if (isBinary) cb(data)
     })
   }
   onClose(cb: (code: number, reason: string) => void): void {

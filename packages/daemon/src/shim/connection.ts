@@ -26,6 +26,8 @@ export interface ShimConnection {
    *  and only ever used to build paths sent back INTO that pod, never on this filesystem. */
   workspaceRoot?: string
   send(frame: ShimFrame): void
+  /** Send a binary frame, one-way; absent when the transport carries text only. */
+  sendData?(frame: Uint8Array): void
   /** Observe inbound frames — how a ShimChannel receives the replies to its requests. */
   onFrame(listener: (text: string) => void): void
   close(reason: string): void

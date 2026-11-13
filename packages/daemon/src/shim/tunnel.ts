@@ -16,6 +16,8 @@ export function isProxyTunnel(tunnel: TunnelName): tunnel is ProxyTunnelName {
 /** Bytes per chunk in either direction. One `shim/request` or `shim/event` carries at most one
  *  chunk, so this has to leave room under `MAX_FRAME_BYTES` (256 KiB) after base64 expansion. */
 export const MAX_TUNNEL_CHUNK_BYTES = 32 * 1024
+/** Bytes per binary data frame, which carries no base64 and so fits a whole socket read under `MAX_FRAME_BYTES`. */
+export const MAX_BINARY_CHUNK_BYTES = 128 * 1024
 /** The most authorities one `codehost` or `provider` listen forwards. */
 export const MAX_CODEHOST_ROUTES = 64
 /** Concurrent `codehost` streams per sandbox, apart from the helper tunnels' own budget so a busy clone cannot starve `mcp` or `agent`. */
@@ -28,7 +30,35 @@ export const MAX_IN_FLIGHT_FRAMES = 8
 export const MAX_DAEMON_FRAMES_IN_FLIGHT = 32
 /** How many shim-sent chunks the daemon writes out before acknowledging them, so a paused stream always earns an ack. */
 export const ACK_EVERY_FRAMES = MAX_IN_FLIGHT_FRAMES / 2
+/** Bytes of binary frames one stream may have unconfirmed before the daemon pauses its socket. */
+export const MAX_DAEMON_BYTES_IN_FLIGHT = 1024 * 1024
+/** Bytes of binary frames the shim writes out before reporting them, besides a short timer for the rest. */
+export const WRITTEN_EVERY_BYTES = MAX_DAEMON_BYTES_IN_FLIGHT / 4
 const MAX_TUNNEL_CHUNK_BASE64 = Math.ceil(MAX_TUNNEL_CHUNK_BYTES / 3) * 4
+
+/** A binary daemon → shim data frame: kind byte, 16-byte stream id, 32-bit sequence number, then the chunk. */
+export const TUNNEL_DATA_FRAME = 0x01
+const DATA_HEADER_BYTES = 21
+
+/** A binary data frame carrying `parts` concatenated, built in one allocation. */
+export function encodeTunnelData(streamId: string, seq: number, parts: readonly Buffer[], length: number): Buffer {
+  const frame = Buffer.allocUnsafe(DATA_HEADER_BYTES + length)
+  frame[0] = TUNNEL_DATA_FRAME
+  frame.write(streamId.replaceAll('-', ''), 1, 16, 'hex')
+  frame.writeUInt32BE(seq, 17)
+  let at = DATA_HEADER_BYTES
+  for (const part of parts) at += part.copy(frame, at)
+  return frame
+}
+
+/** The parts of a binary data frame, or undefined for anything else. */
+export function decodeTunnelData(frame: Buffer): { streamId: string; seq: number; chunk: Buffer } | undefined {
+  if (frame.length < DATA_HEADER_BYTES || frame[0] !== TUNNEL_DATA_FRAME) return undefined
+  const hex = frame.toString('hex', 1, 17)
+  const streamId = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+  const seq = frame.readUInt32BE(17)
+  return seq === 0 ? undefined : { streamId, seq, chunk: frame.subarray(DATA_HEADER_BYTES) }
+}
 
 /**
  * Daemon → shim: serve this tunnel on its in-pod path. Idempotent per pod, because the
@@ -106,6 +136,8 @@ export const TunnelListeningSchema = z.object({
   acks: z.boolean().optional(),
   // The shim applies numbered `data` frames in order and once, so the daemon re-sends what a renewal lost instead of ending the stream.
   resumable: z.boolean().optional(),
+  // The shim takes binary data frames and reports them written with `written` events, so the daemon sends them one-way.
+  binaryData: z.boolean().optional(),
   // `codehost` under `srt`: the names its boundary routes to the shim's codehost socket, which serves this listen's routes.
   srt: z.object({ domains: z.array(z.string().min(1).max(253)).max(MAX_CODEHOST_ROUTES) }).optional(),
   // `codehost`: the shim merges the trust files its seed names when a launch asks; absent from an older shim, whose hosted VM keeps the helper path.

@@ -1431,11 +1431,13 @@ with a large matrix of mocked predicates. Each implementation PR records which r
 it actually exercised; source inspection alone is not a successful environment test.
 
 **Capacity gate, required before delivery 2 (or any earlier expansion to all
-providers).** The `codehost` tunnel uses 32 KiB chunks encoded as base64 in JSON,
-thirty-two unanswered frames per stream toward the sandbox (the direction a clone
-reads) and eight unacknowledged toward the daemon, and sixteen simultaneous code-host streams
-per shim (`shim/tunnel.ts`). Additional-repository and submodule fetches share that
-per-shim ceiling; it is not a pool-member-wide load limit. A CONNECT past the ceiling
+providers).** Toward the sandbox (the direction a clone reads), a current shim takes
+binary frames of up to 128 KiB, at most 1 MiB unreported per stream; an older one gets
+32 KiB chunks encoded as base64 in JSON, thirty-two unanswered per stream
+([the shim design](cluster-spawn-and-shim.md#6-the-credential-tunnel-and-which-way-it-runs)).
+Toward the daemon, chunks stay base64 in JSON, eight unacknowledged per stream. A shim
+serves sixteen simultaneous code-host streams (`shim/tunnel.ts`). Additional-repository
+and submodule fetches share that per-shim ceiling; it is not a pool-member-wide load limit. A CONNECT past the ceiling
 waits for a stream to end rather than being refused, since Git does not retry a
 refused CONNECT. At the ceiling it is refused with 503 only when four times the ceiling are already
 waiting, or after 120 seconds without a free stream. An opened CONNECT the daemon has not
