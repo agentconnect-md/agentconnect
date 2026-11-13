@@ -103,6 +103,8 @@ export interface PlatformManifest {
   readonly addressedByConstruction: boolean
   /** Conversation kinds whose rows can key one long (`append`) session; the spec projection reads it to give an assistant-mode agent one session per place (assistant-mode.md §5.2). */
   readonly appendKinds: readonly AppendConversationKind[]
+  /** The one thread every message of a room (not a DM) carries, where the platform keys a whole room as one thread; such a room has no root, so session keying never runs a coordinator there (auto-session-mode.md §6.8). Absent ⇒ only a room keyed by its own id is one thread. */
+  readonly roomThread?: string
 }
 
 /** A conversation row's kind, as far as session modes go: a room, a 1:1 DM, or a group DM. */
@@ -149,7 +151,8 @@ export const DEFAULT_MANIFEST: Omit<PlatformManifest, 'platform'> = {
  * axes — a fail-OPEN hole in the exact guarantee this module sells.
  */
 const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
-  ['qq', { ...DEFAULT_MANIFEST, dmChannelPattern: /^dm:/, appendKinds: ['channel'] }],
+  // A group is keyed by the fixed thread `group` (`qq-message.ts`), so it is one session.
+  ['qq', { ...DEFAULT_MANIFEST, dmChannelPattern: /^dm:/, appendKinds: ['channel'], roomThread: 'group' }],
   // Slack is the only platform with an authoritative membership snapshot — which
   // is why the branches this replaces read "Slack does X, everyone else does Y".
   // It is also the only platform whose normalizer attributes bot authorship AND
@@ -285,7 +288,9 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       // The official doc delivers a group message only when it mentions the bot, so a mention in a session the agent holds continues it.
       addressedByConstruction: true,
       // A direct chat is one continuous session already, so only groups take `append`.
-      appendKinds: ['channel']
+      appendKinds: ['channel'],
+      // WeCom has no threads, so a group is keyed by the fixed thread `group` (`canonicalizeWeComThread`) and is one session.
+      roomThread: 'group'
     }
   ]
 ])

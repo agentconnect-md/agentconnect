@@ -587,7 +587,9 @@ export class CoordinatorSessions {
 
   /** The newest room a task holds in a conversation other than the message's, where a message moves (§6.8). */
   private roomOf(threads: readonly TaskRoom[], msg: NormalizedMessage): TaskRoom | undefined {
-    const rooms = threads.filter((at) => at.channel !== msg.channel && wholeRoomThread(at))
+    const rooms = threads.filter(
+      (at) => at.channel !== msg.channel && wholeRoomThread({ ...at, platform: msg.platform })
+    )
     const room = rooms[rooms.length - 1]
     return room && { channel: room.channel, thread: room.thread }
   }
@@ -667,7 +669,16 @@ export class CoordinatorSessions {
     const store = this.host.store()
     const index = store.assistantSubsessions
     const now = this.host.now()
-    const sessions = await index.unownedThreadSessions(agentId, at, now - THREADED_TASK_IDLE_CLOSE_MS)
+    // A session holding a room's one thread is that room's only session, never a task (§6.8).
+    const sessions = (await index.unownedThreadSessions(agentId, at, now - THREADED_TASK_IDLE_CLOSE_MS)).filter(
+      (session) =>
+        !wholeRoomThread({
+          ...at,
+          thread: session.thread,
+          isDm: session.conversationKind === 'dm',
+          isGroupDm: session.conversationKind === 'group_dm'
+        })
+    )
     if (sessions.length === 0) return 0
     const parentSessionId = await store.ensureOutwardSessionId(coordinatorKey, agentId, now)
     const adopted: string[] = []

@@ -764,9 +764,9 @@ describe('a coordinator task that makes its own code channel, through the daemon
     expect(calls[0]!.sessionChannel).toBeUndefined()
     expect(await booted.d.store.currentAppendCoordinate('bot-a', 'C2', booted.scope, 'coordinator')).toBeUndefined()
     // A DM keyed as one thread is no room: it still has its coordinator where it runs auto.
-    expect(wholeRoomThread({ channel: 'D1', thread: 'D1', isDm: true })).toBe(false)
-    expect(wholeRoomThread({ channel: 'C2', thread: 'C2', isDm: false })).toBe(true)
-    expect(wholeRoomThread({ channel: 'C1', thread: '1.1', isDm: false })).toBe(false)
+    expect(wholeRoomThread({ platform: 'slack', channel: 'D1', thread: 'D1', isDm: true })).toBe(false)
+    expect(wholeRoomThread({ platform: 'slack', channel: 'C2', thread: 'C2', isDm: false })).toBe(true)
+    expect(wholeRoomThread({ platform: 'slack', channel: 'C1', thread: '1.1', isDm: false })).toBe(false)
     await booted.daemon.stop()
   })
 

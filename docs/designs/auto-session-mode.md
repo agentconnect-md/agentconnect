@@ -615,10 +615,15 @@ place; a channel is a workspace the task earns.
   onboarded (no getting-to-know task, no long session of its own, no coordinator), and a follow-up
   taken from a message there belongs to the task's own place, the conversation the task was opened
   in, where its reports and its board line go. A code channel made outside a task is unchanged here.
-- **Routing.** A room its platform keys as one thread named after itself has no root, so it never runs a
-  coordinator of its own whatever its mode: every message there keys on the channel's session, the
-  task's while a task holds it. This also keeps a code channel made outside a task, or one whose task has
-  closed, an ordinary code channel. `!new`, `!stop` and Slack's native Stop act on that session (§8).
+- **Routing.** A room its platform keys as one thread has no root, so it never runs a coordinator of
+  its own whatever its mode: every message there keys on the channel's session, the task's while a task
+  holds it. The platform declares the shape, never core: a room keyed by its own id (a Slack code channel,
+  `slack:<channel>:<channel>`), or a room whose every message carries the one fixed thread its platform
+  manifest names as `roomThread` (a WeCom or QQ group, thread `group`). Neither is a direct message. Such
+  a room's long session is that thread's, a switch into `auto` adopts no session holding it (§3.5), and
+  `auto` there keeps the room's one session. This also keeps a code channel made outside a task, or one
+  whose task has closed, an ordinary code channel. `!new`, `!stop` and Slack's native Stop act on that
+  session (§8).
   A message in a room a task holds passes the session source gate
   ([session-visibility.md](session-visibility.md) §4.1) as the task's own: it is judged as the
   conversation of the task's session, whose row keeps its binding to the origin.

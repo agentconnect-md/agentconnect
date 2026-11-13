@@ -138,6 +138,26 @@ describe('platform manifest', () => {
     expect(DEFAULT_MANIFEST.appendKinds).toEqual([])
   })
 
+  it('declares a room keyed as one thread on QQ and WeCom, and nowhere else', () => {
+    // Session keying reads it before any target resolves: such a room has no root, so it never runs a coordinator.
+    expect(manifestFor('qq').roomThread).toBe('group')
+    expect(manifestFor(WECOM_PLATFORM).roomThread).toBe('group')
+    for (const p of [
+      'slack',
+      'telegram',
+      'discord',
+      'feishu',
+      'linear',
+      GOOGLE_CHAT_PLATFORM,
+      DINGTALK_PLATFORM,
+      MSTEAMS_PLATFORM,
+      WECHAT_PLATFORM
+    ])
+      expect(manifestFor(p).roomThread, p).toBeUndefined()
+    expect(manifestFor('some-future-platform').roomThread).toBeUndefined()
+    expect(DEFAULT_MANIFEST.roomThread).toBeUndefined()
+  })
+
   it('keeps Linear on the fail-closed arm of every axis it did not earn', () => {
     // Linear's row exists for `multiAgentShareable`, `ownerAsDefault` and `addressedByConstruction` alone: no
     // membership snapshot API, no bot-sender admission, nothing but a conversation to leave.
@@ -214,7 +234,8 @@ describe('platform manifest', () => {
       ...DEFAULT_MANIFEST,
       dmChannelPattern: /^dm:/,
       addressedByConstruction: true,
-      appendKinds: ['channel']
+      appendKinds: ['channel'],
+      roomThread: 'group'
     })
     expect(axes.dmChannelPattern?.test('dm:user-alice')).toBe(true)
     expect(axes.dmChannelPattern?.test('chat-example-group')).toBe(false)

@@ -12051,12 +12051,21 @@ export class Daemon {
     if (!int || (mode !== 'append' && !coordinator)) return undefined
     // A channel a task holds has no long session of its own (auto-session-mode.md §6.8).
     if (await this.heldByTask(agentId, int, place.channel)) return undefined
+    const room = {
+      platform: place.platform,
+      channel: place.channel,
+      thread: manifestFor(place.platform).roomThread,
+      isDm: conversationKindOf({ platform: place.platform, channel: place.channel, isDm }) === 'im'
+    }
+    // A room its platform keys as one thread runs no coordinator: its long session is that thread's (auto-session-mode.md §6.8).
     const thread = coordinator
-      ? await this.resolveCoordinator(agentId, {
-          platform: place.platform,
-          channel: place.channel,
-          transportScope: place.transportScope ?? null
-        })
+      ? wholeRoomThread(room)
+        ? room.thread!
+        : await this.resolveCoordinator(agentId, {
+            platform: place.platform,
+            channel: place.channel,
+            transportScope: place.transportScope ?? null
+          })
       : await this.store.resolveAppendCoordinate(agentId, place.channel, place.transportScope)
     return {
       key: sessionKey(place.platform, place.channel, thread, agentId, place.transportScope),
@@ -15362,7 +15371,7 @@ export class Daemon {
     await this.coordinators.roomsAttached(agentId)
     const index = this.store.assistantSubsessions
     const at = { platform: msg.platform, channel: msg.channel, transportScope: msg.transportScope ?? null }
-    const task = await index.taskOfThread(agentId, { ...at, thread: msg.channel })
+    const task = await index.taskOfThread(agentId, { ...at, thread: msg.thread! })
     if (task === undefined) return undefined
     const session = await this.store.getSession(task)
     return session ? { channel: session.channel, thread: session.thread } : (await index.threadsOf(agentId, task))[0]
@@ -15400,7 +15409,7 @@ export class Daemon {
     // A scheduled run, a hook or another agent's call names no platform message to decide on, so it keeps its own session.
     if (msg.source !== 'user') return undefined
     // A room keyed as one thread has no root: its one session takes every message, the task's while a task holds it (§6.8).
-    if (wholeRoomThread(msg)) return undefined
+    if (wholeRoomThread({ ...msg, platform: int.platform })) return undefined
     const at = { platform: int.platform, channel: msg.channel, transportScope: msg.transportScope ?? null }
     // Minted before the thread lookup, so a thread session the switch into `auto` adopts keeps its thread (§3.5).
     const coordinator = mint
@@ -27771,7 +27780,7 @@ export class Daemon {
   ): Promise<NormalizedMessage> {
     if (!session || sessionChannelOf(msg) === msg.channel || !wholeRoomThread(msg)) return msg
     const room = { platform: msg.platform, channel: msg.channel, transportScope: msg.transportScope ?? null }
-    if ((await this.store.assistantSubsessions.taskOfThread(agentId, { ...room, thread: msg.channel })) !== key)
+    if ((await this.store.assistantSubsessions.taskOfThread(agentId, { ...room, thread: msg.thread! })) !== key)
       return msg
     return { ...msg, channel: session.channel, thread: session.thread, isDm: session.conversationKind === 'dm' }
   }

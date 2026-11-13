@@ -4,8 +4,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it, expect, vi } from 'vitest'
 import { FakeClock } from '@agentconnect.md/connection'
+import { normalizeQQMessage } from '@agentconnect.md/message'
+import { manifestFor } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
+import { QQConnection } from '../src/platforms/qq/connection.js'
+import { WeComConnection } from '../src/platforms/wecom/connection.js'
 import { THREADED_TASK_IDLE_CLOSE_MS } from '../src/auto-session/coordinator-sessions.js'
+import { wholeRoomThread } from '../src/auto-session/coordinator-turns.js'
+import { WECOM_DM_THREAD, WECOM_GROUP_THREAD } from '../src/platforms/wecom/module.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { isAppendCoordinate, isCoordinatorCoordinate } from '../src/session/append-coordinate.js'
 import { sessionKey, type SessionRecord } from '../src/store/local-store.js'
@@ -30,7 +36,16 @@ const mention = { mentionedBots: ['U_FAKE_BOT'], text: '<@U_FAKE_BOT> and now?' 
 
 type Mode = 'createNew' | 'append' | 'auto'
 
-function scaffold(mode: Mode): string {
+// The conversation each platform's harness runs in: Slack threads off a message, WeCom and QQ key a group as one thread.
+const ROOMS = {
+  slack: { channel: 'C1', config: { botToken: 'xoxb', appToken: 'xapp', botUserId: 'U_FAKE_BOT' } },
+  wecom: { channel: 'chat-example-group', config: { botId: 'aibot-example', secret: 'secret-placeholder' } },
+  qq: { channel: 'group:chat-example-group', config: { appId: '100', appSecret: 'secret-placeholder' } }
+} as const
+type Platform = keyof typeof ROOMS
+
+function scaffold(mode: Mode, platform: Platform = 'slack'): string {
+  const room = ROOMS[platform]
   const root = mkdtempSync(join(tmpdir(), 'ac-auto-switch-'))
   writeFileSync(
     join(root, 'config.json'),
@@ -54,13 +69,13 @@ function scaffold(mode: Mode): string {
       integrations: [
         {
           id: 'int-bot-a',
-          platform: 'slack',
+          platform,
           // Mention only: under auto the daemon admits Any message itself (§3.3).
           core: {
             bindRules: [{ match: { kind: 'mention' } }],
-            sessionModes: mode === 'createNew' ? [] : [{ channel: 'C1', mode }]
+            sessionModes: mode === 'createNew' ? [] : [{ channel: room.channel, mode }]
           },
-          config: { botToken: 'xoxb', appToken: 'xapp', botUserId: 'U_FAKE_BOT' }
+          config: room.config
         }
       ],
       output: { mode: 'low' }
@@ -69,10 +84,13 @@ function scaffold(mode: Mode): string {
   return root
 }
 
-async function boot(mode: Mode) {
+async function boot(mode: Mode, platform: Platform = 'slack') {
+  const { channel } = ROOMS[platform]
+  vi.spyOn(WeComConnection.prototype, 'start').mockResolvedValue()
+  vi.spyOn(QQConnection.prototype, 'start').mockResolvedValue()
   const clock = new FakeClock(Date.now())
   const daemon = new Daemon({
-    root: scaffold(mode),
+    root: scaffold(mode, platform),
     slackAppFactory: fakeSlackAppFactory(),
     hostFactory: () => ({ __started: true, start: vi.fn(), stop: vi.fn() }) as never,
     clock
@@ -86,20 +104,19 @@ async function boot(mode: Mode) {
   })
   const scope: string = d.transportScopeForIntegrationIds(['int-bot-a'])
   const index = d.store.assistantSubsessions
-  const keyAt = (thread: string, channel = 'C1') => sessionKey('slack', channel, thread, 'bot-a', scope)
+  const keyAt = (thread: string, at: string = channel) => sessionKey(platform, at, thread, 'bot-a', scope)
   const route = async (msg: NormalizedMessage) => await d.onInboundOutcome(msg, ['int-bot-a'])
   // Mode is read per message (channel-session-mode.md §3.4), so the switch is the live spec's.
   const setMode = (next: Mode) => {
-    d.agents.get('bot-a').integrations[0].core.sessionModes =
-      next === 'createNew' ? [] : [{ channel: 'C1', mode: next }]
+    d.agents.get('bot-a').integrations[0].core.sessionModes = next === 'createNew' ? [] : [{ channel, mode: next }]
   }
   const seed = async (thread: string, over: Partial<SessionRecord> = {}) => {
     const { title, ...row } = over
     await d.store.upsertSession({
       key: keyAt(thread, over.channel),
       agentId: 'bot-a',
-      platform: 'slack',
-      channel: 'C1',
+      platform,
+      channel,
       thread,
       transportScope: scope,
       acpSessionId: `acp-${thread}`,
@@ -111,7 +128,7 @@ async function boot(mode: Mode) {
     if (title) await d.store.setSessionTitle(keyAt(thread, over.channel), title)
   }
   const coordinatorKey = async () => {
-    const coordinate = await d.store.currentAppendCoordinate('bot-a', 'C1', scope, 'coordinator')
+    const coordinate = await d.store.currentAppendCoordinate('bot-a', channel, scope, 'coordinator')
     return coordinate === undefined ? undefined : keyAt(coordinate)
   }
   const tasksOf = async (parentKey: string) =>
@@ -122,7 +139,7 @@ async function boot(mode: Mode) {
         20
       )
     ).rows as { childSessionKey: string; title?: string; state: string }[]
-  const at = (thread: string) => ({ platform: 'slack', channel: 'C1', transportScope: scope, thread })
+  const at = (thread: string) => ({ platform, channel, transportScope: scope, thread })
   return { daemon, d, clock, calls, scope, index, keyAt, route, setMode, seed, coordinatorKey, tasksOf, at }
 }
 
@@ -332,6 +349,152 @@ describe('turning the coordinator off', () => {
     delete d.agents.get('bot-a').coordinatorDisabled
     await route(slack('3.1'))
     expect(calls.map((msg) => isCoordinatorCoordinate(msg.sessionThread))).toEqual([true])
+    await daemon.stop()
+  })
+})
+
+// A mention in a WeCom group, before canonicalization gives it the group's one thread.
+const weComGroup = (id: string): NormalizedMessage =>
+  ({
+    msgId: `wecom:aibot-example:${id}`,
+    traceId: `t-${id}`,
+    source: 'user',
+    platform: 'wecom',
+    channel: ROOMS.wecom.channel,
+    sender: { id: 'user-alice', isBot: false },
+    text: '@bot what changed today?',
+    mentionedBots: ['aibot-example'],
+    isDm: false
+  }) as NormalizedMessage
+
+const qqGroup = (id: string): NormalizedMessage =>
+  normalizeQQMessage(
+    '100',
+    {
+      rawEventType: 'GROUP_AT_MESSAGE_CREATE',
+      kind: 'group',
+      groupOpenid: 'chat-example-group',
+      senderId: 'user-alice',
+      messageId: id,
+      content: '<@!100> what changed today?'
+    },
+    `t-${id}`
+  ) as NormalizedMessage
+
+// auto-session-mode.md §6.8: a room its platform keys as one thread has no root, so `auto` keeps its one session.
+describe('a group its platform keys as one thread', () => {
+  it('is declared by the platform, beside a room named after itself', () => {
+    expect(manifestFor('wecom').roomThread).toBe(WECOM_GROUP_THREAD)
+    expect(qqGroup('m0').thread).toBe(manifestFor('qq').roomThread)
+    for (const platform of ['wecom', 'qq']) {
+      expect(wholeRoomThread({ platform, channel: 'chat-example-group', thread: 'group', isDm: false })).toBe(true)
+      // A direct chat is one session too, but no room: its own mode decides.
+      expect(wholeRoomThread({ platform, channel: 'dm:user-alice', thread: 'group', isDm: true })).toBe(false)
+      expect(wholeRoomThread({ platform, channel: 'chat-example-group', thread: undefined })).toBe(false)
+    }
+    expect(wholeRoomThread({ platform: 'wecom', channel: 'dm:user-alice', thread: WECOM_DM_THREAD })).toBe(false)
+    // Elsewhere only a room named after itself is one thread, as before.
+    expect(wholeRoomThread({ platform: 'slack', channel: 'C1', thread: 'group' })).toBe(false)
+    expect(wholeRoomThread({ platform: 'slack', channel: 'C1', thread: 'C1' })).toBe(true)
+    expect(wholeRoomThread({ platform: 'wecom', channel: 'chat-example-group', thread: 'chat-example-group' })).toBe(
+      true
+    )
+  })
+
+  for (const [platform, message] of [
+    ['wecom', weComGroup],
+    ['qq', qqGroup]
+  ] as const) {
+    describe(`on ${platform}`, () => {
+      it('keeps the group’s one session through the switch into auto: no coordinator, task or owner', async () => {
+        const { daemon, d, calls, scope, index, keyAt, route, setMode, seed, coordinatorKey, at } = await boot(
+          'createNew',
+          platform
+        )
+        // The first mention predates auto and keys the group's one thread.
+        await route(message('m1'))
+        expect(calls.map((msg) => [msg.thread, msg.sessionThread])).toEqual([['group', undefined]])
+        // The session that first turn opened, as its dispatch would record it.
+        await seed('group', { title: 'Meet the team' })
+        setMode('auto')
+        const outward = vi.spyOn(d.store, 'ensureOutwardSessionId')
+        const adopt = vi.spyOn(d.coordinators, 'adoptThreadSessions')
+        const owners = vi.spyOn(d, 'reportTaskOwners')
+        const emit = vi.spyOn(d.sessionMetadataOutbox, 'emitSessionMetadataSnapshot')
+
+        await route(message('m2'))
+        // The second mention reaches the same session, keyed on the group's thread.
+        expect(calls).toHaveLength(2)
+        expect(calls[1]).toMatchObject({ platform, thread: 'group' })
+        expect(calls[1]!.sessionThread).toBeUndefined()
+        expect(calls[1]!.sessionChannel).toBeUndefined()
+        // No coordinator was minted, so nothing was adopted and no owner reported.
+        expect(await coordinatorKey()).toBeUndefined()
+        expect(await d.store.currentAppendCoordinate('bot-a', ROOMS[platform].channel, scope)).toBeUndefined()
+        expect(outward).not.toHaveBeenCalled()
+        expect(adopt).not.toHaveBeenCalled()
+        expect(owners).not.toHaveBeenCalled()
+        expect(emit).not.toHaveBeenCalled()
+        // The group's session is not a task.
+        expect(await index.get('bot-a', keyAt('group'))).toBeUndefined()
+        expect(await index.taskOfThread('bot-a', at('group'))).toBeUndefined()
+        await daemon.stop()
+      })
+
+      it('keys every mention on the group’s one session when the group starts in auto', async () => {
+        const { daemon, d, calls, scope, keyAt, route, seed, coordinatorKey, at, index } = await boot('auto', platform)
+        await route(message('m1'))
+        await seed('group')
+        await route(message('m2'))
+        expect(calls.map((msg) => [msg.thread, msg.sessionThread])).toEqual([
+          ['group', undefined],
+          ['group', undefined]
+        ])
+        expect(await coordinatorKey()).toBeUndefined()
+        expect(await d.store.currentAppendCoordinate('bot-a', ROOMS[platform].channel, scope)).toBeUndefined()
+        expect(await index.get('bot-a', keyAt('group'))).toBeUndefined()
+        expect(await index.taskOfThread('bot-a', at('group'))).toBeUndefined()
+        await daemon.stop()
+      })
+
+      it('gives a place nobody spoke in the group’s one thread as its long session, minting no coordinator', async () => {
+        const { daemon, d, scope, keyAt, coordinatorKey } = await boot('auto', platform)
+        const place = { platform, channel: ROOMS[platform].channel, transportScope: scope }
+        expect(await d.checkParent('bot-a', place, { open: true })).toMatchObject({
+          key: keyAt('group'),
+          thread: 'group',
+          opening: true
+        })
+        expect(await coordinatorKey()).toBeUndefined()
+        await daemon.stop()
+      })
+
+      it('never adopts the group’s session as a task, whatever mints a coordinator there', async () => {
+        const { daemon, d, scope, index, keyAt, seed, at } = await boot('auto', platform)
+        await seed('group')
+        const owners = vi.spyOn(d, 'reportTaskOwners')
+        const room = { platform, channel: ROOMS[platform].channel, transportScope: scope }
+        expect(await d.coordinators.adoptThreadSessions('bot-a', keyAt('append:coordinator-1'), room)).toBe(0)
+        expect(await index.get('bot-a', keyAt('group'))).toBeUndefined()
+        expect(await index.taskOfThread('bot-a', at('group'))).toBeUndefined()
+        expect(owners).not.toHaveBeenCalled()
+        await daemon.stop()
+      })
+    })
+  }
+
+  it('still mints and uses a Slack conversation’s coordinator, adopting its thread sessions but not one keyed on the room', async () => {
+    const { daemon, d, calls, keyAt, route, setMode, seed, coordinatorKey, tasksOf } = await boot('createNew')
+    await seed('1.1', { title: 'A thread from before' })
+    await seed('C1', { title: 'Keyed on the room' })
+    setMode('auto')
+    await route(slack('9.1'))
+    const parent = (await coordinatorKey())!
+    expect(isCoordinatorCoordinate(calls[0]!.sessionThread)).toBe(true)
+    expect(calls[0]!.sessionThread).toBe(
+      await d.store.currentAppendCoordinate('bot-a', 'C1', calls[0]!.transportScope, 'coordinator')
+    )
+    expect((await tasksOf(parent)).map((row) => row.childSessionKey)).toEqual([keyAt('1.1')])
     await daemon.stop()
   })
 })

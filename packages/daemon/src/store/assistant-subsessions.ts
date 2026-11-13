@@ -1096,10 +1096,10 @@ export class AssistantSubsessionIndex {
     agentId: string,
     at: { platform: string; channel: string; transportScope?: string | null },
     activeSince: number
-  ): Promise<{ key: string; thread: string; title?: string; running: boolean }[]> {
+  ): Promise<{ key: string; thread: string; title?: string; running: boolean; conversationKind?: string }[]> {
     const rows = (
       await this.db.query(
-        `SELECT s.key, s.thread, s.title, s.state FROM sessions s
+        `SELECT s.key, s.thread, s.title, s.state, s.conversationKind FROM sessions s
           WHERE s.agentId = ? AND s.platform = ? AND s.channel = ? AND COALESCE(s.transportScope, '') = ?
             AND s.thread NOT LIKE ? AND s.thread NOT LIKE ? AND s.originSessionId IS NULL AND s.updatedAt >= ?
             AND NOT EXISTS (SELECT 1 FROM assistant_subsession a WHERE a.agentId = s.agentId AND a.childSessionKey = s.key
@@ -1123,7 +1123,8 @@ export class AssistantSubsessionIndex {
       key: String(row.key),
       thread: String(row.thread),
       ...(row.title != null ? { title: String(row.title) } : {}),
-      running: row.state === 'prompting' || row.state === 'cancelling'
+      running: row.state === 'prompting' || row.state === 'cancelling',
+      ...(row.conversationKind != null ? { conversationKind: String(row.conversationKind) } : {})
     }))
   }
 

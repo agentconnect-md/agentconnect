@@ -1,4 +1,5 @@
 // A coordinator turn's delivered messages and the one outcome each may take (auto-session-mode.md §4.2–§4.5).
+import { manifestFor } from '@agentconnect.md/protocol'
 import type { CallMeta } from '../daemon/turn-types.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import { coordinatorMessageId, type CoordinatorMessage, type ReportAbout } from './coordinator-prompt.js'
@@ -63,14 +64,16 @@ export function threadless(msg: Pick<NormalizedMessage, 'platform' | 'thread'>):
   return msg.platform === 'webchat' && msg.thread === undefined
 }
 
-/** Whether a room is one thread named after it, as a platform keys a room of its own (a task's place, auto-session-mode.md §6.8): it has no root to coordinate. */
+/** Whether a room is one thread, named after it or the one its platform declares (auto-session-mode.md §6.8): it has no root to coordinate. */
 export function wholeRoomThread(msg: {
+  platform: string
   channel: string
   thread?: string
   isDm?: boolean
   isGroupDm?: boolean
 }): boolean {
-  return !msg.isDm && msg.isGroupDm !== true && msg.thread === msg.channel
+  if (msg.isDm || msg.isGroupDm === true || msg.thread === undefined) return false
+  return msg.thread === msg.channel || msg.thread === manifestFor(msg.platform).roomThread
 }
 
 /** Whether a message sits in a thread under another message, rather than at the conversation root. */

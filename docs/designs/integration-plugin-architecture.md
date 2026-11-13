@@ -259,7 +259,10 @@ mention inside a thread the agent holds as the continuation it is, not as a
 fresh address to judge again. `appendKinds` lists the conversation kinds whose rows
 can key one long session; the spec projection reads it before any dispatch to give an
 assistant-mode agent one session per place, so no core branch names Linear (rooms
-never append) or Slack (its DMs do).
+never append) or Slack (its DMs do). `roomThread` names the one fixed thread a platform
+keys every message of a room by (WeCom and QQ groups, `group`); session keying reads it
+before any target resolves, so such a room never runs an `auto` coordinator
+([auto-session-mode.md](auto-session-mode.md) §6.8), and no core branch names WeCom or QQ.
 
 Status-bar shape is the counter-example: it reads like a capability, but every
 read of it happens from a turn that already exists, so it is post-dispatch and
