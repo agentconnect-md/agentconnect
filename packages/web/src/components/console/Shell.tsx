@@ -169,24 +169,31 @@ export const useMobileActionSlot = () => useContext(MobileActionContext)
 const CrumbContext = createContext<{ register: (s: CrumbSlot | null) => void }>({ register: () => {} })
 export const useCrumbSlot = () => useContext(CrumbContext)
 
-export default function ConsoleShell({ children }: { children: ReactNode }) {
+export default function ConsoleShell({ children, authConfigured }: { children: ReactNode; authConfigured: boolean }) {
   return (
     <SWRConfig value={CONSOLE_SWR_CONFIG}>
       <OrgProvider>
         <ConsoleDataProvider>
-          <PlaygroundProvider>
-            <DecisionsPrototypeProvider>
-              <ModalProvider>
-                {/* One pending-action registry outlives every route and its banner. */}
-                <PendingActionsProvider>
-                  <ShellChrome>{children}</ShellChrome>
-                </PendingActionsProvider>
-              </ModalProvider>
-            </DecisionsPrototypeProvider>
-          </PlaygroundProvider>
+          <DecisionsPrototypeProvider>
+            <ModalProvider>
+              {/* One pending-action registry outlives every route and its banner. */}
+              <PendingActionsProvider>
+                <ShellChrome authConfigured={authConfigured}>{children}</ShellChrome>
+              </PendingActionsProvider>
+            </ModalProvider>
+          </DecisionsPrototypeProvider>
         </ConsoleDataProvider>
       </OrgProvider>
     </SWRConfig>
+  )
+}
+
+// The playground resets per org by remounting, so it wraps only page content: keyed above the rail, every org change tore the rail down.
+function PageContent({ children }: { children: ReactNode }) {
+  return (
+    <PlaygroundProvider>
+      <OrgGate>{children}</OrgGate>
+    </PlaygroundProvider>
   )
 }
 
@@ -340,16 +347,16 @@ function RailAccount({
   )
 }
 
-function ShellChrome({ children }: { children: ReactNode }) {
+function ShellChrome({ children, authConfigured }: { children: ReactNode; authConfigured: boolean }) {
   const { activeOrg } = useOrgs()
   return (
     <NotificationProvider orgId={activeOrg?.id}>
-      <ShellChromeInner>{children}</ShellChromeInner>
+      <ShellChromeInner authConfigured={authConfigured}>{children}</ShellChromeInner>
     </NotificationProvider>
   )
 }
 
-function ShellChromeInner({ children }: { children: ReactNode }) {
+function ShellChromeInner({ children, authConfigured }: { children: ReactNode; authConfigured: boolean }) {
   const t = useTranslations('Shell')
   const pathname = usePathname()
   const searchParams = useSearchParams()
@@ -414,10 +421,8 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
   const [connectAiOpen, setConnectAiOpen] = useState(false)
   const [githubNotice, setGithubNotice] = useState<GithubCallbackNotice | null>(null)
   const help = resolveHelpLinks()
-  // Gate the first paint until the auth check resolves so an unauthenticated
-  // visitor never flashes the console before the /login redirect. In no-auth
-  // OSS mode there's nothing to check, so we're ready immediately.
-  const [authReady, setAuthReady] = useState(!isAuthConfigured())
+  // Gate first paint on the auth check; seeded from the server's snapshot so SSR and hydration agree (no console → spinner → console flash).
+  const [authReady, setAuthReady] = useState(!authConfigured)
   // Whether the signed-in user may create orgs. Always true unless WAITLIST_MODE is
   // on and the user is not yet activated (waitlist-and-login.md §9) — then the
   // "Create organization" entry points are hidden (the real block is server-side).
@@ -604,7 +609,7 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
           {isAuthConfigured() && <UserMenu display={display} orgPath={orgPath} onSignOut={signOut} />}
         </header>
         <div className="flex-1 overflow-auto">
-          <OrgGate>{children}</OrgGate>
+          <PageContent>{children}</PageContent>
         </div>
         <TooltipLayer />
       </div>
@@ -995,7 +1000,7 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
 
               <div className="content">
                 <SearchOpenContext.Provider value={openSearch}>
-                  <OrgGate>{children}</OrgGate>
+                  <PageContent>{children}</PageContent>
                 </SearchOpenContext.Provider>
               </div>
             </div>
