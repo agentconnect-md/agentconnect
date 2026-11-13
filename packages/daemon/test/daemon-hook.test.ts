@@ -937,7 +937,7 @@ describe('Daemon rd/msg hook fires', () => {
     expect(host.prompt).not.toHaveBeenCalled()
     expect((daemon as any).activeGithubTurnMeta.size).toBe(0)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('routes review-comment follow-ups inline without granting formal-review authority', async () => {
     let onUpdate!: (sid: string, update: unknown) => void
