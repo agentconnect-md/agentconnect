@@ -349,8 +349,12 @@ export class AgentChannelServer {
         denied: 'repository'
       })
     }
-    // The daemon's own Git holds the daemon capability; a window opens for a private skill's acquisition.
-    const consumer: GitCredConsumer = isAgentPrincipal(principal) && principal.holder === 'daemon' ? 'daemon' : 'helper'
+    // The daemon's own Git holds the daemon capability, or a daemon-subject window for a private skill's acquisition.
+    const consumer: GitCredConsumer = (
+      isAgentPrincipal(principal) ? principal.holder === 'daemon' : principal.subject === DAEMON_SKILL_WINDOW_SUBJECT
+    )
+      ? 'daemon'
+      : 'helper'
     const { access: _access, ...answer } = await this.answer(req, plane, repo, privateSkill, window, consumer)
     return reply(answer)
   }

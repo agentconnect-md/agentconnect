@@ -8,6 +8,9 @@ import { authorizeWorkspaceGitUrl } from '../workspace/git-origin-policy.js'
 import type { CodeHostCredentialModule, SecondaryRootPlacement } from '../codehost/credentials.js'
 import type { ManagedCredentialScope } from '../workspace/git-injection.js'
 
+/** The deployment switch that makes GitHub proxy-only on this daemon, as Gitea, GitLab and Azure DevOps always are; set by the chart's `features.githubGitProxy`. */
+export const GITHUB_GIT_PROXY_ENV = 'AC_GITHUB_GIT_PROXY'
+
 /** Anonymous and github-app operations both pin github.com; only a spec-carried host moves the axis. */
 const GITHUB_SCOPE: ManagedCredentialScope = { host: GITHUB_MANAGED_HOST }
 
@@ -35,5 +38,10 @@ export const githubCredentials: CodeHostCredentialModule = {
   },
   secondaryCloneUrl: (repoFullName) =>
     authorizeWorkspaceGitUrl(normalizeGithubRepoUrl(`https://github.com/${repoFullName}`)),
-  secondaryCredentialScope: () => GITHUB_SCOPE
+  secondaryCredentialScope: () => GITHUB_SCOPE,
+  // Read per call, so the switch is the process environment alone.
+  get proxyOnly(): boolean {
+    const raw = process.env[GITHUB_GIT_PROXY_ENV]?.trim().toLowerCase()
+    return raw === 'true' || raw === '1'
+  }
 }

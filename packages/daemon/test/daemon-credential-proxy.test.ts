@@ -17,6 +17,7 @@ import { join } from 'node:path'
 import type { Duplex } from 'node:stream'
 import { promisify } from 'node:util'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { isProxyOnlyProvider, proxyOnlyProvidersOf } from '../src/codehost/credentials.js'
 import { generateCa } from '@anthropic-ai/sandbox-runtime'
 import { createMitmCA } from '@anthropic-ai/sandbox-runtime/dist/sandbox/mitm-ca.js'
 import { mintLeafCert } from '@anthropic-ai/sandbox-runtime/dist/sandbox/mitm-leaf.js'
@@ -705,6 +706,27 @@ describe('a GitHub agent with a private GitHub skill source', () => {
     fakeControlPlane(d, 'write')
     const minted = await d.credentialProxyMint(GITHUB_AGENT, { provider: 'github', repo: 'acme/skills', plane: 'git' })
     expect(minted.token).toBe(MINTED_GITHUB)
+  })
+})
+
+describe('a GitHub agent on a daemon that makes GitHub proxy-only', () => {
+  afterEach(() => vi.unstubAllEnvs())
+
+  it('counts GitHub as proxy-only only under the switch, and mints its proxy token as the proxy consumer', async () => {
+    expect(isProxyOnlyProvider('github')).toBe(false)
+    vi.stubEnv('AC_GITHUB_GIT_PROXY', 'true')
+    expect(isProxyOnlyProvider('github')).toBe(true)
+    const { d } = await startDaemon()
+    await admit(d, GITHUB_AGENT, githubSpec())
+    const asked = fakeControlPlane(d, 'write')
+    expect(proxyOnlyProvidersOf(d.agents.get(GITHUB_AGENT).workspace)).toEqual(['github'])
+    // The cache, not a lease: GitHub's grant still resolves the repository by name.
+    const minted = await d.credentialProxyMint(GITHUB_AGENT, { provider: 'github', repo: 'acme/app', plane: 'api' })
+    expect(minted.token).toBe(MINTED_GITHUB)
+    expect(asked).toEqual([
+      expect.objectContaining({ agentId: GITHUB_AGENT, reason: 'helper', repoFullName: 'acme/app', consumer: 'proxy' })
+    ])
+    expect(asked[0]).not.toHaveProperty('provider')
   })
 })
 

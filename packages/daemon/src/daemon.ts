@@ -4500,6 +4500,8 @@ export class Daemon {
             ...(externalRepoId !== undefined ? { externalRepoId } : {}),
             ...proxyOnlyConsumer(provider, 'daemon')
           })
+        } else if (isProxyOnlyProvider(IMPLICIT_CREDENTIAL_PROVIDER)) {
+          await this.gitCreds.get(agentId, reason, { consumer: 'daemon' })
         } else await this.gitCreds.get(agentId, reason)
       }
     })
@@ -7180,9 +7182,8 @@ export class Daemon {
     }
   }
 
-  /** The proxy's token for one request: GitHub's straight from the cache, as before; a proxy-only provider's by its own lease; each with its `erase`. */
+  /** The proxy's token for one request: GitHub's from the cache, proxy-only or not; any other proxy-only provider's by its own lease; each with its `erase`. */
   private async credentialProxyMint(agentId: string, ask: MintAsk): Promise<MintedCredential> {
-    if (isProxyOnlyProvider(ask.provider)) return await this.proxyOnlyLease(agentId, ask)
     if (ask.provider === 'github') {
       const plane = ask.plane === 'git' ? 'git' : 'gh'
       const repo = ask.repo !== undefined ? { repo: ask.repo } : {}
@@ -7196,7 +7197,8 @@ export class Daemon {
       const cred = await this.gitCreds.get(agentId, 'helper', {
         plane,
         ...repo,
-        ...(ask.readOnly || ask.skill ? { requestedAccess: 'read' as const } : {})
+        ...(ask.readOnly || ask.skill ? { requestedAccess: 'read' as const } : {}),
+        ...proxyOnlyConsumer('github', 'proxy')
       })
       return {
         username: cred.username,
@@ -7205,6 +7207,7 @@ export class Daemon {
         invalidate: () => this.gitCreds.invalidate(agentId, cred.token, { plane, ...repo })
       }
     }
+    if (isProxyOnlyProvider(ask.provider)) return await this.proxyOnlyLease(agentId, ask)
     throw new Error(`the credential proxy holds no ${ask.provider} credential`)
   }
 
