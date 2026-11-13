@@ -174,11 +174,11 @@ export class AutoMergeWatcher {
     }
     try {
       const proxy = await this.deps.proxyFor(target.agentId, subject)
-      // Typed so the console keeps its restart guidance: a pod whose listener forwards no GitHub predates the route.
+      // Typed so the console branches on it; the route needs a current image, a running credential proxy and a managed GitHub credential.
       if (!proxy) {
         throw new AutoMergeViolationError(
           'unsupported-image',
-          `the sandbox ${subject} has no GitHub proxy route for its watcher — restart the agent to pick it up`
+          `the sandbox ${subject} has no GitHub proxy route for its watcher (it needs a current runtime image, this daemon's credential proxy and the agent's managed GitHub credential)`
         )
       }
       const answer = await sandbox.arm({ ...this.call(target), proxy })
