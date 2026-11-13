@@ -4,7 +4,7 @@ import { GithubReplyCollector } from '../github/poster.js'
 import { flattenUnsafeLinks } from '../messages/agent-links.js'
 import { AgentMessageRun, WorkBoundary } from '../messages/message-boundary.js'
 import type { WorkspaceFileLinkResolver } from '../messages/workspace-file-links.js'
-import { isNoResponseBody } from '../session/no-response.js'
+import { isNoResponseBody, isNoResponsePrefix } from '../session/no-response.js'
 
 const PROGRESS_LIMIT = 2
 const PROGRESS_SPACING_MS = 15_000
@@ -59,6 +59,7 @@ export class CompleteMessageConverger {
       phase === 'final_answer' ||
       !text.trim() ||
       isNoResponseBody(text.trim()) ||
+      isNoResponsePrefix(text.trim()) ||
       this.published.has(text) ||
       this.progressCount >= PROGRESS_LIMIT ||
       Date.now() - this.lastProgressAt < PROGRESS_SPACING_MS

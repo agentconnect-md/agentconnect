@@ -314,6 +314,16 @@ describe('WeCom converger', () => {
     expect(conv.onFinal()).toEqual([])
   })
 
+  it('leaves out a block that closed as only sentinel text, but keeps a short final reply', () => {
+    const interrupted = new WeComConverger('low')
+    interrupted.onUpdate(chunk('AC_NO_RES', 'm1'))
+    interrupted.onUpdate(chunk('Sure, here it is.', 'm2'))
+    expect(interrupted.onFinal()).toEqual([{ kind: 'post', text: 'Sure, here it is.' }])
+    const short = new WeComConverger('low')
+    short.onUpdate(chunk('A', 'm1'))
+    expect(short.onFinal()).toEqual([{ kind: 'post', text: 'A' }])
+  })
+
   it('records without streaming in the none mode', () => {
     const conv = new WeComConverger('none')
     expect(conv.onUpdate(chunk('Quiet'))).toEqual([])

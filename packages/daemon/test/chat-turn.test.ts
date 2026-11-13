@@ -43,4 +43,31 @@ describe('protocol-neutral chat output', () => {
     expect(posts).toEqual(context.replySegments.map((segment) => segment.postId))
     expect(output.every((update) => !('lastIndex' in update) && !('serverSeq' in update))).toBe(true)
   })
+
+  it('drops a message that closed as only sentinel text instead of joining the next one onto it', () => {
+    const output: ChatOutput[] = []
+    const context: ChatTurnOutput = {
+      conversationId: 'conversation',
+      turnId: 'turn',
+      index: 0,
+      replyText: '',
+      replySegments: [],
+      heldText: '',
+      messageEmitted: false,
+      sink: { output: (update) => output.push(update), done: () => {} }
+    }
+    const chunk = (messageId: string, text: string) => ({
+      sessionUpdate: 'agent_message_chunk',
+      messageId,
+      content: { type: 'text', text }
+    })
+    emitChatUpdate(context, chunk('m1', 'AC_NO_RES'))
+    expect(output).toEqual([])
+    emitChatUpdate(context, chunk('m2', 'Sure, here it is.'))
+    flushHeldChatText(context)
+    expect(context.replyText).toBe('Sure, here it is.')
+    expect(context.replySegments.map((segment) => segment.text)).toEqual(['Sure, here it is.'])
+    const said = output.flatMap((update) => (update.event?.kind === 'message' ? [update.event.text] : []))
+    expect(said.join('')).toBe('Sure, here it is.')
+  })
 })

@@ -21,9 +21,16 @@ export function emitChatUpdate(wc: ChatTurnOutput, update: any, resolveFileLink?
     })
   }
   const messageId = update?.sessionUpdate === 'agent_message_chunk' ? agentMessageId(update) : ''
-  const boundary =
-    (messageId && wc.messageId && messageId !== wc.messageId) ||
-    ['agent_thought_chunk', 'tool_call', 'plan'].includes(update?.sessionUpdate)
+  const opensMessage = Boolean(messageId && wc.messageId && messageId !== wc.messageId)
+  // A reply that is still only sentinel text when its message closes can never complete: drop it instead of joining the next message onto it.
+  if (opensMessage && !wc.messageEmitted && wc.replyText.trim() && isNoResponsePrefix(wc.replyText.trim())) {
+    wc.replyText = ''
+    wc.heldText = ''
+    wc.heldTextOffset = 0
+    wc.replySegments = []
+    wc.segmentIndex = undefined
+  }
+  const boundary = opensMessage || ['agent_thought_chunk', 'tool_call', 'plan'].includes(update?.sessionUpdate)
   if ((boundary || update?.sessionUpdate === 'tool_call_update') && !isNoResponsePrefix(wc.replyText.trim())) {
     flushHeldChatText(wc, resolveFileLink)
     if (boundary) wc.segmentIndex = undefined

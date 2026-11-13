@@ -73,8 +73,9 @@ export class QQConverger {
     if (!this.sourceText.trim() || isNoResponseBody(this.sourceText.trim())) return ''
     return flattenUnsafeLinks(this.sourceText, { resolveFileLink: this.resolveFileLink })
   }
-  private completeBlock(): void {
-    const text = this.currentText()
+  private completeBlock(final = false): void {
+    // A block closed mid-turn that is only sentinel text can never complete; at the turn's end a short reply like "A" stays.
+    const text = !final && isNoResponsePrefix(this.sourceText.trim()) ? '' : this.currentText()
     if (text) this.completed.push(QQStreamText(text, true))
     this.sourceText = ''
   }
@@ -95,7 +96,7 @@ export class QQConverger {
     if (this.finalized) return []
     this.finalized = true
     if (this.group) return this.group.onFinal()
-    this.completeBlock()
+    this.completeBlock(true)
     const text = this.completed.join('\n\n')
     return text
       ? [{ kind: 'post', text, attributed: false, ...(this.mode === 'none' ? { recordOnly: true } : {}) }]
